@@ -8,8 +8,6 @@
 
 ### Fixed
 
-- Persisted billing and quota provider cooldowns across sessions for six hours, with original-error exclusion reasons and a cheap authenticated models-list probe to restore availability early; ordinary permission errors and transient rate limits do not create billing bans.
-
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02
