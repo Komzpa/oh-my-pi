@@ -8,7 +8,6 @@
 
 ### Fixed
 
-- Fixed oversized tool-call arguments of completed calls, including in the current turn, and oversized historical tool results, keeping sessions stuck in context overflow after compaction while preserving full values in session storage. ([#121](https://github.com/Komzpa/oh-my-pi/pull/121) by [@Komzpa](https://github.com/Komzpa))
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02
