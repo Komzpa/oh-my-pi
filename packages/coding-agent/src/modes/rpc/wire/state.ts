@@ -30,12 +30,23 @@ export const stateDefs = {
 	AgentSource: "'bundled' | 'user' | 'project'",
 	SubagentStatus: "'pending' | 'running' | 'completed' | 'failed' | 'aborted'",
 
+	TodoAwaitingUser: {
+		action: "string",
+		"ids?": "string[]",
+	},
 	TodoItem: {
 		content: "string",
 		status: "TodoStatus",
 		"blocker?": doc("string", "What a `blocked` task is waiting on."),
 		"details?": "string",
 		"notes?": "string[]",
+		"artifactCwd?": doc("string", "Persisted checkout whose clean HEAD is the row's QA artifact."),
+		"artifactOwner?": doc("string", "Owner whose checkout was last verified as artifactCwd."),
+		"deployment?": doc("string", "Explicit deployment identity for this requirement row."),
+		"awaitingUser?": doc(
+			"TodoAwaitingUser",
+			"User-owned pending check; it does not constitute verification or close the row.",
+		),
 	},
 	TodoPhase: { name: "string", tasks: "TodoItem[]" },
 	ContextUsage: { tokens: "number.integer", contextWindow: "number.integer", percent: "number" },

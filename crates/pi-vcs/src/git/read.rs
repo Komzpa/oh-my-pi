@@ -14,8 +14,8 @@ use super::{
 use crate::{
 	error::{Error, Result},
 	types::{
-		CommitAuthor, CommitDetails, HeadState, ShowResult, StatusOptions, StatusSummary,
-		UntrackedMode, WorktreeEntry,
+		CommitAuthor, CommitDetails, GitTreeEntry, HeadState, ShowResult, StatusOptions,
+		StatusSummary, UntrackedMode, WorktreeEntry,
 	},
 };
 
@@ -99,6 +99,86 @@ impl GitRepo {
 			Ok(id) => Ok(Some(id.detach().to_string())),
 			Err(_) => Ok(None),
 		}
+	}
+
+	/// Read one exact literal path in a full immutable commit, including its
+	/// mode. No pathspec widening and no decoding of blob bytes is involved.
+	pub fn tree_entry(&self, commit: &str, path: &str) -> Result<Option<GitTreeEntry>> {
+		if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+			return Err(Error::backend("git tree-entry", "expected a full commit object ID"));
+		}
+		if path.is_empty()
+			|| path.len() > 4096
+			|| path.bytes().any(|b| b < 0x20 || b == 0x7f || b == b'\\')
+			|| path.split('/').any(|part| matches!(part, "" | "." | ".."))
+		{
+			return Err(Error::backend("git tree-entry", "expected an exact relative path"));
+		}
+		if self.is_reftable() {
+			if cli_text(self.root(), &["cat-file", "-t", commit])?.trim() != "commit" {
+				return Err(Error::ObjectNotFound { spec: commit.to_owned() });
+			}
+			// core.quotePath makes every filename byte outside printable ASCII an
+			// octal escape. Thus even the fallback's text capture is lossless; we
+			// compare the encoded *exact* name, never a lossy UTF-8 filename.
+			let args = vec![
+				"-c".to_owned(),
+				"core.quotePath=true".to_owned(),
+				"ls-tree".to_owned(),
+				"--full-tree".to_owned(),
+				commit.to_owned(),
+				"--".to_owned(),
+				path.to_owned(),
+			];
+			let limit = path.len().saturating_mul(4).saturating_add(512);
+			let raw = cli_text_owned_capped(self.root(), &args, super::cli::SYNC_TIMEOUT, limit)?;
+			if !raw.is_ascii() || (!raw.is_empty() && !raw.ends_with('\n')) {
+				return Err(Error::backend("git tree-entry", "invalid or truncated tree metadata"));
+			}
+			let wanted = quote_path(path);
+			let mut found = None;
+			for row in raw.lines() {
+				let (header, name) = row
+					.split_once('\t')
+					.ok_or_else(|| Error::backend("git tree-entry", "invalid tree metadata"))?;
+				if name != wanted {
+					continue;
+				}
+				let mut fields = header.split(' ');
+				let mode_text = fields.next().unwrap_or_default();
+				let _kind = fields.next().unwrap_or_default();
+				let oid = fields.next().unwrap_or_default();
+				if fields.next().is_some()
+					|| oid.len() != commit.len()
+					|| !oid.bytes().all(|b| b.is_ascii_hexdigit())
+					|| found.is_some()
+				{
+					return Err(Error::backend("git tree-entry", "invalid exact tree entry"));
+				}
+				let mode = u32::from_str_radix(mode_text, 8)
+					.map_err(|err| Error::backend("git tree-entry", err))?;
+				found = Some(GitTreeEntry { oid: oid.to_owned(), mode });
+			}
+			return Ok(found);
+		}
+		let repo = self.gix()?;
+		let commit_object = repo
+			.rev_parse_single(commit)
+			.map_err(|err| Error::backend("git tree-entry", err))?
+			.object()
+			.map_err(|err| Error::backend("git tree-entry", err))?
+			.try_into_commit()
+			.map_err(|err| Error::backend("git tree-entry", err))?;
+		let tree = commit_object
+			.tree()
+			.map_err(|err| Error::backend("git tree-entry", err))?;
+		Ok(tree
+			.lookup_entry_by_path(path)
+			.map_err(|err| Error::backend("git tree-entry", err))?
+			.map(|entry| GitTreeEntry {
+				oid:  entry.id().detach().to_string(),
+				mode: u32::from(entry.mode().value()),
+			}))
 	}
 
 	/// Abbreviate the object `rev` names to its shortest unambiguous id

@@ -44,8 +44,36 @@ export interface SubagentEventPayload {
 const outputSchemaInputSchema = type("object | boolean | string | null");
 // Coarse per-spawn thinking effort; must stay in sync with TASK_EFFORTS in ../thinking.
 const effortRule = '"lo" | "med" | "hi"' as const;
+// Image attachment delivered to the child's first prompt as a real image
+// content part. Bytes travel by reference: ledger-produced images carry
+// `artifactPath`/`sourcePath` with no `data`. Invariant: at least one byte
+// source is required. A single shape with a narrow check keeps the schema
+// deterministic (omptype rejects overlapping morph unions and their
+// intersections); the provider grammar sees one object, runtime rejects
+// sourceless images.
+const taskImageSchema = type({
+	type: "'image'",
+	mimeType: "string",
+	"data?": "string",
+	"sha256?": "string",
+	"rn?": "string",
+	"index?": "number",
+	"sourcePath?": "string",
+	"artifactPath?": "string",
+	"+": "delete",
+}).narrow((image, ctx) => {
+	const hasSource = (value: unknown): boolean => typeof value === "string" && value.length > 0;
+	return (
+		hasSource(image.data) ||
+		hasSource(image.artifactPath) ||
+		hasSource(image.sourcePath) ||
+		ctx.mustBe("an image with a byte source (data, artifactPath, or sourcePath)")
+	);
+});
+const taskImagesRule = taskImageSchema.array();
 
 export const taskItemSchema = type({
+	"images?": taskImagesRule,
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
@@ -64,6 +92,7 @@ const taskItemSchemaIsolated = type({
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
 	"isolated?": "boolean",
+	"images?": taskImagesRule,
 	"+": "delete",
 });
 
@@ -76,9 +105,11 @@ export const taskSchema = type({
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
 	"isolated?": "boolean",
+	"images?": taskImagesRule,
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
+	"images?": taskImagesRule,
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
@@ -141,6 +172,7 @@ function createTaskSchema(options: {
 				...schemaFields,
 				...toolsField,
 				"isolated?": "boolean",
+				"images?": taskImagesRule,
 				"+": "delete",
 			});
 			return type.raw({
@@ -157,6 +189,7 @@ function createTaskSchema(options: {
 			...effortField,
 			...schemaFields,
 			...toolsField,
+			"images?": taskImagesRule,
 			"+": "delete",
 		});
 		return type.raw({
@@ -175,6 +208,7 @@ function createTaskSchema(options: {
 			...schemaFields,
 			...toolsField,
 			"isolated?": "boolean",
+			"images?": taskImagesRule,
 			"+": "delete",
 		});
 	}
@@ -186,6 +220,7 @@ function createTaskSchema(options: {
 		...effortField,
 		...schemaFields,
 		...toolsField,
+		"images?": taskImagesRule,
 		"+": "delete",
 	});
 }
