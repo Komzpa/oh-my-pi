@@ -184,9 +184,6 @@
 
 ### Added
 
-- Check provider cooldowns and probe recovery immediately with `omp providers` and `/providers`; successful inference clears billing cooldowns ([#16532](https://github.com/can1357/oh-my-pi/pull/16532) by [@Komzpa](https://github.com/Komzpa)).
-- Model selection skips unavailable providers without changing preferences; sessions wait for recovery, with shared probes and host-routable transition notices ([#16532](https://github.com/can1357/oh-my-pi/pull/16532) by [@Komzpa](https://github.com/Komzpa)).
-
 - RPC `bash` accepts `excludeFromContext: true` to keep a run out of model context like terminal `!!`; runtimes advertise support with `supportsBashExcludeFromContext` in the `ready` frame, and the Python SDK exposes that frame as `client.ready` ([#18206](https://github.com/can1357/oh-my-pi/pull/18206) by [@andrebrait](https://github.com/andrebrait))
 
 ### Changed
