@@ -227,15 +227,10 @@
 - An extension provider with `authHeader: true` keeps its cached `fetchDynamicModels` catalog when `omp models refresh` fails, instead of showing 0 models until the next successful forced refresh ([#18227](https://github.com/can1357/oh-my-pi/issues/18227))
 - A session whose request carries no titleable text of its own — an attached `@brief.md`, a greeting, a bare number — is now named once from the assistant's reading of it, instead of staying untitled until the next message that happens to be titleable (which, for an agent launched from one brief and left to run, never came) ([#18238](https://github.com/can1357/oh-my-pi/pull/18238) by [@sjawhar](https://github.com/sjawhar))
 - Prewalk no longer hands a subagent to its cheap model when the subagent messages its parent or another agent (`write agent://…`) before its first file edit ([#18322](https://github.com/can1357/oh-my-pi/pull/18322) by [@1vivy](https://github.com/1vivy))
-### Fixed
-
-- Keep prompt preparation responsive on large session journals ([#166](https://github.com/Komzpa/oh-my-pi/pull/166) by [@Komzpa](https://github.com/Komzpa)).
 
 ## [18.17.0] - 2026-11-06
 
 ### Added
-
-- Added cache-stable global, agent and project prompt layers with `OMP_PROMPT_LAYERS=1` boundary and hash diagnostics ([#166](https://github.com/Komzpa/oh-my-pi/pull/166) by [@Komzpa](https://github.com/Komzpa)).
 
 - Bash commands, foreground and background, now show a live execution visualization in Raw or Python-like Pseudo view, with variable values and replay history; disable with `display.shellVisualization` (default on).
 - `grep` and `glob` inside an ovnfs checkout ask the ovnfs daemon to search the checkout in-process, avoiding per-file mount round trips; the daemon and its mount come from `ovnfs --json status` when the ovnfs binary is found. They fall back to the native search when the daemon is unavailable or rejects the request, and cancelling the tool cancels the daemon's search. ovnfs with admin protocol 5 is required.
@@ -290,9 +285,6 @@
 ### Fixed
 
 - On macOS, the browser tool's headless Chromium keeps background tabs at normal CPU priority, so on a busy machine `tab.traceStart()`, opening a second tab, and other calls into background tabs no longer stall or time out
-- Keep system prompts identical across fresh sessions by delivering recalled memories and mutable boot context in the conversation.
-- Keep system prompts identical across fresh sessions by delivering recalled memories and mutable boot context in the conversation ([#166](https://github.com/Komzpa/oh-my-pi/pull/166) by [@Komzpa](https://github.com/Komzpa)).
-
 - Subagents loading MCP tools (such as Kata's `load_*`) no longer change the main session's tools or system prompt
 - Mounting an MCP tool mid-session on prefix-bound models no longer changes the eval tool description, and the mount notice now reaches the model
 - Worker-thread subagents are faster: switching views on long transcripts no longer lags, `wait` no longer streams full transcripts, and they stall less on a busy main thread
