@@ -8,8 +8,6 @@
 
 ### Fixed
 
-- Fixed invalid `models.yml` warnings reporting JavaScript call-site lines or unrelated provider keys instead of the offending YAML line.
-- Fixed last-good model sidecars being created with non-private permissions, commented JSONC snapshots failing to restore, and models CLI warnings reporting recovery when no validated configuration was retained.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02
