@@ -8,7 +8,6 @@
 
 ### Fixed
 
-- Automatic tool-result pruning now appends an overlay without rewriting the journal, preserving original bytes and matching live context on resume and forks.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02
