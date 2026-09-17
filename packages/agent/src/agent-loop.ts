@@ -94,6 +94,7 @@ import {
 	isSoftToolRequirement,
 	SPECULATIVE_STREAM_SESSION,
 } from "./types";
+import { isNonBlankContext, withAdditionalContext } from "./tool-context";
 import { yieldIfDue } from "./utils/yield";
 /** Stop-details marker for a provider error after assistant content/tool args already streamed. */
 export const STREAM_INTERRUPTED_AFTER_CONTENT_STOP_DETAIL = "stream_interrupted_after_content";
@@ -740,6 +741,7 @@ async function emitTurnEnd(
 	await config.onTurnEnd?.(currentContext.messages, terminalYield ? undefined : signal, {
 		message,
 		toolResults,
+		additionalMessages: [],
 		willContinue: false,
 		...context,
 	});
@@ -1089,6 +1091,31 @@ function emitInputMessages(stream: EventStream<AgentEvent, AgentMessage[]>, mess
 }
 
 /**
+ * Append passive tool-call context after its results as a developer message.
+ * Returns the injected message for turn-end bookkeeping, or undefined when
+ * there is nothing to inject. Shared by the normal tool-call path and the
+ * resume-tail replay so replayed calls deliver context identically.
+ */
+function injectExecutionAdditionalContext(
+	currentContext: AgentContext,
+	newMessages: AgentMessage[],
+	stream: EventStream<AgentEvent, AgentMessage[]>,
+	additionalContext: string | undefined,
+): AgentMessage | undefined {
+	if (additionalContext === undefined) return undefined;
+	const contextMessage: AgentMessage = {
+		role: "developer",
+		content: [{ type: "text", text: additionalContext }],
+		attribution: "agent",
+		timestamp: Date.now(),
+	};
+	currentContext.messages.push(contextMessage);
+	newMessages.push(contextMessage);
+	emitInputMessages(stream, [contextMessage]);
+	return contextMessage;
+}
+
+/**
  * Resolve aside entries at the moment the loop is about to inject them. Each entry
  * is either a ready {@link AgentMessage} or a sync thunk evaluated here so the
  * producer can make the final inject-or-drop decision (return null) against
@@ -1208,8 +1235,15 @@ async function runLoopBody(
 				currentContext.messages.push(result);
 				newMessages.push(result);
 			}
+			const resumeContextMessage = injectExecutionAdditionalContext(
+				currentContext,
+				newMessages,
+				stream,
+				executionResult.additionalContext,
+			);
 			await emitTurnEnd(stream, currentContext, resumeTail, executionResult.toolResults, config, signal, {
 				willContinue: !isDeadlineExceeded(config.deadline),
+				...(resumeContextMessage ? { additionalMessages: [resumeContextMessage] } : {}),
 			});
 			turnOpen = false;
 			// A tool hook may mark its completed result as terminal (e.g. subagent
@@ -1519,6 +1553,7 @@ async function runLoopBody(
 				const softNonCompliant = softGateActive && !calledOnlyRequiredTool;
 
 				const toolResults: ToolResultMessage[] = [];
+				const additionalMessages: AgentMessage[] = [];
 				if (softNonCompliant && softRequiredTool !== undefined) {
 					SpeculativeOperationCoordinator.discardForMessage(message, "soft tool requirement deferred execution");
 					if (softRequirementState.escalations >= MAX_SOFT_TOOL_ESCALATIONS) {
@@ -1561,13 +1596,19 @@ async function runLoopBody(
 						telemetry,
 						invokeAgentSpan,
 					);
-
 					toolResults.push(...executionResult.toolResults);
 
 					for (const result of toolResults) {
 						currentContext.messages.push(result);
 						newMessages.push(result);
 					}
+					const injectedContext = injectExecutionAdditionalContext(
+						currentContext,
+						newMessages,
+						stream,
+						executionResult.additionalContext,
+					);
+					if (injectedContext) additionalMessages.push(injectedContext);
 				} else if (toolCalls.length > 0) {
 					SpeculativeOperationCoordinator.discardForMessage(
 						message,
@@ -1618,6 +1659,7 @@ async function runLoopBody(
 				}
 
 				await emitTurnEnd(stream, currentContext, message, toolResults, config, signal, {
+					additionalMessages,
 					willContinue: hasMoreToolCalls && !isDeadlineExceeded(config.deadline),
 				});
 				turnOpen = false;
@@ -2553,6 +2595,8 @@ interface PreparedToolCall {
 	tool: AgentTool<any> | undefined;
 	/** Validated (possibly hook-revised) execution args; raw args when validation failed. */
 	args: Record<string, unknown>;
+	/** Passive context returned by `beforeToolCall`, injected after this batch settles. */
+	additionalContext?: string;
 	/** Transformed args shared by final reconciliation and eventual dispatch. */
 	executionArgs?: Record<string, unknown>;
 	/** Transform failure retained for execution's scheduled error result. */
@@ -2747,6 +2791,9 @@ async function prepareToolCallDispatch(
 			entry.blockReason = beforeResult.reason;
 			continue;
 		}
+		if (isNonBlankContext(beforeResult?.additionalContext)) {
+			entry.additionalContext = beforeResult.additionalContext;
+		}
 		if (beforeResult?.args !== undefined) {
 			// Revalidate: a hook revision is untrusted input to the tool schema.
 			const revised = validate(beforeResult.args);
@@ -2831,7 +2878,8 @@ async function speculativeFinalCalls(
 }
 
 /**
- * Execute tool calls from an assistant message.
+ * Execute tool calls from an assistant message. Returns model-visible context
+ * only after every result has settled, preserving assistant call order.
  */
 async function executeToolCalls(
 	currentContext: AgentContext,
@@ -2841,7 +2889,7 @@ async function executeToolCalls(
 	config: AgentLoopConfig,
 	telemetry: AgentTelemetry | undefined,
 	invokeAgentSpan: Span | undefined,
-): Promise<{ toolResults: ToolResultMessage[] }> {
+): Promise<{ toolResults: ToolResultMessage[]; additionalContext?: string }> {
 	const tools = currentContext.tools;
 	const {
 		hasSteeringMessages,
@@ -2930,6 +2978,7 @@ async function executeToolCalls(
 			blocked: prepared.blocked === true,
 			blockReason: prepared.blockReason,
 			prepareError: prepared.prepareError,
+			additionalContext: prepared.additionalContext !== undefined ? [prepared.additionalContext] : ([] as string[]),
 			executionArgs: prepared.executionArgs,
 			transformError: prepared.transformError,
 		};
@@ -3067,6 +3116,9 @@ async function executeToolCalls(
 			// `recordSkippedTool` and `emitToolResult` once per record, so any
 			// work we did here would double-count.
 			record.skipped = true;
+			// The call never ran: drop its prepared context so it cannot leak
+			// into the next provider request.
+			record.additionalContext = [];
 			return;
 		}
 		// Park before starting this tool while the process-wide pause gate is
@@ -3092,6 +3144,7 @@ async function executeToolCalls(
 		const effectiveArgs = record.args;
 		if (record.signal.aborted) {
 			record.skipped = true;
+			record.additionalContext = [];
 			recordSkippedTool(telemetry, {
 				toolCallId: toolCall.id,
 				toolName: toolCall.name,
@@ -3162,12 +3215,10 @@ async function executeToolCalls(
 				}
 
 				if (!completedToolExecution) {
-					// The cooperative steering signal rides the loop-owned
-					// ToolCallContext (surfacing as `ctx.toolCall.steeringSignal`):
-					// AgentToolContext itself is app-built via declaration merging, so
-					// the loop cannot construct or extend one structurally.
-					const streamSession = speculationCoordinator?.takeStreamSession(toolCall.id);
-					const toolContext = getToolContext?.({
+					const addAdditionalContext = (context: string): void => {
+						record.additionalContext.push(context);
+					};
+					const baseToolContext = getToolContext?.({
 						batchId,
 						index,
 						total: toolCalls.length,
@@ -3175,6 +3226,16 @@ async function executeToolCalls(
 						steeringSignal: steeringSoftController.signal,
 						providerMetadata: toolCall.providerMetadata,
 					});
+					// The cooperative steering signal rides the loop-owned
+					// ToolCallContext (surfacing as `ctx.toolCall.steeringSignal`).
+					// Wrapper-dispatched nested calls (for example `write xd://…`) do
+					// not pass through `beforeToolCall` themselves. They inherit this
+					// context and report passive hook context through the callback, so
+					// it joins the root call's prepared context at the batch boundary.
+					// Augmentation preserves the host object's private brand: a
+					// structural clone would break `#private`-backed members.
+					const toolContext = withAdditionalContext(baseToolContext, addAdditionalContext);
+					const streamSession = speculationCoordinator?.takeStreamSession(toolCall.id);
 					if (streamSession && toolContext) {
 						toolContext[SPECULATIVE_STREAM_SESSION] = streamSession;
 					} else if (streamSession && !streamSession.contextIndependent) {
@@ -3262,6 +3323,7 @@ async function executeToolCalls(
 			// execution may already have performed partial work before throwing on
 			// abort, so preserve that distinction in the placeholder metadata.
 			record.skipped = true;
+			record.additionalContext = [];
 			emitToolResult(record, createSkippedToolResult(interruptState.source, executionStarted), true);
 		} else {
 			// No interrupt on this signal, or the tool finished before the interrupt landed
@@ -3409,6 +3471,7 @@ async function executeToolCalls(
 	for (const record of records) {
 		if (!record.toolResultMessage) {
 			record.skipped = true;
+			record.additionalContext = [];
 			recordSkippedTool(telemetry, {
 				toolCallId: record.toolCall.id,
 				toolName: record.toolCall.name,
@@ -3419,7 +3482,15 @@ async function executeToolCalls(
 	}
 	await speculationCoordinator?.discardAll("candidate was not dispatched");
 
-	return { toolResults: emittedToolResults };
+	const additionalContext = records
+		.filter(record => !record.skipped)
+		.flatMap(record => record.additionalContext)
+		.filter(context => isNonBlankContext(context))
+		.join("\n\n");
+	return {
+		toolResults: emittedToolResults,
+		...(additionalContext.length > 0 ? { additionalContext } : {}),
+	};
 }
 
 /**
