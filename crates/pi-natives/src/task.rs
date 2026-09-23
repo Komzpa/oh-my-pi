@@ -220,6 +220,7 @@ where
 	}
 
 	fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+		self.cancel_token.heartbeat()?;
 		Ok(output)
 	}
 }
@@ -319,6 +320,7 @@ where
 	}
 
 	fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+		self.cancel_token.heartbeat()?;
 		Ok(output)
 	}
 }
