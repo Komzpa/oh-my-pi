@@ -831,7 +831,8 @@ export interface SpeculativeToolExecutionConfig {
  * Non-empty values from a tool batch are injected in assistant tool-call order
  * after every result settles and before the next provider request. It is
  * dropped when the call is blocked or skipped, or when its final result is an
- * error (including an approval denial raised by the tool's own gate).
+ * error (including an approval denial raised by the tool's own gate). Within a
+ * call it follows any context the tool reported during execution.
  */
 export interface BeforeToolCallResult {
 	block?: boolean;

@@ -3476,12 +3476,15 @@ async function executeToolCalls(
 
 	// Skipped calls never ran. Hook-prepared context also requires a non-error
 	// final result; context the tool itself reported during execution stands.
+	// Within a call, tool-reported context (including nested `xd://` dispatch)
+	// precedes the hook's: wrappers release hook context only after the call
+	// succeeds, so this is the one order every dispatch path can produce.
 	const additionalContext = joinAdditionalContext(
 		records
 			.filter(record => !record.skipped)
 			.flatMap(record => [
-				record.toolResultMessage?.isError ? undefined : record.preparedContext,
 				...record.reportedContext,
+				record.toolResultMessage?.isError ? undefined : record.preparedContext,
 			]),
 	);
 	return {

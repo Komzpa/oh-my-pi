@@ -1040,7 +1040,7 @@ describe("Agent", () => {
 		expect(developer?.content).toEqual([
 			{
 				type: "text",
-				text: "prepared context for hi\n\ntool context for hi",
+				text: "tool context for hi\n\nprepared context for hi",
 			},
 		]);
 	});

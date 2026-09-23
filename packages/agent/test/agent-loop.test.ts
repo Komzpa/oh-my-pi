@@ -4956,7 +4956,7 @@ describe("agentLoop passive additionalContext", () => {
 		expect(developer?.content).toEqual([
 			{
 				type: "text",
-				text: ["context for slow", "nested context for slow", "context for fast", "nested context for fast"].join(
+				text: ["nested context for slow", "context for slow", "nested context for fast", "context for fast"].join(
 					"\n\n",
 				),
 			},
