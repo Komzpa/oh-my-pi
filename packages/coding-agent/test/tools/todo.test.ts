@@ -714,6 +714,18 @@ describe("todoToolRenderer.renderResult phase collapsing", () => {
 		// No empty body line survives between phases.
 		expect(innerLines(component).every(line => line.length > 0)).toBe(true);
 	});
+	it("renders a sole trailing pending todo as a row in the collapsed preview", async () => {
+		const tool = new TodoTool(createSession());
+		const result = await tool.execute("init", {
+			op: "init",
+			list: [{ phase: "Work", items: Array.from({ length: 9 }, (_, i) => `Task ${i + 1}`) }],
+		});
+		const rendered = Bun.stripANSI(
+			todoToolRenderer.renderResult(result, { expanded: false, isPartial: false }, theme).render(100).join("\n"),
+		);
+		expect(rendered).toContain("Task 9");
+		expect(rendered).not.toContain("more todos");
+	});
 });
 
 describe("selectCollapsedTodos walking viewport (#5873)", () => {
@@ -792,14 +804,27 @@ describe("selectCollapsedTodos walking viewport (#5873)", () => {
 		expect(contents(sel).some(c => ["Task 8", "Task 9", "Task 10"].includes(c))).toBe(false);
 	});
 
-	it("keeps a summary when actives exactly fill the cap but pending remains", () => {
-		// 5 matched actives + 1 trailing pending, cap 5. The active-overflow branch
-		// must NOT swallow the hidden pending work with an empty summary (#5878).
+	it("shows a sole trailing pending todo when actives fill the cap", () => {
+		// 5 matched actives + 1 trailing pending, cap 5. The sole hidden task
+		// uses the summary row as its real row instead of a one-more summary.
 		const tasks = mk(6, []);
 		const matched = (t: TodoItem) => ["Task 1", "Task 2", "Task 3", "Task 4", "Task 5"].includes(t.content);
 		const sel = selectCollapsedTodos(tasks, matched, 5);
+		expect(contents(sel)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5", "Task 6"]);
+		expect(sel.summary).toBe("");
+	});
+	it("shows a sole hidden active todo as a real row", () => {
+		const tasks = mk(6, []);
+		const matched = (t: TodoItem) => ["Task 1", "Task 2", "Task 3", "Task 4", "Task 5", "Task 6"].includes(t.content);
+		const sel = selectCollapsedTodos(tasks, matched, 5);
+		expect(contents(sel)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5", "Task 6"]);
+		expect(sel.summary).toBe("");
+	});
+
+	it("keeps the summary when two ordinary todos are hidden", () => {
+		const sel = selectCollapsedTodos(mk(7, []), never, 5);
 		expect(contents(sel)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5"]);
-		expect(sel.summary).toBe("… 1 more todo");
+		expect(sel.summary).toBe("… 2 more todos");
 	});
 
 	it("returns the whole open set with no summary when it fits", () => {
