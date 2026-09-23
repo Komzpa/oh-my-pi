@@ -152,10 +152,12 @@ function selectWithinCap<T extends { status: TodoStatus }>(
 	// branch still surfaces any following pending work in the summary.
 	if (active.length > cap) {
 		const hiddenActive = active.length - cap;
-		return {
-			items: active.slice(0, cap),
-			summary: `… ${hiddenActive} more active ${pluralize("todo", hiddenActive)}`,
-		};
+		return hiddenActive === 1
+			? { items: active, summary: "" }
+			: {
+					items: active.slice(0, cap),
+					summary: `… ${hiddenActive} more active ${pluralize("todo", hiddenActive)}`,
+				};
 	}
 
 	// Fill trailing rows with tasks following the first active one, so the
@@ -168,8 +170,12 @@ function selectWithinCap<T extends { status: TodoStatus }>(
 		fill.push(task);
 	}
 	const items = [...active, ...fill];
-	const hidden = base.length - items.length;
-	return { items, summary: hidden > 0 ? formatMoreItems(hidden, "todo") : "" };
+	const hiddenCount = base.length - items.length;
+	if (hiddenCount === 1) {
+		const hidden = base.find(task => !items.includes(task));
+		return { items: [...items, hidden!], summary: "" };
+	}
+	return { items, summary: hiddenCount > 0 ? formatMoreItems(hiddenCount, "todo") : "" };
 }
 
 /**
