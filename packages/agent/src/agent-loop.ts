@@ -69,6 +69,7 @@ import {
 	startExecuteToolSpan,
 	startInvokeAgentSpan,
 } from "./telemetry";
+import { createAdditionalContextMessage, isNonBlankContext, joinAdditionalContext } from "./tool-context";
 import type {
 	AgentContext,
 	AgentEvent,
@@ -94,7 +95,6 @@ import {
 	isSoftToolRequirement,
 	SPECULATIVE_STREAM_SESSION,
 } from "./types";
-import { isNonBlankContext, withAdditionalContext } from "./tool-context";
 import { yieldIfDue } from "./utils/yield";
 /** Stop-details marker for a provider error after assistant content/tool args already streamed. */
 export const STREAM_INTERRUPTED_AFTER_CONTENT_STOP_DETAIL = "stream_interrupted_after_content";
@@ -1103,12 +1103,7 @@ function injectExecutionAdditionalContext(
 	additionalContext: string | undefined,
 ): AgentMessage | undefined {
 	if (additionalContext === undefined) return undefined;
-	const contextMessage: AgentMessage = {
-		role: "developer",
-		content: [{ type: "text", text: additionalContext }],
-		attribution: "agent",
-		timestamp: Date.now(),
-	};
+	const contextMessage = createAdditionalContextMessage(additionalContext);
 	currentContext.messages.push(contextMessage);
 	newMessages.push(contextMessage);
 	emitInputMessages(stream, [contextMessage]);
@@ -2595,7 +2590,11 @@ interface PreparedToolCall {
 	tool: AgentTool<any> | undefined;
 	/** Validated (possibly hook-revised) execution args; raw args when validation failed. */
 	args: Record<string, unknown>;
-	/** Passive context returned by `beforeToolCall`, injected after this batch settles. */
+	/**
+	 * Passive context returned by `beforeToolCall`. Committed after the batch
+	 * settles only when the call's final result is not an error, so a call the
+	 * tool's own approval gate denies (or that otherwise fails) injects nothing.
+	 */
 	additionalContext?: string;
 	/** Transformed args shared by final reconciliation and eventual dispatch. */
 	executionArgs?: Record<string, unknown>;
@@ -2978,7 +2977,8 @@ async function executeToolCalls(
 			blocked: prepared.blocked === true,
 			blockReason: prepared.blockReason,
 			prepareError: prepared.prepareError,
-			additionalContext: prepared.additionalContext !== undefined ? [prepared.additionalContext] : ([] as string[]),
+			preparedContext: prepared.additionalContext,
+			reportedContext: [] as string[],
 			executionArgs: prepared.executionArgs,
 			transformError: prepared.transformError,
 		};
@@ -3116,9 +3116,6 @@ async function executeToolCalls(
 			// `recordSkippedTool` and `emitToolResult` once per record, so any
 			// work we did here would double-count.
 			record.skipped = true;
-			// The call never ran: drop its prepared context so it cannot leak
-			// into the next provider request.
-			record.additionalContext = [];
 			return;
 		}
 		// Park before starting this tool while the process-wide pause gate is
@@ -3144,7 +3141,6 @@ async function executeToolCalls(
 		const effectiveArgs = record.args;
 		if (record.signal.aborted) {
 			record.skipped = true;
-			record.additionalContext = [];
 			recordSkippedTool(telemetry, {
 				toolCallId: toolCall.id,
 				toolName: toolCall.name,
@@ -3215,26 +3211,24 @@ async function executeToolCalls(
 				}
 
 				if (!completedToolExecution) {
-					const addAdditionalContext = (context: string): void => {
-						record.additionalContext.push(context);
-					};
-					const baseToolContext = getToolContext?.({
+					// The cooperative steering signal and the passive-context sink
+					// ride the loop-owned ToolCallContext (surfacing as
+					// `ctx.toolCall.*`); the host surfaces the sink on the context it
+					// builds, and the loop hands that object to the tool untouched.
+					// Wrapper-dispatched nested calls (for example `write xd://…`)
+					// inherit the context, so their passive hook context joins this
+					// root call at the batch boundary.
+					const toolContext = getToolContext?.({
 						batchId,
 						index,
 						total: toolCalls.length,
 						toolCalls: toolCallInfos,
 						steeringSignal: steeringSoftController.signal,
 						providerMetadata: toolCall.providerMetadata,
+						addAdditionalContext: context => {
+							if (isNonBlankContext(context)) record.reportedContext.push(context);
+						},
 					});
-					// The cooperative steering signal rides the loop-owned
-					// ToolCallContext (surfacing as `ctx.toolCall.steeringSignal`).
-					// Wrapper-dispatched nested calls (for example `write xd://…`) do
-					// not pass through `beforeToolCall` themselves. They inherit this
-					// context and report passive hook context through the callback, so
-					// it joins the root call's prepared context at the batch boundary.
-					// Augmentation preserves the host object's private brand: a
-					// structural clone would break `#private`-backed members.
-					const toolContext = withAdditionalContext(baseToolContext, addAdditionalContext);
 					const streamSession = speculationCoordinator?.takeStreamSession(toolCall.id);
 					if (streamSession && toolContext) {
 						toolContext[SPECULATIVE_STREAM_SESSION] = streamSession;
@@ -3323,7 +3317,6 @@ async function executeToolCalls(
 			// execution may already have performed partial work before throwing on
 			// abort, so preserve that distinction in the placeholder metadata.
 			record.skipped = true;
-			record.additionalContext = [];
 			emitToolResult(record, createSkippedToolResult(interruptState.source, executionStarted), true);
 		} else {
 			// No interrupt on this signal, or the tool finished before the interrupt landed
@@ -3471,7 +3464,6 @@ async function executeToolCalls(
 	for (const record of records) {
 		if (!record.toolResultMessage) {
 			record.skipped = true;
-			record.additionalContext = [];
 			recordSkippedTool(telemetry, {
 				toolCallId: record.toolCall.id,
 				toolName: record.toolCall.name,
@@ -3482,14 +3474,19 @@ async function executeToolCalls(
 	}
 	await speculationCoordinator?.discardAll("candidate was not dispatched");
 
-	const additionalContext = records
-		.filter(record => !record.skipped)
-		.flatMap(record => record.additionalContext)
-		.filter(context => isNonBlankContext(context))
-		.join("\n\n");
+	// Skipped calls never ran. Hook-prepared context also requires a non-error
+	// final result; context the tool itself reported during execution stands.
+	const additionalContext = joinAdditionalContext(
+		records
+			.filter(record => !record.skipped)
+			.flatMap(record => [
+				record.toolResultMessage?.isError ? undefined : record.preparedContext,
+				...record.reportedContext,
+			]),
+	);
 	return {
 		toolResults: emittedToolResults,
-		...(additionalContext.length > 0 ? { additionalContext } : {}),
+		...(additionalContext !== undefined ? { additionalContext } : {}),
 	};
 }
 

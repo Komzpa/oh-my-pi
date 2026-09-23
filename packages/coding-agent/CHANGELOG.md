@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `additionalContext` to extension and hook `tool_call` results, plus `ctx.addAdditionalContext()` for registered tools, to pass trusted instructions to the model after a tool call without changing its result ([#11998](https://github.com/can1357/oh-my-pi/pull/11998) by [@H4vC](https://github.com/H4vC))
 - Added Jev (TypeSafe Jev 1.13) to `toks` command supported encodings
 - Added `*** Insert Before` and `*** Insert After` to append new lines without replacing existing code
 - Added `toks` command to count tokens via offline tokenizers

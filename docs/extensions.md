@@ -421,12 +421,16 @@ supports it. Raw tool output and other untrusted data must stay in the ordinary 
 
 Non-empty context from every non-blocking handler is preserved in registration order. OMP waits
 until the tool batch settles, then emits the context after the corresponding tool results in
-assistant tool-call order and before the next provider request. If that call is blocked by this or a
-later handler, its collected context is discarded.
+assistant tool-call order and before the next provider request. Handler context is delivered only when
+the call actually runs and returns a non-error result: if the call is blocked by this or a later
+handler, denied at the approval prompt, skipped by an interrupt, or fails, its collected context is
+discarded.
 
 Registered tools can add context during execution through
-`ctx.addAdditionalContext?.("...")`. The same ordering and delivery rules apply, including tools
-reached through nested `xd://` dispatch.
+`ctx.addAdditionalContext?.("...")`. Context a tool adds itself is kept even when the tool then
+returns an error; ordering is the same, including tools reached through nested `xd://` dispatch.
+Calls Cursor executes on its exec channel deliver context after their buffered results, on the next
+provider request.
 
 ### Delegating to a native built-in (`ctx.invokeTool`)
 

@@ -149,6 +149,7 @@ tool_call handlers
 
 - if any handler returns `{ block: true }`, execution stops and context already collected for that call is discarded
 - if handler throws, wrapper fails closed, blocks execution, and discards collected context
+- collected context is forwarded only after the tool returns a non-error result; a throwing or `isError` result discards it
 - returned `reason` becomes the thrown error text
 
 ### 2) Tool execution

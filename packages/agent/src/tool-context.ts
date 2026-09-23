@@ -1,92 +1,49 @@
-import type { AgentToolContext } from "./types";
+import type { ToolResultMessage } from "@oh-my-pi/pi-ai";
+import type { AgentMessage } from "./types";
+
+/**
+ * Symbol-keyed carrier for passive context reported by a tool executed outside
+ * the agent loop (Cursor exec-channel dispatch). The executor attaches the
+ * joined context to the {@link ToolResultMessage} it returns; `Agent` reads it
+ * when the provider hands the result back and injects it after the buffered
+ * results. Symbol keys never serialize, so the context cannot leak into the
+ * persisted tool result.
+ */
+export const TOOL_RESULT_ADDITIONAL_CONTEXT = Symbol("tool-result-additional-context");
+
+/** A tool result optionally carrying {@link TOOL_RESULT_ADDITIONAL_CONTEXT}. */
+export type ToolResultWithAdditionalContext = ToolResultMessage & { [TOOL_RESULT_ADDITIONAL_CONTEXT]?: string };
 
 /**
  * True for a passive-context value worth delivering: a string with at least
- * one non-whitespace character. Blank strings carry no instructions and must
- * never produce a developer message, an aggregation entry, or a forwarded
- * callback invocation — every call site below shares this predicate so the
- * rule cannot drift between the prepare, execution, and runner paths.
+ * one non-whitespace character. Shared by every producer and aggregation site
+ * so blank values never produce a developer message.
  */
 export function isNonBlankContext(value: unknown): value is string {
 	return typeof value === "string" && value.trim().length > 0;
 }
 
 /**
- * Augment a host-provided tool context with the loop-owned
- * `addAdditionalContext` callback without disturbing the host's object.
- *
- * A structural clone must preserve more than shape: hosts may back context
- * members with ES `#private` state, which lives on the instance rather than
- * its prototype, so a naive descriptor copy throws `TypeError` the moment the
- * tool touches such a member. Functions bind to the original receiver
- * (including methods inherited through the prototype chain) and accessors are
- * re-homed onto it, keeping the private brand intact. Writable data members
- * forward through accessors: tools previously received the host object itself,
- * so a write such as `context.counter++` must stay visible through it — a
- * descriptor copy would fork storage on the clone. Read-only data still
- * copies by descriptor. The injected callback is the only member that
- * resolves against the clone.
- * A host-supplied `addAdditionalContext` is always shadowed: the loop-owned
- * callback routes to the current call. Blank and non-string input never
- * reaches the callback.
+ * Join passive context values in order, dropping blanks. Returns undefined
+ * when nothing remains.
  */
-export function withAdditionalContext(
-	base: AgentToolContext | undefined,
-	addAdditionalContext: (context: string) => void,
-): AgentToolContext {
-	const guardedAddAdditionalContext = (context: string): void => {
-		if (isNonBlankContext(context)) {
-			addAdditionalContext(context);
-		}
-	};
-	if (base === undefined) return { addAdditionalContext: guardedAddAdditionalContext } as AgentToolContext;
-	const clone: AgentToolContext = Object.create(Object.getPrototypeOf(base));
-	const defineForwarded = (target: object, key: string | symbol): void => {
-		if (key === "addAdditionalContext") return;
-		const descriptor = Object.getOwnPropertyDescriptor(target, key);
-		if (descriptor === undefined) return;
-		if (typeof descriptor.get === "function" || typeof descriptor.set === "function") {
-			const { get, set } = descriptor;
-			Object.defineProperty(clone, key, {
-				...descriptor,
-				...(get === undefined ? {} : { get: () => get.call(base) }),
-				...(set === undefined ? {} : { set: (value: unknown) => set.call(base, value) }),
-			});
-		} else if (typeof descriptor.value === "function") {
-			Object.defineProperty(clone, key, { ...descriptor, value: descriptor.value.bind(base) });
-		} else if (descriptor.writable === true) {
-			const host = base as unknown as Record<string | symbol, unknown>;
-			Object.defineProperty(clone, key, {
-				enumerable: descriptor.enumerable,
-				configurable: descriptor.configurable,
-				get: () => host[key],
-				set: (value: unknown) => {
-					host[key] = value;
-				},
-			});
-		} else {
-			Object.defineProperty(clone, key, descriptor);
-		}
-	};
-	for (const key of Reflect.ownKeys(base)) defineForwarded(base, key);
-	// Prototype methods run with the clone as receiver by default, which breaks
-	// `#private`-backed members the same way a naive copy does. Bind the
-	// inherited surface to the original instance; data members resolve through
-	// the intact prototype chain untouched.
-	let prototype = Object.getPrototypeOf(base);
-	while (prototype !== null && prototype !== Object.prototype) {
-		for (const key of Reflect.ownKeys(prototype)) {
-			if (key === "constructor") continue;
-			if (Object.prototype.hasOwnProperty.call(clone, key)) continue;
-			defineForwarded(prototype, key);
-		}
-		prototype = Object.getPrototypeOf(prototype);
+export function joinAdditionalContext(values: Iterable<string | undefined>): string | undefined {
+	const kept: string[] = [];
+	for (const value of values) {
+		if (isNonBlankContext(value)) kept.push(value);
 	}
-	Object.defineProperty(clone, "addAdditionalContext", {
-		value: guardedAddAdditionalContext,
-		writable: true,
-		enumerable: true,
-		configurable: true,
-	});
-	return clone;
+	return kept.length > 0 ? kept.join("\n\n") : undefined;
+}
+
+/**
+ * Build the developer message that carries passive tool context to the next
+ * provider request. Emitted after the tool results it belongs to.
+ */
+export function createAdditionalContextMessage(text: string): AgentMessage {
+	return {
+		role: "developer",
+		content: [{ type: "text", text }],
+		attribution: "agent",
+		timestamp: Date.now(),
+	};
 }

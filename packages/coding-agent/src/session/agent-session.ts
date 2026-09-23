@@ -4214,16 +4214,15 @@ export class AgentSession {
 			},
 			signal,
 		);
-		if (!callResult) return undefined;
-		if (callResult.block) {
+		if (callResult?.block) {
 			return { block: true, reason: callResult.reason || "Tool execution was blocked by an extension" };
 		}
 		// A computer call's event input is a synthetic {actions, pendingSafetyChecks}
 		// view, not the execution params — a revision cannot map back onto them.
-		return {
-			...(callResult.input !== undefined && !computer ? { args: callResult.input } : {}),
-			...(callResult.additionalContext !== undefined ? { additionalContext: callResult.additionalContext } : {}),
-		};
+		const args = callResult?.input !== undefined && !computer ? callResult.input : undefined;
+		const additionalContext = callResult?.additionalContext;
+		if (args === undefined && additionalContext === undefined) return undefined;
+		return { args, additionalContext };
 	}
 
 	/** Find the last assistant message in agent state (including aborted ones) */

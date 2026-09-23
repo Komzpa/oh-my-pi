@@ -1,14 +1,14 @@
 /**
  * Tool wrappers for extensions.
  */
-import type {
-	AgentTool,
-	AgentToolContext,
-	AgentToolResult,
-	AgentToolUpdateCallback,
-	ToolLoadMode,
+import {
+	type AgentTool,
+	type AgentToolContext,
+	type AgentToolResult,
+	type AgentToolUpdateCallback,
+	isNonBlankContext,
+	type ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
-import { isNonBlankContext } from "@oh-my-pi/pi-agent-core/tool-context";
 import type { ComputerSafetyCheck, ImageContent, Static, TextContent, TSchema } from "@oh-my-pi/pi-ai";
 import { sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
@@ -205,9 +205,10 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		// runs with. Doing this BEFORE the approval gate means approval (below) resolves against the
 		// input that actually executes, closing the "approve one thing, run another" gap: the prompt
 		// text, policy resolution, and provider safety checks all see `effectiveParams`.
-		// Passive context collected here is held until the approval gate below
-		// succeeds: a deny, user reject, or fail-closed safety refusal throws
-		// before it is forwarded, so refused calls never inject instructions.
+		// Passive context collected here is forwarded only once the call has run
+		// and produced a non-error result: a block, deny, user reject, fail-closed
+		// safety refusal, or failed execution never injects instructions. This
+		// matches the loop's rule for context prepared at arg-prep time.
 		let pendingAdditionalContext: string | undefined;
 		let effectiveParams = params;
 		if (!loopEmittedToolCall && this.runner.hasHandlers("tool_call")) {
@@ -354,13 +355,6 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			}
 		}
 
-		// The approval gate above throws on deny, user reject, and fail-closed
-		// safety refusal: reaching here means the call may run, so its passive
-		// context is safe to forward to the agent loop.
-		if (pendingAdditionalContext !== undefined) {
-			context?.addAdditionalContext?.(pendingAdditionalContext);
-		}
-
 		// Execute the actual tool
 		let result: AgentToolResult<TDetails, TParameters>;
 		let executionError: Error | undefined;
@@ -407,6 +401,9 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 				// call's model-visible content/details while keeping it an error, flip a
 				// failure to success, or flag a success as an error.
 				const effectiveError = resultResult.isError ?? !!executionError;
+				if (!effectiveError && pendingAdditionalContext !== undefined) {
+					context?.addAdditionalContext?.(pendingAdditionalContext);
+				}
 
 				// Return the (possibly modified) result carrying the error flag rather than
 				// rethrowing the original exception. The agent loop honors
@@ -426,6 +423,9 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		// No extension modification
 		if (executionError) {
 			throw executionError;
+		}
+		if (result.isError !== true && pendingAdditionalContext !== undefined) {
+			context?.addAdditionalContext?.(pendingAdditionalContext);
 		}
 		return result;
 	}

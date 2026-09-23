@@ -342,7 +342,11 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 
 	/**
 	 * Provides tool execution context, resolved per tool call.
-	 * Use for late-bound UI or session state access.
+	 * Use for late-bound UI or session state access. The loop passes the tool
+	 * call's {@link ToolCallContext}; hosts that support passive tool context
+	 * surface its `addAdditionalContext` sink as
+	 * {@link AgentToolContext.addAdditionalContext}. The returned object is
+	 * handed to the tool as-is.
 	 */
 	getToolContext?: (toolCall?: ToolCallContext) => AgentToolContext | undefined;
 
@@ -613,6 +617,13 @@ export interface ToolCallContext {
 	 * always safe (the message injects at the next batch boundary).
 	 */
 	steeringSignal?: AbortSignal;
+	/**
+	 * Loop-owned sink for passive context reported while this call executes.
+	 * Values join the call's context at the batch boundary and are injected
+	 * after the batch's tool results, in assistant tool-call order, before the
+	 * next provider request. Blank values are ignored.
+	 */
+	addAdditionalContext?: (context: string) => void;
 }
 
 /** A single tool-call content block emitted by an assistant message. */
@@ -818,8 +829,9 @@ export interface SpeculativeToolExecutionConfig {
  *
  * Set `additionalContext` to attach passive model-visible context to this call.
  * Non-empty values from a tool batch are injected in assistant tool-call order
- * after every result settles and before the next provider request. It is ignored
- * when this call is blocked.
+ * after every result settles and before the next provider request. It is
+ * dropped when the call is blocked or skipped, or when its final result is an
+ * error (including an approval denial raised by the tool's own gate).
  */
 export interface BeforeToolCallResult {
 	block?: boolean;
@@ -998,7 +1010,9 @@ export interface AgentToolContext {
 	 * The host emits them after tool results with developer/system priority where
 	 * the selected transport supports it. Do not use this channel for raw tool
 	 * output, retrieved documents, web content, or other untrusted data; return
-	 * those through the ordinary tool result instead.
+	 * those through the ordinary tool result instead. Hosts populate it from
+	 * {@link ToolCallContext.addAdditionalContext} (or their own collector for
+	 * calls dispatched outside the loop); absent when the host has no sink.
 	 */
 	addAdditionalContext?(context: string): void;
 	/** Present only while the matching outer tool owns its finalized stream session. */

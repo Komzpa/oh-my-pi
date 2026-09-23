@@ -39,6 +39,12 @@ import {
 import type { AppendOnlyContextManager } from "./append-only-context";
 import { isProviderRefusalMessage } from "./replay-policy";
 import { Tokenizer, tokenizerEncodingForModel } from "./tokenizer";
+import {
+	createAdditionalContextMessage,
+	joinAdditionalContext,
+	TOOL_RESULT_ADDITIONAL_CONTEXT,
+	type ToolResultWithAdditionalContext,
+} from "./tool-context";
 import type {
 	AgentBeforeModelCall,
 	AgentContext,
@@ -361,6 +367,12 @@ interface CursorToolResultEntry {
 	 * `message_end` lands in the same chunk as the tool result.
 	 */
 	pending?: Promise<void>;
+	/**
+	 * Passive context the executor attached via
+	 * {@link TOOL_RESULT_ADDITIONAL_CONTEXT}, captured before any transformer
+	 * can replace the message. Injected after the buffered results.
+	 */
+	additionalContext?: string;
 }
 
 type QueuedMessageQueue = "steering" | "followUp";
@@ -1511,7 +1523,10 @@ export class Agent {
 			// that, a transformer resolving after the swap would patch a detached
 			// object while the persisted result kept the original payload — the
 			// rewrite silently lost.
-			const entry: CursorToolResultEntry = { toolResult: message };
+			const entry: CursorToolResultEntry = {
+				toolResult: message,
+				additionalContext: (message as ToolResultWithAdditionalContext)[TOOL_RESULT_ADDITIONAL_CONTEXT],
+			};
 			this.#cursorToolResultBuffer.push(entry);
 			const transform = this.#cursorOnToolResult;
 			if (transform) {
@@ -1773,6 +1788,9 @@ export class Agent {
 				.map(entry => entry.pending);
 			if (pendingTransforms.length > 0) await Promise.all(pendingTransforms);
 			const bufferedCursorResults = this.#cursorToolResultBuffer.map(({ toolResult }) => toolResult);
+			const bufferedCursorContext = joinAdditionalContext(
+				this.#cursorToolResultBuffer.map(({ additionalContext }) => additionalContext),
+			);
 			const retainedToolCallIds = new Set(completedToolCallIds);
 			for (const { toolCallId } of bufferedCursorResults) retainedToolCallIds.add(toolCallId);
 			const errorMsg: AssistantMessage =
@@ -1849,9 +1867,13 @@ export class Agent {
 					this.#emit({ type: "message_end", message: toolResult });
 					toolResults.push(toolResult);
 				}
+				const agentEndMessages: AgentMessage[] = [errorMsg, ...toolResults];
+				if (bufferedCursorContext !== undefined) {
+					agentEndMessages.push(this.#emitCursorAdditionalContext(bufferedCursorContext));
+				}
 				this.#emit({ type: "turn_end", message: errorMsg, toolResults });
 				turnOpen = false;
-				this.#emit({ type: "agent_end", messages: [errorMsg, ...toolResults] });
+				this.#emit({ type: "agent_end", messages: agentEndMessages });
 			} else {
 				this.appendMessage(errorMsg);
 				this.#state.error = errorMessage;
@@ -1923,8 +1945,24 @@ export class Agent {
 				this.appendMessage(toolResult);
 				this.#emit({ type: "message_end", message: toolResult });
 			}
+			const additionalContext = joinAdditionalContext(buffer.map(entry => entry.additionalContext));
+			if (additionalContext !== undefined) this.#emitCursorAdditionalContext(additionalContext);
 		} finally {
 			this.#cursorToolResultDrain = undefined;
 		}
+	}
+
+	/**
+	 * Append passive context reported by Cursor exec-channel tools after their
+	 * results, mirroring the loop's post-batch developer message. Cursor runs
+	 * those tools server-side mid-stream, so the context reaches the next
+	 * provider request instead of the current one.
+	 */
+	#emitCursorAdditionalContext(text: string): AgentMessage {
+		const message = createAdditionalContextMessage(text);
+		this.#emit({ type: "message_start", message });
+		this.appendMessage(message);
+		this.#emit({ type: "message_end", message });
+		return message;
 	}
 }

@@ -1,6 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
-import { Agent, AgentBusyError, type AgentEvent, type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import {
+	Agent,
+	AgentBusyError,
+	type AgentEvent,
+	type AgentTool,
+	ThinkingLevel,
+	TOOL_RESULT_ADDITIONAL_CONTEXT,
+	type ToolResultWithAdditionalContext,
+} from "@oh-my-pi/pi-agent-core";
 import type { Context, SimpleStreamOptions, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
@@ -936,6 +944,53 @@ describe("Agent", () => {
 		expect(toolResults[0]).toMatchObject({ toolCallId: toolCall.id, toolName: toolCall.name });
 	});
 
+	it("injects Cursor-carried passive context after the buffered results on success and provider error", async () => {
+		for (const outcome of ["done", "fail"] as const) {
+			const mock = createMockModel({ responses: [] });
+			const toolCall = {
+				type: "toolCall" as const,
+				id: `cursor-context-${outcome}`,
+				name: "shell",
+				arguments: { command: "pwd" },
+				[kCursorExecResolved]: true,
+			};
+			const started = createAssistantMessage([toolCall]);
+			const realToolResult: ToolResultWithAdditionalContext = {
+				role: "toolResult",
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				content: [{ type: "text", text: "/workspace" }],
+				isError: false,
+				timestamp: Date.now(),
+				[TOOL_RESULT_ADDITIONAL_CONTEXT]: "cursor passive context",
+			};
+			const agent = new Agent({
+				initialState: { model: mock.model, systemPrompt: ["Test"], tools: [], messages: [] },
+				// A transformer replacing the message must not lose the carrier.
+				cursorOnToolResult: message => ({ ...message, content: [{ type: "text" as const, text: "rewritten" }] }),
+				streamFn: (_model, _context, options) => {
+					const stream = new AssistantMessageEventStream();
+					queueMicrotask(async () => {
+						await options?.cursorOnToolResult?.(realToolResult);
+						stream.push({ type: "start", partial: started });
+						if (outcome === "done") stream.push({ type: "done", reason: "stop", message: started });
+						else stream.fail(new Error("connection reset after Cursor exec"));
+					});
+					return stream;
+				},
+			});
+
+			await agent.prompt("trigger");
+
+			const roles = agent.state.messages.map(message => message.role);
+			expect(roles.slice(-3)).toEqual(["assistant", "toolResult", "developer"]);
+			expect(agent.state.messages.at(-1)).toMatchObject({
+				role: "developer",
+				content: [{ type: "text", text: "cursor passive context" }],
+			});
+		}
+	});
+
 	it("sends passive tool context with the default LLM conversion", async () => {
 		const toolSchema = type({ value: type("string") });
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
@@ -966,6 +1021,7 @@ describe("Agent", () => {
 		const agent = new Agent({
 			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
 			streamFn: mock.stream,
+			getToolContext: toolCall => ({ addAdditionalContext: toolCall?.addAdditionalContext }),
 		});
 		agent.beforeToolCall = async ({ args }) => ({
 			additionalContext: `prepared context for ${args.value}`,

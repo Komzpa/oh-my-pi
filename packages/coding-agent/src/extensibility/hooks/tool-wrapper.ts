@@ -1,8 +1,12 @@
 /**
  * Tool wrapper - wraps tools with hook callbacks for interception.
  */
-import type { AgentTool, AgentToolContext, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import { isNonBlankContext } from "@oh-my-pi/pi-agent-core/tool-context";
+import {
+	type AgentTool,
+	type AgentToolContext,
+	type AgentToolUpdateCallback,
+	isNonBlankContext,
+} from "@oh-my-pi/pi-agent-core";
 import type { Static, TSchema } from "@oh-my-pi/pi-ai";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
 import { applyToolProxy } from "../tool-proxy";
@@ -44,6 +48,9 @@ export class HookToolWrapper<TParameters extends TSchema = TSchema, TDetails = u
 		// Emit tool_call event - hooks can block execution or revise the input the tool runs with.
 		// If hook errors/times out, block by default (fail-safe)
 		let effectiveParams = params;
+		// Forwarded only after the tool returns a non-error result, matching the
+		// extension wrapper and the agent loop.
+		let pendingAdditionalContext: string | undefined;
 		if (this.hookRunner.hasHandlers("tool_call")) {
 			try {
 				const callResult = (await this.hookRunner.emitToolCall({
@@ -61,7 +68,7 @@ export class HookToolWrapper<TParameters extends TSchema = TSchema, TDetails = u
 					throw new Error(reason);
 				}
 				if (isNonBlankContext(callResult?.additionalContext)) {
-					context?.addAdditionalContext?.(callResult.additionalContext);
+					pendingAdditionalContext = callResult.additionalContext;
 				}
 				// A non-blocking handler may replace the execution input. The returned object is the raw
 				// input the tool runs with (handler-owned); it is not re-normalized. Skipped for `computer`
@@ -81,6 +88,9 @@ export class HookToolWrapper<TParameters extends TSchema = TSchema, TDetails = u
 		// Execute the actual tool, forwarding onUpdate for progress streaming
 		try {
 			const result = await this.tool.execute(toolCallId, effectiveParams, signal, onUpdate, context);
+			if (result.isError !== true && pendingAdditionalContext !== undefined) {
+				context?.addAdditionalContext?.(pendingAdditionalContext);
+			}
 
 			// Emit tool_result event - hooks can modify the result
 			if (this.hookRunner.hasHandlers("tool_result")) {
