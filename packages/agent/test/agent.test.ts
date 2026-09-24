@@ -614,6 +614,95 @@ describe("Agent", () => {
 		expect(agent.state.messages[agent.state.messages.length - 1].role).toBe("assistant");
 	});
 
+	it("replaces 38 queued goal continuations with one delivery and no model-news pressure", async () => {
+		const mock = createMockModel({ responses: [{ content: ["Processed"] }] });
+		const agent = new Agent({ streamFn: mock.stream });
+		const goalContinuations = Array.from({ length: 38 }, (_, index) => ({
+			role: "custom" as const,
+			customType: "goal-continuation",
+			content: `continuation ${index + 1}`,
+			display: false,
+			timestamp: index + 1,
+		}));
+		const newestGoalContinuation = goalContinuations[goalContinuations.length - 1]!;
+		agent.replaceMessages([
+			{ role: "user", content: "Initial", timestamp: Date.now() - 10 },
+			createAssistantMessage([{ type: "text", text: "Initial response" }]),
+		]);
+
+		for (const continuation of goalContinuations) agent.followUp(continuation);
+
+		expect(agent.peekFollowUpQueue()).toEqual([newestGoalContinuation]);
+		expect(agent.getPendingModelNewsCount()).toBe(0);
+		await agent.continue();
+
+		const delivered = agent.state.messages.filter(
+			(message): message is Extract<typeof message, { role: "custom" }> =>
+				message.role === "custom" && message.customType === "goal-continuation",
+		);
+		expect(delivered).toEqual([newestGoalContinuation]);
+	});
+
+	it("keeps only the newest goal continuation when restoring queued messages", () => {
+		const agent = new Agent();
+		const goalContinuations = Array.from({ length: 38 }, (_, index) => ({
+			role: "custom" as const,
+			customType: "goal-continuation",
+			content: `restored continuation ${index + 1}`,
+			display: false,
+			timestamp: index + 1,
+		}));
+		const newestGoalContinuation = goalContinuations[goalContinuations.length - 1]!;
+
+		agent.replaceQueues(goalContinuations.slice(0, 19), goalContinuations.slice(19));
+
+		expect(agent.peekSteeringQueue()).toEqual([]);
+		expect(agent.peekFollowUpQueue()).toEqual([newestGoalContinuation]);
+		expect(agent.getPendingModelNewsCount()).toBe(0);
+	});
+
+	it("counts queued user input as one model-news message", () => {
+		const agent = new Agent();
+		agent.steer({
+			role: "user",
+			content: "Please do this next",
+			attribution: "user",
+			timestamp: Date.now(),
+		});
+
+		expect(agent.getPendingModelNewsCount()).toBe(1);
+	});
+
+	it("counts worker and IRC results but ignores agent-attributed asides", () => {
+		const agent = new Agent();
+		agent.followUp({
+			role: "custom",
+			customType: "extension-aside",
+			content: "Harness status",
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+		agent.followUp({
+			role: "custom",
+			customType: "async-result",
+			content: "Worker finished",
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+		agent.steer({
+			role: "custom",
+			customType: "irc:incoming",
+			content: "Peer result",
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+
+		expect(agent.getPendingModelNewsCount()).toBe(2);
+	});
+
 	it("continue() should keep one-at-a-time steering semantics from assistant tail", async () => {
 		const mock = createMockModel({
 			responses: [{ content: ["Processed 1"] }, { content: ["Processed 2"] }],
