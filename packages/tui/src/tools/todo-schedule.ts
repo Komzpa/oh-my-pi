@@ -772,16 +772,10 @@ function scheduleResources(
 			const predecessorFinish = Math.max(0, ...node.predecessors.map(predecessor => finishes.get(predecessor) ?? 0));
 			const baseRelease = Math.max(anchor, predecessorFinish);
 			let controllers: PlanNode[] = [];
-			let ambiguous = false;
-			if (node.predecessors.length > 0 && Math.abs(anchor - predecessorFinish) <= CPM_TIE_TOLERANCE_MS) {
-				ambiguous = node.predecessors.some(
-					predecessor => Math.abs((finishes.get(predecessor) ?? 0) - predecessorFinish) <= CPM_TIE_TOLERANCE_MS,
-				);
-			} else if (predecessorFinish > anchor + CPM_TIE_TOLERANCE_MS) {
+			if (node.predecessors.length > 0 && predecessorFinish >= anchor - CPM_TIE_TOLERANCE_MS) {
 				controllers = node.predecessors.filter(
 					predecessor => Math.abs((finishes.get(predecessor) ?? 0) - predecessorFinish) <= CPM_TIE_TOLERANCE_MS,
 				);
-				ambiguous = controllers.length !== 1;
 			}
 
 			const resources = Array.isArray(node.schedule?.resources) ? node.schedule.resources : [];
@@ -793,17 +787,16 @@ function scheduleResources(
 				return wasAtCapacity || sameOwner || sameResource;
 			});
 			if (resourceControllers.length > 0) {
-				if (time > baseRelease + CPM_TIE_TOLERANCE_MS) {
-					controllers = resourceControllers;
-					ambiguous = false;
-				} else {
-					controllers = [...new Set([...controllers, ...resourceControllers])];
-					if (Math.abs(anchor - time) <= CPM_TIE_TOLERANCE_MS) ambiguous = true;
-				}
-				if (controllers.length > 1) ambiguous = true;
+				controllers =
+					time > baseRelease + CPM_TIE_TOLERANCE_MS
+						? resourceControllers
+						: [...new Set([...controllers, ...resourceControllers])];
 			}
-			const parent = !ambiguous && controllers.length === 1 ? controllers[0] : undefined;
-			if (!parent && time > anchor + CPM_TIE_TOLERANCE_MS) ambiguous = true;
+			// Tied controllers finish together, so the row waits for all of them; the chain with the
+			// larger P95 bounds its finish (2026-09-25: equal parallel shards made every later row
+			// "tied or unavailable" and the whole plan (partial)).
+			const parent = dominantController(controllers);
+			let ambiguous = controllers.length > 0 ? parent === undefined : time > anchor + CPM_TIE_TOLERANCE_MS;
 			if (scenario === "expected") {
 				const inheritedAmbiguity = parent?.fixedPathAmbiguous === true;
 				const parentExpected = parent?.fixedPathExpectedSeconds ?? 0;
@@ -839,6 +832,24 @@ function scheduleResources(
 		time = next;
 	}
 	return { starts, finishes, unassigned };
+}
+
+/** Any tied controller will do; take the known chain with the largest P95. Undefined only when none is known. */
+function dominantController(controllers: PlanNode[]): PlanNode | undefined {
+	if (controllers.length <= 1) return controllers[0];
+	let best: PlanNode | undefined;
+	let bestP95 = Number.NEGATIVE_INFINITY;
+	for (const candidate of controllers) {
+		const expected = candidate.fixedPathExpectedSeconds;
+		const variance = candidate.fixedPathVarianceSeconds;
+		if (candidate.fixedPathAmbiguous || expected === undefined || variance === undefined) continue;
+		const p95 = (candidate.fixedPathStart ?? 0) / 1_000 + expected + FIXED_PATH_P95_Z * Math.sqrt(variance);
+		if (p95 > bestP95) {
+			best = candidate;
+			bestP95 = p95;
+		}
+	}
+	return best;
 }
 
 function fixedPathToNode(node: PlanNode): string[] | undefined {
