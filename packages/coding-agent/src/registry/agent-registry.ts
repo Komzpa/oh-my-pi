@@ -187,6 +187,16 @@ export class AgentRegistry {
 		this.#emit({ type: "metadata_changed", ref });
 		return true;
 	}
+	/** Restore transcript-backed display/parent identity only while the exact ref is still current. */
+	restoreIdentity(id: string, expected: AgentRef, identity: { displayName: string; parentId?: string }): boolean {
+		const ref = this.#refs.get(id);
+		if (ref !== expected || ref.status === "aborted") return false;
+		if (ref.displayName === identity.displayName && ref.parentId === identity.parentId) return true;
+		ref.displayName = identity.displayName;
+		ref.parentId = identity.parentId;
+		this.#emit({ type: "metadata_changed", ref });
+		return true;
+	}
 
 	setStatus(id: string, status: AgentStatus, expected?: AgentRefExpectation): boolean {
 		const ref = this.#refs.get(id);
