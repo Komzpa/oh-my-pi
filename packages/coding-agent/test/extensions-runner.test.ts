@@ -115,7 +115,7 @@ describe("ExtensionRunner", () => {
 		expect(runner.createContext().cwd).toBe(dirB);
 	});
 
-	it("exposes the initialized host mode to extension contexts", async () => {
+	it("exposes initialized mode and forwards subagent fast-mode changes", async () => {
 		const result = await loadTestExtensions();
 		const runner = new ExtensionRunner(
 			result.extensions,
@@ -139,6 +139,7 @@ describe("ExtensionRunner", () => {
 			getSessionName: () => undefined,
 			setSessionName: async () => {},
 		};
+		const setSubagentFastMode = vi.fn((_id: string, _enabled: boolean) => true);
 		const contextActions = {
 			getModel: () => undefined,
 			isIdle: () => true,
@@ -148,12 +149,15 @@ describe("ExtensionRunner", () => {
 			getContextUsage: () => undefined,
 			compact: async () => {},
 			getSystemPrompt: () => [],
+			setSubagentFastMode,
 		};
 
 		expect(runner.createContext().mode).toBe("print");
 
 		runner.initialize(actions, contextActions, undefined, undefined, "rpc");
 		expect(runner.createContext().mode).toBe("rpc");
+		expect(runner.createContext().setSubagentFastMode?.("worker-1", true)).toBe(true);
+		expect(setSubagentFastMode).toHaveBeenCalledWith("worker-1", true);
 
 		runner.initialize(actions, contextActions, undefined, undefined, "json");
 		expect(runner.createContext().mode).toBe("json");

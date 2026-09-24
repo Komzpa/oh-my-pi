@@ -22,6 +22,7 @@ import type {
 import type { postmortem } from "@oh-my-pi/pi-utils";
 import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import type { AsyncJob, AsyncJobDeliveryState, AsyncJobManager } from "../async";
+import type { AgentRegistry } from "../registry/agent-registry";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import type { ModelRegistry } from "../config/model-registry";
 import type { PromptTemplate } from "../config/prompt-templates";
@@ -284,6 +285,8 @@ export interface AgentSessionConfig {
 	asyncJobManager?: AsyncJobManager;
 	/** Registry identity used for IRC routing. */
 	agentId?: string;
+	/** Registry holding this session and its live subagents. */
+	agentRegistry?: AgentRegistry;
 	/** Whether this is a top-level or subagent session. */
 	agentKind?: "main" | "sub";
 	/** Provider-facing session ID override. */
