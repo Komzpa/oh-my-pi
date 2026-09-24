@@ -2621,6 +2621,9 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	const settledPayload = {
 		id,
 		agent: agent.name,
+		at: Date.now(),
+		resolvedModelIdentity: progress.resolvedModelIdentity,
+		resolvedThinkingLevel: progress.resolvedThinkingLevel,
 		parentToolCallId: args.parentToolCallId,
 		detached: args.detached,
 		agentSource: agent.source,
@@ -2927,6 +2930,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		const startedPayload = {
 			id,
 			agent: agent.name,
+			at: Date.now(),
 			parentToolCallId: options.parentToolCallId,
 			detached: true,
 			agentSource: agent.source,
@@ -3301,6 +3305,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 	const startedPayload = {
 		id,
 		agent: agent.name,
+		at: Date.now(),
 		parentToolCallId: options.parentToolCallId,
 		detached: true,
 		agentSource: agent.source,
@@ -4031,6 +4036,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			const startedPayload = {
 				id,
 				agent: agent.name,
+				at: Date.now(),
 				parentToolCallId: options.parentToolCallId,
 				detached: options.detached,
 				agentSource: agent.source,

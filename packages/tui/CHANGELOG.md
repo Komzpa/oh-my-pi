@@ -15,6 +15,12 @@
 - Added visual indicators for live-steered user messages and paginated content in read-tool results.
 - Added transcript support for `cfg://` configuration read and write tool calls.
 - Added an Anthropic slow-mode badge to the status-line model segment, showing the priority state, end time, and remaining request percentage when available.
+- Added visual marker for live-steered user messages in the chat transcript
+- Added an Anthropic slow-mode badge to the status-line model segment (`low priority until HH:MM · N% left`, warning colour) via the optional `StatusLineSession.getAnthropicSlowModeLabel()` ([#13222](https://github.com/can1357/oh-my-pi/pull/13222) by [@H4vC](https://github.com/H4vC)).
+- Added UI support for marking paginated content in read-tool results
+- Added transcript rendering for `cfg://` configuration read and write tool calls
+- Record the executing worker, model, thinking level, and actual run times on linked TODO rows ([fork PR #6](https://github.com/Komzpa/oh-my-pi/pull/6)).
+- Added push-to-talk dictation to `Input`, including live transcription text and `cursorOverride` support.
 
 ### Changed
 

@@ -25,6 +25,10 @@ export interface SubagentLifecyclePayload {
 	id: string;
 	agent: string;
 	agentSource: AgentSource;
+	/** Wall clock of the emitted lifecycle transition, in Unix milliseconds. */
+	at?: number;
+	resolvedModelIdentity?: string;
+	resolvedThinkingLevel?: string;
 	description?: string;
 	status: "started" | "completed" | "failed" | "aborted";
 	sessionFile?: string;

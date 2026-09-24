@@ -816,7 +816,7 @@ describe("todoToolRenderer.renderResult view layout", () => {
 			const component = render();
 			const firstRender = component.render(120).join("\n");
 			expect(Bun.stripANSI(firstRender)).toContain("scheduled step");
-			expect(Bun.stripANSI(firstRender)).toContain("work 7m / estimate 2m");
+			expect(Bun.stripANSI(firstRender)).toContain("7m / 2m");
 			expect(Bun.stripANSI(firstRender)).not.toContain("overdue");
 			setSystemTime(new Date(forecastAt + 60 * 60_000));
 			expect(component.render(120).join("\n")).toBe(firstRender);
@@ -862,8 +862,8 @@ describe("todoToolRenderer.renderResult view layout", () => {
 
 		expect(rendered).toContain(theme.fg("error", `${theme.checkbox.unchecked} late step`));
 		expect(rendered).toContain(theme.fg("accent", `${theme.checkbox.unchecked} current step`));
-		expect(Bun.stripANSI(rendered)).toContain("work 10m / estimate 2m · overdue");
-		expect(Bun.stripANSI(rendered)).toContain("work 0m / estimate 2m");
+		expect(Bun.stripANSI(rendered)).toContain("10m / 2m");
+		expect(Bun.stripANSI(rendered)).toContain("0m / 2m");
 	});
 
 	it("orders view rows topologically across phase sections without changing stored order", () => {

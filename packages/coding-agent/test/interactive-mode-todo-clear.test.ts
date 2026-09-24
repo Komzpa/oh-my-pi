@@ -199,7 +199,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(renderTodos(mode)).toContain("done task");
 	});
 
-	it("renders shared ETA, confidence, criticality, and overall forecast in normal and compact TODO views", () => {
+	it("renders a concise ETA and task forecast in normal and compact TODO views", () => {
 		vi.useFakeTimers();
 		setSystemTime(new Date(FORECAST_TEST_NOW));
 		setTodoClearDelay(-1);
@@ -226,12 +226,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		mode.setTodos(phases);
 		const expanded = renderTodos(mode).toLowerCase();
 		expect(expanded).toContain("workera");
-		expect(expanded).toContain("cpm");
-		expect(expanded).toMatch(/\bes\b/);
-		expect(expanded).toMatch(/\bef\b/);
-		expect(expanded).toMatch(/\bls\b/);
-		expect(expanded).toMatch(/\blf\b/);
-		expect(expanded).toContain("float");
+		expect(expanded).not.toMatch(/fixed-path|p95|cpm|confidence|float|eta eta/);
 		mode.todoExpanded = false;
 	});
 
@@ -482,7 +477,9 @@ describe("InteractiveMode todo HUD persistence", () => {
 
 		expect(session.getTodoPhases()).toEqual(phases);
 		expect(renderTodos(mode)).toContain("Fix review comments");
-		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("Inspect adjacent work");
+		expect(renderTodos(mode)).toContain("unassigned workers");
+		expect(renderTodos(mode)).toContain("Inspect adjacent work");
+		expect(mode.subagentContainer.render(120)).toEqual([]);
 	});
 
 	it("completes and auto-dismisses only after an explicit Main TODO done command", async () => {
