@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
-import { Agent, AgentBusyError, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -65,10 +65,11 @@ describe("AgentSession restart drain", () => {
 					stopReason: "toolUse",
 				},
 				{ content: ["resumed after cancelled drain"] },
+				{ content: ["queued input handled"] },
 				{ content: ["post-cancel prompt accepted"] },
 			],
 		});
-		const sessionManager = SessionManager.inMemory();
+		const sessionManager = SessionManager.create(fixtureDir, fixtureDir);
 		const rootAgent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: ["Test"], tools: [blockingTool] },
@@ -112,7 +113,8 @@ describe("AgentSession restart drain", () => {
 
 		expect(session.isAborting).toBe(false);
 		expect(mock.calls).toHaveLength(1);
-		await expect(session.prompt("must wait for restart decision")).rejects.toBeInstanceOf(AgentBusyError);
+		await session.prompt("deliver after restart decision");
+		expect(sessionManager.isSessionOnDisk()).toBe(true);
 		await neighbor.prompt("unrelated session");
 		expect(neighborMock.calls).toHaveLength(1);
 
@@ -138,11 +140,16 @@ describe("AgentSession restart drain", () => {
 		expect(session.isRestartDraining).toBe(false);
 
 		await session.waitForIdle();
-		expect(mock.calls).toHaveLength(2);
+		expect(mock.calls).toHaveLength(3);
+		expect(
+			mock.calls[2]?.context.messages.some(message =>
+				JSON.stringify(message).includes("deliver after restart decision"),
+			),
+		).toBe(true);
 		expect(toolRuns).toBe(1);
 
 		await session.prompt("admission reopened after cancel");
-		expect(mock.calls).toHaveLength(3);
+		expect(mock.calls).toHaveLength(4);
 	});
 
 	it("refuses to drain queued work when a persistent checkpoint is not resumable", async () => {
