@@ -6,16 +6,16 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { forecastTodoPlan } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 
 /**
- * Regression coverage: `AgentSession.#cloneTodoPhases` used to clone only
- * `{ content, status }`, dropping the `blocker` note on every set/get. That made
- * a blocker reason vanish on the first `todo view` or any later op even though it
- * appeared in the immediate tool result. The contract: a blocked task's reason
- * survives a `setTodoPhases` → `getTodoPhases` round-trip (the same clone every
- * storage read/write goes through).
+ * Regression coverage for TodoTracker.#clonePhases: set/get must preserve blocker,
+ * details, notes, and scheduling metadata while detaching every nested array/object.
+ * Exercise the real AgentSession API and confirm its recovered schedule still
+ * produces a dependency-respecting forecast.
  */
-describe("AgentSession todo blocker clone", () => {
+describe("AgentSession todo defensive clone", () => {
 	let session: AgentSession;
 	let sessionManager: SessionManager;
 	let authStorage: AuthStorage;
@@ -47,23 +47,115 @@ describe("AgentSession todo blocker clone", () => {
 		authStorage.close();
 	});
 
-	it("preserves a blocker reason across a setTodoPhases/getTodoPhases round-trip", () => {
-		session.setTodoPhases([
+	it("deep-preserves schedules/details/notes through real set/get and forecast reads", () => {
+		const original: TodoPhase[] = [
 			{
 				name: "Work",
 				tasks: [
-					{ content: "a", status: "blocked", blocker: "waiting on sign-off" },
-					{ content: "b", status: "pending" },
+					{
+						content: "Blocked external prerequisite",
+						status: "blocked",
+						blocker: "waiting on sign-off",
+						details: "Keep blocker context",
+						notes: ["owner requested review"],
+						schedule: {
+							dependencies: [],
+							owner: "blocked-owner",
+							resources: ["cpu"],
+							estimate: {
+								optimisticSeconds: 10,
+								likelySeconds: 20,
+								pessimisticSeconds: 30,
+								confidence: "medium",
+								basis: "One small follow-up after approval",
+								updatedAt: 100,
+							},
+							progress: { at: 120, evidence: "Approval is still pending" },
+							startedAt: 80,
+						},
+					},
+					{
+						content: "Completed prerequisite",
+						status: "completed",
+						schedule: {
+							dependencies: [],
+							estimate: {
+								optimisticSeconds: 10,
+								likelySeconds: 20,
+								pessimisticSeconds: 30,
+								confidence: "high",
+								basis: "Completed bounded prerequisite",
+								updatedAt: 100,
+							},
+							finishedAt: 200,
+						},
+					},
+					{
+						content: "Dependent follow-up",
+						status: "pending",
+						schedule: {
+							dependencies: ["Completed prerequisite"],
+							estimate: {
+								optimisticSeconds: 10,
+								likelySeconds: 20,
+								pessimisticSeconds: 30,
+								confidence: "medium",
+								basis: "One dependent follow-up",
+								updatedAt: 100,
+							},
+						},
+					},
 				],
 			},
-		]);
+		];
+		const callerInput = structuredClone(original);
+		session.setTodoPhases(callerInput);
+		callerInput[0]!.tasks[0]!.notes?.push("mutated after set");
+		callerInput[0]!.tasks[0]!.schedule?.dependencies?.push("mutated after set");
 
-		const roundTripped = session.getTodoPhases();
-		const blocked = roundTripped[0]?.tasks.find(task => task.content === "a");
+		const afterSet = session.getTodoPhases();
+		expect(afterSet).toEqual(original);
+		const blocked = afterSet[0]?.tasks[0];
 		expect(blocked?.status).toBe("blocked");
 		expect(blocked?.blocker).toBe("waiting on sign-off");
-		// A task with no blocker must not gain one through the clone.
-		const open = roundTripped[0]?.tasks.find(task => task.content === "b");
-		expect(open?.blocker).toBeUndefined();
+		expect(blocked).toMatchObject({
+			details: "Keep blocker context",
+			notes: ["owner requested review"],
+			schedule: {
+				owner: "blocked-owner",
+				dependencies: [],
+				resources: ["cpu"],
+				estimate: { basis: "One small follow-up after approval", updatedAt: 100 },
+				progress: { at: 120, evidence: "Approval is still pending" },
+				startedAt: 80,
+			},
+		});
+
+		const returned = session.getTodoPhases();
+		const external = returned[0]?.tasks[0];
+		if (
+			!external?.notes ||
+			!external.schedule?.dependencies ||
+			!external.schedule.estimate ||
+			!external.schedule.progress
+		) {
+			throw new Error("Expected nested TODO metadata on the real session API result");
+		}
+		external.notes.push("mutated after get");
+		external.schedule.dependencies.push("mutated after get");
+		external.schedule.resources?.push("mutated after get");
+		external.schedule.estimate.basis = "mutated after get";
+		external.schedule.progress.evidence = "mutated after get";
+		expect(session.getTodoPhases()).toEqual(original);
+		expect(session.getTodoPhases()[0]?.tasks[0]?.blocker).toBe("waiting on sign-off");
+		expect(session.getTodoPhases()[0]?.tasks[1]?.status).toBe("completed");
+
+		const forecast = forecastTodoPlan(session.getTodoPhases(), { now: 300 });
+		const prerequisite = forecast.rows.find(row => row.content === "Completed prerequisite");
+		const dependent = forecast.rows.find(row => row.content === "Dependent follow-up");
+		if (prerequisite?.earliestFinish === undefined || dependent?.earliestStart === undefined) {
+			throw new Error("Expected scheduled dependency dates after the real session round-trip");
+		}
+		expect(dependent.earliestStart).toBeGreaterThanOrEqual(prerequisite.earliestFinish);
 	});
 });
