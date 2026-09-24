@@ -185,6 +185,32 @@ function parseTransition(entry: SessionEntry, entryIndex: number): StoredRestart
 	return { identity, record, entryIndex };
 }
 
+/** Human-facing state for a persisted restart notice; the model prompt remains unchanged. */
+export function restartNoticeText(entries: readonly SessionEntry[], requestId: string): string {
+	let latest: RestartRequestRecord | undefined;
+	for (let index = 0; index < entries.length; index++) {
+		const entry = entries[index];
+		if (!entry) continue;
+		const transition = parseTransition(entry, index);
+		if (transition?.record.requestId === requestId) latest = transition.record;
+	}
+	switch (latest?.state) {
+		case "completed":
+			return "Restarted";
+		case "cancelled":
+			return "Restart cancelled";
+		case "failed":
+			return "Restart failed";
+		case "draining":
+			return "Restart draining";
+		case "checkpointed":
+		case "restarting":
+			return "Restarting";
+		default:
+			return "Restart queued";
+	}
+}
+
 /** Only a checkpoint from the previous process licenses active-goal recovery. */
 export function isRestartResumePending(
 	entries: readonly SessionEntry[],

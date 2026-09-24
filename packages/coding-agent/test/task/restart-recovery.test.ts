@@ -6,7 +6,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
-import { SESSION_EXIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
+import { collectPendingToolCalls, SESSION_EXIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import {
 	captureSubagentsForRestart,
 	restoreSubagentsAfterRestart,
@@ -376,7 +376,7 @@ describe("subagent restart recovery", () => {
 		expect(thirdRegistry.get(parked.id)).toMatchObject({ status: "parked", session: null });
 	});
 
-	it("leaves children with shutdown-pending tool calls parked and surfaces final-branch diagnostics", async () => {
+	it("closes an interrupted tool call and resumes the same child once", async () => {
 		const cwd = makeTempDir("@pi-restart-pending-");
 		const { manager: rootManager, file: rootFile } = await createRootSession(cwd, path.join(cwd, "sessions"));
 		const child = await createTranscript(cwd, rootFile.slice(0, -".jsonl".length), { task: "pending task" });
@@ -406,19 +406,46 @@ describe("subagent restart recovery", () => {
 		const resumedRegistry = AgentRegistry.global();
 		registerRoot(resumedRegistry, resumedRoot.session, rootFile);
 		let reviveCalls = 0;
-		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(async () => {
-			reviveCalls++;
-			return undefined;
-		}, 0);
+		const deliveries: IrcMessage[] = [];
+		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+			async ref => async () => {
+				reviveCalls++;
+				const manager = track(await SessionManager.open(ref.sessionFile!));
+				const revived = makeTestSession(manager, {
+					onDelivery: message => {
+						deliveries.push(message);
+						resumedRegistry.setStatus(ref.id, "running", revived.session);
+					},
+				});
+				return revived.session;
+			},
+			0,
+		);
 
 		const report = await restoreSubagentsAfterRestart(resumedRoot.session);
-		expect(report.pendingToolCalls).toHaveLength(1);
-		expect(report.pendingToolCalls[0]?.calls).toMatchObject([{ toolName: "bash", toolCallId: "pending-bash" }]);
-		expect(report.resumed).toEqual([]);
-		expect(reviveCalls).toBe(0);
-		expect(resumedRegistry.get(child.id)).toMatchObject({ status: "parked", session: null });
-		expect(resumedRoot.notices).toHaveLength(1);
-		expect(resumedRoot.notices[0]?.message).toContain("bash pending-bash");
+		expect(report.resumed).toEqual([child.id]);
+		expect(report.pendingToolCalls).toEqual([]);
+		expect(report.failures).toEqual([]);
+		expect(reviveCalls).toBe(1);
+		expect(deliveries).toHaveLength(1);
+		expect(resumedRegistry.get(child.id)).toMatchObject({ status: "running" });
+		const resumedChild = resumedRegistry.get(child.id)?.session;
+		expect(resumedChild).toBeTruthy();
+		const branch = resumedChild!.sessionManager.getBranch();
+		expect(collectPendingToolCalls(branch)).toEqual([]);
+		const interruption = branch.find(
+			entry =>
+				entry.type === "message" &&
+				entry.message.role === "toolResult" &&
+				entry.message.toolCallId === "pending-bash",
+		);
+		expect(interruption).toMatchObject({
+			type: "message",
+			message: { isError: true, details: { status: "interrupted" } },
+		});
+		const again = await restoreSubagentsAfterRestart(resumedRoot.session);
+		expect(again.resumed).toEqual([child.id]);
+		expect(deliveries).toHaveLength(1);
 	});
 
 	it("uses the latest terminal yield rather than a stale output artifact", async () => {

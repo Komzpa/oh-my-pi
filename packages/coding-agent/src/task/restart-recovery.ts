@@ -164,6 +164,50 @@ async function readBranchEntries(sessionFile: string, liveSession?: AgentSession
 	}
 }
 
+/** Close only calls left without a result by the previous process. Their effects are unknown. */
+async function closeInterruptedToolCalls(sessionFile: string): Promise<number> {
+	const manager = await SessionManager.open(sessionFile, undefined, undefined, {
+		suppressBreadcrumb: true,
+		throwIfMissing: true,
+	});
+	try {
+		const entries = manager.getBranch();
+		const pending = collectPendingToolCalls(entries);
+		if (pending.length === 0) return 0;
+		const calls = new Map<string, { name: string; arguments: unknown }>();
+		for (const entry of entries) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			for (const part of entry.message.content) {
+				if (part.type === "toolCall") calls.set(part.id, { name: part.name, arguments: part.arguments });
+			}
+		}
+		for (const item of pending) {
+			if (!item.toolCallId || !calls.has(item.toolCallId)) {
+				throw new Error(`cannot close interrupted ${item.toolName} call without its persisted assistant call`);
+			}
+			const call = calls.get(item.toolCallId)!;
+			manager.appendMessage({
+				role: "toolResult",
+				toolCallId: item.toolCallId,
+				toolName: call.name,
+				content: [
+					{
+						type: "text",
+						text: "OMP exited while this call was in progress. Its effects are unknown; inspect the target before retrying.",
+					},
+				],
+				details: { status: "interrupted", type: "restart-recovery" },
+				isError: true,
+				timestamp: Date.now(),
+			});
+		}
+		await manager.flush();
+		return pending.length;
+	} finally {
+		await manager.close();
+	}
+}
+
 function isTerminalYieldResult(isError: boolean, details: unknown): boolean {
 	if (isError) return false;
 	if (details === null || typeof details !== "object" || Array.isArray(details)) return true;
@@ -698,28 +742,33 @@ export async function restoreSubagentsAfterRestart(rootSession: AgentSession): P
 				continue;
 			}
 			if (priorReceipt?.outcome === "tombstoned") continue;
-			const entries = await readBranchEntries(child.sessionFile, ref.session);
+			let entries = await readBranchEntries(child.sessionFile, ref.session);
 			const pending = collectPendingToolCalls(entries);
 			if (pending.length > 0) {
-				if (priorReceipt?.outcome !== "pending-tool-calls") {
-					await recordReceipt(rootSession, identity, entryId, child, "pending-tool-calls");
-				}
-				report.pendingToolCalls.push({ id: child.id, displayName: child.displayName, calls: pending });
-				continue;
+				if (ref.session) throw new Error("cannot close interrupted calls while the child session is still live");
+				await closeInterruptedToolCalls(child.sessionFile);
+				entries = await readBranchEntries(child.sessionFile);
 			}
-			if (priorReceipt) {
-				if (priorReceipt.outcome === "continuation-claimed") {
+			const effectivePriorReceipt = priorReceipt?.outcome === "pending-tool-calls" ? undefined : priorReceipt;
+			if (effectivePriorReceipt) {
+				if (effectivePriorReceipt.outcome === "continuation-claimed") {
 					report.failures.push({
 						id: child.id,
 						reason:
 							"continuation was durably claimed but has no delivery receipt; it was not retried to avoid a duplicate wake",
 					});
-				} else if (priorReceipt.outcome === "continuation-failed" || priorReceipt.outcome === "revival-failed") {
-					report.failures.push({ id: child.id, reason: priorReceipt.reason ?? "restart recovery failed" });
 				} else if (
-					priorReceipt.outcome === "continuation-delivered" ||
-					priorReceipt.outcome === "idle-restored" ||
-					priorReceipt.outcome === "settled-during-restart"
+					effectivePriorReceipt.outcome === "continuation-failed" ||
+					effectivePriorReceipt.outcome === "revival-failed"
+				) {
+					report.failures.push({
+						id: child.id,
+						reason: effectivePriorReceipt.reason ?? "restart recovery failed",
+					});
+				} else if (
+					effectivePriorReceipt.outcome === "continuation-delivered" ||
+					effectivePriorReceipt.outcome === "idle-restored" ||
+					effectivePriorReceipt.outcome === "settled-during-restart"
 				) {
 					try {
 						const live = await AgentLifecycleManager.global().ensureLive(child.id);
@@ -734,7 +783,7 @@ export async function restoreSubagentsAfterRestart(rootSession: AgentSession): P
 							reason: error instanceof Error ? error.message : String(error),
 						});
 					}
-				} else if (priorReceipt.outcome === "parked-preserved" || priorReceipt.outcome === "pending-tool-calls") {
+				} else if (effectivePriorReceipt.outcome === "parked-preserved") {
 					if (ref.status === "parked") report.parked.push(child.id);
 					else if (ref.status === "running") report.resumed.push(child.id);
 					else if (ref.status === "idle") report.restoredIdle.push(child.id);
@@ -742,7 +791,7 @@ export async function restoreSubagentsAfterRestart(rootSession: AgentSession): P
 				continue;
 			}
 			const completedDuringRestart = child.status === "running" && latestTurnHasTerminalYield(entries);
-			if (child.status === "parked") {
+			if (child.status === "parked" && pending.length === 0) {
 				await recordReceipt(rootSession, identity, entryId, child, "parked-preserved");
 				report.parked.push(child.id);
 				continue;
@@ -756,7 +805,7 @@ export async function restoreSubagentsAfterRestart(rootSession: AgentSession): P
 				report.failures.push({ id: child.id, reason });
 				continue;
 			}
-			if (child.status === "idle" || child.settled || completedDuringRestart) {
+			if ((child.status === "idle" || child.settled || completedDuringRestart) && pending.length === 0) {
 				const outcome = completedDuringRestart || child.settled ? "settled-during-restart" : "idle-restored";
 				await recordReceipt(rootSession, identity, entryId, child, outcome);
 				report.restoredIdle.push(child.id);
