@@ -77,7 +77,16 @@ export type AsyncJobSnapshotItem = Pick<
 export interface AsyncJobSnapshot {
 	running: AsyncJobSnapshotItem[];
 	recent: AsyncJobSnapshotItem[];
+	/** Exact ids and session-corroborated liveness for registry agents without a running job. */
+	nonJobAgents?: Array<{ id: string; live: boolean }>;
 	delivery: AsyncJobDeliveryState;
+}
+
+/** Stops this session at the next safe model boundary until released. */
+export interface RestartDrainLease {
+	wasRunning: boolean;
+	waitForQuiescence(): Promise<void>;
+	release(): void;
 }
 
 export type { ShakeMode, ShakeResult } from "./shake-types";

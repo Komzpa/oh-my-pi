@@ -109,6 +109,9 @@ export const readHelp = {
 export const renderHelp = {
 	description: "Draw a session's entire thread through the production transcript pipeline (with repaint timing)",
 } satisfies CommandMetadata;
+export const restartHelp = {
+	description: "Queue, inspect, or cancel a graceful restart for an exact live interactive session",
+} satisfies CommandMetadata;
 
 export const sayHelp = {
 	description: "Synthesize text with the local TTS engine and play it through the speakers",

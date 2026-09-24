@@ -23,7 +23,7 @@ import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { isLowSignalTitleInput } from "../tiny/text";
 import { resolveToCwd } from "../tools/path-utils";
-import { commandConsumed, errorMessage, usage } from "./helpers/parse";
+import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import { handleSshAcp } from "./helpers/ssh";
 import type {
 	ParsedSlashCommand,
@@ -868,10 +868,28 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	{
 		name: "restart",
 		icon: "restart",
-		description: "Restart omp with the same launch flags, resuming this session",
-		handleTui: async (_command, runtime) => {
+		description: "Queue a cooperative restart, or show/cancel the current request",
+		allowArgs: true,
+		subcommands: [
+			{ name: "status", description: "Show the current queued restart" },
+			{ name: "cancel", description: "Cancel a queued restart that has not started" },
+		],
+		handleTui: async (command, runtime) => {
+			const { verb, rest } = parseSubcommand(command.args);
 			runtime.ctx.editor.setText("");
-			await runtime.ctx.restart();
+			if (!verb && !rest) {
+				await runtime.ctx.restart();
+				return;
+			}
+			if (rest) {
+				runtime.ctx.showWarning("Usage: /restart [status|cancel]");
+				return;
+			}
+			if (verb === "status" || verb === "cancel") {
+				await runtime.ctx.handleRestartCommand(verb);
+				return;
+			}
+			runtime.ctx.showWarning("Usage: /restart [status|cancel]");
 		},
 	},
 ];

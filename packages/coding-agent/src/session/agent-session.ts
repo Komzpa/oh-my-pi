@@ -24,6 +24,7 @@ import {
 	type AfterToolCallResult,
 	type Agent,
 	AgentBusyError,
+	agentPauseGate,
 	type AgentEvent,
 	type AgentMessage,
 	type AgentState,
@@ -106,6 +107,8 @@ import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import { formatUsageResetWindow } from "@oh-my-pi/pi-tui/overlays/usage-display";
 import { loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
+import { AgentRegistry } from "../registry/agent-registry";
+import { runningAgentsFromRegistryOutsideJobs } from "../async/job-control";
 import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
@@ -279,6 +282,7 @@ import type {
 	SessionOAuthAccountList,
 	SessionStats,
 	SteerOptions,
+	RestartDrainLease,
 	UsageFallbackConfirmer,
 } from "./agent-session-types";
 import { writeArtifact } from "./artifacts";
@@ -508,6 +512,44 @@ type AgentContinueOutcome =
  */
 type PromptDispatchOutcome = { sessionClaimed: boolean };
 
+const RESTART_PENDING_QUEUES_CUSTOM_TYPE = "omp:restart-pending-queues";
+
+interface RestartPendingQueues {
+	steering: AgentMessage[];
+	followUp: AgentMessage[];
+	pendingNextTurn: CustomMessage[];
+}
+
+function isRestartPendingQueues(value: unknown): value is RestartPendingQueues {
+	if (!isRecord(value)) return false;
+	return (
+		Array.isArray(value.steering) &&
+		value.steering.every(
+			(message): message is AgentMessage =>
+				isRecord(message) && typeof message.role === "string" && typeof message.timestamp === "number",
+		) &&
+		Array.isArray(value.followUp) &&
+		value.followUp.every(
+			(message): message is AgentMessage =>
+				isRecord(message) && typeof message.role === "string" && typeof message.timestamp === "number",
+		) &&
+		Array.isArray(value.pendingNextTurn) &&
+		value.pendingNextTurn.every(
+			(message): message is CustomMessage =>
+				isRecord(message) && message.role === "custom" && typeof message.timestamp === "number",
+		)
+	);
+}
+
+type PendingNextTurnDelivery = {
+	boundary: CustomMessage;
+	messages: CustomMessage[];
+	promptGeneration: number;
+	sessionId: string;
+	inputMessageSeen: boolean;
+	settled: boolean;
+};
+
 type ActiveAgentContinue = {
 	schedulerToken: number;
 	source: string;
@@ -650,6 +692,7 @@ export class AgentSession {
 
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	#pendingNextTurnMessages: CustomMessage[] = [];
+	#pendingNextTurnDeliveryByMessage = new Map<CustomMessage, PendingNextTurnDelivery>();
 	#scheduledHiddenNextTurnGeneration: number | undefined = undefined;
 	#queuedMessageDrainScheduled = false;
 	/** A single model-only notebook reminder queued for the current prompt generation. */
@@ -772,6 +815,7 @@ export class AgentSession {
 	#turnIndex = 0;
 	#messageEndPersistenceTail: Promise<void> = Promise.resolve();
 	#pendingMessageEndPersistence = new Map<string, Promise<void>>();
+	#restartPendingQueuesCheckpointActive = false;
 	#persistedMessageKeys: { anchor: string; keys: Set<string> } | undefined;
 
 	// Custom commands (TypeScript slash commands)
@@ -785,10 +829,20 @@ export class AgentSession {
 	#usagePreflightAbortControllers = new Set<AbortController>();
 	#queuedMessageDrainBlocked = false;
 	#modeExitDrainSuppressionDepth = 0;
+	#restartDrainLeaseCount = 0;
+	#restartDrainGeneration = 0;
+	#restartDrainQuiescence: Promise<void> | undefined;
+	#restartDrainStoppedRun = false;
+	#restartDrainNeedsResume = false;
+	#restartDrainReleaseWaiters = new Set<{
+		resolve: () => void;
+		reject: (reason: unknown) => void;
+	}>();
 	#usagePreflightReadyForNextModelCall = false;
 	#usagePreflightReadyModel: Model | undefined;
 	#detachUsageBeforeQueueDequeue: (() => void) | undefined;
 	#detachUsageBeforeModelCall: (() => void) | undefined;
+	#detachRestartDrainBeforeModelCall: (() => void) | undefined;
 
 	#transformContext: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 	#onPayload: SimpleStreamOptions["onPayload"] | undefined;
@@ -1007,6 +1061,20 @@ export class AgentSession {
 	 *  the agent responds to the peer. Skip only when a queued steer/follow-up will itself drive a
 	 *  resume turn whose aside poll already consumes these (no double-wake). */
 	#resumeStrandedIrcAsides(): void {
+		if (this.#restartDrainLeaseCount > 0) {
+			if (this.#isDisposed || this.isStreaming || !this.#irc.hasPending()) return;
+			const records = [...this.#irc.drainDeferredWakes(), ...this.#irc.drainPending()];
+			this.#foldStrandedIrcAsidesIntoContext(records);
+			if (
+				records.length > 0 &&
+				!this.#planModeState?.enabled &&
+				(!this.#advisors.autoResumeSuppressed ||
+					records.some(record => record.role === "custom" && record.customType === "irc:incoming"))
+			) {
+				this.#restartDrainNeedsResume = true;
+			}
+			return;
+		}
 		if (this.#modeExitDrainSuppressionDepth > 0 || this.#isDisposed || this.isStreaming || !this.#irc.hasPending()) {
 			return;
 		}
@@ -1089,6 +1157,22 @@ export class AgentSession {
 	 *  because #canAutoContinueForFollowUp suppresses follow-up auto-resume while a user interrupt is
 	 *  in effect, even though the wake left a provider-valid tail. */
 	#wakeForIrc(records: AgentMessage[]): void {
+		if (this.#restartDrainLeaseCount > 0) {
+			if (this.isStreaming) {
+				this.#irc.queueAside(records);
+			} else {
+				this.#foldStrandedIrcAsidesIntoContext(records);
+				if (
+					records.length > 0 &&
+					!this.#planModeState?.enabled &&
+					(!this.#advisors.autoResumeSuppressed ||
+						records.some(record => record.role === "custom" && record.customType === "irc:incoming"))
+				) {
+					this.#restartDrainNeedsResume = true;
+				}
+			}
+			return;
+		}
 		if (this.#modeExitDrainSuppressionDepth > 0) {
 			this.#irc.queueAside(records);
 			return;
@@ -1319,10 +1403,17 @@ export class AgentSession {
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
+		this.agent.requireQueuedMessagePersistenceAcknowledgement();
+		this.#detachRestartDrainBeforeModelCall = this.agent.addBeforeModelCall(() => {
+			if (this.#restartDrainLeaseCount === 0) return;
+			this.#restartDrainStoppedRun = true;
+			return { stop: true, reason: "Session restart drain" };
+		});
 		this.tokenRate = new TokenRateMeter(text => this.agent.tokenizer.countTokens(text));
 		this.#reseedTokenRate();
 		this.#codeModeState = config.codeModeState ?? {};
 		this.sessionManager = config.sessionManager;
+		this.#restorePendingRestartMessages();
 		this.settings = config.settings;
 		this.#skillDescriptions = config.skillDescriptions ?? new SkillDescriptionCatalog();
 		this.memoryEnabled = config.memoryEnabled ?? true;
@@ -2322,7 +2413,10 @@ export class AgentSession {
 			agentId: job.agentId,
 		}));
 		const delivery = manager.getDeliveryState(ownerFilter);
-		return { running, recent, delivery };
+		const nonJobAgents = runningAgentsFromRegistryOutsideJobs(AgentRegistry.global(), manager, this.#agentId).map(
+			({ id, live }) => ({ id, live }),
+		);
+		return { running, recent, delivery, nonJobAgents };
 	}
 
 	/**
@@ -2406,7 +2500,9 @@ export class AgentSession {
 		return this.#admittedSubmissionsSettled.promise;
 	}
 
-	async #admitSubmission<T>(work: () => Promise<T>): Promise<T> {
+	async #admitSubmission<T>(work: () => Promise<T>, options: { allowDuringRestartDrain?: boolean } = {}): Promise<T> {
+		// Check and count synchronously so a drain cannot slip between the guard and admission.
+		if (this.#restartDrainLeaseCount > 0 && options.allowDuringRestartDrain !== true) throw new AgentBusyError();
 		this.#admittedSubmissionCount++;
 		try {
 			return await work();
@@ -2778,9 +2874,14 @@ export class AgentSession {
 
 	/** Commit messages in emission order without waiting for notification listeners. */
 	#queueMessageEndPersistence(message: AgentMessage, promptGeneration: number): Promise<void> {
+		if (message.role === "custom") {
+			const delivery = this.#pendingNextTurnDeliveryByMessage.get(message);
+			if (delivery) delivery.inputMessageSeen = true;
+		}
 		const key = sessionMessagePersistenceKey(message);
+		const queuedDelivery = this.agent.queuedMessageDeliveryQueue(message);
 		const pending = this.#messageEndPersistenceTail
-			.then(() => this.#persistMessageEnd(message, promptGeneration))
+			.then(() => this.#persistMessageEnd(message, promptGeneration, queuedDelivery))
 			.finally(() => {
 				if (key !== undefined && this.#pendingMessageEndPersistence.get(key) === pending) {
 					this.#pendingMessageEndPersistence.delete(key);
@@ -2789,6 +2890,53 @@ export class AgentSession {
 		if (key !== undefined) this.#pendingMessageEndPersistence.set(key, pending);
 		this.#messageEndPersistenceTail = pending.catch(() => {});
 		return pending;
+	}
+
+	#reservePendingNextTurnMessages(consumed?: CustomMessage[]): CustomMessage[] {
+		if (!consumed) {
+			const pending = this.#pendingNextTurnMessages;
+			this.#pendingNextTurnMessages = [];
+			return pending;
+		}
+
+		const remaining = [...this.#pendingNextTurnMessages];
+		for (const message of consumed) {
+			const index = remaining.indexOf(message);
+			if (index !== -1) remaining.splice(index, 1);
+		}
+		this.#pendingNextTurnMessages = [];
+		return [...consumed, ...remaining];
+	}
+
+	#registerPendingNextTurnDelivery(
+		messages: CustomMessage[],
+		promptGeneration: number,
+	): PendingNextTurnDelivery | undefined {
+		const boundary = messages[messages.length - 1];
+		if (!boundary) return;
+		const delivery: PendingNextTurnDelivery = {
+			boundary,
+			messages,
+			promptGeneration,
+			sessionId: this.sessionManager.getSessionId(),
+			inputMessageSeen: false,
+			settled: false,
+		};
+		for (const message of messages) this.#pendingNextTurnDeliveryByMessage.set(message, delivery);
+		return delivery;
+	}
+
+	#settlePendingNextTurnDelivery(delivery: PendingNextTurnDelivery, committed: boolean): void {
+		if (delivery.settled) return;
+		delivery.settled = true;
+		for (const message of delivery.messages) {
+			if (this.#pendingNextTurnDeliveryByMessage.get(message) === delivery) {
+				this.#pendingNextTurnDeliveryByMessage.delete(message);
+			}
+		}
+		if (!committed && this.sessionManager.getSessionId() === delivery.sessionId) {
+			this.#pendingNextTurnMessages = [...delivery.messages, ...this.#pendingNextTurnMessages];
+		}
 	}
 
 	async #waitForSessionMessagePersistence(message: AgentMessage): Promise<void> {
@@ -2972,12 +3120,152 @@ export class AgentSession {
 		};
 	}
 
-	#persistMessageEnd(message: AgentMessage, promptGeneration: number): void {
+	#persistMessageEnd(
+		message: AgentMessage,
+		promptGeneration: number,
+		queuedDelivery: "steering" | "followUp" | undefined,
+	): void | Promise<void> {
+		const nextTurnDelivery =
+			message.role === "custom" ? this.#pendingNextTurnDeliveryByMessage.get(message) : undefined;
+		if (nextTurnDelivery && nextTurnDelivery.promptGeneration !== promptGeneration) {
+			if (message.role === "custom" && message === nextTurnDelivery.boundary) {
+				this.#settlePendingNextTurnDelivery(nextTurnDelivery, false);
+			}
+			return;
+		}
+		if (message.role === "custom" && nextTurnDelivery && message !== nextTurnDelivery.boundary) return;
+
+		if (this.#promptGeneration !== promptGeneration) {
+			if (message.role === "custom" && nextTurnDelivery) {
+				this.#settlePendingNextTurnDelivery(nextTurnDelivery, false);
+			}
+			if (queuedDelivery === undefined) return;
+
+			// The message_end belongs to a superseded turn, so its transcript
+			// entry must not be appended. Persist the unacknowledged delivery
+			// with the queue checkpoint; only a transcript commit may ack it.
+			return this.sessionManager.appendEntriesAtomically(() => {
+				const queues = this.agent.snapshotPendingQueues();
+				this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, {
+					...queues,
+					pendingNextTurn: [...this.#pendingNextTurnMessages],
+				});
+			});
+		}
+
+		if (message.role === "custom" && nextTurnDelivery) {
+			return this.#persistPendingNextTurnDelivery(message, nextTurnDelivery, promptGeneration, queuedDelivery);
+		}
+
+		if (queuedDelivery === undefined || !this.#restartPendingQueuesCheckpointActive) {
+			const afterCommit = this.#persistMessageEndEntry(message, promptGeneration);
+			if (queuedDelivery !== undefined) this.agent.acknowledgeQueuedMessagePersistence(message);
+			afterCommit?.();
+			return;
+		}
+
+		return this.sessionManager
+			.appendEntriesAtomically(() => {
+				const afterCommit = this.#persistMessageEndEntry(message, promptGeneration);
+				const queues = this.agent.snapshotPendingQueues(message, queuedDelivery);
+				this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, {
+					...queues,
+					pendingNextTurn: [...this.#pendingNextTurnMessages],
+				});
+				return afterCommit;
+			})
+			.then(afterCommit => {
+				this.agent.acknowledgeQueuedMessagePersistence(message);
+				afterCommit?.();
+			});
+	}
+
+	/** Persist hidden input as one batch at the last message, together with
+	 * the remaining queue checkpoint. */
+	#persistPendingNextTurnDelivery(
+		message: CustomMessage,
+		delivery: PendingNextTurnDelivery,
+		promptGeneration: number,
+		queuedDelivery: "steering" | "followUp" | undefined,
+	): void | Promise<void> {
+		const appendDeliveredMessages = (): (() => void) | undefined => {
+			let afterCommit: (() => void) | undefined;
+			for (const pendingMessage of delivery.messages) {
+				const effect = this.#persistMessageEndEntry(pendingMessage, promptGeneration);
+				if (effect) {
+					const previous = afterCommit;
+					if (previous) {
+						afterCommit = () => {
+							previous();
+							effect();
+						};
+					} else {
+						afterCommit = effect;
+					}
+				}
+			}
+			return afterCommit;
+		};
+		const acknowledgeQueuedMessage = (): void => {
+			if (queuedDelivery !== undefined) this.agent.acknowledgeQueuedMessagePersistence(message);
+		};
+
+		if (!this.#restartPendingQueuesCheckpointActive) {
+			let afterCommit: (() => void) | undefined;
+			try {
+				afterCommit = appendDeliveredMessages();
+			} catch (error) {
+				this.#settlePendingNextTurnDelivery(delivery, false);
+				throw error;
+			}
+			acknowledgeQueuedMessage();
+			this.#settlePendingNextTurnDelivery(delivery, true);
+			afterCommit?.();
+			return;
+		}
+
+		let committed = false;
+		return this.sessionManager
+			.appendEntriesAtomically(() => {
+				if (
+					this.#promptGeneration !== promptGeneration ||
+					this.sessionManager.getSessionId() !== delivery.sessionId
+				) {
+					return;
+				}
+				const afterCommit = appendDeliveredMessages();
+				const queues =
+					queuedDelivery === undefined
+						? this.agent.snapshotPendingQueues()
+						: this.agent.snapshotPendingQueues(message, queuedDelivery);
+				this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, {
+					...queues,
+					pendingNextTurn: [...this.#pendingNextTurnMessages],
+				});
+				committed = true;
+				return afterCommit;
+			})
+			.then(
+				afterCommit => {
+					if (!committed) {
+						this.#settlePendingNextTurnDelivery(delivery, false);
+						return;
+					}
+					acknowledgeQueuedMessage();
+					this.#settlePendingNextTurnDelivery(delivery, true);
+					afterCommit?.();
+				},
+				error => {
+					this.#settlePendingNextTurnDelivery(delivery, false);
+					throw error;
+				},
+			);
+	}
+
+	#persistMessageEndEntry(message: AgentMessage, promptGeneration: number): (() => void) | undefined {
 		// Session transitions may replace the transcript before a queued commit
 		// runs. Never append the previous conversation to the replacement session.
 		if (this.#promptGeneration !== promptGeneration) {
-			// The message has already left the agent queue. If it was a deferred TTSR
-			// delivery, queue cleanup cannot clear its reservation.
 			if (message.role === "custom" && message.customType === "ttsr-injection") {
 				this.#ttsr.releaseDeferredReservationFromDetails(message.details);
 			}
@@ -3000,7 +3288,7 @@ export class AgentSession {
 				);
 			}
 			if (message.role === "custom" && message.customType === "ttsr-injection") {
-				this.#ttsr.markInjectedFromDetails(message.details);
+				return () => this.#ttsr.markInjectedFromDetails(message.details);
 			}
 			return;
 		}
@@ -3992,6 +4280,11 @@ export class AgentSession {
 		});
 		this.#schedulePostPromptTask(
 			async signal => {
+				if (this.#restartDrainLeaseCount > 0) {
+					this.#restartDrainNeedsResume = true;
+					this.#skipAgentContinue("session-unavailable", request);
+					return;
+				}
 				// Defense in depth: if compaction/handoff slipped onto the post-prompt queue
 				// alongside us (e.g. via a scheduler we don't own), refuse to start a fresh
 				// streaming turn — agent.continue() here would race the handoff's session
@@ -4101,6 +4394,10 @@ export class AgentSession {
 		this.#schedulePostPromptTask(
 			async signal => {
 				await Promise.resolve();
+				if (this.#restartDrainLeaseCount > 0) {
+					this.#restartDrainNeedsResume = true;
+					return;
+				}
 				if (signal.aborted) return;
 				if (this.agent.hasQueuedMessages()) {
 					this.#scheduleAgentContinue({
@@ -4733,6 +5030,18 @@ export class AgentSession {
 		this.#detachUsageBeforeQueueDequeue = undefined;
 		this.#detachUsageBeforeModelCall?.();
 		this.#detachUsageBeforeModelCall = undefined;
+		this.#detachRestartDrainBeforeModelCall?.();
+		this.#detachRestartDrainBeforeModelCall = undefined;
+		this.#restartDrainLeaseCount = 0;
+		this.#restartDrainGeneration++;
+		this.#restartDrainQuiescence = undefined;
+		this.#restartDrainStoppedRun = false;
+		this.#restartDrainNeedsResume = false;
+		if (this.#restartDrainReleaseWaiters.size > 0) {
+			const error = new Error("AgentSession disposed before restart drain was released");
+			for (const waiter of this.#restartDrainReleaseWaiters) waiter.reject(error);
+			this.#restartDrainReleaseWaiters.clear();
+		}
 		if (this.agent.prepareQueuedMessages === this.#prepareQueuedUserMessages) {
 			this.agent.prepareQueuedMessages = undefined;
 		}
@@ -5369,6 +5678,186 @@ export class AgentSession {
 
 	get isAborting(): boolean {
 		return this.agent.isAborting;
+	}
+
+	/** True while one or more restart callers hold drain leases. */
+	get isRestartDraining(): boolean {
+		return this.#restartDrainLeaseCount > 0;
+	}
+
+	/** Resolve when all current drain leases release; disposal rejects pending waiters. */
+	waitForRestartDrainRelease(): Promise<void> {
+		if (this.#isDisposed) {
+			return Promise.reject(new Error("AgentSession disposed before restart drain was released"));
+		}
+		if (!this.isRestartDraining) return Promise.resolve();
+		const waiter = Promise.withResolvers<void>();
+		this.#restartDrainReleaseWaiters.add({
+			resolve: () => waiter.resolve(undefined),
+			reject: reason => waiter.reject(reason),
+		});
+		return waiter.promise;
+	}
+
+	/**
+	 * Close prompt admission and stop this session after its current provider/tool
+	 * batch. Queued input and completed side effects are persisted before the
+	 * lease reports quiescence; other AgentSession instances remain independent.
+	 */
+	beginRestartDrain(): RestartDrainLease {
+		if (this.#isDisposed) throw new Error("Cannot drain a disposed session for restart");
+		if (this.#restartDrainLeaseCount === 0) {
+			this.#restartDrainGeneration++;
+			this.#restartDrainQuiescence = undefined;
+			this.#restartDrainStoppedRun = false;
+			this.#restartDrainNeedsResume = false;
+		}
+		const generation = this.#restartDrainGeneration;
+		const wasRunning = this.isStreaming;
+		this.#restartDrainLeaseCount++;
+		let released = false;
+		return {
+			wasRunning,
+			waitForQuiescence: () => {
+				if (released) return Promise.reject(new Error("Restart drain lease has already been released"));
+				this.#restartDrainQuiescence ??= this.#waitForRestartDrainQuiescence(generation);
+				return this.#restartDrainQuiescence;
+			},
+			release: () => {
+				if (released) return;
+				released = true;
+				if (this.#isDisposed || generation !== this.#restartDrainGeneration) return;
+				if (--this.#restartDrainLeaseCount > 0) return;
+				this.#restartDrainGeneration++;
+				this.#restartDrainQuiescence = undefined;
+				const resume = this.#restartDrainStoppedRun || this.#restartDrainNeedsResume;
+				this.#restartDrainStoppedRun = false;
+				this.#restartDrainNeedsResume = false;
+				if (this.#isDisposed) return;
+				if (resume) {
+					if (!this.#abortInProgress && !this.agent.isAborting && !this.#advisors.autoResumeSuppressed) {
+						if (!agentPauseGate.paused) this.#scheduleAgentContinue({ source: "restart-drain-cancelled" });
+					}
+					this.#resolveRestartDrainReleaseWaiters();
+					return;
+				}
+				this.#scheduleIdleQueueDrain();
+				this.#resumeStrandedIrcAsides();
+				this.#resolveRestartDrainReleaseWaiters();
+			},
+		};
+	}
+	#resolveRestartDrainReleaseWaiters(): void {
+		for (const waiter of this.#restartDrainReleaseWaiters) waiter.resolve();
+		this.#restartDrainReleaseWaiters.clear();
+	}
+
+	async #waitForRestartDrainQuiescence(generation: number): Promise<void> {
+		const assertLease = (): void => {
+			if (this.#restartDrainLeaseCount === 0 || generation !== this.#restartDrainGeneration) {
+				throw new Error("Restart drain lease was released before quiescence completed");
+			}
+		};
+		const paused = Promise.withResolvers<never>();
+		const rejectForPause = (): void => {
+			paused.reject(
+				new Error(
+					"Restart drain blocked by the process-wide user pause; resume the existing pause and retry. The drain will not resume it.",
+				),
+			);
+		};
+		const detachPause = agentPauseGate.onChange(isPaused => {
+			if (isPaused && this.isStreaming) rejectForPause();
+		});
+		if (agentPauseGate.paused && this.isStreaming) rejectForPause();
+		try {
+			await Promise.race([
+				(async () => {
+					await this.waitForAdmittedSubmissions();
+					assertLease();
+					await this.waitForIdle();
+					assertLease();
+					await this.#settleRestartDrainEffects(generation);
+					assertLease();
+					await this.waitForIdle();
+					assertLease();
+					await this.#bash.flushPending();
+					this.#eval.flushPending();
+					this.#resumeStrandedIrcAsides();
+					await this.#persistPendingRestartMessages();
+					assertLease();
+					await this.yieldQueue.flush("idle");
+					if (this.yieldQueue.has()) {
+						throw new Error(
+							"Restart drain blocked: a yield receipt remains in memory because it cannot be delivered by the idle flush.",
+						);
+					}
+					await this.waitForIdle();
+					assertLease();
+					await this.#drainInFlightEventHandlers();
+					assertLease();
+					await this.settleInFlightMessagePersistence();
+					assertLease();
+					await this.sessionManager.flush();
+					assertLease();
+				})(),
+				paused.promise,
+			]);
+		} finally {
+			detachPause();
+		}
+	}
+
+	async #settleRestartDrainEffects(generation: number): Promise<void> {
+		const manager = this.#asyncJobManager;
+		if (!manager || !this.#agentId) return;
+		const filter = { ownerId: this.#agentId };
+		for (;;) {
+			if (this.#restartDrainLeaseCount === 0 || generation !== this.#restartDrainGeneration) {
+				throw new Error("Restart drain lease was released before side effects settled");
+			}
+			const effects = manager.getRunningJobs(filter).filter(job => job.type !== "task");
+			if (effects.length > 0) await Promise.all(effects.map(job => job.promise));
+			if (manager.hasPendingDeliveries(filter)) {
+				if (!(await manager.drainDeliveries({ filter }))) {
+					throw new Error("Restart drain blocked: an owner-scoped background-effect receipt did not settle");
+				}
+				continue;
+			}
+			if (manager.getRunningJobs(filter).some(job => job.type !== "task")) continue;
+			return;
+		}
+	}
+
+	async #persistPendingRestartMessages(): Promise<void> {
+		const pendingNextTurn = [...this.#pendingNextTurnMessages];
+		const queues = this.agent.snapshotPendingQueues();
+		this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, {
+			...queues,
+			pendingNextTurn,
+		});
+		this.#restartPendingQueuesCheckpointActive = true;
+		if (pendingNextTurn.length > 0) this.#restartDrainNeedsResume = true;
+		await this.sessionManager.ensureOnDisk();
+		if (
+			!this.sessionManager.isSessionOnDisk() &&
+			(queues.steering.length > 0 || queues.followUp.length > 0 || pendingNextTurn.length > 0)
+		) {
+			throw new Error("Restart drain blocked: the pending queue checkpoint is not resumable on disk.");
+		}
+	}
+
+	#restorePendingRestartMessages(): void {
+		const branch = this.sessionManager.getBranch();
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry?.type !== "custom" || entry.customType !== RESTART_PENDING_QUEUES_CUSTOM_TYPE) continue;
+			if (!isRestartPendingQueues(entry.data)) return;
+			this.agent.replaceQueues(entry.data.steering, entry.data.followUp);
+			this.#pendingNextTurnMessages = entry.data.pendingNextTurn;
+			this.#restartPendingQueuesCheckpointActive = true;
+			return;
+		}
 	}
 
 	/**
@@ -6863,6 +7352,7 @@ export class AgentSession {
 		expandedText: string,
 		options?: Pick<PromptOptions, "toolChoice" | "images" | "skipCompactionCheck"> & {
 			prependMessages?: AgentMessage[];
+			consumeNextTurnMessages?: CustomMessage[];
 			skipPostPromptRecoveryWait?: boolean;
 			acceptTerminalEmptyStop?: boolean;
 		},
@@ -6876,6 +7366,7 @@ export class AgentSession {
 		this.#promptSequence++;
 		const setupAbort = new AbortController();
 		this.#promptSetupAbortController = setupAbort;
+		let pendingNextTurnDelivery: PendingNextTurnDelivery | undefined;
 		try {
 			await this.#recovery.maybeRestoreRetryFallbackPrimary();
 			if (!(await this.#runUsageAwarePreflightForNextModelCall())) return false;
@@ -6956,12 +7447,14 @@ export class AgentSession {
 			// promotion/summary can rebuild the base prompt and clear a roster delta
 			// it subsumes, avoiding a contradictory materialized notice.
 			const xdevMountNoticeIndex = messages.length;
+			// Keep restored hidden inputs reserved until their last message commits with
+			// the updated checkpoint.
+			const pendingNextTurnMessages = this.#reservePendingNextTurnMessages(options?.consumeNextTurnMessages);
+			pendingNextTurnDelivery = this.#registerPendingNextTurnDelivery(pendingNextTurnMessages, generation);
 			messages.push(message);
-			// Inject any pending "nextTurn" messages as context alongside the user message
-			for (const msg of this.#pendingNextTurnMessages) {
+			for (const msg of pendingNextTurnMessages.slice(options?.consumeNextTurnMessages?.length ?? 0)) {
 				messages.push(msg);
 			}
-			this.#pendingNextTurnMessages = [];
 
 			// Auto-read @filepath mentions
 			const fileMentions = extractFileMentions(expandedText);
@@ -7082,6 +7575,9 @@ export class AgentSession {
 			return true;
 		} finally {
 			// The per-turn before_agent_start override lives only for this turn.
+			if (pendingNextTurnDelivery && !pendingNextTurnDelivery.inputMessageSeen) {
+				this.#settlePendingNextTurnDelivery(pendingNextTurnDelivery, false);
+			}
 			this.#tools.clearTurnSystemPromptOverride();
 			this.#usagePreflightReadyForNextModelCall = false;
 			this.#endInFlight();
@@ -7427,6 +7923,7 @@ export class AgentSession {
 	#scheduleQueuedMessageDrain(): void {
 		if (
 			this.#queuedMessageDrainScheduled ||
+			this.#restartDrainLeaseCount > 0 ||
 			this.#modeExitDrainSuppressionDepth > 0 ||
 			this.#queuedMessageDrainBlocked ||
 			!this.#canAutoContinueForFollowUp() ||
@@ -7440,6 +7937,7 @@ export class AgentSession {
 			shouldContinue: () => {
 				this.#queuedMessageDrainScheduled = false;
 				return (
+					this.#restartDrainLeaseCount === 0 &&
 					this.#modeExitDrainSuppressionDepth === 0 &&
 					this.#canAutoContinueForFollowUp() &&
 					this.agent.hasQueuedMessages()
@@ -7506,6 +8004,13 @@ export class AgentSession {
 		this.#scheduledHiddenNextTurnGeneration = generation;
 		this.#schedulePostPromptTask(
 			async () => {
+				if (this.#restartDrainLeaseCount > 0) {
+					if (this.#scheduledHiddenNextTurnGeneration === generation) {
+						this.#scheduledHiddenNextTurnGeneration = undefined;
+					}
+					this.#restartDrainNeedsResume = true;
+					return;
+				}
 				if (this.#scheduledHiddenNextTurnGeneration === generation) {
 					this.#scheduledHiddenNextTurnGeneration = undefined;
 				}
@@ -7535,7 +8040,6 @@ export class AgentSession {
 		}
 
 		const queuedMessages = [...this.#pendingNextTurnMessages];
-		this.#pendingNextTurnMessages = [];
 		const message = queuedMessages[queuedMessages.length - 1];
 		if (!message) {
 			return;
@@ -7543,15 +8047,11 @@ export class AgentSession {
 
 		const prependMessages = queuedMessages.slice(0, -1);
 		const textContent = this.#getCustomMessageTextContent(message);
-		try {
-			await this.#promptWithMessage(message, textContent, {
-				prependMessages,
-				skipPostPromptRecoveryWait: true,
-			});
-		} catch (error) {
-			this.#pendingNextTurnMessages = [...queuedMessages, ...this.#pendingNextTurnMessages];
-			throw error;
-		}
+		await this.#promptWithMessage(message, textContent, {
+			prependMessages,
+			consumeNextTurnMessages: queuedMessages,
+			skipPostPromptRecoveryWait: true,
+		});
 	}
 
 	#getCustomMessageTextContent(message: Pick<CustomMessage, "content">): string {
@@ -7680,7 +8180,9 @@ export class AgentSession {
 			acceptTerminalEmptyStop?: boolean;
 		},
 	): Promise<boolean> {
-		return this.#admitSubmission(() => this.#sendCustomMessage(message, options));
+		return this.#admitSubmission(() => this.#sendCustomMessage(message, options), {
+			allowDuringRestartDrain: options?.deliverAs === "nextTurn" && options?.triggerTurn !== true,
+		});
 	}
 
 	async #sendCustomMessage<T = unknown>(
@@ -8547,6 +9049,14 @@ export class AgentSession {
 					type: "session_switch",
 					reason: "new",
 					previousSessionFile,
+				});
+			}
+			try {
+				await this.#sessionSwitchReconciler?.();
+			} catch (error) {
+				logger.warn("Failed to reconcile session mode after new session", {
+					sessionFile: this.sessionFile,
+					error: String(error),
 				});
 			}
 
