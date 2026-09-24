@@ -741,24 +741,67 @@ describe("YieldTool", () => {
 		await expect(tool.execute("call-empty-type", { type: [] } as never)).rejects.toThrow(
 			"type must be a string or non-empty array of strings",
 		);
-		await expect(tool.execute("call-both", { data: { ok: true }, error: "boom" } as never)).rejects.toThrow(
-			"yield cannot contain both data and error",
+		const bothError = await tool.execute("call-both", { data: { ok: true }, error: "boom" } as never).catch(err => err);
+		expect(bothError).toBeInstanceOf(Error);
+		expect(String(bothError.message)).toContain("Resubmit exactly one outcome");
+		expect(String(bothError.message)).toContain(
+			'For success, resend the same payload without `error`, keeping the same `type` if you sent one: `{"data":<your output>}`',
 		);
+		expect(String(bothError.message)).toContain('For failure, resend only `{"error":"boom"}`');
 		await expect(tool.execute("call-object-error", { error: { message: "boom" } } as never)).rejects.toThrow(
 			"error must be a string",
 		);
 	});
 
-	it("accepts data alongside an empty-string error (non-strict OpenAI-compatible backends)", async () => {
+	it("accepts data alongside empty or placeholder errors from non-strict OpenAI-compatible backends", async () => {
 		const tool = new YieldTool(createSession());
-		const result = await tool.execute("call-empty-error", { type: "result", data: { ok: true }, error: "" } as never);
-		expect(result.details?.status).toBe("success");
-		expect(result.details?.data).toEqual({ ok: true });
-		expect(result.details?.error).toBeUndefined();
+		for (const error of ["", "   ", "unused", "placeholder", "n/a"]) {
+			const result = await tool.execute(`call-placeholder-error-${String(error).trim() || "empty"}`, {
+				type: "result",
+				data: { ok: true },
+				error,
+			} as never);
+			expect(result.details?.status).toBe("success");
+			expect(result.details?.data).toEqual({ ok: true });
+			expect(result.details?.error).toBeUndefined();
+		}
 
 		const failure = await tool.execute("call-only-empty-error", { error: "" } as never).catch(err => err);
 		expect(failure).toBeInstanceOf(Error);
 		expect(String(failure.message)).toContain("yield must contain either `data` or `error`");
+
+		const errorOnly = await tool.execute("call-only-placeholder-error", { error: "unused" } as never);
+		expect(errorOnly.details?.status).toBe("aborted");
+		expect(errorOnly.details?.error).toBe("unused");
+	});
+
+	it("rejects data alongside ambiguous error text with exact resend guidance", async () => {
+		const tool = new YieldTool(createSession());
+		const failure = await tool
+			.execute("call-ambiguous-error", { type: "result", data: { ok: true }, error: "invalid output shape" } as never)
+			.catch(err => err);
+		expect(failure).toBeInstanceOf(Error);
+		expect(String(failure.message)).toContain("non-placeholder error");
+		expect(String(failure.message)).toContain(
+			'For success, resend the same payload without `error`, keeping the same `type` if you sent one: `{"type":"result","data":<your output>}`',
+		);
+		expect(String(failure.message)).toContain('For failure, resend only `{"error":"invalid output shape"}`');
+	});
+
+	it("preserves incremental yield type in data/error conflict retry guidance", async () => {
+		const tool = new YieldTool(createSession());
+		const failure = await tool
+			.execute("call-incremental-conflict", {
+				type: ["findings"],
+				data: { title: "real finding" },
+				error: "contradictory source",
+			} as never)
+			.catch(err => err);
+		expect(failure).toBeInstanceOf(Error);
+		expect(String(failure.message)).toContain(
+			'For success, resend the same payload without `error`, keeping the same `type` if you sent one: `{"type":["findings"],"data":<your output>}`',
+		);
+		expect(String(failure.message)).toContain('For failure, resend only `{"error":"contradictory source"}`');
 	});
 
 	it("aborts instead of throwing forever after repeated untyped empty results", async () => {
