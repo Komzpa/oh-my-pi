@@ -3,6 +3,7 @@ import {
 	forecastTodoPlan,
 	formatTaskForecast,
 	formatTaskForecastDisplay,
+	formatPlanForecastDisplay,
 	validateTodoDependencies,
 	type TodoEstimate,
 	type TodoScheduleInput,
@@ -68,11 +69,25 @@ it("shows worked minutes and current likely estimate in the TODO tree", () => {
 	done.schedule!.finishedAt = now - 5 * 60_000;
 	const rows = forecastTodoPlan(phases(active, done, task("pending", 600)), { now }).rows;
 	const shown = Object.fromEntries(rows.map(row => [row.content, formatTaskForecastDisplay(row, now)]));
-	expect(shown.active).toContain("work 7m / estimate 10m");
-	expect(shown.active).toContain("reestimated 2×");
-	expect(shown.done).toContain("work 4m / estimate 10m");
-	expect(shown.pending).toContain("estimate 10m");
-	expect(shown.pending).not.toContain("work ");
+	expect(shown.active).toContain("7m / 10m");
+	expect(shown.active).not.toContain("reestimated");
+	expect(shown.done).toContain("4m / 10m");
+	expect(shown.pending).toContain("10m");
+	expect(shown.pending).not.toContain(" / ");
+});
+
+it("keeps scheduling method details out of rendered TODO lines", () => {
+	const now = Date.parse("2026-09-24T22:00:00Z");
+	const item = task("Merge current main", 600, { status: "in_progress", owner: "Main" });
+	item.schedule!.startedAt = now - 4 * 60_000;
+	item.schedule!.reestimateCount = 5;
+	const plan = forecastTodoPlan(phases(item), { now, deadlineAt: now - 9 * 60_000 });
+	const lines = [formatPlanForecastDisplay(plan, now), formatTaskForecastDisplay(plan.rows[0]!, now, true)];
+	expect(lines[0]).toStartWith("ETA ");
+	expect(lines[0]).toContain("overdue 0h9m");
+	expect(lines[1]).toContain(" · 4m / 10m · critical · reestimated 5×");
+	expect(lines[1]).not.toContain("owner Main");
+	for (const line of lines) expect(line).not.toMatch(/fixed-path|P95|CPM|ETA ETA|confidence|critical no/i);
 });
 
 describe("todo schedule forecast", () => {
