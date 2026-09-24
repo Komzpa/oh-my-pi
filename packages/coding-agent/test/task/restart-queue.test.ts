@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
-import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/hub";
+import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
