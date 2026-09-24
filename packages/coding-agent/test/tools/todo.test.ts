@@ -330,6 +330,29 @@ describe("TodoTool operations", () => {
 		expect(view.details?.phases[0]?.tasks.find(task => task.content === "a")?.status).not.toBe("completed");
 	});
 
+	it("an empty batch or a done/drop without a target changes nothing", async () => {
+		const tool = new TodoTool(createSession());
+		await tool.execute("call-1", { op: "init", list: [{ phase: "Work", items: ["a", "b"] }] });
+		for (const [id, args] of [
+			["call-2", { op: "done", items: [] }],
+			["call-3", { op: "drop", items: [] }],
+			["call-4", { op: "done" }],
+			["call-5", { op: "drop" }],
+		] as const) {
+			const outcome = await tool.execute(id, args).then(
+				result => JSON.stringify(result.content),
+				error => String(error),
+			);
+			expect(outcome).toMatch(/items is empty|needs a task, a phase, or items/);
+		}
+		const view = await tool.execute("call-6", { op: "view" });
+		expect(view.details?.phases[0]?.tasks.map(task => task.status)).not.toContain("completed");
+		expect(view.details?.phases[0]?.tasks.map(task => task.status)).not.toContain("abandoned");
+		// Neighbour: a whole phase can still be closed by naming it.
+		const phase = await tool.execute("call-7", { op: "done", phase: "Work" });
+		expect(phase.details?.phases[0]?.tasks.every(task => task.status === "completed")).toBe(true);
+	});
+
 	it("blocking a phase leaves completed/abandoned tasks closed", async () => {
 		const tool = new TodoTool(createSession());
 		await tool.execute("call-1", { op: "init", list: [{ phase: "Work", items: ["a", "b", "c"] }] });

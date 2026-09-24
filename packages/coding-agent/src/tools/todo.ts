@@ -404,6 +404,16 @@ function resolvePhaseOrError(phases: TodoPhase[], name: string | undefined, erro
 /** `done`/`drop` accept a batch of exact task contents in `items`, so closing or pruning many
  *  rows is one call instead of one round trip per row. */
 function getBatchTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoItem[] {
+	// Closing or dropping never falls back to "every row": an empty batch or a call with no target
+	// is a mistake, not a request to finish the whole plan.
+	if (entry.items && entry.items.length === 0 && !entry.task) {
+		errors.push("items is empty; name the rows to close or drop");
+		return [];
+	}
+	if (!entry.items && !entry.task && !entry.phase) {
+		errors.push("done/drop needs a task, a phase, or items");
+		return [];
+	}
 	if (!entry.items || entry.items.length === 0) return getTaskTargets(phases, entry, errors);
 	const names = entry.task ? [entry.task, ...entry.items] : entry.items;
 	const hits = names.map(name => resolveTaskOrError(phases, name, errors)?.task);
