@@ -4099,8 +4099,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			segment.tasks.push(entry.task);
 		}
 
-		// Repeated phase headers preserve the original labels when dependency
-		// order moves back to a previously displayed phase.
+		const displayedPhases = new Set<number>();
 		const spineGlyphs: string[] = [];
 		const contentLines: string[] = [];
 		const contentOwners: (string | undefined)[] = [];
@@ -4119,6 +4118,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		for (const segment of segments) {
 			const { phase, phaseIndex } = segment;
 			const label = multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name;
+			const firstSegment = !displayedPhases.has(phaseIndex);
+			displayedPhases.add(phaseIndex);
 			const done = phase.tasks.filter(isClosedTodo).length;
 			const progress = ` · ${done}/${phase.tasks.length}`;
 			const header =
@@ -4131,11 +4132,22 @@ export class InteractiveMode implements InteractiveModeContext {
 					expanded,
 					itemType: "task",
 					renderItem: todo =>
-						this.#formatForecastTodoLine(todo, "", isMatched(todo), now, workers.byTask.get(todo)),
+						this.#formatForecastTodoLine(
+							todo,
+							firstSegment ? "" : `${label}: `,
+							isMatched(todo),
+							now,
+							workers.byTask.get(todo),
+						),
 				},
 				theme,
 			);
-			pushBlock([header, ...tasks], [undefined, ...segment.tasks.map(task => workers.byTask.get(task)?.id)]);
+			pushBlock(
+				firstSegment ? [header, ...tasks] : tasks,
+				firstSegment
+					? [undefined, ...segment.tasks.map(task => workers.byTask.get(task)?.id)]
+					: segment.tasks.map(task => workers.byTask.get(task)?.id),
+			);
 		}
 		if (!expanded && hiddenTasks > 0) pushBlock(theme.fg("muted", formatMoreItems(hiddenTasks, "todo")));
 		if (workers.unassigned.length > 0) {
