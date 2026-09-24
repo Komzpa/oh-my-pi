@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -175,6 +176,65 @@ describe("AgentSession restart queue round trip", () => {
 		expect(reopenedWithoutQueue.agent.peekSteeringQueue()).toEqual([]);
 		expect(reopenedWithoutQueue.agent.peekFollowUpQueue()).toEqual([]);
 		expect(currentManager().buildSessionContext().messages).toEqual(originalTranscript);
+	});
+
+	it("persists IRC, extension and prompt input arriving during a drain for delivery after restart", async () => {
+		if (!sessionManager) throw new Error("Expected a session manager");
+		appendPriorAssistant(sessionManager);
+		session = createSession(sessionManager);
+		const lease = session.beginRestartDrain();
+		const ircOutcome = await session.deliverIrcMessage({
+			id: "drain-irc",
+			from: "peer",
+			to: MAIN_AGENT_ID,
+			body: "peer update",
+			ts: Date.now(),
+		});
+		const extensionOutcome = await session.sendCustomMessage(
+			{ customType: "extension-during-drain", content: "extension update", display: true },
+			{ deliverAs: "aside", triggerTurn: true },
+		);
+		const promptOutcome = await session.promptCustomMessage({
+			customType: "prompt-during-drain",
+			content: "prompt update",
+			display: false,
+		});
+		expect(ircOutcome).toBe("injected");
+		expect(extensionOutcome).toBe(false);
+		expect(promptOutcome).toBe(true);
+		await lease.waitForQuiescence();
+		const sessionFile = currentManager().getSessionFile();
+		if (!sessionFile) throw new Error("Expected durable session file");
+		expect(restartQueueCheckpoints(currentManager()).at(-1)).toMatchObject({
+			data: {
+				followUp: [
+					{ customType: "irc:incoming" },
+					{ customType: "extension-during-drain" },
+					{ customType: "prompt-during-drain" },
+				],
+			},
+		});
+		await session.dispose();
+		session = undefined;
+		sessionManager = undefined;
+
+		const restored = await reopenSession(sessionFile, [
+			{ content: ["received IRC"] },
+			{ content: ["received extension"] },
+			{ content: ["received prompt"] },
+		]);
+		expect(
+			restored.agent
+				.peekFollowUpQueue()
+				.map(message => (message.role === "custom" ? message.customType : message.role)),
+		).toEqual(["irc:incoming", "extension-during-drain", "prompt-during-drain"]);
+		await restored.agent.continue();
+		await restored.settleInFlightMessagePersistence();
+		await currentManager().flush();
+
+		for (const customType of ["irc:incoming", "extension-during-drain", "prompt-during-drain"]) {
+			expect(countCustomMessageEntries(currentManager(), customType)).toBe(1);
+		}
 	});
 
 	it("does not resurrect a delivered queued message after a second reopen", async () => {

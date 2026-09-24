@@ -1136,15 +1136,7 @@ export class AgentSession implements SettingsScope {
 		if (this.#restartDrainLeaseCount > 0) {
 			if (this.#isDisposed || this.isStreaming || !this.#irc.hasPending()) return;
 			const records = [...this.#irc.drainDeferredWakes(), ...this.#irc.drainPending()];
-			this.#foldStrandedIrcAsidesIntoContext(records);
-			if (
-				records.length > 0 &&
-				!this.#planModeState?.enabled &&
-				(!this.#advisors.autoResumeSuppressed ||
-					records.some(record => record.role === "custom" && record.customType === "irc:incoming"))
-			) {
-				this.#restartDrainNeedsResume = true;
-			}
+			for (const record of records) this.agent.followUp(record);
 			return;
 		}
 		if (this.#modeExitDrainSuppressionDepth > 0 || this.#isDisposed || this.isStreaming || !this.#irc.hasPending()) {
@@ -1230,19 +1222,7 @@ export class AgentSession implements SettingsScope {
 	 *  in effect, even though the wake left a provider-valid tail. */
 	#wakeForIrc(records: AgentMessage[]): void {
 		if (this.#restartDrainLeaseCount > 0) {
-			if (this.isStreaming) {
-				this.#irc.queueAside(records);
-			} else {
-				this.#foldStrandedIrcAsidesIntoContext(records);
-				if (
-					records.length > 0 &&
-					!this.#planModeState?.enabled &&
-					(!this.#advisors.autoResumeSuppressed ||
-						records.some(record => record.role === "custom" && record.customType === "irc:incoming"))
-				) {
-					this.#restartDrainNeedsResume = true;
-				}
-			}
+			for (const record of records) this.agent.followUp(record);
 			return;
 		}
 		if (this.#modeExitDrainSuppressionDepth > 0) {
@@ -1534,6 +1514,8 @@ export class AgentSession implements SettingsScope {
 			sessionManager: this.sessionManager,
 			isDisposed: () => this.#isDisposed,
 			isStreaming: () => this.isStreaming,
+			isRestartDraining: () => this.isRestartDraining,
+			queueForRestart: record => this.#queueRestartMessage(record),
 			planModeEnabled: () => this.#planModeState?.enabled === true,
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			wakeForIrc: records => this.#wakeForIrc(records),
@@ -6033,6 +6015,7 @@ export class AgentSession implements SettingsScope {
 	}
 
 	async #persistPendingRestartMessages(): Promise<void> {
+		this.#resumeStrandedIrcAsides();
 		const pendingNextTurn = [...this.#pendingNextTurnMessages];
 		const queues = this.agent.snapshotPendingQueues();
 		this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, {
@@ -6040,7 +6023,9 @@ export class AgentSession implements SettingsScope {
 			pendingNextTurn,
 		});
 		this.#restartPendingQueuesCheckpointActive = true;
-		if (pendingNextTurn.length > 0) this.#restartDrainNeedsResume = true;
+		if (pendingNextTurn.length > 0 || queues.steering.length > 0 || queues.followUp.length > 0) {
+			this.#restartDrainNeedsResume = true;
+		}
 		await this.sessionManager.ensureOnDisk();
 		if (
 			!this.sessionManager.isSessionOnDisk() &&
@@ -6048,6 +6033,12 @@ export class AgentSession implements SettingsScope {
 		) {
 			throw new Error("Restart drain blocked: the pending queue checkpoint is not resumable on disk.");
 		}
+	}
+
+	async #queueRestartMessage(message: CustomMessage): Promise<void> {
+		this.agent.followUp(message);
+		await this.#persistPendingRestartMessages();
+		await this.sessionManager.flush();
 	}
 
 	#restorePendingRestartMessages(): void {
@@ -7097,7 +7088,22 @@ export class AgentSession implements SettingsScope {
 	 * the ACP agent) use this to know whether to expect an `agent_end` event.
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
-		return this.#admitSubmission(() => this.#prompt(text, options));
+		return this.#admitSubmission(
+			async () => {
+				if (this.#restartDrainLeaseCount > 0) {
+					await this.followUp(text, options?.images, {
+						attribution: options?.attribution,
+						expandPromptTemplates: options?.expandPromptTemplates,
+						synthetic: options?.synthetic,
+					});
+					await this.#persistPendingRestartMessages();
+					await this.sessionManager.flush();
+					return true;
+				}
+				return this.#prompt(text, options);
+			},
+			{ allowDuringRestartDrain: true },
+		);
 	}
 
 	async #prompt(text: string, options?: PromptOptions): Promise<boolean> {
@@ -7347,7 +7353,21 @@ export class AgentSession implements SettingsScope {
 			queueOnly?: boolean;
 		},
 	): Promise<boolean> {
-		return this.#admitSubmission(() => this.#promptCustomMessage(message, options));
+		return this.#admitSubmission(
+			async () => {
+				if (this.#restartDrainLeaseCount > 0) {
+					const normalized = await this.#normalizeAgentMessageImages({
+						role: "custom",
+						...message,
+						timestamp: Date.now(),
+					});
+					await this.#queueRestartMessage(normalized);
+					return true;
+				}
+				return this.#promptCustomMessage(message, options);
+			},
+			{ allowDuringRestartDrain: true },
+		);
 	}
 
 	async #promptCustomMessage<T = unknown>(
@@ -8415,7 +8435,7 @@ export class AgentSession implements SettingsScope {
 		},
 	): Promise<boolean> {
 		return this.#admitSubmission(() => this.#sendCustomMessage(message, options), {
-			allowDuringRestartDrain: options?.deliverAs === "nextTurn" && options?.triggerTurn !== true,
+			allowDuringRestartDrain: true,
 		});
 	}
 
@@ -8479,6 +8499,10 @@ export class AgentSession implements SettingsScope {
 			timestamp: Date.now(),
 		};
 		const normalizedAppMessage = await this.#normalizeAgentMessageImages(appMessage);
+		if (this.#restartDrainLeaseCount > 0 && (options?.deliverAs !== "nextTurn" || options.triggerTurn === true)) {
+			await this.#queueRestartMessage(normalizedAppMessage);
+			return false;
+		}
 		if (this.isStreaming) {
 			// Queued into a turn the agent owns: that turn holds the session. Busy only
 			// from another prompt's setup claims nothing (that prompt decides).

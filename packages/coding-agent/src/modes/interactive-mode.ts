@@ -136,6 +136,7 @@ import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-pro
 import { labelEchoesHandle } from "../task/label";
 import {
 	createRestartQueueController,
+	isRestartResumePending,
 	type RestartControlIdentity,
 	type RestartControlRequest,
 	type RestartControlSnapshot,
@@ -1964,7 +1965,14 @@ export class InteractiveMode implements InteractiveModeContext {
 				await this.#restartControlSessionChanged();
 			}
 		});
-		await logger.time("InteractiveMode.init:reconcileMode", () => this.#reconcileModeFromSession());
+		const restartResumePending = isRestartResumePending(
+			this.sessionManager.getBranch(),
+			this.sessionManager.getSessionId(),
+			this.#restartInstanceId,
+		);
+		await logger.time("InteractiveMode.init:reconcileMode", () =>
+			this.#reconcileModeFromSession({ preserveActiveGoal: restartResumePending }),
+		);
 
 		// Brand-new sessions optionally start in plan mode when the user has made it
 		// the startup default. "Brand-new" means the resolved branch carries no
