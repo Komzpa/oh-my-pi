@@ -110,7 +110,9 @@ interface RestartHandoff {
 	rootSessionId: string;
 	rootSessionFile: string;
 	capturedAt: number;
+	requestId?: string;
 	children: RestartChildSnapshot[];
+	omittedChildren?: Array<{ id: string; reason: string }>;
 }
 
 interface RestartReceipt {
@@ -293,8 +295,8 @@ function parseHandoff(entry: SessionEntry): RestartHandoff | undefined {
 		typeof data.rootSessionId !== "string" ||
 		typeof data.rootSessionFile !== "string" ||
 		typeof data.capturedAt !== "number" ||
-		!Array.isArray(data.children) ||
-		data.children.length > MAX_RESTART_SUBAGENTS
+		(data.requestId !== undefined && typeof data.requestId !== "string") ||
+		!Array.isArray(data.children)
 	) {
 		return undefined;
 	}
@@ -326,6 +328,7 @@ function parseHandoff(entry: SessionEntry): RestartHandoff | undefined {
 		rootSessionId: data.rootSessionId,
 		rootSessionFile: data.rootSessionFile,
 		capturedAt: data.capturedAt,
+		...(typeof data.requestId === "string" ? { requestId: data.requestId } : {}),
 		children,
 	};
 }
@@ -373,6 +376,7 @@ function parseReceipt(entry: SessionEntry): RestartReceipt | undefined {
 function latestHandoff(
 	entries: readonly SessionEntry[],
 	identity: RootSessionIdentity,
+	requestId?: string,
 ): { entryId: string; handoff: RestartHandoff } | undefined {
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index];
@@ -380,6 +384,7 @@ function latestHandoff(
 		const handoff = parseHandoff(entry);
 		if (
 			handoff &&
+			(requestId === undefined || handoff.requestId === requestId) &&
 			handoff.rootSessionId === identity.rootSessionId &&
 			path.resolve(handoff.rootSessionFile) === identity.rootSessionFile
 		) {
@@ -598,7 +603,7 @@ function emitReportNotice(session: AgentSession, report: RestartRecoveryReport):
  */
 export async function captureSubagentsForRestart(
 	rootSession: AgentSession,
-	options?: { runningAgentIds?: ReadonlySet<string> },
+	options?: { runningAgentIds?: ReadonlySet<string>; requestId?: string },
 ): Promise<void> {
 	const registry = AgentRegistry.global();
 	const rootSessionFile = rootSession.sessionManager.getSessionFile();
@@ -613,16 +618,30 @@ export async function captureSubagentsForRestart(
 		rootSessionFile: path.resolve(rootSessionFile),
 	};
 	const candidates = rootSubagentRefs(rootSession, registry);
-	if (candidates.length > MAX_RESTART_SUBAGENTS) {
-		throw new Error(
-			`Cannot restart safely: ${candidates.length} root-owned subagents exceed the ${MAX_RESTART_SUBAGENTS}-agent handoff limit.`,
-		);
-	}
-	const children: RestartChildSnapshot[] = [];
+	const resumable: AgentRef[] = [];
 	for (const ref of candidates) {
+		// Parked children have a durable transcript and are restored lazily by
+		// persisted-agents. They do not need a restart handoff slot.
+		if (!ref.session || (ref.status !== "running" && ref.status !== "idle")) continue;
 		if (!ref.sessionFile)
 			throw new Error(`Cannot restart safely: root-owned subagent ${ref.id} has no durable session file.`);
 		if (await isTombstoned(ref.sessionFile)) continue;
+		resumable.push(ref);
+	}
+	const needsContinuation = (ref: AgentRef): boolean =>
+		(options?.runningAgentIds?.has(ref.id) || ref.status === "running") && ref.lifecycle?.acceptedAt === undefined;
+	resumable.sort((left, right) => {
+		const continuationOrder = Number(needsContinuation(right)) - Number(needsContinuation(left));
+		return continuationOrder || right.lastActivity - left.lastActivity || left.id.localeCompare(right.id);
+	});
+	const selected = resumable.slice(0, MAX_RESTART_SUBAGENTS);
+	const omittedChildren = resumable.slice(MAX_RESTART_SUBAGENTS).map(ref => ({
+		id: ref.id,
+		reason: `restart handoff limit (${MAX_RESTART_SUBAGENTS}) reached; this live child was not revived`,
+	}));
+	const children: RestartChildSnapshot[] = [];
+	for (const ref of selected) {
+		if (!ref.sessionFile) continue;
 		if (
 			(ref.status === "running" || options?.runningAgentIds?.has(ref.id)) &&
 			ref.lifecycle?.acceptedAt === undefined
@@ -658,13 +677,15 @@ export async function captureSubagentsForRestart(
 			settled: currentRef.lifecycle?.acceptedAt !== undefined,
 		});
 	}
-	if (children.length === 0) return;
+	if (children.length === 0 && omittedChildren.length === 0) return;
 	await rootSession.sessionManager.ensureOnDisk();
 	rootSession.sessionManager.appendCustomEntry(RESTART_HANDOFF_TYPE, {
 		version: RESTART_HANDOFF_VERSION,
 		...rootIdentityValue,
 		capturedAt: Date.now(),
+		...(options?.requestId ? { requestId: options.requestId } : {}),
 		children,
+		...(omittedChildren.length > 0 ? { omittedChildren } : {}),
 	} satisfies RestartHandoff);
 	await rootSession.sessionManager.flush();
 }
@@ -674,7 +695,10 @@ export async function captureSubagentsForRestart(
  * interactive runtime are ready. The transcript scanner restores identity in
  * parked form; this helper revives only captured-idle/unfinished-running rows.
  */
-export async function restoreSubagentsAfterRestart(rootSession: AgentSession): Promise<RestartRecoveryReport> {
+export async function restoreSubagentsAfterRestart(
+	rootSession: AgentSession,
+	options?: { requestId?: string },
+): Promise<RestartRecoveryReport> {
 	const report: RestartRecoveryReport = {
 		resumed: [],
 		restoredIdle: [],
@@ -689,14 +713,10 @@ export async function restoreSubagentsAfterRestart(rootSession: AgentSession): P
 		rootSessionFile: path.resolve(rootSessionFile),
 	};
 	const rootEntries = rootSession.sessionManager.getBranch();
-	const saved = latestHandoff(rootEntries, identity);
+	const saved = latestHandoff(rootEntries, identity, options?.requestId);
 	if (!saved) return report;
 	const { handoff, entryId } = saved;
-	if (handoff.children.length > MAX_RESTART_SUBAGENTS) {
-		report.failures.push({ id: "root", reason: `restart handoff exceeds the ${MAX_RESTART_SUBAGENTS}-agent limit` });
-		emitReportNotice(rootSession, report);
-		return report;
-	}
+	for (const omitted of handoff.omittedChildren ?? []) report.failures.push(omitted);
 	const registry = AgentRegistry.global();
 	try {
 		const scannedRoot = await ensurePersistedRoster(registry, identity.rootSessionFile);
@@ -710,7 +730,23 @@ export async function restoreSubagentsAfterRestart(rootSession: AgentSession): P
 	}
 	const receipts = receiptMap(rootSession.sessionManager.getBranch(), identity.rootSessionId, entryId);
 	const rootRef = registry.list().find(ref => ref.kind === "main" && ref.session === rootSession);
+	const childrenToRestore = handoff.children
+		.filter(child => child.status !== "parked")
+		.sort((left, right) => {
+			const continuationOrder = Number(right.status === "running") - Number(left.status === "running");
+			return continuationOrder || right.sessionFile.localeCompare(left.sessionFile);
+		})
+		.slice(0, MAX_RESTART_SUBAGENTS);
 	for (const child of handoff.children) {
+		if (child.status === "parked") continue;
+		if (!childrenToRestore.includes(child)) {
+			report.failures.push({
+				id: child.id,
+				reason: `restart handoff limit (${MAX_RESTART_SUBAGENTS}) reached; this live child was not revived`,
+			});
+		}
+	}
+	for (const child of childrenToRestore) {
 		const priorReceipt = receipts.get(child.id);
 		try {
 			if (await isTombstoned(child.sessionFile)) {

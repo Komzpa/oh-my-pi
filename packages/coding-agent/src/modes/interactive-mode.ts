@@ -6300,6 +6300,18 @@ export class InteractiveMode implements InteractiveModeContext {
 						session: this.session,
 						identity: () => this.#restartControlIdentity(),
 						restart: () => this.#executeRestart(),
+						captureGoalMode: () => {
+							const state = this.session.getGoalModeState();
+							return state?.enabled && state.goal.status === "active" ? { goalId: state.goal.id } : undefined;
+						},
+						restoreGoalMode: async ({ goalId }) => {
+							if (this.#getPausedGoalState()?.goal.id !== goalId) return;
+							await this.#enterGoalMode({ resume: true, silent: true });
+							this.#scheduleGoalContinuation();
+						},
+						onStateChange: record => {
+							if (isRestartRequestActive(record.state)) this.showStatus(formatRestartProgress(record));
+						},
 					});
 					this.#restartQueueController = controller;
 					this.#restartBoundIdentity = identity;
