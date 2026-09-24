@@ -22,6 +22,8 @@ use crate::desktop::{
 };
 
 const DEVICE_DISCOVERY_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
+const DEVICE_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+const DEVICE_DISCOVERY_WAKE_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy)]
 struct DiscoveryTargets {
@@ -197,14 +199,29 @@ impl Libei {
 			let mut pending_pointer = None;
 			let mut pending_keyboard = None;
 			let mut drain_deadline = None;
+			let discovery_deadline = tokio::time::Instant::now() + DEVICE_DISCOVERY_TIMEOUT;
 			for _ in 0..128 {
-				let event = if let Some(deadline) = drain_deadline {
-					match tokio::time::timeout_at(deadline, events.next()).await {
-						Ok(event) => event,
-						Err(_) => break,
+				let now = tokio::time::Instant::now();
+				let deadline = drain_deadline.unwrap_or(discovery_deadline).min(discovery_deadline);
+				if now >= deadline {
+					if drain_deadline.is_some() {
+						break;
 					}
-				} else {
-					events.next().await
+					return Err(DesktopError::input_failed("libei device discovery timed out"));
+				}
+				let event = match tokio::time::timeout_at(
+					(now + DEVICE_DISCOVERY_WAKE_INTERVAL).min(deadline),
+					events.next(),
+				).await {
+					Ok(event) => event,
+					Err(_) => {
+						// Messages can remain queued after handshake's separate block_on;
+						// drain them rather than waiting indefinitely for another readiness edge.
+						self.context.read().map_err(|err| {
+							DesktopError::input_failed(format!("libei socket read: {err}"))
+						})?;
+						continue;
+					},
 				}
 				.ok_or_else(|| {
 					DesktopError::input_failed("libei disconnected during device discovery")
@@ -283,7 +300,14 @@ impl Libei {
 							"libei disconnected while reading keyboard state",
 						));
 					},
-					Err(_) => break,
+					Err(_) => {
+						if self.context.read().map_err(|err| {
+							DesktopError::input_failed(format!("libei keyboard socket read: {err}"))
+						})? == 0 {
+							break;
+						}
+						continue;
+					},
 				};
 				match event {
 					EiEvent::KeyboardModifiers(event) => {
