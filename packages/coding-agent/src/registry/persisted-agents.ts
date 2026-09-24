@@ -491,6 +491,18 @@ function sessionFileBelongsToRoot(sessionFile: string, rootSessionFile: string):
 	return file === root || file.startsWith(`${artifactRoot}${path.sep}`);
 }
 
+/** Strict session-file ownership predicate shared by persisted restoration callers. */
+export function isAgentSessionFileInRootTree(
+	sessionFile: string | null | undefined,
+	rootSessionFile: string | null | undefined,
+): boolean {
+	if (!sessionFile || !rootSessionFile) return false;
+	return (
+		path.resolve(sessionFile) !== path.resolve(rootSessionFile) &&
+		sessionFileBelongsToRoot(sessionFile, rootSessionFile)
+	);
+}
+
 /** Keep old parked trees out of a new/current session's model-facing roster. */
 export function isCurrentSessionRosterRef(
 	ref: { status: string; sessionFile: string | null },
