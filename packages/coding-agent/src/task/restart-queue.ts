@@ -41,6 +41,8 @@ export interface RestartRequestRecord {
 	reason?: string;
 	error?: string;
 	rootWasRunning: boolean;
+	runningWorkerCount?: number;
+	goalModeBefore?: { goalId: string };
 }
 
 export interface RestartControlSnapshot {
@@ -68,6 +70,9 @@ export interface RestartQueueControllerOptions {
 	session: AgentSession;
 	identity: () => RestartControlIdentity;
 	restart: () => Promise<void>;
+	onStateChange?: (record: RestartRequestRecord) => void;
+	captureGoalMode?: () => { goalId: string } | undefined;
+	restoreGoalMode?: (snapshot: { goalId: string }) => Promise<void>;
 }
 
 interface RestartRequestTransition {
@@ -152,6 +157,15 @@ function parseRestartRequestRecord(value: unknown): RestartRequestRecord | undef
 			(typeof value.reason !== "string" || value.reason.length > MAX_RESTART_REASON_LENGTH)) ||
 		(value.error !== undefined &&
 			(typeof value.error !== "string" || value.error.length > MAX_RESTART_ERROR_LENGTH)) ||
+		(value.runningWorkerCount !== undefined &&
+			(typeof value.runningWorkerCount !== "number" ||
+				!Number.isInteger(value.runningWorkerCount) ||
+				value.runningWorkerCount < 0)) ||
+		(value.goalModeBefore !== undefined &&
+			(!isObject(value.goalModeBefore) ||
+				typeof value.goalModeBefore.goalId !== "string" ||
+				value.goalModeBefore.goalId.length === 0 ||
+				value.goalModeBefore.goalId.length > 256)) ||
 		!VALID_RESTART_STATES.includes(value.state as RestartRequestState) ||
 		typeof value.requestedAt !== "number" ||
 		!Number.isFinite(value.requestedAt) ||
@@ -171,6 +185,10 @@ function parseRestartRequestRecord(value: unknown): RestartRequestRecord | undef
 		...(typeof value.reason === "string" ? { reason: value.reason } : {}),
 		...(typeof value.error === "string" ? { error: value.error } : {}),
 		rootWasRunning: value.rootWasRunning,
+		...(typeof value.runningWorkerCount === "number" ? { runningWorkerCount: value.runningWorkerCount } : {}),
+		...(isObject(value.goalModeBefore) && typeof value.goalModeBefore.goalId === "string"
+			? { goalModeBefore: { goalId: value.goalModeBefore.goalId } }
+			: {}),
 	};
 }
 
@@ -271,6 +289,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	readonly #session: AgentSession;
 	readonly #identity: () => RestartControlIdentity;
 	readonly #restart: () => Promise<void>;
+	readonly #onStateChange: ((record: RestartRequestRecord) => void) | undefined;
+	readonly #captureGoalMode: (() => { goalId: string } | undefined) | undefined;
+	readonly #restoreGoalMode: ((snapshot: { goalId: string }) => Promise<void>) | undefined;
 	#serial: Promise<void> = Promise.resolve();
 	#run: ActiveRestartDrain | undefined;
 	#restorePromise: Promise<void> | undefined;
@@ -280,6 +301,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		this.#session = options.session;
 		this.#identity = options.identity;
 		this.#restart = options.restart;
+		this.#onStateChange = options.onStateChange;
+		this.#captureGoalMode = options.captureGoalMode;
+		this.#restoreGoalMode = options.restoreGoalMode;
 	}
 
 	snapshot(): RestartControlSnapshot {
@@ -356,7 +380,12 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				this.#notice("error", record.error ?? "Restart request did not reach a safe checkpoint.");
 			}
 
-			await restoreSubagentsAfterRestart(this.#session);
+			if (!stored || record?.state === "completed") {
+				await restoreSubagentsAfterRestart(this.#session, record ? { requestId: record.requestId } : undefined);
+			}
+			if (record && (record.state === "completed" || record.state === "cancelled" || record.state === "failed")) {
+				await this.#restoreGoalModeFor(record);
+			}
 			if (restartCompleted && record?.rootWasRunning) {
 				await sendRootContinuationOnce(this.#session, record.requestId);
 			}
@@ -394,6 +423,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			return Promise.reject(new Error(`Restart request ${journal.active.record.requestId} is already active`));
 
 		const now = Date.now();
+		const goalModeBefore = this.#captureGoalMode?.();
 		const record: RestartRequestRecord = {
 			version: RESTART_REQUEST_TRANSITION_VERSION,
 			requestId,
@@ -403,6 +433,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			updatedAt: now,
 			...(reason !== undefined ? { reason } : {}),
 			rootWasRunning: this.#session.isStreaming,
+			...(goalModeBefore ? { goalModeBefore } : {}),
 		};
 		const run = makeRun(identity, record);
 		this.#run = run;
@@ -489,6 +520,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				this.#releaseLeases(pendingRun);
 				if (this.#run === pendingRun) this.#run = undefined;
 			}
+			await this.#restoreGoalModeFor(cancelled);
 			return this.#makeSnapshot(identity, cancelled);
 		});
 	}
@@ -500,6 +532,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		run.record = { ...run.record, rootWasRunning: rootLease.wasRunning || rootWasStreaming };
 		for (const child of getLiveSubagentsForRestart(this.#session))
 			this.#prepareChild(run, child.id, child.status, child.session);
+		run.record = { ...run.record, runningWorkerCount: run.runningAgentIds.size };
 	}
 
 	#prepareChild(run: ActiveRestartDrain, id: string, status: string, session: AgentSession): void {
@@ -552,7 +585,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			run.record = await this.#transition(run, "draining");
 			const safe = await this.#settleAndFlush(run);
 			if (!safe || run.cancelled || this.#disposed) return;
-			await captureSubagentsForRestart(this.#session, { runningAgentIds: run.runningAgentIds });
+			await captureSubagentsForRestart(this.#session, {
+				runningAgentIds: run.runningAgentIds,
+				requestId: run.record.requestId,
+			});
 			if (run.cancelled || this.#disposed) return;
 			run.record = await this.#transition(run, "checkpointed");
 			if (run.cancelled || this.#disposed) return;
@@ -641,6 +677,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		if (state !== "failed") delete next.error;
 		await this.#persistRecord(identity, next);
 		if (run) run.record = next;
+		this.#onStateChange?.(next);
 		return next;
 	}
 
@@ -722,6 +759,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		}
 		try {
 			run.record = await this.#transition(run, "failed", detail);
+			await this.#restoreGoalModeFor(run.record);
 		} catch (persistError) {
 			this.#notice(
 				"error",
@@ -755,6 +793,18 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		) {
 			throw new Error(
 				`Only restart requests may include a reason of at most ${MAX_RESTART_REASON_LENGTH} characters`,
+			);
+		}
+	}
+
+	async #restoreGoalModeFor(record: RestartRequestRecord): Promise<void> {
+		if (!record.goalModeBefore || !this.#restoreGoalMode) return;
+		try {
+			await this.#restoreGoalMode(record.goalModeBefore);
+		} catch (error) {
+			this.#notice(
+				"error",
+				`Restart request ${record.requestId} reached ${record.state}, but its prior goal mode could not be restored: ${this.#errorText(error)}`,
 			);
 		}
 	}

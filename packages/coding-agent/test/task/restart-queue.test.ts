@@ -156,6 +156,31 @@ afterEach(async () => {
 });
 
 describe("restart queue controller", () => {
+	it("restores the goal captured before a failed restart after relaunch", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const oldIdentity = identityFor(manager, "old-instance", 1);
+		const record = { ...coldRecord(oldIdentity, "failed"), goalModeBefore: { goalId: "goal-1" } };
+		await appendQueueRecord(manager, oldIdentity, record);
+		const harness = makeSession(manager);
+		registerRoot(AgentRegistry.global(), harness.session, manager.getSessionFile()!);
+		const restored: string[] = [];
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identityFor(manager, "new-instance", 2),
+			restart: async () => {},
+			restoreGoalMode: async snapshot => {
+				restored.push(snapshot.goalId);
+			},
+		});
+
+		await controller.restore();
+
+		expect(restored).toEqual(["goal-1"]);
+		expect(controller.snapshot().request).toMatchObject({ state: "failed", goalModeBefore: { goalId: "goal-1" } });
+		controller.dispose();
+	});
+
 	it("licenses active-goal startup only from a previous process checkpoint", async () => {
 		const cwd = makeTempDir();
 		const { manager } = await createRoot(cwd);
@@ -183,6 +208,7 @@ describe("restart queue controller", () => {
 				}
 			},
 		});
+		const restoredGoals: string[] = [];
 		const identity = identityFor(manager, "queue-instance", 1);
 		let restartCalls = 0;
 		const controller = createRestartQueueController({
@@ -190,6 +216,10 @@ describe("restart queue controller", () => {
 			identity: () => identity,
 			restart: async () => {
 				restartCalls++;
+			},
+			captureGoalMode: () => ({ goalId: "goal-cancel" }),
+			restoreGoalMode: async snapshot => {
+				restoredGoals.push(snapshot.goalId);
 			},
 		});
 
@@ -222,6 +252,7 @@ describe("restart queue controller", () => {
 		expect(harness.releaseCount).toBe(1);
 		expect(harness.customMessages.at(-1)?.details).toEqual({ requestId: "cancel-me", state: "cancelled" });
 		expect(restartCalls).toBe(0);
+		expect(restoredGoals).toEqual(["goal-cancel"]);
 		releaseQuiescence();
 		controller.dispose();
 	});
@@ -254,9 +285,10 @@ describe("restart queue controller", () => {
 			sessionFile: childFile,
 			status: "running",
 		});
-		await captureSubagentsForRestart(oldRoot.session);
 		const oldIdentity = identityFor(oldRootManager, "old-instance", 4);
-		await appendQueueRecord(oldRootManager, oldIdentity, coldRecord(oldIdentity, "checkpointed"));
+		const completedRequest = coldRecord(oldIdentity, "checkpointed");
+		await captureSubagentsForRestart(oldRoot.session, { requestId: completedRequest.requestId });
+		await appendQueueRecord(oldRootManager, oldIdentity, completedRequest);
 		await Promise.all([oldRootManager.close(), childManager.close()]);
 
 		AgentLifecycleManager.resetGlobalForTests();
@@ -314,6 +346,71 @@ describe("restart queue controller", () => {
 		expect(rootDeliveries[0]).toMatchObject({ from: MAIN_AGENT_ID, to: MAIN_AGENT_ID });
 		expect(controller.snapshot().request?.state).toBe("completed");
 		expect(restartNoticeText(rootManager.getBranch(), "cold-restart-request")).toBe("Restarted");
+		controller.dispose();
+	});
+
+	it("does not replay an older worker handoff after a later restart request failed", async () => {
+		const cwd = makeTempDir();
+		const { manager: oldRootManager, file: rootFile } = await createRoot(cwd);
+		const rootArtifactDir = rootFile.slice(0, -".jsonl".length);
+		const childManager = track(SessionManager.create(cwd, rootArtifactDir));
+		childManager.appendSessionInit({
+			systemPrompt: "Persisted child prompt",
+			task: "Continue the original child assignment",
+			tools: ["read", "yield"],
+		});
+		childManager.appendMessage({ role: "user", content: "Begin child work", timestamp: Date.now() });
+		await childManager.ensureOnDisk();
+		await childManager.flush();
+		const childFile = childManager.getSessionFile();
+		if (!childFile) throw new Error("Expected a durable child session file");
+		const childId = childManager.getSessionId();
+		const oldRoot = makeSession(oldRootManager);
+		const registry = AgentRegistry.global();
+		registerRoot(registry, oldRoot.session, rootFile);
+		registry.register({
+			id: childId,
+			displayName: "Older child",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: makeSession(childManager).session,
+			sessionFile: childFile,
+			status: "running",
+		});
+		const oldIdentity = identityFor(oldRootManager, "old-instance", 1);
+		await captureSubagentsForRestart(oldRoot.session, { requestId: "older-success" });
+		await appendQueueRecord(oldRootManager, oldIdentity, {
+			...coldRecord(oldIdentity, "failed"),
+			requestId: "new-failed-request",
+		});
+		await Promise.all([oldRootManager.close(), childManager.close()]);
+
+		AgentLifecycleManager.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
+		IrcBus.resetGlobalForTests();
+		const manager = track(await SessionManager.open(rootFile));
+		const harness = makeSession(manager);
+		const freshRegistry = AgentRegistry.global();
+		registerRoot(freshRegistry, harness.session, rootFile);
+		const revivalIds: string[] = [];
+		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(async ref => {
+			if (ref.id !== childId || !ref.sessionFile) return undefined;
+			return async () => {
+				revivalIds.push(ref.id);
+				return makeSession(track(await SessionManager.open(ref.sessionFile!))).session;
+			};
+		}, 0);
+
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identityFor(manager, "new-instance", 2),
+			restart: async () => {},
+		});
+		await controller.restore();
+
+		expect(revivalIds).toEqual([]);
+		expect(harness.deliveries).toEqual([]);
+		expect(controller.snapshot().request).toMatchObject({ requestId: "new-failed-request", state: "failed" });
 		controller.dispose();
 	});
 
