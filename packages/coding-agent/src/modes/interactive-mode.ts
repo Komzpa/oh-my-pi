@@ -806,6 +806,32 @@ function isHudSubagent(session: ObservableSession): boolean {
 	return session.kind === "subagent" && session.status === "active";
 }
 
+/** A worker is shown on one todo row at most; an explicit id wins over a description match. */
+export function linkTodoWorkers(
+	phases: readonly TodoPhase[],
+	sessions: readonly ObservableSession[],
+): { byTask: Map<TodoItem, ObservableSession>; unassigned: ObservableSession[] } {
+	const tasks = phases.flatMap(phase => phase.tasks);
+	const byTask = new Map<TodoItem, ObservableSession>();
+	const unassigned: ObservableSession[] = [];
+	for (const session of sessions.filter(isHudSubagent)) {
+		const explicit = tasks.filter(
+			task => task.schedule?.executor?.workerId === session.id || task.schedule?.owner === session.id,
+		);
+		const description = session.description?.trim() || session.progress?.description?.trim();
+		const candidates =
+			explicit.length > 0
+				? explicit
+				: description
+					? tasks.filter(task => !isClosedTodo(task) && todoMatchesAnyDescription(task.content, [description]))
+					: [];
+		const matched = candidates.length === 1 ? candidates[0] : undefined;
+		if (matched && !byTask.has(matched)) byTask.set(matched, session);
+		else unassigned.push(session);
+	}
+	return { byTask, unassigned };
+}
+
 /**
  * Anchored subagent HUD block with its visible session order, so click-to-focus
  * can map a rendered row back to its agent. Row 0 is the leading blank, row 1
@@ -828,35 +854,19 @@ export class SubagentHudComponent implements Component {
 	#renderedWidth?: number;
 	#renderedRows = 0;
 	#renderedWidthConfigEpoch?: number;
-	constructor(lines: readonly string[], order: readonly string[], toggleRow?: number, native?: SubagentHudNative) {
+	readonly #lineOwners: readonly (string | undefined)[] | undefined;
+	constructor(
+		lines: readonly string[],
+		order: readonly string[],
+		toggleRow?: number,
+		native?: SubagentHudNative,
+		lineOwners?: readonly (string | undefined)[],
+	) {
 		this.#text = new Text(lines.join("\n"), 1, 0);
 		this.#lines = lines;
 		this.#order = order;
 		this.#toggleLine = toggleRow;
-		this.#native = native;
-	}
-
-	describe(): NativeNode {
-		return this.#native?.node ?? EMPTY_HUD;
-	}
-
-	/** A click on the pill opens the agent hub, as the hub key does. */
-	handleNativeEvent(event: NativeUiEvent): void {
-		if (event.type === "action" && event.act === "agents.open") this.#native?.onOpen();
-	}
-	/** Same agents and expander row as `order`/`toggleRow`, so `setLines` can repaint in place. */
-	hasLayout(order: readonly string[], toggleRow: number | undefined): boolean {
-		return (
-			this.#toggleLine === toggleRow &&
-			this.#order.length === order.length &&
-			this.#order.every((id, index) => id === order[index])
-		);
-	}
-	/** Repaint rows in place (keeps component identity for the HUD memo); the click map rebuilds lazily. */
-	setLines(lines: readonly string[]): void {
-		if (!this.#text.setText(lines.join("\n"))) return;
-		this.#lines = lines;
-		this.#physicalOwner = undefined;
+		this.#lineOwners = lineOwners;
 	}
 	render(width: number): readonly string[] {
 		const rows = this.#text.render(width);
@@ -891,7 +901,8 @@ export class SubagentHudComponent implements Component {
 		for (let index = 0; index < this.#lines.length; index++) {
 			const height = wrapTextWithAnsi(replaceTabs(this.#lines[index]!), contentWidth).length;
 			let id: string | undefined;
-			if (this.#toggleLine !== undefined && index === this.#toggleLine) id = PINNED_HUD_TOGGLE_ID;
+			if (this.#lineOwners) id = this.#lineOwners[index];
+			else if (this.#toggleLine !== undefined && index === this.#toggleLine) id = PINNED_HUD_TOGGLE_ID;
 			else {
 				const orderIndex = index - 2;
 				id = orderIndex >= 0 && orderIndex < this.#order.length ? this.#order[orderIndex] : undefined;
@@ -900,6 +911,7 @@ export class SubagentHudComponent implements Component {
 		}
 		if (owner.length !== renderedRows) {
 			this.#physicalOwner = this.#lines.map((_line, index) => {
+				if (this.#lineOwners) return this.#lineOwners[index];
 				if (this.#toggleLine !== undefined && index === this.#toggleLine) return PINNED_HUD_TOGGLE_ID;
 				const orderIndex = index - 2;
 				return orderIndex >= 0 && orderIndex < this.#order.length ? this.#order[orderIndex] : undefined;
@@ -3850,14 +3862,28 @@ export class InteractiveMode implements InteractiveModeContext {
 				return theme.fg("dim", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
 		}
 	}
-	#formatForecastTodoLine(todo: TodoItem, prefix: string, matched: boolean, now: number): string {
+	#formatForecastTodoLine(
+		todo: TodoItem,
+		prefix: string,
+		matched: boolean,
+		now: number,
+		worker?: ObservableSession,
+	): string {
 		const row = this.#todoForecastRowsByContent.get(todo.content);
 		const isOverdueOpenTask = row?.overdue && (todo.status === "pending" || todo.status === "in_progress");
-		const line = this.#formatTodoLine(todo, prefix, matched, isOverdueOpenTask);
-		if (!row) return line;
+		let line = this.#formatTodoLine(todo, prefix, matched, isOverdueOpenTask);
+		if (!row) return worker ? `${line} ${this.#formatInlineWorker(worker)}` : line;
 		const forecast = sanitizeStatusText(formatTaskForecastDisplay(row, now, this.todoExpanded));
-		if (!forecast) return line;
-		return `${line} ${theme.fg(isOverdueOpenTask ? "error" : row.confidence === "unknown" ? "warning" : "dim", forecast)}`;
+		if (forecast)
+			line += ` ${theme.fg(isOverdueOpenTask ? "error" : row.confidence === "unknown" ? "warning" : "dim", forecast)}`;
+		return worker ? `${line} ${this.#formatInlineWorker(worker)}` : line;
+	}
+
+	#formatInlineWorker(worker: ObservableSession, separator = true, description = false): string {
+		const role = worker.agent ?? worker.progress?.agent;
+		const detail = description ? worker.description?.trim() || worker.progress?.description?.trim() : undefined;
+		const label = `${formatTaskId(worker.id)}${role ? ` (${role})` : ""}${detail ? `: ${detail}` : ""}`;
+		return theme.fg("accent", `${separator ? "· " : ""}◔ ${sanitizeStatusText(label)}`);
 	}
 
 	#cancelTodoAutoClearTimer(): void {
@@ -3981,7 +4007,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	#flushObserverUiSync(): void {
 		this.syncRunningSubagentBadge({ requestRender: false });
 		this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
-		this.#renderTodoList();
 		this.#renderSubagentList();
 		this.ui.requestRender();
 	}
@@ -3998,17 +4023,30 @@ export class InteractiveMode implements InteractiveModeContext {
 	#renderTodoList(): void {
 		this.todoContainer.clear();
 		this.todoHudNative = undefined;
+		const running =
+			cfgDisplayPinnedAgents.get(settings) === "off"
+				? []
+				: this.#observerRegistry.getSessions().filter(isHudSubagent);
 		if (this.#todoHudHidden) {
 			this.#todoForecast = undefined;
 			this.#todoForecastRowsByContent.clear();
 			this.#syncTodoForecastRefreshTimer(false);
-			return;
+			if (running.length === 0) return;
 		}
-		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
+		const phases = this.#todoHudHidden ? [] : this.todoPhases.filter(phase => phase.tasks.length > 0);
+		const workers = linkTodoWorkers(phases, running);
 		if (phases.length === 0) {
 			this.#todoForecast = undefined;
 			this.#todoForecastRowsByContent.clear();
 			this.#syncTodoForecastRefreshTimer(false);
+			if (workers.unassigned.length === 0) return;
+			const lines = ["", theme.bold(theme.fg("accent", "TODO")), ` ${theme.fg("dim", "unassigned workers")}`];
+			const owners: (string | undefined)[] = [undefined, undefined, undefined];
+			for (const worker of workers.unassigned) {
+				lines.push(` ${theme.fg("dim", `${theme.tree.branch} `)}${this.#formatInlineWorker(worker, false, true)}`);
+				owners.push(worker.id);
+			}
+			this.todoContainer.addChild(new SubagentHudComponent(lines, [], undefined, owners));
 			return;
 		}
 		const now = Date.now();
@@ -4030,9 +4068,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const activeIdx = activePhase ? phases.indexOf(activePhase) : -1;
 		const activeTaskCap = 5;
 
-		const activeDescs = this.#getActiveSubagentDescriptions();
-		const isMatched = (todo: TodoItem): boolean =>
-			activeDescs.length > 0 && todoMatchesAnyDescription(todo.content, activeDescs);
+		const isMatched = (todo: TodoItem): boolean => workers.byTask.has(todo);
 		const orderedTasks = orderTodoTasksForDisplay(phases, this.#todoForecast?.rows);
 		const visible = new Set<(typeof orderedTasks)[number]>();
 		if (expanded) {
@@ -4067,14 +4103,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		// order moves back to a previously displayed phase.
 		const spineGlyphs: string[] = [];
 		const contentLines: string[] = [];
-		const pushBlock = (block: string | string[]): void => {
+		const contentOwners: (string | undefined)[] = [];
+		const pushBlock = (block: string | string[], owners: readonly (string | undefined)[] = []): void => {
 			const rows = Array.isArray(block) ? block : [block];
 			if (rows.length === 0) return;
 			spineGlyphs.push(`${theme.tree.branch} `);
 			contentLines.push(replaceTabs(rows[0]!));
+			contentOwners.push(owners[0]);
 			for (let i = 1; i < rows.length; i++) {
 				spineGlyphs.push(`${theme.tree.vertical}  `);
 				contentLines.push(replaceTabs(rows[i]!));
+				contentOwners.push(owners[i]);
 			}
 		};
 		for (const segment of segments) {
@@ -4091,13 +4130,23 @@ export class InteractiveMode implements InteractiveModeContext {
 					items: segment.tasks,
 					expanded,
 					itemType: "task",
-					renderItem: todo => this.#formatForecastTodoLine(todo, "", isMatched(todo), now),
+					renderItem: todo =>
+						this.#formatForecastTodoLine(todo, "", isMatched(todo), now, workers.byTask.get(todo)),
 				},
 				theme,
 			);
-			pushBlock([header, ...tasks]);
+			pushBlock([header, ...tasks], [undefined, ...segment.tasks.map(task => workers.byTask.get(task)?.id)]);
 		}
 		if (!expanded && hiddenTasks > 0) pushBlock(theme.fg("muted", formatMoreItems(hiddenTasks, "todo")));
+		if (workers.unassigned.length > 0) {
+			pushBlock(
+				[
+					theme.fg("muted", "unassigned workers"),
+					...workers.unassigned.map(worker => this.#formatInlineWorker(worker, false, true)),
+				],
+				[undefined, ...workers.unassigned.map(worker => worker.id)],
+			);
+		}
 		// Closing tail: hook + a few horizontals. Every tail cell is 1 column in
 		// both glyph sets, so string slicing below splits it by visible cells.
 		const tailLen = 6;
@@ -4115,100 +4164,23 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (closedTasks < totalTasks) filled = Math.min(filled, pathLen - 1);
 
 		const lines = ["", theme.bold(theme.fg("accent", "TODO"))];
+		const lineOwners: (string | undefined)[] = [undefined, undefined];
 		if (this.#todoForecast) {
 			const summary = sanitizeStatusText(formatPlanForecastDisplay(this.#todoForecast, this.#todoForecast.now));
 			lines.push(` ${theme.fg("dim", `${summary}${deadline?.paused ? " · goal paused" : ""}`)}`);
+			lineOwners.push(undefined);
 		}
 		for (let i = 0; i < contentLines.length; i++) {
 			lines.push(` ${theme.fg(i < filled ? "accent" : "dim", spineGlyphs[i]!)}${contentLines[i]}`);
+			lineOwners.push(contentOwners[i]);
 		}
 		const tailFilled = Math.max(0, Math.min(filled - contentLines.length, tail.length));
 		lines.push(` ${theme.fg("accent", tail.slice(0, tailFilled))}${theme.fg("dim", tail.slice(tailFilled))}`);
-		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
-
-		// Native: the same stage window as a tree, overall progress as a bar.
-		const describeTask = (todo: TodoItem, id: string): TspTreeNode => {
-			const done = todo.status === "completed";
-			const token =
-				todo.status === "completed"
-					? "success del"
-					: todo.status === "abandoned"
-						? "error del"
-						: todo.status === "blocked"
-							? "warning"
-							: todo.status === "in_progress" || isMatched(todo)
-								? "accent"
-								: "dim";
-			const label: TspSpan[] = [span(todo.status === "blocked" ? `${todo.content} (blocked)` : todo.content, token)];
-			const notes = todo.notes?.length ?? 0;
-			if (notes > 0) label.push(span(` +${notes}`, "dim em"));
-			return { id, label, icon: done ? "check" : "circle" };
-		};
-		const describeTasks = (phase: TodoPhase, phaseIndex: number): TspTreeNode[] => {
-			const index = (todo: TodoItem): string => `${phaseIndex}.${phase.tasks.indexOf(todo)}`;
-			if (expanded) return phase.tasks.map(todo => describeTask(todo, index(todo)));
-			const selection = selectCollapsedTodos(phase.tasks, isMatched, activeTaskCap);
-			const nodes = selection.items.map(todo => describeTask(todo, index(todo)));
-			if (selection.summary) nodes.push({ id: `${phaseIndex}.more`, label: [span(selection.summary, "muted")] });
-			return nodes;
-		};
-		const phaseNodes: TspTreeNode[] = phaseSlice.map((phase, offset) => {
-			const phaseIndex = baseIdx + offset;
-			const isActive = phaseIndex === activeIdx;
-			const name = multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name;
-			const done = phase.tasks.filter(isClosedTodo).length;
-			const open = isActive || expanded;
-			return {
-				id: `${phaseIndex}`,
-				label: [span(name, isActive ? "accent strong" : "muted"), span(` · ${done}/${phase.tasks.length}`, "dim")],
-				open,
-				children: open ? describeTasks(phase, phaseIndex) : undefined,
-			};
-		});
-		if (hiddenStages > 0) {
-			phaseNodes.push({ id: "more", label: [span(formatMoreItems(hiddenStages, "stage"), "muted")] });
-		}
-		const fallback = col(
-			[
-				row(
-					[
-						text([span("TODO", "accent strong")]),
-						node("progress", { value: closedTasks / totalTasks, label: `${closedTasks}/${totalTasks}` }),
-					],
-					{ gap: "sm", align: "center" },
-				),
-				node("tree", { nodes: phaseNodes }),
-			],
-			{ role: "omp.hud.todo" },
-		);
-		// A `checklist` HUD is a pill with the whole plan as its popover.
-		const checklistPhases: TspChecklistPhase[] = phases.map((phase, phaseIndex) => ({
-			id: `${phaseIndex}`,
-			title: multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name,
-			collapsed: phase.tasks.every(isClosedTodo) || undefined,
-			items: phase.tasks.map((todo, taskIndex): TspChecklistItem => {
-				const note = todo.blocker ?? todo.notes?.at(-1);
-				return {
-					id: `${phaseIndex}.${taskIndex}`,
-					text: todo.content,
-					status:
-						todo.status === "completed"
-							? "done"
-							: todo.status === "abandoned"
-								? "dropped"
-								: todo.status === "blocked"
-									? "blocked"
-									: todo.status === "in_progress" || isMatched(todo)
-										? "active"
-										: "pending",
-					note,
-				};
-			}),
-		}));
-		this.todoHudNative = {
-			checklist: node("checklist", { phases: checklistPhases, mode: "hud", role: "omp.hud.todo" }),
-			fallback,
-		};
+		this.todoHudNative = undefined;
+		const running =
+			cfgDisplayPinnedAgents.get(settings) === "off"
+				? []
+				: this.#observerRegistry.getSessions().filter(isHudSubagent);
 	}
 
 	isCompactTodoMode(): boolean {
@@ -4351,18 +4323,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		);
 		this.#armSubagentPreviewTick(view.tickMs);
-	}
-
-	/** Inputs for one HUD paint; undefined when the HUD is off or nothing is running. */
-	#buildSubagentHudView():
-		| {
-				sessions: ObservableSession[];
-				lines: string[];
-				order: string[];
-				toggleRow: number | undefined;
-				tickMs: number | undefined;
-		  }
-		| undefined {
+		this.#renderTodoList();
 		const mode = cfgDisplayPinnedAgents.get(settings);
 		if (mode === "off") return undefined;
 		const sessions = this.#observerRegistry.getSessions();
