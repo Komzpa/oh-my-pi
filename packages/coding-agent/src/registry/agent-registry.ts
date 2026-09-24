@@ -323,6 +323,21 @@ export class AgentRegistry {
 		return this.#refs.get(id);
 	}
 
+	/** Change fast mode only for a live direct child owned by `parentId`. */
+	setSubagentFastMode(parentId: string, id: string, enabled: boolean): boolean {
+		const ref = this.#refs.get(id);
+		if (
+			!ref ||
+			ref.kind !== "sub" ||
+			ref.parentId !== parentId ||
+			(ref.status !== "running" && ref.status !== "idle") ||
+			!ref.session
+		) {
+			return false;
+		}
+		return ref.session.setFastMode(enabled);
+	}
+
 	list(): AgentRef[] {
 		return [...this.#refs.values()];
 	}
