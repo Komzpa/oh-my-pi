@@ -654,6 +654,31 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(hud).not.toContain("Subagents");
 	});
 
+	it("shows each phase header once when dependencies interleave phases", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		mode.setTodos([
+			{
+				name: "Recording",
+				tasks: [
+					{ content: "record first", status: "pending", schedule: { dependencies: [] } },
+					{ content: "record second", status: "pending", schedule: { dependencies: ["release first"] } },
+				],
+			},
+			{
+				name: "Release",
+				tasks: [
+					{ content: "release first", status: "pending", schedule: { dependencies: ["record first"] } },
+					{ content: "release second", status: "pending", schedule: { dependencies: ["record second"] } },
+				],
+			},
+		]);
+		const lines = Bun.stripANSI(mode.todoContainer.render(120).join("\n")).split("\n");
+		expect(lines.filter(line => line.includes("Recording · 0/2"))).toHaveLength(1);
+		expect(lines.filter(line => line.includes("Release · 0/2"))).toHaveLength(1);
+		expect(lines.find(line => line.includes("record second"))).toContain("Recording:");
+		expect(lines.find(line => line.includes("release second"))).toContain("Release:");
+	});
+
 	it("keeps ambiguous description and repeated owner matches unassigned", () => {
 		const tasks = [
 			{ content: "Review code", status: "pending" as const },
