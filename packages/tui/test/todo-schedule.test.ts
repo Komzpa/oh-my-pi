@@ -199,6 +199,28 @@ describe("todo schedule forecast", () => {
 		expect(plan.resourceFinish).toBe(maxRowP95);
 	});
 
+	it("resolves a tie between equal parallel predecessors to the one with the larger P95", () => {
+		// Live 2026-09-25: equal-duration browser shards before a join marked the join and everything
+		// after it "tied or unavailable", so the whole plan read (partial) with every estimate present.
+		const plan = forecastTodoPlan(
+			phases(
+				task("build", 10),
+				task("shard-a", 5, { dependencies: ["build"], optimisticSeconds: 4, pessimisticSeconds: 6 }),
+				task("shard-b", 5, { dependencies: ["build"], optimisticSeconds: 2, pessimisticSeconds: 8 }),
+				task("join", 2, { dependencies: ["shard-a", "shard-b"] }),
+				task("release", 1, { dependencies: ["join"] }),
+			),
+			{ now: NOW },
+		);
+		const join = plan.rows.find(row => row.content === "join")!;
+		const release = plan.rows.find(row => row.content === "release")!;
+		expect(plan.rows.flatMap(row => row.issues ?? []).join("\n")).not.toContain("tied or unavailable");
+		expect(join.fixedPath).toEqual(["build", "shard-b", "join"]);
+		expect(join.fixedPathSigmaSeconds).toBe(1);
+		expect(release.fixedPath).toEqual(["build", "shard-b", "join", "release"]);
+		expect(plan.fixedPathP95Finish).toBeCloseTo(NOW + (18 + 1.6448536269514722) * 1_000, 6);
+	});
+
 	it("uses recorded start and completion times without inventing observation-time completion", () => {
 		const running = task("running", 60, { status: "in_progress" });
 		running.schedule!.startedAt = NOW + 30_000;
