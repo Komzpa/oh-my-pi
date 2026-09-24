@@ -63,6 +63,13 @@ import { repairTaskParams } from "@oh-my-pi/pi-tui/tools/task-repair-args";
 import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
 import { SpawnRun, type SpawnPermit } from "./spawn-run";
 import { type TaskLauncher, TaskLaunchSession } from "./speculative-launch";
+import { applyTodoExecutorObservation, type TodoExecutorObservation } from "../tools/todo-executor";
+import {
+TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+TASK_SUBAGENT_PROGRESS_CHANNEL,
+type SubagentLifecyclePayload,
+type SubagentProgressPayload,
+} from "./types";
 
 import { cfgAsyncEnabled } from "../tools/settings";
 import {
@@ -620,43 +627,44 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	 * spawns and work already parked in the semaphore queue.
 	 */
 	#spawnSemaphore: Semaphore | undefined;
-	readonly #permit: SpawnPermit = {
-		acquire: signal => this.#getSpawnSemaphore().acquire(signal),
-		release: () => this.#releaseSpawnSemaphore(),
-	};
-	/** Streamed calls' speculative launches, keyed by tool-call id until dispatch adopts or discards them. */
-	readonly #launchSessions = new Map<string, TaskLaunchSession>();
-	readonly #launcher: TaskLauncher = {
-		spawns: args => {
-			const plan = planSpawns(args, this.#isBatchEnabled(), this.#defaultAgent());
-			return typeof plan === "string" ? undefined : plan.spawns;
-		},
-		start: (toolCallId, spawn, index, signal) => this.#startSpeculative(toolCallId, spawn, index, signal),
-	};
+readonly #permit: SpawnPermit = {
+acquire: signal => this.#getSpawnSemaphore().acquire(signal),
+release: () => this.#releaseSpawnSemaphore(),
+};
+/** Streamed calls’ speculative launches, keyed by tool-call id until dispatch adopts or discards them. */
+readonly #launchSessions = new Map<string, TaskLaunchSession>();
+readonly #launcher: TaskLauncher = {
+spawns: args => {
+const plan = planSpawns(args, this.#isBatchEnabled(), this.#defaultAgent());
+return typeof plan === "string" ? undefined : plan.spawns;
+},
+start: (toolCallId, spawn, index, signal) => this.#startSpeculative(toolCallId, spawn, index, signal),
+};
 
-	/**
-	 * Batch calls start each subagent as soon as its `tasks[]` item streams in;
-	 * see `./speculative-launch` for the abort/adoption contract.
-	 */
-	readonly speculation: ToolSpeculationPolicy = {
-		stream: {
-			open: async context => {
-				if (!cfgTaskSpeculativeLaunch.get(this.session.settings) || !this.#isBatchEnabled()) return undefined;
-				if (!context.coordinator.authorizeLaunch) return undefined;
-				const id = context.parentToolCallId;
-				const session = new TaskLaunchSession({
-					sink: context.coordinator,
-					tool: this,
-					launcher: this.#launcher,
-					onClose: () => {
-						if (this.#launchSessions.get(id) === session) this.#launchSessions.delete(id);
-					},
-				});
-				this.#launchSessions.set(id, session);
-				return session;
-			},
-		},
-	};
+/**
+ * Batch calls start each subagent as soon as its `tasks[]` item streams in;
+ * see `./speculative-launch` for the abort/adoption contract.
+ */
+readonly speculation: ToolSpeculationPolicy = {
+stream: {
+open: async context => {
+if (!cfgTaskSpeculativeLaunch.get(this.session.settings) || !this.#isBatchEnabled()) return undefined;
+if (!context.coordinator.authorizeLaunch) return undefined;
+const id = context.parentToolCallId;
+const session = new TaskLaunchSession({
+sink: context.coordinator,
+tool: this,
+launcher: this.#launcher,
+onClose: () => {
+if (this.#launchSessions.get(id) === session) this.#launchSessions.delete(id);
+},
+});
+this.#launchSessions.set(id, session);
+return session;
+},
+},
+};
+readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
 
 	get parameters(): TaskToolSchemaInstance {
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
@@ -701,6 +709,64 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	) {
 		this.#blockedAgent = $env.PI_BLOCKED_AGENT;
 		this.#discoveredAgents = discoveredAgents;
+		const bus = session.subagentEventBus ?? session.eventBus;
+		if (bus && session.getTodoPhases && session.setTodoPhases && session.persistTodoPhases) {
+			const stopLifecycle = bus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
+				if (!data || typeof data !== "object") return;
+				const event = data as Partial<SubagentLifecyclePayload>;
+				if (typeof event.id !== "string" || typeof event.agent !== "string") return;
+				if (event.status === "started") {
+					const observed: TodoExecutorObservation = {
+						workerId: event.id,
+						agentProfile: event.agent,
+						description: event.description,
+						startedAt: event.at ?? Date.now(),
+					};
+					this.#todoExecutors.set(event.id, observed);
+					this.#persistTodoExecutor(observed);
+				} else if (event.status === "completed" || event.status === "failed" || event.status === "aborted") {
+					const prior = this.#todoExecutors.get(event.id);
+					if (!prior) return;
+					const observed = {
+						...prior,
+						resolvedModel: event.resolvedModelIdentity ?? prior.resolvedModel,
+						thinkingLevel: event.resolvedThinkingLevel ?? prior.thinkingLevel,
+						finishedAt: event.at ?? Date.now(),
+					};
+					this.#persistTodoExecutor(observed);
+					this.#todoExecutors.delete(event.id);
+				}
+			});
+			const stopProgress = bus.on(TASK_SUBAGENT_PROGRESS_CHANNEL, data => {
+				if (!data || typeof data !== "object") return;
+				const event = data as Partial<SubagentProgressPayload>;
+				const workerId = event.progress?.id;
+				if (typeof workerId !== "string") return;
+				const prior = this.#todoExecutors.get(workerId);
+				if (!prior) return;
+				const observed = {
+					...prior,
+					resolvedModel:
+						event.progress?.resolvedModelIdentity ?? event.progress?.resolvedModel ?? prior.resolvedModel,
+					thinkingLevel: event.progress?.resolvedThinkingLevel ?? prior.thinkingLevel,
+				};
+				this.#todoExecutors.set(workerId, observed);
+				this.#persistTodoExecutor(observed);
+			});
+			session.registerDisposeCallback?.(() => {
+				stopLifecycle();
+				stopProgress();
+			});
+		}
+	}
+
+	#persistTodoExecutor(observation: TodoExecutorObservation): void {
+		const phases = this.session.getTodoPhases?.();
+		if (!phases) return;
+		const updated = applyTodoExecutorObservation(phases, observation);
+		if (!updated) return;
+		this.session.setTodoPhases?.(updated);
+		this.session.persistTodoPhases?.(updated);
 	}
 
 	#isBatchEnabled(): boolean {

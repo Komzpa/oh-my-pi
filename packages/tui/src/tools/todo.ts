@@ -635,7 +635,7 @@ export const todoToolRenderer = {
 			}
 			if (forecast) {
 				const summary = forDisplay(formatPlanForecastDisplay(forecast, now)).replace(/[\r\n]+/g, " ");
-				if (summary) bodyLines.push(`  ${uiTheme.fg("dim", `ETA ${summary}`)}`);
+				if (summary) bodyLines.push(`  ${uiTheme.fg("dim", summary)}`);
 			}
 			if (!showSnapshot) {
 				return {
