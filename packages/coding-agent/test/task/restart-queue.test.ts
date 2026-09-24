@@ -9,6 +9,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import {
 	createRestartQueueController,
 	isRestartResumePending,
+	restartNoticeText,
 	type RestartControlIdentity,
 	type RestartQueueController,
 	type RestartRequestRecord,
@@ -217,6 +218,7 @@ describe("restart queue controller", () => {
 
 		const cancelled = await controller.handle(cancelRequest);
 		expect(cancelled.request?.state).toBe("cancelled");
+		expect(restartNoticeText(manager.getBranch(), "cancel-me")).toBe("Restart cancelled");
 		expect(harness.releaseCount).toBe(1);
 		expect(harness.customMessages.at(-1)?.details).toEqual({ requestId: "cancel-me", state: "cancelled" });
 		expect(restartCalls).toBe(0);
@@ -311,6 +313,7 @@ describe("restart queue controller", () => {
 		expect(rootDeliveries).toHaveLength(1);
 		expect(rootDeliveries[0]).toMatchObject({ from: MAIN_AGENT_ID, to: MAIN_AGENT_ID });
 		expect(controller.snapshot().request?.state).toBe("completed");
+		expect(restartNoticeText(rootManager.getBranch(), "cold-restart-request")).toBe("Restarted");
 		controller.dispose();
 	});
 
