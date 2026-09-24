@@ -13,6 +13,7 @@ import { USER_INTERRUPT_LABEL } from "../session/messages";
 import type { StructuredSubagentOutput } from "@oh-my-pi/pi-tui/tools/task";
 import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
+import type { AgentRegistry } from "../registry/agent-registry";
 import type { ToolSession } from "../tools";
 
 import { formatDuration } from "@oh-my-pi/pi-tui/render/render-utils";
@@ -73,15 +74,16 @@ export function undeliveredJobs(manager: AsyncJobManager, ownerId: string | unde
  * here to cancel it (#8634). Hiding it would match the badge count to nothing
  * and remove the only discovery path for the id.
  */
-export function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySnapshot[] {
-	const registry = session.agentRegistry;
+export function runningAgentsFromRegistryOutsideJobs(
+	registry: AgentRegistry | undefined,
+	manager: AsyncJobManager | undefined,
+	selfId: string | undefined,
+): AgentActivitySnapshot[] {
 	if (!registry) return [];
-	const selfId = session.getAgentId?.() ?? undefined;
 	// Cover = the caller's RUNNING jobs only. A settled job still sitting in
 	// delivery retention must not hide its agent if that agent was re-woken
 	// (e.g. via a peer message) and is running again without a job.
 	const covered = new Set<string>();
-	const manager = session.asyncJobManager;
 	if (manager) {
 		for (const job of manager.getRunningJobs(selfId ? { ownerId: selfId } : undefined)) {
 			covered.add(job.id);
@@ -107,6 +109,14 @@ export function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySna
 		});
 	}
 	return out;
+}
+
+export function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySnapshot[] {
+	return runningAgentsFromRegistryOutsideJobs(
+		session.agentRegistry,
+		session.asyncJobManager,
+		session.getAgentId?.() ?? undefined,
+	);
 }
 
 /** Model-facing lines for the running-agents section shared by `jobs` and empty-wait results. */

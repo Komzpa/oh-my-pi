@@ -2181,9 +2181,18 @@ async function driveSessionToYield(
 			abortSignal.removeEventListener("abort", onAbort);
 		}
 	};
+	const waitForRestartDrain = async (): Promise<boolean> => {
+		if (!session.isRestartDraining) return false;
+		await awaitAbortable(session.waitForRestartDrainRelease());
+		// Release schedules the session's one existing continuation before its
+		// waiters resolve. Do not classify the synthetic gate-stop until it settles.
+		await awaitAbortable(session.waitForIdle());
+		return true;
+	};
 
 	try {
 		try {
+			while (session.isRestartDraining) await waitForRestartDrain();
 			// An IRC wake may own the session when this turn dispatches. Its prompt
 			// wins the race and this prompt throws AgentBusyError; back off through
 			// the caller hook and retry. Bounded so a wedged worker still resolves
@@ -2200,6 +2209,7 @@ async function driveSessionToYield(
 				}
 			}
 			await awaitAbortable(session.waitForIdle());
+			await waitForRestartDrain();
 		} catch (err) {
 			// A budget stop or a yield turn-stop (terminal yield parked behind
 			// the async quiescence barrier) cancels the free-running turn by
@@ -2217,6 +2227,7 @@ async function driveSessionToYield(
 			let retryCount = 0;
 			let retriesForced = false;
 			while (!monitor.yieldCalled() && retryCount < MAX_YIELD_RETRIES && !abortSignal.aborted) {
+				if (await waitForRestartDrain()) continue;
 				// A budget stop collapses the reminder ladder to a single forced
 				// final yield: wait for the stop's session abort to settle, then
 				// prompt once with the wrap-up reminder + named tool choice.
@@ -2255,6 +2266,7 @@ async function driveSessionToYield(
 						}),
 					);
 					await awaitAbortable(session.waitForIdle());
+					if (await waitForRestartDrain()) retryCount--;
 				} catch (err) {
 					if (abortSignal.aborted || err instanceof ToolAbortError) {
 						// Benign control-flow exit — user cancel (^C) or compaction aborting
@@ -2303,11 +2315,13 @@ async function driveSessionToYield(
 		// still cancels and awaits their jobs before worktree capture.
 		let asyncPendingNoticeSent = false;
 		while (!abortSignal.aborted) {
+			if (await waitForRestartDrain()) continue;
 			if (!monitor.yieldCalled()) {
 				await runYieldLadder();
 				// Ladder exhausted / terminal model error: classified below
 				// (missing yield, or stale yield when one was invalidated).
-				if (!monitor.yieldCalled()) break;
+				if (!monitor.yieldCalled() && !(await waitForRestartDrain())) break;
+				if (!monitor.yieldCalled()) continue;
 			}
 			// Let the parked yield's turn-stop session abort settle before
 			// prompting again (mirrors waitForBudgetStop).
@@ -2346,6 +2360,10 @@ async function driveSessionToYield(
 
 		if (!monitor.yieldCalled()) {
 			await awaitAbortable(session.waitForIdle());
+		}
+		for (;;) {
+			if (!(await waitForRestartDrain())) break;
+			if (!monitor.yieldCalled()) await runYieldLadder();
 		}
 
 		const lastAssistant = session.getLastAssistantMessage();
@@ -2922,6 +2940,21 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		turnMonitor.setActiveSession(session);
 		const unsubscribeTurn = turnMonitor.attach(session);
 		return async turnError => {
+			while (!turnMonitor.abortSignal.aborted) {
+				try {
+					await untilAborted(turnMonitor.abortSignal, () => session.waitForRestartDrainRelease());
+					await untilAborted(turnMonitor.abortSignal, () => session.waitForIdle());
+				} catch (error) {
+					if (!turnMonitor.abortSignal.aborted) {
+						logger.warn("IRC wake could not await restart-drain continuation", {
+							id,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+					break;
+				}
+				if (!session.isRestartDraining || turnMonitor.abortSignal.aborted) break;
+			}
 			unsubscribeTurn();
 			const activeSession = turnMonitor.takeActiveSession();
 			if (activeSession) turnMonitor.captureSalvage(activeSession);

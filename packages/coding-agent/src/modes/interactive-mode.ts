@@ -2,6 +2,7 @@
  * Interactive mode for the coding agent.
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
  */
+import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
@@ -133,6 +134,15 @@ import type { SpaceHoldHandler } from "@oh-my-pi/pi-tui/space-hold";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { labelEchoesHandle } from "../task/label";
+import {
+	createRestartQueueController,
+	isRestartResumePending,
+	type RestartControlIdentity,
+	type RestartControlRequest,
+	type RestartControlSnapshot,
+	type RestartQueueController,
+} from "../task/restart-queue";
+import { publishRestartControl, type RestartControlPublication } from "../restart-control";
 import { agentTypeBadge, formatTaskId } from "@oh-my-pi/pi-tui/tools/task";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { isMCPToolName } from "../tools/builtin-names";
@@ -1159,6 +1169,15 @@ export class InteractiveMode implements InteractiveModeContext {
 	#autocompleteProviderFactories: AutocompleteProviderFactory[] = [];
 	#cleanupUnsubscribe?: () => void;
 	#signalTeardown?: SessionTeardown;
+	#restartInstanceId = crypto.randomUUID();
+	#restartGeneration = 0;
+	#restartQueueController: RestartQueueController | undefined;
+	#restartBoundIdentity: RestartControlIdentity | undefined;
+	#restartControlPublication: RestartControlPublication | undefined;
+	#restartControlBind: Promise<void> = Promise.resolve();
+	#restartControlInitializing = false;
+	#restartControlReady = false;
+	#restartControlRestoring = false;
 	readonly #version: string;
 	readonly #startupChangelog: StartupChangelogSelection | undefined;
 	/** Header components below the config warnings + welcome, retained so a live config-warning change can rebuild the header (#10048). */
@@ -1652,6 +1671,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	async init(options: InteractiveModeInitOptions = {}): Promise<void> {
 		if (this.isInitialized) return;
+		this.#restartControlInitializing = true;
 
 		this.keybindings = logger.time("InteractiveMode.init:keybindings", () => KeybindingsManager.create());
 
@@ -1924,8 +1944,21 @@ export class InteractiveMode implements InteractiveModeContext {
 			await this.#liveCommandController.stop();
 			await this.#quiesceVibeForSessionSwitch();
 		});
-		this.session.setSessionSwitchReconciler?.(() => this.#reconcileModeFromSession({ preserveActiveGoal: true }));
-		await logger.time("InteractiveMode.init:reconcileMode", () => this.#reconcileModeFromSession());
+		this.session.setSessionSwitchReconciler?.(async () => {
+			try {
+				await this.#reconcileModeFromSession({ preserveActiveGoal: true });
+			} finally {
+				await this.#restartControlSessionChanged();
+			}
+		});
+		const restartResumePending = isRestartResumePending(
+			this.sessionManager.getBranch(),
+			this.sessionManager.getSessionId(),
+			this.#restartInstanceId,
+		);
+		await logger.time("InteractiveMode.init:reconcileMode", () =>
+			this.#reconcileModeFromSession({ preserveActiveGoal: restartResumePending }),
+		);
 
 		// Brand-new sessions optionally start in plan mode when the user has made it
 		// the startup default. "Brand-new" means the resolved branch carries no
@@ -2064,15 +2097,15 @@ export class InteractiveMode implements InteractiveModeContext {
 			onTerminalAppearanceChange(mode, appearanceRefreshWasRequested ? {} : undefined);
 		});
 
-		// Everything is wired: subscriptions observe agent events, the session
-		// mode is reconciled, and the submit handler is installed. Lift the
-		// composer's bootstrap submit gate (`disableSubmit = true` since
-		// construction, so an Enter typed before the pipeline existed could not
-		// clear the draft into nowhere, and a turn started mid-init could not run
-		// unobserved). From here Enter dispatches safely in every state — the
-		// initial CLI prompt and a user submission both flow with
-		// `streamingBehavior: "steer"`, so whichever lands second queues into the
-		// other's turn instead of dying.
+		// Restore child sessions and the root continuation through the controller
+		// before opening local or external restart admission. Its journal restore
+		// owns the child same-ID recovery order.
+		try {
+			await this.#initializeRestartControl();
+		} catch (error) {
+			this.showWarning(`Restart controls unavailable: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		this.#restartControlInitializing = false;
 		this.editor.disableSubmit = false;
 	}
 
@@ -6004,6 +6037,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	stop(): void {
+		void this.#disposeRestartControl();
 		this.#appearanceRefreshRequest = undefined;
 		this.#streamPublisher?.dispose();
 		this.#streamPublisher = undefined;
@@ -6116,6 +6150,203 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 	}
 
+	async restart(): Promise<void> {
+		try {
+			await this.#handleRestartControl({ identity: this.#restartControlIdentity(), op: "request" });
+		} catch (error) {
+			this.showError(`Could not queue restart: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	async handleRestartCommand(action: "status" | "cancel"): Promise<void> {
+		try {
+			const snapshot = await this.#handleRestartControl({ identity: this.#restartControlIdentity(), op: action });
+			const request = snapshot.request;
+			if (action === "status") {
+				this.showStatus(
+					request ? `Restart ${request.state} (${request.requestId}).` : "No restart request is queued.",
+				);
+				return;
+			}
+			this.showStatus(
+				request
+					? request.state === "cancelled"
+						? `Restart request ${request.requestId} cancelled.`
+						: `Restart request ${request.requestId} is ${request.state}; cancellation was not accepted.`
+					: "No restart request is available to cancel.",
+			);
+		} catch (error) {
+			this.showError(
+				action === "status"
+					? `Restart status unavailable: ${error instanceof Error ? error.message : String(error)}`
+					: `Restart cancellation failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	#restartControlIdentity(): RestartControlIdentity {
+		return {
+			instanceId: this.#restartInstanceId,
+			sessionId: this.sessionManager.getSessionId(),
+			generation: this.#restartGeneration,
+		};
+	}
+
+	#sameRestartControlIdentity(left: RestartControlIdentity | undefined, right: RestartControlIdentity): boolean {
+		return (
+			left?.instanceId === right.instanceId &&
+			left.sessionId === right.sessionId &&
+			left.generation === right.generation
+		);
+	}
+
+	#restartControlSnapshot(): RestartControlSnapshot {
+		const identity = this.#restartControlIdentity();
+		const controller = this.#restartQueueController;
+		if (
+			controller &&
+			this.#sameRestartControlIdentity(this.#restartBoundIdentity, identity) &&
+			!this.#restartControlRestoring &&
+			!this.session.isSessionTransitioning &&
+			!this.#isShuttingDown
+		) {
+			return { ...controller.snapshot(), identity, cwd: this.sessionManager.getCwd() };
+		}
+		return { identity, pid: process.pid, cwd: this.sessionManager.getCwd(), request: null };
+	}
+
+	async #handleRestartControl(request: RestartControlRequest): Promise<RestartControlSnapshot> {
+		if (!this.#restartControlReady || this.#restartControlInitializing) {
+			throw new Error("Restart controls are still restoring for this session");
+		}
+		await this.#restartControlBind;
+		if (this.#isShuttingDown) throw new Error("Restart controls are shutting down");
+		if (this.session.isSessionTransitioning)
+			throw new Error("Restart controls are unavailable during a session switch");
+		const identity = this.#restartControlIdentity();
+		if (!this.#sameRestartControlIdentity(request.identity, identity)) {
+			throw new Error("Restart control identity is stale; no request was applied");
+		}
+		const controller = this.#restartQueueController;
+		if (
+			!controller ||
+			!this.#sameRestartControlIdentity(this.#restartBoundIdentity, identity) ||
+			this.#restartControlRestoring
+		) {
+			throw new Error("Restart controls are restoring for the current session; retry the command");
+		}
+		return controller.handle(request);
+	}
+
+	#rebindRestartQueueController(): Promise<void> {
+		const binding = this.#restartControlBind
+			.catch(() => undefined)
+			.then(async () => {
+				if (this.#isShuttingDown) return;
+				const identity = this.#restartControlIdentity();
+				if (
+					this.#restartQueueController &&
+					this.#sameRestartControlIdentity(this.#restartBoundIdentity, identity)
+				) {
+					return;
+				}
+				this.#restartControlRestoring = true;
+				const previous = this.#restartQueueController;
+				this.#restartQueueController = undefined;
+				this.#restartBoundIdentity = undefined;
+				let controller: RestartQueueController | undefined;
+				try {
+					previous?.dispose();
+					controller = createRestartQueueController({
+						session: this.session,
+						identity: () => this.#restartControlIdentity(),
+						restart: () => this.#executeRestart(),
+						captureGoalMode: () => {
+							const state = this.session.getGoalModeState();
+							return state?.enabled && state.goal.status === "active" ? { goalId: state.goal.id } : undefined;
+						},
+						restoreGoalMode: async ({ goalId }) => {
+							if (this.#getPausedGoalState()?.goal.id !== goalId) return;
+							await this.#enterGoalMode({ resume: true, silent: true });
+							this.#scheduleGoalContinuation();
+						},
+						onStateChange: record => {
+							if (
+								record.state === "queued" ||
+								record.state === "draining" ||
+								record.state === "checkpointed" ||
+								record.state === "restarting"
+							)
+								this.showStatus(`Restart ${record.state}`);
+						},
+					});
+					this.#restartQueueController = controller;
+					this.#restartBoundIdentity = identity;
+					await controller.restore();
+				} catch (error) {
+					if (controller && this.#restartQueueController === controller) {
+						this.#restartQueueController = undefined;
+						this.#restartBoundIdentity = undefined;
+						controller.dispose();
+					}
+					throw error;
+				} finally {
+					this.#restartControlRestoring = false;
+				}
+			});
+		this.#restartControlBind = binding;
+		return binding;
+	}
+
+	async #restartControlSessionChanged(): Promise<void> {
+		this.#restartGeneration++;
+		try {
+			await this.#rebindRestartQueueController();
+		} catch (error) {
+			this.showWarning(
+				`Restart controls could not restore the switched session: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	async #initializeRestartControl(): Promise<void> {
+		const identity = this.#restartControlIdentity();
+		if (!identity.sessionId) throw new Error("The current session has no durable runtime identity");
+		await this.#rebindRestartQueueController();
+		if (!this.#restartQueueController || !this.#sameRestartControlIdentity(this.#restartBoundIdentity, identity)) {
+			throw new Error("Restart queue did not restore the current session");
+		}
+		this.#restartControlReady = true;
+		this.#restartControlInitializing = false;
+		try {
+			this.#restartControlPublication = await publishRestartControl({
+				snapshot: () => this.#restartControlSnapshot(),
+				handle: request => this.#handleRestartControl(request),
+			});
+		} catch (error) {
+			logger.warn("External restart control endpoint unavailable", { error: String(error) });
+			this.showWarning(
+				`External restart control unavailable: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	async #disposeRestartControl(): Promise<void> {
+		const publication = this.#restartControlPublication;
+		this.#restartControlPublication = undefined;
+		if (publication) {
+			try {
+				await publication.dispose();
+			} catch (error) {
+				logger.warn("Failed to dispose restart control endpoint", { error: String(error) });
+			}
+		}
+		const controller = this.#restartQueueController;
+		this.#restartQueueController = undefined;
+		this.#restartBoundIdentity = undefined;
+		this.#restartControlReady = false;
+		controller?.dispose();
+	}
 	/**
 	 * Tear down like {@link shutdown}, then relaunch the CLI with the original
 	 * launch argv (session-source flags and positional prompts stripped, see
@@ -6127,14 +6358,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * exec. On Windows (no exec semantics) or on exec failure, falls back to
 	 * spawning the replacement and lingering only to forward its exit code.
 	 */
-	async restart(): Promise<void> {
-		if (this.#isShuttingDown) return;
+	async #executeRestart(): Promise<void> {
+		if (this.#isShuttingDown) throw new Error("Cannot restart while the session is already shutting down");
 		this.#isShuttingDown = true;
 		try {
 			await this.#teardown();
 		} catch (error) {
 			this.#handleTeardownError("restart", error);
-			return;
+			throw error;
 		}
 
 		const cmd = [...resolveCliEntryCmd(), ...restartArgv(process.argv.slice(2), this.#resumableSessionId())];
@@ -6226,6 +6457,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// hands Bash the cursor immediately after visible OMP content.
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
+		await this.#disposeRestartControl();
 		await this.ui.terminal.drainInput(1000);
 		// Stop the run-state spinner interval BEFORE restoring the shell title, so a
 		// pending tick cannot re-emit an OSC title after `popTerminalTitle` hands the
