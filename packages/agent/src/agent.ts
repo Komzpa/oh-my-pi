@@ -397,6 +397,46 @@ interface QueuedMessageClaim {
 	controller: AbortController;
 }
 
+function isGoalContinuationMessage(message: AgentMessage): boolean {
+	return message.role === "custom" && message.customType === "goal-continuation";
+}
+
+function isQueuedModelNews(message: AgentMessage): boolean {
+	// Worker results and IRC are news even though the harness attributes them to the agent.
+	if (message.role === "custom" && (message.customType === "async-result" || message.customType === "irc:incoming"))
+		return true;
+	if ("attribution" in message && message.attribution === "agent") return false;
+	return message.role === "user" || ("attribution" in message && message.attribution === "user");
+}
+
+function keepNewestGoalContinuation(
+	steering: AgentMessage[],
+	followUp: AgentMessage[],
+): { steering: AgentMessage[]; followUp: AgentMessage[] } {
+	let newestQueue: "steering" | "followUp" | undefined;
+	let newestIndex = -1;
+	let newestTimestamp = Number.NEGATIVE_INFINITY;
+	for (const [queue, messages] of [
+		["steering", steering],
+		["followUp", followUp],
+	] as const) {
+		for (let index = 0; index < messages.length; index++) {
+			const message = messages[index];
+			if (!message || !isGoalContinuationMessage(message)) continue;
+			if (message.timestamp >= newestTimestamp) {
+				newestQueue = queue;
+				newestIndex = index;
+				newestTimestamp = message.timestamp;
+			}
+		}
+	}
+	const retain = (queue: "steering" | "followUp", messages: AgentMessage[]) =>
+		messages.filter(
+			(message, index) => !isGoalContinuationMessage(message) || (queue === newestQueue && index === newestIndex),
+		);
+	return { steering: retain("steering", steering), followUp: retain("followUp", followUp) };
+}
+
 export class Agent {
 	#state: AgentState = {
 		systemPrompt: [],
@@ -1220,6 +1260,7 @@ export class Agent {
 		this.#followUpQueue = followUp.slice();
 		this.#cancelQueuedMessagePreparation("steering");
 		this.#cancelQueuedMessagePreparation("followUp");
+		this.#normalizeQueuedGoalContinuations();
 		this.#notifySteeringWaiters();
 	}
 
@@ -1296,6 +1337,12 @@ export class Agent {
 	 * Delivered after current tool execution, skips remaining tools.
 	 */
 	steer(m: AgentMessage) {
+		if (isGoalContinuationMessage(m)) {
+			this.#cancelQueuedMessagePreparation("steering", true);
+			this.#cancelQueuedMessagePreparation("followUp", true);
+			this.#steeringQueue = this.#steeringQueue.filter(message => !isGoalContinuationMessage(message));
+			this.#followUpQueue = this.#followUpQueue.filter(message => !isGoalContinuationMessage(message));
+		}
 		this.#steeringQueue.push(m);
 		this.#notifySteeringWaiters();
 	}
@@ -1305,6 +1352,12 @@ export class Agent {
 	 * Delivered only when agent has no more tool calls or steering messages.
 	 */
 	followUp(m: AgentMessage) {
+		if (isGoalContinuationMessage(m)) {
+			this.#cancelQueuedMessagePreparation("steering", true);
+			this.#cancelQueuedMessagePreparation("followUp", true);
+			this.#steeringQueue = this.#steeringQueue.filter(message => !isGoalContinuationMessage(message));
+			this.#followUpQueue = this.#followUpQueue.filter(message => !isGoalContinuationMessage(message));
+		}
 		this.#followUpQueue.push(m);
 	}
 
@@ -1345,6 +1398,24 @@ export class Agent {
 			this.#queuedMessageClaims.steering !== undefined ||
 			this.#queuedMessageClaims.followUp !== undefined
 		);
+	}
+
+	/** Count only queued items that add information the model needs to respond to. */
+	getPendingModelNewsCount(): number {
+		this.#normalizeQueuedGoalContinuations();
+		return [...this.peekSteeringQueue(), ...this.peekFollowUpQueue()].filter(isQueuedModelNews).length;
+	}
+
+	#normalizeQueuedGoalContinuations(): void {
+		const claims = [this.#queuedMessageClaims.steering, this.#queuedMessageClaims.followUp];
+		const hasClaimedGoalContinuation = claims.some(claim => claim?.messages.some(isGoalContinuationMessage));
+		if (hasClaimedGoalContinuation) {
+			this.#cancelQueuedMessagePreparation("steering", true);
+			this.#cancelQueuedMessagePreparation("followUp", true);
+		}
+		const queues = keepNewestGoalContinuation(this.#steeringQueue, this.#followUpQueue);
+		this.#steeringQueue = queues.steering;
+		this.#followUpQueue = queues.followUp;
 	}
 
 	/** Non-consuming view of the pending steering queue (insertion order, newest
@@ -1388,6 +1459,7 @@ export class Agent {
 	}
 
 	#dequeueSteeringMessages(): AgentMessage[] {
+		this.#normalizeQueuedGoalContinuations();
 		if (this.#steeringMode === "one-at-a-time") {
 			if (this.#steeringQueue.length > 0) {
 				const first = this.#steeringQueue[0];
@@ -1402,6 +1474,7 @@ export class Agent {
 	}
 
 	#dequeueFollowUpMessages(): AgentMessage[] {
+		this.#normalizeQueuedGoalContinuations();
 		if (this.#followUpMode === "one-at-a-time") {
 			if (this.#followUpQueue.length > 0) {
 				const first = this.#followUpQueue[0];
@@ -1782,7 +1855,7 @@ export class Agent {
 				const transformedContext = this.#transformProviderContext
 					? await this.#transformProviderContext(context, providerModel)
 					: context;
-				const queuedCount = this.peekSteeringQueue().length + this.peekFollowUpQueue().length;
+				const queuedCount = this.getPendingModelNewsCount();
 				if (queuedCount === 0 && this.#lastModelQueuedMessageCount === 0) return transformedContext;
 
 				this.#lastModelQueuedMessageCount = queuedCount;
