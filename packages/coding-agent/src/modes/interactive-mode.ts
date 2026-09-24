@@ -3702,22 +3702,20 @@ export class InteractiveMode implements InteractiveModeContext {
 				phaseIndex === activeIdx
 					? theme.bold(theme.fg("accent", label)) + theme.fg("dim", progress)
 					: theme.fg("muted", label) + theme.fg("dim", progress);
-			const tasks = renderTreeList(
-				{
-					items: segment.tasks,
-					expanded,
-					itemType: "task",
-					renderItem: todo =>
-						this.#formatForecastTodoLine(
-							todo,
-							firstSegment ? "" : `${label}: `,
-							isMatched(todo),
-							now,
-							workers.byTask.get(todo),
-						),
-				},
-				theme,
-			);
+			const tasks = firstSegment
+				? renderTreeList(
+						{
+							items: segment.tasks,
+							expanded,
+							itemType: "task",
+							renderItem: todo =>
+								this.#formatForecastTodoLine(todo, "", isMatched(todo), now, workers.byTask.get(todo)),
+						},
+						theme,
+					)
+				: segment.tasks.map(todo =>
+						this.#formatForecastTodoLine(todo, `${label}: `, isMatched(todo), now, workers.byTask.get(todo)),
+					);
 			pushBlock(
 				firstSegment ? [header, ...tasks] : tasks,
 				firstSegment
