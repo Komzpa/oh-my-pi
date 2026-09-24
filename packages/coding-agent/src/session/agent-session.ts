@@ -114,6 +114,7 @@ import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
+import { AgentRegistry } from "../registry/agent-registry";
 import {
 	DEFAULT_PREWALK_TARGET,
 	getModelMatchPreferences,
@@ -856,6 +857,7 @@ export class AgentSession implements SettingsScope {
 		| undefined;
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
+	#agentRegistry: AgentRegistry;
 	#agentKind: "main" | "sub" = "main";
 	#scoutAllowedBySpawnPolicy = true;
 	#providerSessionId: string | undefined;
@@ -1923,6 +1925,7 @@ export class AgentSession implements SettingsScope {
 		this.#streamingEditGuard = new StreamingEditGuard(streamGuardsHost);
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
+		this.#agentRegistry = config.agentRegistry ?? AgentRegistry.global();
 		this.#agentKind = config.agentKind ?? "main";
 		// A subagent's streamed text reaches no output sink until the run settles
 		// (the parent sees only the yield), so a failed turn's partial prose is
@@ -9421,6 +9424,12 @@ export class AgentSession implements SettingsScope {
 	/** Enables or disables priority service for the active model family. */
 	setFastMode(enabled: boolean): boolean {
 		return this.#models.setFastMode(enabled);
+	}
+
+	/** Set fast mode on one of this session's live direct subagents. */
+	setSubagentFastMode(id: string, enabled: boolean): boolean {
+		if (!this.#agentId) return false;
+		return this.#agentRegistry.setSubagentFastMode(this.#agentId, id, enabled);
 	}
 
 	/** Toggles priority service for the active model family. */
