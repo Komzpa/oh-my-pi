@@ -135,9 +135,9 @@ const COLLAPSED_CLOSED_CONTEXT = 1;
  * 2. Remaining rows up to `cap` are filled with the pending tasks that follow
  *    the first active one, in todo order (falling back to leading pending tasks
  *    when no active task exists), so a freshly-promoted task leads the preview.
- * 3. When active tasks alone exceed `cap`, only the first `cap` active tasks are
- *    shown and the summary counts the hidden *active* todos, never replacing
- *    them with unrelated pending rows.
+ * 3. When active tasks exceed `cap`, only the first `cap` active tasks are shown.
+ *    If pending tasks are also hidden, the summary counts all omitted tasks;
+ *    otherwise it counts the hidden active todos.
  */
 function selectWithinCap<T extends { status: TodoStatus }>(
 	base: T[],
@@ -147,17 +147,18 @@ function selectWithinCap<T extends { status: TodoStatus }>(
 	if (base.length <= cap) return { items: base, summary: "" };
 
 	const active = base.filter(task => isActiveTodo(task, isMatched));
-	// Only when active work strictly exceeds the cap do we drop pending rows and
-	// count hidden *actives*. At exactly `cap` actives, fall through so the normal
-	// branch still surfaces any following pending work in the summary.
+	// Active work takes priority over pending rows when it exceeds the cap. Keep
+	// the one-row exception only when the total hidden set is exactly one; if
+	// pending rows are omitted too, include them in the summary.
 	if (active.length > cap) {
 		const hiddenActive = active.length - cap;
-		return hiddenActive === 1
-			? { items: active, summary: "" }
-			: {
-					items: active.slice(0, cap),
-					summary: `… ${hiddenActive} more active ${pluralize("todo", hiddenActive)}`,
-				};
+		const hiddenPending = base.length - active.length;
+		if (hiddenActive === 1 && hiddenPending === 0) return { items: active, summary: "" };
+		const summary =
+			hiddenPending > 0
+				? formatMoreItems(hiddenActive + hiddenPending, "todo")
+				: `… ${hiddenActive} more active ${pluralize("todo", hiddenActive)}`;
+		return { items: active.slice(0, cap), summary };
 	}
 
 	// Fill trailing rows with tasks following the first active one, so the

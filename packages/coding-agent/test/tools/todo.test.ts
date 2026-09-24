@@ -793,15 +793,18 @@ describe("selectCollapsedTodos walking viewport (#5873)", () => {
 		expect(contents(sel)).toHaveLength(5);
 	});
 
-	it("caps active todos and counts the hidden actives in the summary", () => {
+	it("summarizes all omitted work when active and pending todos overflow", () => {
 		const tasks = mk(10, []);
-		const matched = (t: TodoItem) =>
-			["Task 1", "Task 2", "Task 3", "Task 4", "Task 5", "Task 6", "Task 7"].includes(t.content);
+		const matched = (t: TodoItem) => Number(t.content.slice("Task ".length)) <= 7;
 		const sel = selectCollapsedTodos(tasks, matched, 5);
 		expect(contents(sel)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5"]);
+		expect(sel.summary).toBe("… 5 more todos");
+	});
+
+	it("counts hidden active todos when only active work overflows", () => {
+		const sel = selectCollapsedTodos(mk(7, []), t => Number(t.content.slice("Task ".length)) <= 7, 5);
+		expect(contents(sel)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5"]);
 		expect(sel.summary).toBe("… 2 more active todos");
-		// No unrelated pending rows leak in.
-		expect(contents(sel).some(c => ["Task 8", "Task 9", "Task 10"].includes(c))).toBe(false);
 	});
 
 	it("shows a sole trailing pending todo when actives fill the cap", () => {
@@ -819,6 +822,14 @@ describe("selectCollapsedTodos walking viewport (#5873)", () => {
 		const sel = selectCollapsedTodos(tasks, matched, 5);
 		expect(contents(sel)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5", "Task 6"]);
 		expect(sel.summary).toBe("");
+	});
+
+	it("summarizes every hidden task when active overflow also hides pending work", () => {
+		const tasks = [...mk(6, []), { content: "Task 7", status: "pending" as const }];
+		const matched = (t: TodoItem) => Number(t.content.slice("Task ".length)) <= 6;
+		const sel = selectCollapsedTodos(tasks, matched, 5);
+		expect(contents(sel)).toEqual(["Task 1", "Task 2", "Task 3", "Task 4", "Task 5"]);
+		expect(sel.summary).toBe("… 2 more todos");
 	});
 
 	it("keeps the summary when two ordinary todos are hidden", () => {
