@@ -202,7 +202,9 @@ impl Libei {
 			let discovery_deadline = tokio::time::Instant::now() + DEVICE_DISCOVERY_TIMEOUT;
 			for _ in 0..128 {
 				let now = tokio::time::Instant::now();
-				let deadline = drain_deadline.unwrap_or(discovery_deadline).min(discovery_deadline);
+				let deadline = drain_deadline
+					.unwrap_or(discovery_deadline)
+					.min(discovery_deadline);
 				if now >= deadline {
 					if drain_deadline.is_some() {
 						break;
@@ -212,7 +214,9 @@ impl Libei {
 				let event = match tokio::time::timeout_at(
 					(now + DEVICE_DISCOVERY_WAKE_INTERVAL).min(deadline),
 					events.next(),
-				).await {
+				)
+				.await
+				{
 					Ok(event) => event,
 					Err(_) => {
 						// Messages can remain queued after handshake's separate block_on;
@@ -303,7 +307,8 @@ impl Libei {
 					Err(_) => {
 						if self.context.read().map_err(|err| {
 							DesktopError::input_failed(format!("libei keyboard socket read: {err}"))
-						})? == 0 {
+						})? == 0
+						{
 							break;
 						}
 						continue;
