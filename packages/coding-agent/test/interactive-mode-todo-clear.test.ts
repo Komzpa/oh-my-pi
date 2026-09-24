@@ -1,16 +1,16 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, setSystemTime, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
-import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task";
-import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { todoToolRenderer, type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { forecastTodoPlan } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -18,6 +18,23 @@ import { cfgTasksTodoClearDelay } from "@oh-my-pi/pi-coding-agent/tools/settings
 
 function renderTodos(mode: InteractiveMode): string {
 	return Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
+}
+
+const FORECAST_TEST_NOW = Date.parse("2026-09-23T09:00:00.000Z");
+
+function scheduleWithEstimate(updatedAt: number): NonNullable<TodoItem["schedule"]> {
+	return {
+		dependencies: [],
+		owner: "WorkerA",
+		estimate: {
+			optimisticSeconds: 60,
+			likelySeconds: 90,
+			pessimisticSeconds: 150,
+			confidence: "high",
+			basis: "estimated from the implementation scope",
+			updatedAt,
+		},
+	};
 }
 
 describe("InteractiveMode todo HUD persistence", () => {
@@ -66,6 +83,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		session.setTodoPhases([]);
 		mode.setTodos([]);
 		vi.useRealTimers();
+		setSystemTime();
 		vi.restoreAllMocks();
 	});
 
@@ -101,6 +119,8 @@ describe("InteractiveMode todo HUD persistence", () => {
 		await session.sessionManager.flush();
 		expect(renderTodos(mode)).not.toContain("done task");
 		expect(renderTodos(mode)).not.toContain("abandoned task");
+		const compact = Bun.stripANSI(mode.renderCompactStatusLine(120, []).join("\n"));
+		expect(compact).not.toContain("TODO");
 		expect(session.getTodoPhases()).toEqual(phases);
 	});
 
@@ -136,6 +156,31 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(rendered).toContain("current task");
 	});
 
+	it("keeps the pinned HUD as the only task tree beside an expanded mutation result", () => {
+		const phases = unfinishedPlan();
+		mode.setTodos(phases);
+
+		const mutationTranscript = Bun.stripANSI(
+			todoToolRenderer
+				.renderResult(
+					{
+						content: [{ type: "text", text: "" }],
+						details: { op: "done", phases, storage: "session" },
+						isError: false,
+					},
+					{ expanded: true, isPartial: false },
+					theme,
+				)
+				.render(120)
+				.join("\n"),
+		);
+		const pinnedHud = renderTodos(mode);
+
+		expect(mutationTranscript).not.toContain("current task");
+		expect(pinnedHud.match(/current task/g)?.length ?? 0).toBe(1);
+		expect(pinnedHud).toContain("2/3");
+	});
+
 	it("keeps an unfinished plan's progress when auto-clear is instant", () => {
 		setTodoClearDelay(0);
 
@@ -152,6 +197,192 @@ describe("InteractiveMode todo HUD persistence", () => {
 		mode.setTodos([{ name: "Implementation", tasks: [{ content: "done task", status: "completed" }] }]);
 
 		expect(renderTodos(mode)).toContain("done task");
+	});
+
+	it("renders shared ETA, confidence, criticality, and overall forecast in normal and compact TODO views", () => {
+		vi.useFakeTimers();
+		setSystemTime(new Date(FORECAST_TEST_NOW));
+		setTodoClearDelay(-1);
+		const phases: TodoPhase[] = [
+			{
+				name: "Implementation",
+				tasks: [
+					{ content: "planned task", status: "in_progress", schedule: scheduleWithEstimate(FORECAST_TEST_NOW) },
+				],
+			},
+		];
+		mode.setTodos(phases);
+
+		const rendered = renderTodos(mode).toLowerCase();
+		expect(rendered).toContain("eta");
+		expect(rendered).toContain("critical");
+		expect(rendered).toContain("planned task");
+
+		const compact = Bun.stripANSI(mode.renderCompactStatusLine(160, []).join("\n")).toLowerCase();
+		expect(compact).toContain("eta");
+		expect(compact).toContain("critical");
+
+		mode.todoExpanded = true;
+		mode.setTodos(phases);
+		const expanded = renderTodos(mode).toLowerCase();
+		expect(expanded).toContain("workera");
+		expect(expanded).toContain("cpm");
+		expect(expanded).toMatch(/\bes\b/);
+		expect(expanded).toMatch(/\bef\b/);
+		expect(expanded).toMatch(/\bls\b/);
+		expect(expanded).toMatch(/\blf\b/);
+		expect(expanded).toContain("float");
+		mode.todoExpanded = false;
+	});
+
+	it("compacts blocked and prerequisite reasons in the HUD and restores them when expanded", () => {
+		setTodoClearDelay(-1);
+		const reason = "waiting for the upstream worker to finish its unusually long review";
+		const phases: TodoPhase[] = [
+			{
+				name: "Implementation",
+				tasks: [
+					{ content: "Blocked item", status: "blocked", blocker: reason },
+					{ content: "Waiting item", status: "pending", schedule: { dependencies: ["Blocked item"] } },
+				],
+			},
+		];
+		mode.todoExpanded = false;
+		mode.setTodos(phases);
+
+		const compact = renderTodos(mode);
+		const compactLines = compact.split("\n");
+		expect(compactLines.filter(line => line.includes("needs unblock:")).length).toBe(1);
+		expect(compactLines.filter(line => line.includes("awaits prerequisite:")).length).toBe(1);
+		expect(compact).toContain("waiting for the upstream");
+		expect(compact).toContain("…");
+		expect(compact).not.toContain(reason);
+
+		mode.todoExpanded = true;
+		mode.setTodos(phases);
+		try {
+			const expanded = Bun.stripANSI(mode.todoContainer.render(240).join("\n")).replace(/\s+/g, " ");
+			expect(expanded).toContain(`Blocked item: ${reason}`);
+			expect(expanded).toContain(`needs unblock: ${reason}`);
+			expect(expanded).toContain(reason);
+		} finally {
+			mode.todoExpanded = false;
+		}
+	});
+
+	it("retains unresolved task state and sanitized expanded schedule metadata", () => {
+		setTodoClearDelay(-1);
+		mode.todoExpanded = true;
+		const phases: TodoPhase[] = [
+			{
+				name: "Implementation",
+				tasks: [
+					{
+						content: "unestimated task",
+						status: "pending",
+						schedule: {
+							owner: `${String.fromCharCode(27)}]0;unsafe${String.fromCharCode(7)}WorkerB`,
+							dependencies: ["upstream task"],
+						},
+					},
+				],
+			},
+		];
+		mode.setTodos(phases);
+
+		const row = forecastTodoPlan(phases, { now: FORECAST_TEST_NOW }).rows[0];
+		expect(row).toMatchObject({ status: "pending", estimateRequired: true });
+		expect([row.resourceFinish, row.expectedResourceFinish, row.earliestFinish]).toEqual([
+			undefined,
+			undefined,
+			undefined,
+		]);
+		const raw = mode.todoContainer.render(120).join("\n");
+		const rendered = Bun.stripANSI(raw).toLowerCase();
+		expect(rendered).not.toMatch(/\b\d{2}:\d{2}\b/);
+		expect(rendered).toContain("workerb");
+		expect(raw).not.toContain(`${String.fromCharCode(27)}]0;`);
+		mode.todoExpanded = false;
+	});
+
+	it("keeps the later active section visible and its ETA fixed when wall clock advances", () => {
+		vi.useFakeTimers();
+		setSystemTime(new Date(FORECAST_TEST_NOW));
+		setTodoClearDelay(-1);
+		const phases: TodoPhase[] = [
+			{ name: "Earlier pending", tasks: [{ content: "later work", status: "pending" }] },
+			{
+				name: "Current repair",
+				tasks: [
+					{
+						content: "visible current work",
+						status: "in_progress",
+						schedule: scheduleWithEstimate(FORECAST_TEST_NOW),
+					},
+				],
+			},
+		];
+		mode.setTodos(phases);
+		const before = renderTodos(mode);
+		expect(before).toContain("II. Current repair");
+		expect(before).toContain("visible current work");
+		const beforeEta = forecastTodoPlan(phases, { now: FORECAST_TEST_NOW }).rows.find(
+			row => row.content === "visible current work",
+		)?.resourceFinish;
+		expect(beforeEta).toBeDefined();
+		vi.advanceTimersByTime(180_000);
+		const after = renderTodos(mode);
+		expect(after).toContain("visible current work");
+		const laterRow = forecastTodoPlan(phases, { now: FORECAST_TEST_NOW + 180_000 }).rows.find(
+			row => row.content === "visible current work",
+		);
+		expect(laterRow?.resourceFinish).toBe(beforeEta);
+		expect(laterRow?.overdue).toBe(true);
+		expect(phases[1].tasks[0].schedule?.estimate?.updatedAt).toBe(FORECAST_TEST_NOW);
+	});
+
+	it("uses the active native goal deadline to report an overdue TODO forecast", () => {
+		vi.useFakeTimers();
+		setSystemTime(new Date(FORECAST_TEST_NOW));
+		setTodoClearDelay(-1);
+		const goalId = "todo-render-deadline-test";
+		session.sessionManager.appendCustomEntry("pi-goal-state", {
+			goal: { id: goalId, createdAt: FORECAST_TEST_NOW - 60_000, status: "active" },
+		});
+		session.sessionManager.appendCustomEntry("reemxy-goal-deadlines", {
+			version: 1,
+			goalId,
+			goalStartedAt: Math.floor((FORECAST_TEST_NOW - 60_000) / 1000),
+			timezone: "UTC",
+			active: true,
+			stages: [
+				{
+					id: "ship",
+					label: "Ship",
+					expectedResult: "Verified",
+					deadlineAt: Math.floor((FORECAST_TEST_NOW - 60_000) / 1000),
+				},
+			],
+		});
+
+		try {
+			mode.setTodos([
+				{
+					name: "Implementation",
+					tasks: [
+						{
+							content: "deliver after deadline",
+							status: "in_progress",
+							schedule: scheduleWithEstimate(FORECAST_TEST_NOW),
+						},
+					],
+				},
+			]);
+			const rendered = renderTodos(mode).toLowerCase();
+			expect(rendered).toContain("overdue");
+		} finally {
+			session.sessionManager.appendCustomEntry("pi-goal-state", { goal: null });
+		}
 	});
 
 	it("reloads the visible HUD from the explicitly attached session", async () => {
@@ -175,7 +406,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 					name: "Worker plan",
 					tasks: [
 						{ content: "finished worker task", status: "completed" },
-						{ content: "current worker task", status: "in_progress" },
+						{ content: "current worker task", status: "in_progress", schedule: scheduleWithEstimate(Date.now()) },
 					],
 				},
 			]);
@@ -213,177 +444,22 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(renderTodos(mode)).not.toContain("done task");
 	});
 
-	it("marks reconciled todos complete and auto-dismisses the durable plan", async () => {
-		await replaceMode();
-		setTodoClearDelay(0);
-		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
-		session.sessionManager.appendCustomEntry("user_todo_edit", {
-			phases: [{ name: "Implementation", tasks: [{ content: "Fix review comments", status: "pending" }] }],
-		});
-		session.setTodoPhases([
-			{ name: "Implementation", tasks: [{ content: "Fix review comments", status: "pending" }] },
-		]);
-		mode.setTodos(session.getTodoPhases());
-		await mode.init();
-		vi.useFakeTimers();
-		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
-			id: "ReviewFixer",
-			index: 0,
-			agent: "task",
-			description: "Fix review comments",
-			status: "completed",
-			detached: true,
-		});
-		vi.advanceTimersByTime(100);
-		vi.advanceTimersByTime(0);
-		await session.settleInFlightMessagePersistence();
-		await session.sessionManager.flush();
-		expect(session.getTodoPhases()[0]?.tasks[0]?.status).toBe("completed");
-		expect(renderTodos(mode)).toBe("");
-	});
-
-	it("reconciles focused worker todos without overwriting the main session", async () => {
+	it("keeps TODOs open after worker completion and preserves the active worker HUD", async () => {
 		await replaceMode();
 		setTodoClearDelay(-1);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
-		const mainPhases: TodoPhase[] = [
-			{ name: "Main plan", tasks: [{ content: "orchestrate the main work", status: "in_progress" }] },
-		];
-		session.setTodoPhases(mainPhases);
-		mode.setTodos(session.getTodoPhases());
-		await mode.init();
-
-		const focusedDir = TempDir.createSync("@pi-focused-reconcile-");
-		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
-		if (!model) throw new Error("Expected claude-sonnet-4-5 to exist in registry");
-		const focusedSession = new AgentSession({
-			agent: new Agent({
-				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
-			}),
-			sessionManager: SessionManager.create(focusedDir.path(), focusedDir.path()),
-			settings: Settings.isolated(),
-			modelRegistry,
-		});
-		focusedSession.setTodoPhases([
-			{
-				name: "Worker plan",
-				tasks: [
-					{ content: "apply nested review fixes", status: "pending" },
-					{ content: "verify worker changes", status: "in_progress" },
-				],
-			},
-		]);
-		const registry = AgentRegistry.global();
-		const agentId = "FocusedTodoParent";
-		const ref = registry.register({
-			id: agentId,
-			displayName: agentId,
-			kind: "sub",
-			parentId: MAIN_AGENT_ID,
-			session: focusedSession,
-			status: "running",
-		});
-		try {
-			await mode.focusAgentSession(agentId);
-			expect(renderTodos(mode)).toContain("apply nested review fixes");
-
-			vi.useFakeTimers();
-			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
-				id: `${agentId}/NestedFixer`,
-				index: 0,
-				agent: "task",
-				description: "apply nested review fixes",
-				status: "completed",
-				detached: true,
-			});
-			vi.advanceTimersByTime(100);
-
-			expect(focusedSession.getTodoPhases()[0]?.tasks[0]?.status).toBe("completed");
-			expect(session.getTodoPhases()).toEqual(mainPhases);
-			expect(renderTodos(mode)).toContain("1/2");
-
-			await mode.unfocusSession();
-			expect(renderTodos(mode)).toContain("orchestrate the main work");
-			expect(renderTodos(mode)).not.toContain("apply nested review fixes");
-		} finally {
-			vi.useRealTimers();
-			if (mode.focusedAgentId) await mode.unfocusSession();
-			registry.unregister(agentId, ref);
-			await focusedSession.dispose();
-			focusedDir.removeSync();
-		}
-	});
-
-	it("reconciles into the snapshot's owning session even when viewSession has moved on", async () => {
-		// Reproduces the focus-attach window deterministically: the HUD snapshot is
-		// reloaded from the worker (making it the owner) while viewSession is still
-		// the main session. A subagent completing here must land in the worker, not
-		// be written over the main session's canonical plan (#9575 review).
-		await replaceMode();
-		setTodoClearDelay(-1);
-		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
-		const mainPhases: TodoPhase[] = [
-			{ name: "Main plan", tasks: [{ content: "orchestrate the main work", status: "in_progress" }] },
-		];
-		session.setTodoPhases(mainPhases);
-		mode.setTodos(session.getTodoPhases());
-		await mode.init();
-
-		const workerDir = TempDir.createSync("@pi-owner-reconcile-");
-		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
-		if (!model) throw new Error("Expected claude-sonnet-4-5 to exist in registry");
-		const workerSession = new AgentSession({
-			agent: new Agent({
-				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
-			}),
-			sessionManager: SessionManager.create(workerDir.path(), workerDir.path()),
-			settings: Settings.isolated(),
-			modelRegistry,
-		});
-		workerSession.setTodoPhases([
-			{ name: "Worker plan", tasks: [{ content: "run the delegated fix", status: "in_progress" }] },
-		]);
-		try {
-			// Owner := worker, viewSession still := main.
-			await mode.reloadTodos(workerSession);
-			expect(renderTodos(mode)).toContain("run the delegated fix");
-
-			vi.useFakeTimers();
-			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
-				id: "DelegatedFixer",
-				index: 0,
-				agent: "task",
-				description: "run the delegated fix",
-				status: "completed",
-				detached: true,
-			});
-			vi.advanceTimersByTime(100);
-
-			expect(workerSession.getTodoPhases()[0]?.tasks[0]?.status).toBe("completed");
-			expect(session.getTodoPhases()).toEqual(mainPhases);
-			expect(renderTodos(mode)).toContain("1/1");
-		} finally {
-			vi.useRealTimers();
-			await workerSession.dispose();
-			workerDir.removeSync();
-		}
-	});
-
-	it("completes a blocked todo when the detached subagent it waits on finishes", async () => {
-		await replaceMode();
-		setTodoClearDelay(-1);
-		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
-		// A todo blocked while waiting on a detached subagent. Blocked todos are
-		// excluded from the stop reminder, so if reconciliation skipped them this
-		// would strand silently after the subagent completes.
-		session.setTodoPhases([
+		const phases: TodoPhase[] = [
 			{
 				name: "Implementation",
-				tasks: [{ content: "Fix review comments", status: "blocked", blocker: "waiting on ReviewFixer" }],
+				tasks: [
+					{ content: "Fix review comments", status: "pending" },
+					{ content: "Fix review comments", status: "in_progress" },
+					{ content: "Fix review comments", status: "blocked", blocker: "waiting on ReviewFixer" },
+				],
 			},
-		]);
+		];
+		session.setTodoPhases(phases);
 		mode.setTodos(session.getTodoPhases());
-
 		await mode.init();
 		vi.useFakeTimers();
 		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
@@ -394,12 +470,55 @@ describe("InteractiveMode todo HUD persistence", () => {
 			status: "completed",
 			detached: true,
 		});
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "NeighborWorker",
+			index: 1,
+			agent: "task",
+			description: "Inspect adjacent work",
+			status: "started",
+			detached: true,
+		});
 		vi.advanceTimersByTime(100);
 
-		const task = session.getTodoPhases()[0]?.tasks[0];
-		expect(task?.status).toBe("completed");
-		// The blocker note is dropped with the blocked status — the wait is over.
-		expect(task?.blocker).toBeUndefined();
+		expect(session.getTodoPhases()).toEqual(phases);
+		expect(renderTodos(mode)).toContain("Fix review comments");
+		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("Inspect adjacent work");
+	});
+
+	it("completes and auto-dismisses only after an explicit Main TODO done command", async () => {
+		await replaceMode();
+		setTodoClearDelay(1);
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		const startedAt = Date.now() - 60_000;
+		const phases: TodoPhase[] = [
+			{
+				name: "Implementation",
+				tasks: [
+					{
+						content: "Fix review comments",
+						status: "in_progress",
+						schedule: { ...scheduleWithEstimate(startedAt), startedAt },
+					},
+				],
+			},
+		];
+		session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
+		session.setTodoPhases(phases);
+		mode.setTodos(session.getTodoPhases());
+		await mode.init();
+		vi.useFakeTimers();
+		await mode.handleTodoCommand("done Fix review comments");
+		expect(session.getTodoPhases()[0]?.tasks[0]?.status).toBe("completed");
+		expect(renderTodos(mode)).toContain("Fix review comments");
+		vi.advanceTimersByTime(999);
+		expect(renderTodos(mode)).toContain("Fix review comments");
+		vi.advanceTimersByTime(1);
+		await session.settleInFlightMessagePersistence();
+		await session.sessionManager.flush();
+		const completedForecast = forecastTodoPlan(session.getTodoPhases(), { now: Date.now() });
+		expect(completedForecast.rows[0]?.finishedAt).toBeGreaterThan(startedAt);
+		expect(completedForecast.rows[0]?.earliestStart).toBe(startedAt);
+		expect(renderTodos(mode)).toBe("");
 	});
 	it("does not persist a stale reveal after the owning snapshot changes", async () => {
 		await replaceMode();
@@ -537,7 +656,12 @@ describe("InteractiveMode todo HUD persistence", () => {
 	it("persists dismissal and explicit reveal across fresh session loads without losing tasks", async () => {
 		await replaceMode();
 		vi.useFakeTimers();
-		const phases: TodoPhase[] = [{ name: "Done", tasks: [{ content: "ship", status: "completed" }] }];
+		const phases: TodoPhase[] = [
+			{
+				name: "Done",
+				tasks: [{ content: "ship", status: "completed", schedule: scheduleWithEstimate(Date.now()) }],
+			},
+		];
 		cfgTasksTodoClearDelay.override(session.settings, 0);
 		session.sessionManager.appendMessage({
 			role: "assistant",
@@ -620,7 +744,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		resetSettingsForTest();
 	});
 
-	it("renders a Todos tree: stage progression header, active stage expanded, others collapsed", () => {
+	it("keeps phase identities and progress while displaying dependency-ready tasks", () => {
 		mode.setTodos([
 			{
 				name: "Foundation",
@@ -657,9 +781,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		expect(lines.some(line => line.includes("third task"))).toBe(true);
 		const firstLine = lines.find(line => line.includes("first task"));
 		expect(firstLine).toContain(theme.checkbox.checked);
-		// Upcoming stage: header with its own progress, but collapsed (no task rows).
 		expect(lines.some(line => line.includes("II. Verification") && line.includes("0/1"))).toBe(true);
-		expect(lines.some(line => line.includes("run tests"))).toBe(false);
 		// No overflow rows — the header/progress counts imply what is hidden.
 		expect(lines.some(line => line.includes("more"))).toBe(false);
 	});
@@ -693,7 +815,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		expect(lines.some(line => line.includes("alpha"))).toBe(true);
 	});
 
-	it("caps the visible stage list and summarizes the hidden ones in an overflow row", () => {
+	it("bounds a multi-phase display and reports the hidden task count", () => {
 		const stage = (name: string): TodoPhase => ({ name, tasks: [{ content: `${name} task`, status: "pending" }] });
 		mode.setTodos([
 			stage("Discovery"),
@@ -708,15 +830,47 @@ describe("InteractiveMode todo HUD anchor", () => {
 			.render(80)
 			.flatMap(line => line.split("\n"))
 			.map(line => Bun.stripANSI(line));
-		// Active stage + four following stages render; the rest collapse into a
-		// trailing "… n more stages" row.
 		expect(lines.some(line => line.includes("II. Two"))).toBe(true);
 		expect(lines.some(line => line.includes("V. Five"))).toBe(true);
 		expect(lines.some(line => line.includes("Six"))).toBe(false);
-		expect(lines.some(line => line.includes("2 more stages"))).toBe(true);
+		expect(lines.some(line => line.includes("2 more todos"))).toBe(true);
 		// Hidden stages do not change the compact title.
 		const root = lines.find(line => line.includes("TODO"));
 		expect(root?.trim()).toBe("TODO");
+	});
+
+	it("renders one hidden task instead of a same-row overflow summary", () => {
+		mode.setTodos([
+			{
+				name: "Tasks",
+				tasks: Array.from({ length: 6 }, (_, index): TodoItem => ({
+					content: `Task ${index + 1}`,
+					status: index === 0 ? "in_progress" : "pending",
+				})),
+			},
+		]);
+		expect(renderTodos(mode)).toContain("Task 6");
+		expect(renderTodos(mode)).not.toContain("more todo");
+
+		mode.setTodos([
+			{
+				name: "Tasks",
+				tasks: Array.from({ length: 7 }, (_, index): TodoItem => ({
+					content: `Task ${index + 1}`,
+					status: index === 0 ? "in_progress" : "pending",
+				})),
+			},
+		]);
+		expect(renderTodos(mode)).not.toContain("Task 7");
+		expect(renderTodos(mode)).toContain("2 more todos");
+	});
+
+	it("uses one hidden task's original phase and task instead of a summary", () => {
+		const stage = (name: string): TodoPhase => ({ name, tasks: [{ content: `${name} task`, status: "pending" }] });
+		mode.setTodos([stage("One"), stage("Two"), stage("Three"), stage("Four"), stage("Five"), stage("Six")]);
+		const oneHidden = renderTodos(mode);
+		expect(oneHidden).toContain("VI. Six");
+		expect(oneHidden).not.toContain("more stage");
 	});
 
 	it("expands and collapses the complete todo HUD through /todo", async () => {

@@ -828,11 +828,12 @@ describe("layoutPinnedHud", () => {
 	});
 
 	it("collapses longer lists behind an expander", () => {
-		expect(layoutPinnedHud(4, false)).toEqual({ itemRows: 3, toggle: "expand", toggleRow: 5 });
+		expect(layoutPinnedHud(4, false)).toEqual({ itemRows: 4, toggle: undefined, toggleRow: undefined });
 		expect(layoutPinnedHud(10, false)).toEqual({ itemRows: 3, toggle: "expand", toggleRow: 5 });
 	});
 
 	it("expands to every row with a collapse row", () => {
+		expect(layoutPinnedHud(4, true)).toEqual({ itemRows: 4, toggle: "collapse", toggleRow: 6 });
 		expect(layoutPinnedHud(5, true)).toEqual({ itemRows: 5, toggle: "collapse", toggleRow: 7 });
 		expect(layoutPinnedHud(10, true)).toEqual({ itemRows: 10, toggle: "collapse", toggleRow: 12 });
 	});
