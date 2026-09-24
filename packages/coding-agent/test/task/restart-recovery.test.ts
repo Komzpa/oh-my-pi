@@ -11,7 +11,7 @@ import {
 	captureSubagentsForRestart,
 	restoreSubagentsAfterRestart,
 } from "@oh-my-pi/pi-coding-agent/task/restart-recovery";
-import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/hub";
+import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 interface Transcript {
