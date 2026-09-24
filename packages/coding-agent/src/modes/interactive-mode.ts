@@ -3665,17 +3665,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		const visibleTasks = orderedTasks.filter(entry => visible.has(entry));
 		const hiddenTasks = orderedTasks.filter(entry => !visible.has(entry) && !isClosedTodo(entry.task)).length;
+		// One block per phase, in the order its first row comes due; rows keep their time order inside
+		// it. Interleaved phases used to repeat their label on every row ("VII. …: " four times).
 		const segments: Array<{ phase: TodoPhase; phaseIndex: number; tasks: TodoItem[] }> = [];
+		const segmentByPhase = new Map<number, (typeof segments)[number]>();
 		for (const entry of visibleTasks) {
-			let segment = segments[segments.length - 1];
-			if (!segment || segment.phaseIndex !== entry.phaseIndex) {
+			let segment = segmentByPhase.get(entry.phaseIndex);
+			if (!segment) {
 				segment = { phase: entry.phase, phaseIndex: entry.phaseIndex, tasks: [] };
+				segmentByPhase.set(entry.phaseIndex, segment);
 				segments.push(segment);
 			}
 			segment.tasks.push(entry.task);
 		}
 
-		const displayedPhases = new Set<number>();
 		const spineGlyphs: string[] = [];
 		const contentLines: string[] = [];
 		const contentOwners: (string | undefined)[] = [];
@@ -3694,34 +3697,23 @@ export class InteractiveMode implements InteractiveModeContext {
 		for (const segment of segments) {
 			const { phase, phaseIndex } = segment;
 			const label = multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name;
-			const firstSegment = !displayedPhases.has(phaseIndex);
-			displayedPhases.add(phaseIndex);
 			const done = phase.tasks.filter(isClosedTodo).length;
 			const progress = ` · ${done}/${phase.tasks.length}`;
 			const header =
 				phaseIndex === activeIdx
 					? theme.bold(theme.fg("accent", label)) + theme.fg("dim", progress)
 					: theme.fg("muted", label) + theme.fg("dim", progress);
-			const tasks = firstSegment
-				? renderTreeList(
-						{
-							items: segment.tasks,
-							expanded,
-							itemType: "task",
-							renderItem: todo =>
-								this.#formatForecastTodoLine(todo, "", isMatched(todo), now, workers.byTask.get(todo)),
-						},
-						theme,
-					)
-				: segment.tasks.map(todo =>
-						this.#formatForecastTodoLine(todo, `${label}: `, isMatched(todo), now, workers.byTask.get(todo)),
-					);
-			pushBlock(
-				firstSegment ? [header, ...tasks] : tasks,
-				firstSegment
-					? [undefined, ...segment.tasks.map(task => workers.byTask.get(task)?.id)]
-					: segment.tasks.map(task => workers.byTask.get(task)?.id),
+			const tasks = renderTreeList(
+				{
+					items: segment.tasks,
+					expanded,
+					itemType: "task",
+					renderItem: todo =>
+						this.#formatForecastTodoLine(todo, "", isMatched(todo), now, workers.byTask.get(todo)),
+				},
+				theme,
 			);
+			pushBlock([header, ...tasks], [undefined, ...segment.tasks.map(task => workers.byTask.get(task)?.id)]);
 		}
 		if (!expanded && hiddenTasks > 0) pushBlock(theme.fg("muted", formatMoreItems(hiddenTasks, "todo")));
 		if (workers.unassigned.length > 0) {

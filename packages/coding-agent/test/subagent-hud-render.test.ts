@@ -654,7 +654,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(hud).not.toContain("Subagents");
 	});
 
-	it("shows each phase header once when dependencies interleave phases", async () => {
+	it("groups interleaved phases under one header each, without per-row phase labels", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
 		mode.setTodos([
 			{
@@ -675,8 +675,13 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		const lines = Bun.stripANSI(mode.todoContainer.render(120).join("\n")).split("\n");
 		expect(lines.filter(line => line.includes("Recording · 0/2"))).toHaveLength(1);
 		expect(lines.filter(line => line.includes("Release · 0/2"))).toHaveLength(1);
-		expect(lines.find(line => line.includes("record second"))).toContain("Recording:");
-		expect(lines.find(line => line.includes("release second"))).toContain("Release:");
+		// Rows sit under their own phase's single header, without a repeated "Phase: " prefix.
+		const at = (text: string) => lines.findIndex(line => line.includes(text));
+		expect(lines.some(line => /Recording:|Release:/.test(line))).toBe(false);
+		expect(at("Recording · 0/2")).toBeLessThan(at("record first"));
+		expect(at("record second")).toBeLessThan(at("Release · 0/2"));
+		expect(at("Release · 0/2")).toBeLessThan(at("release first"));
+		expect(at("release first")).toBeLessThan(at("release second"));
 	});
 
 	it("keeps ambiguous description and repeated owner matches unassigned", () => {
