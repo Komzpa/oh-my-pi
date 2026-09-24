@@ -333,12 +333,13 @@ describe("TodoTool operations", () => {
 	it("an empty batch or a done/drop without a target changes nothing", async () => {
 		const tool = new TodoTool(createSession());
 		await tool.execute("call-1", { op: "init", list: [{ phase: "Work", items: ["a", "b"] }] });
-		for (const [id, args] of [
+		const calls: Array<[string, Parameters<TodoTool["execute"]>[1]]> = [
 			["call-2", { op: "done", items: [] }],
 			["call-3", { op: "drop", items: [] }],
 			["call-4", { op: "done" }],
 			["call-5", { op: "drop" }],
-		] as const) {
+		];
+		for (const [id, args] of calls) {
 			const outcome = await tool.execute(id, args).then(
 				result => JSON.stringify(result.content),
 				error => String(error),
