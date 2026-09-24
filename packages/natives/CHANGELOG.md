@@ -13,6 +13,10 @@
 - Fixed shell access to standard and special file descriptors, including `/dev/stdin`, `/dev/stdout`, `/dev/stderr`, `/dev/fd/N`, and `/dev/tty`, preventing heredoc commands from hanging the TUI.
 - Fixed native operations such as grep, glob, AST, shell, and VCS calls to promptly honor an `AbortSignal` that was already aborted when the operation starts.
 - Fixed Windows path formatting in the shell’s `fd` and `find` builtins so POSIX path patterns match correctly.
+- Fixed shell commands using `/dev/stdin`, `/dev/stdout`, `/dev/stderr`, `/dev/fd/N`, and `/dev/tty` so they now access the command's descriptors correctly, including preventing heredoc commands from hanging the TUI.
+- Fixed native operations such as grep, glob, AST, shell, and VCS calls so they promptly honor an `AbortSignal` that was already aborted when the operation starts.
+- Fixed the shell's `fd` and `find` builtins printing Windows backslash paths, so POSIX path patterns such as `-path '*/src/*'` never matched on Windows ([#13164](https://github.com/can1357/oh-my-pi/issues/13164)).
+- Fixed native operations to deliver results completed within their timeout and reject results when an abort signal arrives before settlement ([#13209](https://github.com/can1357/oh-my-pi/pull/13209) by [@Komzpa](https://github.com/Komzpa)).
 
 ## [18.3.0] - 2026-09-24
 
