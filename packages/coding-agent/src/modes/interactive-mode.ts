@@ -3466,8 +3466,19 @@ export class InteractiveMode implements InteractiveModeContext {
 	#formatInlineWorker(worker: ObservableSession, separator = true, description = false): string {
 		const role = worker.agent ?? worker.progress?.agent;
 		const detail = description ? worker.description?.trim() || worker.progress?.description?.trim() : undefined;
+		// Which model serves this worker, the same badge and setting as the subagent feed (Darafei
+		// 2026-09-25: "тут бы писать какая модель за каким воркером").
+		const model = isFeedModelBadgeEnabled()
+			? formatFeedModelBadge(
+					worker.progress?.resolvedModelIdentity ?? worker.progress?.resolvedModel,
+					worker.progress?.resolvedThinkingLevel,
+					worker.progress?.advisor,
+					theme,
+					FEED_MODEL_BADGE_WIDTH,
+				)
+			: "";
 		const label = `${formatTaskId(worker.id)}${role ? ` (${role})` : ""}${detail ? `: ${detail}` : ""}`;
-		return theme.fg("accent", `${separator ? "· " : ""}◔ ${sanitizeStatusText(label)}`);
+		return `${theme.fg("accent", `${separator ? "· " : ""}◔ ${sanitizeStatusText(label)}`)}${model ? ` ${model}` : ""}`;
 	}
 
 	#cancelTodoAutoClearTimer(): void {
