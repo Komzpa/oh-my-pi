@@ -211,26 +211,27 @@ impl Libei {
 					}
 					return Err(DesktopError::input_failed("libei device discovery timed out"));
 				}
-				let event = match tokio::time::timeout_at(
+				let Ok(event) = tokio::time::timeout_at(
 					(now + DEVICE_DISCOVERY_WAKE_INTERVAL).min(deadline),
 					events.next(),
 				)
 				.await
-				{
-					Ok(event) => event,
-					Err(_) => {
-						// Messages can remain queued after handshake's separate block_on;
-						// drain them rather than waiting indefinitely for another readiness edge.
-						self.context.read().map_err(|err| {
-							DesktopError::input_failed(format!("libei socket read: {err}"))
-						})?;
-						continue;
-					},
-				}
-				.ok_or_else(|| {
-					DesktopError::input_failed("libei disconnected during device discovery")
-				})?
-				.map_err(|err| DesktopError::input_failed(format!("libei device discovery: {err}")))?;
+				else {
+					// Messages can remain queued after handshake's separate block_on;
+					// drain them rather than waiting indefinitely for another readiness edge.
+					self
+						.context
+						.read()
+						.map_err(|err| DesktopError::input_failed(format!("libei socket read: {err}")))?;
+					continue;
+				};
+				let event = event
+					.ok_or_else(|| {
+						DesktopError::input_failed("libei disconnected during device discovery")
+					})?
+					.map_err(|err| {
+						DesktopError::input_failed(format!("libei device discovery: {err}"))
+					})?;
 				match event {
 					EiEvent::SeatAdded(event) => {
 						event.seat.bind_capabilities(&[
