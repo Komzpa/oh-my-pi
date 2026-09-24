@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { IrcBus } from "../irc/bus";
 import restartContinuationPrompt from "../prompts/restart-continuation.md" with { type: "text" };
 import restartRootContinuationPrompt from "../prompts/restart-root-continuation.md" with { type: "text" };
-import type { IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools/hub";
+import type { IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools/irc";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, getAgentTombstonePath, MAIN_AGENT_ID, type AgentRef } from "../registry/agent-registry";
 import { ensurePersistedRoster, isAgentSessionFileInRootTree } from "../registry/persisted-agents";
