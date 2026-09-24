@@ -56,7 +56,7 @@ export async function executeSend(
 	// Restore parked recipients only when needed; never delay delivery to a live peer.
 	if (!isBroadcast && sessionFileHint) {
 		const recipient = registry.get(to);
-		if (!recipient || recipient.status === "parked") await ensurePersistedRoster(registry, sessionFileHint);
+		if (!recipient || recipient.status === "parked") await ensurePersistedRoster(registry, sessionFileHint, to);
 	}
 
 	const targets = isBroadcast ? registry.listVisibleTo(senderId).map(ref => ref.id) : [to];

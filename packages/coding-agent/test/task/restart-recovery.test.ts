@@ -306,7 +306,7 @@ describe("subagent restart recovery", () => {
 		const first = await restoreSubagentsAfterRestart(freshRootSession.session);
 		expect(first.resumed).toEqual([running.id]);
 		expect(first.restoredIdle).toEqual([idle.id]);
-		expect(first.parked).toEqual([parked.id]);
+		expect(first.parked).toEqual([]);
 		expect(first.failures).toEqual([]);
 		expect(deliveries).toHaveLength(1);
 		expect(deliveries[0]).toMatchObject({ from: MAIN_AGENT_ID, to: running.id });
@@ -331,7 +331,6 @@ describe("subagent restart recovery", () => {
 		expect(freshRegistry.get(parked.id)).toMatchObject({
 			status: "parked",
 			session: null,
-			displayName: "Parked label",
 		});
 		expect(freshRegistry.get(tombstoned.id)?.status).toBe("aborted");
 		expect(freshRegistry.get(tombstoned.id)?.session).toBeNull();
@@ -340,7 +339,7 @@ describe("subagent restart recovery", () => {
 		const second = await restoreSubagentsAfterRestart(freshRootSession.session);
 		expect(second.resumed).toEqual([running.id]);
 		expect(second.restoredIdle).toEqual([idle.id]);
-		expect(second.parked).toEqual([parked.id]);
+		expect(second.parked).toEqual([]);
 		expect(deliveries).toHaveLength(1);
 		expect(revivalCalls).toEqual([running.id, idle.id]);
 
@@ -364,7 +363,7 @@ describe("subagent restart recovery", () => {
 		const third = await restoreSubagentsAfterRestart(thirdRootSession.session);
 		expect(third.resumed).toEqual([]);
 		expect(third.restoredIdle).toEqual([running.id, idle.id]);
-		expect(third.parked).toEqual([parked.id]);
+		expect(third.parked).toEqual([]);
 		expect(third.failures).toEqual([]);
 		expect(deliveries).toHaveLength(1);
 		expect(thirdRevivalCalls).toEqual([running.id, idle.id]);
@@ -374,6 +373,117 @@ describe("subagent restart recovery", () => {
 		});
 		expect(thirdRegistry.get(idle.id)).toMatchObject({ status: "idle", session: thirdRevived.get(idle.id)?.session });
 		expect(thirdRegistry.get(parked.id)).toMatchObject({ status: "parked", session: null });
+	});
+
+	it("restarts with 300 completed refs and hands off exactly the two live children", async () => {
+		const cwd = makeTempDir("@pi-restart-large-roster-");
+		const { manager: rootManager, file: rootFile } = await createRootSession(cwd, path.join(cwd, "sessions"));
+		const rootArtifactDir = rootFile.slice(0, -".jsonl".length);
+		const registry = AgentRegistry.global();
+		const rootSession = makeTestSession(rootManager).session;
+		registerRoot(registry, rootSession, rootFile);
+		const completedAt = Date.now() - 60_000;
+		for (let index = 0; index < 300; index++) {
+			const id = `Finished-${String(index).padStart(3, "0")}`;
+			registry.register({
+				id,
+				displayName: id,
+				kind: "sub",
+				parentId: MAIN_AGENT_ID,
+				session: null,
+				sessionFile: path.join(rootArtifactDir, `${id}.jsonl`),
+				status: "parked",
+				lifecycle: { acceptedAt: completedAt, terminalAt: completedAt },
+			});
+		}
+		const live: Transcript[] = [];
+		const childManagers: SessionManager[] = [];
+		for (const task of ["first live worker", "second live worker"]) {
+			const transcript = await createTranscript(cwd, rootArtifactDir, { task });
+			const manager = track(await SessionManager.open(transcript.sessionFile));
+			childManagers.push(manager);
+			live.push(transcript);
+			registry.register({
+				id: transcript.id,
+				displayName: transcript.id,
+				kind: "sub",
+				parentId: MAIN_AGENT_ID,
+				session: makeTestSession(manager, { streaming: true }).session,
+				sessionFile: transcript.sessionFile,
+				status: "running",
+			});
+		}
+
+		await captureSubagentsForRestart(rootSession);
+		const handoff = rootManager
+			.getEntries()
+			.find(entry => entry.type === "custom" && entry.customType === "subagent_restart_handoff");
+		expect(handoff?.type).toBe("custom");
+		if (!handoff || handoff.type !== "custom") throw new Error("Expected durable restart handoff");
+		expect(
+			(handoff.data as { children: Array<{ id: string; status: string }> }).children
+				.map(({ id, status }) => ({
+					id,
+					status,
+				}))
+				.toSorted((left, right) => left.id.localeCompare(right.id)),
+		).toEqual(
+			live.map(({ id }) => ({ id, status: "running" })).sort((left, right) => left.id.localeCompare(right.id)),
+		);
+		expect((handoff.data as { omittedChildren?: unknown[] }).omittedChildren ?? []).toEqual([]);
+		await Promise.all([...childManagers.map(manager => manager.close()), rootManager.close()]);
+	});
+
+	it("keeps the newest live refs and records omitted workers when the live limit is exceeded", async () => {
+		const cwd = makeTempDir("@pi-restart-live-limit-");
+		const { manager: rootManager, file: rootFile } = await createRootSession(cwd, path.join(cwd, "sessions"));
+		const rootArtifactDir = rootFile.slice(0, -".jsonl".length);
+		const registry = AgentRegistry.global();
+		const rootSession = makeTestSession(rootManager).session;
+		registerRoot(registry, rootSession, rootFile);
+		for (let index = 0; index < 257; index++) {
+			const id = `Idle-${String(index).padStart(3, "0")}`;
+			registry.register({
+				id,
+				displayName: id,
+				kind: "sub",
+				parentId: MAIN_AGENT_ID,
+				session: rootSession,
+				sessionFile: path.join(rootArtifactDir, `${id}.jsonl`),
+				status: "idle",
+				createdAt: index,
+				lastActivity: index,
+			});
+		}
+		const running = await createTranscript(cwd, rootArtifactDir, { task: "priority running worker" });
+		const runningManager = track(await SessionManager.open(running.sessionFile));
+		registry.register({
+			id: running.id,
+			displayName: running.id,
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: makeTestSession(runningManager, { streaming: true }).session,
+			sessionFile: running.sessionFile,
+			status: "running",
+		});
+
+		await captureSubagentsForRestart(rootSession);
+		const handoff = rootManager
+			.getEntries()
+			.find(entry => entry.type === "custom" && entry.customType === "subagent_restart_handoff");
+		expect(handoff?.type).toBe("custom");
+		if (!handoff || handoff.type !== "custom") throw new Error("Expected durable restart handoff");
+		const data = handoff.data as {
+			children: Array<{ id: string; status: string }>;
+			omittedChildren?: Array<{ id: string; reason: string }>;
+		};
+		expect(data.children).toHaveLength(256);
+		expect(data.children[0]).toMatchObject({ id: running.id, status: "running" });
+		expect(data.children.some(child => child.id === "Idle-256")).toBe(true);
+		expect(data.children.some(child => child.id === "Idle-000")).toBe(false);
+		expect(data.omittedChildren?.map(child => child.id).sort()).toEqual(["Idle-000", "Idle-001"]);
+		expect(data.omittedChildren?.every(child => child.reason.includes("not revived"))).toBe(true);
+		await Promise.all([runningManager.close(), rootManager.close()]);
 	});
 
 	it("closes an interrupted tool call and resumes the same child once", async () => {
