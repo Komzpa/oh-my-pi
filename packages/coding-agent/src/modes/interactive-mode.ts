@@ -6910,7 +6910,13 @@ export class InteractiveMode implements InteractiveModeContext {
 							this.#scheduleGoalContinuation();
 						},
 						onStateChange: record => {
-							if (isRestartRequestActive(record.state)) this.showStatus(formatRestartProgress(record));
+							if (
+								record.state === "queued" ||
+								record.state === "draining" ||
+								record.state === "checkpointed" ||
+								record.state === "restarting"
+							)
+								this.showStatus(`Restart ${record.state}`);
 						},
 					});
 					this.#restartQueueController = controller;
