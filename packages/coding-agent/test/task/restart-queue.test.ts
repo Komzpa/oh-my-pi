@@ -8,6 +8,7 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
 	createRestartQueueController,
+	isRestartResumePending,
 	type RestartControlIdentity,
 	type RestartQueueController,
 	type RestartRequestRecord,
@@ -154,6 +155,19 @@ afterEach(async () => {
 });
 
 describe("restart queue controller", () => {
+	it("licenses active-goal startup only from a previous process checkpoint", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const oldIdentity = identityFor(manager, "old-instance", 1);
+		const nextIdentity = identityFor(manager, "next-instance", 1);
+		await appendQueueRecord(manager, oldIdentity, coldRecord(oldIdentity, "draining"));
+		expect(isRestartResumePending(manager.getBranch(), manager.getSessionId(), nextIdentity.instanceId)).toBe(false);
+		await appendQueueRecord(manager, oldIdentity, coldRecord(oldIdentity, "restarting"));
+		expect(isRestartResumePending(manager.getBranch(), manager.getSessionId(), nextIdentity.instanceId)).toBe(true);
+		expect(isRestartResumePending(manager.getBranch(), manager.getSessionId(), oldIdentity.instanceId)).toBe(false);
+		await appendQueueRecord(manager, nextIdentity, coldRecord(nextIdentity, "failed"));
+		expect(isRestartResumePending(manager.getBranch(), manager.getSessionId(), "third-instance")).toBe(false);
+	});
 	it("rejects stale identities, deduplicates, and retries cancellation delivery before releasing a held drain", async () => {
 		const cwd = makeTempDir();
 		const { manager } = await createRoot(cwd);
