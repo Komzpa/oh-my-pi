@@ -30,6 +30,15 @@ export interface TodoSchedule {
 	progress?: { at: number; evidence: string };
 	startedAt?: number;
 	finishedAt?: number;
+	/** Observed Task worker that actually executed this row, independent of forecast ownership. */
+	executor?: {
+		workerId: string;
+		agentProfile?: string;
+		resolvedModel?: string;
+		thinkingLevel?: string;
+		startedAt: number;
+		finishedAt?: number;
+	};
 }
 
 export interface TodoScheduleInputTask {
@@ -1438,7 +1447,7 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 			: row.awaitingPrerequisite
 				? `awaits prerequisite: ${expanded ? safeText(row.awaitingPrerequisite) : truncateToWidth(safeText(row.awaitingPrerequisite), 32)} · ${effort}`
 				: row.resourceFinish !== undefined
-					? `fixed-path P95 ${displayTimestamp(row.resourceFinish, now)}`
+					? `by ${displayTimestamp(row.resourceFinish, now)}`
 					: planActions
 						? `plan required: ${planActions}`
 						: `forecast unavailable${row.issues[0] ? `: ${safeText(row.issues[0])}` : ""}`;
@@ -1446,40 +1455,15 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 	const workEnd = terminal ? row.finishedAt : row.status === "in_progress" ? now : undefined;
 	const worked =
 		finiteTimestamp(row.startedAt) && finiteTimestamp(workEnd) && workEnd >= row.startedAt
-			? `work ${Math.floor((workEnd - row.startedAt) / 60_000)}m`
+			? `${Math.floor((workEnd - row.startedAt) / 60_000)}m`
 			: undefined;
 	if (row.estimateRangeSeconds)
-		parts.push(`${worked ? `${worked} / ` : ""}estimate ${Math.ceil(row.estimateRangeSeconds.likely / 60)}m`);
+		parts.push(`${worked ? `${worked} / ` : ""}${Math.ceil(row.estimateRangeSeconds.likely / 60)}m`);
 	else if (worked) parts.push(worked);
-	if (row.overdue) parts.push(`overdue ${Math.ceil((now - row.resourceFinish!) / 60_000)}m`);
 	if (row.criticalityKnown === true && row.critical) parts.push("critical");
-	if (row.reestimateCount > 0) parts.push(`reestimated ${row.reestimateCount}×`);
+	if (row.reestimateCount >= 3) parts.push(`reestimated ${row.reestimateCount}×`);
 	if (expanded) {
-		if (row.confidence !== "unknown") parts.push(`confidence ${row.confidence}`);
-		if (row.criticalityKnown === true) parts.push(`critical ${row.critical ? "yes" : "no"}`);
-		if (row.owner) parts.push(`owner ${safeText(row.owner)}`);
-		const cpm = [
-			row.earliestStart === undefined ? undefined : `ES ${displayTimestamp(row.earliestStart, now)}`,
-			row.earliestFinish === undefined ? undefined : `EF ${displayTimestamp(row.earliestFinish, now)}`,
-			row.latestStart === undefined ? undefined : `LS ${displayTimestamp(row.latestStart, now)}`,
-			row.latestFinish === undefined ? undefined : `LF ${displayTimestamp(row.latestFinish, now)}`,
-		].filter((value): value is string => value !== undefined);
-		if (cpm.length) parts.push(`CPM ${cpm.join(" / ")}`);
-		const float = [
-			row.totalFloatSeconds === undefined ? undefined : `total ${Math.round(row.totalFloatSeconds / 60)}m`,
-			row.freeFloatSeconds === undefined ? undefined : `free ${Math.round(row.freeFloatSeconds / 60)}m`,
-		].filter((value): value is string => value !== undefined);
-		if (float.length) parts.push(`float ${float.join(" / ")}`);
-		if (row.resourceStart !== undefined) parts.push(`resource start ${displayTimestamp(row.resourceStart, now)}`);
-		if (row.expectedResourceFinish !== undefined)
-			parts.push(`expected resource finish ${displayTimestamp(row.expectedResourceFinish, now)}`);
-		if (row.fixedPathP95Finish !== undefined)
-			parts.push(`fixed-path P95 finish ${displayTimestamp(row.fixedPathP95Finish, now)}`);
-		if (row.fixedPathExpectedSeconds !== undefined || row.fixedPathSigmaSeconds !== undefined)
-			parts.push(
-				`fixed path TE/σ ${formatSeconds(row.fixedPathExpectedSeconds)}/${formatSeconds(row.fixedPathSigmaSeconds)}`,
-			);
-		if (row.fixedPath?.length) parts.push(`fixed path ${row.fixedPath.map(safeText).join(" → ")}`);
+		if (row.owner && !["main", "root"].includes(row.owner.toLowerCase())) parts.push(`owner ${safeText(row.owner)}`);
 		if (row.planningIssues?.length)
 			parts.push(`plan required: ${row.planningIssues.map(issue => safeText(issue.message)).join("; ")}`);
 		else if (row.issues.length) parts.push(row.issues.map(safeText).join("; "));
@@ -1491,14 +1475,13 @@ export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number): 
 	const parts: string[] = [];
 	if (plan.unresolvedCount > 0) {
 		if (plan.knownWorkFinish !== undefined)
-			parts.push(`Known work fixed-path P95 ${displayTimestamp(plan.knownWorkFinish, now)} (partial)`);
+			parts.push(`Known work by ${displayTimestamp(plan.knownWorkFinish, now)} (partial)`);
 		parts.push(`${plan.unresolvedCount} unresolved`);
-	} else if (plan.resourceFinish !== undefined)
-		parts.push(`ETA fixed-path P95 ${displayTimestamp(plan.resourceFinish, now)}`);
+	} else if (plan.resourceFinish !== undefined) parts.push(`ETA ${displayTimestamp(plan.resourceFinish, now)}`);
 	else parts.push("Resource ETA unavailable");
 	if (plan.deadlineAt !== undefined)
 		parts.push(
-			`due ${displayTimestamp(plan.deadlineAt, now)}${plan.deadlineStatus ? ` (${plan.deadlineStatus})` : ""}`,
+			`due ${displayTimestamp(plan.deadlineAt, now)}${plan.deadlineAt < now ? ` (overdue ${Math.floor((now - plan.deadlineAt) / 3_600_000)}h${Math.floor(((now - plan.deadlineAt) % 3_600_000) / 60_000)}m)` : plan.deadlineStatus === "at-risk" ? " (at risk)" : ""}`,
 		);
 	if (plan.planningIssues.length) parts.push(`plan required: ${plan.planningIssues.length} repairs`);
 	const overdue = plan.rows.filter(row => row.overdue).length;
