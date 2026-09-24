@@ -4,11 +4,13 @@ import { HookEditorComponent, HookInputComponent, HookSelectorComponent } from "
 
 export * as zod from "@oh-my-pi/omptype/zod";
 export { z } from "@oh-my-pi/omptype/zod";
+export * from "@oh-my-pi/pi-agent-core/pause";
 // Re-export TUI components for custom tool rendering
 export { Container, Markdown, Spacer, Text } from "@oh-my-pi/pi-tui";
 // Logging
 export { getAgentDir, logger, VERSION } from "@oh-my-pi/pi-utils";
 export * from "@oh-my-pi/pi-tui/app-keybindings";
+export * from "@oh-my-pi/pi-tui/tools/todo-schedule";
 export * from "./config/model-registry";
 // Prompt templates
 export type * from "./config/prompt-templates";
@@ -25,6 +27,7 @@ export * from "./extensibility/extensions";
 // Hook system types (legacy re-export)
 // Skills
 export * from "./extensibility/skills";
+export * from "./goals/deadlines";
 // Slash commands
 export { type FileSlashCommand, loadSlashCommands as discoverSlashCommands } from "./extensibility/slash-commands";
 export type * from "./lsp";
