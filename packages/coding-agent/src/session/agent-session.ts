@@ -1769,6 +1769,7 @@ export class AgentSession implements SettingsScope {
 			isStreaming: () => this.isStreaming,
 			queuedMessageCount: () => this.queuedMessageCount,
 			planModeEnabled: () => this.#planModeState?.enabled === true,
+			planningRepairMessage: () => this.#todo.planningRepairMessage,
 			model: () => this.model,
 			setCodeModeNamespacesInfo: info => {
 				this.#codeModeState.namespacesInfo = info;
@@ -2342,12 +2343,11 @@ export class AgentSession implements SettingsScope {
 	 * The per-turn tool-choice directive for the agent loop's `getToolChoice`. Priority:
 	 *   1. a HARD forced choice from the queue (genuine forces: user-force, eager-todo, …) —
 	 *      consuming (advances the queue generator);
-	 *   2. else, when a non-forcing preview is pending, a {@link SoftToolRequirement} — a
-	 *      PEEK (advances/pops nothing), so the agent-loop injects the reminder once per head
-	 *      and escalates to a forced `write` only if the model declines to
-	 *      resolve via `xd://resolve` or `xd://reject`. A compliant turn
-	 *      pays ZERO tool_choice change (no prompt-cache messages-cache invalidation);
-	 *   3. else undefined.
+	 *   2. else, a pending preview's non-forcing {@link SoftToolRequirement}, which keeps
+	 *      the existing `write` resolution priority and does not consume the queue;
+	 *   3. else, a fresh extension-provided native soft requirement. If its required tool is
+	 *      not active, fail closed before the model request rather than dropping the gate;
+	 *   4. else undefined.
 	 */
 	nextToolChoiceDirective(): ToolChoiceDirective | undefined {
 		const hard = this.#nextHardToolChoice();
@@ -2365,7 +2365,14 @@ export class AgentSession implements SettingsScope {
 				reminder: [buildResolveReminderMessage(head.sourceToolName)],
 			};
 		}
-		return undefined;
+		const requirement = this.#extensionRunner?.getSoftToolRequirement();
+		if (requirement === undefined) return undefined;
+		if (!this.agent.state.tools.some(tool => tool.name === requirement.toolName)) {
+			throw new Error(
+				`Required ${requirement.toolName} tool unavailable: extension soft tool requirement "${requirement.id}" cannot be enforced.`,
+			);
+		}
+		return requirement;
 	}
 
 	/** Peek the head non-forcing pending preview invoker, for the preview-resolution dispatch. */
@@ -7383,6 +7390,7 @@ export class AgentSession implements SettingsScope {
 				void this.dispose().finally(() => process.exit(0));
 			},
 			getContextUsage: () => this.getContextUsage(),
+			getTaskMaxConcurrency: () => this.settings.get("task.maxConcurrency"),
 			getAsyncJobSnapshot: () => this.getAsyncJobSnapshot(),
 			waitForIdle: () => this.waitForIdle(),
 			newSession: async options => {

@@ -483,6 +483,18 @@ describe("subagent HUD lines", () => {
 		expect(out).toContain("7 more — expand");
 		expect(out).not.toContain("show less");
 	});
+	it("shows the sole overflow agent without spending a row on the expander", () => {
+		const active = Array.from({ length: 4 }, (_, index) =>
+			makeSession({
+				id: `Worker${index}`,
+				description: `job ${index}`,
+			}),
+		);
+		const out = render(active, 120);
+		expect(out).toContain("Worker3: job 3");
+		expect(out).not.toContain("more — expand");
+		expect(out.split("\n")).toHaveLength(6);
+	});
 });
 
 describe("SubagentHudComponent click rows", () => {
@@ -536,11 +548,12 @@ describe("layoutPinnedHud", () => {
 	});
 
 	it("collapses longer lists behind an expander", () => {
-		expect(layoutPinnedHud(4, false)).toEqual({ itemRows: 3, toggle: "expand", toggleRow: 5 });
+		expect(layoutPinnedHud(4, false)).toEqual({ itemRows: 4, toggle: undefined, toggleRow: undefined });
 		expect(layoutPinnedHud(10, false)).toEqual({ itemRows: 3, toggle: "expand", toggleRow: 5 });
 	});
 
 	it("expands to every row with a collapse row", () => {
+		expect(layoutPinnedHud(4, true)).toEqual({ itemRows: 4, toggle: "collapse", toggleRow: 6 });
 		expect(layoutPinnedHud(5, true)).toEqual({ itemRows: 5, toggle: "collapse", toggleRow: 7 });
 		expect(layoutPinnedHud(10, true)).toEqual({ itemRows: 10, toggle: "collapse", toggleRow: 12 });
 	});

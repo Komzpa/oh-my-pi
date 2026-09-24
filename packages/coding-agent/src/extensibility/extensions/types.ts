@@ -31,12 +31,13 @@ import type {
 	AgentMessage,
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	SoftToolRequirement,
 	ThinkingLevel,
 	ToolApproval,
 	ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
-import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ContextUsage } from "@oh-my-pi/pi-tui/status-line/types";
+import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	Api,
 	AssistantMessageEvent,
@@ -433,6 +434,8 @@ export interface ExtensionContext {
 	mode: ExtensionMode;
 	/** Get current context usage for the active model. */
 	getContextUsage(): ContextUsage | undefined;
+	/** Current task worker concurrency limit, if this host has settings available. */
+	getTaskMaxConcurrency(): number | undefined;
 	/** Get a read-only snapshot of async jobs owned by this session. */
 	getAsyncJobSnapshot(): AsyncJobSnapshot | null;
 	/** Compact the session context (interactive mode shows UI). */
@@ -1313,6 +1316,13 @@ export interface ExtensionAPI {
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "user_python", handler: ExtensionHandler<UserPythonEvent, UserPythonEventResult>): void;
 	on(event: "mcp_notification", handler: ExtensionHandler<McpNotificationEvent>): void;
+	/**
+	 * Register the single extension-owned provider for the native agent loop's soft tool gate.
+	 * The host evaluates it synchronously at each model-choice boundary with a fresh context;
+	 * Return undefined whenever the action is not currently safe. The host asks only after higher-priority queued
+	 * hard tool choices and pending-preview resolution requirements are absent. Register during extension load.
+	 */
+	registerSoftToolRequirementProvider(provider: (ctx: ExtensionContext) => SoftToolRequirement | undefined): void;
 
 	// =========================================================================
 	// Tool Registration
@@ -1789,6 +1799,8 @@ export interface Extension {
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
 	shortcuts: Map<KeyId, ExtensionShortcut>;
+	/** Native soft tool gate provider registered by this extension, if any. */
+	softToolRequirementProvider?: (ctx: ExtensionContext) => SoftToolRequirement | undefined;
 }
 
 /**
