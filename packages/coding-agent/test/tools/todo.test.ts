@@ -302,6 +302,34 @@ describe("TodoTool operations", () => {
 		expect(result.details?.phases[0]?.tasks[0]?.status).toBe("blocked");
 	});
 
+	it("closes and drops a batch of named rows in one call and leaves the rest open", async () => {
+		const tool = new TodoTool(createSession());
+		await tool.execute("call-1", { op: "init", list: [{ phase: "Work", items: ["a", "b", "c", "d", "e"] }] });
+		await tool.execute("call-2", { op: "done", items: ["a", "b"] });
+		const result = await tool.execute("call-3", { op: "drop", task: "c", items: ["d"] });
+		const status = (content: string) =>
+			result.details?.phases[0]?.tasks.find(task => task.content === content)?.status;
+		expect([status("a"), status("b")]).toEqual(["completed", "completed"]);
+		expect([status("c"), status("d")]).toEqual(["abandoned", "abandoned"]);
+		// Neighbour: a row the batch did not name stays open.
+		expect(status("e")).not.toBe("completed");
+		expect(status("e")).not.toBe("abandoned");
+	});
+
+	it("rejects a batch naming an unknown row", async () => {
+		const tool = new TodoTool(createSession());
+		await tool.execute("call-1", { op: "init", list: [{ phase: "Work", items: ["a", "b"] }] });
+		const outcome = await tool.execute("call-2", { op: "done", items: ["a", "missing"] }).then(
+			result => ({ result, error: undefined as unknown }),
+			error => ({ result: undefined, error }),
+		);
+		const text = outcome.error ? String(outcome.error) : JSON.stringify(outcome.result?.content);
+		expect(text).toContain("missing");
+		// Atomic: the known row in the rejected batch stays open.
+		const view = await tool.execute("call-3", { op: "view" });
+		expect(view.details?.phases[0]?.tasks.find(task => task.content === "a")?.status).not.toBe("completed");
+	});
+
 	it("blocking a phase leaves completed/abandoned tasks closed", async () => {
 		const tool = new TodoTool(createSession());
 		await tool.execute("call-1", { op: "init", list: [{ phase: "Work", items: ["a", "b", "c"] }] });

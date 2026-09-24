@@ -93,7 +93,10 @@ const todoSchema = type({
 	// No `atLeastLength(1)` here: `items` is only meaningful for `init`/`append`,
 	// and both enforce non-empty with op-specific errors. A stray `items: []` on
 	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
-	"items?": type("string").describe("task content").array().describe("tasks for single-phase init or append"),
+	"items?": type("string")
+		.describe("task content")
+		.array()
+		.describe("tasks for single-phase init or append; exact task contents to close in one done/drop"),
 	"reason?": type("string").describe(
 		"required concise external blocker (max 160 normalized characters), naming its actor or condition",
 	),
@@ -398,6 +401,15 @@ function resolvePhaseOrError(phases: TodoPhase[], name: string | undefined, erro
 	return phase;
 }
 
+/** `done`/`drop` accept a batch of exact task contents in `items`, so closing or pruning many
+ *  rows is one call instead of one round trip per row. */
+function getBatchTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoItem[] {
+	if (!entry.items || entry.items.length === 0) return getTaskTargets(phases, entry, errors);
+	const names = entry.task ? [entry.task, ...entry.items] : entry.items;
+	const hits = names.map(name => resolveTaskOrError(phases, name, errors)?.task);
+	return [...new Set(hits.filter((task): task is TodoItem => task !== undefined))];
+}
+
 function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoItem[] {
 	if (entry.task) {
 		const hit = resolveTaskOrError(phases, entry.task, errors);
@@ -661,13 +673,13 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			return phases;
 		}
 		case "done": {
-			for (const task of getTaskTargets(phases, entry, errors)) {
+			for (const task of getBatchTargets(phases, entry, errors)) {
 				task.status = "completed";
 			}
 			return phases;
 		}
 		case "drop": {
-			for (const task of getTaskTargets(phases, entry, errors)) {
+			for (const task of getBatchTargets(phases, entry, errors)) {
 				task.status = "abandoned";
 			}
 			return phases;
