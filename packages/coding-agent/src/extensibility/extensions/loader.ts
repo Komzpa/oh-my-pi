@@ -213,6 +213,13 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		this.extension.handlers.set(event, list);
 	}
 
+	registerSoftToolRequirementProvider(provider: NonNullable<Extension["softToolRequirementProvider"]>): void {
+		if (this.extension.softToolRequirementProvider !== undefined) {
+			throw new Error(`Extension "${this.extension.path}" already registered a soft tool requirement provider`);
+		}
+		this.extension.softToolRequirementProvider = provider;
+	}
+
 	registerTool<TParams extends TSchema = TSchema, TDetails = unknown>(tool: ToolDefinition<TParams, TDetails>): void {
 		const registered = {
 			definition: tool,
