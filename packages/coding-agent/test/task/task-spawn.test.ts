@@ -21,6 +21,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
+import * as evalToolsModule from "@oh-my-pi/pi-coding-agent/task/eval-tools";
 import * as isolationRunner from "@oh-my-pi/pi-coding-agent/task/isolation-runner";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { AgentProgress, SingleResult, TaskParams } from "@oh-my-pi/pi-tui/tools/task";
@@ -106,6 +107,71 @@ describe("task spawn routing", () => {
 	beforeEach(() => {
 		AgentRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
+	});
+
+	it("drops built-in names from Task.tools and reports the correction", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [{ ...taskAgent, tools: ["read"] }],
+			projectAgentsDir: null,
+		});
+		const runSpy = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? "?"));
+		const tool = await TaskTool.create(createSession({ settings: { "async.enabled": false } }));
+
+		const result = await tool.execute("builtin-tool-name", {
+			agent: "task",
+			task: "Read the assigned file.",
+			tools: ["read"],
+		} as TaskParams);
+
+		expect(runSpy).toHaveBeenCalledTimes(1);
+		expect(runSpy.mock.calls[0]?.[0].customTools).toBeUndefined();
+		expect(getFirstText(result)).toContain(
+			"Note: `read` is a built-in tool provided by agent `task`; it was removed from `tools`, which accepts eval-defined tools only.",
+		);
+	});
+
+	it("keeps rejecting unknown eval tool names", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [taskAgent], projectAgentsDir: null });
+		const runSpy = vi.spyOn(executorModule, "runSubprocess");
+		const tool = await TaskTool.create(createSession({ settings: { "async.enabled": false } }));
+
+		const result = await tool.execute("unknown-eval-tool", {
+			agent: "task",
+			task: "Use the requested tool.",
+			tools: ["nope"],
+		} as TaskParams);
+
+		expect(getFirstText(result)).toContain(
+			"Task execution failed: Unknown eval tool(s): nope. Define them with @tool (Python) or tool(fn, {…}) (JS) in an eval cell first. Available: none",
+		);
+		expect(runSpy).not.toHaveBeenCalled();
+	});
+
+	it("passes defined eval tools through to the child", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [taskAgent], projectAgentsDir: null });
+		vi.spyOn(evalToolsModule, "describeEvalTools").mockResolvedValue([
+			{
+				name: "word_count",
+				description: "Count words.",
+				parameters: { type: "object", properties: {} },
+				language: "js",
+			},
+		]);
+		const runSpy = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? "?"));
+		const tool = await TaskTool.create(createSession({ settings: { "async.enabled": false } }));
+
+		await tool.execute("defined-eval-tool", {
+			agent: "task",
+			task: "Count the words.",
+			tools: ["word_count"],
+		} as TaskParams);
+
+		expect(runSpy).toHaveBeenCalledTimes(1);
+		expect(runSpy.mock.calls[0]?.[0].customTools?.map(customTool => customTool.name)).toEqual(["word_count"]);
 	});
 
 	afterEach(async () => {

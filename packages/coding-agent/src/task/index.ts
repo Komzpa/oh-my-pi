@@ -35,6 +35,7 @@ import { truncateForPrompt } from "../tools/approval";
 import { hasWaitTool } from "../tools/wait";
 import { isIrcEnabled } from "../irc/messaging";
 import { isReadOnlyAgent } from "./read-only-policy";
+import { BUILTIN_TOOL_NAMES, normalizeToolName } from "../tools/builtin-names";
 import { formatTaskResultSummary } from "./result-summary";
 import { isScoutSpawnable, resolveSpawnPolicy } from "./spawn-policy";
 import { type AgentDefinition, canSpawnAtDepth, getTaskSchema, type TaskToolSchemaInstance } from "./types";
@@ -85,6 +86,41 @@ function createUsageTotals(): Usage {
 		totalTokens: 0,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
+}
+
+const BUILTIN_TOOL_NAME_SET: ReadonlySet<string> = new Set(BUILTIN_TOOL_NAMES);
+
+function filterChildEvalToolNames(
+	names: readonly string[] | undefined,
+	agent: AgentDefinition,
+): { evalNames: string[]; ignoredBuiltins: string[] } {
+	const available = new Set((agent.tools ?? BUILTIN_TOOL_NAMES).map(normalizeToolName));
+	const evalNames: string[] = [];
+	const ignoredBuiltins: string[] = [];
+	for (const name of names ?? []) {
+		const canonical = normalizeToolName(name);
+		if (BUILTIN_TOOL_NAME_SET.has(canonical) && available.has(canonical)) ignoredBuiltins.push(canonical);
+		else evalNames.push(name);
+	}
+	return { evalNames, ignoredBuiltins };
+}
+
+function appendTaskNotices(
+	result: AgentToolResult<TaskToolDetails>,
+	notices: readonly string[],
+): AgentToolResult<TaskToolDetails> {
+	if (notices.length === 0) return result;
+	const noticeText = notices.join("\n");
+	let appended = false;
+	const content = result.content.map(part => {
+		if (!appended && part.type === "text" && typeof part.text === "string") {
+			appended = true;
+			return { ...part, text: `${part.text}\n\n${noticeText}` };
+		}
+		return part;
+	});
+	if (!appended) content.push({ type: "text", text: noticeText });
+	return { ...result, content };
 }
 
 function addUsageTotals(target: Usage, usage: Partial<Usage>): void {
@@ -700,21 +736,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			return createTaskModeError(validationError);
 		}
 
-		const spawnItems = resolveSpawnItems(params);
-		const evalToolNames = spawnItems.flatMap(item => item.tools ?? []);
-		if (evalToolNames.length > 0) {
-			if (this.session.getPlanModeState?.()?.enabled === true) {
-				return createTaskModeError("Task execution failed: Eval-defined tools are unavailable in plan mode.");
-			}
-			try {
-				await describeEvalTools(this.session, evalToolNames, signal);
-			} catch (error) {
-				return createTaskModeError(
-					`Task execution failed: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			}
-		}
-		const normalizedSpawnParams = spawnItems.map(item => spawnParamsFor(params, item, defaultAgent));
+		let spawnItems = resolveSpawnItems(params);
+		let normalizedSpawnParams = spawnItems.map(item => spawnParamsFor(params, item, defaultAgent));
 		const resolvedAgents = normalizedSpawnParams.map(spawn => spawn.agent ?? defaultAgent);
 		// Resolve every item before choosing an execution path. No executor or
 		// job manager may observe a batch unless every effective policy is valid.
@@ -744,6 +767,38 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			);
 		}
 		const policies = preflights.map(preflight => preflight.policy!);
+		const toolNotices: string[] = [];
+		spawnItems = spawnItems.map((item, index) => {
+			const policy = policies[index]!;
+			const filtered = filterChildEvalToolNames(item.tools, policy.effectiveAgent);
+			for (const name of filtered.ignoredBuiltins) {
+				toolNotices.push(
+					`Note: \`${name}\` is a built-in tool provided by agent \`${policy.agentName}\`; it was removed from \`tools\`, which accepts eval-defined tools only.`,
+				);
+			}
+			return { ...item, tools: filtered.evalNames };
+		});
+		normalizedSpawnParams = normalizedSpawnParams.map((spawn, index) => ({
+			...spawn,
+			tools: spawnItems[index]!.tools,
+		}));
+		const evalToolNames = spawnItems.flatMap(item => item.tools ?? []);
+		if (evalToolNames.length > 0) {
+			if (this.session.getPlanModeState?.()?.enabled === true) {
+				return appendTaskNotices(
+					createTaskModeError("Task execution failed: Eval-defined tools are unavailable in plan mode."),
+					toolNotices,
+				);
+			}
+			try {
+				await describeEvalTools(this.session, evalToolNames, signal);
+			} catch (error) {
+				return appendTaskNotices(
+					createTaskModeError(`Task execution failed: ${error instanceof Error ? error.message : String(error)}`),
+					toolNotices,
+				);
+			}
+		}
 		const itemBlocking = policies.map(policy => policy.effectiveAgent.blocking === true);
 
 		// Execution mode is per item: an item whose agent type declares
@@ -787,7 +842,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				signal,
 				onUpdate,
 			);
-			if (!advisory) return result;
+			if (!advisory) return appendTaskNotices(result, toolNotices);
 			let appended = false;
 			const content = result.content.map(part => {
 				if (!appended && part.type === "text" && typeof part.text === "string") {
@@ -797,7 +852,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				return part;
 			});
 			if (!appended) content.push({ type: "text", text: advisory });
-			return { ...result, content };
+			return appendTaskNotices({ ...result, content }, toolNotices);
 		}
 
 		// Coordination only makes sense for spawns that keep running after this
@@ -820,7 +875,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// than mutating the caller's — task results are short-lived here, but an
 		// in-place edit on a shared/cached AgentToolResult would be a hidden trap.
 		const withAdvisory = (result: AgentToolResult<TaskToolDetails>): AgentToolResult<TaskToolDetails> => {
-			if (!advisory) return result;
+			if (!advisory) return appendTaskNotices(result, toolNotices);
 			let appended = false;
 			const content = result.content.map(part => {
 				if (!appended && part.type === "text" && typeof part.text === "string") {
@@ -830,7 +885,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				return part;
 			});
 			if (!appended) content.push({ type: "text", text: advisory });
-			return { ...result, content };
+			return appendTaskNotices({ ...result, content }, toolNotices);
 		};
 		if (asyncItems.length === 0) {
 			return withAdvisory(
