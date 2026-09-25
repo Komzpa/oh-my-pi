@@ -148,6 +148,30 @@ export interface TranscriptViewportSpan {
 
 /** Owns transcript order, live capacity, and ordered immutable retirement. */
 export class TranscriptContainer extends Container {
+	// Owned child-array writes are explicit invalidations; externally replaced arrays
+	// remain untrusted and are compared until clear() restores ownership.
+	#ownedChildren: Component[];
+	#childrenDirty = false;
+
+	constructor() {
+		super();
+		this.#ownedChildren = this.#trackChildren(this.children);
+		this.children = this.#ownedChildren;
+	}
+
+	#trackChildren(children: Component[]): Component[] {
+		return new Proxy(children, {
+			set: (target, property, value) => {
+				this.#childrenDirty = true;
+				return Reflect.set(target, property, value);
+			},
+			deleteProperty: (target, property) => {
+				this.#childrenDirty = true;
+				return Reflect.deleteProperty(target, property);
+			},
+		});
+	}
+
 	#entries: TranscriptEntry[] = [];
 	#frontier = 0;
 	#nextBatchId = 1;
@@ -166,6 +190,7 @@ export class TranscriptContainer extends Container {
 	#lastViewportSpans: TranscriptViewportSpan[] = [];
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
+		const synchronized = this.children === this.#ownedChildren && !this.#childrenDirty;
 		super.addChild(component);
 		this.#entries.push({
 			component,
@@ -177,6 +202,7 @@ export class TranscriptContainer extends Container {
 			emitted: 0,
 			stableFrozen: false,
 		});
+		if (synchronized) this.#childrenDirty = false;
 	}
 
 	override removeChild(component: Component): void {
@@ -185,10 +211,14 @@ export class TranscriptContainer extends Container {
 		this.#entries = this.#entries.filter(candidate => candidate.component !== component);
 		this.#frontier = Math.min(this.#frontier, this.#entries.length);
 		this.#childStartRows.delete(component);
+		if (this.children === this.#ownedChildren) this.#childrenDirty = false;
 	}
 
 	override clear(): void {
 		super.clear();
+		this.#ownedChildren = this.#trackChildren(this.children);
+		this.children = this.#ownedChildren;
+		this.#childrenDirty = false;
 		this.#entries = [];
 		this.#frontier = 0;
 		this.#offered = undefined;
@@ -874,11 +904,15 @@ export class TranscriptContainer extends Container {
 	}
 
 	#syncEntries(): void {
+		if (this.children === this.#ownedChildren && !this.#childrenDirty) return;
 		if (
 			this.#entries.length === this.children.length &&
 			this.#entries.every((entry, index) => entry.component === this.children[index])
-		)
+		) {
+			this.#childrenDirty = false;
 			return;
+		}
+		this.#childrenDirty = false;
 		const existing = new Map(this.#entries.map(entry => [entry.component, entry]));
 		this.#entries = this.children.map(
 			component =>
