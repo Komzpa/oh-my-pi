@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed isolated task workers starting from dirty parent checkout files instead of a clean copy of the parent `HEAD` ([#17](https://github.com/Komzpa/oh-my-pi/pull/17) by [@Komzpa](https://github.com/Komzpa)).
+
 ## [18.3.1] - 2026-09-25
 
 ### Added
