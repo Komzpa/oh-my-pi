@@ -43,7 +43,7 @@ function sessionFor(phases: TodoPhase[]): ToolSession {
 		getSessionFile: () => "/tmp/todo-perf-test/session.jsonl",
 		getSessionSpawns: () => "*",
 		getTodoPhases: () => current,
-		setTodoPhases: next => {
+		setTodoPhases: (next: TodoPhase[]) => {
 			current = next;
 		},
 		settings: Settings.isolated({ "task.maxConcurrency": 4 }),
