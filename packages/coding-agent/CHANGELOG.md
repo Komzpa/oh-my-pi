@@ -125,6 +125,7 @@
 
 - Fixed mouse handling ignoring per-mode TUI mouse setting
 - Fixed the shell's `cp --reflink=always` emptying an existing destination when the filesystem cannot clone; the destination is now left untouched.
+- Fixed isolated task workers starting from dirty parent checkout files instead of a clean copy of the parent `HEAD` ([#17](https://github.com/Komzpa/oh-my-pi/pull/17) by [@Komzpa](https://github.com/Komzpa)).
 - Fixed `block-clone` task isolation on Windows ReFS and Dev Drive volumes failing on files whose size is not a whole number of clusters, larger than 4 GiB, or sparse.
 - Fixed Google Antigravity requests failing with `429 RESOURCE_EXHAUSTED` on every turn: the system prompts' RFC 2119 conventions line is reworded so the endpoint no longer rejects it ([#13379](https://github.com/can1357/oh-my-pi/pull/13379) by [@heshuoshuo0512](https://github.com/heshuoshuo0512))
 - Fixed CRLF `SKILL.md` files injecting raw YAML frontmatter into user-invoked and autoload skill messages ([#13590](https://github.com/can1357/oh-my-pi/issues/13590)).
