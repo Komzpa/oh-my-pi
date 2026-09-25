@@ -1,5 +1,6 @@
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { stripOmpCollisionSuffixChain } from "../task/id-collision";
 
 export interface TodoExecutorObservation {
 	workerId: string;
@@ -36,10 +37,8 @@ function getRecordedTodoWorkerIds(task: TodoPhase["tasks"][number]): string[] {
 	return [...new Set(ids)];
 }
 
-function hasOmpCollisionSuffix(workerId: string, recordedWorkerId: string): boolean {
-	if (!workerId.startsWith(`${recordedWorkerId}-`)) return false;
-	const suffix = workerId.slice(recordedWorkerId.length + 1);
-	return /^[2-9]\d*$/.test(suffix);
+function hasSameOmpCollisionBase(workerId: string, recordedWorkerId: string): boolean {
+	return stripOmpCollisionSuffixChain(workerId) === stripOmpCollisionSuffixChain(recordedWorkerId);
 }
 
 function matchesRecordedTodoWorkerId(
@@ -50,7 +49,7 @@ function matchesRecordedTodoWorkerId(
 	return (
 		observation.runningWorkerIds !== undefined &&
 		!observation.runningWorkerIds.has(recordedWorkerId) &&
-		hasOmpCollisionSuffix(observation.workerId, recordedWorkerId)
+		hasSameOmpCollisionBase(observation.workerId, recordedWorkerId)
 	);
 }
 
