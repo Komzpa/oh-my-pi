@@ -459,6 +459,8 @@ export interface ExtensionContext {
 	hasPendingMessages(): boolean;
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
+	/** Send a message to a live or revivable agent peer through the same route as `write agent://<id>`. */
+	sendAgentMessage(to: string, message: string): Promise<{ delivered: boolean; text: string }>;
 	/**
 	 * Whether the current project/workspace is trusted. OMP performs no
 	 * project-trust gating — project-level settings and extensions load
@@ -1749,6 +1751,7 @@ export interface ExtensionContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	getSystemPrompt: () => string[];
+	sendAgentMessage?: (to: string, message: string) => Promise<{ delivered: boolean; text: string }>;
 	runEphemeralTurn?: (options: EphemeralTurnOptions) => Promise<EphemeralTurnResult>;
 }
 

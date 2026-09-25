@@ -2,12 +2,27 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import type { CoordinationDetails } from "@oh-my-pi/pi-tui/tools/wait";
 import type { Settings } from "../config/settings";
+import type { AgentRegistry } from "../registry/agent-registry";
 import { IrcBus } from "./bus";
-import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import { ensurePersistedRoster } from "../registry/persisted-agents";
 import { canSpawnAtDepth } from "../task/types";
 
 import { cfgTaskMaxRecursionDepth } from "../task/settings";
+
+export interface AgentMessageDelivery {
+	delivered: boolean;
+	text: string;
+}
+
+interface AgentMessageSession {
+	agentRegistry?: AgentRegistry;
+	enableIrc?: boolean;
+	settings: Settings;
+	taskDepth?: number;
+	getAgentId?: () => string | null | undefined;
+	getSessionFile?: () => string | null | undefined;
+}
 
 function coordinationErrorResult(text: string, details: CoordinationDetails): AgentToolResult<CoordinationDetails> {
 	return { content: [{ type: "text", text }], details, isError: true };
@@ -99,4 +114,31 @@ export async function executeSend(
 		details: { op: "send", from: senderId, to, receipts },
 		isError: delivered.length === 0 && targets.length > 0,
 	};
+}
+
+export async function sendAgentMessageFromSession(
+	session: AgentMessageSession,
+	to: string,
+	message: string,
+): Promise<AgentMessageDelivery> {
+	const registry = session.agentRegistry;
+	const senderId = session.getAgentId?.() ?? undefined;
+	if (
+		!registry ||
+		!senderId ||
+		session.enableIrc === false ||
+		!isIrcEnabled(session.settings, session.taskDepth ?? 0)
+	) {
+		return { delivered: false, text: "Peer messaging is unavailable in this session." };
+	}
+	try {
+		const result = await executeSend(
+			{ registry, senderId, sessionFileHint: session.getSessionFile?.() },
+			{ to, message },
+		);
+		const text = result.content.find(item => item.type === "text")?.text ?? "Message delivery failed.";
+		return { delivered: result.isError !== true, text };
+	} catch (error) {
+		return { delivered: false, text: error instanceof Error ? error.message : String(error) };
+	}
 }
