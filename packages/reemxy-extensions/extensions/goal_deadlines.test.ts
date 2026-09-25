@@ -30,7 +30,7 @@ const state: DeadlineState = {
 	version: 1,
 	goalId: "goal-1",
 	goalStartedAt: 1_000,
-	timezone: "Asia/Tbilisi",
+	timezone: "UTC",
 	active: true,
 	stages: [
 		{ id: "draft", label: "Draft", expectedResult: "Usable draft", deadlineAt: 1_600 },
@@ -240,35 +240,44 @@ describe("automatic presence", () => {
 	});
 
 	test("derives away at the silence and quiet-hour boundaries", () => {
-		const now = Date.UTC(2026, 8, 25, 19, 0); // 23:00 Asia/Tbilisi
-		expect(derivePresence([userEntry(now - 30 * 60_000)], null, now)).toBe("away");
-		expect(derivePresence([userEntry(now - 15 * 60_000)], null, now)).toBe("away");
-		expect(derivePresence([userEntry(now - 14 * 60_000)], null, now)).toBe("watching");
+		const now = Date.UTC(2026, 8, 25, 23, 0);
+		const utcState = { ...state, timezone: "UTC" };
+		expect(derivePresence([userEntry(now - 30 * 60_000)], utcState, now)).toBe("away");
+		expect(derivePresence([userEntry(now - 15 * 60_000)], utcState, now)).toBe("away");
+		expect(derivePresence([userEntry(now - 14 * 60_000)], utcState, now)).toBe("watching");
 	});
 
 	test("derives watching during working hours", () => {
-		const now = Date.UTC(2026, 8, 25, 8, 0); // 12:00 Asia/Tbilisi
+		const now = Date.UTC(2026, 8, 25, 12, 0);
 		expect(derivePresence([userEntry(now - 15 * 60_000)], presenceState(Math.floor(now / 1_000) + 7_200), now)).toBe(
 			"watching",
 		);
 	});
 
 	test("derives firefighting for a recent weekend at-risk deadline", () => {
-		const now = Date.UTC(2026, 8, 26, 8, 0); // Saturday 12:00 Asia/Tbilisi
+		const now = Date.UTC(2026, 8, 26, 12, 0);
 		expect(
 			derivePresence([userEntry(now - 15 * 60_000)], presenceState(Math.floor(now / 1_000) + 60 * 60), now),
 		).toBe("firefighting");
 	});
 
-	test("shows the promised deadline when away", () => {
+	test("uses the persisted goal timezone", () => {
+		const now = Date.UTC(2026, 8, 25, 8, 0);
+		const stateInLosAngeles = { ...presenceState(Math.floor(now / 1_000) + 7_200), timezone: "America/Los_Angeles" };
+		const message = renderPresence([userEntry(now - 15 * 60_000)], stateInLosAngeles, now);
+		expect(derivePresence([userEntry(now - 15 * 60_000)], stateInLosAngeles, now)).toBe("away");
+		expect(message).toContain("01:00 America/Los_Angeles");
+	});
+
+	test("reports the generic presence sentence", () => {
 		const now = Date.UTC(2026, 8, 25, 8, 0);
 		const message = renderPresence(
 			[userEntry(now - 30 * 60_000)],
 			presenceState(Math.floor(now / 1_000) + 7_200),
 			now,
 		);
-		expect(message).toContain("Darafei is: away");
-		expect(message).toContain("Promised before he left: done by 14:00.");
+		expect(message).toStartWith("The user is: away (guess from signals:");
+		expect(message).toEndWith("the user's own words in the conversation outrank this guess.");
 	});
 
 	test("context appends one combined automatic presence message", () => {
@@ -294,7 +303,7 @@ describe("automatic presence", () => {
 		) as { messages: Array<{ role: string; content: string }> };
 		expect(result.messages).toHaveLength(2);
 		expect(result.messages[1]?.role).toBe("developer");
-		expect(result.messages[1]?.content).toContain("Darafei is: watching");
+		expect(result.messages[1]?.content).toContain("The user is: watching");
 		expect(result.messages[1]?.content).toContain("No deadline schedule is recorded.");
 	});
 });
@@ -460,7 +469,7 @@ test("native lifecycle preserves the original deadline without reviving stale go
 			"set",
 			{
 				action: "set",
-				timezone: "Asia/Tbilisi",
+				timezone: "UTC",
 				stages: [
 					{ id: "ship", label: "Ship", expected_result: "Verified render", deadline_at: now - 60 },
 					{ id: "draft", label: "Draft", expected_result: "Usable draft", deadline_at: now - 120 },
@@ -499,7 +508,7 @@ test("native lifecycle preserves the original deadline without reviving stale go
 		expect(repaired.details.state.stages.find(stage => stage.id === "draft")?.deadlineAt).toBe(now - 120);
 		expect(repaired.details.state.stages.find(stage => stage.id === "ship")?.deadlineAt).toBe(now - 60);
 		expect(repaired.details.state.baselineDeadlineAt).toBe(now - 60);
-		expect(repaired.details.state.timezone).toBe("Asia/Tbilisi");
+		expect(repaired.details.state.timezone).toBe("UTC");
 		const corruptedFinal: DeadlineState = {
 			...repaired.details.state,
 			stages: repaired.details.state.stages.map(stage =>
@@ -666,7 +675,7 @@ test("clear lets an explicit set replace a corrupted immutable final deadline", 
 		version: 1,
 		goalId: "focused-goal",
 		goalStartedAt: 1_000,
-		timezone: "Asia/Tbilisi",
+		timezone: "UTC",
 		active: true,
 		stages: [{ id: "bad-final", label: "Bad final", expectedResult: "Wrong unit", deadlineAt: 1_790_236_800_000 }],
 		baselineDeadlineAt: 1_790_236_800_000,
