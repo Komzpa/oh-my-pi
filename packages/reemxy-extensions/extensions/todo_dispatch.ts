@@ -89,7 +89,7 @@ const WORKER_NAME_GUIDANCE: Record<string, string> = {
   Conflict: '"Conflict, Merge: parallel writers on the same files, then workers to untangle them"',
   Merge: '"Conflict, Merge: parallel writers on the same files, then workers to untangle them"',
   Omp: '"Omp: the session is working on its own harness. A harness defect is `report_issue`"',
-  Final: '"Nothing is `final`: Darafei still reviews it, so an artefact and its worker carry a version, never `Final`"',
+  Final: '"Nothing is `final`: the user still reviews it, so an artefact and its worker carry a version, never `Final`"',
 };
 const WORKER_NAME_ACTION: Record<string, string> = {
   Owner: "Name the worker by result, verb-first.",
@@ -1252,7 +1252,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     return decision;
   };
   // A worker whose row is on the critical path gets /fast; the harness sets it from the plan, not
-  // the model (Darafei 2026-09-24: "If a worker's task is on the critical path, it gets /fast").
+  // the model (user 2026-09-24: "If a worker's task is on the critical path, it gets /fast").
   // Needs omp's ctx.setSubagentFastMode (fork PR #8); older builds skip this silently.
   const fastByWorker = new Map<string, boolean>();
   const syncCriticalFast = (ctx: ExtensionContext, decision: ReturnType<typeof currentDecision>) => {
@@ -1365,7 +1365,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   // Seen live 2026-09-24: lint, unit, browser, visual, performance and capture gates of one merge
   // candidate were chained one after another, so the ETA was their sum instead of the longest one.
   // One idempotent runbook instead of per-case orders: every gate and refusal states the measured
-  // situation and points here (Darafei 2026-09-25: "одну идемпотентную доку … её в любой ситуации тыкай").
+  // situation and points here (user 2026-09-25: "одну идемпотентную доку … её в любой ситуации тыкай").
   const PLAN_CHECK_CLEAN = "PLAN CHECK: no problems.";
   const PLAN_TICK_MS = 60_000;
   const PLAN_REPEAT_MS = 10 * 60_000;
@@ -1377,12 +1377,12 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     `The plan holds ${parked} idle rows, more than the ${capacity} worker slots. ${ORDER}`;
   // Waiting critical rows go out as a list, one per line with what each waits on, and each needs its
   // own answer: as one run-on sentence the chief waved all of them off at once with "every row
-  // genuinely consumes unfinished output" (live 2026-09-25 06:50, Darafei: "там надо списком").
+  // genuinely consumes unfinished output" (live 2026-09-25 06:50, user: "там надо списком").
   // The list is the one chain that sets the ETA (the finishing row's fixed path), and each link says
   // what it is: a dependency, or a queue on a resource both rows hold. Mixing dependency-only
   // criticality with the resource-aware chain listed all three E2E shards as critical and shard three
   // "waiting on" shard one, which was a shared browser slot the chief had assigned (live 2026-09-25,
-  // Darafei: "шард 3 зависит от 1 - это дичь").
+  // user: "шард 3 зависит от 1 - это дичь").
   const criticalChainLines = (ctx: ExtensionContext, rows: TodoTaskForecast[], mode: "chief" | "snapshot" = "chief") => {
     const finish = (row: TodoTaskForecast) => row.fixedPathP95Finish ?? row.resourceFinish ?? Number.NEGATIVE_INFINITY;
     const last = rows.reduce<TodoTaskForecast | undefined>((best, row) => (best === undefined || finish(row) > finish(best) ? row : best), undefined);
@@ -1532,14 +1532,14 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       writeFileSync(bySession, text);
     } catch {}
   };
-  // Any row on the chain shortens it when split, not only the next one (Darafei 2026-09-25: "сплитать
+  // Any row on the chain shortens it when split, not only the next one (user 2026-09-25: "сплитать
   // то что на критическом пути - не обязательно ближайшее декомпозировать").
   // A link often records contention, not consumption: rows chained because they would share one
-  // checkout, browser or port (Darafei 2026-09-25: "ну так блядь выдели им разные чекауты-ворктри??",
+  // checkout, browser or port (user 2026-09-25: "ну так блядь выдели им разные чекауты-ворктри??",
   // after the chief serialized a click fix and an audit on one checkout).
   const WHY_EACH_LINK = "For each link ask why the row waits. If it consumes the other row's output, the link is real. If the two rows only use the same thing (the checkout, a browser, a port, a test database, and so on), that thing is the contended resource: give each row its own copy and drop the link. For the checkout, a small edit to files nobody else touches (a config value, one function, …) goes into it live, and overlapping edits get isolated: true, a worktree whose branch is rebased, merged and pushed as soon as its row finishes.";
   const SPLIT_EACH = "Every row in this chain moves the finish when split, not only the next one; the last rows of a chain (documentation, verification, delivery, …) usually hold the most work that can be prepared now. For each row name the part that can be done now without that result (fixtures, the check that will verify it, drafted text, reading the target, and so on), append it as its own row and dispatch it; a row with no such part gets one line saying why";
-  // Darafei 2026-09-25 on three E2E shards split over two "browser slots": "чего он как будто у нас
+  // user 2026-09-25 on three E2E shards split over two "browser slots": "чего он как будто у нас
   // браузеров мало, запусти больше браузеров и не еби мозг".
   const RESOURCE_QUEUE = "A resource queue on this chain is a limit you set, not one the machine has: anything that can be started, copied or allocated again (browsers, ports, worktrees, databases, …) is not scarce here. Give the queued row its own copy and remove the shared resource. Keep a shared resource only for a thing that physically exists once, and prove that by a measurement, not an assumption.";
   const replanInstruction = (ctx: ExtensionContext, open: TodoTaskForecast[], capacity: number) => {
@@ -1551,7 +1551,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   const CHIEF_OF_STAFF = `ROLE: You are the chief of staff for this session, not a worker; your runbook is skill://chief-of-staff. ${ORDER}`;
   const READ_ONLY_BASH = /^\s*(git\s+(status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|merge-base)\b|grep\b|rg\b|ls\b|cat\b|head\b|tail\b|wc\b|pwd\b|echo\b|stat\b|test\b|\[\s|sha256sum\b|sha1sum\b|md5sum\b|readlink\b|realpath\b|file\b)/;
   // Git mutation (add, commit, push, merge) is the git-pr-owner worker's job, never the chief's
-  // (Darafei 2026-09-25: "чего чиф оф стафф гит дрочит, у него же писарь есть и гитарь?").
+  // (user 2026-09-25: "чего чиф оф стафф гит дрочит, у него же писарь есть и гитарь?").
   // A chain is read-only only when every part is: `cat x && bun test` is not.
   const isChiefBash = (command: string) =>
     command.split(/&&|\|\||;|\|/).every((part) => !part.trim() || READ_ONLY_BASH.test(part));
@@ -2297,7 +2297,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     taskCallBaselines.set(event.toolCallId, new Map(dispatchGateBaseline));
   });
   // Every todo result ends with what is still wrong with the plan, so the chief sees the problems
-  // where it looks instead of in a gate it may never hit (Darafei 2026-09-25: "тулы выдавали
+  // where it looks instead of in a gate it may never hit (user 2026-09-25: "тулы выдавали
   // список ошибок в плане или хотя бы говорили что они там есть и напоминали как смотреть").
   // The finish that recedes with the clock: every attempt finds the next defect and each estimate
   // assumes the next attempt succeeds (live 2026-09-25: the ETA stayed "now + 2.5-3 h" from 05:23 to
@@ -2313,7 +2313,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     recedingSince ??= now;
     const history = finishSamples.filter((_, i, all) => i === 0 || i === all.length - 1 || i % 3 === 0).map((sample) => `${safeTimestamp(sample.at)} → ${safeTimestamp(sample.finish)}`).join(", ");
     // Twenty minutes after the first report the numbers have not changed the plan: a second look
-    // with no execution duties decides, and the chief applies it (Darafei 2026-09-25: "давай 1 2 3").
+    // with no execution duties decides, and the chief applies it (user 2026-09-25: "давай 1 2 3").
     if (now - recedingSince >= 20 * 60_000)
       return `the finish has receded with the clock for ${minutes(now - first.at)} and ${minutes(now - recedingSince)} after this was first reported (samples, now → finish: ${history}). Run \`task\` with agent \`plan-doctor\` now: give it the goal, these samples, the open rows with dependencies, owners and receipts, and ask one question: what makes the finish later and which plan change shortens it. Apply its plan in one \`todo\` call; do not add rows of your own before it answers`;
     return `the finish recedes with the clock: ${minutes(now - first.at)} ago it was ${safeTimestamp(first.finish)}, now ${safeTimestamp(finish)}. Work is being found as fast as it is done, one defect per attempt. Find all remaining defects in one pass (run the whole check once with failures collected instead of stopping at the first), fix them as parallel rows, and take every check that does not consume the stuck output off the chain`;
@@ -2381,7 +2381,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const overdue = open.filter((row) => row.overdue);
     const ready = decision.dispatchableReady ?? [];
     const idle = open.length - running.length;
-    // A row naming an owner that runs nowhere looks staffed in the HUD and is not (Darafei 2026-09-25:
+    // A row naming an owner that runs nowhere looks staffed in the HUD and is not (user 2026-09-25:
     // "Owner not running - run it!!!!"): name each one so it is resumed by its exact name.
     // The HUD's "N unresolved": open rows omp cannot forecast. Nobody but the chief can fix them.
     const unresolved = open.filter((row) => (row as { fixedPathP95Finish?: number }).fixedPathP95Finish === undefined);
@@ -2499,7 +2499,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         : PLAN_CHECK_CLEAN;
   };
   // Once a minute, busy or idle, a plan with problems gets its PLAN CHECK as an aside: the channel
-  // IRC messages use, landing at the next step boundary without cutting the running tool (Darafei
+  // IRC messages use, landing at the next step boundary without cutting the running tool (user
   // 2026-09-25: "надо всегда. то есть при любой возможности, типа как IRC"), once per distinct
   // problem list.
   let planTicker: Timer | null = null;
