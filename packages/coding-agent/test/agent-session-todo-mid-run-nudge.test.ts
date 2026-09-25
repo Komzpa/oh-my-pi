@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool, type AsideMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, TextContent, ToolCall } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -47,6 +48,7 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 	let sessionManager: SessionManager;
 	let reminderEvents: Array<Extract<AgentSessionEvent, { type: "todo_reminder" }>>;
 	let asideProvider: (() => AsideMessage[] | Promise<AsideMessage[]>) | undefined;
+	let taskExecutions: number;
 
 	const THRESHOLD = 12; // mirrors MID_RUN_NUDGE_MUTATION_THRESHOLD
 	const NUDGE_TYPE = "mid-run-todo-nudge";
@@ -152,12 +154,24 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		};
 		const todoTool = new TodoTool(toolSession);
 		const writeTool = new WriteTool(toolSession);
+		taskExecutions = 0;
+		const taskTool: AgentTool = {
+			name: "task",
+			label: "Task",
+			description: "Mock planning worker dispatch",
+			parameters: type({}),
+			approval: "exec",
+			execute: async () => {
+				taskExecutions++;
+				return { content: [{ type: "text", text: "task-ok" }] };
+			},
+		};
 
 		const agent = new Agent({
 			initialState: {
 				model,
 				systemPrompt: ["Test"],
-				tools: [todoTool, writeTool] as unknown as AgentTool[],
+				tools: [todoTool, writeTool, taskTool] as unknown as AgentTool[],
 				messages: [],
 			},
 		});
@@ -180,6 +194,7 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 			toolRegistry: new Map<string, AgentTool>([
 				["todo", todoTool as unknown as AgentTool],
 				["write", writeTool as unknown as AgentTool],
+				["task", taskTool],
 			]),
 		});
 
@@ -373,5 +388,24 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		session.setTodoPhases(phases);
 		await bridged.execute("scheduled-blocked", { path, content: "recovered" });
 		expect(await Bun.file(path).text()).toBe("recovered");
+	});
+
+	it("keeps task dispatch available while planning debt blocks ordinary writes", async () => {
+		const directWrite = session.agent.state.tools.find(tool => tool.name === "write")!;
+		const task = session.agent.state.tools.find(tool => tool.name === "task")!;
+		const path = `${tempDir.path()}/admission-task.txt`;
+		await Bun.write(path, "original");
+		const phases = session.getTodoPhases();
+		delete phases[0].tasks[1].schedule;
+		session.setTodoPhases(phases);
+
+		await expect(directWrite.execute("write-debt", { path, content: "bad write" })).rejects.toThrow(
+			"Complete whole-plan estimates and dependencies before executing write",
+		);
+		await expect(task.execute("task-debt", {})).resolves.toEqual({
+			content: [{ type: "text", text: "task-ok" }],
+		});
+		expect(taskExecutions).toBe(1);
+		expect(await Bun.file(path).text()).toBe("original");
 	});
 });
