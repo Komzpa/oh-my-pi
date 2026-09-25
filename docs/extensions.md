@@ -230,6 +230,7 @@ Handlers and tool `execute` receive `ctx` with:
 - `getContextUsage()`
 - `getAsyncJobSnapshot()` returns the current session's read-only async-job snapshot, or `null` when no session owns the context
 - `compact(...)`
+- `sendAgentMessage(to, message)` sends an agent peer message and returns `{ delivered, text }`
 - `isIdle()`, `hasPendingMessages()`, `abort()`
 - `shutdown()`
 - `getSystemPrompt()`
@@ -264,6 +265,19 @@ Hooks may start a side turn, including from delayed callbacks. Only `context`, `
 Tool calls are always discarded rather than executed. Pass `tools: false` to remove tool definitions after context transforms and set `toolChoice: "none"` at the provider boundary. Omitting it preserves `/btw`'s tool catalog for prompt-cache reuse; disabling it may reduce cache hits. Existing context/provider hooks still run. It is not a sandbox or a guarantee that arbitrary extension hooks have no side effects. Model inference consumes the configured provider's resources. `dedupeReply` defaults to `true` and removes repeated reply text; set it to `false` to retain the provider's exact text. Callers should use `replyText` for the final result.
 
 Use `history` only for detached prior side-turn messages; it is cloned with `structuredClone`, so pass cloneable message data. A `conversationKey` keeps related side turns on one provider lineage. Rotate it after cancellation or failure before retrying. A side turn also rejects with a retryable error if its session or exact model instance changes before dispatch; callers should retry from a new current-context snapshot rather than reuse the old one.
+
+### Agent peer messages (`ctx.sendAgentMessage`)
+
+Extensions can send the same peer messages that `write agent://<id>` sends:
+
+```ts
+const result = await ctx.sendAgentMessage("Scout", "Status check: are you still blocked?");
+if (!result.delivered) {
+  ctx.ui.notify(result.text, "warning");
+}
+```
+
+`sendAgentMessage(to: string, message: string): Promise<{ delivered: boolean; text: string }>` uses the current session's agent id as the sender. It follows normal peer-messaging availability rules: IRC must be enabled and the session must have an agent registry. Unavailable messaging, an unknown recipient, or another delivery failure resolves with `delivered: false` and a human-readable `text`; it does not throw for ordinary delivery failures.
 
 ### Background work (`ctx.setInterval` / `ctx.setTimeout`)
 
