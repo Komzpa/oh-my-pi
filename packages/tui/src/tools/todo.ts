@@ -66,6 +66,15 @@ export interface TodoCompletionTransition {
 	content: string;
 }
 
+/** Compact archive event preserving the removed rows and the operation that caused it. */
+export interface TodoArchivePersistedEdit {
+	v: 1;
+	kind: "archive";
+	at: number;
+	operation?: TodoOperationPersistedEdit;
+	archivedPhases: TodoPhase[];
+}
+
 /** Compact durable todo operation. Full snapshots before this shape remain readable. */
 export interface TodoOperationPersistedEdit {
 	v: 1;
@@ -94,7 +103,14 @@ export interface TodoExecutorPersistedEdit {
 	};
 }
 
-export type TodoPersistedEdit = TodoOperationPersistedEdit | TodoExecutorPersistedEdit;
+export type TodoPersistedEdit = TodoOperationPersistedEdit | TodoExecutorPersistedEdit | TodoArchivePersistedEdit;
+
+/** One-line archive summary included in ordinary live-plan snapshots. */
+export interface TodoArchiveSummary {
+	count: number;
+	fromAt: number;
+	toAt: number;
+}
 
 /** Todo snapshot and transitions displayed after an operation. */
 export interface TodoToolDetails {
@@ -105,6 +121,10 @@ export interface TodoToolDetails {
 	phases: TodoPhase[];
 	storage: "session" | "memory";
 	completedTasks?: TodoCompletionTransition[];
+	/** Archived row payload appears only in an explicit archive view. */
+	archivedPhases?: TodoPhase[];
+	/** Compact summary of archive volume and oldest/newest archived timestamps. */
+	archiveSummary?: TodoArchiveSummary;
 	/** Active goal's final deadline in epoch milliseconds, when available. */
 	deadlineAt?: number;
 	/** Fixed timestamp used to render this snapshot's forecasts. */
@@ -112,6 +132,8 @@ export interface TodoToolDetails {
 	/** Forecast receipt computed with this exact accepted snapshot; not recomputed later. */
 	forecast?: TodoPlanForecast;
 }
+
+
 
 /** Minimum overlap (after normalization) required for a substring match.
  * Picked at six chars to admit single-word identifiers like "review" /
@@ -607,6 +629,7 @@ export const todoToolRenderer = {
 			keys.add(task.content);
 		}
 		const allTasks = phases.flatMap(phase => phase.tasks);
+		const archivedPhases = result.details?.op === "view" ? result.details.archivedPhases : undefined;
 		const header = renderStatusLine(
 			{
 				iconOverride: uiTheme.styledSymbol("tool.todo", "accent"),
@@ -615,7 +638,7 @@ export const todoToolRenderer = {
 			},
 			uiTheme,
 		);
-		if (allTasks.length === 0) {
+		if (allTasks.length === 0 && !archivedPhases) {
 			// Provider text on the Cursor path (the todo summary or a refusal note),
 			// so sanitize like every other label. The error branch above already
 			// goes through `formatErrorDetail`.
@@ -721,6 +744,27 @@ export const todoToolRenderer = {
 					uiTheme,
 				);
 				bodyLines.push(...treeLines);
+			}
+			if (archivedPhases) {
+				const count = archivedPhases.reduce((total, phase) => total + phase.tasks.length, 0);
+				bodyLines.push(`Archived rows (${count}):`);
+				for (const phase of archivedPhases) {
+					bodyLines.push(uiTheme.fg("accent", forDisplay(phase.name)));
+					for (const task of phase.tasks) {
+						const schedule = task.schedule;
+						const actual = Number.isFinite(schedule?.startedAt) && Number.isFinite(schedule?.finishedAt)
+							? `${Math.max(0, Math.round((schedule!.finishedAt! - schedule!.startedAt!) / 1000))}s`
+							: undefined;
+						const evidence = [
+							schedule?.owner && `owner ${schedule.owner}`,
+							schedule?.estimate && `estimate ${schedule.estimate.likelySeconds}s`,
+							actual && `actual ${actual}`,
+							schedule?.executor && `executor ${schedule.executor.workerId}${schedule.executor.outcome ? ` (${schedule.executor.outcome})` : ""}`,
+						].filter(Boolean).map(value => forDisplay(String(value)).replace(/[\r\n]+/g, " "));
+						const line = formatTodoLine(task, uiTheme, "  ", EMPTY_COMPLETION_KEYS, undefined, true);
+						bodyLines.push(evidence.length > 0 ? `${line} ${uiTheme.fg("dim", `· ${evidence.join(" · ")}`)}` : line);
+					}
+				}
 			}
 			while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();
 			return {

@@ -4,7 +4,11 @@ import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { getLatestTodoPhasesFromEntries, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools";
+import {
+	getLatestTodoArchiveFromEntries,
+	getLatestTodoPhasesFromEntries,
+	USER_TODO_EDIT_CUSTOM_TYPE,
+} from "@oh-my-pi/pi-coding-agent/tools";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import type { TodoPersistedEdit, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
@@ -145,5 +149,62 @@ describe("task todo persistence", () => {
 		] as SessionEntry[];
 
 		expect(getLatestTodoPhasesFromEntries(entries)).toEqual(session.getTodoPhases!());
+	});
+	it("replays archived rows separately without rewriting historical snapshots or losing estimates and execution evidence", () => {
+		const now = Date.parse("2026-09-25T13:10:00.000Z");
+		const archivedTask = {
+			content: "Completed task with retained evidence",
+			status: "completed" as const,
+			schedule: {
+				finishedAt: now - 10 * 60_000,
+				estimate: {
+					optimisticSeconds: 30,
+					likelySeconds: 60,
+					pessimisticSeconds: 120,
+					confidence: "high" as const,
+					basis: "pre-archive estimate",
+					updatedAt: now - 20 * 60_000,
+				},
+				executor: {
+					workerId: "archive-fixture-worker",
+					startedAt: now - 15 * 60_000,
+					finishedAt: now - 10 * 60_000,
+					outcome: "completed" as const,
+				},
+			},
+		};
+		const base: TodoPhase[] = [
+			{ name: "Finished", tasks: [structuredClone(archivedTask)] },
+			{ name: "Open", tasks: [{ content: "Still running", status: "in_progress" }] },
+		];
+		const archivedPhases: TodoPhase[] = [{ name: "Finished", tasks: [structuredClone(archivedTask)] }];
+		const edit: TodoPersistedEdit = { v: 1, kind: "archive", at: now, operation: {
+			v: 1, kind: "op", at: now, op: "block", params: { op: "block", task: "Still running", reason: "Waiting" },
+		}, archivedPhases };
+		const entries = [
+			{
+				type: "custom",
+				customType: USER_TODO_EDIT_CUSTOM_TYPE,
+				data: { phases: base },
+				id: "base-archive-fixture",
+				parentId: null,
+				timestamp: new Date(now - 1_000).toISOString(),
+			},
+			compactEntry(edit, "archive-fixture", "base-archive-fixture"),
+		] as SessionEntry[];
+
+		expect(getLatestTodoPhasesFromEntries(entries)).toEqual([
+			{ name: "Open", tasks: [{ content: "Still running", status: "blocked", blocker: "Waiting" }] },
+		]);
+		expect(getLatestTodoArchiveFromEntries(entries)).toEqual(archivedPhases);
+		expect(getLatestTodoArchiveFromEntries(entries)[0]?.tasks[0]?.schedule?.estimate?.basis).toBe(
+			"pre-archive estimate",
+		);
+		expect(getLatestTodoArchiveFromEntries(entries)[0]?.tasks[0]?.schedule?.executor?.workerId).toBe(
+			"archive-fixture-worker",
+		);
+		// Historical event evidence remains available to consumers of the original full snapshot.
+		expect((entries[0] as SessionEntry & { data: { phases: TodoPhase[] } }).data.phases).toEqual(base);
+		expect(base[0]?.tasks[0]?.schedule?.estimate?.basis).toBe("pre-archive estimate");
 	});
 });

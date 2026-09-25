@@ -242,6 +242,7 @@ import {
 } from "../tools/resolve";
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";
 import { supportsExternalThinking } from "../tools/think";
+import { getTodoArchiveSummaryFromEntries } from "../tools/todo";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
@@ -6695,7 +6696,8 @@ export class AgentSession implements SettingsScope {
 		const canCallTodoTool = this.getActiveToolNames().includes("todo");
 		if (!canCallTodoTool) return undefined;
 		const phases = this.getTodoPhases().filter(phase => phase.tasks.length > 0);
-		if (phases.length === 0) return undefined;
+		const archiveSummary = getTodoArchiveSummaryFromEntries(this.sessionManager.getBranch());
+		if (phases.length === 0 && !archiveSummary) return undefined;
 
 		let total = 0;
 		let closed = 0;
@@ -6712,11 +6714,14 @@ export class AgentSession implements SettingsScope {
 				return { content: this.#sanitizeGoalTodoText(task.content), status: task.status };
 			}),
 		}));
+		const archiveSummaryLine = archiveSummary
+			? `\nArchive summary: ${archiveSummary.count} archived task${archiveSummary.count === 1 ? "" : "s"} (${new Date(archiveSummary.fromAt).toISOString()} to ${new Date(archiveSummary.toAt).toISOString()}).`
+			: "";
 
 		return prompt.render(goalTodoContextPrompt, {
 			canCallTodoTool,
 			closed: String(closed),
-			open: String(open),
+			open: `${open}${archiveSummaryLine}`,
 			phases: promptPhases,
 			total: String(total),
 		});
