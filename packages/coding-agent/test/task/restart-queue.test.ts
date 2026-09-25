@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
@@ -295,6 +296,15 @@ describe("restart queue controller", () => {
 		expect(formatRestartRequestStatus(snapshot.request, 721_000)).toBe(
 			"Restart waiting for 1 worker: CaptureWatch 12m; 1 queued input.",
 		);
+		expect(
+			formatRestartRequestStatus(
+				{
+					...snapshot.request!,
+					drainStatus: { ...snapshot.request!.drainStatus!, workerGraceDeadlineAt: 724_000 },
+				},
+				721_000,
+			),
+		).toBe("Restart waiting up to 3.0s for 1 worker to reach a safe point: CaptureWatch 12m; 1 queued input.");
 		controller.dispose();
 	});
 
@@ -390,6 +400,98 @@ describe("restart queue controller", () => {
 		expect(rootDeliveries[0]).toMatchObject({ from: MAIN_AGENT_ID, to: MAIN_AGENT_ID });
 		expect(controller.snapshot().request?.state).toBe("completed");
 		expect(restartNoticeText(rootManager.getBranch(), "cold-restart-request")).toBe("Restarted");
+		controller.dispose();
+	});
+
+	it("checkpoints running workers after grace without waiting for a hung worker to finish", async () => {
+		const cwd = makeTempDir();
+		const { manager: oldRootManager, file: rootFile } = await createRoot(cwd);
+		const rootArtifactDir = rootFile.slice(0, -".jsonl".length);
+		const registry = AgentRegistry.global();
+		const rootHarness = makeSession(oldRootManager);
+		registerRoot(registry, rootHarness.session, rootFile);
+		const hangingManager = track(SessionManager.create(cwd, rootArtifactDir));
+		hangingManager.appendSessionInit({
+			systemPrompt: "Persisted child prompt",
+			task: "Continue the hung child assignment",
+			tools: ["read", "yield"],
+		});
+		hangingManager.appendMessage({ role: "user", content: "Begin hung child work", timestamp: Date.now() });
+		await hangingManager.ensureOnDisk();
+		await hangingManager.flush();
+		const hangingFile = hangingManager.getSessionFile();
+		if (!hangingFile) throw new Error("Expected a durable hung child session file");
+		const hangingId = hangingManager.getSessionId();
+		const writingManager = track(SessionManager.create(cwd, rootArtifactDir));
+		writingManager.appendSessionInit({
+			systemPrompt: "Persisted child prompt",
+			task: "Finish the short child write",
+			tools: ["read", "yield"],
+		});
+		writingManager.appendMessage({ role: "user", content: "Begin short child work", timestamp: Date.now() });
+		await writingManager.ensureOnDisk();
+		await writingManager.flush();
+		const writingFile = writingManager.getSessionFile();
+		if (!writingFile) throw new Error("Expected a durable writing child session file");
+		const writePath = path.join(cwd, "child-write.txt");
+		await fs.writeFile(writePath, "partial");
+		const { promise: hungQuiescence } = Promise.withResolvers<void>();
+		const writingQuiescence = (async () => {
+			await Bun.sleep(5);
+			await fs.writeFile(writePath, "complete");
+		})();
+		registry.register({
+			id: hangingId,
+			displayName: "Hung child",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: makeSession(hangingManager, { wasRunning: true, quiescence: hungQuiescence }).session,
+			sessionFile: hangingFile,
+			status: "running",
+		});
+		registry.register({
+			id: writingManager.getSessionId(),
+			displayName: "Writing child",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: makeSession(writingManager, { wasRunning: true, quiescence: writingQuiescence }).session,
+			sessionFile: writingFile,
+			status: "running",
+		});
+		const identity = identityFor(oldRootManager, "restart-instance", 1);
+		const restartCalled = Promise.withResolvers<void>();
+		const controller = createRestartQueueController({
+			session: rootHarness.session,
+			identity: () => identity,
+			restartWorkerGraceMs: 25,
+			restart: async () => {
+				expect(await fs.readFile(writePath, "utf8")).toBe("complete");
+				restartCalled.resolve();
+			},
+		});
+
+		await controller.handle({ identity, op: "request", requestId: "worker-grace" });
+		await expect(
+			Promise.race([restartCalled.promise, Bun.sleep(250).then(() => "timed out" as const)]),
+		).resolves.toBe(undefined);
+
+		const handoff = oldRootManager
+			.getEntries()
+			.find(entry => entry.type === "custom" && entry.customType === "subagent_restart_handoff");
+		expect(handoff?.type).toBe("custom");
+		if (!handoff || handoff.type !== "custom") throw new Error("Expected durable restart handoff");
+		const children = (handoff.data as { children: Array<{ id: string; sessionFile: string; status: string }> })
+			.children;
+		expect(children).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: hangingId, sessionFile: path.resolve(hangingFile), status: "running" }),
+				expect.objectContaining({
+					id: writingManager.getSessionId(),
+					sessionFile: path.resolve(writingFile),
+					status: "running",
+				}),
+			]),
+		);
 		controller.dispose();
 	});
 
