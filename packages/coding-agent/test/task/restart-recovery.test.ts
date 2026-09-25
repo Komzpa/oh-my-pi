@@ -285,21 +285,24 @@ describe("subagent restart recovery", () => {
 		const revivalCalls: string[] = [];
 		const revived = new Map<string, TestSession>();
 		const installReviver = (targetRegistry: AgentRegistry, calls: string[], sessions: Map<string, TestSession>) => {
-			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(async ref => {
-				if (!ref.sessionFile) return undefined;
-				return async () => {
-					calls.push(ref.id);
-					const manager = track(await SessionManager.open(ref.sessionFile!));
-					const fake = makeTestSession(manager, {
-						onDelivery: message => {
-							deliveries.push(message);
-							targetRegistry.setStatus(ref.id, "running", fake.session);
-						},
-					});
-					sessions.set(ref.id, fake);
-					return fake.session;
-				};
-			}, 0);
+			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+				async ref => {
+					if (!ref.sessionFile) return undefined;
+					return async () => {
+						calls.push(ref.id);
+						const manager = track(await SessionManager.open(ref.sessionFile!));
+						const fake = makeTestSession(manager, {
+							onDelivery: message => {
+								deliveries.push(message);
+								targetRegistry.setStatus(ref.id, "running", fake.session);
+							},
+						});
+						sessions.set(ref.id, fake);
+						return fake.session;
+					};
+				},
+				() => 0,
+			);
 		};
 		installReviver(freshRegistry, revivalCalls, revived);
 
@@ -529,7 +532,7 @@ describe("subagent restart recovery", () => {
 				});
 				return revived.session;
 			},
-			0,
+			() => 0,
 		);
 
 		const report = await restoreSubagentsAfterRestart(resumedRoot.session);
@@ -597,7 +600,7 @@ describe("subagent restart recovery", () => {
 				const manager = track(await SessionManager.open(ref.sessionFile!));
 				return makeTestSession(manager).session;
 			},
-			0,
+			() => 0,
 		);
 
 		const report = await restoreSubagentsAfterRestart(resumedRoot.session);
