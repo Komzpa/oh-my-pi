@@ -6,6 +6,7 @@
 
 import { formatKeyHint } from "@oh-my-pi/pi-tui/key-hint-format";
 import { truncateToWidth } from "@oh-my-pi/pi-tui/utils";
+import { readRecentFrameDrops } from "@oh-my-pi/pi-tui/frame-telemetry";
 import { formatDuration, formatNumber, formatPercent } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { formatCost } from "@oh-my-pi/pi-tui/overlays/agent-hub-renderer";
@@ -63,6 +64,8 @@ export interface StatsCommandArgs {
 	host: string;
 	json: boolean;
 	summary: boolean;
+	frameDrops: boolean;
+	minutes: number;
 }
 
 function normalizePremiumRequests(n: number): number {
@@ -74,6 +77,11 @@ function normalizePremiumRequests(n: number): number {
 // =============================================================================
 
 export async function runStatsCommand(cmd: StatsCommandArgs): Promise<void> {
+	if (cmd.frameDrops) {
+		await printFrameDropSummary(cmd.minutes);
+		return;
+	}
+
 	// Lazy import to avoid loading stats module when not needed
 	const {
 		closeDb,
@@ -167,5 +175,33 @@ async function printStatsSummary(): Promise<void> {
 		}
 	}
 
+	console.log("");
+}
+
+async function printFrameDropSummary(minutes: number): Promise<void> {
+	const summaries = await readRecentFrameDrops(minutes);
+	console.log(chalk.bold(`\n=== TUI Frame Drops: last ${minutes} min ===\n`));
+	if (summaries.length === 0) {
+		console.log("No ui.frame-drop entries found.\n");
+		return;
+	}
+	for (const summary of summaries) {
+		console.log(
+			chalk.bold(
+				`${summary.phase}: ${formatNumber(summary.count)} drops, worst ${formatDuration(summary.worstMs)}, p95 ${formatDuration(summary.p95Ms)}`,
+			),
+		);
+		for (const drop of summary.drops) {
+			const detail = [
+				drop.kind,
+				drop.renderTarget ? `render=${drop.renderTarget}` : "",
+				drop.handling ? `handling=${drop.handling}` : "",
+				drop.msSinceLastInput !== undefined ? `since-key=${formatDuration(drop.msSinceLastInput)}` : "",
+			]
+				.filter(Boolean)
+				.join(", ");
+			console.log(`  ${drop.timestamp} ${formatDuration(drop.durationMs)} ${detail}`);
+		}
+	}
 	console.log("");
 }
