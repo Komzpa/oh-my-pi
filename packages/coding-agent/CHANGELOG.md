@@ -35,17 +35,6 @@
 - Improved IDA database resource management with project sharing, bounded concurrency, idle cleanup, autosave, and clearer database status in listings.
 - Improved runtime configuration behavior with type-safe layered settings, live updates, and safe sequential saves.
 - Improved authentication and credential management to support live broker and credential-store changes.
-- Implemented sequential atomic configuration saves to prevent write overlaps
-- Refactored domain-specific settings to a type-safe registry supporting dynamic reactivity and layered environment variable overrides
-- Updated URL resolution to use a canonical router, replacing ad-hoc `normalizeLocalScheme` logic
-- Hardened filesystem access across `local://`, `memory://`, and `vault://` protocols with robust symlink and containment validation
-- Materialized specific Mach-O slices into temporary store IDBs to ensure IDA analyzes only the selected architecture
-- Updated IDA and read tool documentation to describe universal binary slice selection
-- Refactored all domain-specific settings to use the registry, enabling dynamic UI and session state updates without full restarts
-- Show active subagents inline with TODO tasks and keep unmatched workers in the same tree; remove scheduling method details from the visible forecast ([fork PR #6](https://github.com/Komzpa/oh-my-pi/pull/6)).
-- Shortened the default system prompt by removing redundant rules and empty sections, reducing token usage by about 150 tokens with default settings.
-- Added `additionalContext` to extension and hook `tool_call` results, plus `ctx.addAdditionalContext()` for registered tools, to pass trusted instructions to the model after a tool call without changing its result ([#11998](https://github.com/can1357/oh-my-pi/pull/11998) by [@H4vC](https://github.com/H4vC))
-- Added Anthropic fallback credit token preservation across same-provider classifier refusal fallbacks, including continuation through signed thinking turns.
 
 ### Fixed
 
