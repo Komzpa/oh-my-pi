@@ -50,7 +50,7 @@ import {
 	recoverHarmonyToolCall,
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
-import { logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
+import { logger, popLoopPhase, pushLoopPhase, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { LiveSteeringChannel } from "./live-steering";
 import { agentPauseGate } from "./pause";
@@ -3334,6 +3334,7 @@ async function executeToolCalls(
 					executionStarted = true;
 					let rawResult: unknown;
 					try {
+						pushLoopPhase(`tool.${toolCall.name}.execute`);
 						rawResult = await tool.execute(
 							toolCall.id,
 							executionArgs,
@@ -3350,6 +3351,7 @@ async function executeToolCalls(
 							toolContext,
 						);
 					} finally {
+						popLoopPhase();
 						await streamSession?.discard("outer tool completed without committing stream speculation");
 					}
 					completedToolExecution = true;

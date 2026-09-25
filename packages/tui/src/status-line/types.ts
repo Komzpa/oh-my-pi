@@ -48,6 +48,7 @@ export interface StatusLineSettings {
 	separator?: StatusLineSeparatorStyle;
 	segmentOptions?: StatusLineSegmentOptions;
 	showHookStatus?: boolean;
+	showFpsMeter?: boolean;
 	sessionAccent?: boolean;
 	/** Drop the theme's `statusLineBg` fill and powerline caps so the bar
 	 *  inherits the terminal's default background. */
@@ -127,6 +128,8 @@ export interface SegmentContext {
 	stream: { viewers: number } | null;
 	/** A `/record` capture of this screen is running. */
 	recording: boolean;
+	/** Compact rolling TUI frame-rate/render-lag text, e.g. `12fps p95 48ms lag 3.1s`. */
+	fpsText?: string;
 	// Cached values for performance (computed once per render)
 	usageStats: {
 		input: number;
