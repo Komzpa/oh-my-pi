@@ -93,6 +93,7 @@ import {
 	type McpConnectionStatusEvent,
 } from "../mcp/startup-events";
 import { humanizePlanTitle, type PlanApprovalDetails, resolvePlanTitle } from "../plan-mode/approved-plan";
+import { cfgTaskMaxConcurrency } from "../task/settings";
 import {
 	isJudgmentBatchProgress,
 	JUDGMENT_BATCH_PROGRESS_EVENT_CHANNEL,
@@ -3644,7 +3645,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const deadlineAt = deadline?.deadlineAt;
 		const hasScheduleData = deadlineAt !== undefined || phases.some(phase => phase.tasks.some(task => task.schedule));
 		this.#todoForecast = hasScheduleData
-			? forecastTodoPlan(phases, { now, capacity: owner.settings.get("task.maxConcurrency"), deadlineAt })
+			? forecastTodoPlan(phases, { now, capacity: cfgTaskMaxConcurrency.get(owner.settings), deadlineAt })
 			: undefined;
 		this.#todoForecastRowsByContent.clear();
 		for (const row of this.#todoForecast?.rows ?? []) this.#todoForecastRowsByContent.set(row.content, row);

@@ -455,7 +455,7 @@ import {
 	cfgThemeDark,
 	cfgThemeLight,
 } from "../modes/settings";
-import { cfgTaskBatch, cfgTaskDisabledAgents } from "../task/settings";
+import { cfgTaskBatch, cfgTaskDisabledAgents, cfgTaskMaxConcurrency } from "../task/settings";
 import {
 	cfgBranchSummaryReserveTokens,
 	cfgExtendedContext,
@@ -7390,7 +7390,7 @@ export class AgentSession implements SettingsScope {
 				void this.dispose().finally(() => process.exit(0));
 			},
 			getContextUsage: () => this.getContextUsage(),
-			getTaskMaxConcurrency: () => this.settings.get("task.maxConcurrency"),
+			getTaskMaxConcurrency: () => cfgTaskMaxConcurrency.get(this.settings),
 			getAsyncJobSnapshot: () => this.getAsyncJobSnapshot(),
 			waitForIdle: () => this.waitForIdle(),
 			newSession: async options => {

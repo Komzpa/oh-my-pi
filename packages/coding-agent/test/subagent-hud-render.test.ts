@@ -632,7 +632,11 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(hud).toContain("TODO");
 		expect(hud).toContain("unassigned workers");
 		for (let index = 0; index < 6; index++) expect(hud).toContain(`BurstAgent${index}`);
-		expect(mode.subagentContainer.render(120)).toEqual([]);
+		const pinnedHud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+		expect(pinnedHud).toContain("Subagents");
+		expect(pinnedHud).toContain("BurstAgent0");
+		expect(pinnedHud).toContain("BurstAgent2");
+		expect(pinnedHud).toContain("3 more");
 		expect(rebuildHud).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});

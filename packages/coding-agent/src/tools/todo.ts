@@ -22,6 +22,7 @@ import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
+import { cfgTaskMaxConcurrency } from "../task/settings";
 
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
 import { readGoalDeadline } from "../goals/deadlines";
@@ -1208,7 +1209,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		if (!readOnly && !failed) this.session.setTodoPhases?.(updated);
 		const forecast = forecastTodoPlan(effective, {
 			now,
-			capacity: this.session.settings.get("task.maxConcurrency"),
+			capacity: cfgTaskMaxConcurrency.get(this.session.settings),
 			...(deadline === undefined ? {} : { deadlineAt: deadline.deadlineAt }),
 		});
 		const details: TodoToolDetails = { op, phases: effective, storage, forecastAt: now, forecast };
