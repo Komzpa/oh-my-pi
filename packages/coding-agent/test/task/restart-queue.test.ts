@@ -311,21 +311,24 @@ describe("restart queue controller", () => {
 		const childDeliveries: IrcMessage[] = [];
 		const revivalIds: string[] = [];
 		let revivedChildSessionId: string | undefined;
-		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(async ref => {
-			if (!ref.sessionFile) return undefined;
-			return async () => {
-				revivalIds.push(ref.id);
-				const revivedManager = track(await SessionManager.open(ref.sessionFile!));
-				revivedChildSessionId = revivedManager.getSessionId();
-				const childHarness = makeSession(revivedManager, {
-					onDelivery: message => {
-						childDeliveries.push(message);
-						registry.setStatus(ref.id, "running", childHarness.session);
-					},
-				});
-				return childHarness.session;
-			};
-		}, 0);
+		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+			async ref => {
+				if (!ref.sessionFile) return undefined;
+				return async () => {
+					revivalIds.push(ref.id);
+					const revivedManager = track(await SessionManager.open(ref.sessionFile!));
+					revivedChildSessionId = revivedManager.getSessionId();
+					const childHarness = makeSession(revivedManager, {
+						onDelivery: message => {
+							childDeliveries.push(message);
+							registry.setStatus(ref.id, "running", childHarness.session);
+						},
+					});
+					return childHarness.session;
+				};
+			},
+			() => 0,
+		);
 
 		const currentIdentity = identityFor(rootManager, "new-instance", 5);
 		const controller = createRestartQueueController({
@@ -393,13 +396,16 @@ describe("restart queue controller", () => {
 		const freshRegistry = AgentRegistry.global();
 		registerRoot(freshRegistry, harness.session, rootFile);
 		const revivalIds: string[] = [];
-		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(async ref => {
-			if (ref.id !== childId || !ref.sessionFile) return undefined;
-			return async () => {
-				revivalIds.push(ref.id);
-				return makeSession(track(await SessionManager.open(ref.sessionFile!))).session;
-			};
-		}, 0);
+		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+			async ref => {
+				if (ref.id !== childId || !ref.sessionFile) return undefined;
+				return async () => {
+					revivalIds.push(ref.id);
+					return makeSession(track(await SessionManager.open(ref.sessionFile!))).session;
+				};
+			},
+			() => 0,
+		);
 
 		const controller = createRestartQueueController({
 			session: harness.session,
