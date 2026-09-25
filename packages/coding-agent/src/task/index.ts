@@ -63,13 +63,14 @@ import { repairTaskParams } from "@oh-my-pi/pi-tui/tools/task-repair-args";
 import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
 import { SpawnRun, type SpawnPermit } from "./spawn-run";
 import { type TaskLauncher, TaskLaunchSession } from "./speculative-launch";
+import { buildTodoExecutorPersistedEdit } from "../tools/todo";
 import { applyTodoExecutorObservation, type TodoExecutorObservation } from "../tools/todo-executor";
 import {
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
 	type SubagentLifecyclePayload,
 	type SubagentProgressPayload,
-} from "./types";b56aa6590f (fix(todo): simplify forecast HUD and record worker execution)
+} from "./types";
 
 import { cfgAsyncEnabled } from "../tools/settings";
 import {
@@ -664,7 +665,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			},
 		},
 	};
-	readonly #todoExecutors = new Map<string, TodoExecutorObservation>();b56aa6590f (fix(todo): simplify forecast HUD and record worker execution)
+	readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
 
 	get parameters(): TaskToolSchemaInstance {
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
@@ -771,7 +772,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		});
 		if (!updated) return;
 		this.session.setTodoPhases?.(updated);
-		this.session.persistTodoPhases?.(updated);
+		this.session.persistTodoPhases?.(
+			updated,
+			buildTodoExecutorPersistedEdit({
+				...observation,
+				runningWorkerIds: new Set(this.#todoExecutors.keys()),
+			}),
+		);
 	}
 
 	#isBatchEnabled(): boolean {
