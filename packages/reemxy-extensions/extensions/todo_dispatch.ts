@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { lifecycleGoal, readGoalDeadline } from "@oh-my-pi/pi-coding-agent/goals/deadlines";
+import { lifecycleGoal, readGoalDeadline } from "./deadlines";
 
 type DispatchForecastApi = Pick<
   ExtensionAPI["pi"],
