@@ -47,6 +47,8 @@ import type {
 	UrlCompletion,
 } from "./types";
 
+const UNKNOWN_AGENT_HINT_LIMIT = 10;
+
 /** Registry lookup for a `history://<id>` URL, bound to the caller's root. */
 interface RefLookup {
 	ref?: AgentRef;
@@ -76,6 +78,63 @@ function formatAgo(timestamp: number): string {
 	const hours = Math.floor(mins / 60);
 	if (hours < 24) return `${hours}h ago`;
 	return `${Math.floor(hours / 24)}d ago`;
+}
+
+function editDistance(left: string, right: string): number {
+	const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+	const current = Array.from({ length: right.length + 1 }, () => 0);
+	for (let leftIndex = 1; leftIndex <= left.length; leftIndex++) {
+		current[0] = leftIndex;
+		for (let rightIndex = 1; rightIndex <= right.length; rightIndex++) {
+			const substitutionCost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
+			current[rightIndex] = Math.min(
+				previous[rightIndex] + 1,
+				current[rightIndex - 1] + 1,
+				previous[rightIndex - 1] + substitutionCost,
+			);
+		}
+		for (let index = 0; index < previous.length; index++) previous[index] = current[index] ?? 0;
+	}
+	return previous[right.length] ?? 0;
+}
+
+function closestAgentScore(requestedId: string, candidateId: string): number {
+	const requested = requestedId.toLowerCase();
+	const candidate = candidateId.toLowerCase();
+	const distance = editDistance(requested, candidate);
+	const lengthPenalty =
+		Math.abs(candidate.length - requested.length) / Math.max(candidate.length, requested.length, 1);
+	const substringBonus = candidate.includes(requested) || requested.includes(candidate) ? -2 : 0;
+	const prefixBonus = candidate.startsWith(requested) || requested.startsWith(candidate) ? -1 : 0;
+	return distance + lengthPenalty + substringBonus + prefixBonus;
+}
+
+function unknownAgentHints(agentId: string, visible: readonly AgentRef[]): string[] {
+	const hints: string[] = [];
+	const seen = new Set<string>();
+	const add = (id: string) => {
+		if (hints.length >= UNKNOWN_AGENT_HINT_LIMIT || seen.has(id)) return;
+		seen.add(id);
+		hints.push(id);
+	};
+
+	const running = visible
+		.filter(ref => ref.status === "running")
+		.toSorted((left, right) => right.lastActivity - left.lastActivity || left.id.localeCompare(right.id));
+	for (const ref of running) add(ref.id);
+
+	const closest = visible
+		.filter(ref => !seen.has(ref.id))
+		.toSorted((left, right) => {
+			const scoreDiff = closestAgentScore(agentId, left.id) - closestAgentScore(agentId, right.id);
+			return scoreDiff || left.id.localeCompare(right.id);
+		});
+	for (const ref of closest) add(ref.id);
+	return hints;
+}
+
+function registryForContext(context: ResolveContext | undefined): AgentRegistry {
+	return context?.agentRegistry ?? AgentRegistry.global();
 }
 
 /** One row of the history index — either a registered ref or a disk-only transcript. */
@@ -315,7 +374,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	 * skipping advisor transcripts.
 	 */
 	async #lookup(agentId: string, context: ResolveContext | undefined): Promise<RefLookup> {
-		const registry = AgentRegistry.global();
+		const registry = registryForContext(context);
 		// A caller resolving a possibly-parked id refreshes its own root's
 		// persisted roster first: a same-named parked ref restored by another
 		// root's scan must not be served (or listed as known) in its place.
@@ -363,7 +422,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		if (isCurrentFullRoute(url)) return this.#resolveCurrentFull(url, context);
 		const agentId = url.rawHost || url.hostname;
 		if (!agentId) {
-			const visible = AgentRegistry.global()
+			const visible = registryForContext(context)
 				.list()
 				.filter(ref => ref.kind !== "advisor");
 			const content = await this.#renderIndex(visible);
@@ -382,7 +441,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			const disk = await this.#resolveFromDisk(agentId, preferredArtifactDir);
 			if (disk) return { ...disk, url: url.href };
 
-			const known = visible.map(candidate => candidate.id);
+			const known = unknownAgentHints(agentId, visible);
 			const knownStr = known.length > 0 ? known.join(", ") : "none";
 			throw new Error(`Unknown agent: ${agentId}\nKnown agents: ${knownStr}\nList all with history://`);
 		}
@@ -400,6 +459,22 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			// giving up, in case the transcript lingers under an artifacts dir.
 			const disk = await this.#resolveFromDisk(ref.id, preferredArtifactDir);
 			if (disk) return { ...disk, url: url.href };
+			if (ref.status === "running") {
+				const content = [
+					`# ${ref.id} (${ref.status})`,
+					"",
+					"No transcript has been written yet.",
+					`Started ${formatAgo(ref.createdAt)}.`,
+					"",
+				].join("\n");
+				return {
+					url: url.href,
+					content,
+					contentType: "text/markdown",
+					size: Buffer.byteLength(content, "utf-8"),
+					notes: ["Source: agent registry (no transcript yet)"],
+				};
+			}
 			throw new Error(`Agent ${ref.id} has no transcript: session is gone and no session file was retained`);
 		}
 
