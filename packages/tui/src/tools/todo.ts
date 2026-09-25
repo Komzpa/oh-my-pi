@@ -148,6 +148,8 @@ export interface TodoToolDetails {
 	forecast?: TodoPlanForecast;
 }
 
+
+
 /** Minimum overlap (after normalization) required for a substring match.
  * Picked at six chars to admit single-word identifiers like "review" /
  * "Sonnet" without admitting tiny common substrings like "test" / "fix"
