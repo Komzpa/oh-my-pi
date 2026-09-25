@@ -18,6 +18,7 @@ const { IsoBackendKind } = natives;
 
 const TASK_ISOLATION_DIR_PREFIX = "t";
 const TASK_ISOLATION_DIR_DIGEST_CHARS = 9;
+const TASK_ISOLATION_SOURCE_DIR = "s";
 const TASK_ISOLATION_MOUNT_DIR = "m";
 const GIT_NETWORK_TIMEOUT_MS = 30 * 60 * 1000;
 type IsoBackendKind = natives.IsoBackendKind;
@@ -541,8 +542,13 @@ export async function ensureIsolation(
 	preferred?: IsoBackendKind,
 ): Promise<IsolationHandle> {
 	const repoRoot = await getRepoRoot(baseCwd);
-	const sourceCommonDir = vcs.requireGit(repoRoot).info().commonDir;
+	const repo = vcs.requireGit(repoRoot);
+	const headSha = await repo.headSha();
+	if (!headSha) {
+		throw new Error("Isolated task execution requires a committed Git HEAD.");
+	}
 	const baseDir = getWorktreeDir(getTaskIsolationSegment(repoRoot, id));
+	const sourceDir = path.join(baseDir, TASK_ISOLATION_SOURCE_DIR);
 	const mergedDir = path.join(baseDir, TASK_ISOLATION_MOUNT_DIR);
 	const resolution = natives.isoResolve(preferred ?? null);
 	const candidates = resolution.candidates.length > 0 ? resolution.candidates : [resolution.kind];
@@ -551,21 +557,20 @@ export async function ensureIsolation(
 	for (const candidate of candidates) {
 		await fs.rm(baseDir, { recursive: true, force: true });
 		// Claim ownership before the backend materialises `m`. Backends only
-		// create/replace `mergedDir` (and overlay upper/work), never the base
-		// dir, so the marker survives `isoStart` — and a concurrent
+		// create/replace `mergedDir` (and overlay upper/work), never the base dir
+		// or the clean source, so the marker survives `isoStart` — and a concurrent
 		// `omp worktree clear` never sees this sandbox without a live owner,
 		// even while a large clone is still in progress.
 		await fs.mkdir(baseDir, { recursive: true });
 		await writeIsolationOwner(baseDir, id);
 		try {
-			await natives.isoStart(candidate, repoRoot, mergedDir);
+			await vcs.clone(repoRoot, sourceDir, { sha: headSha, timeoutMs: GIT_NETWORK_TIMEOUT_MS });
+			const sourceCommonDir = vcs.requireGit(sourceDir).info().commonDir;
+			await natives.isoStart(candidate, sourceDir, mergedDir);
 			// Sever the isolation's git metadata from the source checkout. Copy
-			// backends duplicate `repoRoot`'s `.git` verbatim — a linked-worktree
-			// pointer file (or the rcopy `git worktree add` registration) leaves
-			// the isolation sharing the source's HEAD/index/ref namespace, so a
-			// task's git operations would mutate the parent checkout and stack
-			// parallel task branches. Detaching gives each isolation a private,
-			// frozen repo that still borrows the source object DB via alternates.
+			// backends duplicate the clean source's `.git` verbatim; detaching
+			// gives each isolation a private, frozen repo even when the backend
+			// copied a linked metadata layout or alternates from the source clone.
 			await vcs.detachGitDir(mergedDir, sourceCommonDir);
 			return {
 				mergedDir,
