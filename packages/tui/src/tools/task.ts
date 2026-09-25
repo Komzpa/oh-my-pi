@@ -2004,6 +2004,19 @@ export interface SingleResult {
 		attempt: number;
 		errorMessage: string;
 	};
+	/**
+	 * Background jobs that still belonged to the worker when it failed or was
+	 * aborted. Preserved so the parent can see follow-on processes the worker
+	 * started before a terminal provider/runtime failure.
+	 */
+	retainedBackgroundJobs?: Array<{
+		id: string;
+		type: "bash" | "task" | "eval";
+		status: "running" | "completed" | "failed" | "cancelled";
+		label?: string;
+		agentId?: string;
+		pid?: number;
+	}>;
 	/** Output metadata for agent:// URL integration */
 	outputMeta?: { lineCount: number; charCount: number };
 }
