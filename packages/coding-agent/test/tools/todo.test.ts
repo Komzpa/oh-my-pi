@@ -5,6 +5,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
+	getLatestTodoPhasesFromEntries,
 	markdownToPhases,
 	nextActionableTask,
 	phasesToMarkdown,
@@ -12,6 +13,7 @@ import {
 	resolveTodoMarkdownPath,
 	TodoTool,
 } from "@oh-my-pi/pi-coding-agent/tools";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import {
 	selectCollapsedTodos,
 	type TodoItem,
@@ -135,6 +137,120 @@ describe("nextActionableTask", () => {
 });
 
 describe("TodoTool operations", () => {
+	function heavyTodoPlan(rowCount: number): TodoPhase[] {
+		return [
+			{
+				name: "Sunbim 316-row fixture",
+				tasks: Array.from({ length: rowCount }, (_, index) => {
+					const content = `Task ${String(index + 1).padStart(3, "0")} with retained schedule history`;
+					return {
+						content,
+						status: index === rowCount - 1 ? ("in_progress" as const) : ("completed" as const),
+						schedule: {
+							startedAt: 1_790_217_022_691 + index,
+							finishedAt: index === rowCount - 1 ? undefined : 1_790_217_192_187 + index,
+							dependencies:
+								index === 0 ? [] : [`Task ${String(index).padStart(3, "0")} with retained schedule history`],
+							owner: "Main",
+							resources: ["native-todo", `lane-${index % 9}`],
+							reestimateCount: 0,
+							estimateRevision: 1,
+							estimate: {
+								optimisticSeconds: 60,
+								likelySeconds: 180,
+								pessimisticSeconds: 420,
+								confidence: "high" as const,
+								basis: "Large-plan regression basis retaining enough text to model Sunbim schedule history without depending on a private session fixture.",
+								updatedAt: 1_790_217_111_019 + index,
+							},
+							progress: {
+								at: 1_790_217_111_019 + index,
+								evidence:
+									"Large-plan regression evidence retaining enough text to model repeated progress history.",
+							},
+							executor: {
+								workerId: `worker-${index}`,
+								agentProfile: "task",
+								resolvedModel: "openrouter/free",
+								thinkingLevel: "low",
+								startedAt: 1_790_217_111_019 + index,
+								finishedAt: index === rowCount - 1 ? undefined : 1_790_217_192_187 + index,
+								outcome: index === rowCount - 1 ? undefined : ("completed" as const),
+							},
+						},
+					};
+				}),
+			},
+		];
+	}
+
+	it("persists a one-row update compactly for a 316-row plan while retaining live details", async () => {
+		const phases = heavyTodoPlan(316);
+		const tool = new TodoTool(createSession(phases));
+
+		const result = await tool.execute("large-update", {
+			op: "schedule",
+			updates: [
+				{
+					task: "Task 316 with retained schedule history",
+					evidence: "One-row update for compact persistence budget",
+				},
+			],
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.phases[0]?.tasks).toHaveLength(316);
+		expect(result.details?.forecast?.rows).toHaveLength(316);
+		const persistedBytes = new TextEncoder().encode(JSON.stringify(result.details)).length;
+		expect(persistedBytes).toBeLessThan(20_000);
+		expect(JSON.stringify(result.details)).not.toContain("Large-plan regression basis");
+	});
+
+	it("replays a compact persisted todo edit after an old full-snapshot entry", async () => {
+		const phases = heavyTodoPlan(3);
+		const tool = new TodoTool(createSession(phases));
+		const result = await tool.execute("compact-update", {
+			op: "schedule",
+			updates: [
+				{
+					task: "Task 003 with retained schedule history",
+					evidence: "Replay compact edit evidence",
+				},
+			],
+		});
+
+		const persistedDetails = JSON.parse(JSON.stringify(result.details));
+		const entries = [
+			{
+				type: "custom",
+				customType: "user_todo_edit",
+				data: { phases },
+				id: "base",
+				parentId: null,
+				timestamp: "2026-09-25T11:00:00.000Z",
+			},
+			{
+				type: "message",
+				id: "compact",
+				parentId: "base",
+				timestamp: "2026-09-25T11:00:01.000Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "compact-update",
+					toolName: "todo",
+					content: result.content,
+					details: persistedDetails,
+					isError: false,
+					timestamp: 1_790_217_112_000,
+				},
+			},
+		] as SessionEntry[];
+
+		const restored = getLatestTodoPhasesFromEntries(entries);
+		expect(restored[0]?.tasks[2]?.schedule?.progress?.evidence).toBe("Replay compact edit evidence");
+		expect(restored[0]?.tasks[2]?.schedule?.progress?.at).toBe(result.details?.edit?.at);
+	});
+
 	it("jumps to a specific task out of order", async () => {
 		const tool = new TodoTool(createSession());
 		await tool.execute("call-1", {
