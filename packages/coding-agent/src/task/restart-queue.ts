@@ -1,4 +1,4 @@
-import { logger } from "@oh-my-pi/pi-utils";
+import { formatDuration, logger } from "@oh-my-pi/pi-utils";
 import restartQueuedPrompt from "../prompts/restart-queued.md" with { type: "text" };
 import type { RestartDrainLease } from "../session/agent-session-types";
 import type { AgentSession } from "../session/agent-session";
@@ -42,7 +42,19 @@ export interface RestartRequestRecord {
 	error?: string;
 	rootWasRunning: boolean;
 	runningWorkerCount?: number;
+	drainStatus?: RestartDrainStatus;
 	goalModeBefore?: { goalId: string };
+}
+
+export interface RestartDrainWorkerStatus {
+	id: string;
+	name: string;
+	startedAt: number;
+}
+
+export interface RestartDrainStatus {
+	runningWorkers: RestartDrainWorkerStatus[];
+	queuedInputCount: number;
 }
 
 export interface RestartControlSnapshot {
@@ -104,6 +116,7 @@ interface ActiveRestartDrain {
 	children: Map<string, AgentSession>;
 	runningAgentIds: Set<string>;
 	notifications: Promise<void>[];
+	notifiedSessions: Map<AgentSession, Set<string>>;
 	irreversible: boolean;
 	callbackStarted: boolean;
 	cancelNoticeDelivered: boolean;
@@ -143,6 +156,36 @@ function parseIdentity(value: unknown): RestartControlIdentity | undefined {
 		generation: value.generation,
 	};
 }
+
+function parseDrainStatus(value: unknown): RestartDrainStatus | undefined {
+	if (!isObject(value) || !Array.isArray(value.runningWorkers)) return undefined;
+	if (
+		typeof value.queuedInputCount !== "number" ||
+		!Number.isInteger(value.queuedInputCount) ||
+		value.queuedInputCount < 0
+	) {
+		return undefined;
+	}
+	const runningWorkers: RestartDrainWorkerStatus[] = [];
+	for (const item of value.runningWorkers) {
+		if (
+			!isObject(item) ||
+			typeof item.id !== "string" ||
+			item.id.length === 0 ||
+			item.id.length > 256 ||
+			typeof item.name !== "string" ||
+			item.name.length === 0 ||
+			item.name.length > 256 ||
+			typeof item.startedAt !== "number" ||
+			!Number.isFinite(item.startedAt)
+		) {
+			return undefined;
+		}
+		runningWorkers.push({ id: item.id, name: item.name, startedAt: item.startedAt });
+	}
+	return { runningWorkers, queuedInputCount: value.queuedInputCount };
+}
+
 function parseRestartRequestRecord(value: unknown): RestartRequestRecord | undefined {
 	if (!isObject(value)) return undefined;
 	if (
@@ -161,6 +204,7 @@ function parseRestartRequestRecord(value: unknown): RestartRequestRecord | undef
 			(typeof value.runningWorkerCount !== "number" ||
 				!Number.isInteger(value.runningWorkerCount) ||
 				value.runningWorkerCount < 0)) ||
+		(value.drainStatus !== undefined && parseDrainStatus(value.drainStatus) === undefined) ||
 		(value.goalModeBefore !== undefined &&
 			(!isObject(value.goalModeBefore) ||
 				typeof value.goalModeBefore.goalId !== "string" ||
@@ -186,6 +230,7 @@ function parseRestartRequestRecord(value: unknown): RestartRequestRecord | undef
 		...(typeof value.error === "string" ? { error: value.error } : {}),
 		rootWasRunning: value.rootWasRunning,
 		...(typeof value.runningWorkerCount === "number" ? { runningWorkerCount: value.runningWorkerCount } : {}),
+		...(value.drainStatus !== undefined ? { drainStatus: parseDrainStatus(value.drainStatus)! } : {}),
 		...(isObject(value.goalModeBefore) && typeof value.goalModeBefore.goalId === "string"
 			? { goalModeBefore: { goalId: value.goalModeBefore.goalId } }
 			: {}),
@@ -227,6 +272,31 @@ export function restartNoticeText(entries: readonly SessionEntry[], requestId: s
 		default:
 			return "Restart queued";
 	}
+}
+
+function plural(count: number, singular: string, pluralText = `${singular}s`): string {
+	return count === 1 ? singular : pluralText;
+}
+
+function formatWorker(worker: RestartDrainWorkerStatus, now: number): string {
+	const elapsed = Math.max(0, now - worker.startedAt);
+	return `${worker.name} ${formatDuration(elapsed)}`;
+}
+
+export function formatRestartRequestStatus(record: RestartRequestRecord | null, now = Date.now()): string {
+	if (!record) return "No restart request is queued.";
+	if (record.state !== "queued" && record.state !== "draining") {
+		return `Restart ${record.state} (${record.requestId}).`;
+	}
+	const status = record.drainStatus;
+	const workers = status?.runningWorkers ?? [];
+	const queuedInputCount = status?.queuedInputCount ?? 0;
+	const queued = `${queuedInputCount} queued ${plural(queuedInputCount, "input")}`;
+	if (workers.length > 0) {
+		return `Restart waiting for ${workers.length} ${plural(workers.length, "worker")}: ${workers.map(worker => formatWorker(worker, now)).join(", ")}; ${queued}.`;
+	}
+	if (queuedInputCount > 0) return `Restart waiting for ${queued}.`;
+	return `Restart ${record.state} (${record.requestId}).`;
 }
 
 /** Only a checkpoint from the previous process licenses active-goal recovery. */
@@ -279,6 +349,7 @@ function makeRun(identity: RestartControlIdentity, record: RestartRequestRecord)
 		children: new Map(),
 		runningAgentIds: new Set(),
 		notifications: [],
+		notifiedSessions: new Map(),
 		irreversible: false,
 		callbackStarted: false,
 		cancelNoticeDelivered: false,
@@ -532,7 +603,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		run.record = { ...run.record, rootWasRunning: rootLease.wasRunning || rootWasStreaming };
 		for (const child of getLiveSubagentsForRestart(this.#session))
 			this.#prepareChild(run, child.id, child.status, child.session);
-		run.record = { ...run.record, runningWorkerCount: run.runningAgentIds.size };
+		run.record = this.#withDrainStatus({ ...run.record, runningWorkerCount: run.runningAgentIds.size }, run);
 	}
 
 	#prepareChild(run: ActiveRestartDrain, id: string, status: string, session: AgentSession): void {
@@ -550,6 +621,12 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	}
 
 	#notifySession(run: ActiveRestartDrain, session: AgentSession): void {
+		const bucket = run.notifiedSessions.get(session) ?? new Set<string>();
+		const noticeKey =
+			run.record.state === "cancelled" ? `${run.record.requestId}:cancelled` : `${run.record.requestId}:active`;
+		if (bucket.has(noticeKey)) return;
+		bucket.add(noticeKey);
+		run.notifiedSessions.set(session, bucket);
 		let notification: Promise<void>;
 		try {
 			notification = session
@@ -567,8 +644,30 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		} catch (error) {
 			notification = Promise.reject(error);
 		}
-		void notification.catch(() => {});
+		void notification.catch(() => {
+			bucket.delete(noticeKey);
+		});
 		run.notifications.push(notification);
+	}
+
+	#withDrainStatus(record: RestartRequestRecord, run: ActiveRestartDrain): RestartRequestRecord {
+		const liveChildren = getLiveSubagentsForRestart(this.#session);
+		const runningWorkers = liveChildren
+			.filter(child => child.status === "running" || child.session.isStreaming || run.runningAgentIds.has(child.id))
+			.map(child => ({
+				id: child.id,
+				name: child.displayName || child.id,
+				startedAt: child.createdAt,
+			}))
+			.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+		const sessions = new Set<AgentSession>([this.#session, ...run.children.values()]);
+		let queuedInputCount = 0;
+		for (const session of sessions) queuedInputCount += session.agent.getPendingModelNewsCount();
+		return {
+			...record,
+			runningWorkerCount: runningWorkers.length,
+			drainStatus: { runningWorkers, queuedInputCount },
+		};
 	}
 
 	#takeLease(run: ActiveRestartDrain, session: AgentSession): RestartDrainLease {
@@ -668,12 +767,13 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			throw new Error(`Invalid restart request transition ${from} -> ${state}`);
 		}
 		const base = latest ?? current;
-		const next: RestartRequestRecord = {
+		let next: RestartRequestRecord = {
 			...base,
 			state,
 			updatedAt: Date.now(),
 			...(state === "failed" && error ? { error } : {}),
 		};
+		if (run && (state === "queued" || state === "draining")) next = this.#withDrainStatus(next, run);
 		if (state !== "failed") delete next.error;
 		await this.#persistRecord(identity, next);
 		if (run) run.record = next;

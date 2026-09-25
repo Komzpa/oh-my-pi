@@ -610,6 +610,25 @@ function isRestartPendingQueues(value: unknown): value is RestartPendingQueues {
 	);
 }
 
+function restartQueueFingerprintMessage(message: AgentMessage): Record<string, unknown> {
+	const normalized = { ...(message as unknown as Record<string, unknown>) };
+	if (
+		message.role === "custom" &&
+		(message.customType === "goal-continuation" || message.customType === "restart-queued")
+	) {
+		delete normalized.timestamp;
+	}
+	return normalized;
+}
+
+function restartPendingQueuesSignature(queues: RestartPendingQueues): string {
+	return JSON.stringify({
+		steering: queues.steering.map(restartQueueFingerprintMessage),
+		followUp: queues.followUp.map(restartQueueFingerprintMessage),
+		pendingNextTurn: queues.pendingNextTurn.map(restartQueueFingerprintMessage),
+	});
+}
+
 type PendingNextTurnDelivery = {
 	boundary: CustomMessage;
 	messages: CustomMessage[];
@@ -887,6 +906,7 @@ export class AgentSession implements SettingsScope {
 	#messageEndPersistenceTail: Promise<void> = Promise.resolve();
 	#pendingMessageEndPersistence = new Map<string, Promise<void>>();
 	#restartPendingQueuesCheckpointActive = false;
+	#lastRestartPendingQueuesSignature: string | undefined;
 	#persistedMessageKeys: { anchor: string; keys: Set<string> } | undefined;
 
 	// Custom commands (TypeScript slash commands)
@@ -5896,6 +5916,7 @@ export class AgentSession implements SettingsScope {
 			this.#restartDrainQuiescence = undefined;
 			this.#restartDrainStoppedRun = false;
 			this.#restartDrainNeedsResume = false;
+			this.#lastRestartPendingQueuesSignature = undefined;
 		}
 		const generation = this.#restartDrainGeneration;
 		const wasRunning = this.isStreaming;
@@ -6018,10 +6039,14 @@ export class AgentSession implements SettingsScope {
 		this.#resumeStrandedIrcAsides();
 		const pendingNextTurn = [...this.#pendingNextTurnMessages];
 		const queues = this.agent.snapshotPendingQueues();
-		this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, {
+		const checkpoint: RestartPendingQueues = {
 			...queues,
 			pendingNextTurn,
-		});
+		};
+		const signature = restartPendingQueuesSignature(checkpoint);
+		if (signature === this.#lastRestartPendingQueuesSignature) return;
+		this.#lastRestartPendingQueuesSignature = signature;
+		this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, checkpoint);
 		this.#restartPendingQueuesCheckpointActive = true;
 		if (pendingNextTurn.length > 0 || queues.steering.length > 0 || queues.followUp.length > 0) {
 			this.#restartDrainNeedsResume = true;
