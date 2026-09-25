@@ -5,7 +5,7 @@ import {
 	getLatestTodoPhasesFromEntries,
 	markdownToPhases,
 	phasesToMarkdown,
-} from "@oh-my-pi/pi-coding-agent/tools";
+} from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
@@ -65,7 +65,7 @@ const initialPlan: TodoPhase[] = [
 ];
 
 describe("native todo schedule operation", () => {
-	it("counts only accepted replacement estimates and retains revisions after recovery", async () => {
+	it("does not re-anchor unchanged estimate resends", async () => {
 		const clock = spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
 		try {
 			const harness = createHarness([{ name: "Revision proof", tasks: [{ content: "ship", status: "pending" }] }]);
@@ -81,16 +81,46 @@ describe("native todo schedule operation", () => {
 				updates: [{ task: "ship", dependencies: [], estimate }],
 			});
 			expect(harness.phases()[0].tasks[0].schedule).toMatchObject({ estimateRevision: 1, reestimateCount: 0 });
+			const firstForecast = forecastTodoPlan(harness.phases(), { now: 1_800_000_000_000 });
+			const firstP95Finish = firstForecast.rows[0].fixedPathP95Finish;
+			expect(firstP95Finish).toBeDefined();
+
 			clock.mockReturnValue(1_800_000_120_000);
+			await harness.tool.execute("same-estimate", {
+				op: "schedule",
+				updates: [{ task: "ship", estimate }],
+			});
+			expect(forecastTodoPlan(harness.phases(), { now: 1_800_000_120_000 }).rows[0].fixedPathP95Finish).toBe(
+				firstP95Finish,
+			);
+
 			await harness.tool.execute("evidence", {
 				op: "schedule",
-				updates: [{ task: "ship", owner: "worker", evidence: "Artifact changed" }],
+				updates: [
+					{
+						task: "ship",
+						owner: "worker",
+						evidence: "Artifact changed",
+						estimate: { ...estimate, basis: "Same numeric estimate after evidence changed" },
+					},
+				],
 			});
 			await harness.tool.execute("view", { op: "view" });
 			expect(harness.phases()[0].tasks[0].schedule).toMatchObject({
 				estimateRevision: 1,
 				reestimateCount: 0,
-				estimate: { updatedAt: 1_800_000_000_000 },
+				owner: "worker",
+				estimate: {
+					basis: "Same numeric estimate after evidence changed",
+					updatedAt: 1_800_000_000_000,
+				},
+				progress: { at: 1_800_000_120_000, evidence: "Artifact changed" },
+			});
+			expect(forecastTodoPlan(harness.phases(), { now: 1_800_000_120_000 }).rows[0]).toMatchObject({
+				fixedPathP95Finish: firstP95Finish,
+				estimateUpdatedAt: 1_800_000_000_000,
+				estimateRevision: 1,
+				reestimateCount: 0,
 			});
 			const rejected = await harness.tool.execute("rejected", {
 				op: "schedule",
@@ -101,12 +131,22 @@ describe("native todo schedule operation", () => {
 			});
 			expect(rejected.isError).toBe(true);
 			expect(harness.phases()[0].tasks[0].schedule?.reestimateCount).toBe(0);
-			await harness.tool.execute("revision", { op: "schedule", updates: [{ task: "ship", estimate }] });
+			clock.mockReturnValue(1_800_000_240_000);
+			await harness.tool.execute("revision", {
+				op: "schedule",
+				updates: [{ task: "ship", estimate: { ...estimate, likelySeconds: 75 } }],
+			});
 			const restored = markdownToPhases(phasesToMarkdown(harness.phases()));
 			expect(restored.errors).toEqual([]);
 			expect(restored.phases[0].tasks[0].schedule).toMatchObject({ estimateRevision: 2, reestimateCount: 1 });
-			const forecast = forecastTodoPlan(restored.phases, { now: 1_800_000_200_000 });
-			expect(forecast.rows[0]).toMatchObject({ estimateRevision: 2, reestimateCount: 1, overdue: true });
+			expect(restored.phases[0].tasks[0].schedule?.estimate?.updatedAt).toBe(1_800_000_240_000);
+			const forecast = forecastTodoPlan(restored.phases, { now: 1_800_000_240_000 });
+			expect(forecast.rows[0].fixedPathP95Finish).not.toBe(firstP95Finish);
+			expect(forecast.rows[0]).toMatchObject({
+				estimateRevision: 2,
+				reestimateCount: 1,
+				estimateUpdatedAt: 1_800_000_240_000,
+			});
 		} finally {
 			clock.mockRestore();
 		}

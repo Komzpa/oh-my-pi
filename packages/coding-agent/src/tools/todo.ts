@@ -12,6 +12,7 @@ import {
 	formatPlanForecastDisplay,
 	formatTaskForecastDisplay,
 	getTodoPlanningIssues,
+	type TodoConfidence,
 	type TodoSchedule,
 	type TodoPlanForecast,
 	validateTodoDependencies,
@@ -577,6 +578,26 @@ function validateScheduleDependencyGraph(
 	}
 }
 
+interface AcceptedEstimateFields {
+	optimisticSeconds: number;
+	likelySeconds: number;
+	pessimisticSeconds: number;
+	confidence: TodoConfidence;
+}
+
+function isSameAcceptedEstimate(
+	left: TodoSchedule["estimate"],
+	right: AcceptedEstimateFields,
+): left is NonNullable<TodoSchedule["estimate"]> {
+	return (
+		left !== undefined &&
+		left.optimisticSeconds === right.optimisticSeconds &&
+		left.likelySeconds === right.likelySeconds &&
+		left.pessimisticSeconds === right.pessimisticSeconds &&
+		left.confidence === right.confidence
+	);
+}
+
 function applyScheduleUpdates(
 	phases: TodoPhase[],
 	entry: TodoOpEntryValue,
@@ -646,9 +667,15 @@ function applyScheduleUpdates(
 		}
 		if (update.resources !== undefined) schedule.resources = update.resources.map(resource => resource.trim());
 		if (update.estimate) {
-			schedule.reestimateCount = (schedule.reestimateCount ?? 0) + (schedule.estimate ? 1 : 0);
-			schedule.estimateRevision = (schedule.estimateRevision ?? (schedule.estimate ? 1 : 0)) + 1;
-			schedule.estimate = { ...update.estimate, basis: update.estimate.basis.trim(), updatedAt: now };
+			const estimate = { ...update.estimate, basis: update.estimate.basis.trim() };
+			const previousEstimate = schedule.estimate;
+			if (isSameAcceptedEstimate(previousEstimate, estimate)) {
+				schedule.estimate = { ...estimate, updatedAt: previousEstimate.updatedAt };
+			} else {
+				schedule.reestimateCount = (schedule.reestimateCount ?? 0) + (previousEstimate ? 1 : 0);
+				schedule.estimateRevision = (schedule.estimateRevision ?? (previousEstimate ? 1 : 0)) + 1;
+				schedule.estimate = { ...estimate, updatedAt: now };
+			}
 		}
 		if (update.evidence?.trim()) schedule.progress = { at: now, evidence: update.evidence.trim() };
 		candidates.set(targets[0], schedule);
