@@ -21,7 +21,7 @@ import {
   formatTaskForecast,
   forecastTodoPlan,
   type TodoScheduleInput,
-} from "@oh-my-pi/pi-tui/tools/todo-schedule";
+} from "./todo-schedule";
 import todoDispatch from "./todo_dispatch";
 
 type Jobs = Pick<AsyncJobSnapshot, "running" | "recent" | "nonJobAgents">;
