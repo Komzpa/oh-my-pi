@@ -736,21 +736,18 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		}
 		const content = rawContent ?? "";
 		// A device-only session grants `write` purely as the device transport (see
-		// createTools): device dispatches and coordination messages proceed, every
-		// other target is rejected before any handler, guard, conflict resolver, or
-		// bridge sees it. Active plan mode additionally permits its sandbox, but does
-		// not relax the restriction for working-tree or other internal URLs.
+		// createTools): device dispatches and coordination messages proceed, and
+		// the session-local artifact sandbox remains writable for scratch notes.
+		// Every other target is rejected before any handler, guard, conflict
+		// resolver, or bridge sees it.
 		if (
 			this.session.deviceOnlyWrite === true &&
 			policy?.scope !== "device" &&
 			policy?.scope !== "coordination" &&
-			!(
-				this.session.getPlanModeState?.()?.enabled === true &&
-				(await targetsLocalSandbox(this.session, path, signal))
-			)
+			!(await targetsLocalSandbox(this.session, path, signal))
 		) {
 			throw new ToolError(
-				"This `write` tool is limited to the xd:// device transport: call it with path `xd://<tool>` and the device's JSON arguments in `content` (`read xd://` lists mounted devices). Active plan mode additionally permits local:// sandbox drafts. Filesystem writes are not available elsewhere.",
+				"This `write` tool is limited to the xd:// device transport: call it with path `xd://<tool>` and the device's JSON arguments in `content` (`read xd://` lists mounted devices). Session-local local:// sandbox writes are also available for scratch notes. Filesystem writes are not available elsewhere.",
 			);
 		}
 		return untilAborted(signal, async () => {
