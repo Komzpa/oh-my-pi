@@ -296,13 +296,13 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		expect(reminderEvents).toEqual([]);
 	});
 
-	it("continues nudging after each new window of real mutations", async () => {
+	it("continues nudging after new mutation windows until the per-cycle cap", async () => {
 		let fired = 0;
 		for (let cycle = 0; cycle < 3; cycle++) {
 			for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
 			fired += (await drainNudges()).length;
 		}
-		expect(fired).toBe(3);
+		expect(fired).toBe(2);
 		expect(reminderEvents).toEqual([]);
 	});
 
