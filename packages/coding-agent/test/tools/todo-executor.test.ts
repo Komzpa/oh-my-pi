@@ -273,6 +273,39 @@ it("replaces a finished owner from omp's collision suffix without title text", (
 	expect(updated?.[0]?.tasks[0]?.schedule?.executor?.finishedAt).toBeUndefined();
 });
 
+it("replaces a finished chained owner when the successor has the same collision base", () => {
+	const phases: TodoPhase[] = [
+		{
+			name: "Restarted",
+			tasks: [
+				{
+					content: "Restore systems cue interaction",
+					status: "pending",
+					schedule: {
+						owner: "SystemsCueInteractionOwner-3-2",
+						executor: { workerId: "SystemsCueInteractionOwner-3-2", startedAt: 100, finishedAt: 200 },
+					},
+				},
+			],
+		},
+	];
+
+	const updated = applyTodoExecutorObservation(phases, {
+		workerId: "SystemsCueInteractionOwner-4",
+		startedAt: 300,
+		runningWorkerIds: new Set(["SystemsCueInteractionOwner-4"]),
+	});
+
+	expect(updated?.[0]?.tasks[0]).toMatchObject({
+		status: "in_progress",
+		schedule: {
+			owner: "SystemsCueInteractionOwner-4",
+			executor: { workerId: "SystemsCueInteractionOwner-4", startedAt: 300 },
+		},
+	});
+	expect(updated?.[0]?.tasks[0]?.schedule?.executor?.finishedAt).toBeUndefined();
+});
+
 it("does not replace a row while the previous executor is still running", () => {
 	const phases: TodoPhase[] = [
 		{
