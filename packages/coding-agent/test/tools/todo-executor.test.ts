@@ -197,3 +197,131 @@ it("records terminal outcome without closing the row", () => {
 		},
 	});
 });
+
+it("replaces a finished executor when a successor worker contains the row title", () => {
+	const phases: TodoPhase[] = [
+		{
+			name: "Restarted",
+			tasks: [
+				{
+					content: "Restore Schedule Gantt painted rows and targets",
+					status: "pending",
+					schedule: {
+						owner: "ScheduleGanttUiOwner",
+						executor: {
+							workerId: "ScheduleGanttUiOwner",
+							agentProfile: "task",
+							startedAt: 100,
+							finishedAt: 200,
+							outcome: "completed",
+						},
+					},
+				},
+			],
+		},
+	];
+
+	const updated = applyTodoExecutorObservation(phases, {
+		workerId: "ScheduleGanttUiOwner-2",
+		agentProfile: "task",
+		taskText: "Restore Schedule Gantt painted rows and targets. Continue from the last checkpoint.",
+		startedAt: 300,
+		runningWorkerIds: new Set(["ScheduleGanttUiOwner-2"]),
+	});
+
+	expect(updated?.[0]?.tasks[0]).toMatchObject({
+		status: "in_progress",
+		schedule: {
+			owner: "ScheduleGanttUiOwner-2",
+			executor: { workerId: "ScheduleGanttUiOwner-2", agentProfile: "task", startedAt: 300 },
+		},
+	});
+	expect(updated?.[0]?.tasks[0]?.schedule?.executor?.finishedAt).toBeUndefined();
+	expect(updated?.[0]?.tasks[0]?.schedule?.executor?.outcome).toBeUndefined();
+});
+
+it("replaces a finished owner from omp's collision suffix without title text", () => {
+	const phases: TodoPhase[] = [
+		{
+			name: "Restarted",
+			tasks: [
+				{
+					content: "Restore search release UI",
+					status: "pending",
+					schedule: {
+						owner: "SearchReleaseUiOwner",
+						executor: { workerId: "SearchReleaseUiOwner", startedAt: 100, finishedAt: 200 },
+					},
+				},
+			],
+		},
+	];
+
+	const updated = applyTodoExecutorObservation(phases, {
+		workerId: "SearchReleaseUiOwner-2",
+		startedAt: 300,
+		runningWorkerIds: new Set(["SearchReleaseUiOwner-2"]),
+	});
+
+	expect(updated?.[0]?.tasks[0]).toMatchObject({
+		status: "in_progress",
+		schedule: {
+			owner: "SearchReleaseUiOwner-2",
+			executor: { workerId: "SearchReleaseUiOwner-2", startedAt: 300 },
+		},
+	});
+	expect(updated?.[0]?.tasks[0]?.schedule?.executor?.finishedAt).toBeUndefined();
+});
+
+it("does not replace a row while the previous executor is still running", () => {
+	const phases: TodoPhase[] = [
+		{
+			name: "Restarted",
+			tasks: [
+				{
+					content: "Restore media release contract handoff",
+					status: "pending",
+					schedule: {
+						owner: "MediaReleaseContractOwner",
+						executor: { workerId: "MediaReleaseContractOwner", startedAt: 100 },
+					},
+				},
+			],
+		},
+	];
+
+	expect(
+		applyTodoExecutorObservation(phases, {
+			workerId: "MediaReleaseContractOwner-2",
+			taskText: "Restore media release contract handoff. Continue from the last checkpoint.",
+			startedAt: 300,
+			runningWorkerIds: new Set(["MediaReleaseContractOwner", "MediaReleaseContractOwner-2"]),
+		}),
+	).toBeUndefined();
+});
+
+it("does not treat a different owner that merely starts with the same letters as a collision suffix", () => {
+	const phases: TodoPhase[] = [
+		{
+			name: "Restarted",
+			tasks: [
+				{
+					content: "Restore systems cue interaction",
+					status: "pending",
+					schedule: {
+						owner: "X",
+						executor: { workerId: "X", startedAt: 100, finishedAt: 200 },
+					},
+				},
+			],
+		},
+	];
+
+	expect(
+		applyTodoExecutorObservation(phases, {
+			workerId: "Xyz-2",
+			startedAt: 300,
+			runningWorkerIds: new Set(["Xyz-2"]),
+		}),
+	).toBeUndefined();
+});

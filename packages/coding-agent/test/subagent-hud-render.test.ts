@@ -983,7 +983,6 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(linked.byTask.size).toBe(0);
 		expect(linked.unassigned.map(worker => worker.id)).toEqual(["Reviewer", "Shared"]);
 	});
-
 	it("advances a quiet call's elapsed marker by repainting the same HUD in place", async () => {
 		cfgDisplaySubagentLivePreview.override(Settings.instance, true);
 		await mode.init({ suppressWelcomeIntro: true });
@@ -1007,5 +1006,24 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		vi.advanceTimersByTime(1_000);
 		expect(mode.subagentContainer.children[0]).toBe(hud);
 		expect(hudText()).toContain("bash: sleep 40 · 21.1s");
+	});
+
+	it("links a collision-suffixed restarted worker to its stale-owner todo row", () => {
+		const task = {
+			content: "Restore systems cue interaction",
+			status: "pending" as const,
+			schedule: {
+				owner: "SystemsCueInteractionOwner-3-2",
+				executor: { workerId: "SystemsCueInteractionOwner-3-2", startedAt: 100, finishedAt: 200 },
+			},
+		};
+
+		const linked = linkTodoWorkers(
+			[{ name: "Restarted", tasks: [task] }],
+			[makeSession({ id: "SystemsCueInteractionOwner-3-2-2" })],
+		);
+
+		expect(linked.byTask.get(task)?.id).toBe("SystemsCueInteractionOwner-3-2-2");
+		expect(linked.unassigned).toEqual([]);
 	});
 });
