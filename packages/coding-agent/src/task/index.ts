@@ -650,6 +650,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						workerId: event.id,
 						agentProfile: event.agent,
 						description: event.description,
+						taskText: event.taskText,
 						startedAt: event.at ?? Date.now(),
 					};
 					this.#todoExecutors.set(event.id, observed);
@@ -662,6 +663,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						resolvedModel: event.resolvedModelIdentity ?? prior.resolvedModel,
 						thinkingLevel: event.resolvedThinkingLevel ?? prior.thinkingLevel,
 						finishedAt: event.at ?? Date.now(),
+						outcome: event.status,
 					};
 					this.#persistTodoExecutor(observed);
 					this.#todoExecutors.delete(event.id);
@@ -693,7 +695,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	#persistTodoExecutor(observation: TodoExecutorObservation): void {
 		const phases = this.session.getTodoPhases?.();
 		if (!phases) return;
-		const updated = applyTodoExecutorObservation(phases, observation);
+		const updated = applyTodoExecutorObservation(phases, {
+			...observation,
+			runningWorkerIds: new Set(this.#todoExecutors.keys()),
+		});
 		if (!updated) return;
 		this.session.setTodoPhases?.(updated);
 		this.session.persistTodoPhases?.(updated);
