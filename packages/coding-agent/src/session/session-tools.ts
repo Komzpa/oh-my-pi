@@ -224,6 +224,7 @@ const EVAL_PRELUDE_NOTICE_MESSAGE_TYPE = "eval-prelude-notice";
 const SESSION_AGENT_NOTICE_MESSAGE_TYPE = "session-agent-notice";
 const PLANNING_CONTROL_TOOLS: Record<string, true> = {
 	todo: true,
+	task: true,
 	ask: true,
 	hub: true,
 	think: true,
