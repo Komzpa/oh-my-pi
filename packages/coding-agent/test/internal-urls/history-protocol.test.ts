@@ -448,6 +448,46 @@ describe("history:// protocol", () => {
 		});
 	});
 
+	it("history://<id> reports a running registered worker that has not written a transcript yet", async () => {
+		AgentRegistry.global().register({
+			id: "FacilityHeaderMigrationOwner",
+			displayName: "task",
+			kind: "sub",
+			session: null,
+			sessionFile: null,
+			status: "running",
+			createdAt: Date.now() - 5_000,
+		});
+
+		const resource = await InternalUrlRouter.instance().resolve("history://FacilityHeaderMigrationOwner");
+
+		expect(resource.contentType).toBe("text/markdown");
+		expect(resource.content).toContain("# FacilityHeaderMigrationOwner (running)");
+		expect(resource.content).toContain("No transcript has been written yet.");
+		expect(resource.content).toMatch(/Started \d+s ago\./);
+		expect(resource.notes).toContain("Source: agent registry (no transcript yet)");
+	});
+
+	it("history://<id> finds a just-spawned worker in the caller registry", async () => {
+		const callerRegistry = new AgentRegistry();
+		callerRegistry.register({
+			id: "FacilityHeaderMigrationOwner",
+			displayName: "task",
+			kind: "sub",
+			session: null,
+			sessionFile: null,
+			status: "running",
+			createdAt: Date.now() - 3_000,
+		});
+
+		const resource = await InternalUrlRouter.instance().resolve("history://FacilityHeaderMigrationOwner", {
+			agentRegistry: callerRegistry,
+		});
+
+		expect(resource.content).toContain("# FacilityHeaderMigrationOwner (running)");
+		expect(resource.content).toContain("No transcript has been written yet.");
+	});
+
 	it("rejects an unknown id with the list of known agents", async () => {
 		AgentRegistry.global().register({
 			id: "HubAgent",
@@ -467,6 +507,60 @@ describe("history:// protocol", () => {
 		expect(error).toBeInstanceOf(Error);
 		expect(error?.message).toContain("Unknown agent: Nope");
 		expect(error?.message).toContain("HubAgent");
+	});
+
+	it("caps unknown-id hints to running agents plus closest matches", async () => {
+		AgentRegistry.global().register({
+			id: "RunnerA",
+			displayName: "task",
+			kind: "sub",
+			session: null,
+			sessionFile: null,
+			status: "running",
+			lastActivity: Date.now() - 1_000,
+		});
+		AgentRegistry.global().register({
+			id: "RunnerB",
+			displayName: "task",
+			kind: "sub",
+			session: null,
+			sessionFile: null,
+			status: "running",
+			lastActivity: Date.now() - 2_000,
+		});
+		AgentRegistry.global().register({
+			id: "FacilityHeaderMigrationOwner",
+			displayName: "task",
+			kind: "sub",
+			session: fakeLiveSession([]),
+			status: "idle",
+		});
+		for (let i = 0; i < 20; i++) {
+			AgentRegistry.global().register({
+				id: `OldAgent${i}`,
+				displayName: "task",
+				kind: "sub",
+				session: fakeLiveSession([]),
+				status: "idle",
+			});
+		}
+
+		const error = await InternalUrlRouter.instance()
+			.resolve("history://FacilityHeaderMigrationOwnr")
+			.then(
+				() => null,
+				err => err as Error,
+			);
+		const knownLine = error?.message.split("\n").find(line => line.startsWith("Known agents: "));
+		const known = knownLine?.slice("Known agents: ".length).split(", ") ?? [];
+
+		expect(error?.message).toContain("Unknown agent: FacilityHeaderMigrationOwnr");
+		expect(known.length).toBeLessThanOrEqual(10);
+		expect(known).toContain("RunnerA");
+		expect(known).toContain("RunnerB");
+		expect(known).toContain("FacilityHeaderMigrationOwner");
+		expect(known).not.toContain("OldAgent19");
+		expect(error?.message).toContain("List all with history://");
 	});
 
 	it("rejects a ref with neither session nor session file", async () => {
