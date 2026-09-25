@@ -14,6 +14,8 @@ export interface TodoExecutorObservation {
 	runningWorkerIds?: ReadonlySet<string>;
 }
 
+const MIN_CONTAINED_TITLE = 24;
+
 function isOpenStatus(status: TodoPhase["tasks"][number]["status"]): boolean {
 	return status !== "completed" && status !== "abandoned";
 }
@@ -60,7 +62,8 @@ function findTodoExecutorTarget(
 		.filter((source): source is string => Boolean(source));
 	const contains = openTasks.filter(task => {
 		const content = task.content.trim();
-		return content.length > 0 && sources.some(source => source.includes(content));
+		// A short title ("Push", "Commit") also occurs in unrelated task text; only a distinctive one links.
+		return content.length >= MIN_CONTAINED_TITLE && sources.some(source => source.includes(content));
 	});
 	return selectUniqueLongest(contains);
 }
