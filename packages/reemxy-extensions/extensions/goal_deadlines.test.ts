@@ -8,10 +8,12 @@ import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
 import { z } from "zod";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import goalDeadlines, {
+	derivePresence,
 	REMINDER_MAX_CHARS,
 	remainingPercent,
 	renderDeadlineReminder,
 	renderDeadlineUi,
+	renderPresence,
 } from "./goal_deadlines";
 import {
 	goalRef,
@@ -22,7 +24,7 @@ import {
 	resolveFocusedGoal,
 	STATE_ENTRY,
 	type DeadlineState,
-} from "@oh-my-pi/pi-coding-agent/goals/deadlines";
+} from "./deadlines";
 
 const state: DeadlineState = {
 	version: 1,
@@ -143,14 +145,30 @@ describe("goal deadline reminders", () => {
 
 	test("paused deadlines are displayable without granting active goal authority", () => {
 		const paused = [
-			{ type: "mode_change", mode: "goal_paused", data: { goal: { id: "goal-1", createdAt: 1_000_000, status: "paused" } } },
+			{
+				type: "mode_change",
+				mode: "goal_paused",
+				data: { goal: { id: "goal-1", createdAt: 1_000_000, status: "paused" } },
+			},
 			{ type: "custom", customType: STATE_ENTRY, data: state },
 		];
 		expect(readGoalDeadline(paused)).toBeUndefined();
 		expect(readFocusedGoal(paused)).toBeNull();
-		expect(readGoalDeadline(paused, undefined, { includePaused: true })).toEqual({ goalId: "goal-1", deadlineAt: 2_200_000, paused: true });
-		expect(readGoalDeadline([...paused, { type: "mode_change", mode: "none" }], undefined, { includePaused: true })).toBeUndefined();
-		expect(readGoalDeadline([...paused, { type: "custom", customType: STATE_ENTRY, data: { ...state, active: false } }], undefined, { includePaused: true })).toBeUndefined();
+		expect(readGoalDeadline(paused, undefined, { includePaused: true })).toEqual({
+			goalId: "goal-1",
+			deadlineAt: 2_200_000,
+			paused: true,
+		});
+		expect(
+			readGoalDeadline([...paused, { type: "mode_change", mode: "none" }], undefined, { includePaused: true }),
+		).toBeUndefined();
+		expect(
+			readGoalDeadline(
+				[...paused, { type: "custom", customType: STATE_ENTRY, data: { ...state, active: false } }],
+				undefined,
+				{ includePaused: true },
+			),
+		).toBeUndefined();
 	});
 
 	test("uses pi-goal-x pool only for explicit focus and honors native terminal mode", () => {
@@ -209,6 +227,78 @@ describe("goal deadline reminders", () => {
 	});
 });
 
+describe("automatic presence", () => {
+	const userEntry = (timestamp: number) => ({
+		type: "message",
+		timestamp: new Date(timestamp).toISOString(),
+		message: { role: "user", content: "I am here", timestamp },
+	});
+	const presenceState = (deadlineAt: number): DeadlineState => ({
+		...state,
+		goalStartedAt: deadlineAt - 7_200,
+		baselineDeadlineAt: deadlineAt,
+	});
+
+	test("derives away at the silence and quiet-hour boundaries", () => {
+		const now = Date.UTC(2026, 8, 25, 19, 0); // 23:00 Asia/Tbilisi
+		expect(derivePresence([userEntry(now - 30 * 60_000)], null, now)).toBe("away");
+		expect(derivePresence([userEntry(now - 15 * 60_000)], null, now)).toBe("away");
+		expect(derivePresence([userEntry(now - 14 * 60_000)], null, now)).toBe("watching");
+	});
+
+	test("derives watching during working hours", () => {
+		const now = Date.UTC(2026, 8, 25, 8, 0); // 12:00 Asia/Tbilisi
+		expect(derivePresence([userEntry(now - 15 * 60_000)], presenceState(Math.floor(now / 1_000) + 7_200), now)).toBe(
+			"watching",
+		);
+	});
+
+	test("derives firefighting for a recent weekend at-risk deadline", () => {
+		const now = Date.UTC(2026, 8, 26, 8, 0); // Saturday 12:00 Asia/Tbilisi
+		expect(
+			derivePresence([userEntry(now - 15 * 60_000)], presenceState(Math.floor(now / 1_000) + 60 * 60), now),
+		).toBe("firefighting");
+	});
+
+	test("shows the promised deadline when away", () => {
+		const now = Date.UTC(2026, 8, 25, 8, 0);
+		const message = renderPresence(
+			[userEntry(now - 30 * 60_000)],
+			presenceState(Math.floor(now / 1_000) + 7_200),
+			now,
+		);
+		expect(message).toContain("Darafei is: away");
+		expect(message).toContain("Promised before he left: done by 14:00.");
+	});
+
+	test("context appends one combined automatic presence message", () => {
+		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+		const activeGoal = { id: "goal-1", createdAt: 1_000, status: "active" as const };
+		goalDeadlines({
+			pi: { readFocusedGoal: () => activeGoal, rehydrateDeadlineState: () => null, STATE_ENTRY },
+			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
+				handlers.set(event, handler),
+			registerTool: () => {},
+			appendEntry: () => {},
+			zod: z,
+		} as unknown as ExtensionAPI);
+		const now = Date.now();
+		const ctx = {
+			cwd: "/tmp",
+			hasUI: false,
+			sessionManager: { getBranch: () => [userEntry(now - 60_000)] },
+		} as unknown as ExtensionContext;
+		const result = handlers.get("context")?.(
+			{ messages: [{ role: "user", content: "I am here", timestamp: now - 60_000 }] },
+			ctx,
+		) as { messages: Array<{ role: string; content: string }> };
+		expect(result.messages).toHaveLength(2);
+		expect(result.messages[1]?.role).toBe("developer");
+		expect(result.messages[1]?.content).toContain("Darafei is: watching");
+		expect(result.messages[1]?.content).toContain("No deadline schedule is recorded.");
+	});
+});
+
 test("vetoes native and plugin goal completion until branch TODO work is closed", () => {
 	let branch: unknown[] = [{ id: "native-branch" }];
 	const reducerBranches: unknown[] = [];
@@ -234,8 +324,7 @@ test("vetoes native and plugin goal completion until branch TODO work is closed"
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	goalDeadlines({
 		pi: host,
-		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
-			handlers.set(event, handler),
+		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
 		registerTool: () => {},
 		appendEntry: () => {},
 		zod: z,
@@ -303,7 +392,11 @@ test("native lifecycle preserves the original deadline without reviving stale go
 		);
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 		let deadlineTool:
-			| { execute: (...args: unknown[]) => Promise<{ content: Array<{ type: string; text: string }>; details: { state: DeadlineState } }> }
+			| {
+					execute: (
+						...args: unknown[]
+					) => Promise<{ content: Array<{ type: string; text: string }>; details: { state: DeadlineState } }>;
+			  }
 			| undefined;
 		let goalState: GoalModeState | undefined;
 		let status: string | undefined;
@@ -354,7 +447,9 @@ test("native lifecycle preserves the original deadline without reviving stale go
 				"set",
 				{
 					action: "set",
-					stages: [{ id: "ship", label: "Ship", expected_result: "Verified render", deadline_at: (now - 60) * 1_000 }],
+					stages: [
+						{ id: "ship", label: "Ship", expected_result: "Verified render", deadline_at: (now - 60) * 1_000 },
+					],
 				},
 				undefined,
 				undefined,
@@ -393,7 +488,9 @@ test("native lifecycle preserves the original deadline without reviving stale go
 			"set",
 			{
 				action: "set",
-				stages: [{ id: "draft", label: "Draft corrected", expected_result: "Usable draft", deadline_at: now - 120 }],
+				stages: [
+					{ id: "draft", label: "Draft corrected", expected_result: "Usable draft", deadline_at: now - 120 },
+				],
 			},
 			undefined,
 			undefined,
@@ -416,7 +513,9 @@ test("native lifecycle preserves the original deadline without reviving stale go
 			"set",
 			{
 				action: "set",
-				stages: [{ id: "ship", label: "Ship corrected", expected_result: "Verified render", deadline_at: now - 60 }],
+				stages: [
+					{ id: "ship", label: "Ship corrected", expected_result: "Verified render", deadline_at: now - 60 },
+				],
 			},
 			undefined,
 			undefined,
@@ -541,7 +640,11 @@ test("names deadline_at seconds and rejects implausible future seconds", async (
 	} as unknown as ExtensionContext;
 
 	expect(deadlineTool!.description).toContain("deadline_at is a Unix timestamp in seconds, not milliseconds");
-	const stageSchema = (deadlineTool!.parameters as z.ZodObject<{ stages: z.ZodOptional<z.ZodArray<z.ZodObject<{ deadline_at: z.ZodTypeAny }>>> }>).shape.stages.unwrap().element.shape;
+	const stageSchema = (
+		deadlineTool!.parameters as z.ZodObject<{
+			stages: z.ZodOptional<z.ZodArray<z.ZodObject<{ deadline_at: z.ZodTypeAny }>>>;
+		}>
+	).shape.stages.unwrap().element.shape;
 	expect(stageSchema.deadline_at.description).toContain("Unix timestamp in seconds");
 	await expect(
 		deadlineTool!.execute(
@@ -565,9 +668,7 @@ test("clear lets an explicit set replace a corrupted immutable final deadline", 
 		goalStartedAt: 1_000,
 		timezone: "Asia/Tbilisi",
 		active: true,
-		stages: [
-			{ id: "bad-final", label: "Bad final", expectedResult: "Wrong unit", deadlineAt: 1_790_236_800_000 },
-		],
+		stages: [{ id: "bad-final", label: "Bad final", expectedResult: "Wrong unit", deadlineAt: 1_790_236_800_000 }],
 		baselineDeadlineAt: 1_790_236_800_000,
 	};
 	let deadlineTool:
@@ -581,8 +682,7 @@ test("clear lets an explicit set replace a corrupted immutable final deadline", 
 			rehydrateDeadlineState,
 			STATE_ENTRY,
 		},
-		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
-			handlers.set(event, handler),
+		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
 		registerTool: (tool: typeof deadlineTool) => {
 			deadlineTool = tool;
 		},
@@ -603,7 +703,9 @@ test("clear lets an explicit set replace a corrupted immutable final deadline", 
 		"set",
 		{
 			action: "set",
-			stages: [{ id: "correct-final", label: "Correct final", expected_result: "Corrected", deadline_at: 1_790_236_800 }],
+			stages: [
+				{ id: "correct-final", label: "Correct final", expected_result: "Corrected", deadline_at: 1_790_236_800 },
+			],
 		},
 		undefined,
 		undefined,

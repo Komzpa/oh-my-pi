@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
-import { readGoalDeadline } from "@oh-my-pi/pi-coding-agent/goals/deadlines";
+import { readGoalDeadline } from "./deadlines";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";

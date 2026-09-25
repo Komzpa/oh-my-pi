@@ -2,16 +2,97 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type {
-	ActiveGoalRef,
-	DeadlineState,
-	ExtensionAPI,
-	ExtensionContext,
-	QuotaSnapshot,
-} from "@oh-my-pi/pi-coding-agent";
-import * as deadlineSdk from "@oh-my-pi/pi-coding-agent/goals/deadlines";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ActiveGoalRef, DeadlineState, QuotaSnapshot } from "./deadlines";
+import * as deadlineSdk from "./deadlines";
 
 export const REMINDER_MAX_CHARS = 800;
+
+export const PRESENCE_TIME_ZONE = "Asia/Tbilisi";
+export const PRESENCE_ACTIVE_MINUTES = 15;
+export const PRESENCE_AWAY_MINUTES = 30;
+export const PRESENCE_QUIET_START_HOUR = 23;
+export const PRESENCE_QUIET_END_HOUR = 9;
+export const PRESENCE_AT_RISK_MINUTES = 60;
+
+export type Presence = "away" | "watching" | "firefighting";
+
+type PresenceLocalTime = { hour: number; minute: number; weekend: boolean; display: string };
+type PresenceDeadline = { dueAt: number; state: "on track" | "at risk" | "missed"; display: string };
+
+function presenceLocalTime(now: number): PresenceLocalTime {
+	const parts = new Intl.DateTimeFormat("en-GB", {
+		timeZone: PRESENCE_TIME_ZONE,
+		hour: "2-digit",
+		minute: "2-digit",
+		hourCycle: "h23",
+		weekday: "short",
+	}).formatToParts(new Date(now));
+	const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+	const weekday = values.weekday ?? "";
+	return {
+		hour: Number(values.hour),
+		minute: Number(values.minute),
+		weekend: weekday === "Sat" || weekday === "Sun",
+		display: `${values.hour ?? "??"}:${values.minute ?? "??"} ${PRESENCE_TIME_ZONE}`,
+	};
+}
+
+function latestUserMessageAt(entries: readonly unknown[]): number | undefined {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index] as {
+			type?: unknown;
+			timestamp?: unknown;
+			message?: { role?: unknown; timestamp?: unknown };
+		};
+		if (entry.type !== "message" || entry.message?.role !== "user") continue;
+		const timestamp = entry.timestamp ?? entry.message.timestamp;
+		const milliseconds =
+			typeof timestamp === "number" ? timestamp : typeof timestamp === "string" ? Date.parse(timestamp) : Number.NaN;
+		if (Number.isFinite(milliseconds)) return milliseconds;
+	}
+	return undefined;
+}
+
+function presenceDeadline(state: DeadlineState | null, now: number): PresenceDeadline | undefined {
+	if (!state?.active || state.stages.length === 0) return undefined;
+	const dueAt = (state.baselineDeadlineAt ?? Math.max(...state.stages.map(stage => stage.deadlineAt))) * 1_000;
+	if (!Number.isFinite(dueAt)) return undefined;
+	const stateName = dueAt < now ? "missed" : dueAt - now <= PRESENCE_AT_RISK_MINUTES * 60_000 ? "at risk" : "on track";
+	const display = new Intl.DateTimeFormat("en-GB", {
+		timeZone: PRESENCE_TIME_ZONE,
+		hour: "2-digit",
+		minute: "2-digit",
+		hourCycle: "h23",
+	}).format(new Date(dueAt));
+	return { dueAt, state: stateName, display };
+}
+
+export function derivePresence(entries: readonly unknown[], state: DeadlineState | null, now = Date.now()): Presence {
+	const local = presenceLocalTime(now);
+	const lastMessageAt = latestUserMessageAt(entries);
+	const ageMinutes =
+		lastMessageAt === undefined ? Number.POSITIVE_INFINITY : Math.max(0, (now - lastMessageAt) / 60_000);
+	const deadline = presenceDeadline(state, now);
+	const recent = ageMinutes <= PRESENCE_ACTIVE_MINUTES;
+	const quietHours = local.hour >= PRESENCE_QUIET_START_HOUR || local.hour < PRESENCE_QUIET_END_HOUR;
+	if (recent && (deadline?.state === "at risk" || deadline?.state === "missed") && (quietHours || local.weekend))
+		return "firefighting";
+	if (ageMinutes >= PRESENCE_AWAY_MINUTES || (ageMinutes >= PRESENCE_ACTIVE_MINUTES && quietHours)) return "away";
+	return "watching";
+}
+
+export function renderPresence(entries: readonly unknown[], state: DeadlineState | null, now = Date.now()): string {
+	const local = presenceLocalTime(now);
+	const lastMessageAt = latestUserMessageAt(entries);
+	const ageMinutes =
+		lastMessageAt === undefined ? "unknown" : String(Math.max(0, Math.floor((now - lastMessageAt) / 60_000)));
+	const deadline = presenceDeadline(state, now);
+	const presence = derivePresence(entries, state, now);
+	const signals = `last message ${ageMinutes} min ago, ${local.display}, deadline ${deadline ? `${deadline.display} ${deadline.state}` : "not set"}`;
+	const promise = presence === "away" && deadline ? `\nPromised before he left: done by ${deadline.display}.` : "";
+	return `Darafei is: ${presence} (guess from signals: ${signals}) — his own words in the conversation outrank this guess; see skill://chief-of-staff "The user is on the team".${promise}`;
+}
 const MAX_REASONABLE_DEADLINE_SECONDS = 4_102_444_800; // 2100-01-01T00:00:00Z
 
 function isUnixSeconds(value: number): boolean {
@@ -101,7 +182,8 @@ export function renderDeadlineUi(state: DeadlineState, now: number, todoShowsDue
 		return [];
 	const current = pending[0]!;
 	const finalDue = state.baselineDeadlineAt ?? Math.max(...state.stages.map(stage => stage.deadlineAt));
-	const final = finalDue === current.deadlineAt ? "" : ` · final ${deadline(finalDue, state.goalStartedAt, now, state.timezone)}`;
+	const final =
+		finalDue === current.deadlineAt ? "" : ` · final ${deadline(finalDue, state.goalStartedAt, now, state.timezone)}`;
 	if (todoShowsDue) return [`Goal · ${current.label} → ${bounded(current.expectedResult, 120)}${final}`];
 	return [
 		`Deadline · ${current.label}: ${deadline(current.deadlineAt, state.goalStartedAt, now, state.timezone)}`,
@@ -205,12 +287,10 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 	const persist = () => pi.appendEntry(sdk.STATE_ENTRY, state);
 	const updateUi = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		const applies = state?.active && activeGoal?.status === "active" && activeGoal.id === state.goalId;
-		if (!applies) {
-			ctx.ui.setStatus(
-				"goal-deadline",
-				activeGoal?.status === "active" && state?.goalId !== activeGoal.id ? "deadline: not set" : undefined,
-			);
+		const deadlineState =
+			state?.active && activeGoal?.status === "active" && activeGoal.id === state.goalId ? state : null;
+		if (!deadlineState) {
+			ctx.ui.setStatus("goal-deadline", derivePresence(ctx.sessionManager.getBranch(), null));
 			ctx.ui.setWidget("goal-deadline", undefined);
 			return;
 		}
@@ -222,9 +302,9 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		const todoShowsDue = (phases ?? []).some(phase =>
 			phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
 		);
-		const lines = renderDeadlineUi(state!, Math.floor(Date.now() / 1000), todoShowsDue);
-		// The widget below the editor already shows the deadline; a status copy would print it twice.
-		ctx.ui.setStatus("goal-deadline", undefined);
+		const lines = renderDeadlineUi(deadlineState, Math.floor(Date.now() / 1000), todoShowsDue);
+		// The widget below the editor already shows the deadline; the status keeps presence brief.
+		ctx.ui.setStatus("goal-deadline", derivePresence(ctx.sessionManager.getBranch(), deadlineState));
 		ctx.ui.setWidget("goal-deadline", lines, { placement: "belowEditor" });
 	};
 	const refresh = (ctx: ExtensionContext) => {
@@ -260,13 +340,18 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 
 	pi.on("context", (event, ctx) => {
 		refresh(ctx);
-		if (!activeGoal || activeGoal.status !== "active") return;
+		const deadlineState =
+			state?.active && activeGoal?.status === "active" && activeGoal.id === state.goalId ? state : null;
 		const reminder =
-			state?.goalId === activeGoal.id
-				? renderDeadlineReminder(state, Math.floor(Date.now() / 1000), readQuota())
-				: renderMissingScheduleReminder(activeGoal);
-		if (!reminder) return;
-		return { messages: [...event.messages, { role: "developer", content: reminder, timestamp: Date.now() }] };
+			activeGoal?.status === "active"
+				? deadlineState
+					? renderDeadlineReminder(deadlineState, Math.floor(Date.now() / 1000), readQuota())
+					: renderMissingScheduleReminder(activeGoal)
+				: null;
+		const content = [renderPresence(ctx.sessionManager.getBranch(), deadlineState), reminder]
+			.filter(Boolean)
+			.join("\n\n");
+		return { messages: [...event.messages, { role: "developer", content, timestamp: Date.now() }] };
 	});
 
 	pi.on("tool_result", (event, ctx) => {
@@ -311,7 +396,9 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 						deadline_at: z
 							.number()
 							.int()
-							.describe("Unix timestamp in seconds, not milliseconds; current dates are 10 digits and must be no later than 2100-01-01T00:00:00Z."),
+							.describe(
+								"Unix timestamp in seconds, not milliseconds; current dates are 10 digits and must be no later than 2100-01-01T00:00:00Z.",
+							),
 					}),
 				)
 				.optional(),
@@ -329,7 +416,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 					(state !== null && state.goalId === goalId
 						? state.timezone
 						: activeGoal
-							? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC"
+							? (Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC")
 							: undefined);
 				if (
 					!goalId ||
@@ -338,7 +425,9 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 					!timezone ||
 					!params.stages?.length
 				)
-					throw new Error("set requires a focused goal and non-empty stages; no focused goal is available, so pass goal_id, goal_started_at, and timezone explicitly");
+					throw new Error(
+						"set requires a focused goal and non-empty stages; no focused goal is available, so pass goal_id, goal_started_at, and timezone explicitly",
+					);
 				if (activeGoal && goalId !== activeGoal.id)
 					throw new Error(`deadline goal ${goalId} does not match focused goal ${activeGoal.id}`);
 				const stageIds = new Set(params.stages.map(stage => stage.id));
@@ -347,7 +436,9 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 					if (!Number.isSafeInteger(stage.deadline_at))
 						throw new Error(`deadline_at for stage ${stage.id} must be Unix seconds (integer), not milliseconds`);
 					if (!isUnixSeconds(stage.deadline_at))
-						throw new Error(`deadline_at for stage ${stage.id} must be Unix seconds (10-digit timestamp for current dates), not milliseconds, and no later than 2100-01-01T00:00:00Z`);
+						throw new Error(
+							`deadline_at for stage ${stage.id} must be Unix seconds (10-digit timestamp for current dates), not milliseconds, and no later than 2100-01-01T00:00:00Z`,
+						);
 				}
 				const previous = state?.goalId === goalId ? state : null;
 				const previousStages = new Map(previous?.stages.map(stage => [stage.id, stage] as const));
@@ -369,7 +460,9 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 							id: stage.id,
 							label: stage.label,
 							expectedResult: stage.expected_result,
-							deadlineAt: repairedStageIds.has(stage.id) ? stage.deadline_at : (old?.deadlineAt ?? stage.deadline_at),
+							deadlineAt: repairedStageIds.has(stage.id)
+								? stage.deadline_at
+								: (old?.deadlineAt ?? stage.deadline_at),
 							...(old?.deliveredAt === undefined ? {} : { deliveredAt: old.deliveredAt }),
 							...(old?.deliveredArtifact === undefined ? {} : { deliveredArtifact: old.deliveredArtifact }),
 						};
