@@ -910,7 +910,7 @@ export function formatTodoView(
 			const row = rows.get(task.content);
 			const owner = task.schedule?.owner;
 			const parts = [
-				row ? formatTaskForecastDisplay(row, now) : task.status,
+				formatOpenTaskState(task, row ? formatTaskForecastDisplay(row, now) : task.status),
 				...(owner && !terminal && !["main", "root"].includes(owner.toLowerCase()) ? [`owner ${owner}`] : []),
 			];
 			lines.push(`  ${TODO_VIEW_MARK[task.status]} ${task.content} · ${parts.join(" · ")}`);
@@ -928,6 +928,16 @@ const TODO_VIEW_MARK: Record<TodoStatus, string> = {
 	abandoned: "✗",
 	blocked: "⊘",
 };
+
+function hasExecutorResult(task: TodoItem): boolean {
+	return (
+		task.status !== "completed" && task.status !== "abandoned" && task.schedule?.executor?.finishedAt !== undefined
+	);
+}
+
+function formatOpenTaskState(task: TodoItem, forecast: string): string {
+	return hasExecutorResult(task) ? "result arrived: review" : forecast;
+}
 
 /**
  * Render todo phases as a Markdown checklist. `metadata` (default on) appends the hidden schedule
@@ -1070,9 +1080,8 @@ function formatSummary(
 		);
 		lines.push(`Remaining items (${remainingTasks.length}${critical.size ? `, ${critical.size} critical` : ""}):`);
 		for (const task of remainingTasks) {
-			lines.push(
-				`  - ${task.content} [${task.status}] (${task.phase})${critical.has(task.content) ? " critical" : ""}`,
-			);
+			const state = formatOpenTaskState(task, task.status);
+			lines.push(`  - ${task.content} [${state}] (${task.phase})${critical.has(task.content) ? " critical" : ""}`);
 		}
 	}
 	// Closed = completed + abandoned, mirroring the per-phase `done` count.
