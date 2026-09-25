@@ -89,7 +89,7 @@ const todoSchema = type({
 	op: TodoOp,
 	"list?": InitListEntry.array().describe("phases for init"),
 	"task?": type("string").describe("verbatim task content"),
-	"phase?": type("string"),
+	"phase?": type("string").describe("phase name; with view, lists that whole phase including closed rows"),
 	// No `atLeastLength(1)` here: `items` is only meaningful for `init`/`append`,
 	// and both enforce non-empty with op-specific errors. A stray `items: []` on
 	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
@@ -975,6 +975,7 @@ function formatSummary(
 	forecast: TodoPlanForecast,
 	readOnly = false,
 	now = Date.now(),
+	focusPhase?: string,
 ): string {
 	const tasks = phases.flatMap(phase => phase.tasks);
 	if (tasks.length === 0) {
@@ -1001,9 +1002,13 @@ function formatSummary(
 	if (remainingTasks.length === 0) {
 		lines.push("Remaining items: none.");
 	} else {
-		lines.push(`Remaining items (${remainingTasks.length}):`);
+		// The lead acts on the critical path first, so the open list says which rows are on it.
+		const critical = new Set(
+			forecast.rows.filter(row => row.criticalityKnown === true && row.critical).map(row => row.content),
+		);
+		lines.push(`Remaining items (${remainingTasks.length}${critical.size ? `, ${critical.size} critical` : ""}):`);
 		for (const task of remainingTasks) {
-			lines.push(`  - ${task.content} [${task.status}] (${task.phase})`);
+			lines.push(`  - ${task.content} [${task.status}] (${task.phase})${critical.has(task.content) ? " critical" : ""}`);
 		}
 	}
 	// Closed = completed + abandoned, mirroring the per-phase `done` count.
@@ -1013,7 +1018,14 @@ function formatSummary(
 		`Overall: ${closedAll}/${tasks.length} done, ${remainingTasks.length} open${blockedAll > 0 ? `, ${blockedAll} blocked` : ""}.`,
 	);
 	lines.push(`Active phase ${currentIdx + 1}/${phases.length} "${current.name}" (${done}/${current.tasks.length}).`);
+	// Closed rows are counted, not listed: a long session re-read 135 finished rows on every view.
+	// `view` with `phase` lists that whole phase, closed rows included.
 	for (const phase of phases) {
+		const closed = phase.tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
+		if (phase.name !== focusPhase) {
+			lines.push(`  ${phase.name}: ${closed}/${phase.tasks.length} closed`);
+			continue;
+		}
 		lines.push(`  ${phase.name}:`);
 		for (const task of phase.tasks) {
 			const checkbox = task.status === "completed" ? "[X]" : "[ ]";
@@ -1203,7 +1215,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 
 		const summary =
 			op === "init" || readOnly
-				? formatSummary(effective, errors, forecast, readOnly, now)
+				? formatSummary(effective, errors, forecast, readOnly, now, readOnly ? entry.phase : undefined)
 				: formatMutationSummary(op, previousPhases, effective, errors, forecast, now);
 		return {
 			content: [{ type: "text", text: summary }],

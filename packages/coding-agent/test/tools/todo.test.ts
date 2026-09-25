@@ -257,6 +257,48 @@ describe("TodoTool operations", () => {
 		);
 	});
 
+	it("view lists open rows with their critical mark and counts closed rows unless a phase is named", async () => {
+		const tool = new TodoTool(createSession());
+		await tool.execute("call-1", {
+			op: "init",
+			list: [
+				{ phase: "Done", items: ["old one", "old two"] },
+				{ phase: "Work", items: ["build", "ship", "side note"] },
+			],
+		});
+		await tool.execute("call-2", { op: "done", items: ["old one", "old two"] });
+		const estimate = (likelySeconds: number) => ({
+			optimisticSeconds: likelySeconds / 2,
+			likelySeconds,
+			pessimisticSeconds: likelySeconds * 2,
+			confidence: "medium" as const,
+			basis: "view fixture",
+		});
+		await tool.execute("call-3", {
+			op: "schedule",
+			updates: [
+				{ task: "build", dependencies: [], resources: ["build"], estimate: estimate(600) },
+				{ task: "ship", dependencies: ["build"], resources: ["ship"], estimate: estimate(600) },
+				{ task: "side note", dependencies: [], resources: ["note"], estimate: estimate(60) },
+			],
+		});
+		const text = async (params: Parameters<TodoTool["execute"]>[1]) => {
+			const part = (await tool.execute("call-v", params)).content.find(item => item.type === "text");
+			if (part?.type !== "text") throw new Error("Expected text summary from todo view");
+			return part.text;
+		};
+		const view = await text({ op: "view" });
+		expect(view).toContain("Remaining items (3, 2 critical):");
+		expect(view).toContain("ship [pending] (Work) critical");
+		expect(view).toContain("side note [pending] (Work)\n");
+		expect(view).toContain("  Done: 2/2 closed");
+		expect(view).not.toContain("old one");
+		// Naming a phase lists it whole, closed rows included.
+		const done = await text({ op: "view", phase: "Done" });
+		expect(done).toContain("[X] old one");
+		expect(done).toContain("  Work: 0/3 closed");
+	});
+
 	it("blocks a task (excluded from remaining, counted distinctly) and unblocks it", async () => {
 		const tool = new TodoTool(createSession());
 		await tool.execute("call-1", { op: "init", list: [{ phase: "Work", items: ["a", "b"] }] });
