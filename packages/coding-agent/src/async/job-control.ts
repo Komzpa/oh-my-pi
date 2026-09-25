@@ -10,7 +10,7 @@ import type { AsyncJob, AsyncJobDetails, AsyncJobManager, AsyncJobType } from ".
 
 import { renderStructuredJson, structuredStatusLabel } from "../session/async-job-delivery";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
-import type { StructuredSubagentOutput } from "@oh-my-pi/pi-tui/tools/task";
+import type { AgentProgress, StructuredSubagentOutput } from "@oh-my-pi/pi-tui/tools/task";
 import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
 import type { ToolSession } from "../tools";
@@ -151,6 +151,21 @@ interface TrackedJobLike {
 	structured?: StructuredSubagentOutput;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function isAgentProgressSnapshot(value: unknown): value is AgentProgress {
+	if (!isRecord(value)) return false;
+	return (
+		typeof value.id === "string" &&
+		typeof value.agent === "string" &&
+		typeof value.task === "string" &&
+		Array.isArray(value.recentTools) &&
+		Array.isArray(value.recentOutput)
+	);
+}
+
 export function snapshotJobs(
 	session: ToolSession,
 	jobs: TrackedJobLike[],
@@ -166,9 +181,11 @@ export function snapshotJobs(
 		let resolvedModelIdentity: string | undefined;
 		let resolvedThinkingLevel: JobSnapshot["resolvedThinkingLevel"];
 		let advisor = false;
+		let progress: AgentProgress[] | undefined;
 		if (latest.type === "task") {
 			const progressValue = latest.latestDetails?.progress;
 			if (Array.isArray(progressValue)) {
+				progress = progressValue.filter(isAgentProgressSnapshot);
 				let progressRecord: Record<string, unknown> | undefined;
 				for (const item of progressValue) {
 					if (!item || typeof item !== "object") continue;
@@ -207,6 +224,7 @@ export function snapshotJobs(
 			...(resolvedModelIdentity ? { resolvedModelIdentity } : {}),
 			...(resolvedThinkingLevel !== undefined ? { resolvedThinkingLevel } : {}),
 			...(advisor ? { advisor: true } : {}),
+			...(progress && progress.length > 0 ? { progress } : {}),
 			...(!resultConsumed && options.includeResults !== false && latest.resultText
 				? { resultText: latest.resultText }
 				: {}),
