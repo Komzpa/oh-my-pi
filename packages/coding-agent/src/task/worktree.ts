@@ -968,6 +968,35 @@ export interface MergeBranchResult {
 	stashConflict?: string;
 }
 
+function pathsOverlap(left: string, right: string): boolean {
+	return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+async function branchTouchedFiles(
+	repo: VcsGitRepo,
+	branchName: string,
+	baseSha: string | undefined,
+): Promise<string[]> {
+	const patch = await diffTreeOrEmpty(repo, baseSha ?? "HEAD", branchName);
+	return patchTouchedFiles(patch);
+}
+
+async function findUntrackedMergeCollision(
+	repo: VcsGitRepo,
+	branches: Array<{ branchName: string; baseSha?: string }>,
+	untracked: readonly string[],
+): Promise<{ branchName: string; paths: string[] } | undefined> {
+	if (untracked.length === 0) return undefined;
+	for (const { branchName, baseSha } of branches) {
+		const touched = await branchTouchedFiles(repo, branchName, baseSha);
+		const collisions = touched.filter(file => untracked.some(localPath => pathsOverlap(file, localPath)));
+		if (collisions.length > 0) {
+			return { branchName, paths: collisions };
+		}
+	}
+	return undefined;
+}
+
 /**
  * Cherry-pick task branch commits sequentially onto HEAD. When `baseSha` is
  * provided the cherry-pick uses the inclusive range `baseSha..branchName`,
@@ -988,6 +1017,15 @@ export async function mergeTaskBranches(
 		const repo = vcs.requireGit(repoRoot);
 		const merged: string[] = [];
 		const failed: string[] = [];
+		const untracked = await repo.lsFiles(true, true);
+		const collision = await findUntrackedMergeCollision(repo, branches, untracked);
+		if (collision) {
+			return {
+				merged,
+				failed: branches.map(branch => branch.branchName),
+				conflict: `${collision.branchName}: untracked path would be overwritten by task merge: ${collision.paths.join(", ")}`,
+			};
+		}
 
 		// Stash dirty working tree so cherry-pick can operate on a clean HEAD.
 		// Without this, cherry-pick refuses to run when uncommitted changes exist.

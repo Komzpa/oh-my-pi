@@ -330,6 +330,58 @@ describe("worktree isolation helpers", () => {
 				expect(stashList).toBe("");
 			});
 
+			it("merges task branches while preserving unrelated untracked files", async () => {
+				await fs.mkdir(path.join(repo, "finish-2026-09-22"), { recursive: true });
+				const untrackedPath = path.join(repo, "finish-2026-09-22", "additive.patch");
+				await fs.writeFile(untrackedPath, "manual landing note\n");
+				try {
+					const result = await mergeTaskBranches(repo, [{ branchName: TASK_BRANCH, taskId: "task-1" }]);
+
+					const [mergedContent, untrackedContent, status, stashList] = await Promise.all([
+						fs.readFile(path.join(repo, "merged.txt"), "utf8"),
+						fs.readFile(untrackedPath, "utf8"),
+						runGit(repo, ["status", "--porcelain=v1"]),
+						runGit(repo, ["stash", "list"]),
+					]);
+					expect(result).toEqual({ failed: [], merged: [TASK_BRANCH] });
+					expect(mergedContent).toBe("task branch change\n");
+					expect(untrackedContent).toBe("manual landing note\n");
+					expect(status).toBe("?? finish-2026-09-22/");
+					expect(stashList).toBe("");
+				} finally {
+					await fs.rm(path.join(repo, "finish-2026-09-22"), { recursive: true, force: true });
+				}
+			});
+
+			it("reports a real untracked path collision instead of hiding it in the merge stash", async () => {
+				const collisionBranch = "task/untracked-collision";
+				await runGit(repo, ["checkout", "-q", "-b", collisionBranch, initialSha]);
+				await fs.writeFile(path.join(repo, "collision.txt"), "task output\n");
+				await runGit(repo, ["add", "collision.txt"]);
+				await runGit(repo, ["commit", "-q", "-m", "add collision fixture"]);
+				await runGit(repo, ["checkout", "-q", BASE_BRANCH]);
+				await fs.writeFile(path.join(repo, "collision.txt"), "local untracked\n");
+				try {
+					const result = await mergeTaskBranches(repo, [{ branchName: collisionBranch, taskId: "task-1" }]);
+					const [status, unmerged, content] = await Promise.all([
+						runGit(repo, ["status", "--porcelain=v1"]),
+						runGit(repo, ["ls-files", "--unmerged"]),
+						fs.readFile(path.join(repo, "collision.txt"), "utf8"),
+					]);
+
+					expect(result.merged).toEqual([]);
+					expect(result.failed).toEqual([collisionBranch]);
+					expect(result.conflict).toContain(collisionBranch);
+					expect(result.conflict).toContain("collision.txt");
+					expect(status).toBe("?? collision.txt");
+					expect(unmerged).toBe("");
+					expect(content).toBe("local untracked\n");
+				} finally {
+					await cleanupTaskBranches(repo, [collisionBranch]);
+					await fs.rm(path.join(repo, "collision.txt"), { force: true });
+				}
+			});
+
 			// Regression for #4175: a stash-pop conflict used to leave stage 1/2/3
 			// unmerged entries in `.git/index` (no `MERGE_HEAD`, no way to abort).
 			// The corrupted index survived indefinitely and every subsequent
