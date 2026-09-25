@@ -25,10 +25,6 @@
 - Fixed dimmed blockquote styling after inline code spans.
 - Fixed rendering of tool calls and results for top-level extension and MCP tools invoked through `xd://` links.
 - Fixed file links in pending Read and Write cards so they open the correct local targets, including paths in the home directory, archives, and databases.
-- Rendered soft-requirement deferrals as a muted one-line waiting status instead of a failed tool card.
-- Fixed dimmed blockquote styling being reset after inline code spans.
-- Fixed tool call and result rendering for active top-level extension and MCP tools invoked through `xd://` links.
-- Fixed pending Read and Write cards opening incorrect browser URLs when file paths are clicked; paths now open their local targets, including home-directory, archive, and database paths.
 
 ## [18.3.0] - 2026-09-24
 

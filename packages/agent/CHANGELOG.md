@@ -14,10 +14,6 @@
 
 - Improved prompt token counting for requests with anchored prefixes by using provider-reported usage and limiting local estimation to new message content.
 
-### Fixed
-
-- Fixed soft tool requirements skipping harmless reads and reporting deferred calls as assistant-turn failures.
-
 ## [18.3.0] - 2026-09-24
 
 ### Added
