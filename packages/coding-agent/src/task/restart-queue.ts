@@ -15,6 +15,7 @@ const RESTART_REQUEST_TRANSITION_VERSION = 1;
 const MAX_RESTART_REQUEST_ID_LENGTH = 128;
 const MAX_RESTART_REASON_LENGTH = 1_024;
 const MAX_RESTART_ERROR_LENGTH = 4_096;
+const DEFAULT_RESTART_WORKER_GRACE_MS = 5_000;
 
 export interface RestartControlIdentity {
 	instanceId: string;
@@ -55,6 +56,7 @@ export interface RestartDrainWorkerStatus {
 export interface RestartDrainStatus {
 	runningWorkers: RestartDrainWorkerStatus[];
 	queuedInputCount: number;
+	workerGraceDeadlineAt?: number;
 }
 
 export interface RestartControlSnapshot {
@@ -85,6 +87,7 @@ export interface RestartQueueControllerOptions {
 	onStateChange?: (record: RestartRequestRecord) => void;
 	captureGoalMode?: () => { goalId: string } | undefined;
 	restoreGoalMode?: (snapshot: { goalId: string }) => Promise<void>;
+	restartWorkerGraceMs?: number;
 }
 
 interface RestartRequestTransition {
@@ -115,6 +118,7 @@ interface ActiveRestartDrain {
 	leases: Map<AgentSession, RestartDrainLease>;
 	children: Map<string, AgentSession>;
 	runningAgentIds: Set<string>;
+	workerGraceDeadlineAt?: number;
 	notifications: Promise<void>[];
 	notifiedSessions: Map<AgentSession, Set<string>>;
 	irreversible: boolean;
@@ -183,7 +187,13 @@ function parseDrainStatus(value: unknown): RestartDrainStatus | undefined {
 		}
 		runningWorkers.push({ id: item.id, name: item.name, startedAt: item.startedAt });
 	}
-	return { runningWorkers, queuedInputCount: value.queuedInputCount };
+	return {
+		runningWorkers,
+		queuedInputCount: value.queuedInputCount,
+		...(typeof value.workerGraceDeadlineAt === "number" && Number.isFinite(value.workerGraceDeadlineAt)
+			? { workerGraceDeadlineAt: value.workerGraceDeadlineAt }
+			: {}),
+	};
 }
 
 function parseRestartRequestRecord(value: unknown): RestartRequestRecord | undefined {
@@ -293,6 +303,10 @@ export function formatRestartRequestStatus(record: RestartRequestRecord | null, 
 	const queuedInputCount = status?.queuedInputCount ?? 0;
 	const queued = `${queuedInputCount} queued ${plural(queuedInputCount, "input")}`;
 	if (workers.length > 0) {
+		if (status?.workerGraceDeadlineAt !== undefined) {
+			const remaining = Math.max(0, status.workerGraceDeadlineAt - now);
+			return `Restart waiting up to ${formatDuration(remaining)} for ${workers.length} ${plural(workers.length, "worker")} to reach a safe point: ${workers.map(worker => formatWorker(worker, now)).join(", ")}; ${queued}.`;
+		}
 		return `Restart waiting for ${workers.length} ${plural(workers.length, "worker")}: ${workers.map(worker => formatWorker(worker, now)).join(", ")}; ${queued}.`;
 	}
 	if (queuedInputCount > 0) return `Restart waiting for ${queued}.`;
@@ -363,6 +377,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	readonly #onStateChange: ((record: RestartRequestRecord) => void) | undefined;
 	readonly #captureGoalMode: (() => { goalId: string } | undefined) | undefined;
 	readonly #restoreGoalMode: ((snapshot: { goalId: string }) => Promise<void>) | undefined;
+	readonly #restartWorkerGraceMs: number;
 	#serial: Promise<void> = Promise.resolve();
 	#run: ActiveRestartDrain | undefined;
 	#restorePromise: Promise<void> | undefined;
@@ -375,6 +390,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		this.#onStateChange = options.onStateChange;
 		this.#captureGoalMode = options.captureGoalMode;
 		this.#restoreGoalMode = options.restoreGoalMode;
+		this.#restartWorkerGraceMs =
+			options.restartWorkerGraceMs !== undefined && Number.isFinite(options.restartWorkerGraceMs)
+				? Math.max(0, Math.floor(options.restartWorkerGraceMs))
+				: DEFAULT_RESTART_WORKER_GRACE_MS;
 	}
 
 	snapshot(): RestartControlSnapshot {
@@ -666,7 +685,11 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		return {
 			...record,
 			runningWorkerCount: runningWorkers.length,
-			drainStatus: { runningWorkers, queuedInputCount },
+			drainStatus: {
+				runningWorkers,
+				queuedInputCount,
+				...(run.workerGraceDeadlineAt !== undefined ? { workerGraceDeadlineAt: run.workerGraceDeadlineAt } : {}),
+			},
 		};
 	}
 
@@ -709,9 +732,15 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			if (run.cancelled || this.#disposed) return false;
 			const notifications = run.notifications.splice(0);
 			await Promise.all(notifications);
-			const wait = Promise.all([...run.leases.values()].map(lease => lease.waitForQuiescence())).then(() => true);
-			const settled = await Promise.race([wait, run.cancelSignal.then(() => false)]);
+			const settled = await Promise.race([
+				this.#rootLease(run)
+					.waitForQuiescence()
+					.then(() => true),
+				run.cancelSignal.then(() => false),
+			]);
 			if (!settled || run.cancelled || this.#disposed) return false;
+			await this.#waitForWorkerGrace(run);
+			if (run.cancelled || this.#disposed) return false;
 			await this.#flushSessions(run);
 			let added = false;
 			for (const child of getLiveSubagentsForRestart(this.#session)) {
@@ -720,6 +749,65 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				added = true;
 			}
 			if (!added) return true;
+		}
+	}
+
+	#rootLease(run: ActiveRestartDrain): RestartDrainLease {
+		const lease = run.leases.get(this.#session);
+		if (!lease) throw new Error("Restart drain has no root session lease");
+		return lease;
+	}
+
+	async #waitForWorkerGrace(run: ActiveRestartDrain): Promise<void> {
+		const childLeases = [...run.children.values()]
+			.map(session => ({ session, lease: run.leases.get(session) }))
+			.filter((item): item is { session: AgentSession; lease: RestartDrainLease } => item.lease !== undefined);
+		if (childLeases.length === 0) return;
+		const graceMs = this.#restartWorkerGraceMs;
+		run.workerGraceDeadlineAt = Date.now() + graceMs;
+		run.record = this.#withDrainStatus(run.record, run);
+		this.#onStateChange?.(run.record);
+		const progressTimer =
+			graceMs > 1_000
+				? setInterval(() => {
+						run.record = this.#withDrainStatus(run.record, run);
+						this.#onStateChange?.(run.record);
+					}, 1_000)
+				: undefined;
+		try {
+			const settledSessions = new Set<AgentSession>();
+			const wait = Promise.all(
+				childLeases.map(async item => {
+					await item.lease.waitForQuiescence();
+					settledSessions.add(item.session);
+				}),
+			).then(() => true);
+			const settled = await Promise.race([
+				wait,
+				Bun.sleep(graceMs).then(() => false),
+				run.cancelSignal.then(() => false),
+			]);
+			if (!settled && !run.cancelled) this.#abortUnsettledWorkers(run, settledSessions);
+		} finally {
+			if (progressTimer) clearInterval(progressTimer);
+			run.workerGraceDeadlineAt = undefined;
+		}
+	}
+
+	#abortUnsettledWorkers(run: ActiveRestartDrain, settledSessions: ReadonlySet<AgentSession>): void {
+		for (const [id, session] of run.children) {
+			if (settledSessions.has(session)) continue;
+			if (!run.runningAgentIds.has(id) && !session.isStreaming) continue;
+			const abort = (session as { abort?: AgentSession["abort"] }).abort;
+			if (typeof abort !== "function") continue;
+			void abort
+				.call(session, {
+					goalReason: "internal",
+					reason: "Restart interrupted this worker; it will resume from its persisted session after relaunch.",
+				})
+				.catch(error => {
+					logger.warn("Restart worker abort request failed", { id, error: this.#errorText(error) });
+				});
 		}
 	}
 
