@@ -1,5 +1,9 @@
 import { listRestartControls, RestartControlError, sendRestartControl } from "../restart-control";
-import type { RestartControlRequest, RestartControlSnapshot } from "../task/restart-queue";
+import {
+	formatRestartRequestStatus,
+	type RestartControlRequest,
+	type RestartControlSnapshot,
+} from "../task/restart-queue";
 
 export type RestartAction = "list" | "request" | "status" | "cancel";
 
@@ -47,7 +51,7 @@ function printSnapshot(action: RestartAction, snapshot: RestartControlSnapshot):
 	}
 	process.stdout.write(
 		request
-			? `${snapshot.identity.instanceId}: ${request.state} (${request.requestId})\n`
+			? `${snapshot.identity.instanceId}: ${formatRestartRequestStatus(request)}\n`
 			: `${snapshot.identity.instanceId}: no restart request\n`,
 	);
 }

@@ -140,6 +140,7 @@ import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-pro
 import { labelEchoesHandle } from "../task/label";
 import {
 	createRestartQueueController,
+	formatRestartRequestStatus,
 	isRestartResumePending,
 	type RestartControlIdentity,
 	type RestartControlRequest,
@@ -6159,9 +6160,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			const snapshot = await this.#handleRestartControl({ identity: this.#restartControlIdentity(), op: action });
 			const request = snapshot.request;
 			if (action === "status") {
-				this.showStatus(
-					request ? `Restart ${request.state} (${request.requestId}).` : "No restart request is queued.",
-				);
+				this.showStatus(formatRestartRequestStatus(request));
 				return;
 			}
 			this.showStatus(
@@ -6273,7 +6272,7 @@ export class InteractiveMode implements InteractiveModeContext {
 								record.state === "checkpointed" ||
 								record.state === "restarting"
 							)
-								this.showStatus(`Restart ${record.state}`);
+								this.showStatus(formatRestartRequestStatus(record));
 						},
 					});
 					this.#restartQueueController = controller;

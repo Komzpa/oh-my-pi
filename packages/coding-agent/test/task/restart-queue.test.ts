@@ -8,6 +8,7 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
 	createRestartQueueController,
+	formatRestartRequestStatus,
 	isRestartResumePending,
 	restartNoticeText,
 	type RestartControlIdentity,
@@ -29,6 +30,7 @@ interface SessionHarness {
 interface SessionHarnessOptions {
 	quiescence?: Promise<void>;
 	wasRunning?: boolean;
+	queuedInputCount?: number;
 	onDelivery?: (message: IrcMessage) => void;
 	onCustomMessage?: (message: { details?: { requestId?: string; state?: string } }) => void | Promise<void>;
 }
@@ -64,6 +66,9 @@ function makeSession(manager: SessionManager, options: SessionHarnessOptions = {
 	let releaseCount = 0;
 	const session = {
 		sessionManager: manager,
+		agent: {
+			getPendingModelNewsCount: () => options.queuedInputCount ?? 0,
+		},
 		isStreaming: false,
 		beginRestartDrain: () => {
 			drainCount++;
@@ -254,6 +259,42 @@ describe("restart queue controller", () => {
 		expect(restartCalls).toBe(0);
 		expect(restoredGoals).toEqual(["goal-cancel"]);
 		releaseQuiescence();
+		controller.dispose();
+	});
+
+	it("reports running workers and queued input in restart drain status", async () => {
+		const cwd = makeTempDir();
+		const { manager, file } = await createRoot(cwd);
+		const rootHarness = makeSession(manager, { queuedInputCount: 1 });
+		const registry = AgentRegistry.global();
+		registerRoot(registry, rootHarness.session, file);
+		const childHarness = makeSession(manager, { wasRunning: true });
+		registry.register({
+			id: "worker-capture",
+			displayName: "CaptureWatch",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: childHarness.session,
+			sessionFile: null,
+			status: "running",
+			createdAt: 1_000,
+		});
+		const identity = identityFor(manager, "queue-instance", 1);
+		const controller = createRestartQueueController({
+			session: rootHarness.session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+
+		const snapshot = await controller.handle({ identity, op: "request", requestId: "status-request" });
+
+		expect(snapshot.request?.drainStatus).toEqual({
+			runningWorkers: [{ id: "worker-capture", name: "CaptureWatch", startedAt: 1_000 }],
+			queuedInputCount: 1,
+		});
+		expect(formatRestartRequestStatus(snapshot.request, 721_000)).toBe(
+			"Restart waiting for 1 worker: CaptureWatch 12m; 1 queued input.",
+		);
 		controller.dispose();
 	});
 
