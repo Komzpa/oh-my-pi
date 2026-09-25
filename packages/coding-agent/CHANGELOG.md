@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- Fixed isolated task workers starting from dirty parent checkout files instead of a clean copy of the parent `HEAD` ([#17](https://github.com/Komzpa/oh-my-pi/pull/17) by [@Komzpa](https://github.com/Komzpa)).
 - Fixed `block-clone` task isolation on Windows ReFS and Dev Drive volumes failing on files whose size is not a whole number of clusters, larger than 4 GiB, or sparse.
 
 ## [18.4.1] - 2026-09-28
