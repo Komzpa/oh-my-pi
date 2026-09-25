@@ -22,12 +22,44 @@ function isOpenStatus(status: TodoPhase["tasks"][number]["status"]): boolean {
 
 function isOwnedByAnotherRunningWorker(
 	task: TodoPhase["tasks"][number],
-	observation: TodoExecutorObservation,
+	observation: Pick<TodoExecutorObservation, "workerId" | "runningWorkerIds">,
 ): boolean {
-	const owner = task.schedule?.owner;
-	return (
-		typeof owner === "string" && owner !== observation.workerId && (observation.runningWorkerIds?.has(owner) ?? false)
+	return getRecordedTodoWorkerIds(task).some(
+		workerId => workerId !== observation.workerId && (observation.runningWorkerIds?.has(workerId) ?? false),
 	);
+}
+
+function getRecordedTodoWorkerIds(task: TodoPhase["tasks"][number]): string[] {
+	const ids = [task.schedule?.executor?.workerId, task.schedule?.owner].filter(
+		(workerId): workerId is string => typeof workerId === "string" && workerId.length > 0,
+	);
+	return [...new Set(ids)];
+}
+
+function hasOmpCollisionSuffix(workerId: string, recordedWorkerId: string): boolean {
+	if (!workerId.startsWith(`${recordedWorkerId}-`)) return false;
+	const suffix = workerId.slice(recordedWorkerId.length + 1);
+	return /^[2-9]\d*$/.test(suffix);
+}
+
+function matchesRecordedTodoWorkerId(
+	recordedWorkerId: string,
+	observation: Pick<TodoExecutorObservation, "workerId" | "runningWorkerIds">,
+): boolean {
+	if (recordedWorkerId === observation.workerId) return true;
+	return (
+		observation.runningWorkerIds !== undefined &&
+		!observation.runningWorkerIds.has(recordedWorkerId) &&
+		hasOmpCollisionSuffix(observation.workerId, recordedWorkerId)
+	);
+}
+
+export function todoMatchesObservedWorker(
+	task: TodoPhase["tasks"][number],
+	observation: Pick<TodoExecutorObservation, "workerId" | "runningWorkerIds">,
+): boolean {
+	if (isOwnedByAnotherRunningWorker(task, observation)) return false;
+	return getRecordedTodoWorkerIds(task).some(workerId => matchesRecordedTodoWorkerId(workerId, observation));
 }
 
 function selectUniqueLongest<T extends { content: string }>(tasks: T[]): T | undefined {
@@ -45,10 +77,7 @@ function findTodoExecutorTarget(
 	const openTasks = phases
 		.flatMap(phase => phase.tasks)
 		.filter(task => isOpenStatus(task.status) && !isOwnedByAnotherRunningWorker(task, observation));
-	const existing = openTasks.filter(
-		task =>
-			task.schedule?.executor?.workerId === observation.workerId || task.schedule?.owner === observation.workerId,
-	);
+	const existing = openTasks.filter(task => todoMatchesObservedWorker(task, observation));
 	if (existing.length > 0) return existing.length === 1 ? existing[0] : undefined;
 
 	const description = observation.description?.trim();
@@ -76,23 +105,32 @@ export function applyTodoExecutorObservation(
 	const target = findTodoExecutorTarget(phases, observation);
 	if (!target) return undefined;
 	const previous = target.schedule?.executor;
-	if (previous && previous.workerId !== observation.workerId) return undefined;
+	if (
+		previous &&
+		previous.workerId !== observation.workerId &&
+		(observation.runningWorkerIds?.has(previous.workerId) ?? false)
+	) {
+		return undefined;
+	}
+	const carriedPrevious = previous?.workerId === observation.workerId ? previous : undefined;
 	const executor: NonNullable<TodoSchedule["executor"]> = {
 		workerId: observation.workerId,
-		...(observation.agentProfile || previous?.agentProfile
-			? { agentProfile: observation.agentProfile ?? previous?.agentProfile }
+		...(observation.agentProfile || carriedPrevious?.agentProfile
+			? { agentProfile: observation.agentProfile ?? carriedPrevious?.agentProfile }
 			: {}),
-		...(observation.resolvedModel || previous?.resolvedModel
-			? { resolvedModel: observation.resolvedModel ?? previous?.resolvedModel }
+		...(observation.resolvedModel || carriedPrevious?.resolvedModel
+			? { resolvedModel: observation.resolvedModel ?? carriedPrevious?.resolvedModel }
 			: {}),
-		...(observation.thinkingLevel || previous?.thinkingLevel
-			? { thinkingLevel: observation.thinkingLevel ?? previous?.thinkingLevel }
+		...(observation.thinkingLevel || carriedPrevious?.thinkingLevel
+			? { thinkingLevel: observation.thinkingLevel ?? carriedPrevious?.thinkingLevel }
 			: {}),
-		startedAt: previous?.startedAt ?? observation.startedAt,
-		...(observation.finishedAt !== undefined || previous?.finishedAt !== undefined
-			? { finishedAt: observation.finishedAt ?? previous?.finishedAt }
+		startedAt: carriedPrevious?.startedAt ?? observation.startedAt,
+		...(observation.finishedAt !== undefined || carriedPrevious?.finishedAt !== undefined
+			? { finishedAt: observation.finishedAt ?? carriedPrevious?.finishedAt }
 			: {}),
-		...(observation.outcome || previous?.outcome ? { outcome: observation.outcome ?? previous?.outcome } : {}),
+		...(observation.outcome || carriedPrevious?.outcome
+			? { outcome: observation.outcome ?? carriedPrevious?.outcome }
+			: {}),
 	};
 	const owner = target.schedule?.owner;
 	const shouldSetOwner =

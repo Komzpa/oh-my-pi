@@ -702,4 +702,23 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(linked.byTask.size).toBe(0);
 		expect(linked.unassigned.map(worker => worker.id)).toEqual(["Reviewer", "Shared"]);
 	});
+
+	it("links a collision-suffixed restarted worker to its stale-owner todo row", () => {
+		const task = {
+			content: "Restore systems cue interaction",
+			status: "pending" as const,
+			schedule: {
+				owner: "SystemsCueInteractionOwner-3-2",
+				executor: { workerId: "SystemsCueInteractionOwner-3-2", startedAt: 100, finishedAt: 200 },
+			},
+		};
+
+		const linked = linkTodoWorkers(
+			[{ name: "Restarted", tasks: [task] }],
+			[makeSession({ id: "SystemsCueInteractionOwner-3-2-2" })],
+		);
+
+		expect(linked.byTask.get(task)?.id).toBe("SystemsCueInteractionOwner-3-2-2");
+		expect(linked.unassigned).toEqual([]);
+	});
 });

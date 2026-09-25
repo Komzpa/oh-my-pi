@@ -163,6 +163,7 @@ import {
 	TODO_HUD_STATE_CUSTOM_TYPE,
 	type TodoHudStateEntryData,
 } from "../tools/todo";
+import { todoMatchesObservedWorker } from "../tools/todo-executor";
 import {
 	formatPhaseDisplayName,
 	isClosedTodo,
@@ -762,11 +763,12 @@ export function linkTodoWorkers(
 	sessions: readonly ObservableSession[],
 ): { byTask: Map<TodoItem, ObservableSession>; unassigned: ObservableSession[] } {
 	const tasks = phases.flatMap(phase => phase.tasks);
+	const runningWorkerIds = new Set(sessions.filter(isHudSubagent).map(session => session.id));
 	const byTask = new Map<TodoItem, ObservableSession>();
 	const unassigned: ObservableSession[] = [];
 	for (const session of sessions.filter(isHudSubagent)) {
-		const explicit = tasks.filter(
-			task => task.schedule?.executor?.workerId === session.id || task.schedule?.owner === session.id,
+		const explicit = tasks.filter(task =>
+			todoMatchesObservedWorker(task, { workerId: session.id, runningWorkerIds }),
 		);
 		const description = session.description?.trim() || session.progress?.description?.trim();
 		const candidates =
