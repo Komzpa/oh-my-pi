@@ -130,6 +130,10 @@ pub struct GrepOptions<'env> {
 	/// from exhausting the global `max_count` budget before other files are
 	/// reached.
 	pub max_count_per_file: Option<u32>,
+	/// Stop the directory walk after this many candidate files.
+	pub max_scan_files:     Option<u32>,
+	/// Stop before reading candidate files beyond this aggregate byte budget.
+	pub max_scan_bytes:     Option<u32>,
 	/// Abort signal for cancelling the operation.
 	pub signal:             Option<Unknown<'env>>,
 	/// Timeout in milliseconds for the operation.
@@ -811,6 +815,8 @@ pub(crate) struct GrepConfig {
 	pub(crate) max_columns:        Option<u32>,
 	pub(crate) mode:               Option<GrepOutputMode>,
 	pub(crate) max_count_per_file: Option<u32>,
+	pub(crate) max_scan_files:     Option<u32>,
+	pub(crate) max_scan_bytes:     Option<u32>,
 	/// Filesystem the search path is resolved, walked, and read through.
 	pub(crate) filesystem:         BlockingFs,
 }
@@ -1549,6 +1555,118 @@ fn run_parallel_streaming_grep<M: Matcher + Sync>(
 	))
 }
 
+/// The bounded directory mode is used by callers that need a hard scope
+/// budget, including semantic find. The visitor searches one file at a time
+/// and stops the native walk as soon as either budget is exhausted.
+#[allow(clippy::fn_params_excessive_bools, reason = "matches the grep walk options")]
+fn run_bounded_grep<M: Matcher + Sync>(
+	fs: &BlockingFs,
+	search_path: &Path,
+	matcher: &M,
+	glob: Option<&str>,
+	type_filter: Option<&TypeFilter>,
+	params: SearchParams,
+	include_hidden: bool,
+	use_gitignore: bool,
+	skip_node_modules: bool,
+	max_scan_files: Option<u32>,
+	max_scan_bytes: Option<u32>,
+	ct: &task::CancelToken,
+) -> Result<(Vec<FileSearchResult>, u64, u64)> {
+	let request = build_grep_walk_request(
+		fs,
+		search_path,
+		glob,
+		include_hidden,
+		use_gitignore,
+		skip_node_modules,
+		pi_walker::WalkOrder::Path,
+	)?
+	.scan_limits(
+		max_scan_files.map_or(usize::MAX, |max| max as usize),
+		max_scan_bytes.map_or(usize::MAX, |max| max as usize),
+	);
+	let file_params = per_file_params(params);
+	let stop_after_matches = streaming_stop_after(params);
+	let state = PassState::new(fs);
+	let mut worker = SearchWorker::new(file_params);
+	let mut files = 0_u64;
+	let mut bytes = 0_u64;
+	request
+		.for_each_entry_with_heartbeat(
+			|| ct.heartbeat(),
+			|entry| {
+				if let Some(filter) = type_filter
+					&& !matches_type_filter_str(entry.relative_path, filter)
+				{
+					return Ok(pi_walker::WalkDecision::Include);
+				}
+				let size = file_size_hint(entry.size)
+					.or_else(|| {
+						fs.metadata(entry.absolute_path.as_ref())
+							.ok()
+							.map(|m| m.len())
+					})
+					.unwrap_or(MAX_FILE_BYTES);
+				if max_scan_files.is_some_and(|max| files >= u64::from(max))
+					|| max_scan_bytes.is_some_and(|max| bytes.saturating_add(size) > u64::from(max))
+				{
+					return Err(Error::from_reason(
+						"Grep scan limit reached; narrow the search path".to_string(),
+					));
+				}
+				files += 1;
+				bytes = bytes.saturating_add(size);
+				let file = pi_walker::FileCandidate {
+					path:     entry.absolute_path.into_owned(),
+					relative: entry.relative_path.to_owned(),
+					mtime:    entry.mtime,
+					size:     entry.size,
+				};
+				handle_file(
+					&file,
+					&mut worker,
+					matcher,
+					file_params,
+					ReadPolicy::Full,
+					stop_after_matches,
+					&state,
+					ct,
+				)?;
+				if stop_after_matches.is_some_and(|stop| state.emitted.load(Ordering::Relaxed) >= stop)
+				{
+					return Ok(pi_walker::WalkDecision::Stop);
+				}
+				Ok(pi_walker::WalkDecision::Include)
+			},
+			|_| Ok(pi_walker::WalkDecision::Include),
+		)
+		.map_err(iofs::map_walker_error)?;
+
+	let mut results = std::mem::take(&mut *state.results.lock());
+	results.sort_unstable_by(|a, b| a.relative_path.cmp(&b.relative_path));
+	let deferred = std::mem::take(&mut *state.deferred.lock());
+	if !deferred.is_empty()
+		&& stop_after_matches.is_none_or(|stop| state.emitted.load(Ordering::Relaxed) < stop)
+	{
+		results.extend(run_pass(
+			&deferred,
+			matcher,
+			file_params,
+			ReadPolicy::Prefix,
+			false,
+			stop_after_matches,
+			&state,
+			ct,
+		)?);
+	}
+	Ok((
+		results,
+		state.skipped_oversized.load(Ordering::Relaxed),
+		state.files_searched.load(Ordering::Relaxed),
+	))
+}
+
 fn emitted_content_matches(results: &[FileSearchResult]) -> u64 {
 	results.iter().fold(0, |total, result| {
 		total.saturating_add(u64::try_from(result.matches.len()).unwrap_or(u64::MAX))
@@ -1976,6 +2094,15 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 	}
 
 	if metadata.is_file() {
+		if options.max_scan_files == Some(0)
+			|| options
+				.max_scan_bytes
+				.is_some_and(|max| metadata.len() > u64::from(max))
+		{
+			return Err(Error::from_reason(
+				"Grep scan limit reached; narrow the search path".to_string(),
+			));
+		}
 		if let Some(filter) = type_filter.as_ref()
 			&& !matches_type_filter(&search_path, filter)
 		{
@@ -2109,18 +2236,35 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 	}
 
 	let mentions_node_modules = glob.is_some_and(|g| g.contains("node_modules"));
-	let results = run_streaming_grep(
-		fs,
-		&search_path,
-		matcher,
-		glob,
-		type_filter.as_ref(),
-		params,
-		include_hidden,
-		use_gitignore,
-		!mentions_node_modules,
-		&ct,
-	)?;
+	let results = if options.max_scan_files.is_some() || options.max_scan_bytes.is_some() {
+		run_bounded_grep(
+			fs,
+			&search_path,
+			matcher,
+			glob,
+			type_filter.as_ref(),
+			params,
+			include_hidden,
+			use_gitignore,
+			!mentions_node_modules,
+			options.max_scan_files,
+			options.max_scan_bytes,
+			&ct,
+		)?
+	} else {
+		run_streaming_grep(
+			fs,
+			&search_path,
+			matcher,
+			glob,
+			type_filter.as_ref(),
+			params,
+			include_hidden,
+			use_gitignore,
+			!mentions_node_modules,
+			&ct,
+		)?
+	};
 	let (results, skipped_oversized, files_searched) = results;
 	let (matches, total_matches, files_with_matches, files_searched, limit_reached) =
 		aggregate_parallel_results(results, params, files_searched);
@@ -2252,6 +2396,8 @@ pub fn grep(
 		max_columns,
 		mode,
 		max_count_per_file,
+		max_scan_files,
+		max_scan_bytes,
 		timeout_ms,
 		signal,
 		filesystem,
@@ -2269,6 +2415,8 @@ pub fn grep(
 		gitignore,
 		max_count,
 		max_count_per_file,
+		max_scan_files,
+		max_scan_bytes,
 		offset,
 		context_before,
 		context_after,
@@ -2370,6 +2518,8 @@ mod tests {
 			max_columns:        None,
 			mode:               None,
 			max_count_per_file: None,
+			max_scan_files:     None,
+			max_scan_bytes:     None,
 			filesystem:         BlockingFs::native(),
 		}
 	}
@@ -2414,6 +2564,36 @@ mod tests {
 			escape_unescaped_parentheses("fetchAnthropicProvider()").as_ref(),
 			r"fetchAnthropicProvider\(\)"
 		);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn bounded_grep_rejects_large_file_set_before_collecting_matches() {
+		let root = TempDirGuard::new();
+		for index in 0..128 {
+			write_file(&root.path().join(format!("{index:03}.txt")), "needle\n");
+		}
+		let mut config = base_grep_config(root.path());
+		config.max_scan_files = Some(32);
+		config.max_count = Some(8192);
+		let error = grep_sync(config, None, task::CancelToken::default())
+			.err()
+			.expect("scan must stop at file cap");
+		assert!(error.to_string().contains("narrow the search path"), "{error}");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn bounded_grep_rejects_byte_budget_before_reading_next_file() {
+		let root = TempDirGuard::new();
+		write_file(&root.path().join("a.txt"), "needle\n");
+		write_file(&root.path().join("b.txt"), "needle\n");
+		let mut config = base_grep_config(root.path());
+		config.max_scan_bytes = Some(7);
+		let error = grep_sync(config, None, task::CancelToken::default())
+			.err()
+			.expect("scan must stop at byte cap");
+		assert!(error.to_string().contains("narrow the search path"), "{error}");
 	}
 
 	#[test]
