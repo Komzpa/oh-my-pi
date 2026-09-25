@@ -105,6 +105,18 @@ it("links a worker from task text, assigns owner and starts a pending row", () =
 	});
 });
 
+it("does not link a short row title found inside unrelated task text", () => {
+	const phases: TodoPhase[] = [{ name: "Work", tasks: [{ content: "Push", status: "pending" }] }];
+	expect(
+		applyTodoExecutorObservation(phases, {
+			workerId: "Worker-1",
+			taskText: "Run the six browser shards; do not push anything.",
+			startedAt: 10,
+			runningWorkerIds: new Set(["Worker-1"]),
+		}),
+	).toBeUndefined();
+});
+
 it("leaves ambiguous task-text matches unchanged", () => {
 	const phases: TodoPhase[] = [
 		{
