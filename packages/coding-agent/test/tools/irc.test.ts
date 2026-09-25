@@ -218,7 +218,7 @@ describe("IRC", () => {
 			worker.setOutcome("woken");
 			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
 				async ref => (ref.id === evictedId ? async () => worker.session : undefined),
-				0,
+				() => 0,
 			);
 			const result = await executeSend(
 				{ registry, senderId: "0-Main", sessionFileHint: rootFile },
