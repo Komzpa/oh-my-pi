@@ -166,6 +166,7 @@ import type { Skill, SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand, loadSlashCommands } from "../extensibility/slash-commands";
 import { normalizeToolEventInput, resolveToolEventInput } from "../extensibility/tool-event-input";
 import { GoalRuntime } from "../goals/runtime";
+import { sendAgentMessageFromSession } from "../irc/messaging";
 import type { GoalModeState } from "../goals/state";
 import type { HindsightSessionState } from "../hindsight/state";
 import { InternalUrlRouter, type LocalProtocolOptions } from "../internal-urls";
@@ -7657,6 +7658,7 @@ export class AgentSession implements SettingsScope {
 			},
 			getContextUsage: () => this.getContextUsage(),
 			getAsyncJobSnapshot: () => this.getAsyncJobSnapshot(),
+			sendAgentMessage: (to, message) => sendAgentMessageFromSession(this, to, message),
 			waitForIdle: () => this.waitForIdle(),
 			newSession: async options => {
 				const success = await this.newSession({ parentSession: options?.parentSession });
