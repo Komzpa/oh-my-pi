@@ -63,6 +63,7 @@ import { repairTaskParams } from "@oh-my-pi/pi-tui/tools/task-repair-args";
 import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
 import { SpawnRun, type SpawnPermit } from "./spawn-run";
 import { type TaskLauncher, TaskLaunchSession } from "./speculative-launch";
+import { buildTodoExecutorPersistedEdit } from "../tools/todo";
 import { applyTodoExecutorObservation, type TodoExecutorObservation } from "../tools/todo-executor";
 import {
 TASK_SUBAGENT_LIFECYCLE_CHANNEL,
@@ -771,7 +772,13 @@ readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
 		});
 		if (!updated) return;
 		this.session.setTodoPhases?.(updated);
-		this.session.persistTodoPhases?.(updated);
+		this.session.persistTodoPhases?.(
+			updated,
+			buildTodoExecutorPersistedEdit({
+				...observation,
+				runningWorkerIds: new Set(this.#todoExecutors.keys()),
+			}),
+		);
 	}
 
 	#isBatchEnabled(): boolean {
