@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
-import { AgentOutputManager } from "@oh-my-pi/pi-coding-agent/task/output-manager";
 import { PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-tui/prompt/composer";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { AgentOutputManager } from "../../src/task/output-manager";
 
 // Contract: subagent output ids are the requested name, used verbatim the first
 // time and suffixed (`-2`, `-3`, …) only when the same name recurs. A parent
@@ -18,6 +18,31 @@ describe("AgentOutputManager", () => {
 		expect(await mgr.allocate("Anna")).toBe("Anna-3");
 		// A distinct name is untouched — no prefix, no suffix.
 		expect(await mgr.allocate("Bob")).toBe("Bob");
+	});
+
+	it("collapses a taken collision chain before choosing the next suffix", async () => {
+		const mgr = new AgentOutputManager(() => null);
+		await mgr.reserve([
+			"SystemsCueInteractionOwner",
+			"SystemsCueInteractionOwner-2",
+			"SystemsCueInteractionOwner-3",
+			"SystemsCueInteractionOwner-3-2",
+		]);
+
+		expect(await mgr.allocate("SystemsCueInteractionOwner-3-2")).toBe("SystemsCueInteractionOwner-4");
+	});
+
+	it("preserves a deliberate suffixed id when it is free", async () => {
+		const mgr = new AgentOutputManager(() => null);
+
+		expect(await mgr.allocate("Worker-2")).toBe("Worker-2");
+	});
+
+	it("uses the smallest free suffix for base collisions", async () => {
+		const mgr = new AgentOutputManager(() => null);
+		await mgr.reserve(["Worker", "Worker-3"]);
+
+		expect(await mgr.allocate("Worker")).toBe("Worker-2");
 	});
 
 	it("de-duplicates repeated names while preserving order", async () => {
