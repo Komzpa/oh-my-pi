@@ -5,6 +5,7 @@ import type { CollabHost } from "../collab/host";
 import { type CollabHostSnapshot, listCollabHosts } from "../collab/registry";
 import { settings } from "../config/settings";
 import { parseExportArgs } from "../export/html/args";
+import { runPeerListCommand, runPeerSendCommand } from "../cli/peers-cli";
 import { shareSession } from "../export/share";
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../modes/types";
@@ -21,6 +22,15 @@ import type { SlashCommandSpec } from "./types";
 
 import { cfgBrowserEnabled, cfgBrowserHeadless } from "../tools/browser/settings";
 import { cfgShareRedactSecrets, cfgShareServerUrl, cfgShareStore } from "../commands/settings";
+
+function parsePeersSend(rest: string): { target: string; text: string } | null {
+	const trimmed = rest.trim();
+	const split = trimmed.search(/\s/);
+	if (split <= 0) return null;
+	const target = trimmed.slice(0, split);
+	const text = trimmed.slice(split).trim();
+	return text ? { target, text } : null;
+}
 
 /** Join hint printed by /collab: compact terminal link + clickable browser deep link. */
 function collabLinkHint(host: CollabHost, heading: string, view = false): string {
@@ -410,6 +420,86 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 			let heading = existing ? "Collab session restarted with control access" : "Collab session started!";
 			if (host === existing) heading = view ? "Read-only collab session active" : "Collab session active";
 			showCollabLink(ctx, host, heading, view);
+		},
+	},
+	{
+		name: "peers",
+		icon: "broadcast",
+		description: "List and message local OMP peer sessions",
+		inlineHint: "list|send <target> <text>",
+		subcommands: [
+			{ name: "list", description: "List active local peer sessions" },
+			{ name: "send", description: "Send a message to a peer session" },
+		],
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const { verb, rest } = parseSubcommand(command.args);
+			if (!verb || verb === "list") {
+				const lines: string[] = [];
+				await runPeerListCommand({ json: false }, line => lines.push(line));
+				await runtime.output(lines.join("\n"));
+				return commandConsumed();
+			}
+			if (verb === "send") {
+				const parsed = parsePeersSend(rest);
+				if (!parsed) return usage("Usage: /peers send <target> <text>", runtime);
+				const lines: string[] = [];
+				const errors: string[] = [];
+				await runPeerSendCommand(
+					{
+						target: parsed.target,
+						text: parsed.text,
+						from: {
+							kind: "session",
+							sessionId: runtime.sessionManager.getSessionId(),
+							cwd: runtime.sessionManager.getCwd(),
+						},
+						json: false,
+					},
+					line => lines.push(line),
+					line => errors.push(line),
+				);
+				await runtime.output([...lines, ...errors].join("\n"));
+				return commandConsumed();
+			}
+			return usage("Usage: /peers [list|send <target> <text>]", runtime);
+		},
+		handleTui: async (command, runtime) => {
+			const { verb, rest } = parseSubcommand(command.args);
+			const ctx = runtime.ctx;
+			ctx.editor.setText("");
+			if (!verb || verb === "list") {
+				const lines: string[] = [];
+				await runPeerListCommand({ json: false }, line => lines.push(line));
+				ctx.showStatus(lines.join("\n"));
+				return;
+			}
+			if (verb === "send") {
+				const parsed = parsePeersSend(rest);
+				if (!parsed) {
+					ctx.showStatus("Usage: /peers send <target> <text>");
+					return;
+				}
+				const lines: string[] = [];
+				const errors: string[] = [];
+				await runPeerSendCommand(
+					{
+						target: parsed.target,
+						text: parsed.text,
+						from: {
+							kind: "session",
+							sessionId: ctx.sessionManager.getSessionId(),
+							cwd: ctx.sessionManager.getCwd(),
+						},
+						json: false,
+					},
+					line => lines.push(line),
+					line => errors.push(line),
+				);
+				ctx.showStatus([...lines, ...errors].join("\n"));
+				return;
+			}
+			ctx.showStatus("Usage: /peers [list|send <target> <text>]");
 		},
 	},
 	{

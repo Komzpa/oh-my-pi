@@ -27,12 +27,15 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
 import { getBaseConfigRoot, isEnoent } from "@oh-my-pi/pi-utils";
+import type { IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools/irc";
+import type { IrcBus } from "../irc/bus";
+import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 
 /** Discovery metadata / IPC protocol version. Mixed omp versions fail safely. */
 export const COLLAB_REGISTRY_VERSION = 1;
 
-/** Reject request lines beyond this size; a valid request is <300 bytes. */
-const MAX_REQUEST_BYTES = 4 * 1024;
+/** Reject request lines beyond this size; peer messages carry up to 16 KiB plus envelope metadata. */
+const MAX_REQUEST_BYTES = 24 * 1024;
 /** Reject responses beyond this size. */
 const MAX_RESPONSE_BYTES = 64 * 1024;
 /**
@@ -47,6 +50,10 @@ const MAX_SNAPSHOT_FIELD_CHARS = 1024;
 const DEFAULT_QUERY_TIMEOUT_MS = 1_500;
 /** Concurrency bound for querying discovery entries. */
 const LIST_CONCURRENCY = 8;
+/** Maximum UTF-8 bytes in one peer message. */
+export const MAX_PEER_MESSAGE_BYTES = 16 * 1024;
+/** Minimum milliseconds between accepted messages from one sender to one publication. */
+const PEER_RATE_LIMIT_MS = 1_000;
 
 /** Access a link grants: `view` (bare room key) or `control` (room key + write token). */
 export type CollabAccess = "view" | "control";
@@ -101,6 +108,99 @@ export interface CollabHostRegistrySource {
 	snapshot(): CollabHostSnapshot;
 	/** Browser URL for `access`, or `null` when that access is not published. */
 	link(access: CollabAccess): string | null;
+}
+
+export interface PeerAgentSnapshot {
+	id: string;
+	displayName: string;
+	status: string;
+	kind: string;
+}
+
+export interface PeerSessionSnapshot {
+	/** Random per-publication identity; prefix-addressable by senders. */
+	instanceId: string;
+	/** Increments when a session publication rotates. */
+	generation: number;
+	/** Host process ID. */
+	pid: number;
+	/** Session ID of the target top-level conversation. */
+	sessionId: string;
+	/** Human-readable session title, when one is set. */
+	sessionName: string | null;
+	/** Host working directory. */
+	cwd: string;
+	/** Registry id of the main agent in this process. */
+	mainAgentId: string;
+	/** Epoch milliseconds when this peer publication started. */
+	startedAt: number;
+	/** Whether the main agent is currently running a turn, when known. */
+	busy: boolean | null;
+	/** Messageable agents in this process; no transcript or tool capabilities. */
+	agents: PeerAgentSnapshot[];
+}
+
+export type PeerMessageSender = { kind: "shell" } | { kind: "session"; sessionId: string; cwd: string };
+
+export interface PeerDeliveryReceipt {
+	status: "delivered" | "queued" | "failed";
+	target: string;
+	agent: string;
+	outcome?: IrcDeliveryReceipt["outcome"];
+	reason?: string;
+}
+
+export interface PeerSessionPublication {
+	readonly endpoint: string;
+	readonly instanceId: string;
+	close(): Promise<void>;
+}
+
+export interface PeerSessionPublishOptions extends CollabRegistryOptions {
+	sessionId: string;
+	cwd: string | (() => string);
+	title?: () => string | null;
+	mainAgentId?: string;
+	registry: AgentRegistry;
+	irc: IrcBus;
+	socketFallbackBase?: string;
+	isBusy?: () => boolean | null;
+}
+
+export interface PeerSendOptions {
+	registry?: PeerSessionOptions;
+	from: PeerMessageSender;
+	target: string;
+	text: string;
+	agent?: string;
+}
+
+export interface PeerSessionOptions extends CollabListOptions {}
+
+/** Stable failure codes for local peer-session discovery and messaging. */
+export type PeerSessionErrorCode =
+	| "not_found"
+	| "ambiguous"
+	| "stale_generation"
+	| "unavailable"
+	| "invalid_message"
+	| "invalid_sender"
+	| "rate_limited";
+
+export class PeerSessionError extends Error {
+	readonly code: PeerSessionErrorCode;
+	readonly candidates: PeerSessionSnapshot[];
+	constructor(code: PeerSessionErrorCode, message: string, candidates: PeerSessionSnapshot[] = []) {
+		super(message);
+		this.name = "PeerSessionError";
+		this.code = code;
+		this.candidates = candidates;
+	}
+}
+
+interface PeerSessionRegistrySource {
+	snapshot(): PeerSessionSnapshot;
+	deliver(request: { from: PeerMessageSender; text: string; agent?: string }): Promise<PeerDeliveryReceipt>;
 }
 
 /** One resolved capability returned by {@link resolveCollabHostLink}. */
@@ -165,6 +265,11 @@ export class CollabLinkError extends Error {
  */
 export function collabHostsRuntimeDir(): string {
 	return path.join(getBaseConfigRoot(), "run", "collab-hosts");
+}
+
+export function peerSessionsRuntimeDir(): string {
+	if (Bun.env.OMP_PEER_SESSIONS_DIR) return Bun.env.OMP_PEER_SESSIONS_DIR;
+	return path.join(getBaseConfigRoot(), "run", "peer-sessions");
 }
 
 interface DiscoveryMetadata {
@@ -259,6 +364,81 @@ function parseSnapshot(raw: unknown): CollabHostSnapshot | null {
 	};
 }
 
+function parsePeerMessageSender(raw: unknown): PeerMessageSender | null {
+	if (typeof raw !== "object" || raw === null) return null;
+	const sender = raw as Record<string, unknown>;
+	if (sender.kind === "shell") return { kind: "shell" };
+	if (sender.kind !== "session") return null;
+	if (typeof sender.sessionId !== "string" || sender.sessionId.trim().length === 0) return null;
+	if (typeof sender.cwd !== "string" || sender.cwd.trim().length === 0) return null;
+	return { kind: "session", sessionId: boundField(sender.sessionId), cwd: boundField(sender.cwd) };
+}
+
+function peerSenderLabel(sender: PeerMessageSender): string {
+	return sender.kind === "shell" ? "shell" : `peer:${sender.sessionId}`;
+}
+
+function peerSenderNotice(sender: PeerMessageSender): string {
+	return sender.kind === "shell" ? "from shell" : `from session ${sender.sessionId} cwd ${sender.cwd}`;
+}
+
+function resolvePeerCwd(cwd: string | (() => string)): string {
+	return typeof cwd === "string" ? cwd : cwd();
+}
+
+function validPeerMessage(text: string): boolean {
+	if (text.trim().length === 0 || Buffer.byteLength(text, "utf8") > MAX_PEER_MESSAGE_BYTES) return false;
+	for (const char of text) {
+		const code = char.codePointAt(0);
+		if (code === undefined || (code < 32 && code !== 9 && code !== 10 && code !== 13) || code === 127) return false;
+	}
+	return true;
+}
+
+function parsePeerAgent(raw: unknown): PeerAgentSnapshot | null {
+	if (typeof raw !== "object" || raw === null) return null;
+	const agent = raw as Record<string, unknown>;
+	if (typeof agent.id !== "string" || agent.id.length === 0) return null;
+	if (typeof agent.displayName !== "string") return null;
+	if (typeof agent.status !== "string") return null;
+	if (typeof agent.kind !== "string") return null;
+	return {
+		id: boundField(agent.id),
+		displayName: boundField(agent.displayName),
+		status: boundField(agent.status),
+		kind: boundField(agent.kind),
+	};
+}
+
+function parsePeerSnapshot(raw: unknown): PeerSessionSnapshot | null {
+	if (typeof raw !== "object" || raw === null) return null;
+	const peer = raw as Record<string, unknown>;
+	if (typeof peer.instanceId !== "string" || !INSTANCE_ID_PATTERN.test(peer.instanceId)) return null;
+	if (typeof peer.generation !== "number" || !Number.isInteger(peer.generation) || peer.generation < 1) return null;
+	if (typeof peer.pid !== "number" || !Number.isInteger(peer.pid) || peer.pid <= 0) return null;
+	if (typeof peer.sessionId !== "string" || peer.sessionId.length === 0) return null;
+	if (peer.sessionName !== null && typeof peer.sessionName !== "string") return null;
+	if (typeof peer.cwd !== "string" || peer.cwd.length === 0) return null;
+	if (typeof peer.mainAgentId !== "string" || peer.mainAgentId.length === 0) return null;
+	if (typeof peer.startedAt !== "number") return null;
+	if (peer.busy !== null && typeof peer.busy !== "boolean") return null;
+	if (!Array.isArray(peer.agents)) return null;
+	const agents = peer.agents.map(parsePeerAgent);
+	if (agents.some(agent => agent === null)) return null;
+	return {
+		instanceId: peer.instanceId,
+		generation: peer.generation,
+		pid: peer.pid,
+		sessionId: boundField(peer.sessionId),
+		sessionName: peer.sessionName === null ? null : boundField(peer.sessionName),
+		cwd: boundField(peer.cwd),
+		mainAgentId: boundField(peer.mainAgentId),
+		startedAt: peer.startedAt,
+		busy: typeof peer.busy === "boolean" ? peer.busy : null,
+		agents: agents as PeerAgentSnapshot[],
+	};
+}
+
 function boundField(value: string): string {
 	return value.length > MAX_SNAPSHOT_FIELD_CHARS ? value.slice(0, MAX_SNAPSHOT_FIELD_CHARS) : value;
 }
@@ -276,8 +456,28 @@ function boundSnapshot(snapshot: CollabHostSnapshot): CollabHostSnapshot {
 	};
 }
 
+function boundPeerSnapshot(snapshot: PeerSessionSnapshot): PeerSessionSnapshot {
+	return {
+		...snapshot,
+		sessionId: boundField(snapshot.sessionId),
+		sessionName: snapshot.sessionName === null ? null : boundField(snapshot.sessionName),
+		cwd: boundField(snapshot.cwd),
+		mainAgentId: boundField(snapshot.mainAgentId),
+		agents: snapshot.agents.map(agent => ({
+			id: boundField(agent.id),
+			displayName: boundField(agent.displayName),
+			status: boundField(agent.status),
+			kind: boundField(agent.kind),
+		})),
+	};
+}
+
 /** One request per connection: authenticate, dispatch the op, respond, close. */
-function handleConnection(socket: net.Socket, token: string, source: CollabHostRegistrySource): void {
+function handleConnection(
+	socket: net.Socket,
+	token: string,
+	source: CollabHostRegistrySource | PeerSessionRegistrySource,
+): void {
 	let buffer = "";
 	let handled = false;
 	const respond = (payload: object): void => {
@@ -308,13 +508,56 @@ function handleConnection(socket: net.Socket, token: string, source: CollabHostR
 			fail("malformed_request");
 			return;
 		}
-		const { v, token: presented, op, access, generation } = request as Record<string, unknown>;
-		if (v !== COLLAB_REGISTRY_VERSION) {
+		const fields = request as Record<string, unknown>;
+		if (fields.v !== COLLAB_REGISTRY_VERSION) {
 			fail("unsupported_protocol");
 			return;
 		}
-		if (!tokenMatches(token, presented)) {
+		if (!tokenMatches(token, fields.token)) {
 			fail("authentication_failed");
+			return;
+		}
+		if ("deliver" in source) {
+			let snapshot: PeerSessionSnapshot;
+			try {
+				snapshot = source.snapshot();
+			} catch {
+				fail("snapshot_unavailable");
+				return;
+			}
+			if (fields.op === "snapshot") {
+				respond({ ok: true, v: COLLAB_REGISTRY_VERSION, snapshot: boundPeerSnapshot(snapshot) });
+				return;
+			}
+			if (fields.op !== "send") {
+				fail("invalid_operation");
+				return;
+			}
+			if (fields.instanceId !== snapshot.instanceId || fields.generation !== snapshot.generation) {
+				fail("stale_generation");
+				return;
+			}
+			const from = parsePeerMessageSender(fields.from);
+			if (!from) {
+				fail("invalid_sender");
+				return;
+			}
+			if (typeof fields.text !== "string" || !validPeerMessage(fields.text)) {
+				fail("invalid_message");
+				return;
+			}
+			if (fields.agent !== undefined && typeof fields.agent !== "string") {
+				fail("invalid_agent");
+				return;
+			}
+			source
+				.deliver({
+					from,
+					text: fields.text,
+					...(typeof fields.agent === "string" ? { agent: fields.agent } : {}),
+				})
+				.then(receipt => respond({ ok: true, v: COLLAB_REGISTRY_VERSION, receipt }))
+				.catch(error => fail(error instanceof PeerSessionError ? error.code : "unavailable"));
 			return;
 		}
 		let snapshot: CollabHostSnapshot;
@@ -325,31 +568,31 @@ function handleConnection(socket: net.Socket, token: string, source: CollabHostR
 			fail("snapshot_unavailable");
 			return;
 		}
-		if (op === "snapshot") {
+		if (fields.op === "snapshot") {
 			respond({ ok: true, v: COLLAB_REGISTRY_VERSION, snapshot: boundSnapshot(snapshot) });
 			return;
 		}
-		if (op !== "link") {
+		if (fields.op !== "link") {
 			fail("invalid_operation");
 			return;
 		}
-		if (!isAccess(access)) {
+		if (!isAccess(fields.access)) {
 			fail("invalid_access");
 			return;
 		}
 		// A capability is bound to the exact generation the caller listed: a room
 		// that rotated underneath a stale card must not hand out its successor.
-		if (generation !== snapshot.generation) {
+		if (fields.generation !== snapshot.generation) {
 			fail("stale_generation");
 			return;
 		}
-		if (access === "control" && snapshot.access !== "control") {
+		if (fields.access === "control" && snapshot.access !== "control") {
 			fail("access_unavailable");
 			return;
 		}
 		let url: string | null;
 		try {
-			url = source.link(access);
+			url = source.link(fields.access);
 		} catch {
 			fail("snapshot_unavailable");
 			return;
@@ -436,11 +679,12 @@ async function resolveSocketEndpoint(dir: string, entryId: string, fallbackBase:
  * exit hook removes the on-disk state for normal shutdown, and the OS closing
  * the endpoint covers crashes.
  */
-export async function publishCollabHost(
-	source: CollabHostRegistrySource,
-	options?: CollabPublishOptions,
+async function publishRegistrySource(
+	source: CollabHostRegistrySource | PeerSessionRegistrySource,
+	options: CollabPublishOptions | undefined,
+	defaultDir: string,
 ): Promise<CollabHostPublication> {
-	const dir = options?.dir ?? collabHostsRuntimeDir();
+	const dir = options?.dir ?? defaultDir;
 	await ensurePrivateDir(dir);
 
 	const instanceId = options?.instanceId ?? crypto.randomBytes(8).toString("hex");
@@ -529,6 +773,75 @@ export async function publishCollabHost(
 	};
 }
 
+export function publishCollabHost(
+	source: CollabHostRegistrySource,
+	options?: CollabPublishOptions,
+): Promise<CollabHostPublication> {
+	return publishRegistrySource(source, options, collabHostsRuntimeDir());
+}
+
+export async function publishPeerSession(options: PeerSessionPublishOptions): Promise<PeerSessionPublication> {
+	const instanceId = crypto.randomBytes(8).toString("hex");
+	const startedAt = Date.now();
+	const mainAgentId = options.mainAgentId ?? MAIN_AGENT_ID;
+	const lastAcceptedBySender = new Map<string, number>();
+	const source: PeerSessionRegistrySource = {
+		snapshot: () => {
+			const refs = options.registry.list();
+			return {
+				instanceId,
+				generation: 1,
+				pid: process.pid,
+				sessionId: options.sessionId,
+				sessionName: options.title?.() ?? null,
+				cwd: resolvePeerCwd(options.cwd),
+				mainAgentId,
+				startedAt,
+				busy: options.isBusy?.() ?? null,
+				agents: refs
+					.filter(ref => ref.kind !== "advisor" && ref.session !== null && ref.status !== "aborted")
+					.map(ref => ({
+						id: ref.id,
+						displayName: ref.displayName,
+						status: ref.status,
+						kind: ref.kind,
+					})),
+			};
+		},
+		deliver: async request => {
+			const now = Date.now();
+			const sender = peerSenderLabel(request.from);
+			const last = lastAcceptedBySender.get(sender);
+			if (last !== undefined && now - last < PEER_RATE_LIMIT_MS) {
+				throw new PeerSessionError("rate_limited", "peer message rate limit exceeded");
+			}
+			const to = request.agent ?? mainAgentId;
+			const body = `${request.text}\n\n[${peerSenderNotice(request.from)}]`;
+			const receipt = await options.irc.send({ from: sender, to, body });
+			if (receipt.outcome === "failed") {
+				return {
+					status: "failed",
+					target: instanceId,
+					agent: to,
+					reason: receipt.error ?? "delivery failed",
+				};
+			}
+			lastAcceptedBySender.set(sender, now);
+			return { status: "delivered", target: instanceId, agent: to, outcome: receipt.outcome };
+		},
+	};
+	const pub = await publishRegistrySource(
+		source,
+		{ dir: options.dir, socketFallbackBase: options.socketFallbackBase, instanceId },
+		peerSessionsRuntimeDir(),
+	);
+	return {
+		endpoint: pub.endpoint,
+		instanceId,
+		close: () => pub.close(),
+	};
+}
+
 type QueryResult<T> = { status: "ok"; value: T } | { status: "dead" } | { status: "skip"; error?: string };
 
 /** Query one endpoint: connect, authenticate, send one request, read one bounded response line. */
@@ -585,10 +898,14 @@ function query(meta: DiscoveryMetadata, request: object, timeoutMs: number): Pro
 	return promise;
 }
 
-async function querySnapshot(meta: DiscoveryMetadata, timeoutMs: number): Promise<QueryResult<CollabHostSnapshot>> {
+async function querySnapshot<T>(
+	meta: DiscoveryMetadata,
+	timeoutMs: number,
+	parse: (raw: unknown) => T | null,
+): Promise<QueryResult<T>> {
 	const result = await query(meta, { op: "snapshot" }, timeoutMs);
 	if (result.status !== "ok") return result;
-	const snapshot = parseSnapshot((result.value as Record<string, unknown>).snapshot);
+	const snapshot = parse((result.value as Record<string, unknown>).snapshot);
 	return snapshot ? { status: "ok", value: snapshot } : { status: "skip" };
 }
 
@@ -622,12 +939,17 @@ async function pruneEntry(dir: string, name: string, meta: DiscoveryMetadata | n
 	}
 }
 
-interface LiveEntry {
+interface LiveEntry<T> {
 	meta: DiscoveryMetadata;
-	snapshot: CollabHostSnapshot;
+	snapshot: T;
 }
 
-async function listEntry(dir: string, name: string, timeoutMs: number): Promise<LiveEntry | null> {
+async function listEntry<T>(
+	dir: string,
+	name: string,
+	timeoutMs: number,
+	parse: (raw: unknown) => T | null,
+): Promise<LiveEntry<T> | null> {
 	let text: string;
 	try {
 		text = await Bun.file(path.join(dir, name)).text();
@@ -646,14 +968,18 @@ async function listEntry(dir: string, name: string, timeoutMs: number): Promise<
 		if (!pidAlive(meta.pid)) await pruneEntry(dir, name, meta);
 		return null;
 	}
-	const result = await querySnapshot(meta, timeoutMs);
+	const result = await querySnapshot(meta, timeoutMs, parse);
 	if (result.status === "ok") return { meta, snapshot: result.value };
 	if (result.status === "dead") await pruneEntry(dir, name, meta);
 	return null;
 }
 
-async function listLiveEntries(options?: CollabListOptions): Promise<LiveEntry[]> {
-	const dir = options?.dir ?? collabHostsRuntimeDir();
+async function listLiveEntries<T extends { startedAt: number; pid: number; instanceId: string }>(
+	options: CollabListOptions | undefined,
+	defaultDir: string,
+	parse: (raw: unknown) => T | null,
+): Promise<LiveEntry<T>[]> {
+	const dir = options?.dir ?? defaultDir;
 	const timeoutMs = options?.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS;
 	let names: string[];
 	try {
@@ -664,13 +990,13 @@ async function listLiveEntries(options?: CollabListOptions): Promise<LiveEntry[]
 		throw err;
 	}
 	const entries = names.filter(name => name.endsWith(".json")).sort();
-	const live: LiveEntry[] = [];
+	const live: LiveEntry<T>[] = [];
 	// Bounded worker pool: LIST_CONCURRENCY entries in flight at once.
 	let next = 0;
 	const worker = async (): Promise<void> => {
 		while (next < entries.length) {
 			const name = entries[next++];
-			const entry = await listEntry(dir, name, timeoutMs);
+			const entry = await listEntry(dir, name, timeoutMs, parse);
 			if (entry) live.push(entry);
 		}
 	};
@@ -694,7 +1020,108 @@ async function listLiveEntries(options?: CollabListOptions): Promise<LiveEntry[]
  * entries are omitted without failing the listing. The result carries no URLs.
  */
 export async function listCollabHosts(options?: CollabListOptions): Promise<CollabHostSnapshot[]> {
-	return (await listLiveEntries(options)).map(entry => entry.snapshot);
+	return (await listLiveEntries(options, collabHostsRuntimeDir(), parseSnapshot)).map(entry => entry.snapshot);
+}
+
+export async function listPeerSessions(options?: PeerSessionOptions): Promise<PeerSessionSnapshot[]> {
+	return (await listLiveEntries(options, peerSessionsRuntimeDir(), parsePeerSnapshot)).map(entry => entry.snapshot);
+}
+
+function peerCandidatesText(candidates: PeerSessionSnapshot[]): string {
+	return candidates.map(peer => `${peer.instanceId} ${peer.sessionName ?? peer.sessionId} ${peer.cwd}`).join("; ");
+}
+
+export async function resolvePeerSession(selector: string, options?: PeerSessionOptions): Promise<PeerSessionSnapshot> {
+	const wanted = selector.trim();
+	if (!wanted) throw new PeerSessionError("not_found", "peer target is required");
+	const peers = await listPeerSessions(options);
+	const lower = wanted.toLowerCase();
+	const exact = peers.filter(
+		peer =>
+			peer.instanceId === wanted || peer.sessionId === wanted || path.resolve(peer.cwd) === path.resolve(wanted),
+	);
+	if (exact.length === 1) return exact[0]!;
+	if (exact.length > 1) {
+		throw new PeerSessionError(
+			"ambiguous",
+			`${wanted} matches multiple peer sessions: ${peerCandidatesText(exact)}`,
+			exact,
+		);
+	}
+	const matches = peers.filter(peer => {
+		const title = peer.sessionName?.toLowerCase() ?? "";
+		return (
+			peer.instanceId.startsWith(wanted) ||
+			peer.sessionId.startsWith(wanted) ||
+			peer.cwd.toLowerCase().includes(lower) ||
+			title.includes(lower)
+		);
+	});
+	if (matches.length === 1) return matches[0]!;
+	if (matches.length > 1) {
+		throw new PeerSessionError(
+			"ambiguous",
+			`${wanted} matches multiple peer sessions: ${peerCandidatesText(matches)}`,
+			matches,
+		);
+	}
+	throw new PeerSessionError("not_found", `no active peer session matches ${wanted}`);
+}
+
+function parsePeerReceipt(raw: unknown): PeerDeliveryReceipt | null {
+	if (typeof raw !== "object" || raw === null) return null;
+	const receipt = raw as Record<string, unknown>;
+	if (receipt.status !== "delivered" && receipt.status !== "queued" && receipt.status !== "failed") return null;
+	if (typeof receipt.target !== "string" || typeof receipt.agent !== "string") return null;
+	if (receipt.outcome !== undefined && typeof receipt.outcome !== "string") return null;
+	if (receipt.reason !== undefined && typeof receipt.reason !== "string") return null;
+	return {
+		status: receipt.status,
+		target: receipt.target,
+		agent: receipt.agent,
+		...(typeof receipt.outcome === "string" ? { outcome: receipt.outcome as IrcDeliveryReceipt["outcome"] } : {}),
+		...(typeof receipt.reason === "string" ? { reason: receipt.reason } : {}),
+	};
+}
+
+export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDeliveryReceipt> {
+	const text = options.text;
+	if (!validPeerMessage(text)) {
+		throw new PeerSessionError("invalid_message", "peer messages must be non-empty plain text of at most 16 KiB");
+	}
+	const live = await listLiveEntries(options.registry, peerSessionsRuntimeDir(), parsePeerSnapshot);
+	const snapshot = await resolvePeerSession(options.target, options.registry);
+	const entry = live.find(item => item.snapshot.instanceId === snapshot.instanceId);
+	if (!entry) throw new PeerSessionError("not_found", `target peer session is no longer active`);
+	const result = await query(
+		entry.meta,
+		{
+			op: "send",
+			instanceId: snapshot.instanceId,
+			generation: snapshot.generation,
+			from: options.from,
+			text,
+			...(options.agent ? { agent: options.agent } : {}),
+		},
+		options.registry?.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS,
+	);
+	if (result.status === "ok") {
+		const receipt = parsePeerReceipt((result.value as Record<string, unknown>).receipt);
+		if (receipt) return receipt;
+		throw new PeerSessionError("unavailable", `target peer session returned an invalid receipt`);
+	}
+	if (result.status === "skip") {
+		const code = result.error;
+		if (
+			code === "stale_generation" ||
+			code === "invalid_message" ||
+			code === "invalid_sender" ||
+			code === "rate_limited"
+		) {
+			throw new PeerSessionError(code, `peer delivery rejected: ${code}`);
+		}
+	}
+	throw new PeerSessionError("unavailable", `target peer session did not answer the send request`);
 }
 
 /**
@@ -709,7 +1136,7 @@ export async function resolveCollabHostLink(
 	options?: CollabListOptions,
 ): Promise<CollabResolvedLink> {
 	const wanted = selector.trim();
-	const live = await listLiveEntries(options);
+	const live = await listLiveEntries(options, collabHostsRuntimeDir(), parseSnapshot);
 	let matches = live.filter(entry => entry.snapshot.instanceId === wanted);
 	if (matches.length === 0 && /^[1-9][0-9]*$/.test(wanted)) {
 		const pid = Number(wanted);
@@ -748,7 +1175,7 @@ export async function resolveCollabHostLink(
 		// Every room generation has its own endpoint, so a host that rotated
 		// since the listing is simply gone from this one rather than answering
 		// `stale_generation` itself. Look the instance up again before giving up.
-		const rotated = (await listLiveEntries(options)).some(
+		const rotated = (await listLiveEntries(options, collabHostsRuntimeDir(), parseSnapshot)).some(
 			entry => entry.snapshot.instanceId === snapshot.instanceId && entry.snapshot.generation > snapshot.generation,
 		);
 		if (rotated) {
