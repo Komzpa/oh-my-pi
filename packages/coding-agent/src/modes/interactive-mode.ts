@@ -1059,6 +1059,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	#todoPhasesOwner?: AgentSession;
 	#todoForecast: TodoPlanForecast | undefined;
 	#todoForecastRowsByContent = new Map<string, TodoTaskForecast>();
+	#todoForecastCacheKey:
+		| { phases: TodoPhase[]; deadlineAt: number | undefined; capacity: number; minuteBucket: number }
+		| undefined;
 	#todoHudHidden = false;
 	hideThinkingBlock = false;
 	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
@@ -3619,14 +3622,17 @@ export class InteractiveMode implements InteractiveModeContext {
 				: this.#observerRegistry.getSessions().filter(isHudSubagent);
 		if (this.#todoHudHidden) {
 			this.#todoForecast = undefined;
+			this.#todoForecastCacheKey = undefined;
 			this.#todoForecastRowsByContent.clear();
 			this.#syncTodoForecastRefreshTimer(false);
 			if (running.length === 0) return;
 		}
-		const phases = this.#todoHudHidden ? [] : this.todoPhases.filter(phase => phase.tasks.length > 0);
+		const sourcePhases = this.todoPhases;
+		const phases = this.#todoHudHidden ? [] : sourcePhases.filter(phase => phase.tasks.length > 0);
 		const workers = linkTodoWorkers(phases, running);
 		if (phases.length === 0) {
 			this.#todoForecast = undefined;
+			this.#todoForecastCacheKey = undefined;
 			this.#todoForecastRowsByContent.clear();
 			this.#syncTodoForecastRefreshTimer(false);
 			if (workers.unassigned.length === 0) return;
@@ -3646,11 +3652,26 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 		const deadlineAt = deadline?.deadlineAt;
 		const hasScheduleData = deadlineAt !== undefined || phases.some(phase => phase.tasks.some(task => task.schedule));
-		this.#todoForecast = hasScheduleData
-			? forecastTodoPlan(phases, { now, capacity: cfgTaskMaxConcurrency.get(owner.settings), deadlineAt })
-			: undefined;
-		this.#todoForecastRowsByContent.clear();
-		for (const row of this.#todoForecast?.rows ?? []) this.#todoForecastRowsByContent.set(row.content, row);
+		if (!hasScheduleData) {
+			this.#todoForecast = undefined;
+			this.#todoForecastCacheKey = undefined;
+			this.#todoForecastRowsByContent.clear();
+		} else {
+			const capacity = cfgTaskMaxConcurrency.get(owner.settings);
+			const minuteBucket = Math.floor(now / TODO_FORECAST_REFRESH_MS);
+			const cache = this.#todoForecastCacheKey;
+			const cacheHit =
+				cache?.phases === sourcePhases &&
+				cache.deadlineAt === deadlineAt &&
+				cache.capacity === capacity &&
+				cache.minuteBucket === minuteBucket;
+			if (!cacheHit) {
+				this.#todoForecast = forecastTodoPlan(phases, { now, capacity, deadlineAt });
+				this.#todoForecastCacheKey = { phases: sourcePhases, deadlineAt, capacity, minuteBucket };
+				this.#todoForecastRowsByContent.clear();
+				for (const row of this.#todoForecast.rows) this.#todoForecastRowsByContent.set(row.content, row);
+			}
+		}
 		this.#syncTodoForecastRefreshTimer(hasScheduleData);
 		const expanded = this.todoExpanded;
 		const multiPhase = phases.length > 1;

@@ -5,6 +5,7 @@ import {
 	type TodoPhase,
 	type TodoCompletionTransition,
 	type TodoToolDetails,
+	type TodoPersistedEdit,
 } from "@oh-my-pi/pi-tui/tools/todo";
 import {
 	forecastTodoPlan,
@@ -57,6 +58,13 @@ export function committedTodoPhases(result: AgentToolResult): TodoPhase[] | unde
 	const { op, phases } = result.details;
 	if (op === "view" || !Array.isArray(phases) || !phases.every(isTodoPhase)) return undefined;
 	return phases;
+}
+
+/** Compact todo edit carried by new persisted todo results/custom entries. */
+export function committedTodoEdit(result: AgentToolResult): TodoPersistedEdit | undefined {
+	if (result.isError || !isRecord(result.details)) return undefined;
+	const edit = result.details.edit;
+	return isTodoPersistedEdit(edit) ? edit : undefined;
 }
 
 // =============================================================================
@@ -255,17 +263,75 @@ function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
 	return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
 }
 
+function isTodoPersistedEdit(value: unknown): value is TodoPersistedEdit {
+	return (
+		isRecord(value) &&
+		value.v === 1 &&
+		value.kind === "op" &&
+		typeof value.at === "number" &&
+		Number.isFinite(value.at) &&
+		typeof value.op === "string" &&
+		value.params !== undefined
+	);
+}
+
+function compactTodoEditFromEntry(entry: SessionEntry): TodoPersistedEdit | undefined {
+	if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
+		const edit = (entry.data as { edit?: unknown } | undefined)?.edit;
+		return isTodoPersistedEdit(edit) ? edit : undefined;
+	}
+	if (entry.type !== "message") return undefined;
+	const message = entry.message as {
+		role?: string;
+		toolName?: string;
+		details?: { op?: unknown; edit?: unknown };
+		isError?: boolean;
+	};
+	if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) return undefined;
+	if (message.details?.op === "view") return undefined;
+	return isTodoPersistedEdit(message.details?.edit) ? message.details.edit : undefined;
+}
+
+type TodoReplayResult = { phases: TodoPhase[]; mutable: boolean };
+
+function replayTodoEdit(
+	phases: TodoPhase[] | undefined,
+	edit: TodoPersistedEdit,
+	options: { mutable?: boolean } = {},
+): TodoReplayResult | undefined {
+	if (!phases && edit.op !== "init") return undefined;
+	const current = phases ? (options.mutable ? phases : clonePhases(phases)) : [];
+	const resolved = resolveTodoParams(edit.params, current.length > 0);
+	if (typeof resolved === "string") return undefined;
+	if (resolved.op !== edit.op || resolved.op === "view") return undefined;
+	if (resolved.op === "schedule") {
+		const errors: string[] = [];
+		const next = applyEntry(current, resolved, errors, edit.at);
+		if (errors.length > 0) return undefined;
+		return { phases: next, mutable: true };
+	}
+	const applied = applyParams(current, resolved, edit.at);
+	if (applied.errors.length > 0) return undefined;
+	return { phases: applied.phases, mutable: true };
+}
+
 /** Identify the latest durable canonical todo snapshot on the active branch. */
 export function getLatestTodoSnapshotIdentity(entries: SessionEntry[]): TodoSnapshotIdentity | undefined {
 	let latest: TodoPhase[] | undefined;
+	let mutable = false;
 	let sourceEntryId: string | undefined;
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const phases = canonicalTodoPhases(entries[i]);
-		if (phases) {
-			latest = phases;
-			sourceEntryId = entries[i].id;
-			break;
-		}
+	for (const entry of entries) {
+		const phases = canonicalTodoPhases(entry);
+		const edit = phases ? undefined : compactTodoEditFromEntry(entry);
+		const replayed: TodoReplayResult | undefined = phases
+			? { phases, mutable: false }
+			: edit
+				? replayTodoEdit(latest, edit, { mutable })
+				: undefined;
+		if (!replayed) continue;
+		latest = replayed.phases;
+		mutable = replayed.mutable;
+		sourceEntryId = entry.id;
 	}
 	if (!latest || !sourceEntryId) return undefined;
 	return { sourceEntryId, fingerprint: todoPhasesFingerprint(latest) };
@@ -318,11 +384,22 @@ export function createTodoHudStateData(
 
 export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPhase[] {
 	let latest: TodoPhase[] | undefined;
+	let mutable = false;
 	const completionTimes = new Map<string, number>();
 	for (const entry of entries) {
 		const phases = canonicalTodoPhases(entry);
+		const edit = phases ? undefined : compactTodoEditFromEntry(entry);
+		const replayed: TodoReplayResult | undefined = phases
+			? { phases, mutable: false }
+			: edit
+				? replayTodoEdit(latest, edit, { mutable })
+				: undefined;
+		if (!replayed) continue;
+		latest = replayed.phases;
+		mutable = replayed.mutable;
 		if (!phases) continue;
 		latest = phases;
+		mutable = false;
 		const completedTasks = new Set<string>();
 		for (const phase of phases) {
 			for (const task of phase.tasks) {
@@ -1247,6 +1324,20 @@ function formatMutationSummary(
 	return lines.join("\n");
 }
 
+function buildPersistedTodoEdit(op: TodoOperation, params: TodoOpEntryValue, at: number): TodoPersistedEdit {
+	return { v: 1, kind: "op", at, op, params: structuredClone(params) };
+}
+
+function attachLiveTodoDetails(
+	details: TodoToolDetails,
+	phases: TodoPhase[],
+	forecast: TodoPlanForecast,
+): TodoToolDetails {
+	Object.defineProperty(details, "phases", { value: phases, enumerable: false, configurable: true });
+	Object.defineProperty(details, "forecast", { value: forecast, enumerable: false, configurable: true });
+	return details;
+}
+
 // =============================================================================
 // Tool Class
 // =============================================================================
@@ -1309,7 +1400,16 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			capacity: cfgTaskMaxConcurrency.get(this.session.settings),
 			...(deadline === undefined ? {} : { deadlineAt: deadline.deadlineAt }),
 		});
-		const details: TodoToolDetails = { op, phases: effective, storage, forecastAt: now, forecast };
+		const details = attachLiveTodoDetails(
+			{
+				op,
+				storage,
+				forecastAt: now,
+				...(!readOnly && !failed ? { edit: buildPersistedTodoEdit(op, entry, now) } : {}),
+			} as TodoToolDetails,
+			effective,
+			forecast,
+		);
 		if (deadline) details.deadlineAt = deadline.deadlineAt;
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 

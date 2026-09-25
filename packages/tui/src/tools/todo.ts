@@ -66,10 +66,21 @@ export interface TodoCompletionTransition {
 	content: string;
 }
 
+/** Compact durable todo mutation. Full snapshots before this shape remain readable. */
+export interface TodoPersistedEdit {
+	v: 1;
+	kind: "op";
+	at: number;
+	op: TodoOperation;
+	params: unknown;
+}
+
 /** Todo snapshot and transitions displayed after an operation. */
 export interface TodoToolDetails {
 	/** Operation that produced this snapshot; absent on legacy transcript entries. */
 	op?: TodoOperation;
+	/** Compact durable edit used to replay snapshots without persisting full phases each time. */
+	edit?: TodoPersistedEdit;
 	phases: TodoPhase[];
 	storage: "session" | "memory";
 	completedTasks?: TodoCompletionTransition[];
@@ -593,7 +604,8 @@ export const todoToolRenderer = {
 		const now = result.details?.forecastAt ?? Date.now();
 		const deadlineAt = result.details?.deadlineAt;
 		const hasForecast = deadlineAt !== undefined || allTasks.some(task => task.schedule !== undefined);
-		const forecast = hasForecast ? forecastTodoPlan(phases, { now, deadlineAt }) : undefined;
+		const forecast =
+			result.details?.forecast ?? (hasForecast ? forecastTodoPlan(phases, { now, deadlineAt }) : undefined);
 		const forecastByContent = new Map(forecast?.rows.map(row => [row.content, row]));
 		const operation = result.details?.op ?? args?.op;
 		const displayTasks = orderTodoTasksForDisplay(phases, forecast?.rows);
