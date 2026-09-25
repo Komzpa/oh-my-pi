@@ -12,6 +12,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { createRestartQueueController } from "@oh-my-pi/pi-coding-agent/task/restart-queue";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
 describe("AgentSession restart drain", () => {
@@ -183,5 +184,79 @@ describe("AgentSession restart drain", () => {
 		} finally {
 			lease.release();
 		}
+	});
+
+	it("does not rewrite restart checkpoints for unchanged timer continuations during a held drain", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const toolStarted = Promise.withResolvers<void>();
+		const finishTool = Promise.withResolvers<void>();
+		const blockingTool: AgentTool = {
+			name: "blocking_tool",
+			label: "Blocking Tool",
+			description: "Waits so restart drain remains held",
+			parameters: type({}),
+			execute: async () => {
+				toolStarted.resolve();
+				await finishTool.promise;
+				return { content: [{ type: "text", text: "effect finished" }] };
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [{ type: "toolCall", id: "restart-held-call", name: "blocking_tool", arguments: {} }],
+					stopReason: "toolUse",
+				},
+			],
+		});
+		const sessionManager = SessionManager.create(fixtureDir, fixtureDir);
+		session = new AgentSession({
+			agent: new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model, systemPrompt: ["Test"], tools: [blockingTool] },
+				streamFn: mock.stream,
+				convertToLlm,
+			}),
+			sessionManager,
+			settings: Settings.isolated(),
+			modelRegistry,
+		});
+		const originalPrompt = session.prompt("Run one side effect");
+		await toolStarted.promise;
+		const identity = { instanceId: "restart-drain-test", sessionId: sessionManager.getSessionId(), generation: 0 };
+		const controller = createRestartQueueController({
+			session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+
+		await controller.handle({ identity, op: "request", requestId: "held-restart" });
+		await session.promptCustomMessage({
+			customType: "goal-continuation",
+			content: "Continue active goal.",
+			display: false,
+			attribution: "agent",
+		});
+		await session.promptCustomMessage({
+			customType: "goal-continuation",
+			content: "Continue active goal.",
+			display: false,
+			attribution: "agent",
+		});
+
+		expect(
+			sessionManager
+				.getEntries()
+				.filter(entry => entry.type === "custom" && entry.customType === "omp:restart-pending-queues"),
+		).toHaveLength(1);
+		expect(
+			sessionManager
+				.getEntries()
+				.filter(entry => entry.type === "custom_message" && entry.customType === "restart-queued"),
+		).toHaveLength(0);
+
+		controller.dispose();
+		finishTool.resolve();
+		await originalPrompt.catch(() => {});
 	});
 });
