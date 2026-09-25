@@ -214,6 +214,7 @@ const TOOL_ROSTER_NOTICE_MESSAGE_TYPE = "tool-roster-notice";
 const XDEV_MOUNT_NOTICE_MESSAGE_TYPE = "xdev-mount-notice";
 const PLANNING_CONTROL_TOOLS: Record<string, true> = {
 	todo: true,
+	task: true,
 	ask: true,
 	hub: true,
 	think: true,
