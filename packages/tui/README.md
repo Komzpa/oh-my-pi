@@ -719,6 +719,13 @@ class CachedComponent implements Component {
 }
 ```
 
+For the production Composer → TranscriptContainer route, the 400-plan-row,
+100-subagent, 1,200-row retained-transcript virtual-terminal fixture must keep
+post-input terminal-frame p50 below 100 ms without changing output bytes.
+`test/transcript-container.test.ts` enforces this with 30 synchronous input-to-frame
+samples (input dispatch and `renderNow()` included; setup, startup, and editor
+reset excluded) and a pre-repair SHA-256 snapshot of the emitted frame.
+
 ## Example
 
 See `test/chat-simple.ts` for a complete chat interface example with:
