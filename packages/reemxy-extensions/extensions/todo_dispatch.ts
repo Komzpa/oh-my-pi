@@ -2,12 +2,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { availableParallelism } from "node:os";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
-import type {
-  TodoPlanForecast,
-  TodoPlanningIssue,
-  TodoScheduleInput,
-  TodoTaskForecast,
-} from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import type { TodoPlanForecast, TodoPlanningIssue, TodoScheduleInput, TodoTaskForecast } from "./todo-schedule";
+import * as forecastFallback from "./todo-schedule";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -1038,11 +1034,8 @@ export function decideTodoDispatch(
 export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   const host = pi.pi;
   const hostSdk = host as DispatchForecastApi | undefined;
-  // Legacy hosts already providing forecasts must not pull a second physical
-  // TUI package just because a newer optional planning API is absent.
-  const sourceFallback = !hostSdk?.forecastTodoPlan
-    ? await import("@oh-my-pi/pi-tui/tools/todo-schedule")
-    : undefined;
+  // The package carries this fallback for hosts whose extension SDK predates forecast exports.
+  const sourceFallback = hostSdk?.forecastTodoPlan ? undefined : forecastFallback;
   const sdk = {
     forecastTodoPlan: hostSdk?.forecastTodoPlan ?? sourceFallback!.forecastTodoPlan,
     formatPlanForecast: hostSdk?.formatPlanForecast ?? sourceFallback!.formatPlanForecast,
@@ -1053,9 +1046,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     getLatestTodoPhasesFromEntries: host.getLatestTodoPhasesFromEntries,
   };
   // The pause switch is host-owned. Never import a second module instance of its singleton.
-  // Legacy hosts can render advice, but cannot safely schedule autonomous wakes until upgraded.
   const pauseGate = host?.agentPauseGate;
+  // Legacy hosts can render advice, but cannot safely schedule autonomous wakes until upgraded.
   let cachedStatic: { key: string; text: string } | null = null;
+  let cachedDecision: { key: string; decision: DispatchDecision } | null = null;
   let lastWakeKey: string | null = null;
   let persistedChildren: PersistedChild[] = [];
   let sprintState: SprintState = blankSprintState();
@@ -1085,9 +1079,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   const reset = () => {
     clearIdleTimer();
     cachedStatic = null;
+    cachedDecision = null;
     lastWakeKey = null;
     dispatchGateBaseline = null;
-    taskCallBaselines.clear();
     pendingTaskReconciliation = null;
     pendingIdleResumeOwner = null;
     idleResumeAttempts.clear();
@@ -1229,12 +1223,16 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         ? taskMaxConcurrency
         : undefined;
     const jobs = ctx.getAsyncJobSnapshot();
+    const phases = sdk.getLatestTodoPhasesFromEntries(branch);
+    const restored = restoredChildren(persistedChildren, jobs);
+    const key = `${staticKey(phases, jobs, deadline, capacity, goalPaused, restored, persistedChildren)}:${Math.floor(now / 60_000)}`;
+    if (pending.length === 0 && cachedDecision?.key === key) return cachedDecision.decision;
     const decision = decideTodoDispatch(
       {
-        phases: sdk.getLatestTodoPhasesFromEntries(branch),
+        phases,
         jobs,
         persistedChildren,
-        restoredChildren: restoredChildren(persistedChildren, jobs),
+        restoredChildren: restored,
         isMainSession: header !== null && !header.parentSession,
         capacity,
         taskEnabled: pi.getActiveTools().includes("task"),
@@ -1248,10 +1246,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       },
       sdk,
     );
-    cachedStatic =
-      decision.key && decision.staticPrompt
-        ? { key: decision.key, text: decision.staticPrompt }
-        : null;
+    cachedStatic = decision.key && decision.staticPrompt ? { key: decision.key, text: decision.staticPrompt } : null;
+    if (pending.length === 0 && decision.key) cachedDecision = { key, decision };
     writeCurrentPlanSnapshot(ctx, decision, now);
     return decision;
   };
@@ -1302,9 +1298,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       return deps.length < prior.size && deps.every((dep) => prior.has(dep));
     });
   };
-  let lateWaitRefusals = 0;
   let lateWaitRefusalKey: string | null = null;
-  const MAX_LATE_WAIT_REFUSALS = 3;
   // The machine can run about one worker per CPU (capped by the Task limit when one is set). While
   // open rows sit idle and fewer workers run than that, the plan must find parallel work; only a
   // backlog beyond capacity may be postponed.
@@ -1349,16 +1343,13 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     // whether or not the deadline has slipped yet: rows chained behind the running work = replan.
     const parked = open.length - runningTasks.length;
     if (runningTasks.length === 0 || (ready.length === 0 && !understaffed(ctx, runningTasks.length, parked))) {
-      lateWaitRefusals = 0;
+      lateWaitRefusalKey = null;
       return;
     }
-    if (lateWaitRefusalKey !== decision.key) {
-      // A new plan revision earns a fresh check; an unchanged plan does not get to wait again.
-      lateWaitRefusalKey = decision.key;
-    } else if (lateWaitRefusals >= MAX_LATE_WAIT_REFUSALS) {
-      return;
-    }
-    lateWaitRefusals += 1;
+    // The first refusal records the lead's answer for this exact revision. Repeating it only burns
+    // CPU and turns an advisory gate into a 61-message loop; a changed revision earns one new answer.
+    if (lateWaitRefusalKey === decision.key) return;
+    lateWaitRefusalKey = decision.key;
     return {
       block: true,
       reason: [
