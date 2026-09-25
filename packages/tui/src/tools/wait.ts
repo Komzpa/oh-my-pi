@@ -23,7 +23,7 @@ import {
 	createCachedComponent,
 	type ConfiguredThinkingLevel,
 } from "../render/render-utils";
-import type { StructuredSubagentOutput } from "./task";
+import type { AgentProgress, StructuredSubagentOutput } from "./task";
 import type { RenderResultOptions, ToolRenderer, ToolActivitySummary } from "./renderer";
 import type { IrcDeliveryReceipt, IrcMessage } from "./irc";
 
@@ -61,6 +61,8 @@ export interface JobSnapshot {
 	/** Capture error in historical snapshots; new snapshots store source metadata in `meta`. */
 	artifactError?: OutputMeta["artifactError"];
 	structured?: StructuredSubagentOutput;
+	/** Live task progress retained while a task job is still running. */
+	progress?: AgentProgress[];
 	/**
 	 * `agent://<id>` handle backing this job's artifacts — the job-row's
 	 * registry `agentId` when the manager disambiguated a requested job id
@@ -134,6 +136,9 @@ const PREVIEW_LINES_EXPANDED = 4;
 const LABEL_LINES_COLLAPSED = 1;
 const LABEL_LINES_EXPANDED = 3;
 const PREVIEW_LINE_WIDTH = 80;
+const INLINE_STREAM_OUTPUT_COLLAPSED = 2;
+const INLINE_STREAM_OUTPUT_EXPANDED = 6;
+const INLINE_STREAM_LINE_WIDTH = 100;
 
 function statusToIcon(status: JobSnapshot["status"]): ToolUIStatus {
 	switch (status) {
@@ -183,6 +188,69 @@ function flattenStructuredPreview(text: string): string {
 	const first = text[0];
 	if (first !== "{" && first !== "[") return text;
 	return text.slice(0, PREVIEW_LINES_EXPANDED * PREVIEW_LINE_WIDTH * 2).replace(/\s+/g, " ");
+}
+
+function compactInlineText(text: string, width = INLINE_STREAM_LINE_WIDTH): string {
+	return truncateToWidth(replaceTabs(text).replace(/\s+/g, " ").trim(), width, Ellipsis.Unicode);
+}
+
+function progressForJob(job: JobSnapshot): AgentProgress | undefined {
+	if (job.type !== "task" || job.status !== "running") return undefined;
+	const progress = job.progress;
+	if (!progress || progress.length === 0) return undefined;
+	return progress.find(item => item.id === (job.agentUrlId ?? job.id) || item.id === job.id) ?? progress[0];
+}
+
+function renderSoleWorkerStream(
+	job: JobSnapshot,
+	progress: AgentProgress,
+	expanded: boolean,
+	uiTheme: Theme,
+	spinnerFrame: number | undefined,
+	rowWidth: number,
+): string[] {
+	const box = uiTheme.boxRound;
+	const rail = (glyph: string) => uiTheme.fg("accent", glyph);
+	const model = progress.resolvedModelIdentity ?? progress.resolvedModel;
+	const headerParts = [
+		uiTheme.fg("accent", compactInlineText(progress.id || job.id, 40)),
+		formatBadge(progress.agent, "accent", uiTheme),
+	];
+	if (model) headerParts.push(uiTheme.fg("muted", compactInlineText(model, 40)));
+	const lines = [`${rail(`${box.topLeft}${box.horizontal}`)} ${headerParts.join(" ")}`];
+	const body: string[] = [];
+	const lead = progress.description ?? progress.assignment ?? progress.task;
+	if (lead) body.push(`${uiTheme.fg("accent", ">")} ${uiTheme.fg("dim", compactInlineText(lead))}`);
+	if (progress.lastIntent) {
+		body.push(
+			`${uiTheme.fg("dim", uiTheme.tree.hook)} ${uiTheme.fg("toolOutput", compactInlineText(progress.lastIntent))}`,
+		);
+	}
+	if (progress.currentTool) {
+		const detail = progress.currentToolArgs;
+		const label = `${progress.currentTool}${detail ? `: ${detail}` : ""}`;
+		const rendered =
+			spinnerFrame !== undefined && shimmerEnabled()
+				? shimmerText(compactInlineText(label), uiTheme)
+				: uiTheme.fg("muted", compactInlineText(label));
+		body.push(`${uiTheme.fg("accent", uiTheme.tree.hook)} ${rendered}`);
+	} else if (progress.recentTools.length > 0) {
+		const recent = progress.recentTools[0]!;
+		const label = `${recent.tool}${recent.args ? `: ${recent.args}` : ""}`;
+		body.push(`${uiTheme.fg("dim", uiTheme.tree.hook)} ${uiTheme.fg("muted", compactInlineText(label))}`);
+	}
+	const outputCap = expanded ? INLINE_STREAM_OUTPUT_EXPANDED : INLINE_STREAM_OUTPUT_COLLAPSED;
+	const outputLines = [...progress.recentOutput]
+		.reverse()
+		.filter(line => line.trim().length > 0)
+		.slice(-outputCap);
+	for (const line of outputLines) {
+		body.push(`  ${uiTheme.fg("muted", compactInlineText(line))}`);
+	}
+	if (body.length === 0) body.push(uiTheme.fg("dim", "streaming…"));
+	for (const line of body) lines.push(`${rail(box.vertical)} ${line}`);
+	lines.push(rail(`${box.bottomLeft}${box.horizontal}`));
+	return lines.map(line => truncateToWidth(line, rowWidth, Ellipsis.Unicode));
 }
 
 /** Pending wait frame. */
@@ -443,11 +511,29 @@ function jobsRenderResult(
 							uiTheme,
 						);
 
+			const soleRunningTask =
+				sortedJobs.length === 1 && agents.length === 0 && sortedJobs[0]?.status === "running"
+					? sortedJobs[0]
+					: undefined;
+			const soleRunningProgress = soleRunningTask ? progressForJob(soleRunningTask) : undefined;
 			const all = [header];
 			if (aggregateArtifactError) {
 				all.push(uiTheme.fg("warning", formatArtifactErrorNotice(aggregateArtifactError)));
 			}
-			all.push(...itemLines, ...agentLines);
+			all.push(...itemLines);
+			if (soleRunningTask && soleRunningProgress) {
+				all.push(
+					...renderSoleWorkerStream(
+						soleRunningTask,
+						soleRunningProgress,
+						expanded,
+						uiTheme,
+						options.spinnerFrame,
+						width,
+					),
+				);
+			}
+			all.push(...agentLines);
 			for (let i = 0; i < all.length; i++) all[i] = truncateToWidth(all[i]!, width, Ellipsis.Unicode);
 			cached = { key, lines: all };
 			return all;
