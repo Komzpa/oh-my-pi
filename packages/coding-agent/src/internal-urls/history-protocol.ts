@@ -13,10 +13,12 @@
  * mirroring how `agent://` reads `.md` outputs straight off disk.
  *
  * URL forms:
- * - history:// - Index of all registry + on-disk agents (id, status, kind, last activity)
+ * - history:// - Index of this caller session's registry + on-disk agents when caller-bound, else all agents
+ * - history://all - Index of all registry + on-disk agents (id, status, kind, last activity)
  * - history://<agentId> - Concise markdown transcript of that agent
  * - history://current/full - Full, caller-bound current branch history (experimental)
  */
+import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { AgentRef } from "../registry/agent-registry";
@@ -55,6 +57,11 @@ interface RefLookup {
 	/** Registered, non-advisor refs. */
 	visible: AgentRef[];
 	/** Caller root's artifact dir, scanned first by on-disk fallbacks. */
+	preferredArtifactDir?: string;
+}
+
+interface CallerRootScope {
+	rootSessionFile?: string;
 	preferredArtifactDir?: string;
 }
 
@@ -135,6 +142,27 @@ function unknownAgentHints(agentId: string, visible: readonly AgentRef[]): strin
 
 function registryForContext(context: ResolveContext | undefined): AgentRegistry {
 	return context?.agentRegistry ?? AgentRegistry.global();
+}
+
+function isSameOrInside(candidate: string, root: string): boolean {
+	const relative = path.relative(path.resolve(root), path.resolve(candidate));
+	return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function refSessionFile(ref: AgentRef): string | undefined {
+	return ref.sessionFile ?? ref.session?.sessionManager?.getSessionFile?.() ?? undefined;
+}
+
+function refBelongsToScope(ref: AgentRef, scope: CallerRootScope): boolean {
+	if (!scope.rootSessionFile && !scope.preferredArtifactDir) return true;
+	const sessionFile = refSessionFile(ref);
+	if (scope.rootSessionFile && sessionFile === scope.rootSessionFile) return true;
+	if (scope.preferredArtifactDir) {
+		if (sessionFile && isSameOrInside(sessionFile, scope.preferredArtifactDir)) return true;
+		const artifactsDir = ref.session?.sessionManager?.getArtifactsDir?.();
+		if (artifactsDir && isSameOrInside(artifactsDir, scope.preferredArtifactDir)) return true;
+	}
+	return false;
 }
 
 /** One row of the history index — either a registered ref or a disk-only transcript. */
@@ -379,13 +407,10 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		// persisted roster first: a same-named parked ref restored by another
 		// root's scan must not be served (or listed as known) in its place.
 		// The refresh is latched per root, so a settled roster never re-scans.
-		const rootSessionFile = context?.sessionFile
-			? await ensurePersistedRoster(registry, context.sessionFile)
-			: undefined;
+		const { preferredArtifactDir } = await this.#callerRootScope(context, registry);
 		// On-disk fallbacks scan the caller root's artifact directory first, so a
 		// same-named transcript restored by another root's scan never shadows
 		// this caller's own on-disk transcript.
-		const preferredArtifactDir = rootSessionFile?.slice(0, -".jsonl".length);
 		// Advisor transcripts are observability-only — surfaced in the Agent Hub, never
 		// in the agent-facing roster. Hide them from the index, lookup, and completions.
 		const visible = registry.list().filter(ref => ref.kind !== "advisor");
@@ -397,6 +422,16 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			ref = visible.find(candidate => candidate.id.toLowerCase() === lower);
 		}
 		return { ref, visible, preferredArtifactDir };
+	}
+
+	async #callerRootScope(
+		context: ResolveContext | undefined,
+		registry: AgentRegistry = registryForContext(context),
+	): Promise<CallerRootScope> {
+		const rootSessionFile = context?.sessionFile
+			? await ensurePersistedRoster(registry, context.sessionFile)
+			: undefined;
+		return { rootSessionFile, preferredArtifactDir: rootSessionFile?.slice(0, -".jsonl".length) };
 	}
 
 	#resolveCurrentFull(url: InternalUrl, context: ResolveContext | undefined): InternalResource {
@@ -421,11 +456,36 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
 		if (isCurrentFullRoute(url)) return this.#resolveCurrentFull(url, context);
 		const agentId = url.rawHost || url.hostname;
-		if (!agentId) {
-			const visible = registryForContext(context)
+		if (
+			agentId &&
+			agentId.toLowerCase() === "all" &&
+			(!url.pathname || url.pathname === "/") &&
+			!url.search &&
+			!url.hash
+		) {
+			const visible = AgentRegistry.global()
 				.list()
 				.filter(ref => ref.kind !== "advisor");
-			const content = await this.#renderIndex(visible);
+			const content = await this.#renderIndex(visible, { scope: "all" });
+			return {
+				url: url.href,
+				content,
+				contentType: "text/markdown",
+				size: Buffer.byteLength(content, "utf-8"),
+			};
+		}
+		if (!agentId) {
+			const registry = registryForContext(context);
+			const visible = registry.list().filter(ref => ref.kind !== "advisor");
+			const scope = await this.#callerRootScope(context, registry);
+			const scoped =
+				scope.preferredArtifactDir && !context?.agentRegistry
+					? visible.filter(ref => refBelongsToScope(ref, scope))
+					: visible;
+			const content = await this.#renderIndex(scoped, {
+				scope: scope.preferredArtifactDir ? "current" : "all",
+				preferredArtifactDir: scope.preferredArtifactDir,
+			});
 			return {
 				url: url.href,
 				content,
@@ -528,7 +588,10 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		return match;
 	}
 
-	async #renderIndex(refs: AgentRef[]): Promise<string> {
+	async #renderIndex(
+		refs: AgentRef[],
+		options: { scope: "current" | "all"; preferredArtifactDir?: string } = { scope: "all" },
+	): Promise<string> {
 		const entries: IndexEntry[] = refs.map(ref => ({
 			id: ref.id,
 			status: ref.status,
@@ -538,13 +601,20 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		}));
 		// Merge on-disk transcripts for agents absent from the registry.
 		const registered = new Set(refs.map(ref => ref.id));
-		const disk = await sessionFilesFromDisk();
+		const disk = await sessionFilesFromDisk(options.preferredArtifactDir, {
+			includeRegistryDirs: options.scope === "all",
+		});
 		for (const id of disk.keys()) {
 			if (registered.has(id)) continue;
 			entries.push({ id, status: "on disk", kind: "—", parent: "—", lastActivity: "—" });
 		}
 
 		const lines: string[] = ["# Agents", ""];
+		if (options.scope === "current") {
+			lines.push("Showing current session agents. Use `read history://all` to list every known transcript.", "");
+		} else {
+			lines.push("Showing all known agents.", "");
+		}
 		if (entries.length === 0) {
 			lines.push("No agents registered.");
 			return `${lines.join("\n")}\n`;

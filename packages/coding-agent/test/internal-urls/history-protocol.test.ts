@@ -180,6 +180,84 @@ describe("history:// protocol", () => {
 		expect(resource.content).toContain("| HubAgent | idle | sub |");
 	});
 
+	it("bare history:// defaults to the caller root and history://all shows every known transcript", async () => {
+		await withTempDir(async dir => {
+			const currentRoot = path.join(dir, "current", "main.jsonl");
+			const currentArtifacts = currentRoot.slice(0, -".jsonl".length);
+			const otherArtifacts = path.join(dir, "other", "main");
+			await Bun.write(currentRoot, sessionFixtureJsonl());
+			await fs.mkdir(currentArtifacts, { recursive: true });
+			await fs.mkdir(otherArtifacts, { recursive: true });
+			await Bun.write(path.join(currentArtifacts, "CurrentDisk.jsonl"), sessionFixtureJsonl());
+			await Bun.write(path.join(otherArtifacts, "OtherDisk.jsonl"), sessionFixtureJsonl());
+			registerArtifactsDir(otherArtifacts);
+			AgentRegistry.global().register({
+				id: "CurrentLive",
+				displayName: "current task",
+				kind: "sub",
+				session: fakeLiveSession([]),
+				sessionFile: path.join(currentArtifacts, "CurrentLive.jsonl"),
+				status: "running",
+			});
+			AgentRegistry.global().register({
+				id: "OtherLive",
+				displayName: "other task",
+				kind: "sub",
+				session: fakeLiveSession([]),
+				sessionFile: path.join(otherArtifacts, "OtherLive.jsonl"),
+				status: "running",
+			});
+
+			const scoped = await InternalUrlRouter.instance().resolve("history://", { sessionFile: currentRoot });
+			expect(scoped.content).toContain("Showing current session agents");
+			expect(scoped.content).toContain("history://all");
+			expect(scoped.content).toContain("CurrentLive");
+			expect(scoped.content).toContain("CurrentDisk");
+			expect(scoped.content).not.toContain("OtherLive");
+			expect(scoped.content).not.toContain("OtherDisk");
+
+			const all = await InternalUrlRouter.instance().resolve("history://all", { sessionFile: currentRoot });
+			expect(all.content).toContain("Showing all known agents");
+			expect(all.content).toContain("CurrentLive");
+			expect(all.content).toContain("CurrentDisk");
+			expect(all.content).toContain("OtherLive");
+			expect(all.content).toContain("OtherDisk");
+		});
+	});
+
+	it("bare history:// includes just-spawned workers from the caller registry", async () => {
+		await withTempDir(async dir => {
+			const currentRoot = path.join(dir, "current", "main.jsonl");
+			await Bun.write(currentRoot, sessionFixtureJsonl());
+			const callerRegistry = new AgentRegistry();
+			callerRegistry.register({
+				id: "PendingTranscript",
+				displayName: "task",
+				kind: "sub",
+				session: null,
+				sessionFile: null,
+				status: "running",
+				createdAt: Date.now() - 3_000,
+			});
+			AgentRegistry.global().register({
+				id: "OtherLive",
+				displayName: "other task",
+				kind: "sub",
+				session: fakeLiveSession([]),
+				status: "running",
+			});
+
+			const resource = await InternalUrlRouter.instance().resolve("history://", {
+				agentRegistry: callerRegistry,
+				sessionFile: currentRoot,
+			});
+
+			expect(resource.content).toContain("Showing current session agents");
+			expect(resource.content).toContain("PendingTranscript");
+			expect(resource.content).not.toContain("OtherLive");
+		});
+	});
+
 	it("history://<id> renders a live ref's in-memory transcript", async () => {
 		AgentRegistry.global().register({
 			id: "HubAgent",
