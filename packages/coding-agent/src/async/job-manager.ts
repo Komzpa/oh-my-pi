@@ -229,6 +229,16 @@ export interface AsyncJobFilter {
 	ownerId: string | undefined;
 }
 
+export interface AsyncJobQueryOptions {
+	/**
+	 * Foreground-backed jobs are hidden from user job listings until promoted to
+	 * background jobs, but owner quiescence checks still need to see them: a
+	 * hidden long-running foreground command can still auto-background and wake
+	 * the owner later.
+	 */
+	includeForeground?: boolean;
+}
+
 export class AsyncJobManager {
 	static #instance: AsyncJobManager | undefined;
 
@@ -276,8 +286,9 @@ export class AsyncJobManager {
 		return out;
 	}
 
-	#visibleJobs(filter?: AsyncJobFilter): AsyncJob[] {
-		return this.#filterJobs(this.#jobs.values(), filter).filter(job => !job.foreground);
+	#visibleJobs(filter?: AsyncJobFilter, options: AsyncJobQueryOptions = {}): AsyncJob[] {
+		const jobs = this.#filterJobs(this.#jobs.values(), filter);
+		return options.includeForeground === true ? jobs : jobs.filter(job => !job.foreground);
 	}
 
 	constructor(options: AsyncJobManagerOptions) {
@@ -437,8 +448,8 @@ export class AsyncJobManager {
 	}
 
 	/** Running background jobs; foreground-backed jobs stay hidden until promoted. */
-	getRunningJobs(filter?: AsyncJobFilter): AsyncJob[] {
-		return this.#visibleJobs(filter).filter(job => job.status === "running");
+	getRunningJobs(filter?: AsyncJobFilter, options?: AsyncJobQueryOptions): AsyncJob[] {
+		return this.#visibleJobs(filter, options).filter(job => job.status === "running");
 	}
 
 	/** Settled background jobs, newest first; foreground-backed jobs stay hidden. */
