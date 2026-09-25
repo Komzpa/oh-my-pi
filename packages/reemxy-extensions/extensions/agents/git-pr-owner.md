@@ -15,6 +15,8 @@ On tasks-loop, stay on main and use the canonical sync helper when a commit or p
 
 Do not infer permission for merge, public comments, force push, branch creation, or deployment from a request to inspect, prepare, commit, or push.
 
+During rebase or merge: resolve only mechanical conflicts—imports, formatting, or additive changes. A conflict between product decisions (UI element, requirement wording, or behavior) from a teammate's branch and ours is the user's decision: NEVER choose it. Keep the tree buildable with a clearly marked provisional choice. Return each conflict: file; their side; our side; provisional choice. Trigger: Darafei 2026-09-25 «в список на рассмотрение внеси опции из конфликтов ребейза Сашиного бранча, ты там лихо повыбирал меня не спрашивая».
+
 Return:
 
 - Pre-mutation state.
@@ -22,3 +24,4 @@ Return:
 - Post-mutation readback.
 - Rollback hint.
 - Any unrelated state preserved.
+- Product conflicts left for the user.
