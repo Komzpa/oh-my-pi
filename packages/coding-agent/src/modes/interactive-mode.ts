@@ -158,6 +158,9 @@ import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
 import { type CfgApproval, type CfgChangeRequest, setCfgApprovalHost } from "../internal-urls/cfg-protocol";
 import {
 	createTodoHudStateData,
+	forecastTodoLivePlan,
+	getLatestTodoArchiveFromEntries,
+	getTodoArchiveSummaryFromEntries,
 	getTodoHudVisibility,
 	nextActionableTask,
 	TODO_HUD_STATE_CUSTOM_TYPE,
@@ -172,7 +175,6 @@ import {
 	todoMatchesAnyDescription,
 } from "@oh-my-pi/pi-tui/tools/todo";
 import {
-	forecastTodoPlan,
 	formatPlanForecastDisplay,
 	formatTaskForecastDisplay,
 	type TodoPlanForecast,
@@ -1060,7 +1062,15 @@ export class InteractiveMode implements InteractiveModeContext {
 	#todoForecast: TodoPlanForecast | undefined;
 	#todoForecastRowsByContent = new Map<string, TodoTaskForecast>();
 	#todoForecastCacheKey:
-		| { phases: TodoPhase[]; deadlineAt: number | undefined; capacity: number; minuteBucket: number }
+		| {
+				phases: TodoPhase[];
+				deadlineAt: number | undefined;
+				capacity: number;
+				minuteBucket: number;
+				archiveCount: number;
+				archiveFromAt: number;
+				archiveToAt: number;
+		  }
 		| undefined;
 	#todoHudHidden = false;
 	hideThinkingBlock = false;
@@ -3659,15 +3669,32 @@ export class InteractiveMode implements InteractiveModeContext {
 		} else {
 			const capacity = cfgTaskMaxConcurrency.get(owner.settings);
 			const minuteBucket = Math.floor(now / TODO_FORECAST_REFRESH_MS);
+			// Archived rows are dependency evidence: a live task may depend on a
+			// completed row that archival moved out of the live phases. The archive
+			// summary joins the cache key so an archival (or an init that clears it)
+			// never serves a stale forecast resurrecting pre-archive plan data.
+			const archiveSummary = getTodoArchiveSummaryFromEntries(owner.sessionManager.getBranch());
 			const cache = this.#todoForecastCacheKey;
 			const cacheHit =
 				cache?.phases === sourcePhases &&
 				cache.deadlineAt === deadlineAt &&
 				cache.capacity === capacity &&
-				cache.minuteBucket === minuteBucket;
+				cache.minuteBucket === minuteBucket &&
+				cache.archiveCount === (archiveSummary?.count ?? 0) &&
+				cache.archiveFromAt === (archiveSummary?.fromAt ?? 0) &&
+				cache.archiveToAt === (archiveSummary?.toAt ?? 0);
 			if (!cacheHit) {
-				this.#todoForecast = forecastTodoPlan(phases, { now, capacity, deadlineAt });
-				this.#todoForecastCacheKey = { phases: sourcePhases, deadlineAt, capacity, minuteBucket };
+				const archived = getLatestTodoArchiveFromEntries(owner.sessionManager.getBranch());
+				this.#todoForecast = forecastTodoLivePlan(phases, archived, { now, capacity, deadlineAt });
+				this.#todoForecastCacheKey = {
+					phases: sourcePhases,
+					deadlineAt,
+					capacity,
+					minuteBucket,
+					archiveCount: archiveSummary?.count ?? 0,
+					archiveFromAt: archiveSummary?.fromAt ?? 0,
+					archiveToAt: archiveSummary?.toAt ?? 0,
+				};
 				this.#todoForecastRowsByContent.clear();
 				for (const row of this.#todoForecast.rows) this.#todoForecastRowsByContent.set(row.content, row);
 			}

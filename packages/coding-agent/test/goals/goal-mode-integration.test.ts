@@ -16,6 +16,7 @@ import { normalizeCustomMessagePayload } from "@oh-my-pi/pi-coding-agent/session
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { TodoTool, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -418,7 +419,78 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(content).toContain("- [completed] Identify gaps");
 		expect(content).toContain("- [in_progress] Choose &lt;next&gt; &amp; slice &lt;/todo_context&gt;");
 		expect(content).toContain("- [pending] Run focused checks");
+		expect(content).not.toMatch(/^Archive summary:/m);
 		expect(content.match(/<\/todo_context>/g)).toHaveLength(1);
+	});
+
+	it("hands off live todo rows and one archive summary without archived payloads", async () => {
+		await harness.session.setActiveToolsByName(["read", "todo"]);
+		await harness.mode.handleGoalModeCommand("Ship the release");
+		const now = Date.now();
+		const archivedPayload = "Archived task private payload";
+		harness.session.setTodoPhases([
+			{
+				name: "Finished work",
+				tasks: [
+					{
+						content: archivedPayload,
+						status: "completed",
+						details: "archive-details-private",
+						schedule: {
+							finishedAt: now - 30 * 60_000,
+							owner: "archive-owner-private",
+							estimate: {
+								optimisticSeconds: 1,
+								likelySeconds: 2,
+								pessimisticSeconds: 3,
+								confidence: "high",
+								basis: "archive-estimate-private",
+								updatedAt: now,
+							},
+							executor: {
+								workerId: "archive-actual-private",
+								startedAt: now - 40 * 60_000,
+								finishedAt: now - 30 * 60_000,
+								outcome: "completed",
+							},
+						},
+					},
+				],
+			},
+			{ name: "Current work", tasks: [{ content: "Continue the release", status: "in_progress" }] },
+		]);
+
+		const todo = new TodoTool({
+			...harness.toolSession,
+			sessionManager: harness.session.sessionManager,
+		});
+		const result = await todo.execute("archive-current-plan", {
+			op: "block",
+			task: "Continue the release",
+			reason: "Waiting for release approval",
+		});
+		const archiveEdit = result.details?.edit;
+		if (!archiveEdit || archiveEdit.kind !== "archive") throw new Error("Expected an archive edit");
+		harness.session.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit: archiveEdit });
+
+		const sendCustomMessage = vi.spyOn(harness.session, "sendCustomMessage").mockResolvedValue(false);
+		await harness.session.sendGoalModeContext({ deliverAs: "steer" });
+
+		const message = normalizeCustomMessagePayload(sendCustomMessage.mock.calls[0]?.[0]);
+		const content = typeof message.content === "string" ? message.content : "";
+		const summary = result.details?.archiveSummary;
+		if (!summary) throw new Error("Expected archive summary in the todo result");
+		expect(message?.customType).toBe("goal-mode-context");
+		expect(content).toContain("- [blocked] Continue the release");
+		expect(content).not.toContain(archivedPayload);
+		expect(content).not.toContain("archive-details-private");
+		expect(content).not.toContain("archive-owner-private");
+		expect(content).not.toContain("archive-estimate-private");
+		expect(content).not.toContain("archive-actual-private");
+		expect(content.match(/^Archive summary: .*$/gm)).toHaveLength(1);
+		expect(content).toContain(
+			`Archive summary: ${summary.count} archived task${summary.count === 1 ? "" : "s"} (${new Date(summary.fromAt).toISOString()} to ${new Date(summary.toAt).toISOString()}).`,
+		);
 	});
 
 	it("renders todo context text without raw line/control characters", async () => {

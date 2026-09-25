@@ -3,6 +3,7 @@ import {
 	applyOpsToPhases,
 	buildTodoOpPersistedEdit,
 	getLatestTodoPhasesFromEntries,
+	getLatestTodoSnapshotIdentity,
 	formatTodoView,
 	markdownToPhases,
 	phasesToMarkdown,
@@ -93,8 +94,11 @@ function findTaskFuzzy(phases: TodoPhase[], query: string): TodoTaskMatch | unde
 }
 
 function currentPhases(runtime: SlashCommandRuntime): TodoPhase[] {
-	const fromEntries = getLatestTodoPhasesFromEntries(runtime.sessionManager.getBranch());
-	return fromEntries.length > 0 ? fromEntries : runtime.session.getTodoPhases();
+	const entries = runtime.sessionManager.getBranch();
+	// A saved snapshot with zero live phases is authoritative (all rows
+	// archived); only an entirely absent transcript falls back to session state.
+	if (getLatestTodoSnapshotIdentity(entries) !== undefined) return getLatestTodoPhasesFromEntries(entries);
+	return runtime.session.getTodoPhases();
 }
 
 function commitTodos(runtime: SlashCommandRuntime, phases: TodoPhase[], edit?: TodoPersistedEdit): void {
