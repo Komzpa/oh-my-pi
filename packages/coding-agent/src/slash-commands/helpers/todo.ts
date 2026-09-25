@@ -2,6 +2,7 @@ import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import {
 	applyOpsToPhases,
 	getLatestTodoPhasesFromEntries,
+	formatTodoView,
 	markdownToPhases,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
@@ -102,7 +103,8 @@ function commitTodos(runtime: SlashCommandRuntime, phases: TodoPhase[]): void {
 
 const TODO_HELP_TEXT = [
 	"Usage: /todo <verb> [args]",
-	"  /todo                              Show current todos",
+	"  /todo                              Show open todos (status, owner, ETA, critical)",
+	"  /todo all                          Show every todo, closed ones included",
 	"  /todo edit                         (TUI only) open in $EDITOR",
 	"  /todo copy                         Print todos as Markdown",
 	"  /todo expand                       (TUI only) expand the sticky HUD",
@@ -118,7 +120,7 @@ const TODO_HELP_TEXT = [
 
 async function handleTodoCopyCommand(runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
 	const phases = currentPhases(runtime);
-	const markdown = phases.length === 0 ? "" : phasesToMarkdown(phases).trimEnd();
+	const markdown = phases.length === 0 ? "" : phasesToMarkdown(phases, { metadata: false }).trimEnd();
 	await runtime.output(`Copy not available in ACP mode; printing instead:\n\n${markdown || "No todos."}`);
 	return commandConsumed();
 }
@@ -210,7 +212,18 @@ async function handleTodoMutationCommand(
 			await runtime.output("Cleared all todos.");
 			return commandConsumed();
 		}
-		const { phases } = applyOpsToPhases(current, [{ op: verb }]);
+		// The tool refuses a bare done/drop so the model names its rows; the user's command names
+		// every open row explicitly.
+		const items = current
+			.flatMap(phase => phase.tasks)
+			.filter(task => task.status !== "completed" && task.status !== "abandoned")
+			.map(task => task.content);
+		if (items.length === 0) {
+			await runtime.output("No open tasks.");
+			return commandConsumed();
+		}
+		const { phases, errors } = applyOpsToPhases(current, [{ op: verb, items }]);
+		if (errors.length > 0) return usage(errors.join("; "), runtime);
 		commitTodos(runtime, phases);
 		await runtime.output(verb === "done" ? "Marked all tasks completed." : "Marked all tasks abandoned.");
 		return commandConsumed();
@@ -248,10 +261,12 @@ export async function handleTodoAcp(
 	runtime: SlashCommandRuntime,
 ): Promise<SlashCommandResult> {
 	const trimmed = command.args.trim();
-	if (!trimmed) {
+	if (!trimmed || trimmed.toLowerCase() === "all") {
 		const phases = currentPhases(runtime);
 		await runtime.output(
-			phases.length === 0 ? "No todos. Use /todo append <task> to start one." : phasesToMarkdown(phases).trimEnd(),
+			phases.length === 0
+				? "No todos. Use /todo append <task> to start one."
+				: formatTodoView(phases, { all: trimmed.toLowerCase() === "all" }),
 		);
 		return commandConsumed();
 	}

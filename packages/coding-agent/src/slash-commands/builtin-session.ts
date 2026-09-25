@@ -182,6 +182,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		acpInputHint: "<subcommand>",
 		subcommands: [
 			{ name: "edit", description: "Open todos in $EDITOR (Markdown round-trip)" },
+			{ name: "all", description: "Show every todo, closed ones included" },
 			{ name: "copy", description: "Copy todos as Markdown to clipboard" },
 			{ name: "expand", description: "Show every phase and task in the HUD" },
 			{ name: "collapse", description: "Restore the bounded HUD preview" },

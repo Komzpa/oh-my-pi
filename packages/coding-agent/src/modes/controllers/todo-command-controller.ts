@@ -3,18 +3,21 @@ import {
 	applyOpsToPhases,
 	getLatestTodoPhasesFromEntries,
 	markdownToPhases,
+	formatTodoView,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
 	USER_TODO_EDIT_CUSTOM_TYPE,
 } from "../../tools/todo";
 import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { cfgTaskMaxConcurrency } from "../../task/settings";
 import { copyToClipboard } from "../../utils/clipboard";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import type { InteractiveModeContext } from "../types";
 
 const USAGE = [
 	"Usage: /todo <verb> [args]",
-	"  /todo                              Show current todos",
+	"  /todo                              Show open todos (status, owner, ETA, critical)",
+	"  /todo all                          Show every todo, closed ones included",
 	"  /todo edit                         Open todos in $EDITOR",
 	"  /todo copy                         Copy todos as Markdown to clipboard",
 	"  /todo expand                       Show every phase and task in the HUD",
@@ -118,7 +121,7 @@ function findTaskFuzzy(phases: TodoPhase[], query: string): { task: TodoItem; ph
 // =============================================================================
 
 function buildSystemReminder(action: string, phases: TodoPhase[], removed = false): string {
-	const md = phases.length === 0 ? "(empty)" : phasesToMarkdown(phases).trimEnd();
+	const md = phases.length === 0 ? "(empty)" : phasesToMarkdown(phases, { metadata: false }).trimEnd();
 	const lines = ["<system-reminder>", `The user manually modified the todo list (${action}).`];
 	if (removed) {
 		lines.push(
@@ -146,8 +149,8 @@ export class TodoCommandController {
 
 	async handleTodoCommand(args: string): Promise<void> {
 		const trimmed = args.trim();
-		if (!trimmed) {
-			this.#showCurrent();
+		if (!trimmed || trimmed.toLowerCase() === "all") {
+			this.#showCurrent(trimmed.toLowerCase() === "all");
 			return;
 		}
 
@@ -198,13 +201,14 @@ export class TodoCommandController {
 		}
 	}
 
-	#showCurrent(): void {
+	#showCurrent(all = false): void {
 		const phases = this.#currentPhases();
 		if (phases.length === 0) {
 			this.ctx.showStatus("No todos. Use /todo append <task> to start one.");
 			return;
 		}
-		this.ctx.showStatus(phasesToMarkdown(phases).trimEnd());
+		const capacity = this.ctx.session.settings ? cfgTaskMaxConcurrency.get(this.ctx.session.settings) : undefined;
+		this.ctx.showStatus(formatTodoView(phases, { all, ...(typeof capacity === "number" ? { capacity } : {}) }));
 	}
 
 	#copyMarkdown(): void {
@@ -214,7 +218,7 @@ export class TodoCommandController {
 			return;
 		}
 		try {
-			copyToClipboard(phasesToMarkdown(phases));
+			copyToClipboard(phasesToMarkdown(phases, { metadata: false }));
 			this.ctx.showStatus("Copied todos as Markdown to clipboard.");
 		} catch (error) {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
@@ -333,8 +337,17 @@ export class TodoCommandController {
 		const current = this.#currentPhases();
 		const trimmed = rest.trim();
 		if (!trimmed) {
-			// no-arg: apply to all
-			const { phases, errors } = applyOpsToPhases(current, [{ op }]);
+			// no-arg: apply to every open row. The tool refuses a bare done/drop so the model names its
+			// rows; the user's `/todo done` names them all explicitly.
+			const items = current
+				.flatMap(phase => phase.tasks)
+				.filter(task => task.status !== "completed" && task.status !== "abandoned")
+				.map(task => task.content);
+			if (items.length === 0) {
+				this.ctx.showStatus("No open tasks.");
+				return;
+			}
+			const { phases, errors } = applyOpsToPhases(current, [{ op, items }]);
 			if (errors.length > 0) {
 				this.ctx.showError(errors.join("; "));
 				return;

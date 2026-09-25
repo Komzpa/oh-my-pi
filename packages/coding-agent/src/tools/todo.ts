@@ -9,6 +9,8 @@ import {
 import {
 	forecastTodoPlan,
 	formatPlanForecast,
+	formatPlanForecastDisplay,
+	formatTaskForecastDisplay,
 	getTodoPlanningIssues,
 	type TodoSchedule,
 	type TodoPlanForecast,
@@ -873,8 +875,67 @@ function decodeTodoMetadata(encoded: string): TodoMarkdownMetadata {
 	};
 }
 
-/** Render todo phases as a Markdown checklist suitable for editing/copying. */
-export function phasesToMarkdown(phases: TodoPhase[]): string {
+/**
+ * Human view of the plan for `/todo`: open rows with status, owner, ETA and criticality, closed rows
+ * counted per phase. `all` lists closed rows too. No round-trip metadata: that belongs to
+ * `/todo edit`/`export` only.
+ */
+export function formatTodoView(
+	phases: TodoPhase[],
+	options: { now?: number; capacity?: number; all?: boolean } = {},
+): string {
+	const now = options.now ?? Date.now();
+	const forecast = forecastTodoPlan(phases, {
+		now,
+		...(options.capacity === undefined ? {} : { capacity: options.capacity }),
+	});
+	const rows = new Map(forecast.rows.map(row => [row.content, row]));
+	const lines = [formatPlanForecastDisplay(forecast, now)];
+	let hidden = 0;
+	const finished: string[] = [];
+	for (const phase of phases) {
+		const closed = phase.tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
+		if (closed === phase.tasks.length && !options.all) {
+			finished.push(`${phase.name} (${closed})`);
+			hidden += closed;
+			continue;
+		}
+		lines.push("", `${phase.name} · ${closed}/${phase.tasks.length} closed`);
+		for (const task of phase.tasks) {
+			const terminal = task.status === "completed" || task.status === "abandoned";
+			if (terminal && !options.all) {
+				hidden += 1;
+				continue;
+			}
+			const row = rows.get(task.content);
+			const owner = task.schedule?.owner;
+			const parts = [
+				row ? formatTaskForecastDisplay(row, now) : task.status,
+				...(owner && !terminal && !["main", "root"].includes(owner.toLowerCase()) ? [`owner ${owner}`] : []),
+			];
+			lines.push(`  ${TODO_VIEW_MARK[task.status]} ${task.content} · ${parts.join(" · ")}`);
+		}
+	}
+	if (finished.length > 0) lines.push("", `Closed phases: ${finished.join(", ")}`);
+	if (hidden > 0) lines.push("", `${hidden} closed row(s) hidden; /todo all lists them.`);
+	return lines.join("\n");
+}
+
+const TODO_VIEW_MARK: Record<TodoStatus, string> = {
+	pending: "☐",
+	in_progress: "◐",
+	completed: "☑",
+	abandoned: "✗",
+	blocked: "⊘",
+};
+
+/**
+ * Render todo phases as a Markdown checklist. `metadata` (default on) appends the hidden schedule
+ * comment that `/todo edit`/`export`/`import` need for a lossless round-trip; views and model
+ * reminders turn it off so readers do not get base64.
+ */
+export function phasesToMarkdown(phases: TodoPhase[], options: { metadata?: boolean } = {}): string {
+	const withMetadata = options.metadata !== false;
 	if (phases.length === 0) return "# Todos\n";
 	const out: string[] = [];
 	for (let i = 0; i < phases.length; i++) {
@@ -882,7 +943,7 @@ export function phasesToMarkdown(phases: TodoPhase[]): string {
 		out.push(`# ${phases[i].name}`);
 		for (const task of phases[i].tasks) {
 			// One base64url HTML comment keeps structured metadata hidden from rendered Markdown.
-			const metadata = encodeTodoMetadata(task);
+			const metadata = withMetadata ? encodeTodoMetadata(task) : "";
 			out.push(`- [${STATUS_TO_MARKER[task.status]}] ${task.content}${metadata}`);
 		}
 	}
