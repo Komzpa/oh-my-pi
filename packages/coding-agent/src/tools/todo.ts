@@ -1008,7 +1008,9 @@ function formatSummary(
 		);
 		lines.push(`Remaining items (${remainingTasks.length}${critical.size ? `, ${critical.size} critical` : ""}):`);
 		for (const task of remainingTasks) {
-			lines.push(`  - ${task.content} [${task.status}] (${task.phase})${critical.has(task.content) ? " critical" : ""}`);
+			lines.push(
+				`  - ${task.content} [${task.status}] (${task.phase})${critical.has(task.content) ? " critical" : ""}`,
+			);
 		}
 	}
 	// Closed = completed + abandoned, mirroring the per-phase `done` count.
