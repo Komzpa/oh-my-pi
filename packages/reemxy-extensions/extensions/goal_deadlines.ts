@@ -2,27 +2,61 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { SettingsManager } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
 import type { ActiveGoalRef, DeadlineState, QuotaSnapshot } from "./deadlines";
 import * as deadlineSdk from "./deadlines";
 
 export const REMINDER_MAX_CHARS = 800;
 
-export const PRESENCE_TIME_ZONE = "Asia/Tbilisi";
-export const PRESENCE_ACTIVE_MINUTES = 15;
-export const PRESENCE_AWAY_MINUTES = 30;
-export const PRESENCE_QUIET_START_HOUR = 23;
-export const PRESENCE_QUIET_END_HOUR = 9;
-export const PRESENCE_AT_RISK_MINUTES = 60;
+const PRESENCE_DEFAULTS = {
+	activeMinutes: 15,
+	awayMinutes: 30,
+	quietStartHour: 23,
+	quietEndHour: 9,
+	atRiskMinutes: 60,
+};
+
+type PresenceSettings = Partial<typeof PRESENCE_DEFAULTS>;
+
+function readPresenceSettings(value: unknown): PresenceSettings {
+	if (!value || typeof value !== "object") return {};
+	const settings = value as PresenceSettings;
+	const result: PresenceSettings = {};
+	if (Number.isFinite(settings.activeMinutes)) result.activeMinutes = Math.max(0, settings.activeMinutes!);
+	if (Number.isFinite(settings.awayMinutes)) result.awayMinutes = Math.max(0, settings.awayMinutes!);
+	if (Number.isInteger(settings.quietStartHour)) result.quietStartHour = ((settings.quietStartHour! % 24) + 24) % 24;
+	if (Number.isInteger(settings.quietEndHour)) result.quietEndHour = ((settings.quietEndHour! % 24) + 24) % 24;
+	if (Number.isFinite(settings.atRiskMinutes)) result.atRiskMinutes = Math.max(0, settings.atRiskMinutes!);
+	return result;
+}
+
+function presenceSettings(cwd?: string): typeof PRESENCE_DEFAULTS {
+	const settings = SettingsManager.create(cwd);
+	return {
+		...PRESENCE_DEFAULTS,
+		...readPresenceSettings(settings.getGlobalSettings().reemxyPresence),
+		...readPresenceSettings(settings.getProjectSettings().reemxyPresence),
+	};
+}
+
+function presenceTimeZone(state: DeadlineState | null): string {
+	const timeZone = state?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+	try {
+		new Intl.DateTimeFormat("en-GB", { timeZone }).format();
+		return timeZone;
+	} catch {
+		return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+	}
+}
 
 export type Presence = "away" | "watching" | "firefighting";
 
 type PresenceLocalTime = { hour: number; minute: number; weekend: boolean; display: string };
 type PresenceDeadline = { dueAt: number; state: "on track" | "at risk" | "missed"; display: string };
 
-function presenceLocalTime(now: number): PresenceLocalTime {
+function presenceLocalTime(now: number, timeZone: string): PresenceLocalTime {
 	const parts = new Intl.DateTimeFormat("en-GB", {
-		timeZone: PRESENCE_TIME_ZONE,
+		timeZone,
 		hour: "2-digit",
 		minute: "2-digit",
 		hourCycle: "h23",
@@ -34,7 +68,7 @@ function presenceLocalTime(now: number): PresenceLocalTime {
 		hour: Number(values.hour),
 		minute: Number(values.minute),
 		weekend: weekday === "Sat" || weekday === "Sun",
-		display: `${values.hour ?? "??"}:${values.minute ?? "??"} ${PRESENCE_TIME_ZONE}`,
+		display: `${values.hour ?? "??"}:${values.minute ?? "??"} ${timeZone}`,
 	};
 }
 
@@ -54,13 +88,18 @@ function latestUserMessageAt(entries: readonly unknown[]): number | undefined {
 	return undefined;
 }
 
-function presenceDeadline(state: DeadlineState | null, now: number): PresenceDeadline | undefined {
+function presenceDeadline(
+	state: DeadlineState | null,
+	now: number,
+	timeZone: string,
+	settings: typeof PRESENCE_DEFAULTS,
+): PresenceDeadline | undefined {
 	if (!state?.active || state.stages.length === 0) return undefined;
 	const dueAt = (state.baselineDeadlineAt ?? Math.max(...state.stages.map(stage => stage.deadlineAt))) * 1_000;
 	if (!Number.isFinite(dueAt)) return undefined;
-	const stateName = dueAt < now ? "missed" : dueAt - now <= PRESENCE_AT_RISK_MINUTES * 60_000 ? "at risk" : "on track";
+	const stateName = dueAt < now ? "missed" : dueAt - now <= settings.atRiskMinutes * 60_000 ? "at risk" : "on track";
 	const display = new Intl.DateTimeFormat("en-GB", {
-		timeZone: PRESENCE_TIME_ZONE,
+		timeZone,
 		hour: "2-digit",
 		minute: "2-digit",
 		hourCycle: "h23",
@@ -68,30 +107,41 @@ function presenceDeadline(state: DeadlineState | null, now: number): PresenceDea
 	return { dueAt, state: stateName, display };
 }
 
-export function derivePresence(entries: readonly unknown[], state: DeadlineState | null, now = Date.now()): Presence {
-	const local = presenceLocalTime(now);
+export function derivePresence(
+	entries: readonly unknown[],
+	state: DeadlineState | null,
+	now = Date.now(),
+	settings = presenceSettings(),
+): Presence {
+	const timeZone = presenceTimeZone(state);
+	const local = presenceLocalTime(now, timeZone);
 	const lastMessageAt = latestUserMessageAt(entries);
 	const ageMinutes =
 		lastMessageAt === undefined ? Number.POSITIVE_INFINITY : Math.max(0, (now - lastMessageAt) / 60_000);
-	const deadline = presenceDeadline(state, now);
-	const recent = ageMinutes <= PRESENCE_ACTIVE_MINUTES;
-	const quietHours = local.hour >= PRESENCE_QUIET_START_HOUR || local.hour < PRESENCE_QUIET_END_HOUR;
+	const deadline = presenceDeadline(state, now, timeZone, settings);
+	const recent = ageMinutes <= settings.activeMinutes;
+	const quietHours = local.hour >= settings.quietStartHour || local.hour < settings.quietEndHour;
 	if (recent && (deadline?.state === "at risk" || deadline?.state === "missed") && (quietHours || local.weekend))
 		return "firefighting";
-	if (ageMinutes >= PRESENCE_AWAY_MINUTES || (ageMinutes >= PRESENCE_ACTIVE_MINUTES && quietHours)) return "away";
+	if (ageMinutes >= settings.awayMinutes || (ageMinutes >= settings.activeMinutes && quietHours)) return "away";
 	return "watching";
 }
 
-export function renderPresence(entries: readonly unknown[], state: DeadlineState | null, now = Date.now()): string {
-	const local = presenceLocalTime(now);
+export function renderPresence(
+	entries: readonly unknown[],
+	state: DeadlineState | null,
+	now = Date.now(),
+	settings = presenceSettings(),
+): string {
+	const timeZone = presenceTimeZone(state);
+	const local = presenceLocalTime(now, timeZone);
 	const lastMessageAt = latestUserMessageAt(entries);
 	const ageMinutes =
 		lastMessageAt === undefined ? "unknown" : String(Math.max(0, Math.floor((now - lastMessageAt) / 60_000)));
-	const deadline = presenceDeadline(state, now);
-	const presence = derivePresence(entries, state, now);
+	const deadline = presenceDeadline(state, now, timeZone, settings);
+	const presence = derivePresence(entries, state, now, settings);
 	const signals = `last message ${ageMinutes} min ago, ${local.display}, deadline ${deadline ? `${deadline.display} ${deadline.state}` : "not set"}`;
-	const promise = presence === "away" && deadline ? `\nPromised before he left: done by ${deadline.display}.` : "";
-	return `Darafei is: ${presence} (guess from signals: ${signals}) — his own words in the conversation outrank this guess; see skill://chief-of-staff "The user is on the team".${promise}`;
+	return `The user is: ${presence} (guess from signals: ${signals}) — the user's own words in the conversation outrank this guess.`;
 }
 const MAX_REASONABLE_DEADLINE_SECONDS = 4_102_444_800; // 2100-01-01T00:00:00Z
 

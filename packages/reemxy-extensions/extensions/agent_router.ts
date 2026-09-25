@@ -30,7 +30,7 @@ export const AGENT_POOLS: Record<string, PoolConfig> = {
 		fallbacks: ["codex-lb/gpt-6-sol:medium", "anthropic/claude-sonnet-5:medium"],
 	},
 	// Pools for the agents that take most spawns: with only coder/ui-coder/workhorse pooled, 90% of
-	// spawns went to fixed chains led by gpt-6-luna and Kimi ran in 3% (Darafei 2026-09-25: "почему
+	// spawns went to fixed chains led by gpt-6-luna and Kimi ran in 3% (user 2026-09-25: "почему
 	// так мало кими, он же должен быть").
 	task: {
 		pool: [
