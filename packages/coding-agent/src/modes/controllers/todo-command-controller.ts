@@ -3,6 +3,7 @@ import {
 	applyOpsToPhases,
 	buildTodoOpPersistedEdit,
 	getLatestTodoPhasesFromEntries,
+	getLatestTodoSnapshotIdentity,
 	markdownToPhases,
 	formatTodoView,
 	phasesToMarkdown,
@@ -139,12 +140,14 @@ export class TodoCommandController {
 	constructor(private readonly ctx: InteractiveModeContext) {}
 
 	/**
-	 * True latest todo state for the user-facing /todo verbs. Reads from session
-	 * entries or falls back to the active session state.
+	 * True latest todo state for the user-facing /todo verbs. Canonical entry
+	 * replay wins whenever a todo snapshot exists on the branch; a legitimate
+	 * empty live replay (all rows archived) is authoritative and must not fall
+	 * back to cached session state.
 	 */
 	#currentPhases(): TodoPhase[] {
-		const fromEntries = getLatestTodoPhasesFromEntries(this.ctx.sessionManager.getBranch());
-		if (fromEntries.length > 0) return fromEntries;
+		const entries = this.ctx.sessionManager.getBranch();
+		if (getLatestTodoSnapshotIdentity(entries) !== undefined) return getLatestTodoPhasesFromEntries(entries);
 		return this.ctx.session.getTodoPhases();
 	}
 
