@@ -1,6 +1,7 @@
-import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { TodoPersistedEdit, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import {
 	applyOpsToPhases,
+	buildTodoOpPersistedEdit,
 	getLatestTodoPhasesFromEntries,
 	formatTodoView,
 	markdownToPhases,
@@ -96,9 +97,9 @@ function currentPhases(runtime: SlashCommandRuntime): TodoPhase[] {
 	return fromEntries.length > 0 ? fromEntries : runtime.session.getTodoPhases();
 }
 
-function commitTodos(runtime: SlashCommandRuntime, phases: TodoPhase[]): void {
+function commitTodos(runtime: SlashCommandRuntime, phases: TodoPhase[], edit?: TodoPersistedEdit): void {
 	runtime.session.setTodoPhases(phases);
-	runtime.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+	runtime.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, edit ? { edit } : { phases });
 }
 
 const TODO_HELP_TEXT = [
@@ -182,7 +183,11 @@ async function handleTodoAppendCommand(restArgs: string, runtime: SlashCommandRu
 
 	const finalContent = titleCaseSentence(content);
 	targetPhase.tasks.push({ content: finalContent, status: "pending" });
-	commitTodos(runtime, next);
+	commitTodos(
+		runtime,
+		next,
+		buildTodoOpPersistedEdit("append", { op: "append", phase: targetPhase.name, items: [finalContent] }),
+	);
 	await runtime.output(`Appended to ${targetPhase.name}: ${finalContent}`);
 	return commandConsumed();
 }
@@ -193,8 +198,9 @@ async function handleTodoStartCommand(restArgs: string, runtime: SlashCommandRun
 	const query = tokenize(restArgs).join(" ") || restArgs;
 	const hit = findTaskFuzzy(current, query);
 	if (!hit) return usage(`No task matched "${restArgs}". Use /todo to list current tasks.`, runtime);
-	const { phases } = applyOpsToPhases(current, [{ op: "start", task: hit.task.content }]);
-	commitTodos(runtime, phases);
+	const op = { op: "start" as const, task: hit.task.content };
+	const { phases } = applyOpsToPhases(current, [op]);
+	commitTodos(runtime, phases, buildTodoOpPersistedEdit("start", op));
 	await runtime.output(`Started: ${hit.task.content}`);
 	return commandConsumed();
 }
@@ -208,7 +214,8 @@ async function handleTodoMutationCommand(
 	const trimmedArg = restArgs.trim();
 	if (!trimmedArg) {
 		if (verb === "rm") {
-			commitTodos(runtime, []);
+			const op = { op: "rm" as const };
+			commitTodos(runtime, [], buildTodoOpPersistedEdit("rm", op));
 			await runtime.output("Cleared all todos.");
 			return commandConsumed();
 		}
@@ -222,17 +229,19 @@ async function handleTodoMutationCommand(
 			await runtime.output("No open tasks.");
 			return commandConsumed();
 		}
-		const { phases, errors } = applyOpsToPhases(current, [{ op: verb, items }]);
+		const op = { op: verb, items };
+		const { phases, errors } = applyOpsToPhases(current, [op]);
 		if (errors.length > 0) return usage(errors.join("; "), runtime);
-		commitTodos(runtime, phases);
+		commitTodos(runtime, phases, buildTodoOpPersistedEdit(verb, op));
 		await runtime.output(verb === "done" ? "Marked all tasks completed." : "Marked all tasks abandoned.");
 		return commandConsumed();
 	}
 
 	const taskHit = findTaskFuzzy(current, trimmedArg);
 	if (taskHit) {
-		const { phases } = applyOpsToPhases(current, [{ op: verb, task: taskHit.task.content }]);
-		commitTodos(runtime, phases);
+		const op = { op: verb, task: taskHit.task.content };
+		const { phases } = applyOpsToPhases(current, [op]);
+		commitTodos(runtime, phases, buildTodoOpPersistedEdit(verb, op));
 		const label = verb === "done" ? "Marked completed" : verb === "drop" ? "Marked abandoned" : "Removed";
 		await runtime.output(`${label}: ${taskHit.task.content}`);
 		return commandConsumed();
@@ -240,8 +249,9 @@ async function handleTodoMutationCommand(
 
 	const phaseHit = findPhaseFuzzy(current, trimmedArg);
 	if (phaseHit) {
-		const { phases } = applyOpsToPhases(current, [{ op: verb, phase: phaseHit.name }]);
-		commitTodos(runtime, phases);
+		const op = { op: verb, phase: phaseHit.name };
+		const { phases } = applyOpsToPhases(current, [op]);
+		commitTodos(runtime, phases, buildTodoOpPersistedEdit(verb, op));
 		const message =
 			verb === "done"
 				? `Marked phase ${phaseHit.name} completed.`

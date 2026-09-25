@@ -56,6 +56,7 @@ import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
 import { renderResult, renderCall as renderTaskCall } from "@oh-my-pi/pi-tui/tools/task";
 import { repairTaskParams } from "@oh-my-pi/pi-tui/tools/task-repair-args";
 import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
+import { buildTodoExecutorPersistedEdit } from "../tools/todo";
 import { applyTodoExecutorObservation, type TodoExecutorObservation } from "../tools/todo-executor";
 import {
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
@@ -701,7 +702,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		});
 		if (!updated) return;
 		this.session.setTodoPhases?.(updated);
-		this.session.persistTodoPhases?.(updated);
+		this.session.persistTodoPhases?.(
+			updated,
+			buildTodoExecutorPersistedEdit({
+				...observation,
+				runningWorkerIds: new Set(this.#todoExecutors.keys()),
+			}),
+		);
 	}
 
 	#isBatchEnabled(): boolean {

@@ -269,7 +269,7 @@ import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { isFilesystemSourcePath } from "./tools/path-utils";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
 import { queueResolveHandler } from "./tools/resolve";
-import { USER_TODO_EDIT_CUSTOM_TYPE } from "./tools/todo";
+import { shouldPersistTodoFullSnapshotCheckpoint, USER_TODO_EDIT_CUSTOM_TYPE } from "./tools/todo";
 import { ttsTool } from "./tools/tts";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
@@ -2130,8 +2130,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getFileMutationVersion: path => fileMutationVersions.get(path) ?? 0,
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
-			persistTodoPhases: (phases, edit) =>
-				sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, edit ? { edit } : { phases }),
+			persistTodoPhases: (phases, edit) => {
+				if (edit) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
+				} else if (shouldPersistTodoFullSnapshotCheckpoint(sessionManager.getBranch())) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				}
+			},
 			getWorkPoolYieldItems: () => session?.getWorkPoolYieldItems() ?? [],
 			getLastAssistantText: () => session?.getLastAssistantText(),
 			setWorkPoolYieldItems: items => session.setWorkPoolYieldItems(items),
@@ -3465,8 +3470,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			emitEvent: event => cursorEventEmitter?.(event),
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
-			persistTodoPhases: (phases, edit) =>
-				sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, edit ? { edit } : { phases }),
+			persistTodoPhases: (phases, edit) => {
+				if (edit) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
+				} else if (shouldPersistTodoFullSnapshotCheckpoint(sessionManager.getBranch())) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				}
+			},
 			// `pi_grep` carries its own context width and match cap, which the
 			// shared grep instance fixed at construction cannot express. Gated on
 			// the grant: the factory builds a fresh tool and `executeTool` prefers

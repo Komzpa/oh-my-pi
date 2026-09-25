@@ -66,14 +66,35 @@ export interface TodoCompletionTransition {
 	content: string;
 }
 
-/** Compact durable todo mutation. Full snapshots before this shape remain readable. */
-export interface TodoPersistedEdit {
+/** Compact durable todo operation. Full snapshots before this shape remain readable. */
+export interface TodoOperationPersistedEdit {
 	v: 1;
 	kind: "op";
 	at: number;
 	op: TodoOperation;
 	params: unknown;
 }
+
+/** Compact durable task-worker observation linked to one todo row. */
+export interface TodoExecutorPersistedEdit {
+	v: 1;
+	kind: "executor";
+	at: number;
+	observation: {
+		workerId: string;
+		agentProfile?: string;
+		description?: string;
+		taskText?: string;
+		resolvedModel?: string;
+		thinkingLevel?: string;
+		startedAt: number;
+		finishedAt?: number;
+		outcome?: "completed" | "failed" | "aborted";
+		runningWorkerIds?: string[];
+	};
+}
+
+export type TodoPersistedEdit = TodoOperationPersistedEdit | TodoExecutorPersistedEdit;
 
 /** Todo snapshot and transitions displayed after an operation. */
 export interface TodoToolDetails {

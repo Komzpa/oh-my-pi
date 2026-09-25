@@ -30,6 +30,7 @@ import { cfgTaskMaxConcurrency } from "../task/settings";
 
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
 import { readGoalDeadline } from "../goals/deadlines";
+import { applyTodoExecutorObservation, type TodoExecutorObservation } from "./todo-executor";
 
 /** Whether an unknown value is a persisted todo phase. */
 export function isTodoPhase(value: unknown): value is TodoPhase {
@@ -66,6 +67,8 @@ export function committedTodoEdit(result: AgentToolResult): TodoPersistedEdit | 
 	const edit = result.details.edit;
 	return isTodoPersistedEdit(edit) ? edit : undefined;
 }
+
+export const TODO_FULL_SNAPSHOT_CHECKPOINT_INTERVAL = 100;
 
 // =============================================================================
 // Schema
@@ -264,14 +267,29 @@ function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
 }
 
 function isTodoPersistedEdit(value: unknown): value is TodoPersistedEdit {
+	if (
+		!isRecord(value) ||
+		value.v !== 1 ||
+		typeof value.at !== "number" ||
+		!Number.isFinite(value.at) ||
+		typeof value.kind !== "string"
+	) {
+		return false;
+	}
+	if (value.kind === "op") return typeof value.op === "string" && value.params !== undefined;
+	if (value.kind !== "executor" || !isRecord(value.observation)) return false;
+	const observation = value.observation;
+	const outcome = observation.outcome;
 	return (
-		isRecord(value) &&
-		value.v === 1 &&
-		value.kind === "op" &&
-		typeof value.at === "number" &&
-		Number.isFinite(value.at) &&
-		typeof value.op === "string" &&
-		value.params !== undefined
+		typeof observation.workerId === "string" &&
+		typeof observation.startedAt === "number" &&
+		Number.isFinite(observation.startedAt) &&
+		(observation.finishedAt === undefined ||
+			(typeof observation.finishedAt === "number" && Number.isFinite(observation.finishedAt))) &&
+		(outcome === undefined || outcome === "completed" || outcome === "failed" || outcome === "aborted") &&
+		(observation.runningWorkerIds === undefined ||
+			(Array.isArray(observation.runningWorkerIds) &&
+				observation.runningWorkerIds.every(workerId => typeof workerId === "string")))
 	);
 }
 
@@ -299,8 +317,15 @@ function replayTodoEdit(
 	edit: TodoPersistedEdit,
 	options: { mutable?: boolean } = {},
 ): TodoReplayResult | undefined {
-	if (!phases && edit.op !== "init") return undefined;
+	if (!phases && (edit.kind !== "op" || edit.op !== "init")) return undefined;
 	const current = phases ? (options.mutable ? phases : clonePhases(phases)) : [];
+	if (edit.kind === "executor") {
+		const updated = applyTodoExecutorObservation(current, {
+			...edit.observation,
+			runningWorkerIds: new Set(edit.observation.runningWorkerIds ?? []),
+		});
+		return updated ? { phases: updated, mutable: true } : undefined;
+	}
 	const resolved = resolveTodoParams(edit.params, current.length > 0);
 	if (typeof resolved === "string") return undefined;
 	if (resolved.op !== edit.op || resolved.op === "view") return undefined;
@@ -313,6 +338,16 @@ function replayTodoEdit(
 	const applied = applyParams(current, resolved, edit.at);
 	if (applied.errors.length > 0) return undefined;
 	return { phases: applied.phases, mutable: true };
+}
+
+export function shouldPersistTodoFullSnapshotCheckpoint(entries: SessionEntry[]): boolean {
+	let compactEditsSinceSnapshot = 0;
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i]!;
+		if (canonicalTodoPhases(entry)) return compactEditsSinceSnapshot >= TODO_FULL_SNAPSHOT_CHECKPOINT_INTERVAL;
+		if (compactTodoEditFromEntry(entry)) compactEditsSinceSnapshot++;
+	}
+	return true;
 }
 
 /** Identify the latest durable canonical todo snapshot on the active branch. */
@@ -1324,8 +1359,31 @@ function formatMutationSummary(
 	return lines.join("\n");
 }
 
-function buildPersistedTodoEdit(op: TodoOperation, params: TodoOpEntryValue, at: number): TodoPersistedEdit {
+export function buildTodoOpPersistedEdit(op: TodoOperation, params: unknown, at = Date.now()): TodoPersistedEdit {
 	return { v: 1, kind: "op", at, op, params: structuredClone(params) };
+}
+
+export function buildTodoExecutorPersistedEdit(
+	observation: TodoExecutorObservation,
+	at = Date.now(),
+): TodoPersistedEdit {
+	return {
+		v: 1,
+		kind: "executor",
+		at,
+		observation: {
+			workerId: observation.workerId,
+			...(observation.agentProfile ? { agentProfile: observation.agentProfile } : {}),
+			...(observation.description ? { description: observation.description } : {}),
+			...(observation.taskText ? { taskText: observation.taskText } : {}),
+			...(observation.resolvedModel ? { resolvedModel: observation.resolvedModel } : {}),
+			...(observation.thinkingLevel ? { thinkingLevel: observation.thinkingLevel } : {}),
+			startedAt: observation.startedAt,
+			...(observation.finishedAt !== undefined ? { finishedAt: observation.finishedAt } : {}),
+			...(observation.outcome ? { outcome: observation.outcome } : {}),
+			...(observation.runningWorkerIds ? { runningWorkerIds: [...observation.runningWorkerIds].sort() } : {}),
+		},
+	};
 }
 
 function attachLiveTodoDetails(
@@ -1405,7 +1463,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 				op,
 				storage,
 				forecastAt: now,
-				...(!readOnly && !failed ? { edit: buildPersistedTodoEdit(op, entry, now) } : {}),
+				...(!readOnly && !failed ? { edit: buildTodoOpPersistedEdit(op, entry, now) } : {}),
 			} as TodoToolDetails,
 			effective,
 			forecast,

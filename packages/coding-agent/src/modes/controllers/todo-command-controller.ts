@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import {
 	applyOpsToPhases,
+	buildTodoOpPersistedEdit,
 	getLatestTodoPhasesFromEntries,
 	markdownToPhases,
 	formatTodoView,
@@ -8,7 +9,7 @@ import {
 	resolveTodoMarkdownPath,
 	USER_TODO_EDIT_CUSTOM_TYPE,
 } from "../../tools/todo";
-import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { type TodoItem, type TodoPersistedEdit, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { cfgTaskMaxConcurrency } from "../../task/settings";
 import { copyToClipboard } from "../../utils/clipboard";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
@@ -306,7 +307,9 @@ export class TodoCommandController {
 			status: "pending",
 		});
 
-		this.#commit(next, `/todo append → ${targetPhase.name}`);
+		this.#commit(next, `/todo append → ${targetPhase.name}`, {
+			edit: buildTodoOpPersistedEdit("append", { op: "append", phase: targetPhase.name, items: [finalContent] }),
+		});
 		this.ctx.showStatus(`Appended to ${targetPhase.name}: ${finalContent}`);
 	}
 
@@ -323,17 +326,18 @@ export class TodoCommandController {
 			this.ctx.showError(`No task matched "${rest}". Use /todo to list current tasks.`);
 			return;
 		}
-		const { phases, errors } = applyOpsToPhases(current, [{ op: "start", task: hit.task.content }]);
+		const todoOp = { op: "start" as const, task: hit.task.content };
+		const { phases, errors } = applyOpsToPhases(current, [todoOp]);
 		if (errors.length > 0) {
 			this.ctx.showError(errors.join("; "));
 			return;
 		}
-		this.#commit(phases, `/todo start ${hit.task.content}`);
+		this.#commit(phases, `/todo start ${hit.task.content}`, { edit: buildTodoOpPersistedEdit("start", todoOp) });
 		this.ctx.showStatus(`Started: ${hit.task.content}`);
 	}
 
 	#mutateStatus(rest: string, target: "completed" | "abandoned"): void {
-		const op = target === "completed" ? "done" : "drop";
+		const op: "done" | "drop" = target === "completed" ? "done" : "drop";
 		const current = this.#currentPhases();
 		const trimmed = rest.trim();
 		if (!trimmed) {
@@ -347,36 +351,39 @@ export class TodoCommandController {
 				this.ctx.showStatus("No open tasks.");
 				return;
 			}
-			const { phases, errors } = applyOpsToPhases(current, [{ op, items }]);
+			const todoOp = { op, items };
+			const { phases, errors } = applyOpsToPhases(current, [todoOp]);
 			if (errors.length > 0) {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/todo ${op} (all)`);
+			this.#commit(phases, `/todo ${op} (all)`, { edit: buildTodoOpPersistedEdit(op, todoOp) });
 			this.ctx.showStatus(`Marked all tasks ${target}.`);
 			return;
 		}
 
 		const taskHit = findTaskFuzzy(current, trimmed);
 		if (taskHit) {
-			const { phases, errors } = applyOpsToPhases(current, [{ op, task: taskHit.task.content }]);
+			const todoOp = { op, task: taskHit.task.content };
+			const { phases, errors } = applyOpsToPhases(current, [todoOp]);
 			if (errors.length > 0) {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/todo ${op} ${taskHit.task.content}`);
+			this.#commit(phases, `/todo ${op} ${taskHit.task.content}`, { edit: buildTodoOpPersistedEdit(op, todoOp) });
 			this.ctx.showStatus(`Marked ${target}: ${taskHit.task.content}`);
 			return;
 		}
 
 		const phaseHit = findPhaseFuzzy(current, trimmed);
 		if (phaseHit) {
-			const { phases, errors } = applyOpsToPhases(current, [{ op, phase: phaseHit.name }]);
+			const todoOp = { op, phase: phaseHit.name };
+			const { phases, errors } = applyOpsToPhases(current, [todoOp]);
 			if (errors.length > 0) {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/todo ${op} ${phaseHit.name}`);
+			this.#commit(phases, `/todo ${op} ${phaseHit.name}`, { edit: buildTodoOpPersistedEdit(op, todoOp) });
 			this.ctx.showStatus(`Marked phase ${phaseHit.name} ${target}.`);
 			return;
 		}
@@ -388,29 +395,38 @@ export class TodoCommandController {
 		const current = this.#currentPhases();
 		const trimmed = rest.trim();
 		if (!trimmed) {
-			this.#commit([], "/todo rm (all)", { removed: true });
+			const todoOp = { op: "rm" as const };
+			this.#commit([], "/todo rm (all)", { removed: true, edit: buildTodoOpPersistedEdit("rm", todoOp) });
 			this.ctx.showStatus("Cleared all todos.");
 			return;
 		}
 		const taskHit = findTaskFuzzy(current, trimmed);
 		if (taskHit) {
-			const { phases, errors } = applyOpsToPhases(current, [{ op: "rm", task: taskHit.task.content }]);
+			const todoOp = { op: "rm" as const, task: taskHit.task.content };
+			const { phases, errors } = applyOpsToPhases(current, [todoOp]);
 			if (errors.length > 0) {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/todo rm ${taskHit.task.content}`, { removed: true });
+			this.#commit(phases, `/todo rm ${taskHit.task.content}`, {
+				removed: true,
+				edit: buildTodoOpPersistedEdit("rm", todoOp),
+			});
 			this.ctx.showStatus(`Removed: ${taskHit.task.content}`);
 			return;
 		}
 		const phaseHit = findPhaseFuzzy(current, trimmed);
 		if (phaseHit) {
-			const { phases, errors } = applyOpsToPhases(current, [{ op: "rm", phase: phaseHit.name }]);
+			const todoOp = { op: "rm" as const, phase: phaseHit.name };
+			const { phases, errors } = applyOpsToPhases(current, [todoOp]);
 			if (errors.length > 0) {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/todo rm ${phaseHit.name}`, { removed: true });
+			this.#commit(phases, `/todo rm ${phaseHit.name}`, {
+				removed: true,
+				edit: buildTodoOpPersistedEdit("rm", todoOp),
+			});
 			this.ctx.showStatus(`Removed phase: ${phaseHit.name}`);
 			return;
 		}
@@ -455,10 +471,13 @@ export class TodoCommandController {
 		}
 	}
 
-	#commit(nextPhases: TodoPhase[], action: string, opts?: { removed?: boolean }): void {
+	#commit(nextPhases: TodoPhase[], action: string, opts?: { removed?: boolean; edit?: TodoPersistedEdit }): void {
 		// Persist first so HUD visibility binds to the new canonical source.
 		this.ctx.session.setTodoPhases(nextPhases);
-		this.ctx.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: nextPhases });
+		this.ctx.sessionManager.appendCustomEntry(
+			USER_TODO_EDIT_CUSTOM_TYPE,
+			opts?.edit ? { edit: opts.edit } : { phases: nextPhases },
+		);
 		this.ctx.setTodos(nextPhases);
 
 		// 3. Inject system reminder so the agent learns about the change next turn.
