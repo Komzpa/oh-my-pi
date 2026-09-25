@@ -2093,6 +2093,7 @@ export async function runRootCommand(
 		sessionOptions.authStorage = authStorage;
 		sessionOptions.modelRegistry = modelRegistry;
 		sessionOptions.hasUI = isInteractive || mode === "rpc-ui";
+		sessionOptions.publishPeerSession = isInteractive || mode === "rpc-ui" || parsedArgs.print || autoPrint;
 		sessionOptions.settingsApproval = isInteractive;
 		sessionOptions.settings = settingsInstance;
 		sessionOptions.onPrewalkWarning = warning => {
