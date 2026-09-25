@@ -30,6 +30,7 @@ export interface SubagentLifecyclePayload {
 	resolvedModelIdentity?: string;
 	resolvedThinkingLevel?: string;
 	description?: string;
+	taskText?: string;
 	status: "started" | "completed" | "failed" | "aborted";
 	sessionFile?: string;
 	parentToolCallId?: string;
