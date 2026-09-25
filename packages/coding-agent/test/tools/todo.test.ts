@@ -8,6 +8,7 @@ import {
 	markdownToPhases,
 	nextActionableTask,
 	phasesToMarkdown,
+	formatTodoView,
 	resolveTodoMarkdownPath,
 	TodoTool,
 } from "@oh-my-pi/pi-coding-agent/tools";
@@ -297,6 +298,41 @@ describe("TodoTool operations", () => {
 		const done = await text({ op: "view", phase: "Done" });
 		expect(done).toContain("[X] old one");
 		expect(done).toContain("  Work: 0/3 closed");
+	});
+
+	it("shows open rows with finished worker results as needing lead review", async () => {
+		const now = Date.parse("2026-09-25T08:00:00.000Z");
+		const phases: TodoPhase[] = [
+			{
+				name: "Work",
+				tasks: [
+					{
+						content: "Read preflight result",
+						status: "in_progress",
+						schedule: {
+							owner: "Worker-1",
+							executor: {
+								workerId: "Worker-1",
+								agentProfile: "task",
+								startedAt: now - 10_000,
+								finishedAt: now - 1_000,
+								outcome: "completed",
+							},
+						},
+					},
+				],
+			},
+		];
+		const tool = new TodoTool(createSession(phases));
+
+		const summary = await tool.execute("call-1", { op: "view" });
+		const summaryText = summary.content.find(part => part.type === "text");
+		if (summaryText?.type !== "text") throw new Error("Expected text summary from todo view");
+		expect(summaryText.text).toContain("Read preflight result [result arrived: review] (Work)");
+
+		const view = formatTodoView(phases, { now });
+		expect(view).toContain("Read preflight result · result arrived: review · owner Worker-1");
+		expect(summary.details?.phases[0]?.tasks[0]?.status).toBe("in_progress");
 	});
 
 	it("blocks a task (excluded from remaining, counted distinctly) and unblocks it", async () => {

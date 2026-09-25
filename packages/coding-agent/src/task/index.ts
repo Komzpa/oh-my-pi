@@ -720,6 +720,7 @@ readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
 						workerId: event.id,
 						agentProfile: event.agent,
 						description: event.description,
+						taskText: event.taskText,
 						startedAt: event.at ?? Date.now(),
 					};
 					this.#todoExecutors.set(event.id, observed);
@@ -732,6 +733,7 @@ readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
 						resolvedModel: event.resolvedModelIdentity ?? prior.resolvedModel,
 						thinkingLevel: event.resolvedThinkingLevel ?? prior.thinkingLevel,
 						finishedAt: event.at ?? Date.now(),
+						outcome: event.status,
 					};
 					this.#persistTodoExecutor(observed);
 					this.#todoExecutors.delete(event.id);
@@ -763,7 +765,10 @@ readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
 	#persistTodoExecutor(observation: TodoExecutorObservation): void {
 		const phases = this.session.getTodoPhases?.();
 		if (!phases) return;
-		const updated = applyTodoExecutorObservation(phases, observation);
+		const updated = applyTodoExecutorObservation(phases, {
+			...observation,
+			runningWorkerIds: new Set(this.#todoExecutors.keys()),
+		});
 		if (!updated) return;
 		this.session.setTodoPhases?.(updated);
 		this.session.persistTodoPhases?.(updated);

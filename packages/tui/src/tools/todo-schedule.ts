@@ -38,6 +38,7 @@ export interface TodoSchedule {
 		thinkingLevel?: string;
 		startedAt: number;
 		finishedAt?: number;
+		outcome?: "completed" | "failed" | "aborted";
 	};
 }
 
