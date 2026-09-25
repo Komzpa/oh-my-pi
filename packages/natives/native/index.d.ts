@@ -1658,6 +1658,10 @@ export interface GlobOptions {
   hidden?: boolean
   /** Maximum number of results to return. */
   maxResults?: number
+  /** Maximum number of entries to inspect before asking for a narrower path. */
+  maxScanEntries?: number
+  /** Maximum accumulated regular-file size in bytes to inspect. */
+  maxScanBytes?: number
   /** Respect .gitignore files (default: true). */
   gitignore?: boolean
   /** Enable walker scan caching (default: false). */
@@ -1756,6 +1760,10 @@ export interface GrepOptions {
    * reached.
    */
   maxCountPerFile?: number
+  /** Stop the directory walk after this many candidate files. */
+  maxScanFiles?: number
+  /** Stop before reading candidate files beyond this aggregate byte budget. */
+  maxScanBytes?: number
   /** Abort signal for cancelling the operation. */
   signal?: unknown
   /** Timeout in milliseconds for the operation. */
