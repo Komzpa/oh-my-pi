@@ -217,6 +217,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.renderHelp,
 	},
 	{
+		name: "restart",
+		load: () => import("./commands/restart").then(m => m.default),
+		help: commandHelp.restartHelp,
+	},
+	{
 		name: "skill",
 		load: () => import("./commands/skill").then(m => m.default),
 		aliases: ["skills"],

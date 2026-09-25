@@ -269,8 +269,10 @@ export interface InteractiveModeContext {
 	init(options?: InteractiveModeInitOptions): Promise<void>;
 	playWelcomeIntro(): void;
 	shutdown(): Promise<void>;
-	/** Tear down like {@link shutdown}, then relaunch the CLI with the original launch flags, resuming this session. */
+	/** Queue a cooperative restart; the low-level relaunch is private to InteractiveMode. */
 	restart(): Promise<void>;
+	/** Show or cancel the current session's queued restart without starting a model turn. */
+	handleRestartCommand(action: "status" | "cancel"): Promise<void>;
 	/** Request graceful shutdown at the next fully settled boundary, including background turns. */
 	requestShutdown(): void;
 	checkShutdownRequested(): Promise<void>;

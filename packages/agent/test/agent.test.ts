@@ -25,6 +25,77 @@ describe("Agent", () => {
 		// The message is queued but not yet in state.messages
 		expect(agent.state.messages).not.toContainEqual(message);
 	});
+	it("shows count-only queue pressure at provider boundaries and clears it after drain", async () => {
+		const toolSchema = type({});
+		const agentRef = {} as { current: Agent };
+		const enqueueTool: AgentTool<typeof toolSchema> = {
+			name: "enqueue",
+			label: "Enqueue",
+			description: "Queue two steering messages",
+			parameters: toolSchema,
+			async execute() {
+				agentRef.current.steer({ role: "user", content: "queued A", timestamp: Date.now() });
+				agentRef.current.steer({ role: "user", content: "secret queued B", timestamp: Date.now() });
+				return { content: [{ type: "text", text: "queued" }] };
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "enqueue-1", name: "enqueue", arguments: {} }] },
+				{ content: ["continue"] },
+				{ content: ["done"] },
+				{ content: ["ordinary turn"] },
+			],
+		});
+		const agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [enqueueTool], messages: [] },
+			streamFn: mock.stream,
+			steeringMode: "one-at-a-time",
+			transformProviderContext: context => ({
+				...context,
+				messages: [
+					...context.messages,
+					{ role: "developer", content: "existing transform", timestamp: Date.now() },
+				],
+			}),
+		});
+		agentRef.current = agent;
+
+		await agent.prompt("start");
+		expect(
+			mock.calls[1].context.messages.some(
+				message => message.role === "developer" && message.content === "existing transform",
+			),
+		).toBe(true);
+		const pressureMessages = (index: number) =>
+			mock.calls[index].context.messages.filter(
+				message =>
+					message.role === "developer" &&
+					typeof message.content === "string" &&
+					message.content.includes("pending queued messages"),
+			);
+
+		expect(pressureMessages(0)).toHaveLength(0);
+		expect(pressureMessages(1)).toMatchObject([
+			{ role: "developer", content: expect.stringContaining("There are 1 pending queued messages") },
+		]);
+		expect(
+			mock.calls[1].context.messages.some(
+				message => message.role === "user" && message.content === "secret queued B",
+			),
+		).toBe(false);
+		expect(pressureMessages(2)).toMatchObject([
+			{ role: "developer", content: expect.stringContaining("There are 0 pending queued messages") },
+		]);
+		expect(
+			mock.calls[2].context.messages.some(
+				message => message.role === "user" && message.content === "secret queued B",
+			),
+		).toBe(true);
+
+		await agent.prompt("ordinary turn");
+		expect(pressureMessages(3)).toHaveLength(0);
+	});
 
 	it("classifies agent-authored steering as a parent steering message", async () => {
 		const toolSchema = type({ value: type("string") });
@@ -541,6 +612,95 @@ describe("Agent", () => {
 
 		expect(hasQueuedFollowUp).toBe(true);
 		expect(agent.state.messages[agent.state.messages.length - 1].role).toBe("assistant");
+	});
+
+	it("replaces 38 queued goal continuations with one delivery and no model-news pressure", async () => {
+		const mock = createMockModel({ responses: [{ content: ["Processed"] }] });
+		const agent = new Agent({ streamFn: mock.stream });
+		const goalContinuations = Array.from({ length: 38 }, (_, index) => ({
+			role: "custom" as const,
+			customType: "goal-continuation",
+			content: `continuation ${index + 1}`,
+			display: false,
+			timestamp: index + 1,
+		}));
+		const newestGoalContinuation = goalContinuations[goalContinuations.length - 1]!;
+		agent.replaceMessages([
+			{ role: "user", content: "Initial", timestamp: Date.now() - 10 },
+			createAssistantMessage([{ type: "text", text: "Initial response" }]),
+		]);
+
+		for (const continuation of goalContinuations) agent.followUp(continuation);
+
+		expect(agent.peekFollowUpQueue()).toEqual([newestGoalContinuation]);
+		expect(agent.getPendingModelNewsCount()).toBe(0);
+		await agent.continue();
+
+		const delivered = agent.state.messages.filter(
+			(message): message is Extract<typeof message, { role: "custom" }> =>
+				message.role === "custom" && message.customType === "goal-continuation",
+		);
+		expect(delivered).toEqual([newestGoalContinuation]);
+	});
+
+	it("keeps only the newest goal continuation when restoring queued messages", () => {
+		const agent = new Agent();
+		const goalContinuations = Array.from({ length: 38 }, (_, index) => ({
+			role: "custom" as const,
+			customType: "goal-continuation",
+			content: `restored continuation ${index + 1}`,
+			display: false,
+			timestamp: index + 1,
+		}));
+		const newestGoalContinuation = goalContinuations[goalContinuations.length - 1]!;
+
+		agent.replaceQueues(goalContinuations.slice(0, 19), goalContinuations.slice(19));
+
+		expect(agent.peekSteeringQueue()).toEqual([]);
+		expect(agent.peekFollowUpQueue()).toEqual([newestGoalContinuation]);
+		expect(agent.getPendingModelNewsCount()).toBe(0);
+	});
+
+	it("counts queued user input as one model-news message", () => {
+		const agent = new Agent();
+		agent.steer({
+			role: "user",
+			content: "Please do this next",
+			attribution: "user",
+			timestamp: Date.now(),
+		});
+
+		expect(agent.getPendingModelNewsCount()).toBe(1);
+	});
+
+	it("counts worker and IRC results but ignores agent-attributed asides", () => {
+		const agent = new Agent();
+		agent.followUp({
+			role: "custom",
+			customType: "extension-aside",
+			content: "Harness status",
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+		agent.followUp({
+			role: "custom",
+			customType: "async-result",
+			content: "Worker finished",
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+		agent.steer({
+			role: "custom",
+			customType: "irc:incoming",
+			content: "Peer result",
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+
+		expect(agent.getPendingModelNewsCount()).toBe(2);
 	});
 
 	it("continue() should keep one-at-a-time steering semantics from assistant tail", async () => {

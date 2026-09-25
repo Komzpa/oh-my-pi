@@ -383,9 +383,57 @@ interface CursorToolResultEntry {
 
 type QueuedMessageQueue = "steering" | "followUp";
 
+interface QueuedMessageDelivery {
+	queue: QueuedMessageQueue;
+	controller: AbortController | undefined;
+	messages: AgentMessage[];
+	next: number;
+	persisted: number;
+	persistedMessages: Set<AgentMessage>;
+}
 interface QueuedMessageClaim {
 	messages: AgentMessage[];
 	controller: AbortController;
+}
+
+function isGoalContinuationMessage(message: AgentMessage): boolean {
+	return message.role === "custom" && message.customType === "goal-continuation";
+}
+
+function isQueuedModelNews(message: AgentMessage): boolean {
+	// Worker results and IRC are news even though the harness attributes them to the agent.
+	if (message.role === "custom" && (message.customType === "async-result" || message.customType === "irc:incoming"))
+		return true;
+	if ("attribution" in message && message.attribution === "agent") return false;
+	return message.role === "user" || ("attribution" in message && message.attribution === "user");
+}
+
+function keepNewestGoalContinuation(
+	steering: AgentMessage[],
+	followUp: AgentMessage[],
+): { steering: AgentMessage[]; followUp: AgentMessage[] } {
+	let newestQueue: "steering" | "followUp" | undefined;
+	let newestIndex = -1;
+	let newestTimestamp = Number.NEGATIVE_INFINITY;
+	for (const [queue, messages] of [
+		["steering", steering],
+		["followUp", followUp],
+	] as const) {
+		for (let index = 0; index < messages.length; index++) {
+			const message = messages[index];
+			if (!message || !isGoalContinuationMessage(message)) continue;
+			if (message.timestamp >= newestTimestamp) {
+				newestQueue = queue;
+				newestIndex = index;
+				newestTimestamp = message.timestamp;
+			}
+		}
+	}
+	const retain = (queue: "steering" | "followUp", messages: AgentMessage[]) =>
+		messages.filter(
+			(message, index) => !isGoalContinuationMessage(message) || (queue === newestQueue && index === newestIndex),
+		);
+	return { steering: retain("steering", steering), followUp: retain("followUp", followUp) };
 }
 
 export class Agent {
@@ -411,13 +459,11 @@ export class Agent {
 	#steeringQueue: AgentMessage[] = [];
 	#followUpQueue: AgentMessage[] = [];
 	#queuedMessageClaims: Partial<Record<QueuedMessageQueue, QueuedMessageClaim>> = {};
-	/** Dequeued originals remain recoverable until their transcript events arrive. */
-	#queuedMessageDeliveries = new Set<{
-		queue: QueuedMessageQueue;
-		controller: AbortController | undefined;
-		messages: AgentMessage[];
-		next: number;
-	}>();
+	#lastModelQueuedMessageCount = 0;
+	/** Dequeued originals remain recoverable until their transcript events are durable. */
+	#queuedMessageDeliveries = new Set<QueuedMessageDelivery>();
+	#queuedMessageDeliveryAcks = new WeakMap<AgentMessage, QueuedMessageDelivery>();
+	#queuedMessagePersistenceRequired = false;
 	#steeringWaiters = new Set<() => void>();
 
 	#steeringMode: "all" | "one-at-a-time";
@@ -941,7 +987,14 @@ export class Agent {
 		if (messages.length === 0) return messages;
 		const runController = this.#abortController;
 		if (!prepare) {
-			this.#queuedMessageDeliveries.add({ queue, controller: runController, messages, next: 0 });
+			this.#queuedMessageDeliveries.add({
+				queue,
+				controller: runController,
+				messages,
+				next: 0,
+				persisted: 0,
+				persistedMessages: new Set(),
+			});
 			return messages;
 		}
 
@@ -960,7 +1013,14 @@ export class Agent {
 				throw new DOMException("Queued message preparation cancelled", "AbortError");
 			}
 			delete this.#queuedMessageClaims[queue];
-			this.#queuedMessageDeliveries.add({ queue, controller: runController, messages, next: 0 });
+			this.#queuedMessageDeliveries.add({
+				queue,
+				controller: runController,
+				messages,
+				next: 0,
+				persisted: 0,
+				persistedMessages: new Set(),
+			});
 			return additional?.length ? [...messages, ...additional] : messages;
 		} catch (error) {
 			if (signal.aborted) throw error;
@@ -996,9 +1056,18 @@ export class Agent {
 		const restored: Record<QueuedMessageQueue, AgentMessage[]> = { steering: [], followUp: [] };
 		for (const delivery of this.#queuedMessageDeliveries) {
 			if (delivery.controller !== controller) continue;
-			this.#queuedMessageDeliveries.delete(delivery);
+			const appendedButUnpersisted = delivery.messages.slice(delivery.persisted, delivery.next);
 			for (let i = delivery.next; i < delivery.messages.length; i++) {
 				restored[delivery.queue].push(delivery.messages[i]);
+			}
+			if (this.#queuedMessagePersistenceRequired && appendedButUnpersisted.length > 0) {
+				delivery.messages = appendedButUnpersisted;
+				delivery.next = appendedButUnpersisted.length;
+				delivery.persisted = 0;
+				delivery.persistedMessages.clear();
+				delivery.controller = undefined;
+			} else {
+				this.#queuedMessageDeliveries.delete(delivery);
 			}
 		}
 		if (restored.steering.length > 0) {
@@ -1142,16 +1211,63 @@ export class Agent {
 		this.#followUpQueue = followUp.slice();
 		this.#cancelQueuedMessagePreparation("steering");
 		this.#cancelQueuedMessagePreparation("followUp");
+		this.#normalizeQueuedGoalContinuations();
 		this.#notifySteeringWaiters();
+	}
+
+	/** Require queued deliveries to remain recoverable until the host confirms durable persistence. */
+	requireQueuedMessagePersistenceAcknowledgement(): void {
+		this.#queuedMessagePersistenceRequired = true;
+	}
+
+	queuedMessageDeliveryQueue(message: AgentMessage): QueuedMessageQueue | undefined {
+		return this.#queuedMessageDeliveryAcks.get(message)?.queue;
+	}
+
+	acknowledgeQueuedMessagePersistence(message: AgentMessage): void {
+		const delivery = this.#queuedMessageDeliveryAcks.get(message);
+		if (!delivery) return;
+		this.#queuedMessageDeliveryAcks.delete(message);
+		delivery.persistedMessages.add(message);
+		while (delivery.persistedMessages.delete(delivery.messages[delivery.persisted])) delivery.persisted++;
+		if (delivery.persisted === delivery.messages.length) this.#queuedMessageDeliveries.delete(delivery);
 	}
 
 	appendMessage(m: AgentMessage) {
 		this.#state.messages.push(m);
 		for (const delivery of this.#queuedMessageDeliveries) {
 			if (delivery.messages[delivery.next] !== m) continue;
-			if (++delivery.next === delivery.messages.length) this.#queuedMessageDeliveries.delete(delivery);
+			if (this.#queuedMessagePersistenceRequired) {
+				this.#queuedMessageDeliveryAcks.set(m, delivery);
+				delivery.next++;
+			} else {
+				delivery.persisted = ++delivery.next;
+				if (delivery.next === delivery.messages.length) this.#queuedMessageDeliveries.delete(delivery);
+			}
 			break;
 		}
+	}
+
+	/** Snapshot pending queues including unpersisted delivery suffixes and active preparation claims. */
+	snapshotPendingQueues(
+		excludingMessage?: AgentMessage,
+		excludingQueue?: QueuedMessageQueue,
+	): { steering: AgentMessage[]; followUp: AgentMessage[] } {
+		const snapshot = (queue: QueuedMessageQueue): AgentMessage[] => {
+			const messages: AgentMessage[] = [];
+			for (const delivery of this.#queuedMessageDeliveries) {
+				if (delivery.queue !== queue) continue;
+				for (let index = delivery.persisted; index < delivery.messages.length; index++) {
+					const message = delivery.messages[index];
+					if (message !== excludingMessage || queue !== excludingQueue) messages.push(message);
+				}
+			}
+			const claim = this.#queuedMessageClaims[queue];
+			if (claim) messages.push(...claim.messages);
+			messages.push(...(queue === "steering" ? this.#steeringQueue : this.#followUpQueue));
+			return messages;
+		};
+		return { steering: snapshot("steering"), followUp: snapshot("followUp") };
 	}
 
 	popMessage(): AgentMessage | undefined {
@@ -1167,6 +1283,12 @@ export class Agent {
 	 * Delivered after current tool execution, skips remaining tools.
 	 */
 	steer(m: AgentMessage) {
+		if (isGoalContinuationMessage(m)) {
+			this.#cancelQueuedMessagePreparation("steering", true);
+			this.#cancelQueuedMessagePreparation("followUp", true);
+			this.#steeringQueue = this.#steeringQueue.filter(message => !isGoalContinuationMessage(message));
+			this.#followUpQueue = this.#followUpQueue.filter(message => !isGoalContinuationMessage(message));
+		}
 		this.#steeringQueue.push(m);
 		this.#notifySteeringWaiters();
 	}
@@ -1176,6 +1298,12 @@ export class Agent {
 	 * Delivered only when agent has no more tool calls or steering messages.
 	 */
 	followUp(m: AgentMessage) {
+		if (isGoalContinuationMessage(m)) {
+			this.#cancelQueuedMessagePreparation("steering", true);
+			this.#cancelQueuedMessagePreparation("followUp", true);
+			this.#steeringQueue = this.#steeringQueue.filter(message => !isGoalContinuationMessage(message));
+			this.#followUpQueue = this.#followUpQueue.filter(message => !isGoalContinuationMessage(message));
+		}
 		this.#followUpQueue.push(m);
 	}
 
@@ -1217,6 +1345,24 @@ export class Agent {
 		);
 	}
 
+	/** Count only queued items that add information the model needs to respond to. */
+	getPendingModelNewsCount(): number {
+		this.#normalizeQueuedGoalContinuations();
+		return [...this.peekSteeringQueue(), ...this.peekFollowUpQueue()].filter(isQueuedModelNews).length;
+	}
+
+	#normalizeQueuedGoalContinuations(): void {
+		const claims = [this.#queuedMessageClaims.steering, this.#queuedMessageClaims.followUp];
+		const hasClaimedGoalContinuation = claims.some(claim => claim?.messages.some(isGoalContinuationMessage));
+		if (hasClaimedGoalContinuation) {
+			this.#cancelQueuedMessagePreparation("steering", true);
+			this.#cancelQueuedMessagePreparation("followUp", true);
+		}
+		const queues = keepNewestGoalContinuation(this.#steeringQueue, this.#followUpQueue);
+		this.#steeringQueue = queues.steering;
+		this.#followUpQueue = queues.followUp;
+	}
+
 	/** Non-consuming view of the pending steering queue (insertion order, newest
 	 *  last). The session layer derives its queued-message display/count from
 	 *  this live view instead of a mirror, so the agent-core queue stays the
@@ -1246,6 +1392,7 @@ export class Agent {
 	}
 
 	#dequeueSteeringMessages(): AgentMessage[] {
+		this.#normalizeQueuedGoalContinuations();
 		if (this.#steeringMode === "one-at-a-time") {
 			if (this.#steeringQueue.length > 0) {
 				const first = this.#steeringQueue[0];
@@ -1260,6 +1407,7 @@ export class Agent {
 	}
 
 	#dequeueFollowUpMessages(): AgentMessage[] {
+		this.#normalizeQueuedGoalContinuations();
 		if (this.#followUpMode === "one-at-a-time") {
 			if (this.#followUpQueue.length > 0) {
 				const first = this.#followUpQueue[0];
@@ -1636,7 +1784,24 @@ export class Agent {
 			kimiApiFormat: this.#kimiApiFormat,
 			preferWebsockets: this.#preferWebsockets,
 			convertToLlm: this.#convertToLlm,
-			transformProviderContext: this.#transformProviderContext,
+			transformProviderContext: async (context, providerModel) => {
+				const transformedContext = this.#transformProviderContext
+					? await this.#transformProviderContext(context, providerModel)
+					: context;
+				const queuedCount = this.getPendingModelNewsCount();
+				if (queuedCount === 0 && this.#lastModelQueuedMessageCount === 0) return transformedContext;
+
+				this.#lastModelQueuedMessageCount = queuedCount;
+				const pressure: Message = {
+					role: "developer",
+					content:
+						queuedCount === 0
+							? "There are 0 pending queued messages. This clears any earlier queue notice; do not assume another iteration is pending. Continue the current task normally."
+							: `There are ${queuedCount} pending queued messages. This supersedes earlier queue counts. Their contents are withheld until normal delivery. Finish meaningful current work and yield when practical; defer optional exhaustive checks, but never skip correctness or safety checks.`,
+					timestamp: Date.now(),
+				};
+				return { ...transformedContext, messages: [...transformedContext.messages, pressure] };
+			},
 			sentToolDefinitions: this.#sentToolDefinitions,
 			transformContext: this.#transformContext,
 			onPayload: this.#onPayload,
