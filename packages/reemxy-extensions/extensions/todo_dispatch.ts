@@ -2,8 +2,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { availableParallelism } from "node:os";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
-import type { TodoPlanForecast, TodoPlanningIssue, TodoScheduleInput, TodoTaskForecast } from "./todo-schedule";
-import * as forecastFallback from "./todo-schedule";
+import type { TodoPlanForecast, TodoPlanningIssue, TodoScheduleInput, TodoTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import * as forecastFallback from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -1037,7 +1037,7 @@ export function decideTodoDispatch(
 export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   const host = pi.pi;
   const hostSdk = host as DispatchForecastApi | undefined;
-  // The package carries this fallback for hosts whose extension SDK predates forecast exports.
+  // The host engine module is the fallback for hosts whose extension SDK predates forecast exports.
   const sourceFallback = hostSdk?.forecastTodoPlan ? undefined : forecastFallback;
   const sdk = {
     forecastTodoPlan: hostSdk?.forecastTodoPlan ?? sourceFallback!.forecastTodoPlan,
