@@ -101,7 +101,7 @@ function buildDefaultToolSnapshot(
 		body.push("");
 	}
 
-	if (result) {
+	if (result && !result.skipped) {
 		const textContent = result.output.trimEnd();
 		if (!textContent) {
 			body.push(uiTheme.fg("dim", "(no output)"));
