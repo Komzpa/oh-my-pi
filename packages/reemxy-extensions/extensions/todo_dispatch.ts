@@ -1110,7 +1110,13 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     sprintState = { ...sprintState, seenRows: [...sprintState.seenRows, content] };
   };
   const setRetroDue = (reason: string, meta: { deadlineAt?: number; deliveryKey?: string } = {}) => {
-    if (sprintState.retroDueReason) return;
+    if (sprintState.retroDueReason) {
+      const newWindow = reason === sprintState.retroDueReason && (
+        (meta.deadlineAt !== undefined && meta.deadlineAt !== sprintState.retroDueDeadlineAt) ||
+        (meta.deliveryKey !== undefined && meta.deliveryKey !== sprintState.retroDueDeliveryKey)
+      );
+      if (!newWindow) return;
+    }
     sprintState = {
       ...sprintState,
       retroDueReason: reason,
@@ -1138,7 +1144,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     }
     let facilitatorSettled = false;
     for (const job of jobs?.recent ?? []) {
-      if (job.type !== "task" || !["completed", "failed", "cancelled"].includes(job.status)) continue;
+      if (job.type !== "task" || !["completed", "failed"].includes(job.status)) continue;
       if (sprintState.seenJobIds.includes(job.id)) continue;
       const id = job.agentId ?? job.id;
       const at = typeof job.startTime === "number" ? job.startTime : now;
