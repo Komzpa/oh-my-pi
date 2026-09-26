@@ -2,6 +2,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	TodoTool,
+	getLatestTodoArchiveFromEntries,
 	getLatestTodoPhasesFromEntries,
 	markdownToPhases,
 	phasesToMarkdown,
@@ -159,8 +160,19 @@ describe("native todo schedule operation", () => {
 			await harness.tool.execute("done-first", { op: "done", task: "ship" });
 			expect(harness.phases()[0].tasks[0].schedule?.finishedAt).toBe(1_800_000_000_000);
 			clock.mockReturnValue(1_800_000_600_000);
-			await harness.tool.execute("done-again", { op: "done", task: "ship" });
-			expect(harness.phases()[0].tasks[0].schedule?.finishedAt).toBe(1_800_000_000_000);
+			const secondDone = await harness.tool.execute("done-again", { op: "done", task: "ship" });
+			const archived = getLatestTodoArchiveFromEntries([
+				{
+					type: "custom",
+					id: "archive",
+					parentId: null,
+					timestamp: new Date(1_800_000_600_000).toISOString(),
+					customType: "user_todo_edit",
+					data: { edit: secondDone.details?.edit },
+				} as unknown as SessionEntry,
+			]);
+			expect(archived[0]?.tasks[0]?.schedule?.finishedAt).toBe(1_800_000_000_000);
+			expect(archived[0]?.tasks[0]?.status).toBe("completed");
 
 			const timestamp = "2026-09-23T17:13:21.867Z";
 			const legacy = [{ name: "Work", tasks: [{ content: "legacy", status: "completed" as const }] }];
