@@ -4,6 +4,7 @@ import {
 	formatTaskForecast,
 	formatTaskForecastDisplay,
 	formatPlanForecastDisplay,
+	parseUserWait,
 	validateTodoDependencies,
 	type TodoEstimate,
 	type TodoScheduleInput,
@@ -524,5 +525,62 @@ describe("todo schedule forecast", () => {
 		expect(byName.get("healthy")?.resourceStart).toBe(NOW);
 		expect(plan.earliestFinish).toBeUndefined();
 		expect(plan.resourceFinish).toBeUndefined();
+	});
+
+	// The blocker form `waits for user: <question> proposal: <answer and why>` marks a row only the
+	// user can unblock. The host HUD renders it as `waits for you: … · proposal: …` instead of the
+	// ordinary `needs unblock: …`. This is the host copy of the same parsing and render rule as
+	// `parseUserWait`/`formatUserWait` in `packages/reemxy-extensions/extensions/todo-schedule.ts`;
+	// keep the rendered text identical in both files.
+	it("parses a user-wait blocker into question and proposal, and leaves an ordinary blocker alone", () => {
+		expect(parseUserWait(undefined)).toBeUndefined();
+		expect(parseUserWait("waiting on infra ticket")).toBeUndefined();
+		expect(parseUserWait("waits for user: ship on Friday? proposal: yes, ship Friday; fix is verified.")).toEqual({
+			question: "ship on Friday?",
+			proposal: "yes, ship Friday; fix is verified.",
+		});
+		expect(parseUserWait("waits for the user: pick a vendor")).toEqual({ question: "pick a vendor" });
+	});
+
+	it("renders a user-wait blocker as 'waits for you', not 'needs unblock'", () => {
+		const release = task("release", 60, { status: "blocked" });
+		release.blocker = "waits for user: ship on Friday? proposal: yes, ship Friday; fix is verified.";
+		const row = forecastTodoPlan(phases(release), { now: NOW }).rows[0]!;
+
+		expect(row.waitsForUser).toEqual({
+			question: "ship on Friday?",
+			proposal: "yes, ship Friday; fix is verified.",
+		});
+		const compact = formatTaskForecast(row, NOW);
+		const expanded = formatTaskForecastDisplay(row, NOW, true);
+		expect(compact).toContain("waits for you: ship on Friday? · proposal: yes, ship Friday; fix is verified.");
+		expect(compact).not.toContain("needs unblock");
+		expect(expanded).toContain("waits for you: ship on Friday? · proposal: yes, ship Friday; fix is verified.");
+		expect(expanded).not.toContain("needs unblock");
+	});
+
+	it("renders a user-wait blocker without a proposal as 'no proposal yet', still not 'needs unblock'", () => {
+		const procure = task("procure", 60, { status: "blocked" });
+		procure.blocker = "waits for user: pick a vendor";
+		const row = forecastTodoPlan(phases(procure), { now: NOW }).rows[0]!;
+
+		expect(formatTaskForecast(row, NOW)).toContain("waits for you: pick a vendor · no proposal yet");
+		expect(formatTaskForecast(row, NOW)).not.toContain("needs unblock");
+	});
+
+	it("keeps an ordinary blocked reason as 'needs unblock' when it is not a user wait", () => {
+		const deploy = task("deploy", 60, { status: "blocked" });
+		deploy.blocker = "waiting on infra ticket";
+		const row = forecastTodoPlan(phases(deploy), { now: NOW }).rows[0]!;
+		expect(row.waitsForUser).toBeUndefined();
+		expect(formatTaskForecast(row, NOW)).toContain("needs unblock: waiting on infra ticket");
+		expect(formatTaskForecastDisplay(row, NOW, true)).toContain("needs unblock: waiting on infra ticket");
+	});
+
+	it("renders 'on proposal' for a row that proceeds on a parked user-wait proposal", () => {
+		const plan = forecastTodoPlan(phases(task("draft doc", 60)), { now: NOW });
+		const row = { ...plan.rows[0]!, onProposal: ["pick a vendor"] };
+		expect(formatTaskForecast(row, NOW)).toContain("on proposal: pick a vendor");
+		expect(formatTaskForecastDisplay(row, NOW)).toContain("on proposal");
 	});
 });
