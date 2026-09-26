@@ -63,6 +63,10 @@ export interface TodoTaskForecast {
 	blocker?: string;
 	/** Direct blocked prerequisite and its reason, when known. */
 	awaitingPrerequisite?: string;
+	/** A blocked row that only the user can unblock, with the chief's own proposal when recorded. */
+	waitsForUser?: TodoUserWait;
+	/** Parked rows whose proposal this row proceeds on; re-check it when the user answers. */
+	onProposal?: string[];
 	estimateRangeSeconds?: { optimistic: number; likely: number; pessimistic: number };
 	planningIssues?: TodoPlanningIssue[];
 	owner?: string;
@@ -183,6 +187,35 @@ export interface TodoPlanningIssue {
 
 export function getTodoPlanningIssues(phases: TodoScheduleInput): TodoPlanningIssue[] {
 	return collectTodoPlanningIssues(phases, analyzeDependencies(phases));
+}
+
+/** What the user must give, and the answer the chief would pick itself. */
+export interface TodoUserWait {
+	question: string;
+	proposal?: string;
+}
+
+const USER_WAIT = /^\s*waits?\s+for\s+(?:the\s+)?user\s*:\s*([\s\S]*)$/iu;
+const PROPOSAL_MARK = /(?:^|[\s;,.|])proposal\s*:\s*/iu;
+
+/**
+ * The one reading of a user-wait blocker: `waits for user: <question> proposal: <answer and why>`.
+ * Only the user can unblock such a row (an approval, a choice, a file only the user has); every
+ * other blocker is ordinary recovery work. Undefined for any other blocker.
+ *
+ * Kept identical to `parseUserWait` in `packages/reemxy-extensions/extensions/todo-schedule.ts`
+ * (the two renderers must agree on the same blocker text; see that file's copy for the source of
+ * truth until the duplication is resolved).
+ */
+export function parseUserWait(blocker: string | undefined): TodoUserWait | undefined {
+	if (typeof blocker !== "string") return undefined;
+	const match = USER_WAIT.exec(blocker);
+	if (!match) return undefined;
+	const body = match[1]!;
+	const mark = PROPOSAL_MARK.exec(body);
+	const question = (mark ? body.slice(0, mark.index) : body).replace(/[\s;,.|]+$/u, "").trim();
+	const proposal = mark ? body.slice(mark.index + mark[0].length).trim() : "";
+	return proposal ? { question, proposal } : { question };
 }
 
 const CONFIDENCE_RANK: Record<TodoConfidence, number> = { low: 0, medium: 1, high: 2 };
@@ -1228,8 +1261,10 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 		const awaitingPrerequisite = blockedPrerequisite
 			? `${blockedPrerequisite.content}${blockedPrerequisite.blocker ? `: ${blockedPrerequisite.blocker}` : ""}`
 			: undefined;
+		const waitsForUser = node.status === "blocked" ? parseUserWait(node.blocker) : undefined;
 		return {
 			blocker: node.blocker,
+			...(waitsForUser ? { waitsForUser } : {}),
 			awaitingPrerequisite,
 			estimateRangeSeconds: isValidEstimate(node.estimate)
 				? {
@@ -1344,6 +1379,11 @@ function formatCompletion(row: TodoTaskForecast, now: number, compact: boolean, 
 	return `${status} at ${clock} · ${age} ago`;
 }
 
+/** A row only the user can unblock: what it waits for and the chief's own answer. */
+function formatUserWait(wait: TodoUserWait, text: (value: string) => string): string {
+	return `waits for you: ${text(wait.question)} · ${wait.proposal ? `proposal: ${text(wait.proposal)}` : "no proposal yet"}`;
+}
+
 /** Compact item summary; task identity and detailed issues remain in structured data. */
 export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded = false): string {
 	const terminal = row.status === "completed" || row.status === "abandoned";
@@ -1354,7 +1394,9 @@ export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded 
 	const label = terminal
 		? formatCompletion(row, now, false)
 		: row.status === "blocked"
-			? `needs unblock${row.blocker ? `: ${safeText(row.blocker)}` : ""} · ${effort}`
+			? row.waitsForUser
+				? formatUserWait(row.waitsForUser, safeText)
+				: `needs unblock${row.blocker ? `: ${safeText(row.blocker)}` : ""} · ${effort}`
 			: row.awaitingPrerequisite
 				? `awaits prerequisite: ${safeText(row.awaitingPrerequisite)} · ${effort}`
 				: row.resourceFinish !== undefined
@@ -1363,6 +1405,7 @@ export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded 
 						? `plan required: ${planActions}`
 						: `forecast unavailable${row.issues[0] ? `: ${safeText(row.issues[0])}` : ""}`;
 	const parts = [label];
+	if (row.onProposal?.length) parts.push(`on proposal: ${row.onProposal.map(safeText).join(", ")}`);
 	if (row.confidence !== "unknown") parts.push(`confidence: ${row.confidence}`);
 	if (row.resourceConfidence && row.resourceConfidence !== "unknown")
 		parts.push(`resource confidence: ${row.resourceConfidence}`);
@@ -1455,7 +1498,11 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 	const label = terminal
 		? formatCompletion(row, now, true, expanded)
 		: row.status === "blocked"
-			? `needs unblock${row.blocker ? `: ${expanded ? safeText(row.blocker) : truncateToWidth(safeText(row.blocker), 32)}` : ""} · ${effort}`
+			? row.waitsForUser
+				? formatUserWait(row.waitsForUser, text =>
+						expanded ? safeText(text) : truncateToWidth(safeText(text), 32),
+					)
+				: `needs unblock${row.blocker ? `: ${expanded ? safeText(row.blocker) : truncateToWidth(safeText(row.blocker), 32)}` : ""} · ${effort}`
 			: row.awaitingPrerequisite
 				? `awaits prerequisite: ${expanded ? safeText(row.awaitingPrerequisite) : truncateToWidth(safeText(row.awaitingPrerequisite), 32)} · ${effort}`
 				: row.resourceFinish !== undefined
@@ -1472,6 +1519,7 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 	if (row.estimateRangeSeconds)
 		parts.push(`${worked ? `${worked} / ` : ""}${Math.ceil(row.estimateRangeSeconds.likely / 60)}m`);
 	else if (worked) parts.push(worked);
+	if (row.onProposal?.length) parts.push("on proposal");
 	if (row.criticalityKnown === true && row.critical) parts.push("critical");
 	if (row.reestimateCount >= 3) parts.push(`reestimated ${row.reestimateCount}×`);
 	if (expanded) {
