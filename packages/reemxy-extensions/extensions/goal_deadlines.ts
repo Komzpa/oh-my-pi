@@ -121,9 +121,9 @@ export function derivePresence(
 	const deadline = presenceDeadline(state, now, timeZone, settings);
 	const recent = ageMinutes <= settings.activeMinutes;
 	const quietHours = local.hour >= settings.quietStartHour || local.hour < settings.quietEndHour;
+	if (ageMinutes >= settings.awayMinutes || (ageMinutes >= settings.activeMinutes && quietHours)) return "away";
 	if (recent && (deadline?.state === "at risk" || deadline?.state === "missed") && (quietHours || local.weekend))
 		return "firefighting";
-	if (ageMinutes >= settings.awayMinutes || (ageMinutes >= settings.activeMinutes && quietHours)) return "away";
 	return "watching";
 }
 
