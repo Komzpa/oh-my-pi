@@ -17,7 +17,7 @@ const row = (content: string, status: string = "pending") => ({
 async function fixture(initial: TodoScheduleInput, jobs: unknown[]) {
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   const branch: unknown[] = [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: initial } } }];
-  let plan = initial;
+  const state = { plan: initial };
   let deadlineAt = liveNow - 1;
   let recent = jobs;
   const intervals: Array<() => void> = [];
@@ -38,13 +38,13 @@ async function fixture(initial: TodoScheduleInput, jobs: unknown[]) {
     setInterval: (fn: () => void) => { intervals.push(fn); return fn as unknown as ReturnType<typeof setInterval>; },
     clearInterval: () => undefined,
   } as unknown as ExtensionContext;
-  const check = (phases: TodoScheduleInput = plan) => {
+  const check = (phases: TodoScheduleInput = state.plan) => {
     const result = handlers.get("tool_result")!({ toolName: "todo", toolCallId: "retro-check", isError: false, content: [{ type: "text", text: "schedule" }], details: { phases } }, ctx) as { content: Array<{ text?: string }> };
     return result.content.map((part) => part.text ?? "").join("\n");
   };
   const dispatch = (name: string, agent = "retro-facilitator") => handlers.get("tool_call")!({ toolName: "task", toolCallId: `call-${name}`, input: { tasks: [{ name, agent, task: "facilitate" }] } }, ctx);
   const finish = (agent = "retro-facilitator", isError = false) => handlers.get("tool_result")!({ toolName: "task", toolCallId: "retro-task", isError, details: { results: [{ agent, exitCode: 0, durationMs: 1000 }] } }, ctx);
-  return { handlers, branch, ctx, check, finish, dispatch, setPlan: (next: TodoScheduleInput) => { plan = next; }, setJobs: (next: unknown[]) => { recent = next; }, intervals, notices };
+  return { handlers, branch, ctx, check, finish, dispatch, setPlan: (next: TodoScheduleInput) => { state.plan = next; }, setJobs: (next: unknown[]) => { recent = next; }, intervals, notices };
 }
 
 test("successful retro-facilitator settlement clears stale due on the next PLAN CHECK", async () => {
