@@ -1,9 +1,10 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
-import { mkdirSync, appendFileSync, chmodSync } from "node:fs";
+import { mkdirSync, appendFileSync, chmodSync, readFileSync } from "node:fs";
 import { randomInt } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import type { ModelUsageHealth, ModelUsageHealthState } from "@oh-my-pi/pi-ai";
 
 export interface PoolConfig {
@@ -11,87 +12,27 @@ export interface PoolConfig {
 	fallbacks: string[];
 }
 
+// Pool lengths are routing policy; model selectors and fallback order live in agent frontmatter.
+const POOL_SIZES: Record<string, number> = {
+	coder: 4, "ui-coder": 3, scout: 2, "gate-runner": 2, "git-pr-owner": 2,
+	scribe: 2, reviewer: 3, workhorse: 3, "retro-facilitator": 3,
+	architect: 4, "plan-doctor": 3, "security-reviewer": 0,
+	researcher: 1, "business-analyst": 3, creative: 2,
+};
+
+function profilePool(agent: string, poolSize: number): PoolConfig {
+	const file = new URL(`./agents/${agent}.md`, import.meta.url);
+	const chain = parseAgent(file.pathname, readFileSync(file, "utf8"), "user").model;
+	if (!chain?.length) throw new Error(`Missing model frontmatter for ${agent}`);
+	return { pool: chain.slice(0, poolSize), fallbacks: chain.slice(poolSize) };
+}
+
 export const AGENT_POOLS: Record<string, PoolConfig> = {
-	coder: {
-		pool: [
-			"kimi-code/kimi-for-coding:high",
-			"deepseek/deepseek-v4-pro:high",
-			"codex-lb/gpt-6-luna:medium",
-			"kimi-code/k3:high",
-		],
-		fallbacks: ["codex-lb/gpt-6-sol:medium"],
-	},
-	"ui-coder": {
-		pool: [
-			"codex-lb/gpt-6-luna:medium",
-			"kimi-code/k3:high",
-			"deepseek/deepseek-v4-flash-vision-exp:high",
-		],
-		fallbacks: ["codex-lb/gpt-6-sol:medium", "anthropic/claude-sonnet-5:medium"],
-	},
-	// Pools for the agents that take most spawns: with only coder/ui-coder/workhorse pooled, 90% of
-	// spawns went to fixed chains led by gpt-6-luna and Kimi ran in 3% (user 2026-09-25: "почему
-	// так мало кими, он же должен быть").
+	...Object.fromEntries(Object.entries(POOL_SIZES).map(([agent, size]) => [agent, profilePool(agent, size)])),
+	// The built-in task agent has no package profile; retain its independent router policy.
 	task: {
-		pool: [
-			"codex-lb/gpt-6-luna:medium",
-			"kimi-code/kimi-for-coding:high",
-			"deepseek/deepseek-v4-pro:high",
-			"kimi-code/k3:high",
-		],
-		fallbacks: ["codex-lb/gpt-6-sol:medium"],
-	},
-	scout: {
-		pool: [
-			"codex-lb/gpt-6-luna:low",
-			"kimi-code/kimi-for-coding-highspeed:low",
-		],
-		fallbacks: ["anthropic/claude-haiku-4-5:low", "deepseek/deepseek-v4-flash:high"],
-	},
-	"gate-runner": {
-		pool: [
-			"codex-lb/gpt-6-luna:medium",
-			"kimi-code/kimi-for-coding-highspeed:medium",
-		],
-		fallbacks: ["deepseek/deepseek-v4-flash:high"],
-	},
-	"git-pr-owner": {
-		pool: [
-			"codex-lb/gpt-6-luna:medium",
-			"kimi-code/kimi-for-coding-highspeed:medium",
-		],
-		fallbacks: ["deepseek/deepseek-v4-flash:high"],
-	},
-	scribe: {
-		pool: [
-			"codex-lb/gpt-6-luna:low",
-			"kimi-code/kimi-for-coding-highspeed:low",
-		],
-		fallbacks: ["deepseek/deepseek-v4-flash:high"],
-	},
-	reviewer: {
-		pool: [
-			"codex-lb/gpt-6-luna:low",
-			"deepseek/deepseek-v4-pro:high",
-			"kimi-code/k3:high",
-		],
-		fallbacks: ["anthropic/claude-opus-5-5:high"],
-	},
-	workhorse: {
-		pool: [
-			"codex-lb/gpt-6-luna:low",
-			"deepseek/deepseek-v4-flash:high",
-			"kimi-code/kimi-for-coding-highspeed:medium",
-		],
-		fallbacks: [],
-	},
-	"retro-facilitator": {
-		pool: [
-			"anthropic/claude-fable-5-1:high",
-			"codex-lb/gpt-6-astra:xhigh",
-			"anthropic/claude-opus-5-5:high",
-		],
-		fallbacks: [],
+		pool: ["codex-lb/gpt-6-luna:medium", "kimi-code/kimi-for-coding:high", "deepseek/deepseek-v4-pro:high", "kimi-code/k3:high"],
+		fallbacks: ["codex-lb/gpt-6-sol:medium", "claude-bridge/claude-sonnet-5", "codex-lb/Qwen3.8-27B", "openrouter/thinkingmachines/inkling:free"],
 	},
 };
 
@@ -225,7 +166,7 @@ function usageSkipRecord(spec: string, health: ModelUsageHealth): SkippedModelRe
 	};
 }
 
-async function usageSkipForPoolMember(spec: string, ctx: ExtensionContext): Promise<SkippedModelRecord | undefined> {
+async function usageSkipForModel(spec: string, ctx: ExtensionContext): Promise<SkippedModelRecord | undefined> {
 	const model = ctx.models?.resolve?.(spec);
 	const health = ctx.modelRegistry?.authStorage?.health?.model;
 	if (!model || !health) return undefined;
@@ -259,7 +200,7 @@ async function availablePoolMembers(
 	for (const spec of pool) {
 		const model = ctx.models.resolve(spec);
 		if (model === undefined || !authenticated.has(`${model.provider}/${model.id}`)) continue;
-		const usageSkip = await usageSkipForPoolMember(spec, ctx);
+		const usageSkip = await usageSkipForModel(spec, ctx);
 		if (usageSkip) {
 			skipped.push(usageSkip);
 			continue;
@@ -267,6 +208,13 @@ async function availablePoolMembers(
 		available.push(spec);
 	}
 	return { available, skipped };
+}
+
+/** True when this routed agent has at least one authenticated, non-depleted pool or fallback model now. */
+export async function agentHasLiveModel(agent: string, ctx: ExtensionContext): Promise<boolean> {
+	const config = AGENT_POOLS[agent];
+	if (!config) return false;
+	return (await availablePoolMembers([...config.pool, ...config.fallbacks], ctx)).available.length > 0;
 }
 
 export async function routeSubagentSpawn(
@@ -281,10 +229,12 @@ export async function routeSubagentSpawn(
 	if (!config) return undefined;
 
 	const shuffle = options.shuffle ?? cryptoShuffle;
-	const { available, skipped } = await availablePoolMembers(config.pool, ctx);
+	const { available, skipped: poolSkipped } = await availablePoolMembers(config.pool, ctx);
+	const { available: fallbacks, skipped: fallbackSkipped } = await availablePoolMembers(config.fallbacks, ctx);
+	const skipped = [...poolSkipped, ...fallbackSkipped];
 	const poolOrder = shuffle(available);
-	const order = [...poolOrder, ...config.fallbacks];
-	const chosen = poolOrder[0];
+	const order = [...poolOrder, ...fallbacks];
+	const chosen = order[0];
 	if (!chosen) return undefined;
 
 	const spawnKey = stringValue(event.spawnKey) ?? `${agent}:${Date.now()}:${randomInt(1_000_000_000)}`;
