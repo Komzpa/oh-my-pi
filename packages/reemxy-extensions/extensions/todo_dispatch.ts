@@ -8,6 +8,7 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync,
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { lifecycleGoal, readGoalDeadline } from "./deadlines";
+import { countLiveWorkerModels } from "./agent_router";
 
 type DispatchForecastApi = Pick<
   ExtensionAPI["pi"],
@@ -426,6 +427,8 @@ export interface DispatchInput {
   now: number;
   /** Current Task worker cap when exposed by the host; 0 means Unlimited. */
   capacity?: number;
+  /** Unique authenticated model routes that can start now, after Task and CPU limits. */
+  startableCapacity?: number;
   /** Whether the host can enforce a Task call before another turn. */
   dispatchGateAvailable?: boolean;
   deadline?: { goalId: string; deadlineAt: number; paused?: boolean };
@@ -465,6 +468,7 @@ function staticKey(
   jobs: Jobs | null,
   deadline: DispatchInput["deadline"],
   capacity: number | undefined,
+  startableCapacity: number | undefined,
   goalPaused: boolean,
   restored: PersistedChild[],
   persisted: PersistedChild[],
@@ -493,7 +497,7 @@ function staticKey(
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   const persistedKey = persisted.map(({ id, owner, live }) => [id, owner, live])
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  return JSON.stringify([tasks, jobKey, nonJobAgents ?? null, restoredKey, persistedKey, deadline ?? null, capacity ?? null, goalPaused]);
+  return JSON.stringify([tasks, jobKey, nonJobAgents ?? null, restoredKey, persistedKey, deadline ?? null, capacity ?? null, startableCapacity ?? null, goalPaused]);
 }
 
 function safeTimestamp(value: unknown): string {
@@ -555,6 +559,7 @@ function buildStaticPrompt(
   jobs: Jobs | null,
   deadline: DispatchInput["deadline"],
   capacity: number | undefined,
+  startableCapacity: number | undefined,
   goalPaused: boolean,
   restored: PersistedChild[],
 ): string {
@@ -587,9 +592,10 @@ function buildStaticPrompt(
   );
   const openCount = rows.filter(({ task }) => task.status === "pending" || task.status === "in_progress").length;
   const blockedCount = rows.filter(({ task }) => task.status === "blocked").length;
+  const shownCapacity = startableCapacity ?? (capacity === undefined ? "unknown" : capacity === 0 ? "unlimited" : capacity);
   return [
     "[TODO supervisor; advisory, not a user request]",
-    `TODO rows ${snapshotRows.length}/${rows.length}; open=${openCount}; blocked=${blockedCount}; tail=${Math.max(0, rows.length - snapshotRows.length)}; Task cap=${capacity === undefined ? "unknown" : capacity === 0 ? "unlimited" : capacity}. Rows follow canonical order:`,
+    `TODO rows ${snapshotRows.length}/${rows.length}; open=${openCount}; blocked=${blockedCount}; tail=${Math.max(0, rows.length - snapshotRows.length)}; Task cap=${shownCapacity}. Rows follow canonical order:`,
     ...(snapshotLines.length ? snapshotLines : ["- none"]),
     "Owner labels and bare live non-job roster entries are not active staffing proof: count exact IDs in running task jobs, or a live roster entry that matches a persisted task-child owner. Idle live agents may be re-staffed but do not count as staffed. Do not dispatch blocked or dependency-waiting rows. Main coordinates staffed work; if Task dispatch is unavailable, main may do bounded safe work directly rather than leave the deliverable untouched.",
     goalPaused
@@ -651,6 +657,13 @@ export function decideTodoDispatch(
     input.capacity >= 0
       ? input.capacity
       : undefined;
+  const startableCapacity =
+    typeof input.startableCapacity === "number" &&
+    Number.isFinite(input.startableCapacity) &&
+    Number.isInteger(input.startableCapacity) &&
+    input.startableCapacity >= 0
+      ? input.startableCapacity
+      : undefined;
   if (!isMainSession) {
     return {
       key: null,
@@ -689,14 +702,14 @@ export function decideTodoDispatch(
     };
   }
 
-  const key = staticKey(phases, jobs, deadline, capacity, goalPaused, input.restoredChildren ?? [], input.persistedChildren ?? []);
+  const key = staticKey(phases, jobs, deadline, capacity, startableCapacity, goalPaused, input.restoredChildren ?? [], input.persistedChildren ?? []);
   let staticPrompt = input.cachedStatic?.key === key ? input.cachedStatic.text : undefined;
   if (staticPrompt === undefined) {
     const snapshotRows: SnapshotRow[] = [];
     for (const phase of phases)
       for (const task of phase.tasks)
         snapshotRows.push({ number: snapshotRows.length + 1, phase: phase.name, task });
-    staticPrompt = buildStaticPrompt(snapshotRows, jobs, deadline, capacity, goalPaused, input.restoredChildren ?? []);
+    staticPrompt = buildStaticPrompt(snapshotRows, jobs, deadline, capacity, startableCapacity, goalPaused, input.restoredChildren ?? []);
   }
   const forecast = sdk.forecastTodoPlan(phases, {
     now,
@@ -848,7 +861,9 @@ export function decideTodoDispatch(
   );
   const actionableReadyContents = new Set(
     staffingSnapshotComplete && taskEnabled && !goalPaused && capacity !== undefined &&
-      (capacity === 0 || activeTaskJobs.length < capacity)
+      (startableCapacity === undefined
+        ? capacity === 0 || activeTaskJobs.length < capacity
+        : activeTaskJobs.length < startableCapacity)
       ? dispatchableReady.map((row) => row.content)
       : [],
   );
@@ -1216,6 +1231,34 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   let armPlanTicker: (ctx: ExtensionContext) => void = () => {};
   let disarmPlanTicker = () => {};
   let writeCurrentPlanSnapshot: (ctx: ExtensionContext, decision: ReturnType<typeof decideTodoDispatch>, now: number) => void = () => {};
+  let liveWorkerModelCount = 0;
+  let liveWorkerModelCheckedAt = 0;
+  let liveWorkerModelSession = "";
+  let liveWorkerModelRefresh: { session: string; promise: Promise<number> } | null = null;
+  const refreshLiveWorkerModels = (ctx: ExtensionContext): Promise<number> => {
+    const session = `${ctx.cwd}\u0000${ctx.sessionManager.getHeader()?.id ?? "unknown"}`;
+    if (session !== liveWorkerModelSession) {
+      liveWorkerModelSession = session;
+      liveWorkerModelCount = 0;
+      liveWorkerModelCheckedAt = 0;
+    }
+    if (Date.now() - liveWorkerModelCheckedAt < 15_000) return Promise.resolve(liveWorkerModelCount);
+    if (liveWorkerModelRefresh?.session === session) return liveWorkerModelRefresh.promise;
+    let promise: Promise<number>;
+    promise = countLiveWorkerModels(ctx)
+      .then((count) => {
+        if (liveWorkerModelSession === session) {
+          liveWorkerModelCount = count;
+          liveWorkerModelCheckedAt = Date.now();
+        }
+        return count;
+      })
+      .finally(() => {
+        if (liveWorkerModelRefresh?.promise === promise) liveWorkerModelRefresh = null;
+      });
+    liveWorkerModelRefresh = { session, promise };
+    return promise;
+  };
   const load = (ctx: ExtensionContext) => {
     reset();
     persistedChildren = readPersistedChildren(ctx.sessionManager.getBranch());
@@ -1223,10 +1266,14 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     persistedSprintStateJson = JSON.stringify(sprintState);
     armPlanTicker(ctx);
   };
-  pi.on("session_start", (_event, ctx) => load(ctx));
-  pi.on("session_switch", (_event, ctx) => load(ctx));
-  pi.on("session_branch", (_event, ctx) => load(ctx));
-  pi.on("session_tree", (_event, ctx) => load(ctx));
+  const loadAndRefresh = async (_event: unknown, ctx: ExtensionContext) => {
+	load(ctx);
+	await refreshLiveWorkerModels(ctx);
+  };
+  pi.on("session_start", loadAndRefresh);
+  pi.on("session_switch", loadAndRefresh);
+  pi.on("session_branch", loadAndRefresh);
+  pi.on("session_tree", loadAndRefresh);
   pi.on("session_shutdown", (_event, ctx) => {
     persistRoster(ctx);
     persistSprintState();
@@ -1249,10 +1296,11 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       taskMaxConcurrency >= 0
         ? taskMaxConcurrency
         : undefined;
+    const startableCapacity = workerCapacity(ctx);
     const jobs = ctx.getAsyncJobSnapshot();
     const phases = sdk.getLatestTodoPhasesFromEntries(branch);
     const restored = restoredChildren(persistedChildren, jobs);
-    const key = `${staticKey(phases, jobs, deadline, capacity, goalPaused, restored, persistedChildren)}:${Math.floor(now / 60_000)}`;
+    const key = `${staticKey(phases, jobs, deadline, capacity, startableCapacity, goalPaused, restored, persistedChildren)}:${Math.floor(now / 60_000)}`;
     if (pending.length === 0 && cachedDecision?.key === key) {
       if (refreshSnapshot) writeCurrentPlanSnapshot(ctx, cachedDecision.decision, now);
       return cachedDecision.decision;
@@ -1265,7 +1313,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         restoredChildren: restored,
         isMainSession: header !== null && !header.parentSession,
         capacity,
-        taskEnabled: pi.getActiveTools().includes("task"),
+        startableCapacity,
+        taskEnabled: pi.getActiveTools().includes("task") && startableCapacity > 0,
         now,
         deadline,
         goalPaused,
@@ -1329,13 +1378,12 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     });
   };
   let lateWaitRefusalKey: string | null = null;
-  // The machine can run about one worker per CPU (capped by the Task limit when one is set). While
-  // open rows sit idle and fewer workers run than that, the plan must find parallel work; only a
-  // backlog beyond capacity may be postponed.
+  // Worker capacity is bounded by the Task cap, CPU slots, and unique authenticated live model routes.
   const workerCapacity = (ctx: ExtensionContext) => {
     const cap = ctx.getTaskMaxConcurrency?.() ?? 0;
     // Same rule as omp task/worker-capacity (not imported: an extension must load on an omp built before that module).
-    return cap > 0 ? Math.min(cap, availableParallelism()) : availableParallelism();
+    const providerSlots = liveWorkerModelCheckedAt === 0 ? availableParallelism() : liveWorkerModelCount;
+    return Math.min(cap > 0 ? Math.min(cap, availableParallelism()) : availableParallelism(), providerSlots);
   };
   const understaffed = (ctx: ExtensionContext, runningTasks: number, parked: number) =>
     parked >= 2 && runningTasks < workerCapacity(ctx);
@@ -2339,7 +2387,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     };
   };
 
-  pi.on("before_subagent_spawn", (event, ctx) => {
+  pi.on("before_subagent_spawn", async (event, ctx) => {
+    await refreshLiveWorkerModels(ctx);
     if (event.agent !== "plan-doctor") return;
     const decision = currentDecision(ctx, Date.now(), [], true);
     const paths = planSnapshotPaths(ctx);
@@ -2348,7 +2397,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       : { note: `plan snapshot unavailable: no current main-session plan` };
   });
 
-  pi.on("tool_call", (event, ctx) => {
+  pi.on("tool_call", async (event, ctx) => {
+    await refreshLiveWorkerModels(ctx);
     if (gateSwitchedOff(ctx)) return;
     const badWorkerName = refusePlanningFailureWorkerName(event as { toolName: string; input?: unknown }, ctx);
     if (badWorkerName) return badWorkerName;
@@ -2641,8 +2691,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     for (const id of pendingSizingNoticeIds) workerSizingNoticed.add(id);
     pendingSizingNoticeIds = [];
   };
-  const planTick = (ctx: ExtensionContext) => {
+  const planTick = async (ctx: ExtensionContext) => {
     if (pauseGate?.paused || !isMain(ctx) || !pi.getActiveTools().includes("task") || ctx.hasPendingMessages()) return;
+    await refreshLiveWorkerModels(ctx);
     const check = planCheck(ctx);
     if (!check || check === PLAN_CHECK_CLEAN) return;
     // Once per distinct problem list, and again after PLAN_REPEAT_MS while the same problems stand:
@@ -2671,7 +2722,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     planTicker = ctx.setInterval(() => planTick(ctx), PLAN_TICK_MS);
   };
   disarmPlanTicker = stopPlanTicker;
-  pi.on("tool_result", (event, ctx) => {
+  pi.on("tool_result", async (event, ctx) => {
+    await refreshLiveWorkerModels(ctx);
     if (event.toolName === "todo") {
       if (event.isError || !isMain(ctx) || !pi.getActiveTools().includes("task")) return;
       // The hook runs before this result joins the branch: check the plan the call just produced
@@ -2708,7 +2760,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   // The role rides on every provider request. A before_agent_start system prompt lasts only for
   // a user-started run, and a goal session lives mostly on autonomous continuations and restarts.
   // The kill switch stops only what can block a call (demands, refusals); this note only informs, so it stays.
-  pi.on("context", (event, ctx) => {
+  pi.on("context", async (event, ctx) => {
+    await refreshLiveWorkerModels(ctx);
     const now = Date.now();
     const decision = currentDecision(ctx, now);
     const chief = isMain(ctx) && pi.getActiveTools().includes("task");
@@ -2742,10 +2795,11 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       return;
     const delay = decision.wakeKey && decision.rawWakeKey !== lastWakeKey ? 0 : decision.nextCheckMs;
     timerContext = ctx;
-    idleTimer = ctx.setTimeout(() => {
+    idleTimer = ctx.setTimeout(async () => {
       idleTimer = null;
       timerContext = null;
       if (!pauseGate || pauseGate.paused || !ctx.isIdle() || ctx.hasPendingMessages()) return;
+      await refreshLiveWorkerModels(ctx);
       const fresh = currentDecision(ctx);
       if (pauseGate.paused) return;
       if (!fresh.key || !fresh.forecast || !fresh.wakeKey || !fresh.rawWakeKey) {
@@ -2771,8 +2825,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       );
     }, delay);
   };
-  pi.on("agent_end", (_event, ctx) => {
+  pi.on("agent_end", async (_event, ctx) => {
     persistRoster(ctx);
+    await refreshLiveWorkerModels(ctx);
     const decision = currentDecision(ctx);
     if (pendingTaskReconciliation) {
       pendingTaskReconciliation.turnEnded = true;

@@ -151,7 +151,7 @@ test("wait is allowed when open rows depend on running work or user approval", a
 		setTimeout: () => ({}),
 		clearTimer: () => undefined,
 	} as unknown as ExtensionContext;
-	const result = handlers.get("tool_call")!({ toolName: "wait", toolCallId: "wait-on-chained-work", input: {} }, ctx);
+	const result = await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "wait-on-chained-work", input: {} }, ctx);
 	expect(result).toBeUndefined();
 });
 
@@ -216,7 +216,7 @@ async function waitOnReadyRowWithStaleOwner(): Promise<{ block?: boolean; reason
 			setTimeout: () => ({}),
 			clearTimer: () => undefined,
 		} as unknown as ExtensionContext;
-		return handlers.get("tool_call")!({ toolName: "wait", toolCallId: "ready", input: {} }, ctx) as { block?: boolean; reason?: string } | undefined;
+		return await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "ready", input: {} }, ctx) as { block?: boolean; reason?: string } | undefined;
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}
@@ -236,4 +236,46 @@ test("a dead scheduled owner prompts conditional owner repair", async () => {
 	expect(result?.reason).toContain("not running");
 	expect(result?.reason).toContain("todo schedule");
 	expect(result?.reason).toContain("otherwise start");
+});
+
+test("capacity reports zero when no authenticated worker profile can start", async () => {
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const api = {
+		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+		getActiveTools: () => ["task", "todo", "wait"],
+		pi: { forecastTodoPlan, formatPlanForecast, formatTaskForecast, getLatestTodoPhasesFromEntries: () => phases, readGoalDeadline: () => undefined },
+		appendEntry: () => undefined,
+		sendMessage: () => undefined,
+	} as unknown as ExtensionAPI;
+	await todoDispatch(api);
+	const ctx = {
+		cwd: "/tmp/todo-wait-capacity-test",
+		sessionManager: {
+			getHeader: () => ({ id: "capacity-zero" }),
+			getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
+			getSessionFile: () => undefined,
+		},
+		getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+		getTaskMaxConcurrency: () => 20,
+		models: { resolve: () => undefined, list: () => [] },
+		hasPendingMessages: () => false,
+		isIdle: () => false,
+		setTimeout: () => ({}),
+		clearTimer: () => undefined,
+	} as unknown as ExtensionContext;
+	const result = await handlers.get("context")!({ messages: [] }, ctx) as { messages?: Array<{ content: string }> };
+	expect(result?.messages?.at(-1)?.content).toContain("Task cap=0");
+	const onlyInklingModel = { provider: "openrouter", id: "thinkingmachines/inkling:free" };
+	const oneProviderCtx = {
+		...ctx,
+		sessionManager: { ...ctx.sessionManager, getHeader: () => ({ id: "capacity-one" }) },
+		models: {
+			list: () => [onlyInklingModel],
+			resolve: (spec: string) => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === "openrouter/thinkingmachines/inkling:free" ? onlyInklingModel : undefined,
+		},
+	} as unknown as ExtensionContext;
+	const oneResult = await handlers.get("context")!({ messages: [] }, oneProviderCtx) as { messages?: Array<{ content: string }> };
+	expect(oneResult?.messages?.at(-1)?.content).toContain("Task cap=1");
 });
