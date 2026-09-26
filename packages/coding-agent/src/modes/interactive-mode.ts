@@ -216,6 +216,7 @@ import { PlanSaveOverlay, type PlanSaveOverlayResult } from "@oh-my-pi/pi-tui/ov
 import { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
 import { SessionInfoOverlay } from "@oh-my-pi/pi-tui/overlays/session-info-overlay";
 import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
+import { frameTelemetry } from "@oh-my-pi/pi-tui/frame-telemetry";
 import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "./status-line-host";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "@oh-my-pi/pi-tui/chat/tool-execution";
@@ -326,11 +327,13 @@ import {
 	cfgStatusLineSegmentOptions,
 	cfgStatusLineSeparator,
 	cfgStatusLineSessionAccent,
+	cfgStatusLineShowFpsMeter,
 	cfgStatusLineShowHookStatus,
 	cfgStatusLineTransparent,
 	cfgSymbolPreset,
 	cfgTerminalShowImages,
 	cfgTuiHyperlinks,
+	cfgTuiFrameDropThresholdMs,
 	cfgTuiImeSafeCursor,
 	cfgTuiMaxInlineImages,
 	cfgTuiMouse,
@@ -405,11 +408,13 @@ const cfgLiveUiSettings = combine({
 	"statusLine.rightSegments": cfgStatusLineRightSegments,
 	"statusLine.separator": cfgStatusLineSeparator,
 	"statusLine.showHookStatus": cfgStatusLineShowHookStatus,
+	"statusLine.showFpsMeter": cfgStatusLineShowFpsMeter,
 	"statusLine.sessionAccent": cfgStatusLineSessionAccent,
 	"statusLine.transparent": cfgStatusLineTransparent,
 	"statusLine.segmentOptions": cfgStatusLineSegmentOptions,
 	"statusLine.compactThinkingLevel": cfgStatusLineCompactThinkingLevel,
 	"statusLine.contextLine": cfgStatusLineContextLine,
+	"tui.frameDropThresholdMs": cfgTuiFrameDropThresholdMs,
 	"git.enabled": cfgGitEnabled,
 	"advisor.enabled": cfgAdvisorEnabled,
 	"advisor.maxNotesPerUpdate": cfgAdvisorMaxNotesPerUpdate,
@@ -1000,6 +1005,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#todoAutoClearTimer: NodeJS.Timeout | undefined;
 	#todoAutoClearGeneration = 0;
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
+	#fpsTelemetryUnsubscribe: (() => void) | undefined;
 	readonly #judgmentBatchProgressHud = new JudgmentBatchProgressHud();
 	readonly #judgmentBatchProgressClearTimers = new Map<string, NodeJS.Timeout>();
 	#nextAppearanceRequestToken = 1;
@@ -1530,6 +1536,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editorContainer.addChild(this.editor);
 		this.statusLine = new StatusLineComponent(session, statusLineHost);
 		this.statusLine.setAutoCompactEnabled(session.autoCompactionEnabled);
+		frameTelemetry.setThresholdMs(cfgTuiFrameDropThresholdMs.get(settings));
+		this.statusLine.setFpsText(frameTelemetry.statusText);
+		this.#fpsTelemetryUnsubscribe = frameTelemetry.onStatusTextChange(text => {
+			this.statusLine.setFpsText(text);
+			if (!cfgStatusLineShowFpsMeter.get(settings)) return;
+			this.ui.requestComponentRender(this.statusLine);
+		});
 		this.#codexResetFireworksController = new CodexResetFireworksController(this);
 		this.statusLine.setCodexResetFireworksHandler(event => {
 			this.#codexResetFireworksController.show(event);
@@ -3074,6 +3087,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				"statusLine.rightSegments",
 				"statusLine.separator",
 				"statusLine.showHookStatus",
+				"statusLine.showFpsMeter",
 				"statusLine.sessionAccent",
 				"statusLine.transparent",
 				"statusLine.segmentOptions",
@@ -3084,6 +3098,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		) {
 			this.#syncStatusLineSettings();
 			this.ui.requestRender();
+		}
+		if (any("tui.frameDropThresholdMs")) {
+			frameTelemetry.setThresholdMs(cfgTuiFrameDropThresholdMs.get(settings));
 		}
 		if (any("statusLine.sessionAccent")) this.#handleSessionAccentInputsChanged();
 		// Advisor runtime start/stop has no session event; repaint its status segment.
@@ -3103,6 +3120,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			rightSegments: cfgStatusLineRightSegments.get(settings),
 			separator: cfgStatusLineSeparator.get(settings),
 			showHookStatus: cfgStatusLineShowHookStatus.get(settings),
+			showFpsMeter: cfgStatusLineShowFpsMeter.get(settings),
 			sessionAccent: cfgStatusLineSessionAccent.get(settings),
 			transparent: cfgStatusLineTransparent.get(settings),
 			segmentOptions: cfgStatusLineSegmentOptions.get(settings),
@@ -6080,6 +6098,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#agentRegistrySubscriptionTarget = undefined;
 		this.#eventController.dispose();
 		this.#codexResetFireworksController.dispose();
+		this.#fpsTelemetryUnsubscribe?.();
+		this.#fpsTelemetryUnsubscribe = undefined;
 		this.statusLine.dispose();
 		if (this.#resizeHandler) {
 			process.stdout.removeListener("resize", this.#resizeHandler);

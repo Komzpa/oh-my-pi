@@ -1,9 +1,13 @@
+import { createHash } from "node:crypto";
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
-import { TranscriptContainer, type TranscriptStableRow } from "@oh-my-pi/pi-tui/chrome/transcript-container";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { Component } from "@oh-my-pi/pi-tui";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { Text } from "@oh-my-pi/pi-tui/components/text";
+import { TranscriptContainer, type TranscriptStableRow } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { VirtualTerminal } from "./virtual-terminal";
 
 class Block implements Component {
 	#rows: string[];
@@ -108,6 +112,38 @@ class ReflowingAppendBlock implements Component {
 
 	render(width: number): readonly string[] {
 		return [...this.renderTranscriptStableRows(1, width), this.#finalized ? "final" : "partial"];
+	}
+}
+
+/** A never-finalized, never-retained live block: the currently-streaming
+ *  assistant message, whose rendered rows grow on every delta the way a
+ *  real streaming turn's `AssistantMessageComponent` grows. */
+class LiveStreamingBlock implements Component {
+	readonly transcriptBlockMode = "appendOnly" as const;
+	#rows: string[];
+
+	constructor(rows: string[]) {
+		this.#rows = rows;
+	}
+
+	setRows(rows: string[]): void {
+		this.#rows = rows;
+	}
+
+	isTranscriptBlockFinalized(): boolean {
+		return false;
+	}
+
+	getTranscriptStableRows(): readonly TranscriptStableRow[] {
+		return [];
+	}
+
+	renderTranscriptStableRows(): readonly string[] {
+		return [];
+	}
+
+	render(): readonly string[] {
+		return this.#rows;
 	}
 }
 const finalAnswer: AssistantMessage = {
@@ -607,4 +643,148 @@ describe("TranscriptContainer viewport click spans", () => {
 		transcript.clear();
 		expect(transcript.getLastViewportSpans()).toEqual([]);
 	});
+});
+
+class CapturingTerminal extends VirtualTerminal {
+	writes: string[] = [];
+
+	override write(data: string): void {
+		this.writes.push(data);
+		super.write(data);
+	}
+}
+
+it("keeps the 400-plan-row, 100-subagent, long-transcript post-input frame bounded and byte-identical", async () => {
+	await initTheme(false);
+	const terminal = new CapturingTerminal(120, 24);
+	const transcript = new TranscriptContainer();
+	for (let index = 0; index < 400; index++) {
+		transcript.addChild(
+			new Text(
+				`TODO ${String(index + 1).padStart(3, "0")} pending: review session render invariant and retain its current plan row ${"detail ".repeat(5)}`,
+				0,
+				0,
+			),
+		);
+	}
+	for (let index = 0; index < 100; index++) {
+		transcript.addChild(
+			new Text(
+				`Subagent ${String(index + 1).padStart(3, "0")} active: inspect transcript section ${"agent-work ".repeat(4)}`,
+				0,
+				0,
+			),
+		);
+	}
+	for (let index = 0; index < 1200; index++) {
+		transcript.addChild(
+			new Text(
+				`Transcript ${String(index + 1).padStart(4, "0")}: ${"long conversation text retains the immutable historical detail and must stay out of each live render ".repeat(3)}`,
+				0,
+				0,
+			),
+		);
+	}
+	const history = transcript.peekFlushBatch(120);
+	if (!history) throw new Error("Expected retained transcript history");
+	transcript.acknowledgeFinalizedBatch(history.id);
+	terminal.write(history.rows.join("\r\n"));
+	const composer = new Composer({ terminal, preferences: { ...COMPOSER_DEFAULTS, quiet: true } });
+	composer.setRuntimeChildren([transcript, composer.editor]);
+	composer.start({ playWelcomeIntro: false });
+	try {
+		composer.ui.renderNow();
+		terminal.writes.length = 0;
+		const samplesMs: number[] = [];
+		let firstFrame = "";
+		for (let index = 0; index < 30; index++) {
+			terminal.writes.length = 0;
+			const start = Bun.nanoseconds();
+			terminal.sendInput("j");
+			composer.ui.renderNow();
+			samplesMs.push((Bun.nanoseconds() - start) / 1e6);
+			if (index === 0) firstFrame = terminal.writes.join("");
+			composer.editor.setText("");
+			composer.ui.renderNow();
+		}
+		const sorted = [...samplesMs].sort((a, b) => a - b);
+		const p50 = (sorted[14]! + sorted[15]!) / 2;
+		console.log(
+			`production transcript post-input p50=${p50.toFixed(3)} ms over 30 samples (input dispatch + renderNow; setup/startup/reset excluded)`,
+		);
+		expect(p50).toBeLessThan(100);
+		expect(Buffer.byteLength(firstFrame)).toBe(218);
+		expect(createHash("sha256").update(firstFrame).digest("hex")).toBe(
+			"b311d0271e748f895127b9b00eba23ce8cd309e1cf649ed93151532f57bc4224",
+		);
+	} finally {
+		composer.stop();
+	}
+});
+
+it("keeps repeated streaming-delta updates over the same long-transcript retained history bounded", async () => {
+	await initTheme(false);
+	const terminal = new CapturingTerminal(120, 24);
+	const transcript = new TranscriptContainer();
+	for (let index = 0; index < 400; index++) {
+		transcript.addChild(
+			new Text(
+				`TODO ${String(index + 1).padStart(3, "0")} pending: review session render invariant and retain its current plan row ${"detail ".repeat(5)}`,
+				0,
+				0,
+			),
+		);
+	}
+	for (let index = 0; index < 100; index++) {
+		transcript.addChild(
+			new Text(
+				`Subagent ${String(index + 1).padStart(3, "0")} active: inspect transcript section ${"agent-work ".repeat(4)}`,
+				0,
+				0,
+			),
+		);
+	}
+	for (let index = 0; index < 1200; index++) {
+		transcript.addChild(
+			new Text(
+				`Transcript ${String(index + 1).padStart(4, "0")}: ${"long conversation text retains the immutable historical detail and must stay out of each live render ".repeat(3)}`,
+				0,
+				0,
+			),
+		);
+	}
+	const history = transcript.peekFlushBatch(120);
+	if (!history) throw new Error("Expected retained transcript history");
+	transcript.acknowledgeFinalizedBatch(history.id);
+	terminal.write(history.rows.join("\r\n"));
+
+	// The currently-streaming assistant message: added after the 1700-row
+	// history is already retained/finalized, exactly as a real turn appends
+	// its live component once prior history has been written once and excluded
+	// from further diffs.
+	const streamingBlock = new LiveStreamingBlock(["Streaming response line 1"]);
+	transcript.addChild(streamingBlock);
+
+	const composer = new Composer({ terminal, preferences: { ...COMPOSER_DEFAULTS, quiet: true } });
+	composer.setRuntimeChildren([transcript, composer.editor]);
+	composer.start({ playWelcomeIntro: false });
+	try {
+		composer.ui.renderNow();
+		terminal.writes.length = 0;
+		const samplesMs: number[] = [];
+		for (let index = 0; index < 30; index++) {
+			streamingBlock.setRows([`Streaming response line 1 delta ${"x".repeat(index)}`]);
+			const start = Bun.nanoseconds();
+			composer.ui.renderNow();
+			samplesMs.push((Bun.nanoseconds() - start) / 1e6);
+		}
+		const sorted = [...samplesMs].sort((a, b) => a - b);
+		const p50 = (sorted[14]! + sorted[15]!) / 2;
+		console.log(
+			`production transcript streaming-delta p50=${p50.toFixed(3)} ms over 30 samples (setRows + renderNow; setup/startup/reset excluded)`,
+		);
+		expect(p50).toBeLessThan(100);
+	} finally {
+		composer.stop();
+	}
 });

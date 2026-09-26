@@ -182,6 +182,28 @@ describe("status line path segment", () => {
 		}
 	});
 
+	it.skipIf(CHECKOUT_IS_SCRATCH)("normalizes the Projects root and the candidate path only once per pwd", () => {
+		const { projectsRoot } = createFakeHome();
+		const projectDir = fs.mkdtempSync(path.join(projectsRoot, "omp-status-line-strip-"));
+		try {
+			setProjectDir(projectDir);
+			const realpath = vi.spyOn(fs, "realpathSync");
+			renderSegment("path", createPathContext());
+			const afterFirst = realpath.mock.calls.filter(
+				call => path.resolve(String(call[0])) === path.resolve(projectDir),
+			).length;
+			renderSegment("path", createPathContext());
+			renderSegment("path", createPathContext());
+			const afterMore = realpath.mock.calls.filter(
+				call => path.resolve(String(call[0])) === path.resolve(projectDir),
+			).length;
+			expect(afterMore).toBe(afterFirst);
+		} finally {
+			setProjectDir(originalProjectDir);
+			removeSyncWithRetries(projectDir);
+		}
+	});
+
 	it("keeps nested subpaths visible under a scratch root", () => {
 		const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-scratch-nest-"));
 		const nested = path.join(scratchDir, "sub", "deep");
