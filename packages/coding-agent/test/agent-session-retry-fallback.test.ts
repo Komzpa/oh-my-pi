@@ -2690,62 +2690,78 @@ describe("AgentSession retry fallback", () => {
 		}
 	});
 
-	it("allows model fallback on 402 Payment Required when all sibling credentials are exhausted", async () => {
-		const primaryModel = getBundledModel("openai", "gpt-4o") ?? getBundledModel("anthropic", "claude-sonnet-4-5");
-		const fallbackModel = getBundledModel("google", "gemini-1.5-pro") ?? getBundledModel("openai", "gpt-4o-mini");
-		if (!primaryModel || !fallbackModel) {
-			throw new Error("Expected bundled test models to exist");
+	it("skips same-provider model fallback only for latched billing-cap 402 responses", async () => {
+		const primaryModel = getBundledModel("openai", "gpt-4o");
+		const sameProviderFallback = getBundledModel("openai", "gpt-4o-mini");
+		const otherProviderFallback = getBundledModel("google", "gemini-1.5-pro");
+		if (!primaryModel || !sameProviderFallback || !otherProviderFallback) {
+			throw new Error("Expected bundled same-provider and cross-provider test models");
 		}
-
-		const requestedModels: string[] = [];
-		const mock = createMockModel();
-		const agent = new Agent({
-			getApiKey: model => `${model.provider}-test-key`,
-			initialState: {
-				model: primaryModel,
-				systemPrompt: ["Test"],
-				tools: [],
-				messages: [],
-			},
-			streamFn: (model, context, options) => {
-				requestedModels.push(`${model.provider}/${model.id}`);
-				if (model.provider === primaryModel.provider && model.id === primaryModel.id) {
-					mock.push({ throw: Object.assign(new Error("Payment Required"), { status: 402 }) });
-				} else {
-					mock.push({ content: [`ok:${model.provider}/${model.id}`] });
-				}
-				return mock.stream(model, context, options);
-			},
-		});
-
+		const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+		const sameProviderSelector = `${sameProviderFallback.provider}/${sameProviderFallback.id}`;
+		const otherProviderSelector = `${otherProviderFallback.provider}/${otherProviderFallback.id}`;
 		vi.spyOn(modelRegistry.authStorage.limits, "markReached").mockResolvedValue({ switched: false });
+		const runCase = async (errorMessage: string, expectedFallback: Model, shouldRemainDepleted: boolean) => {
+			const requestedModels: string[] = [];
+			let latchedAtFailure = false;
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: primaryModel,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					const mock = createMockModel({ provider: model.provider, id: model.id });
+					requestedModels.push(`${model.provider}/${model.id}`);
+					if (model.provider === primaryModel.provider && model.id === primaryModel.id) {
+						modelRegistry.authStorage.health.markProviderDepleted(primaryModel.provider, {
+							status: 402,
+							message: errorMessage,
+						});
+						latchedAtFailure = modelRegistry.authStorage.health.isProviderDepleted(primaryModel.provider);
+						mock.push({ throw: new Error(errorMessage) });
+					} else {
+						mock.push({ content: [`ok:${model.provider}/${model.id}`] });
+					}
+					return mock.stream(model, context, options);
+				},
+			});
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 1,
+				"retry.maxRetries": 1,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					[primarySelector]: [sameProviderSelector, otherProviderSelector],
+				},
+			});
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+			});
+			try {
+				await session.prompt("Advance past a failed provider when appropriate");
+				await session.waitForIdle();
+				expect(latchedAtFailure).toBe(shouldRemainDepleted);
+				expect(requestedModels).toEqual([primarySelector, `${expectedFallback.provider}/${expectedFallback.id}`]);
+				expect(session.model?.provider).toBe(expectedFallback.provider);
+				expect(session.model?.id).toBe(expectedFallback.id);
+				expect(modelRegistry.authStorage.health.isProviderDepleted(primaryModel.provider)).toBe(
+					shouldRemainDepleted,
+				);
+			} finally {
+				await session.dispose();
+				session = undefined;
+				modelRegistry.authStorage.health.resetProviderDepletion(primaryModel.provider);
+			}
+		};
 
-		const settings = Settings.isolated({
-			"compaction.enabled": false,
-			"retry.baseDelayMs": 1,
-			"retry.maxRetries": 1,
-			"retry.modelFallback": true,
-			"retry.fallbackChains": {
-				[`${primaryModel.provider}/${primaryModel.id}`]: [`${fallbackModel.provider}/${fallbackModel.id}`],
-			},
-		});
-
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings,
-			modelRegistry,
-		});
-
-		await session.prompt("Prompt triggering fallback on exhausted siblings");
-		await session.waitForIdle();
-
-		expect(requestedModels).toEqual([
-			`${primaryModel.provider}/${primaryModel.id}`,
-			`${fallbackModel.provider}/${fallbackModel.id}`,
-		]);
-		expect(session.model?.provider).toBe(fallbackModel.provider);
-		expect(session.model?.id).toBe(fallbackModel.id);
+		await runCase("HTTP 402 Payment Required", otherProviderFallback, true);
+		await runCase("HTTP 402 A subscription is required for this endpoint", sameProviderFallback, false);
 	});
 
 	it("applies a provider-wildcard chain to any model of that provider", async () => {
