@@ -117,6 +117,8 @@ export interface ScopedModelItem {
 export type ModelRoleSelectionScope = "global" | "project";
 
 export interface ModelHubCallbacks {
+	/** Switch only the active session to this model. */
+	onSelectForSession: (model: Model) => void;
 	/** Persist a role assignment. */
 	onAssign: (
 		model: Model,
@@ -139,6 +141,8 @@ export interface ModelHubCallbacks {
 export interface ModelHubOptions {
 	/** Preselect this provider's sidebar entry (e.g. when reopening after /login). */
 	initialProviderId?: string;
+	/** The model actively running this session, shown in the header alongside the configured default. */
+	currentSessionModel?: Model;
 }
 
 interface SidebarEntry extends HubSidebarEntry<"recent" | "roles" | "all" | "separator" | "provider"> {
@@ -179,18 +183,44 @@ type StripState =
 			returnToRoles: boolean;
 			/** Thinking value already committed for this strip. */
 			initialThinkingLevel?: ConfiguredThinkingLevel;
-	  })
+			/** Role picker groups are rendered as vertical rows. */
+			roleGroups?: { heading: string; chips: StripChip[] }[];
+	})
 	| {
-			/** Footer text input naming a new custom role. */
 			kind: "roleName";
 			input: Input;
-	  };
+			role?: string;
+			index: number;
+		};
 
 const PROVIDER_REFRESH_DEBOUNCE_MS = 120;
 const RECENT_LIMIT = 15;
 const MODEL_KIND_TABS: ReadonlyArray<"all" | ModelKind> = ["all", ...MODEL_KINDS];
 const ROLE_TABS = ["all", "chat", "kind"] as const;
 type RoleTab = (typeof ROLE_TABS)[number];
+
+// `section` on RoleInfo only ever carries "chat"/"kind" (browsing tabs), so the
+// role picker's Main chat/Workers/Background groups need their own mapping —
+// interactive session roles, dispatched-work roles, and passive/utility roles
+// respectively. Anything not listed here (custom, unconfigured role ids) falls
+// through to the "Other roles" catch-all group instead of being misclassified.
+const ROLE_GROUP_MAIN_CHAT: Record<string, true> = {
+	default: true,
+	smol: true,
+	slow: true,
+	vision: true,
+	plan: true,
+	commit: true,
+};
+const ROLE_GROUP_WORKERS: Record<string, true> = { task: true, advisor: true, judge: true };
+const ROLE_GROUP_BACKGROUND: Record<string, true> = {
+	tiny: true,
+	memory: true,
+	image: true,
+	web: true,
+	speech: true,
+	dictation: true,
+};
 
 /**
  * Providers already auto-refreshed this process. Selecting a provider fetches
@@ -251,6 +281,8 @@ export class ModelHubComponent implements Component {
 	#roleScrollStart = 0;
 	/** Roles rows actually drawn this frame; bounds mouse hit-testing to the visible window. */
 	#rolesVisibleCount = 0;
+	/** Scroll offset for the vertical role-choice picker body when it overflows. */
+	#roleChoiceScroll = 0;
 
 	#assigning: AssignTarget | null = null;
 	#strip: StripState | null = null;
@@ -268,15 +300,19 @@ export class ModelHubComponent implements Component {
 	#refreshSpinnerInterval?: Timer;
 	#renderBodyPane = (width: number, height: number | undefined): readonly string[] => {
 		const rows = Math.max(1, Math.floor(height ?? 10));
-		const lines: string[] = [this.#statusRow(width)];
 		const entry = this.#activeEntry();
+		const strip = this.#strip;
+		if (strip?.kind === "role" && strip.roleGroups) {
+			return this.#renderRoleChoices(width, rows, { index: strip.index, roleGroups: strip.roleGroups });
+		}
+		const lines: string[] = [this.#renderSessionFactsRow(width), this.#statusRow(width)];
 		if (entry.kind === "roles" && this.#assigning === null) {
-			lines.push(...this.#renderRolesView(width, rows - 1));
+			lines.push(...this.#renderRolesView(width, rows - 2));
 		} else if (entry.kind === "provider" && entry.locked && this.#assigning === null) {
-			lines.push(...this.#renderLockedView(entry, width, rows - 1));
+			lines.push(...this.#renderLockedView(entry, width, rows - 2));
 		} else {
 			lines.push(this.#renderModelKindTabs(width));
-			this.#browser.setMaxVisible(rows - 2 - 5);
+			this.#browser.setMaxVisible(rows - 3 - 5);
 			this.#browser.setFocused(this.#focus === "list");
 			lines.push(...this.#browser.render(width));
 		}
@@ -291,6 +327,7 @@ export class ModelHubComponent implements Component {
 	);
 	#lockedLoginLine: number | null = null;
 	#rolesRowStart = 1;
+	#currentSessionModel: Model | undefined;
 
 	constructor(
 		tui: TUI,
@@ -317,6 +354,7 @@ export class ModelHubComponent implements Component {
 		// Enter after opening acts on cached models instead of being dropped
 		// while the offline refresh promise is still pending.
 		this.#syncFromRegistryState();
+		this.#currentSessionModel = options.currentSessionModel;
 
 		const initialProvider = options.initialProviderId;
 		if (initialProvider && this.#entries.some(entry => entry.providerId === initialProvider)) {
@@ -940,7 +978,7 @@ export class ModelHubComponent implements Component {
 			}
 			return;
 		}
-		this.#openRoleStrip(item);
+		this.#callbacks.onSelectForSession(item.model);
 	}
 
 	#roleForScope(role: string, scope: ModelRoleSelectionScope): ResolvedModelRoleValue {
@@ -1022,55 +1060,66 @@ export class ModelHubComponent implements Component {
 		return [ThinkingLevel.Inherit, ThinkingLevel.Off, AUTO_THINKING, ...getSupportedEfforts(model)];
 	}
 
-	/** Offer only the roles this model can actually fill (chat roles for chat models, `web` for search runners, …). */
+	/** Offer only the roles this model can actually fill, grouped by semantic role. */
 	#openRoleStrip(item: ModelBrowserItem): void {
-		const chips: StripChip[] = [];
 		const scopedStorage = this.#settings.modelRoleStorage === "project";
 		const scopes: readonly ModelRoleSelectionScope[] = scopedStorage ? ["project", "global"] : ["global"];
+		const roleGroups = [
+			{ heading: "Main chat", roles: [] as string[] },
+			{ heading: "Workers", roles: [] as string[] },
+			{ heading: "Background", roles: [] as string[] },
+			{ heading: "Other roles", roles: [] as string[] },
+		];
 		for (const role of this.#visibleRoleIds()) {
 			const info = this.#settings.getRoleInfo(role);
 			if (!info.accepts(item.model)) continue;
-			const assignment = this.#roles[role];
-			for (const scope of scopes) {
-				const scopedModel = scopedStorage
-					? this.#roleForScope(role, scope).model
-					: assignment && !assignment.autoSelected
-						? assignment.model
-						: undefined;
-				const assignedHere =
-					!!scopedModel && scopedModel.provider === item.model.provider && scopedModel.id === item.model.id;
-				const roleLabel = (info.tag ?? info.name ?? role).toLowerCase();
-				const label = scopedStorage ? `${scope} ${roleLabel}` : roleLabel;
-				chips.push({
-					label,
-					styled: assignedHere
-						? // Separator required: under the `nerd` preset this glyph is a
-							// two-cell-wide PUA icon that `visibleWidth` counts as one, so
-							// without it the icon overhangs and eats `label`'s first char.
-							theme.fg(info.color ?? "muted", `${theme.status.enabled} ${label}`) +
-							theme.fg("dim", ` ${theme.status.success}`)
-						: theme.fg(info.color ?? "muted", label),
-					role,
-					scope,
-					action: assignedHere ? "unassign" : "assign",
-				});
+			const group = ROLE_GROUP_MAIN_CHAT[role]
+				? roleGroups[0]
+				: ROLE_GROUP_WORKERS[role]
+					? roleGroups[1]
+					: ROLE_GROUP_BACKGROUND[role]
+						? roleGroups[2]
+						: roleGroups[3];
+			group?.roles.push(role);
+		}
+		const chips: StripChip[] = [];
+		const renderedGroups: { heading: string; chips: StripChip[] }[] = [];
+		for (const group of roleGroups) {
+			const groupChips: StripChip[] = [];
+			for (const role of group.roles) {
+				const info = this.#settings.getRoleInfo(role);
+				const assignment = this.#roles[role];
+				for (const scope of scopes) {
+					const scopedModel = scopedStorage
+						? this.#roleForScope(role, scope).model
+						: assignment && !assignment.autoSelected ? assignment.model : undefined;
+					const assignedHere = !!scopedModel && scopedModel.provider === item.model.provider && scopedModel.id === item.model.id;
+					const name = info.name ?? role;
+					const label = `${name} (${role}) · ${scope}`;
+					const chip: StripChip = {
+						label,
+						styled: `${assignedHere ? theme.status.enabled : " "} ${label}`,
+						role,
+						scope,
+						action: assignedHere ? "unassign" : "assign",
+					};
+					groupChips.push(chip);
+					chips.push(chip);
+				}
 			}
+			if (groupChips.length) renderedGroups.push({ heading: group.heading, chips: groupChips });
 		}
-		chips.push({
-			label: `fallbacks:${item.model.id}`,
-			styled: theme.fg("muted", `fallbacks:${item.model.id}`),
-			action: "fallbackModel",
-		});
-		chips.push({
-			label: `fallbacks:${item.model.provider}/*`,
-			styled: theme.fg("muted", `fallbacks:${item.model.provider}/*`),
-			action: "fallbackProvider",
-		});
-		// `retry-fallback` appends to the default chain, so only chat-capable models qualify.
+		const fallbacks: StripChip[] = [
+			{ label: `Fallback · model · ${item.model.id}`, styled: `Fallback · model · ${item.model.id}`, action: "fallbackModel" },
+			{ label: `Fallback · provider · ${item.model.provider}/*`, styled: `Fallback · provider · ${item.model.provider}/*`, action: "fallbackProvider" },
+		];
 		if (this.#settings.getRoleInfo("default").accepts(item.model)) {
-			chips.push({ label: "fallback", styled: theme.fg("muted", "retry-fallback"), action: "fallback" });
+			fallbacks.push({ label: "Fallback · retry chain", styled: "Fallback · retry chain", action: "fallback" });
 		}
-		this.#strip = { kind: "role", item, chips, index: 0, returnToRoles: false };
+		chips.push(...fallbacks);
+		renderedGroups.push({ heading: "Fallbacks", chips: fallbacks });
+		this.#strip = { kind: "role", item, chips, index: 0, returnToRoles: false, roleGroups: renderedGroups };
+		this.#roleChoiceScroll = 0;
 	}
 
 	#openScopeStrip(item: ModelBrowserItem, role: string, returnToRoles: boolean): void {
@@ -1485,7 +1534,7 @@ export class ModelHubComponent implements Component {
 
 	/** Open the footer name input that creates a new custom role. */
 	#openRoleNameStrip(): void {
-		this.#strip = { kind: "roleName", input: new Input() };
+		this.#strip = { kind: "roleName", input: new Input(), index: 0 };
 	}
 
 	/** Validate and commit the new-role name: jump straight into assigning it. */
@@ -1634,6 +1683,13 @@ export class ModelHubComponent implements Component {
 		// rows instead of acting on a row the user cannot see is selected.
 		if (this.#focus === "scope" && (matchesKey(data, "enter") || matchesKey(data, "return") || data === "\n")) {
 			this.#focus = "list";
+			return;
+		}
+
+		// Alt+R opens the role editor without consuming the printable search key.
+		if (this.#focus === "list" && this.#assigning === null && matchesKey(data, "alt+r")) {
+			const selected = this.#browser.getSelected();
+			if (selected && selected.id !== "separator") this.#openRoleStrip(selected);
 			return;
 		}
 
@@ -1854,10 +1910,13 @@ export class ModelHubComponent implements Component {
 
 	#routeMouseEvent(event: SgrMouseEvent): boolean {
 		if (this.#assignmentPending) return true;
-		const { footerColumn, bodyHeight, contentLine, overSidebar, overBody, bodyLine } = this.#frame.locate(
+		const { footerColumn, bodyHeight, contentLine, overSidebar, overBody, bodyLine: rawBodyLine } = this.#frame.locate(
 			event.row,
 			event.col,
 		);
+		// The session-facts row adds one more universal header line beyond what
+		// the shared frame's own bodyLine offset accounts for.
+		const bodyLine = rawBodyLine - 1;
 		const entry = this.#activeEntry();
 
 		// Footer strip chips (columns stay in frame coordinates).
@@ -2023,6 +2082,17 @@ export class ModelHubComponent implements Component {
 			Math.max(0, active),
 		);
 		return truncateToWidth(` ${theme.fg("dim", "Roles:")} ${track}  ${theme.fg("dim", "Alt+←/→")}`, width);
+	}
+
+	/** Header line distinguishing this session's live model from the default new sessions will start with. */
+	#renderSessionFactsRow(width: number): string {
+		const sessionLabel = this.#currentSessionModel
+			? `${this.#currentSessionModel.provider}/${this.#currentSessionModel.id}`
+			: "—";
+		const defaultAssignment = this.#roles.default;
+		const defaultLabel = defaultAssignment ? `${defaultAssignment.model.provider}/${defaultAssignment.model.id}` : "—";
+		const text = ` ${theme.fg("dim", "Session:")} ${sessionLabel}   ${theme.fg("dim", "New sessions:")} ${defaultLabel}`;
+		return truncateToWidth(text, width);
 	}
 
 	#statusRow(width: number): string {
@@ -2233,6 +2303,38 @@ export class ModelHubComponent implements Component {
 		}
 		return lines;
 	}
+	/** Vertical, scrollable body render for the grouped role/fallback picker; keeps every
+	 * label on its own row so 100-column terminals never truncate a choice. */
+	#renderRoleChoices(
+		width: number,
+		rows: number,
+		strip: { index: number; roleGroups: { heading: string; chips: StripChip[] }[] },
+	): readonly string[] {
+		const flat: { text: string; selected: boolean }[] = [];
+		let selectedLine = 0;
+		let chipCursor = 0;
+		for (const group of strip.roleGroups) {
+			flat.push({ text: theme.bold(theme.fg("accent", group.heading)), selected: false });
+			for (const chip of group.chips) {
+				const isSelected = chipCursor === strip.index;
+				if (isSelected) selectedLine = flat.length;
+				const marker = isSelected ? theme.fg("accent", "›") : " ";
+				flat.push({ text: truncateToWidth(`  ${marker} ${chip.styled}`, width), selected: isSelected });
+				chipCursor++;
+			}
+			flat.push({ text: "", selected: false });
+		}
+		while (flat.length > 0 && flat[flat.length - 1]?.text === "") flat.pop();
+
+		const visible = Math.max(1, rows);
+		if (selectedLine < this.#roleChoiceScroll) this.#roleChoiceScroll = selectedLine;
+		else if (selectedLine >= this.#roleChoiceScroll + visible) this.#roleChoiceScroll = selectedLine - visible + 1;
+		this.#roleChoiceScroll = Math.max(0, Math.min(this.#roleChoiceScroll, Math.max(0, flat.length - visible)));
+
+		const lines = flat.slice(this.#roleChoiceScroll, this.#roleChoiceScroll + visible).map(entry => entry.text);
+		while (lines.length < visible) lines.push("");
+		return lines;
+	}
 
 	#renderLockedView(entry: SidebarEntry, width: number, rows: number): string[] {
 		const lines: string[] = [];
@@ -2322,7 +2424,12 @@ export class ModelHubComponent implements Component {
 		if (this.#focus === "scope") {
 			return `Enter/→ models · ↑/↓ providers · type to search · Alt+←/→ kind${refresh} · Esc close`;
 		}
-		return `Enter assign roles · ↑/↓ models · ← providers · type to search · Alt+←/→ kind${refresh} · Esc close`;
+		const selected = this.#browser.getSelected();
+		const roleHint =
+			this.#focus === "list" && selected && selected.id !== "separator"
+				? " · Alt+R: role/fallback choices"
+				: "";
+		return `Enter: use for this session${roleHint}`;
 	}
 
 	#renderFooter(width: number): string {
@@ -2342,38 +2449,17 @@ export class ModelHubComponent implements Component {
 			return truncateToWidth(`${label} ${inputLine} ${theme.fg("dim", "(letters, digits, - and _)")}`, width);
 		}
 
+		if (strip.kind === "role" && strip.roleGroups) {
+			return truncateToWidth(theme.fg("dim", "↑/↓ choose · Enter assign/unassign · Esc close"), width);
+		}
+
 		const prefix =
 			strip.kind === "role"
 				? `${theme.fg("accent", strip.item.id)}${theme.fg("dim", " →")} `
 				: `${theme.fg(this.#settings.getRoleInfo(strip.role ?? "").color ?? "muted", (this.#settings.getRoleInfo(strip.role ?? "").tag ?? strip.role ?? "").toLowerCase())}${theme.fg("dim", ` · ${strip.item.id} →`)} `;
+		return this.#frame.renderChips(width, prefix, strip);
 
-		// Horizontal window: once the strip overflows, drop leading chips behind
-		// a dim ellipsis so the selected chip (plus one chip of lookahead when it
-		// fits) stays visible while cycling right.
-		const prefixWidth = visibleWidth(prefix);
-		const available = Math.max(1, width - prefixWidth);
-		const chipWidths = strip.chips.map(
-			(chip, i) => visibleWidth(` ${chip.styled} `) + (i === strip.index ? 2 : 0) + 1,
-		);
-		// Smallest start index whose window [start..target] (with its "… " lead-in
-		// when start > 0) fits in the available width; `target` itself may still
-		// overflow when a single chip is wider than the row.
-		const startFor = (target: number): number => {
-			let start = 0;
-			while (start < target) {
-				let sum = start > 0 ? 2 : 0;
-				for (let i = start; i <= target; i++) sum += chipWidths[i] ?? 0;
-				if (sum <= available) break;
-				start++;
-			}
-			return start;
-		};
-		let start = startFor(Math.min(strip.index + 1, strip.chips.length - 1));
-		if (start > strip.index) start = startFor(strip.index);
-
-		return this.#frame.renderChips(width, prefix, strip, start);
 	}
-
 	render(width: number): readonly string[] {
 		const height = Math.max(16, this.#tui.terminal?.rows || process.stdout.rows || 40);
 		return this.#frame.render(width, height, this.#entries, this.#renderFooter(width - 4));

@@ -295,6 +295,7 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		flushCompactionQueue: vi.fn(async () => {}),
 		flushPendingModelSwitch: vi.fn(async () => {}),
 		reloadTodos: vi.fn(async () => {}),
+		keybindings: { getKeys: vi.fn(() => []), getDisplayString: vi.fn(() => "") },
 		setTodos: vi.fn(),
 	} satisfies ContextOverrides;
 	layer(ctx, overrides, RESOLVED_AHEAD);

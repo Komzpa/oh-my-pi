@@ -768,6 +768,10 @@ export class SelectorController {
 			this.ctx.session.modelRegistry,
 			this.ctx.session.scopedModels,
 			{
+				onSelectForSession: model => {
+					done();
+					void this.switchSessionModel(model);
+				},
 				onAssign: async (model, role, thinkingLevel, selector, scope?: ModelRoleSelectionScope) => {
 					const releaseDefaultMutation = role === "default" ? await this.#acquireDefaultRoleMutation() : undefined;
 					const configuredStorage = cfgModelRoleStorage.get(this.ctx.settings);
@@ -971,6 +975,7 @@ export class SelectorController {
 			},
 			{
 				initialProviderId: hubOptions.initialProviderId,
+				currentSessionModel: this.ctx.session.model,
 			},
 		);
 		const overlayHandle = this.#showFullscreenMenu(hub);

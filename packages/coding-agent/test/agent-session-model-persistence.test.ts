@@ -264,6 +264,51 @@ describe("AgentSession model persistence", () => {
 		expect(created.settings.getModelRole("slow")).toBe(slowRoleValue);
 	});
 
+	it("cycles smol, default, and slow roles forward and backward", async () => {
+		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
+		const smolModel = getAnthropicModelOrThrow("claude-sonnet-4-6");
+		const slowModel = getAnthropicModelOrThrow("claude-opus-4-5");
+		const roleValues = {
+			default: modelValue(defaultModel),
+			smol: `${modelValue(smolModel)}:low`,
+			slow: `${modelValue(slowModel)}:high`,
+		};
+		const roleOrder = ["default", "smol", "slow"];
+		const created = await createSession({
+			initialModel: defaultModel,
+			modelRoles: roleValues,
+		});
+
+		const assertRolesUnchanged = () => {
+			expect(created.settings.getModelRole("default")).toBe(roleValues.default);
+			expect(created.settings.getModelRole("smol")).toBe(roleValues.smol);
+			expect(created.settings.getModelRole("slow")).toBe(roleValues.slow);
+		};
+		const toSmol = await created.session.cycleRoleModels(roleOrder, "forward");
+		expect(toSmol?.role).toBe("smol");
+		expect(toSmol?.model.id).toBe(smolModel.id);
+		expect(created.session.model?.id).toBe(smolModel.id);
+		assertRolesUnchanged();
+
+		const toSlow = await created.session.cycleRoleModels(roleOrder, "forward");
+		expect(toSlow?.role).toBe("slow");
+		expect(toSlow?.model.id).toBe(slowModel.id);
+		expect(created.session.model?.id).toBe(slowModel.id);
+		assertRolesUnchanged();
+
+		const backToSmol = await created.session.cycleRoleModels(roleOrder, "backward");
+		expect(backToSmol?.role).toBe("smol");
+		expect(backToSmol?.model.id).toBe(smolModel.id);
+		expect(created.session.model?.id).toBe(smolModel.id);
+		assertRolesUnchanged();
+
+		const backToDefault = await created.session.cycleRoleModels(roleOrder, "backward");
+		expect(backToDefault?.role).toBe("default");
+		expect(backToDefault?.model.id).toBe(defaultModel.id);
+		expect(created.session.model?.id).toBe(defaultModel.id);
+		assertRolesUnchanged();
+	});
+
 	it("cycles available models without persisting the default role", async () => {
 		const created = await createSession({
 			selectInitialModel: availableModels => {
