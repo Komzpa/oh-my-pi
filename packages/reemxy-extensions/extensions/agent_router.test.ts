@@ -308,7 +308,7 @@ describe("agent router", () => {
 	test("twenty coder spawns exclude depleted Codex and DeepSeek, including fallbacks", async () => {
 		const { dir, file } = tempStateFile();
 		try {
-			const context = ctxWithHealth({ "codex-lb": { state: "depleted", accounts: [{ state: "depleted", resetsAt: 1790333025547 }] }, "deepseek": { state: "depleted", accounts: [{ state: "depleted", resetsAt: 1790333025547 }] } });
+			const context = ctxWithHealth({ "codex-lb": { state: "depleted", accounts: [] }, "deepseek": { state: "depleted", accounts: [] } });
 			for (let i = 0; i < 20; i++) {
 				const result = await routeSubagentSpawn({ agent: "coder", spawnKey: `depleted-${i}` }, context, createRouterState(), { stateFile: file });
 				expect(result?.model.length).toBeGreaterThan(0);

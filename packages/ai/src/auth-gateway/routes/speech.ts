@@ -7,6 +7,8 @@ import {
 	type AuthGatewayBootOptions,
 	buildGatewayApiKeyResolver,
 	mirrorRequestAbort,
+	observeGatewayProviderFailure,
+	observeGatewayProviderSuccess,
 	recordGatewayUsage,
 	resolveGatewayApiKey,
 } from "../dispatch";
@@ -83,6 +85,7 @@ export async function handleSpeech(bootOpts: AuthGatewayBootOptions, req: Reques
 			fetch: bootOpts.fetch,
 			signal: controller.signal,
 		});
+		observeGatewayProviderSuccess(bootOpts.storage, model.provider);
 		recordGatewayUsage(bootOpts.storage, model, client, result.usage);
 		const response = speechWire.encodeResponse(result, parsed.modelId);
 		const responseHeaders = gatewayResponseHeaders(model, {
@@ -94,6 +97,7 @@ export async function handleSpeech(bootOpts: AuthGatewayBootOptions, req: Reques
 		return response;
 	} catch (error) {
 		if (controller.signal.aborted) return aborted();
+		observeGatewayProviderFailure(bootOpts.storage, model, error);
 		const classified = classifyGatewayError(error);
 		logger.warn("auth-gateway speech failed", { format: "speech", error: classified.message, peer });
 		return speechWire.formatError(classified.status, classified.type, classified.message);

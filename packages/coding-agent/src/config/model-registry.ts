@@ -45,7 +45,9 @@ import {
 } from "@oh-my-pi/pi-catalog/provider-models";
 import { toModelSpec } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
 import { modelKind, type ModelKind } from "@oh-my-pi/pi-catalog/types";
-import { getAgentDir, isBunTestRuntime, logger, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
+import { extractHttpStatusFromError, getAgentDir, isBunTestRuntime, logger, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
+import * as AIError from "@oh-my-pi/pi-ai/error";
+import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
 import { resolveProviderModelReference } from "../config/model-resolver";
 import { generateCodexAttestation } from "../live/attestation";
 import type { AuthStorage } from "../session/auth-storage";
@@ -2911,13 +2913,45 @@ export class ModelRegistry {
 	resolver(target: string | ApiKeyResolverModel, optionsOrSessionId?: ApiKeyResolverOptions | string): ApiKeyResolver {
 		const options = typeof optionsOrSessionId === "string" ? { sessionId: optionsOrSessionId } : optionsOrSessionId;
 		if (typeof target === "string") {
-			return createApiKeyResolver(this, target, options);
+			return this.#attachProviderCallObservers(target, createApiKeyResolver(this, target, options));
 		}
-		return createApiKeyResolver(this, target.provider, {
-			...options,
-			baseUrl: target.baseUrl,
-			modelId: target.id,
-		});
+		return this.#attachProviderCallObservers(
+			target.provider,
+			createApiKeyResolver(this, target.provider, {
+				...options,
+				baseUrl: target.baseUrl,
+				modelId: target.id,
+			}),
+		);
+	}
+
+	#attachProviderCallObservers(provider: string, resolver: ApiKeyResolver): ApiKeyResolver {
+		resolver.onProviderCallSucceeded = message => this.authStorage.health.markProviderSucceeded(message.provider);
+		resolver.onProviderCallFailed = error => {
+			const candidate = typeof error === "object" && error !== null ? error as {
+				errorClassificationMessage?: unknown;
+				errorMessage?: unknown;
+				errorStatus?: unknown;
+				message?: unknown;
+			} : undefined;
+			const message =
+				error instanceof Error
+					? error.message
+					: typeof error === "string"
+						? error
+						: (candidate?.errorClassificationMessage ?? candidate?.errorMessage ?? candidate?.message ?? String(error));
+			if (typeof message !== "string") return;
+			const status =
+				typeof candidate?.errorStatus === "number"
+					? candidate.errorStatus
+					: AIError.status(error) ?? extractHttpStatusFromError(message);
+			const retryAfterMs = status === 429 ? extractProviderRetryHint(provider, message) : undefined;
+			const resetAtMs = retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+				? Date.now() + retryAfterMs
+				: undefined;
+			this.authStorage.health.markProviderDepleted(provider, { status, message, resetAtMs });
+		};
+		return resolver;
 	}
 
 	async #peekApiKeyForProvider(provider: string): Promise<string | undefined> {

@@ -8,6 +8,8 @@ import {
 	type AuthGatewayBootOptions,
 	buildGatewayApiKeyResolver,
 	mirrorRequestAbort,
+	observeGatewayProviderFailure,
+	observeGatewayProviderSuccess,
 	recordGatewayUsage,
 	resolveGatewayApiKey,
 } from "../dispatch";
@@ -103,6 +105,7 @@ async function handleImages(
 			fetch: bootOpts.fetch,
 			signal: controller.signal,
 		});
+		observeGatewayProviderSuccess(bootOpts.storage, model.provider);
 		if (result.usage.cost.total === 0) calculateCost(model, result.usage);
 		recordGatewayUsage(bootOpts.storage, model, client, result.usage);
 		return json(
@@ -112,6 +115,7 @@ async function handleImages(
 		);
 	} catch (error) {
 		if (controller.signal.aborted) return aborted();
+		observeGatewayProviderFailure(bootOpts.storage, model, error);
 		const classified = classifyGatewayError(error);
 		logger.warn("auth-gateway image generation failed", { format: "images", error: classified.message, peer });
 		return imagesServer.formatError(classified.status, classified.type, classified.message);

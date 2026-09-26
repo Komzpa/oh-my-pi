@@ -582,6 +582,10 @@ export interface StreamOptions {
 	 * Optional callback for provider response metadata after headers are received.
 	 */
 	onResponse?: (response: ProviderResponseMetadata, model?: Model<Api>, signal?: AbortSignal) => void | Promise<void>;
+	/** Called only after a completed, non-error provider response, with the resolved credential identity. */
+	onProviderCallSucceeded?: (message: AssistantMessage) => void;
+	/** Called once for a final provider failure after retries; never for aborts. */
+	onProviderCallFailed?: (error: unknown) => void;
 	/**
 	 * Optional callback for raw Server-Sent Events as they arrive from HTTP streaming providers,
 	 * plus synthesized SSE-shaped frames for the Codex WebSocket transport (one synthetic frame
