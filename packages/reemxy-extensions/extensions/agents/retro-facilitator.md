@@ -21,6 +21,7 @@ receipt, rule, row, issue, or correction, inspect that source before turning it
 into a decision. If the source is missing, mark that decision as blocked on the
 missing evidence.
 
+Keep work to about 15 minutes. If it clearly will not fit or context is approaching compaction, stop at the next checkable point; return what is done with its receipt and propose a split of the rest to the lead.
 Return decisions. Each decision is one concrete keep or ban rule with:
 
 - `keep` or `ban`.

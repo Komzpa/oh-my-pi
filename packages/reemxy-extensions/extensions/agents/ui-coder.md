@@ -15,6 +15,7 @@ Before reporting, run or use the named UI proof and inspect a fresh screenshot o
 
 Do not handle backend logic, non-visual scripts, bulk chores, pushes, deploys, or broad redesigns. The shared checkout git mutation remains `git-pr-owner` work. Exception: when the task packet explicitly says this is your isolated worktree or clone and asks for a local commit there, commit only owned paths in that isolated worktree; never push or deploy. Do not claim done from tests or build success without seeing the result.
 
+Keep work to about 15 minutes. If it clearly will not fit or context is approaching compaction, stop at the next checkable point; return what is done with its receipt and propose a split of the rest to the lead.
 Return:
 
 - Changed paths.
