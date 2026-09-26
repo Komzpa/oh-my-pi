@@ -66,6 +66,7 @@ import { MemoryEditTool } from "./memory-edit";
 import { MemoryRecallTool } from "./memory-recall";
 import { MemoryReflectTool } from "./memory-reflect";
 import { MemoryRetainTool } from "./memory-retain";
+import { PeersTool } from "./peers";
 import { wrapToolWithMetaNotice } from "./output-meta";
 import { ReadTool } from "./read";
 import type { PlanProposalHandler } from "./resolve";
@@ -143,6 +144,7 @@ export * from "./memory-edit";
 export * from "./memory-recall";
 export * from "./memory-reflect";
 export * from "./memory-retain";
+export * from "./peers";
 export * from "./read";
 export * from "./report-tool-issue";
 export * from "./resolve";
@@ -567,6 +569,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	new_context: NewContextTool.createIf,
 	task: s => TaskTool.create(s),
 	wait: s => new WaitTool(s),
+	peers: s => new PeersTool(s),
 	todo: s => new TodoTool(s),
 	web_search: s => new WebSearchTool(s),
 	write: s => new WriteTool(s),

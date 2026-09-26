@@ -172,6 +172,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.pluginHelp,
 	},
 	{
+		name: "peers",
+		load: () => import("./commands/peers").then(m => m.default),
+		help: commandHelp.peersHelp,
+	},
+	{
 		name: "ps",
 		load: () => import("./commands/ps").then(m => m.default),
 		help: commandHelp.psHelp,
