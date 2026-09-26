@@ -240,6 +240,10 @@ export class EventController {
 	// delta before the snapshot is coalesced away.
 	#pendingMessageUpdate: Extract<AgentSessionEvent, { type: "message_update" }> | undefined = undefined;
 	#messageUpdateTimer: NodeJS.Timeout | undefined = undefined;
+	/** Raw deltas coalesced into the pending flush; logged by
+	 *  {@link EventController.#flushPendingMessageUpdate} to attribute a slow flush
+	 *  either to per-flush render cost or to a growing coalesce backlog. */
+	#deltasSinceLastFlush = 0;
 	/** Tail of the serialized dispatch chain; see #runSerialized. */
 	#dispatchTail: Promise<void> = Promise.resolve();
 	/** Whether a chained run is currently in flight (awaiting its own awaits). */
@@ -721,6 +725,7 @@ export class EventController {
 		// cumulative snapshot is later superseded and never rebuilt.
 		this.#vocalizeDelta(event);
 		this.#vocalizedMessageUpdates.add(event);
+		this.#deltasSinceLastFlush++;
 		this.#pendingMessageUpdate = event;
 		if (this.#messageUpdateTimer) return;
 		this.#messageUpdateTimer = setTimeout(() => {
@@ -754,7 +759,15 @@ export class EventController {
 		const event = this.#pendingMessageUpdate;
 		if (!event) return;
 		this.#pendingMessageUpdate = undefined;
+		const deltasCoalesced = this.#deltasSinceLastFlush;
+		this.#deltasSinceLastFlush = 0;
+		const startedAt = performance.now();
 		await this.handleEvent(event);
+		logger.debug("Coalesced message_update flush", {
+			deltasCoalesced,
+			handleEventMs: performance.now() - startedAt,
+			coalesceWindowMs: EventController.#MESSAGE_UPDATE_COALESCE_MS,
+		});
 	}
 
 	/** Whether `#handleToolExecutionStart` has fired for this call id this turn. */
@@ -774,6 +787,7 @@ export class EventController {
 			this.#messageUpdateTimer = undefined;
 		}
 		this.#pendingMessageUpdate = undefined;
+		this.#deltasSinceLastFlush = 0;
 		this.#resetReadGroup();
 		this.#lastVisibleBlockCount = 0;
 		this.#renderedCustomMessages.clear();

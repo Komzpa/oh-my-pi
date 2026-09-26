@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
+import { logger } from "@oh-my-pi/pi-utils";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
@@ -7,7 +8,6 @@ import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { vocalizer } from "@oh-my-pi/pi-coding-agent/tts/vocalizer";
 import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
-
 import { cfgSpeechEnabled, cfgSpeechMode } from "@oh-my-pi/pi-coding-agent/tts/settings";
 
 function zeroUsage(): Usage {
@@ -107,6 +107,23 @@ describe("EventController message_update coalescing", () => {
 		expect((ctx.streamingMessage as AssistantMessage | undefined)?.content).toEqual([
 			{ type: "text", text: "tok1 tok2 tok3 tok4 tok5 tok6 tok7" },
 		]);
+	});
+
+	it("logs the coalesced delta count and flush duration once per window", async () => {
+		const { emit } = createStreamingFixture();
+		const debugSpy = vi.spyOn(logger, "debug");
+
+		emit(messageUpdate("tok1"));
+		emit(messageUpdate("tok1 tok2"));
+		emit(messageUpdate("tok1 tok2 tok3"));
+		vi.advanceTimersByTime(33);
+		await flushMicrotasks();
+
+		const flushLogs = debugSpy.mock.calls.filter(([message]) => message === "Coalesced message_update flush");
+		expect(flushLogs).toHaveLength(1);
+		const [, context] = flushLogs[0]!;
+		expect(context).toMatchObject({ deltasCoalesced: 3, coalesceWindowMs: 33 });
+		expect(typeof context?.handleEventMs).toBe("number");
 	});
 
 	it("flushes the pending snapshot before a subsequent non-update event", async () => {
