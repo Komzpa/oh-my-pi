@@ -56,8 +56,12 @@ import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
 import { renderResult, renderCall as renderTaskCall } from "@oh-my-pi/pi-tui/tools/task";
 import { repairTaskParams } from "@oh-my-pi/pi-tui/tools/task-repair-args";
 import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
-import { buildTodoExecutorPersistedEdit } from "../tools/todo";
-import { applyTodoExecutorObservation, type TodoExecutorObservation } from "../tools/todo-executor";
+import { applyOpsToPhases, buildTodoExecutorPersistedEdit, buildTodoOpPersistedEdit } from "../tools/todo";
+import {
+	applyTodoExecutorObservation,
+	findRespawnOwnerRows,
+	type TodoExecutorObservation,
+} from "../tools/todo-executor";
 import {
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
@@ -711,6 +715,41 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		);
 	}
 
+	/**
+	 * Hand open rows owned by a settled worker to its respawn. Re-staffing a row under its owner's
+	 * name gets `<name>-<n>` from the output manager; the row moves in the same tool call so the
+	 * caller never sees an owner that names a finished job. Returns the note for the tool result.
+	 */
+	#relinkRespawnOwners(
+		spawns: ReadonlyArray<{ requestedName: string; workerId: string }>,
+		manager: AsyncJobManager,
+	): string | undefined {
+		const phases = this.session.getTodoPhases?.();
+		if (!phases || !this.session.setTodoPhases || !this.session.persistTodoPhases) return undefined;
+		const running = new Set([...this.#todoExecutors.keys(), ...manager.getRunningJobs().map(job => job.id)]);
+		const notes: string[] = [];
+		let current = phases;
+		for (const { requestedName, workerId } of spawns) {
+			if (!requestedName) continue;
+			// The new worker's own job is already registered as running; only the requested id counts.
+			running.delete(workerId);
+			const rows = findRespawnOwnerRows(current, { requestedName, workerId, runningWorkerIds: running });
+			running.add(workerId);
+			if (rows.length === 0) continue;
+			const params = { op: "schedule" as const, updates: rows.map(task => ({ task, owner: workerId })) };
+			const applied = applyOpsToPhases(current, [params]);
+			if (applied.errors.length > 0) continue;
+			current = applied.phases;
+			this.session.setTodoPhases(current);
+			this.session.persistTodoPhases(current, buildTodoOpPersistedEdit("schedule", params));
+			const rowList = rows.map(row => `"${row}"`).join(", ");
+			notes.push(
+				`\`${requestedName}\` already names an earlier job, so this worker is \`${workerId}\`; TODO ${rows.length === 1 ? "row" : "rows"} ${rowList} now ${rows.length === 1 ? "names" : "name"} \`${workerId}\` as owner.`,
+			);
+		}
+		return notes.length > 0 ? notes.join("\n") : undefined;
+	}
+
 	#isBatchEnabled(): boolean {
 		return cfgTaskBatch.get(this.session.settings);
 	}
@@ -897,17 +936,20 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// Returns a fresh result (copied content array, copied text part) rather
 		// than mutating the caller's — task results are short-lived here, but an
 		// in-place edit on a shared/cached AgentToolResult would be a hidden trap.
+		// oxlint-disable-next-line prefer-const -- read by withAdvisory, assigned once spawns are registered
+		let respawnNote: string | undefined;
 		const withAdvisory = (result: AgentToolResult<TaskToolDetails>): AgentToolResult<TaskToolDetails> => {
-			if (!advisory) return result;
+			const note = [respawnNote, advisory].filter(Boolean).join("\n\n");
+			if (!note) return result;
 			let appended = false;
 			const content = result.content.map(part => {
 				if (!appended && part.type === "text" && typeof part.text === "string") {
 					appended = true;
-					return { ...part, text: `${part.text}\n\n${advisory}` };
+					return { ...part, text: `${part.text}\n\n${note}` };
 				}
 				return part;
 			});
-			if (!appended) content.push({ type: "text", text: advisory });
+			if (!appended) content.push({ type: "text", text: note });
 			return { ...result, content };
 		};
 		if (asyncItems.length === 0) {
@@ -1028,6 +1070,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				failedCount += 1;
 			}
 		}
+
+		respawnNote = this.#relinkRespawnOwners(
+			spawns
+				.filter(spawn => spawn.blocking || started.some(entry => entry.agentId === spawn.agentId))
+				.map(spawn => ({ requestedName: spawn.item.name?.trim() ?? "", workerId: spawn.agentId })),
+			manager,
+		);
 
 		if (started.length === 0 && syncSpawns.length === 0) {
 			return {
