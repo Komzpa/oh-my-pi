@@ -76,10 +76,18 @@ class SinkTerminal implements Terminal {
 		this.bytes += Buffer.byteLength(text);
 		this.writes++;
 	}
-	get columns(): number { return WIDTH; }
-	get rows(): number { return HEIGHT; }
-	get kittyProtocolActive(): boolean { return false; }
-	get kittyEnableSequence(): string | null { return null; }
+	get columns(): number {
+		return WIDTH;
+	}
+	get rows(): number {
+		return HEIGHT;
+	}
+	get kittyProtocolActive(): boolean {
+		return false;
+	}
+	get kittyEnableSequence(): string | null {
+		return null;
+	}
 	moveBy(): void {}
 	hideCursor(): void {}
 	showCursor(): void {}
@@ -90,14 +98,20 @@ class SinkTerminal implements Terminal {
 	setProgress(): void {}
 	onAppearanceChange(): void {}
 	refreshAppearance(_token?: TerminalAppearanceRequestToken): void {}
-	get appearance(): TerminalAppearance | undefined { return undefined; }
+	get appearance(): TerminalAppearance | undefined {
+		return undefined;
+	}
 }
 class DrainScheduler implements RenderScheduler {
 	#immediate: Array<() => void> = [];
 	#renders = new Map<number, () => void>();
 	#next = 0;
-	now(): number { return performance.now(); }
-	scheduleImmediate(callback: () => void): void { this.#immediate.push(callback); }
+	now(): number {
+		return performance.now();
+	}
+	scheduleImmediate(callback: () => void): void {
+		this.#immediate.push(callback);
+	}
 	scheduleRender(callback: () => void, _delayMs: number): { cancel(): void } {
 		const id = this.#next++;
 		this.#renders.set(id, callback);
@@ -135,10 +149,21 @@ function percentiles(samples: number[]) {
 }
 function assistant(content: AssistantMessage["content"]): AssistantMessage {
 	return {
-		role: "assistant", content, api: "anthropic-messages", provider: "anthropic", model: "bench",
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-		stopReason: "toolUse", timestamp: Date.now(),
+		role: "assistant",
+		content,
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "bench",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "toolUse",
+		timestamp: Date.now(),
 	};
 }
 
@@ -153,29 +178,56 @@ const history: AssistantMessage[] = [];
 let historyBytes = 0;
 for (let index = 0; index < HISTORY_COUNT; index++) {
 	// Unique ASCII text per message; count the UTF-8 bytes actually retained in Agent.state.messages.
-	const text = `${index.toString().padStart(4, "0")} ${"session transcript, code review and tool output. ".repeat(Math.ceil(HISTORY_TEXT_BYTES / 48))}`.slice(0, HISTORY_TEXT_BYTES);
+	const text =
+		`${index.toString().padStart(4, "0")} ${"session transcript, code review and tool output. ".repeat(Math.ceil(HISTORY_TEXT_BYTES / 48))}`.slice(
+			0,
+			HISTORY_TEXT_BYTES,
+		);
 	const message = assistant([{ type: "text", text }]);
 	history.push(message);
 	historyBytes += Buffer.byteLength(text);
 	manager.appendMessage(message);
 }
 if (historyBytes < MIN_BYTES) throw new Error(`History too small: ${historyBytes}`);
-const phases: TodoPhase[] = [{ name: "Plan", tasks: Array.from({ length: PLAN_ROWS }, (_, i) => ({
-	content: `Implement and verify plan row ${i.toString().padStart(3, "0")}`,
-	status: i < 40 ? "completed" as const : "pending" as const,
-})) }];
+const phases: TodoPhase[] = [
+	{
+		name: "Plan",
+		tasks: Array.from({ length: PLAN_ROWS }, (_, i) => ({
+			content: `Implement and verify plan row ${i.toString().padStart(3, "0")}`,
+			status: i < 40 ? ("completed" as const) : ("pending" as const),
+		})),
+	},
+];
 const todo: ToolResultMessage<{ op: "init"; phases: TodoPhase[] }> = {
-	role: "toolResult", toolCallId: "plan-fixture", toolName: "todo", content: [{ type: "text", text: "Plan initialized" }],
-	details: { op: "init", phases }, isError: false, timestamp: Date.now(),
+	role: "toolResult",
+	toolCallId: "plan-fixture",
+	toolName: "todo",
+	content: [{ type: "text", text: "Plan initialized" }],
+	details: { op: "init", phases },
+	isError: false,
+	timestamp: Date.now(),
 };
 manager.appendMessage(todo);
 const agent = new Agent({ initialState: { model, systemPrompt: [], tools: [], messages: history } });
-const session = new AgentSession({ agent, sessionManager: manager, settings, modelRegistry: registry, memoryEnabled: false,
-	disableExtensionDiscovery: true });
+const session = new AgentSession({
+	agent,
+	sessionManager: manager,
+	settings,
+	modelRegistry: registry,
+	memoryEnabled: false,
+	disableExtensionDiscovery: true,
+});
 const agents = AgentRegistry.global();
 for (let index = 0; index < SUBAGENTS; index++) {
-	agents.register({ id: `sub-${index}`, displayName: `Subagent ${index}`, kind: "sub", parentId: "Main",
-		status: "parked", session: null, activity: `Plan row ${index}` });
+	agents.register({
+		id: `sub-${index}`,
+		displayName: `Subagent ${index}`,
+		kind: "sub",
+		parentId: "Main",
+		status: "parked",
+		session: null,
+		activity: `Plan row ${index}`,
+	});
 }
 const terminal = new SinkTerminal();
 const scheduler = new DrainScheduler();
@@ -255,17 +307,29 @@ try {
 	const rows = mode.todoContainer.render(WIDTH).length;
 	if (rows < PLAN_ROWS) throw new Error(`Todo HUD did not render 400 rows: ${rows}`);
 	if (agents.list().length !== SUBAGENTS) throw new Error("Subagent registry incomplete");
-	if (session.messages !== agent.state.messages || session.messages.length !== HISTORY_COUNT) throw new Error("Agent history not retained");
+	if (session.messages !== agent.state.messages || session.messages.length !== HISTORY_COUNT)
+		throw new Error("Agent history not retained");
 
 	// Revise the pre-tool text across cumulative deltas: providers can revise a
 	// previous block (Cursor). Growing visible units stresses the tool-boundary
 	// clone, but short-circuits deepEquals at streaming-reveal.ts:302-304.
-	const text = "A streamed response before a tool boundary. ".repeat(Math.ceil(preToolTargetBytes / 44)).slice(0, preToolTargetBytes);
+	const text = "A streamed response before a tool boundary. "
+		.repeat(Math.ceil(preToolTargetBytes / 44))
+		.slice(0, preToolTargetBytes);
 	const preToolBytes = Buffer.byteLength(text) + UPDATES;
 	const first = assistant([{ type: "text", text }]);
 	const messageStartPartition: PartitionBucket = {
-		clone: 0, deepCompare: 0, renderContent: 0, paint: 0, immediate: 0,
-		gcMs: 0, heapBefore: process.memoryUsage().heapUsed, heapAfter: 0, delivery: 0, frame: 0, other: 0,
+		clone: 0,
+		deepCompare: 0,
+		renderContent: 0,
+		paint: 0,
+		immediate: 0,
+		gcMs: 0,
+		heapBefore: process.memoryUsage().heapUsed,
+		heapAfter: 0,
+		delivery: 0,
+		frame: 0,
+		other: 0,
 	};
 	activePartition = messageStartPartition;
 	const messageStartBegan = performance.now();
@@ -274,9 +338,14 @@ try {
 	messageStartPartition.frame = scheduler.drain();
 	activePartition = undefined;
 	messageStartPartition.heapAfter = process.memoryUsage().heapUsed;
-	messageStartPartition.other = messageStartPartition.delivery + messageStartPartition.frame
-		- messageStartPartition.clone - messageStartPartition.deepCompare - messageStartPartition.renderContent
-		- messageStartPartition.paint - messageStartPartition.immediate;
+	messageStartPartition.other =
+		messageStartPartition.delivery +
+		messageStartPartition.frame -
+		messageStartPartition.clone -
+		messageStartPartition.deepCompare -
+		messageStartPartition.renderContent -
+		messageStartPartition.paint -
+		messageStartPartition.immediate;
 	const delivery: number[] = [];
 	const frame: number[] = [];
 	const keys: number[] = [];
@@ -293,13 +362,27 @@ try {
 		gcAfterSetupMs = performance.now() - gcStart;
 	}
 	for (let index = 0; index < UPDATES; index++) {
-		const message = assistant([{ type: "text", text: `${text}${"x".repeat(index + 1)}` }, { type: "toolCall", name: "read", id: "fixture-read",
-			arguments: { path: `fixture-${index}.txt` } }]);
-		const event = { type: "message_update" as const, message,
-			assistantMessageEvent: { type: "toolcall_delta" as const, contentIndex: 1, delta: "x", partial: message } };
+		const message = assistant([
+			{ type: "text", text: `${text}${"x".repeat(index + 1)}` },
+			{ type: "toolCall", name: "read", id: "fixture-read", arguments: { path: `fixture-${index}.txt` } },
+		]);
+		const event = {
+			type: "message_update" as const,
+			message,
+			assistantMessageEvent: { type: "toolcall_delta" as const, contentIndex: 1, delta: "x", partial: message },
+		};
 		const bucket: PartitionBucket = {
-			clone: 0, deepCompare: 0, renderContent: 0, paint: 0, immediate: 0,
-			gcMs: 0, heapBefore: 0, heapAfter: 0, delivery: 0, frame: 0, other: 0,
+			clone: 0,
+			deepCompare: 0,
+			renderContent: 0,
+			paint: 0,
+			immediate: 0,
+			gcMs: 0,
+			heapBefore: 0,
+			heapAfter: 0,
+			delivery: 0,
+			frame: 0,
+			other: 0,
 		};
 		if (forceGc) {
 			const gcStart = performance.now();
@@ -314,8 +397,14 @@ try {
 		bucket.frame = scheduler.drain();
 		activePartition = undefined;
 		bucket.heapAfter = process.memoryUsage().heapUsed;
-		bucket.other = bucket.delivery + bucket.frame
-			- bucket.clone - bucket.deepCompare - bucket.renderContent - bucket.paint - bucket.immediate;
+		bucket.other =
+			bucket.delivery +
+			bucket.frame -
+			bucket.clone -
+			bucket.deepCompare -
+			bucket.renderContent -
+			bucket.paint -
+			bucket.immediate;
 		partitions.push(bucket);
 		delivery.push(bucket.delivery);
 		frame.push(bucket.frame);
@@ -342,21 +431,42 @@ try {
 		for (const sample of samples) {
 			(bySite[sample.site] ??= []).push(sample.ms);
 		}
-		return Object.fromEntries(Object.entries(bySite).map(([site, ms]) => [site, { n: ms.length, ms: percentiles(ms) }]));
+		return Object.fromEntries(
+			Object.entries(bySite).map(([site, ms]) => [site, { n: ms.length, ms: percentiles(ms) }]),
+		);
 	};
 	const result = {
-		variant, historyBytes, historyMessages: history.length, planRows: PLAN_ROWS,
-		renderedTodoRows: rows, registeredSubagents: agents.list().length, preToolBytes,
-		updates: UPDATES, keypresses: KEYPRESSES,
-		inclusion: "all 60 updates after message_start (await direct EventController.handleEvent), all 60 paired keypresses; scheduler-drained frames measured separately; no event coalescing or timer waits",
-		mainThreadMs: { messageUpdateDelivery: percentiles(delivery), messageUpdateFrame: percentiles(frame),
-			keypressDelivery: percentiles(keys), keypressFrame: percentiles(keyFrame),
+		variant,
+		historyBytes,
+		historyMessages: history.length,
+		planRows: PLAN_ROWS,
+		renderedTodoRows: rows,
+		registeredSubagents: agents.list().length,
+		preToolBytes,
+		updates: UPDATES,
+		keypresses: KEYPRESSES,
+		inclusion:
+			"all 60 updates after message_start (await direct EventController.handleEvent), all 60 paired keypresses; scheduler-drained frames measured separately; no event coalescing or timer waits",
+		mainThreadMs: {
+			messageUpdateDelivery: percentiles(delivery),
+			messageUpdateFrame: percentiles(frame),
+			keypressDelivery: percentiles(keys),
+			keypressFrame: percentiles(keyFrame),
 			messageUpdateToPaint: percentiles(delivery.map((ms, i) => ms + frame[i]!)),
-			keypressToPaint: percentiles(keys.map((ms, i) => ms + keyFrame[i]!)) },
-		clones: { reveal: { count: cloneCounts.reveal, ms: cloneSamples.reveal.length ? percentiles(cloneSamples.reveal) : null },
-			other: { count: cloneCounts.other, ms: cloneSamples.other.length ? percentiles(cloneSamples.other) : null } },
+			keypressToPaint: percentiles(keys.map((ms, i) => ms + keyFrame[i]!)),
+		},
+		clones: {
+			reveal: {
+				count: cloneCounts.reveal,
+				ms: cloneSamples.reveal.length ? percentiles(cloneSamples.reveal) : null,
+			},
+			other: { count: cloneCounts.other, ms: cloneSamples.other.length ? percentiles(cloneSamples.other) : null },
+		},
 		partition: {
-			messageStart: { ...messageStartPartition, toPaint: messageStartPartition.delivery + messageStartPartition.frame },
+			messageStart: {
+				...messageStartPartition,
+				toPaint: messageStartPartition.delivery + messageStartPartition.frame,
+			},
 			forceGc,
 			gcAfterSetupMs: forceGc ? gcAfterSetupMs : undefined,
 			gcAtPeakMs,
@@ -383,11 +493,18 @@ try {
 			sites: { deepCompare: siteSummary(deepCompareSamples), renderContent: siteSummary(renderContentSamples) },
 			deepCompareCounts: { ...deepCompareCounts },
 		},
-		terminalWrites: terminal.writes, terminalBytes: terminal.bytes,
+		terminalWrites: terminal.writes,
+		terminalBytes: terminal.bytes,
 	};
 	console.log(JSON.stringify(result));
-	if (variant === "baseline" && result.mainThreadMs.messageUpdateToPaint.p90 < 100 && result.mainThreadMs.keypressToPaint.p90 < 100) {
-		console.error("NONREPRODUCING BASELINE: both p90 frame gaps are below 100ms; do not claim a seconds-scale clone regression");
+	if (
+		variant === "baseline" &&
+		result.mainThreadMs.messageUpdateToPaint.p90 < 100 &&
+		result.mainThreadMs.keypressToPaint.p90 < 100
+	) {
+		console.error(
+			"NONREPRODUCING BASELINE: both p90 frame gaps are below 100ms; do not claim a seconds-scale clone regression",
+		);
 		process.exitCode = 1;
 	}
 } finally {
