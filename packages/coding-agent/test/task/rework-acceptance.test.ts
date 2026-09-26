@@ -139,15 +139,17 @@ describe("task rework acceptance", () => {
 	it("advances completed rework in the same worker session and preserves ordinary routing", async () => {
 		const harness = createSession();
 		const run = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => makeResult(options.id ?? OWNER));
+		let followUpCalls = 0;
 		const followUp = vi.spyOn(executorModule, "runSubagentFollowUpTurn").mockImplementation(async options => {
+			const call = ++followUpCalls;
 			const effort = options.thinkingLevel ?? "medium";
 			return makeResult(options.id, {
+				output: call === 1 ? "Use a simpler cut path." : "Reworked the crop.",
 				resolvedModel: `${MODEL}:${effort}`,
 				resolvedModelIdentity: MODEL,
 				resolvedThinkingLevel: effort as SingleResult["resolvedThinkingLevel"],
 			});
 		});
-		vi.spyOn(reflectionModule, "captureReworkReflection").mockResolvedValue({ answer: "Use a simpler cut path." });
 		const tool = await TaskTool.create(harness.session);
 
 		const first = await tool.execute("ordinary-first", { agent: "task", name: OWNER, task: "Render the cut." } as TaskParams);
@@ -160,9 +162,14 @@ describe("task rework acceptance", () => {
 		const rework = await tool.execute("rework", {
 			agent: "task", name: OWNER, task: "Improve the render.", rework: "The motion blur obscures the subject.",
 		} as TaskParams);
-		const resumed = followUp.mock.calls[0]![0];
+		const reflection = followUp.mock.calls[0]![0];
+		const resumed = followUp.mock.calls[1]![0];
 		expect(run).toHaveBeenCalledTimes(1);
-		expect(followUp).toHaveBeenCalledTimes(1);
+		expect(followUp).toHaveBeenCalledTimes(2);
+		expect(reflection.id).toBe(OWNER);
+		expect(reflection.message).toContain("What was wrong with your approach, and what should the next attempt do differently?");
+		expect(reflection.message).toContain("The chief rejected your completed attempt: The motion blur obscures the subject.");
+		expect(reflection.message).toContain('answer exactly: "Is there a much simpler different way?"');
 		expect(resumed.id).toBe(OWNER);
 		expect(resumed.thinkingLevel).toBe("high");
 		expect(resumed.message).toContain("Previous attempts:");

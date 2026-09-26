@@ -1,9 +1,10 @@
 import type { ToolSession } from "..";
 import type { TodoReworkAttempt } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { prompt } from "@oh-my-pi/pi-utils";
 import { runSubagentFollowUpTurn } from "./executor";
 import type { StructuredSubagentResult } from "./structured-subagent";
+import reworkReflectionPrompt from "./rework-reflection.md" with { type: "text" };
 
-const REFLECTION_QUESTION = "What was wrong with your approach, and what should the next attempt do differently?";
 const REFLECTION_TIMEOUT_MS = 120_000;
 
 export interface ReworkReflectionResult {
@@ -35,7 +36,7 @@ export async function captureReworkReflection(options: {
 		const result = await runSubagentFollowUpTurn({
 			id,
 			agent: previous.policy.effectiveAgent,
-			message: `${REFLECTION_QUESTION}\n\nThe chief rejected your completed attempt: ${options.reason}\nAnswer the question directly, then answer exactly: "Is there a much simpler different way?" Do not continue implementation. Yield both answers.`,
+			message: prompt.render(reworkReflectionPrompt, { reason: options.reason }),
 			modelRole: previous.policy.modelRole,
 			maxRuntimeMs: REFLECTION_TIMEOUT_MS,
 			signal: boundedSignal,
