@@ -91,7 +91,7 @@ afterEach(() => {
 	for (const hub of hubs.splice(0)) hub.dispose();
 });
 
-function openHub(calls: { assign: string[]; cancel: number }, models: Model[] = MODELS): ModelHubComponent {
+function openHub(calls: { assign: string[]; cancel: number; select: string[] }, models: Model[] = MODELS): ModelHubComponent {
 	const hub = new ModelHubComponent(
 		ui,
 		source({ default: "demo/demo" }, ["demo/demo"]),
@@ -99,6 +99,9 @@ function openHub(calls: { assign: string[]; cancel: number }, models: Model[] = 
 		// A `--models` scope skips the background online refresh.
 		models.map(entry => ({ model: entry })),
 		{
+			onSelectForSession: model => {
+				calls.select.push(`${model.provider}/${model.id}`);
+			},
 			onAssign: (_model, role, _level, selector) => {
 				calls.assign.push(`${role}=${selector}`);
 			},
@@ -135,7 +138,7 @@ function titleOf(children: readonly NativeChild[] | undefined): unknown {
 }
 
 test("the model hub describes a data-first picker when the terminal has the kind, else its generic frame", () => {
-	const hub = openHub({ assign: [], cancel: 0 });
+	const hub = openHub({ assign: [], cancel: 0, select: [] });
 	expect(hub.nativeSheet(withPicker)).toBe(true);
 	expect(hub.nativeSheet(withoutPicker)).toBe(false);
 	expect(hub.describe(withoutPicker).k).not.toBe("picker");
@@ -173,7 +176,7 @@ test("Factory Droid rows carry the base credit rate and a credit-only model is n
 		...model("factory-droid", "preview-credit-model", { cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
 		factoryDroidCredits: 0.5,
 	};
-	const hub = openHub({ assign: [], cancel: 0 }, [...MODELS, priced, creditOnly]);
+	const hub = openHub({ assign: [], cancel: 0, select: [] }, [...MODELS, priced, creditOnly]);
 	const items = props(hub.describe(withPicker)).items ?? [];
 	const row = (id: string) => items.find(entry => entry.id === `factory-droid/${id}`);
 	expect(row("claude-opus-5")?.facts?.price).toBe("$3·15 2×");
@@ -182,7 +185,7 @@ test("Factory Droid rows carry the base credit rate and a credit-only model is n
 });
 
 test("typing changes the order, hits, counts and head total but never the catalogue", () => {
-	const hub = openHub({ assign: [], cancel: 0 });
+	const hub = openHub({ assign: [], cancel: 0, select: [] });
 	const before = props(hub.describe(withPicker));
 	for (const ch of "sonnet") hub.handleInput(ch);
 	const after = props(hub.describe(withPicker));
@@ -205,6 +208,7 @@ test("a re-sync that moves a role patches the catalogue instead of resending it"
 		registry(models),
 		models.map(entry => ({ model: entry })),
 		{
+			onSelectForSession: () => {},
 			onAssign: () => {},
 			onUnassign: () => {},
 			onCancel: () => {},
@@ -235,7 +239,7 @@ test("a re-sync that moves a role patches the catalogue instead of resending it"
 });
 
 test("pointer events drive the hub through the same paths as its keys", () => {
-	const calls = { assign: [] as string[], cancel: 0 };
+	const calls = { assign: [] as string[], cancel: 0, select: [] as string[] };
 	const hub = openHub(calls);
 	const act = (act: string, value?: string) =>
 		hub.handleNativeEvent({ type: "action", key: "", act, value, mods: [] });
@@ -246,8 +250,11 @@ test("pointer events drive the hub through the same paths as its keys", () => {
 	expect(p.focus).toBe("list");
 	expect(titleOf(hub.describe(withPicker).c)).toBe("gpt-5.6");
 
-	// Activate = Enter: the role-assignment strip opens and takes the focus.
+	// Activate = Enter: switches only this session's model; Alt+R opens the role editor.
 	hub.handleNativeEvent({ type: "activate", key: "", item: "openai/gpt-5.6" });
+	expect(calls.select).toEqual(["openai/gpt-5.6"]);
+	expect(calls.assign).toEqual([]);
+	hub.handleInput("\x1br"); // Alt+R: role editor
 	p = props(hub.describe(withPicker));
 	expect(p.focus).toBe("strip");
 	expect(p.strip?.items.map(chip => chip.label).slice(0, 2)).toEqual(["default", "smol"]);
