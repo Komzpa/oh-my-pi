@@ -963,23 +963,47 @@ export function stream<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
+	const onSucceeded = options?.onProviderCallSucceeded;
+	const onFailed = options?.onProviderCallFailed;
+	const requestOptions =
+		onSucceeded || onFailed
+			? { ...options, onProviderCallSucceeded: undefined, onProviderCallFailed: undefined }
+			: options;
+	let response: AssistantMessageEventStream;
 	if (model.resolveHeaders) {
-		return withResolvedModelHeaders(model, options?.signal, resolvedModel => stream(resolvedModel, context, options));
-	}
-	if (!model.requiresGlyphTokenization) {
-		return withThinkingLoopGuard(model, options, opts =>
+		response = withResolvedModelHeaders(model, requestOptions?.signal, resolvedModel =>
+			stream(resolvedModel, context, requestOptions),
+		);
+	} else if (!model.requiresGlyphTokenization) {
+		response = withThinkingLoopGuard(model, requestOptions, opts =>
 			withProviderInFlightLimit(model, opts, () => streamDispatch(model, context, opts)),
 		);
+	} else {
+		const codec = applyGlyphCodec(context);
+		const execHandlers = requestOptions?.execHandlers;
+		const wireOptions: OptionsForApi<TApi> | undefined =
+			execHandlers === undefined
+				? requestOptions
+				: { ...requestOptions, execHandlers: codec.wrapCursorExecHandlers(execHandlers) };
+		response = codec.wrap(
+			withThinkingLoopGuard(model, wireOptions, opts =>
+				withProviderInFlightLimit(model, opts, () => streamDispatch(model, codec.context, opts)),
+			),
+		);
 	}
-	const codec = applyGlyphCodec(context);
-	const execHandlers = options?.execHandlers;
-	const wireOptions: OptionsForApi<TApi> | undefined =
-		execHandlers === undefined ? options : { ...options, execHandlers: codec.wrapCursorExecHandlers(execHandlers) };
-	return codec.wrap(
-		withThinkingLoopGuard(model, wireOptions, opts =>
-			withProviderInFlightLimit(model, opts, () => streamDispatch(model, codec.context, opts)),
-		),
-	);
+	return onSucceeded || onFailed
+		? observeProviderCompletion(
+				response,
+				onSucceeded
+					? message => {
+							if (requestOptions?.credentialId !== undefined) message.credentialId = requestOptions.credentialId;
+							onSucceeded(message);
+						}
+					: undefined,
+				onFailed,
+				requestOptions?.signal,
+			)
+		: response;
 }
 
 function streamDispatch<TApi extends Api>(
@@ -1259,27 +1283,94 @@ function withInferenceSessionId(options?: SimpleStreamOptions): SimpleStreamOpti
 	return { ...options, sessionId: crypto.randomUUID() };
 }
 
+function observeProviderCompletion(
+	inner: AssistantMessageEventStream,
+	onSucceeded?: (message: AssistantMessage) => void,
+	onFailed?: (error: unknown) => void,
+	signal?: AbortSignal,
+): AssistantMessageEventStream {
+	const outer = new AssistantMessageEventStream();
+	const failed = (error: unknown): void => {
+		const failure = typeof error === "object" && error !== null ? error as { stopReason?: unknown } : undefined;
+		if (
+			!onFailed ||
+			signal?.aborted ||
+			failure?.stopReason === "aborted" ||
+			(error instanceof Error && AIError.is(AIError.classify(error), AIError.Flag.Abort))
+		) {
+			return;
+		}
+		try {
+			onFailed(error);
+		} catch (observerError) {
+			logger.warn("Provider failure observer failed", { error: String(observerError) });
+		}
+	};
+	const finish = (message: AssistantMessage): void => {
+		if (message.stopReason === "error") {
+			failed(message);
+		} else if (message.stopReason !== "aborted" && onSucceeded) {
+			try {
+				onSucceeded(message);
+			} catch (error) {
+				logger.warn("Provider success observer failed", { provider: message.provider, error: String(error) });
+			}
+		}
+	};
+	void (async () => {
+		try {
+			for await (const event of inner) {
+				if (event.type === "done") finish(event.message);
+				else if (event.type === "error") failed(event.error);
+				outer.push(event);
+				if (outer.done) return;
+			}
+			if (!outer.done) {
+				const result = await inner.result();
+				finish(result);
+				outer.end(result);
+			}
+		} catch (error) {
+			failed(error);
+			outer.fail(error);
+		}
+	})();
+	return outer;
+}
+
 export function streamSimple<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
-	const sessionOptions = withInferenceSessionId(options);
+	const apiKeyResolver = isApiKeyResolver(options?.apiKey) ? options.apiKey : undefined;
+	const onSucceeded = options?.onProviderCallSucceeded ?? apiKeyResolver?.onProviderCallSucceeded;
+	const onFailed = options?.onProviderCallFailed ?? apiKeyResolver?.onProviderCallFailed;
+	const sessionOptions = withInferenceSessionId(
+		onSucceeded || onFailed
+			? { ...options, onProviderCallSucceeded: undefined, onProviderCallFailed: undefined }
+			: options,
+	);
+	let response: AssistantMessageEventStream;
 	if (!model.requiresGlyphTokenization) {
-		return streamSimpleRequest(model, context, sessionOptions);
+		response = streamSimpleRequest(model, context, sessionOptions);
+	} else {
+		const codec = applyGlyphCodec(context);
+		const execHandlers = sessionOptions.cursorExecHandlers ?? sessionOptions.execHandlers;
+		const wrappedExecHandlers = execHandlers === undefined ? undefined : codec.wrapCursorExecHandlers(execHandlers);
+		const wireOptions =
+			wrappedExecHandlers === undefined
+				? sessionOptions
+				: {
+						...sessionOptions,
+						execHandlers: wrappedExecHandlers,
+						cursorExecHandlers: wrappedExecHandlers,
+					};
+		response = codec.wrap(streamSimpleRequest(model, codec.context, wireOptions));
 	}
-	const codec = applyGlyphCodec(context);
-	const execHandlers = sessionOptions.cursorExecHandlers ?? sessionOptions.execHandlers;
-	const wrappedExecHandlers = execHandlers === undefined ? undefined : codec.wrapCursorExecHandlers(execHandlers);
-	const wireOptions =
-		wrappedExecHandlers === undefined
-			? sessionOptions
-			: {
-					...sessionOptions,
-					execHandlers: wrappedExecHandlers,
-					cursorExecHandlers: wrappedExecHandlers,
-				};
-	return codec.wrap(streamSimpleRequest(model, codec.context, wireOptions));
+	return onSucceeded || onFailed
+		? observeProviderCompletion(response, onSucceeded, onFailed, options?.signal)
+		: response;
 }
 
 /**
