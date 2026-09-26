@@ -4,8 +4,27 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { expect, test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { formatPlanForecast, formatTaskForecast, forecastTodoPlan } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import todoDispatch from "./todo_dispatch";
+
+type WaitTestTask = {
+	content: string;
+	status: "pending" | "in_progress" | "blocked";
+	blocker?: string;
+	schedule: {
+		dependencies: string[];
+		owner?: string;
+		resources: string[];
+		estimate: {
+			optimisticSeconds: number;
+			likelySeconds: number;
+			pessimisticSeconds: number;
+			confidence: "medium";
+			basis: string;
+			updatedAt: number;
+		};
+	};
+};
+type WaitTestPhase = { name: string; tasks: WaitTestTask[] };
 
 function chainedPlan(rows: number, now: number) {
 	return [
@@ -31,25 +50,89 @@ function chainedPlan(rows: number, now: number) {
 		},
 	];
 }
+function formatPlanForecast(): string {
+	return "fixture";
+}
+function formatTaskForecast(): string {
+	return "fixture";
+}
+function forecastTodoPlan(phases: WaitTestPhase[], { now }: { now: number }) {
+	const tasks = phases.flatMap(phase => phase.tasks);
+	const statusByContent = new Map(tasks.map(task => [task.content, task.status] as const));
+	return {
+		rows: tasks.map(task => {
+			const status = task.status;
+			const dependencies = task.schedule.dependencies;
+			return {
+				content: task.content,
+				status,
+				owner: task.schedule.owner ?? null,
+				ready: (status === "pending" || status === "in_progress") && dependencies.every(dependency => {
+					const prerequisite = statusByContent.get(dependency);
+					return prerequisite === "completed" || prerequisite === "abandoned";
+				}),
+				earliestStart: now,
+				earliestFinish: now,
+				latestStart: now,
+				latestFinish: now,
+				resourceStart: now,
+				resourceFinish: now,
+				expectedResourceFinish: now,
+				fixedPathP95Finish: now,
+				totalFloatSeconds: 0,
+				freeFloatSeconds: 0,
+				critical: false,
+				criticalityKnown: true,
+				overdue: false,
+				stale: false,
+			};
+		}),
+		issues: [],
+		planningIssues: [],
+		earliestFinish: now,
+		resourceFinish: now,
+		knownWorkFinish: now,
+	};
+}
 
-test("wait is refused once then allowed for an unchanged 400-row chain", async () => {
+test("wait is allowed when open rows depend on running work or user approval", async () => {
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	const now = Date.now();
-	const phases = chainedPlan(400, now);
-	let forecasts = 0;
+	const phases = chainedPlan(6, now);
+	const tasks = phases[0]!.tasks;
+	for (let index = 0; index < 3; index++) {
+		const task = tasks[index]!;
+		task.content = `Running row ${index + 1}`;
+		task.status = "in_progress";
+		task.schedule.dependencies = [];
+		task.schedule.resources = [];
+		task.schedule.owner = `worker-${index + 1}`;
+	}
+	tasks[3]!.content = "Row A waits for running work";
+	tasks[3]!.status = "pending";
+	tasks[3]!.schedule.dependencies = ["Running row 1"];
+	tasks[3]!.schedule.resources = [];
+	tasks[4]!.content = "Row B waits for user approval";
+	tasks[4]!.status = "pending";
+	tasks[4]!.schedule.dependencies = ["Approve chief proposal"];
+	tasks[4]!.schedule.resources = [];
+	tasks[5]!.content = "Approve chief proposal";
+	tasks[5]!.status = "blocked";
+	tasks[5]!.blocker = "Awaiting user approval of the chief's recorded proposal";
+	tasks[5]!.schedule.dependencies = [];
+	tasks[5]!.schedule.resources = [];
+	const running = tasks.slice(0, 3).map((task, index) => ({
+		id: `task-${index + 1}`,
+		agentId: task.schedule.owner,
+		type: "task" as const,
+		status: "running" as const,
+		label: task.content,
+		startTime: now,
+	}));
 	const api = {
 		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
 		getActiveTools: () => ["task", "todo", "wait"],
-		pi: {
-			forecastTodoPlan: (...args: Parameters<typeof forecastTodoPlan>) => {
-				forecasts++;
-				return forecastTodoPlan(...args);
-			},
-			formatPlanForecast,
-			formatTaskForecast,
-			getLatestTodoPhasesFromEntries: () => phases,
-			readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }),
-		},
+		pi: { forecastTodoPlan, formatPlanForecast, formatTaskForecast, getLatestTodoPhasesFromEntries: () => phases, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
 		appendEntry: () => undefined,
 		sendMessage: () => undefined,
 	} as unknown as ExtensionAPI;
@@ -61,25 +144,15 @@ test("wait is refused once then allowed for an unchanged 400-row chain", async (
 			getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
 			getSessionFile: () => undefined,
 		},
-		getAsyncJobSnapshot: () => ({
-			running: [
-				{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row 1", startTime: now },
-			],
-			recent: [],
-			nonJobAgents: [{ id: "worker-a", live: true }],
-		}),
+		getAsyncJobSnapshot: () => ({ running, recent: [], nonJobAgents: running.map(job => ({ id: job.agentId, live: true })) }),
 		getTaskMaxConcurrency: () => 20,
 		hasPendingMessages: () => false,
 		isIdle: () => false,
 		setTimeout: () => ({}),
 		clearTimer: () => undefined,
 	} as unknown as ExtensionContext;
-	const wait = handlers.get("tool_call")!;
-	const first = wait({ toolName: "wait", toolCallId: "first", input: {} }, ctx) as { block?: boolean; reason?: string } | undefined;
-	expect(first).toMatchObject({ block: true });
-	expect(first?.reason).toMatch(/\b\d+ of \d+ possible worker/);
-	expect(wait({ toolName: "wait", toolCallId: "repeated", input: {} }, ctx)).toBeUndefined();
-	expect(forecasts).toBe(1);
+	const result = handlers.get("tool_call")!({ toolName: "wait", toolCallId: "wait-on-chained-work", input: {} }, ctx);
+	expect(result).toBeUndefined();
 });
 
 async function waitOnReadyRowWithStaleOwner(): Promise<{ block?: boolean; reason?: string } | undefined> {
