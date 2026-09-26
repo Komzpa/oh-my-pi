@@ -529,9 +529,7 @@ describe("todo schedule forecast", () => {
 
 	// The blocker form `waits for user: <question> proposal: <answer and why>` marks a row only the
 	// user can unblock. The host HUD renders it as `waits for you: … · proposal: …` instead of the
-	// ordinary `needs unblock: …`. This is the host copy of the same parsing and render rule as
-	// `parseUserWait`/`formatUserWait` in `packages/reemxy-extensions/extensions/todo-schedule.ts`;
-	// keep the rendered text identical in both files.
+	// ordinary `needs unblock: …`. Extensions render through this same module.
 	it("parses a user-wait blocker into question and proposal, and leaves an ordinary blocker alone", () => {
 		expect(parseUserWait(undefined)).toBeUndefined();
 		expect(parseUserWait("waiting on infra ticket")).toBeUndefined();
