@@ -40,13 +40,7 @@ function presenceSettings(cwd?: string): typeof PRESENCE_DEFAULTS {
 }
 
 function presenceTimeZone(state: DeadlineState | null): string {
-	const timeZone = state?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-	try {
-		new Intl.DateTimeFormat("en-GB", { timeZone }).format();
-		return timeZone;
-	} catch {
-		return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-	}
+	return deadlineSdk.resolveTimeZone(state?.timezone);
 }
 
 export type Presence = "away" | "watching" | "firefighting";
@@ -98,12 +92,7 @@ function presenceDeadline(
 	const dueAt = (state.baselineDeadlineAt ?? Math.max(...state.stages.map(stage => stage.deadlineAt))) * 1_000;
 	if (!Number.isFinite(dueAt)) return undefined;
 	const stateName = dueAt < now ? "missed" : dueAt - now <= settings.atRiskMinutes * 60_000 ? "at risk" : "on track";
-	const display = new Intl.DateTimeFormat("en-GB", {
-		timeZone,
-		hour: "2-digit",
-		minute: "2-digit",
-		hourCycle: "h23",
-	}).format(new Date(dueAt));
+	const display = deadlineSdk.formatLocalClock(dueAt, timeZone);
 	return { dueAt, state: stateName, display };
 }
 
@@ -167,16 +156,7 @@ function duration(seconds: number): string {
 function deadline(due: number, start: number, now: number, timezone?: string): string {
 	const delta = due - now;
 	const percent = remainingPercent(start, due, now);
-	const clock = timezone
-		? new Date(due * 1000).toLocaleString([], {
-				timeZone: timezone,
-				month: "short",
-				day: "numeric",
-				hour: "2-digit",
-				minute: "2-digit",
-				hour12: false,
-			})
-		: new Date(due * 1000).toISOString();
+	const clock = deadlineSdk.formatLocalTimestamp(due * 1000, timezone);
 	return `${clock} ${delta < 0 ? "overdue" : "left"} ${duration(delta)} (${percent ?? "n/a"}%)`;
 }
 
@@ -203,9 +183,9 @@ export function renderDeadlineReminder(state: DeadlineState, now: number, curren
 		: "Quota now=unknown; do not infer capacity.";
 	const text = [
 		"Deliver usable work; reserve review time; delegate bounded cheap tasks when authorized. Adjust depth to time/quota. Overdue is not a verdict: floor it and catch up; show the latest artifact or say none.",
-		`Goal=${bounded(state.goalId, 64)} start=${new Date(state.goalStartedAt * 1000).toISOString()} now=${new Date(now * 1000).toISOString()} tz=${bounded(state.timezone, 40)}.`,
-		`Next=${bounded(current.label, 80)}; ${deadline(current.deadlineAt, state.goalStartedAt, now)}; expected=${bounded(current.expectedResult, 160)}.`,
-		`Final=${deadline(finalDue, state.goalStartedAt, now)}; overdue=${overdue}.`,
+		`Goal=${bounded(state.goalId, 64)} start=${deadlineSdk.formatLocalTimestamp(state.goalStartedAt * 1000, state.timezone)} now=${deadlineSdk.formatLocalTimestamp(now * 1000, state.timezone)} tz=${bounded(state.timezone, 40)}.`,
+		`Next=${bounded(current.label, 80)}; ${deadline(current.deadlineAt, state.goalStartedAt, now, state.timezone)}; expected=${bounded(current.expectedResult, 160)}.`,
+		`Final=${deadline(finalDue, state.goalStartedAt, now, state.timezone)}; overdue=${overdue}.`,
 		quota,
 		`Latest artifact=${bounded(latest?.deliveredArtifact ?? "none recorded", 120)}.`,
 	].join("\n");

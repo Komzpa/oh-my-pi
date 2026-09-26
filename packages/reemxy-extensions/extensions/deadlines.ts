@@ -155,6 +155,40 @@ function validState(value: unknown): value is DeadlineState {
 	);
 }
 
+export function resolveTimeZone(timeZone?: string): string {
+	const localTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+	const candidate = timeZone || localTimeZone;
+	try {
+		new Intl.DateTimeFormat("en-GB", { timeZone: candidate }).format();
+		return candidate;
+	} catch {
+		return localTimeZone;
+	}
+}
+
+export function formatLocalTimestamp(value: number, timeZone?: string): string {
+	if (!Number.isFinite(value)) return "unknown";
+	const zone = resolveTimeZone(timeZone);
+	const parts = new Intl.DateTimeFormat("en-CA", {
+		timeZone: zone,
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+		hour: "2-digit",
+		minute: "2-digit",
+		second: "2-digit",
+		hourCycle: "h23",
+	}).formatToParts(new Date(value));
+	const fields = Object.fromEntries(parts.map(({ type, value: part }) => [type, part]));
+	return `${fields.year}-${fields.month}-${fields.day} ${fields.hour}:${fields.minute}:${fields.second} ${zone}`;
+}
+
+export function formatLocalClock(value: number, timeZone?: string): string {
+	if (!Number.isFinite(value)) return "unknown";
+	const zone = resolveTimeZone(timeZone);
+	return new Intl.DateTimeFormat("en-GB", { timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(value));
+}
+
 export function rehydrateDeadlineState(entries: readonly unknown[]): DeadlineState | null {
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index] as {
@@ -194,7 +228,7 @@ export function readGoalDeadline(
 	entries: readonly unknown[],
 	cwd?: string,
 	options: { includePaused?: boolean } = {},
-): { goalId: string; deadlineAt: number; paused?: boolean } | undefined {
+): { goalId: string; deadlineAt: number; timezone: string; paused?: boolean } | undefined {
 	const goal = resolveLifecycleGoal(entries, () => readGoalPool(cwd));
 	if (!goal || (goal.status !== "active" && !(options.includePaused && goal.status === "paused"))) return undefined;
 	const state = rehydrateDeadlineState(entries);
@@ -208,6 +242,6 @@ export function readGoalDeadline(
 		return undefined;
 	const deadlineAt = state.baselineDeadlineAt ?? Math.max(...state.stages.map(stage => stage.deadlineAt));
 	return Number.isFinite(deadlineAt)
-		? { goalId: goal.id, deadlineAt: deadlineAt * 1_000, ...(goal.status === "paused" ? { paused: true } : {}) }
+		? { goalId: goal.id, deadlineAt: deadlineAt * 1_000, timezone: resolveTimeZone(state.timezone), ...(goal.status === "paused" ? { paused: true } : {}) }
 		: undefined;
 }

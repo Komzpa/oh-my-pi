@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { lifecycleGoal, readGoalDeadline } from "./deadlines";
+import { formatLocalClock, formatLocalTimestamp, lifecycleGoal, readGoalDeadline } from "./deadlines";
 import { countLiveWorkerModels } from "./agent_router";
 
 type DispatchForecastApi = Pick<
@@ -431,7 +431,7 @@ export interface DispatchInput {
   startableCapacity?: number;
   /** Whether the host can enforce a Task call before another turn. */
   dispatchGateAvailable?: boolean;
-  deadline?: { goalId: string; deadlineAt: number; paused?: boolean };
+  deadline?: { goalId: string; deadlineAt: number; timezone?: string; paused?: boolean };
   goalPaused?: boolean;
   lastWakeKey?: string | null;
   cachedStatic?: { key: string; text: string } | null;
@@ -500,11 +500,15 @@ function staticKey(
   return JSON.stringify([tasks, jobKey, nonJobAgents ?? null, restoredKey, persistedKey, deadline ?? null, capacity ?? null, startableCapacity ?? null, goalPaused]);
 }
 
-function safeTimestamp(value: unknown): string {
-  const date = new Date(value as number);
-  return typeof value === "number" && Number.isFinite(value) && Number.isFinite(date.getTime())
-    ? date.toISOString()
-    : "unknown";
+function safeTimestamp(value: unknown, timeZone?: string): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isFinite(new Date(value).getTime())) return "unknown";
+  return formatLocalTimestamp(value, timeZone);
+}
+
+function localizeTimestampText(value: string, timeZone?: string): string {
+  return value.replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})\b/g, (timestamp) =>
+    formatLocalTimestamp(Date.parse(timestamp), timeZone),
+  );
 }
 
 function safeText(value: unknown, max = MAX_LABEL): string {
@@ -538,18 +542,18 @@ function isRetroFacilitatorTaskResult(event: unknown): boolean {
     (result as { agent?: unknown }).agent === "retro-facilitator"
   );
 }
-function taskDetails(task: TaskRow): string {
+function taskDetails(task: TaskRow, timeZone?: string): string {
   const schedule = task.schedule && typeof task.schedule === "object" ? task.schedule : undefined;
   if (!schedule) return "schedule=missing";
   const estimate = schedule.estimate
-    ? `${schedule.estimate.optimisticSeconds}/${schedule.estimate.likelySeconds}/${schedule.estimate.pessimisticSeconds}s ${safeText(schedule.estimate.confidence)}; basis=${safeText(schedule.estimate.basis, 80)}; updated=${safeTimestamp(schedule.estimate.updatedAt)}`
+    ? `${schedule.estimate.optimisticSeconds}/${schedule.estimate.likelySeconds}/${schedule.estimate.pessimisticSeconds}s ${safeText(schedule.estimate.confidence)}; basis=${safeText(schedule.estimate.basis, 80)}; updated=${safeTimestamp(schedule.estimate.updatedAt, timeZone)}`
     : "MISSING estimate";
   const dependencies = Array.isArray(schedule.dependencies)
     ? JSON.stringify(schedule.dependencies)
     : "unknown";
   const resources = Array.isArray(schedule.resources) ? JSON.stringify(schedule.resources) : "unknown";
   const progress = schedule.progress
-    ? `${safeTimestamp(schedule.progress.at)}:${safeText(schedule.progress.evidence, 120)}`
+    ? `${safeTimestamp(schedule.progress.at, timeZone)}:${safeText(schedule.progress.evidence, 120)}`
     : "none";
   return `owner=${JSON.stringify(schedule.owner ?? null)}; dependencies=${dependencies}; resources=${resources}; O/L/P=${estimate}; progress=${progress}`;
 }
@@ -571,7 +575,7 @@ function buildStaticPrompt(
     lastPhase = phase;
     const blocker = task.status === "blocked" ? `; blocker=${JSON.stringify(task.blocker ?? "not recorded")}` : "";
     const closed = task.status === "completed" || task.status === "abandoned";
-    snapshotLines.push(`  #${number} [${task.status}] ${JSON.stringify(task.content)}${blocker}${closed ? "" : `; ${taskDetails(task)}`}`);
+    snapshotLines.push(`  #${number} [${task.status}] ${JSON.stringify(task.content)}${blocker}${closed ? "" : `; ${taskDetails(task, deadline?.timezone)}`}`);
   }
   if (rows.length > MAX_ROWS)
     snapshotLines.push(`… ${rows.length - MAX_ROWS} rows beyond the ${MAX_ROWS}-row bound; inspect native todo.view before deciding on the tail`);
@@ -601,7 +605,7 @@ function buildStaticPrompt(
     goalPaused
       ? "Paused goal: observation only; require evidence-based current O/L/P plus confidence for every nonclosed row, the full remaining scope, and exact Task/non-job worker roster. Do not start Task jobs or perform autonomous goal work."
       : "Schedule every pending/in-progress/blocked row before work: evidence-based O/L/P plus confidence, explicit dependencies ([] only if proven independent), owner and exclusive resources when known; inspect/ask on unknowns, split pessimistic work >1h, and recover blockers safely. Once recorded, do not repeat planning without a new fact; move to the next deliverable-producing action.",
-    `Fixed native deadline: ${deadline ? `${JSON.stringify(deadline.goalId)} at ${safeTimestamp(deadline.deadlineAt)} (immutable${goalPaused ? "; paused: observation only, no autonomous goal work" : ""})` : goalPaused ? "paused goal; deadline unavailable through host API (observation only, no autonomous goal work)" : "none"}.`,
+    `Fixed native deadline: ${deadline ? `${JSON.stringify(deadline.goalId)} at ${safeTimestamp(deadline.deadlineAt, deadline.timezone)} (immutable${goalPaused ? "; paused: observation only, no autonomous goal work" : ""})` : goalPaused ? "paused goal; deadline unavailable through host API (observation only, no autonomous goal work)" : "none"}.`,
     `Running task jobs (${running.length}; session-owned):`,
     ...(jobs === null ? ["- snapshot unavailable; inspect live hub state"] : runningLines.length ? runningLines : ["- none"]),
     `Recent task jobs (${recentTasks.length}; reconcile exact settlements):`,
@@ -615,22 +619,22 @@ function buildStaticPrompt(
   ].join("\n");
 }
 
-function compactForecastRow(row: TodoTaskForecast): string {
+function compactForecastRow(row: TodoTaskForecast, timeZone?: string): string {
   return [
     `ready=${row.ready ? "yes" : "no"}`,
     row.awaitingPrerequisite ? `await=${JSON.stringify(row.awaitingPrerequisite)}` : undefined,
-    `CPM=${safeTimestamp(row.earliestStart)}/${safeTimestamp(row.earliestFinish)}/${safeTimestamp(row.latestStart)}/${safeTimestamp(row.latestFinish)}`,
+    `CPM=${safeTimestamp(row.earliestStart, timeZone)}/${safeTimestamp(row.earliestFinish, timeZone)}/${safeTimestamp(row.latestStart, timeZone)}/${safeTimestamp(row.latestFinish, timeZone)}`,
     `float=${Number.isFinite(row.totalFloatSeconds) ? `${Math.round(row.totalFloatSeconds!)}s` : "?"}/${Number.isFinite(row.freeFloatSeconds) ? `${Math.round(row.freeFloatSeconds!)}s` : "?"}`,
-    `resource=${safeTimestamp(row.resourceStart)}..${safeTimestamp(row.resourceFinish)}; expected=${safeTimestamp(row.expectedResourceFinish)}`,
-    `PERT=${Number.isFinite(row.fixedPathExpectedSeconds) ? `${Math.round(row.fixedPathExpectedSeconds!)}s` : "?"}/${Number.isFinite(row.fixedPathSigmaSeconds) ? `${Math.round(row.fixedPathSigmaSeconds!)}s` : "?"}; P95=${safeTimestamp(row.fixedPathP95Finish ?? row.resourceFinish)}`,
+    `resource=${safeTimestamp(row.resourceStart, timeZone)}..${safeTimestamp(row.resourceFinish, timeZone)}; expected=${safeTimestamp(row.expectedResourceFinish, timeZone)}`,
+    `PERT=${Number.isFinite(row.fixedPathExpectedSeconds) ? `${Math.round(row.fixedPathExpectedSeconds!)}s` : "?"}/${Number.isFinite(row.fixedPathSigmaSeconds) ? `${Math.round(row.fixedPathSigmaSeconds!)}s` : "?"}; P95=${safeTimestamp(row.fixedPathP95Finish ?? row.resourceFinish, timeZone)}`,
     `critical=${row.criticalityKnown === false ? "unknown" : row.critical ? "yes" : "no"}`,
     row.overdue ? `MISSED-ETA revision=${row.estimateRevision}; reestimates=${row.reestimateCount}` : undefined,
     row.stale ? "STALE" : undefined,
   ].filter((part): part is string => part !== undefined).join(" ");
 }
 
-function displayClock(now: number): string {
-  return safeTimestamp(now);
+function displayClock(now: number, timeZone?: string): string {
+  return safeTimestamp(now, timeZone);
 }
 
 function nextCheckDelay(plan: TodoPlanForecast, now: number, deadlineAt: number): number {
@@ -723,7 +727,7 @@ export function decideTodoDispatch(
     .filter((row) => obligatedContent.has(row.content))
     .slice(0, MAX_ROWS);
   const forecastLines = forecastRows.map((row) =>
-    `- [${row.status}] ${JSON.stringify(shorten(row.content))}: ${compactForecastRow(row)}`,
+    `- [${row.status}] ${JSON.stringify(shorten(row.content))}: ${compactForecastRow(row, deadline?.timezone)}`,
   );
   if (obligated.length > MAX_ROWS)
     forecastLines.push(`- … ${obligated.length - MAX_ROWS} more nonclosed rows; inspect native todo.view`);
@@ -976,7 +980,7 @@ export function decideTodoDispatch(
       ? JSON.stringify([deadline, capacity ?? null, alarmRevision, alarms, readyFacts])
       : null;
   const wakeKey = rawWakeKey !== null && rawWakeKey !== lastWakeKey ? rawWakeKey : null;
-  const planSummary = sdk.formatPlanForecast(forecast, now);
+  const planSummary = localizeTimestampText(sdk.formatPlanForecast(forecast, now), deadline?.timezone);
   const forecastIssues = forecast.issues
     .slice(0, MAX_ROWS)
     .map((issue) => `- ${JSON.stringify(issue)}`);
@@ -995,7 +999,7 @@ export function decideTodoDispatch(
       ? ["DELIVERY FIRST: the fixed deadline is at risk. Name the exact missing user-visible artifact and its current version; take the shortest safe action that creates or updates it now. Do not re-read the same plan, reforecast, or rerun broad checks without a changed artifact or a specific new diagnostic question. Reconcile workers only to unblock real work; report the remaining gap without moving the deadline or silently shrinking scope. No automatic paid/model escalation."]
       : []),
     staticPrompt,
-    `Now=${displayClock(now)}; ETA anchored to recorded estimates/real starts, not redraw time.`,
+    `Now=${displayClock(now, deadline?.timezone)}; ETA anchored to recorded estimates/real starts, not redraw time.`,
     `Whole-plan CPM/resource/P95: ${planSummary}. Shared predecessors and resource assumptions bound confidence; this is not an optimum.`,
     `Planning issues (${planningIssues.length}):`,
     ...(planningIssueLines.length ? planningIssueLines : ["- none"]),
@@ -1562,12 +1566,12 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       const owner = typeof row.owner === "string" ? row.owner : typeof task?.schedule?.owner === "string" ? task.schedule.owner : "";
       const runs = runByContent.get(row.content)?.running ? "yes" : "no";
       const resources = task?.schedule?.resources?.length ? task.schedule.resources.join(", ") : "[]";
-      const p95 = safeTimestamp(row.fixedPathP95Finish ?? row.resourceFinish);
+      const p95 = safeTimestamp(row.fixedPathP95Finish ?? row.resourceFinish, decision.deadline?.timezone);
       const critical = row.criticalityKnown === false ? "unknown" : row.critical ? "yes" : "no";
       return `| ${markdownCell(row.content)} | ${row.status} | ${olp} | ${markdownCell(deps)} | ${markdownCell(owner)} | ${runs} | ${markdownCell(resources)} | ${p95} | ${critical} |`;
     });
     const sampleLines = finishSamples.length
-      ? finishSamples.map((sample) => `- ${safeTimestamp(sample.at)} -> ${safeTimestamp(sample.finish)}`)
+      ? finishSamples.map((sample) => `- ${safeTimestamp(sample.at, decision.deadline?.timezone)} -> ${safeTimestamp(sample.finish, decision.deadline?.timezone)}`)
       : ["- none"];
     const text = [
       "# OMP Plan Snapshot",
@@ -1575,16 +1579,16 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       "Read by plan-doctor first. This file is written by tools/omp/todo_dispatch.ts from the dispatcher forecast.",
       `Snapshot paths: ${byCwd} and ${bySession}`,
       "CWD slug rule: absolute cwd, replace every non [A-Za-z0-9._-] with -, collapse repeated -, trim leading/trailing -, take first 120 chars, fallback cwd",
-      `Written: ${safeTimestamp(now)}`,
+      `Written: ${safeTimestamp(now, decision.deadline?.timezone)}`,
       `CWD: ${ctx.cwd}`,
       `Session: ${ctx.sessionManager.getHeader()?.id ?? "unknown"}`,
       "",
       "## Goal And Deadline",
       `Goal: ${decision.deadline?.goalId ?? "none"}`,
-      `Deadline: ${decision.deadline ? safeTimestamp(decision.deadline.deadlineAt) : "none"}`,
+      `Deadline: ${decision.deadline ? safeTimestamp(decision.deadline.deadlineAt, decision.deadline.timezone) : "none"}`,
       "",
       "## ETA",
-      `Current ETA/P95 finish: ${currentFinish === null ? "unknown" : safeTimestamp(currentFinish)}`,
+      `Current ETA/P95 finish: ${currentFinish === null ? "unknown" : safeTimestamp(currentFinish, decision.deadline?.timezone)}`,
       "Recent ETA samples:",
       ...sampleLines,
       "",
@@ -2079,10 +2083,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   const silentWorkers = (activity: ReturnType<typeof workerActivity>) =>
     activity.filter((worker) => worker.known && worker.ageMs !== undefined && worker.ageMs >= SILENT_MS);
   const minutes = (ms: number | undefined) => `${Math.round((ms ?? 0) / 60_000)} min`;
-  const hhmm = (at: number) => {
-    const date = new Date(at);
-    return `${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}`;
-  };
+  const hhmm = (at: number, timeZone?: string) => formatLocalClock(at, timeZone);
   const overdueWorkerEpisodes = new Map<string, string>();
   const workerOverlapEpisodes = new Set<string>();
   const missingWorkerMessageApi = "omp core exposes no worker-message API to extensions";
@@ -2117,6 +2118,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     running: Array<{ id: string; agentId?: string; startTime?: number }>,
     activity: ReturnType<typeof workerActivity>,
     now: number,
+    timeZone?: string,
   ) => {
     const activityByName = new Map(activity.map((worker) => [worker.name, worker]));
     return running.flatMap((job) => {
@@ -2136,7 +2138,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         : "last activity unknown";
       if (alreadyAsked)
         return [{ id, row: row.content, sent: true, repeated: true, activityText }];
-      const content = `your row ${shorten(row.content)} is past its P95 at ${hhmm(p95)}; reply with current artifact/path, first failing proof, or what you wait on`;
+      const content = `your row ${shorten(row.content)} is past its P95 at ${hhmm(p95, timeZone)}; reply with current artifact/path, first failing proof, or what you wait on`;
       const canSend = typeof (ctx as AgentMessageContext).sendAgentMessage === "function";
       if (canSend) {
         void sendWorkerSteering(ctx, id, content).then((result) => {
@@ -2450,7 +2452,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   // The finish that recedes with the clock: every attempt finds the next defect and each estimate
   // assumes the next attempt succeeds (live 2026-09-25: the ETA stayed "now + 2.5-3 h" from 05:23 to
   // 10:40 while eight fix rows were appended one at a time). Samples live for the session only.
-  const recedingFinish = (ctx: ExtensionContext, open: TodoTaskForecast[], now: number): string => {
+  const recedingFinish = (ctx: ExtensionContext, open: TodoTaskForecast[], now: number, timeZone?: string): string => {
     const finish = recordFinishSample(ctx, open, now);
     if (finish === null) return "";
     const first = finishSamples[0];
@@ -2459,12 +2461,12 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     // found about as fast as it is done.
     if (finish - first.finish < 0.8 * (now - first.at)) { recedingSince = undefined; return ""; }
     recedingSince ??= now;
-    const history = finishSamples.filter((_, i, all) => i === 0 || i === all.length - 1 || i % 3 === 0).map((sample) => `${safeTimestamp(sample.at)} → ${safeTimestamp(sample.finish)}`).join(", ");
+    const history = finishSamples.filter((_, i, all) => i === 0 || i === all.length - 1 || i % 3 === 0).map((sample) => `${safeTimestamp(sample.at, timeZone)} → ${safeTimestamp(sample.finish, timeZone)}`).join(", ");
     // Twenty minutes after the first report the numbers have not changed the plan: a second look
     // with no execution duties decides, and the chief applies it (user 2026-09-25: "давай 1 2 3").
     if (now - recedingSince >= 20 * 60_000)
       return `the finish has receded with the clock for ${minutes(now - first.at)} and ${minutes(now - recedingSince)} after this was first reported (samples, now → finish: ${history}). Run \`task\` with agent \`plan-doctor\` now: give it the goal, these samples, the open rows with dependencies, owners and receipts, and ask one question: what makes the finish later and which plan change shortens it. Apply its plan in one \`todo\` call; do not add rows of your own before it answers`;
-    return `the finish recedes with the clock: ${minutes(now - first.at)} ago it was ${safeTimestamp(first.finish)}, now ${safeTimestamp(finish)}. Work is being found as fast as it is done, one defect per attempt. Find all remaining defects in one pass (run the whole check once with failures collected instead of stopping at the first), fix them as parallel rows, and take every check that does not consume the stuck output off the chain`;
+    return `the finish recedes with the clock: ${minutes(now - first.at)} ago it was ${safeTimestamp(first.finish, timeZone)}, now ${safeTimestamp(finish, timeZone)}. Work is being found as fast as it is done, one defect per attempt. Find all remaining defects in one pass (run the whole check once with failures collected instead of stopping at the first), fix them as parallel rows, and take every check that does not consume the stuck output off the chain`;
   };
   const planCheck = (ctx: ExtensionContext, pending: unknown[] = []): string | null => {
     pendingSizingNoticeIds = [];
@@ -2492,7 +2494,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       if (sprintState.retroDueNotifiedKey === notifyKey) return "";
       sprintState = { ...sprintState, retroDueNotifiedKey: notifyKey };
       persistSprintState();
-      return `retrospective due (${sprintState.retroDueReason}): ask the ${workerIds.length} workers who finished since ${safeTimestamp(since)} through agent://, then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}`;
+      return `retrospective due (${sprintState.retroDueReason}): ask the ${workerIds.length} workers who finished since ${safeTimestamp(since, decision.deadline?.timezone)} through agent://, then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}`;
     };
     const retroLine = retroAdvice();
     if (!decision.forecast)
@@ -2550,7 +2552,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     for (const id of workerSizingNoticed) if (!activeJobIds.has(id)) workerSizingNoticed.delete(id);
     const activeWorkerNames = new Set(activity.map((worker) => worker.name));
     for (const name of workerCompactionCursors.keys()) if (!activeWorkerNames.has(name)) workerCompactionCursors.delete(name);
-    const checkins = overdueWorkerCheckins(ctx, open, running, activity, now);
+    const checkins = overdueWorkerCheckins(ctx, open, running, activity, now, decision.deadline?.timezone);
     const checkedIn = new Set(checkins.map((worker) => worker.id));
     const silent = silentWorkers(activity).filter((worker) => !checkedIn.has(worker.name));
     const activityByName = new Map(activity.map((worker) => [worker.name, worker]));
@@ -2560,7 +2562,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       if (!row) return [];
       const p95 = row.fixedPathP95Finish ?? row.resourceFinish;
       const p95Text = typeof p95 === "number" && Number.isFinite(p95)
-        ? now >= p95 ? `past ${minutes(now - p95)} (P95 ${hhmm(p95)})` : `due ${hhmm(p95)}`
+        ? now >= p95 ? `past ${minutes(now - p95)} (P95 ${hhmm(p95, decision.deadline?.timezone)})` : `due ${hhmm(p95, decision.deadline?.timezone)}`
         : "unknown";
       const trace = workerTrace(ctx, id);
       const age = activityByName.get(id)?.ageMs;
@@ -2578,7 +2580,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       const id = job.agentId ?? job.id;
       const observed = activityByName.get(id);
       const compactedAt = observed ? workerCompactionAt(observed) : undefined;
-      if (compactedAt !== undefined) return [{ id, jobId: job.id, fact: `compacted at ${hhmm(compactedAt)}` }];
+      if (compactedAt !== undefined) return [{ id, jobId: job.id, fact: `compacted at ${hhmm(compactedAt, decision.deadline?.timezone)}` }];
       if (typeof job.startTime === "number" && now - job.startTime > SILENT_MS)
         return [{ id, jobId: job.id, fact: `running ${minutes(now - job.startTime)}` }];
       return [];
@@ -2641,7 +2643,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       const owner = ownerOf.get(row.content);
       return owner && !running.some((job) => job.id === owner || job.agentId === owner) && settled.some((job) => job.id === owner || job.agentId === owner);
     });
-    const receding = recedingFinish(ctx, open, now);
+    const receding = recedingFinish(ctx, open, now, decision.deadline?.timezone);
     const problems = [
       planningAdvice,
       retroLine,
