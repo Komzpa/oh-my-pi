@@ -340,10 +340,13 @@ function isTodoReworkAttempt(value: unknown): value is TodoReworkAttempt {
 		typeof value.durationMs !== "number" ||
 		!Number.isFinite(value.durationMs) ||
 		value.durationMs < 0 ||
-		(value.terminalStatus !== "completed" && value.terminalStatus !== "failed" && value.terminalStatus !== "aborted") ||
+		(value.terminalStatus !== "completed" &&
+			value.terminalStatus !== "failed" &&
+			value.terminalStatus !== "aborted") ||
 		!Array.isArray(value.deliverablePaths) ||
 		!value.deliverablePaths.every(path => typeof path === "string")
-	) return false;
+	)
+		return false;
 	return [
 		"rejectionReason",
 		"reflectionAnswer",

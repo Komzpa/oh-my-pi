@@ -50,7 +50,12 @@ function makeResult(id: string, overrides: Partial<SingleResult> = {}): SingleRe
 function createSession(
 	initial: TodoPhase[] = [],
 	ladder: readonly string[] = [":high"],
-): { session: ToolSession; phases: () => TodoPhase[]; setPhases: (value: TodoPhase[]) => void; edits: TodoPersistedEdit[] } {
+): {
+	session: ToolSession;
+	phases: () => TodoPhase[];
+	setPhases: (value: TodoPhase[]) => void;
+	edits: TodoPersistedEdit[];
+} {
 	let current = initial;
 	const edits: TodoPersistedEdit[] = [];
 	const bus = new EventBus();
@@ -63,43 +68,64 @@ function createSession(
 		eventBus: bus,
 		subagentEventBus: bus,
 		getTodoPhases: () => current,
-		setTodoPhases: (next: TodoPhase[]) => { current = next; },
-		persistTodoPhases: (_next: TodoPhase[], edit?: TodoPersistedEdit) => { if (edit) edits.push(edit); },
+		setTodoPhases: (next: TodoPhase[]) => {
+			current = next;
+		},
+		persistTodoPhases: (_next: TodoPhase[], edit?: TodoPersistedEdit) => {
+			if (edit) edits.push(edit);
+		},
 		getArtifactsDir: () => "/tmp",
 	} as unknown as ToolSession;
-	return { session, phases: () => current, setPhases: value => { current = value; }, edits };
+	return {
+		session,
+		phases: () => current,
+		setPhases: value => {
+			current = value;
+		},
+		edits,
+	};
 }
 function seededPhase(
 	outcome: "failed" | "aborted" | "completed",
 	history: NonNullable<TodoPhase["tasks"][number]["schedule"]>["attemptHistory"] = [],
-	executor: { owner?: string; workerId?: string; startedAt?: number; finishedAt?: number; resolvedModel?: string; thinkingLevel?: string } = {},
+	executor: {
+		owner?: string;
+		workerId?: string;
+		startedAt?: number;
+		finishedAt?: number;
+		resolvedModel?: string;
+		thinkingLevel?: string;
+	} = {},
 ): TodoPhase[] {
-	return [{
-		name: "Video craft",
-		tasks: [{
-			content: ROW,
-			status: "in_progress",
-			schedule: {
-				dependencies: [],
-				owner: executor.owner ?? OWNER,
-				executor: {
-					workerId: executor.workerId ?? OWNER,
-					agentProfile: "task",
-					startedAt: executor.startedAt ?? 100,
-					finishedAt: executor.finishedAt ?? 200,
-					outcome,
-					resolvedModel: executor.resolvedModel ?? MODEL,
-					thinkingLevel: executor.thinkingLevel ?? "medium",
+	return [
+		{
+			name: "Video craft",
+			tasks: [
+				{
+					content: ROW,
+					status: "in_progress",
+					schedule: {
+						dependencies: [],
+						owner: executor.owner ?? OWNER,
+						executor: {
+							workerId: executor.workerId ?? OWNER,
+							agentProfile: "task",
+							startedAt: executor.startedAt ?? 100,
+							finishedAt: executor.finishedAt ?? 200,
+							outcome,
+							resolvedModel: executor.resolvedModel ?? MODEL,
+							thinkingLevel: executor.thinkingLevel ?? "medium",
+						},
+						attemptHistory: history,
+					},
 				},
-				attemptHistory: history,
-			},
-		}],
-	}];
+			],
+		},
+	];
 }
 
-
 function text(result: { content: Array<{ type: string; text?: string }> }): string {
-	return result.content.map(part => part.type === "text" ? part.text ?? "" : "").join("\n");
+	return result.content.map(part => (part.type === "text" ? (part.text ?? "") : "")).join("\n");
 }
 
 describe("task rework acceptance", () => {
@@ -115,17 +141,32 @@ describe("task rework acceptance", () => {
 	});
 
 	it("keeps an infrastructure retry on its current rung without rejection history", async () => {
-		const existing = [{
-			attemptId: `${OWNER}:100`, workerName: OWNER, resolvedModel: MODEL, effort: "medium",
-			startedAt: 100, finishedAt: 200, durationMs: 100, terminalStatus: "failed",
-			deliverablePaths: [], infraFailureError: "HTTP 402 payment required",
-			infraFailureLine: "attempt 1 failed: HTTP 402 payment required",
-		}];
+		const existing = [
+			{
+				attemptId: `${OWNER}:100`,
+				workerName: OWNER,
+				resolvedModel: MODEL,
+				effort: "medium",
+				startedAt: 100,
+				finishedAt: 200,
+				durationMs: 100,
+				terminalStatus: "failed",
+				deliverablePaths: [],
+				infraFailureError: "HTTP 402 payment required",
+				infraFailureLine: "attempt 1 failed: HTTP 402 payment required",
+			},
+		];
 		const harness = createSession(seededPhase("failed", existing));
-		const run = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => makeResult(options.id ?? OWNER));
+		const run = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? OWNER));
 		const tool = await TaskTool.create(harness.session);
 
-		const result = await tool.execute("retry", { agent: "task", name: OWNER, task: "Retry the render." } as TaskParams);
+		const result = await tool.execute("retry", {
+			agent: "task",
+			name: OWNER,
+			task: "Retry the render.",
+		} as TaskParams);
 
 		expect(run).toHaveBeenCalledTimes(1);
 		expect(run.mock.calls[0]![0].exactThinkingLevel).toBe("medium");
@@ -138,7 +179,9 @@ describe("task rework acceptance", () => {
 
 	it("advances completed rework in the same worker session and preserves ordinary routing", async () => {
 		const harness = createSession();
-		const run = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => makeResult(options.id ?? OWNER));
+		const run = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? OWNER));
 		let followUpCalls = 0;
 		const followUp = vi.spyOn(executorModule, "runSubagentFollowUpTurn").mockImplementation(async options => {
 			const call = ++followUpCalls;
@@ -152,7 +195,11 @@ describe("task rework acceptance", () => {
 		});
 		const tool = await TaskTool.create(harness.session);
 
-		const first = await tool.execute("ordinary-first", { agent: "task", name: OWNER, task: "Render the cut." } as TaskParams);
+		const first = await tool.execute("ordinary-first", {
+			agent: "task",
+			name: OWNER,
+			task: "Render the cut.",
+		} as TaskParams);
 		expect(first.details?.results[0]?.id).toBe(OWNER);
 		expect(run).toHaveBeenCalledTimes(1);
 		expect(text(first)).not.toContain("Previous attempts:");
@@ -160,15 +207,22 @@ describe("task rework acceptance", () => {
 
 		harness.setPhases(seededPhase("completed"));
 		const rework = await tool.execute("rework", {
-			agent: "task", name: OWNER, task: "Improve the render.", rework: "The motion blur obscures the subject.",
+			agent: "task",
+			name: OWNER,
+			task: "Improve the render.",
+			rework: "The motion blur obscures the subject.",
 		} as TaskParams);
 		const reflection = followUp.mock.calls[0]![0];
 		const resumed = followUp.mock.calls[1]![0];
 		expect(run).toHaveBeenCalledTimes(1);
 		expect(followUp).toHaveBeenCalledTimes(2);
 		expect(reflection.id).toBe(OWNER);
-		expect(reflection.message).toContain("What was wrong with your approach, and what should the next attempt do differently?");
-		expect(reflection.message).toContain("The chief rejected your completed attempt: The motion blur obscures the subject.");
+		expect(reflection.message).toContain(
+			"What was wrong with your approach, and what should the next attempt do differently?",
+		);
+		expect(reflection.message).toContain(
+			"The chief rejected your completed attempt: The motion blur obscures the subject.",
+		);
 		expect(reflection.message).toContain('answer exactly: "Is there a much simpler different way?"');
 		expect(resumed.id).toBe(OWNER);
 		expect(resumed.thinkingLevel).toBe("high");
@@ -176,19 +230,33 @@ describe("task rework acceptance", () => {
 		expect(resumed.message).toContain("Rejection reason: The motion blur obscures the subject.");
 		expect(rework.details?.results[0]?.id).toBe(OWNER);
 		expect(rework.details?.results[0]?.resolvedModelIdentity).toBe(MODEL);
-		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory?.[0]?.rejectionReason).toBe("The motion blur obscures the subject.");
+		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory?.[0]?.rejectionReason).toBe(
+			"The motion blur obscures the subject.",
+		);
 	});
 	it("refuses completed rework without a single-line rejection reason", async () => {
 		const harness = createSession(seededPhase("completed"));
-		const run = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => makeResult(options.id ?? OWNER));
+		const run = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? OWNER));
 		const tool = await TaskTool.create(harness.session);
 
-		const missing = await tool.execute("missing-reason", { agent: "task", name: OWNER, task: "Improve the cut." } as TaskParams);
+		const missing = await tool.execute("missing-reason", {
+			agent: "task",
+			name: OWNER,
+			task: "Improve the cut.",
+		} as TaskParams);
 		const multiline = await tool.execute("multiline-reason", {
-			agent: "task", name: OWNER, task: "Improve the cut.", rework: "first line\nsecond line",
+			agent: "task",
+			name: OWNER,
+			task: "Improve the cut.",
+			rework: "first line\nsecond line",
 		} as TaskParams);
 		const blank = await tool.execute("blank-reason", {
-			agent: "task", name: OWNER, task: "Improve the cut.", rework: " \t",
+			agent: "task",
+			name: OWNER,
+			task: "Improve the cut.",
+			rework: " \t",
 		} as TaskParams);
 
 		expect(text(missing)).toContain("requires a one-line");
@@ -199,17 +267,33 @@ describe("task rework acceptance", () => {
 
 	it("passes the prior report paragraph when reflection has no answer", async () => {
 		const harness = createSession();
-		const run = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => makeResult(options.id ?? OWNER));
-		const followUp = vi.spyOn(executorModule, "runSubagentFollowUpTurn").mockImplementation(async options => makeResult(options.id));
-		vi.spyOn(reflectionModule, "captureReworkReflection").mockResolvedValue({ noAnswerReason: "worker returned no reflection answer" });
+		const run = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? OWNER));
+		const followUp = vi
+			.spyOn(executorModule, "runSubagentFollowUpTurn")
+			.mockImplementation(async options => makeResult(options.id));
+		vi.spyOn(reflectionModule, "captureReworkReflection").mockResolvedValue({
+			noAnswerReason: "worker returned no reflection answer",
+		});
 		const tool = await TaskTool.create(harness.session);
 
 		await tool.execute("first", { agent: "task", name: OWNER, task: "Render the cut." } as TaskParams);
-		harness.setPhases(seededPhase("completed", [], {
-			owner: OWNER, workerId: OWNER, startedAt: 100, finishedAt: 200, resolvedModel: MODEL, thinkingLevel: "medium",
-		}));
+		harness.setPhases(
+			seededPhase("completed", [], {
+				owner: OWNER,
+				workerId: OWNER,
+				startedAt: 100,
+				finishedAt: 200,
+				resolvedModel: MODEL,
+				thinkingLevel: "medium",
+			}),
+		);
 		await tool.execute("rework", {
-			agent: "task", name: OWNER, task: "Improve the cut.", rework: "The crop still hides the subject.",
+			agent: "task",
+			name: OWNER,
+			task: "Improve the cut.",
+			rework: "The crop still hides the subject.",
 		} as TaskParams);
 
 		const message = followUp.mock.calls[0]![0].message;
@@ -234,50 +318,67 @@ describe("task rework acceptance", () => {
 		vi.spyOn(reflectionModule, "captureReworkReflection").mockResolvedValue({ answer: "Use the simpler crop." });
 		const tool = await TaskTool.create(harness.session);
 		const seed = await tool.execute("seed-session", {
-			agent: "task", name: OWNER, task: "Seed the previous worker session.",
+			agent: "task",
+			name: OWNER,
+			task: "Seed the previous worker session.",
 		} as TaskParams);
 		const firstWorkerId = seed.details?.results[0]?.id ?? OWNER;
 		const now = Date.now();
-		const neighborHistory = [{
-			attemptId: "neighbor:50",
-			workerName: "NeighborWorker",
-			resolvedModel: MODEL,
-			effort: "high",
-			startedAt: 50,
-			finishedAt: 60,
-			durationMs: 10,
-			terminalStatus: "completed" as const,
-			deliverablePaths: ["neighbor.md"],
-			rejectionReason: "Neighbor rejection.",
-			reflectionAnswer: "Do not copy this row.",
-		}];
-		const base = seededPhase("completed", [{
-			attemptId: "older:100",
-			workerName: "OlderWorker",
-			resolvedModel: MODEL,
-			effort: "medium",
-			startedAt: 100,
-			finishedAt: 200,
-			durationMs: 100,
-			terminalStatus: "completed",
-			deliverablePaths: ["older-output.md"],
-			rejectionReason: "First rejection.",
-			reflectionAnswer: "Simplify the crop.",
-			finalReportParagraph: "Original report end.",
-		}], {
-			owner: firstWorkerId,
-			workerId: firstWorkerId,
-			startedAt: 300,
-			finishedAt: 400,
-			resolvedModel: MODEL,
-			thinkingLevel: "high",
+		const neighborHistory = [
+			{
+				attemptId: "neighbor:50",
+				workerName: "NeighborWorker",
+				resolvedModel: MODEL,
+				effort: "high",
+				startedAt: 50,
+				finishedAt: 60,
+				durationMs: 10,
+				terminalStatus: "completed" as const,
+				deliverablePaths: ["neighbor.md"],
+				rejectionReason: "Neighbor rejection.",
+				reflectionAnswer: "Do not copy this row.",
+			},
+		];
+		const base = seededPhase(
+			"completed",
+			[
+				{
+					attemptId: "older:100",
+					workerName: "OlderWorker",
+					resolvedModel: MODEL,
+					effort: "medium",
+					startedAt: 100,
+					finishedAt: 200,
+					durationMs: 100,
+					terminalStatus: "completed",
+					deliverablePaths: ["older-output.md"],
+					rejectionReason: "First rejection.",
+					reflectionAnswer: "Simplify the crop.",
+					finalReportParagraph: "Original report end.",
+				},
+			],
+			{
+				owner: firstWorkerId,
+				workerId: firstWorkerId,
+				startedAt: 300,
+				finishedAt: 400,
+				resolvedModel: MODEL,
+				thinkingLevel: "high",
+			},
+		);
+		base[0]!.tasks.push({
+			content: "Unrelated neighboring row",
+			status: "completed",
+			schedule: { attemptHistory: neighborHistory },
 		});
-		base[0]!.tasks.push({ content: "Unrelated neighboring row", status: "completed", schedule: { attemptHistory: neighborHistory } });
 		harness.setPhases(base);
 		harness.edits.length = 0;
 
 		const third = await tool.execute("third-dispatch", {
-			agent: "task", name: firstWorkerId, task: "Improve the cut again.", rework: "Second rejection.",
+			agent: "task",
+			name: firstWorkerId,
+			task: "Improve the cut again.",
+			rework: "Second rejection.",
 		} as TaskParams);
 		const thirdDispatch = run.mock.calls[1]![0];
 		const previousAttempts = thirdDispatch.context ?? "";
@@ -312,27 +413,38 @@ describe("task rework acceptance", () => {
 			parentId: null,
 			timestamp: new Date(now).toISOString(),
 		} as SessionEntry;
-		const replayEntries = [snapshot, ...harness.edits.map((edit, index) => ({
-			type: "custom" as const,
-			customType: USER_TODO_EDIT_CUSTOM_TYPE,
-			data: { edit },
-			id: `edit-${index}`,
-			parentId: index === 0 ? "snapshot" : `edit-${index - 1}`,
-			timestamp: new Date(now + index + 1).toISOString(),
-		} as SessionEntry))];
+		const replayEntries = [
+			snapshot,
+			...harness.edits.map(
+				(edit, index) =>
+					({
+						type: "custom" as const,
+						customType: USER_TODO_EDIT_CUSTOM_TYPE,
+						data: { edit },
+						id: `edit-${index}`,
+						parentId: index === 0 ? "snapshot" : `edit-${index - 1}`,
+						timestamp: new Date(now + index + 1).toISOString(),
+					}) as SessionEntry,
+			),
+		];
 		expect(getLatestTodoPhasesFromEntries(replayEntries)).toEqual(harness.phases());
 
 		const thirdWorkerId = third.details?.results[0]?.id ?? firstWorkerId;
-		harness.setPhases(seededPhase("completed", harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory, {
-			owner: thirdWorkerId,
-			workerId: thirdWorkerId,
-			startedAt: 500,
-			finishedAt: 600,
-			resolvedModel: "codex-lb/gpt-6-sol",
-			thinkingLevel: "medium",
-		}));
+		harness.setPhases(
+			seededPhase("completed", harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory, {
+				owner: thirdWorkerId,
+				workerId: thirdWorkerId,
+				startedAt: 500,
+				finishedAt: 600,
+				resolvedModel: "codex-lb/gpt-6-sol",
+				thinkingLevel: "medium",
+			}),
+		);
 		const top = await tool.execute("top-rung", {
-			agent: "task", name: thirdWorkerId, task: "Improve the cut once more.", rework: "Third rejection.",
+			agent: "task",
+			name: thirdWorkerId,
+			task: "Improve the cut once more.",
+			rework: "Third rejection.",
 		} as TaskParams);
 		const topText = text(top);
 		expect(topText).toContain("Rework circuit breaker");
@@ -343,7 +455,10 @@ describe("task rework acceptance", () => {
 		expect(harness.phases()[0]!.tasks[0]!.blocker).toContain("waits for user");
 		expect(run).toHaveBeenCalledTimes(2);
 		const waiting = await tool.execute("after-top-rung", {
-			agent: "task", name: thirdWorkerId, task: "Retry after circuit breaker.", rework: "Fourth rejection.",
+			agent: "task",
+			name: thirdWorkerId,
+			task: "Retry after circuit breaker.",
+			rework: "Fourth rejection.",
 		} as TaskParams);
 		expect(text(waiting)).toContain("ladder is exhausted");
 		expect(text(waiting)).not.toContain("Rework circuit breaker");
