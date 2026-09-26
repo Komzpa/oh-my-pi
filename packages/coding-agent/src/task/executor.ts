@@ -4149,6 +4149,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						getContextUsage: () => session.getContextUsage(),
 						getSystemPrompt: () => session.systemPrompt,
 						runEphemeralTurn: args => session.runEphemeralTurn(args),
+						setSubagentFastMode: (targetId, enabled) => session.setSubagentFastMode(targetId, enabled),
 						compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
 					},
 				);
