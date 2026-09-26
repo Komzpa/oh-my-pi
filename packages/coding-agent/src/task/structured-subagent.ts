@@ -9,6 +9,7 @@ import * as os from "node:os";
 import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
+import type { Effort } from "@oh-my-pi/pi-ai";
 import { resolveAgentModelSelection, resolveConfiguredModelPatterns } from "../config/model-resolver";
 import {
 	type CompactionThresholdPair,
@@ -31,7 +32,7 @@ import { isIrcEnabled } from "../irc/messaging";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
-import { type ExecutorOptions, runSubprocess } from "./executor";
+import { type ExecutorOptions, runSubagentFollowUpTurn, runSubprocess } from "./executor";
 import {
 	applyEligibleNestedPatches,
 	type IsolationContext,
@@ -113,6 +114,8 @@ export interface StructuredSubagentRequest {
 	effort?: TaskEffort;
 	/** Caller's description of how open-ended the work is; steers the child's `auto` thinking classification. */
 	solutionSpace?: string;
+	/** Exact internal rung effort; wins over coarse effort and model selector defaults. */
+	thinkingLevel?: Effort;
 	identity?: StructuredSubagentIdentity;
 	index?: number;
 	parentToolCallId?: string;
@@ -427,6 +430,8 @@ async function applySpawnHook(
 		throw new StructuredSubagentError("preflight", spawnResult.reason ?? "Subagent spawn blocked by extension.");
 	}
 	if (spawnResult?.model === undefined) return policy;
+	// Rework rungs specify both selectors and must not be redirected by extension routing.
+	if (request.model !== undefined && request.thinkingLevel !== undefined) return policy;
 	const replacement = resolveConfiguredModelPatterns(spawnResult.model, request.session.settings);
 	if (replacement.length === 0) return policy;
 	return { ...policy, modelOverride: replacement, modelRoute: spawnResult.note };
@@ -516,6 +521,7 @@ function buildExecutorOptions(
 		thinkingLevel: policy.effectiveAgent.thinkingLevel,
 		effort: request.effort,
 		solutionSpace: request.solutionSpace?.trim() || undefined,
+		exactThinkingLevel: request.thinkingLevel,
 		...(policy.schema.source === "none"
 			? {}
 			: {
@@ -863,6 +869,44 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			request.onArtifactsRetained(cleanupArtifacts);
 		}
 	}
+}
+
+/**
+ * Continue an existing task worker at an effort-only rung. No model selection,
+ * spawn hook, artifact lease, or id allocation runs here: the lifecycle owner
+ * supplies the original live session (or revives its same persisted transcript).
+ * The original invocation must keep the worker alive and retain its artifacts;
+ * ownership of retained temporary-artifact cleanup remains with its caller.
+ */
+export async function resumeStructuredSubagent(
+	request: Pick<StructuredSubagentRequest,
+		"session" | "assignment" | "index" | "parentToolCallId" | "maxRuntimeMs" | "signal" | "onProgress" | "workPoolYieldItems"
+	>,
+	previous: StructuredSubagentResult,
+	thinkingLevel: Effort,
+): Promise<StructuredSubagentResult> {
+	const { policy } = previous;
+	const result = await runSubagentFollowUpTurn({
+		id: previous.result.id,
+		agent: policy.effectiveAgent,
+		message: renderSubagentPrompt(request.assignment),
+		thinkingLevel,
+		index: request.index,
+		modelRole: policy.modelRole,
+		outputSchema: policy.schema.schema,
+		outputSchemaMode: policy.schema.mode,
+		outputSchemaSource: policy.schema.source,
+		parentToolCallId: request.parentToolCallId,
+		artifactsDir: previous.artifactsDir,
+		maxRuntimeMs: request.maxRuntimeMs,
+		signal: request.signal,
+		onProgress: request.onProgress,
+		workPoolYieldItems: request.workPoolYieldItems,
+		eventBus: request.session.eventBus,
+		subagentEventBus: request.session.subagentEventBus,
+	});
+	attachStructuredOutputMetadata(result, policy.schema);
+	return { ...previous, result, mergeSummary: "", changesApplied: null };
 }
 
 /** Build the recovery suffix used by adapters after an isolated failure. */

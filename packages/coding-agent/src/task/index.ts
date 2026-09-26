@@ -31,6 +31,7 @@ import taskSpawnFeedbackTemplate from "../prompts/tools/task-spawn-feedback.md" 
 import taskSpecializationAdvisoryTemplate from "../prompts/tools/task-specialization-advisory.md" with { type: "text" };
 import taskFollowUpTemplate from "../prompts/tools/task-follow-up.md" with { type: "text" };
 import { TASK_EFFORTS, type TaskEffort } from "@oh-my-pi/pi-tui/thinking";
+import { THINKING_EFFORTS, type Effort } from "@oh-my-pi/pi-catalog/effort";
 import { truncateForPrompt } from "../tools/approval";
 import { hasWaitTool } from "../tools/wait";
 import { isIrcEnabled } from "../irc/messaging";
@@ -55,10 +56,24 @@ import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
 import { renderResult, renderCall as renderTaskCall } from "@oh-my-pi/pi-tui/tools/task";
 import { repairTaskParams } from "@oh-my-pi/pi-tui/tools/task-repair-args";
-import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
-import { applyOpsToPhases, buildTodoExecutorPersistedEdit, buildTodoOpPersistedEdit } from "../tools/todo";
+import { captureReworkReflection, renderPreviousAttempts, type ReworkReflectionResult } from "./rework-reflection";
+import {
+	resolveEffectiveSubagentPolicy,
+	resumeStructuredSubagent,
+	runStructuredSubagent,
+	StructuredSubagentError,
+	type StructuredSubagentResult,
+	type EffectiveSubagentPolicy,
+} from "./structured-subagent";
+import {
+	applyOpsToPhases,
+	buildTodoExecutorPersistedEdit,
+	buildTodoOpPersistedEdit,
+	buildTodoReworkAttemptPersistedEdit,
+} from "../tools/todo";
 import {
 	applyTodoExecutorObservation,
+	appendTodoReworkAttempt,
 	findRespawnOwnerRows,
 	type TodoExecutorObservation,
 } from "../tools/todo-executor";
@@ -68,6 +83,7 @@ import {
 	type SubagentLifecyclePayload,
 	type SubagentProgressPayload,
 } from "./types";
+import type { TodoReworkAttempt, TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 
 import { cfgAsyncEnabled } from "../tools/settings";
 import {
@@ -80,6 +96,8 @@ import {
 	cfgTaskMaxConcurrency,
 	cfgTaskMaxRecursionDepth,
 	cfgTaskMaxRuntimeMs,
+	cfgTaskReworkLadder,
+	type TaskReworkLadderEntry,
 } from "./settings";
 
 function renderSubagentUserPrompt(assignment: string): string {
@@ -291,6 +309,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	}
 	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task };
 	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
+	if ("rework" in params) item.rework = params.rework;
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
 	if ("tools" in params) item.tools = params.tools;
@@ -313,6 +332,7 @@ function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string
 	if (item.name !== undefined) spawn.name = item.name;
 	if (item.task !== undefined) spawn.task = item.task;
 	if (item.solutionSpace !== undefined) spawn.solutionSpace = item.solutionSpace;
+	if (item.rework !== undefined) spawn.rework = item.rework;
 	if (params.context !== undefined) spawn.context = params.context;
 	if ("outputSchema" in item) spawn.outputSchema = item.outputSchema;
 	if ("schemaMode" in item) spawn.schemaMode = item.schemaMode;
@@ -324,6 +344,29 @@ function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string
 		spawn.isolated = params.isolated;
 	}
 	return spawn;
+}
+
+interface ReworkRoute {
+	row: { phase: string; content: string };
+	previous: NonNullable<TodoSchedule["executor"]>;
+	reason?: string;
+	rung?: { model?: string; effort: Effort };
+	failedLine?: string;
+	context?: string;
+}
+
+function nextReworkRung(ladder: readonly TaskReworkLadderEntry[], model: string, effort: string) {
+	const choices = ladder.map(entry => {
+		const colon = entry.lastIndexOf(":");
+		return { model: entry.slice(0, colon) || model, effort: entry.slice(colon + 1) as Effort };
+	});
+	const current = choices.findLastIndex(choice => choice.model === model && choice.effort === effort);
+	for (let index = current + 1; index < choices.length; index++) {
+		const choice = choices[index]!;
+		if (choice.model === model && THINKING_EFFORTS.indexOf(choice.effort) <= THINKING_EFFORTS.indexOf(effort as Effort)) continue;
+		return { model: ladder[index]!.startsWith(":") ? undefined : choice.model, effort: choice.effort };
+	}
+	return undefined;
 }
 
 /** One sync-executed spawn: its item, position in the original call, and (for mixed calls) a pre-claimed agent id. */
@@ -602,6 +645,199 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	 */
 	#spawnSemaphore: Semaphore | undefined;
 	readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
+	readonly #reworkRoutes = new Map<string, ReworkRoute>();
+	readonly #workerSessions = new Map<string, StructuredSubagentResult>();
+	readonly #reflectingWorkers = new Set<string>();
+
+	#routeRework(spawn: TaskParams): { route?: ReworkRoute; error?: string } {
+		const phases = this.session.getTodoPhases?.();
+		const name = spawn.name?.trim();
+		if (!phases || !name) return {};
+		const rows = phases.flatMap(phase => phase.tasks
+			.filter(task => task.status !== "completed" && task.status !== "abandoned" &&
+				(task.schedule?.owner === name || task.schedule?.executor?.workerId === name))
+			.map(task => ({ phase: phase.name, task })));
+		if (rows.length !== 1) return {};
+		const { phase, task } = rows[0]!;
+		if (task.status === "blocked" && task.blocker?.startsWith("waits for user: Rework ladder exhausted.")) {
+			return { error: `"${task.content}" is waiting for the user; the rework ladder is exhausted.` };
+		}
+		const previous = task.schedule?.executor;
+		if (!previous?.outcome) return {};
+		if (!previous.resolvedModel || !previous.thinkingLevel) return { error: `Cannot redispatch "${task.content}": the worker's resolved model or effort is missing.` };
+		if (previous.outcome !== "completed") {
+			const failed = task.schedule?.attemptHistory?.findLast(attempt => attempt.attemptId === `${previous.workerId}:${previous.startedAt}`);
+			return { route: { row: { phase, content: task.content }, previous,
+				rung: previous.resolvedModel && previous.thinkingLevel ? { model: previous.resolvedModel, effort: previous.thinkingLevel as Effort } : undefined,
+				failedLine: failed?.infraFailureLine ?? `attempt ${(task.schedule?.attemptHistory?.length ?? 0) + 1} failed: ${previous.outcome}` } };
+		}
+		const reason = spawn.rework;
+		if (!reason?.trim() || /[\r\n\u2028\u2029]/u.test(reason)) return { error: `Rework of "${task.content}" requires a one-line \`rework\` rejection reason.` };
+		if (!previous.resolvedModel || !previous.thinkingLevel || previous.finishedAt === undefined) {
+			return { error: `Cannot rework "${task.content}": the completed worker's resolved model, effort, or finish time is missing.` };
+		}
+		const rung = nextReworkRung(cfgTaskReworkLadder.get(this.session.settings), previous.resolvedModel, previous.thinkingLevel);
+		return { route: { row: { phase, content: task.content }, previous, reason, rung } };
+	}
+
+	#appendAttempt(row: ReworkRoute["row"], attempt: TodoReworkAttempt): void {
+		const phases = this.session.getTodoPhases?.();
+		if (!phases || !this.session.setTodoPhases || !this.session.persistTodoPhases) {
+			throw new Error("Rework requires durable Todo persistence.");
+		}
+		const updated = appendTodoReworkAttempt(phases, row, attempt);
+		if (!updated) {
+			const matches = phases.flatMap(phase => phase.name === row.phase ? phase.tasks.filter(task => task.content === row.content) : []);
+			if (matches.length === 1 && matches[0]!.schedule?.attemptHistory?.some(previous => previous.attemptId === attempt.attemptId)) return;
+			throw new Error(`Cannot persist rework attempt: exact Todo row "${row.content}" is no longer unique.`);
+		}
+		this.session.setTodoPhases(updated);
+		this.session.persistTodoPhases(updated, buildTodoReworkAttemptPersistedEdit(row, attempt));
+	}
+
+	#recordFailedAttempt(result: Pick<SingleResult, "id" | "exitCode" | "error" | "aborted" | "abortReason" | "stderr" | "output" | "outputPath" | "durationMs" | "resolvedModelIdentity" | "resolvedThinkingLevel">): void {
+		if (!result.aborted && result.exitCode === 0 && !result.error) return;
+		const phases = this.session.getTodoPhases?.();
+		if (!phases) return;
+		const rows = phases.flatMap(phase => phase.tasks
+			.filter(task => task.schedule?.executor?.workerId === result.id)
+			.map(task => ({ phase: phase.name, task })));
+		if (rows.length !== 1) return;
+		const { phase, task } = rows[0]!;
+		const previous = task.schedule!.executor!;
+		this.#persistTodoExecutor({ ...previous,
+			resolvedModel: result.resolvedModelIdentity ?? previous.resolvedModel,
+			thinkingLevel: result.resolvedThinkingLevel ?? previous.thinkingLevel,
+			finishedAt: previous.finishedAt ?? Date.now(),
+			outcome: result.aborted ? "aborted" : "failed",
+		});
+		const error = (result.error ?? result.abortReason ?? result.stderr ?? result.output).replace(/[\r\n\u2028\u2029]+/gu, " ").trim() || "worker failed";
+		this.#appendAttempt({ phase, content: task.content }, {
+			attemptId: `${result.id}:${previous.startedAt}`,
+			workerName: result.id,
+			resolvedModel: result.resolvedModelIdentity ?? previous.resolvedModel ?? "unresolved",
+			effort: result.resolvedThinkingLevel ?? previous.thinkingLevel ?? "unresolved",
+			startedAt: previous.startedAt,
+			finishedAt: previous.finishedAt ?? Date.now(),
+			durationMs: result.durationMs,
+			terminalStatus: result.aborted ? "aborted" : "failed",
+			deliverablePaths: result.outputPath ? [result.outputPath] : [],
+			infraFailureError: error,
+			infraFailureLine: `attempt ${(task.schedule?.attemptHistory?.length ?? 0) + 1} failed: ${error}`,
+		});
+	}
+
+	async #restoreWorker(route: ReworkRoute, policy: EffectiveSubagentPolicy): Promise<StructuredSubagentResult> {
+		const cached = this.#workerSessions.get(route.previous.workerId);
+		if (cached) return cached;
+		const ref = AgentRegistry.global().get(route.previous.workerId);
+		const artifactsDir = ref?.sessionFile ? path.dirname(ref.sessionFile) : this.session.getArtifactsDir?.();
+		if (!artifactsDir) throw new Error(`Cannot restore report for ${route.previous.workerId}: artifacts directory is unavailable.`);
+		const outputPath = ref?.history?.outputPath ?? path.join(artifactsDir, `${route.previous.workerId}.md`);
+		const output = await Bun.file(outputPath).text();
+		const restored: StructuredSubagentResult = {
+			policy: { ...policy, effectiveAgent: { ...policy.effectiveAgent, name: route.previous.agentProfile ?? policy.agentName } },
+			artifactsDir,
+			temporaryArtifacts: false,
+			changesApplied: null,
+			mergeSummary: "",
+			result: {
+				index: 0,
+				id: route.previous.workerId,
+				agent: route.previous.agentProfile ?? policy.agentName,
+				agentSource: policy.agent.source,
+				task: route.row.content,
+				exitCode: route.previous.outcome === "completed" ? 0 : 1,
+				output,
+				outputPath,
+				stderr: "",
+				truncated: false,
+				durationMs: Math.max(0, (route.previous.finishedAt ?? route.previous.startedAt) - route.previous.startedAt),
+				tokens: 0,
+				requests: 0,
+				resolvedModelIdentity: route.previous.resolvedModel,
+				resolvedThinkingLevel: route.previous.thinkingLevel as Effort,
+			},
+		};
+		this.#workerSessions.set(route.previous.workerId, restored);
+		return restored;
+	}
+
+	async #prepareRework(route: ReworkRoute, policy: EffectiveSubagentPolicy, signal?: AbortSignal): Promise<string | undefined> {
+		if (route.failedLine) {
+			route.context = route.failedLine;
+			return undefined;
+		}
+		const previous = await this.#restoreWorker(route, policy);
+		// Save the rejected report before reflection can overwrite the same worker artifact.
+		const report = previous.result.outputPath ? await Bun.file(previous.result.outputPath).text() : previous.result.output;
+		const attemptId = `${route.previous.workerId}:${route.previous.startedAt}`;
+		const phasesBefore = this.session.getTodoPhases?.() ?? [];
+		const priorRecord = phasesBefore.find(phase => phase.name === route.row.phase)?.tasks
+			.find(task => task.content === route.row.content)?.schedule?.attemptHistory?.find(attempt => attempt.attemptId === attemptId);
+		if (!priorRecord) {
+			this.#reflectingWorkers.add(route.previous.workerId);
+			let reflection: ReworkReflectionResult;
+			try {
+				reflection = await captureReworkReflection({ session: this.session, previous, reason: route.reason!, signal });
+			} finally {
+				this.#reflectingWorkers.delete(route.previous.workerId);
+			}
+			if (reflection.resumed) this.#workerSessions.set(route.previous.workerId, reflection.resumed);
+			const paths = new Set<string>();
+			if (previous.result.outputPath) paths.add(previous.result.outputPath);
+			if (previous.result.patchPath) paths.add(previous.result.patchPath);
+			for (const deliverable of previous.result.nestedPatchPaths ?? []) paths.add(deliverable);
+			const collectPaths = (value: unknown, pathField = false): void => {
+				if (typeof value === "string") {
+					if (pathField && value.trim()) paths.add(value);
+				} else if (Array.isArray(value)) {
+					for (const item of value) collectPaths(item, pathField);
+				} else if (value && typeof value === "object") {
+					for (const [key, item] of Object.entries(value)) collectPaths(item, /(?:paths?|files?)$/iu.test(key));
+				}
+			};
+			collectPaths(previous.result.structuredOutput?.data);
+			try {
+				collectPaths(JSON.parse(report));
+			} catch {
+				// Prose reports are inspected below; JSON reports also preserve explicit path fields.
+			}
+			for (const match of report.matchAll(/`([^`\r\n]+)`/gu)) {
+				const candidate = match[1]!;
+				if (!/\s/u.test(candidate) && (candidate.includes("/") || /\.[a-z0-9]+$/iu.test(candidate))) paths.add(candidate);
+			}
+			this.#appendAttempt(route.row, {
+				attemptId,
+				workerName: route.previous.workerId,
+				resolvedModel: route.previous.resolvedModel!,
+				effort: route.previous.thinkingLevel!,
+				startedAt: route.previous.startedAt,
+				finishedAt: route.previous.finishedAt!,
+				durationMs: Math.max(0, route.previous.finishedAt! - route.previous.startedAt),
+				terminalStatus: "completed",
+				deliverablePaths: [...paths],
+				rejectionReason: route.reason,
+				reflectionAnswer: reflection.answer,
+				noAnswerReason: reflection.noAnswerReason,
+				finalReportParagraph: report.trimEnd().split(/\n\s*\n/u).at(-1) ?? "",
+			});
+		}
+		const phases = this.session.getTodoPhases?.() ?? [];
+		const task = phases.find(phase => phase.name === route.row.phase)?.tasks.find(task => task.content === route.row.content);
+		route.context = renderPreviousAttempts(task?.schedule?.attemptHistory ?? []);
+		if (!route.rung) {
+			const reason = "waits for user: Rework ladder exhausted. Review the entire attempt chain and choose how to proceed.";
+			const operation = { op: "block" as const, task: route.row.content, reason };
+			const updated = applyOpsToPhases(phases, [operation]);
+			if (updated.errors.length > 0) throw new Error(updated.errors.join("\n"));
+			this.session.setTodoPhases?.(updated.phases);
+			this.session.persistTodoPhases?.(updated.phases, buildTodoOpPersistedEdit("block", operation));
+			return `Rework circuit breaker for "${route.row.content}": top rung reached. Waiting for the user.\n\n${route.context}`;
+		}
+		return undefined;
+	}
+
 
 	get parameters(): TaskToolSchemaInstance {
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
@@ -653,6 +889,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				if (!data || typeof data !== "object") return;
 				const event = data as Partial<SubagentLifecyclePayload>;
 				if (typeof event.id !== "string" || typeof event.agent !== "string") return;
+				if (this.#reflectingWorkers.has(event.id)) return;
 				if (event.status === "started") {
 					const observed: TodoExecutorObservation = {
 						workerId: event.id,
@@ -682,6 +919,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				const event = data as Partial<SubagentProgressPayload>;
 				const workerId = event.progress?.id;
 				if (typeof workerId !== "string") return;
+				if (this.#reflectingWorkers.has(workerId)) return;
 				const prior = this.#todoExecutors.get(workerId);
 				if (!prior) return;
 				const observed = {
@@ -842,6 +1080,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			}
 		}
 		const normalizedSpawnParams = spawnItems.map(item => spawnParamsFor(params, item, defaultAgent));
+		for (const spawn of normalizedSpawnParams) {
+			const decision = this.#routeRework(spawn);
+			if (decision.error) return createTaskModeError(decision.error);
+			if (decision.route) this.#reworkRoutes.set(`${toolCallId}:${normalizedSpawnParams.indexOf(spawn)}`, decision.route);
+		}
 		const resolvedAgents = normalizedSpawnParams.map(spawn => spawn.agent ?? defaultAgent);
 		// Resolve every item before choosing an execution path. No executor or
 		// job manager may observe a batch unless every effective policy is valid.
@@ -871,6 +1114,16 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			);
 		}
 		const policies = preflights.map(preflight => preflight.policy!);
+		try {
+			for (const [index, policy] of policies.entries()) {
+				const route = this.#reworkRoutes.get(`${toolCallId}:${index}`);
+				if (!route) continue;
+				const blocked = await this.#prepareRework(route, policy, signal);
+				if (blocked) return createTaskModeError(blocked);
+			}
+		} catch (error) {
+			return createTaskModeError(`Rework preparation failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
 		const itemBlocking = policies.map(policy => policy.effectiveAgent.blocking === true);
 
 		// Execution mode is per item: an item whose agent type declares
@@ -994,7 +1247,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const agentType = resolvedAgents[index]!;
 			const policy = policies[index]!;
 			const agentSource = policy.agent.source;
-			const agentId = await outputManager.allocate(item.name?.trim() || generateTaskName());
+			const route = this.#reworkRoutes.get(`${toolCallId}:${index}`);
+			const agentId = route?.reason && route.rung && !route.rung.model
+				? route.previous.workerId
+				: await outputManager.allocate(item.name?.trim() || generateTaskName());
 			const assignment = (item.task ?? "").trim();
 			spawns.push({
 				agentId,
@@ -1627,13 +1883,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		onArtifactsRetained?: (cleanup: () => Promise<void>) => void,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
-		const assignment = (params.task ?? "").trim();
-		const context = this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined;
+		const assignment = `${(params.task ?? "").trim()}\n\nEvery message to the lead MUST answer exactly this question: Is there a much simpler different way?`;
+		const route = this.#reworkRoutes.get(`${toolCallId}:${spawnIndex}`);
+		const context = [this.#isBatchEnabled() ? params.context?.trim() : undefined, route?.context].filter(Boolean).join("\n\n") || undefined;
 		let latestProgress: AgentProgress | undefined;
 		try {
-			const execution = await runStructuredSubagent({
+			const request = {
 				session: this.session,
-				invocationKind: "task",
+				invocationKind: "task" as const,
 				assignment,
 				context,
 				agent: params.agent,
@@ -1641,6 +1898,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				...(Object.hasOwn(params, "schemaMode") ? { schemaMode: params.schemaMode } : {}),
 				...(params.effort !== undefined ? { effort: params.effort } : {}),
 				solutionSpace: params.solutionSpace,
+				...(route?.rung ? { model: route.rung.model, thinkingLevel: route.rung.effort } : {}),
 				...(params.tools?.length
 					? {
 							customTools: createEvalCustomTools(
@@ -1655,13 +1913,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				index: spawnIndex,
 				parentToolCallId: toolCallId,
 				detached,
-				// Detached (async) spawns advertise `agent://<id>` handles in the
-				// eventual async-result delivery, which can land well after this
-				// call returns. Without this, a temporary (in-memory session)
-				// artifacts directory is deleted immediately on completion and the
-				// advertised URL 404s by the time delivery happens.
-				retainArtifacts: detached,
-				...(onArtifactsRetained ? { onArtifactsRetained } : {}),
+				// Rework may resume this worker after the async job is evicted.
+				// Retain the worker's artifacts for the parent session, not one invocation.
+				keepAlive: true,
+				retainArtifacts: true,
+				onArtifactsRetained: (cleanup: () => Promise<void>) => {
+					if (this.session.registerDisposeCallback) this.session.registerDisposeCallback(() => { void cleanup(); });
+					else onArtifactsRetained?.(cleanup);
+				},
 				invokedAt: launchTiming?.invokedAt,
 				acquiredAt: launchTiming?.acquiredAt,
 				...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
@@ -1670,7 +1929,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
 				maxRuntimeMs: cfgTaskMaxRuntimeMs.get(this.session.settings),
 				signal,
-				onProgress: progress => {
+				onProgress: (progress: AgentProgress) => {
 					latestProgress = { ...progress, recentTools: progress.recentTools.slice() };
 					onUpdate?.({
 						content: [{ type: "text", text: `Running agent ${progress.id}...` }],
@@ -1682,7 +1941,18 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						},
 					});
 				},
-			});
+			};
+			let execution: StructuredSubagentResult;
+			if (route?.reason && route.rung && !route.rung.model) {
+				const previous = this.#workerSessions.get(route.previous.workerId);
+				if (!previous) throw new Error(`Rework session ${route.previous.workerId} is unavailable.`);
+				execution = await resumeStructuredSubagent({ ...request, assignment: [context, assignment].filter(Boolean).join("\n\n") }, previous, route.rung.effort);
+			} else {
+				execution = await runStructuredSubagent(request);
+			}
+			this.#workerSessions.set(execution.result.id, execution);
+			this.#recordFailedAttempt(execution.result);
+			this.#reworkRoutes.delete(`${toolCallId}:${spawnIndex}`);
 			return this.#buildResultPayload(
 				execution.result,
 				execution.policy.discovery.projectAgentsDir,
@@ -1699,6 +1969,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const salvaged = settled
 				? { ...settled, error: settled.error ?? (cause instanceof Error ? cause.message : message) }
 				: undefined;
+			const workerId = latestProgress?.id ?? preAllocatedId;
+			if (workerId) this.#recordFailedAttempt({ id: workerId, exitCode: 1, error: message, output: "", stderr: message, durationMs: Date.now() - startTime, aborted: signal?.aborted });
+			this.#reworkRoutes.delete(`${toolCallId}:${spawnIndex}`);
 			return {
 				content: [{ type: "text", text: `Task execution failed: ${message}` }],
 				isError: true,

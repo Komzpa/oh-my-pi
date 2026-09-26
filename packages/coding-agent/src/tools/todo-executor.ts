@@ -1,5 +1,5 @@
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
-import type { TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import type { TodoReworkAttempt, TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { stripOmpCollisionSuffixChain } from "../task/id-collision";
 
 export interface TodoExecutorObservation {
@@ -111,7 +111,9 @@ export function applyTodoExecutorObservation(
 	) {
 		return undefined;
 	}
-	const carriedPrevious = previous?.workerId === observation.workerId ? previous : undefined;
+	const carriedPrevious = previous?.workerId === observation.workerId && previous.startedAt === observation.startedAt
+		? previous
+		: undefined;
 	const executor: NonNullable<TodoSchedule["executor"]> = {
 		workerId: observation.workerId,
 		...(observation.agentProfile || carriedPrevious?.agentProfile
@@ -147,6 +149,34 @@ export function applyTodoExecutorObservation(
 		...phase,
 		tasks: phase.tasks.map(task =>
 			task === target ? { ...task, status: nextStatus, schedule: nextSchedule } : task,
+		),
+	}));
+}
+
+/** Append only to a unique exact phase/content row; replay never guesses from worker names. */
+export function appendTodoReworkAttempt(
+	phases: readonly TodoPhase[],
+	row: { phase: string; content: string },
+	attempt: TodoReworkAttempt,
+): TodoPhase[] | undefined {
+	const matches = phases.flatMap(phase =>
+		phase.name === row.phase ? phase.tasks.filter(task => task.content === row.content) : [],
+	);
+	if (matches.length !== 1 || matches[0].schedule?.attemptHistory?.some(previous => previous.attemptId === attempt.attemptId)) {
+		return undefined;
+	}
+	return phases.map(phase => ({
+		...phase,
+		tasks: phase.tasks.map(task =>
+			task === matches[0]
+				? {
+					...task,
+					schedule: {
+						...task.schedule,
+						attemptHistory: [...(task.schedule?.attemptHistory ?? []), structuredClone(attempt)],
+					},
+				}
+				: task,
 		),
 	}));
 }
