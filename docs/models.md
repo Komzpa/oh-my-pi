@@ -457,10 +457,9 @@ When a bare id matches models from multiple providers, preference order is:
 
 Model roles assign model selectors to workloads. Configure them under `modelRoles` in `config.yml`, not in `models.yml`; `models.yml` defines providers and model metadata.
 
-Built-in roles are grouped in the model picker:
+The model hub’s primary model list is session-only: pressing Enter on a model immediately switches the current session through the session model setter, does not write settings, and does not ask a role question. Its footer identifies this action as `Enter: use for this session`. Pressing `r` opens a separate editor for model roles and their fallback chains; role and fallback rows are grouped under human-readable role names.
 
-- **Chat roles:** `default`, `smol`, `slow`, `vision`, `plan`, `commit`, `tiny`, `memory`, `task`, and `advisor`. The `tiny` and `memory` roles accept both ordinary chat models and `tiny` catalog models.
-- **Model-kind roles:** `image`, `web`, `speech`, `dictation`, and `judge`. These select image generation, search/grounded chat, text-to-speech, speech-to-text, and judgment runners respectively. The `judge` role also accepts tiny and chat models.
+The hub header presents two separate facts: the model active in the current session and the configured default model for new sessions. At both 100- and 200-column terminal widths, the model list and role/fallback editor remain usable. Role details identify the current holder, scope, and effect; Enter assigns the selected model to the role, or unassigns it when that model already holds the role. Fallback choices are distinct: retry the exact model, retry any model from the same provider, or append the selected model to the default retry chain. The generic Task profile declares `@task`, but request-level and per-agent model overrides and `agent_router` can supersede that selection. Other unmodeled agents inherit the parent/session model or configured default; they do not universally use `@task`.
 
 `vision` and `image` are different workloads: `vision` selects a chat model for image analysis, such as `read screenshot.png?q=...`; `image` selects a model with catalog kind `image` for `generate_image`. Assigning a model to `vision` does not give it image-input support: image questions additionally check that the model can send image input to its provider.
 

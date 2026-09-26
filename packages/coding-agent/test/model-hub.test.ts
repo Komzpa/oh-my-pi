@@ -99,6 +99,7 @@ function makeRegistry(models: () => Model[], overrides: RegistryOverrides = {}):
 
 interface HubHarness {
 	hub: ModelHubComponent;
+	onSelectForSession: Mock<(model: Model) => void>;
 	onAssign: ReturnType<typeof vi.fn>;
 	onUnassign: ReturnType<typeof vi.fn>;
 	onLoginRequest: ReturnType<typeof vi.fn>;
@@ -123,6 +124,7 @@ function createHub(options: {
 	const registry = makeRegistry(modelsFn, options.registry);
 	const ui = { requestRender: vi.fn(), terminal: { rows: options.terminalRows ?? 40 } } as unknown as TUI;
 	const onAssign = vi.fn();
+	const onSelectForSession = vi.fn();
 	const onUnassign = vi.fn();
 	const onLoginRequest = vi.fn();
 	const onCancel = vi.fn();
@@ -142,6 +144,7 @@ function createHub(options: {
 		registry,
 		options.scoped ? modelsFn().map(model => ({ model })) : [],
 		{
+			onSelectForSession: options.callbacks?.onSelectForSession ?? onSelectForSession,
 			onAssign: options.callbacks?.onAssign ?? onAssign,
 			onUnassign: options.callbacks?.onUnassign ?? onUnassign,
 			onLoginRequest: options.callbacks?.onLoginRequest ?? onLoginRequest,
@@ -152,7 +155,7 @@ function createHub(options: {
 		options.hub,
 	);
 	openHubs.push(hub);
-	return { hub, onAssign, onUnassign, onLoginRequest, onCancel, onFallbackChainChange };
+	return { hub, onSelectForSession, onAssign, onUnassign, onLoginRequest, onCancel, onFallbackChainChange };
 }
 
 const DOWN = "\x1b[B";
@@ -458,7 +461,7 @@ describe("ModelHub", () => {
 		test("typing on All models switches focus to model list and navigates results with arrows", () => {
 			const modelA = makeModel("test", "model-a");
 			const modelB = makeModel("test", "model-b");
-			const { hub, onAssign } = createHub({ models: [modelA, modelB], scoped: true });
+			const { hub, onSelectForSession } = createHub({ models: [modelA, modelB], scoped: true });
 			installTestTheme();
 
 			// Initial state: scope focus (sidebar)
@@ -467,16 +470,14 @@ describe("ModelHub", () => {
 			// Type to search
 			for (const ch of "model") hub.handleInput(ch);
 
-			// Focus is now on the model list
-			expect(footerLine(hub.render(220))).toContain("↑/↓ models · ← providers");
+			// Focus is now on the model list.
+			expect(footerLine(hub.render(220))).toContain("Enter: use for this session");
 
-			// Down arrow navigates within the model list (from model-a to model-b)
+			// Down arrow navigates within the model list (from model-a to model-b),
+			// and Enter selects the focused row for this session.
 			hub.handleInput(DOWN);
-			hub.handleInput("\n"); // open role strip for model-b
-			expect(footerLine(hub.render(220))).toContain("model-b →");
-
-			hub.handleInput("\n"); // assign to default
-			expect(onAssign.mock.calls[0]?.[0]).toBe(modelB);
+			hub.handleInput("\n");
+			expect(onSelectForSession).toHaveBeenCalledWith(modelB);
 		});
 
 		test("typing while on Roles in scope focus switches to All models and focuses model list", () => {
@@ -490,7 +491,7 @@ describe("ModelHub", () => {
 			// Typing a search character switches away from Roles to All models and focuses list
 			hub.handleInput("t");
 			expect(normalize(hub.render(220))).toContain("All available models");
-			expect(footerLine(hub.render(220))).toContain("↑/↓ models · ← providers");
+			expect(footerLine(hub.render(220))).toContain("Enter: use for this session");
 		});
 
 		test("typing while on a locked provider in scope focus switches to All models and focuses model list", () => {
@@ -508,7 +509,7 @@ describe("ModelHub", () => {
 			// Typing a search character switches to All models and focuses list
 			hub.handleInput("t");
 			expect(normalize(hub.render(220))).toContain("All available models");
-			expect(footerLine(hub.render(220))).toContain("↑/↓ models · ← providers");
+			expect(footerLine(hub.render(220))).toContain("Enter: use for this session");
 		});
 	});
 
@@ -597,21 +598,15 @@ describe("ModelHub", () => {
 		});
 	});
 
-	describe("assignment strips", () => {
-		test("Enter opens the role strip; assigning fires onAssign and opens the thinking strip", () => {
+	describe("role assignments", () => {
+		test("the role editor assignment fires onAssign and opens the thinking picker", () => {
 			const model = getBundledModel("openai", "gpt-5.5");
 			if (!model) throw new Error("Expected bundled model openai/gpt-5.5");
 			const { hub, onAssign } = createHub({ models: [model], scoped: true });
 			installTestTheme();
 
-			hub.handleInput("\n"); // sidebar → model list
-			hub.handleInput("\n");
-			const strip = footerLine(hub.render(220));
-			expect(strip).toContain("default");
-			expect(strip).toContain("retry-fallback");
-			expect(strip).not.toContain("project default");
-			expect(strip).not.toContain("global default");
-
+			hub.handleInput("\n"); // Sidebar → model list.
+			hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 			hub.handleInput("\n"); // assign to default (first chip)
 			expect(onAssign).toHaveBeenCalledTimes(1);
 			const call = onAssign.mock.calls[0];
@@ -636,7 +631,7 @@ describe("ModelHub", () => {
 			const { hub } = createHub({ models: [model], scoped: true, callbacks: { onAssign } });
 
 			hub.handleInput("\n"); // Sidebar → model list.
-			hub.handleInput("\n"); // Open role strip.
+			hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 			hub.handleInput("\n"); // Assign default.
 			expect(onAssign).toHaveBeenCalledTimes(1);
 			expect(normalize(hub.render(220))).toContain("Applying model");
@@ -660,7 +655,7 @@ describe("ModelHub", () => {
 			const { hub } = createHub({ models: [model], scoped: true, callbacks: { onAssign } });
 
 			hub.handleInput("\n"); // Sidebar → model list.
-			hub.handleInput("\n");
+			hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 			hub.handleInput("\n");
 			assignment.resolve(false);
 			await assignment.promise;
@@ -678,7 +673,7 @@ describe("ModelHub", () => {
 			const { hub } = createHub({ models: [model], scoped: true, callbacks: { onAssign } });
 
 			hub.handleInput("\n"); // Sidebar → model list.
-			hub.handleInput("\n");
+			hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 			hub.handleInput("\n");
 			hub.handleInput("\x1b[C"); // Inherit → off.
 			hub.handleInput("\n");
@@ -697,16 +692,13 @@ describe("ModelHub", () => {
 			const projectHarness = createHub({ models: [model], scoped: true, settings });
 
 			projectHarness.hub.handleInput("\n"); // Sidebar → model list.
-			projectHarness.hub.handleInput("\n");
-			const projectStrip = footerLine(projectHarness.hub.render(220));
-			expect(projectStrip).toContain("project default");
-			expect(projectStrip).toContain("global default");
+			projectHarness.hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 			projectHarness.hub.handleInput("\n");
 			expect(projectHarness.onAssign.mock.calls[0]?.[4]).toBe("project");
 
 			const globalHarness = createHub({ models: [model], scoped: true, settings });
 			globalHarness.hub.handleInput("\n"); // Sidebar → model list.
-			globalHarness.hub.handleInput("\n");
+			globalHarness.hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 			globalHarness.hub.handleInput(DOWN);
 			globalHarness.hub.handleInput("\n");
 			expect(globalHarness.onAssign.mock.calls[0]?.[4]).toBe("global");
@@ -725,7 +717,7 @@ describe("ModelHub", () => {
 
 			hub.handleInput("\t"); // Sidebar → model list.
 			hub.handleInput(DOWN); // Effective project model → shadowed global model.
-			hub.handleInput("\n");
+			hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 			hub.handleInput(DOWN); // Project default → global default.
 			hub.handleInput("\n");
 
@@ -758,14 +750,14 @@ describe("ModelHub", () => {
 				const projectDefault = createHub({ models: [model], scoped: true, settings });
 				expect(normalize(projectDefault.hub.render(220))).toContain("○ smol");
 				projectDefault.hub.handleInput("\n"); // Sidebar → model list.
-				projectDefault.hub.handleInput("\n");
+				projectDefault.hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 				projectDefault.hub.handleInput("\n");
 				expect(projectDefault.onUnassign).toHaveBeenCalledWith("default", "project");
 				expect(projectDefault.onAssign).not.toHaveBeenCalled();
 
 				const globalDefault = createHub({ models: [model], scoped: true, settings });
 				globalDefault.hub.handleInput("\n"); // Sidebar → model list.
-				globalDefault.hub.handleInput("\n");
+				globalDefault.hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 				globalDefault.hub.handleInput(DOWN);
 				globalDefault.hub.handleInput("\n");
 				expect(globalDefault.onUnassign).toHaveBeenCalledWith("default", "global");
@@ -773,7 +765,7 @@ describe("ModelHub", () => {
 
 				const projectAutoSelected = createHub({ models: [model], scoped: true, settings });
 				projectAutoSelected.hub.handleInput("\n"); // Sidebar → model list.
-				projectAutoSelected.hub.handleInput("\n");
+				projectAutoSelected.hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 				projectAutoSelected.hub.handleInput(DOWN);
 				projectAutoSelected.hub.handleInput(DOWN);
 				projectAutoSelected.hub.handleInput("\n");
@@ -782,7 +774,7 @@ describe("ModelHub", () => {
 
 				const globalAutoSelected = createHub({ models: [model], scoped: true, settings });
 				globalAutoSelected.hub.handleInput("\n"); // Sidebar → model list.
-				globalAutoSelected.hub.handleInput("\n");
+				globalAutoSelected.hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 				globalAutoSelected.hub.handleInput(DOWN);
 				globalAutoSelected.hub.handleInput(DOWN);
 				globalAutoSelected.hub.handleInput(DOWN);
@@ -801,7 +793,7 @@ describe("ModelHub", () => {
 			expect(normalize(hub.render(220))).toContain("○ smol");
 
 			hub.handleInput("\n"); // Sidebar → model list.
-			hub.handleInput("\n");
+			hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 			hub.handleInput(DOWN);
 			hub.handleInput(DOWN);
 			hub.handleInput("\n");
@@ -827,7 +819,7 @@ describe("ModelHub", () => {
 
 			hub.handleInput("\t"); // Sidebar → model list.
 			hub.handleInput(DOWN); // Effective configured model → assignment target.
-			hub.handleInput("\n");
+			hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 			hub.handleInput(DOWN); // Project default → global default.
 			hub.handleInput("\n");
 
@@ -860,7 +852,7 @@ describe("ModelHub", () => {
 			const assignHub = createHub({ models: [configuredModel, targetModel], scoped: true, settings });
 			assignHub.hub.handleInput("\t"); // Sidebar → model list.
 			assignHub.hub.handleInput(DOWN); // gpt-5.5 → gpt-5.6.
-			assignHub.hub.handleInput("\n"); // Open the role strip for gpt-5.6.
+			assignHub.hub.handleInput("\x1br"); // Alt+R opens role choices for gpt-5.6.
 			assignHub.hub.handleInput("\n"); // Assign to "project default" (first chip).
 			expect(assignHub.onAssign).toHaveBeenCalledTimes(1);
 			expect(assignHub.onAssign.mock.calls[0]?.[1]).toBe("default");
@@ -871,7 +863,7 @@ describe("ModelHub", () => {
 			// "assigned here" because @smol falls back to global smol → gpt-5.5.
 			const classifyHub = createHub({ models: [configuredModel, targetModel], scoped: true, settings });
 			classifyHub.hub.handleInput("\t"); // Sidebar → model list.
-			classifyHub.hub.handleInput("\n"); // Open the role strip for gpt-5.5.
+			classifyHub.hub.handleInput("\x1br"); // Alt+R opens role choices for gpt-5.5.
 			classifyHub.hub.handleInput("\n"); // Select "project default" (first chip).
 			expect(classifyHub.onUnassign).toHaveBeenCalledWith("default", "project");
 			expect(classifyHub.onAssign).not.toHaveBeenCalled();
@@ -884,7 +876,7 @@ describe("ModelHub", () => {
 			installTestTheme();
 
 			hub.handleInput("\n"); // Sidebar → model list.
-			hub.handleInput("\n");
+			hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 			hub.handleInput("\n");
 			const thinking = footerLine(hub.render(220));
 			expect(thinking).toContain("xhigh");
@@ -898,8 +890,8 @@ describe("ModelHub", () => {
 			installTestTheme();
 
 			hub.handleInput("\n"); // Sidebar → model list.
-			hub.handleInput("\n"); // role strip
-			hub.handleInput(DOWN); // default → smol chip (down moves right)
+			hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
+			hub.handleInput(DOWN); // default → smol chip (next row down)
 			hub.handleInput("\n");
 
 			expect(onUnassign).toHaveBeenCalledWith("smol");
@@ -908,36 +900,6 @@ describe("ModelHub", () => {
 			expect(footerLine(hub.render(220))).not.toContain("inherit");
 		});
 
-		test("role strip offers only roles the model can fill", () => {
-			const chat = makeModel("test", "chat-model");
-			const search = makeModel("web", "perplexity", 128_000, undefined, "search");
-			const { hub } = createHub({ models: [chat, search], scoped: true });
-			hub.handleInput("\t");
-
-			for (const ch of "chat-model") hub.handleInput(ch);
-			hub.handleInput("\n");
-			const chatStrip = footerLine(hub.render(400));
-			expect(chatStrip).toContain("default");
-			expect(chatStrip).toContain("smol");
-			expect(chatStrip).toContain("judge");
-			expect(chatStrip).toContain("retry-fallback");
-			expect(chatStrip).not.toContain("image");
-			expect(chatStrip).not.toContain("web");
-			expect(chatStrip).not.toContain("speech");
-			expect(chatStrip).not.toContain("dictation");
-			hub.handleInput(ESC);
-
-			hub.handleInput(ESC); // clear query
-			for (const ch of "perplexity") hub.handleInput(ch);
-			hub.handleInput("\n");
-			const searchStrip = footerLine(hub.render(400));
-			expect(searchStrip).toContain("web");
-			expect(searchStrip).toContain("fallbacks:perplexity");
-			expect(searchStrip).not.toContain("default");
-			expect(searchStrip).not.toContain("smol");
-			expect(searchStrip).not.toContain("judge");
-			expect(searchStrip).not.toContain("retry-fallback");
-		});
 
 		test("retry-fallback chip appends the model to the default chain without a thinking strip", () => {
 			const model = makeModel("test", "retry-fallback-model");
@@ -945,7 +907,7 @@ describe("ModelHub", () => {
 			installTestTheme();
 
 			hub.handleInput("\n"); // Sidebar → model list.
-			hub.handleInput("\n");
+			hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
 			hub.handleInput(LEFT); // wraps to the trailing retry-fallback chip
 			hub.handleInput("\n");
 
@@ -954,33 +916,12 @@ describe("ModelHub", () => {
 			expect(footerLine(hub.render(220))).not.toContain("inherit");
 
 			// A second registration of the same model is a no-op, not a duplicate.
-			hub.handleInput("\n");
+			hub.handleInput("\x1br"); // Alt+R reopens role choices without consuming search text.
 			hub.handleInput(LEFT);
 			hub.handleInput("\n");
 			expect(onFallbackChainChange).toHaveBeenCalledTimes(1);
 		});
 
-		test("overflowing role strip scrolls left so the selected chip stays visible", () => {
-			const model = makeModel("test", "narrow-strip-model");
-			const { hub } = createHub({ models: [model], scoped: true });
-			installTestTheme();
-
-			hub.handleInput("\n"); // Sidebar → model list.
-			hub.handleInput("\n"); // open the role strip
-			// At full width every chip fits and no left ellipsis appears.
-			expect(footerLine(hub.render(220))).not.toContain("…");
-
-			hub.handleInput(LEFT); // wrap to the trailing retry-fallback chip
-			const narrow = footerLine(hub.render(80));
-			expect(narrow).toContain("[ retry-fallback ]");
-			expect(narrow).toContain("…");
-
-			// Back on the first chip the window resets — no leading ellipsis.
-			hub.handleInput("\x1b[C"); // wrap right back to the first chip
-			const reset = footerLine(hub.render(80));
-			expect(reset).toContain("[ default");
-			expect(reset.trimStart().startsWith("…")).toBe(false);
-		});
 	});
 
 	describe("fallback chains in the roles view", () => {
@@ -1110,7 +1051,7 @@ describe("ModelHub", () => {
 			const { hub, onFallbackChainChange } = createHub({ models: [a, b], scoped: true });
 
 			for (const ch of "model-a") hub.handleInput(ch);
-			hub.handleInput("\n"); // open the strip for model-a
+			hub.handleInput("\x1br"); // Alt+R opens role choices for model-a.
 			hub.handleInput(LEFT); // retry-fallback
 			hub.handleInput(LEFT); // fallbacks:test/*
 			hub.handleInput(LEFT); // fallbacks:model-a
@@ -1131,7 +1072,7 @@ describe("ModelHub", () => {
 			const { hub, onFallbackChainChange } = createHub({ models: [a, b], scoped: true });
 
 			for (const ch of "model-a") hub.handleInput(ch);
-			hub.handleInput("\n");
+			hub.handleInput("\x1br"); // Alt+R opens role choices for model-a.
 			hub.handleInput(LEFT); // retry-fallback
 			hub.handleInput(LEFT); // fallbacks:test/*
 			hub.handleInput("\n");
@@ -1339,13 +1280,13 @@ describe("ModelHub", () => {
 	});
 
 	test("Enter on the sidebar moves focus to the model list instead of acting on a row", () => {
-		const { hub, onAssign } = createHub({ models: [makeModel("test", "test-model")], scoped: true });
+		const { hub, onSelectForSession } = createHub({ models: [makeModel("test", "test-model")], scoped: true });
 		installTestTheme();
 		hub.handleInput("\n");
-		expect(footerLine(hub.render(220))).toContain("↑/↓ models · ← providers");
-		expect(onAssign).not.toHaveBeenCalled();
-		hub.handleInput("\n"); // now Enter acts on the focused row: opens its role strip
-		expect(footerLine(hub.render(220))).toContain("test-model →");
+		expect(footerLine(hub.render(220))).toContain("Enter: use for this session");
+		expect(onSelectForSession).not.toHaveBeenCalled();
+		hub.handleInput("\n"); // Enter now acts on the focused row: selects it for this session.
+		expect(onSelectForSession).toHaveBeenCalledWith(expect.objectContaining({ id: "test-model" }));
 	});
 
 	describe("mouse wheel", () => {
@@ -1362,12 +1303,13 @@ describe("ModelHub", () => {
 
 			hub.handleInput("\n"); // Sidebar → model list.
 			const before = normalize(hub.render(220)); // establishes mouse geometry
-			// Enter opens the role strip for the selected model — its footer
-			// (`<model-id> → …`) identifies the selection.
-			hub.handleInput("\n");
-			const initialStrip = footerLine(hub.render(220));
-			expect(initialStrip).toContain("→");
-			hub.handleInput(ESC); // close the strip
+			// Alt+R opens role choices for the currently selected model; its
+			// "Fallback · model · <id>" row identifies the selection.
+			hub.handleInput("\x1br");
+			const initialEditor = normalize(hub.render(220));
+			const initialSelector = initialEditor.match(/Fallback · model · (\S+)/)?.[1];
+			expect(initialSelector).toBeDefined();
+			hub.handleInput(ESC); // close the picker
 
 			// Panning reveals rows that were below the fold...
 			for (let i = 0; i < 8; i++) hub.handleInput(WHEEL_DOWN_BODY);
@@ -1377,9 +1319,9 @@ describe("ModelHub", () => {
 			const revealed = [...modelIdsIn(panned)].filter(id => !beforeIds.has(id));
 			expect(revealed.length).toBeGreaterThan(0);
 
-			// ...but never moves the selection: Enter still opens the same model's strip.
-			hub.handleInput("\n");
-			expect(footerLine(hub.render(220))).toBe(initialStrip);
+			// ...but never moves the selection: Alt+R still opens the same model's editor.
+			hub.handleInput("\x1br");
+			expect(normalize(hub.render(220))).toContain(`Fallback · model · ${initialSelector}`);
 			hub.handleInput(ESC);
 
 			// The window clamps at the bottom instead of wrapping back to the top...
@@ -1435,7 +1377,7 @@ describe("ModelHub", () => {
 		test("search inside a provider scope keeps that provider's model (#4522)", () => {
 			const openrouterGlm = makeModel("openrouter", "z-ai/glm-5.2");
 			const customGlm = makeModel("custom-provider", "glm-5.2");
-			const { hub } = createHub({ models: [openrouterGlm, customGlm] });
+			const { hub, onSelectForSession } = createHub({ models: [openrouterGlm, customGlm] });
 			installTestTheme();
 
 			// Scope-hop: All models → custom-provider → openrouter.
@@ -1446,9 +1388,9 @@ describe("ModelHub", () => {
 			for (const ch of "glm-5.2") hub.handleInput(ch);
 			hub.handleInput("\n");
 
-			// The role strip opened for the provider-scoped match, not the
-			// identically named custom-provider model.
-			expect(footerLine(hub.render(220))).toContain("z-ai/glm-5.2 →");
+			// Enter selected the provider-scoped match for this session, not
+			// the identically named custom-provider model.
+			expect(onSelectForSession).toHaveBeenCalledWith(openrouterGlm);
 		});
 
 		test("search on All models spans every provider", () => {
@@ -1681,3 +1623,106 @@ describe("ModelHub", () => {
 		});
 	});
 });
+describe("responsive grouped role picker", () => {
+	// model-hub.ts #openRoleStrip classifies roles by explicit id lists, not
+	// config/model-roles.ts `section` (which is only ever "chat"/"kind" and
+	// can't express a 4-way split): Main chat = default/smol/slow/vision/plan/
+	// commit, Workers = task/advisor/judge, Background = tiny/memory/image/
+	// web/speech/dictation, "Other roles" = anything else (custom/configured
+	// tags only — none of the built-ins land there). A plain chat model
+	// accepts every Main-chat/Workers-chat role plus tiny/memory, so all of
+	// Main chat/Workers/Background/Fallbacks populate. A search-kind model
+	// only accepts `web` (Background), so Main chat/Workers stay empty. A
+	// tiny-kind model accepts `judge` (Workers) plus tiny/memory (Background),
+	// so Main chat stays empty. "Fallbacks" always renders (its model/provider
+	// chips are unconditional).
+	const fixtures = [
+		{
+			kind: "chat",
+			model: makeModel("test", "chat-render-model"),
+			headings: ["Main chat", "Workers", "Background", "Fallbacks"],
+			missingHeadings: ["Other roles"],
+			firstChoice: "Default (default) · global",
+		},
+		{
+			kind: "search",
+			model: makeModel("web", "search-render-model", 128_000, undefined, "search"),
+			headings: ["Background", "Fallbacks"],
+			missingHeadings: ["Main chat", "Workers", "Other roles"],
+			firstChoice: "Web search (web) · global",
+		},
+		{
+			kind: "tiny",
+			model: makeModel("test", "tiny-render-model", 128_000, undefined, "tiny"),
+			headings: ["Workers", "Background", "Fallbacks"],
+			missingHeadings: ["Main chat", "Other roles"],
+			firstChoice: "Judge (judge) · global",
+		},
+	] as const;
+
+	for (const { kind, model, headings, missingHeadings, firstChoice } of fixtures) {
+		for (const width of [100, 200]) {
+			test(`${kind} model shows the session action and grouped role editor at ${width} columns`, () => {
+				const sessionSelection = createHub({ models: [model], scoped: true });
+				installTestTheme();
+
+				sessionSelection.hub.handleInput("\n"); // Sidebar → model list.
+				const primary = sessionSelection.hub.render(width);
+				expect(footerLine(primary)).toContain("Enter: use for this session");
+				expect(footerLine(primary)).toContain("Alt+R: role/fallback choices");
+				sessionSelection.hub.handleInput("\n");
+				expect(sessionSelection.onSelectForSession).toHaveBeenCalledWith(model);
+				expect(sessionSelection.onAssign).not.toHaveBeenCalled();
+
+				const roleEditor = createHub({ models: [model], scoped: true });
+				roleEditor.hub.handleInput("\n"); // Sidebar → model list.
+				roleEditor.hub.handleInput("\x1br"); // Alt+R opens role choices without consuming search text.
+				const rawLines = roleEditor.hub.render(width).map(line => stripVTControlCharacters(line));
+				const editor = normalize(roleEditor.hub.render(width));
+				for (const heading of headings) {
+					expect(editor).toContain(heading);
+				}
+				for (const heading of missingHeadings) {
+					expect(editor).not.toContain(heading);
+				}
+				expect(editor).toContain(model.id);
+
+				// The first (focused) choice row carries the "›" cursor marker;
+				// later rows in the same group don't.
+				const focusedRow = rawLines.find(line => line.includes(firstChoice));
+				expect(focusedRow).toContain("›");
+
+				expect(footerLine(roleEditor.hub.render(width))).toContain(
+					"↑/↓ choose · Enter assign/unassign · Esc close",
+				);
+			});
+		}
+	}
+});
+
+describe("session header", () => {
+	for (const width of [100, 200]) {
+		test(`shows the running session model and the default role's model at ${width} columns`, () => {
+			const sessionModel = makeModel("openai", "gpt-a");
+			const defaultModel = makeModel("anthropic", "claude-a");
+			const settings = Settings.isolated({ modelRoles: { default: "anthropic/claude-a" } });
+			const { hub } = createHub({
+				models: [sessionModel, defaultModel],
+				settings,
+				hub: { currentSessionModel: sessionModel },
+			});
+			const rendered = normalize(hub.render(width));
+			expect(rendered).toContain("Session: openai/gpt-a");
+			expect(rendered).toContain("New sessions: anthropic/claude-a");
+		});
+	}
+
+	test("shows an em dash placeholder when the session model or default role is unset", () => {
+		const model = makeModel("test", "header-fallback-model");
+		const { hub } = createHub({ models: [model] });
+		const rendered = normalize(hub.render(100));
+		expect(rendered).toContain("Session: —");
+		expect(rendered).toContain("New sessions: —");
+	});
+});
+
