@@ -71,7 +71,10 @@ export function artifactsDirsFromRegistry(options?: { preferredDir?: string }): 
  * multiple dirs, the first hit wins (registry dirs are scanned first; a
  * `preferredDir` from the caller root is scanned before them).
  */
-export async function sessionFilesFromDisk(preferredDir?: string): Promise<Map<string, string>> {
+export async function sessionFilesFromDisk(
+	preferredDir?: string,
+	options?: { includeRegistryDirs?: boolean },
+): Promise<Map<string, string>> {
 	const found = new Map<string, string>();
 	const seenDirs = new Set<string>();
 	const scan = async (dir: string, depth: number): Promise<void> => {
@@ -97,20 +100,22 @@ export async function sessionFilesFromDisk(preferredDir?: string): Promise<Map<s
 			if (!found.has(id)) found.set(id, path.join(dir, name));
 		}
 	};
-	const dirs = preferredDir ? [preferredDir, ...artifactsDirsFromRegistry()] : artifactsDirsFromRegistry();
+	const dirs = preferredDir
+		? [preferredDir, ...(options?.includeRegistryDirs === false ? [] : artifactsDirsFromRegistry())]
+		: artifactsDirsFromRegistry();
 	for (const dir of dirs) await scan(dir, 0);
 	return found;
 }
 
 /**
- * Availability half of the `history://` resolution semantics: true when a
- * transcript for `agentId` can be served from a registered ref's live session
- * or retained session file, or from an on-disk `.jsonl` under a known
- * artifacts dir. Hint surfaces use this so they only advertise
- * `history://<agentId>` links that `HistoryProtocolHandler` can actually
- * resolve. A retained sessionFile path is verified on disk before it counts,
- * and probing never throws: a stale path or unreadable artifacts subtree
- * reads as unavailable instead of disturbing the caller's delivery path.
+ * Availability half of the `history://` resolution semantics: true when
+ * `agentId` can resolve to a live transcript, a pending running ref, a
+ * retained session file, or an on-disk `.jsonl` under a known artifacts dir.
+ * Hint surfaces use this so they only advertise `history://<agentId>` links
+ * that `HistoryProtocolHandler` can actually resolve. A retained sessionFile
+ * path is verified on disk before it counts, and probing never throws: a
+ * stale path or unreadable artifacts subtree reads as unavailable instead of
+ * disturbing the caller's delivery path.
  */
 export async function hasResolvableTranscript(agentId: string): Promise<boolean> {
 	try {
@@ -120,6 +125,7 @@ export async function hasResolvableTranscript(agentId: string): Promise<boolean>
 		if (ref?.kind === "advisor") ref = undefined;
 		ref ??= registry.list().find(candidate => candidate.kind !== "advisor" && candidate.id.toLowerCase() === lower);
 		if (ref?.session) return true;
+		if (ref?.status === "running") return true;
 		if (ref?.sessionFile && (await isReadableFile(ref.sessionFile))) return true;
 		const files = await sessionFilesFromDisk();
 		for (const id of files.keys()) {
