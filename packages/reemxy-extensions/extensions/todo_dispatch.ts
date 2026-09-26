@@ -1059,6 +1059,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   let persistedSprintStateJson = JSON.stringify(sprintState);
   let dispatchGateBaseline: Map<string, string> | null = null;
   const taskCallBaselines = new Map<string, Map<string, string>>();
+  // Names of dispatched retro-facilitator workers: an async facilitator settles through `wait`, and
+  // the job snapshot carries no agent type, so the dispatch input is the only place to learn it.
+  const retroFacilitatorJobs = new Set<string>();
   let pendingTaskReconciliation: {
     baseline: Map<string, string>;
     workers: Array<{ id: string; agentId?: string }>;
@@ -1133,21 +1136,30 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       const taskJobs = [...(jobs?.running ?? []), ...(jobs?.recent ?? [])].filter((job) => job.type === "task");
       if (taskJobs.some((job) => typeof job.label === "string" && job.label.includes(task.content))) addSeenRow(task.content);
     }
+    let facilitatorSettled = false;
     for (const job of jobs?.recent ?? []) {
       if (job.type !== "task" || !["completed", "failed", "cancelled"].includes(job.status)) continue;
       if (sprintState.seenJobIds.includes(job.id)) continue;
       const id = job.agentId ?? job.id;
       const at = typeof job.startTime === "number" ? job.startTime : now;
+      const facilitator = [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name));
+      if (facilitator && job.status === "completed") facilitatorSettled = true;
+      // Only a worker that finished is a retro participant: a cancelled one did no work, and a
+      // failed one is usually a provider refusal (429/402), which would make a quota outage itself
+      // look like a sprint worth a retrospective.
       sprintState = {
         ...sprintState,
         seenJobIds: [...sprintState.seenJobIds, job.id],
-        ...(job.status === "cancelled"
+        ...(job.status !== "completed" || facilitator
           ? {}
           : { workerFinishes: [...sprintState.workerFinishes, { jobId: job.id, id, at, row: typeof job.label === "string" ? job.label : "" }] }),
       };
     }
+    if (facilitatorSettled) finishRetro();
     if (open.length > 0 && sprintState.goalWorkStartedAt === null) {
-      const knownWorkerAt = sprintState.workerFinishes.length ? Math.min(...sprintState.workerFinishes.map((finish) => finish.at)) : now;
+      // Only finishes since the last retro start the next goal-work window; older ones were covered.
+      const sinceRetro = sprintState.workerFinishes.filter((finish) => sprintState.lastRetroAt === null || finish.at >= sprintState.lastRetroAt);
+      const knownWorkerAt = sinceRetro.length ? Math.min(...sinceRetro.map((finish) => finish.at)) : now;
       sprintState = { ...sprintState, goalWorkStartedAt: Math.min(now, knownWorkerAt) };
     }
     if (sprintState.correctionPending) setRetroDue("user correction");
@@ -2383,6 +2395,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     }
     if (event.toolName === "todo" && pendingReplan) pendingReplan.answered = pendingReplan.demands;
     if (event.toolName === "todo" && pendingTaskReconciliation?.linkDemanded) pendingTaskReconciliation.linkAnswered = true;
+    if (event.toolName === "task")
+      for (const item of taskItems(event.input))
+        if (item.agent === "retro-facilitator" && typeof item.name === "string") retroFacilitatorJobs.add(item.name);
     if (event.toolName !== "task" || !dispatchGateBaseline) return;
     if (pendingIdleResumeOwner) idleResumeAttempts.add(pendingIdleResumeOwner);
     taskCallBaselines.set(event.toolCallId, new Map(dispatchGateBaseline));
