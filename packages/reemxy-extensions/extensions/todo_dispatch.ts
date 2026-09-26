@@ -3,7 +3,6 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { availableParallelism } from "node:os";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
 import type { TodoPlanForecast, TodoPlanningIssue, TodoScheduleInput, TodoTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import * as forecastFallback from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -1037,15 +1036,13 @@ export function decideTodoDispatch(
 export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   const host = pi.pi;
   const hostSdk = host as DispatchForecastApi | undefined;
-  // The host engine module is the fallback for hosts whose extension SDK predates forecast exports.
-  const sourceFallback = hostSdk?.forecastTodoPlan ? undefined : forecastFallback;
+  if (!hostSdk?.forecastTodoPlan || !hostSdk.formatPlanForecast || !hostSdk.formatTaskForecast) return;
   const sdk = {
-    forecastTodoPlan: hostSdk?.forecastTodoPlan ?? sourceFallback!.forecastTodoPlan,
-    formatPlanForecast: hostSdk?.formatPlanForecast ?? sourceFallback!.formatPlanForecast,
-    formatTaskForecast: hostSdk?.formatTaskForecast ?? sourceFallback!.formatTaskForecast,
-    getTodoPlanningIssues:
-      hostSdk?.getTodoPlanningIssues ?? sourceFallback?.getTodoPlanningIssues,
-    readGoalDeadline: hostSdk?.readGoalDeadline ?? readGoalDeadline,
+    forecastTodoPlan: hostSdk.forecastTodoPlan,
+    formatPlanForecast: hostSdk.formatPlanForecast,
+    formatTaskForecast: hostSdk.formatTaskForecast,
+    getTodoPlanningIssues: hostSdk.getTodoPlanningIssues,
+    readGoalDeadline: hostSdk.readGoalDeadline ?? readGoalDeadline,
     getLatestTodoPhasesFromEntries: host.getLatestTodoPhasesFromEntries,
   };
   // The pause switch is host-owned. Never import a second module instance of its singleton.
@@ -1378,11 +1375,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         ].filter(Boolean).join(" "),
       };
     }
-    // Something is running. Main waiting on a few workers while the backlog sits idle is a bad plan
-    // whether or not the deadline has slipped yet: rows chained behind the running work = replan.
-    const parked = open.length - runningTasks.length;
-    const shortfall = runningTasks.length > 0 && understaffed(ctx, runningTasks.length, parked);
-    if (runningTasks.length === 0 || (ready.length === 0 && !shortfall)) {
+    // Dependency-waiting and recorded-approval rows cannot start yet, so they do not make the wait gate idle.
+    if (runningTasks.length === 0 || ready.length === 0) {
       lateWaitRefusalKey = null;
       return;
     }
@@ -1393,9 +1387,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     return {
       block: true,
       reason: [
-        ready.length > 0 && !shortfall
-          ? `Stop waiting: ready work lacks a distinct running worker${overdue ? ", and you are past the deadline" : late ? ", and you are about to miss the deadline" : ""}.`
-          : `Stop waiting: ${runningTasks.length} of ${workerCapacity(ctx)} possible worker(s) run while ${parked} open row(s) sit idle${overdue ? ", and you are past the deadline" : late ? ", and you are about to miss the deadline" : ""}.`,
+        `Stop waiting: ready work lacks a distinct running worker${overdue ? ", and you are past the deadline" : late ? ", and you are about to miss the deadline" : ""}.`,
         next,
         activityLine(ctx, runningTasks),
       ].filter(Boolean).join(" "),
