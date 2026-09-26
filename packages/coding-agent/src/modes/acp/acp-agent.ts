@@ -2613,6 +2613,7 @@ export class AcpAgent implements Agent {
 				getContextUsage: () => record.session.getContextUsage(),
 				getSystemPrompt: () => record.session.systemPrompt,
 				runEphemeralTurn: args => record.session.runEphemeralTurn(args),
+				setSubagentFastMode: (id, enabled) => record.session.setSubagentFastMode(id, enabled),
 				compact: instructionsOrOptions => runExtensionCompact(record.session, instructionsOrOptions),
 			},
 			{
