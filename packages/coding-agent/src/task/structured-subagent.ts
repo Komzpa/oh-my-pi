@@ -876,8 +876,16 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
  * ownership of retained temporary-artifact cleanup remains with its caller.
  */
 export async function resumeStructuredSubagent(
-	request: Pick<StructuredSubagentRequest,
-		"session" | "assignment" | "index" | "parentToolCallId" | "maxRuntimeMs" | "signal" | "onProgress" | "workPoolYieldItems"
+	request: Pick<
+		StructuredSubagentRequest,
+		| "session"
+		| "assignment"
+		| "index"
+		| "parentToolCallId"
+		| "maxRuntimeMs"
+		| "signal"
+		| "onProgress"
+		| "workPoolYieldItems"
 	>,
 	previous: StructuredSubagentResult,
 	thinkingLevel: Effort,

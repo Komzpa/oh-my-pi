@@ -45,7 +45,7 @@ export async function captureReworkReflection(options: {
 			return {
 				noAnswerReason: timeout.aborted
 					? "reflection timed out after 120 seconds"
-					: result.error ?? result.abortReason ?? `reflection exited ${result.exitCode}`,
+					: (result.error ?? result.abortReason ?? `reflection exited ${result.exitCode}`),
 			};
 		}
 		if (!result.output.trim()) return { noAnswerReason: "worker returned no reflection answer" };
@@ -57,7 +57,9 @@ export async function captureReworkReflection(options: {
 		return {
 			noAnswerReason: timeout.aborted
 				? "reflection timed out after 120 seconds"
-				: error instanceof Error ? error.message : String(error),
+				: error instanceof Error
+					? error.message
+					: String(error),
 		};
 	}
 }
@@ -67,7 +69,10 @@ export function renderPreviousAttempts(attempts: readonly TodoReworkAttempt[]): 
 	if (attempts.length === 0) return "";
 	const lines = attempts.map((attempt, index) => {
 		if (attempt.terminalStatus !== "completed") {
-			return attempt.infraFailureLine ?? `attempt ${index + 1} failed: ${attempt.infraFailureError ?? attempt.terminalStatus}`;
+			return (
+				attempt.infraFailureLine ??
+				`attempt ${index + 1} failed: ${attempt.infraFailureError ?? attempt.terminalStatus}`
+			);
 		}
 		return [
 			`Attempt ${index + 1}:`,

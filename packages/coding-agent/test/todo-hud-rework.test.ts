@@ -55,31 +55,33 @@ describe("rework attempt TODO HUD", () => {
 		mode.todoPhases = [
 			{
 				name: "Acceptance",
-				tasks: [{
-					content: "route the rejected row",
-					status: "in_progress",
-					schedule: {
-						dependencies: [],
-						owner: "RenderCut",
-						resources: [],
-						estimate: {
-							optimisticSeconds: 60,
-							likelySeconds: 90,
-							pessimisticSeconds: 120,
-							confidence: "medium",
-							basis: "fixture for visible HUD behavior",
-							updatedAt: now,
+				tasks: [
+					{
+						content: "route the rejected row",
+						status: "in_progress",
+						schedule: {
+							dependencies: [],
+							owner: "RenderCut",
+							resources: [],
+							estimate: {
+								optimisticSeconds: 60,
+								likelySeconds: 90,
+								pessimisticSeconds: 120,
+								confidence: "medium",
+								basis: "fixture for visible HUD behavior",
+								updatedAt: now,
+							},
+							estimateRevision: 1,
+							attemptHistory: prior,
+							executor: {
+								workerId: "RenderCut",
+								resolvedModel: "codex-lb/gpt-6-sol",
+								thinkingLevel: "medium",
+								startedAt: now,
+							},
 						},
-						estimateRevision: 1,
-						attemptHistory: prior,
-						executor: {
-							workerId: "RenderCut",
-							resolvedModel: "codex-lb/gpt-6-sol",
-							thinkingLevel: "medium",
-							startedAt: now,
 					},
-					},
-				}],
+				],
 			},
 			{ name: "Ordinary", tasks: [{ content: "new first-dispatch row", status: "pending" }] },
 		] satisfies TodoPhase[];

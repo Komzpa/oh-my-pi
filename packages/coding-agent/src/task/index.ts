@@ -391,7 +391,11 @@ function nextReworkRung(ladder: readonly TaskReworkLadderEntry[], model: string,
 	const current = choices.findLastIndex(choice => choice.model === model && choice.effort === effort);
 	for (let index = current + 1; index < choices.length; index++) {
 		const choice = choices[index]!;
-		if (choice.model === model && THINKING_EFFORTS.indexOf(choice.effort) <= THINKING_EFFORTS.indexOf(effort as Effort)) continue;
+		if (
+			choice.model === model &&
+			THINKING_EFFORTS.indexOf(choice.effort) <= THINKING_EFFORTS.indexOf(effort as Effort)
+		)
+			continue;
 		return { model: ladder[index]!.startsWith(":") ? undefined : choice.model, effort: choice.effort };
 	}
 	return undefined;
@@ -673,47 +677,60 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	 * spawns and work already parked in the semaphore queue.
 	 */
 	#spawnSemaphore: Semaphore | undefined;
-readonly #permit: SpawnPermit = {
-acquire: signal => this.#getSpawnSemaphore().acquire(signal),
-release: () => this.#releaseSpawnSemaphore(),
-};
-/** Streamed calls’ speculative launches, keyed by tool-call id until dispatch adopts or discards them. */
-readonly #launchSessions = new Map<string, TaskLaunchSession>();
-readonly #launcher: TaskLauncher = {
-spawns: args => {
-const plan = planSpawns(args, this.#isBatchEnabled(), this.#defaultAgent());
-return typeof plan === "string" ? undefined : plan.spawns;
-},
-start: (toolCallId, spawn, index, signal) => this.#startSpeculative(toolCallId, spawn, index, signal),
-};
+	readonly #permit: SpawnPermit = {
+		acquire: signal => this.#getSpawnSemaphore().acquire(signal),
+		release: () => this.#releaseSpawnSemaphore(),
+	};
+	/** Streamed calls’ speculative launches, keyed by tool-call id until dispatch adopts or discards them. */
+	readonly #launchSessions = new Map<string, TaskLaunchSession>();
+	readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
+	readonly #launcher: TaskLauncher = {
+		spawns: args => {
+			const plan = planSpawns(args, this.#isBatchEnabled(), this.#defaultAgent());
+			return typeof plan === "string" ? undefined : plan.spawns;
+		},
+		start: (toolCallId, spawn, index, signal) => this.#startSpeculative(toolCallId, spawn, index, signal),
+	};
 
-/**
- * Batch calls start each subagent as soon as its `tasks[]` item streams in;
- * see `./speculative-launch` for the abort/adoption contract.
- */
-readonly speculation: ToolSpeculationPolicy = {
-stream: {
-open: async context => {
-if (!cfgTaskSpeculativeLaunch.get(this.session.settings) || !this.#isBatchEnabled()) return undefined;
-if (!context.coordinator.authorizeLaunch) return undefined;
-const id = context.parentToolCallId;
-const session = new TaskLaunchSession({
-sink: context.coordinator,
-tool: this,
-launcher: this.#launcher,
-onClose: () => {
-if (this.#launchSessions.get(id) === session) this.#launchSessions.delete(id);
-},
-});
-this.#launchSessions.set(id, session);
-return session;
-},
-},
-};
-import type { TodoReworkAttempt, TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { SpawnRun, type SpawnPermit } from "./spawn-run";
-import { type TaskLauncher, TaskLaunchSession } from "./speculative-launch";
+	#spawnSemaphore: Semaphore | undefined;
+	readonly #permit: SpawnPermit = {
+		acquire: signal => this.#getSpawnSemaphore().acquire(signal),
+		release: () => this.#releaseSpawnSemaphore(),
+	};
+	/** Streamed calls’ speculative launches, keyed by tool-call id until dispatch adopts or discards them. */
+	readonly #launchSessions = new Map<string, TaskLaunchSession>();
+	readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
+	readonly #launcher: TaskLauncher = {
+		spawns: args => {
+			const plan = planSpawns(args, this.#isBatchEnabled(), this.#defaultAgent());
+			return typeof plan === "string" ? undefined : plan.spawns;
+		},
+		start: (toolCallId, spawn, index, signal) => this.#startSpeculative(toolCallId, spawn, index, signal),
+	};
 
+	/**
+	 * Batch calls start each subagent as soon as its `tasks[]` item streams in;
+	 * see `./speculative-launch` for the abort/adoption contract.
+	 */
+	readonly speculation: ToolSpeculationPolicy = {
+		stream: {
+			open: async context => {
+				if (!cfgTaskSpeculativeLaunch.get(this.session.settings) || !this.#isBatchEnabled()) return undefined;
+				if (!context.coordinator.authorizeLaunch) return undefined;
+				const id = context.parentToolCallId;
+				const session = new TaskLaunchSession({
+					sink: context.coordinator,
+					tool: this,
+					launcher: this.#launcher,
+					onClose: () => {
+						if (this.#launchSessions.get(id) === session) this.#launchSessions.delete(id);
+					},
+				});
+				this.#launchSessions.set(id, session);
+				return session;
+			},
+		},
+	};
 	get parameters(): TaskToolSchemaInstance {
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
 		const isolationEnabled = !planMode && cfgTaskIsolationEnabled.get(this.session.settings);
@@ -1036,7 +1053,8 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 		for (const [index, spawn] of normalizedSpawnParams.entries()) {
 			const decision = this.#routeRework(spawn);
 			if (decision.error) return createTaskModeError(decision.error);
-			if (decision.route) this.#reworkRoutes.set(`${toolCallId}:${index}`, decision.route);
+if (decision.route)
+this.#reworkRoutes.set(`${toolCallId}:${index}`, decision.route);
 		}
 		const resolvedAgents = normalizedSpawnParams.map(spawn => spawn.agent ?? defaultAgent);
 		// Resolve every item before choosing an execution path. No executor or
@@ -1075,7 +1093,9 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 				if (blocked) return createTaskModeError(blocked);
 			}
 		} catch (error) {
-			return createTaskModeError(`Rework preparation failed: ${error instanceof Error ? error.message : String(error)}`);
+			return createTaskModeError(
+				`Rework preparation failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 		const itemBlocking = policies.map(policy => policy.effectiveAgent.blocking === true);
 
@@ -1193,9 +1213,10 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 			const agentSource = policy.agent.source;
 			const run = adopted.get(index);
 			const route = this.#reworkRoutes.get(`${toolCallId}:${index}`);
-			const agentId = route?.reason && route.rung && !route.rung.model
-				? route.previous.workerId
-				: run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName()));
+const agentId =
+route?.reason && route.rung && !route.rung.model
+? route.previous.workerId
+: run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName()));
 			const assignment = (item.task ?? "").trim();
 			spawns.push({
 				agentId,
@@ -1791,7 +1812,9 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 		const startTime = Date.now();
 		const assignment = `${(params.task ?? "").trim()}\n\nEvery message to the lead MUST answer exactly this question: Is there a much simpler different way?`;
 		const route = this.#reworkRoutes.get(`${toolCallId}:${spawnIndex}`);
-		const context = [this.#isBatchEnabled() ? params.context?.trim() : undefined, route?.context].filter(Boolean).join("\n\n") || undefined;
+		const context =
+			[this.#isBatchEnabled() ? params.context?.trim() : undefined, route?.context].filter(Boolean).join("\n\n") ||
+			undefined;
 		let latestProgress: AgentProgress | undefined;
 		try {
 			const request = {
@@ -1824,7 +1847,10 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 				keepAlive: true,
 				retainArtifacts: true,
 				onArtifactsRetained: (cleanup: () => Promise<void>) => {
-					if (this.session.registerDisposeCallback) this.session.registerDisposeCallback(() => { void cleanup(); });
+					if (this.session.registerDisposeCallback)
+						this.session.registerDisposeCallback(() => {
+							void cleanup();
+						});
 					else onArtifactsRetained?.(cleanup);
 				},
 				invokedAt: launchTiming?.invokedAt,
@@ -1852,7 +1878,11 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 			if (route?.reason && route.rung && !route.rung.model) {
 				const previous = this.#workerSessions.get(route.previous.workerId);
 				if (!previous) throw new Error(`Rework session ${route.previous.workerId} is unavailable.`);
-				execution = await resumeStructuredSubagent({ ...request, assignment: [context, assignment].filter(Boolean).join("\n\n") }, previous, route.rung.effort);
+				execution = await resumeStructuredSubagent(
+					{ ...request, assignment: [context, assignment].filter(Boolean).join("\n\n") },
+					previous,
+					route.rung.effort,
+				);
 			} else {
 				execution = await runStructuredSubagent(request);
 			}
@@ -1876,7 +1906,16 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 				? { ...settled, error: settled.error ?? (cause instanceof Error ? cause.message : message) }
 				: undefined;
 			const workerId = latestProgress?.id ?? preAllocatedId;
-			if (workerId) this.#recordFailedAttempt({ id: workerId, exitCode: 1, error: message, output: "", stderr: message, durationMs: Date.now() - startTime, aborted: signal?.aborted });
+			if (workerId)
+				this.#recordFailedAttempt({
+					id: workerId,
+					exitCode: 1,
+					error: message,
+					output: "",
+					stderr: message,
+					durationMs: Date.now() - startTime,
+					aborted: signal?.aborted,
+				});
 			this.#reworkRoutes.delete(`${toolCallId}:${spawnIndex}`);
 			return {
 				content: [{ type: "text", text: `Task execution failed: ${message}` }],

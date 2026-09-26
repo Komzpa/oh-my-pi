@@ -34,7 +34,9 @@ const DEFAULT_TASK_REWORK_LADDER: readonly TaskReworkLadderEntry[] = [
 /** Validate ordered generic effort rungs and explicit provider/model:effort choices. */
 export function validateTaskReworkLadder(value: unknown): readonly TaskReworkLadderEntry[] {
 	if (!Array.isArray(value) || value.length === 0) {
-		throw new Error("Invalid task.reworkLadder: expected a non-empty ordered array of effort or provider/model:effort entries.");
+		throw new Error(
+			"Invalid task.reworkLadder: expected a non-empty ordered array of effort or provider/model:effort entries.",
+		);
 	}
 	const entries: TaskReworkLadderEntry[] = [];
 	for (const [index, entry] of value.entries()) {
