@@ -80,6 +80,7 @@ interface AuthStorageModules {
 export class AuthStorage {
 	readonly #options: AuthStorageOptions;
 	readonly #overrides: KeyOverrides;
+	readonly #policies: AccountPolicies;
 	readonly #providerDepletion = new Map<string, number | null>();
 	#modules: AuthStorageModules;
 
