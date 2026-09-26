@@ -702,7 +702,7 @@ test("PLAN CHECK reports a compacted running worker once with a done/left split 
   mkdirSync(join(sessions, "main"));
   const liveNow = Date.now();
   const compactedAt = liveNow - 2 * 60_000;
-  const compactedClock = new Date(compactedAt).toISOString().slice(11, 16);
+  const compactedClock = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tbilisi", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(compactedAt));
   const workerFile = join(sessions, "main", "worker-a.jsonl");
   writeFileSync(
     workerFile,
@@ -725,7 +725,7 @@ test("PLAN CHECK reports a compacted running worker once with a done/left split 
       handlers[event] = handler;
     },
     getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
-    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000 }) },
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000, timezone: "Asia/Tbilisi" }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
     sendMessage: (message: { content: string }) => {
@@ -896,13 +896,17 @@ test("PLAN CHECK has the harness ask an overdue worker once instead of telling c
   const api = {
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
     getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
-    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000 }) },
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000, timezone: "Asia/Tbilisi" }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
     sendMessage: (message: { content: string }) => { sent.push(message.content); },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
-  const branch = plan("chained", liveNow - 60 * 60_000);
+  const branch = plan("chained", liveNow - 60 * 60_000) as Array<{ message: { details: { phases: TodoScheduleInput } } }>;
+	const forecast = forecastTodoPlan(branch[0]!.message.details.phases, { now: liveNow, deadlineAt: liveNow + 3_600_000 });
+	const p95 = forecast.rows.find(row => row.content === "Row A")?.fixedPathP95Finish;
+	if (typeof p95 !== "number") throw new Error("expected the overdue row to have a P95 finish");
+	const checkinClock = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tbilisi", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(p95));
   let tick: (() => void) | undefined;
   const ctx = {
     cwd,
@@ -933,7 +937,8 @@ test("PLAN CHECK has the harness ask an overdue worker once instead of telling c
     await Promise.resolve();
     expect(nudges).toHaveLength(1);
     expect(nudges[0]).toMatchObject({ id: "worker-a" });
-    expect(nudges[0]!.content).toContain("your row Row A is past its P95 at");
+    expect(nudges[0]!.content).toContain(`your row Row A is past its P95 at ${checkinClock}`);
+    expect(nudges[0]!.content).not.toMatch(/\d{4}-\d{2}-\d{2}T[^ ]*Z/);
     expect(nudges[0]!.content).toContain("reply with current artifact/path, first failing proof, or what you wait on");
     expect(sent[0]).toContain("overdue check-in sent to worker-a");
     expect(sent[0]).not.toContain("write agent://<id> asking what it waits on");
