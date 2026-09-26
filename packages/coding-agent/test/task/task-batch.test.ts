@@ -484,7 +484,8 @@ describe("task.batch spawning", () => {
 		expect(byId.get("Alpha")?.outputSchemaMode).toBe("strict");
 		expect(byId.get("Beta")?.outputSchema).toEqual(betaSchema);
 		expect(byId.get("Beta")?.outputSchemaMode).toBe("permissive");
-		expect(seen.map(spawn => spawn.assignment).sort()).toEqual(["Do A.", "Do B."]);
+		expect(seen.map(spawn => spawn.assignment.split("\n\n")[0]).sort()).toEqual(["Do A.", "Do B."]);
+		for (const spawn of seen) expect(spawn.assignment).toContain("Is there a much simpler different way?");
 		for (const spawn of seen) expect(spawn.parentAgentId).toBe("ParentA");
 	});
 
