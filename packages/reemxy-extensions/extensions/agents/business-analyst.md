@@ -2,7 +2,7 @@
 name: business-analyst
 description: Turn a request into acceptance criteria and value-scoped deliverables.
 tools: read, grep, glob, find, bash
-model: anthropic/claude-opus-5-5:high, codex-lb/gpt-6-sol:high, kimi-code/k3:high
+model: anthropic/claude-opus-5-5:high, codex-lb/gpt-6-sol:high, kimi-code/k3:high, claude-bridge/claude-sonnet-5, codex-lb/Qwen3.8-27B, openrouter/thinkingmachines/inkling:free
 thinking-level: high
 spawns: []
 ---
