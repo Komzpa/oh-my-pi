@@ -9,7 +9,6 @@ import {
 	getProjectDir,
 	normalizePathForComparison,
 	relativePathWithinNormalizedRoot,
-	relativePathWithinRoot,
 } from "@oh-my-pi/pi-utils";
 import { type SymbolKey, type Theme, type ThemeColor, theme } from "../theme";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../render/render-utils";
@@ -75,12 +74,36 @@ function leadingGlyph(display: string): string {
 	return space === -1 ? display : display.slice(0, space);
 }
 
-function stripDisplayRoot(pwd: string): string {
-	for (const root of [path.join(os.homedir(), "Projects"), "/work"]) {
-		const relative = relativePathWithinRoot(root, pwd);
-		if (relative) return relative;
+const NORMALIZED_WORK_ROOT = normalizePathForComparison("/work");
+let cachedHomeDirForDisplayRoot: string | undefined;
+let cachedNormalizedProjectsRoot: string | undefined;
+const DISPLAY_ROOT_STRIPPED = new Map<string, string>();
+
+function normalizedProjectsRoot(): string {
+	const homeDir = os.homedir();
+	if (homeDir !== cachedHomeDirForDisplayRoot) {
+		cachedHomeDirForDisplayRoot = homeDir;
+		cachedNormalizedProjectsRoot = normalizePathForComparison(path.join(homeDir, "Projects"));
 	}
-	return pwd;
+	return cachedNormalizedProjectsRoot as string;
+}
+
+function stripDisplayRoot(pwd: string): string {
+	const homeDir = os.homedir();
+	const cacheKey = `${homeDir}\u0000${pwd}`;
+	const cached = DISPLAY_ROOT_STRIPPED.get(cacheKey);
+	if (cached !== undefined) return cached;
+	const normalizedPwd = normalizePathForComparison(pwd);
+	let stripped = pwd;
+	for (const normalizedRoot of [normalizedProjectsRoot(), NORMALIZED_WORK_ROOT]) {
+		const relative = relativePathWithinNormalizedRoot(normalizedRoot, normalizedPwd);
+		if (relative) {
+			stripped = relative;
+			break;
+		}
+	}
+	DISPLAY_ROOT_STRIPPED.set(cacheKey, stripped);
+	return stripped;
 }
 
 /**
