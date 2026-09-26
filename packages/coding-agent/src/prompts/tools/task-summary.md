@@ -6,6 +6,11 @@
 {{#if error}}
 <error>{{error}}</error>
 {{/if}}
+{{#if retainedBackgroundJobs}}
+<retained-background-jobs>
+{{retainedBackgroundJobs}}
+</retained-background-jobs>
+{{/if}}
 {{#if truncated}}
 <preview full-output="agent://{{id}}">
 {{preview}}
