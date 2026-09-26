@@ -8,7 +8,7 @@ import {
 } from "../config/compaction-threshold";
 import { effect, register } from "../config/registry";
 import { type ServiceTierInheritSettingValue, validateAgentServiceTierOverrides } from "../config/service-tier";
-import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
+import { THINKING_EFFORTS, type Effort } from "@oh-my-pi/pi-catalog/effort";
 import { logger, setWorktreesDir } from "@oh-my-pi/pi-utils";
 import { setFeedModelBadgeEnabled } from "@oh-my-pi/pi-tui/render/render-utils";
 import { getThinkingLevelMetadata } from "@oh-my-pi/pi-tui/thinking";
@@ -17,6 +17,49 @@ const EMPTY_AGENT_SERVICE_TIER_OVERRIDES: Record<string, ServiceTierInheritSetti
 const EMPTY_AGENT_COMPACTION_THRESHOLD_OVERRIDES: Record<string, AgentCompactionThresholdOverride> = {};
 
 const DEFAULT_AGENT_MODEL_OVERRIDES: Record<string, string | string[]> = {};
+
+export type TaskReworkEffort = Effort;
+/** An effort-only entry retains the rejected attempt's resolved model; otherwise `provider/model` is explicit. */
+export type TaskReworkLadderEntry = `:${TaskReworkEffort}` | `${string}/${string}:${TaskReworkEffort}`;
+
+const DEFAULT_TASK_REWORK_LADDER: readonly TaskReworkLadderEntry[] = [
+	":minimal",
+	":low",
+	":medium",
+	":high",
+	":xhigh",
+	":max",
+];
+
+/** Validate ordered generic effort rungs and explicit provider/model:effort choices. */
+export function validateTaskReworkLadder(value: unknown): readonly TaskReworkLadderEntry[] {
+	if (!Array.isArray(value) || value.length === 0) {
+		throw new Error("Invalid task.reworkLadder: expected a non-empty ordered array of effort or provider/model:effort entries.");
+	}
+	const entries: TaskReworkLadderEntry[] = [];
+	for (const [index, entry] of value.entries()) {
+		if (typeof entry !== "string") {
+			throw new Error(`Invalid task.reworkLadder[${index}]: expected a string, got ${typeof entry}.`);
+		}
+		const separator = entry.lastIndexOf(":");
+		const model = entry.slice(0, separator);
+		const effort = entry.slice(separator + 1);
+		const slash = model.indexOf("/");
+		const modelIsValid =
+			model === "" ||
+			(slash > 0 &&
+				slash < model.length - 1 &&
+				!model.split("").some(character => character.trim() === "") &&
+				!model.includes(":"));
+		if (separator < 0 || !modelIsValid || !THINKING_EFFORTS.includes(effort as Effort)) {
+			throw new Error(
+				`Invalid task.reworkLadder[${index}]: ${JSON.stringify(entry)}. Expected :${THINKING_EFFORTS.join("|:")} or provider/model:${THINKING_EFFORTS.join("|")}.`,
+			);
+		}
+		entries.push(entry as TaskReworkLadderEntry);
+	}
+	return entries;
+}
 
 // Delegation. Task and isolation settings declare `protocolDefault`: protocol hosts get neutral
 // defaults instead of the local user's interactive preferences.
@@ -366,6 +409,12 @@ export const cfgTaskMaxEffort = register({
 			"Maximum reasoning effort allowed for the task tool's per-spawn effort hint. Lower values prevent callers from escalating subagents above this ceiling; the default preserves the model's full range.",
 		options: THINKING_EFFORTS.map(getThinkingLevelMetadata),
 	},
+});
+export const cfgTaskReworkLadder = register({
+	id: "task.reworkLadder",
+	type: "array",
+	default: DEFAULT_TASK_REWORK_LADDER,
+	validate: validateTaskReworkLadder,
 });
 
 export const cfgTaskDisabledAgents = register({

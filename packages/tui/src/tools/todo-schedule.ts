@@ -30,6 +30,8 @@ export interface TodoSchedule {
 	progress?: { at: number; evidence: string };
 	startedAt?: number;
 	finishedAt?: number;
+	/** Append-only durable attempts for this exact row. */
+	attemptHistory?: TodoReworkAttempt[];
 	/** Observed Task worker that actually executed this row, independent of forecast ownership. */
 	executor?: {
 		workerId: string;
@@ -40,6 +42,25 @@ export interface TodoSchedule {
 		finishedAt?: number;
 		outcome?: "completed" | "failed" | "aborted";
 	};
+}
+
+/** One immutable terminal worker attempt attached to its owning todo row. */
+export interface TodoReworkAttempt {
+	attemptId: string;
+	workerName: string;
+	resolvedModel: string;
+	effort: string;
+	startedAt: number;
+	finishedAt: number;
+	durationMs: number;
+	terminalStatus: "completed" | "failed" | "aborted";
+	deliverablePaths: string[];
+	rejectionReason?: string;
+	reflectionAnswer?: string;
+	noAnswerReason?: string;
+	finalReportParagraph?: string;
+	infraFailureLine?: string;
+	infraFailureError?: string;
 }
 
 export interface TodoScheduleInputTask {

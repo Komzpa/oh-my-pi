@@ -7,6 +7,7 @@ import {
 	type TodoSchedule,
 	type TodoPlanForecast,
 	type TodoTaskForecast,
+	type TodoReworkAttempt,
 } from "./todo-schedule";
 
 import type { Component } from "../index";
@@ -89,6 +90,16 @@ export interface TodoOperationPersistedEdit {
 	params: unknown;
 }
 
+/** Append-only durable attempt record scoped to one exact todo row. */
+export interface TodoReworkAttemptPersistedEdit {
+	v: 1;
+	kind: "attempt";
+	at: number;
+	phase: string;
+	content: string;
+	attempt: TodoReworkAttempt;
+}
+
 /** Compact durable task-worker observation linked to one todo row. */
 export interface TodoExecutorPersistedEdit {
 	v: 1;
@@ -108,7 +119,11 @@ export interface TodoExecutorPersistedEdit {
 	};
 }
 
-export type TodoPersistedEdit = TodoOperationPersistedEdit | TodoExecutorPersistedEdit | TodoArchivePersistedEdit;
+export type TodoPersistedEdit =
+	| TodoOperationPersistedEdit
+	| TodoExecutorPersistedEdit
+	| TodoReworkAttemptPersistedEdit
+	| TodoArchivePersistedEdit;
 
 /** One-line archive summary included in ordinary live-plan snapshots. */
 export interface TodoArchiveSummary {
