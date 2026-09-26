@@ -3428,6 +3428,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		const row = this.#todoForecastRowsByContent.get(todo.content);
 		const isOverdueOpenTask = row?.overdue && (todo.status === "pending" || todo.status === "in_progress");
 		let line = this.#formatTodoLine(todo, prefix, matched, isOverdueOpenTask);
+		const history = todo.schedule?.attemptHistory;
+		const executor = todo.schedule?.executor;
+		if (history && history.length > 0 && executor?.resolvedModel && executor.thinkingLevel) {
+			const model = executor.resolvedModel.split("/").at(-1)?.split("-").at(-1);
+			if (model) {
+				const badge = sanitizeStatusText(`attempt ${history.length + 1} · ${model}:${executor.thinkingLevel}`);
+				line += ` ${theme.fg("dim", badge)}`;
+			}
+		}
 		if (!row) return worker ? `${line} ${this.#formatInlineWorker(worker)}` : line;
 		const forecast = sanitizeStatusText(formatTaskForecastDisplay(row, now, this.todoExpanded));
 		if (forecast)
