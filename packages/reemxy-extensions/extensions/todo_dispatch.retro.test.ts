@@ -42,8 +42,9 @@ async function fixture(initial: TodoScheduleInput, jobs: unknown[]) {
     const result = handlers.get("tool_result")!({ toolName: "todo", toolCallId: "retro-check", isError: false, content: [{ type: "text", text: "schedule" }], details: { phases } }, ctx) as { content: Array<{ text?: string }> };
     return result.content.map((part) => part.text ?? "").join("\n");
   };
+  const dispatch = (name: string, agent = "retro-facilitator") => handlers.get("tool_call")!({ toolName: "task", toolCallId: `call-${name}`, input: { tasks: [{ name, agent, task: "facilitate" }] } }, ctx);
   const finish = (agent = "retro-facilitator", isError = false) => handlers.get("tool_result")!({ toolName: "task", toolCallId: "retro-task", isError, details: { results: [{ agent, exitCode: 0, durationMs: 1000 }] } }, ctx);
-  return { handlers, branch, ctx, check, finish, setPlan: (next: TodoScheduleInput) => { plan = next; }, setJobs: (next: unknown[]) => { recent = next; }, intervals, notices };
+  return { handlers, branch, ctx, check, finish, dispatch, setPlan: (next: TodoScheduleInput) => { plan = next; }, setJobs: (next: unknown[]) => { recent = next; }, intervals, notices };
 }
 
 test("successful retro-facilitator settlement clears stale due on the next PLAN CHECK", async () => {
@@ -92,5 +93,53 @@ test("unchanged skipped retro trigger notifies once until a genuinely new window
     const afterNewWindow = f.check();
     expect(afterNewWindow).toContain("retrospective due");
     expect(afterNewWindow).toContain("worker-b");
+  } finally { setSystemTime(); }
+});
+
+test("an async retro-facilitator that settles through wait clears the due notice", async () => {
+  // Live 2026-09-25..26: 627 "retrospective due" notices; the facilitator finished as an async job,
+  // no task tool_result carried details.results, and the notice came back 4 s later.
+  setSystemTime(new Date(liveNow));
+  try {
+    const workers = [
+      { id: "done-a", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" },
+    ];
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], workers);
+    expect(f.check()).toContain("retrospective due");
+    f.dispatch("SprintRetro");
+    f.setJobs([...workers, { id: "SprintRetro", type: "task", status: "completed", label: "SprintRetro", startTime: liveNow - 1000, agentId: "SprintRetro" }]);
+    const after = f.check();
+    expect(after).not.toContain("retrospective due");
+    expect(after).not.toContain("SprintRetro");
+  } finally { setSystemTime(); }
+});
+
+test("an async retro-facilitator that failed does not clear the due notice", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const workers = [
+      { id: "done-a", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" },
+    ];
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], workers);
+    f.check();
+    f.dispatch("SprintRetro");
+    f.setJobs([...workers, { id: "SprintRetro", type: "task", status: "failed", label: "SprintRetro", startTime: liveNow - 1000, agentId: "SprintRetro" }]);
+    // The trigger is unchanged, so the once-per-trigger notice stays quiet; the state must still be due.
+    f.setJobs([...workers, { id: "SprintRetro", type: "task", status: "failed", label: "SprintRetro", startTime: liveNow - 1000, agentId: "SprintRetro" },
+      { id: "done-b", type: "task", status: "completed", label: "More work", startTime: liveNow - 500, agentId: "worker-b" }]);
+    expect(f.check()).toContain("retrospective due");
+  } finally { setSystemTime(); }
+});
+
+test("workers that failed on provider errors are not retro participants", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], [
+      { id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "completed-worker" },
+      { id: "quota", type: "task", status: "failed", label: "RetraceExporterEstimateGap", startTime: liveNow - 2000, agentId: "quota-worker" },
+    ]);
+    const notice = f.check();
+    expect(notice).toContain("completed-worker");
+    expect(notice).not.toContain("quota-worker");
   } finally { setSystemTime(); }
 });
