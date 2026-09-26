@@ -59,6 +59,10 @@ export interface ApiKeyResolver {
 
 export type ApiKeyResolution = string | ResolvedApiKey | undefined;
 
+export interface ResolvedApiKey {
+	apiKey: string;
+	credentialId?: number;
+}
 
 /** Extract the bearer while preserving optional credential provenance for streaming callers. */
 export function resolvedApiKeyBearer(resolved: ApiKeyResolution): string | undefined {
