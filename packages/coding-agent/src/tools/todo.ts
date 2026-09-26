@@ -2,6 +2,7 @@ import type {
 	TodoArchivePersistedEdit,
 	TodoArchiveSummary,
 	TodoOperationPersistedEdit,
+	TodoReworkAttemptPersistedEdit,
 } from "@oh-my-pi/pi-tui/tools/todo";
 import {
 	type TodoStatus,
@@ -21,6 +22,7 @@ import {
 	type TodoConfidence,
 	type TodoSchedule,
 	type TodoPlanForecast,
+	type TodoReworkAttempt,
 	validateTodoDependencies,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { type } from "@oh-my-pi/omptype";
@@ -35,7 +37,7 @@ import { cfgTaskMaxConcurrency } from "../task/settings";
 
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
 import { readGoalDeadline } from "../goals/deadlines";
-import { applyTodoExecutorObservation, type TodoExecutorObservation } from "./todo-executor";
+import { applyTodoExecutorObservation, appendTodoReworkAttempt, type TodoExecutorObservation } from "./todo-executor";
 
 /** Whether an unknown value is a persisted todo phase. */
 export function isTodoPhase(value: unknown): value is TodoPhase {
@@ -324,6 +326,34 @@ function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
 	return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
 }
 
+function isTodoReworkAttempt(value: unknown): value is TodoReworkAttempt {
+	if (
+		!isRecord(value) ||
+		typeof value.attemptId !== "string" ||
+		typeof value.workerName !== "string" ||
+		typeof value.resolvedModel !== "string" ||
+		typeof value.effort !== "string" ||
+		typeof value.startedAt !== "number" ||
+		!Number.isFinite(value.startedAt) ||
+		typeof value.finishedAt !== "number" ||
+		!Number.isFinite(value.finishedAt) ||
+		typeof value.durationMs !== "number" ||
+		!Number.isFinite(value.durationMs) ||
+		value.durationMs < 0 ||
+		(value.terminalStatus !== "completed" && value.terminalStatus !== "failed" && value.terminalStatus !== "aborted") ||
+		!Array.isArray(value.deliverablePaths) ||
+		!value.deliverablePaths.every(path => typeof path === "string")
+	) return false;
+	return [
+		"rejectionReason",
+		"reflectionAnswer",
+		"noAnswerReason",
+		"finalReportParagraph",
+		"infraFailureLine",
+		"infraFailureError",
+	].every(key => value[key] === undefined || typeof value[key] === "string");
+}
+
 function isTodoPersistedEdit(value: unknown): value is TodoPersistedEdit {
 	if (
 		!isRecord(value) ||
@@ -341,6 +371,9 @@ function isTodoPersistedEdit(value: unknown): value is TodoPersistedEdit {
 			value.archivedPhases.every(isTodoPhase) &&
 			(value.operation === undefined || (isTodoPersistedEdit(value.operation) && value.operation.kind === "op"))
 		);
+	}
+	if (value.kind === "attempt") {
+		return typeof value.phase === "string" && typeof value.content === "string" && isTodoReworkAttempt(value.attempt);
 	}
 	if (value.kind !== "executor" || !isRecord(value.observation)) return false;
 	const observation = value.observation;
@@ -394,6 +427,10 @@ function replayTodoEdit(
 			...edit.observation,
 			runningWorkerIds: new Set(edit.observation.runningWorkerIds ?? []),
 		});
+		return updated ? { phases: updated, mutable: true } : undefined;
+	}
+	if (edit.kind === "attempt") {
+		const updated = appendTodoReworkAttempt(current, edit, edit.attempt);
 		return updated ? { phases: updated, mutable: true } : undefined;
 	}
 	if (edit.kind === "archive") {
@@ -1550,6 +1587,15 @@ export function buildTodoOpPersistedEdit(
 	at = Date.now(),
 ): TodoOperationPersistedEdit {
 	return { v: 1, kind: "op", at, op, params: structuredClone(params) };
+}
+
+/** Build a row-keyed append event for the existing durable Todo custom-entry writer. */
+export function buildTodoReworkAttemptPersistedEdit(
+	row: { phase: string; content: string },
+	attempt: TodoReworkAttempt,
+	at = Date.now(),
+): TodoReworkAttemptPersistedEdit {
+	return { v: 1, kind: "attempt", at, phase: row.phase, content: row.content, attempt: structuredClone(attempt) };
 }
 
 export function buildTodoExecutorPersistedEdit(

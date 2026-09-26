@@ -36,6 +36,7 @@ import taskSpawnFeedbackTemplate from "../prompts/tools/task-spawn-feedback.md" 
 import taskSpecializationAdvisoryTemplate from "../prompts/tools/task-specialization-advisory.md" with { type: "text" };
 import taskFollowUpTemplate from "../prompts/tools/task-follow-up.md" with { type: "text" };
 import { TASK_EFFORTS, type TaskEffort } from "@oh-my-pi/pi-tui/thinking";
+import { THINKING_EFFORTS, type Effort } from "@oh-my-pi/pi-catalog/effort";
 import { truncateForPrompt } from "../tools/approval";
 import { hasWaitTool } from "../tools/wait";
 import { isIrcEnabled } from "../irc/messaging";
@@ -60,12 +61,24 @@ import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
 import { renderResult, renderCall as renderTaskCall } from "@oh-my-pi/pi-tui/tools/task";
 import { repairTaskParams } from "@oh-my-pi/pi-tui/tools/task-repair-args";
-import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
-import { SpawnRun, type SpawnPermit } from "./spawn-run";
-import { type TaskLauncher, TaskLaunchSession } from "./speculative-launch";
-import { applyOpsToPhases, buildTodoExecutorPersistedEdit, buildTodoOpPersistedEdit } from "../tools/todo";
+import { captureReworkReflection, renderPreviousAttempts, type ReworkReflectionResult } from "./rework-reflection";
+import {
+	resolveEffectiveSubagentPolicy,
+	resumeStructuredSubagent,
+	runStructuredSubagent,
+	StructuredSubagentError,
+	type StructuredSubagentResult,
+	type EffectiveSubagentPolicy,
+} from "./structured-subagent";
+import {
+	applyOpsToPhases,
+	buildTodoExecutorPersistedEdit,
+	buildTodoOpPersistedEdit,
+	buildTodoReworkAttemptPersistedEdit,
+} from "../tools/todo";
 import {
 	applyTodoExecutorObservation,
+	appendTodoReworkAttempt,
 	findRespawnOwnerRows,
 	type TodoExecutorObservation,
  } from "../tools/todo-executor";
@@ -75,6 +88,9 @@ TASK_SUBAGENT_PROGRESS_CHANNEL,
 type SubagentLifecyclePayload,
 type SubagentProgressPayload,
 } from "./types";
+import type { TodoReworkAttempt, TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { SpawnRun, type SpawnPermit } from "./spawn-run";
+import { type TaskLauncher, TaskLaunchSession } from "./speculative-launch";
 
 import { cfgAsyncEnabled } from "../tools/settings";
 import {
@@ -88,6 +104,8 @@ import {
 	cfgTaskMaxRecursionDepth,
 	cfgTaskMaxRuntimeMs,
 	cfgTaskSpeculativeLaunch,
+	cfgTaskReworkLadder,
+	type TaskReworkLadderEntry,
 } from "./settings";
 
 function renderSubagentUserPrompt(assignment: string): string {
@@ -299,6 +317,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	}
 	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task };
 	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
+	if ("rework" in params) item.rework = params.rework;
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
 	if ("tools" in params) item.tools = params.tools;
@@ -321,6 +340,7 @@ function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string
 	if (item.name !== undefined) spawn.name = item.name;
 	if (item.task !== undefined) spawn.task = item.task;
 	if (item.solutionSpace !== undefined) spawn.solutionSpace = item.solutionSpace;
+	if (item.rework !== undefined) spawn.rework = item.rework;
 	if (params.context !== undefined) spawn.context = params.context;
 	if ("outputSchema" in item) spawn.outputSchema = item.outputSchema;
 	if ("schemaMode" in item) spawn.schemaMode = item.schemaMode;
@@ -354,10 +374,30 @@ function planSpawns(rawParams: unknown, batchEnabled: boolean, defaultAgent: str
 	return { params, items, spawns: items.map(item => spawnParamsFor(params, item, defaultAgent)) };
 }
 
-/**
- * One sync-executed spawn: its item, position in the original call, (for mixed
- * calls) a pre-claimed agent id, and a run already started speculatively.
- */
+interface ReworkRoute {
+	row: { phase: string; content: string };
+	previous: NonNullable<TodoSchedule["executor"]>;
+	reason?: string;
+	rung?: { model?: string; effort: Effort };
+	failedLine?: string;
+	context?: string;
+}
+
+function nextReworkRung(ladder: readonly TaskReworkLadderEntry[], model: string, effort: string) {
+	const choices = ladder.map(entry => {
+		const colon = entry.lastIndexOf(":");
+		return { model: entry.slice(0, colon) || model, effort: entry.slice(colon + 1) as Effort };
+	});
+	const current = choices.findLastIndex(choice => choice.model === model && choice.effort === effort);
+	for (let index = current + 1; index < choices.length; index++) {
+		const choice = choices[index]!;
+		if (choice.model === model && THINKING_EFFORTS.indexOf(choice.effort) <= THINKING_EFFORTS.indexOf(effort as Effort)) continue;
+		return { model: ladder[index]!.startsWith(":") ? undefined : choice.model, effort: choice.effort };
+	}
+	return undefined;
+}
+
+/** One sync-executed spawn: its item, position, pre-claimed id, and optional speculative run. */
 interface SyncSpawnRef {
 	item: TaskItem;
 	index: number;
@@ -670,7 +710,9 @@ return session;
 },
 },
 };
-readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
+import type { TodoReworkAttempt, TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { SpawnRun, type SpawnPermit } from "./spawn-run";
+import { type TaskLauncher, TaskLaunchSession } from "./speculative-launch";
 
 	get parameters(): TaskToolSchemaInstance {
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
@@ -721,6 +763,7 @@ readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
 				if (!data || typeof data !== "object") return;
 				const event = data as Partial<SubagentLifecyclePayload>;
 				if (typeof event.id !== "string" || typeof event.agent !== "string") return;
+				if (this.#reflectingWorkers.has(event.id)) return;
 				if (event.status === "started") {
 					const observed: TodoExecutorObservation = {
 						workerId: event.id,
@@ -750,6 +793,7 @@ readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
 				const event = data as Partial<SubagentProgressPayload>;
 				const workerId = event.progress?.id;
 				if (typeof workerId !== "string") return;
+				if (this.#reflectingWorkers.has(workerId)) return;
 				const prior = this.#todoExecutors.get(workerId);
 				if (!prior) return;
 				const observed = {
@@ -989,6 +1033,11 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 				);
 			}
 		}
+		for (const [index, spawn] of normalizedSpawnParams.entries()) {
+			const decision = this.#routeRework(spawn);
+			if (decision.error) return createTaskModeError(decision.error);
+			if (decision.route) this.#reworkRoutes.set(`${toolCallId}:${index}`, decision.route);
+		}
 		const resolvedAgents = normalizedSpawnParams.map(spawn => spawn.agent ?? defaultAgent);
 		// Resolve every item before choosing an execution path. No executor or
 		// job manager may observe a batch unless every effective policy is valid.
@@ -1018,6 +1067,16 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 			);
 		}
 		const policies = preflights.map(preflight => preflight.policy!);
+		try {
+			for (const [index, policy] of policies.entries()) {
+				const route = this.#reworkRoutes.get(`${toolCallId}:${index}`);
+				if (!route) continue;
+				const blocked = await this.#prepareRework(route, policy, signal);
+				if (blocked) return createTaskModeError(blocked);
+			}
+		} catch (error) {
+			return createTaskModeError(`Rework preparation failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
 		const itemBlocking = policies.map(policy => policy.effectiveAgent.blocking === true);
 
 		// Execution mode is per item: an item whose agent type declares
@@ -1133,8 +1192,10 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 			const policy = policies[index]!;
 			const agentSource = policy.agent.source;
 			const run = adopted.get(index);
-			const agentId =
-				run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName()));
+			const route = this.#reworkRoutes.get(`${toolCallId}:${index}`);
+			const agentId = route?.reason && route.rung && !route.rung.model
+				? route.previous.workerId
+				: run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName()));
 			const assignment = (item.task ?? "").trim();
 			spawns.push({
 				agentId,
@@ -1728,13 +1789,14 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 		onArtifactsRetained?: (cleanup: () => Promise<void>) => void,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
-		const assignment = (params.task ?? "").trim();
-		const context = this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined;
+		const assignment = `${(params.task ?? "").trim()}\n\nEvery message to the lead MUST answer exactly this question: Is there a much simpler different way?`;
+		const route = this.#reworkRoutes.get(`${toolCallId}:${spawnIndex}`);
+		const context = [this.#isBatchEnabled() ? params.context?.trim() : undefined, route?.context].filter(Boolean).join("\n\n") || undefined;
 		let latestProgress: AgentProgress | undefined;
 		try {
-			const execution = await runStructuredSubagent({
+			const request = {
 				session: this.session,
-				invocationKind: "task",
+				invocationKind: "task" as const,
 				assignment,
 				context,
 				agent: params.agent,
@@ -1742,6 +1804,7 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 				...(Object.hasOwn(params, "schemaMode") ? { schemaMode: params.schemaMode } : {}),
 				...(params.effort !== undefined ? { effort: params.effort } : {}),
 				solutionSpace: params.solutionSpace,
+				...(route?.rung ? { model: route.rung.model, thinkingLevel: route.rung.effort } : {}),
 				...(params.tools?.length
 					? {
 							customTools: createEvalCustomTools(
@@ -1756,13 +1819,14 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 				index: spawnIndex,
 				parentToolCallId: toolCallId,
 				detached,
-				// Detached (async) spawns advertise `agent://<id>` handles in the
-				// eventual async-result delivery, which can land well after this
-				// call returns. Without this, a temporary (in-memory session)
-				// artifacts directory is deleted immediately on completion and the
-				// advertised URL 404s by the time delivery happens.
-				retainArtifacts: detached,
-				...(onArtifactsRetained ? { onArtifactsRetained } : {}),
+				// Rework may resume this worker after the async job is evicted.
+				// Retain the worker's artifacts for the parent session, not one invocation.
+				keepAlive: true,
+				retainArtifacts: true,
+				onArtifactsRetained: (cleanup: () => Promise<void>) => {
+					if (this.session.registerDisposeCallback) this.session.registerDisposeCallback(() => { void cleanup(); });
+					else onArtifactsRetained?.(cleanup);
+				},
 				invokedAt: launchTiming?.invokedAt,
 				acquiredAt: launchTiming?.acquiredAt,
 				...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
@@ -1771,7 +1835,7 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 				enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
 				maxRuntimeMs: cfgTaskMaxRuntimeMs.get(this.session.settings),
 				signal,
-				onProgress: progress => {
+				onProgress: (progress: AgentProgress) => {
 					latestProgress = { ...progress, recentTools: progress.recentTools.slice() };
 					onUpdate?.({
 						content: [{ type: "text", text: `Running agent ${progress.id}...` }],
@@ -1783,7 +1847,18 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 						},
 					});
 				},
-			});
+			};
+			let execution: StructuredSubagentResult;
+			if (route?.reason && route.rung && !route.rung.model) {
+				const previous = this.#workerSessions.get(route.previous.workerId);
+				if (!previous) throw new Error(`Rework session ${route.previous.workerId} is unavailable.`);
+				execution = await resumeStructuredSubagent({ ...request, assignment: [context, assignment].filter(Boolean).join("\n\n") }, previous, route.rung.effort);
+			} else {
+				execution = await runStructuredSubagent(request);
+			}
+			this.#workerSessions.set(execution.result.id, execution);
+			this.#recordFailedAttempt(execution.result);
+			this.#reworkRoutes.delete(`${toolCallId}:${spawnIndex}`);
 			return this.#buildResultPayload(
 				execution.result,
 				execution.policy.discovery.projectAgentsDir,
@@ -1800,6 +1875,9 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 			const salvaged = settled
 				? { ...settled, error: settled.error ?? (cause instanceof Error ? cause.message : message) }
 				: undefined;
+			const workerId = latestProgress?.id ?? preAllocatedId;
+			if (workerId) this.#recordFailedAttempt({ id: workerId, exitCode: 1, error: message, output: "", stderr: message, durationMs: Date.now() - startTime, aborted: signal?.aborted });
+			this.#reworkRoutes.delete(`${toolCallId}:${spawnIndex}`);
 			return {
 				content: [{ type: "text", text: `Task execution failed: ${message}` }],
 				isError: true,
