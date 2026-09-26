@@ -3825,14 +3825,15 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				options.exactThinkingLevel !== undefined || options.effort !== undefined
 					? cfgTaskMaxEffort.get(settings)
 					: undefined;
-			const effortLevel = options.exactThinkingLevel !== undefined
-				? resolveThinkingLevelForModel(
-						model,
-						clampThinkingLevelToCeiling(model, options.exactThinkingLevel, spawnEffortCeiling),
-					)
-				: options.effort !== undefined
-					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
-					: undefined;
+			const effortLevel =
+				options.exactThinkingLevel !== undefined
+					? resolveThinkingLevelForModel(
+							model,
+							clampThinkingLevelToCeiling(model, options.exactThinkingLevel, spawnEffortCeiling),
+						)
+					: options.effort !== undefined
+						? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
+						: undefined;
 			if (model) {
 				const displayLevel = effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : undefined);
 				progress.resolvedModelIdentity = formatModelStringWithRouting(model);

@@ -363,7 +363,11 @@ function nextReworkRung(ladder: readonly TaskReworkLadderEntry[], model: string,
 	const current = choices.findLastIndex(choice => choice.model === model && choice.effort === effort);
 	for (let index = current + 1; index < choices.length; index++) {
 		const choice = choices[index]!;
-		if (choice.model === model && THINKING_EFFORTS.indexOf(choice.effort) <= THINKING_EFFORTS.indexOf(effort as Effort)) continue;
+		if (
+			choice.model === model &&
+			THINKING_EFFORTS.indexOf(choice.effort) <= THINKING_EFFORTS.indexOf(effort as Effort)
+		)
+			continue;
 		return { model: ladder[index]!.startsWith(":") ? undefined : choice.model, effort: choice.effort };
 	}
 	return undefined;
@@ -653,10 +657,16 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const phases = this.session.getTodoPhases?.();
 		const name = spawn.name?.trim();
 		if (!phases || !name) return {};
-		const rows = phases.flatMap(phase => phase.tasks
-			.filter(task => task.status !== "completed" && task.status !== "abandoned" &&
-				(task.schedule?.owner === name || task.schedule?.executor?.workerId === name))
-			.map(task => ({ phase: phase.name, task })));
+		const rows = phases.flatMap(phase =>
+			phase.tasks
+				.filter(
+					task =>
+						task.status !== "completed" &&
+						task.status !== "abandoned" &&
+						(task.schedule?.owner === name || task.schedule?.executor?.workerId === name),
+				)
+				.map(task => ({ phase: phase.name, task })),
+		);
 		if (rows.length !== 1) return {};
 		const { phase, task } = rows[0]!;
 		if (task.status === "blocked" && task.blocker?.startsWith("waits for user: Rework ladder exhausted.")) {
@@ -664,19 +674,39 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 		const previous = task.schedule?.executor;
 		if (!previous?.outcome) return {};
-		if (!previous.resolvedModel || !previous.thinkingLevel) return { error: `Cannot redispatch "${task.content}": the worker's resolved model or effort is missing.` };
+		if (!previous.resolvedModel || !previous.thinkingLevel)
+			return { error: `Cannot redispatch "${task.content}": the worker's resolved model or effort is missing.` };
 		if (previous.outcome !== "completed") {
-			const failed = task.schedule?.attemptHistory?.findLast(attempt => attempt.attemptId === `${previous.workerId}:${previous.startedAt}`);
-			return { route: { row: { phase, content: task.content }, previous,
-				rung: previous.resolvedModel && previous.thinkingLevel ? { model: previous.resolvedModel, effort: previous.thinkingLevel as Effort } : undefined,
-				failedLine: failed?.infraFailureLine ?? `attempt ${(task.schedule?.attemptHistory?.length ?? 0) + 1} failed: ${previous.outcome}` } };
+			const failed = task.schedule?.attemptHistory?.findLast(
+				attempt => attempt.attemptId === `${previous.workerId}:${previous.startedAt}`,
+			);
+			return {
+				route: {
+					row: { phase, content: task.content },
+					previous,
+					rung:
+						previous.resolvedModel && previous.thinkingLevel
+							? { model: previous.resolvedModel, effort: previous.thinkingLevel as Effort }
+							: undefined,
+					failedLine:
+						failed?.infraFailureLine ??
+						`attempt ${(task.schedule?.attemptHistory?.length ?? 0) + 1} failed: ${previous.outcome}`,
+				},
+			};
 		}
 		const reason = spawn.rework;
-		if (!reason?.trim() || /[\r\n\u2028\u2029]/u.test(reason)) return { error: `Rework of "${task.content}" requires a one-line \`rework\` rejection reason.` };
+		if (!reason?.trim() || /[\r\n\u2028\u2029]/u.test(reason))
+			return { error: `Rework of "${task.content}" requires a one-line \`rework\` rejection reason.` };
 		if (!previous.resolvedModel || !previous.thinkingLevel || previous.finishedAt === undefined) {
-			return { error: `Cannot rework "${task.content}": the completed worker's resolved model, effort, or finish time is missing.` };
+			return {
+				error: `Cannot rework "${task.content}": the completed worker's resolved model, effort, or finish time is missing.`,
+			};
 		}
-		const rung = nextReworkRung(cfgTaskReworkLadder.get(this.session.settings), previous.resolvedModel, previous.thinkingLevel);
+		const rung = nextReworkRung(
+			cfgTaskReworkLadder.get(this.session.settings),
+			previous.resolvedModel,
+			previous.thinkingLevel,
+		);
 		return { route: { row: { phase, content: task.content }, previous, reason, rung } };
 	}
 
@@ -687,44 +717,74 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 		const updated = appendTodoReworkAttempt(phases, row, attempt);
 		if (!updated) {
-			const matches = phases.flatMap(phase => phase.name === row.phase ? phase.tasks.filter(task => task.content === row.content) : []);
-			if (matches.length === 1 && matches[0]!.schedule?.attemptHistory?.some(previous => previous.attemptId === attempt.attemptId)) return;
+			const matches = phases.flatMap(phase =>
+				phase.name === row.phase ? phase.tasks.filter(task => task.content === row.content) : [],
+			);
+			if (
+				matches.length === 1 &&
+				matches[0]!.schedule?.attemptHistory?.some(previous => previous.attemptId === attempt.attemptId)
+			)
+				return;
 			throw new Error(`Cannot persist rework attempt: exact Todo row "${row.content}" is no longer unique.`);
 		}
 		this.session.setTodoPhases(updated);
 		this.session.persistTodoPhases(updated, buildTodoReworkAttemptPersistedEdit(row, attempt));
 	}
 
-	#recordFailedAttempt(result: Pick<SingleResult, "id" | "exitCode" | "error" | "aborted" | "abortReason" | "stderr" | "output" | "outputPath" | "durationMs" | "resolvedModelIdentity" | "resolvedThinkingLevel">): void {
+	#recordFailedAttempt(
+		result: Pick<
+			SingleResult,
+			| "id"
+			| "exitCode"
+			| "error"
+			| "aborted"
+			| "abortReason"
+			| "stderr"
+			| "output"
+			| "outputPath"
+			| "durationMs"
+			| "resolvedModelIdentity"
+			| "resolvedThinkingLevel"
+		>,
+	): void {
 		if (!result.aborted && result.exitCode === 0 && !result.error) return;
 		const phases = this.session.getTodoPhases?.();
 		if (!phases) return;
-		const rows = phases.flatMap(phase => phase.tasks
-			.filter(task => task.schedule?.executor?.workerId === result.id)
-			.map(task => ({ phase: phase.name, task })));
+		const rows = phases.flatMap(phase =>
+			phase.tasks
+				.filter(task => task.schedule?.executor?.workerId === result.id)
+				.map(task => ({ phase: phase.name, task })),
+		);
 		if (rows.length !== 1) return;
 		const { phase, task } = rows[0]!;
 		const previous = task.schedule!.executor!;
-		this.#persistTodoExecutor({ ...previous,
+		this.#persistTodoExecutor({
+			...previous,
 			resolvedModel: result.resolvedModelIdentity ?? previous.resolvedModel,
 			thinkingLevel: result.resolvedThinkingLevel ?? previous.thinkingLevel,
 			finishedAt: previous.finishedAt ?? Date.now(),
 			outcome: result.aborted ? "aborted" : "failed",
 		});
-		const error = (result.error ?? result.abortReason ?? result.stderr ?? result.output).replace(/[\r\n\u2028\u2029]+/gu, " ").trim() || "worker failed";
-		this.#appendAttempt({ phase, content: task.content }, {
-			attemptId: `${result.id}:${previous.startedAt}`,
-			workerName: result.id,
-			resolvedModel: result.resolvedModelIdentity ?? previous.resolvedModel ?? "unresolved",
-			effort: result.resolvedThinkingLevel ?? previous.thinkingLevel ?? "unresolved",
-			startedAt: previous.startedAt,
-			finishedAt: previous.finishedAt ?? Date.now(),
-			durationMs: result.durationMs,
-			terminalStatus: result.aborted ? "aborted" : "failed",
-			deliverablePaths: result.outputPath ? [result.outputPath] : [],
-			infraFailureError: error,
-			infraFailureLine: `attempt ${(task.schedule?.attemptHistory?.length ?? 0) + 1} failed: ${error}`,
-		});
+		const error =
+			(result.error ?? result.abortReason ?? result.stderr ?? result.output)
+				.replace(/[\r\n\u2028\u2029]+/gu, " ")
+				.trim() || "worker failed";
+		this.#appendAttempt(
+			{ phase, content: task.content },
+			{
+				attemptId: `${result.id}:${previous.startedAt}`,
+				workerName: result.id,
+				resolvedModel: result.resolvedModelIdentity ?? previous.resolvedModel ?? "unresolved",
+				effort: result.resolvedThinkingLevel ?? previous.thinkingLevel ?? "unresolved",
+				startedAt: previous.startedAt,
+				finishedAt: previous.finishedAt ?? Date.now(),
+				durationMs: result.durationMs,
+				terminalStatus: result.aborted ? "aborted" : "failed",
+				deliverablePaths: result.outputPath ? [result.outputPath] : [],
+				infraFailureError: error,
+				infraFailureLine: `attempt ${(task.schedule?.attemptHistory?.length ?? 0) + 1} failed: ${error}`,
+			},
+		);
 	}
 
 	async #restoreWorker(route: ReworkRoute, policy: EffectiveSubagentPolicy): Promise<StructuredSubagentResult> {
@@ -732,11 +792,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (cached) return cached;
 		const ref = AgentRegistry.global().get(route.previous.workerId);
 		const artifactsDir = ref?.sessionFile ? path.dirname(ref.sessionFile) : this.session.getArtifactsDir?.();
-		if (!artifactsDir) throw new Error(`Cannot restore report for ${route.previous.workerId}: artifacts directory is unavailable.`);
+		if (!artifactsDir)
+			throw new Error(`Cannot restore report for ${route.previous.workerId}: artifacts directory is unavailable.`);
 		const outputPath = ref?.history?.outputPath ?? path.join(artifactsDir, `${route.previous.workerId}.md`);
 		const output = await Bun.file(outputPath).text();
 		const restored: StructuredSubagentResult = {
-			policy: { ...policy, effectiveAgent: { ...policy.effectiveAgent, name: route.previous.agentProfile ?? policy.agentName } },
+			policy: {
+				...policy,
+				effectiveAgent: { ...policy.effectiveAgent, name: route.previous.agentProfile ?? policy.agentName },
+			},
 			artifactsDir,
 			temporaryArtifacts: false,
 			changesApplied: null,
@@ -763,23 +827,36 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		return restored;
 	}
 
-	async #prepareRework(route: ReworkRoute, policy: EffectiveSubagentPolicy, signal?: AbortSignal): Promise<string | undefined> {
+	async #prepareRework(
+		route: ReworkRoute,
+		policy: EffectiveSubagentPolicy,
+		signal?: AbortSignal,
+	): Promise<string | undefined> {
 		if (route.failedLine) {
 			route.context = route.failedLine;
 			return undefined;
 		}
 		const previous = await this.#restoreWorker(route, policy);
 		// Save the rejected report before reflection can overwrite the same worker artifact.
-		const report = previous.result.outputPath ? await Bun.file(previous.result.outputPath).text() : previous.result.output;
+		const report = previous.result.outputPath
+			? await Bun.file(previous.result.outputPath).text()
+			: previous.result.output;
 		const attemptId = `${route.previous.workerId}:${route.previous.startedAt}`;
 		const phasesBefore = this.session.getTodoPhases?.() ?? [];
-		const priorRecord = phasesBefore.find(phase => phase.name === route.row.phase)?.tasks
-			.find(task => task.content === route.row.content)?.schedule?.attemptHistory?.find(attempt => attempt.attemptId === attemptId);
+		const priorRecord = phasesBefore
+			.find(phase => phase.name === route.row.phase)
+			?.tasks.find(task => task.content === route.row.content)
+			?.schedule?.attemptHistory?.find(attempt => attempt.attemptId === attemptId);
 		if (!priorRecord) {
 			this.#reflectingWorkers.add(route.previous.workerId);
 			let reflection: ReworkReflectionResult;
 			try {
-				reflection = await captureReworkReflection({ session: this.session, previous, reason: route.reason!, signal });
+				reflection = await captureReworkReflection({
+					session: this.session,
+					previous,
+					reason: route.reason!,
+					signal,
+				});
 			} finally {
 				this.#reflectingWorkers.delete(route.previous.workerId);
 			}
@@ -805,7 +882,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			}
 			for (const match of report.matchAll(/`([^`\r\n]+)`/gu)) {
 				const candidate = match[1]!;
-				if (!/\s/u.test(candidate) && (candidate.includes("/") || /\.[a-z0-9]+$/iu.test(candidate))) paths.add(candidate);
+				if (!/\s/u.test(candidate) && (candidate.includes("/") || /\.[a-z0-9]+$/iu.test(candidate)))
+					paths.add(candidate);
 			}
 			this.#appendAttempt(route.row, {
 				attemptId,
@@ -820,14 +898,21 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				rejectionReason: route.reason,
 				reflectionAnswer: reflection.answer,
 				noAnswerReason: reflection.noAnswerReason,
-				finalReportParagraph: report.trimEnd().split(/\n\s*\n/u).at(-1) ?? "",
+				finalReportParagraph:
+					report
+						.trimEnd()
+						.split(/\n\s*\n/u)
+						.at(-1) ?? "",
 			});
 		}
 		const phases = this.session.getTodoPhases?.() ?? [];
-		const task = phases.find(phase => phase.name === route.row.phase)?.tasks.find(task => task.content === route.row.content);
+		const task = phases
+			.find(phase => phase.name === route.row.phase)
+			?.tasks.find(task => task.content === route.row.content);
 		route.context = renderPreviousAttempts(task?.schedule?.attemptHistory ?? []);
 		if (!route.rung) {
-			const reason = "waits for user: Rework ladder exhausted. Review the entire attempt chain and choose how to proceed.";
+			const reason =
+				"waits for user: Rework ladder exhausted. Review the entire attempt chain and choose how to proceed.";
 			const operation = { op: "block" as const, task: route.row.content, reason };
 			const updated = applyOpsToPhases(phases, [operation]);
 			if (updated.errors.length > 0) throw new Error(updated.errors.join("\n"));
@@ -837,7 +922,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 		return undefined;
 	}
-
 
 	get parameters(): TaskToolSchemaInstance {
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
@@ -1083,7 +1167,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		for (const spawn of normalizedSpawnParams) {
 			const decision = this.#routeRework(spawn);
 			if (decision.error) return createTaskModeError(decision.error);
-			if (decision.route) this.#reworkRoutes.set(`${toolCallId}:${normalizedSpawnParams.indexOf(spawn)}`, decision.route);
+			if (decision.route)
+				this.#reworkRoutes.set(`${toolCallId}:${normalizedSpawnParams.indexOf(spawn)}`, decision.route);
 		}
 		const resolvedAgents = normalizedSpawnParams.map(spawn => spawn.agent ?? defaultAgent);
 		// Resolve every item before choosing an execution path. No executor or
@@ -1122,7 +1207,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				if (blocked) return createTaskModeError(blocked);
 			}
 		} catch (error) {
-			return createTaskModeError(`Rework preparation failed: ${error instanceof Error ? error.message : String(error)}`);
+			return createTaskModeError(
+				`Rework preparation failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 		const itemBlocking = policies.map(policy => policy.effectiveAgent.blocking === true);
 
@@ -1248,9 +1335,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const policy = policies[index]!;
 			const agentSource = policy.agent.source;
 			const route = this.#reworkRoutes.get(`${toolCallId}:${index}`);
-			const agentId = route?.reason && route.rung && !route.rung.model
-				? route.previous.workerId
-				: await outputManager.allocate(item.name?.trim() || generateTaskName());
+			const agentId =
+				route?.reason && route.rung && !route.rung.model
+					? route.previous.workerId
+					: await outputManager.allocate(item.name?.trim() || generateTaskName());
 			const assignment = (item.task ?? "").trim();
 			spawns.push({
 				agentId,
@@ -1885,7 +1973,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const startTime = Date.now();
 		const assignment = `${(params.task ?? "").trim()}\n\nEvery message to the lead MUST answer exactly this question: Is there a much simpler different way?`;
 		const route = this.#reworkRoutes.get(`${toolCallId}:${spawnIndex}`);
-		const context = [this.#isBatchEnabled() ? params.context?.trim() : undefined, route?.context].filter(Boolean).join("\n\n") || undefined;
+		const context =
+			[this.#isBatchEnabled() ? params.context?.trim() : undefined, route?.context].filter(Boolean).join("\n\n") ||
+			undefined;
 		let latestProgress: AgentProgress | undefined;
 		try {
 			const request = {
@@ -1918,7 +2008,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				keepAlive: true,
 				retainArtifacts: true,
 				onArtifactsRetained: (cleanup: () => Promise<void>) => {
-					if (this.session.registerDisposeCallback) this.session.registerDisposeCallback(() => { void cleanup(); });
+					if (this.session.registerDisposeCallback)
+						this.session.registerDisposeCallback(() => {
+							void cleanup();
+						});
 					else onArtifactsRetained?.(cleanup);
 				},
 				invokedAt: launchTiming?.invokedAt,
@@ -1946,7 +2039,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			if (route?.reason && route.rung && !route.rung.model) {
 				const previous = this.#workerSessions.get(route.previous.workerId);
 				if (!previous) throw new Error(`Rework session ${route.previous.workerId} is unavailable.`);
-				execution = await resumeStructuredSubagent({ ...request, assignment: [context, assignment].filter(Boolean).join("\n\n") }, previous, route.rung.effort);
+				execution = await resumeStructuredSubagent(
+					{ ...request, assignment: [context, assignment].filter(Boolean).join("\n\n") },
+					previous,
+					route.rung.effort,
+				);
 			} else {
 				execution = await runStructuredSubagent(request);
 			}
@@ -1970,7 +2067,16 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				? { ...settled, error: settled.error ?? (cause instanceof Error ? cause.message : message) }
 				: undefined;
 			const workerId = latestProgress?.id ?? preAllocatedId;
-			if (workerId) this.#recordFailedAttempt({ id: workerId, exitCode: 1, error: message, output: "", stderr: message, durationMs: Date.now() - startTime, aborted: signal?.aborted });
+			if (workerId)
+				this.#recordFailedAttempt({
+					id: workerId,
+					exitCode: 1,
+					error: message,
+					output: "",
+					stderr: message,
+					durationMs: Date.now() - startTime,
+					aborted: signal?.aborted,
+				});
 			this.#reworkRoutes.delete(`${toolCallId}:${spawnIndex}`);
 			return {
 				content: [{ type: "text", text: `Task execution failed: ${message}` }],
