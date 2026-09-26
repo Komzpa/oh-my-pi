@@ -3,7 +3,7 @@ import { expect, setSystemTime, test } from "bun:test";
 import { readGoalDeadline } from "./deadlines";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { formatPlanForecast, formatTaskForecast, forecastTodoPlan, type TodoScheduleInput } from "./todo-schedule";
+import { formatPlanForecast, formatTaskForecast, forecastTodoPlan, type TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import todoDispatch from "./todo_dispatch";
 
 const sdk = { forecastTodoPlan, formatPlanForecast, formatTaskForecast, readGoalDeadline, getLatestTodoPhasesFromEntries };

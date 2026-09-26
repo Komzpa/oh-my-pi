@@ -1,7 +1,7 @@
 // @ts-nocheck -- local performance harness for the Reemxy extension gate.
 import { performance } from "node:perf_hooks";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { formatPlanForecast, formatTaskForecast, forecastTodoPlan } from "../extensions/todo-schedule";
+import { formatPlanForecast, formatTaskForecast, forecastTodoPlan } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import todoDispatch from "../extensions/todo_dispatch";
 
 const now = Date.UTC(2026, 8, 25, 16, 0, 0);

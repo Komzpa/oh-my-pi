@@ -13,7 +13,7 @@ import {
   formatTaskForecast,
   forecastTodoPlan,
   type TodoScheduleInput,
-} from "./todo-schedule";
+} from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import todoDispatch, { decideTodoDispatch, type DispatchInput } from "./todo_dispatch";
 
 type Jobs = Pick<AsyncJobSnapshot, "running" | "recent" | "nonJobAgents">;

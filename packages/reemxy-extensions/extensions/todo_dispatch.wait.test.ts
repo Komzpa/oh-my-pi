@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { expect, test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { formatPlanForecast, formatTaskForecast, forecastTodoPlan } from "./todo-schedule";
+import { formatPlanForecast, formatTaskForecast, forecastTodoPlan } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import todoDispatch from "./todo_dispatch";
 
 function chainedPlan(rows: number, now: number) {
