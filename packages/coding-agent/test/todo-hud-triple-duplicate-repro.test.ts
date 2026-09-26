@@ -5,7 +5,9 @@
  * can list live subagents:
  *   - TODO tree (#renderTodoList -> todoContainer)
  *   - anchored Subagents panel (#renderSubagentList -> subagentContainer)
- *   - wait-tool result tree (waitToolRenderer.renderResult with agents roster)
+ *   - wait-tool result tree (waitToolRenderer.renderResult with a running
+ *     task-type jobs roster, matching what WaitTool actually reports for
+ *     running subagents)
  *
  * The test surfaces counts and truncation markers so a red-before fix is
  * observable without editing any production render file.
@@ -27,7 +29,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/task";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { type AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
-import { waitToolRenderer, type AgentActivitySnapshot } from "@oh-my-pi/pi-tui/tools/wait";
+import { waitToolRenderer, type JobSnapshot } from "@oh-my-pi/pi-tui/tools/wait";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -78,8 +80,9 @@ function makeProgressPayload(id: string, index: number, description: string): Su
 	};
 }
 
-function makeAgentSnapshot(id: string): AgentActivitySnapshot {
-	return { id, ageMs: 1000, live: true, activity: "running" };
+/** Running task-type job, matching what WaitTool.snapshotJobs reports for a live subagent. */
+function makeJobSnapshot(id: string): JobSnapshot {
+	return { id, type: "task", status: "running", label: id, durationMs: 1000 };
 }
 
 function countWorkerOccurrences(text: string, id: string): number {
@@ -174,12 +177,15 @@ describe("TODO HUD triple-duplication reproduction", () => {
 		const todoStrip = Bun.stripANSI(mode.todoContainer.render(COLUMNS).join("\n"));
 		const subagentStrip = Bun.stripANSI(mode.subagentContainer.render(COLUMNS).join("\n"));
 
+		// A plan is active, so WaitTool would report todoTracksTasks: true for
+		// these same running task jobs (see packages/coding-agent/src/tools/wait.ts).
 		const waitComponent = waitToolRenderer.renderResult(
 			{
 				content: [{ type: "text", text: "waiting" }],
 				details: {
 					op: "wait",
-					agents: Array.from({ length: WORKER_COUNT }, (_, i) => makeAgentSnapshot(`Override${i}`)),
+					jobs: Array.from({ length: WORKER_COUNT }, (_, i) => makeJobSnapshot(`Override${i}`)),
+					todoTracksTasks: true,
 				},
 			},
 			{ expanded: true, isPartial: true } as Parameters<typeof waitToolRenderer.renderResult>[1],
@@ -196,26 +202,25 @@ describe("TODO HUD triple-duplication reproduction", () => {
 		console.log(waitStrip);
 
 		// A real plan is active, so the TODO tree alone accounts for every
-		// worker (linked to its row, or under "unassigned workers"). The
-		// anchored Subagents panel must not repeat that list — the reported
-		// triple-duplication symptom was this panel showing the same workers
-		// a second (and the wait-tool tree a third) time.
-		expect(subagentStrip).not.toContain("Subagents");
-
+		// worker (linked to its row, or under "unassigned workers"). Neither
+		// the Subagents panel nor the wait-tool roster may repeat that list —
+		// each worker appears exactly once across all three surfaces combined,
+		// not once per surface.
 		for (let index = 0; index < WORKER_COUNT; index++) {
 			const id = `Override${index}`;
-			expect(countWorkerOccurrences(todoStrip, id)).toBe(1);
-			expect(countWorkerOccurrences(subagentStrip, id)).toBe(0);
-			// The wait-tool tree is an independent, pre-existing surface (not
-			// part of this regression): it may still list its own roster once.
-			expect(countWorkerOccurrences(waitStrip, id)).toBe(1);
+			const total =
+				countWorkerOccurrences(todoStrip, id) +
+				countWorkerOccurrences(subagentStrip, id) +
+				countWorkerOccurrences(waitStrip, id);
+			expect(total).toBe(1);
 		}
 
 		// Truncation at 190 columns would be unexpected for 13 short rows.
+		expect(findTruncationLines(subagentStrip)).toEqual([]);
 		expect(findTruncationLines(waitStrip)).toEqual([]);
 	});
 
-	it("keeps the Subagents panel with no todo plan when active subagents are present", async () => {
+	it("keeps the Subagents panel and wait-tool roster with no todo plan", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
 		// Explicitly do NOT call mode.setTodos().
 
@@ -236,5 +241,23 @@ describe("TODO HUD triple-duplication reproduction", () => {
 		// existing "coalesces a burst of worker changes" test, still applies).
 		expect(subagentStrip).toContain("Subagents");
 		expect(subagentStrip).toContain("NoPlan0");
+
+		// The wait tool has no plan to defer to either, so it keeps listing
+		// its own roster in full instead of collapsing it.
+		const waitComponent = waitToolRenderer.renderResult(
+			{
+				content: [{ type: "text", text: "waiting" }],
+				details: {
+					op: "wait",
+					jobs: Array.from({ length: WORKER_COUNT }, (_, i) => makeJobSnapshot(`NoPlan${i}`)),
+					todoTracksTasks: false,
+				},
+			},
+			{ expanded: true, isPartial: true } as Parameters<typeof waitToolRenderer.renderResult>[1],
+			theme,
+		);
+		const waitStrip = Bun.stripANSI(waitComponent.render(COLUMNS).join("\n"));
+		expect(waitStrip).toContain("NoPlan0");
+		expect(waitStrip).not.toContain("listed in TODO");
 	});
 });
