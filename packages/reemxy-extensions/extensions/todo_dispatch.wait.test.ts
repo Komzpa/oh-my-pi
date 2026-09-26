@@ -280,6 +280,46 @@ test("capacity reports zero when no authenticated worker profile can start", asy
 	expect(oneResult?.messages?.at(-1)?.content).toContain("Task cap=1");
 });
 
+test("dispatcher renders forecast and deadline times in the persisted goal timezone", async () => {
+	const now = Date.UTC(2026, 8, 25, 19, 16);
+	const phases = chainedPlan(1, now);
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+	const api = {
+		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+		getActiveTools: () => ["task", "todo", "wait"],
+		pi: {
+			forecastTodoPlan,
+			formatPlanForecast: () => "P95=2026-09-25T19:16:00.000Z",
+			formatTaskForecast,
+			getLatestTodoPhasesFromEntries: () => phases,
+			readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 60_000, timezone: "Asia/Tbilisi" }),
+		},
+		appendEntry: () => undefined,
+		sendMessage: () => undefined,
+	} as unknown as ExtensionAPI;
+	await todoDispatch(api);
+	const ctx = {
+		cwd: "/tmp/todo-wait-timezone-test",
+		sessionManager: {
+			getHeader: () => ({ id: "timezone" }),
+			getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
+			getSessionFile: () => undefined,
+		},
+		getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+		getTaskMaxConcurrency: () => 1,
+		models: { resolve: () => undefined, list: () => [] },
+		hasPendingMessages: () => false,
+		isIdle: () => false,
+		setTimeout: () => ({}),
+		clearTimer: () => undefined,
+	} as unknown as ExtensionContext;
+	const result = await handlers.get("context")!({ messages: [] }, ctx) as { messages?: Array<{ content: string }> };
+	const content = result.messages?.at(-1)?.content ?? "";
+	expect(content).toContain("P95=2026-09-25 23:16:00 Asia/Tbilisi");
+	expect(content).toContain("2026-09-25 23:17:00 Asia/Tbilisi");
+	expect(content).not.toContain("19:16:00.000Z");
+});
+
 test("wait refusals deduplicate by rendered content across plan revisions", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "todo-wait-dedup-"));
 	try {
