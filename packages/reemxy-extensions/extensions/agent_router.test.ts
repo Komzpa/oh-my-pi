@@ -1,6 +1,6 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -189,6 +189,23 @@ describe("agent router", () => {
 	test("agent markdown model chains mirror router pools and fallbacks", () => {
 		for (const agent of ["scout", "gate-runner", "git-pr-owner", "scribe", "retro-facilitator"] as const) {
 			expect(frontmatterModelChain(agent)).toEqual([...AGENT_POOLS[agent].pool, ...AGENT_POOLS[agent].fallbacks]);
+		}
+	});
+	test("all executing profiles set a bounded-work stop and receipt contract", () => {
+		const executingProfiles = readdirSync(new URL("./agents/", import.meta.url))
+			.filter(file => file.endsWith(".md"))
+			.map(file => file.slice(0, -3));
+		for (const agent of executingProfiles) {
+			const content = readFileSync(new URL(`./agents/${agent}.md`, import.meta.url), "utf8");
+			const instructions = content.replace(/^---\n[\s\S]*?\n---\n/, "").toLowerCase();
+			const boundedWindow = /(?:~|about|approximately|roughly|around|up to|within)\s*15\s*(?:minutes?|mins?)\b/.test(instructions);
+			const stopForOversizedWork = /(?:larger|oversized|bigger|exceeds?|over budget|too large|too big|will not fit|won't fit)[\s\S]{0,180}(?:stop|pause|return|split|boundar|checkable)|(?:stop|pause|return|split|boundar|checkable)[\s\S]{0,180}(?:larger|oversized|bigger|exceeds?|over budget|too large|too big|will not fit|won't fit)/.test(instructions);
+			const stopForImpendingCompaction = /(?:compaction|compact(?:ed|ing)?)[\s\S]{0,180}(?:stop|pause|return|split|boundar|checkable)|(?:stop|pause|return|split|boundar|checkable)[\s\S]{0,180}(?:compaction|compact(?:ed|ing)?)/.test(instructions);
+			const completedReceiptAndSplit = /(?:done|completed|finished)[\s\S]{0,180}(?:receipt|report|result|summary)[\s\S]{0,180}(?:split|subtask|follow-on|next task)|(?:split|subtask|follow-on|next task)[\s\S]{0,180}(?:done|completed|finished)[\s\S]{0,180}(?:receipt|report|result|summary)/.test(instructions);
+			expect(boundedWindow, `${agent} should set an approximately 15-minute execution window`).toBe(true);
+			expect(stopForOversizedWork, `${agent} should stop at a checkable point when work is oversized`).toBe(true);
+			expect(stopForImpendingCompaction, `${agent} should stop at a checkable point when compaction is near`).toBe(true);
+			expect(completedReceiptAndSplit, `${agent} should return completed work and a proposed split`).toBe(true);
 		}
 	});
 

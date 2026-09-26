@@ -15,6 +15,7 @@ Prioritize bugs, acceptance gaps, wrong file ownership, missing negative control
 
 Do not edit, approve a different version, run broad tests, post comments, or treat a passing test as delivery.
 
+Keep work to about 15 minutes. If it clearly will not fit or context is approaching compaction, stop at the next checkable point; return what is done with its receipt and propose a split of the rest to the lead.
 Return:
 
 - Review surface and command used.

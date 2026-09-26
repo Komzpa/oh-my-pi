@@ -695,6 +695,192 @@ test("PLAN CHECK names a worker whose session file went quiet, and only that one
   }
 }, 60_000);
 
+test("PLAN CHECK reports a compacted running worker once with a done/left split action", async () => {
+  const cwd = repo("clean");
+  const sessions = mkdtempSync(join(tmpdir(), "gates-compacted-worker-"));
+  const sessionFile = join(sessions, "main.jsonl");
+  mkdirSync(join(sessions, "main"));
+  const liveNow = Date.now();
+  const compactedAt = liveNow - 2 * 60_000;
+  const compactedClock = new Date(compactedAt).toISOString().slice(11, 16);
+  const workerFile = join(sessions, "main", "worker-a.jsonl");
+  writeFileSync(
+    workerFile,
+    `${JSON.stringify({
+      type: "compaction",
+      id: "compaction-a",
+      parentId: "entry-before-compaction",
+      timestamp: new Date(compactedAt).toISOString(),
+      summary: "Worker context compacted",
+      firstKeptEntryId: "entry-after-compaction",
+      tokensBefore: 120_000,
+    })}\n`,
+  );
+  const lastActivity = (liveNow - 60_000) / 1000;
+  utimesSync(workerFile, lastActivity, lastActivity);
+  const handlers: Record<string, (event: unknown, ctx: ExtensionContext) => unknown> = {};
+  const sent: string[] = [];
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
+      handlers[event] = handler;
+    },
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: (message: { content: string }) => {
+      sent.push(message.content);
+    },
+  } as unknown as ExtensionAPI;
+  await todoDispatch(api);
+  const branch = plan("ready", liveNow) as Array<{ message: { details: { phases: TodoScheduleInput } } }>;
+  branch[0]!.message.details.phases[0]!.tasks.splice(1);
+  let tick: (() => void) | undefined;
+  const ctx = {
+    cwd,
+    sessionManager: {
+      getHeader: () => ({ id: "gates-compacted-worker" }),
+      getBranch: () => branch,
+      getSessionFile: () => sessionFile,
+    },
+    getAsyncJobSnapshot: () => ({
+      running: [
+        {
+          id: "worker-a",
+          agentId: "worker-a",
+          type: "task",
+          status: "running",
+          label: "Row A",
+          startTime: liveNow - 8 * 60_000,
+        },
+      ],
+      recent: [],
+      nonJobAgents: [],
+    }),
+    getTaskMaxConcurrency: () => 1,
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    setInterval: (callback: () => void) => {
+      tick = callback;
+      return {};
+    },
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  try {
+    handlers.session_start!({}, ctx);
+    tick!();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("PLAN CHECK:");
+    expect(sent[0]).toContain("worker-a");
+    expect(sent[0]).toContain(`compacted at ${compactedClock}`);
+    expect(sent[0]).toContain("write agent://worker-a");
+    expect(sent[0]).toContain("done/left");
+    expect(sent[0]).toContain("then split");
+    tick!();
+    expect(sent).toHaveLength(1);
+  } finally {
+    handlers.session_shutdown?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(sessions, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("PLAN CHECK asks only workers running longer than fifteen minutes for a done/left split", async () => {
+  const cwd = repo("clean");
+  const sessions = mkdtempSync(join(tmpdir(), "gates-worker-runtime-"));
+  const sessionFile = join(sessions, "main.jsonl");
+  mkdirSync(join(sessions, "main"));
+  const liveNow = Date.now();
+  for (const id of ["worker-a", "worker-b"]) {
+    const workerFile = join(sessions, "main", `${id}.jsonl`);
+    writeFileSync(workerFile, "{}\n");
+    const lastActivity = (liveNow - 60_000) / 1000;
+    utimesSync(workerFile, lastActivity, lastActivity);
+  }
+  const handlers: Record<string, (event: unknown, ctx: ExtensionContext) => unknown> = {};
+  const sent: string[] = [];
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
+      handlers[event] = handler;
+    },
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: (message: { content: string }) => {
+      sent.push(message.content);
+    },
+  } as unknown as ExtensionAPI;
+  await todoDispatch(api);
+  const branch = plan("ready", liveNow) as Array<{ message: { details: { phases: TodoScheduleInput } } }>;
+  const tasks = branch[0]!.message.details.phases[0]!.tasks;
+  tasks.splice(3);
+  tasks[1]!.status = "in_progress";
+  tasks[1]!.schedule!.owner = "worker-b";
+  let tick: (() => void) | undefined;
+  const ctx = {
+    cwd,
+    sessionManager: {
+      getHeader: () => ({ id: "gates-worker-runtime" }),
+      getBranch: () => branch,
+      getSessionFile: () => sessionFile,
+    },
+    getAsyncJobSnapshot: () => ({
+      running: [
+        {
+          id: "worker-a",
+          agentId: "worker-a",
+          type: "task",
+          status: "running",
+          label: "Row A",
+          startTime: liveNow - (sent.length ? 16 : 14) * 60_000,
+        },
+        {
+          id: "worker-b",
+          agentId: "worker-b",
+          type: "task",
+          status: "running",
+          label: "Row B",
+          startTime: liveNow - 10 * 60_000,
+        },
+      ],
+      recent: [],
+      nonJobAgents: [],
+    }),
+    getTaskMaxConcurrency: () => 3,
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    setInterval: (callback: () => void) => {
+      tick = callback;
+      return {};
+    },
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  try {
+    handlers.session_start!({}, ctx);
+    tick!();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("Row C");
+    expect(sent[0]).not.toContain("done/left");
+    tick!();
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toContain("worker-a");
+    expect(sent[1]).toContain("16 min");
+    expect(sent[1]).toContain("write agent://worker-a");
+    expect(sent[1]).toContain("done/left");
+    expect(sent[1]).toContain("then split");
+    expect(sent[1]).not.toContain("write agent://worker-b");
+    tick!();
+    expect(sent).toHaveLength(2);
+  } finally {
+    handlers.session_shutdown?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(sessions, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("PLAN CHECK has the harness ask an overdue worker once instead of telling chief to inspect it", async () => {
   const cwd = repo("clean");
   const sessions = mkdtempSync(join(tmpdir(), "gates-overdue-worker-"));
