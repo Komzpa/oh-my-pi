@@ -120,6 +120,8 @@ export interface CoordinationDetails {
 	cancelled?: { id: string; status: CancelStatus }[];
 	/** Running subagents not represented by a job row in this result. */
 	agents?: AgentActivitySnapshot[];
+	/** A todo plan is active and already lists every task-type job below by worker id. */
+	todoTracksTasks?: boolean;
 	/** `wait` was cut short by steering, a peer message, or a completion notice that injects next. */
 	interrupted?: boolean;
 }
@@ -198,6 +200,14 @@ function jobsRenderResult(
 ): Component {
 	let jobs = result.details?.jobs ?? [];
 	const agents = result.details?.agents ?? [];
+	// When a todo plan is active it already lists every task worker (linked
+	// to its row, or under "unassigned workers"), so a still-running task job
+	// here would just repeat the same identity a second time. Fold those rows
+	// into the header count instead of listing them again.
+	const todoTracksTasks = result.details?.todoTracksTasks === true;
+	const collapsedTaskJobIds = new Set(
+		todoTracksTasks ? jobs.filter(job => job.type === "task" && job.status === "running").map(job => job.id) : [],
+	);
 
 	if (jobs.length === 0 && agents.length === 0) {
 		const fallback = result.content?.find(c => c.type === "text")?.text || "No jobs to process";
@@ -231,13 +241,14 @@ function jobsRenderResult(
 	const headerIcon: ToolUIStatus =
 		counts.failed > 0 ? "warning" : counts.running > 0 || agents.length > 0 ? "info" : "success";
 	const jobsNoun = jobs.length === 1 ? "job" : "jobs";
+	const listedInTodo = collapsedTaskJobIds.size > 0 ? ", listed in TODO" : "";
 	const description =
 		jobs.length === 0
 			? `${agents.length} running agent${agents.length === 1 ? "" : "s"} — no jobs`
 			: counts.running > 0
 				? counts.running === jobs.length
-					? `waiting on ${jobs.length} ${jobsNoun}`
-					: `waiting on ${counts.running} of ${jobs.length} ${jobsNoun}`
+					? `waiting on ${jobs.length} ${jobsNoun}${listedInTodo}`
+					: `waiting on ${counts.running} of ${jobs.length} ${jobsNoun}${listedInTodo}`
 				: `${jobs.length} ${jobsNoun} settled`;
 
 	const header = renderStatusLine(
@@ -267,11 +278,13 @@ function jobsRenderResult(
 		cancelled: 2,
 		completed: 3,
 	};
-	const sortedJobs = [...jobs].sort((a, b) => {
-		const diff = statusOrder[a.status] - statusOrder[b.status];
-		if (diff !== 0) return diff;
-		return b.durationMs - a.durationMs;
-	});
+	const sortedJobs = jobs
+		.filter(job => !collapsedTaskJobIds.has(job.id))
+		.sort((a, b) => {
+			const diff = statusOrder[a.status] - statusOrder[b.status];
+			if (diff !== 0) return diff;
+			return b.durationMs - a.durationMs;
+		});
 
 	let cached: RenderCache | undefined;
 	return {
