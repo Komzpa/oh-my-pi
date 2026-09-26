@@ -49,7 +49,7 @@ function makeResult(id: string, overrides: Partial<SingleResult> = {}): SingleRe
 
 function createSession(
 	initial: TodoPhase[] = [],
-	ladder: readonly string[] = [":high"],
+	ladder?: readonly string[],
 ): {
 	session: ToolSession;
 	phases: () => TodoPhase[];
@@ -62,7 +62,10 @@ function createSession(
 	const session = {
 		cwd: "/tmp",
 		hasUI: false,
-		settings: Settings.isolated({ "async.enabled": false, "task.reworkLadder": [...ladder] }),
+		settings: Settings.isolated({
+			"async.enabled": false,
+			...(ladder === undefined ? {} : { "task.reworkLadder": [...ladder] }),
+		}),
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
 		eventBus: bus,
