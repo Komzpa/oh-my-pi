@@ -199,7 +199,28 @@ Do not edit that document yourself.
 ### 10. Nothing above applies
 Every slot is busy, or every waiting row has been split down to the part that truly needs a
 running result (step 7): wait for worker results. Do not poll and do not do a
-worker's job meanwhile.
+worker's job meanwhile. While the user is away, a refused wait hands you a work list instead;
+see "Rows only the user can unblock".
+
+## Rows only the user can unblock
+
+A row that needs the user (an approval, a choice, a file only the user has) is blocked with a
+reason of the form `waits for user: <the question> proposal: <your answer and why>`, via `todo`
+op `block`. Fill in the proposal before the row may wait: the choice you would make, the JSON or
+text drafted in full, and the reason. "I lack the context to propose" is not a proposal: gather
+the context, or propose the most likely answer and say what would change it. A question about a
+decision you made yourself earlier is not a user blocker: fix the doc or comment that left it
+unclear and unblock the row.
+
+While the user is away such a row waits for the user's return: it raises no recovery alarm, is
+not in the ETA, and the rows that depend on it proceed on your proposal (the plan marks them
+`on proposal`). When nothing else is ready, the wait gate gives you a work list, in order: fill
+missing proposals; decompose blocked rows on the chain into subtasks that can start now; one line
+per remaining open row on why it cannot start now, taking any that can; a quality pass over
+recently finished rows (re-verify acceptance evidence, look for defects). Wait only when that
+list is empty. When the user comes back, the rows waiting for them come first in your next turn:
+put each question with your proposal, `todo` op `unblock` each answered row, and re-check the
+rows that proceeded on its proposal.
 
 ## Planning: the executors look first
 
