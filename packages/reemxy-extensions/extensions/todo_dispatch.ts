@@ -1330,14 +1330,20 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const decision = currentDecision(ctx);
     if (!decision.key || !decision.forecast) return;
     const rows = decision.forecast.rows ?? [];
-    const ready = (decision.dispatchableReady ?? []).map((row) => JSON.stringify(shorten(row.content)));
+    const readyRows = decision.dispatchableReady ?? [];
+    const ready = readyRows.map((row) => {
+      const ownerState = row.ownership === "shared-live-owner"
+        ? "running for another row, not separately staffed"
+        : row.owner === null ? "unassigned" : "not running";
+      return `${JSON.stringify(shorten(row.content))} [owner=${JSON.stringify(row.owner)}; ${ownerState}]`;
+    });
     const overdue = decision.alarms?.some((alarm) => alarm.startsWith("deadline-overdue:") || alarm.startsWith("overdue-todo-minute:"));
     const late = overdue || decision.alarms?.some((alarm) => alarm.startsWith("deadline-risk-"));
     const open = rows.filter((row) => row.status === "pending" || row.status === "in_progress");
     // One next action, naming the exact tool. Seen live: "write the rows into the todo plan" sent the
     // model to edit a backlog file in the repo, and "start workers … replan …" in one breath gave it two orders at once.
     const next = ready.length
-      ? `Ready rows without a worker: ${ready.slice(0, MAX_TASK_DISPATCH).join(", ")}. ${ORDER}`
+      ? `Ready rows needing a distinct running worker: ${ready.slice(0, MAX_TASK_DISPATCH).join(", ")}. If a running worker already does one of these rows but differs from its recorded owner, set that row's schedule.owner via todo schedule to that worker; otherwise start one worker for the row (skill://chief-of-staff).`
       : replanInstruction(ctx, open, workerCapacity(ctx));
     if (idle) {
       return {
@@ -1352,7 +1358,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     // Something is running. Main waiting on a few workers while the backlog sits idle is a bad plan
     // whether or not the deadline has slipped yet: rows chained behind the running work = replan.
     const parked = open.length - runningTasks.length;
-    if (runningTasks.length === 0 || (ready.length === 0 && !understaffed(ctx, runningTasks.length, parked))) {
+    const shortfall = runningTasks.length > 0 && understaffed(ctx, runningTasks.length, parked);
+    if (runningTasks.length === 0 || (ready.length === 0 && !shortfall)) {
       lateWaitRefusalKey = null;
       return;
     }
@@ -1363,7 +1370,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     return {
       block: true,
       reason: [
-        `Stop waiting: ${runningTasks.length} of ${workerCapacity(ctx)} possible worker(s) run while ${parked} open row(s) sit idle${overdue ? ", and you are past the deadline" : late ? ", and you are about to miss the deadline" : ""}.`,
+        ready.length > 0 && !shortfall
+          ? `Stop waiting: ready work lacks a distinct running worker${overdue ? ", and you are past the deadline" : late ? ", and you are about to miss the deadline" : ""}.`
+          : `Stop waiting: ${runningTasks.length} of ${workerCapacity(ctx)} possible worker(s) run while ${parked} open row(s) sit idle${overdue ? ", and you are past the deadline" : late ? ", and you are about to miss the deadline" : ""}.`,
         next,
         activityLine(ctx, runningTasks),
       ].filter(Boolean).join(" "),
