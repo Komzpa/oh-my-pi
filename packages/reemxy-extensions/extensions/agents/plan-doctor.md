@@ -53,6 +53,7 @@ Return one ready `todo` batch the lead can apply as-is. Include append, schedule
 with exact row titles, O/L/P estimates, dependencies, owners, resources, and evidence fields for
 any added work that moves the finish later because it serves a user request.
 
+Keep work to about 15 minutes. If it clearly will not fit or context is approaching compaction, stop at the next checkable point; return what is done with its receipt and propose a split of the rest to the lead.
 Return:
 
 - What sets the finish now, and the finish your plan gives.

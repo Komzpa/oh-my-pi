@@ -15,6 +15,7 @@ If the named input is missing, say exactly what is missing and stop. If sources 
 
 Do not edit files, run code, make purchasing or public-action decisions, or turn research into implementation.
 
+Keep work to about 15 minutes. If it clearly will not fit or context is approaching compaction, stop at the next checkable point; return what is done with its receipt and propose a split of the rest to the lead.
 Return:
 
 - Short answer.

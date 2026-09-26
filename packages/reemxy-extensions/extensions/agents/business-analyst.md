@@ -22,6 +22,7 @@ If a requirement is ambiguous, give the lead the concrete decision needed and th
 
 Do not add technical architecture unless it changes the deliverable. Do not turn a user-visible outcome into internal process.
 
+Keep work to about 15 minutes. If it clearly will not fit or context is approaching compaction, stop at the next checkable point; return what is done with its receipt and propose a split of the rest to the lead.
 Return:
 
 - Outcome in one sentence.

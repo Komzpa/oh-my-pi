@@ -15,6 +15,7 @@ Prefer the smallest design that preserves the main path. Split work only when th
 
 Do not run code, edit files, commit, deploy, or invent a new framework. Do not hide a cross-module contract behind "refactor later".
 
+Keep work to about 15 minutes. If it clearly will not fit or context is approaching compaction, stop at the next checkable point; return what is done with its receipt and propose a split of the rest to the lead.
 Return:
 
 - Design summary.

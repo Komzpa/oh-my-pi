@@ -15,6 +15,7 @@ If the source artifact changes during the run, label the result stale and stop. 
 
 Do not edit source, repair failures, broaden the suite, commit, push, deploy, or claim that a green supporting gate proves final delivery.
 
+Keep work to about 15 minutes. If it clearly will not fit or context is approaching compaction, stop at the next checkable point; return what is done with its receipt and propose a split of the rest to the lead.
 Return:
 
 - Command and working directory.

@@ -40,6 +40,7 @@ type SprintState = {
 type TaskRow = TodoScheduleInput[number]["tasks"][number];
 type SnapshotRow = { number: number; phase: string; task: TaskRow };
 type AgentMessageDelivery = { delivered: boolean; text: string };
+type WorkerCompactionCursor = { path: string; offset: number; pending: string; buffer: Buffer; at?: number };
 type AgentMessageContext = ExtensionContext & {
   sendAgentMessage?: (to: string, message: string) => Promise<AgentMessageDelivery>;
 };
@@ -1069,6 +1070,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   } | null = null;
   let pendingIdleResumeOwner: string | null = null;
   const idleResumeAttempts = new Set<string>();
+  const workerCompactionCursors = new Map<string, WorkerCompactionCursor>();
+  const workerSizingNoticed = new Set<string>();
+  let pendingSizingNoticeIds: string[] = [];
   let idleTimer: Timer | null = null;
   let timerContext: ExtensionContext | null = null;
   const clearIdleTimer = () => {
@@ -1085,6 +1089,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     pendingTaskReconciliation = null;
     pendingIdleResumeOwner = null;
     idleResumeAttempts.clear();
+    workerCompactionCursors.clear();
+    workerSizingNoticed.clear();
+    pendingSizingNoticeIds = [];
     pendingReplan = null;
   };
   const persistSprintState = () => {
@@ -1844,24 +1851,91 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   // reading every worker's history tail (live 2026-09-25: 56 of 150 chief calls were history reads).
   const SILENT_MS = 15 * 60_000;
   const LIKELY_GRACE_MS = 5 * 60_000;
-  const workerActivity = (ctx: ExtensionContext, running: Array<{ id: string; agentId?: string; startTime?: number }>, now: number) => {
+  const workerActivity = (
+    ctx: ExtensionContext,
+    running: Array<{ id: string; agentId?: string; startTime?: number }>,
+    now: number,
+  ) => {
     const sessionFile = ctx.sessionManager.getSessionFile?.();
     const dir = sessionFile?.replace(/\.jsonl$/, "");
-    return running.map((job) => {
+    return running.map(job => {
       const name = job.agentId ?? job.id;
       let lastAt: number | undefined;
+      let path: string | undefined;
+      let size: number | undefined;
       if (dir)
         for (const candidate of new Set([job.agentId, job.id].filter((x): x is string => !!x))) {
-          try { lastAt = Math.max(lastAt ?? 0, statSync(join(dir, `${candidate}.jsonl`)).mtimeMs); } catch {}
+          try {
+            const candidatePath = join(dir, `${candidate}.jsonl`);
+            const stat = statSync(candidatePath);
+            if (lastAt === undefined || stat.mtimeMs > lastAt) {
+              lastAt = stat.mtimeMs;
+              path = candidatePath;
+              size = stat.size;
+            }
+          } catch {}
         }
       const since = lastAt ?? job.startTime;
-      return { name, lastAt, ageMs: since === undefined ? undefined : now - since, known: dir !== undefined };
+      return {
+        name,
+        lastAt,
+        ageMs: since === undefined ? undefined : now - since,
+        known: dir !== undefined,
+        path,
+        size,
+      };
     });
   };
   const workerSessionPath = (ctx: ExtensionContext, id: string) => {
     const sessionFile = ctx.sessionManager.getSessionFile?.();
     const dir = sessionFile?.replace(/\.jsonl$/, "");
     return dir ? join(dir, `${id}.jsonl`) : null;
+  };
+  // Read each child's appended session events once, including a preexisting compaction on first observation.
+  const workerCompactionAt = (worker: { name: string; path?: string; size?: number }): number | undefined => {
+    if (!worker.path || worker.size === undefined) return undefined;
+    let cursor = workerCompactionCursors.get(worker.name);
+    if (!cursor || cursor.path !== worker.path || cursor.offset > worker.size) {
+      cursor = { path: worker.path, offset: 0, pending: "", buffer: Buffer.allocUnsafe(64 * 1024) };
+      workerCompactionCursors.set(worker.name, cursor);
+    }
+    if (cursor.offset === worker.size) return cursor.at;
+    let fd: number | undefined;
+    try {
+      fd = openSync(worker.path, "r");
+      while (cursor.offset < worker.size) {
+        const count = readSync(
+          fd,
+          cursor.buffer,
+          0,
+          Math.min(cursor.buffer.length, worker.size - cursor.offset),
+          cursor.offset,
+        );
+        if (count <= 0) break;
+        cursor.offset += count;
+        let start = 0;
+        for (let index = 0; index < count; index++) {
+          if (cursor.buffer[index] !== 10) continue;
+          const line = cursor.pending + cursor.buffer.toString("utf8", start, index);
+          cursor.pending = "";
+          start = index + 1;
+          if (!line.includes("compaction")) continue;
+          try {
+            const entry = JSON.parse(line) as { type?: unknown; timestamp?: unknown };
+            if (entry.type !== "compaction" || typeof entry.timestamp !== "string") continue;
+            const at = Date.parse(entry.timestamp);
+            if (Number.isFinite(at)) cursor.at = at;
+          } catch {}
+        }
+        if (start < count) cursor.pending += cursor.buffer.toString("utf8", start, count);
+      }
+    } catch {
+      workerCompactionCursors.delete(worker.name);
+      return undefined;
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
+    return cursor.at;
   };
   const readTail = (path: string, max = 256 * 1024) => {
     const stat = statSync(path);
@@ -2319,6 +2393,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     return `the finish recedes with the clock: ${minutes(now - first.at)} ago it was ${safeTimestamp(first.finish)}, now ${safeTimestamp(finish)}. Work is being found as fast as it is done, one defect per attempt. Find all remaining defects in one pass (run the whole check once with failures collected instead of stopping at the first), fix them as parallel rows, and take every check that does not consume the stuck output off the chain`;
   };
   const planCheck = (ctx: ExtensionContext, pending: unknown[] = []): string | null => {
+    pendingSizingNoticeIds = [];
     const now = Date.now();
     const decision = currentDecision(ctx, now, pending);
     const phasesNow = sdk.getLatestTodoPhasesFromEntries([...ctx.sessionManager.getBranch(), ...pending] as never);
@@ -2393,6 +2468,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const waitingCritical = criticalWaitList(ctx, open);
     const understaffed = running.length < capacity && ready.length === 0 && open.length > running.length;
     const activity = workerActivity(ctx, running, now);
+    const activeJobIds = new Set(running.map((job) => job.id));
+    for (const id of workerSizingNoticed) if (!activeJobIds.has(id)) workerSizingNoticed.delete(id);
+    const activeWorkerNames = new Set(activity.map((worker) => worker.name));
+    for (const name of workerCompactionCursors.keys()) if (!activeWorkerNames.has(name)) workerCompactionCursors.delete(name);
     const checkins = overdueWorkerCheckins(ctx, open, running, activity, now);
     const checkedIn = new Set(checkins.map((worker) => worker.id));
     const silent = silentWorkers(activity).filter((worker) => !checkedIn.has(worker.name));
@@ -2416,6 +2495,17 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const workerStatus = workerRows.length
       ? `Worker status: ${workerRows.slice(0, 8).join(" | ")}${workerRows.length > 8 ? ` | … ${workerRows.length - 8} more` : ""}`
       : "";
+    const sizing = running.flatMap(job => {
+      if (workerSizingNoticed.has(job.id)) return [];
+      const id = job.agentId ?? job.id;
+      const observed = activityByName.get(id);
+      const compactedAt = observed ? workerCompactionAt(observed) : undefined;
+      if (compactedAt !== undefined) return [{ id, jobId: job.id, fact: `compacted at ${hhmm(compactedAt)}` }];
+      if (typeof job.startTime === "number" && now - job.startTime > SILENT_MS)
+        return [{ id, jobId: job.id, fact: `running ${minutes(now - job.startTime)}` }];
+      return [];
+    });
+    pendingSizingNoticeIds = sizing.map(worker => worker.jobId);
     const runningByContent = new Map((decision.ownerRunStates ?? []).map((row) => [row.content, row.running]));
     const unseenPlanningRows = phasesNow
       .flatMap((phase) => phase.tasks)
@@ -2481,6 +2571,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       finishDelayNotice,
       receding,
       checkins.length ? `${checkins.length} overdue worker check-in(s): ${checkins.slice(0, 6).map((worker) => worker.sent ? `overdue check-in ${worker.repeated ? "already " : ""}sent to ${worker.id} for ${JSON.stringify(shorten(worker.row))}; ${worker.activityText}` : `overdue check-in blocked for ${worker.id}: ${worker.text ?? missingWorkerMessageApi}; chief must write agent://${worker.id} manually`).join("; ")}${checkins.length > 6 ? `; … ${checkins.length - 6} more` : ""}` : "",
+      sizing.length ? `worker sizing: ${sizing.map((worker) => `${worker.id} ${worker.fact}; write agent://${worker.id} asking for done/left with a receipt, then split the rest`).join("; ")}` : "",
       ...overlapWarnings,
       silent.length ? `${silent.length} running worker(s) silent: ${silent.slice(0, 6).map((worker) => `${worker.name} (${worker.lastAt === undefined ? "no activity since start" : "last activity"} ${minutes(worker.ageMs)} ago)`).join(", ")}; write agent://<id> asking what it waits on. Workers not named here are active: their results arrive by themselves, so do not read their history` : "",
       understaffed ? `only ${running.length} of ${capacity} worker slots run and no row is ready: the rest wait on running work. ${waitingCritical ? `Waiting rows on the chain that sets the ETA, in order:${waitingCritical}\n${waitingCritical.includes("queued behind") ? `${RESOURCE_QUEUE}\n` : ""}${WHY_EACH_LINK}\n${SPLIT_EACH} (skill step 7)` : "Split the waiting rows into the part that needs that result and the part that can start now, and dispatch the second part (skill step 7)"}` : "",
@@ -2512,6 +2603,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     tickerContext = null;
     lastIdlePlanCheck = null;
   };
+  const markSizingNotices = () => {
+    for (const id of pendingSizingNoticeIds) workerSizingNoticed.add(id);
+    pendingSizingNoticeIds = [];
+  };
   const planTick = (ctx: ExtensionContext) => {
     if (pauseGate?.paused || !isMain(ctx) || !pi.getActiveTools().includes("task") || ctx.hasPendingMessages()) return;
     const check = planCheck(ctx);
@@ -2523,14 +2618,17 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     // Minutes and timestamps change every tick; the problem list is the same unless the words change.
     const key = check
       .replace(/\(\d+\) planning round due:.*?\(skill:\/\/chief-of-staff Planning\)\s*/g, "")
+      .replace(/\(\d+\) worker sizing:.*?(?= \(\d+\) |\. Fix them with the pass)/g, "")
+      .replace(/\s+/g, " ")
       .replace(/\d+/g, "#");
-    if (gateSwitchedOff(ctx) || (key === lastIdlePlanCheck && now - lastIdlePlanCheckAt < PLAN_REPEAT_MS)) return;
+    if (gateSwitchedOff(ctx) || (pendingSizingNoticeIds.length === 0 && key === lastIdlePlanCheck && now - lastIdlePlanCheckAt < PLAN_REPEAT_MS)) return;
     lastIdlePlanCheck = key;
     lastIdlePlanCheckAt = now;
     pi.sendMessage(
       { customType: "todo-plan-check", content: check, display: false, attribution: "agent" },
       { deliverAs: "aside" },
     );
+    markSizingNotices();
   };
   armPlanTicker = (ctx: ExtensionContext) => {
     stopPlanTicker();
@@ -2546,7 +2644,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       // (live 21:32: an owner written by this very call was reported as missing).
       const details = (event as { details?: unknown }).details;
       const check = planCheck(ctx, details ? [{ type: "message", message: { role: "toolResult", toolName: "todo", details } }] : []);
-      return check ? { content: [...event.content, { type: "text" as const, text: check }] } : undefined;
+      if (!check) return;
+      markSizingNotices();
+      return { content: [...event.content, { type: "text" as const, text: check }] };
     }
     if (event.toolName !== "task") return;
     if (!event.isError && isRetroFacilitatorTaskResult(event)) finishRetro();

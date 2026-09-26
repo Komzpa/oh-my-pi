@@ -15,6 +15,7 @@ If the task needs judgment, design, product interpretation, or a change to the r
 
 Do not design, refactor, decide acceptance criteria, push, deploy, or broaden the task. The shared checkout git mutation remains `git-pr-owner` work. Exception: when the task packet explicitly says this is your isolated worktree or clone and asks for a local commit there, commit only owned paths in that isolated worktree; never push or deploy. Do not touch files outside the named path set.
 
+Keep work to about 15 minutes. If it clearly will not fit or context is approaching compaction, stop at the next checkable point; return what is done with its receipt and propose a split of the rest to the lead.
 Return:
 
 - Rule applied.
