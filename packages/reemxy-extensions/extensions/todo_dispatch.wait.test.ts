@@ -279,3 +279,56 @@ test("capacity reports zero when no authenticated worker profile can start", asy
 	const oneResult = await handlers.get("context")!({ messages: [] }, oneProviderCtx) as { messages?: Array<{ content: string }> };
 	expect(oneResult?.messages?.at(-1)?.content).toContain("Task cap=1");
 });
+
+test("wait refusals deduplicate by rendered content across plan revisions", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "todo-wait-dedup-"));
+	try {
+		const now = Date.now();
+		const phases = chainedPlan(2, now);
+		const [runningTask, readyTask] = phases[0]!.tasks;
+		readyTask!.schedule.dependencies = [];
+		readyTask!.schedule.resources = [];
+		const running = [{
+			id: "task-1",
+			agentId: "worker-a",
+			type: "task" as const,
+			status: "running" as const,
+			label: runningTask!.content,
+			startTime: now,
+		}];
+		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+		const api = {
+			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+			getActiveTools: () => ["task", "todo", "wait"],
+			pi: { forecastTodoPlan, formatPlanForecast, formatTaskForecast, getLatestTodoPhasesFromEntries: () => phases, readGoalDeadline: () => undefined },
+			appendEntry: () => undefined,
+			sendMessage: () => undefined,
+		} as unknown as ExtensionAPI;
+		await todoDispatch(api);
+		const ctx = {
+			cwd,
+			sessionManager: {
+				getHeader: () => ({ id: "wait-dedup" }),
+				getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
+				getSessionFile: () => undefined,
+			},
+			getAsyncJobSnapshot: () => ({ running, recent: [], nonJobAgents: [{ id: "worker-a", live: true }] }),
+			getTaskMaxConcurrency: () => 20,
+			hasPendingMessages: () => false,
+			isIdle: () => false,
+			setTimeout: () => ({}),
+			clearTimer: () => undefined,
+		} as unknown as ExtensionContext;
+		const callWait = async () => await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "dedup", input: {} }, ctx) as { block?: boolean; reason?: string } | undefined;
+		const first = await callWait();
+		expect(first?.block).toBe(true);
+		readyTask!.schedule.estimate.updatedAt = now + 1;
+		expect(await callWait()).toBeUndefined();
+		readyTask!.content = "Different ready row";
+		const changed = await callWait();
+		expect(changed?.block).toBe(true);
+		expect(changed?.reason).not.toBe(first?.reason);
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
