@@ -201,11 +201,8 @@ const PROPOSAL_MARK = /(?:^|[\s;,.|])proposal\s*:\s*/iu;
 /**
  * The one reading of a user-wait blocker: `waits for user: <question> proposal: <answer and why>`.
  * Only the user can unblock such a row (an approval, a choice, a file only the user has); every
- * other blocker is ordinary recovery work. Undefined for any other blocker.
- *
- * Kept identical to `parseUserWait` in `packages/reemxy-extensions/extensions/todo-schedule.ts`
- * (the two renderers must agree on the same blocker text; see that file's copy for the source of
- * truth until the duplication is resolved).
+ * other blocker is ordinary recovery work. Undefined for any other blocker. This is the only
+ * parser of that form: extensions import it from this module instead of keeping their own copy.
  */
 export function parseUserWait(blocker: string | undefined): TodoUserWait | undefined {
 	if (typeof blocker !== "string") return undefined;
