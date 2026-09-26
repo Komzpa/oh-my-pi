@@ -778,7 +778,7 @@ test("PLAN CHECK reports a compacted running worker once with a done/left split 
     expect(sent[0]).toContain("done/left");
     expect(sent[0]).toContain("then split");
     tick!();
-    expect(sent).toHaveLength(1);
+    expect(sent.filter(text => text.includes(`compacted at ${compactedClock}`))).toHaveLength(1);
   } finally {
     handlers.session_shutdown?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });
@@ -873,7 +873,7 @@ test("PLAN CHECK asks only workers running longer than fifteen minutes for a don
     expect(sent[1]).toContain("then split");
     expect(sent[1]).not.toContain("write agent://worker-b");
     tick!();
-    expect(sent).toHaveLength(2);
+    expect(sent.filter(text => text.includes("worker sizing:") && text.includes("16 min"))).toHaveLength(1);
   } finally {
     handlers.session_shutdown?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });

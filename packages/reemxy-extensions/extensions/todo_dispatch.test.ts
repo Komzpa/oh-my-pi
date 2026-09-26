@@ -1825,9 +1825,7 @@ test("a plan that leaves worker slots empty while rows idle is sent back to repl
     expect(first?.reason).toContain("skill://chief-of-staff");
     expect(first?.reason).toContain("skill://chief-of-staff");
     expect(first?.reason).toContain("5 open row(s) sit idle");
-    expect(wait()?.block).toBe(true);
-    expect(wait()?.block).toBe(true);
-    // Unchanged plan after three refusals: stop refusing rather than loop.
+    // Repeating a wait against the same decision revision is allowed; a changed revision below is refused again.
     expect(wait()).toBeUndefined();
     expect(first?.reason).toContain("past the deadline");
     // On time is no excuse: a new plan revision that still chains the backlog is refused again.

@@ -1215,7 +1215,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   });
   pi.on("agent_start", clearIdleTimer);
 
-  const currentDecision = (ctx: ExtensionContext, now = Date.now(), pending: unknown[] = []) => {
+  const currentDecision = (ctx: ExtensionContext, now = Date.now(), pending: unknown[] = [], refreshSnapshot = false) => {
     // `pending`: entries not yet on the branch, such as the todo result a tool_result hook is amending.
     const branch = pending.length ? [...ctx.sessionManager.getBranch(), ...pending] : ctx.sessionManager.getBranch();
     const header = ctx.sessionManager.getHeader();
@@ -1233,7 +1233,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const phases = sdk.getLatestTodoPhasesFromEntries(branch);
     const restored = restoredChildren(persistedChildren, jobs);
     const key = `${staticKey(phases, jobs, deadline, capacity, goalPaused, restored, persistedChildren)}:${Math.floor(now / 60_000)}`;
-    if (pending.length === 0 && cachedDecision?.key === key) return cachedDecision.decision;
+    if (pending.length === 0 && cachedDecision?.key === key) {
+      if (refreshSnapshot) writeCurrentPlanSnapshot(ctx, cachedDecision.decision, now);
+      return cachedDecision.decision;
+    }
     const decision = decideTodoDispatch(
       {
         phases,
@@ -2314,7 +2317,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
 
   pi.on("before_subagent_spawn", (event, ctx) => {
     if (event.agent !== "plan-doctor") return;
-    const decision = currentDecision(ctx);
+    const decision = currentDecision(ctx, Date.now(), [], true);
     const paths = planSnapshotPaths(ctx);
     return decision.key
       ? { note: `plan snapshot refreshed: ${paths.byCwd}` }
@@ -2327,7 +2330,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     if (badWorkerName) return badWorkerName;
     const gitOwnerConflict = refuseConcurrentGitPrOwner(event as { toolName: string; input?: unknown }, ctx);
     if (gitOwnerConflict) return gitOwnerConflict;
-    if (event.toolName === "task" && isPlanDoctorTaskInput(event.input)) currentDecision(ctx);
+    if (event.toolName === "task" && isPlanDoctorTaskInput(event.input)) currentDecision(ctx, Date.now(), [], true);
     if (event.toolName === "todo" && pendingFinishDelay && hasEvidenceField(event.input)) pendingFinishDelay = null;
     const finishDelay = finishDelayRefusal(event.toolName, ctx);
     if (finishDelay) return finishDelay;
@@ -2715,6 +2718,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       const fresh = currentDecision(ctx);
       if (pauseGate.paused) return;
       if (!fresh.key || !fresh.forecast || !fresh.wakeKey || !fresh.rawWakeKey) {
+        armIdleCheck(ctx);
+        return;
+      }
+      if (fresh.rawWakeKey === lastWakeKey) {
         armIdleCheck(ctx);
         return;
       }
