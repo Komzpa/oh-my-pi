@@ -34,6 +34,7 @@ type SprintState = {
   retroDueReason: string | null;
   retroDueDeadlineAt?: number;
   retroDueDeliveryKey?: string;
+  retroDueNotifiedKey?: string;
   handledDeadlineAt?: number;
   handledDeliveryKey?: string;
 };
@@ -326,6 +327,7 @@ function readPersistedSprintState(branch: unknown[]): SprintState {
       retroDueReason: typeof data.retroDueReason === "string" ? data.retroDueReason : null,
       ...(typeof data.retroDueDeadlineAt === "number" ? { retroDueDeadlineAt: data.retroDueDeadlineAt } : {}),
       ...(typeof data.retroDueDeliveryKey === "string" ? { retroDueDeliveryKey: data.retroDueDeliveryKey } : {}),
+      ...(typeof data.retroDueNotifiedKey === "string" ? { retroDueNotifiedKey: data.retroDueNotifiedKey } : {}),
       ...(typeof data.handledDeadlineAt === "number" ? { handledDeadlineAt: data.handledDeadlineAt } : {}),
       ...(typeof data.handledDeliveryKey === "string" ? { handledDeliveryKey: data.handledDeliveryKey } : {}),
     };
@@ -1139,7 +1141,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       sprintState = {
         ...sprintState,
         seenJobIds: [...sprintState.seenJobIds, job.id],
-        workerFinishes: [...sprintState.workerFinishes, { jobId: job.id, id, at, row: typeof job.label === "string" ? job.label : "" }],
+        ...(job.status === "cancelled"
+          ? {}
+          : { workerFinishes: [...sprintState.workerFinishes, { jobId: job.id, id, at, row: typeof job.label === "string" ? job.label : "" }] }),
       };
     }
     if (open.length > 0 && sprintState.goalWorkStartedAt === null) {
@@ -1179,6 +1183,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       retroDueReason: null,
       retroDueDeadlineAt: undefined,
       retroDueDeliveryKey: undefined,
+      retroDueNotifiedKey: undefined,
       reopenedRows: [],
       ...(handledDeadlineAt === undefined ? {} : { handledDeadlineAt }),
       ...(handledDeliveryKey === undefined ? {} : { handledDeliveryKey }),
@@ -2426,6 +2431,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         .sort((left, right) => right[1].count - left[1].count || left[1].firstAt - right[1].firstAt || left[0].localeCompare(right[0]))
         .slice(0, 12)
         .map(([id]) => id);
+      const notifyKey = `${sprintState.retroDueReason}|${sprintState.retroDueDeadlineAt ?? ""}|${sprintState.retroDueDeliveryKey ?? ""}|${workerIds.join(",")}`;
+      if (sprintState.retroDueNotifiedKey === notifyKey) return "";
+      sprintState = { ...sprintState, retroDueNotifiedKey: notifyKey };
+      persistSprintState();
       return `retrospective due (${sprintState.retroDueReason}): ask the ${workerIds.length} workers who finished since ${safeTimestamp(since)} through agent://, then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}`;
     };
     const retroLine = retroAdvice();
