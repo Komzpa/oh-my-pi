@@ -7,6 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import agentRouter, {
 	AGENT_POOLS,
 	agentHasLiveModel,
+	countLiveWorkerModels,
 	createRouterState,
 	recordRetryFallbackApplied,
 	recordTaskOutcome,
@@ -290,14 +291,22 @@ describe("agent router", () => {
 		}
 	});
 
-	test("capacity predicate agrees with fallback-only routing and exhausted providers", async () => {
+	test("capacity counts unique authenticated live model routes", async () => {
 		const { dir, file } = tempStateFile();
 		try {
 			const exhausted = ctxWithHealth(Object.fromEntries(["codex-lb", "deepseek", "kimi-code", "claude-bridge", "openrouter", "anthropic"].map(provider => [provider, { state: "depleted", accounts: [] }])));
-			expect(await agentHasLiveModel("coder", exhausted)).toBe(false);
+			expect(await countLiveWorkerModels(exhausted)).toBe(0);
 			expect(await routeSubagentSpawn({ agent: "coder", spawnKey: "all-dead" }, exhausted, createRouterState(), { stateFile: file })).toBeUndefined();
 			const inklingOnly = ctxWithHealth(Object.fromEntries(["codex-lb", "deepseek", "kimi-code", "claude-bridge"].map(provider => [provider, { state: "depleted", accounts: [] }])));
-			expect(await agentHasLiveModel("coder", inklingOnly)).toBe(true);
+			expect(await countLiveWorkerModels(inklingOnly)).toBeGreaterThan(0);
+			const onlyInklingModel = { provider: "openrouter", id: "thinkingmachines/inkling:free" };
+			const onlyInkling = ctx({
+				models: {
+					list: () => [onlyInklingModel],
+					resolve: (spec: string) => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === "openrouter/thinkingmachines/inkling:free" ? onlyInklingModel : undefined,
+				},
+			});
+			expect(await countLiveWorkerModels(onlyInkling)).toBe(1);
 			expect((await routeSubagentSpawn({ agent: "coder", spawnKey: "inkling-only" }, inklingOnly, createRouterState(), { stateFile: file }))?.model).toEqual(["openrouter/thinkingmachines/inkling:free"]);
 			expect(await agentHasLiveModel("nonexistent", ctx())).toBe(false);
 		} finally {

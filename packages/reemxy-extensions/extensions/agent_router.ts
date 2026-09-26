@@ -217,6 +217,16 @@ export async function agentHasLiveModel(agent: string, ctx: ExtensionContext): P
 	return (await availablePoolMembers([...config.pool, ...config.fallbacks], ctx)).available.length > 0;
 }
 
+export async function countLiveWorkerModels(ctx: ExtensionContext): Promise<number> {
+	const specs = [...new Set(Object.values(AGENT_POOLS).flatMap(config => [...config.pool, ...config.fallbacks]))];
+	const { available } = await availablePoolMembers(specs, ctx);
+	const models = new Set(available.map(spec => {
+		const model = ctx.models?.resolve?.(spec);
+		return model ? `${model.provider}/${model.id}` : spec;
+	}));
+	return models.size;
+}
+
 export async function routeSubagentSpawn(
 	event: BeforeSubagentSpawnEvent,
 	ctx: ExtensionContext,
