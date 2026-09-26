@@ -45,7 +45,13 @@ import {
 } from "@oh-my-pi/pi-catalog/provider-models";
 import { toModelSpec } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
 import { modelKind, type ModelKind } from "@oh-my-pi/pi-catalog/types";
-import { extractHttpStatusFromError, getAgentDir, isBunTestRuntime, logger, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
+import {
+	extractHttpStatusFromError,
+	getAgentDir,
+	isBunTestRuntime,
+	logger,
+	wrapFetchForExtraCa,
+} from "@oh-my-pi/pi-utils";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
 import { resolveProviderModelReference } from "../config/model-resolver";
@@ -2906,27 +2912,34 @@ export class ModelRegistry {
 	#attachProviderCallObservers(provider: string, resolver: ApiKeyResolver): ApiKeyResolver {
 		resolver.onProviderCallSucceeded = message => this.authStorage.health.markProviderSucceeded(message.provider);
 		resolver.onProviderCallFailed = error => {
-			const candidate = typeof error === "object" && error !== null ? error as {
-				errorClassificationMessage?: unknown;
-				errorMessage?: unknown;
-				errorStatus?: unknown;
-				message?: unknown;
-			} : undefined;
+			const candidate =
+				typeof error === "object" && error !== null
+					? (error as {
+							errorClassificationMessage?: unknown;
+							errorMessage?: unknown;
+							errorStatus?: unknown;
+							message?: unknown;
+						})
+					: undefined;
 			const message =
 				error instanceof Error
 					? error.message
 					: typeof error === "string"
 						? error
-						: (candidate?.errorClassificationMessage ?? candidate?.errorMessage ?? candidate?.message ?? String(error));
+						: (candidate?.errorClassificationMessage ??
+							candidate?.errorMessage ??
+							candidate?.message ??
+							String(error));
 			if (typeof message !== "string") return;
 			const status =
 				typeof candidate?.errorStatus === "number"
 					? candidate.errorStatus
-					: AIError.status(error) ?? extractHttpStatusFromError(message);
+					: (AIError.status(error) ?? extractHttpStatusFromError(message));
 			const retryAfterMs = status === 429 ? extractProviderRetryHint(provider, message) : undefined;
-			const resetAtMs = retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0
-				? Date.now() + retryAfterMs
-				: undefined;
+			const resetAtMs =
+				retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+					? Date.now() + retryAfterMs
+					: undefined;
 			this.authStorage.health.markProviderDepleted(provider, { status, message, resetAtMs });
 		};
 		return resolver;
