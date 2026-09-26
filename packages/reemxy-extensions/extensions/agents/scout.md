@@ -14,6 +14,7 @@ Read the named input and identify the canonical owner. Return the exact path, li
 
 Do not edit, run gates, infer completed work from a plan, broaden the search, or start another scout. If the requested input is missing, name the missing identity and stop.
 
+Keep work to about 15 minutes. If it clearly will not fit or context is approaching compaction, stop at the next checkable point; return what is done with its receipt and propose a split of the rest to the lead.
 Return:
 
 - Answer.
