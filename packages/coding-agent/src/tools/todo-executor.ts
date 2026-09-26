@@ -111,9 +111,10 @@ export function applyTodoExecutorObservation(
 	) {
 		return undefined;
 	}
-	const carriedPrevious = previous?.workerId === observation.workerId && previous.startedAt === observation.startedAt
-		? previous
-		: undefined;
+	const carriedPrevious =
+		previous?.workerId === observation.workerId && previous.startedAt === observation.startedAt
+			? previous
+			: undefined;
 	const executor: NonNullable<TodoSchedule["executor"]> = {
 		workerId: observation.workerId,
 		...(observation.agentProfile || carriedPrevious?.agentProfile
@@ -162,7 +163,10 @@ export function appendTodoReworkAttempt(
 	const matches = phases.flatMap(phase =>
 		phase.name === row.phase ? phase.tasks.filter(task => task.content === row.content) : [],
 	);
-	if (matches.length !== 1 || matches[0].schedule?.attemptHistory?.some(previous => previous.attemptId === attempt.attemptId)) {
+	if (
+		matches.length !== 1 ||
+		matches[0].schedule?.attemptHistory?.some(previous => previous.attemptId === attempt.attemptId)
+	) {
 		return undefined;
 	}
 	return phases.map(phase => ({
@@ -170,12 +174,12 @@ export function appendTodoReworkAttempt(
 		tasks: phase.tasks.map(task =>
 			task === matches[0]
 				? {
-					...task,
-					schedule: {
-						...task.schedule,
-						attemptHistory: [...(task.schedule?.attemptHistory ?? []), structuredClone(attempt)],
-					},
-				}
+						...task,
+						schedule: {
+							...task.schedule,
+							attemptHistory: [...(task.schedule?.attemptHistory ?? []), structuredClone(attempt)],
+						},
+					}
 				: task,
 		),
 	}));
