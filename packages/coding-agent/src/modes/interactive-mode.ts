@@ -3950,6 +3950,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#renderTodoList();
 		const mode = cfgDisplayPinnedAgents.get(settings);
 		if (mode === "off") return;
+		// The TODO tree already accounts for every live worker (linked to a task,
+		// or listed under "unassigned workers") once a real plan is active, so a
+		// separate Subagents panel would just repeat the same rows. Only render
+		// it when there is no plan for the TODO tree to claim workers into.
+		const sourcePhases = this.todoPhases;
+		const phases = this.#todoHudHidden ? [] : sourcePhases.filter(phase => phase.tasks.length > 0);
+		if (phases.length > 0) return;
 		const sessions = this.#observerRegistry.getSessions();
 		const running = sessions.filter(isHudSubagent);
 		const expanded = this.#pinnedHudOverride ?? mode === "full";
