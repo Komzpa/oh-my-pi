@@ -3,12 +3,21 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { availableParallelism } from "node:os";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
 import type { TodoPlanForecast, TodoPlanningIssue, TodoScheduleInput, TodoTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import * as forecastFallback from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { parseUserWait } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import * as hostForecastEngine from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import {
+  forecastPlanWithUserWaits,
+  getPlanningIssuesWithUserWaits,
+  getUserWaitPlanningIssues,
+  parkUserWaits,
+  USER_WAIT_SELF_FILL,
+} from "./todo-schedule-away";
+import { derivePresence, type Presence } from "./goal_deadlines";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { lifecycleGoal, readGoalDeadline } from "./deadlines";
+import { lifecycleGoal, readGoalDeadline, rehydrateDeadlineState } from "./deadlines";
 
 type DispatchForecastApi = Pick<
   ExtensionAPI["pi"],
@@ -63,6 +72,8 @@ const MAX_ROWS = 64;
 const MAX_LABEL = 120;
 const MAX_IDLE_RECHECK_MS = 30_000;
 const MAX_TASK_DISPATCH = 20;
+// "Recently finished" for the away quality pass.
+const RECENT_FINISH_MS = 3 * 60 * 60_000;
 const ROSTER_ENTRY_TYPE = "todo-dispatch-roster";
 const SPRINT_STATE_ENTRY_TYPE = "todo-dispatch-sprint-state";
 // A merge whose conflicts are all resolved is one `git commit` away. Seen live: a planner kept a
@@ -434,6 +445,8 @@ export interface DispatchInput {
   lastWakeKey?: string | null;
   cachedStatic?: { key: string; text: string } | null;
   idleResumeAttempts?: ReadonlySet<string>;
+  /** goal_deadlines `derivePresence`; `away` parks rows that wait for the user with a proposal. */
+  presence?: Presence;
 }
 
 export interface DispatchDecision {
@@ -459,6 +472,13 @@ export interface DispatchDecision {
   goalPaused?: boolean;
   staffingSnapshotComplete?: boolean;
   taskEnabled?: boolean;
+  presence?: Presence;
+  /** Blocked rows only the user can unblock, with the chief's proposal when recorded. */
+  userWaits?: Array<{ content: string; question: string; proposal?: string }>;
+  /** Away only: open row → parked rows whose proposal it proceeds on. */
+  onProposal?: Array<[string, string[]]>;
+  /** Away only: what the chief does instead of waiting, in order; empty means it may wait. */
+  awayWorkList?: string[];
 }
 
 function staticKey(
@@ -512,6 +532,13 @@ function isOpenRowStatus(status: string): boolean {
 }
 function isNonClosedRowStatus(status: string): boolean {
   return status === "pending" || status === "in_progress" || status === "blocked";
+}
+/** Blocked rows only the user can unblock, in plan order, with the chief's proposal when recorded. */
+function userWaitRows(phases: TodoScheduleInput): Array<{ content: string; question: string; proposal?: string }> {
+  return phases.flatMap((phase) => phase.tasks).flatMap((task) => {
+    const wait = task.status === "blocked" ? parseUserWait(task.blocker) : undefined;
+    return wait ? [{ content: task.content, ...wait }] : [];
+  });
 }
 function sprintSetKey(rows: string[]): string {
   return JSON.stringify([...rows].sort());
@@ -699,13 +726,26 @@ export function decideTodoDispatch(
         snapshotRows.push({ number: snapshotRows.length + 1, phase: phase.name, task });
     staticPrompt = buildStaticPrompt(snapshotRows, jobs, deadline, capacity, goalPaused, input.restoredChildren ?? []);
   }
-  const forecast = sdk.forecastTodoPlan(phases, {
+  const away = input.presence === "away";
+  // While the user is away a row that waits only for them, with the chief's proposal, leaves the
+  // forecast: it is not the chief's work, its dependents proceed on the proposal. The plan is parked
+  // here rather than inside the forecast because the host's forecast may predate user waits.
+  const parking = away ? parkUserWaits(phases) : { phases, parked: [], onProposal: new Map<string, string[]>() };
+  const parkedContent = new Set(parking.parked.map((row) => row.content));
+  const userWaits = userWaitRows(phases);
+  const forecast = sdk.forecastTodoPlan(parking.phases, {
     now,
     deadlineAt: deadline?.deadlineAt,
     ...(capacity === undefined ? {} : { capacity }),
   });
-  const planningIssues =
+  const basePlanningIssues =
     forecast.planningIssues ?? sdk.getTodoPlanningIssues?.(phases) ?? [];
+  // Self-fill first holds on hosts whose planning issues predate user waits.
+  const planningIssues = [
+    ...basePlanningIssues,
+    ...getUserWaitPlanningIssues(phases).filter((issue) =>
+      !basePlanningIssues.some((known) => known.code === issue.code && known.task === issue.task)),
+  ];
   const obligatedContent = new Set(obligated.map(({ task }) => task.content));
   const forecastRows = forecast.rows
     .filter((row) => obligatedContent.has(row.content))
@@ -898,7 +938,9 @@ export function decideTodoDispatch(
   const alarmSet = new Set<string>();
   for (const issue of planningIssues)
     alarmSet.add(`${issue.code}:${JSON.stringify(issue.task)}`);
-  for (const { task } of blocked)
+  // A parked row waits for the user's return, not for recovery: no alarm every turn while away.
+  const recoveryBlocked = blocked.filter(({ task }) => !parkedContent.has(task.content));
+  for (const { task } of recoveryBlocked)
     alarmSet.add(`blocked-recovery:${JSON.stringify(task.content)}:${JSON.stringify(task.blocker ?? null)}`);
   for (const row of ownerlessReady) alarmSet.add(`ownerless-ready:${JSON.stringify(row.content)}`);
   for (const job of failedTasks) alarmSet.add(`failed-child:${job.id}:${job.status}`);
@@ -955,11 +997,39 @@ export function decideTodoDispatch(
       task.blocker ?? null,
     ]),
   );
-  const planNeedsDiagnosis = planningIssues.length > 0 || blocked.length > 0;
+  const planNeedsDiagnosis = planningIssues.length > 0 || recoveryBlocked.length > 0;
+  // Nothing is ready while the user is away: the chief works through this list, in order, instead
+  // of waiting (the user's standing request: "when there is no possibility, go through the rest").
+  const listNames = (list: string[]) =>
+    list.slice(0, 6).map((content) => JSON.stringify(shorten(content))).join(", ") + (list.length > 6 ? `, … ${list.length - 6} more` : "");
+  const awayWorkList: string[] = [];
+  if (away && dispatchableReady.length === 0) {
+    const noProposal = userWaits.filter((wait) => wait.proposal === undefined).map((wait) => wait.content);
+    if (noProposal.length)
+      awayWorkList.push(`rows waiting for the user without your proposal: ${listNames(noProposal)}; ${USER_WAIT_SELF_FILL}`);
+    const holds = (content: string) =>
+      open.filter(({ task }) => Array.isArray(task.schedule?.dependencies) && task.schedule.dependencies.includes(content)).length;
+    const stuck = recoveryBlocked
+      .map(({ task }) => ({ content: task.content, holds: holds(task.content) }))
+      .sort((a, b) => b.holds - a.holds);
+    if (stuck.length)
+      awayWorkList.push(`decompose the blocked rows into independent subtasks that can start now, the ones holding other rows first: ${stuck.slice(0, 6).map((row) => `${JSON.stringify(shorten(row.content))}${row.holds ? ` (holds ${row.holds})` : ""}`).join(", ")}${stuck.length > 6 ? `, … ${stuck.length - 6} more` : ""}`);
+    const runningContent = new Set(ownerRunStates.filter((row) => row.running).map((row) => row.content));
+    const idleOpen = open.map(({ task }) => task.content).filter((content) => !runningContent.has(content));
+    if (idleOpen.length)
+      awayWorkList.push(`for each open row without a running worker, one line on why it cannot start now, and take any that can: ${listNames(idleOpen)}`);
+    const finished = phases
+      .flatMap((phase) => phase.tasks)
+      .filter((task) => task.status === "completed" && typeof task.schedule?.finishedAt === "number" && now - task.schedule.finishedAt <= RECENT_FINISH_MS)
+      .sort((a, b) => b.schedule!.finishedAt! - a.schedule!.finishedAt!)
+      .map((task) => task.content);
+    if (finished.length)
+      awayWorkList.push(`quality pass over recently finished rows: re-verify each one's acceptance evidence and look for defects: ${listNames(finished)}`);
+  }
   const rawWakeKey =
     taskEnabled && deadline !== undefined && !goalPaused &&
-    (executableMissed.length > 0 || planNeedsDiagnosis || (alarms.length > 0 && executableReady))
-      ? JSON.stringify([deadline, capacity ?? null, alarmRevision, alarms, readyFacts])
+    (executableMissed.length > 0 || planNeedsDiagnosis || (alarms.length > 0 && executableReady) || awayWorkList.length > 0)
+      ? JSON.stringify([deadline, capacity ?? null, alarmRevision, alarms, readyFacts, awayWorkList])
       : null;
   const wakeKey = rawWakeKey !== null && rawWakeKey !== lastWakeKey ? rawWakeKey : null;
   const planSummary = sdk.formatPlanForecast(forecast, now);
@@ -993,6 +1063,12 @@ export function decideTodoDispatch(
     `Ready rows needing distinct live workers (${ownerlessReady.length}/${readyCandidates.length}): ${ownerlessReady.length ? ownerlessReady.slice(0, MAX_ROWS).map((row) => `${JSON.stringify(shorten(row.content))} [${row.ownership}; owner=${JSON.stringify(row.owner)}]`).join(", ") : "none"}`,
     `Dependency-waiting rows (${dependencyUnready.length}; do not dispatch): ${dependencyUnready.length ? dependencyUnready.slice(0, MAX_ROWS).map((row) => `${JSON.stringify(shorten(row.content))}${row.awaitingPrerequisite ? ` [awaiting ${JSON.stringify(shorten(row.awaitingPrerequisite))}]` : ""}`).join(", ") : "none"}`,
     `Dispatch: ${dispatchDirective}`,
+    ...(userWaits.length
+      ? [`Rows waiting for the user (${userWaits.length}): ${userWaits.slice(0, MAX_ROWS).map((wait) => `${JSON.stringify(shorten(wait.content))} → ${wait.proposal ? `proposal: ${JSON.stringify(shorten(wait.proposal))}` : "NO PROPOSAL: fill in your own first"}`).join("; ")}. ${away ? "The user is away: rows with a proposal are parked until the user returns (no recovery, not in the ETA)." : "The user is here: put each question to the user, with your proposal."}`]
+      : []),
+    ...(parking.onProposal.size
+      ? [`Rows proceeding on a proposal (re-check each when the user answers): ${[...parking.onProposal].slice(0, MAX_ROWS).map(([content, on]) => `${JSON.stringify(shorten(content))} on proposal of ${on.map((row) => JSON.stringify(shorten(row))).join(", ")}`).join("; ")}`]
+      : []),
     `Alarm facts: ${alarms.length ? alarms.join("; ") : "none"}`,
     ...(corrections.length ? ["MISSED ETA: inspect exact worker/artifact and failed assumption, then schedule evidence-based remaining O/L/P with a falsifiable checkpoint; reestimation does not erase prior misses.", ...corrections] : []),
     "Do not infer staffing from labels or close TODOs from lifecycle/estimates. Verify exact live IDs; preserve user queue/pause and approval gates. Resolve blocked prerequisites safely, split only independently executable work, and retain all parent criteria.",
@@ -1031,14 +1107,25 @@ export function decideTodoDispatch(
     staffingSnapshotComplete,
     taskEnabled,
     goalPaused,
+    presence: input.presence,
+    userWaits,
+    onProposal: [...parking.onProposal],
+    awayWorkList,
   };
 
 }
 export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   const host = pi.pi;
   const hostSdk = host as DispatchForecastApi | undefined;
-  // The host engine module is the fallback for hosts whose extension SDK predates forecast exports.
-  const sourceFallback = hostSdk?.forecastTodoPlan ? undefined : forecastFallback;
+  // The host engine, with the user-wait additions of ./todo-schedule-away, is the fallback for hosts
+  // whose extension SDK predates forecast exports.
+  const sourceFallback = hostSdk?.forecastTodoPlan
+    ? undefined
+    : {
+        ...hostForecastEngine,
+        forecastTodoPlan: forecastPlanWithUserWaits,
+        getTodoPlanningIssues: getPlanningIssuesWithUserWaits,
+      };
   const sdk = {
     forecastTodoPlan: hostSdk?.forecastTodoPlan ?? sourceFallback!.forecastTodoPlan,
     formatPlanForecast: hostSdk?.formatPlanForecast ?? sourceFallback!.formatPlanForecast,
@@ -1232,10 +1319,42 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   });
   pi.on("agent_start", clearIdleTimer);
 
+  // Presence is goal_deadlines' guess from the user's last message and local hours; it changes at
+  // most once a minute or when the branch grows.
+  let presenceCache: { minute: number; entries: number; presence: Presence } | null = null;
+  const presenceOf = (branch: readonly unknown[], now: number): Presence => {
+    const minute = Math.floor(now / 60_000);
+    if (presenceCache?.minute === minute && presenceCache.entries === branch.length) return presenceCache.presence;
+    let presence: Presence = "watching";
+    try {
+      presence = derivePresence(branch, rehydrateDeadlineState(branch), now);
+    } catch {}
+    presenceCache = { minute, entries: branch.length, presence };
+    return presence;
+  };
+  // When the user comes back (presence leaves `away`, or the user writes while away), the rows
+  // waiting for them go first in the chief's next turn, once, each with the chief's proposal.
+  let lastPresence: Presence | null = null;
+  let returnNotice: { text: string; shown: boolean } | null = null;
+  const queueReturnNotice = (phases: TodoScheduleInput) => {
+    if (returnNotice) return;
+    const waits = userWaitRows(phases);
+    if (!waits.length) return;
+    const dependents = [...parkUserWaits(phases).onProposal];
+    const lines = waits.map((wait, index) => {
+      const on = dependents.filter(([, parked]) => parked.includes(wait.content)).map(([content]) => JSON.stringify(shorten(content)));
+      return `(${index + 1}) ${JSON.stringify(shorten(wait.content))}: ${shorten(wait.question, 200)} — ${wait.proposal ? `your proposal: ${shorten(wait.proposal, 300)}` : "no proposal recorded"}${on.length ? `; proceeded on it: ${on.join(", ")}` : ""}`;
+    });
+    returnNotice = {
+      text: `THE USER IS BACK. Before anything else this turn, put the rows that wait for the user to them, each with your proposal: ${lines.join(" ")}. For each answer, unblock that row (todo unblock) so it leaves the waiting state, and re-check the rows that proceeded on its proposal.`,
+      shown: false,
+    };
+  };
   const currentDecision = (ctx: ExtensionContext, now = Date.now(), pending: unknown[] = [], refreshSnapshot = false) => {
     // `pending`: entries not yet on the branch, such as the todo result a tool_result hook is amending.
     const branch = pending.length ? [...ctx.sessionManager.getBranch(), ...pending] : ctx.sessionManager.getBranch();
     const header = ctx.sessionManager.getHeader();
+    const presence = header !== null && !header.parentSession ? presenceOf(branch, now) : undefined;
     const goalPaused = lifecycleGoal(branch, [])?.status === "paused";
     const deadline = sdk.readGoalDeadline(branch, ctx.cwd, { includePaused: true });
     const taskMaxConcurrency = ctx.getTaskMaxConcurrency?.();
@@ -1249,7 +1368,11 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const jobs = ctx.getAsyncJobSnapshot();
     const phases = sdk.getLatestTodoPhasesFromEntries(branch);
     const restored = restoredChildren(persistedChildren, jobs);
-    const key = `${staticKey(phases, jobs, deadline, capacity, goalPaused, restored, persistedChildren)}:${Math.floor(now / 60_000)}`;
+    if (presence !== undefined) {
+      if (lastPresence === "away" && presence !== "away") queueReturnNotice(phases);
+      lastPresence = presence;
+    }
+    const key = `${staticKey(phases, jobs, deadline, capacity, goalPaused, restored, persistedChildren)}:${Math.floor(now / 60_000)}:${presence ?? ""}`;
     if (pending.length === 0 && cachedDecision?.key === key) {
       if (refreshSnapshot) writeCurrentPlanSnapshot(ctx, cachedDecision.decision, now);
       return cachedDecision.decision;
@@ -1270,6 +1393,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         lastWakeKey,
         cachedStatic,
         idleResumeAttempts,
+        presence,
       },
       sdk,
     );
@@ -1326,6 +1450,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     });
   };
   let lateWaitRefusalKey: string | null = null;
+  let awayWorkListKey: string | null = null;
   // The machine can run about one worker per CPU (capped by the Task limit when one is set). While
   // open rows sit idle and fewer workers run than that, the plan must find parallel work; only a
   // backlog beyond capacity may be postponed.
@@ -1362,13 +1487,17 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const next = ready.length
       ? `Ready rows needing a distinct running worker: ${ready.slice(0, MAX_TASK_DISPATCH).join(", ")}. If a running worker already does one of these rows but differs from its recorded owner, set that row's schedule.owner via todo schedule to that worker; otherwise start one worker for the row (skill://chief-of-staff).`
       : replanInstruction(ctx, open, workerCapacity(ctx));
+    const workList = decision.awayWorkList ?? [];
+    const workListText = workList.length
+      ? `The user is away and nothing is ready, so waiting is not the step. Work list, in order: ${workList.map((item, index) => `(${index + 1}) ${item}.`).join(" ")} Wait only when this list is empty.`
+      : "";
     if (idle) {
       return {
         block: true,
         reason: [
           "Stop waiting: nothing is running, so nothing will arrive.",
           overdue ? "You are past the deadline." : undefined,
-          next,
+          workListText || next,
         ].filter(Boolean).join(" "),
       };
     }
@@ -1378,7 +1507,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const shortfall = runningTasks.length > 0 && understaffed(ctx, runningTasks.length, parked);
     if (runningTasks.length === 0 || (ready.length === 0 && !shortfall)) {
       lateWaitRefusalKey = null;
-      return;
+      // Away with nothing ready: the work list first, once per plan revision, like every refusal here.
+      if (!workListText || awayWorkListKey === decision.key) return;
+      awayWorkListKey = decision.key;
+      return { block: true, reason: [workListText, activityLine(ctx, runningTasks)].filter(Boolean).join(" ") };
     }
     // The first refusal records the lead's answer for this exact revision. Repeating it only burns
     // CPU and turns an advisory gate into a 61-message loop; a changed revision earns one new answer.
@@ -1821,8 +1953,18 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   };
   let userInputs = 0;
   let userInputsSeen = 0;
-  pi.on("input", (event) => {
-    if (event.source !== "extension") userInputs += 1;
+  pi.on("input", (event, ctx) => {
+    if (event.source !== "extension") {
+      userInputs += 1;
+      // The new message is not on the branch yet: presence still reads the time before it.
+      try {
+        const branch = ctx?.sessionManager?.getBranch?.();
+        if (branch && isMain(ctx) && presenceOf(branch, Date.now()) === "away") {
+          queueReturnNotice(sdk.getLatestTodoPhasesFromEntries(branch));
+          lastPresence = null;
+        }
+      } catch {}
+    }
     if (isCorrectionInput(event)) sprintState = { ...sprintState, correctionPending: true };
   });
   let gitStateCache: { cwd: string; at: number; state: GitIntegrationState | null } | null = null;
@@ -2488,7 +2630,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const running = (ctx.getAsyncJobSnapshot()?.running ?? []).filter((job) => job.type === "task" && job.status === "running");
     const owners = new Set(decision.todoOwnerIds ?? []);
     const unlinked = running.filter((job) => !owners.has(job.id) && !(job.agentId && owners.has(job.agentId)));
-    const missing = (decision.forecast.planningIssues ?? []).length;
+    const missing = (decision.forecast.planningIssues ?? []).filter((issue) => issue.code !== "user-wait-without-proposal").length;
+    const noProposal = (decision.userWaits ?? []).filter((wait) => wait.proposal === undefined);
     const overdue = open.filter((row) => row.overdue);
     const ready = decision.dispatchableReady ?? [];
     const idle = open.length - running.length;
@@ -2612,6 +2755,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       silent.length ? `${silent.length} running worker(s) silent: ${silent.slice(0, 6).map((worker) => `${worker.name} (${worker.lastAt === undefined ? "no activity since start" : "last activity"} ${minutes(worker.ageMs)} ago)`).join(", ")}; write agent://<id> asking what it waits on. Workers not named here are active: their results arrive by themselves, so do not read their history` : "",
       understaffed ? `only ${running.length} of ${capacity} worker slots run and no row is ready: the rest wait on running work. ${waitingCritical ? `Waiting rows on the chain that sets the ETA, in order:${waitingCritical}\n${waitingCritical.includes("queued behind") ? `${RESOURCE_QUEUE}\n` : ""}${WHY_EACH_LINK}\n${SPLIT_EACH} (skill step 7)` : "Split the waiting rows into the part that needs that result and the part that can start now, and dispatch the second part (skill step 7)"}` : "",
       missing ? `${missing} planning issue(s) (missing estimates or dependencies) block every non-read tool` : "",
+      noProposal.length ? `${noProposal.length} row(s) wait for the user without your proposal: ${names(noProposal)}; ${USER_WAIT_SELF_FILL}` : "",
       overdue.length ? `${overdue.length} open row(s) past their time: ${names(overdue)}` : "",
       unresolved.length ? `${unresolved.length} row(s) have no forecast (the TODO header's "unresolved"); fix their estimate, dependencies or resources, or drop them: ${unresolved.slice(0, 4).map((row) => `${JSON.stringify(shorten(row.content))}${why(row) ? ` (${shorten(why(row)!)})` : ""}`).join(", ")}${unresolved.length > 4 ? `, … ${unresolved.length - 4} more` : ""}` : "",
       unlinked.length ? `${unlinked.length} running worker(s) own no row: ${unlinked.slice(0, 6).map((job) => job.id).join(", ")}` : "",
@@ -2719,7 +2863,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       .filter((row) => row.ownership === "idle-live-owner" && row.owner && idleResumeAttempts.has(row.owner))
       .map((row) => row.owner!);
     const facts = chief ? integrationFacts(ctx, now) : "";
+    const notice = isMain(ctx) ? returnNotice : null;
+    if (notice) notice.shown = true;
     const content = [
+      ...(notice ? [notice.text] : []),
       ...(chief ? [CHIEF_OF_STAFF] : []),
       ...(facts ? [facts] : []),
       ...(chief && activeDemand ? [`NEXT STEP (advice; no call is skipped or refused for it): ${activeDemand}`] : []),
@@ -2763,8 +2910,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       pi.sendMessage(
         {
           customType: "agent-focus-gym-eval-sandbox-wake",
-          content:
-            `Overdue TODO follow-through: the plan is past its time and the session went idle. ${ORDER}`,
+          content: fresh.awayWorkList?.length && fresh.dispatchableReady?.length === 0
+            ? `The user is away and the session went idle with nothing ready. Work list, in order: ${fresh.awayWorkList.map((item, index) => `(${index + 1}) ${item}.`).join(" ")} ${ORDER}`
+            : `Overdue TODO follow-through: the plan is past its time and the session went idle. ${ORDER}`,
           display: false,
           attribution: "agent",
           details: { planRevision: fresh.key, alarms: fresh.alarms },
@@ -2775,6 +2923,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   };
   pi.on("agent_end", (_event, ctx) => {
     persistRoster(ctx);
+    if (returnNotice?.shown) returnNotice = null;
     const decision = currentDecision(ctx);
     if (pendingTaskReconciliation) {
       pendingTaskReconciliation.turnEnded = true;
