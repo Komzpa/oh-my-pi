@@ -1377,7 +1377,12 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       return deps.length < prior.size && deps.every((dep) => prior.has(dep));
     });
   };
-  let lateWaitRefusalKey: string | null = null;
+  let lateWaitRefusalContent: string | null = null;
+  const refuseWait = (reason: string) => {
+    if (lateWaitRefusalContent === reason) return;
+    lateWaitRefusalContent = reason;
+    return { block: true as const, reason };
+  };
   // Worker capacity is bounded by the Task cap, CPU slots, and unique authenticated live model routes.
   const workerCapacity = (ctx: ExtensionContext) => {
     const cap = ctx.getTaskMaxConcurrency?.() ?? 0;
@@ -1414,32 +1419,21 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       ? `Ready rows needing a distinct running worker: ${ready.slice(0, MAX_TASK_DISPATCH).join(", ")}. If a running worker already does one of these rows but differs from its recorded owner, set that row's schedule.owner via todo schedule to that worker; otherwise start one worker for the row (skill://chief-of-staff).`
       : replanInstruction(ctx, open, workerCapacity(ctx));
     if (idle) {
-      return {
-        block: true,
-        reason: [
-          "Stop waiting: nothing is running, so nothing will arrive.",
-          overdue ? "You are past the deadline." : undefined,
-          next,
-        ].filter(Boolean).join(" "),
-      };
+      const reason = [
+        "Stop waiting: nothing is running, so nothing will arrive.",
+        overdue ? "You are past the deadline." : undefined,
+        next,
+      ].filter(Boolean).join(" ");
+      return refuseWait(reason);
     }
     // Dependency-waiting and recorded-approval rows cannot start yet, so they do not make the wait gate idle.
-    if (runningTasks.length === 0 || ready.length === 0) {
-      lateWaitRefusalKey = null;
-      return;
-    }
-    // The first refusal records the lead's answer for this exact revision. Repeating it only burns
-    // CPU and turns an advisory gate into a 61-message loop; a changed revision earns one new answer.
-    if (lateWaitRefusalKey === decision.key) return;
-    lateWaitRefusalKey = decision.key;
-    return {
-      block: true,
-      reason: [
-        `Stop waiting: ready work lacks a distinct running worker${overdue ? ", and you are past the deadline" : late ? ", and you are about to miss the deadline" : ""}.`,
-        next,
-        activityLine(ctx, runningTasks),
-      ].filter(Boolean).join(" "),
-    };
+    if (runningTasks.length === 0 || ready.length === 0) return;
+    const reason = [
+      `Stop waiting: ready work lacks a distinct running worker${overdue ? ", and you are past the deadline" : late ? ", and you are about to miss the deadline" : ""}.`,
+      next,
+      activityLine(ctx, runningTasks),
+    ].filter(Boolean).join(" ");
+    return refuseWait(reason);
   };
   // Chief of staff: the main session plans, dispatches and integrates. While worker slots are free
   // and rows sit idle, it does not run tests, builds or edits itself; those go to workers. Quick
