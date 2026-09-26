@@ -5,8 +5,10 @@ import type { Settings } from "../config/settings";
 import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import midRunTodoNudgePrompt from "../prompts/system/mid-run-todo-nudge.md" with { type: "text" };
+import todoCompletionReminderPrompt from "../prompts/system/todo-completion-reminder.md" with { type: "text" };
+import { getTodoPlanningIssues, type TodoPlanningIssue } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries, isTodoPhase } from "../tools/todo";
-import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { SessionManager } from "./session-manager";
@@ -74,6 +76,7 @@ export class TodoTracker {
 	#reminderAwaitingProgress = false;
 	#mutationsSinceLastTouch = 0;
 	#midRunNudgeCount = 0;
+	#planningNudgeSent = false;
 
 	constructor(host: TodoTrackerHost) {
 		this.#host = host;
@@ -84,14 +87,40 @@ export class TodoTracker {
 		return this.#clonePhases(this.#phases);
 	}
 
+	/** Current whole-plan obligations, including blocked unfinished tasks. */
+	get planningIssues(): TodoPlanningIssue[] {
+		return getTodoPlanningIssues(this.#phases);
+	}
+
+	/** Whether any unfinished row still violates the planning contract. */
+	get hasPlanningDebt(): boolean {
+		return this.planningIssues.length > 0;
+	}
+
+	/** Render-ready issues for execution admission and final-reply guards. */
+	get planningRepairMessage(): string | undefined {
+		const issues = this.planningIssues;
+		if (issues.length === 0) return undefined;
+		return issues.map(issue => `- ${issue.task}: ${issue.message}`).join("\n");
+	}
+
+	/** Names of blocked unfinished tasks, independent of metadata validity. */
+	get blockedTasks(): string[] {
+		return this.#phases.flatMap(phase =>
+			phase.tasks.filter(task => task.status === "blocked").map(task => task.content),
+		);
+	}
+
 	/** Replaces todo phases with a defensive clone. */
 	setPhases(phases: TodoPhase[]): void {
 		this.#phases = this.#clonePhases(phases);
+		this.#planningNudgeSent = false;
 	}
 
 	/** Rehydrates todo phases from the current transcript branch. */
 	syncFromBranch(): void {
 		this.setPhases(getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch()));
+		this.#planningNudgeSent = false;
 	}
 
 	/** Returns a defensive clone suitable for snapshots and branch state. */
@@ -105,6 +134,7 @@ export class TodoTracker {
 		this.#reminderAwaitingProgress = false;
 		this.#mutationsSinceLastTouch = 0;
 		this.#midRunNudgeCount = 0;
+		this.#planningNudgeSent = false;
 	}
 
 	/** Records a completed tool result before asynchronous event processing begins. */
@@ -230,14 +260,12 @@ export class TodoTracker {
 			this.#reminderAwaitingProgress = false;
 			return false;
 		}
+		const planningIssues = this.planningIssues;
 		const incompleteByPhase = phases
 			.map(phase => ({
 				name: phase.name,
 				tasks: phase.tasks
-					.filter(
-						(task): task is TodoItem & { status: "pending" | "in_progress" } =>
-							task.status === "pending" || task.status === "in_progress",
-					)
+					.filter(task => task.status !== "completed" && task.status !== "abandoned")
 					.map(task => ({ content: task.content, status: task.status })),
 			}))
 			.filter(phase => phase.tasks.length > 0);
@@ -247,7 +275,7 @@ export class TodoTracker {
 			this.#reminderAwaitingProgress = false;
 			return false;
 		}
-		if (isAwaitingUserAnswer(message)) {
+		if (isAwaitingUserAnswer(message) && planningIssues.length === 0) {
 			logger.debug("Todo completion: assistant is waiting for user input; skipping reminder", {
 				incomplete: incomplete.length,
 			});
@@ -261,14 +289,16 @@ export class TodoTracker {
 		}
 		this.#reminderCount++;
 		const todoList = incompleteByPhase
-			.map(phase => `- ${phase.name}\n${phase.tasks.map(task => `  - ${task.content}`).join("\n")}`)
+			.map(phase => `- ${phase.name}\n${phase.tasks.map(task => `  - ${task.content} (${task.status})`).join("\n")}`)
 			.join("\n");
-		const reminder =
-			`<system-reminder>\n` +
-			`You stopped with ${incomplete.length} incomplete todo item(s):\n${todoList}\n\n` +
-			`Please continue working on these tasks or mark them complete if finished.\n` +
-			`(Reminder ${this.#reminderCount}/${remindersMax})\n` +
-			`</system-reminder>`;
+		const reminder = prompt.render(todoCompletionReminderPrompt, {
+			incompleteCount: incomplete.length,
+			todoList,
+			planningIssues: planningIssues.map(issue => `- ${issue.task}: ${issue.message}`).join("\n"),
+			hasPlanningDebt: planningIssues.length > 0,
+			reminderCount: this.#reminderCount,
+			remindersMax,
+		});
 		logger.debug("Todo completion: sending reminder", {
 			incomplete: incomplete.length,
 			attempt: this.#reminderCount,
@@ -298,14 +328,21 @@ export class TodoTracker {
 
 	/** Takes the next hidden mid-run reconciliation nudge, if its budget and guards allow. */
 	takeMidRunNudge(): AgentMessage | null {
-		if (this.#mutationsSinceLastTouch < MID_RUN_NUDGE_MUTATION_THRESHOLD) return null;
 		if (this.#midRunNudgeCount >= MID_RUN_NUDGE_MAX_PER_CYCLE) return null;
+		const planningIssues = this.planningIssues;
+		const hasBlockedTasks = this.#phases.some(phase => phase.tasks.some(task => task.status === "blocked"));
+		if (
+			!((planningIssues.length > 0 || hasBlockedTasks) && !this.#planningNudgeSent) &&
+			this.#mutationsSinceLastTouch < MID_RUN_NUDGE_MUTATION_THRESHOLD
+		)
+			return null;
 		if (!cfgTodoEnabled.get(this.#host.settings) || !cfgTodoReminders.get(this.#host.settings)) return null;
 		if (this.#host.planModeEnabled() || !this.#host.getActiveToolNames().includes("todo")) return null;
 		const incomplete = this.#phases
 			.flatMap(phase => phase.tasks)
-			.filter(task => task.status === "pending" || task.status === "in_progress");
+			.filter(task => task.status !== "completed" && task.status !== "abandoned");
 		if (incomplete.length === 0) return null;
+		this.#planningNudgeSent = true;
 		this.#mutationsSinceLastTouch = 0;
 		this.#midRunNudgeCount++;
 		const { toolRefs } = this.#buildEagerPreludeContext();
@@ -313,9 +350,12 @@ export class TodoTracker {
 			toolRefs,
 			incompleteCount: incomplete.length,
 			plural: incomplete.length !== 1,
+			planningIssues: planningIssues.map(issue => `- ${issue.task}: ${issue.message}`).join("\n"),
+			hasPlanningDebt: planningIssues.length > 0,
 		});
 		logger.debug("Mid-run todo nudge fired", {
 			incomplete: incomplete.length,
+			planningIssues: planningIssues.length,
 			nudge: this.#midRunNudgeCount,
 		});
 		return {
@@ -342,11 +382,7 @@ export class TodoTracker {
 	#clonePhases(phases: TodoPhase[]): TodoPhase[] {
 		return phases.map(phase => ({
 			name: phase.name,
-			tasks: phase.tasks.map(task =>
-				task.blocker !== undefined
-					? { content: task.content, status: task.status, blocker: task.blocker }
-					: { content: task.content, status: task.status },
-			),
+			tasks: phase.tasks.map(task => structuredClone(task)),
 		}));
 	}
 }

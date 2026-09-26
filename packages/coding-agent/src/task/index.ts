@@ -56,6 +56,14 @@ import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
 import { renderResult, renderCall as renderTaskCall } from "@oh-my-pi/pi-tui/tools/task";
 import { repairTaskParams } from "@oh-my-pi/pi-tui/tools/task-repair-args";
 import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
+import { buildTodoExecutorPersistedEdit } from "../tools/todo";
+import { applyTodoExecutorObservation, type TodoExecutorObservation } from "../tools/todo-executor";
+import {
+	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+	TASK_SUBAGENT_PROGRESS_CHANNEL,
+	type SubagentLifecyclePayload,
+	type SubagentProgressPayload,
+} from "./types";
 
 import { cfgAsyncEnabled } from "../tools/settings";
 import {
@@ -586,6 +594,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	 * spawns and work already parked in the semaphore queue.
 	 */
 	#spawnSemaphore: Semaphore | undefined;
+	readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
 
 	get parameters(): TaskToolSchemaInstance {
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
@@ -631,6 +640,75 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	) {
 		this.#blockedAgent = $env.PI_BLOCKED_AGENT;
 		this.#discoveredAgents = discoveredAgents;
+		const bus = session.subagentEventBus ?? session.eventBus;
+		if (bus && session.getTodoPhases && session.setTodoPhases && session.persistTodoPhases) {
+			const stopLifecycle = bus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
+				if (!data || typeof data !== "object") return;
+				const event = data as Partial<SubagentLifecyclePayload>;
+				if (typeof event.id !== "string" || typeof event.agent !== "string") return;
+				if (event.status === "started") {
+					const observed: TodoExecutorObservation = {
+						workerId: event.id,
+						agentProfile: event.agent,
+						description: event.description,
+						taskText: event.taskText,
+						startedAt: event.at ?? Date.now(),
+					};
+					this.#todoExecutors.set(event.id, observed);
+					this.#persistTodoExecutor(observed);
+				} else if (event.status === "completed" || event.status === "failed" || event.status === "aborted") {
+					const prior = this.#todoExecutors.get(event.id);
+					if (!prior) return;
+					const observed = {
+						...prior,
+						resolvedModel: event.resolvedModelIdentity ?? prior.resolvedModel,
+						thinkingLevel: event.resolvedThinkingLevel ?? prior.thinkingLevel,
+						finishedAt: event.at ?? Date.now(),
+						outcome: event.status,
+					};
+					this.#persistTodoExecutor(observed);
+					this.#todoExecutors.delete(event.id);
+				}
+			});
+			const stopProgress = bus.on(TASK_SUBAGENT_PROGRESS_CHANNEL, data => {
+				if (!data || typeof data !== "object") return;
+				const event = data as Partial<SubagentProgressPayload>;
+				const workerId = event.progress?.id;
+				if (typeof workerId !== "string") return;
+				const prior = this.#todoExecutors.get(workerId);
+				if (!prior) return;
+				const observed = {
+					...prior,
+					resolvedModel:
+						event.progress?.resolvedModelIdentity ?? event.progress?.resolvedModel ?? prior.resolvedModel,
+					thinkingLevel: event.progress?.resolvedThinkingLevel ?? prior.thinkingLevel,
+				};
+				this.#todoExecutors.set(workerId, observed);
+				this.#persistTodoExecutor(observed);
+			});
+			session.registerDisposeCallback?.(() => {
+				stopLifecycle();
+				stopProgress();
+			});
+		}
+	}
+
+	#persistTodoExecutor(observation: TodoExecutorObservation): void {
+		const phases = this.session.getTodoPhases?.();
+		if (!phases) return;
+		const updated = applyTodoExecutorObservation(phases, {
+			...observation,
+			runningWorkerIds: new Set(this.#todoExecutors.keys()),
+		});
+		if (!updated) return;
+		this.session.setTodoPhases?.(updated);
+		this.session.persistTodoPhases?.(
+			updated,
+			buildTodoExecutorPersistedEdit({
+				...observation,
+				runningWorkerIds: new Set(this.#todoExecutors.keys()),
+			}),
+		);
 	}
 
 	#isBatchEnabled(): boolean {

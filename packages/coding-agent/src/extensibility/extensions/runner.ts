@@ -8,6 +8,7 @@ import type {
 	AgentToolContext,
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	SoftToolRequirement,
 } from "@oh-my-pi/pi-agent-core";
 import type { CredentialDisabledEvent, ImageContent, Model, ProviderResponseMetadata } from "@oh-my-pi/pi-ai";
 import {
@@ -27,6 +28,7 @@ import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
 import { MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { SessionManager } from "../../session/session-manager";
+import { cfgTaskMaxConcurrency } from "../../task/settings";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { accumulateToolCallResult, buildAggregatedToolCallResult } from "../shared-events";
@@ -1229,6 +1231,29 @@ export class ExtensionRunner {
 	}
 
 	/**
+	 * Evaluate the currently active extension-owned native soft tool requirement.
+	 * Providers share one fresh context and run synchronously at the model-choice boundary.
+	 * More than one active provider is ambiguous, so fail closed instead of silently choosing.
+	 */
+	getSoftToolRequirement(): SoftToolRequirement | undefined {
+		let ctx: ExtensionContext | undefined;
+		let activePath: string | undefined;
+		let activeRequirement: SoftToolRequirement | undefined;
+		for (const extension of this.extensions) {
+			const provider = extension.softToolRequirementProvider;
+			if (!provider) continue;
+			const requirement = withActiveSettings(this.settings, () => provider((ctx ??= this.createContext())));
+			if (requirement === undefined) continue;
+			if (activeRequirement !== undefined) {
+				throw new Error(`Multiple active soft tool requirement providers: ${activePath}, ${extension.path}`);
+			}
+			activePath = extension.path;
+			activeRequirement = requirement;
+		}
+		return activeRequirement;
+	}
+
+	/**
 	 * Creates an extension context, optionally scoped to a provider request model.
 	 *
 	 * `delegation` wires the same-tool `ctx.invokeTool` for a re-registered built-in: when `toolName`
@@ -1255,6 +1280,7 @@ export class ExtensionRunner {
 			ui: this.#uiContext,
 			mode: this.#mode,
 			getContextUsage: () => this.#getContextUsageFn(),
+			getTaskMaxConcurrency: () => (this.settings ? cfgTaskMaxConcurrency.get(this.settings) : undefined),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
 			hasUI: this.hasUI(),

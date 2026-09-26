@@ -38,6 +38,7 @@ import {
 	PERMISSION_OPTIONS_BY_ID,
 	PERMISSION_REQUIRED_TOOLS,
 } from "./acp-permission-gate";
+import { resolveToolTier } from "../tools/approval";
 import type { ClientBridge, ClientBridgePermissionOutcome } from "./client-bridge";
 import { buildToolNamespacesInfo, resolveCodeMode, type ToolNamespacesInfo } from "./code-mode";
 import { toolReadsSkillUris } from "../system-prompt";
@@ -71,6 +72,7 @@ export interface SessionToolsHost {
 	isStreaming(): boolean;
 	queuedMessageCount(): number;
 	planModeEnabled(): boolean;
+	planningRepairMessage?(): string | undefined;
 	model(): Model | undefined;
 	memoryBackendSession(): MemoryBackendStartOptions["session"];
 	clearInheritedProviderPromptCacheKey(): void;
@@ -210,6 +212,14 @@ export function projectMountedMCPXdevGuidance(routes: Iterable<MountedMCPToolRou
 
 const TOOL_ROSTER_NOTICE_MESSAGE_TYPE = "tool-roster-notice";
 const XDEV_MOUNT_NOTICE_MESSAGE_TYPE = "xdev-mount-notice";
+const PLANNING_CONTROL_TOOLS: Record<string, true> = {
+	todo: true,
+	task: true,
+	ask: true,
+	hub: true,
+	think: true,
+	yield: true,
+};
 
 /**
  * Structured payload persisted on each {@link XDEV_MOUNT_NOTICE_MESSAGE_TYPE}
@@ -412,6 +422,7 @@ export class SessionTools {
 		for (const tool of host.agent.state.tools) this.#enabledToolNames.add(tool.name);
 		for (const name of this.#xdev?.mountedNames ?? []) this.#enabledToolNames.add(name);
 		this.#promptModelKey = this.#currentPromptModelKey();
+		this.#host.agent.setTools(this.#host.agent.state.tools.map(tool => this.#wrapToolForAcpPermission(tool)));
 	}
 
 	/** Mutable registry shared with controller hosts that inspect available tools. */
@@ -823,6 +834,33 @@ export class SessionTools {
 			await this.#applyActiveToolsByName(this.getEnabledToolNames());
 		});
 	}
+	#wrapToolForPlanningAdmission<T extends AgentTool>(tool: T): T {
+		return new Proxy(tool, {
+			get: (target, prop) => {
+				if (prop !== "execute") return target[prop as keyof T];
+				return async (
+					toolCallId: string,
+					args: unknown,
+					signal: AbortSignal | undefined,
+					onUpdate: never,
+					ctx: AgentToolContext | undefined,
+				) => {
+					if (signal?.aborted) throw new ToolAbortError("Tool call cancelled");
+					const planningRepair = this.#host.planningRepairMessage?.();
+					if (
+						planningRepair &&
+						resolveToolTier(target, args) !== "read" &&
+						PLANNING_CONTROL_TOOLS[target.name] !== true
+					) {
+						throw new ToolError(
+							`Complete whole-plan estimates and dependencies before executing ${target.name}:\n${planningRepair}`,
+						);
+					}
+					return await target.execute(toolCallId, args as never, signal, onUpdate, ctx as never);
+				};
+			},
+		}) as T;
+	}
 
 	/** Enabled MCP tools in their current presentation partition. */
 	getSelectedMCPToolNames(): string[] {
@@ -831,31 +869,19 @@ export class SessionTools {
 		return this.getEnabledToolNames().filter(name => isMCPToolName(name) && this.#toolRegistry.has(name));
 	}
 
-	/**
-	 * Wrap a tool with a permission-gate proxy when an ACP client is connected.
-	 * Only wraps tools whose name is in PERMISSION_REQUIRED_TOOLS and only when
-	 * the bridge exposes `requestPermission`. No-ops for all other cases.
-	 *
-	 * When the user has explicitly opted into `yolo` / auto-approve behavior (via
-	 * the SDK/CLI `autoApprove` flag or a configured `tools.approvalMode: yolo`),
-	 * skips the gate unless the per-tool policy explicitly requires a prompt or
-	 * deny. The schema default is also `yolo`, so an explicit configuration or
-	 * explicit session flag is required: default-config ACP sessions keep the
-	 * client-side permission gate.
-	 */
+	/** Wrap direct and eval-bridged tools with planning admission, then ACP permission checks. */
 	#wrapToolForAcpPermission<T extends AgentTool>(tool: T): T {
+		const planningGatedTool = this.#wrapToolForPlanningAdmission(tool);
 		const bridge = this.#host.clientBridge();
-		// Match the capability+method gating pattern used by read/write/bash.
-		if (!bridge?.capabilities.requestPermission || !bridge.requestPermission) return tool;
-		if (PERMISSION_REQUIRED_TOOLS[tool.name] !== true) return tool;
-		// Skip the gate only on explicit yolo opt-in; honour per-tool policies
-		// that require a prompt or deny (matching the normal approval wrapper).
+		if (!bridge?.capabilities.requestPermission || !bridge.requestPermission) return planningGatedTool;
+		if (PERMISSION_REQUIRED_TOOLS[tool.name] !== true) return planningGatedTool;
+		// Skip only on explicit yolo opt-in; honor per-tool prompt or deny policies.
 		if (this.#isExplicitAutoApproveMode()) {
 			const userPolicies: Record<string, unknown> = cfgToolsApproval.get(this.#host.settings);
 			const toolPolicy = userPolicies[tool.name];
-			if (!toolPolicy || toolPolicy === "allow") return tool;
+			if (!toolPolicy || toolPolicy === "allow") return planningGatedTool;
 		}
-		return new Proxy(tool, {
+		return new Proxy(planningGatedTool, {
 			get: (target, prop) => {
 				if (prop !== "execute") return target[prop as keyof T];
 				return async (

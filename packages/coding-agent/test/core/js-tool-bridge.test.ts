@@ -719,27 +719,29 @@ describe("callSessionTool", () => {
 		);
 
 		expect(result).not.toEqual(expect.objectContaining({ hasError: true }));
-		expect(phases).toEqual([
-			{ name: "Recovered", tasks: [{ content: "From malformed JSON", status: "in_progress" }] },
-		]);
+		expect(phases).toHaveLength(1);
+		expect(phases[0]?.name).toBe("Recovered");
+		expect(phases[0]?.tasks[0]).toMatchObject({ content: "From malformed JSON", status: "in_progress" });
 	});
 
 	it("persists bridged todo mutations to the branch, which a direct toolResult would carry", async () => {
 		let phases: TodoPhase[] = [{ name: "Ship", tasks: [{ content: "Persist", status: "in_progress" }] }];
-		const persisted: TodoPhase[][] = [];
+		const persisted: Array<{ phases: TodoPhase[]; edit?: unknown }> = [];
 		const session: ToolSession = {
 			...createSession([]),
 			getTodoPhases: () => phases,
 			setTodoPhases: next => {
 				phases = next;
 			},
-			persistTodoPhases: next => persisted.push(next),
+			persistTodoPhases: (next, edit) => persisted.push({ phases: next, edit }),
 			getToolByName: name => (name === "todo" ? (todoTool as unknown as AgentTool) : undefined),
 		};
 		const todoTool = new TodoTool(session);
 
 		await callSessionTool("todo", { op: "done", task: "Persist" }, { session });
-		expect(persisted).toEqual([[{ name: "Ship", tasks: [{ content: "Persist", status: "completed" }] }]]);
+		expect(persisted).toHaveLength(1);
+		expect(persisted[0]?.phases[0]?.tasks[0]).toMatchObject({ content: "Persist", status: "completed" });
+		expect(persisted[0]?.edit).toMatchObject({ v: 1, kind: "op", op: "done" });
 
 		// Reads and rejected batches leave the branch untouched.
 		await callSessionTool("todo", { op: "view" }, { session });
