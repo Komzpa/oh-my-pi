@@ -241,7 +241,7 @@ describe("automatic presence", () => {
 
 	test("derives away at the silence and quiet-hour boundaries", () => {
 		const now = Date.UTC(2026, 8, 25, 23, 0);
-		const utcState = { ...state, timezone: "UTC" };
+		const utcState = { ...presenceState(Math.floor(now / 1_000) + 7_200), timezone: "UTC" };
 		expect(derivePresence([userEntry(now - 30 * 60_000)], utcState, now)).toBe("away");
 		expect(derivePresence([userEntry(now - 15 * 60_000)], utcState, now)).toBe("away");
 		expect(derivePresence([userEntry(now - 14 * 60_000)], utcState, now)).toBe("watching");
@@ -490,7 +490,10 @@ test("native lifecycle preserves the original deadline without reviving stale go
 		};
 		branch.push({ type: "custom", customType: STATE_ENTRY, data: corruptedDraft });
 		handlers.get("session_start")?.({}, ctx);
-		expect(await request()).toBeUndefined();
+		const staleContext = await request();
+		expect(staleContext?.messages).toHaveLength(1);
+		expect(staleContext?.messages?.[0]?.content).not.toContain("Usable draft");
+		expect(status).toBe("away");
 		const invalidStatus = await deadlineTool!.execute("status", { action: "status" }, undefined, undefined, ctx);
 		expect(invalidStatus.content[0]?.text).toContain("forecast is unknown");
 		const repaired = await deadlineTool!.execute(
@@ -569,14 +572,19 @@ test("native lifecycle preserves the original deadline without reviving stale go
 		expect(updated.details.state.stages.find(stage => stage.id === "draft")?.deliveredArtifact).toBe("Usable draft");
 		expect(readGoalDeadline(branch, cwd)).toEqual({ goalId: goalState!.goal.id, deadlineAt: (now - 60) * 1000 });
 		const due = new Date((now - 60) * 1000).toISOString();
+		const expectPresenceOnly = async () => {
+			const messages = (await request())?.messages;
+			expect(messages).toHaveLength(1);
+			expect(messages?.[0]?.content).not.toContain(due);
+		};
 		for (let step = 0; step < 2; step++) {
 			const result = await request();
 			expect(result?.messages?.at(-1)).toMatchObject({ role: "developer" });
 			expect(result?.messages?.at(-1)?.content).toContain(due);
 		}
 		await runtime.pauseGoal();
-		expect(status).toBeUndefined();
-		expect(await request()).toBeUndefined();
+		expect(status).toBe("away");
+		await expectPresenceOnly();
 		expect(readGoalDeadline(branch, cwd)).toBeUndefined();
 		await runtime.resumeGoal();
 		expect((await request())?.messages?.at(-1)?.content).toContain(due);
@@ -584,10 +592,10 @@ test("native lifecycle preserves the original deadline without reviving stale go
 		const cleared = await deadlineTool!.execute("clear", { action: "clear" }, undefined, undefined, ctx);
 		expect(cleared.details.state.baselineDeadlineAt).toBeUndefined();
 		expect(cleared.details.state.stages).toEqual([]);
-		expect(await request()).toBeUndefined();
+		await expectPresenceOnly();
 		expect(readGoalDeadline(branch, cwd)).toBeUndefined();
 		handlers.get("session_start")?.({}, ctx);
-		expect(await request()).toBeUndefined();
+		await expectPresenceOnly();
 		const restored = await deadlineTool!.execute(
 			"set",
 			{
@@ -601,11 +609,11 @@ test("native lifecycle preserves the original deadline without reviving stale go
 		expect(restored.details.state.baselineDeadlineAt).toBe(now - 60);
 		expect(readGoalDeadline(branch, cwd)).toEqual({ goalId: goalState!.goal.id, deadlineAt: (now - 60) * 1000 });
 		await runtime.completeGoalFromTool();
-		expect(await request()).toBeUndefined();
+		await expectPresenceOnly();
 		await runtime.createGoal({ objective: "Different goal" });
 		expect((await request())?.messages?.at(-1)?.content).not.toContain(due);
 		await runtime.dropGoal();
-		expect(status).toBeUndefined();
+		expect(status).toBe("away");
 		branch.push({
 			type: "message",
 			message: {
@@ -613,7 +621,7 @@ test("native lifecycle preserves the original deadline without reviving stale go
 				details: { goal: { id: "stale", createdAt: "2026-09-22T05:00:00Z", status: "active" } },
 			},
 		});
-		expect(await request()).toBeUndefined();
+		await expectPresenceOnly();
 		expect(readGoalDeadline(branch, cwd)).toBeUndefined();
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
