@@ -178,9 +178,19 @@ describe("task todo persistence", () => {
 			{ name: "Open", tasks: [{ content: "Still running", status: "in_progress" }] },
 		];
 		const archivedPhases: TodoPhase[] = [{ name: "Finished", tasks: [structuredClone(archivedTask)] }];
-		const edit: TodoPersistedEdit = { v: 1, kind: "archive", at: now, operation: {
-			v: 1, kind: "op", at: now, op: "block", params: { op: "block", task: "Still running", reason: "Waiting" },
-		}, archivedPhases };
+		const edit: TodoPersistedEdit = {
+			v: 1,
+			kind: "archive",
+			at: now,
+			operation: {
+				v: 1,
+				kind: "op",
+				at: now,
+				op: "block",
+				params: { op: "block", task: "Still running", reason: "Waiting" },
+			},
+			archivedPhases,
+		};
 		const entries = [
 			{
 				type: "custom",
