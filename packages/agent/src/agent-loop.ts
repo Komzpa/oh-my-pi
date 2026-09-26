@@ -1829,13 +1829,37 @@ function openLiveSteering(
 	});
 }
 
+function removeSupersededGoalContext(messages: AgentContext["messages"]): AgentContext["messages"] {
+	let newestGoalContext = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message?.role === "custom" && message.customType === "goal-mode-context") {
+			newestGoalContext = i;
+			break;
+		}
+	}
+	if (newestGoalContext <= 0) return messages;
+	let hasOlderGoalContext = false;
+	for (let i = 0; i < newestGoalContext; i++) {
+		const message = messages[i];
+		if (message?.role === "custom" && message.customType === "goal-mode-context") {
+			hasOlderGoalContext = true;
+			break;
+		}
+	}
+	if (!hasOlderGoalContext) return messages;
+	return messages.filter((message, index) =>
+		index >= newestGoalContext || message.role !== "custom" || message.customType !== "goal-mode-context",
+	);
+}
+
 async function prepareProviderCall(
 	context: AgentContext,
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
 ): Promise<PreparedProviderCall> {
 	const model = config.getModel?.() ?? config.model;
-	let messages = context.messages;
+	let messages = removeSupersededGoalContext(context.messages);
 	if (config.transformContext) {
 		messages = await config.transformContext(messages, signal);
 	}

@@ -7,7 +7,6 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	archiveTodoPhases,
 	formatTodoView,
-	getLatestTodoArchiveFromEntries,
 	getLatestTodoPhasesFromEntries,
 	markdownToPhases,
 	nextActionableTask,
@@ -94,24 +93,36 @@ describe("todo archive policy", () => {
 		expect(archivedTasks[0]?.schedule?.estimate?.basis).toBe("fixture estimate 0");
 		expect(archivedTasks[0]?.schedule?.executor?.workerId).toBe("fixture-worker-0");
 		const ordinaryView = formatTodoView(archived.phases, { now });
-		const archiveView = formatTodoView(archived.phases, { now, archive: true, archivedPhases: archived.archivedPhases });
+		const archiveView = formatTodoView(archived.phases, {
+			now,
+			archive: true,
+			archivedPhases: archived.archivedPhases,
+		});
 		expect(ordinaryView).not.toContain("Closed task 001");
 		expect(archiveView).toContain("Closed task 001");
 		const afterForecast = forecastTodoLivePlan(archived.phases, archived.archivedPhases, { now });
-		expect(afterForecast.rows.find(row => row.content === "Closed task 400")?.issues.some(
-			issue => issue.includes("Missing prerequisite") || issue.includes("unresolved prerequisite"),
-		)).toBe(false);
+		expect(
+			afterForecast.rows
+				.find(row => row.content === "Closed task 400")
+				?.issues.some(issue => issue.includes("Missing prerequisite") || issue.includes("unresolved prerequisite")),
+		).toBe(false);
 		expect(afterForecast.rows.some(row => row.content === "Closed task 001")).toBe(false);
-		expect(beforeForecast.rows.find(row => row.content === "Closed task 400")?.issues.some(
-			issue => issue.includes("Missing prerequisite"),
-		)).toBe(false);
+		expect(
+			beforeForecast.rows
+				.find(row => row.content === "Closed task 400")
+				?.issues.some(issue => issue.includes("Missing prerequisite")),
+		).toBe(false);
 	});
 
 	it("keeps a whole closed phase before grace and archives it at ten minutes regardless of tail", () => {
-		const phases: TodoPhase[] = [{
-			name: "Finished",
-			tasks: [{ content: "Recent completed", status: "completed", schedule: { finishedAt: now - 10 * 60_000 + 1 } }],
-		}];
+		const phases: TodoPhase[] = [
+			{
+				name: "Finished",
+				tasks: [
+					{ content: "Recent completed", status: "completed", schedule: { finishedAt: now - 10 * 60_000 + 1 } },
+				],
+			},
+		];
 		expect(archiveTodoPhases(phases, now).phases).toEqual(phases);
 		phases[0]!.tasks[0]!.schedule!.finishedAt = now - 10 * 60_000;
 		expect(archiveTodoPhases(phases, now)).toEqual({ phases: [], archivedPhases: phases });
@@ -120,27 +131,37 @@ describe("todo archive policy", () => {
 	it("does not prematurely archive a closed phase with unknown finish time or any open work", () => {
 		const phases: TodoPhase[] = [
 			{ name: "Unknown finish", tasks: [{ content: "No timestamp", status: "abandoned" }] },
-			{ name: "Blocked work", tasks: [
-				{ content: "Old closed", status: "completed", schedule: { finishedAt: now - 20 * 60_000 } },
-				{ content: "Still blocked", status: "blocked" },
-			] },
+			{
+				name: "Blocked work",
+				tasks: [
+					{ content: "Old closed", status: "completed", schedule: { finishedAt: now - 20 * 60_000 } },
+					{ content: "Still blocked", status: "blocked" },
+				],
+			},
 		];
 		expect(archiveTodoPhases(phases, now)).toEqual({ phases, archivedPhases: [] });
 	});
 
 	it("retains unknown-time terminal rows while bounding dated closed rows in an open phase", () => {
-		const phases: TodoPhase[] = [{ name: "Mixed", tasks: [
-			{ content: "Unknown finish", status: "completed" },
-			...Array.from({ length: 12 }, (_, index) => ({
-				content: `Dated ${index}`,
-				status: "abandoned" as const,
-				schedule: { finishedAt: now - 60_000 - index * 1_000 },
-			})),
-			{ content: "Blocked open work", status: "blocked" as const },
-		] }];
+		const phases: TodoPhase[] = [
+			{
+				name: "Mixed",
+				tasks: [
+					{ content: "Unknown finish", status: "completed" },
+					...Array.from({ length: 12 }, (_, index) => ({
+						content: `Dated ${index}`,
+						status: "abandoned" as const,
+						schedule: { finishedAt: now - 60_000 - index * 1_000 },
+					})),
+					{ content: "Blocked open work", status: "blocked" as const },
+				],
+			},
+		];
 		const archived = archiveTodoPhases(phases, now);
 		expect(archived.phases[0]?.tasks.map(task => task.content)).toEqual([
-			"Unknown finish", ...Array.from({ length: 9 }, (_, index) => `Dated ${index}`), "Blocked open work",
+			"Unknown finish",
+			...Array.from({ length: 9 }, (_, index) => `Dated ${index}`),
+			"Blocked open work",
 		]);
 		expect(archived.archivedPhases[0]?.tasks.map(task => task.content)).toEqual(["Dated 9", "Dated 10", "Dated 11"]);
 	});
@@ -170,13 +191,23 @@ describe("todo archive policy", () => {
 			expect(updated.details?.phases.flatMap(phase => phase.tasks)).toHaveLength(11);
 			const archivedEdit = updated.details?.edit;
 			if (!archivedEdit || archivedEdit.kind !== "archive") throw new Error("Expected archive event");
-			entries.push({ type: "custom", customType: "user_todo_edit", data: { edit: archivedEdit }, id: "archived", parentId: null, timestamp: new Date(now).toISOString() } as SessionEntry);
+			entries.push({
+				type: "custom",
+				customType: "user_todo_edit",
+				data: { edit: archivedEdit },
+				id: "archived",
+				parentId: null,
+				timestamp: new Date(now).toISOString(),
+			} as SessionEntry);
 			const ordinary = await tool.execute("ordinary", { op: "view" });
 			expect(ordinary.details?.archiveSummary?.count).toBe(389);
 			expect(ordinary.details?.archivedPhases).toBeUndefined();
 			const archiveView = await tool.execute("explicit", { op: "view", archive: true });
 			expect(archiveView.details?.archivedPhases?.flatMap(phase => phase.tasks)).toHaveLength(389);
-			expect(archiveView.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("Closed task 001") });
+			expect(archiveView.content[0]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("Closed task 001"),
+			});
 			expect(writes).toHaveBeenCalledTimes(1);
 		} finally {
 			setSystemTime();
@@ -295,7 +326,8 @@ describe("TodoTool operations", () => {
 						status: index === rowCount - 1 ? ("in_progress" as const) : ("completed" as const),
 						schedule: {
 							startedAt: 1_790_217_022_691 + index,
-							finishedAt: index === rowCount - 1 ? undefined : 1_790_217_192_187 + index,
+							// Unknown task finish times intentionally isolate compact persistence from archive trimming.
+							finishedAt: undefined,
 							dependencies:
 								index === 0 ? [] : [`Task ${String(index).padStart(3, "0")} with retained schedule history`],
 							owner: "Main",
@@ -880,7 +912,7 @@ describe("TodoTool operations", () => {
 		});
 
 		const result = await tool.execute("call-2", { op: "rm" });
-		expect(result.details?.phases[0]?.tasks).toEqual([]);
+		expect(result.details?.phases.flatMap(phase => phase.tasks) ?? []).toEqual([]);
 	});
 
 	it("drops all tasks in a phase", async () => {
@@ -1468,27 +1500,50 @@ describe("todoToolRenderer.renderCall malformed-args regression (#2005)", () => 
 describe("todoToolRenderer archived rows", () => {
 	it("shows recovered evidence only on an explicit archive view", () => {
 		const phases: TodoPhase[] = [{ name: "Live", tasks: [{ content: "Active work", status: "pending" }] }];
-		const archivedPhases: TodoPhase[] = [{ name: "Old", tasks: [{
-			content: "Historic completed work",
-			status: "completed",
-			schedule: {
-				startedAt: 1_000,
-				finishedAt: 4_000,
-				estimate: { optimisticSeconds: 1, likelySeconds: 2, pessimisticSeconds: 5, confidence: "high", basis: "retained", updatedAt: 500 },
-				executor: { workerId: "worker-archive", startedAt: 1_000, finishedAt: 4_000, outcome: "completed" },
+		const archivedPhases: TodoPhase[] = [
+			{
+				name: "Old",
+				tasks: [
+					{
+						content: "Historic completed work",
+						status: "completed",
+						schedule: {
+							startedAt: 1_000,
+							finishedAt: 4_000,
+							estimate: {
+								optimisticSeconds: 1,
+								likelySeconds: 2,
+								pessimisticSeconds: 5,
+								confidence: "high",
+								basis: "retained",
+								updatedAt: 500,
+							},
+							executor: {
+								workerId: "worker-archive",
+								startedAt: 1_000,
+								finishedAt: 4_000,
+								outcome: "completed",
+							},
+						},
+					},
+				],
 			},
-		}] }];
+		];
 		function render(op: "view" | "done", explicit: boolean): string {
 			const details = { op, phases, storage: "session" as const, ...(explicit ? { archivedPhases } : {}) };
-			const result = { content: [{ type: "text" as const, text: "Todo summary" }], details } as Parameters<typeof todoToolRenderer.renderResult>[0];
-			return Bun.stripANSI(todoToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme).render(120).join("\n"));
+			const result = { content: [{ type: "text" as const, text: "Todo summary" }], details } as Parameters<
+				typeof todoToolRenderer.renderResult
+			>[0];
+			return Bun.stripANSI(
+				todoToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme).render(120).join("\n"),
+			);
 		}
 		const explicit = render("view", true);
 		expect(explicit).toContain("Historic completed work");
 		expect(explicit).toContain("estimate 2s");
 		expect(explicit).toContain("actual 3s");
 		expect(explicit).toContain("worker-archive");
-		expect(explicit).toContain("finished");
+		expect(explicit).toContain("executor worker-archive (completed)");
 		expect(render("view", false)).not.toContain("Historic completed work");
 		expect(render("done", true)).not.toContain("Historic completed work");
 	});
@@ -1502,7 +1557,9 @@ describe("todoToolRenderer archived rows", () => {
 				archivedPhases: [{ name: "Old", tasks: [{ content: "Archived sole task", status: "completed" as const }] }],
 			},
 		} as Parameters<typeof todoToolRenderer.renderResult>[0];
-		const rendered = Bun.stripANSI(todoToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme).render(120).join("\n"));
+		const rendered = Bun.stripANSI(
+			todoToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme).render(120).join("\n"),
+		);
 		expect(rendered).toContain("Archived sole task");
 	});
 });

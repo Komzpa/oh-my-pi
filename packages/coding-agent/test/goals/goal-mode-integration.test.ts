@@ -12,7 +12,7 @@ import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { normalizeCustomMessagePayload } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { convertToLlm, normalizeCustomMessagePayload } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -90,6 +90,7 @@ async function createGoalHarness(shared: SharedFixture): Promise<GoalHarness> {
 				tools: initialTools,
 				messages: [],
 			},
+			convertToLlm,
 		}),
 		sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
 		settings,
@@ -423,7 +424,7 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(content.match(/<\/todo_context>/g)).toHaveLength(1);
 	});
 
-	it("hands off live todo rows and one archive summary without archived payloads", async () => {
+	it("hands off one live todo context and archive summary without archived payloads", async () => {
 		await harness.session.setActiveToolsByName(["read", "todo"]);
 		await harness.mode.handleGoalModeCommand("Ship the release");
 		const now = Date.now();
@@ -473,22 +474,68 @@ describe("InteractiveMode goal mode integration", () => {
 		if (!archiveEdit || archiveEdit.kind !== "archive") throw new Error("Expected an archive edit");
 		harness.session.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit: archiveEdit });
 
-		const sendCustomMessage = vi.spyOn(harness.session, "sendCustomMessage").mockResolvedValue(false);
-		await harness.session.sendGoalModeContext({ deliverAs: "steer" });
+		const requestContents: string[] = [];
+		harness.session.agent.streamFn = (_model, context) => {
+			requestContents.push(
+				[
+					...(Array.isArray(context.systemPrompt) ? context.systemPrompt : [context.systemPrompt]),
+					...context.messages.map(message =>
+						typeof message.content === "string"
+							? message.content
+							: message.content.map(block => (block.type === "text" ? block.text : "")).join(""),
+					),
+				].join("\n"),
+			);
+			const message = {
+				role: "assistant" as const,
+				content: [{ type: "text" as const, text: "Objective updated." }],
+				api: "anthropic-messages" as const,
+				provider: "anthropic" as const,
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop" as const,
+				timestamp: Date.now(),
+			};
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: message });
+				stream.push({ type: "done", reason: message.stopReason, message });
+			});
+			return stream;
+		};
+		let goalSetWhileStreaming = false;
+		harness.session.agent.setOnBeforeYield(async () => {
+			if (goalSetWhileStreaming) return;
+			goalSetWhileStreaming = true;
+			await executeBuiltinSlashCommand("/goal set Replace the objective", { ctx: harness.mode });
+		});
+		await harness.session.prompt("Continue the release");
+		await harness.session.waitForIdle();
+		expect(goalSetWhileStreaming).toBe(true);
+		expect(requestContents.length).toBeGreaterThanOrEqual(2);
 
-		const message = normalizeCustomMessagePayload(sendCustomMessage.mock.calls[0]?.[0]);
-		const content = typeof message.content === "string" ? message.content : "";
+		const requestContent = requestContents[1] ?? "";
+
 		const summary = result.details?.archiveSummary;
 		if (!summary) throw new Error("Expected archive summary in the todo result");
-		expect(message?.customType).toBe("goal-mode-context");
-		expect(content).toContain("- [blocked] Continue the release");
-		expect(content).not.toContain(archivedPayload);
-		expect(content).not.toContain("archive-details-private");
-		expect(content).not.toContain("archive-owner-private");
-		expect(content).not.toContain("archive-estimate-private");
-		expect(content).not.toContain("archive-actual-private");
-		expect(content.match(/^Archive summary: .*$/gm)).toHaveLength(1);
-		expect(content).toContain(
+		expect(requestContent).toContain("- [blocked] Continue the release");
+		expect(requestContent).toContain("Replace the objective");
+		expect(requestContent).not.toContain(archivedPayload);
+		expect(requestContent).not.toContain("archive-details-private");
+		expect(requestContent).not.toContain("archive-owner-private");
+		expect(requestContent).not.toContain("archive-estimate-private");
+		expect(requestContent).not.toContain("archive-actual-private");
+		expect(requestContent.match(/<goal_context>/g)).toHaveLength(1);
+		expect(requestContent.match(/<todo_context>/g)).toHaveLength(1);
+		expect(requestContent.match(/^Archive summary: .*$/gm)).toHaveLength(1);
+		expect(requestContent).toContain(
 			`Archive summary: ${summary.count} archived task${summary.count === 1 ? "" : "s"} (${new Date(summary.fromAt).toISOString()} to ${new Date(summary.toAt).toISOString()}).`,
 		);
 	});
@@ -579,7 +626,7 @@ describe("InteractiveMode goal mode integration", () => {
 		harness.session.setTodoPhases([
 			{
 				name: "Verification",
-				tasks: [{ content: "Run focused checks", status: "completed" }],
+				tasks: [{ content: "Run focused checks", status: "pending" }],
 			},
 		]);
 		let providerCall = 0;
@@ -637,7 +684,7 @@ describe("InteractiveMode goal mode integration", () => {
 		harness.session.setTodoPhases([
 			{
 				name: "Verification",
-				tasks: [{ content: "Review release artifact", status: "completed" }],
+				tasks: [{ content: "Review release artifact", status: "pending" }],
 			},
 		]);
 		await runContinuation();
