@@ -65,6 +65,8 @@ Settled response (`async.enabled=false`, no job manager, every item's agent `blo
 - `content`: summary rendered from `packages/coding-agent/src/prompts/tools/task-summary.md` with a preview capped at 5000 chars; `agent://<id>` holds the full output. A sync batch concatenates the per-spawn summaries.
 - `details.results`: one `SingleResult` per spawn; `usage`, `outputPaths` populated (aggregated across spawns for a sync batch).
 
+An empty selected batch (`task.batch` on, non-empty `context`, `tasks: []`) returns normal text `No tasks selected; nothing to dispatch.` with `details.results: []`, leaves TODO state unchanged, and starts no subagents.
+
 `SingleResult` includes:
 - identity: `index`, `id`, `agent`, `agentSource`, `task`, `description`, optional `assignment` (internal payload names; the wire fields are `name`/`agent`/`task`)
 - status: `exitCode`, optional `error`, optional `aborted`, optional `abortReason`, optional `retryFailure`
@@ -75,6 +77,7 @@ Settled response (`async.enabled=false`, no job manager, every item's agent `blo
 - extracted tool data: `extractedToolData?` from registered subprocess tool handlers such as `yield`
 
 Artifacts and side channels:
+
 - Every subagent with an artifacts dir writes `<id>.md`; `agent://<id>` resolves to that file.
 - A subagent's own children are dot-qualified (`<id>.<child>`); `agent://<id>.<child>` reads that nested output. A slash path is always JSON extraction: `agent://<id>/<key>/<index>/…` extracts that value from a JSON output (e.g. `agent://<id>.<child>/reports/0/data`).
 - Each subagent gets `<id>.jsonl` session history when the parent persists artifacts; `history://<id>` renders it as a concise transcript (works for live and parked agents).
@@ -82,7 +85,7 @@ Artifacts and side channels:
 
 ## Flow
 1. `TaskTool.create(...)` discovers agents once per cwd through a process-level memo (`discoverAgentsForCreate`) to render the dynamic prompt description.
-2. `execute(...)` repairs raw params (`repairTaskParams`), then validates: `schema` is always rejected; `tasks`/`context` are rejected unless `task.batch` is on; batch calls need a non-empty `tasks` (a `task` per item, unique provided names), a non-empty shared `context`, and no top-level `task` alongside `tasks`; flat calls need `task`. The call is then normalized into its spawn list (`resolveSpawnItems`).
+2. `execute(...)` repairs raw params (`repairTaskParams`), then validates. `schema` is always rejected; `tasks`/`context` are rejected unless `task.batch` is on. Batch calls require an array of `tasks`, a non-empty shared `context`, per-item `task` instructions, unique provided names, and no top-level `task` alongside `tasks`; flat calls need `task`. An empty `tasks` array with valid `context` returns the no-work response before normalization; other valid calls are normalized into their spawn list (`resolveSpawnItems`).
 3. Per-item execution split: items whose agent type declares `blocking: true` run inline; the rest become background jobs. The whole call runs sync when `async.enabled=false`, the session has no `AsyncJobManager` (orphaned host), or every item is blocking; inline spawns run through `#executeSync(...)` under the session-scoped semaphore.
 4. Background execution (any non-blocking item with `async.enabled=true` and an `AsyncJobManager`):
    - agent ids are allocated up front via `AgentOutputManager.allocate(...)` — each item's `name`, or a generated AdjectiveNoun name — one per spawn;
@@ -157,7 +160,7 @@ Artifacts and side channels:
 - Parameter validation failures are returned as normal tool text with empty `results`:
   - `schema` (never accepted)
   - `tasks` / `context` while `task.batch` is disabled
-  - batch calls: missing/empty `tasks`, an item without `task`, duplicate provided names, missing shared `context`, top-level `task` alongside `tasks`
+  - batch calls: missing or non-array `tasks`, an item without `task`, duplicate provided names, missing shared `context`, top-level `task` alongside `tasks`
   - flat calls: missing/empty `task`
   - unknown or settings-disabled agent type, spawn-policy denial, requesting `isolated` while isolation mode is `none`
 - Isolated execution without a git repo returns `Isolated task execution requires a git repository. ...`; unavailable backends fall back through the PAL candidate list (reported via `fellBack`/`fallbackReason`), other backend errors rethrow, and exhausting every candidate errors with the fallback reason.
