@@ -39,6 +39,7 @@ type SprintState = {
   retroDueNotifiedKey?: string;
   handledDeadlineAt?: number;
   handledDeliveryKey?: string;
+  lastNotices: Record<string, string>;
 };
 type TaskRow = TodoScheduleInput[number]["tasks"][number];
 type SnapshotRow = { number: number; phase: string; task: TaskRow };
@@ -293,6 +294,7 @@ function blankSprintState(): SprintState {
     seenJobIds: [],
     correctionPending: false,
     retroDueReason: null,
+    lastNotices: {},
   };
 }
 
@@ -332,6 +334,9 @@ function readPersistedSprintState(branch: unknown[]): SprintState {
       ...(typeof data.retroDueNotifiedKey === "string" ? { retroDueNotifiedKey: data.retroDueNotifiedKey } : {}),
       ...(typeof data.handledDeadlineAt === "number" ? { handledDeadlineAt: data.handledDeadlineAt } : {}),
       ...(typeof data.handledDeliveryKey === "string" ? { handledDeliveryKey: data.handledDeliveryKey } : {}),
+      lastNotices: typeof data.lastNotices === "object" && data.lastNotices !== null
+        ? Object.fromEntries(Object.entries(data.lastNotices).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+        : {},
     };
   }
   return blankSprintState();
@@ -1123,6 +1128,20 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     if (json === persistedSprintStateJson) return;
     persistedSprintStateJson = json;
     pi.appendEntry(SPRINT_STATE_ENTRY_TYPE, sprintState);
+  };
+  const sendHarnessNotice = (kind: string, rowKey: string, content: string, details?: unknown): boolean => {
+    const key = `${kind}\0${rowKey}`;
+    if (sprintState.lastNotices[key] === content) {
+      pi.appendEntry("todo-dispatch-silent-notice", { kind, rowKey, content, at: Date.now() });
+      return false;
+    }
+    sprintState = { ...sprintState, lastNotices: { ...sprintState.lastNotices, [key]: content } };
+    persistSprintState();
+    pi.sendMessage(
+      { customType: kind, content, display: false, attribution: "agent", ...(details === undefined ? {} : { details }) },
+      { deliverAs: "aside" },
+    );
+    return true;
   };
   const addSeenRow = (content: string) => {
     if (sprintState.seenRows.includes(content)) return;
@@ -2125,14 +2144,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   };
   const reportWorkerSteeringFailure = (ctx: ExtensionContext, id: string, result: AgentMessageDelivery, fallback: string) => {
     gateTrace(ctx, "worker-message-undelivered", { id, text: result.text });
-    pi.sendMessage(
-      {
-        customType: "todo-worker-message-undelivered",
-        content: `PLAN CHECK: overdue check-in not delivered to ${id}: ${result.text}; ${fallback}.`,
-        display: false,
-        attribution: "agent",
-      },
-      { deliverAs: "aside" },
+    sendHarnessNotice(
+      "todo-worker-message-undelivered",
+      id,
+      `PLAN CHECK: overdue check-in not delivered to ${id}: ${result.text}; ${fallback}.`,
     );
   };
   const overdueWorkerCheckins = (
@@ -2753,10 +2768,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     if (gateSwitchedOff(ctx) || (pendingSizingNoticeIds.length === 0 && key === lastIdlePlanCheck && now - lastIdlePlanCheckAt < PLAN_REPEAT_MS)) return;
     lastIdlePlanCheck = key;
     lastIdlePlanCheckAt = now;
-    pi.sendMessage(
-      { customType: "todo-plan-check", content: check, display: false, attribution: "agent" },
-      { deliverAs: "aside" },
-    );
+    sendHarnessNotice("todo-plan-check", key, check);
     markSizingNotices();
   };
   armPlanTicker = (ctx: ExtensionContext) => {
@@ -2859,16 +2871,11 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       }
       // Reserve this exact plan/alarm revision before queuing, so an unchanged alarm cannot loop.
       lastWakeKey = fresh.rawWakeKey;
-      pi.sendMessage(
-        {
-          customType: "agent-focus-gym-eval-sandbox-wake",
-          content:
-            `Overdue TODO follow-through: the plan is past its time and the session went idle. ${ORDER}`,
-          display: false,
-          attribution: "agent",
-          details: { planRevision: fresh.key, alarms: fresh.alarms },
-        },
-        { deliverAs: "aside" },
+      sendHarnessNotice(
+        "agent-focus-gym-eval-sandbox-wake",
+        fresh.rawWakeKey,
+        `Overdue TODO follow-through: the plan is past its time and the session went idle. ${ORDER}`,
+        { planRevision: fresh.key, alarms: fresh.alarms },
       );
     }, delay);
   };
