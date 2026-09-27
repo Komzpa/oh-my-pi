@@ -1055,6 +1055,7 @@ export function decideTodoDispatch(
 
 }
 export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
+  const singleWriterLane = process.env.OMP_LANE_UNIT !== undefined;
   const host = pi.pi;
   const hostSdk = host as DispatchForecastApi | undefined;
   if (!hostSdk?.forecastTodoPlan || !hostSdk.formatPlanForecast || !hostSdk.formatTaskForecast) return;
@@ -1269,7 +1270,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     persistedChildren = readPersistedChildren(ctx.sessionManager.getBranch());
     sprintState = readPersistedSprintState(ctx.sessionManager.getBranch());
     persistedSprintStateJson = JSON.stringify(sprintState);
-    armPlanTicker(ctx);
+    if (!singleWriterLane) armPlanTicker(ctx);
   };
   const loadAndRefresh = async (_event: unknown, ctx: ExtensionContext) => {
 	load(ctx);
@@ -1868,6 +1869,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   let userInputsSeen = 0;
   pi.on("input", (event) => {
     if (event.source !== "extension") userInputs += 1;
+    if (singleWriterLane) return;
     if (isCorrectionInput(event)) sprintState = { ...sprintState, correctionPending: true };
   });
   let gitStateCache: { cwd: string; at: number; state: GitIntegrationState | null } | null = null;
@@ -2222,7 +2224,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   };
   let nativeGateRegistered = false;
   const softRequirementApi = pi as unknown as SoftToolRequirementRegistrar;
-  if (softRequirementApi.registerSoftToolRequirementProvider && pauseGate) {
+  if (!singleWriterLane && softRequirementApi.registerSoftToolRequirementProvider && pauseGate) {
     // The skipped-call text omp shows the model says only "the pending action"; the reminder
     // reaches just the forced request. Keep the live demand in every request's context instead.
     const demandProvider = (ctx: ExtensionContext) => {
@@ -2405,6 +2407,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   };
 
   pi.on("before_subagent_spawn", async (event, ctx) => {
+    if (singleWriterLane) return;
     await refreshLiveWorkerModels(ctx);
     if (event.agent !== "plan-doctor") return;
     const decision = currentDecision(ctx, Date.now(), [], true);
@@ -2417,6 +2420,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   pi.on("tool_call", async (event, ctx) => {
     await refreshLiveWorkerModels(ctx);
     if (gateSwitchedOff(ctx)) return;
+    if (singleWriterLane) return;
     const badWorkerName = refusePlanningFailureWorkerName(event as { toolName: string; input?: unknown }, ctx);
     if (badWorkerName) return badWorkerName;
     const gitOwnerConflict = refuseConcurrentGitPrOwner(event as { toolName: string; input?: unknown }, ctx);
@@ -2732,7 +2736,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     pendingSizingNoticeIds = [];
   };
   const planTick = async (ctx: ExtensionContext) => {
-    if (pauseGate?.paused || !isMain(ctx) || !pi.getActiveTools().includes("task") || ctx.hasPendingMessages()) return;
+    if (singleWriterLane || pauseGate?.paused || !isMain(ctx) || !pi.getActiveTools().includes("task") || ctx.hasPendingMessages()) return;
     await refreshLiveWorkerModels(ctx);
     const check = planCheck(ctx);
     if (!check || check === PLAN_CHECK_CLEAN) return;
@@ -2757,13 +2761,14 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   };
   armPlanTicker = (ctx: ExtensionContext) => {
     stopPlanTicker();
-    if (!ctx.setInterval) return;
+    if (singleWriterLane || !ctx.setInterval) return;
     tickerContext = ctx;
     planTicker = ctx.setInterval(() => planTick(ctx), PLAN_TICK_MS);
   };
   disarmPlanTicker = stopPlanTicker;
   pi.on("tool_result", async (event, ctx) => {
     await refreshLiveWorkerModels(ctx);
+    if (singleWriterLane) return;
     if (event.toolName === "todo") {
       if (event.isError || !isMain(ctx) || !pi.getActiveTools().includes("task")) return;
       // The hook runs before this result joins the branch: check the plan the call just produced
@@ -2802,6 +2807,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   // The kill switch stops only what can block a call (demands, refusals); this note only informs, so it stays.
   pi.on("context", async (event, ctx) => {
     await refreshLiveWorkerModels(ctx);
+    if (singleWriterLane) return;
     const now = Date.now();
     const decision = currentDecision(ctx, now);
     const chief = isMain(ctx) && pi.getActiveTools().includes("task");
@@ -2824,6 +2830,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   const armIdleCheck = (ctx: ExtensionContext, decision = currentDecision(ctx)) => {
     clearIdleTimer();
     if (
+      singleWriterLane ||
       !pauseGate ||
       pauseGate.paused ||
       !decision.key ||
@@ -2866,6 +2873,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     }, delay);
   };
   pi.on("agent_end", async (_event, ctx) => {
+    if (singleWriterLane) return;
     persistRoster(ctx);
     await refreshLiveWorkerModels(ctx);
     const decision = currentDecision(ctx);

@@ -471,3 +471,77 @@ test("wait refusals deduplicate by rendered content across plan revisions", asyn
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}
 });
+
+test("OMP_LANE_UNIT suppresses chief gates, retros and continuation nudges", async () => {
+	const previousLane = process.env.OMP_LANE_UNIT;
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "todo-dispatch-lane-unit-"));
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const row = phases[0]!.tasks[0]!;
+	row.status = "pending";
+	row.schedule.dependencies = [];
+	row.schedule.owner = undefined;
+	const branch: unknown[] = [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases } } }];
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+	let providerRegistered = false;
+	let timers = 0;
+	const sent: unknown[] = [];
+	try {
+		try {
+			process.env.OMP_LANE_UNIT = "";
+			await todoDispatch({
+				on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+				getActiveTools: () => ["task", "todo", "wait"],
+				registerSoftToolRequirementProvider: () => { providerRegistered = true; },
+				appendEntry: () => undefined,
+				sendMessage: (message: unknown) => { sent.push(message); },
+				pi: {
+					forecastTodoPlan,
+					formatPlanForecast,
+					formatTaskForecast,
+					getLatestTodoPhasesFromEntries: () => phases,
+					readGoalDeadline: () => ({ goalId: "lane-goal", deadlineAt: now + 3_600_000 }),
+					agentPauseGate: { paused: false },
+				},
+			} as unknown as ExtensionAPI);
+		} finally {
+			if (previousLane === undefined) delete process.env.OMP_LANE_UNIT;
+			else process.env.OMP_LANE_UNIT = previousLane;
+		}
+		const ctx = {
+			cwd,
+			sessionManager: { getHeader: () => ({ id: "lane-root" }), getBranch: () => branch },
+			getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+			getTaskMaxConcurrency: () => 16,
+			isIdle: () => true,
+			hasPendingMessages: () => false,
+			setTimeout: () => { timers += 1; return {}; },
+			clearTimer: () => undefined,
+			setInterval: () => { timers += 1; return {}; },
+			clearInterval: () => undefined,
+		} as unknown as ExtensionContext;
+		handlers.get("session_start")!({}, ctx);
+		handlers.get("input")!({ source: "user", content: "No, that is wrong" }, ctx);
+		const wait = await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "lane-wait", input: {} }, ctx) as { block?: boolean } | undefined;
+		const context = await handlers.get("context")!({ messages: [] }, ctx);
+		const todoResult = await handlers.get("tool_result")!({
+			toolName: "todo",
+			toolCallId: "lane-todo",
+			isError: false,
+			content: [],
+			details: { phases },
+		}, ctx);
+		await handlers.get("agent_end")!({}, ctx);
+		expect(providerRegistered).toBe(false);
+		expect(wait).toBeUndefined();
+		expect(context).toBeUndefined();
+		expect(todoResult).toBeUndefined();
+		expect(timers).toBe(0);
+		expect(sent).toHaveLength(0);
+	} finally {
+		if (previousLane === undefined) delete process.env.OMP_LANE_UNIT;
+		else process.env.OMP_LANE_UNIT = previousLane;
+		handlers.get("session_shutdown")?.({}, { getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }) } as unknown as ExtensionContext);
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
