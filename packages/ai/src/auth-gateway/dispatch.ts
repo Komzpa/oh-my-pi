@@ -243,26 +243,33 @@ export function buildGatewayApiKeyResolver(
  * code only supplies the observed status, message, and provider reset hint.
  */
 export function observeGatewayProviderFailure(storage: AuthStorage, model: Model<Api>, error: unknown): void {
-	const details = typeof error === "object" && error !== null ? error as {
-		errorClassificationMessage?: unknown;
-		errorMessage?: unknown;
-		errorStatus?: unknown;
-		message?: unknown;
-	} : undefined;
-	const message = error instanceof Error
-		? error.message
-		: typeof error === "string"
-			? error
-			: (details?.errorClassificationMessage ?? details?.errorMessage ?? details?.message ?? String(error));
+	const details =
+		typeof error === "object" && error !== null
+			? (error as {
+					errorClassificationMessage?: unknown;
+					errorMessage?: unknown;
+					errorStatus?: unknown;
+					message?: unknown;
+				})
+			: undefined;
+	const message =
+		error instanceof Error
+			? error.message
+			: typeof error === "string"
+				? error
+				: (details?.errorClassificationMessage ?? details?.errorMessage ?? details?.message ?? String(error));
 	if (typeof message !== "string") return;
 	const status =
 		typeof details?.errorStatus === "number"
 			? details.errorStatus
-			: extractHttpStatusFromError(error) ?? extractHttpStatusFromError(message) ?? classifyGatewayError(message).status;
+			: (extractHttpStatusFromError(error) ??
+				extractHttpStatusFromError(message) ??
+				classifyGatewayError(message).status);
 	const retryAfterMs = status === 429 ? extractProviderRetryHint(model.provider, message) : undefined;
-	const resetAtMs = retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0
-		? Date.now() + retryAfterMs
-		: undefined;
+	const resetAtMs =
+		retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+			? Date.now() + retryAfterMs
+			: undefined;
 	storage.health.markProviderDepleted(model.provider, { status, message, resetAtMs });
 }
 
@@ -270,8 +277,6 @@ export function observeGatewayProviderFailure(storage: AuthStorage, model: Model
 export function observeGatewayProviderSuccess(storage: AuthStorage, provider: string): void {
 	storage.health.markProviderSucceeded(provider);
 }
-
-
 
 /**
  * Attribute one settled upstream request to the originating client via the
