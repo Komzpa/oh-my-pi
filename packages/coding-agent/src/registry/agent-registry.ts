@@ -299,7 +299,8 @@ export class AgentRegistry {
 			ref.worktreeWarning?.minutes === warning?.minutes &&
 			ref.worktreeWarning?.lastLine === warning?.lastLine &&
 			ref.worktreeWarning?.row === warning?.row
-		) return;
+		)
+			return;
 		ref.worktreeWarning = warning;
 		this.#emit({ type: "metadata_changed", ref });
 	}
