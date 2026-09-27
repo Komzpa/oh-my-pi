@@ -4,6 +4,7 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -479,6 +480,8 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(renderTodos(mode)).toContain("Fix review comments");
 		expect(renderTodos(mode)).toContain("unassigned workers");
 		expect(renderTodos(mode)).toContain("Inspect adjacent work");
+		// A real plan is active: the TODO tree alone accounts for every live
+		// worker, so the pinned Subagents panel must not repeat them.
 		const pinnedWorkers = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
 		expect(pinnedWorkers).not.toContain("Subagents");
 		expect(pinnedWorkers).not.toContain("NeighborWorker");
@@ -707,6 +710,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 	let tempDir: TempDir;
 	let authStorage: AuthStorage;
 	let session: AgentSession;
+	let eventBus: EventBus;
 	let mode: InteractiveMode;
 
 	beforeAll(async () => {
@@ -726,7 +730,8 @@ describe("InteractiveMode todo HUD anchor", () => {
 			settings: Settings.isolated({}),
 			modelRegistry,
 		});
-		mode = new InteractiveMode(session, "test");
+		eventBus = new EventBus();
+		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, undefined, eventBus);
 	});
 
 	afterEach(() => {
@@ -894,6 +899,172 @@ describe("InteractiveMode todo HUD anchor", () => {
 
 		expect(renderTodos(mode)).not.toContain("Task 8");
 		expect(renderTodos(mode)).toContain("3 more todos");
+	});
+
+	it("marks the matching in-progress todo row when its worker has no recent commit", async () => {
+		await mode.init();
+		cfgTasksTodoClearDelay.override(session.settings, -1);
+		vi.useFakeTimers();
+		const content = "Implement worker result";
+		mode.setTodos([{ name: "Implementation", tasks: [{ content, status: "in_progress" }] }]);
+		const registry = AgentRegistry.global();
+		const id = "NoCommitWorker";
+		const ref = registry.register({
+			id,
+			displayName: id,
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session,
+			status: "running",
+		});
+		// `worktreeWarning` lands with the worker-warning registry follow-up; the HUD
+		// reads it optionally, so the test injects it through a narrow entry view.
+		const entry = registry.get(id) as { worktreeWarning?: { minutes: number; lastLine?: string; row?: string } };
+		if (!entry) throw new Error(`agent ${id} is not registered`);
+		entry.worktreeWarning = { minutes: 17, lastLine: "bash bun test", row: content };
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id,
+			index: 0,
+			agent: "task",
+			description: content,
+			status: "started",
+			detached: true,
+		});
+		vi.advanceTimersByTime(100);
+		try {
+			expect(renderTodos(mode)).toContain("⚠ 17m no commit");
+			mode.setTodos([{ name: "Implementation", tasks: [{ content: "Unowned task", status: "in_progress" }] }]);
+			expect(renderTodos(mode)).not.toContain("⚠ 17m no commit");
+		} finally {
+			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+				id,
+				index: 0,
+				agent: "task",
+				description: content,
+				status: "completed",
+				detached: true,
+			});
+			vi.advanceTimersByTime(100);
+			registry.unregister(id, ref);
+		}
+	});
+
+	it("shows a TODO-owned worker once and lists an unowned worker under TODO", async () => {
+		await mode.init();
+		vi.useFakeTimers();
+		cfgTasksTodoClearDelay.override(session.settings, -1);
+		const content = "Implement owned row";
+		mode.setTodos([{ name: "Implementation", tasks: [{ content, status: "in_progress" }] }]);
+		const registry = AgentRegistry.global();
+		const ownedId = "OwnedWorker";
+		const unownedId = "UnownedWorker";
+		const ownedRef = registry.register({
+			id: ownedId,
+			displayName: ownedId,
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session,
+			status: "running",
+		});
+		const unownedRef = registry.register({
+			id: unownedId,
+			displayName: unownedId,
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session,
+			status: "running",
+		});
+		for (const [id, description] of [
+			[ownedId, content],
+			[unownedId, "Review an unrelated file"],
+		]) {
+			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+				id,
+				index: 0,
+				agent: "task",
+				description,
+				status: "started",
+				detached: true,
+			});
+		}
+		vi.advanceTimersByTime(100);
+		try {
+			const todo = renderTodos(mode);
+			const subagents = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+			const rendered = `${todo}\n${subagents}`;
+			expect(rendered).toContain("OwnedWorker");
+			expect(rendered.match(/OwnedWorker/g)).toHaveLength(1);
+			expect(todo).toContain("OwnedWorker");
+			expect(todo).toContain("UnownedWorker");
+			expect(subagents).not.toContain("OwnedWorker");
+			expect(subagents).not.toContain("UnownedWorker");
+		} finally {
+			for (const id of [ownedId, unownedId])
+				eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+					id,
+					index: 0,
+					agent: "task",
+					description: "",
+					status: "completed",
+					detached: true,
+				});
+			registry.unregister(ownedId, ownedRef);
+			registry.unregister(unownedId, unownedRef);
+		}
+	});
+
+	it("keeps an owned in-progress row visible in a collapsed later stage", async () => {
+		await mode.init();
+		vi.useFakeTimers();
+		cfgTasksTodoClearDelay.override(session.settings, -1);
+		const content = "Ship owned work";
+		mode.setTodos([
+			{ name: "Current", tasks: [{ content: "Current pending work", status: "pending" }] },
+			{
+				name: "Background",
+				tasks: [
+					{ content, status: "in_progress" },
+					{ content: "Unowned queued follow-up", status: "pending" },
+				],
+			},
+		]);
+		const registry = AgentRegistry.global();
+		const id = "BackgroundWorker";
+		const ref = registry.register({
+			id,
+			displayName: id,
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session,
+			status: "running",
+		});
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id,
+			index: 0,
+			agent: "task",
+			description: content,
+			status: "started",
+			detached: true,
+		});
+		vi.advanceTimersByTime(100);
+		try {
+			mode.setTodoExpanded(false);
+			const rendered = renderTodos(mode);
+			expect(rendered).toContain(id);
+			expect(rendered).toContain(content);
+			expect(rendered).not.toContain("Unowned queued follow-up");
+		} finally {
+			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+				id,
+				index: 0,
+				agent: "task",
+				description: content,
+				status: "completed",
+				detached: true,
+			});
+			vi.advanceTimersByTime(100);
+			registry.unregister(id, ref);
+		}
 	});
 
 	describe("compact todo for small terminal height (< 18 rows)", () => {

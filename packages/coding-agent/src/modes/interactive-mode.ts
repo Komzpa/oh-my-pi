@@ -1006,6 +1006,22 @@ export function layoutPinnedHud(runningTotal: number, expanded: boolean): Pinned
 	};
 }
 
+/**
+ * Narrow HUD view of an agent-registry entry: `worktreeWarning` lands with the
+ * worker-warning registry follow-up, so it is read optionally here to keep this
+ * branch type-checking (and rendering warning-free) without that branch's
+ * registry fields.
+ */
+interface HudWorktreeWarning {
+	minutes: number;
+	lastLine?: string;
+	row?: string;
+}
+
+interface HudRegistryEntry {
+	worktreeWarning?: HudWorktreeWarning;
+}
+
 /** A running tool call earns an elapsed marker in the live preview once it outlasts this. */
 const SUBAGENT_PREVIEW_ELAPSED_MIN_MS = 5000;
 
@@ -1065,7 +1081,6 @@ function renderSubagentToolPreview(session: ObservableSession, width: number): s
 	}
 	return truncateToWidth(`${line}${elapsedLabel}`, width, "");
 }
-
 /**
  * Build the anchored subagent HUD block: a bold accent "Subagents" header plus
  * a bounded set of running-agent rows in the same `Id ⟨role⟩: description` shape
@@ -1111,7 +1126,9 @@ export function renderSubagentHudLines(
 					agentTypeBadge(role, theme),
 					Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}`)),
 				);
-				const titleBudget = Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}${badge}`));
+				const warning = (AgentRegistry.global().get(session.id) as HudRegistryEntry | undefined)?.worktreeWarning;
+				const warningText = warning ? ` ${theme.fg("warning", `⚠ ${warning.minutes}m no commit`)}` : "";
+				const titleBudget = Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}${badge}${warningText}`));
 				const modelBadge = showModelBadge
 					? formatFeedModelBadge(
 							session.progress?.resolvedModelIdentity ?? session.progress?.resolvedModel,
@@ -1127,7 +1144,10 @@ export function renderSubagentHudLines(
 				const distinctDescription =
 					description && !labelEchoesHandle(session.id, description) ? description : undefined;
 				if (distinctDescription) {
-					const budget = Math.max(0, rowWidth - visibleWidth(line) - visibleWidth(": "));
+					const budget = Math.max(
+						0,
+						rowWidth - visibleWidth(line) - visibleWidth(": ") - visibleWidth(warningText),
+					);
 					const formatted = replaceTabs(distinctDescription).replace(/\s*[\r\n]+\s*/g, " ↵ ");
 					if (budget > 0) {
 						line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(formatted, budget))}`;
@@ -1138,11 +1158,14 @@ export function renderSubagentHudLines(
 					const taskPreview = session.progress?.task?.trim();
 					if (taskPreview && !labelEchoesHandle(session.id, taskPreview)) {
 						const formatted = replaceTabs(taskPreview).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-						const budget = Math.min(TRUNCATE_LENGTHS.SHORT, Math.max(0, rowWidth - visibleWidth(line) - 1));
+						const budget = Math.min(
+							TRUNCATE_LENGTHS.SHORT,
+							Math.max(0, rowWidth - visibleWidth(line) - 1 - visibleWidth(warningText)),
+						);
 						if (budget > 0) line += ` ${theme.fg("muted", truncateToWidth(formatted, budget))}`;
 					}
 				}
-				const head = truncateToWidth(line, rowWidth, "");
+				const head = truncateToWidth(`${line}${warningText}`, rowWidth, "");
 				const preview = livePreview ? renderSubagentToolPreview(session, rowWidth) : undefined;
 				itemLineCounts.set(session, preview ? 2 : 1);
 				return preview ? [head, preview] : head;
@@ -3686,7 +3709,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#agentRegistryUnsubscribe?.();
 			this.#agentRegistrySubscriptionTarget = registry;
 			this.#agentRegistryUnsubscribe = registry.onChange(() => {
-				this.syncRunningSubagentBadge();
+				this.syncRunningSubagentBadge({ requestRender: false });
+				this.#renderTodoList();
+				this.#renderSubagentList();
+				this.ui.requestRender();
 			});
 		}
 		const agentIds = getRunningSubagentBadgeAgentIds(registry);
@@ -3861,21 +3887,44 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 	}
 
+	#worktreeWarningForTodo(todo: TodoItem) {
+		if (todo.status !== "in_progress") return undefined;
+		for (const session of this.#observerRegistry.getSessions()) {
+			if (!isHudSubagent(session)) continue;
+			const warning = (AgentRegistry.global().get(session.id) as HudRegistryEntry | undefined)?.worktreeWarning;
+			if (warning?.row === todo.content) return warning;
+		}
+		return undefined;
+	}
+
 	#formatTodoLine(todo: TodoItem, prefix: string, matched: boolean, overdue = false): string {
 		const checkbox = theme.checkbox;
 		const marker = formatHudNoteMarker(todo.notes?.length ?? 0);
+		const warning = this.#worktreeWarningForTodo(todo);
+		const warningText = warning ? ` ${theme.fg("warning", `⚠ ${warning.minutes}m no commit`)}` : "";
 		if (overdue && (todo.status === "pending" || todo.status === "in_progress"))
-			return theme.fg("error", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
+			return theme.fg("error", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker + warningText;
 		switch (todo.status) {
 			case "completed":
-				return theme.fg("success", `${prefix}${checkbox.checked} ${chalk.strikethrough(todo.content)}`) + marker;
+				return (
+					theme.fg("success", `${prefix}${checkbox.checked} ${chalk.strikethrough(todo.content)}`) +
+					marker +
+					warningText
+				);
 			case "abandoned":
-				return theme.fg("error", `${prefix}${checkbox.unchecked} ${chalk.strikethrough(todo.content)}`) + marker;
+				return (
+					theme.fg("error", `${prefix}${checkbox.unchecked} ${chalk.strikethrough(todo.content)}`) +
+					marker +
+					warningText
+				);
 			case "blocked":
-				return theme.fg("warning", `${prefix}${checkbox.unchecked} ${todo.content} (blocked)`) + marker;
+				return (
+					theme.fg("warning", `${prefix}${checkbox.unchecked} ${todo.content} (blocked)`) + marker + warningText
+				);
 			default:
-				if (matched) return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
-				return theme.fg("dim", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
+				if (matched)
+					return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker + warningText;
+				return theme.fg("dim", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker + warningText;
 		}
 	}
 	#formatForecastTodoLine(
@@ -4145,17 +4194,36 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (expanded) {
 			for (const entry of orderedTasks) visible.add(entry);
 		} else {
-			const open = orderedTasks.filter(entry => !isClosedTodo(entry.task));
+			// Owned work survives collapse: a stage that has at least one
+			// worker-owned in-progress row contributes only those rows to the
+			// collapsed window; its remaining queued rows stay hidden until the
+			// HUD is expanded.
+			const ownedPhaseIndexes = new Set(
+				orderedTasks
+					.filter(entry => entry.task.status === "in_progress" && isMatched(entry.task))
+					.map(entry => entry.phaseIndex),
+			);
+			const suppressed = new Set(
+				orderedTasks.filter(
+					entry =>
+						!isClosedTodo(entry.task) &&
+						entry.task.status === "pending" &&
+						!isMatched(entry.task) &&
+						ownedPhaseIndexes.has(entry.phaseIndex),
+				),
+			);
+			const considered = orderedTasks.filter(entry => !suppressed.has(entry));
+			const open = considered.filter(entry => !isClosedTodo(entry.task));
 			for (const entry of open.slice(0, activeTaskCap)) visible.add(entry);
-			for (const entry of orderedTasks) {
+			for (const entry of considered) {
 				if (entry.task.status === "in_progress" || isMatched(entry.task)) visible.add(entry);
 			}
 			const currentTask = nextActionableTask(phases);
-			const current = orderedTasks.find(entry => entry.task === currentTask);
+			const current = considered.find(entry => entry.task === currentTask);
 			if (current) visible.add(current);
-			const closedContext = orderedTasks.filter(entry => isClosedTodo(entry.task)).slice(-1);
+			const closedContext = considered.filter(entry => isClosedTodo(entry.task)).slice(-1);
 			for (const entry of closedContext) visible.add(entry);
-			const hidden = orderedTasks.filter(entry => !visible.has(entry) && !isClosedTodo(entry.task));
+			const hidden = considered.filter(entry => !visible.has(entry) && !isClosedTodo(entry.task));
 			if (hidden.length === 1) visible.add(hidden[0]!);
 		}
 		const visibleTasks = orderedTasks.filter(entry => visible.has(entry));
