@@ -1887,8 +1887,9 @@ function removeSupersededGoalContext(messages: AgentContext["messages"]): AgentC
 		}
 	}
 	if (!hasOlderGoalContext) return messages;
-	return messages.filter((message, index) =>
-		index >= newestGoalContext || message.role !== "custom" || message.customType !== "goal-mode-context",
+	return messages.filter(
+		(message, index) =>
+			index >= newestGoalContext || message.role !== "custom" || message.customType !== "goal-mode-context",
 	);
 }
 
