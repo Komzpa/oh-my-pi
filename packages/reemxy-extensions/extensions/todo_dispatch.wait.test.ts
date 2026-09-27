@@ -369,6 +369,8 @@ test("PLAN CHECK puts stale no-commit workers first and never aborts them", asyn
 		expect(text).toContain("(1) suspect: Row 1 · worker-a · 17 · bash bun run build");
 		expect(text).not.toContain("suspect: Row 2 · worker-b");
 		expect(text).not.toContain("suspect: Row 3 · worker-c");
+		expect(registry.get("worker-b")?.todoRow).toBe(tasks[1]!.content);
+		expect(registry.get("worker-c")?.todoRow).toBe(tasks[2]!.content);
 		expect(aborted).toEqual([]);
 	} finally {
 		handlers.get("session_shutdown")?.({}, ctx);
