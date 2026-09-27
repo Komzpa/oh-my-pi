@@ -162,6 +162,57 @@ describe("agent router", () => {
 		}
 	});
 
+	test("blocks a second non-isolated writer while allowing isolation", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const state = createRouterState();
+			let running: Array<{ id: string; agentId: string; type: string; status: string }> = [];
+			const context = ctx({ getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }) });
+			const first = await routeSubagentSpawn(
+				{ agent: "coder", spawnKey: "writer-1", isolated: false },
+				context,
+				state,
+				{ stateFile: file },
+			);
+			expect(first?.model).toBeDefined();
+
+			running = [{ id: "writer-1", agentId: "writer-1", type: "task", status: "running" }];
+			const blocked = await routeSubagentSpawn(
+				{ agent: "ui-coder", spawnKey: "writer-2", isolated: false },
+				context,
+				state,
+				{ stateFile: file },
+			);
+			expect(blocked).toMatchObject({ block: true });
+			expect(blocked?.reason).toContain("writer-1");
+			expect(blocked?.reason).toContain("isolated: true");
+
+			const isolated = await routeSubagentSpawn(
+				{ agent: "ui-coder", spawnKey: "writer-isolated", isolated: true },
+				context,
+				state,
+				{ stateFile: file },
+			);
+			expect(isolated?.block).not.toBe(true);
+			recordTaskOutcome(
+				{ toolName: "wait", details: { jobs: [{ id: "writer-1", status: "completed", durationMs: 100 }] } },
+				context,
+				state,
+				{ stateFile: file },
+			);
+			running = [];
+			const afterCompletion = await routeSubagentSpawn(
+				{ agent: "workhorse", spawnKey: "writer-3", isolated: false },
+				context,
+				state,
+				{ stateFile: file },
+			);
+			expect(afterCompletion?.model).toBeDefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("high-volume execution agents retain Kimi in their pools", () => {
 		for (const agent of ["task", "scout", "gate-runner", "git-pr-owner", "scribe", "coder", "workhorse"]) {
 			expect(AGENT_POOLS[agent]?.pool.some(spec => spec.startsWith("kimi-code/"))).toBe(true);
@@ -189,13 +240,26 @@ describe("agent router", () => {
 		for (const agent of executingProfiles) {
 			const content = readFileSync(new URL(`./agents/${agent}.md`, import.meta.url), "utf8");
 			const instructions = content.replace(/^---\n[\s\S]*?\n---\n/, "").toLowerCase();
-			const boundedWindow = /(?:~|about|approximately|roughly|around|up to|within)\s*15\s*(?:minutes?|mins?)\b/.test(instructions);
-			const stopForOversizedWork = /(?:larger|oversized|bigger|exceeds?|over budget|too large|too big|will not fit|won't fit)[\s\S]{0,180}(?:stop|pause|return|split|boundar|checkable)|(?:stop|pause|return|split|boundar|checkable)[\s\S]{0,180}(?:larger|oversized|bigger|exceeds?|over budget|too large|too big|will not fit|won't fit)/.test(instructions);
-			const stopForImpendingCompaction = /(?:compaction|compact(?:ed|ing)?)[\s\S]{0,180}(?:stop|pause|return|split|boundar|checkable)|(?:stop|pause|return|split|boundar|checkable)[\s\S]{0,180}(?:compaction|compact(?:ed|ing)?)/.test(instructions);
-			const completedReceiptAndSplit = /(?:done|completed|finished)[\s\S]{0,180}(?:receipt|report|result|summary)[\s\S]{0,180}(?:split|subtask|follow-on|next task)|(?:split|subtask|follow-on|next task)[\s\S]{0,180}(?:done|completed|finished)[\s\S]{0,180}(?:receipt|report|result|summary)/.test(instructions);
+			const boundedWindow = /(?:~|about|approximately|roughly|around|up to|within)\s*15\s*(?:minutes?|mins?)\b/.test(
+				instructions,
+			);
+			const stopForOversizedWork =
+				/(?:larger|oversized|bigger|exceeds?|over budget|too large|too big|will not fit|won't fit)[\s\S]{0,180}(?:stop|pause|return|split|boundar|checkable)|(?:stop|pause|return|split|boundar|checkable)[\s\S]{0,180}(?:larger|oversized|bigger|exceeds?|over budget|too large|too big|will not fit|won't fit)/.test(
+					instructions,
+				);
+			const stopForImpendingCompaction =
+				/(?:compaction|compact(?:ed|ing)?)[\s\S]{0,180}(?:stop|pause|return|split|boundar|checkable)|(?:stop|pause|return|split|boundar|checkable)[\s\S]{0,180}(?:compaction|compact(?:ed|ing)?)/.test(
+					instructions,
+				);
+			const completedReceiptAndSplit =
+				/(?:done|completed|finished)[\s\S]{0,180}(?:receipt|report|result|summary)[\s\S]{0,180}(?:split|subtask|follow-on|next task)|(?:split|subtask|follow-on|next task)[\s\S]{0,180}(?:done|completed|finished)[\s\S]{0,180}(?:receipt|report|result|summary)/.test(
+					instructions,
+				);
 			expect(boundedWindow, `${agent} should set an approximately 15-minute execution window`).toBe(true);
 			expect(stopForOversizedWork, `${agent} should stop at a checkable point when work is oversized`).toBe(true);
-			expect(stopForImpendingCompaction, `${agent} should stop at a checkable point when compaction is near`).toBe(true);
+			expect(stopForImpendingCompaction, `${agent} should stop at a checkable point when compaction is near`).toBe(
+				true,
+			);
 			expect(completedReceiptAndSplit, `${agent} should return completed work and a proposed split`).toBe(true);
 		}
 	});
@@ -213,7 +277,12 @@ describe("agent router", () => {
 	test("leaves unknown agents untouched", async () => {
 		const { dir, file } = tempStateFile();
 		try {
-			const result = await routeSubagentSpawn({ agent: "nonexistent", spawnKey: "unknown-1" }, ctx(), createRouterState(), { stateFile: file });
+			const result = await routeSubagentSpawn(
+				{ agent: "nonexistent", spawnKey: "unknown-1" },
+				ctx(),
+				createRouterState(),
+				{ stateFile: file },
+			);
 			expect(result).toBeUndefined();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -224,14 +293,18 @@ describe("agent router", () => {
 		const { dir, file } = tempStateFile();
 		try {
 			const available = [{ provider: "kimi-code", id: "k3" }];
-			const context = ctx({ models: {
-				list: () => available,
-				resolve: (spec: string) => {
-					const [provider, id] = spec.split(":")[0]!.split("/");
-					return { provider, id };
-				},
-			} as ExtensionContext["models"] });
-			const result = await routeSubagentSpawn({ agent: "coder", spawnKey: "auth-1" }, context, createRouterState(), { stateFile: file });
+			const context = ctx({
+				models: {
+					list: () => available,
+					resolve: (spec: string) => {
+						const [provider, id] = spec.split(":")[0]!.split("/");
+						return { provider, id };
+					},
+				} as ExtensionContext["models"],
+			});
+			const result = await routeSubagentSpawn({ agent: "coder", spawnKey: "auth-1" }, context, createRouterState(), {
+				stateFile: file,
+			});
 			expect(result?.model[0]).toBe("kimi-code/k3:high");
 			expect(result?.model).toEqual(["kimi-code/k3:high"]);
 		} finally {
@@ -248,10 +321,15 @@ describe("agent router", () => {
 					accounts: [{ state: "depleted", resetsAt: 1790333025547 }],
 				},
 			});
-			const result = await routeSubagentSpawn({ agent: "scout", spawnKey: "usage-1" }, context, createRouterState(), {
-				stateFile: file,
-				shuffle: items => [...items],
-			});
+			const result = await routeSubagentSpawn(
+				{ agent: "scout", spawnKey: "usage-1" },
+				context,
+				createRouterState(),
+				{
+					stateFile: file,
+					shuffle: items => [...items],
+				},
+			);
 			expect(result?.model[0]).toBe("codex-lb/gpt-6-luna:low");
 			expect(result?.note).toBe("pool pick codex-lb/gpt-6-luna:low; skipped 1 by usage preflight (eval)");
 			expect(readJsonl(file)[0]).toMatchObject({
@@ -280,10 +358,15 @@ describe("agent router", () => {
 					accounts: [{ state: "healthy", remainingFraction: 0.42 }],
 				},
 			});
-			const result = await routeSubagentSpawn({ agent: "scout", spawnKey: "usage-healthy" }, context, createRouterState(), {
-				stateFile: file,
-				shuffle: items => [...items].reverse(),
-			});
+			const result = await routeSubagentSpawn(
+				{ agent: "scout", spawnKey: "usage-healthy" },
+				context,
+				createRouterState(),
+				{
+					stateFile: file,
+					shuffle: items => [...items].reverse(),
+				},
+			);
 			expect(result?.model[0]).toBe("kimi-code/kimi-for-coding-highspeed:low");
 			expect(readJsonl(file)[0]?.skipped).toBeUndefined();
 		} finally {
@@ -294,20 +377,51 @@ describe("agent router", () => {
 	test("capacity counts unique authenticated live model routes", async () => {
 		const { dir, file } = tempStateFile();
 		try {
-			const exhausted = ctxWithHealth(Object.fromEntries(["codex-lb", "deepseek", "kimi-code", "claude-bridge", "openrouter", "anthropic"].map(provider => [provider, { state: "depleted", accounts: [] }])));
+			const exhausted = ctxWithHealth(
+				Object.fromEntries(
+					["codex-lb", "deepseek", "kimi-code", "claude-bridge", "openrouter", "anthropic"].map(provider => [
+						provider,
+						{ state: "depleted", accounts: [] },
+					]),
+				),
+			);
 			expect(await countLiveWorkerModels(exhausted)).toBe(0);
-			expect(await routeSubagentSpawn({ agent: "coder", spawnKey: "all-dead" }, exhausted, createRouterState(), { stateFile: file })).toBeUndefined();
-			const inklingOnly = ctxWithHealth(Object.fromEntries(["codex-lb", "deepseek", "kimi-code", "claude-bridge"].map(provider => [provider, { state: "depleted", accounts: [] }])));
+			expect(
+				await routeSubagentSpawn({ agent: "coder", spawnKey: "all-dead" }, exhausted, createRouterState(), {
+					stateFile: file,
+				}),
+			).toBeUndefined();
+			const inklingOnly = ctxWithHealth(
+				Object.fromEntries(
+					["codex-lb", "deepseek", "kimi-code", "claude-bridge"].map(provider => [
+						provider,
+						{ state: "depleted", accounts: [] },
+					]),
+				),
+			);
 			expect(await countLiveWorkerModels(inklingOnly)).toBeGreaterThan(0);
 			const onlyInklingModel = { provider: "openrouter", id: "thinkingmachines/inkling:free" };
 			const onlyInkling = ctx({
 				models: {
 					list: () => [onlyInklingModel],
-					resolve: (spec: string) => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === "openrouter/thinkingmachines/inkling:free" ? onlyInklingModel : undefined,
+					resolve: (spec: string) =>
+						spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") ===
+						"openrouter/thinkingmachines/inkling:free"
+							? onlyInklingModel
+							: undefined,
 				},
 			});
 			expect(await countLiveWorkerModels(onlyInkling)).toBe(1);
-			expect((await routeSubagentSpawn({ agent: "coder", spawnKey: "inkling-only" }, inklingOnly, createRouterState(), { stateFile: file }))?.model).toEqual(["openrouter/thinkingmachines/inkling:free"]);
+			expect(
+				(
+					await routeSubagentSpawn(
+						{ agent: "coder", spawnKey: "inkling-only" },
+						inklingOnly,
+						createRouterState(),
+						{ stateFile: file },
+					)
+				)?.model,
+			).toEqual(["openrouter/thinkingmachines/inkling:free"]);
 			expect(await agentHasLiveModel("nonexistent", ctx())).toBe(false);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -317,12 +431,24 @@ describe("agent router", () => {
 	test("twenty coder spawns exclude depleted Codex and DeepSeek, including fallbacks", async () => {
 		const { dir, file } = tempStateFile();
 		try {
-			const context = ctxWithHealth({ "codex-lb": { state: "depleted", accounts: [] }, "deepseek": { state: "depleted", accounts: [] } });
+			const context = ctxWithHealth({
+				"codex-lb": { state: "depleted", accounts: [{ state: "depleted", resetsAt: 1790333025547 }] },
+				deepseek: { state: "depleted", accounts: [{ state: "depleted", resetsAt: 1790333025547 }] },
+			});
 			for (let i = 0; i < 20; i++) {
-				const result = await routeSubagentSpawn({ agent: "coder", spawnKey: `depleted-${i}` }, context, createRouterState(), { stateFile: file });
+				const result = await routeSubagentSpawn(
+					{ agent: "coder", spawnKey: `depleted-${i}` },
+					context,
+					createRouterState(),
+					{ stateFile: file },
+				);
 				expect(result?.model.length).toBeGreaterThan(0);
-				expect(result?.model.every(model => !model.startsWith("codex-lb/") && !model.startsWith("deepseek/"))).toBe(true);
-				expect(result?.model[0]?.startsWith("kimi-code/") || result?.model[0]?.startsWith("claude-bridge/")).toBe(true);
+				expect(result?.model.every(model => !model.startsWith("codex-lb/") && !model.startsWith("deepseek/"))).toBe(
+					true,
+				);
+				expect(result?.model[0]?.startsWith("kimi-code/") || result?.model[0]?.startsWith("claude-bridge/")).toBe(
+					true,
+				);
 			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -332,8 +458,17 @@ describe("agent router", () => {
 	test("reviewer fallback is a strong model, never a free model", async () => {
 		const { dir, file } = tempStateFile();
 		try {
-			const context = ctxWithHealth({ "codex-lb": { state: "depleted", accounts: [] }, "deepseek": { state: "depleted", accounts: [] }, "anthropic": { state: "depleted", accounts: [] } });
-			const result = await routeSubagentSpawn({ agent: "reviewer", spawnKey: "review-depleted" }, context, createRouterState(), { stateFile: file });
+			const context = ctxWithHealth({
+				"codex-lb": { state: "depleted", accounts: [] },
+				deepseek: { state: "depleted", accounts: [] },
+				anthropic: { state: "depleted", accounts: [] },
+			});
+			const result = await routeSubagentSpawn(
+				{ agent: "reviewer", spawnKey: "review-depleted" },
+				context,
+				createRouterState(),
+				{ stateFile: file },
+			);
 			expect(result?.model).toEqual(["claude-bridge/claude-sonnet-5"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -346,10 +481,21 @@ describe("agent router", () => {
 			const state = createRouterState();
 			const context = ctx();
 			await routeSubagentSpawn({ agent: "coder", spawnKey: "CoderResult" }, context, state, { stateFile: file });
-			const waitEvent = { toolName: "wait", details: { jobs: [
-				{ id: "CoderResult", type: "task", status: "running", durationMs: 100 },
-				{ id: "CoderResult", type: "task", status: "completed", durationMs: 500, resolvedModel: "kimi-code/k3:high" },
-			] } };
+			const waitEvent = {
+				toolName: "wait",
+				details: {
+					jobs: [
+						{ id: "CoderResult", type: "task", status: "running", durationMs: 100 },
+						{
+							id: "CoderResult",
+							type: "task",
+							status: "completed",
+							durationMs: 500,
+							resolvedModel: "kimi-code/k3:high",
+						},
+					],
+				},
+			};
 			const rows = recordTaskOutcome(waitEvent, context, state, { stateFile: file });
 			expect(rows).toHaveLength(1);
 			expect(rows[0]?.status).toBe("completed");
@@ -452,7 +598,9 @@ describe("agent router", () => {
 				{ stateFile: file, now: () => new Date("2026-09-24T18:00:02.000Z") },
 			);
 			expect(rows[0]?.fallbackReason).toBe("Usage preflight: available quota is at or below the 10% reserve.");
-			expect(readJsonl(file)[1]?.fallbackReason).toBe("Usage preflight: available quota is at or below the 10% reserve.");
+			expect(readJsonl(file)[1]?.fallbackReason).toBe(
+				"Usage preflight: available quota is at or below the 10% reserve.",
+			);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -486,7 +634,8 @@ describe("agent router", () => {
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 		const api = {
 			setLabel: () => undefined,
-			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
+				handlers.set(event, handler),
 		} as unknown as ExtensionAPI;
 		agentRouter(api);
 		expect(handlers.has("before_subagent_spawn")).toBe(true);
@@ -499,7 +648,8 @@ describe("agent router", () => {
 		const notifications: Array<{ message: string; type?: string }> = [];
 		const api = {
 			setLabel: () => undefined,
-			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
+				handlers.set(event, handler),
 		} as unknown as ExtensionAPI;
 		agentRouter(api);
 		handlers.get("retry_fallback_applied")?.(

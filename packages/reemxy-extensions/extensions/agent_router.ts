@@ -20,6 +20,21 @@ const POOL_SIZES: Record<string, number> = {
 	researcher: 1, "business-analyst": 3, creative: 2,
 };
 
+const WRITE_CAPABLE_WORKERS = new Set(["coder", "ui-coder", "workhorse", "git-pr-owner"]);
+
+function activeWriteWorker(state: RouterState, ctx: ExtensionContext): SpawnState | undefined {
+	const runningJobs = ctx.getAsyncJobSnapshot?.()?.running ?? [];
+	return [...state.spawns.values()].find(spawn => {
+		if (spawn.recordedOutcome || spawn.isolated || !WRITE_CAPABLE_WORKERS.has(spawn.agent)) return false;
+		return runningJobs.some(job => {
+			const identifiers = [stringValue(job.id), stringValue(job.agentId)];
+			return (
+				identifiers.includes(spawn.spawnKey) || (spawn.jobId !== undefined && identifiers.includes(spawn.jobId))
+			);
+		});
+	});
+}
+
 function profilePool(agent: string, poolSize: number): PoolConfig {
 	const file = new URL(`./agents/${agent}.md`, import.meta.url);
 	const chain = parseAgent(file.pathname, readFileSync(file, "utf8"), "user").model;
@@ -46,6 +61,7 @@ export interface SpawnRecord {
 	chosen: string;
 	order: string[];
 	skipped?: SkippedModelRecord[];
+	isolated?: boolean;
 }
 
 export interface OutcomeRecord {
@@ -95,6 +111,7 @@ export interface BeforeSubagentSpawnEvent {
 	agent?: unknown;
 	spawnKey?: unknown;
 	patterns?: unknown;
+	isolated?: unknown;
 }
 
 export interface ToolResultEvent {
@@ -232,12 +249,20 @@ export async function routeSubagentSpawn(
 	ctx: ExtensionContext,
 	state = createRouterState(),
 	options: { stateFile?: string; now?: () => Date; shuffle?: <T>(items: readonly T[]) => T[] } = {},
-): { model: string[]; note: string } | undefined {
+): { model: string[]; note: string } | { block: true; reason: string } | undefined {
 	const agent = stringValue(event.agent);
 	if (!agent) return undefined;
 	const config = AGENT_POOLS[agent];
 	if (!config) return undefined;
-
+	if (WRITE_CAPABLE_WORKERS.has(agent) && event.isolated !== true) {
+		const activeWriter = activeWriteWorker(state, ctx);
+		if (activeWriter) {
+			return {
+				block: true,
+				reason: `Refusing ${agent}: ${activeWriter.agent} worker ${activeWriter.spawnKey} is running in this checkout; pass isolated: true.`,
+			};
+		}
+	}
 	const shuffle = options.shuffle ?? cryptoShuffle;
 	const { available, skipped: poolSkipped } = await availablePoolMembers(config.pool, ctx);
 	const { available: fallbacks, skipped: fallbackSkipped } = await availablePoolMembers(config.fallbacks, ctx);
@@ -256,6 +281,7 @@ export async function routeSubagentSpawn(
 		agent,
 		chosen,
 		order,
+		...(event.isolated === true ? { isolated: true } : {}),
 		...(skipped.length > 0 ? { skipped } : {}),
 	};
 	state.spawns.set(recordKey(spawnKey, agent), { ...record, recordedOutcome: false });
