@@ -2175,7 +2175,11 @@ export class EventController {
 				!hasToolCall
 			) {
 				const component = this.ctx.transcriptMessageComponents.get(finalAssistant) ?? this.#lastAssistantComponent;
-				if (!finalText && component instanceof AssistantMessageComponent && this.ctx.chatContainer.canRemoveBlock(component)) {
+				if (
+					!finalText &&
+					component instanceof AssistantMessageComponent &&
+					this.ctx.chatContainer.canRemoveBlock(component)
+				) {
 					this.ctx.chatContainer.removeChild(component);
 					this.ctx.transcriptMessageComponents.delete(finalAssistant);
 					if (this.#lastAssistantComponent === component) this.#lastAssistantComponent = undefined;

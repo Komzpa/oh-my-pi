@@ -345,7 +345,9 @@ describe("EventController event-woken status replies", () => {
 		await controller.handleEvent({ type: "message_start", message: final });
 		await controller.handleEvent({ type: "message_end", message: final });
 		await controller.handleEvent({ type: "agent_end", messages: [final], isTerminal: true });
-		const assistantMessages = ctx.chatContainer.children.filter(component => component instanceof AssistantMessageComponent);
+		const assistantMessages = ctx.chatContainer.children.filter(
+			component => component instanceof AssistantMessageComponent,
+		);
 		const rendered = ctx.chatContainer.children
 			.flatMap(component => component.render(100))
 			.map(line => Bun.stripANSI(line))
@@ -386,7 +388,6 @@ describe("EventController event-woken status replies", () => {
 		const { assistantMessages } = await renderTurn("");
 		expect(assistantMessages).toHaveLength(0);
 	});
-
 
 	it("collapses short event status without history but keeps a changed commit SHA", async () => {
 		const short = await renderTurn("Nothing new.", false, "worker", false);
