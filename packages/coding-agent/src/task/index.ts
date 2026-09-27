@@ -225,13 +225,13 @@ function validateShapeParams(batchEnabled: boolean, params: TaskParams): string 
 
 /**
  * Validate the spawn parameter contract against the wire shapes. With
- * `task.batch` the model-facing shape is `{ context, tasks[] }` — `tasks`
- * non-empty with per-item `task` instructions and unique names, `context`
- * non-empty, no top-level `task` alongside. The flat `{ agent?, ...item }`
- * form stays accepted at runtime under either setting (internal callers, stale
- * transcripts). Missing `agent` values resolve against the session spawn
- * policy later, in `spawnParamsFor`. Returns a problem description, or
- * undefined when valid.
+ * `task.batch` the model-facing shape is `{ context, tasks[] }` with per-item
+ * `task` instructions and unique names, a non-empty `context`, and no
+ * top-level `task` alongside. An empty `tasks` array with valid `context`
+ * represents no work. The flat `{ agent?, ...item }` form stays accepted at
+ * runtime under either setting (internal callers, stale transcripts). Missing
+ * `agent` values resolve against the session spawn policy later, in
+ * `spawnParamsFor`. Returns a problem description, or undefined when valid.
  */
 
 /** Reject an out-of-range `effort` selector on internal/stale-transcript calls that bypass the wire schema. */
@@ -244,7 +244,7 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 	const hasTask = typeof params.task === "string" && params.task.trim() !== "";
 	const tasks = params.tasks;
 	if (batchEnabled && tasks !== undefined) {
-		if (!Array.isArray(tasks) || tasks.length === 0) {
+		if (!Array.isArray(tasks)) {
 			return "Missing `tasks`. Provide at least one task item ({ name?, agent?, task }).";
 		}
 		if (hasTask) {
@@ -283,10 +283,11 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 }
 
 /**
- * Normalize a validated call into its spawn list: the `tasks[]` batch when
- * provided, otherwise the single top-level spawn. The flat form's `isolated`
- * flag is only materialized when the caller sent one — `#runSpawn`
- * distinguishes an absent key from an explicit value.
+ * Normalize a validated, non-empty call into its spawn list: the `tasks[]`
+ * batch when provided, otherwise the single top-level spawn. `execute()`
+ * returns the no-work result before calling this for an empty batch. The flat
+ * form's `isolated` flag is only materialized when the caller sent one —
+ * `#runSpawn` distinguishes an absent key from an explicit value.
  */
 function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if (Array.isArray(params.tasks) && params.tasks.length > 0) {
@@ -929,7 +930,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			return createTaskModeError(plan);
 		}
 		const { params, items: spawnItems, spawns: normalizedSpawnParams } = plan;
-		const evalToolNames = spawnItems.flatMap(item => item.tools ?? []);
+
+		if (batchEnabled && Array.isArray(params.tasks) && params.tasks.length === 0) {
+			return {
+				content: [{ type: "text", text: "No tasks selected; nothing to dispatch." }],
+				details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
+			};
+		}		const evalToolNames = spawnItems.flatMap(item => item.tools ?? []);
 		if (evalToolNames.length > 0) {
 			if (this.session.getPlanModeState?.()?.enabled === true) {
 				return createTaskModeError("Task execution failed: Eval-defined tools are unavailable in plan mode.");
