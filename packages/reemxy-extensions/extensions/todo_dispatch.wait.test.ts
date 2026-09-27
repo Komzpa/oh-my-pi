@@ -2,8 +2,10 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { expect, test } from "bun:test";
+import { expect, test, vi } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { execFileSync } from "node:child_process";
 import todoDispatch from "./todo_dispatch";
 
 type WaitTestTask = {
@@ -280,6 +282,101 @@ test("capacity reports zero when no authenticated worker profile can start", asy
 	expect(oneResult?.messages?.at(-1)?.content).toContain("Task cap=1");
 });
 
+
+test("PLAN CHECK puts stale no-commit workers first and never aborts them", async () => {
+	const worktrees = [0, 1, 2].map(() => fs.mkdtempSync(path.join(os.tmpdir(), "todo-worker-tree-")));
+	const sessions = fs.mkdtempSync(path.join(os.tmpdir(), "todo-worker-session-"));
+	const sessionFile = path.join(sessions, "main.jsonl");
+	fs.mkdirSync(path.join(sessions, "main"));
+	const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "test@example.com" };
+	const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: gitEnv });
+	for (const cwd of worktrees) {
+		git(cwd, "init", "-q", "-b", "main");
+		fs.writeFileSync(path.join(cwd, "file.txt"), "base\n");
+		git(cwd, "add", "file.txt");
+		git(cwd, "commit", "-qm", "base");
+	}
+	const oldDate = new Date(Date.now() - 18 * 60_000).toISOString();
+	for (const index of [0, 2])
+		execFileSync("git", ["commit", "--amend", "--no-edit", "--date", oldDate], {
+			cwd: worktrees[index]!,
+			encoding: "utf8",
+			env: { ...gitEnv, GIT_AUTHOR_DATE: oldDate, GIT_COMMITTER_DATE: oldDate },
+		});
+	const now = Date.now();
+	const phases = chainedPlan(3, now);
+	const tasks = phases[0]!.tasks;
+	tasks[1]!.status = "in_progress";
+	tasks[1]!.schedule.owner = "worker-b";
+	tasks[1]!.schedule.dependencies = [];
+	tasks[2]!.status = "in_progress";
+	tasks[2]!.schedule.owner = "worker-c";
+	tasks[2]!.schedule.dependencies = [];
+	const running = ["worker-a", "worker-b", "worker-c"].map((id, index) => ({
+		id,
+		agentId: id,
+		type: "task" as const,
+		status: "running" as const,
+		label: `Row ${String.fromCharCode(65 + index)}`,
+		startTime: now - (index === 2 ? 10 : 17) * 60_000,
+	}));
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+	const sent: string[] = [];
+	const api = {
+		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+		getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+		pi: {
+			forecastTodoPlan,
+			formatPlanForecast,
+			formatTaskForecast,
+			getLatestTodoPhasesFromEntries: () => phases,
+			readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }),
+			sendMessage: (message: { content: string }) => sent.push(message.content),
+		},
+		registerSoftToolRequirementProvider: () => undefined,
+		appendEntry: () => undefined,
+		sendMessage: (message: { content: string }) => sent.push(message.content),
+	} as unknown as ExtensionAPI;
+	await todoDispatch(api);
+	const registry = new AgentRegistry();
+	const aborted: string[] = [];
+	vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
+	for (const [index, id] of ["worker-a", "worker-b", "worker-c"].entries())
+		registry.register({ id, displayName: id, kind: "sub", session: { sessionManager: { getCwd: () => worktrees[index] }, abort: () => aborted.push(id) } as never });
+	for (const id of ["worker-a", "worker-b", "worker-c"])
+		fs.writeFileSync(path.join(sessions, "main", `${id}.jsonl`), `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: "bun run build" } }] } })}\n`);
+	let tick: (() => void | Promise<void>) | undefined;
+	const ctx = {
+		cwd: worktrees[0],
+		sessionManager: {
+			getHeader: () => ({ id: "no-commit" }),
+			getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
+			getSessionFile: () => sessionFile,
+		},
+		getAsyncJobSnapshot: () => ({ running, recent: [], nonJobAgents: running.map(job => ({ id: job.agentId, live: true })) }),
+		getTaskMaxConcurrency: () => 3,
+		hasPendingMessages: () => false,
+		isIdle: () => true,
+		setTimeout: () => ({}),
+		setInterval: (callback: () => void | Promise<void>) => { tick = callback; return {}; },
+		clearTimer: () => undefined,
+	} as unknown as ExtensionContext;
+	try {
+		await handlers.get("session_start")!({}, ctx);
+		await tick!();
+		await tick!();
+		const text = sent.join("\n");
+		expect(text).toContain("(1) suspect: Row 1 · worker-a · 17 · bash bun run build");
+		expect(text).not.toContain("suspect: Row 2 · worker-b");
+		expect(text).not.toContain("suspect: Row 3 · worker-c");
+		expect(aborted).toEqual([]);
+	} finally {
+		handlers.get("session_shutdown")?.({}, ctx);
+		vi.restoreAllMocks();
+		for (const cwd of worktrees) fs.rmSync(cwd, { recursive: true, force: true });
+		fs.rmSync(sessions, { recursive: true, force: true });
+	}
+}, 60_000);
 test("dispatcher renders forecast and deadline times in the persisted goal timezone", async () => {
 	const now = Date.UTC(2026, 8, 25, 19, 16);
 	const phases = chainedPlan(1, now);

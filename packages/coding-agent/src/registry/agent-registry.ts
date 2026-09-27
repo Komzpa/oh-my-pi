@@ -78,9 +78,8 @@ export interface AgentRef {
 	sessionFile: string | null;
 	createdAt: number;
 	lastActivity: number;
-	/** Short gist of what the agent is currently doing (latest intent or tool), for the work-aware roster. Display-only. */
-	activity?: string;
-	/** Persisted identity and telemetry restored after the live observer is gone. */
+	/** Worktree has no recent commit despite a long-running task. */
+	worktreeWarning?: { minutes: number; lastLine: string; row?: string };
 	history?: AgentHistorySummary;
 	/** Run lifecycle milestones (launch is {@link createdAt}). */
 	lifecycle?: AgentRunLifecycle;
@@ -204,7 +203,10 @@ export class AgentRegistry {
 		ref.status = status;
 		// Activity describes current work; it is meaningless once the agent
 		// leaves `running`, so drop it to avoid showing stale work in rosters.
-		if (status !== "running") ref.activity = undefined;
+		if (status !== "running") {
+			ref.activity = undefined;
+			ref.worktreeWarning = undefined;
+		}
 		ref.lastActivity = Date.now();
 		if (status === "running") {
 			// Milestones are run-scoped. A ref reused by a follow-up or wake
@@ -285,6 +287,18 @@ export class AgentRegistry {
 		ref.lastActivity = Date.now();
 		if (ref.activity === gist) return;
 		ref.activity = gist;
+	}
+
+	setWorktreeWarning(id: string, warning?: AgentRef["worktreeWarning"]): void {
+		const ref = this.#refs.get(id);
+		if (!ref || (warning !== undefined && ref.status !== "running")) return;
+		if (
+			ref.worktreeWarning?.minutes === warning?.minutes &&
+			ref.worktreeWarning?.lastLine === warning?.lastLine &&
+			ref.worktreeWarning?.row === warning?.row
+		) return;
+		ref.worktreeWarning = warning;
+		this.#emit({ type: "metadata_changed", ref });
 	}
 
 	attachSession(
