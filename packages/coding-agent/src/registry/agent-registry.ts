@@ -78,6 +78,8 @@ export interface AgentRef {
 	sessionFile: string | null;
 	createdAt: number;
 	lastActivity: number;
+	/** Short gist of current work, used only for the work-aware roster. */
+	activity?: string;
 	/** Worktree has no recent commit despite a long-running task. */
 	worktreeWarning?: { minutes: number; lastLine: string; row?: string };
 	/** Open TODO row assigned to this running worker. */
