@@ -1,5 +1,7 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { availableParallelism } from "node:os";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
 import type { TodoPlanForecast, TodoPlanningIssue, TodoScheduleInput, TodoTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -1248,8 +1250,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     }
     if (Date.now() - liveWorkerModelCheckedAt < 15_000) return Promise.resolve(liveWorkerModelCount);
     if (liveWorkerModelRefresh?.session === session) return liveWorkerModelRefresh.promise;
-    let promise: Promise<number>;
-    promise = countLiveWorkerModels(ctx)
+    const promise = countLiveWorkerModels(ctx)
       .then((count) => {
         if (liveWorkerModelSession === session) {
           liveWorkerModelCount = count;
@@ -2080,6 +2081,26 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     } catch {}
     return { lastTool, wrote: wrote.slice(-4) };
   };
+  const workerCommitAt = (id: string): number | undefined => {
+    const cwd = AgentRegistry.global().get(id)?.session?.sessionManager?.getCwd();
+    if (!cwd) return undefined;
+    try {
+      const repo = vcs.git(cwd);
+      if (!repo) return undefined;
+      if (!repo.headSync().commit) return 0;
+      const result = spawnSync("git", ["log", "-1", "--format=%ct"], {
+        cwd,
+        encoding: "utf8",
+        timeout: 5_000,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      });
+      const seconds = Number(String(result.stdout ?? "").trim());
+      return result.status === 0 && Number.isFinite(seconds) ? seconds * 1000 : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const noCommitWarnings = new Set<string>();
   const silentWorkers = (activity: ReturnType<typeof workerActivity>) =>
     activity.filter((worker) => worker.known && worker.ageMs !== undefined && worker.ageMs >= SILENT_MS);
   const minutes = (ms: number | undefined) => `${Math.round((ms ?? 0) / 60_000)} min`;
@@ -2556,21 +2577,43 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const checkedIn = new Set(checkins.map((worker) => worker.id));
     const silent = silentWorkers(activity).filter((worker) => !checkedIn.has(worker.name));
     const activityByName = new Map(activity.map((worker) => [worker.name, worker]));
-    const workerInfos = running.flatMap((job) => {
+    const workerInfos = running.map((job) => {
       const id = job.agentId ?? job.id;
       const row = open.find((candidate) => candidate.owner === job.id || candidate.owner === job.agentId);
-      if (!row) return [];
-      const p95 = row.fixedPathP95Finish ?? row.resourceFinish;
+      const label = row?.content ?? job.label ?? id;
+      const p95 = row?.fixedPathP95Finish ?? row?.resourceFinish;
       const p95Text = typeof p95 === "number" && Number.isFinite(p95)
         ? now >= p95 ? `past ${minutes(now - p95)} (P95 ${hhmm(p95, decision.deadline?.timezone)})` : `due ${hhmm(p95, decision.deadline?.timezone)}`
         : "unknown";
       const trace = workerTrace(ctx, id);
       const age = activityByName.get(id)?.ageMs;
-      return [{ id, row, trace, age, p95Text }];
+      return { id, row, label, trace, age, p95Text };
     });
-    const workerRows = workerInfos.map(({ id, row, trace, age, p95Text }) => {
+    const staleWorkers = workerInfos.flatMap(({ id, row, label, trace }) => {
+      const job = running.find(candidate => (candidate.agentId ?? candidate.id) === id);
+      const startTime = job?.startTime;
+      const elapsed = typeof startTime === "number" ? now - startTime : 0;
+      const commitAt = workerCommitAt(id);
+      const isStale = elapsed > SILENT_MS && commitAt !== undefined && now - commitAt > SILENT_MS;
+      const minutesOld = Math.floor(elapsed / 60_000);
+      const warning = isStale ? { minutes: minutesOld, lastLine: trace.lastTool, ...(row ? { row: row.content } : {}) } : undefined;
+      AgentRegistry.global().setWorktreeWarning(id, warning);
+      if (!warning) {
+        noCommitWarnings.delete(id);
+        return [];
+      }
+      noCommitWarnings.add(id);
+      return [`suspect: ${label} · ${id} · ${minutesOld} · ${trace.lastTool}`];
+    });
+    for (const id of noCommitWarnings) {
+      if (running.some(job => (job.agentId ?? job.id) === id)) continue;
+      AgentRegistry.global().setWorktreeWarning(id, undefined);
+      noCommitWarnings.delete(id);
+    }
+    const workerRows = workerInfos.flatMap(({ id, row, trace, age, p95Text }) => {
+      if (!row) return [];
       const wrote = trace.wrote.length ? trace.wrote.join(",") : "none";
-      return `${id} row=${JSON.stringify(shorten(row.content))} last=${trace.lastTool} age=${minutes(age)} wrote=${wrote} P95=${p95Text}`;
+      return [`${id} row=${JSON.stringify(shorten(row.content))} last=${trace.lastTool} age=${minutes(age)} wrote=${wrote} P95=${p95Text}`];
     });
     const workerStatus = workerRows.length
       ? `Worker status: ${workerRows.slice(0, 8).join(" | ")}${workerRows.length > 8 ? ` | … ${workerRows.length - 8} more` : ""}`
@@ -2645,8 +2688,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     });
     const receding = recedingFinish(ctx, open, now, decision.deadline?.timezone);
     const problems = [
+      ...staleWorkers,
       planningAdvice,
-      retroLine,
       unread.length ? `${unread.length} worker result(s) came back and their rows are still open: ${names(unread)}. Read each receipt now and close the row or send it back with the reason, before any other plan change (skill step 4)` : "",
       finishDelayNotice,
       receding,
@@ -2664,7 +2707,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       ready.length > capacity - running.length && idle > capacity ? `${idle} idle rows for ${capacity} worker slots: prune before adding` : "",
     ].filter(Boolean);
     return problems.length
-      ? `PLAN CHECK: ${problems.length} problem(s). ${workerStatus ? `${workerStatus} ` : ""}${problems.map((line, i) => `(${i + 1}) ${line}`).join(" ")}. Fix them with the pass of skill://chief-of-staff.`
+      ? `PLAN CHECK: ${problems.length} problem(s). ${problems.map((line, i) => `(${i + 1}) ${line}`).join(" ")}.${workerStatus ? ` ${workerStatus}` : ""} Fix them with the pass of skill://chief-of-staff.`
       : workerStatus
         ? `${PLAN_CHECK_CLEAN} ${workerStatus}`
         : PLAN_CHECK_CLEAN;
