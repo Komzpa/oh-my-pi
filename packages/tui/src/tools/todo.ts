@@ -133,8 +133,6 @@ export interface TodoToolDetails {
 	forecast?: TodoPlanForecast;
 }
 
-
-
 /** Minimum overlap (after normalization) required for a substring match.
  * Picked at six chars to admit single-word identifiers like "review" /
  * "Sonnet" without admitting tiny common substrings like "test" / "fix"
@@ -752,17 +750,23 @@ export const todoToolRenderer = {
 					bodyLines.push(uiTheme.fg("accent", forDisplay(phase.name)));
 					for (const task of phase.tasks) {
 						const schedule = task.schedule;
-						const actual = Number.isFinite(schedule?.startedAt) && Number.isFinite(schedule?.finishedAt)
-							? `${Math.max(0, Math.round((schedule!.finishedAt! - schedule!.startedAt!) / 1000))}s`
-							: undefined;
+						const actual =
+							Number.isFinite(schedule?.startedAt) && Number.isFinite(schedule?.finishedAt)
+								? `${Math.max(0, Math.round((schedule!.finishedAt! - schedule!.startedAt!) / 1000))}s`
+								: undefined;
 						const evidence = [
 							schedule?.owner && `owner ${schedule.owner}`,
 							schedule?.estimate && `estimate ${schedule.estimate.likelySeconds}s`,
 							actual && `actual ${actual}`,
-							schedule?.executor && `executor ${schedule.executor.workerId}${schedule.executor.outcome ? ` (${schedule.executor.outcome})` : ""}`,
-						].filter(Boolean).map(value => forDisplay(String(value)).replace(/[\r\n]+/g, " "));
+							schedule?.executor &&
+								`executor ${schedule.executor.workerId}${schedule.executor.outcome ? ` (${schedule.executor.outcome})` : ""}`,
+						]
+							.filter(Boolean)
+							.map(value => forDisplay(String(value)).replace(/[\r\n]+/g, " "));
 						const line = formatTodoLine(task, uiTheme, "  ", EMPTY_COMPLETION_KEYS, undefined, true);
-						bodyLines.push(evidence.length > 0 ? `${line} ${uiTheme.fg("dim", `· ${evidence.join(" · ")}`)}` : line);
+						bodyLines.push(
+							evidence.length > 0 ? `${line} ${uiTheme.fg("dim", `· ${evidence.join(" · ")}`)}` : line,
+						);
 					}
 				}
 			}
