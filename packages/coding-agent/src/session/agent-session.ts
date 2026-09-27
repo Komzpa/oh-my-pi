@@ -837,6 +837,7 @@ export class AgentSession implements SettingsScope {
 	 * across a `/new` is dropped regardless of job-id reuse.
 	 */
 	#asyncDeliveryEpoch = 0;
+	#asyncReceiptDeliveries = new Map<string, Promise<void>>();
 
 	readonly #irc: IrcBridge;
 	#ircWakeTurnObserver:
@@ -2632,6 +2633,7 @@ export class AgentSession implements SettingsScope {
 		// generation, then drop any async-result follow-up already queued, so a
 		// prior session's background result cannot inject into the next transcript.
 		this.#asyncDeliveryEpoch += 1;
+		this.#asyncReceiptDeliveries.clear();
 		this.yieldQueue.clear("async-result");
 	}
 
@@ -2723,23 +2725,38 @@ export class AgentSession implements SettingsScope {
 	async #deliverAsyncJobResult(manager: AsyncJobManager, jobId: string, text: string, job?: AsyncJob): Promise<void> {
 		if (this.#isDisposed) return;
 		if (manager.isDeliverySuppressed(jobId)) return;
-		// Snapshot the generation before the async format step: a `/new` during it
-		// bumps the epoch, so this delivery belongs to the replaced session and
-		// must not enqueue — the suppression marker alone is unreliable because
-		// job-id reuse clears it.
-		const epoch = this.#asyncDeliveryEpoch;
-		const formatted = await this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta);
-		if (this.#isDisposed) return;
-		if (epoch !== this.#asyncDeliveryEpoch) return;
-		if (manager.isDeliverySuppressed(jobId)) return;
-		const durationMs = job ? Math.max(0, (job.endTime ?? Date.now()) - job.startTime) : undefined;
-		await this.yieldQueue.enqueueWithReceipt<AsyncResultEntry>("async-result", {
-			jobId,
-			result: formatted,
-			job,
-			durationMs,
-			epoch,
-		});
+		const receiptKey = `${job?.agentId ?? jobId}:${Bun.hash(text).toString(16)}`;
+		const existingDelivery = this.#asyncReceiptDeliveries.get(receiptKey);
+		if (existingDelivery) return existingDelivery;
+
+		const delivery = (async () => {
+			// Snapshot the generation before the async format step: a `/new` during it
+			// bumps the epoch, so this delivery belongs to the replaced session and
+			// must not enqueue — the suppression marker alone is unreliable because
+			// job-id reuse clears it.
+			const epoch = this.#asyncDeliveryEpoch;
+			const formatted = await this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta);
+			if (this.#isDisposed) return;
+			if (epoch !== this.#asyncDeliveryEpoch) return;
+			if (manager.isDeliverySuppressed(jobId)) return;
+			const durationMs = job ? Math.max(0, (job.endTime ?? Date.now()) - job.startTime) : undefined;
+			await this.yieldQueue.enqueueWithReceipt<AsyncResultEntry>("async-result", {
+				jobId,
+				result: formatted,
+				job,
+				durationMs,
+				epoch,
+			});
+		})();
+		this.#asyncReceiptDeliveries.set(receiptKey, delivery);
+		try {
+			await delivery;
+		} catch (error) {
+			if (this.#asyncReceiptDeliveries.get(receiptKey) === delivery) {
+				this.#asyncReceiptDeliveries.delete(receiptKey);
+			}
+			throw error;
+		}
 	}
 
 	/**
