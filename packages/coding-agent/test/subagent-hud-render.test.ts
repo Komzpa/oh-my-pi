@@ -10,6 +10,7 @@ import { Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resetHangulCompatibilityJamoWidthForTests, setHangulCompatibilityJamoWidth } from "@oh-my-pi/pi-tui";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-tui/prompt/composer";
 import {
 	InteractiveMode,
@@ -242,6 +243,28 @@ describe("subagent HUD lines", () => {
 			expect(out).toContain(`${theme.status.done} custom/model:high LegacyWorker`);
 			expect(out).not.toContain(theme.thinking.high.split(" ")[0]);
 		});
+	});
+
+	it("shows a no-commit warning in the active worker's HUD row", () => {
+		const registry = new AgentRegistry();
+		vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
+		try {
+			const id = "StaleWorker";
+			registry.register({
+				id,
+				displayName: id,
+				kind: "sub",
+				session: { sessionManager: { getCwd: () => "/tmp" } } as never,
+				status: "running",
+			});
+			// `worktreeWarning` lands with the worker-warning registry follow-up; the
+			// HUD reads it optionally, so the test injects it through a narrow view.
+			const entry = registry.get(id) as { worktreeWarning?: { minutes: number; lastLine?: string } };
+			entry.worktreeWarning = { minutes: 17, lastLine: "bash bun test" };
+			expect(render([makeSession({ id, description: "Implement the row" })])).toContain("⚠ 17m no commit");
+		} finally {
+			vi.restoreAllMocks();
+		}
 	});
 
 	it("renders running subagents as Id: description under a Subagents header", () => {
