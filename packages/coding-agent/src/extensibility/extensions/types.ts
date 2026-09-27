@@ -827,6 +827,8 @@ export interface BeforeSubagentSpawnEvent {
 	patterns: string[];
 	/** Stable per-spawn key for deterministic selection, when the caller supplies one. */
 	spawnKey?: string;
+	/** Whether the caller explicitly requested an isolated worktree. */
+	isolated?: boolean;
 }
 
 export type {
