@@ -478,6 +478,7 @@ describe("structured subagent primitive", () => {
 				invocationKind: "task",
 				modelRole: "definition",
 				patterns: ["anthropic/claude-opus-4-5"],
+				isolated: false,
 			},
 		]);
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
@@ -485,13 +486,20 @@ describe("structured subagent primitive", () => {
 
 	it("rejects dispatch before leasing artifacts when an extension blocks the spawn", async () => {
 		mockDiscovery();
-		const blockedSession = session();
-		blockedSession.emitBeforeSubagentSpawn = async () => ({ block: true, reason: "pool exhausted" });
+		const blockedSession = session({ isolationEnabled: true });
+		const events: BeforeSubagentSpawnEvent[] = [];
+		blockedSession.emitBeforeSubagentSpawn = async event => {
+			events.push(event);
+			return { block: true, reason: "pool exhausted" };
+		};
 		const run = vi.spyOn(executorModule, "runSubprocess");
-		const error = await runStructuredSubagent(request({ session: blockedSession })).catch((cause: unknown) => cause);
+		const error = await runStructuredSubagent(
+			request({ session: blockedSession, isolation: { requested: true } }),
+		).catch((cause: unknown) => cause);
 		expect(error).toBeInstanceOf(StructuredSubagentError);
 		expect(error as StructuredSubagentError).toMatchObject({ kind: "preflight", message: "pool exhausted" });
 		expect(run).not.toHaveBeenCalled();
+		expect(events[0]?.isolated).toBe(true);
 		expect(artifactsDirsFromRegistry()).toEqual([]);
 	});
 
