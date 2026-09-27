@@ -442,21 +442,13 @@ export class CredentialHealth implements HealthApi {
 		return true;
 	}
 
-	markProviderDepleted(
-		provider: Provider,
-		options?: { status?: number; message?: string; resetAtMs?: number },
-	): void {
+	markProviderDepleted(provider: Provider, options?: { status?: number; message?: string; resetAtMs?: number }): void {
 		if (options?.status === 402) {
 			if (is402BillingCapBody(options.message)) this.#deps.providerDepletion.set(provider, null);
 			return;
 		}
 		const resetAtMs = options?.resetAtMs;
-		if (
-			options?.status !== 429 ||
-			resetAtMs === undefined ||
-			!Number.isFinite(resetAtMs) ||
-			resetAtMs <= Date.now()
-		)
+		if (options?.status !== 429 || resetAtMs === undefined || !Number.isFinite(resetAtMs) || resetAtMs <= Date.now())
 			return;
 		const existing = this.#deps.providerDepletion.get(provider);
 		if (existing === null) return;
