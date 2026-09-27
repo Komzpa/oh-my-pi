@@ -194,6 +194,7 @@ async function assertNotReadSelectorMisfire(target: string, content: string, cwd
 const writeSchema = type({
 	path: "string",
 	"content?": "string",
+	"replace?": type("boolean").describe("Confirm this write intentionally replaces existing file content."),
 });
 
 /** Write arguments; `content` may be omitted only where the target scheme's write policy allows it. */
