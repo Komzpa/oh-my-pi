@@ -1,7 +1,8 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+	import { execFileSync } from "node:child_process";
+	import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+	import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import agentRouter, {
@@ -58,6 +59,15 @@ function readJsonl(file: string): Array<Record<string, unknown>> {
 		.split("\n")
 		.filter(Boolean)
 		.map(line => JSON.parse(line) as Record<string, unknown>);
+}
+
+function toolCallHandler(): (event: unknown, ctx: ExtensionContext) => unknown {
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+	agentRouter({
+		setLabel: () => undefined,
+		on: (event, handler) => handlers.set(event, handler),
+	} as unknown as ExtensionAPI);
+	return handlers.get("tool_call")!;
 }
 
 const THINKING_ORDER = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -672,5 +682,60 @@ describe("agent router", () => {
 				type: "warning",
 			},
 		]);
+	});
+	test("refuses empty writes unless the call explicitly confirms replacement", async () => {
+		const { dir } = tempStateFile();
+		try {
+			const call = toolCallHandler();
+			const context = ctx({ cwd: dir });
+			const refused = await call({ toolName: "write", input: { path: "empty.txt", content: "" } }, context);
+			expect(refused).toMatchObject({ block: true });
+			expect(refused.reason).toContain("empty.txt");
+			expect(refused.reason).toContain("empty");
+			expect(await call({ toolName: "write", input: { path: "empty.txt", content: "", replace: true } }, context)).toBeUndefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("refuses tiny writes to tracked files but allows normal in-repository writes", async () => {
+		const { dir } = tempStateFile();
+		try {
+			execFileSync("git", ["init", "-q"], { cwd: dir });
+			writeFileSync(join(dir, "tracked.txt"), "x".repeat(1_000));
+			execFileSync("git", ["add", "tracked.txt"], { cwd: dir });
+			const call = toolCallHandler();
+			const context = ctx({ cwd: dir });
+			const refused = await call({ toolName: "write", input: { path: "tracked.txt", content: "tiny" } }, context);
+			expect(refused).toMatchObject({ block: true });
+			expect(refused.reason).toContain("tracked.txt");
+			expect(refused.reason).toContain("5%");
+			expect(await call({ toolName: "write", input: { path: "tracked.txt", content: "tiny", replace: true } }, context)).toBeUndefined();
+			expect(await call({ toolName: "write", input: { path: "new.txt", content: "normal in-repo write" } }, context)).toBeUndefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("refuses write and edit paths outside the repository with actionable reasons", async () => {
+		const { dir } = tempStateFile();
+		try {
+			const call = toolCallHandler();
+			const context = ctx({ cwd: dir });
+			const outside = join(dir, "..", "outside-file.txt");
+			for (const toolName of ["write", "edit"]) {
+				const refused = await call({ toolName, input: { path: outside, content: "content" } }, context);
+				expect(refused).toMatchObject({ block: true });
+				expect(refused.reason).toContain(outside);
+				expect(refused.reason).toContain("outside this session's repository");
+				if (toolName === "edit") {
+					const hashline = await call({ toolName, input: { input: `*** Begin Patch\n[${outside}#BEEF]\nPUT <1:\n+change\n*** End Patch` } }, context);
+					expect(hashline).toMatchObject({ block: true });
+					expect(hashline.reason).toContain(outside);
+				}
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

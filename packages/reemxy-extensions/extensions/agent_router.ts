@@ -1,11 +1,13 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
-import { mkdirSync, appendFileSync, chmodSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { randomInt } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import type { ModelUsageHealth, ModelUsageHealthState } from "@oh-my-pi/pi-ai";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
+import { SettingsManager } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
 
 export interface PoolConfig {
 	pool: string[];
@@ -165,6 +167,106 @@ function appendJsonl(stateFile: string, record: JsonlRecord): void {
 	mkdirSync(dirname(stateFile), { recursive: true, mode: 0o700 });
 	appendFileSync(stateFile, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
 	chmodSync(stateFile, 0o600);
+}
+
+function canonicalPath(target: string): string {
+	let current = resolve(target);
+	const suffix: string[] = [];
+	while (!existsSync(current)) {
+		const parent = dirname(current);
+		if (parent === current) return resolve(target);
+		suffix.unshift(current.slice(parent.length + 1));
+		current = parent;
+	}
+	return resolve(realpathSync(current), ...suffix);
+}
+
+function isWithin(root: string, target: string): boolean {
+	const rel = relative(root, target);
+	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+function configuredWriteAllowlist(ctx: ExtensionContext): string[] {
+	const settings = SettingsManager.create(ctx.cwd);
+	const values = [settings.getGlobalSettings().reemxyWriteAllowlist, settings.getProjectSettings().reemxyWriteAllowlist];
+	return values.flatMap(value => (Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : []));
+}
+
+
+function fileToolTargets(input: Record<string, unknown>): string[] {
+	const targets = [typeof input.path === "string" ? input.path : undefined];
+	if (Array.isArray(input.paths)) targets.push(...input.paths.filter((target): target is string => typeof target === "string"));
+	if (Array.isArray(input.edits)) {
+		for (const edit of input.edits) {
+			if (edit && typeof edit === "object" && typeof (edit as Record<string, unknown>).rename === "string") {
+				targets.push((edit as Record<string, string>).rename);
+			}
+		}
+	}
+	if (typeof input.input === "string") {
+		for (const line of input.input.split(/\r?\n/)) {
+			const hashline = /^\[([^\]]+)\]$/.exec(line.trim());
+			const patchFile = /^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+)$/.exec(line.trim());
+			const patchMove = /^\*\*\*\s+Move to:\s*(.+)$/.exec(line.trim());
+			const unified = /^(?:--- a\/|\+\+\+ b\/)(.+)$/.exec(line.trim());
+			const target = hashline?.[1]?.replace(/#[0-9a-f]{4}$/i, "") ?? patchFile?.[1] ?? patchMove?.[1] ?? unified?.[1];
+			if (target && target !== "/dev/null") targets.push(target);
+		}
+	}
+	return [...new Set(targets.filter((target): target is string => Boolean(target)))];
+}
+async function fileToolRefusal(event: { toolName?: unknown; input?: unknown }, ctx: ExtensionContext) {
+	if (event.toolName !== "write" && event.toolName !== "edit") return undefined;
+	if (!event.input || typeof event.input !== "object") return undefined;
+	const input = event.input as Record<string, unknown>;
+	const requestedPaths = fileToolTargets(input);
+	if (requestedPaths.length === 0) {
+		return { block: true, reason: `Refusing edit to <unresolved path>: provide a file path so the repository boundary can be checked.` };
+	}
+	const repository = vcs.git(ctx.cwd);
+	const roots = repository ? [repository.primaryRoot(), ...(await repository.worktrees()).map(worktree => worktree.path)] : [ctx.cwd];
+	const allowlist = configuredWriteAllowlist(ctx).map(entry =>
+		canonicalPath(isAbsolute(entry) ? entry : resolve(ctx.cwd, entry)),
+	);
+	for (const requestedPath of requestedPaths) {
+		if (/^[a-z][a-z0-9+.-]*:\/\//i.test(requestedPath)) continue;
+		const target = canonicalPath(
+			requestedPath === "~" || requestedPath.startsWith("~/")
+				? resolve(homedir(), requestedPath.slice(2))
+				: resolve(ctx.cwd, requestedPath),
+		);
+		if (!roots.some(root => isWithin(canonicalPath(root), target)) && !allowlist.includes(target)) {
+			return {
+				block: true,
+				reason: `Refusing ${event.toolName} to ${requestedPath}: the path is outside this session's repository and worktrees; add the exact path to reemxyWriteAllowlist to allow it.`,
+			};
+		}
+	}
+	if (event.toolName !== "write" || input.replace === true) return undefined;
+	const requestedPath = requestedPaths[0]!;
+	const target = canonicalPath(
+		requestedPath === "~" || requestedPath.startsWith("~/")
+			? resolve(homedir(), requestedPath.slice(2))
+			: resolve(ctx.cwd, requestedPath),
+	);
+	const content = typeof input.content === "string" ? input.content : "";
+	if (content.length === 0) {
+		return { block: true, reason: `Refusing write to ${requestedPath}: content is empty; pass replace: true to confirm intentional replacement.` };
+	}
+	const targetRepo = vcs.git(target);
+	if (!targetRepo || !existsSync(target)) return undefined;
+	const relativeTarget = relative(targetRepo.info().repoRoot, target);
+	if (!relativeTarget || relativeTarget === ".." || relativeTarget.startsWith(`..${sep}`)) return undefined;
+	if (!(await targetRepo.lsFiles(false, false)).includes(relativeTarget)) return undefined;
+	const size = statSync(target).size;
+	const newSize = Buffer.byteLength(content, "utf8");
+	if (newSize < size * 0.05) {
+		return {
+			block: true,
+			reason: `Refusing write to ${requestedPath}: ${newSize} bytes is under 5% of the tracked file's ${size} bytes; pass replace: true to confirm intentional replacement.`,
+		};
+	}
+	return undefined;
 }
 
 function usageSkipRecord(spec: string, health: ModelUsageHealth): SkippedModelRecord | undefined {
@@ -458,6 +560,7 @@ export function recordTaskOutcome(
 export default function agentRouter(pi: ExtensionAPI) {
 	const state = createRouterState();
 	pi.setLabel?.("Agent Router");
+	pi.on("tool_call", (event, ctx) => fileToolRefusal(event, ctx));
 	pi.on("before_subagent_spawn", (event, ctx) => routeSubagentSpawn(event as BeforeSubagentSpawnEvent, ctx, state));
 	pi.on("retry_fallback_applied", (event, ctx) => {
 		recordAndNotifyRetryFallbackApplied(event as RetryFallbackAppliedEvent, ctx, state);
