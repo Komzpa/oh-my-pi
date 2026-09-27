@@ -1,5 +1,6 @@
 /** Observable task-tool acceptance coverage for retry and rework routing. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import type { Effort } from "@oh-my-pi/pi-ai";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
@@ -158,7 +159,7 @@ describe("task rework acceptance", () => {
 				startedAt: 100,
 				finishedAt: 200,
 				durationMs: 100,
-				terminalStatus: "failed",
+				terminalStatus: "failed" as const,
 				deliverablePaths: [],
 				infraFailureError: "HTTP 402 payment required",
 				infraFailureLine: "attempt 1 failed: HTTP 402 payment required",
@@ -177,7 +178,7 @@ describe("task rework acceptance", () => {
 		} as TaskParams);
 
 		expect(run).toHaveBeenCalledTimes(1);
-		expect(run.mock.calls[0]![0].exactThinkingLevel).toBe("medium");
+		expect(run.mock.calls[0]![0].exactThinkingLevel).toBe("medium" as Effort);
 		expect(run.mock.calls[0]![0].modelOverride).toEqual([MODEL]);
 		expect(run.mock.calls[0]![0].context).toBe("attempt 1 failed: HTTP 402 payment required");
 		expect(text(result)).not.toContain("Previous attempts:");
@@ -233,7 +234,7 @@ describe("task rework acceptance", () => {
 		);
 		expect(reflection.message).toContain('answer exactly: "Is there a much simpler different way?"');
 		expect(resumed.id).toBe(OWNER);
-		expect(resumed.thinkingLevel).toBe("high");
+		expect(resumed.thinkingLevel).toBe("high" as Effort);
 		expect(resumed.message).toContain("Previous attempts:");
 		expect(resumed.message).toContain("Rejection reason: The motion blur obscures the subject.");
 		expect(rework.details?.results[0]?.id).toBe(OWNER);
@@ -393,7 +394,7 @@ describe("task rework acceptance", () => {
 		const firstReason = previousAttempts.indexOf("First rejection.");
 		const secondReason = previousAttempts.indexOf("Second rejection.");
 		expect(thirdDispatch.modelOverride).toEqual(["codex-lb/gpt-6-sol"]);
-		expect(thirdDispatch.thinkingLevel ?? thirdDispatch.exactThinkingLevel).toBe("medium");
+		expect(thirdDispatch.thinkingLevel ?? thirdDispatch.exactThinkingLevel).toBe("medium" as Effort);
 		expect(previousAttempts).toContain("Previous attempts:");
 		expect(previousAttempts).toContain("Worker: OlderWorker");
 		expect(previousAttempts).toContain(`Resolved model:effort: ${MODEL}:medium`);
