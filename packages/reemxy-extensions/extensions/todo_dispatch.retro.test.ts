@@ -14,11 +14,10 @@ const row = (content: string, status: string = "pending") => ({
   schedule: { dependencies: [], estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180, confidence: "medium", basis: "retro fixture", updatedAt: liveNow } },
 });
 
-async function fixture(initial: TodoScheduleInput, jobs: unknown[]) {
+async function fixture(initial: TodoScheduleInput, jobs: unknown[], deadlineAt = liveNow - 1) {
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   const branch: unknown[] = [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: initial } } }];
   const state = { plan: initial };
-  let deadlineAt = liveNow - 1;
   let recent = jobs;
   const intervals: Array<() => void> = [];
   const notices: string[] = [];

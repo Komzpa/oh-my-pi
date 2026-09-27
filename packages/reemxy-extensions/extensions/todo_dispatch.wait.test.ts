@@ -97,6 +97,142 @@ function forecastTodoPlan(phases: WaitTestPhase[], { now }: { now: number }) {
 	};
 }
 
+async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initialJobs: unknown[] = []) {
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+	const notices: Array<{ customType: string; content: string }> = [];
+	const entries: Array<{ customType: string; data?: unknown }> = [];
+	const intervals: Array<() => void | Promise<void>> = [];
+	const timeouts: Array<() => void | Promise<void>> = [];
+	let recent = initialJobs;
+	const api = {
+		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+		getActiveTools: () => ["task", "todo", "wait"],
+		appendEntry: (customType: string, data?: unknown) => entries.push({ customType, data }),
+		sendMessage: (message: { customType: string; content: string }) => notices.push(message),
+		pi: {
+			forecastTodoPlan,
+			formatPlanForecast,
+			formatTaskForecast,
+			getLatestTodoPhasesFromEntries: () => phases,
+			readGoalDeadline: () => ({ goalId: "notice-test", deadlineAt }),
+			agentPauseGate: { paused: false },
+		},
+	} as unknown as ExtensionAPI;
+	await todoDispatch(api);
+	const ctx = {
+		cwd: "/tmp/todo-notice-test",
+		sessionManager: {
+			getHeader: () => ({ id: "notice-root" }),
+			getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
+			getSessionFile: () => undefined,
+		},
+		getAsyncJobSnapshot: () => ({ running: [], recent, nonJobAgents: [] }),
+		getTaskMaxConcurrency: () => 20,
+		hasPendingMessages: () => false,
+		isIdle: () => true,
+		setInterval: (callback: () => void | Promise<void>) => { intervals.push(callback); return callback; },
+		clearInterval: () => undefined,
+		setTimeout: (callback: () => void | Promise<void>) => { timeouts.push(callback); return callback; },
+		clearTimer: () => undefined,
+	} as unknown as ExtensionContext;
+	await handlers.get("session_start")!({}, ctx);
+	return {
+		handlers,
+		ctx,
+		notices,
+		entries,
+		setRecent: (jobs: unknown[]) => { recent = jobs; },
+		tick: async () => { await intervals.at(-1)?.(); },
+		fireIdleWake: async () => { await timeouts.at(-1)?.(); },
+		shutdown: () => handlers.get("session_shutdown")?.({}, ctx),
+	};
+}
+
+test("repeated retro and checkpoint notices do not send another chief turn", async () => {
+	const previousLane = process.env.OMP_LANE_UNIT;
+	delete process.env.OMP_LANE_UNIT;
+	let now = Date.now();
+	const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+	try {
+		const phases = chainedPlan(1, now);
+		const row = phases[0]!.tasks[0]!;
+		row.status = "pending";
+		row.schedule.owner = undefined;
+		row.schedule.dependencies = [];
+		row.schedule.resources = [];
+		const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+		try {
+			await h.tick();
+			expect(h.notices).toHaveLength(1);
+			now += 11 * 60_000;
+			await h.tick();
+			expect(h.notices).toHaveLength(1);
+			const silent = h.entries.filter(entry => entry.customType === "todo-dispatch-silent-notice");
+			expect(silent).toHaveLength(1);
+			expect((silent[0]?.data as { kind?: string; content?: string }).kind).toBe("todo-plan-check");
+			expect((silent[0]?.data as { content?: string }).content).toBe(h.notices[0]?.content);
+		} finally {
+			h.shutdown();
+		}
+		const retroPhases = chainedPlan(1, now);
+		const retroRow = retroPhases[0]!.tasks[0]!;
+		retroRow.status = "pending";
+		retroRow.schedule.owner = undefined;
+		retroRow.schedule.dependencies = [];
+		retroRow.schedule.resources = [];
+		const retro = await noticeHarness(retroPhases, now + 24 * 60 * 60_000);
+		try {
+			await retro.handlers.get("tool_result")!({ toolName: "todo", toolCallId: "retro-init", isError: false, content: [], details: { phases: retroPhases } }, retro.ctx);
+			retroRow.status = "completed";
+			await retro.tick();
+			expect(retro.notices).toHaveLength(1);
+			expect(retro.notices[0]?.content).toContain("retrospective due (goal delivered)");
+			now += 11 * 60_000;
+			await retro.tick();
+			expect(retro.notices).toHaveLength(1);
+		} finally {
+			retro.shutdown();
+		}
+	} finally {
+		nowSpy.mockRestore();
+		if (previousLane === undefined) delete process.env.OMP_LANE_UNIT;
+		else process.env.OMP_LANE_UNIT = previousLane;
+	}
+});
+
+test("an identical due notice is suppressed but a new worker failure wakes chief", async () => {
+	const previousLane = process.env.OMP_LANE_UNIT;
+	delete process.env.OMP_LANE_UNIT;
+	try {
+		const now = Date.now();
+		const phases = chainedPlan(1, now);
+		const row = phases[0]!.tasks[0]!;
+		row.status = "pending";
+		row.schedule.owner = undefined;
+		row.schedule.dependencies = [];
+		row.schedule.resources = [];
+		const h = await noticeHarness(phases, now - 60_000);
+		try {
+			await h.handlers.get("agent_end")!({}, h.ctx);
+			await h.fireIdleWake();
+			expect(h.notices).toHaveLength(1);
+			await h.handlers.get("agent_end")!({}, h.ctx);
+			await h.fireIdleWake();
+			expect(h.notices).toHaveLength(1);
+			h.setRecent([{ id: "failed-new-worker", type: "task", status: "failed", agentId: "worker-new", label: "Build verification" }]);
+			await h.handlers.get("agent_end")!({}, h.ctx);
+			await h.fireIdleWake();
+			expect(h.notices).toHaveLength(2);
+			expect(h.notices[1]?.customType).toBe("agent-focus-gym-eval-sandbox-wake");
+		} finally {
+			h.shutdown();
+		}
+	} finally {
+		if (previousLane === undefined) delete process.env.OMP_LANE_UNIT;
+		else process.env.OMP_LANE_UNIT = previousLane;
+	}
+});
+
 test("wait is allowed when open rows depend on running work or user approval", async () => {
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	const now = Date.now();

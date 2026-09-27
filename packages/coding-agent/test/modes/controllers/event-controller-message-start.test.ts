@@ -345,12 +345,13 @@ describe("EventController event-woken status replies", () => {
 		await controller.handleEvent({ type: "message_start", message: final });
 		await controller.handleEvent({ type: "message_end", message: final });
 		await controller.handleEvent({ type: "agent_end", messages: [final], isTerminal: true });
+		const assistantMessages = ctx.chatContainer.children.filter(component => component instanceof AssistantMessageComponent);
 		const rendered = ctx.chatContainer.children
 			.flatMap(component => component.render(100))
 			.map(line => Bun.stripANSI(line))
 			.join("\n");
 		controller.dispose();
-		return { rendered, sendCustomMessage };
+		return { rendered, sendCustomMessage, assistantMessages };
 	}
 
 	it("collapses normalized repeated event status and tells the chief once", async () => {
@@ -375,6 +376,17 @@ describe("EventController event-woken status replies", () => {
 			expect(rendered).toContain("(no change: status repeated)");
 		}
 	});
+
+	it("keeps a short event reply containing an alphabetic hex id", async () => {
+		const { rendered } = await renderTurn("Release deadbee.", false, "worker", false);
+		expect(rendered).toContain("Release deadbee.");
+		expect(rendered).not.toContain("(no change: status repeated)");
+	});
+	it("does not render an empty event-woken final assistant message", async () => {
+		const { assistantMessages } = await renderTurn("");
+		expect(assistantMessages).toHaveLength(0);
+	});
+
 
 	it("collapses short event status without history but keeps a changed commit SHA", async () => {
 		const short = await renderTurn("Nothing new.", false, "worker", false);

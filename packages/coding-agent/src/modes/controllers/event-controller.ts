@@ -168,7 +168,14 @@ function repeatsUserVisibleStatus(previous: string, current: string, workerNames
 	const currentText = current.trim();
 	if (!currentText) return false;
 	const currentTokens = statusTokens(currentText, workerNames);
-	if (currentTokens.size <= 6 && !/\d/.test(currentText) && !STATUS_URL_PATTERN.test(currentText)) return true;
+	if (
+		currentTokens.size <= 6 &&
+		!/\d/.test(currentText) &&
+		!STATUS_SHA_PATTERN.test(currentText) &&
+		!STATUS_URL_PATTERN.test(currentText)
+	) {
+		return true;
+	}
 	const currentHashes = statusHashes(currentText);
 	const previousHashes = statusHashes(previous);
 	if (currentHashes.size !== previousHashes.size || [...currentHashes].some(hash => !previousHashes.has(hash))) {
@@ -2212,39 +2219,43 @@ export class EventController {
 				Array.isArray(finalAssistant.content) && finalAssistant.content.some(block => block.type === "toolCall");
 			if (
 				this.#eventWokenTurn &&
-				finalText &&
 				finalAssistant.stopReason !== "toolUse" &&
 				finalAssistant.stopReason !== "error" &&
 				finalAssistant.stopReason !== "aborted" &&
 				!hasToolCall
 			) {
-				const jobs = this.ctx.viewSession.getAsyncJobSnapshot?.({ recentLimit: 20 });
-				const workerNames = [...(jobs?.running ?? []), ...(jobs?.recent ?? [])].flatMap(job =>
-					job.agentId ? [job.agentId] : [],
-				);
-				if (repeatsUserVisibleStatus(this.#lastUserVisibleReply ?? "", finalText, workerNames)) {
-					const component =
-						this.ctx.transcriptMessageComponents.get(finalAssistant) ?? this.#lastAssistantComponent;
-					if (component instanceof AssistantMessageComponent) {
-						component.setLinkTargets(new Map());
-						component.updateContent({
-							...finalAssistant,
-							content: [{ type: "text", text: REPEATED_STATUS_TEXT }],
-						});
-						component.setTextColorTransform(text => theme.fg("dim", text));
-						this.ctx.ui.requestComponentRender(component);
+				const component = this.ctx.transcriptMessageComponents.get(finalAssistant) ?? this.#lastAssistantComponent;
+				if (!finalText && component instanceof AssistantMessageComponent && this.ctx.chatContainer.canRemoveBlock(component)) {
+					this.ctx.chatContainer.removeChild(component);
+					this.ctx.transcriptMessageComponents.delete(finalAssistant);
+					if (this.#lastAssistantComponent === component) this.#lastAssistantComponent = undefined;
+				} else if (finalText) {
+					const jobs = this.ctx.viewSession.getAsyncJobSnapshot?.({ recentLimit: 20 });
+					const workerNames = [...(jobs?.running ?? []), ...(jobs?.recent ?? [])].flatMap(job =>
+						job.agentId ? [job.agentId] : [],
+					);
+					if (repeatsUserVisibleStatus(this.#lastUserVisibleReply ?? "", finalText, workerNames)) {
+						if (component instanceof AssistantMessageComponent) {
+							component.setLinkTargets(new Map());
+							component.updateContent({
+								...finalAssistant,
+								content: [{ type: "text", text: REPEATED_STATUS_TEXT }],
+							});
+							component.setTextColorTransform(text => theme.fg("dim", text));
+							this.ctx.ui.requestComponentRender(component);
+						}
+						void this.ctx.viewSession
+							.sendCustomMessage(
+								{
+									customType: "repeated-status-notice",
+									content: REPEATED_STATUS_TEXT,
+									display: false,
+									attribution: "agent",
+								},
+								{ deliverAs: "nextTurn", triggerTurn: false },
+							)
+							.catch(error => logger.debug("Repeated status notice delivery failed", { error: String(error) }));
 					}
-					void this.ctx.viewSession
-						.sendCustomMessage(
-							{
-								customType: "repeated-status-notice",
-								content: REPEATED_STATUS_TEXT,
-								display: false,
-								attribution: "agent",
-							},
-							{ deliverAs: "nextTurn", triggerTurn: false },
-						)
-						.catch(error => logger.debug("Repeated status notice delivery failed", { error: String(error) }));
 				}
 			}
 			if (finalText && finalAssistant.stopReason !== "error" && finalAssistant.stopReason !== "aborted") {
