@@ -142,6 +142,11 @@ describe("task rework acceptance", () => {
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
 	});
+	it("teaches the task chief when to provide a rework reason", async () => {
+		const tool = await TaskTool.create(createSession().session);
+		expect(tool.description).toContain("one-line rejection reason");
+		expect(tool.description).toContain("infrastructure retries");
+	});
 
 	it("keeps an infrastructure retry on its current rung without rejection history", async () => {
 		const existing = [
