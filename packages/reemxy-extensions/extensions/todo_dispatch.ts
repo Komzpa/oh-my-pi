@@ -2580,6 +2580,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const workerInfos = running.map((job) => {
       const id = job.agentId ?? job.id;
       const row = open.find((candidate) => candidate.owner === job.id || candidate.owner === job.agentId);
+      AgentRegistry.global().setTodoRow(id, row?.content);
       const label = row?.content ?? job.label ?? id;
       const p95 = row?.fixedPathP95Finish ?? row?.resourceFinish;
       const p95Text = typeof p95 === "number" && Number.isFinite(p95)

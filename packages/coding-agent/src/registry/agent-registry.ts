@@ -80,6 +80,8 @@ export interface AgentRef {
 	lastActivity: number;
 	/** Worktree has no recent commit despite a long-running task. */
 	worktreeWarning?: { minutes: number; lastLine: string; row?: string };
+	/** Open TODO row assigned to this running worker. */
+	todoRow?: string;
 	history?: AgentHistorySummary;
 	/** Run lifecycle milestones (launch is {@link createdAt}). */
 	lifecycle?: AgentRunLifecycle;
@@ -206,6 +208,7 @@ export class AgentRegistry {
 		if (status !== "running") {
 			ref.activity = undefined;
 			ref.worktreeWarning = undefined;
+			ref.todoRow = undefined;
 		}
 		ref.lastActivity = Date.now();
 		if (status === "running") {
@@ -298,6 +301,14 @@ export class AgentRegistry {
 			ref.worktreeWarning?.row === warning?.row
 		) return;
 		ref.worktreeWarning = warning;
+		this.#emit({ type: "metadata_changed", ref });
+	}
+
+	setTodoRow(id: string, todoRow?: string): void {
+		const ref = this.#refs.get(id);
+		if (!ref || (todoRow !== undefined && ref.status !== "running")) return;
+		if (ref.todoRow === todoRow) return;
+		ref.todoRow = todoRow;
 		this.#emit({ type: "metadata_changed", ref });
 	}
 
