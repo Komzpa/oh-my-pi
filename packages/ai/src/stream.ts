@@ -1291,7 +1291,7 @@ function observeProviderCompletion(
 ): AssistantMessageEventStream {
 	const outer = new AssistantMessageEventStream();
 	const failed = (error: unknown): void => {
-		const failure = typeof error === "object" && error !== null ? error as { stopReason?: unknown } : undefined;
+		const failure = typeof error === "object" && error !== null ? (error as { stopReason?: unknown }) : undefined;
 		if (
 			!onFailed ||
 			signal?.aborted ||

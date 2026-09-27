@@ -1207,10 +1207,7 @@ export interface HealthApi {
 	 * only when the canonical billing-cap classifier accepts its body; HTTP 429
 	 * requires a finite future `resetAtMs`. A 402 latch has no deadline.
 	 */
-	markProviderDepleted(
-		provider: Provider,
-		options?: { status?: number; message?: string; resetAtMs?: number },
-	): void;
+	markProviderDepleted(provider: Provider, options?: { status?: number; message?: string; resetAtMs?: number }): void;
 	/** Clear provider depletion after a successful provider call. */
 	markProviderSucceeded(provider: Provider): void;
 	/** Explicitly clear provider depletion, including an untimed billing latch. */

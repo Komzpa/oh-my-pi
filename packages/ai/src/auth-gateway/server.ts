@@ -448,7 +448,9 @@ async function handleFormatEndpoint(
 		if (controller.signal.aborted) return clientClosedResponse(route);
 		void events
 			.result()
-			.then(message => recordGatewayUsage(bootOpts.storage, model, client, message.usage, message.timestamp || undefined))
+			.then(message =>
+				recordGatewayUsage(bootOpts.storage, model, client, message.usage, message.timestamp || undefined),
+			)
 			.catch(() => {})
 			.finally(() => lease.release());
 		streamOwnsLease = true;
@@ -660,7 +662,9 @@ async function handlePiNative(
 		if (controller.signal.aborted) return aborted();
 		void events
 			.result()
-			.then(message => recordGatewayUsage(bootOpts.storage, model, client, message.usage, message.timestamp || undefined))
+			.then(message =>
+				recordGatewayUsage(bootOpts.storage, model, client, message.usage, message.timestamp || undefined),
+			)
 			.catch(() => {})
 			.finally(() => lease.release());
 		streamOwnsLease = true;
