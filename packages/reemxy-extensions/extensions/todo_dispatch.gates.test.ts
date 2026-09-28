@@ -46,6 +46,7 @@ const CALLS: Record<string, Call> = {
   chainedTest: { name: "bash", arguments: { command: "cat README.md && bun test" } },
   catLook: { name: "bash", arguments: { command: "cat scripts/a.sh" } },
   checksum: { name: "bash", arguments: { command: "sha256sum scripts/a.sh /tmp/a.sh" } },
+  upstreamLook: { name: "bash", arguments: { command: "git -C /tmp/other fetch -q upstream && git -C /tmp/other log --oneline -25 upstream/main" } },
   read: { name: "read", arguments: { path: "README.md" } },
   wait: { name: "wait", arguments: {} },
   complain: { name: "write", arguments: { path: "xd://report_issue", content: "task: gate keeps refusing" } },
@@ -206,6 +207,8 @@ async function violations(strictDemand: boolean) {
       if (results.get("chainedTest")!.executed !== results.get("bashTest")!.executed) found.push(`${label}: chained bun test treated unlike bun test`);
       // 0g. A checksum is a quick look like cat (autoqa #77: sha256sum of two scripts refused as lead work).
       if (results.get("checksum")!.executed !== results.get("catLook")!.executed) found.push(`${label}: checksum refused`);
+      // 0h. Fetching and reading another checkout's history is a look too (live 2026-09-28: refused, a scout was staffed for it).
+      if (results.get("upstreamLook")!.executed !== results.get("catLook")!.executed) found.push(`${label}: git -C fetch/log refused`);
       // 0f. A todo demand never skips a worker staffed onto planned rows.
       if (demand?.toolName === "todo" && (state.plan === "ready" || state.plan === "chained") && !results.get("taskRow")!.satisfied)
         found.push(`${label}: todo demand skips a task for planned rows`);

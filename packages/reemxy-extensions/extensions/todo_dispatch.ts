@@ -1650,7 +1650,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       : `Idle rows are chained behind the running work, with ${capacity} worker slots. Waiting is not the step here: split the waiting rows into the part that needs the running result and the part that can start now, and dispatch that part (skill step 7). ${ORDER}`;
   };
   const CHIEF_OF_STAFF = `ROLE: You are the chief of staff for this session, not a worker; your runbook is skill://chief-of-staff. ${ORDER}`;
-  const READ_ONLY_BASH = /^\s*(git\s+(status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|merge-base)\b|grep\b|rg\b|ls\b|cat\b|head\b|tail\b|wc\b|pwd\b|echo\b|stat\b|test\b|\[\s|sha256sum\b|sha1sum\b|md5sum\b|readlink\b|realpath\b|file\b)/;
+  // `git -C <repo>` looks at another checkout the same way, and `fetch` only moves remote-tracking refs,
+  // which a look at upstream needs (live 2026-09-28: `git -C repo fetch && git -C repo log` was refused,
+  // so the chief staffed a scout for a one-second look).
+  const READ_ONLY_BASH = /^\s*(git\s+(?:-[Cc]\s+\S+\s+)*(status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|merge-base|fetch)\b|grep\b|rg\b|ls\b|cat\b|head\b|tail\b|wc\b|pwd\b|echo\b|stat\b|test\b|\[\s|sha256sum\b|sha1sum\b|md5sum\b|readlink\b|realpath\b|file\b)/;
   // Git mutation (add, commit, push, merge) is the git-pr-owner worker's job, never the chief's
   // (user 2026-09-25: "чего чиф оф стафф гит дрочит, у него же писарь есть и гитарь?").
   // A chain is read-only only when every part is: `cat x && bun test` is not.
