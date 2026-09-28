@@ -2,6 +2,9 @@
 
 After each successful status/list-changing op (not `view` or `schedule`): if nothing is `in_progress`, the earliest `pending` task auto-promotes; if several are `in_progress`, only the earliest stays. Blocked tasks NEVER auto-promote—`unblock` first. Out-of-order completion may move the focus pointer back to an earlier phase—expected; completed tasks NEVER revert.
 
+Completed rows MUST remain addressable, including completed singleton phases and dependency predecessors. Unrelated mutations MUST NOT remove them. `rm` explicitly removes its targets; `drop` explicitly marks its targets abandoned. Legacy archived completions are restored as exact dependency evidence. An accepted `init` replaces the objective and starts fresh forecast/alarm history; rejected `init`, `schedule`, `start`, and `done` MUST NOT reset that history. A new objective MUST NOT move or erase the user's deadline.
+
+
 ## Operations
 
 | `op`       | Fields                                                                       | Effect                                                                                                       |

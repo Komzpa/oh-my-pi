@@ -77,41 +77,9 @@ function closedArchiveFixture(now: number, rowCount = 400): TodoPhase[] {
 describe("todo archive policy", () => {
 	const now = Date.parse("2026-09-25T08:00:00.000Z");
 
-	it("archives seven aged closed phases wholesale and keeps ten recent closed rows beside open work", () => {
+	it("keeps completed phases and predecessors live regardless of age or closed tail", () => {
 		const phases = closedArchiveFixture(now);
-		const beforeForecast = forecastTodoPlan(phases, { now });
-		const archived = archiveTodoPhases(phases, now);
-		const liveTasks = archived.phases.flatMap(phase => phase.tasks);
-		const archivedTasks = archived.archivedPhases.flatMap(phase => phase.tasks);
-
-		expect(archived.phases.map(phase => phase.name)).toEqual(["Open phase"]);
-		expect(liveTasks).toHaveLength(11);
-		expect(liveTasks.filter(task => task.status === "completed")).toHaveLength(10);
-		expect(liveTasks.find(task => task.content === "Closed task 400")?.status).toBe("in_progress");
-		expect(archivedTasks).toHaveLength(389);
-		expect(archived.archivedPhases.slice(0, 7).every(phase => phase.tasks.length === 50)).toBe(true);
-		expect(archivedTasks[0]?.schedule?.estimate?.basis).toBe("fixture estimate 0");
-		expect(archivedTasks[0]?.schedule?.executor?.workerId).toBe("fixture-worker-0");
-		const ordinaryView = formatTodoView(archived.phases, { now });
-		const archiveView = formatTodoView(archived.phases, {
-			now,
-			archive: true,
-			archivedPhases: archived.archivedPhases,
-		});
-		expect(ordinaryView).not.toContain("Closed task 001");
-		expect(archiveView).toContain("Closed task 001");
-		const afterForecast = forecastTodoLivePlan(archived.phases, archived.archivedPhases, { now });
-		expect(
-			afterForecast.rows
-				.find(row => row.content === "Closed task 400")
-				?.issues.some(issue => issue.includes("Missing prerequisite") || issue.includes("unresolved prerequisite")),
-		).toBe(false);
-		expect(afterForecast.rows.some(row => row.content === "Closed task 001")).toBe(false);
-		expect(
-			beforeForecast.rows
-				.find(row => row.content === "Closed task 400")
-				?.issues.some(issue => issue.includes("Missing prerequisite")),
-		).toBe(false);
+		expect(archiveTodoPhases(phases, now)).toEqual({ phases, archivedPhases: [] });
 	});
 
 	it("keeps a whole closed phase before grace and archives it at ten minutes regardless of tail", () => {
@@ -119,7 +87,7 @@ describe("todo archive policy", () => {
 			{
 				name: "Finished",
 				tasks: [
-					{ content: "Recent completed", status: "completed", schedule: { finishedAt: now - 10 * 60_000 + 1 } },
+					{ content: "Recent dropped", status: "abandoned", schedule: { finishedAt: now - 10 * 60_000 + 1 } },
 				],
 			},
 		];
@@ -160,16 +128,18 @@ describe("todo archive policy", () => {
 		const archived = archiveTodoPhases(phases, now);
 		expect(archived.phases[0]?.tasks.map(task => task.content)).toEqual([
 			"Unknown finish",
-			...Array.from({ length: 9 }, (_, index) => `Dated ${index}`),
+			...Array.from({ length: 10 }, (_, index) => `Dated ${index}`),
 			"Blocked open work",
 		]);
-		expect(archived.archivedPhases[0]?.tasks.map(task => task.content)).toEqual(["Dated 9", "Dated 10", "Dated 11"]);
+		expect(archived.archivedPhases[0]?.tasks.map(task => task.content)).toEqual(["Dated 10", "Dated 11"]);
 	});
 
 	it("archives only on successful mutations and recovers rows in explicit archive view", async () => {
 		setSystemTime(new Date(now));
 		try {
-			const session = createSession(closedArchiveFixture(now));
+			const dropped = closedArchiveFixture(now);
+			for (const phase of dropped) for (const task of phase.tasks) if (task.status === "completed") task.status = "abandoned";
+			const session = createSession(dropped);
 			const writes = vi.spyOn(session, "setTodoPhases");
 			const entries: SessionEntry[] = [];
 			Object.assign(session, { sessionManager: { getBranch: () => entries } });
@@ -673,6 +643,21 @@ describe("TodoTool operations", () => {
 
 		// `only` was in_progress; blocking it leaves no pending/in_progress, so normalization must not revive it.
 		expect(result.details?.phases[0]?.tasks[0]?.status).toBe("blocked");
+	});
+
+	it("done on another row retains an aged completed singleton and its dependency", async () => {
+		const predecessor = "Require applied retrospective outcomes before completion report";
+		const tool = new TodoTool(createSession([
+			{ name: "Retrospective", tasks: [{ content: predecessor, status: "completed", schedule: { finishedAt: 100 } }] },
+			{ name: "Work", tasks: [{ content: "Other row", status: "in_progress" }, { content: "Report result", status: "pending" }] },
+		]));
+		const done = await tool.execute("done-other", { op: "done", task: "Other row" });
+		expect(done.details?.phases[0]?.tasks[0]).toMatchObject({ content: predecessor, status: "completed", schedule: { finishedAt: 100 } });
+		const scheduled = await tool.execute("schedule-report", { op: "schedule", updates: [{ task: "Report result", dependencies: [predecessor], estimate: { optimisticSeconds: 1, likelySeconds: 2, pessimisticSeconds: 3, confidence: "high", basis: "bounded report" } }] });
+		expect(scheduled.isError).toBeUndefined();
+		expect(scheduled.details?.forecast?.rows.find(row => row.content === "Report result")?.ready).toBe(true);
+		const removed = await tool.execute("explicit-remove", { op: "rm", task: predecessor });
+		expect(removed.details?.phases.flatMap(phase => phase.tasks).some(task => task.content === predecessor)).toBe(false);
 	});
 
 	it("closes and drops a batch of named rows in one call and leaves the rest open", async () => {

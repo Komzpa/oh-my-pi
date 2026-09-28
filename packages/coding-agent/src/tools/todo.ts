@@ -80,7 +80,7 @@ export const TODO_FULL_SNAPSHOT_CHECKPOINT_INTERVAL = 100;
 export const TODO_ARCHIVE_GRACE_MS = 10 * 60 * 1000;
 export const TODO_LIVE_CLOSED_TAIL = 10;
 
-/** Move aged closed phases and excess closed context out of the live plan. */
+/** Move aged explicitly abandoned phases and excess dropped context out of the live plan. */
 export function archiveTodoPhases(
 	phases: TodoPhase[],
 	now: number,
@@ -93,6 +93,7 @@ export function archiveTodoPhases(
 		whollyClosed.add(phase);
 		const timestamps = phase.tasks.map(task => task.schedule?.finishedAt);
 		if (
+			phase.tasks.every(task => task.status === "abandoned") &&
 			timestamps.every(at => typeof at === "number" && Number.isFinite(at)) &&
 			now - Math.max(...(timestamps as number[])) >= TODO_ARCHIVE_GRACE_MS
 		)
@@ -101,8 +102,8 @@ export function archiveTodoPhases(
 	const closedRows = phases
 		.filter(phase => !whollyClosed.has(phase))
 		.flatMap(phase => phase.tasks.map(task => ({ phase, task })))
-		.filter(row => isClosed(row.task));
-	// Unknown terminal times are never evidence that a row is old enough to discard.
+		.filter(row => row.task.status === "abandoned");
+	// Completed rows remain live dependency evidence; only explicitly dropped work can age out.
 	const known = closedRows.filter(row => Number.isFinite(row.task.schedule?.finishedAt));
 	known.sort((a, b) => b.task.schedule!.finishedAt! - a.task.schedule!.finishedAt!);
 	const retained = new Set(
@@ -123,7 +124,7 @@ export function archiveTodoPhases(
 		const tasks: TodoItem[] = [];
 		const removed: TodoItem[] = [];
 		for (const task of phase.tasks) {
-			if (isClosed(task) && !retained.has(task)) removed.push(structuredClone(task));
+			if (task.status === "abandoned" && !retained.has(task)) removed.push(structuredClone(task));
 			else tasks.push(task);
 		}
 		if (tasks.length > 0) live.push({ name: phase.name, tasks });
@@ -443,8 +444,15 @@ function replayTodoEdit(
 			if (!replayed) return undefined;
 			updated = replayed.phases;
 		}
+		for (const archivedPhase of edit.archivedPhases) {
+			const tasks = archivedPhase.tasks.filter(task => task.status === "completed" && !findTaskByContent(updated, task.content)).map(cloneTask);
+			if (tasks.length === 0) continue;
+			const phase = findPhaseByName(updated, archivedPhase.name);
+			if (phase) phase.tasks.push(...tasks);
+			else updated.push({ name: archivedPhase.name, tasks });
+		}
 		const archived = new Set(
-			edit.archivedPhases.flatMap(phase => phase.tasks.map(task => todoTransitionKey(phase.name, task.content))),
+			edit.archivedPhases.flatMap(phase => phase.tasks.filter(task => task.status !== "completed").map(task => todoTransitionKey(phase.name, task.content))),
 		);
 		const live = updated.flatMap(phase => {
 			const tasks = phase.tasks.filter(task => !archived.has(todoTransitionKey(phase.name, task.content)));
@@ -599,6 +607,15 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 	}
 	if (!latest) return [];
 	const restored = clonePhases(latest);
+	// Older archive edits may have hidden completed prerequisites. Restore their exact rows.
+	const liveContents = new Set(restored.flatMap(phase => phase.tasks.map(task => task.content)));
+	for (const archivedPhase of getLatestTodoArchiveFromEntries(entries)) {
+		const tasks = archivedPhase.tasks.filter(task => task.status === "completed" && !liveContents.has(task.content));
+		if (tasks.length === 0) continue;
+		const phase = restored.find(candidate => candidate.name === archivedPhase.name);
+		if (phase) phase.tasks.push(...tasks);
+		else restored.push({ name: archivedPhase.name, tasks });
+	}
 	for (const phase of restored) {
 		for (const task of phase.tasks) {
 			if (task.status !== "completed" || Number.isFinite(task.schedule?.finishedAt)) continue;
@@ -614,8 +631,23 @@ export function getLatestTodoArchiveFromEntries(entries: SessionEntry[]): TodoPh
 	const archived = new Map<string, Map<string, TodoItem>>();
 	for (const entry of entries) {
 		const edit = compactTodoEditFromEntry(entry);
-		if ((edit?.kind === "op" && edit.op === "init") || (edit?.kind === "archive" && edit.operation?.op === "init"))
+		const snapshotInit = entry.type === "message" && canonicalTodoPhases(entry) !== undefined &&
+			isRecord(entry.message) && isRecord(entry.message.details) && entry.message.details.op === "init";
+		if (snapshotInit || (edit?.kind === "op" && edit.op === "init") || (edit?.kind === "archive" && edit.operation?.op === "init"))
 			archived.clear();
+		const operation = edit?.kind === "archive" ? edit.operation : edit?.kind === "op" ? edit : undefined;
+		if (operation && (operation.op === "rm" || operation.op === "drop") && isRecord(operation.params)) {
+			const params = operation.params;
+			const names = new Set([...(typeof params.task === "string" ? [params.task] : []), ...(Array.isArray(params.items) ? params.items : [])]);
+			for (const [name, tasks] of archived) {
+				for (const [content, task] of tasks) {
+					const targeted = names.size > 0 ? names.has(content) : typeof params.phase === "string" ? params.phase === name : operation.op === "rm";
+					if (!targeted) continue;
+					if (operation.op === "rm") tasks.delete(content);
+					else task.status = "abandoned";
+				}
+			}
+		}
 		if (!edit || edit.kind !== "archive") continue;
 		for (const phase of edit.archivedPhases) {
 			let tasks = archived.get(phase.name);
@@ -638,7 +670,9 @@ export function getTodoArchiveSummaryFromEntries(
 	let toAt = Number.NEGATIVE_INFINITY;
 	for (const entry of entries) {
 		const edit = compactTodoEditFromEntry(entry);
-		if ((edit?.kind === "op" && edit.op === "init") || (edit?.kind === "archive" && edit.operation?.op === "init")) {
+		const snapshotInit = entry.type === "message" && canonicalTodoPhases(entry) !== undefined &&
+			isRecord(entry.message) && isRecord(entry.message.details) && entry.message.details.op === "init";
+		if (snapshotInit || (edit?.kind === "op" && edit.op === "init") || (edit?.kind === "archive" && edit.operation?.op === "init")) {
 			count = 0;
 			fromAt = Number.POSITIVE_INFINITY;
 			toAt = Number.NEGATIVE_INFINITY;
