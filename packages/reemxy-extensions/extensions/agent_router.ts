@@ -2,13 +2,11 @@
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { randomInt } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import type { ModelUsageHealth, ModelUsageHealthState } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { SettingsManager } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
-import { classAtLeast, MODEL_CLASSES, type ModelClass, modelClass } from "./model_classes";
 
 export interface PoolConfig {
 	pool: string[];
@@ -182,18 +180,6 @@ function canonicalPath(target: string): string {
 	return resolve(realpathSync(current), ...suffix);
 }
 
-function isWithin(root: string, target: string): boolean {
-	const rel = relative(root, target);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
-
-function configuredWriteAllowlist(ctx: ExtensionContext): string[] {
-	const settings = SettingsManager.create(ctx.cwd);
-	const values = [settings.getGlobalSettings().reemxyWriteAllowlist, settings.getProjectSettings().reemxyWriteAllowlist];
-	return values.flatMap(value => (Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : []));
-}
-
-
 function fileToolTargets(input: Record<string, unknown>): string[] {
 	const targets = [typeof input.path === "string" ? input.path : undefined];
 	if (Array.isArray(input.paths)) targets.push(...input.paths.filter((target): target is string => typeof target === "string"));
@@ -216,59 +202,13 @@ function fileToolTargets(input: Record<string, unknown>): string[] {
 	}
 	return [...new Set(targets.filter((target): target is string => Boolean(target)))];
 }
-/** The model class a session needs to write outside its repository; `reemxyOutsideWriteClass` overrides. */
-function outsideWriteClass(ctx: ExtensionContext): ModelClass {
-	const settings = SettingsManager.create(ctx.cwd);
-	const value = settings.getProjectSettings().reemxyOutsideWriteClass ?? settings.getGlobalSettings().reemxyOutsideWriteClass;
-	return (MODEL_CLASSES as readonly unknown[]).includes(value) ? (value as ModelClass) : "frontier";
-}
-
-function trustedOutsideWriter(ctx: ExtensionContext): boolean {
-	const id = ctx.model?.id;
-	return id !== undefined && classAtLeast(modelClass(id, ctx.cwd), outsideWriteClass(ctx));
-}
-
 async function fileToolRefusal(event: { toolName?: unknown; input?: unknown }, ctx: ExtensionContext) {
-	if (event.toolName !== "write" && event.toolName !== "edit") return undefined;
+	if (event.toolName !== "write") return undefined;
 	if (!event.input || typeof event.input !== "object") return undefined;
 	const input = event.input as Record<string, unknown>;
 	const requestedPaths = fileToolTargets(input);
-	if (!trustedOutsideWriter(ctx)) {
-		const refusal = await outsideRepositoryRefusal(event.toolName, requestedPaths, ctx);
-		if (refusal && ctx.model?.id) {
-			const cls = modelClass(ctx.model.id, ctx.cwd);
-			refusal.reason += ` (model ${ctx.model.id} is class ${cls}; writes outside the repository need class ${outsideWriteClass(ctx)} or above)`;
-		}
-		if (refusal) return refusal;
-	}
-	if (event.toolName !== "write" || input.replace === true || requestedPaths.length === 0) return undefined;
+	if (input.replace === true || requestedPaths.length === 0) return undefined;
 	return truncatingWriteRefusal(requestedPaths[0]!, input, ctx);
-}
-
-async function outsideRepositoryRefusal(toolName: string, requestedPaths: string[], ctx: ExtensionContext) {
-	if (requestedPaths.length === 0) {
-		return { block: true, reason: `Refusing edit to <unresolved path>: provide a file path so the repository boundary can be checked.` };
-	}
-	const repository = vcs.git(ctx.cwd);
-	const roots = repository ? [repository.primaryRoot(), ...(await repository.worktrees()).map(worktree => worktree.path)] : [ctx.cwd];
-	const allowlist = configuredWriteAllowlist(ctx).map(entry =>
-		canonicalPath(isAbsolute(entry) ? entry : resolve(ctx.cwd, entry)),
-	);
-	for (const requestedPath of requestedPaths) {
-		if (/^[a-z][a-z0-9+.-]*:\/\//i.test(requestedPath)) continue;
-		const target = canonicalPath(
-			requestedPath === "~" || requestedPath.startsWith("~/")
-				? resolve(homedir(), requestedPath.slice(2))
-				: resolve(ctx.cwd, requestedPath),
-		);
-		if (!roots.some(root => isWithin(canonicalPath(root), target)) && !allowlist.includes(target)) {
-			return {
-				block: true,
-				reason: `Refusing ${toolName} to ${requestedPath}: the path is outside this session's repository and worktrees; add the exact path to reemxyWriteAllowlist to allow it.`,
-			};
-		}
-	}
-	return undefined;
 }
 
 async function truncatingWriteRefusal(requestedPath: string, input: Record<string, unknown>, ctx: ExtensionContext) {

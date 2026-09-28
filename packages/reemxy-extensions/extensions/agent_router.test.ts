@@ -717,47 +717,18 @@ describe("agent router", () => {
 		}
 	});
 
-	test("lets frontier-class sessions write outside the repository but still refuses weaker classes", async () => {
+	test("writes and edits outside the session repository pass: sessions work on other repositories from tasks-loop", async () => {
 		const { dir } = tempStateFile();
 		try {
 			const call = toolCallHandler();
-			const outside = join(dir, "..", "outside-file.txt");
-			for (const id of ["claude-opus-5-5", "gpt-6-sol", "gpt-6-astra", "claude-fable-5-1"]) {
-				const trusted = ctx({ cwd: dir, model: { id, provider: "test" } as ExtensionContext["model"] });
-				expect(await call({ toolName: "edit", input: { path: outside, content: "content" } }, trusted)).toBeUndefined();
-				const empty = await call({ toolName: "write", input: { path: outside, content: "" } }, trusted);
-				expect(empty).toMatchObject({ block: true });
-				expect(empty.reason).toContain("empty");
-			}
-			for (const id of ["gpt-6-luna", "claude-sonnet-5", "claude-haiku-4-5", "console-model"]) {
-				const weak = ctx({ cwd: dir, model: { id, provider: "test" } as ExtensionContext["model"] });
-				const refused = await call({ toolName: "edit", input: { path: outside, content: "content" } }, weak);
-				expect(refused).toMatchObject({ block: true });
-				expect(refused.reason).toContain("outside this session's repository");
-				expect(refused.reason).toContain("need class frontier");
-			}
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	test("refuses write and edit paths outside the repository with actionable reasons", async () => {
-		const { dir } = tempStateFile();
-		try {
-			const call = toolCallHandler();
-			const context = ctx({ cwd: dir });
+			const context = ctx({ cwd: dir, model: { id: "gpt-6-luna", provider: "test" } as ExtensionContext["model"] });
 			const outside = join(dir, "..", "outside-file.txt");
 			for (const toolName of ["write", "edit"]) {
-				const refused = await call({ toolName, input: { path: outside, content: "content" } }, context);
-				expect(refused).toMatchObject({ block: true });
-				expect(refused.reason).toContain(outside);
-				expect(refused.reason).toContain("outside this session's repository");
-				if (toolName === "edit") {
-					const hashline = await call({ toolName, input: { input: `*** Begin Patch\n[${outside}#BEEF]\nPUT <1:\n+change\n*** End Patch` } }, context);
-					expect(hashline).toMatchObject({ block: true });
-					expect(hashline.reason).toContain(outside);
-				}
+				expect(await call({ toolName, input: { path: outside, content: "content" } }, context)).toBeUndefined();
 			}
+			const empty = await call({ toolName: "write", input: { path: outside, content: "" } }, context);
+			expect(empty).toMatchObject({ block: true });
+			expect(empty.reason).toContain("empty");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
