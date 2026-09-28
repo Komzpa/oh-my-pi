@@ -215,11 +215,35 @@ function fileToolTargets(input: Record<string, unknown>): string[] {
 	}
 	return [...new Set(targets.filter((target): target is string => Boolean(target)))];
 }
+/** Model families trusted to write outside the session repository; `reemxyWriteTrustedModels` overrides. */
+const DEFAULT_WRITE_TRUSTED_MODELS = ["opus", "sol"];
+
+/** True when a trusted family is a whole `-`/`_`/`.`/`:`/`/`-separated token of the session model id. */
+function trustedOutsideWriter(ctx: ExtensionContext): boolean {
+	const id = ctx.model?.id;
+	if (!id) return false;
+	const settings = SettingsManager.create(ctx.cwd);
+	const values = [settings.getGlobalSettings().reemxyWriteTrustedModels, settings.getProjectSettings().reemxyWriteTrustedModels];
+	const configured = values.find(Array.isArray) as unknown[] | undefined;
+	const families = (configured ?? DEFAULT_WRITE_TRUSTED_MODELS).filter((entry): entry is string => typeof entry === "string");
+	const tokens = new Set(id.toLowerCase().split(/[-_.:/]/));
+	return families.some(family => tokens.has(family.toLowerCase()));
+}
+
 async function fileToolRefusal(event: { toolName?: unknown; input?: unknown }, ctx: ExtensionContext) {
 	if (event.toolName !== "write" && event.toolName !== "edit") return undefined;
 	if (!event.input || typeof event.input !== "object") return undefined;
 	const input = event.input as Record<string, unknown>;
 	const requestedPaths = fileToolTargets(input);
+	if (!trustedOutsideWriter(ctx)) {
+		const refusal = await outsideRepositoryRefusal(event.toolName, requestedPaths, ctx);
+		if (refusal) return refusal;
+	}
+	if (event.toolName !== "write" || input.replace === true || requestedPaths.length === 0) return undefined;
+	return truncatingWriteRefusal(requestedPaths[0]!, input, ctx);
+}
+
+async function outsideRepositoryRefusal(toolName: string, requestedPaths: string[], ctx: ExtensionContext) {
 	if (requestedPaths.length === 0) {
 		return { block: true, reason: `Refusing edit to <unresolved path>: provide a file path so the repository boundary can be checked.` };
 	}
@@ -238,12 +262,14 @@ async function fileToolRefusal(event: { toolName?: unknown; input?: unknown }, c
 		if (!roots.some(root => isWithin(canonicalPath(root), target)) && !allowlist.includes(target)) {
 			return {
 				block: true,
-				reason: `Refusing ${event.toolName} to ${requestedPath}: the path is outside this session's repository and worktrees; add the exact path to reemxyWriteAllowlist to allow it.`,
+				reason: `Refusing ${toolName} to ${requestedPath}: the path is outside this session's repository and worktrees; add the exact path to reemxyWriteAllowlist to allow it.`,
 			};
 		}
 	}
-	if (event.toolName !== "write" || input.replace === true) return undefined;
-	const requestedPath = requestedPaths[0]!;
+	return undefined;
+}
+
+async function truncatingWriteRefusal(requestedPath: string, input: Record<string, unknown>, ctx: ExtensionContext) {
 	const target = canonicalPath(
 		requestedPath === "~" || requestedPath.startsWith("~/")
 			? resolve(homedir(), requestedPath.slice(2))
