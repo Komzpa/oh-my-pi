@@ -6,7 +6,7 @@ import {
 	markdownToPhases,
 	phasesToMarkdown,
 } from "@oh-my-pi/pi-coding-agent/tools/todo";
-import type { TodoToolDetails } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import type { TodoToolDetails } from "@oh-my-pi/pi-tui/tools/todo";
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
@@ -399,25 +399,44 @@ describe("native todo schedule operation", () => {
 
 	it("renames an owned estimated row and preserves dependencies, history, view, and reload", async () => {
 		const attempt = {
-			attemptId: "worker:100", workerName: "worker", resolvedModel: "model", effort: "high",
-			startedAt: 100, finishedAt: 200, durationMs: 100, terminalStatus: "failed" as const,
+			attemptId: "worker:100",
+			workerName: "worker",
+			resolvedModel: "model",
+			effort: "high",
+			startedAt: 100,
+			finishedAt: 200,
+			durationMs: 100,
+			terminalStatus: "failed" as const,
 			deliverablePaths: ["result.txt"],
 		};
-		const initial: TodoPhase[] = [{
-			name: "Work",
-			tasks: [
-				{
-					content: "Old title", status: "in_progress",
-					schedule: {
-						owner: "worker", dependencies: [],
-						estimate: { optimisticSeconds: 10, likelySeconds: 20, pessimisticSeconds: 30, confidence: "high", basis: "Measured", updatedAt: 90 },
-						attemptHistory: [attempt], executor: { workerId: "worker", startedAt: 100 }, startedAt: 80,
+		const initial: TodoPhase[] = [
+			{
+				name: "Work",
+				tasks: [
+					{
+						content: "Old title",
+						status: "in_progress",
+						schedule: {
+							owner: "worker",
+							dependencies: [],
+							estimate: {
+								optimisticSeconds: 10,
+								likelySeconds: 20,
+								pessimisticSeconds: 30,
+								confidence: "high",
+								basis: "Measured",
+								updatedAt: 90,
+							},
+							attemptHistory: [attempt],
+							executor: { workerId: "worker", startedAt: 100 },
+							startedAt: 80,
+						},
 					},
-				},
-				{ content: "Dependent", status: "pending", schedule: { dependencies: ["Old title"] } },
-				{ content: "Closed title", status: "completed", schedule: { finishedAt: 70 } },
-			],
-		}];
+					{ content: "Dependent", status: "pending", schedule: { dependencies: ["Old title"] } },
+					{ content: "Closed title", status: "completed", schedule: { finishedAt: 70 } },
+				],
+			},
+		];
 		const harness = createHarness(initial);
 		const result = await harness.tool.execute("rename", {
 			op: "schedule",
@@ -429,18 +448,22 @@ describe("native todo schedule operation", () => {
 
 		expect(result.isError).not.toBe(true);
 		expect(harness.phases()[0]?.tasks[0]).toMatchObject({
-			content: "New title", status: "in_progress",
+			content: "New title",
+			status: "in_progress",
 			schedule: { owner: "worker", estimate: { likelySeconds: 20 }, attemptHistory: [attempt] },
 		});
 		expect(harness.phases()[0]?.tasks[0]?.schedule?.startedAt).toBe(80);
 		expect(harness.phases()[0]?.tasks[2]).toMatchObject({
-			content: "Closed title renamed", status: "completed", schedule: { finishedAt: 70 },
+			content: "Closed title renamed",
+			status: "completed",
+			schedule: { finishedAt: 70 },
 		});
 		expect(result.details?.completedTasks).toBeUndefined();
 		expect(harness.phases()[0]?.tasks[1]?.schedule?.dependencies).toEqual(["New title"]);
 		const beforeSameContent = structuredClone(harness.phases());
 		const sameContent = await harness.tool.execute("rename-no-op", {
-			op: "schedule", updates: [{ task: "New title", content: "New title" }],
+			op: "schedule",
+			updates: [{ task: "New title", content: "New title" }],
 		});
 		expect(sameContent.isError).not.toBe(true);
 		expect(harness.phases()).toEqual(beforeSameContent);
@@ -450,12 +473,27 @@ describe("native todo schedule operation", () => {
 
 		const persistedResult = JSON.parse(JSON.stringify(result)) as { details: TodoToolDetails; content: unknown };
 		const entries = [
-			{ type: "custom", customType: "user_todo_edit", data: { phases: initial }, id: "base", parentId: null, timestamp: "2026-09-25T11:00:00.000Z" },
 			{
-				type: "message", id: "rename", parentId: "base", timestamp: "2026-09-25T11:00:01.000Z",
+				type: "custom",
+				customType: "user_todo_edit",
+				data: { phases: initial },
+				id: "base",
+				parentId: null,
+				timestamp: "2026-09-25T11:00:00.000Z",
+			},
+			{
+				type: "message",
+				id: "rename",
+				parentId: "base",
+				timestamp: "2026-09-25T11:00:01.000Z",
 				message: {
-					role: "toolResult", toolCallId: "rename", toolName: "todo", content: persistedResult.content,
-					details: persistedResult.details, isError: false, timestamp: 1_790_217_112_000,
+					role: "toolResult",
+					toolCallId: "rename",
+					toolName: "todo",
+					content: persistedResult.content,
+					details: persistedResult.details,
+					isError: false,
+					timestamp: 1_790_217_112_000,
 				},
 			},
 		] as unknown as SessionEntry[];
@@ -465,19 +503,23 @@ describe("native todo schedule operation", () => {
 		expect(restored[0]?.tasks[0]?.schedule?.attemptHistory).toEqual([attempt]);
 		expect(restored[0]?.tasks[1]?.schedule?.dependencies).toEqual(["New title"]);
 		expect(restored[0]?.tasks[2]).toMatchObject({
-			content: "Closed title renamed", status: "completed", schedule: { finishedAt: 70 },
+			content: "Closed title renamed",
+			status: "completed",
+			schedule: { finishedAt: 70 },
 		});
 	});
 
 	it("rejects rename collisions and blank names without partially applying a batch", async () => {
 		for (const content of ["Already exists", "  "]) {
-			const harness = createHarness([{
-				name: "Work",
-				tasks: [
-					{ content: "Rename me", status: "pending", schedule: { owner: "worker" } },
-					{ content: "Already exists", status: "pending" },
-				],
-			}]);
+			const harness = createHarness([
+				{
+					name: "Work",
+					tasks: [
+						{ content: "Rename me", status: "pending", schedule: { owner: "worker" } },
+						{ content: "Already exists", status: "pending" },
+					],
+				},
+			]);
 			const before = structuredClone(harness.phases());
 			const result = await harness.tool.execute(`bad-rename-${content}`, {
 				op: "schedule",
