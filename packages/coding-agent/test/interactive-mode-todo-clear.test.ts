@@ -91,7 +91,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		const at = "2026-09-28T12:00:00.000Z";
 		const requirements = [
 			{ id: "R1", at, rawText: "candidate ask", classification: "candidate", rows: [] },
-			{ id: "R2", at, rawText: "passed ask", classification: "linked", rows: ["Build artifact"], verdict: { status: "pass", evidence: "observed", artifact: "r2", workerId: "QA" } },
+			{ id: "R2", at, rawText: "passed ask", classification: "linked", rows: ["Build artifact"], verdict: { status: "pass", evidence: "observed", artifact: "r2", workerId: "QA", auditor: "qa-auditor" } },
 			{ id: "R3", at, rawText: "failed ask", classification: "linked", rows: ["Build artifact"], verdict: { status: "fail", evidence: "broken", artifact: "r2", workerId: "QA" } },
 			{ id: "R4", at, rawText: "uncertain ask", classification: "linked", rows: ["Build artifact"], verdict: { status: "unverifiable", evidence: "missing access", artifact: "r2", workerId: "QA" } },
 		];
