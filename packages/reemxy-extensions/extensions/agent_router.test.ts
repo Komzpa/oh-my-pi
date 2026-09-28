@@ -717,23 +717,24 @@ describe("agent router", () => {
 		}
 	});
 
-	test("lets Opus and Sol sessions write outside the repository but still refuses weaker models", async () => {
+	test("lets frontier-class sessions write outside the repository but still refuses weaker classes", async () => {
 		const { dir } = tempStateFile();
 		try {
 			const call = toolCallHandler();
 			const outside = join(dir, "..", "outside-file.txt");
-			for (const id of ["claude-opus-5-5", "gpt-6-sol"]) {
+			for (const id of ["claude-opus-5-5", "gpt-6-sol", "gpt-6-astra", "claude-fable-5-1"]) {
 				const trusted = ctx({ cwd: dir, model: { id, provider: "test" } as ExtensionContext["model"] });
 				expect(await call({ toolName: "edit", input: { path: outside, content: "content" } }, trusted)).toBeUndefined();
 				const empty = await call({ toolName: "write", input: { path: outside, content: "" } }, trusted);
 				expect(empty).toMatchObject({ block: true });
 				expect(empty.reason).toContain("empty");
 			}
-			for (const id of ["gpt-6-luna", "console-model"]) {
+			for (const id of ["gpt-6-luna", "claude-sonnet-5", "claude-haiku-4-5", "console-model"]) {
 				const weak = ctx({ cwd: dir, model: { id, provider: "test" } as ExtensionContext["model"] });
 				const refused = await call({ toolName: "edit", input: { path: outside, content: "content" } }, weak);
 				expect(refused).toMatchObject({ block: true });
 				expect(refused.reason).toContain("outside this session's repository");
+				expect(refused.reason).toContain("need class frontier");
 			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });

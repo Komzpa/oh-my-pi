@@ -8,6 +8,7 @@ import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import type { ModelUsageHealth, ModelUsageHealthState } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { SettingsManager } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
+import { classAtLeast, MODEL_CLASSES, type ModelClass, modelClass } from "./model_classes";
 
 export interface PoolConfig {
 	pool: string[];
@@ -215,19 +216,16 @@ function fileToolTargets(input: Record<string, unknown>): string[] {
 	}
 	return [...new Set(targets.filter((target): target is string => Boolean(target)))];
 }
-/** Model families trusted to write outside the session repository; `reemxyWriteTrustedModels` overrides. */
-const DEFAULT_WRITE_TRUSTED_MODELS = ["opus", "sol"];
+/** The model class a session needs to write outside its repository; `reemxyOutsideWriteClass` overrides. */
+function outsideWriteClass(ctx: ExtensionContext): ModelClass {
+	const settings = SettingsManager.create(ctx.cwd);
+	const value = settings.getProjectSettings().reemxyOutsideWriteClass ?? settings.getGlobalSettings().reemxyOutsideWriteClass;
+	return (MODEL_CLASSES as readonly unknown[]).includes(value) ? (value as ModelClass) : "frontier";
+}
 
-/** True when a trusted family is a whole `-`/`_`/`.`/`:`/`/`-separated token of the session model id. */
 function trustedOutsideWriter(ctx: ExtensionContext): boolean {
 	const id = ctx.model?.id;
-	if (!id) return false;
-	const settings = SettingsManager.create(ctx.cwd);
-	const values = [settings.getGlobalSettings().reemxyWriteTrustedModels, settings.getProjectSettings().reemxyWriteTrustedModels];
-	const configured = values.find(Array.isArray) as unknown[] | undefined;
-	const families = (configured ?? DEFAULT_WRITE_TRUSTED_MODELS).filter((entry): entry is string => typeof entry === "string");
-	const tokens = new Set(id.toLowerCase().split(/[-_.:/]/));
-	return families.some(family => tokens.has(family.toLowerCase()));
+	return id !== undefined && classAtLeast(modelClass(id, ctx.cwd), outsideWriteClass(ctx));
 }
 
 async function fileToolRefusal(event: { toolName?: unknown; input?: unknown }, ctx: ExtensionContext) {
@@ -237,6 +235,10 @@ async function fileToolRefusal(event: { toolName?: unknown; input?: unknown }, c
 	const requestedPaths = fileToolTargets(input);
 	if (!trustedOutsideWriter(ctx)) {
 		const refusal = await outsideRepositoryRefusal(event.toolName, requestedPaths, ctx);
+		if (refusal && ctx.model?.id) {
+			const cls = modelClass(ctx.model.id, ctx.cwd);
+			refusal.reason += ` (model ${ctx.model.id} is class ${cls}; writes outside the repository need class ${outsideWriteClass(ctx)} or above)`;
+		}
 		if (refusal) return refusal;
 	}
 	if (event.toolName !== "write" || input.replace === true || requestedPaths.length === 0) return undefined;
