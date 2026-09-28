@@ -4532,12 +4532,12 @@ describe("ExtensionRunner", () => {
 	});
 
 	describe("input attachment transforms", () => {
-		const inputRunner = (handler: (event: InputEvent) => InputEventResult): ExtensionRunner => {
+		const inputRunner = (...handlers: Array<(event: InputEvent) => InputEventResult | undefined>): ExtensionRunner => {
 			const extensionPath = path.join(extensionsDir, "input-transform.ts");
 			const extension: Extension = {
 				path: extensionPath,
 				resolvedPath: extensionPath,
-				handlers: new Map([["input", [async (...args: unknown[]) => handler(args[0] as InputEvent)]]]),
+				handlers: new Map([["input", handlers.map(handler => async (...args: unknown[]) => handler(args[0] as InputEvent))]]),
 				tools: new Map(),
 				assistantThinkingRenderers: [],
 				fileWriteFallbackHandlers: [],
@@ -4563,6 +4563,21 @@ describe("ExtensionRunner", () => {
 			const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
 
 			expect(await runner.emitInput("rewrite me", [image], "interactive")).toEqual({ text: "REWRITE ME" });
+		});
+		it("keeps submitted raw text after an earlier handler transforms the chained text", async () => {
+			const submitted = "feature ask, correction, rename";
+			const seen: InputEvent[] = [];
+			const runner = inputRunner(
+				event => ({ text: event.text.toUpperCase() }),
+				event => {
+					seen.push(event);
+					return undefined;
+				},
+			);
+
+			expect(await runner.emitInput(submitted, undefined, "interactive")).toEqual({ text: submitted.toUpperCase() });
+			expect(seen).toHaveLength(1);
+			expect(seen[0]).toMatchObject({ text: submitted.toUpperCase(), rawText: submitted });
 		});
 	});
 

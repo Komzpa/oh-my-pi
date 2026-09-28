@@ -1044,6 +1044,8 @@ export interface UserPythonEvent {
 export interface InputEvent {
 	type: "input";
 	text: string;
+	/** Original submitted text, unchanged by earlier input-handler transforms. */
+	readonly rawText: string;
 	images?: ImageContent[];
 	source: "interactive" | "rpc" | "extension";
 }

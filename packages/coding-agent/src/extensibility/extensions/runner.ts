@@ -1970,7 +1970,7 @@ export class ExtensionRunner {
 
 		for (const ext of this.extensions) {
 			for (const handler of ext.handlers.get("input") ?? []) {
-				const event: InputEvent = { type: "input", text: currentText, images: currentImages, source };
+				const event: InputEvent = { type: "input", text: currentText, rawText: text, images: currentImages, source };
 				const result = (await this.#runHandlerWithTimeout(handler, event, ctx, ext, extensionHandlerTimeoutMs)) as
 					| InputEventResult
 					| undefined;
