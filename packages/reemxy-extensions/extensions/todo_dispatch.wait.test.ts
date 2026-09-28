@@ -6,7 +6,7 @@ import { expect, test, vi } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { execFileSync } from "node:child_process";
-import todoDispatch from "./todo_dispatch";
+import todoDispatch, { noticeDigest } from "./todo_dispatch";
 
 type WaitTestTask = {
 	content: string;
@@ -170,7 +170,7 @@ test("repeated retro and checkpoint notices do not send another chief turn", asy
 			const silent = h.entries.filter(entry => entry.customType === "todo-dispatch-silent-notice");
 			expect(silent).toHaveLength(1);
 			expect((silent[0]?.data as { kind?: string; content?: string }).kind).toBe("todo-plan-check");
-			expect((silent[0]?.data as { content?: string }).content).toBe(h.notices[0]?.content);
+			expect((silent[0]?.data as { digest?: string }).digest).toBe(noticeDigest(String(h.notices[0]?.content)));
 		} finally {
 			h.shutdown();
 		}
