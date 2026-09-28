@@ -57,7 +57,6 @@ export async function grepIndex(
 		filesystem: options.filesystem,
 		maxScanFiles: options.maxScanFiles,
 		maxScanBytes: options.maxScanBytes,
-		maxCount: 8192,
 		maxColumns: 512,
 		signal: options.signal,
 		timeoutMs: options.timeoutMs,
