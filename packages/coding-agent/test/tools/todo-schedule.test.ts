@@ -65,6 +65,26 @@ const initialPlan: TodoPhase[] = [
 	},
 ];
 
+
+it("restores legacy archived predecessors and honors explicit removal during replay", () => {
+	const completed = { content: "Applied retrospective outcomes", status: "completed" as const, schedule: { finishedAt: 100 } };
+	const entries = [
+		{ type: "custom", customType: "user_todo_edit", data: { phases: [{ name: "Report", tasks: [{ content: "Report result", status: "pending", schedule: { dependencies: [completed.content] } }] }] } },
+		{ type: "custom", customType: "user_todo_edit", data: { edit: { v: 1, kind: "archive", at: 1_000, archivedPhases: [{ name: "Retrospective", tasks: [completed] }] } } },
+	] as unknown as SessionEntry[];
+	const restored = getLatestTodoPhasesFromEntries(entries);
+	const forecast = forecastTodoPlan(restored, { now: 2_000 });
+	expect(restored.flatMap(phase => phase.tasks).find(task => task.content === completed.content)).toEqual(completed);
+	expect(forecast.rows.find(row => row.content === "Report result")?.issues.some(issue => issue.includes("Missing prerequisite"))).toBe(false);
+	const removed = getLatestTodoPhasesFromEntries([...entries, { type: "custom", customType: "user_todo_edit", data: { edit: { v: 1, kind: "op", at: 2_000, op: "rm", params: { op: "rm", task: completed.content } } } } as unknown as SessionEntry]);
+	expect(removed.flatMap(phase => phase.tasks).some(task => task.content === completed.content)).toBe(false);
+	const initialized = { type: "message", message: { role: "toolResult", toolName: "todo", details: { op: "init", phases: [{ name: "New objective", tasks: [{ content: "New result", status: "in_progress" }] }] } } };
+	const rejected = { ...initialized, message: { ...initialized.message, isError: true } } as unknown as SessionEntry;
+	expect(getLatestTodoPhasesFromEntries([...entries, rejected]).flatMap(phase => phase.tasks).find(task => task.content === completed.content)).toEqual(completed);
+	expect(getLatestTodoPhasesFromEntries([...entries, initialized as unknown as SessionEntry]).flatMap(phase => phase.tasks).map(task => task.content)).toEqual(["New result"]);
+	expect(getLatestTodoArchiveFromEntries([...entries, initialized as unknown as SessionEntry])).toEqual([]);
+});
+
 describe("native todo schedule operation", () => {
 	it("does not re-anchor unchanged estimate resends", async () => {
 		const clock = spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
@@ -171,8 +191,8 @@ describe("native todo schedule operation", () => {
 					data: { edit: secondDone.details?.edit },
 				} as unknown as SessionEntry,
 			]);
-			expect(archived[0]?.tasks[0]?.schedule?.finishedAt).toBe(1_800_000_000_000);
-			expect(archived[0]?.tasks[0]?.status).toBe("completed");
+			expect(archived).toEqual([]);
+			expect(secondDone.details?.phases[0]?.tasks[0]).toMatchObject({ status: "completed", schedule: { finishedAt: 1_800_000_000_000 } });
 
 			const timestamp = "2026-09-23T17:13:21.867Z";
 			const legacy = [{ name: "Work", tasks: [{ content: "legacy", status: "completed" as const }] }];

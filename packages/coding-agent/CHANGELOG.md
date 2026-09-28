@@ -14,6 +14,8 @@
 ### Fixed
 
 - Fixed `block-clone` task isolation on Windows ReFS and Dev Drive volumes failing on files whose size is not a whole number of clusters, larger than 4 GiB, or sparse.
+- Fixed unrelated todo mutations archiving completed singleton phases and breaking later prerequisite lookup; completed rows now stay addressable, including legacy archived completion evidence.
+- Fixed a new accepted todo objective inheriting the previous objective's finish-drift, alarm and retrospective history. Rejected initialization and ordinary mutations preserve history, and real deadlines and overdue warnings remain active.
 
 ## [18.4.1] - 2026-09-28
 

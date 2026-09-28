@@ -2537,7 +2537,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       return `the finish has receded with the clock for ${minutes(now - first.at)} and ${minutes(now - recedingSince)} after this was first reported (samples, now → finish: ${history}). Run \`task\` with agent \`plan-doctor\` now: give it the goal, these samples, the open rows with dependencies, owners and receipts, and ask one question: what makes the finish later and which plan change shortens it. Apply its plan in one \`todo\` call; do not add rows of your own before it answers`;
     return `the finish recedes with the clock: ${minutes(now - first.at)} ago it was ${safeTimestamp(first.finish, timeZone)}, now ${safeTimestamp(finish, timeZone)}. Work is being found as fast as it is done, one defect per attempt. Find all remaining defects in one pass (run the whole check once with failures collected instead of stopping at the first), fix them as parallel rows, and take every check that does not consume the stuck output off the chain`;
   };
-  const planCheck = (ctx: ExtensionContext, pending: unknown[] = []): string | null => {
+  const planCheck = (ctx: ExtensionContext, pending: unknown[] = [], initialized = false): string | null => {
     pendingSizingNoticeIds = [];
     const now = Date.now();
     const decision = currentDecision(ctx, now, pending);
@@ -2580,7 +2580,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const currentFinish = planFinish(open);
     if (pendingFinishDelay && Number.isFinite(currentFinish) && currentFinish <= pendingFinishDelay.allowedFinish)
       pendingFinishDelay = null;
-    if (pending.length) {
+    if (pending.length && !initialized) {
       const before = currentDecision(ctx, now).forecast?.rows ?? [];
       previousFinish = planFinish(before);
       const delta = currentFinish - previousFinish;
@@ -2811,11 +2811,24 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     await refreshLiveWorkerModels(ctx);
     if (singleWriterLane) return;
     if (event.toolName === "todo") {
-      if (event.isError || !isMain(ctx) || !pi.getActiveTools().includes("task")) return;
+      if (event.isError || !isMain(ctx)) return;
       // The hook runs before this result joins the branch: check the plan the call just produced
       // (live 21:32: an owner written by this very call was reported as missing).
       const details = (event as { details?: unknown }).details;
-      const check = planCheck(ctx, details ? [{ type: "message", message: { role: "toolResult", toolName: "todo", details } }] : []);
+      const edit = details?.edit;
+      const operation = edit?.kind === "archive" ? edit.operation : edit;
+      const initialized = details?.op === "init" || (operation?.kind === "op" && operation.op === "init");
+      if (initialized) {
+        reset();
+        finishSamples.length = 0;
+        recedingSince = undefined;
+        pendingFinishDelay = null;
+        overdueWorkerEpisodes.clear();
+        sprintState = { ...blankSprintState(), seenJobIds: (ctx.getAsyncJobSnapshot()?.recent ?? []).map(job => job.id) };
+        persistSprintState();
+      }
+      if (!pi.getActiveTools().includes("task")) return;
+      const check = planCheck(ctx, details ? [{ type: "message", message: { role: "toolResult", toolName: "todo", details } }] : [], initialized);
       if (!check) return;
       markSizingNotices();
       return { content: [...event.content, { type: "text" as const, text: check }] };

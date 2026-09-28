@@ -27,6 +27,13 @@ Every row-executing profile must target about 15 minutes of work. If an assignme
 
 A retro-facilitator `task` result clears the due flag and the notified-trigger key together: `retroDueReason`, `goalWorkStartedAt`, `reopenedRows`, and `retroDueNotifiedKey` all reset, so a later trigger with the same reason and deadline/delivery key notifies again. Cancelled/aborted worker jobs are never added to `workerFinishes` and so never appear as retro participants, though they still count as seen so they are not reprocessed. While a trigger's reason, deadline/delivery key, and finished-worker roster stay unchanged, the "retrospective due" line is emitted once and omitted from every subsequent PLAN CHECK; a new worker finishing under the same trigger changes the roster and reopens the notice. The oracle is `todo_dispatch.retro.test.ts`.
 
+## Todo objective lifecycle
+
+Completed rows, singleton phases, and predecessors MUST remain addressable across unrelated mutations; only explicit `rm` removes rows and explicit `drop` abandons them. Historical archived completions MUST resolve by their exact identity and remain prerequisite evidence. Oracles: `todo.test.ts`, `todo-schedule.test.ts` (coding-agent).
+
+Only an accepted native `init` starts a fresh objective epoch. The supervisor MUST clear the old objective's finish samples, receding-finish escalation, pending finish-delay comparison, alarm dedupe, and sprint/retrospective history before evaluating the accepted result. Failed initialization and `schedule`/`start`/`done` MUST retain those histories. The fixed user deadline and current objective's genuine overdue/deadline alarms MUST remain effective. Oracle: `todo_dispatch.test.ts`.
+
+
 ## Waiting on ready work
 
 The wait gate lets the chief wait when the open work is waiting on something real: no refusal and no "N of 20 slots" notice. The points below are the whole requirement; each names its oracle.
