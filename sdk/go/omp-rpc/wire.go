@@ -2132,6 +2132,27 @@ func (v *SubagentStatus) UnmarshalJSON(data []byte) error {
 	return unknownValue("SubagentStatus", s)
 }
 
+type TodoAwaitingUser struct {
+	Action string   `json:"action"`
+	Ids    []string `json:"ids,omitempty"`
+}
+
+func (v *TodoAwaitingUser) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoAwaitingUser", v.decodeFrom)
+}
+
+func (v *TodoAwaitingUser) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoAwaitingUser
+	d := fieldDecoder{raw: raw, owner: "TodoAwaitingUser"}
+	d.required("action", &out.Action)
+	d.optional("ids", &out.Ids)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type TodoItem struct {
 	Content string     `json:"content"`
 	Status  TodoStatus `json:"status"`
@@ -2139,6 +2160,14 @@ type TodoItem struct {
 	Blocker *string  `json:"blocker,omitempty"`
 	Details *string  `json:"details,omitempty"`
 	Notes   []string `json:"notes,omitempty"`
+	// Persisted checkout whose clean HEAD is the row's QA artifact.
+	ArtifactCwd *string `json:"artifactCwd,omitempty"`
+	// Owner whose checkout was last verified as artifactCwd.
+	ArtifactOwner *string `json:"artifactOwner,omitempty"`
+	// Explicit deployment identity for this requirement row.
+	Deployment *string `json:"deployment,omitempty"`
+	// User-owned pending check; it does not constitute verification or close the row.
+	AwaitingUser *TodoAwaitingUser `json:"awaitingUser,omitempty"`
 }
 
 func (v *TodoItem) UnmarshalJSON(data []byte) error {
@@ -2153,6 +2182,10 @@ func (v *TodoItem) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("blocker", &out.Blocker)
 	d.optional("details", &out.Details)
 	d.optional("notes", &out.Notes)
+	d.optional("artifactCwd", &out.ArtifactCwd)
+	d.optional("artifactOwner", &out.ArtifactOwner)
+	d.optional("deployment", &out.Deployment)
+	d.optional("awaitingUser", &out.AwaitingUser)
 	if d.err != nil {
 		return d.err
 	}
@@ -7685,7 +7718,8 @@ func (c Commands) NegotiateProtocol(ctx context.Context, p NegotiateProtocolComm
 
 // PromptCommand holds the parameters of "prompt".
 type PromptCommand struct {
-	Message string `json:"message"`
+	Message            string  `json:"message"`
+	RawRequirementText *string `json:"rawRequirementText,omitempty"`
 	// Images attached to the message.
 	Images            []ImageContent     `json:"images,omitempty"`
 	StreamingBehavior *StreamingBehavior `json:"streamingBehavior,omitempty"`

@@ -93,6 +93,7 @@ import {
 	cfgTuiMouse,
 } from "../settings";
 import { cfgHideThinkingBlock } from "../../session/settings";
+import { bindRequirementInput, withRequirementInput } from "../../session/requirement-input";
 
 /** Bare words that quit (as `/<word>`) when typed alone into a session with no messages. */
 const BARE_EXIT_WORDS: Record<string, true> = { exit: true, quit: true, q: true };
@@ -1480,7 +1481,7 @@ export class InputController {
 		};
 		// A queued `/compact` waits for Enter input taken before it to reach the session (skill
 		// expansion, `/queue`, mode commands), the same as for the follow-up key.
-		this.ctx.editor.onSubmit = text => this.#trackSubmission(() => submit(text));
+		this.ctx.editor.onSubmit = text => this.#trackSubmission(() => withRequirementInput(text, () => submit(text)));
 	}
 
 	/**
@@ -2079,7 +2080,12 @@ export class InputController {
 
 	/** Send editor text as a follow-up message (queued behind current stream). */
 	async handleFollowUp(): Promise<void> {
-		let text = this.#compactDraftImages(this.ctx.editor.getExpandedText().trim());
+		return bindRequirementInput(this.ctx.editor.getText(), () => this.#handleFollowUp())();
+	}
+
+	async #handleFollowUp(): Promise<void> {
+		const originalText = this.ctx.editor.getExpandedText();
+		let text = this.#compactDraftImages(originalText.trim());
 		let images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
 		let imageLinks =
 			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;

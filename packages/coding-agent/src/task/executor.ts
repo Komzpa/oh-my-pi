@@ -15,6 +15,7 @@ import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobError, AsyncJobManager, type
 import type { Rule } from "../capability/rule";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { ModelRegistry } from "../config/model-registry";
+import { MAX_IMAGE_INPUT_BYTES } from "@oh-my-pi/pi-tui/chat/image-loading";
 import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import {
 	previewLine,
@@ -127,6 +128,7 @@ import type { PreparedSeanceSession } from "./seance";
 import {
 	type AgentProgress,
 	type SingleResult,
+	type TaskImage,
 	type StructuredSubagentOutput,
 	type StructuredSubagentSchemaMode,
 	type StructuredSubagentSchemaSource,
@@ -136,6 +138,8 @@ import {
 import { yieldSectionShapes } from "./yield-assembly";
 import { assertPerCallModelApproved, PerCallModelError, type PerCallModelGrants } from "./model-approval";
 import { assembleYieldResult } from "@oh-my-pi/pi-tui/tools/task-yield-assembly";
+import taskImageUnavailableTemplate from "../prompts/tools/task-image-unavailable.md" with { type: "text" };
+import { loadImageAttachmentInput, loadImageInput } from "../utils/image-loading";
 import {
 	cfgTaskPrewalk,
 	cfgTaskAgentPrewalk,
@@ -414,6 +418,12 @@ export interface ExecutorOptions {
 	agent: AgentDefinition;
 	task: string;
 	assignment?: string;
+	/**
+	 * Image attachments delivered as real image content parts in the child's
+	 * first prompt (e.g. qa-auditor requirement images). Absent for image-less
+	 * calls, whose prompts stay byte-identical.
+	 */
+	images?: TaskImage[];
 	preparedSession?: PreparedSeanceSession;
 	/** Shared background from the task call (`task.batch`), rendered into the subagent's system prompt. */
 	context?: string;
@@ -801,7 +811,7 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 				} else {
 					try {
 						rawOutput =
-							assembled.rawText && typeof completeData === "string"
+							typeof completeData === "string"
 								? completeData
 								: (JSON.stringify(completeData, null, 2) ?? "null");
 					} catch (err) {
@@ -2425,6 +2435,128 @@ const PROMPT_DISPATCH_IDLE_TIMEOUT_MS = 5_000;
 class PromptDispatchError extends Error {}
 
 /**
+ * A task image with bytes present, ready for the child's first prompt.
+ * Structurally an `ImageContent` with sha256/rn/index metadata preserved so
+ * auditors can tie the part back to its requirement row.
+ */
+interface FirstPromptImage {
+	type: "image";
+	data: string;
+	mimeType: string;
+	sha256?: string;
+	rn?: string;
+	index?: number;
+	sourcePath?: string;
+	artifactPath?: string;
+}
+
+/**
+ * Resolve task image references to prompt bytes exactly at the real
+ * first-prompt boundary. This is the only place task args become bytes:
+ * callers (flat/batch/structured) forward `TaskImage` refs untouched.
+ *
+ * - Inline `data` is size-limited, decoded and checked against its SHA when present.
+ * - References read `artifactPath` then `sourcePath`; the first readable file
+ *   within the central image limit whose bytes verify against the supplied
+ *   `sha256` (when present) becomes a real image part with metadata preserved.
+ * - Missing files, read failures, and SHA mismatches degrade to one child text
+ *   line containing `unavailable` and the SHA — the task continues with zero
+ *   image parts for that image.
+ * - No images leaves the prompt byte-identical: empty suffix, no images key.
+ */
+export async function resolveTaskImagesForFirstPrompt(
+	images: TaskImage[] | undefined,
+): Promise<{ suffix: string; promptImages?: FirstPromptImage[] }> {
+	if (!images?.length) return { suffix: "" };
+	const promptImages: FirstPromptImage[] = [];
+	let suffix = "";
+	for (const image of images) {
+		const sha = image.sha256 ?? "unknown";
+		const label = `Image${typeof image.index === "number" ? ` #${image.index}` : ""}${image.rn ? ` (${image.rn})` : ""}`;
+		let failure: string | undefined;
+		let loaded: { data: string; mimeType: string } | undefined;
+		if (image.data) {
+			try {
+				if (Buffer.byteLength(image.data, "base64") > MAX_IMAGE_INPUT_BYTES) {
+					throw new Error(`image exceeds the ${MAX_IMAGE_INPUT_BYTES} byte input limit`);
+				}
+				const rawBytes = Buffer.from(image.data, "base64");
+				if (image.sha256) {
+					const actual = new Bun.CryptoHasher("sha256").update(rawBytes).digest("hex");
+					if (actual.toLowerCase() !== image.sha256.toLowerCase()) {
+						throw new Error(`SHA mismatch (expected ${image.sha256}, got ${actual})`);
+					}
+				}
+				const validated = await loadImageAttachmentInput({
+					image: { type: "image", data: image.data, mimeType: image.mimeType ?? "image/png" },
+					label,
+					uri: image.sourcePath ?? image.artifactPath ?? label,
+					autoResize: false,
+					maxBytes: MAX_IMAGE_INPUT_BYTES,
+				});
+				if (!validated) throw new Error("unsupported or invalid image data");
+				loaded = { data: validated.data, mimeType: validated.mimeType };
+			} catch (error) {
+				failure = error instanceof Error ? error.message : String(error);
+			}
+		}
+		if (!loaded && !image.data) {
+			for (const candidate of [image.artifactPath, image.sourcePath]) {
+				if (!candidate) continue;
+				try {
+					const metadata = await Bun.file(candidate).stat();
+					if (metadata.size > MAX_IMAGE_INPUT_BYTES) {
+						throw new Error(`image exceeds the ${MAX_IMAGE_INPUT_BYTES} byte input limit`);
+					}
+					const sourceBytes = await fs.readFile(candidate);
+					if (sourceBytes.byteLength > MAX_IMAGE_INPUT_BYTES) {
+						throw new Error(`image exceeds the ${MAX_IMAGE_INPUT_BYTES} byte input limit`);
+					}
+					if (image.sha256) {
+						const actual = new Bun.CryptoHasher("sha256").update(sourceBytes).digest("hex");
+						if (actual.toLowerCase() !== image.sha256.toLowerCase()) {
+							failure = `SHA mismatch at ${candidate} (expected ${image.sha256}, got ${actual})`;
+							continue;
+						}
+					}
+					const validated = await loadImageInput({
+						path: candidate,
+						cwd: process.cwd(),
+						detectedMimeType: image.mimeType,
+						autoResize: false,
+						maxBytes: MAX_IMAGE_INPUT_BYTES,
+					});
+					if (!validated) throw new Error(`no readable image at ${candidate}`);
+					loaded = { data: validated.data, mimeType: validated.mimeType };
+					break;
+				} catch (error) {
+					failure = error instanceof Error ? error.message : String(error);
+				}
+			}
+		}
+		if (loaded) {
+			promptImages.push({
+				type: "image",
+				data: loaded.data,
+				mimeType: loaded.mimeType,
+				...(image.sha256 ? { sha256: image.sha256 } : {}),
+				...(image.rn ? { rn: image.rn } : {}),
+				...(typeof image.index === "number" ? { index: image.index } : {}),
+				...(image.sourcePath ? { sourcePath: image.sourcePath } : {}),
+				...(image.artifactPath ? { artifactPath: image.artifactPath } : {}),
+			});
+		} else {
+			suffix += `\n${prompt.render(taskImageUnavailableTemplate, {
+				label,
+				sha256: sha,
+				failure: failure ?? "no data, artifactPath, or sourcePath",
+			})}`;
+		}
+	}
+	return { suffix, ...(promptImages.length ? { promptImages } : {}) };
+}
+
+/**
  * Drive one assignment through a live session: send the prompt (with `restore`,
  * go on with the turn the previous process left unfinished instead:
  * {@link AgentSession.restoreInterruptedTurn}), wait for idle,
@@ -2442,6 +2574,8 @@ async function driveSessionToResult(
 	options: {
 		/** Open-endedness description forwarded to the session's `auto` thinking classifier. */
 		solutionSpace?: string;
+		/** Image attachments delivered as real image content parts in the initial prompt. */
+		images?: TaskImage[];
 		/** `false` = no `yield` tool; the final assistant message is the result. Default `true`. */
 		structured?: boolean;
 		/**
@@ -2454,7 +2588,7 @@ async function driveSessionToResult(
 		restore?: boolean;
 	} = {},
 ): Promise<DriveOutcome> {
-	const { solutionSpace, onPromptBusy, restore } = options;
+	const { solutionSpace, images, onPromptBusy, restore } = options;
 	const structured = options.structured !== false;
 	const abortSignal = monitor.abortSignal;
 	let exitCode = 0;
@@ -2533,11 +2667,21 @@ async function driveSessionToResult(
 			// wins the race and this prompt throws AgentBusyError; back off through
 			// the caller hook and retry. Bounded so a wedged worker still resolves
 			// instead of hanging the batch.
+			// Task images resolve from refs to bytes exactly here, at the real
+			// first-prompt load — never earlier in task args. Empty stays
+			// byte-identical: no suffix, no images key.
+			const resolvedImages = await resolveTaskImagesForFirstPrompt(images);
+			const firstPromptText = resolvedImages.suffix ? `${task}${resolvedImages.suffix}` : task;
+			const firstPromptOptions = {
+				attribution: "agent" as const,
+				solutionSpace,
+				...(resolvedImages.promptImages ? { images: resolvedImages.promptImages } : {}),
+			};
 			let promptAttempts = 0;
 			for (;;) {
 				try {
 					if (restore) await awaitAbortable(session.restoreInterruptedTurn());
-					else await dispatchPrompt(task, { attribution: "agent", solutionSpace }, "initial prompt");
+					else await dispatchPrompt(firstPromptText, firstPromptOptions, "initial prompt");
 					break;
 				} catch (error) {
 					promptAttempts++;
@@ -5091,6 +5235,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			if (options.keepAlive !== false) releaseIrcWakes = session.holdIrcWakes();
 			const outcome = await driveSessionToResult(session, monitor, task, {
 				solutionSpace: options.solutionSpace,
+				...(options.images?.length ? { images: options.images } : {}),
 				structured,
 			});
 			// Acceptance boundary (#11079): the run's final result is settled, so

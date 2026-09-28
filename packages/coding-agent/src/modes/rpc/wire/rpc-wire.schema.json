@@ -2337,6 +2337,23 @@
 			],
 			"type": "string"
 		},
+		"TodoAwaitingUser": {
+			"type": "object",
+			"properties": {
+				"action": {
+					"type": "string"
+				},
+				"ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			},
+			"required": [
+				"action"
+			]
+		},
 		"TodoItem": {
 			"type": "object",
 			"properties": {
@@ -2358,6 +2375,22 @@
 					"items": {
 						"type": "string"
 					}
+				},
+				"artifactCwd": {
+					"type": "string",
+					"description": "Persisted checkout whose clean HEAD is the row's QA artifact."
+				},
+				"artifactOwner": {
+					"type": "string",
+					"description": "Owner whose checkout was last verified as artifactCwd."
+				},
+				"deployment": {
+					"type": "string",
+					"description": "Explicit deployment identity for this requirement row."
+				},
+				"awaitingUser": {
+					"$ref": "#/$defs/TodoAwaitingUser",
+					"description": "User-owned pending check; it does not constitute verification or close the row."
 				}
 			},
 			"required": [
@@ -6070,6 +6103,9 @@
 			"type": "object",
 			"properties": {
 				"message": {
+					"type": "string"
+				},
+				"rawRequirementText": {
 					"type": "string"
 				},
 				"images": {

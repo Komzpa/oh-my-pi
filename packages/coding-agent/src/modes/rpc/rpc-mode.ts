@@ -13,6 +13,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { bindRequirementInput } from "../../session/requirement-input";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
@@ -1887,8 +1888,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	const dispatchOrderedUserInput = (
 		command: OrderedUserInput,
 		ticket: RpcPromptTicket | undefined,
-	): Promise<OrderedInputOutcome> =>
-		inputGate.enqueue(async () => {
+	): Promise<OrderedInputOutcome> => {
+		const submit = async (): Promise<OrderedInputOutcome> => {
 			const sessionId = session.sessionId;
 			const isCurrent = () =>
 				inputGate.isCurrent(command) && !shutdownState.requested && session.sessionId === sessionId;
@@ -1906,11 +1907,11 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			if (!isCurrent()) return "cancelled";
 			if (!text.trim() && !images?.length) return "local";
 			if (command.type === "steer") {
-				await session.steer(text, images);
+				await session.steer(text, images, { rawRequirementText: command.message });
 				return "admitted";
 			}
 			if (command.type === "follow_up") {
-				await session.followUp(text, images);
+				await session.followUp(text, images, { rawRequirementText: command.message });
 				return "admitted";
 			}
 			if (command.type === "prompt") {
@@ -1998,8 +1999,16 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				extensionUserMessageTracker,
 			});
 			return "admitted";
-		});
-	// Abort controllers for builtin commands whose work outlives the prompt
+		};
+		return inputGate.enqueue(
+			typeof command.message === "string"
+				? bindRequirementInput(
+						(command.type === "prompt" ? command.rawRequirementText : undefined) ?? command.message,
+						submit,
+					)
+				: submit,
+		);
+	}; // Abort controllers for builtin commands whose work outlives the prompt
 	// response (e.g. the `/mcp reauth` browser wait, dispatched through
 	// `runCommandInBackground`). Host abort and disconnect must tear those
 	// down, or a tracked task parks the shutdown drain for up to five minutes

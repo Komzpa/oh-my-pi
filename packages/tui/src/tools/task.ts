@@ -2246,6 +2246,40 @@ export interface StructuredSubagentOutput {
 /** Display cap for a normalized one-line label (roster line, registry `displayName`, prompt field). */
 export const LABEL_MAX = 80;
 
+/**
+ * One image attachment forwarded to a child's first prompt as a real image
+ * content part. `data` is base64; the sha256/rn/index metadata mirrors the
+ * requirements-ledger `RequirementImage` so an auditor can tie the part back to
+ * its `Rn` requirement row without rehashing.
+ *
+ * Bytes travel by reference: ledger-produced images carry `artifactPath` and/or
+ * `sourcePath` with no `data`. The executor resolves the reference to bytes
+ * exactly at the child's first-prompt boundary (verifying `sha256` when
+ * supplied) and never threads bytes through task args. Inline `data` remains
+ * accepted for callers that already hold bytes.
+ */
+interface TaskImageBase {
+	type: "image";
+	/** Base64 image bytes; absent for path/artifact references. */
+	data?: string;
+	mimeType: string;
+	/** sha256 hex of the decoded bytes, when known. */
+	sha256?: string;
+	/** Requirement id (e.g. "R1") this image was cited by, when known. */
+	rn?: string;
+	/** One-based `[Image #N]` marker position, when known. */
+	index?: number;
+	/** Attachment source file path when the image is file-backed. */
+	sourcePath?: string;
+	/** Durable session artifact holding the bytes when no source file exists. */
+	artifactPath?: string;
+}
+/**
+ * At least one byte source is required: inline `data`, `artifactPath`, or
+ * `sourcePath`. Combinations (e.g. `data` plus its `artifactPath`) are allowed.
+ */
+export type TaskImage = TaskImageBase & ({ data: string } | { artifactPath: string } | { sourcePath: string });
+
 /** Single task item. Fields are optional defensively: args stream in token by token. */
 export interface TaskItem {
 	/** Stable agent name; becomes the registry/IRC id. Default = generated AdjectiveNoun. */
@@ -2271,6 +2305,8 @@ export interface TaskItem {
 	tools?: string[];
 	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
 	isolated?: boolean;
+	/** Image attachments delivered as real image content parts in the child's first prompt. */
+	images?: TaskImage[];
 }
 
 /**
@@ -2306,8 +2342,10 @@ export interface TaskParams {
 	tasks?: TaskItem[];
 	/** Batch form: shared background prepended to every assignment; required by the batch schema. */
 	context?: string;
-	/** Run in an isolated worktree (flat form; per-item in batch form). */
+	/** Run this spawn in an isolated worktree (flat form; per-item in batch form). */
 	isolated?: boolean;
+	/** Image attachments (flat form) delivered as real image content parts in the child's first prompt. */
+	images?: TaskImage[];
 }
 
 /**
@@ -2541,6 +2579,11 @@ export interface SingleResult {
 	 * messageable after the run — summaries must not suggest otherwise.
 	 */
 	isolated?: boolean;
+	/**
+	 * Checkout a non-isolated run executed in, set by the task runner (never by
+	 * model output) so a finished auditor's row binding survives its disposal.
+	 */
+	checkoutCwd?: string;
 	/** Patch path for isolated worktree output */
 	patchPath?: string;
 	/**

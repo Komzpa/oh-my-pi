@@ -31,7 +31,7 @@ export interface RpcCommandSpec {
 
 const IMAGES = doc("ImageContent[]", "Images attached to the message.");
 
-export const rpcCommands: readonly RpcCommandSpec[] = [
+const rpcCommandDefinitions: readonly RpcCommandSpec[] = [
 	{
 		name: "negotiate_protocol",
 		doc: "Switch the connection to a protocol version advertised by `ready`.",
@@ -414,3 +414,13 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		unwrap: "records",
 	},
 ];
+
+/** Original input is an envelope field, independent of session prompt options. */
+export const rpcCommands: readonly RpcCommandSpec[] = rpcCommandDefinitions.map(command =>
+	command.name === "prompt"
+		? {
+				...command,
+				params: { "rawRequirementText?": "string", ...(typeof command.params === "object" ? command.params : {}) },
+			}
+		: command,
+);

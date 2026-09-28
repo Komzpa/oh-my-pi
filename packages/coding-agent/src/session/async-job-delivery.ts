@@ -50,9 +50,10 @@ export interface AsyncResultEntry {
 
 type AsyncResultJobDetails = {
 	jobId: string;
+	agentId?: string;
 	type?: AsyncJobType;
 	status?: AsyncJob["status"];
-	agentId?: string;
+	result?: string;
 	label?: string;
 	durationMs?: number;
 	/** Source capture metadata belongs to this job, not to the enclosing delivery report. */
@@ -151,8 +152,9 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 	});
 	const details: AsyncResultDetails = {
 		meta: { source: { type: "report", value: "background job delivery" } },
-		jobs: jobs.map(job => ({
+		jobs: jobs.map((job, index) => ({
 			jobId: job.jobId,
+			result: entries[index]!.result,
 			type: job.type,
 			status: job.status,
 			agentId: job.agentId,

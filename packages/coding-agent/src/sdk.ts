@@ -32,6 +32,7 @@ import { isOpenAICodexWebSocketPreferred } from "@oh-my-pi/pi-ai/providers/opena
 import { withCredentialRedaction } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import { sendsImageInputOnWire } from "@oh-my-pi/pi-ai/providers/vision-guard";
 import { FALLBACK_DIALECT, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
+import { invalidateStatus } from "@oh-my-pi/pi-natives/vcs";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { $env } from "@oh-my-pi/pi-utils/env";
 import { getAgentDir, getModelDbPath, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
@@ -2540,6 +2541,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			registerSessionChangeCallback: callback => session?.registerSessionChangeCallback(callback),
 			bumpFileMutationVersion: path => {
+				invalidateStatus(path);
 				const next = (fileMutationVersions.get(path) ?? 0) + 1;
 				fileMutationVersions.set(path, next);
 				return next;

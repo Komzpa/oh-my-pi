@@ -17,6 +17,7 @@ Shared edits need one integration owner{{#if ircEnabled}}; siblings coordinate v
 # Inputs
 {{#if file}}`taskFile`: absolute path or `local://` file; contents become the task, read once at dispatch. Exactly one of `task`/`taskFile`.
 {{/if}}
+For requirement audits, set `requirementIds` to the linked requirements to audit (for example `["R5"]`). This explicit scope survives a retry with a different worker name. If omitted, `name` must exactly match the TODO row's `schedule.owner`. Scope never comes from IDs or row names quoted in task prose or shared context.
 `name`: CamelCase ≤32, auto-generated if omitted; address agent by name.{{#if structured}} `outputSchema` overrides agent/session schemas.{{/if}}
 `solutionSpace`: describe how open-ended the child's problem is: whether the fix or design is given, or which causes or designs remain open. Volume of work does not widen it; NEVER mention sibling agents or coordination. (`one fix: rename, names given`; `one fix: slice end in paginate`; `single-flight cache load; races easy to miss`; `several retry API shapes; error classes to choose`; `deadlock cause open, no repro`)
 {{#if seanceGuidance}}{{seanceGuidance}}{{/if}}

@@ -6,6 +6,7 @@ import type {
 	VcsHunkSelectionError,
 	VcsJjWorkspace,
 	VcsRepo,
+	VcsStatusOptions,
 } from "./index.js";
 /** Portable capabilities that differ between Git and Jujutsu. */
 export type VcsFeature = "stagedDiff" | "revDiff";
@@ -56,6 +57,19 @@ export declare function require(dir: string, ...features: VcsFeature[]): VcsRepo
 
 /** Like {@link git}, but throws a `NotARepository` {@link VcsError}. */
 export declare function requireGit(dir: string): VcsGitRepo;
+
+/** Read a fresh porcelain snapshot through the shared rate-limited status queue. */
+export declare function statusPorcelainFresh(
+	repo: VcsGitRepo,
+	options?: VcsStatusOptions,
+	signal?: AbortSignal,
+): Promise<string>;
+
+/** Invalidate cached status after a tool writes repository files; this does not reset rate limiting. */
+export declare function invalidateStatus(dir?: string): void;
+
+/** Snapshot repository identity, status metadata, and explicit invalidation generation. */
+export declare function statusEpoch(repo: VcsGitRepo | VcsRepo): { identity: string; metadata: string; generation: number } | null;
 
 /** Repository metadata only (cheap fs walk) — for synchronous render paths. */
 export declare function gitInfo(dir: string): VcsGitRepoInfo | null;

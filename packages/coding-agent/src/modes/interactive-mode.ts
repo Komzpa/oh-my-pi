@@ -444,6 +444,8 @@ import {
 	cfgCompactionIdleTimeoutSeconds,
 	cfgCompactionMethodOrder,
 } from "../session/context-settings";
+import { getLatestRequirements, REQUIREMENTS_LEDGER_CUSTOM_TYPE } from "../tools/requirements-ledger";
+import { getRequirementHudCounts } from "./utils/requirement-hud-counts";
 
 /**
  * Settings with live interactive-UI side effects, keyed by id. One coalesced listener applies
@@ -709,15 +711,27 @@ class DescribedComponent implements Component {
 }
 
 class TodoHudContainer extends AnchoredLiveContainer {
+	#renderBase: (width: number) => readonly string[];
+
 	constructor(private readonly mode: InteractiveMode) {
 		super();
+		this.#renderBase = super.render.bind(this);
 	}
 
 	override render(width: number): readonly string[] {
-		if (this.mode.isCompactTodoMode()) {
-			return [];
-		}
-		return super.render(width);
+		return this.mode.renderRequirementHudSegment(this.#renderBase, width);
+	}
+
+	/**
+	 * The plan built with the ANSI rows: a HUD `checklist` where the terminal
+	 * has one, else the phase tree. The short-terminal fold is ANSI layout only.
+	 */
+	override describe(cx: DescribeContext): NativeNode {
+		const requirement = this.mode.describeRequirementHudSummary();
+		const body = this.mode.describeTodoHud(cx);
+		if (!body) return requirement ?? EMPTY_HUD;
+		if (!requirement) return body;
+		return col([requirement, body], { role: "omp.hud.todo" });
 	}
 }
 
@@ -934,7 +948,9 @@ class StatusHudContainer extends AnchoredLiveContainer {
 			}
 			return childLines;
 		}
-		return this.mode.renderCompactStatusLine(width, childLines);
+		const requirementSegment = this.mode.requirementHudSegment;
+		const compactLines = requirementSegment ? [...childLines, requirementSegment] : childLines;
+		return this.mode.renderCompactStatusLine(width, compactLines);
 	}
 }
 
@@ -1647,9 +1663,13 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * todo HUD, so the todo holds its place as the turn starts and ends.
 	 * Nothing to show describes the empty HUD.
 	 */
-	describeStatusHud(children: readonly Component[], cx: DescribeContext): NativeNode {
+	describeTodoHud(cx: DescribeContext): NativeNode | undefined {
 		const hud = this.#todoHudNative;
-		const todo = hud && (cx.supports("checklist") ? hud.checklist : hud.fallback);
+		return hud && (cx.supports("checklist") ? hud.checklist : hud.fallback);
+	}
+
+	describeStatusHud(children: readonly Component[], cx: DescribeContext): NativeNode {
+		const todo = this.describeTodoHud(cx);
 		const memo = this.#statusHudNative;
 		if (memo && memo.todo === todo && sameItems(memo.children, children)) return memo.node;
 		const parts: NativeChild[] = [];
@@ -2134,6 +2154,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#eventBusUnsubscribers.push(onDownloadActivity(activity => this.#downloadActivityHud.update(activity)));
 		this.statusContainer = new StatusHudContainer(this);
 		this.todoContainer = new TodoHudContainer(this);
+		this.#eventBusUnsubscribers.push(
+			this.sessionManager.subscribeEntryAppended(entry => {
+				if (entry.type !== "custom" || entry.customType !== REQUIREMENTS_LEDGER_CUSTOM_TYPE) return;
+				this.#renderTodoList();
+				this.ui.requestRender();
+			}),
+		);
 		this.subagentContainer = new AnchoredLiveContainer();
 		this.btwContainer = new AnchoredLiveContainer();
 		this.omfgContainer = new AnchoredLiveContainer();
@@ -2582,7 +2609,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
 		this.syncRunningSubagentBadge();
 		this.#observerRegistry.onChange(kind => {
-			this.#scheduleObserverUiSync(kind);
+			const owner = this.#todoPhasesOwner ?? this.session;
+			// Ledger plans require artifact verification. Worker observations may
+			// repaint them, but cannot authorize completion or journal writes.
+			const ledgerPlan = getLatestRequirements(owner.sessionManager.getBranch()).length > 0;
+			this.#scheduleObserverUiSync(ledgerPlan ? "progress" : kind);
 		});
 		// `/pause` stops the live-preview tick (the fullscreen pause screen covers
 		// the HUD); resuming repaints so elapsed markers catch up immediately.
@@ -9571,6 +9602,77 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showToolError(toolName: string, error: string): void {
 		this.#extensionUiController.showToolError(toolName, error);
+	}
+
+	requirementHudSegment = "";
+
+	/**
+	 * Native requirement-summary line mirroring the ANSI `req …` segment, so
+	 * native terminals see requirement counts even when checklist rows are
+	 * absent (`todoHudNative` is `undefined` with no phases).
+	 */
+	describeRequirementHudSummary(): NativeNode | undefined {
+		const counts = getRequirementHudCounts((this.#todoPhasesOwner ?? this.session).sessionManager);
+		if (counts.total === 0) return undefined;
+		return text([
+			span("TODO", "accent strong"),
+			span(` · req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗`, "dim"),
+		]);
+	}
+
+	renderRequirementHudSegment(renderBase: (width: number) => readonly string[], width: number): readonly string[] {
+		const counts = getRequirementHudCounts((this.#todoPhasesOwner ?? this.session).sessionManager);
+		const wasHidden = this.#todoHudHidden;
+		const compact = this.isCompactTodoMode();
+		const hasOutstandingRequirements = counts.open > 0 || counts.failed > 0;
+		const showRequirements = counts.total > 0 && (!wasHidden || hasOutstandingRequirements);
+		this.requirementHudSegment = "";
+
+		if (showRequirements) {
+			const title = theme.bold(theme.fg("accent", "TODO"));
+			const requirementText = `req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗`;
+			const requirementSummary = theme.fg("dim", ` · ${requirementText}`);
+			if (compact) {
+				const hasVisibleTasks = !wasHidden && this.todoPhases.some(phase => phase.tasks.length > 0);
+				this.requirementHudSegment = hasVisibleTasks
+					? theme.fg("dim", requirementText)
+					: `${title}${requirementSummary}`;
+			} else {
+				this.requirementHudSegment = `${title}${requirementSummary}`;
+			}
+		}
+
+		if (compact) return [];
+		if (wasHidden && hasOutstandingRequirements) {
+			this.#todoHudHidden = false;
+			try {
+				this.#renderTodoList();
+			} finally {
+				this.#todoHudHidden = wasHidden;
+			}
+		}
+
+		const lines = renderBase(width);
+		if (!showRequirements) return lines;
+		const title = theme.bold(theme.fg("accent", "TODO"));
+		const requirementSummary = theme.fg(
+			"dim",
+			` · req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗`,
+		);
+		if (lines.length === 0) return ["", truncateToWidth(`${title}${requirementSummary}`, width)];
+
+		let inserted = false;
+		const rendered = lines.map(line => {
+			if (inserted) return truncateToWidth(line, width);
+			const titleIndex = line.indexOf(title);
+			if (titleIndex < 0) return truncateToWidth(line, width);
+			inserted = true;
+			return truncateToWidth(
+				`${line.slice(0, titleIndex)}${title}${requirementSummary}${line.slice(titleIndex + title.length)}`,
+				width,
+			);
+		});
+		return inserted ? rendered : [truncateToWidth(`${title}${requirementSummary}`, width), ...rendered];
 	}
 
 	#subscribeToAgent(): void {

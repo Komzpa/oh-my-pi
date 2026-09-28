@@ -38,6 +38,9 @@
 ### Changed
 
 - Updated Bun engine requirement to ≥1.4.4
+### Added
+
+- Added an assistant publication gate that admits or replaces completed responses before public delivery, with isolated event snapshots and provider continuation support ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
 
 ### Fixed
 

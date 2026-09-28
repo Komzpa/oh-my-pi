@@ -38,6 +38,11 @@ import {
 	steeringQueueState,
 	unpairedToolCallTail,
 } from "./agent-loop";
+import {
+	admitAssistantMessage,
+	getAssistantPublicationGate,
+	setAssistantPublicationGateProvider,
+} from "./assistant-publication";
 import type { AppendOnlyContextManager } from "./append-only-context";
 import { agentPauseGate } from "./pause";
 import { isProviderRefusalMessage } from "./replay-policy";
@@ -1248,6 +1253,7 @@ export class Agent {
 				this.appendMessage(event.message);
 				break;
 			case "tool_execution_start":
+				this.#updateAssistantToolCallArguments(event.toolCallId, event.args);
 				this.#state.pendingToolCalls.add(event.toolCallId);
 				break;
 			case "tool_execution_end":
@@ -1513,6 +1519,21 @@ export class Agent {
 	}
 
 	/** Nonblocking snapshot of the latest results, including provisional payloads while transforms are pending. */
+	#updateAssistantToolCallArguments(toolCallId: string, args: unknown): void {
+		if (!args || typeof args !== "object" || Array.isArray(args)) return;
+		const candidates = [
+			...(this.#state.streamMessage?.role === "assistant" ? [this.#state.streamMessage] : []),
+			...this.#state.messages.slice().reverse(),
+		];
+		for (const message of candidates) {
+			if (message.role !== "assistant") continue;
+			const toolCall = message.content.find(block => block.type === "toolCall" && block.id === toolCallId);
+			if (!toolCall || toolCall.type !== "toolCall") continue;
+			toolCall.arguments = structuredClone(args as Record<string, unknown>);
+			return;
+		}
+	}
+
 	getPendingToolResults(): readonly ToolResultMessage[] {
 		const results = this.#cursorToolResultDrain?.map(({ toolResult }) => toolResult) ?? [];
 		for (const { toolResult } of this.#cursorToolResultBuffer) results.push(toolResult);
@@ -2028,6 +2049,7 @@ export class Agent {
 			onDetachedToolUpdate: event => this.emitExternalEvent(event),
 			telemetry: this.#telemetry,
 		};
+		setAssistantPublicationGateProvider(config, () => getAssistantPublicationGate(this));
 
 		let partial: AgentMessage | null = null;
 		const completedToolCallIds = new Set<string>();
@@ -2081,6 +2103,7 @@ export class Agent {
 						break;
 
 					case "tool_execution_start":
+						this.#updateAssistantToolCallArguments(event.toolCallId, event.args);
 						this.#state.pendingToolCalls.add(event.toolCallId);
 						break;
 
@@ -2174,6 +2197,7 @@ export class Agent {
 							errorMessage,
 							timestamp: Date.now(),
 						};
+			await admitAssistantMessage(errorMsg, getAssistantPublicationGate(config), loopSignal, abortReasonText);
 
 			if (shouldEmitVisibleError) {
 				if (!turnOpen) {

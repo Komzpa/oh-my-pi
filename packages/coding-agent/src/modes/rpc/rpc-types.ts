@@ -45,7 +45,7 @@ import type { BtwHistoryRecord } from "../../session/btw-history";
  */
 export type RpcMessageUpdates = "full" | "delta";
 
-export type RpcCommand =
+type RpcCommandEnvelope =
 	// Protocol
 	| { id?: string; type: "negotiate_protocol"; protocolVersion: number }
 
@@ -985,3 +985,8 @@ export type RpcExtensionUIResponse =
 // ============================================================================
 
 export type RpcCommandType = RpcCommand["type"];
+
+/** Original input remains attached when a frontend transforms its prompt. */
+export type RpcCommand =
+	| (Extract<RpcCommandEnvelope, { type: "prompt" }> & { rawRequirementText?: string })
+	| Exclude<RpcCommandEnvelope, { type: "prompt" }>;
