@@ -480,9 +480,8 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(renderTodos(mode)).toContain("unassigned workers");
 		expect(renderTodos(mode)).toContain("Inspect adjacent work");
 		const pinnedWorkers = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
-		expect(pinnedWorkers).toContain("Subagents");
-		expect(pinnedWorkers).toContain("NeighborWorker");
-		expect(pinnedWorkers).toContain("Inspect adjacent work");
+		expect(pinnedWorkers).not.toContain("Subagents");
+		expect(pinnedWorkers).not.toContain("NeighborWorker");
 	});
 
 	it("completes and auto-dismisses only after an explicit Main TODO done command", async () => {
