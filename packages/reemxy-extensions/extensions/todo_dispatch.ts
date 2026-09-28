@@ -6,6 +6,7 @@ import { availableParallelism } from "node:os";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
 import type { TodoPlanForecast, TodoPlanningIssue, TodoScheduleInput, TodoTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -298,7 +299,30 @@ function blankSprintState(): SprintState {
   };
 }
 
-function readPersistedSprintState(branch: unknown[]): SprintState {
+/** Notice dedupe keeps only digests of the most recent keys; full notice texts made each persisted state megabytes. */
+export const MAX_NOTICE_KEYS = 200;
+
+export function noticeDigest(text: string): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+export function noticeKey(kind: string, rowKey: string): string {
+  return `${kind}\0${noticeDigest(rowKey)}`;
+}
+
+const DIGEST = /^[0-9a-f]{16}$/;
+
+export function boundedNotices(notices: Record<string, string>): Record<string, string> {
+  const entries = Object.entries(notices).map(([key, value]): [string, string] => {
+    const split = key.indexOf("\0");
+    const kind = split < 0 ? key : key.slice(0, split);
+    const rowKey = split < 0 ? "" : key.slice(split + 1);
+    return [DIGEST.test(rowKey) ? key : noticeKey(kind, rowKey), DIGEST.test(value) ? value : noticeDigest(value)];
+  });
+  return Object.fromEntries(entries.slice(-MAX_NOTICE_KEYS));
+}
+
+export function readPersistedSprintState(branch: unknown[]): SprintState {
   for (let index = branch.length - 1; index >= 0; index--) {
     const entry = branch[index];
     if (typeof entry !== "object" || entry === null) continue;
@@ -335,7 +359,7 @@ function readPersistedSprintState(branch: unknown[]): SprintState {
       ...(typeof data.handledDeadlineAt === "number" ? { handledDeadlineAt: data.handledDeadlineAt } : {}),
       ...(typeof data.handledDeliveryKey === "string" ? { handledDeliveryKey: data.handledDeliveryKey } : {}),
       lastNotices: typeof data.lastNotices === "object" && data.lastNotices !== null
-        ? Object.fromEntries(Object.entries(data.lastNotices).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+        ? boundedNotices(Object.fromEntries(Object.entries(data.lastNotices).filter((entry): entry is [string, string] => typeof entry[1] === "string")))
         : {},
     };
   }
@@ -1130,12 +1154,14 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     pi.appendEntry(SPRINT_STATE_ENTRY_TYPE, sprintState);
   };
   const sendHarnessNotice = (kind: string, rowKey: string, content: string, details?: unknown): boolean => {
-    const key = `${kind}\0${rowKey}`;
-    if (sprintState.lastNotices[key] === content) {
-      pi.appendEntry("todo-dispatch-silent-notice", { kind, rowKey, content, at: Date.now() });
+    const key = noticeKey(kind, rowKey);
+    const digest = noticeDigest(content);
+    if (sprintState.lastNotices[key] === digest) {
+      pi.appendEntry("todo-dispatch-silent-notice", { kind, digest, at: Date.now() });
       return false;
     }
-    sprintState = { ...sprintState, lastNotices: { ...sprintState.lastNotices, [key]: content } };
+    const { [key]: _previous, ...others } = sprintState.lastNotices;
+    sprintState = { ...sprintState, lastNotices: boundedNotices({ ...others, [key]: digest }) };
     persistSprintState();
     pi.sendMessage(
       { customType: kind, content, display: false, attribution: "agent", ...(details === undefined ? {} : { details }) },
