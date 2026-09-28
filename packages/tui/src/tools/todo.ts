@@ -25,12 +25,16 @@ import type { NativeToolView, ToolRenderResult } from "./renderer";
 export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 
 /** Operation names accepted by the todo tool and echoed in successful result details. */
-export type TodoOperation = "init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view";
+export type TodoOperation = "init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view" | "classify";
 
 /** A task displayed within a todo phase. */
 export interface TodoItem {
 	content: string;
 	status: TodoStatus;
+	/** Persisted checkout whose clean HEAD is the row's QA artifact; independent of schedule reservations. */
+	artifactCwd?: string;
+	/** Owner whose checkout was last verified as artifactCwd; a later schedule reassignment invalidates it. */
+	artifactOwner?: string;
 	/** When `status === "blocked"`, an optional note on what the task is waiting for. */
 	blocker?: string;
 	details?: string;

@@ -73,6 +73,12 @@ import {
 	startExecuteToolSpan,
 	startInvokeAgentSpan,
 } from "./telemetry";
+import {
+	admitAssistantMessage,
+	ASSISTANT_GATE_REFUSAL,
+	isAssistantNarrativeReplaced,
+	replaceAssistantNarrative,
+} from "./assistant-publication";
 import { createAdditionalContextMessage, isNonBlankContext, joinAdditionalContext } from "./tool-context";
 import type {
 	AgentContext,
@@ -411,6 +417,7 @@ function snapshotAssistantMessage(message: AssistantMessage): AssistantMessage {
 		toolCallAbortMessages: message.toolCallAbortMessages ? { ...message.toolCallAbortMessages } : undefined,
 	};
 }
+
 
 /**
  * Incremental variant of `snapshotAssistantMessage` for per-delta
@@ -1480,9 +1487,17 @@ async function runLoopBody(
 				}
 				if (recovered) {
 					message = snapshotAssistantMessage(message);
+					await config.transformAssistantMessage?.(message, signal);
+					await admitAssistantMessage(message, config.beforeAssistantMessage, signal, abortReasonText);
 					currentContext.messages.push(message);
-					stream.push({ type: "message_start", message: snapshotAssistantMessage(message) });
-					stream.push({ type: "message_end", message: snapshotAssistantMessage(message) });
+					stream.push({
+						type: "message_start",
+						message: config.beforeAssistantMessage ? message : snapshotAssistantMessage(message),
+					});
+					stream.push({
+						type: "message_end",
+						message: config.beforeAssistantMessage ? message : snapshotAssistantMessage(message),
+					});
 				}
 				newMessages.push(message);
 
@@ -2103,6 +2118,7 @@ async function streamAssistantResponse(
 
 			let providerStreamSettled = false;
 			let speculationSettled = false;
+			let finalMessagePublished = false;
 			const responseIterator = response[Symbol.asyncIterator]();
 			const finishAbortedStream = async (): Promise<AssistantMessage> => {
 				try {
@@ -2113,7 +2129,7 @@ async function streamAssistantResponse(
 				}
 				await speculationCoordinator?.discardAll("run aborted", "aborted");
 				speculationSettled = true;
-				const aborted = emitAbortedAssistantMessage(
+				const aborted = await emitAbortedAssistantMessage(
 					partialMessage,
 					addedPartial,
 					completedToolCallIds,
@@ -2122,8 +2138,33 @@ async function streamAssistantResponse(
 					stream,
 					requestSignal,
 				);
+				finalMessagePublished = true;
 				await finishChat(aborted);
 				return aborted;
+			};
+			const finishFailedStream = async (error: unknown): Promise<AssistantMessage> => {
+				await speculationCoordinator?.discardAll("provider stream failed", "aborted");
+				speculationSettled = true;
+				// A throwing iterator/result has no terminal event. Preserve its private
+				// draft's completed calls, usage, and real error without a raw fallback.
+				const failed = snapshotAssistantMessage(retainCompletedToolCalls({
+					...(partialMessage ?? createGateStopMessage(model, undefined)),
+					stopReason: requestSignal?.aborted ? "aborted" : "error",
+					errorMessage: requestSignal?.aborted ? abortReasonText(requestSignal) : error instanceof Error ? error.message : String(error),
+				}, completedToolCallIds));
+				try {
+					await config.transformAssistantMessage?.(failed, requestSignal);
+				} catch {
+					replaceAssistantNarrative(failed, ASSISTANT_GATE_REFUSAL);
+				}
+				await admitAssistantMessage(failed, config.beforeAssistantMessage, requestSignal, abortReasonText);
+				context.messages.push(failed);
+				finalMessagePublished = true;
+				stream.push({ type: "message_start", message: failed });
+				stream.push({ type: "message_end", message: failed });
+				await finishChat(failed);
+				providerStreamSettled = true;
+				return failed;
 			};
 
 			// Set up a single abort race: register the abort listener once for the whole
@@ -2189,6 +2230,7 @@ async function streamAssistantResponse(
 						if (config.transformAssistantMessage) {
 							await config.transformAssistantMessage(finalMessage, requestSignal);
 						}
+						await admitAssistantMessage(finalMessage, config.beforeAssistantMessage, requestSignal, abortReasonText);
 						// A pre-dispatch hook may request approval or change external state, so
 						// do not run it until the outer loop has established this tool turn can
 						// actually dispatch. The same gate keeps host-deferred speculation from
@@ -2229,10 +2271,11 @@ async function streamAssistantResponse(
 						} else {
 							context.messages.push(finalMessage);
 						}
+						finalMessagePublished = true;
 						if (!addedPartial) {
-							stream.push({ type: "message_start", message: snapshotAssistantMessage(finalMessage) });
+							stream.push({ type: "message_start", message: config.beforeAssistantMessage ? finalMessage : snapshotAssistantMessage(finalMessage) });
 						}
-						stream.push({ type: "message_end", message: snapshotAssistantMessage(finalMessage) });
+						stream.push({ type: "message_end", message: config.beforeAssistantMessage ? finalMessage : snapshotAssistantMessage(finalMessage) });
 						await finishChat(finalMessage);
 						speculationSettled = true;
 						providerStreamSettled = true;
@@ -2295,6 +2338,10 @@ async function streamAssistantResponse(
 					switch (event.type) {
 						case "start":
 							partialMessage = event.partial;
+							if (config.beforeAssistantMessage) {
+								config.onAssistantMessageEvent?.(partialMessage, event);
+								break;
+							}
 							if (addedPartial) {
 								context.messages[context.messages.length - 1] = partialMessage;
 								completedToolCallIds.clear();
@@ -2390,41 +2437,43 @@ async function streamAssistantResponse(
 									}
 								}
 								partialMessage = event.partial;
-								context.messages[context.messages.length - 1] = partialMessage;
+								if (addedPartial) context.messages[context.messages.length - 1] = partialMessage;
 								config.onAssistantMessageEvent?.(partialMessage, event);
-								// Track which blocks are still streaming: open blocks are
-								// re-cloned on every delta, finalized blocks are shared.
-								const contentIndex = (event as { contentIndex?: number }).contentIndex;
-								if (contentIndex !== undefined) {
-									if (event.type.endsWith("_start")) openBlocks.add(contentIndex);
-									else if (event.type.endsWith("_end")) openBlocks.delete(contentIndex);
+								if (!config.beforeAssistantMessage) {
+									// Track which blocks are still streaming: open blocks are
+									// re-cloned on every delta, finalized blocks are shared.
+									const contentIndex = event.contentIndex;
+									if (contentIndex !== undefined) {
+										if (event.type.endsWith("_start")) openBlocks.add(contentIndex);
+										else if (event.type.endsWith("_end")) openBlocks.delete(contentIndex);
+									}
+									// READ-ONLY-CONSUMER INVARIANT: `message` and
+									// `assistantMessageEvent.partial` intentionally share one snapshot,
+									// and the snapshot is rebuilt incrementally — only the delta's
+									// block, open blocks, and newly appended blocks are deep-cloned;
+									// finalized blocks are carried over from the previous snapshot by
+									// reference (see `snapshotAssistantMessageIncremental`), so they are
+									// shared across ALL message_update snapshots of the turn.
+									// Consumers MUST treat both fields — and every content block inside
+									// them — as read-only: mutating a snapshot would corrupt every
+									// earlier and later snapshot of the turn, not just this one. In
+									// exchange, per-delta work is proportional to the live stream
+									// instead of the whole turn (issue #10605).
+									const messageSnapshot: AssistantMessage = turnSnapshot
+										? snapshotAssistantMessageIncremental(
+												partialMessage,
+												turnSnapshot,
+												contentIndex ?? -1,
+												openBlocks,
+											)
+										: snapshotAssistantMessage(partialMessage);
+									turnSnapshot = messageSnapshot;
+									stream.push({
+										type: "message_update",
+										assistantMessageEvent: snapshotAssistantMessageEvent(event, messageSnapshot),
+										message: messageSnapshot,
+									});
 								}
-								// READ-ONLY-CONSUMER INVARIANT: `message` and
-								// `assistantMessageEvent.partial` intentionally share one snapshot,
-								// and the snapshot is rebuilt incrementally — only the delta's
-								// block, open blocks, and newly appended blocks are deep-cloned;
-								// finalized blocks are carried over from the previous snapshot by
-								// reference (see `snapshotAssistantMessageIncremental`), so they are
-								// shared across ALL message_update snapshots of the turn.
-								// Consumers MUST treat both fields — and every content block inside
-								// them — as read-only: mutating a snapshot would corrupt every
-								// earlier and later snapshot of the turn, not just this one. In
-								// exchange, per-delta work is proportional to the live stream
-								// instead of the whole turn (issue #10605).
-								const messageSnapshot: AssistantMessage = turnSnapshot
-									? snapshotAssistantMessageIncremental(
-											partialMessage,
-											turnSnapshot,
-											contentIndex ?? -1,
-											openBlocks,
-										)
-									: snapshotAssistantMessage(partialMessage);
-								turnSnapshot = messageSnapshot;
-								stream.push({
-									type: "message_update",
-									assistantMessageEvent: snapshotAssistantMessageEvent(event, messageSnapshot),
-									message: messageSnapshot,
-								});
 							}
 							if (
 								event.type === "toolcall_end" &&
@@ -2437,6 +2486,9 @@ async function streamAssistantResponse(
 							break;
 					}
 				}
+			} catch (error) {
+				if (!config.beforeAssistantMessage || finalMessagePublished || error instanceof HarmonyLeakInterruption) throw error;
+				return await finishFailedStream(error);
 			} finally {
 				detachAbortListener?.();
 				cancelArgStreams();
@@ -2469,6 +2521,7 @@ async function streamAssistantResponse(
 					await config.transformAssistantMessage(trailing, requestSignal);
 				}
 				trailing = snapshotAssistantMessage(trailing);
+				await admitAssistantMessage(trailing, config.beforeAssistantMessage, requestSignal, abortReasonText);
 				const finalToolCallsCanDispatch =
 					!requestSignal?.aborted &&
 					(canDispatchFinalToolCalls?.(trailing) ??
@@ -2504,14 +2557,18 @@ async function streamAssistantResponse(
 					context.messages[context.messages.length - 1] = trailing;
 				} else {
 					context.messages.push(trailing);
-					stream.push({ type: "message_start", message: snapshotAssistantMessage(trailing) });
+					stream.push({ type: "message_start", message: config.beforeAssistantMessage ? trailing : snapshotAssistantMessage(trailing) });
 				}
-				stream.push({ type: "message_end", message: snapshotAssistantMessage(trailing) });
+				stream.push({ type: "message_end", message: config.beforeAssistantMessage ? trailing : snapshotAssistantMessage(trailing) });
+				finalMessagePublished = true;
 				await finishChat(trailing);
 				speculationSettled = true;
 				providerStreamSettled = true;
 				return trailing;
 			} catch (error) {
+				if (config.beforeAssistantMessage && !finalMessagePublished && !(error instanceof HarmonyLeakInterruption)) {
+					return await finishFailedStream(error);
+				}
 				if (!speculationSettled) {
 					await speculationCoordinator?.discardAll("provider stream finalization failed", "aborted");
 				}
@@ -2536,7 +2593,7 @@ function retainCompletedToolCalls(
 	let droppedIncompleteToolCall = false;
 	const content = message.content.filter(block => {
 		if (block.type !== "toolCall") return true;
-		const keep = completedToolCallIds.has(block.id);
+		const keep = completedToolCallIds.has(block.id) || (block as CursorExecResolvedCarrier)[kCursorExecResolved] === true;
 		if (!keep) droppedIncompleteToolCall = true;
 		return keep;
 	});
@@ -2659,7 +2716,7 @@ export function abortReasonText(signal: AbortSignal | undefined): string {
 	return "Request was aborted";
 }
 
-function emitAbortedAssistantMessage(
+async function emitAbortedAssistantMessage(
 	partialMessage: AssistantMessage | null,
 	addedPartial: boolean,
 	completedToolCallIds: ReadonlySet<string>,
@@ -2667,7 +2724,7 @@ function emitAbortedAssistantMessage(
 	config: AgentLoopConfig,
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	requestSignal: AbortSignal | undefined,
-): AssistantMessage {
+): Promise<AssistantMessage> {
 	const model = config.getModel?.() ?? config.model;
 	const errorMessage = abortReasonText(requestSignal);
 	const errorId =
@@ -2705,13 +2762,21 @@ function emitAbortedAssistantMessage(
 		retained.toolCallAbortMessages = toolCallAbortMessages;
 	}
 	const abortedMessage = snapshotAssistantMessage(retained);
+	if (config.beforeAssistantMessage) {
+		try {
+			await config.transformAssistantMessage?.(abortedMessage, requestSignal);
+		} catch {
+			replaceAssistantNarrative(abortedMessage, ASSISTANT_GATE_REFUSAL);
+		}
+		await admitAssistantMessage(abortedMessage, config.beforeAssistantMessage, requestSignal, abortReasonText);
+	}
 	if (addedPartial) {
 		context.messages[context.messages.length - 1] = abortedMessage;
 	} else {
 		context.messages.push(abortedMessage);
-		stream.push({ type: "message_start", message: snapshotAssistantMessage(abortedMessage) });
+		stream.push({ type: "message_start", message: config.beforeAssistantMessage ? abortedMessage : snapshotAssistantMessage(abortedMessage) });
 	}
-	stream.push({ type: "message_end", message: snapshotAssistantMessage(abortedMessage) });
+	stream.push({ type: "message_end", message: config.beforeAssistantMessage ? abortedMessage : snapshotAssistantMessage(abortedMessage) });
 	return abortedMessage;
 }
 
@@ -2888,8 +2953,8 @@ async function prepareToolCallDispatch(
 				continue;
 			}
 			if (intent) {
-				toolCall.intent = intent;
-			} else if (typeof tool?.intent === "function") {
+				if (!isAssistantNarrativeReplaced(assistantMessage)) toolCall.intent = intent;
+			} else if (!isAssistantNarrativeReplaced(assistantMessage) && typeof tool?.intent === "function") {
 				try {
 					const derived = tool.intent(strippedArgs as never)?.trim();
 					if (derived) {

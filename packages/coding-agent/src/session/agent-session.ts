@@ -863,6 +863,8 @@ export class AgentSession implements SettingsScope {
 	#adoptedResetMarkers = new Map<string, number>();
 	// Extension system
 	#extensionRunner: ExtensionRunner | undefined = undefined;
+	/** Out-of-band receipts tied to the exact finalized messages admitted by the native gate. */
+	#settledAssistantStatuses = new WeakSet<AssistantMessage>();
 	#getEvalPreludes: (() => readonly EvalPreludeDefinition[]) | undefined;
 	#reconcileBrowserMcpFilter: AgentSessionConfig["reconcileBrowserMcpFilter"];
 	#skillDescriptions: SkillDescriptionCatalog;
@@ -1918,6 +1920,21 @@ export class AgentSession implements SettingsScope {
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
 		this.#agentKind = config.agentKind ?? "main";
+		if (this.#agentKind === "main" && this.#extensionRunner?.hasHandlers("before_assistant_message")) {
+			const runner = this.#extensionRunner;
+			this.agent.beforeAssistantMessage = async (message, signal) => {
+				const result = await runner.emitBeforeAssistantMessage({ type: "before_assistant_message", message, signal });
+				if (
+					result?.settled === true &&
+					!signal.aborted &&
+					message.stopReason !== "aborted" &&
+					!message.content.some(block => block.type === "toolCall")
+				) {
+					this.#settledAssistantStatuses.add(message);
+				}
+				return result;
+			};
+		}
 		// A subagent's streamed text reaches no output sink until the run settles
 		// (the parent sees only the yield), so a failed turn's partial prose is
 		// replay-safe and transient provider errors after it stay retryable —
@@ -1944,6 +1961,22 @@ export class AgentSession implements SettingsScope {
 		}
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
 			this.#loopGuards.onAssistantEvent(message, assistantMessageEvent);
+			if (this.agent.beforeAssistantMessage) {
+				// Withheld streams still drive internal safety and token accounting, never public delivery.
+				if (assistantMessageEvent.type === "start") {
+					this.#ttsr.onAssistantMessageStart();
+					this.tokenRate.begin(message.timestamp);
+				} else if (
+					assistantMessageEvent.type === "text_delta" ||
+					assistantMessageEvent.type === "thinking_delta" ||
+					assistantMessageEvent.type === "toolcall_delta"
+				) {
+					this.tokenRate.push(assistantMessageEvent.delta);
+				}
+				void this.#ttsr
+					.checkMessageUpdate({ type: "message_update", message, assistantMessageEvent })
+					.catch(error => logger.warn("TTSR raw stream check failed", { error }));
+			}
 		});
 		// Tool-result hook owns synchronous post-tool actions that must affect the current loop.
 		this.agent.afterToolCall = ctx => this.#afterToolCall(ctx);
@@ -3640,14 +3673,16 @@ export class AgentSession implements SettingsScope {
 		// concurrently and message_update skips the await, so a reset placed after
 		// it could land behind the new message's first deltas and clear them.
 		if (event.type === "turn_start") this.#ttsr.onTurnStart();
-		if (event.type === "message_start" && event.message.role === "assistant") this.#ttsr.onAssistantMessageStart();
+		if (!this.agent.beforeAssistantMessage && event.type === "message_start" && event.message.role === "assistant") {
+			this.#ttsr.onAssistantMessageStart();
+		}
 
 		// Meter generation per session: each session tracks its own stream, so a
 		// background subagent holds a live reading by the time it is focused and
 		// the main session's reading survives focus round-trips.
-		if (event.type === "message_start" && event.message.role === "assistant") {
+		if (!this.agent.beforeAssistantMessage && event.type === "message_start" && event.message.role === "assistant") {
 			this.tokenRate.begin(event.message.timestamp);
-		} else if (event.type === "message_update" && event.message.role === "assistant") {
+		} else if (!this.agent.beforeAssistantMessage && event.type === "message_update" && event.message.role === "assistant") {
 			const delta = event.assistantMessageEvent;
 			if (delta.type === "text_delta" || delta.type === "thinking_delta" || delta.type === "toolcall_delta") {
 				this.tokenRate.push(delta.delta);
@@ -3715,7 +3750,7 @@ export class AgentSession implements SettingsScope {
 
 		if (event.type === "tool_stream_update") this.#streamingEditGuard.maybeAbort(event);
 
-		if (await this.#ttsr.checkMessageUpdate(event)) return;
+		if (!this.agent.beforeAssistantMessage && (await this.#ttsr.checkMessageUpdate(event))) return;
 
 		// Handle session persistence
 		if (event.type === "message_end") {
@@ -4201,7 +4236,8 @@ export class AgentSession implements SettingsScope {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
 				}
-				const todoContinuationScheduled = await this.#todo.checkCompletion(msg);
+				const todoContinuationScheduled =
+					!this.#settledAssistantStatuses.has(msg) && (await this.#todo.checkCompletion(msg));
 				if (todoContinuationScheduled) {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
@@ -4735,6 +4771,10 @@ export class AgentSession implements SettingsScope {
 			signal: this.#postPromptTasksAbortController.signal,
 		});
 		if (this.#promptGeneration !== generation || this.#abortInProgress || this.#isDisposed) {
+			this.#resetSessionStopContinuationState();
+			return false;
+		}
+		if (lastAssistantMessage && this.#settledAssistantStatuses.has(lastAssistantMessage) && result?.decision !== "block") {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}

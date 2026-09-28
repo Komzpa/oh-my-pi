@@ -97,6 +97,19 @@ export type AgentBeforeModelCall = (
 	signal?: AbortSignal,
 ) => AgentPreModelCallResult | void | Promise<AgentPreModelCallResult | void>;
 
+/** Result of an awaited assistant publication gate. */
+export interface AgentBeforeAssistantMessageResult {
+	replacementText: string;
+	/** Marks a terminal host status response without adding a message field. */
+	settled?: true;
+}
+
+/** Gate each finalized assistant draft before any public publication. */
+export type AgentBeforeAssistantMessage = (
+	message: AssistantMessage,
+	signal: AbortSignal,
+) => void | AgentBeforeAssistantMessageResult | Promise<void | AgentBeforeAssistantMessageResult>;
+
 /**
  * A soft tool requirement: the host wants `toolName` called before the loop
  * runs other tools or yields, but WITHOUT paying the forced-`toolChoice` cost
@@ -602,6 +615,16 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * calls, so they stay disabled under a transform unless this is set.
 	 */
 	transformAssistantMessagePreservesToolCalls?: boolean;
+
+	/**
+	 * Installing this gate withholds all public assistant streaming content.
+	 * Called after the final transform and before tool validation, dispatch, or publication.
+	 * Undefined approves; replacementText replaces narrative, never tool-call ids or arguments.
+	 * Rejection, malformed results, or cancellation fail closed. The exact message
+	 * object is delivered to message_end/turn_end/agent_end for private receipts.
+	 * settled is a host receipt, not a persisted/provider message field.
+	 */
+	beforeAssistantMessage?: AgentBeforeAssistantMessage;
 
 	/**
 	 * Called after a tool finishes executing, before `tool_execution_end` and the

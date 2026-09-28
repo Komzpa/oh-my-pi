@@ -61,6 +61,9 @@
 ### Fixed
 
 - Fixed an issue where streaming tool call arguments could be incorrectly modified in-place
+### Added
+
+- Added the awaited `beforeAssistantMessage` gate for hosts that must approve or replace assistant output before public streaming, state updates, or tool dispatch.
 
 ## [18.4.1] - 2026-09-28
 

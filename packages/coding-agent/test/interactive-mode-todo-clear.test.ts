@@ -11,6 +11,10 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import {
+	createRequirementCandidates,
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+} from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -80,6 +84,62 @@ describe("InteractiveMode todo HUD persistence", () => {
 	function setTodoClearDelay(todoClearDelay: number): void {
 		cfgTasksTodoClearDelay.override(session.settings, todoClearDelay);
 	}
+
+	it("renders requirement counts in the TODO HUD and compact header", async () => {
+		await replaceMode();
+		setTodoClearDelay(-1);
+		const at = "2026-09-28T12:00:00.000Z";
+		const requirements = [
+			{ id: "R1", at, rawText: "candidate ask", classification: "candidate", rows: [] },
+			{ id: "R2", at, rawText: "passed ask", classification: "linked", rows: ["Build artifact"], verdict: { status: "pass", evidence: "observed", artifact: "r2", workerId: "QA" } },
+			{ id: "R3", at, rawText: "failed ask", classification: "linked", rows: ["Build artifact"], verdict: { status: "fail", evidence: "broken", artifact: "r2", workerId: "QA" } },
+			{ id: "R4", at, rawText: "uncertain ask", classification: "linked", rows: ["Build artifact"], verdict: { status: "unverifiable", evidence: "missing access", artifact: "r2", workerId: "QA" } },
+		];
+		session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements });
+		try {
+			mode.setTodos([{ name: "Work", tasks: [{ content: "Build artifact", status: "in_progress" }] }]);
+			expect(renderTodos(mode)).toContain("TODO · req 4 · 1 ✓ · 2 open · 1 ✗");
+			expect(Bun.stripANSI(mode.renderCompactStatusLine(180, []).join("\n"))).toContain("req 4 · 1 ✓ · 2 open · 1 ✗");
+			// Lifecycle invalidation persists absence of the stale verdict, not a UI-only discount.
+			session.sessionManager.appendCustomEntry("requirements_ledger", {
+				version: 1, requirements: requirements.map(item => item.id === "R2" ? { ...item, verdict: undefined } : item),
+			});
+			mode.setTodos(session.getTodoPhases());
+			expect(renderTodos(mode)).toContain("req 4 · 0 ✓ · 3 open · 1 ✗");
+		} finally {
+			session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements: [] });
+		}
+	});
+
+	it("keeps linked rows open on worker success while still auto-closing unlinked rows", async () => {
+		await replaceMode();
+		setTodoClearDelay(-1);
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		session.sessionManager.appendCustomEntry("requirements_ledger", {
+			version: 1,
+			requirements: [{ id: "R1", at: "2026-09-28T12:00:00.000Z", rawText: "Implement the artifact", classification: "linked", rows: ["Build linked artifact"] }],
+		});
+		try {
+			session.setTodoPhases([{ name: "Work", tasks: [
+				{ content: "Build linked artifact", status: "blocked", blocker: "waiting on worker" },
+				{ content: "Clean temporary files", status: "pending" },
+			] }]);
+			mode.setTodos(session.getTodoPhases());
+			await mode.init();
+			vi.useFakeTimers();
+			for (const [id, description] of [["ArtifactWorker", "Build linked artifact"], ["CleanupWorker", "Clean temporary files"]]) {
+				eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, { id, index: 0, agent: "task", description, status: "completed", detached: true });
+			}
+			vi.advanceTimersByTime(100);
+			expect(session.getTodoPhases()[0]?.tasks).toEqual([
+				{ content: "Build linked artifact", status: "blocked", blocker: "waiting on worker" },
+				{ content: "Clean temporary files", status: "completed" },
+			]);
+			expect(renderTodos(mode)).toContain("req 1 · 0 ✓ · 1 open · 0 ✗");
+		} finally {
+			session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements: [] });
+		}
+	});
 
 	it("clears closed todos from the panel instantly without mutating session history", async () => {
 		vi.useFakeTimers();
@@ -667,6 +727,28 @@ describe("InteractiveMode todo HUD anchor", () => {
 	it("renders nothing when there are no todos", () => {
 		mode.setTodos([]);
 		expect(mode.todoContainer.render(80)).toHaveLength(0);
+	});
+
+	it("refreshes requirement counts on ledger append without replacing the collab append hook", () => {
+		mode.setTodos([{ name: "Work", tasks: [{ content: "Build artifact", status: "pending" }] }]);
+		const manager = session.sessionManager;
+		const previousAppendHook = manager.onEntryAppended;
+		const collabAppendHook = vi.fn();
+		manager.onEntryAppended = collabAppendHook;
+		try {
+			expect(renderTodos(mode)).not.toContain("req 1");
+			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
+				version: 1,
+				requirements: createRequirementCandidates([], ["keep this ask"], "2026-09-28T12:00:00.000Z"),
+			});
+			expect(collabAppendHook).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "custom", customType: REQUIREMENTS_LEDGER_CUSTOM_TYPE }),
+			);
+			expect(renderTodos(mode)).toContain("req 1 · 0 ✓ · 1 open · 0 ✗");
+		} finally {
+			manager.onEntryAppended = previousAppendHook;
+			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: 1, requirements: [] });
+		}
 	});
 
 	it("keeps the summed progress bar but omits the roman numeral for a single-phase list", () => {

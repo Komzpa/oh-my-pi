@@ -180,6 +180,12 @@ import {
 	type TodoHudStateEntryData,
 } from "../tools/todo";
 import {
+	countRequirements,
+	getLatestRequirements,
+	isRequirementLinkedToRow,
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+} from "../tools/requirements-ledger";
+import {
 	formatPhaseDisplayName,
 	isClosedTodo,
 	selectCollapsedTodos,
@@ -1819,6 +1825,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#eventBusUnsubscribers.push(onDownloadActivity(activity => this.#downloadActivityHud.update(activity)));
 		this.statusContainer = new StatusHudContainer(this);
 		this.todoContainer = new TodoHudContainer(this);
+		this.#eventBusUnsubscribers.push(
+			this.sessionManager.subscribeEntryAppended(entry => {
+				if (entry.type !== "custom" || entry.customType !== REQUIREMENTS_LEDGER_CUSTOM_TYPE) return;
+				this.#renderTodoList();
+				this.ui.requestRender();
+			}),
+		);
 		this.subagentContainer = new AnchoredLiveContainer();
 		this.btwContainer = new AnchoredLiveContainer();
 		this.omfgContainer = new AnchoredLiveContainer();
@@ -3976,6 +3989,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (candidate) completedDescs.push(candidate);
 		}
 		if (completedDescs.length === 0) return;
+		const owner = this.#todoPhasesOwner ?? this.session;
+		const requirements = getLatestRequirements(owner.sessionManager.getBranch());
 
 		let mutated = false;
 		const next: TodoPhase[] = this.todoPhases.map(phase => ({
@@ -3984,6 +3999,8 @@ export class InteractiveMode implements InteractiveModeContext {
 				if (task.status !== "pending" && task.status !== "in_progress" && task.status !== "blocked") {
 					return task;
 				}
+				// Successful implementation is not a QA verdict for a linked requirement.
+				if (isRequirementLinkedToRow(requirements, task.content)) return task;
 				if (!todoMatchesAnyDescription(task.content, completedDescs)) return task;
 				mutated = true;
 				// Drop any blocker note along with the blocked status — the wait the
@@ -3997,7 +4014,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		// destination there would clobber its canonical plan. Leaving the owner
 		// bound (rather than routing through `setTodos`, which rebinds it to
 		// `viewSession`) keeps a follow-up reconcile in the same window correct.
-		const owner = this.#todoPhasesOwner ?? this.session;
 		owner.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
 			phases: next,
 		});
@@ -4141,9 +4157,16 @@ export class InteractiveMode implements InteractiveModeContext {
 	#renderTodoList(): void {
 		this.todoContainer.clear();
 		this.todoHudNative = undefined;
-		if (this.#todoHudHidden) return;
+		const counts = countRequirements(getLatestRequirements((this.#todoPhasesOwner ?? this.session).sessionManager.getBranch()));
+		const requirementSummary = counts.total > 0
+			? theme.fg("dim", ` · req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗`)
+			: "";
+		if (this.#todoHudHidden && counts.open === 0 && counts.failed === 0) return;
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
-		if (phases.length === 0) return;
+		if (phases.length === 0) {
+			if (counts.total > 0) this.todoContainer.addChild(new Text(`\n${theme.bold(theme.fg("accent", "TODO"))}${requirementSummary}`, 1, 0));
+			return;
+		}
 		const expanded = this.todoExpanded;
 		const multiPhase = phases.length > 1;
 		const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
@@ -4247,7 +4270,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (closedTasks > 0) filled = Math.max(filled, 1);
 		if (closedTasks < totalTasks) filled = Math.min(filled, pathLen - 1);
 
-		const lines = ["", theme.bold(theme.fg("accent", "TODO"))];
+		const lines = ["", theme.bold(theme.fg("accent", "TODO")) + requirementSummary];
 		for (let i = 0; i < contentLines.length; i++) {
 			lines.push(` ${theme.fg(i < filled ? "accent" : "dim", spineGlyphs[i]!)}${contentLines[i]}`);
 		}
@@ -4347,7 +4370,9 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	renderCompactStatusLine(width: number, childLines: readonly string[]): readonly string[] {
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
-		if (phases.length === 0) return childLines;
+		const counts = countRequirements(getLatestRequirements((this.#todoPhasesOwner ?? this.session).sessionManager.getBranch()));
+		const requirementSummary = counts.total > 0 ? ` · req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗` : "";
+		if (phases.length === 0 && counts.total === 0) return childLines;
 
 		const activeDescs = this.#getActiveSubagentDescriptions();
 		const isMatched = (todo: TodoItem): boolean =>
@@ -4357,10 +4382,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		const closedTasks = phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
 		const activeTask = nextActionableTask(phases);
 
-		const header = `${theme.bold(theme.fg("accent", "TODO"))} ${theme.fg("dim", `${closedTasks}/${totalTasks}`)}`;
+		const header =
+			`${theme.bold(theme.fg("accent", "TODO"))}` +
+			(totalTasks > 0 ? ` ${theme.fg("dim", `${closedTasks}/${totalTasks}`)}` : "") +
+			(requirementSummary ? theme.fg("dim", requirementSummary) : "");
 		const taskStr = activeTask
 			? this.#formatTodoLine(activeTask, "", isMatched(activeTask))
-			: theme.fg("success", `${theme.checkbox.checked} done`);
+			: counts.open > 0 || counts.failed > 0
+				? theme.fg("warning", "requirements pending")
+				: theme.fg("success", `${theme.checkbox.checked} done`);
 		const rightLine = `${header} ${theme.fg("dim", "·")} ${taskStr}`;
 
 		const rightPad = " ";

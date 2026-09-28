@@ -1,0 +1,368 @@
+import { isRecord } from "@oh-my-pi/pi-utils";
+
+import type { SessionEntry } from "../session/session-entries";
+
+export const REQUIREMENTS_LEDGER_CUSTOM_TYPE = "requirements_ledger";
+
+export type RequirementClassification = "candidate" | "linked" | "not-a-requirement" | "merged";
+export type RequirementVerdictStatus = "pass" | "fail" | "unverifiable";
+
+export interface RequirementVerdict {
+	status: RequirementVerdictStatus;
+	evidence: string;
+	artifact: string;
+	workerId: string;
+	auditor?: "qa-auditor";
+}
+
+export interface RequirementLedgerItem {
+	id: string;
+	at: string;
+	rawText: string;
+	classification: RequirementClassification;
+	rows: string[];
+	reason?: string;
+	mergeInto?: string;
+	verdict?: RequirementVerdict;
+}
+
+export interface RequirementsLedgerData {
+	version: 1;
+	requirements: RequirementLedgerItem[];
+}
+
+export interface RequirementsLedgerAppender {
+	appendEntry(customType: string, data?: unknown): unknown;
+}
+
+export interface RequirementCounts {
+	total: number;
+	passed: number;
+	open: number;
+	failed: number;
+}
+
+export type RequirementAuditSource = Pick<RequirementLedgerItem, "id" | "rawText">;
+
+const REQUIREMENT_ID = /^R([1-9]\d*)$/;
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const FULL_COMMIT_SHA = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i;
+const COMMIT_IDS_IN_ARTIFACT = /(?:^|[^a-f0-9])([a-f0-9]{40}|[a-f0-9]{64})(?=$|[^a-f0-9])/gi;
+const CLASSIFICATIONS: Record<RequirementClassification, true> = {
+	candidate: true,
+	linked: true,
+	"not-a-requirement": true,
+	merged: true,
+};
+const VERDICT_STATUSES: Record<RequirementVerdictStatus, true> = { pass: true, fail: true, unverifiable: true };
+
+function parseRequirement(value: unknown): RequirementLedgerItem | undefined {
+	if (
+		!isRecord(value) ||
+		typeof value.id !== "string" ||
+		!REQUIREMENT_ID.test(value.id) ||
+		(typeof value.at !== "string" || !ISO_TIMESTAMP.test(value.at) || !Number.isFinite(Date.parse(value.at))) ||
+		typeof value.rawText !== "string" ||
+		value.rawText.trim().length === 0 ||
+		typeof value.classification !== "string" ||
+		!Object.hasOwn(CLASSIFICATIONS, value.classification) ||
+		!Array.isArray(value.rows) ||
+		!value.rows.every(row => typeof row === "string" && row.trim().length > 0) ||
+		(value.classification === "linked" ? value.rows.length === 0 : value.rows.length > 0)
+	) {
+		return undefined;
+	}
+
+	if (value.reason !== undefined && typeof value.reason !== "string") return undefined;
+	if (
+		value.classification === "not-a-requirement" &&
+		(typeof value.reason !== "string" || value.reason.trim().length === 0)
+	) {
+		return undefined;
+	}
+	if (value.mergeInto !== undefined && (typeof value.mergeInto !== "string" || !REQUIREMENT_ID.test(value.mergeInto))) {
+		return undefined;
+	}
+	if ((value.classification === "merged") !== (value.mergeInto !== undefined)) return undefined;
+
+	let verdict: RequirementVerdict | undefined;
+	if (value.verdict !== undefined) {
+		if (
+			!isRecord(value.verdict) ||
+			typeof value.verdict.status !== "string" ||
+			!Object.hasOwn(VERDICT_STATUSES, value.verdict.status) ||
+			typeof value.verdict.evidence !== "string" ||
+			typeof value.verdict.artifact !== "string" ||
+			typeof value.verdict.workerId !== "string" ||
+			(value.verdict.status === "pass" &&
+				(value.verdict.evidence.trim().length === 0 ||
+					value.verdict.artifact.trim().length === 0 ||
+					value.verdict.workerId.trim().length === 0))
+		) {
+			return undefined;
+		}
+		verdict = {
+			status: value.verdict.status as RequirementVerdictStatus,
+			evidence: value.verdict.evidence,
+			artifact: value.verdict.artifact,
+			workerId: value.verdict.workerId,
+			...(value.verdict.auditor === "qa-auditor" ? { auditor: "qa-auditor" as const } : {}),
+		};
+	}
+
+	return {
+		id: value.id,
+		at: value.at,
+		rawText: value.rawText,
+		classification: value.classification as RequirementClassification,
+		rows: [...value.rows] as string[],
+		...(value.reason === undefined ? {} : { reason: value.reason }),
+		...(value.mergeInto === undefined ? {} : { mergeInto: value.mergeInto }),
+		...(verdict === undefined ? {} : { verdict }),
+	};
+}
+
+/** Parse and validate the canonical custom-entry payload without rewriting ask text or IDs. */
+export function parseRequirementsLedger(value: unknown): RequirementsLedgerData | undefined {
+	if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.requirements)) return undefined;
+	const requirements: RequirementLedgerItem[] = [];
+	const ids = new Set<string>();
+	for (const item of value.requirements) {
+		const requirement = parseRequirement(item);
+		if (!requirement || ids.has(requirement.id)) return undefined;
+		ids.add(requirement.id);
+		requirements.push(requirement);
+	}
+	for (const requirement of requirements) {
+		if (requirement.classification !== "merged") continue;
+		const target = requirements.find(candidate => candidate.id === requirement.mergeInto);
+		if (
+			!target ||
+			target.id === requirement.id ||
+			target.classification === "merged" ||
+			target.classification === "not-a-requirement"
+		) {
+			return undefined;
+		}
+	}
+	return { version: 1, requirements };
+}
+
+/** Read the newest valid `requirements_ledger` custom entry on the supplied branch. */
+export function getLatestRequirements(entries: readonly SessionEntry[]): RequirementLedgerItem[] {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry?.type !== "custom" || entry.customType !== REQUIREMENTS_LEDGER_CUSTOM_TYPE) continue;
+		const ledger = parseRequirementsLedger(entry.data);
+		if (ledger) return ledger.requirements;
+	}
+	return [];
+}
+
+/** Append one canonical snapshot entry through the extension `pi.appendEntry` API. */
+export function appendRequirementsSnapshot(
+	pi: RequirementsLedgerAppender,
+	requirements: readonly RequirementLedgerItem[],
+): void {
+	const ledger = parseRequirementsLedger({ version: 1, requirements });
+	if (!ledger) throw new TypeError("Invalid requirements ledger snapshot");
+	pi.appendEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, ledger);
+}
+
+/** Append candidates in ask order, assigning stable Rn IDs while preserving each raw string byte-for-byte. */
+export function createRequirementCandidates(
+	requirements: readonly RequirementLedgerItem[],
+	rawTexts: readonly string[],
+	at = new Date().toISOString(),
+): RequirementLedgerItem[] {
+	if (!ISO_TIMESTAMP.test(at) || !Number.isFinite(Date.parse(at))) {
+		throw new TypeError("Requirement timestamp must be an ISO timestamp");
+	}
+	let highestId = 0;
+	for (const requirement of requirements) {
+		const match = REQUIREMENT_ID.exec(requirement.id);
+		if (match) highestId = Math.max(highestId, Number(match[1]));
+	}
+	const additions = rawTexts.map(rawText => {
+		if (typeof rawText !== "string" || rawText.trim().length === 0) {
+			throw new TypeError("Requirement rawText must be a non-empty string");
+		}
+		return {
+			id: `R${++highestId}`,
+			at,
+			rawText,
+			classification: "candidate" as const,
+			rows: [],
+		};
+	});
+	return [...requirements, ...additions];
+}
+
+export type RequirementDecision = "linked" | "not-a-requirement" | "merged";
+
+export interface ClassifyRequirementOptions {
+	rows?: readonly string[];
+	reason?: string;
+	mergeInto?: string;
+}
+
+export type ClassifyRequirementResult = { requirements: RequirementLedgerItem[] } | { error: string };
+
+/** Classify one candidate exactly once without renumbering or normalizing its source words. */
+export function classifyRequirement(
+	requirements: readonly RequirementLedgerItem[],
+	id: string,
+	classification: RequirementDecision,
+	options: ClassifyRequirementOptions = {},
+): ClassifyRequirementResult {
+	const sourceIndex = requirements.findIndex(requirement => requirement.id === id);
+	if (sourceIndex < 0) return { error: `Unknown requirement ${id}` };
+	const source = requirements[sourceIndex]!;
+	if (source.classification !== "candidate") {
+		return { error: `${id} has already been classified as ${source.classification}` };
+	}
+	if (classification === "not-a-requirement" && !options.reason?.trim()) {
+		return { error: `Classifying ${id} as not-a-requirement requires a reason` };
+	}
+
+	const incomingMerges = requirements.filter(
+		requirement => requirement.classification === "merged" && requirement.mergeInto === id,
+	);
+	if (classification !== "linked" && incomingMerges.length > 0) {
+		return {
+			error: `Cannot reclassify ${id} while ${incomingMerges.map(requirement => requirement.id).join(", ")} is merged into it; the ledger would lose its active target`,
+		};
+	}
+	const next = requirements.map(requirement => ({ ...requirement, rows: [...requirement.rows] }));
+	const updatedSource: RequirementLedgerItem = {
+		...source,
+		classification,
+		rows: [],
+		verdict: undefined,
+		...(options.reason === undefined ? {} : { reason: options.reason }),
+	};
+	delete updatedSource.mergeInto;
+	delete updatedSource.verdict;
+
+	if (classification === "linked") {
+		if (
+			!options.rows ||
+			options.rows.length === 0 ||
+			options.rows.some(row => typeof row !== "string" || row.trim() === "")
+		) {
+			return { error: `Linking ${id} requires at least one TODO row` };
+		}
+		updatedSource.rows = [...new Set(options.rows)];
+	}
+
+	if (classification === "merged") {
+		const mergeInto = options.mergeInto;
+		if (!mergeInto || mergeInto === id) {
+			return { error: `Merging ${id} requires a different existing Rn in mergeInto` };
+		}
+		const targetIndex = next.findIndex(requirement => requirement.id === mergeInto);
+		if (targetIndex < 0) return { error: `Unknown merge target ${mergeInto}` };
+		const target = next[targetIndex]!;
+		if (target.classification === "merged" || target.classification === "not-a-requirement") {
+			return { error: `Merge target ${mergeInto} is not an active requirement` };
+		}
+		const mergedRows = [...new Set([...target.rows, ...source.rows])];
+		next[targetIndex] = {
+			...target,
+			classification: mergedRows.length > 0 ? "linked" : target.classification,
+			rows: mergedRows,
+			verdict: undefined,
+		};
+		delete next[targetIndex]!.verdict;
+		updatedSource.mergeInto = mergeInto;
+	}
+
+	next[sourceIndex] = updatedSource;
+	return { requirements: next };
+}
+
+/** Counts active requirements; merged and explicitly rejected asks do not block completion. */
+export function countRequirements(requirements: readonly RequirementLedgerItem[]): RequirementCounts {
+	let total = 0;
+	let passed = 0;
+	let failed = 0;
+	for (const requirement of requirements) {
+		if (requirement.classification !== "candidate" && requirement.classification !== "linked") continue;
+		total++;
+		if (requirement.classification !== "linked") continue;
+		if (requirement.verdict?.status === "pass" && requirement.verdict.auditor === "qa-auditor") passed++;
+		else if (requirement.verdict?.status === "fail") failed++;
+	}
+	return { total, passed, failed, open: total - passed - failed };
+}
+
+/** Linked rows remain open until the extension records QA evidence for the current artifact. */
+export function isRequirementLinkedToRow(requirements: readonly RequirementLedgerItem[], row: string): boolean {
+	return requirements.some(
+		requirement => requirement.classification === "linked" && requirement.rows.includes(row),
+	);
+}
+
+/**
+ * A persisted pass is current only when it names every linked row's exact,
+ * clean artifact. Auditor-profile authentication happens before the extension
+ * persists the pass; this shared check validates its durable row evidence.
+ */
+export function isFreshRequirementVerdict(
+	requirement: RequirementLedgerItem,
+	artifacts: readonly { row: string; head: string | null; dirty: boolean }[],
+): boolean {
+	const verdict = requirement.verdict;
+	if (
+		requirement.classification !== "linked" ||
+		verdict?.status !== "pass" ||
+		verdict.auditor !== "qa-auditor" ||
+		!verdict.workerId.trim() ||
+		requirement.rows.length === 0 ||
+		artifacts.length !== requirement.rows.length
+	) {
+		return false;
+	}
+
+	const rowSet = new Set(requirement.rows);
+	const artifactRows = new Set<string>();
+	const currentHeads = new Set<string>();
+	for (const artifact of artifacts) {
+		if (
+			!rowSet.has(artifact.row) ||
+			artifactRows.has(artifact.row) ||
+			artifact.dirty !== false ||
+			typeof artifact.head !== "string" ||
+			!FULL_COMMIT_SHA.test(artifact.head)
+		) {
+			return false;
+		}
+		artifactRows.add(artifact.row);
+		currentHeads.add(artifact.head.toLowerCase());
+	}
+	if (artifactRows.size !== rowSet.size) return false;
+
+	const auditedHeads = new Set(
+		[...verdict.artifact.matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!.toLowerCase()),
+	);
+	return auditedHeads.size > 0 &&
+		auditedHeads.size === currentHeads.size &&
+		[...auditedHeads].every(head => currentHeads.has(head));
+}
+
+/** Return the linked ask and every merged raw ask for QA, retaining each source ID. */
+export function getRequirementAuditSources(
+	requirements: readonly RequirementLedgerItem[],
+	id: string,
+): RequirementAuditSource[] {
+	const target = requirements.find(requirement => requirement.id === id && requirement.classification === "linked");
+	if (!target) return [];
+	const sources: RequirementAuditSource[] = [{ id: target.id, rawText: target.rawText }];
+	for (const requirement of requirements) {
+		if (requirement.classification === "merged" && requirement.mergeInto === id) {
+			sources.push({ id: requirement.id, rawText: requirement.rawText });
+		}
+	}
+	return sources;
+}
+
