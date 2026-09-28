@@ -15,6 +15,12 @@ import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 import { cfgTasksTodoClearDelay } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import {
+	appendRequirementsSnapshot,
+	classifyRequirement,
+	createRequirementCandidates,
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+} from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 
 function renderTodos(mode: InteractiveMode): string {
 	return Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
@@ -80,6 +86,87 @@ describe("InteractiveMode todo HUD persistence", () => {
 	function setTodoClearDelay(todoClearDelay: number): void {
 		cfgTasksTodoClearDelay.override(session.settings, todoClearDelay);
 	}
+
+	it("preserves row bindings and leaves requirement-linked rows open during subagent reconciliation", async () => {
+		await replaceMode();
+		setTodoClearDelay(-1);
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		const cwd = tempDir.path();
+		const phases = [
+			{
+				name: "Implementation",
+				tasks: [
+					{
+						content: "linked row",
+						status: "pending",
+						schedule: { owner: "Auditor", resources: [cwd] },
+						artifactCwd: cwd,
+						artifactOwner: "Worker",
+					},
+					{
+						content: "unlinked row",
+						status: "blocked",
+						blocker: "waiting for worker",
+						schedule: { owner: "Worker", resources: [cwd] },
+						artifactCwd: cwd,
+						artifactOwner: "Worker",
+					},
+				],
+			},
+		] as unknown as TodoPhase[];
+		session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
+		session.setTodoPhases(phases);
+		const linked = classifyRequirement(
+			createRequirementCandidates(
+				[],
+				["Keep the linked row open until its audit passes"],
+				"2026-10-25T12:00:00.000Z",
+			),
+			"R1",
+			"linked",
+			{ rows: ["linked row"] },
+		);
+		if ("error" in linked) throw new Error(linked.error);
+		appendRequirementsSnapshot(
+			{ appendEntry: (customType, data) => session.sessionManager.appendCustomEntry(customType, data) },
+			linked.requirements,
+		);
+		mode.setTodos(session.getTodoPhases());
+		await mode.init();
+
+		vi.useFakeTimers();
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "Worker",
+			index: 0,
+			agent: "task",
+			description: "linked row and unlinked row",
+			status: "completed",
+			detached: true,
+		});
+		vi.advanceTimersByTime(100);
+		await session.settleInFlightMessagePersistence();
+		await session.sessionManager.flush();
+
+		const result = session.getTodoPhases()[0]?.tasks;
+		expect(result?.[0]).toMatchObject({
+			content: "linked row",
+			status: "pending",
+			artifactCwd: cwd,
+			artifactOwner: "Worker",
+		});
+		expect(result?.[1]).toMatchObject({
+			content: "unlinked row",
+			status: "blocked",
+			schedule: { owner: "Worker", resources: [cwd] },
+			artifactCwd: cwd,
+			artifactOwner: "Worker",
+		});
+		expect(result?.[1]?.blocker).toBe("waiting for worker");
+		appendRequirementsSnapshot(
+			{ appendEntry: (customType, data) => session.sessionManager.appendCustomEntry(customType, data) },
+			[],
+		);
+	});
 
 	it("clears closed todos from the panel instantly without mutating session history", async () => {
 		vi.useFakeTimers();
@@ -487,6 +574,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		session.setTodoPhases(phases);
 		mode.setTodos(phases);
 		expect(newSourceEntryId).not.toBe(oldSourceEntryId);
+
 		expect(renderTodos(mode)).toContain("same task");
 
 		vi.advanceTimersByTime(1000);
@@ -670,6 +758,114 @@ describe("InteractiveMode todo HUD anchor", () => {
 	it("renders nothing when there are no todos", () => {
 		mode.setTodos([]);
 		expect(mode.todoContainer.render(80)).toHaveLength(0);
+	});
+
+	it("refreshes requirement counts on ledger append without replacing the collab append hook", () => {
+		mode.setTodos([{ name: "Work", tasks: [{ content: "Build artifact", status: "pending" }] }]);
+		const manager = session.sessionManager;
+		const previousAppendHook = manager.onEntryAppended;
+		const collabAppendHook = vi.fn();
+		manager.onEntryAppended = collabAppendHook;
+		try {
+			expect(renderTodos(mode)).not.toContain("req 1");
+			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
+				version: 1,
+				requirements: createRequirementCandidates([], ["keep this ask"], "2026-09-28T12:00:00.000Z"),
+			});
+			expect(collabAppendHook).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "custom", customType: REQUIREMENTS_LEDGER_CUSTOM_TYPE }),
+			);
+			expect(renderTodos(mode)).toContain("req 1 · 0 ✓ · 1 open · 0 ✗");
+		} finally {
+			manager.onEntryAppended = previousAppendHook;
+			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: 1, requirements: [] });
+		}
+	});
+	it("reuses requirement counts across unchanged HUD renders and refreshes after append", () => {
+		mode.setTodos([{ name: "Work", tasks: [{ content: "Build artifact", status: "pending" }] }]);
+		const manager = session.sessionManager;
+		const getBranch = vi.spyOn(manager, "getBranch");
+		manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
+			version: 1,
+			requirements: createRequirementCandidates([], ["first ask"], "2026-09-28T12:00:00.000Z"),
+		});
+		getBranch.mockClear();
+		try {
+			renderTodos(mode);
+			const initialReads = getBranch.mock.calls.length;
+			for (let render = 0; render < 50; render++) renderTodos(mode);
+			expect(getBranch).toHaveBeenCalledTimes(initialReads);
+			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
+				version: 1,
+				requirements: createRequirementCandidates([], ["first ask", "new ask"], "2026-09-28T12:01:00.000Z"),
+			});
+			expect(renderTodos(mode)).toContain("req 2 · 0 ✓ · 2 open · 0 ✗");
+		} finally {
+			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: 1, requirements: [] });
+		}
+	});
+	it("renders requirement counts in the TODO HUD and compact header", async () => {
+		cfgTasksTodoClearDelay.override(session.settings, -1);
+		const at = "2026-09-28T12:00:00.000Z";
+		const requirements = [
+			{ id: "R1", at, rawText: "candidate ask", classification: "candidate", rows: [] },
+			{
+				id: "R2",
+				at,
+				rawText: "passed ask",
+				classification: "linked",
+				rows: ["Build artifact"],
+				verdict: {
+					status: "pass",
+					rawWords: "passed ask",
+					evidence: "observed",
+					artifact: "r2",
+					workerId: "QA",
+					auditor: "qa-auditor",
+				},
+			},
+			{
+				id: "R3",
+				at,
+				rawText: "failed ask",
+				classification: "linked",
+				rows: ["Build artifact"],
+				verdict: { status: "fail", evidence: "broken", artifact: "r2", workerId: "QA" },
+			},
+			{
+				id: "R4",
+				at,
+				rawText: "uncertain ask",
+				classification: "linked",
+				rows: ["Build artifact"],
+				verdict: { status: "unverifiable", evidence: "missing access", artifact: "r2", workerId: "QA" },
+			},
+		];
+		session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements });
+		try {
+			mode.setTodos([{ name: "Work", tasks: [{ content: "Build artifact", status: "in_progress" }] }]);
+			expect(renderTodos(mode)).toContain("TODO · req 4 · 1 ✓ · 2 open · 1 ✗");
+			const terminal = mode.ui.terminal;
+			const originalRows = Object.getOwnPropertyDescriptor(terminal, "rows");
+			Object.defineProperty(terminal, "rows", { get: () => 10, configurable: true });
+			try {
+				renderTodos(mode);
+				const compact = Bun.stripANSI(mode.statusContainer.render(180).join("\n"));
+				expect(compact).toContain("req 4 · 1 ✓ · 2 open · 1 ✗");
+			} finally {
+				if (originalRows) Object.defineProperty(terminal, "rows", originalRows);
+				else Reflect.deleteProperty(terminal, "rows");
+			}
+			// Lifecycle invalidation persists absence of the stale verdict, not a UI-only discount.
+			session.sessionManager.appendCustomEntry("requirements_ledger", {
+				version: 1,
+				requirements: requirements.map(item => (item.id === "R2" ? { ...item, verdict: undefined } : item)),
+			});
+			mode.setTodos(session.getTodoPhases());
+			expect(renderTodos(mode)).toContain("req 4 · 0 ✓ · 3 open · 1 ✗");
+		} finally {
+			session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements: [] });
+		}
 	});
 
 	it("keeps the summed progress bar but omits the roman numeral for a single-phase list", () => {

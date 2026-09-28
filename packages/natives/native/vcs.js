@@ -2,6 +2,7 @@ import { $ } from "bun";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { loadNative } from "./loader-state.js";
+import { statusCoordinator } from "./status-coordinator.js";
 
 let native;
 function api() {
@@ -16,6 +17,178 @@ function vcsError(code, message) {
 	error.stdout = "";
 	error.stderr = message;
 	return error;
+}
+
+const wrapped = new WeakMap();
+const wrappedTargets = new WeakMap();
+const repoIdentities = new Map();
+const invalidatingMethods = new Set([
+	"applyPatch", "commitCreate", "checkout", "createBranch", "deleteBranch", "checkoutNewBranch",
+	"stageFiles", "unstage", "stageHunks", "restore", "reset", "clean", "readTree", "cherryPick",
+	"cherryPickAbort", "cherryPickSkip", "stashPush", "stashTryPop", "merge", "mergeAbort", "rebase", "rebaseAbort",
+]);
+
+function canonicalPath(file) {
+	try {
+		return fs.realpathSync.native(file);
+	} catch {
+		return path.resolve(file);
+	}
+}
+
+function repoIdentity(repo) {
+	const info = repo.info();
+	const identity = `${canonicalPath(info.repoRoot)}\0${canonicalPath(info.gitDir)}`;
+	repoIdentities.set(identity, info);
+	return { identity, info };
+}
+
+function statusEntries(output) {
+	const tokens = output.split("\0");
+	const statuses = [];
+	for (let index = 0; index < tokens.length; index++) {
+		const entry = tokens[index];
+		if (!entry) continue;
+		const status = entry.slice(0, 2);
+		statuses.push(status);
+		if (status.includes("R") || status.includes("C")) index++;
+	}
+	return statuses;
+}
+
+function summarize(output) {
+	const entries = statusEntries(output);
+	return {
+		staged: entries.filter(status => status[0] !== " " && status[0] !== "?").length,
+		unstaged: entries.filter(status => status[1] !== " " && status[1] !== "?").length,
+		untracked: entries.filter(status => status === "??").length,
+	};
+}
+
+function wrapGitRepo(repo) {
+	if (!repo || (typeof repo !== "object" && typeof repo !== "function")) return repo;
+	const known = wrapped.get(repo);
+	if (known) return known;
+	const { identity, info } = repoIdentity(repo);
+	const proxy = new Proxy(repo, {
+		get(target, property) {
+			const value = Reflect.get(target, property, target);
+			if (typeof value !== "function") return value;
+			if (property === "statusPorcelain") {
+				return (options, signal) => {
+					const snapshot = normalizedStatusOptions(options);
+					const meta = statusMetadata(info);
+					return statusCoordinator.request(identity, JSON.stringify(snapshot), meta,
+						() => Reflect.apply(value, target, [snapshot, undefined]), signal);
+				};
+			}
+			if (property === "statusSummary" || property === "isDirty") {
+				return signal => {
+					const snapshot = { untracked: "normal", nulTerminated: true, pathspecs: [] };
+					const meta = statusMetadata(info);
+					return statusCoordinator.request(identity, JSON.stringify(snapshot), meta,
+						() => Reflect.apply(target.statusPorcelain, target, [snapshot, undefined]), signal)
+						.then(status => property === "isDirty" ? status.length > 0 : summarize(status));
+				};
+			}
+			if (property === "asGit") return (...args) => wrapRepo(Reflect.apply(value, target, args));
+			if (invalidatingMethods.has(property)) {
+				return (...args) => {
+					statusCoordinator.invalidate(identity);
+					const result = Reflect.apply(value, target, args);
+					if (!result || typeof result.then !== "function") {
+						statusCoordinator.invalidate(identity);
+						return result;
+					}
+					return result.finally(() => statusCoordinator.invalidate(identity));
+				};
+			}
+			return value.bind(target);
+		},
+	});
+	wrapped.set(repo, proxy);
+	wrappedTargets.set(proxy, repo);
+	return proxy;
+}
+
+/** Read an exact status snapshot while still honoring the shared status probe queue. */
+export function statusPorcelainFresh(repo, options = {}, signal) {
+	const target = wrappedTargets.get(repo);
+	if (!target) throw new TypeError("statusPorcelainFresh requires a discovered Git repo");
+	const { identity, info } = repoIdentity(target);
+	const snapshot = normalizedStatusOptions(options);
+	const meta = statusMetadata(info);
+	return statusCoordinator.request(identity, JSON.stringify(snapshot), meta,
+		() => Reflect.apply(target.statusPorcelain, target, [snapshot, undefined]), signal, true);
+}
+
+function wrapRepo(repo) {
+	if (!repo || (typeof repo !== "object" && typeof repo !== "function")) return repo;
+	if (typeof repo.info === "function" && typeof repo.statusPorcelain === "function") return wrapGitRepo(repo);
+	if (typeof repo.kind !== "function" || repo.kind() !== "git" || typeof repo.asGit !== "function") return repo;
+	const nativeGit = repo.asGit();
+	if (!nativeGit) return repo;
+	const gitRepo = wrapGitRepo(nativeGit);
+	return new Proxy(repo, {
+		get(target, property) {
+			if (property === "asGit") return () => gitRepo;
+			if (property === "statusPorcelain" || property === "statusSummary") return (...args) => gitRepo[property](...args);
+			const value = Reflect.get(target, property, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+}
+
+function normalizedStatusOptions(options = {}) {
+	return {
+		untracked: options.untracked ?? "normal",
+		nulTerminated: options.nulTerminated ?? false,
+		pathspecs: [...(options.pathspecs ?? [])],
+	};
+}
+
+function statusMetadata(info) {
+	const stat = file => {
+		try {
+			const item = fs.statSync(file, { bigint: true });
+			return [item.dev, item.ino, item.size, item.mtimeNs, item.ctimeNs].join(":");
+		} catch (error) {
+			return `missing:${error?.code ?? "error"}`;
+		}
+	};
+	let head = "";
+	try { head = fs.readFileSync(info.headPath, "utf8"); } catch {}
+	const ref = /^ref: (.+)\n?$/.exec(head)?.[1];
+	const refPath = ref ? path.resolve(info.commonDir, ref) : "";
+	return JSON.stringify([stat(path.join(info.gitDir, "index")), stat(info.headPath), refPath ? stat(refPath) : "", stat(path.join(info.commonDir, "packed-refs")), head]);
+}
+
+/** Invalidate cached Git status after a file-writing tool; this never resets the probe rate limit. */
+export function invalidateStatus(dir) {
+	if (dir === undefined) {
+		if (repoIdentities.size === 0) statusCoordinator.invalidate();
+		else for (const identity of repoIdentities.keys()) statusCoordinator.invalidate(identity);
+		return;
+	}
+	const target = path.resolve(dir);
+	for (const [identity, info] of repoIdentities) {
+		for (const root of [info.repoRoot, info.gitDir]) {
+			const relative = path.relative(canonicalPath(root), canonicalPath(target));
+			if (relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))) {
+				statusCoordinator.invalidate(identity);
+				break;
+			}
+		}
+	}
+}
+
+/** Snapshot repository identity, status metadata, and explicit invalidation generation. */
+export function statusEpoch(repo) {
+	const directGitRepo = typeof repo?.info === "function" && typeof repo?.statusPorcelain === "function" ? repo : null;
+	const nativeRepo = directGitRepo ?? repo?.asGit?.();
+	if (!nativeRepo || typeof nativeRepo.statusPorcelain !== "function") return null;
+	const { identity, info } = repoIdentity(nativeRepo);
+	return { identity, metadata: statusMetadata(info), generation: statusCoordinator.epoch(identity) };
 }
 
 /**
@@ -36,16 +209,16 @@ export function isEmptyCherryPick(error) {
 
 /** Discover the git repository containing `dir`; `null` outside any checkout. */
 export function git(dir) {
-	return api().vcsGitDiscover(dir);
+	return wrapRepo(api().vcsGitDiscover(dir));
 }
 /** Discover the repository owning `dir`; `null` outside any repository. */
 export function repo(dir) {
-	return api().vcsDiscover(dir);
+	return wrapRepo(api().vcsDiscover(dir));
 }
 
 /** Like {@link repo}, but equal-root jj+git ties prefer Jujutsu for display. Git-safe automation must keep using {@link repo}. */
 export function repoForDisplay(dir) {
-	return api().vcsDiscoverForDisplay(dir);
+	return wrapRepo(api().vcsDiscoverForDisplay(dir));
 }
 
 /** Like {@link repo}, asserting any requested backend capabilities. */

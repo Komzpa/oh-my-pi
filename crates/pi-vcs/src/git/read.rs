@@ -9,13 +9,14 @@ use gix::bstr::ByteSlice;
 
 use super::{
 	GitRepo,
+	filter::WorktreeFilter,
 	open::{load_index_or_empty, status_with_fresh_index},
 };
 use crate::{
 	error::{Error, Result},
 	types::{
-		CommitAuthor, CommitDetails, HeadState, ShowResult, StatusOptions, StatusSummary,
-		UntrackedMode, WorktreeEntry,
+		CommitAuthor, CommitDetails, GitTreeEntry, HeadState, ShowResult, StatusOptions,
+		StatusSummary, UntrackedMode, WorktreeEntry,
 	},
 };
 
@@ -99,6 +100,148 @@ impl GitRepo {
 			Ok(id) => Ok(Some(id.detach().to_string())),
 			Err(_) => Ok(None),
 		}
+	}
+
+	/// Read one exact literal path in a full immutable commit, including its
+	/// mode. No pathspec widening and no decoding of blob bytes is involved.
+	pub fn tree_entry(&self, commit: &str, path: &str) -> Result<Option<GitTreeEntry>> {
+		if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+			return Err(Error::backend("git tree-entry", "expected a full commit object ID"));
+		}
+		if path.is_empty()
+			|| path.len() > 4096
+			|| path.bytes().any(|b| b < 0x20 || b == 0x7f || b == b'\\')
+			|| path.split('/').any(|part| matches!(part, "" | "." | ".."))
+		{
+			return Err(Error::backend("git tree-entry", "expected an exact relative path"));
+		}
+		if self.is_reftable() {
+			if cli_text(self.root(), &["cat-file", "-t", commit])?.trim() != "commit" {
+				return Err(Error::ObjectNotFound { spec: commit.to_owned() });
+			}
+			// core.quotePath makes every filename byte outside printable ASCII an
+			// octal escape. Thus even the fallback's text capture is lossless; we
+			// compare the encoded *exact* name, never a lossy UTF-8 filename.
+			let args = vec![
+				"-c".to_owned(),
+				"core.quotePath=true".to_owned(),
+				"ls-tree".to_owned(),
+				"--full-tree".to_owned(),
+				commit.to_owned(),
+				"--".to_owned(),
+				path.to_owned(),
+			];
+			let limit = path.len().saturating_mul(4).saturating_add(512);
+			let raw = cli_text_owned_capped(self.root(), &args, super::cli::SYNC_TIMEOUT, limit)?;
+			if !raw.is_ascii() || (!raw.is_empty() && !raw.ends_with('\n')) {
+				return Err(Error::backend("git tree-entry", "invalid or truncated tree metadata"));
+			}
+			let wanted = quote_path(path);
+			let mut found = None;
+			for row in raw.lines() {
+				let (header, name) = row
+					.split_once('\t')
+					.ok_or_else(|| Error::backend("git tree-entry", "invalid tree metadata"))?;
+				if name != wanted {
+					continue;
+				}
+				let mut fields = header.split(' ');
+				let mode_text = fields.next().unwrap_or_default();
+				let _kind = fields.next().unwrap_or_default();
+				let oid = fields.next().unwrap_or_default();
+				if fields.next().is_some()
+					|| oid.len() != commit.len()
+					|| !oid.bytes().all(|b| b.is_ascii_hexdigit())
+					|| found.is_some()
+				{
+					return Err(Error::backend("git tree-entry", "invalid exact tree entry"));
+				}
+				let mode = u32::from_str_radix(mode_text, 8)
+					.map_err(|err| Error::backend("git tree-entry", err))?;
+				found = Some(GitTreeEntry { oid: oid.to_owned(), mode });
+			}
+			return Ok(found);
+		}
+		let repo = self.gix()?;
+		let commit_object = repo
+			.rev_parse_single(commit)
+			.map_err(|err| Error::backend("git tree-entry", err))?
+			.object()
+			.map_err(|err| Error::backend("git tree-entry", err))?
+			.try_into_commit()
+			.map_err(|err| Error::backend("git tree-entry", err))?;
+		let tree = commit_object
+			.tree()
+			.map_err(|err| Error::backend("git tree-entry", err))?;
+		Ok(tree
+			.lookup_entry_by_path(path)
+			.map_err(|err| Error::backend("git tree-entry", err))?
+			.map(|entry| GitTreeEntry {
+				oid:  entry.id().detach().to_string(),
+				mode: u32::from(entry.mode().value()),
+			}))
+	}
+
+	/// Return the Git blob identity of stable worktree bytes after Git's clean
+	/// filters, using the index's mode when this platform/configuration cannot
+	/// observe executable bits (for example Windows or `core.fileMode=false`).
+	pub fn worktree_blob_entry(&self, path: &str, bytes: Vec<u8>) -> Result<GitTreeEntry> {
+		if path.is_empty()
+			|| path.len() > 4096
+			|| path.bytes().any(|b| b < 0x20 || b == 0x7f || b == b'\\')
+			|| path.split('/').any(|part| matches!(part, "" | "." | ".."))
+		{
+			return Err(Error::backend("git worktree blob", "expected an exact relative path"));
+		}
+		let repo = self.gix()?;
+		let index = load_index_or_empty(&repo, "git worktree blob")?;
+		let index_mode = index
+			.entries()
+			.iter()
+			.find(|entry| {
+				entry.stage() == gix::index::entry::Stage::Unconflicted
+					&& entry.path(&index).to_str().ok() == Some(path)
+			})
+			.map(|entry| {
+				entry
+					.mode
+					.to_tree_entry_mode()
+					.map(|mode| u32::from(mode.value()))
+					.ok_or_else(|| Error::backend("git worktree blob", "invalid index entry mode"))
+			})
+			.transpose()?
+			.unwrap_or(0o100644);
+		let mut filter = WorktreeFilter::staging(&repo, "git worktree blob")?;
+		let bytes = filter.worktree_to_git(path, bytes)?;
+		let oid = gix::objs::compute_hash(repo.object_hash(), gix::objs::Kind::Blob, &bytes)
+			.map_err(|err| Error::backend("git worktree blob", err))?;
+		let mode = if cfg!(unix)
+			&& repo
+				.config_snapshot()
+				.boolean("core.fileMode")
+				.unwrap_or(true)
+		{
+			let metadata = std::fs::symlink_metadata(self.root().join(path))?;
+			if !metadata.is_file() {
+				return Err(Error::backend("git worktree blob", "expected a regular worktree file"));
+			}
+			#[cfg(unix)]
+			{
+				use std::os::unix::fs::PermissionsExt;
+				if metadata.permissions().mode() & 0o111 != 0 {
+					0o100755
+				} else {
+					0o100644
+				}
+			}
+			#[cfg(not(unix))]
+			{
+				index_mode
+			}
+		} else {
+			index_mode
+		};
+		Ok(GitTreeEntry { oid: oid.to_string(), mode })
 	}
 
 	/// Abbreviate the object `rev` names to its shortest unambiguous id
