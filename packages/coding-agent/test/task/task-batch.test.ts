@@ -335,7 +335,8 @@ describe("task.batch validation", () => {
 		});
 		await agent.prompt("go");
 
-		expect(spawned).toEqual(["Do A."]);
+		expect(spawned.map(assignment => assignment?.split("\n\n")[0])).toEqual(["Do A."]);
+		expect(spawned[0]).toContain("Is there a much simpler different way?");
 		const toolResult = agent.state.messages.find(message => message.role === "toolResult");
 		expect(toolResult?.role === "toolResult" && toolResult.isError).toBe(false);
 	});
@@ -401,7 +402,8 @@ describe("task.batch spawning", () => {
 		});
 		expect(neighboring.details?.results).toHaveLength(1);
 		expect(runSubprocess).toHaveBeenCalledTimes(1);
-		expect(runSubprocess.mock.calls[0]?.[0]?.assignment).toBe("Do the neighboring work.");
+		expect(runSubprocess.mock.calls[0]?.[0]?.assignment?.split("\n\n")[0]).toBe("Do the neighboring work.");
+		expect(runSubprocess.mock.calls[0]?.[0]?.assignment).toContain("Is there a much simpler different way?");
 	});
 
 	it("spawns one background job per task item and forwards independent models and schemas with shared context", async () => {
