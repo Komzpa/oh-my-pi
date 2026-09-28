@@ -50,9 +50,19 @@ export interface ResolvedApiKey {
 	afterSiblingWait?: boolean;
 }
 
+export interface ApiKeyResolver {
+	(ctx: ApiKeyResolveContext): Promise<ApiKeyResolution> | ApiKeyResolution;
+	/** Optional observers bound by the owning model registry and consumed at stream completion. */
+	onProviderCallSucceeded?: (message: { provider: string; credentialId?: number }) => void;
+	onProviderCallFailed?: (error: unknown) => void;
+}
+
 export type ApiKeyResolution = string | ResolvedApiKey | undefined;
 
-export type ApiKeyResolver = (ctx: ApiKeyResolveContext) => Promise<ApiKeyResolution> | ApiKeyResolution;
+export interface ResolvedApiKey {
+	apiKey: string;
+	credentialId?: number;
+}
 
 /** Extract the bearer while preserving optional credential provenance for streaming callers. */
 export function resolvedApiKeyBearer(resolved: ApiKeyResolution): string | undefined {

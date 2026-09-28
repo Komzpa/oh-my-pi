@@ -163,6 +163,7 @@ async function refreshGatewayApiKeyAfterAuthError(
 		if (!switched) return undefined;
 		return storage.keys.get(provider, sessionId, modelKeyOptions(model, signal));
 	}
+	if (status === 402) return undefined;
 	await storage.limits.invalidateMatching(provider, oldKey, { sessionId, signal });
 	logger.debug("auth-gateway retrying provider request after credential invalidation", {
 		format,
@@ -235,6 +236,46 @@ export function buildGatewayApiKeyResolver(
 		if (next) onResolvedKey?.(next);
 		return next;
 	};
+}
+/**
+ * Forward a settled upstream failure to the canonical provider-health latch.
+ * The health owner classifies quota 402 bodies and timed 429 resets; gateway
+ * code only supplies the observed status, message, and provider reset hint.
+ */
+export function observeGatewayProviderFailure(storage: AuthStorage, model: Model<Api>, error: unknown): void {
+	const details =
+		typeof error === "object" && error !== null
+			? (error as {
+					errorClassificationMessage?: unknown;
+					errorMessage?: unknown;
+					errorStatus?: unknown;
+					message?: unknown;
+				})
+			: undefined;
+	const message =
+		error instanceof Error
+			? error.message
+			: typeof error === "string"
+				? error
+				: (details?.errorClassificationMessage ?? details?.errorMessage ?? details?.message ?? String(error));
+	if (typeof message !== "string") return;
+	const status =
+		typeof details?.errorStatus === "number"
+			? details.errorStatus
+			: (extractHttpStatusFromError(error) ??
+				extractHttpStatusFromError(message) ??
+				classifyGatewayError(message).status);
+	const retryAfterMs = status === 429 ? extractProviderRetryHint(model.provider, message) : undefined;
+	const resetAtMs =
+		retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+			? Date.now() + retryAfterMs
+			: undefined;
+	storage.health.markProviderDepleted(model.provider, { status, message, resetAtMs });
+}
+
+/** Clear the provider latch only after the provider layer reports a completed call. */
+export function observeGatewayProviderSuccess(storage: AuthStorage, provider: string): void {
+	storage.health.markProviderSucceeded(provider);
 }
 
 /**

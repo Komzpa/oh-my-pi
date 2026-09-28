@@ -8,9 +8,15 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import { AgentBusyError, EventLoopKeepalive, recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
-import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
+import type { Api, Effort, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
 import { logger, popLoopPhase, prompt, pushLoopPhase, untilAborted } from "@oh-my-pi/pi-utils";
-import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobError, AsyncJobManager, type AsyncJobRunResult } from "../async";
+import {
+	ASYNC_JOB_MANAGER_SHUTDOWN_REASON,
+	type AsyncJob,
+	AsyncJobError,
+	AsyncJobManager,
+	type AsyncJobRunResult,
+} from "../async";
 import type { Rule } from "../capability/rule";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { ModelRegistry } from "../config/model-registry";
@@ -44,6 +50,7 @@ import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
 import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { IrcBus } from "../irc/bus";
+import { sendAgentMessageFromSession } from "../irc/messaging";
 import type { MCPManager } from "../mcp/manager";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import { initializeExtensions } from "../modes/runtime-init";
@@ -69,6 +76,8 @@ import { hasConversationalHistory, SessionManager } from "../session/session-man
 import { truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import {
 	type ConfiguredThinkingLevel,
+	clampThinkingLevelToCeiling,
+	resolveThinkingLevelForModel,
 	prewalkWouldBeNoop,
 	resolveTaskEffortLevel,
 	type TaskEffort,
@@ -428,6 +437,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return !Array.isArray(value);
 }
 
+type RetainedBackgroundJob = NonNullable<SingleResult["retainedBackgroundJobs"]>[number];
+
+function retainedJobPid(job: AsyncJob): number | undefined {
+	const details = job.latestDetails;
+	if (!details) return undefined;
+	const direct = Reflect.get(details, "pid");
+	if (typeof direct === "number" && Number.isFinite(direct)) return direct;
+	const service = Reflect.get(details, "service");
+	if (isRecord(service)) {
+		const servicePid = Reflect.get(service, "pid");
+		if (typeof servicePid === "number" && Number.isFinite(servicePid)) return servicePid;
+	}
+	return undefined;
+}
+
+function retainedBackgroundJob(job: AsyncJob): RetainedBackgroundJob {
+	const pid = retainedJobPid(job);
+	return {
+		id: job.id,
+		type: job.type,
+		status: job.status,
+		...(job.label ? { label: job.label } : {}),
+		...(job.agentId ? { agentId: job.agentId } : {}),
+		...(pid !== undefined ? { pid } : {}),
+	};
+}
+
 /** Options for subagent execution */
 export interface ExecutorOptions {
 	cwd: string;
@@ -476,6 +512,8 @@ export interface ExecutorOptions {
 	effort?: TaskEffort;
 	/** Caller's description of how open-ended the work is; rides the initial prompt into the child's `auto` thinking classifier. */
 	solutionSpace?: string;
+	/** Internal exact rung selection; takes precedence over coarse effort and model suffixes. */
+	exactThinkingLevel?: Effort;
 	/** Schema used to validate the final structured completion. */
 	outputSchema?: unknown;
 	/** Enforcement policy for {@link outputSchema}; defaults to legacy permissive behavior. */
@@ -2237,6 +2275,15 @@ async function driveSessionToYield(
 			abortSignal.removeEventListener("abort", onAbort);
 		}
 	};
+	const waitForRestartDrain = async (): Promise<boolean> => {
+		if (!session.isRestartDraining) return false;
+		await awaitAbortable(session.waitForRestartDrainRelease());
+		// Release schedules the session's one existing continuation before its
+		// waiters resolve. Do not classify the synthetic gate-stop until it settles.
+		await awaitAbortable(session.waitForIdle());
+		return true;
+	};
+
 	/**
 	 * Send a headless prompt, retrying pre-provider drops (`PromptDroppedError`).
 	 * Local slash commands are disabled so an assignment always reaches the
@@ -2278,6 +2325,7 @@ async function driveSessionToYield(
 
 	try {
 		try {
+			while (session.isRestartDraining) await waitForRestartDrain();
 			// An IRC wake may own the session when this turn dispatches. Its prompt
 			// wins the race and this prompt throws AgentBusyError; back off through
 			// the caller hook and retry. Bounded so a wedged worker still resolves
@@ -2294,6 +2342,7 @@ async function driveSessionToYield(
 				}
 			}
 			await awaitAbortable(session.waitForIdle());
+			await waitForRestartDrain();
 		} catch (err) {
 			// A budget stop or a yield turn-stop (terminal yield parked behind
 			// the async quiescence barrier) cancels the free-running turn by
@@ -2311,6 +2360,7 @@ async function driveSessionToYield(
 			let retryCount = 0;
 			let retriesForced = false;
 			while (!monitor.yieldCalled() && retryCount < MAX_YIELD_RETRIES && !abortSignal.aborted) {
+				if (await waitForRestartDrain()) continue;
 				// A budget stop collapses the reminder ladder to a single forced
 				// final yield: wait for the stop's session abort to settle, then
 				// prompt once with the wrap-up reminder + named tool choice.
@@ -2354,6 +2404,7 @@ async function driveSessionToYield(
 						{ forceFinalYield: isFinalRetry },
 					);
 					await awaitAbortable(session.waitForIdle());
+					if (await waitForRestartDrain()) retryCount--;
 				} catch (err) {
 					if (err instanceof PromptDispatchError) throw err;
 					if (abortSignal.aborted || err instanceof ToolAbortError) {
@@ -2402,15 +2453,21 @@ async function driveSessionToYield(
 		// model error, skip the barrier; teardown reaps their jobs.
 		let asyncPendingNoticeSent = false;
 		while (!abortSignal.aborted) {
+			if (await waitForRestartDrain()) continue;
 			if (!monitor.yieldCalled()) {
 				await runYieldLadder();
-				if (
-					!monitor.yieldCalled() &&
-					(monitor.budgetStopRequested() ||
+				if (!monitor.yieldCalled()) {
+					// Ladder exhausted / terminal model error: give a restart drain
+					// (if one just started or is already active) a chance to settle
+					// and retry before classifying this as missing/stale yield below.
+					if (await waitForRestartDrain()) continue;
+					if (
+						monitor.budgetStopRequested() ||
 						session.getLastAssistantMessage()?.stopReason === "error" ||
-						!session.hasPendingAsyncWork())
-				)
-					break;
+						!session.hasPendingAsyncWork()
+					)
+						break;
+				}
 			}
 			// Let the parked yield's turn-stop session abort settle before
 			// prompting again (mirrors waitForBudgetStop).
@@ -2456,6 +2513,10 @@ async function driveSessionToYield(
 
 		if (!monitor.yieldCalled()) {
 			await awaitAbortable(session.waitForIdle());
+		}
+		for (;;) {
+			if (!(await waitForRestartDrain())) break;
+			if (!monitor.yieldCalled()) await runYieldLadder();
 		}
 
 		const lastAssistant = session.getLastAssistantMessage();
@@ -2543,6 +2604,7 @@ interface FinalizeRunArgs {
 	subagentEventBus?: EventBus;
 	parentToolCallId?: string;
 	detached?: boolean;
+	retainedBackgroundJobs?: RetainedBackgroundJob[];
 	/**
 	 * This finalize is a revival/wake or explicit follow-up turn, not the initial
 	 * run. Such turns only (re)write `<id>.md` when they produce a real `yield`
@@ -2713,10 +2775,14 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	const settledPayload = {
 		id,
 		agent: agent.name,
+		at: Date.now(),
+		resolvedModelIdentity: progress.resolvedModelIdentity,
+		resolvedThinkingLevel: progress.resolvedThinkingLevel,
 		parentToolCallId: args.parentToolCallId,
 		detached: args.detached,
 		agentSource: agent.source,
 		description: progress.description,
+		taskText: assignment ?? task,
 		status: progress.status as "completed" | "failed" | "aborted",
 		sessionFile: args.sessionFile,
 		index,
@@ -2757,6 +2823,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		outputPath,
 		extractedToolData: progress.extractedToolData,
 		retryFailure: progress.retryFailure,
+		retainedBackgroundJobs: args.retainedBackgroundJobs?.length ? args.retainedBackgroundJobs : undefined,
 		outputMeta,
 	};
 }
@@ -3019,10 +3086,12 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		const startedPayload = {
 			id,
 			agent: agent.name,
+			at: Date.now(),
 			parentToolCallId: options.parentToolCallId,
 			detached: true,
 			agentSource: agent.source,
 			description: options.description,
+			taskText: ircTask,
 			status: "started",
 			sessionFile,
 			index,
@@ -3032,6 +3101,21 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		turnMonitor.setActiveSession(session);
 		const unsubscribeTurn = turnMonitor.attach(session);
 		return async turnError => {
+			while (!turnMonitor.abortSignal.aborted) {
+				try {
+					await untilAborted(turnMonitor.abortSignal, () => session.waitForRestartDrainRelease());
+					await untilAborted(turnMonitor.abortSignal, () => session.waitForIdle());
+				} catch (error) {
+					if (!turnMonitor.abortSignal.aborted) {
+						logger.warn("IRC wake could not await restart-drain continuation", {
+							id,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+					break;
+				}
+				if (!session.isRestartDraining || turnMonitor.abortSignal.aborted) break;
+			}
 			unsubscribeTurn();
 			const activeSession = turnMonitor.takeActiveSession();
 			if (activeSession) turnMonitor.captureSalvage(activeSession);
@@ -3281,6 +3365,8 @@ export interface FollowUpTurnOptions {
 	agent: AgentDefinition;
 	/** The follow-up message; sent as the turn's user prompt. */
 	message: string;
+	/** Effort-only continuation: retain the resolved model and session identity. */
+	thinkingLevel?: Effort;
 	index?: number;
 	description?: string;
 	/** Explicit pre-expansion model role alias retained from the original run. */
@@ -3364,6 +3450,9 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		session = live;
 		await acquireOwnership();
 	}
+	// Apply only after revival and turn ownership: never mutate a parked stale
+	// instance or an active peer wake. The session setter persists the selection.
+	if (options.thinkingLevel !== undefined) session.setThinkingLevel(options.thinkingLevel);
 	// A kept-alive session reuses its YieldTool across turns; clear the prior
 	// run's incremental-section flag and retry counters so this turn's guards
 	// evaluate against its own state, not stale accumulators.
@@ -3393,10 +3482,12 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 	const startedPayload = {
 		id,
 		agent: agent.name,
+		at: Date.now(),
 		parentToolCallId: options.parentToolCallId,
 		detached: true,
 		agentSource: agent.source,
 		description: options.description,
+		taskText: message,
 		status: "started",
 		sessionFile,
 		index,
@@ -3640,6 +3731,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		maxRuntimeMs,
 	});
 	const progress = monitor.progress;
+	let retainedBackgroundJobs: RetainedBackgroundJob[] | undefined;
 	let unsubscribe: (() => void) | null = null;
 	let registryAbortUnsubscribe: (() => void) | null = null;
 	let reviveSession: AgentReviver | null = null;
@@ -3804,11 +3896,19 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// through to the normal selectors below.
 			// The ceiling outlives initial resolution: it rides into the session so
 			// retry-fallback recovery can never clamp effort back up past it.
-			const spawnEffortCeiling = options.effort !== undefined ? cfgTaskMaxEffort.get(settings) : undefined;
-			const effortLevel =
-				options.effort !== undefined
-					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
+			const spawnEffortCeiling =
+				options.exactThinkingLevel !== undefined || options.effort !== undefined
+					? cfgTaskMaxEffort.get(settings)
 					: undefined;
+			const effortLevel =
+				options.exactThinkingLevel !== undefined
+					? resolveThinkingLevelForModel(
+							model,
+							clampThinkingLevelToCeiling(model, options.exactThinkingLevel, spawnEffortCeiling),
+						)
+					: options.effort !== undefined
+						? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
+						: undefined;
 			if (model) {
 				const displayLevel = effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : undefined);
 				progress.resolvedModelIdentity = formatModelStringWithRouting(model);
@@ -3818,9 +3918,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						? formatModelSelectorValue(progress.resolvedModelIdentity, displayLevel)
 						: progress.resolvedModelIdentity;
 			}
-			// Precedence: caller `effort` > explicit `:level` suffix on the resolved
-			// model pattern > agent-definition default (e.g. task's `auto`) >
-			// pattern-derived level.
+			// Precedence: exact rung > coarse caller effort > explicit model
+			// suffix > agent-definition default > pattern-derived level.
 			const effectiveThinkingLevel =
 				effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : (thinkingLevel ?? resolvedThinkingLevel));
 			resolvedAt = performance.now();
@@ -4141,10 +4240,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			const startedPayload = {
 				id,
 				agent: agent.name,
+				at: Date.now(),
 				parentToolCallId: options.parentToolCallId,
 				detached: options.detached,
 				agentSource: agent.source,
 				description: options.description,
+				taskText: assignment ?? options.task,
 				status: "started" as const,
 				sessionFile: subtaskSessionFile,
 				index,
@@ -4258,7 +4359,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						shutdown: () => {},
 						getContextUsage: () => session.getContextUsage(),
 						getSystemPrompt: () => session.systemPrompt,
+						sendAgentMessage: (to, message) => sendAgentMessageFromSession(session, to, message),
 						runEphemeralTurn: args => session.runEphemeralTurn(args),
+						setSubagentFastMode: (targetId, enabled) => session.setSubagentFastMode(targetId, enabled),
 						compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
 					},
 				);
@@ -4368,6 +4471,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			}
 			const jobManager = AsyncJobManager.instance();
 			if (jobManager) {
+				if ((exitCode !== 0 || aborted) && retainedBackgroundJobs === undefined) {
+					const ownedJobs = jobManager.getAllJobs({ ownerId: id });
+					if (ownedJobs.length > 0) {
+						retainedBackgroundJobs = ownedJobs.map(retainedBackgroundJob);
+					}
+				}
 				const reap = await jobManager.cancelAndReapOwnerJobs(id, cleanupDeadlineAt);
 				if (!reap.settled) {
 					deferCleanup(reap.completion);
@@ -4486,6 +4595,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		subagentEventBus: options.subagentEventBus,
 		parentToolCallId: options.parentToolCallId,
 		detached: options.detached,
+		retainedBackgroundJobs,
 		sessionFile: subtaskSessionFile,
 		startTime,
 	});

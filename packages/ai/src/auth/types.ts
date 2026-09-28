@@ -1161,7 +1161,7 @@ export interface UsageApi {
 	removeProvider(provider: Provider): void;
 }
 
-/** Credential and model-level health probes. */
+/** Credential and model-level health probes plus provider depletion controls. */
 export interface HealthApi {
 	/**
 	 * Inspect the credential pool that {@link getApiKey} would use for one model
@@ -1200,6 +1200,18 @@ export interface HealthApi {
 	 * unchanged so callers can tell the two signals apart.
 	 */
 	check(options?: CheckCredentialsOptions): Promise<CredentialHealthResult[]>;
+	/** Whether this provider has an active depletion latch. Timed latches expire at their reset. */
+	isProviderDepleted(provider: Provider): boolean;
+	/**
+	 * Latch a provider after a classified quota response. HTTP 402 is accepted
+	 * only when the canonical billing-cap classifier accepts its body; HTTP 429
+	 * requires a finite future `resetAtMs`. A 402 latch has no deadline.
+	 */
+	markProviderDepleted(provider: Provider, options?: { status?: number; message?: string; resetAtMs?: number }): void;
+	/** Clear provider depletion after a successful provider call. */
+	markProviderSucceeded(provider: Provider): void;
+	/** Explicitly clear provider depletion, including an untimed billing latch. */
+	resetProviderDepletion(provider: Provider): void;
 }
 
 /** Usage-limit blocking and credential rotation operations. */

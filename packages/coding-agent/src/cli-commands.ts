@@ -177,6 +177,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.predictHelp,
 	},
 	{
+		name: "peers",
+		load: () => import("./commands/peers").then(m => m.default),
+		help: commandHelp.peersHelp,
+	},
+	{
 		name: "ps",
 		load: () => import("./commands/ps").then(m => m.default),
 		help: commandHelp.psHelp,
@@ -220,6 +225,11 @@ export const commands: CommandEntry[] = [
 		name: "render",
 		load: () => import("./commands/render").then(m => m.default),
 		help: commandHelp.renderHelp,
+	},
+	{
+		name: "restart",
+		load: () => import("./commands/restart").then(m => m.default),
+		help: commandHelp.restartHelp,
 	},
 	{
 		name: "skill",

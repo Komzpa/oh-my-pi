@@ -23,7 +23,7 @@ import {
 	createCachedComponent,
 	type ConfiguredThinkingLevel,
 } from "../render/render-utils";
-import type { StructuredSubagentOutput } from "./task";
+import type { AgentProgress, StructuredSubagentOutput } from "./task";
 import type { RenderResultOptions, ToolRenderer, ToolActivitySummary } from "./renderer";
 import type { IrcDeliveryReceipt, IrcMessage } from "./irc";
 
@@ -61,6 +61,8 @@ export interface JobSnapshot {
 	/** Capture error in historical snapshots; new snapshots store source metadata in `meta`. */
 	artifactError?: OutputMeta["artifactError"];
 	structured?: StructuredSubagentOutput;
+	/** Live task progress retained while a task job is still running. */
+	progress?: AgentProgress[];
 	/**
 	 * `agent://<id>` handle backing this job's artifacts — the job-row's
 	 * registry `agentId` when the manager disambiguated a requested job id
@@ -120,6 +122,8 @@ export interface CoordinationDetails {
 	cancelled?: { id: string; status: CancelStatus }[];
 	/** Running subagents not represented by a job row in this result. */
 	agents?: AgentActivitySnapshot[];
+	/** A todo plan is active and already lists every task-type job below by worker id. */
+	todoTracksTasks?: boolean;
 	/** `wait` was cut short by steering, a peer message, or a completion notice that injects next. */
 	interrupted?: boolean;
 }
@@ -134,6 +138,9 @@ const PREVIEW_LINES_EXPANDED = 4;
 const LABEL_LINES_COLLAPSED = 1;
 const LABEL_LINES_EXPANDED = 3;
 const PREVIEW_LINE_WIDTH = 80;
+const INLINE_STREAM_OUTPUT_COLLAPSED = 2;
+const INLINE_STREAM_OUTPUT_EXPANDED = 6;
+const INLINE_STREAM_LINE_WIDTH = 100;
 
 function statusToIcon(status: JobSnapshot["status"]): ToolUIStatus {
 	switch (status) {
@@ -185,6 +192,69 @@ function flattenStructuredPreview(text: string): string {
 	return text.slice(0, PREVIEW_LINES_EXPANDED * PREVIEW_LINE_WIDTH * 2).replace(/\s+/g, " ");
 }
 
+function compactInlineText(text: string, width = INLINE_STREAM_LINE_WIDTH): string {
+	return truncateToWidth(replaceTabs(text).replace(/\s+/g, " ").trim(), width, Ellipsis.Unicode);
+}
+
+function progressForJob(job: JobSnapshot): AgentProgress | undefined {
+	if (job.type !== "task" || job.status !== "running") return undefined;
+	const progress = job.progress;
+	if (!progress || progress.length === 0) return undefined;
+	return progress.find(item => item.id === (job.agentUrlId ?? job.id) || item.id === job.id) ?? progress[0];
+}
+
+function renderSoleWorkerStream(
+	job: JobSnapshot,
+	progress: AgentProgress,
+	expanded: boolean,
+	uiTheme: Theme,
+	spinnerFrame: number | undefined,
+	rowWidth: number,
+): string[] {
+	const box = uiTheme.boxRound;
+	const rail = (glyph: string) => uiTheme.fg("accent", glyph);
+	const model = progress.resolvedModelIdentity ?? progress.resolvedModel;
+	const headerParts = [
+		uiTheme.fg("accent", compactInlineText(progress.id || job.id, 40)),
+		formatBadge(progress.agent, "accent", uiTheme),
+	];
+	if (model) headerParts.push(uiTheme.fg("muted", compactInlineText(model, 40)));
+	const lines = [`${rail(`${box.topLeft}${box.horizontal}`)} ${headerParts.join(" ")}`];
+	const body: string[] = [];
+	const lead = progress.description ?? progress.assignment ?? progress.task;
+	if (lead) body.push(`${uiTheme.fg("accent", ">")} ${uiTheme.fg("dim", compactInlineText(lead))}`);
+	if (progress.lastIntent) {
+		body.push(
+			`${uiTheme.fg("dim", uiTheme.tree.hook)} ${uiTheme.fg("toolOutput", compactInlineText(progress.lastIntent))}`,
+		);
+	}
+	if (progress.currentTool) {
+		const detail = progress.currentToolArgs;
+		const label = `${progress.currentTool}${detail ? `: ${detail}` : ""}`;
+		const rendered =
+			spinnerFrame !== undefined && shimmerEnabled()
+				? shimmerText(compactInlineText(label), uiTheme)
+				: uiTheme.fg("muted", compactInlineText(label));
+		body.push(`${uiTheme.fg("accent", uiTheme.tree.hook)} ${rendered}`);
+	} else if (progress.recentTools.length > 0) {
+		const recent = progress.recentTools[0]!;
+		const label = `${recent.tool}${recent.args ? `: ${recent.args}` : ""}`;
+		body.push(`${uiTheme.fg("dim", uiTheme.tree.hook)} ${uiTheme.fg("muted", compactInlineText(label))}`);
+	}
+	const outputCap = expanded ? INLINE_STREAM_OUTPUT_EXPANDED : INLINE_STREAM_OUTPUT_COLLAPSED;
+	const outputLines = [...progress.recentOutput]
+		.reverse()
+		.filter(line => line.trim().length > 0)
+		.slice(-outputCap);
+	for (const line of outputLines) {
+		body.push(`  ${uiTheme.fg("muted", compactInlineText(line))}`);
+	}
+	if (body.length === 0) body.push(uiTheme.fg("dim", "streaming…"));
+	for (const line of body) lines.push(`${rail(box.vertical)} ${line}`);
+	lines.push(rail(`${box.bottomLeft}${box.horizontal}`));
+	return lines.map(line => truncateToWidth(line, rowWidth, Ellipsis.Unicode));
+}
+
 /** Pending wait frame. */
 function waitRenderCall(_args: object, _options: RenderResultOptions, uiTheme: Theme): Component {
 	return new Text(renderStatusLine({ icon: "pending", title: "Wait" }, uiTheme), 0, 0);
@@ -198,6 +268,14 @@ function jobsRenderResult(
 ): Component {
 	let jobs = result.details?.jobs ?? [];
 	const agents = result.details?.agents ?? [];
+	// When a todo plan is active it already lists every task worker (linked
+	// to its row, or under "unassigned workers"), so a still-running task job
+	// here would just repeat the same identity a second time. Fold those rows
+	// into the header count instead of listing them again.
+	const todoTracksTasks = result.details?.todoTracksTasks === true;
+	const collapsedTaskJobIds = new Set(
+		todoTracksTasks ? jobs.filter(job => job.type === "task" && job.status === "running").map(job => job.id) : [],
+	);
 
 	if (jobs.length === 0 && agents.length === 0) {
 		const fallback = result.content?.find(c => c.type === "text")?.text || "No jobs to process";
@@ -231,13 +309,14 @@ function jobsRenderResult(
 	const headerIcon: ToolUIStatus =
 		counts.failed > 0 ? "warning" : counts.running > 0 || agents.length > 0 ? "info" : "success";
 	const jobsNoun = jobs.length === 1 ? "job" : "jobs";
+	const listedInTodo = collapsedTaskJobIds.size > 0 ? ", listed in TODO" : "";
 	const description =
 		jobs.length === 0
 			? `${agents.length} running agent${agents.length === 1 ? "" : "s"} — no jobs`
 			: counts.running > 0
 				? counts.running === jobs.length
-					? `waiting on ${jobs.length} ${jobsNoun}`
-					: `waiting on ${counts.running} of ${jobs.length} ${jobsNoun}`
+					? `waiting on ${jobs.length} ${jobsNoun}${listedInTodo}`
+					: `waiting on ${counts.running} of ${jobs.length} ${jobsNoun}${listedInTodo}`
 				: `${jobs.length} ${jobsNoun} settled`;
 
 	const header = renderStatusLine(
@@ -267,11 +346,13 @@ function jobsRenderResult(
 		cancelled: 2,
 		completed: 3,
 	};
-	const sortedJobs = [...jobs].sort((a, b) => {
-		const diff = statusOrder[a.status] - statusOrder[b.status];
-		if (diff !== 0) return diff;
-		return b.durationMs - a.durationMs;
-	});
+	const sortedJobs = jobs
+		.filter(job => !collapsedTaskJobIds.has(job.id))
+		.sort((a, b) => {
+			const diff = statusOrder[a.status] - statusOrder[b.status];
+			if (diff !== 0) return diff;
+			return b.durationMs - a.durationMs;
+		});
 
 	let cached: RenderCache | undefined;
 	return {
@@ -443,11 +524,29 @@ function jobsRenderResult(
 							uiTheme,
 						);
 
+			const soleRunningTask =
+				sortedJobs.length === 1 && agents.length === 0 && sortedJobs[0]?.status === "running"
+					? sortedJobs[0]
+					: undefined;
+			const soleRunningProgress = soleRunningTask ? progressForJob(soleRunningTask) : undefined;
 			const all = [header];
 			if (aggregateArtifactError) {
 				all.push(uiTheme.fg("warning", formatArtifactErrorNotice(aggregateArtifactError)));
 			}
-			all.push(...itemLines, ...agentLines);
+			all.push(...itemLines);
+			if (soleRunningTask && soleRunningProgress) {
+				all.push(
+					...renderSoleWorkerStream(
+						soleRunningTask,
+						soleRunningProgress,
+						expanded,
+						uiTheme,
+						options.spinnerFrame,
+						width,
+					),
+				);
+			}
+			all.push(...agentLines);
 			for (let i = 0; i < all.length; i++) all[i] = truncateToWidth(all[i]!, width, Ellipsis.Unicode);
 			cached = { key, lines: all };
 			return all;

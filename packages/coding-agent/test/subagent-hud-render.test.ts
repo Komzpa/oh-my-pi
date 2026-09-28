@@ -10,10 +10,12 @@ import { Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resetHangulCompatibilityJamoWidthForTests, setHangulCompatibilityJamoWidth } from "@oh-my-pi/pi-tui";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-tui/prompt/composer";
 import {
 	InteractiveMode,
 	layoutPinnedHud,
+	linkTodoWorkers,
 	renderSubagentHudLines,
 	SubagentHudComponent,
 } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
@@ -241,6 +243,28 @@ describe("subagent HUD lines", () => {
 			expect(out).toContain(`${theme.status.done} custom/model:high LegacyWorker`);
 			expect(out).not.toContain(theme.thinking.high.split(" ")[0]);
 		});
+	});
+
+	it("shows a no-commit warning in the active worker's HUD row", () => {
+		const registry = new AgentRegistry();
+		vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
+		try {
+			const id = "StaleWorker";
+			registry.register({
+				id,
+				displayName: id,
+				kind: "sub",
+				session: { sessionManager: { getCwd: () => "/tmp" } } as never,
+				status: "running",
+			});
+			// `worktreeWarning` lands with the worker-warning registry follow-up; the
+			// HUD reads it optionally, so the test injects it through a narrow view.
+			const entry = registry.get(id) as { worktreeWarning?: { minutes: number; lastLine?: string } };
+			entry.worktreeWarning = { minutes: 17, lastLine: "bash bun test" };
+			expect(render([makeSession({ id, description: "Implement the row" })])).toContain("⚠ 17m no commit");
+		} finally {
+			vi.restoreAllMocks();
+		}
 	});
 
 	it("renders running subagents as Id: description under a Subagents header", () => {
@@ -484,6 +508,18 @@ describe("subagent HUD lines", () => {
 		expect(out).toContain("7 more — expand");
 		expect(out).not.toContain("show less");
 	});
+	it("shows the sole overflow agent without spending a row on the expander", () => {
+		const active = Array.from({ length: 4 }, (_, index) =>
+			makeSession({
+				id: `Worker${index}`,
+				description: `job ${index}`,
+			}),
+		);
+		const out = render(active, 120);
+		expect(out).toContain("Worker3: job 3");
+		expect(out).not.toContain("more — expand");
+		expect(out.split("\n")).toHaveLength(6);
+	});
 });
 
 describe("SubagentHudComponent click rows", () => {
@@ -574,11 +610,12 @@ describe("layoutPinnedHud", () => {
 	});
 
 	it("collapses longer lists behind an expander", () => {
-		expect(layoutPinnedHud(4, false)).toEqual({ itemRows: 3, toggle: "expand", toggleRow: 5 });
+		expect(layoutPinnedHud(4, false)).toEqual({ itemRows: 4, toggle: undefined, toggleRow: undefined });
 		expect(layoutPinnedHud(10, false)).toEqual({ itemRows: 3, toggle: "expand", toggleRow: 5 });
 	});
 
 	it("expands to every row with a collapse row", () => {
+		expect(layoutPinnedHud(4, true)).toEqual({ itemRows: 4, toggle: "collapse", toggleRow: 6 });
 		expect(layoutPinnedHud(5, true)).toEqual({ itemRows: 5, toggle: "collapse", toggleRow: 7 });
 		expect(layoutPinnedHud(10, true)).toEqual({ itemRows: 10, toggle: "collapse", toggleRow: 12 });
 	});
@@ -635,10 +672,10 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		resetSettingsForTest();
 	});
 
-	it("coalesces a burst of progress observer changes into one HUD rebuild and render request", async () => {
+	it("coalesces a burst of worker changes into one TODO tree rebuild", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
 		const requestRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
-		const rebuildHud = vi.spyOn(mode.subagentContainer, "clear");
+		const rebuildHud = vi.spyOn(mode.todoContainer, "clear");
 		vi.useFakeTimers();
 
 		for (let index = 0; index < 6; index++) {
@@ -652,28 +689,97 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		vi.runAllTimers();
 		await Promise.resolve();
 
-		const hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
-		expect(hud).toContain("BurstAgent0: Burst job 0");
-		expect(hud).toContain("BurstAgent2: Burst job 2");
-		expect(hud).not.toContain("BurstAgent3: Burst job 3");
-		expect(hud).toContain("3 more — expand");
+		const hud = Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
+		expect(hud).toContain("TODO");
+		expect(hud).toContain("unassigned workers");
+		for (let index = 0; index < 6; index++) expect(hud).toContain(`BurstAgent${index}`);
+		const pinnedHud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+		expect(pinnedHud).toContain("Subagents");
+		expect(pinnedHud).toContain("BurstAgent0");
+		expect(pinnedHud).toContain("BurstAgent2");
+		expect(pinnedHud).toContain("3 more");
 		expect(rebuildHud).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
-	it("applies the setting over a clicked expand override", async () => {
+	it("links a live worker to its TODO row and lists other workers once", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
+		mode.setTodos([
+			{ name: "Work", tasks: [{ content: "job 0", status: "in_progress", schedule: { owner: "Override0" } }] },
+		]);
 		for (let index = 0; index < 5; index++) {
 			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle(`Override${index}`, index, `job ${index}`));
 		}
 		await Promise.resolve();
-		const hudText = () => Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
-
-		mode.togglePinnedHudExpanded();
-		expect(hudText()).toContain("Override4");
-
 		mode.applyPinnedAgentsSetting();
-		expect(hudText()).not.toContain("Override4");
-		expect(hudText()).toContain("more — expand");
+		const hud = Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
+		expect(hud.split("\n").find(line => line.includes("job 0"))).toContain("Override0 (task)");
+		expect(hud).toContain("unassigned workers");
+		expect(hud.match(/Override4/g)).toHaveLength(1);
+		expect(hud).not.toContain("Subagents");
+	});
+
+	it("groups interleaved phases under one header each, without per-row phase labels", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		mode.setTodos([
+			{
+				name: "Recording",
+				tasks: [
+					{ content: "record first", status: "pending", schedule: { dependencies: [] } },
+					{ content: "record second", status: "pending", schedule: { dependencies: ["release first"] } },
+				],
+			},
+			{
+				name: "Release",
+				tasks: [
+					{ content: "release first", status: "pending", schedule: { dependencies: ["record first"] } },
+					{ content: "release second", status: "pending", schedule: { dependencies: ["record second"] } },
+				],
+			},
+		]);
+		const lines = Bun.stripANSI(mode.todoContainer.render(120).join("\n")).split("\n");
+		expect(lines.filter(line => line.includes("Recording · 0/2"))).toHaveLength(1);
+		expect(lines.filter(line => line.includes("Release · 0/2"))).toHaveLength(1);
+		// Rows sit under their own phase's single header, without a repeated "Phase: " prefix.
+		const at = (text: string) => lines.findIndex(line => line.includes(text));
+		expect(lines.some(line => /Recording:|Release:/.test(line))).toBe(false);
+		expect(at("Recording · 0/2")).toBeLessThan(at("record first"));
+		expect(at("record second")).toBeLessThan(at("Release · 0/2"));
+		expect(at("Release · 0/2")).toBeLessThan(at("release first"));
+		expect(at("release first")).toBeLessThan(at("release second"));
+	});
+
+	it("keeps ambiguous description and repeated owner matches unassigned", () => {
+		const tasks = [
+			{ content: "Review code", status: "pending" as const },
+			{ content: "Review tests", status: "pending" as const },
+			{ content: "Build", status: "in_progress" as const, schedule: { owner: "Shared" } },
+			{ content: "Deploy", status: "pending" as const, schedule: { owner: "Shared" } },
+		];
+		const linked = linkTodoWorkers(
+			[{ name: "Work", tasks }],
+			[makeSession({ id: "Reviewer", description: "Review" }), makeSession({ id: "Shared" })],
+		);
+		expect(linked.byTask.size).toBe(0);
+		expect(linked.unassigned.map(worker => worker.id)).toEqual(["Reviewer", "Shared"]);
+	});
+
+	it("links a collision-suffixed restarted worker to its stale-owner todo row", () => {
+		const task = {
+			content: "Restore systems cue interaction",
+			status: "pending" as const,
+			schedule: {
+				owner: "SystemsCueInteractionOwner-3-2",
+				executor: { workerId: "SystemsCueInteractionOwner-3-2", startedAt: 100, finishedAt: 200 },
+			},
+		};
+
+		const linked = linkTodoWorkers(
+			[{ name: "Restarted", tasks: [task] }],
+			[makeSession({ id: "SystemsCueInteractionOwner-3-2-2" })],
+		);
+
+		expect(linked.byTask.get(task)?.id).toBe("SystemsCueInteractionOwner-3-2-2");
+		expect(linked.unassigned).toEqual([]);
 	});
 });

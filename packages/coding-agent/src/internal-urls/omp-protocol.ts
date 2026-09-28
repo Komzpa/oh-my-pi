@@ -26,7 +26,7 @@ import type {
  */
 export class OmpProtocolHandler implements ProtocolHandler {
 	readonly scheme = "omp";
-	readonly spec: SchemeSpec = { backing: "virtual", selectors: "lines", immutable: true };
+	readonly spec: SchemeSpec = { backing: "virtual", selectors: "lines", immutable: true, compactTranscript: true };
 
 	/** Always advertised: harness docs are embedded in every build. */
 	promptDoc(): string {

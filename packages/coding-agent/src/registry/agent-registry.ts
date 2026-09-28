@@ -78,9 +78,12 @@ export interface AgentRef {
 	sessionFile: string | null;
 	createdAt: number;
 	lastActivity: number;
-	/** Short gist of what the agent is currently doing (latest intent or tool), for the work-aware roster. Display-only. */
+	/** Short gist of current work, used only for the work-aware roster. */
 	activity?: string;
-	/** Persisted identity and telemetry restored after the live observer is gone. */
+	/** Worktree has no recent commit despite a long-running task. */
+	worktreeWarning?: { minutes: number; lastLine: string; row?: string };
+	/** Open TODO row assigned to this running worker. */
+	todoRow?: string;
 	history?: AgentHistorySummary;
 	/** Run lifecycle milestones (launch is {@link createdAt}). */
 	lifecycle?: AgentRunLifecycle;
@@ -187,6 +190,16 @@ export class AgentRegistry {
 		this.#emit({ type: "metadata_changed", ref });
 		return true;
 	}
+	/** Restore transcript-backed display/parent identity only while the exact ref is still current. */
+	restoreIdentity(id: string, expected: AgentRef, identity: { displayName: string; parentId?: string }): boolean {
+		const ref = this.#refs.get(id);
+		if (ref !== expected || ref.status === "aborted") return false;
+		if (ref.displayName === identity.displayName && ref.parentId === identity.parentId) return true;
+		ref.displayName = identity.displayName;
+		ref.parentId = identity.parentId;
+		this.#emit({ type: "metadata_changed", ref });
+		return true;
+	}
 
 	setStatus(id: string, status: AgentStatus, expected?: AgentRefExpectation): boolean {
 		const ref = this.#refs.get(id);
@@ -204,7 +217,11 @@ export class AgentRegistry {
 		ref.status = status;
 		// Activity describes current work; it is meaningless once the agent
 		// leaves `running`, so drop it to avoid showing stale work in rosters.
-		if (status !== "running") ref.activity = undefined;
+		if (status !== "running") {
+			ref.activity = undefined;
+			ref.worktreeWarning = undefined;
+			ref.todoRow = undefined;
+		}
 		ref.lastActivity = Date.now();
 		if (status === "running") {
 			// Milestones are run-scoped. A ref reused by a follow-up or wake
@@ -287,6 +304,27 @@ export class AgentRegistry {
 		ref.activity = gist;
 	}
 
+	setWorktreeWarning(id: string, warning?: AgentRef["worktreeWarning"]): void {
+		const ref = this.#refs.get(id);
+		if (!ref || (warning !== undefined && ref.status !== "running")) return;
+		if (
+			ref.worktreeWarning?.minutes === warning?.minutes &&
+			ref.worktreeWarning?.lastLine === warning?.lastLine &&
+			ref.worktreeWarning?.row === warning?.row
+		)
+			return;
+		ref.worktreeWarning = warning;
+		this.#emit({ type: "metadata_changed", ref });
+	}
+
+	setTodoRow(id: string, todoRow?: string): void {
+		const ref = this.#refs.get(id);
+		if (!ref || (todoRow !== undefined && ref.status !== "running")) return;
+		if (ref.todoRow === todoRow) return;
+		ref.todoRow = todoRow;
+		this.#emit({ type: "metadata_changed", ref });
+	}
+
 	attachSession(
 		id: string,
 		session: AgentSession,
@@ -321,6 +359,21 @@ export class AgentRegistry {
 
 	get(id: string): AgentRef | undefined {
 		return this.#refs.get(id);
+	}
+
+	/** Change fast mode only for a live direct child owned by `parentId`. */
+	setSubagentFastMode(parentId: string, id: string, enabled: boolean): boolean {
+		const ref = this.#refs.get(id);
+		if (
+			!ref ||
+			ref.kind !== "sub" ||
+			ref.parentId !== parentId ||
+			(ref.status !== "running" && ref.status !== "idle") ||
+			!ref.session
+		) {
+			return false;
+		}
+		return ref.session.setFastMode(enabled);
 	}
 
 	list(): AgentRef[] {

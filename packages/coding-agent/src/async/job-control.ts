@@ -10,9 +10,10 @@ import type { AsyncJob, AsyncJobDetails, AsyncJobManager, AsyncJobType } from ".
 
 import { renderStructuredJson, structuredStatusLabel } from "../session/async-job-delivery";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
-import type { StructuredSubagentOutput } from "@oh-my-pi/pi-tui/tools/task";
+import type { AgentProgress, StructuredSubagentOutput } from "@oh-my-pi/pi-tui/tools/task";
 import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
+import type { AgentRegistry } from "../registry/agent-registry";
 import type { ToolSession } from "../tools";
 
 import { formatDuration } from "@oh-my-pi/pi-tui/render/render-utils";
@@ -74,15 +75,16 @@ export function undeliveredJobs(manager: AsyncJobManager, ownerId: string | unde
  * here to cancel it (#8634). Hiding it would match the badge count to nothing
  * and remove the only discovery path for the id.
  */
-export function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySnapshot[] {
-	const registry = session.agentRegistry;
+export function runningAgentsFromRegistryOutsideJobs(
+	registry: AgentRegistry | undefined,
+	manager: AsyncJobManager | undefined,
+	selfId: string | undefined,
+): AgentActivitySnapshot[] {
 	if (!registry) return [];
-	const selfId = session.getAgentId?.() ?? undefined;
 	// Cover = the caller's RUNNING jobs only. A settled job still sitting in
 	// delivery retention must not hide its agent if that agent was re-woken
 	// (e.g. via a peer message) and is running again without a job.
 	const covered = new Set<string>();
-	const manager = session.asyncJobManager;
 	if (manager) {
 		for (const job of manager.getRunningJobs({ ownerId: selfId })) {
 			covered.add(job.id);
@@ -108,6 +110,14 @@ export function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySna
 		});
 	}
 	return out;
+}
+
+export function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySnapshot[] {
+	return runningAgentsFromRegistryOutsideJobs(
+		session.agentRegistry,
+		session.asyncJobManager,
+		session.getAgentId?.() ?? undefined,
+	);
 }
 
 /** Model-facing lines for the running-agents section shared by `jobs` and empty-wait results. */
@@ -151,6 +161,21 @@ interface TrackedJobLike {
 	structured?: StructuredSubagentOutput;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function isAgentProgressSnapshot(value: unknown): value is AgentProgress {
+	if (!isRecord(value)) return false;
+	return (
+		typeof value.id === "string" &&
+		typeof value.agent === "string" &&
+		typeof value.task === "string" &&
+		Array.isArray(value.recentTools) &&
+		Array.isArray(value.recentOutput)
+	);
+}
+
 export function snapshotJobs(
 	session: ToolSession,
 	jobs: TrackedJobLike[],
@@ -166,9 +191,11 @@ export function snapshotJobs(
 		let resolvedModelIdentity: string | undefined;
 		let resolvedThinkingLevel: JobSnapshot["resolvedThinkingLevel"];
 		let advisor = false;
+		let progress: AgentProgress[] | undefined;
 		if (latest.type === "task") {
 			const progressValue = latest.latestDetails?.progress;
 			if (Array.isArray(progressValue)) {
+				progress = progressValue.filter(isAgentProgressSnapshot);
 				let progressRecord: Record<string, unknown> | undefined;
 				for (const item of progressValue) {
 					if (!item || typeof item !== "object") continue;
@@ -207,6 +234,7 @@ export function snapshotJobs(
 			...(resolvedModelIdentity ? { resolvedModelIdentity } : {}),
 			...(resolvedThinkingLevel !== undefined ? { resolvedThinkingLevel } : {}),
 			...(advisor ? { advisor: true } : {}),
+			...(progress && progress.length > 0 ? { progress } : {}),
 			...(!resultConsumed && options.includeResults !== false && latest.resultText
 				? { resultText: latest.resultText }
 				: {}),
@@ -231,6 +259,7 @@ export function buildJobResult(
 	jobs: TrackedJobLike[],
 	cancelOutcomes: CancelOutcome[],
 	agents: AgentActivitySnapshot[] = [],
+	todoTracksTasks = false,
 ): AgentToolResult<CoordinationDetails> {
 	// Deduplicate by id (cancelled jobs may also appear in the watched set).
 	const seen = new Set<string>();
@@ -337,6 +366,7 @@ export function buildJobResult(
 		jobs: jobResults,
 		...(cancelOutcomes.length ? { cancelled: cancelOutcomes.map(({ id, status }) => ({ id, status })) } : {}),
 		...(agents.length ? { agents } : {}),
+		...(todoTracksTasks ? { todoTracksTasks: true } : {}),
 	};
 	return {
 		content: [{ type: "text", text: lines.join("\n").trimEnd() }],

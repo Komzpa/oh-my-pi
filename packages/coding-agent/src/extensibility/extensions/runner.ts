@@ -8,6 +8,7 @@ import type {
 	AgentToolContext,
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	SoftToolRequirement,
 } from "@oh-my-pi/pi-agent-core";
 import type { CredentialDisabledEvent, ImageContent, Model, ProviderResponseMetadata } from "@oh-my-pi/pi-ai";
 import {
@@ -17,7 +18,7 @@ import {
 	setContextHistoryIndex,
 } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import type { KeyId } from "@oh-my-pi/pi-tui";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { MAIN_AGENT_RULE_NAME } from "../../capability/rule";
 import type { ModelRegistry } from "../../config/model-registry";
 import { type Settings, withActiveSettings } from "../../config/settings";
@@ -27,6 +28,7 @@ import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
 import { MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { SessionManager } from "../../session/session-manager";
+import { cfgTaskMaxConcurrency } from "../../task/settings";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { accumulateToolCallResult, buildAggregatedToolCallResult } from "../shared-events";
@@ -150,6 +152,100 @@ export function testSetSessionShutdownHandlerTimeoutMs(timeoutMs: number): void 
  *  uses its own short cap so teardown stays prompt. */
 function handlerTimeoutForEvent(eventType: string): number {
 	return eventType === "session_shutdown" ? sessionShutdownHandlerTimeoutMs : extensionHandlerTimeoutMs;
+}
+
+type ContextMessageMutationState = {
+	readonly source: AgentMessage;
+	readonly root: AgentMessage;
+	dirty: boolean;
+	readonly proxies: WeakMap<object, object>;
+};
+
+type ContextMessageProxyInfo = {
+	readonly state: ContextMessageMutationState;
+	readonly target: object;
+};
+
+const contextMessageProxyInfo = new WeakMap<object, ContextMessageProxyInfo>();
+
+function cloneContextMessage(message: AgentMessage): AgentMessage {
+	try {
+		return structuredClone(message);
+	} catch {}
+	try {
+		return structuredCloneJSON(message);
+	} catch {}
+	return { ...message } as AgentMessage;
+}
+
+function isContextProxyableObject(value: unknown): value is object {
+	if (value === null || typeof value !== "object") return false;
+	if (Array.isArray(value)) return true;
+	const proto = Object.getPrototypeOf(value);
+	return proto === Object.prototype || proto === null;
+}
+
+function materializeContextMessageValue(value: unknown, seen = new WeakMap<object, unknown>()): unknown {
+	if (value === null || typeof value !== "object") return value;
+	const proxyInfo = contextMessageProxyInfo.get(value);
+	if (proxyInfo) return materializeContextMessageValue(proxyInfo.target, seen);
+	if (!isContextProxyableObject(value)) return value;
+	const seenValue = seen.get(value);
+	if (seenValue) return seenValue;
+	if (Array.isArray(value)) {
+		const copy: unknown[] = [];
+		seen.set(value, copy);
+		for (let index = 0; index < value.length; index++) {
+			copy[index] = materializeContextMessageValue(value[index], seen);
+		}
+		return copy;
+	}
+	const copy: Record<PropertyKey, unknown> = {};
+	seen.set(value, copy);
+	for (const key of Reflect.ownKeys(value)) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		if (!descriptor?.enumerable) continue;
+		copy[key] = materializeContextMessageValue(Reflect.get(value, key), seen);
+	}
+	return copy;
+}
+
+function materializeContextMessage(message: AgentMessage): AgentMessage {
+	const proxyInfo = contextMessageProxyInfo.get(message as object);
+	if (proxyInfo && proxyInfo.target === proxyInfo.state.root) return proxyInfo.state.root as AgentMessage;
+	return materializeContextMessageValue(message) as AgentMessage;
+}
+
+function createContextMessageMutationView<T extends object>(target: T, state: ContextMessageMutationState): T {
+	if (!isContextProxyableObject(target)) return target;
+	const existing = state.proxies.get(target);
+	if (existing) return existing as T;
+	const proxy = new Proxy(target, {
+		get(targetObject, property, receiver) {
+			const value = Reflect.get(targetObject, property, receiver);
+			if (!isContextProxyableObject(value)) return value;
+			return createContextMessageMutationView(value, state);
+		},
+		set(targetObject, property, value) {
+			state.dirty = true;
+			return Reflect.set(targetObject, property, materializeContextMessageValue(value));
+		},
+		deleteProperty(targetObject, property) {
+			state.dirty = true;
+			return Reflect.deleteProperty(targetObject, property);
+		},
+		defineProperty(targetObject, property, attributes) {
+			state.dirty = true;
+			const materializedAttributes: PropertyDescriptor = { ...attributes };
+			if ("value" in materializedAttributes) {
+				materializedAttributes.value = materializeContextMessageValue(materializedAttributes.value);
+			}
+			return Reflect.defineProperty(targetObject, property, materializedAttributes);
+		},
+	});
+	state.proxies.set(target, proxy);
+	contextMessageProxyInfo.set(proxy, { state, target });
+	return proxy as T;
 }
 
 const EXTENSION_HANDLER_TIMEOUT = Symbol("extensionHandlerTimeout");
@@ -487,7 +583,12 @@ export class ExtensionRunner {
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
+	#sendAgentMessageFn: NonNullable<ExtensionContextActions["sendAgentMessage"]> = async () => ({
+		delivered: false,
+		text: "Peer messaging is unavailable in this session.",
+	});
 	#runEphemeralTurnFn?: ExtensionContextActions["runEphemeralTurn"];
+	#setSubagentFastModeFn?: ExtensionContextActions["setSubagentFastMode"];
 	#ephemeralTurnBlocker = new AsyncLocalStorage<string | undefined>();
 	#getAsyncJobSnapshotFn: () => AsyncJobSnapshot | null = () => null;
 	#newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
@@ -498,6 +599,7 @@ export class ExtensionRunner {
 	#shutdownHandler: ShutdownHandler = () => {};
 	#getMemoryFn?: () => MemoryRuntimeContext | undefined;
 	#commandDiagnostics: Array<{ type: string; message: string; path: string }> = [];
+	#contextMessageCloneCache = new WeakMap<AgentMessage, AgentMessage>();
 	#toolRegistrationScope = new AsyncLocalStorage<ToolRegistrationScope>();
 	#toolRegistrationBarrier: Promise<void> | undefined;
 	#initialized = false;
@@ -788,7 +890,11 @@ export class ExtensionRunner {
 		this.#getContextUsageFn = contextActions.getContextUsage;
 		this.#compactFn = contextActions.compact;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
+		this.#sendAgentMessageFn =
+			contextActions.sendAgentMessage ??
+			(async () => ({ delivered: false, text: "Peer messaging is unavailable in this session." }));
 		this.#runEphemeralTurnFn = contextActions.runEphemeralTurn;
+		this.#setSubagentFastModeFn = contextActions.setSubagentFastMode;
 
 		// Command context actions (optional, only for interactive mode)
 		if (commandContextActions) {
@@ -1319,6 +1425,29 @@ export class ExtensionRunner {
 	}
 
 	/**
+	 * Evaluate the currently active extension-owned native soft tool requirement.
+	 * Providers share one fresh context and run synchronously at the model-choice boundary.
+	 * More than one active provider is ambiguous, so fail closed instead of silently choosing.
+	 */
+	getSoftToolRequirement(): SoftToolRequirement | undefined {
+		let ctx: ExtensionContext | undefined;
+		let activePath: string | undefined;
+		let activeRequirement: SoftToolRequirement | undefined;
+		for (const extension of this.extensions) {
+			const provider = extension.softToolRequirementProvider;
+			if (!provider) continue;
+			const requirement = withActiveSettings(this.settings, () => provider((ctx ??= this.createContext())));
+			if (requirement === undefined) continue;
+			if (activeRequirement !== undefined) {
+				throw new Error(`Multiple active soft tool requirement providers: ${activePath}, ${extension.path}`);
+			}
+			activePath = extension.path;
+			activeRequirement = requirement;
+		}
+		return activeRequirement;
+	}
+
+	/**
 	 * Creates an extension context, optionally scoped to a provider request model.
 	 *
 	 * `delegation` wires the same-tool `ctx.invokeTool` for a re-registered built-in: when `toolName`
@@ -1345,8 +1474,10 @@ export class ExtensionRunner {
 			ui: this.#uiContext,
 			mode: this.#mode,
 			getContextUsage: () => this.#getContextUsageFn(),
+			getTaskMaxConcurrency: () => (this.settings ? cfgTaskMaxConcurrency.get(this.settings) : undefined),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
+			setSubagentFastMode: this.#setSubagentFastModeFn,
 			hasUI: this.hasUI(),
 			cwd: this.cwd,
 			sessionManager: this.sessionManager,
@@ -1362,6 +1493,7 @@ export class ExtensionRunner {
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
 			shutdown: () => this.#shutdownHandler(),
 			getSystemPrompt: () => this.#getSystemPromptFn(),
+			sendAgentMessage: (to, message) => this.#sendAgentMessageFn(to, message),
 			runEphemeralTurn: runEphemeralTurn
 				? async options => {
 						if (this.#ephemeralTurnBlocker.getStore()) {
@@ -1824,6 +1956,14 @@ export class ExtensionRunner {
 		return transformed;
 	}
 
+	#getContextMessageClone(message: AgentMessage): AgentMessage {
+		const cached = this.#contextMessageCloneCache.get(message);
+		if (cached) return cached;
+		const clone = cloneContextMessage(message);
+		this.#contextMessageCloneCache.set(message, clone);
+		return clone;
+	}
+
 	async emitContext(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> {
 		const ctx = this.createContext();
 
@@ -1837,18 +1977,19 @@ export class ExtensionRunner {
 		}
 		if (!hasContextHandlers) return messages;
 
-		let currentMessages: AgentMessage[];
-		try {
-			currentMessages = structuredClone(messages);
-		} catch {
-			// Messages may contain non-cloneable objects (e.g. in ToolResultMessage.details
-			// or ProviderPayload). Fall back to a shallow array clone — extensions should
-			// return new message arrays rather than mutating in place.
-			currentMessages = [...messages];
-		}
-		for (let index = 0; index < currentMessages.length; index++) {
-			const message = currentMessages[index];
-			if (message) setContextHistoryIndex(message, index);
+		const mutationStates: ContextMessageMutationState[] = [];
+		let currentMessages: AgentMessage[] = [];
+		for (let index = 0; index < messages.length; index++) {
+			const clone = this.#getContextMessageClone(messages[index]);
+			setContextHistoryIndex(clone, index);
+			const mutationState: ContextMessageMutationState = {
+				source: messages[index],
+				root: clone,
+				dirty: false,
+				proxies: new WeakMap(),
+			};
+			mutationStates.push(mutationState);
+			currentMessages.push(createContextMessageMutationView(clone, mutationState));
 		}
 
 		for (const ext of this.extensions) {
@@ -1884,15 +2025,26 @@ export class ExtensionRunner {
 			}
 		}
 
+		currentMessages = currentMessages.map(message => materializeContextMessage(message));
+		for (const mutationState of mutationStates) {
+			if (mutationState.dirty) this.#contextMessageCloneCache.delete(mutationState.source);
+		}
 		for (const message of currentMessages) {
 			const historyIndex = getContextHistoryIndex(message);
 			const historyMessage = historyIndex === undefined ? undefined : messages[historyIndex];
 			if (historyMessage && historyIndex !== undefined) setContextHistoryIndex(historyMessage, historyIndex);
-			const unchanged = historyMessage !== undefined && Bun.deepEquals(message, historyMessage);
+			const unchanged =
+				historyMessage !== undefined &&
+				historyIndex !== undefined &&
+				this.#contextMessageCloneCache.get(historyMessage) === message &&
+				!mutationStates[historyIndex]?.dirty
+					? true
+					: historyMessage !== undefined && Bun.deepEquals(message, historyMessage);
 			clearContextHistoryIndex(message);
 			if (historyMessage) clearContextHistoryIndex(historyMessage);
 			if (!unchanged) markPerCallContextMessage(message);
 		}
+		for (const mutationState of mutationStates) clearContextHistoryIndex(mutationState.root);
 		for (const message of messages) clearContextHistoryIndex(message);
 		// An aborted handler is skipped and its input kept unchanged. Never hand that
 		// untransformed (possibly unredacted) context back to a caller as if every hook ran.
