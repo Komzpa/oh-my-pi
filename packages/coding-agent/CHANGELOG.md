@@ -5,6 +5,7 @@
 ### Added
 
 - The shell's `cp` builtin accepts macOS's `-c` (clone where possible, else copy; same as `--reflink=auto`).
+- Todo schedule updates can rename a row while retaining its owner and history.
 
 ### Changed
 

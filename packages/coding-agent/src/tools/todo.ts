@@ -150,6 +150,7 @@ const TodoEstimateInput = type({
 
 const TodoScheduleUpdateInput = type({
 	task: type("string"),
+	"content?": type("string").describe("Rename the row; keeps its owner and history"),
 	"dependencies?": type("string").array(),
 	"owner?": type("string"),
 	"resources?": type("string").array(),
@@ -858,6 +859,7 @@ function indexTasksByContent(phases: TodoPhase[]): Map<string, TodoItem[]> {
 function validateScheduleDependencyGraph(
 	phases: TodoPhase[],
 	scheduleOverrides: Map<TodoItem, TodoSchedule>,
+	contentOverrides: Map<TodoItem, string>,
 	errors: string[],
 ): void {
 	const candidatePhases = phases.map(phase => ({
@@ -865,7 +867,7 @@ function validateScheduleDependencyGraph(
 		tasks: phase.tasks.map(task => {
 			const schedule = scheduleOverrides.get(task) ?? task.schedule;
 			return {
-				content: task.content,
+				content: contentOverrides.get(task) ?? task.content,
 				status: task.status,
 				...(task.blocker === undefined ? {} : { blocker: task.blocker }),
 				...(schedule === undefined ? {} : { schedule }),
@@ -920,6 +922,9 @@ function applyScheduleUpdates(
 	const tasksByContent = indexTasksByContent(phases);
 	const seenUpdates = new Set<string>();
 	const candidates = new Map<TodoItem, TodoSchedule>();
+	const renamedTasks = new Map<TodoItem, string>();
+	const renamedContent = new Map<string, string>();
+	const renamedTitles = new Set<string>();
 	for (const update of updates) {
 		if (seenUpdates.has(update.task)) {
 			errors.push(`Duplicate schedule update for task "${update.task}"`);
@@ -935,6 +940,25 @@ function applyScheduleUpdates(
 		if (targets.length !== 1) {
 			errors.push(`Task content "${update.task}" is not unique; schedule requires exact unique identity`);
 			continue;
+		}
+		const task = targets[0]!;
+		if (update.content !== undefined) {
+			if (!update.content.trim()) {
+				errors.push(`New content for task "${update.task}" must be nonblank`);
+			} else if (update.content !== task.content) {
+				const collision =
+					renamedTitles.has(update.content) ||
+					phases.some(phase => phase.tasks.some(other => other !== task && other.content === update.content));
+				if (collision) {
+					errors.push(
+						`Cannot rename task "${update.task}" to "${update.content}": another row already has that content`,
+					);
+				} else {
+					renamedTasks.set(task, update.content);
+					renamedContent.set(task.content, update.content);
+					renamedTitles.add(update.content);
+				}
+			}
 		}
 		if (update.owner !== undefined && update.owner !== "" && update.owner.trim() === "") {
 			errors.push(`Owner for task "${update.task}" must be nonblank or the empty string to clear it`);
@@ -964,7 +988,7 @@ function applyScheduleUpdates(
 		}
 
 		const schedule: TodoSchedule = structuredClone(
-			targets[0].schedule && typeof targets[0].schedule === "object" ? targets[0].schedule : {},
+			task.schedule && typeof task.schedule === "object" ? task.schedule : {},
 		);
 		if (update.dependencies !== undefined) schedule.dependencies = [...update.dependencies];
 		if (update.owner !== undefined) {
@@ -984,13 +1008,27 @@ function applyScheduleUpdates(
 			}
 		}
 		if (update.evidence?.trim()) schedule.progress = { at: now, evidence: update.evidence.trim() };
-		candidates.set(targets[0], schedule);
+		candidates.set(task, schedule);
 	}
 
 	if (errors.length > initialErrorCount) return phases;
-	validateScheduleDependencyGraph(phases, candidates, errors);
+	if (renamedContent.size > 0) {
+		for (const phase of phases) {
+			for (const task of phase.tasks) {
+				const schedule = candidates.get(task) ?? task.schedule;
+				if (!schedule?.dependencies) continue;
+				const previousDependencies = schedule.dependencies;
+				const dependencies = previousDependencies.map(dependency => renamedContent.get(dependency) ?? dependency);
+				if (dependencies.some((dependency, index) => dependency !== previousDependencies[index])) {
+					candidates.set(task, { ...structuredClone(schedule), dependencies });
+				}
+			}
+		}
+	}
+	validateScheduleDependencyGraph(phases, candidates, renamedTasks, errors);
 	if (errors.length > initialErrorCount) return phases;
 	for (const [task, schedule] of candidates) task.schedule = schedule;
+	for (const [task, content] of renamedTasks) task.content = content;
 	return phases;
 }
 
@@ -1123,8 +1161,10 @@ function applyParams(
 	const errors: string[] = [];
 	const previous = clonePhases(phases);
 	const next = applyEntry(phases, params, errors, now);
-	if (params.op !== "schedule") normalizeInProgressTask(next);
-	stampTaskTransitionTimes(previous, next, now);
+	if (params.op !== "schedule") {
+		normalizeInProgressTask(next);
+		stampTaskTransitionTimes(previous, next, now);
+	}
 	return { phases: next, errors };
 }
 
@@ -1134,14 +1174,16 @@ export function applyOpsToPhases(
 	ops: TodoOpEntryValue[],
 ): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
-	const previous = clonePhases(currentPhases);
 	let next = clonePhases(currentPhases);
 	const now = Date.now();
 	for (const op of ops) {
+		const previous = clonePhases(next);
 		next = applyEntry(next, op, errors, now);
+		if (op.op !== "schedule" && op.op !== "view") {
+			normalizeInProgressTask(next);
+			stampTaskTransitionTimes(previous, next, now);
+		}
 	}
-	if (ops.some(op => op.op !== "schedule" && op.op !== "view")) normalizeInProgressTask(next);
-	stampTaskTransitionTimes(previous, next, now);
 	return { phases: next, errors };
 }
 
@@ -1688,7 +1730,8 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const effective = archived?.phases ?? (failed ? previousPhases : updated);
 		const archivedPhases = op === "init" && !failed ? [] : getLatestTodoArchiveFromEntries(entries);
 		const newArchive = archived?.archivedPhases ?? [];
-		const completedTasks = readOnly || failed ? [] : getCompletionTransitions(previousPhases, updated);
+		const completedTasks =
+			readOnly || failed || op === "schedule" ? [] : getCompletionTransitions(previousPhases, updated);
 		if (archived) this.session.setTodoPhases?.(effective);
 		const operation = !readOnly && !failed ? buildTodoOpPersistedEdit(op, entry, now) : undefined;
 		const archiveEdit: TodoArchivePersistedEdit | undefined =
