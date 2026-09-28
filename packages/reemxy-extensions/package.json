@@ -28,6 +28,10 @@
 			"types": "./extensions/agent_router.ts",
 			"import": "./extensions/agent_router.ts"
 		},
+		"./codex_lb_provider": {
+			"types": "./extensions/codex_lb_provider.ts",
+			"import": "./extensions/codex_lb_provider.ts"
+		},
 		"./jev_compaction": {
 			"types": "./extensions/jev_compaction.ts",
 			"import": "./extensions/jev_compaction.ts"
@@ -35,6 +39,7 @@
 	},
 	"omp": {
 		"extensions": [
+			"extensions/codex_lb_provider.ts",
 			"extensions/goal_deadlines.ts",
 			"extensions/todo_dispatch.ts",
 			"extensions/agent_router.ts"
