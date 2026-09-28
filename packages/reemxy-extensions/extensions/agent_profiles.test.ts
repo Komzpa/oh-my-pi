@@ -21,7 +21,7 @@ function extensionProfiles() {
 describe("Reemxy extension agent model chains", () => {
 	test("all parsed execution profiles have the live tail in fallback order", () => {
 		const profiles = extensionProfiles();
-		const execution = profiles.filter(agent => !["reviewer", "security-reviewer", "architect", "plan-doctor", "retro-facilitator"].includes(agent.name));
+		const execution = profiles.filter(agent => !["reviewer", "security-reviewer", "architect", "plan-doctor", "retro-facilitator", "coder-strong", "ui-coder-strong"].includes(agent.name));
 		expect(execution.map(agent => agent.name).sort()).toEqual([
 			"business-analyst", "coder", "creative", "gate-runner", "git-pr-owner", "researcher", "scout", "scribe", "ui-coder", "workhorse",
 		]);
@@ -32,7 +32,8 @@ describe("Reemxy extension agent model chains", () => {
 
 	test("judgment profiles never delegate to a weak free model", () => {
 		const profiles = extensionProfiles();
-		for (const name of ["reviewer", "security-reviewer", "architect", "plan-doctor", "retro-facilitator"]) {
+		// The -strong coders are the escalation rung a chief picks when luna could not do a row.
+		for (const name of ["reviewer", "security-reviewer", "architect", "plan-doctor", "retro-facilitator", "coder-strong", "ui-coder-strong"]) {
 			const profile = profiles.find(agent => agent.name === name);
 			expect(profile?.model?.slice(-1)).toEqual(judgmentTail);
 			expect(profile?.model?.some(model => model === "codex-lb/Qwen3.8-27B" || model.endsWith(":free"))).toBe(false);
