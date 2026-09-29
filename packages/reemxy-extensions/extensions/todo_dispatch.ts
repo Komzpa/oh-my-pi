@@ -272,7 +272,9 @@ function readPersistedChildren(branch: unknown[]): PersistedChild[] {
       if (typeof child !== "object" || child === null) return [];
       const item = child as { id?: unknown; owner?: unknown; live?: unknown };
       return typeof item.id === "string" &&
+        !isBackgroundJobId(item.id) &&
         (typeof item.owner === "string" || item.owner === null) &&
+        (item.owner === null || !isBackgroundJobId(item.owner)) &&
         typeof item.live === "boolean"
         ? [{ id: item.id, owner: item.owner, live: item.live }]
         : [];
@@ -370,22 +372,28 @@ function mergePersistedChildren(
   previous: PersistedChild[],
   jobs: Jobs | null,
 ): PersistedChild[] {
-  if (jobs === null) return previous;
+  if (jobs === null) return previous.filter((child) =>
+    !isBackgroundJobId(child.id) && !(child.owner && isBackgroundJobId(child.owner)),
+  );
   const settledIds = new Set(
     jobs.recent
-      .filter((job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled")
+      .filter((job) => isTodoTaskWorker(job) && (job.status === "completed" || job.status === "failed" || job.status === "cancelled"))
       .flatMap((job) => job.agentId ? [job.id, job.agentId] : [job.id]),
   );
   const children = new Map(
     previous
-      .filter((child) => !settledIds.has(child.id) && !(child.owner && settledIds.has(child.owner)))
+      .filter((child) =>
+        !isBackgroundJobId(child.id) && !(child.owner && isBackgroundJobId(child.owner)) &&
+        !settledIds.has(child.id) && !(child.owner && settledIds.has(child.owner)),
+      )
       .map((child) => [child.id, child]),
   );
   for (const agent of jobs.nonJobAgents ?? []) {
+    if (isBackgroundJobId(agent.id)) continue;
     children.set(agent.id, { id: agent.id, owner: children.get(agent.id)?.owner ?? null, live: agent.live });
   }
   for (const job of jobs.running) {
-    if (job.status !== "running") continue;
+    if (!isTodoTaskWorker(job) || job.status !== "running") continue;
     const id = job.agentId ?? job.id;
     children.set(id, { id, owner: job.agentId ? job.id : null, live: true });
   }
@@ -396,19 +404,22 @@ function restoredChildren(
   previous: PersistedChild[],
   jobs: Jobs | null,
 ): PersistedChild[] {
-  if (jobs === null) return previous;
+  if (jobs === null) return previous.filter((child) =>
+    !isBackgroundJobId(child.id) && !(child.owner && isBackgroundJobId(child.owner)),
+  );
   const activeIds = new Set([
-    ...jobs.running.filter((job) => job.status === "running").flatMap((job) =>
+    ...jobs.running.filter((job) => isTodoTaskWorker(job) && job.status === "running").flatMap((job) =>
       job.agentId ? [job.id, job.agentId] : [job.id],
     ),
-    ...(jobs.nonJobAgents ?? []).filter((agent) => agent.live).map((agent) => agent.id),
+    ...(jobs.nonJobAgents ?? []).filter((agent) => agent.live && !isBackgroundJobId(agent.id)).map((agent) => agent.id),
   ]);
   const settledIds = new Set(
     jobs.recent
-      .filter((job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled")
+      .filter((job) => isTodoTaskWorker(job) && (job.status === "completed" || job.status === "failed" || job.status === "cancelled"))
       .flatMap((job) => job.agentId ? [job.id, job.agentId] : [job.id]),
   );
   return previous.filter((child) =>
+    !isBackgroundJobId(child.id) && !(child.owner && isBackgroundJobId(child.owner)) &&
     !activeIds.has(child.id) && !(child.owner && activeIds.has(child.owner)) &&
     !settledIds.has(child.id) && !(child.owner && settledIds.has(child.owner)),
   );
@@ -481,7 +492,7 @@ export interface DispatchDecision {
   readyCandidates: Array<{
     content: string;
     owner: string | null;
-    ownership: "unassigned" | "unverified" | "live-owned" | "shared-live-owner" | "idle-live-owner" | "restored-owner";
+    ownership: "unassigned" | "unverified" | "live-owned" | "shared-live-owner" | "idle-live-owner" | "restored-owner" | "direct-execution";
   }>;
   dispatchableReady?: Array<DispatchDecision["readyCandidates"][number]>;
   todoOwnerIds?: string[];
@@ -516,13 +527,15 @@ function staticKey(
   const jobKey =
     jobs === null
       ? null
-      : [jobs.running, jobs.recent.filter((job) => job.type === "task")].map((group) =>
+      : [jobs.running, jobs.recent].map((group) =>
           group
+            .filter((job) => isTodoTaskWorker(job))
             .map((job) => [job.id, job.type, job.status, job.label, job.agentId ?? null, job.startTime])
             .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
         );
   const nonJobAgents = jobs?.nonJobAgents
-    ?.map(({ id, live }) => [id, live])
+    ?.filter(({ id }) => !isBackgroundJobId(id))
+    .map(({ id, live }) => [id, live])
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   const restoredKey = restored.map(({ id, owner, live }) => [id, owner, live])
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
@@ -573,9 +586,19 @@ function isRetroFacilitatorTaskResult(event: unknown): boolean {
     (result as { agent?: unknown }).agent === "retro-facilitator"
   );
 }
+function isBackgroundJobId(id: string): boolean {
+  return /^bg_\w+$/.test(id.trim());
+}
+function normalizeTodoOwner(owner: string | null | undefined): string | null {
+  return typeof owner !== "string" ? null : isBackgroundJobId(owner) ? "Main" : owner;
+}
+function isTodoTaskWorker(job: Pick<Jobs["running"][number], "id" | "type" | "agentId">): boolean {
+  return job.type === "task" && !isBackgroundJobId(job.id) && !isBackgroundJobId(job.agentId ?? "");
+}
 function taskDetails(task: TaskRow, timeZone?: string): string {
   const schedule = task.schedule && typeof task.schedule === "object" ? task.schedule : undefined;
-  if (!schedule) return "schedule=missing";
+  const normalizedOwner = normalizeTodoOwner(schedule?.owner);
+  const owner = normalizedOwner === "Main" ? "Main (direct execution)" : normalizedOwner;
   const estimate = schedule.estimate
     ? `${schedule.estimate.optimisticSeconds}/${schedule.estimate.likelySeconds}/${schedule.estimate.pessimisticSeconds}s ${safeText(schedule.estimate.confidence)}; basis=${safeText(schedule.estimate.basis, 80)}; updated=${safeTimestamp(schedule.estimate.updatedAt, timeZone)}`
     : "MISSING estimate";
@@ -586,7 +609,7 @@ function taskDetails(task: TaskRow, timeZone?: string): string {
   const progress = schedule.progress
     ? `${safeTimestamp(schedule.progress.at, timeZone)}:${safeText(schedule.progress.evidence, 120)}`
     : "none";
-  return `owner=${JSON.stringify(schedule.owner ?? null)}; dependencies=${dependencies}; resources=${resources}; O/L/P=${estimate}; progress=${progress}`;
+  return `owner=${JSON.stringify(owner)}; dependencies=${dependencies}; resources=${resources}; O/L/P=${estimate}; progress=${progress}`;
 }
 
 function buildStaticPrompt(
@@ -611,16 +634,16 @@ function buildStaticPrompt(
   if (rows.length > MAX_ROWS)
     snapshotLines.push(`… ${rows.length - MAX_ROWS} rows beyond the ${MAX_ROWS}-row bound; inspect native todo.view before deciding on the tail`);
 
-  const running = jobs?.running ?? [];
-  const recentTasks = jobs?.recent.filter((job) => job.type === "task") ?? [];
-  const jobLines = (list: typeof running) =>
+  const runningTasks = jobs?.running.filter((job) => isTodoTaskWorker(job)) ?? [];
+  const recentTasks = jobs?.recent.filter((job) => isTodoTaskWorker(job)) ?? [];
+  const jobLines = (list: typeof runningTasks) =>
     list.map((job) =>
       `- ${JSON.stringify(job.id)} ${job.status} agent=${JSON.stringify(job.agentId ?? null)} label=${JSON.stringify(shorten(job.label))}`,
     );
-  const runningLines = jobLines(running);
+  const runningLines = jobLines(runningTasks);
   const recentLines = jobLines(recentTasks).slice(0, MAX_ROWS);
   if (recentTasks.length > MAX_ROWS) recentLines.push(`- ${recentTasks.length - MAX_ROWS} more recent task jobs; inspect live hub jobs`);
-  const agents = jobs?.nonJobAgents;
+  const agents = jobs?.nonJobAgents?.filter(({ id }) => !isBackgroundJobId(id));
   const agentLines = agents?.map(({ id, live }) => `${JSON.stringify(id)}=${live}`) ?? [];
   const restoredLines = restored.map(({ id, owner, live }) =>
     `- id=${JSON.stringify(id)} owner=${JSON.stringify(owner)} last-known-live=${live}`,
@@ -637,7 +660,7 @@ function buildStaticPrompt(
       ? "Paused goal: observation only; require evidence-based current O/L/P plus confidence for every nonclosed row, the full remaining scope, and exact Task/non-job worker roster. Do not start Task jobs or perform autonomous goal work."
       : "Schedule every pending/in-progress/blocked row before work: evidence-based O/L/P plus confidence, explicit dependencies ([] only if proven independent), owner and exclusive resources when known; inspect/ask on unknowns, split pessimistic work >1h, and recover blockers safely. Once recorded, do not repeat planning without a new fact; move to the next deliverable-producing action.",
     `Fixed native deadline: ${deadline ? `${JSON.stringify(deadline.goalId)} at ${safeTimestamp(deadline.deadlineAt, deadline.timezone)} (immutable${goalPaused ? "; paused: observation only, no autonomous goal work" : ""})` : goalPaused ? "paused goal; deadline unavailable through host API (observation only, no autonomous goal work)" : "none"}.`,
-    `Running task jobs (${running.length}; session-owned):`,
+    `Running task jobs (${runningTasks.length}; session-owned):`,
     ...(jobs === null ? ["- snapshot unavailable; inspect live hub state"] : runningLines.length ? runningLines : ["- none"]),
     `Recent task jobs (${recentTasks.length}; reconcile exact settlements):`,
     ...(jobs === null ? ["- snapshot unavailable"] : recentLines.length ? recentLines : ["- none"]),
@@ -751,6 +774,7 @@ export function decideTodoDispatch(
     deadlineAt: deadline?.deadlineAt,
     ...(capacity === undefined ? {} : { capacity }),
   });
+  for (const row of forecast.rows) row.owner = normalizeTodoOwner(row.owner) ?? undefined;
   const planningIssues =
     forecast.planningIssues ?? sdk.getTodoPlanningIssues?.(phases) ?? [];
   const obligatedContent = new Set(obligated.map(({ task }) => task.content));
@@ -768,13 +792,13 @@ export function decideTodoDispatch(
   const stale = forecast.rows
     .filter((row) => obligatedContent.has(row.content) && row.stale)
     .map((row) => row.content);
-  const openContent = new Set(open.map(({ task }) => task.content));
   const activeTaskJobs =
-    jobs?.running.filter((job) => job.type === "task" && job.status === "running") ?? [];
-  const nonJobAgents = jobs?.nonJobAgents;
+    jobs?.running.filter((job) => isTodoTaskWorker(job) && job.status === "running") ?? [];
+  const nonJobAgents = jobs?.nonJobAgents?.filter((agent) => !isBackgroundJobId(agent.id));
   const persistedTaskChildren = input.persistedChildren ?? [];
-  const livePersistedChildForOwner = (owner: string | null) => {
-    if (owner === null) return undefined;
+  const livePersistedChildForOwner = (value: string | null) => {
+    const owner = normalizeTodoOwner(value);
+    if (owner === null || owner.toLowerCase() === "main") return undefined;
     const child = persistedTaskChildren.find((candidate) =>
       candidate.live && candidate.owner !== null && (candidate.id === owner || candidate.owner === owner)
     );
@@ -792,32 +816,33 @@ export function decideTodoDispatch(
   );
   const activeRestoredTaskIds = new Set(
     open.flatMap(({ task }) => {
-      const owner = typeof task.schedule?.owner === "string" ? task.schedule.owner : null;
-      const child = livePersistedChildForOwner(owner);
+      const child = livePersistedChildForOwner(task.schedule?.owner ?? null);
       return child && !runningTaskWorkerIds.has(child.id) ? [child.id] : [];
     }),
   );
-  const ownerHasActiveTask = (owner: string | null) =>
-    owner !== null && (
+  const ownerHasActiveTask = (value: string | null) => {
+    const owner = normalizeTodoOwner(value);
+    return owner !== null && owner.toLowerCase() !== "main" && (
       activeTaskJobs.some((job) => job.id === owner || job.agentId === owner) ||
       livePersistedChildForOwner(owner) !== undefined
     );
+  };
   const ownerRunStates = open.map(({ task }) => {
-    const owner = typeof task.schedule?.owner === "string" ? task.schedule.owner : null;
+    const owner = normalizeTodoOwner(task.schedule?.owner);
     return { content: task.content, owner, running: ownerHasActiveTask(owner) };
   });
   const openTasksByContent = new Map(open.map(({ task }) => [task.content, task]));
   const liveResourceHolders = open
     .filter(({ task }) => {
-      const owner = task.schedule?.owner;
-      return task.status === "in_progress" && typeof owner === "string" && ownerHasActiveTask(owner);
+      const owner = normalizeTodoOwner(task.schedule?.owner);
+      return task.status === "in_progress" && owner !== null && ownerHasActiveTask(owner);
     })
     .map(({ task }) => task);
   const claimedLiveWorkerIds = new Set<string>();
   const readyCandidates = forecast.rows
     .filter((row) => openContent.has(row.content) && row.ready)
     .map((row) => {
-      const owner = typeof row.owner === "string" ? row.owner : null;
+      const owner = normalizeTodoOwner(row.owner);
       const registryAgent = owner === null || owner.toLowerCase() === "main"
         ? undefined
         : nonJobAgents?.find((agent) => agent.id === owner && agent.live === true);
@@ -835,21 +860,22 @@ export function decideTodoDispatch(
         jobByAgentId?.agentId || (jobById ? jobById.agentId || jobById.id : undefined) ||
         activeRestoredChild?.id;
       const sharedLiveOwner = liveWorkerId !== undefined && claimedLiveWorkerIds.has(liveWorkerId);
-      if (liveWorkerId !== undefined && !sharedLiveOwner) claimedLiveWorkerIds.add(liveWorkerId);
-      const ownership = sharedLiveOwner
-        ? "shared-live-owner" as const
-        : liveWorkerId !== undefined
-          ? "live-owned" as const
-          : registryAgent !== undefined
-            ? "idle-live-owner" as const
-            : restoredOwner !== undefined
-              ? "restored-owner" as const
-              : owner === null
-                ? "unassigned" as const
-                : "unverified" as const;
+      const ownership = owner !== null && owner.toLowerCase() === "main"
+        ? "direct-execution" as const
+        : sharedLiveOwner
+          ? "shared-live-owner" as const
+          : liveWorkerId !== undefined
+            ? "live-owned" as const
+            : registryAgent !== undefined
+              ? "idle-live-owner" as const
+              : restoredOwner !== undefined
+                ? "restored-owner" as const
+                : owner === null
+                  ? "unassigned"
+                  : "unverified";
       return { content: row.content, owner, ownership };
     });
-  const ownerlessReady = readyCandidates.filter((row) => row.ownership !== "live-owned");
+  const ownerlessReady = readyCandidates.filter((row) => row.ownership !== "live-owned" && row.ownership !== "direct-execution");
   const resourceExecutableContents = new Set(
     forecast.rows
       .filter((row) => row.ready && typeof row.resourceStart === "number" && row.resourceStart <= now)
@@ -925,7 +951,7 @@ export function decideTodoDispatch(
           : readyCandidates.length === 0
             ? "No open row is dependency-ready; resolve the real blocker/dependency wait before dispatch."
             : ownerlessReady.length === 0
-              ? "Every dependency-ready row has an exact running task-job match; do not duplicate them."
+              ? `No dependency-ready row needs a Task worker; ${directExecutionCount} row(s) are assigned to Main/direct execution.`
               : capacity === undefined
                 ? "FAIL CLOSED: Task capacity is unknown; inspect live hub limits before dispatching."
                 : !staffingSnapshotComplete
@@ -942,7 +968,7 @@ export function decideTodoDispatch(
   const readyFacts = readyCandidates.map((row) => [row.content, row.owner, row.ownership]);
   const failedTasks =
     jobs?.recent.filter(
-      (job) => job.type === "task" && (job.status === "failed" || job.status === "cancelled"),
+      (job) => isTodoTaskWorker(job) && (job.status === "failed" || job.status === "cancelled"),
     ) ?? [];
   const alarmSet = new Set<string>();
   for (const issue of planningIssues)
@@ -1063,9 +1089,10 @@ export function decideTodoDispatch(
               ? Math.max(1, Math.min(MAX_IDLE_RECHECK_MS, (overdueMinute + 1) * 60_000 - now))
               : MAX_IDLE_RECHECK_MS,
           ),
-    todoOwnerIds: phases.flatMap((phase) =>
-      phase.tasks.flatMap((task) => typeof task.schedule?.owner === "string" ? [task.schedule.owner] : []),
-    ),
+    todoOwnerIds: phases.flatMap((phase) => phase.tasks.flatMap((task) => {
+      const owner = normalizeTodoOwner(task.schedule?.owner);
+      return owner === null ? [] : [owner];
+    })),
     ownerRunStates,
     openStructure: phases.flatMap((phase) =>
       phase.tasks
@@ -1203,12 +1230,12 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     }
     for (const task of open) {
       if (task.status === "in_progress" && typeof task.schedule?.owner === "string") addSeenRow(task.content);
-      const taskJobs = [...(jobs?.running ?? []), ...(jobs?.recent ?? [])].filter((job) => job.type === "task");
+      const taskJobs = [...(jobs?.running ?? []), ...(jobs?.recent ?? [])].filter((job) => isTodoTaskWorker(job));
       if (taskJobs.some((job) => typeof job.label === "string" && job.label.includes(task.content))) addSeenRow(task.content);
     }
     let facilitatorSettled = false;
     for (const job of jobs?.recent ?? []) {
-      if (job.type !== "task" || !["completed", "failed"].includes(job.status)) continue;
+      if (!isTodoTaskWorker(job) || !["completed", "failed"].includes(job.status)) continue;
       if (sprintState.seenJobIds.includes(job.id)) continue;
       const id = job.agentId ?? job.id;
       const at = typeof job.startTime === "number" ? job.startTime : now;
@@ -1388,7 +1415,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   const syncCriticalFast = (ctx: ExtensionContext, decision: ReturnType<typeof currentDecision>) => {
     const setFast = (ctx as { setSubagentFastMode?: (id: string, enabled: boolean) => unknown }).setSubagentFastMode;
     if (typeof setFast !== "function" || !decision.forecast) return;
-    const running = ctx.getAsyncJobSnapshot()?.running.filter((job) => job.type === "task" && job.status === "running") ?? [];
+    const running = ctx.getAsyncJobSnapshot()?.running.filter((job) => isTodoTaskWorker(job) && job.status === "running") ?? [];
     const want = new Map<string, boolean>();
     for (const row of decision.forecast.rows ?? []) {
       if (row.status !== "in_progress" && row.status !== "pending") continue;
@@ -1448,8 +1475,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const jobs = ctx.getAsyncJobSnapshot();
     if (!jobs) return;
     const running = jobs.running.filter((job) => job.status === "running");
-    const runningTasks = running.filter((job) => job.type === "task");
-    const liveAgents = (jobs.nonJobAgents ?? []).filter((agent) => agent.live);
+    const runningTasks = running.filter((job) => isTodoTaskWorker(job));
+    const liveAgents = (jobs.nonJobAgents ?? []).filter((agent) => agent.live && !isBackgroundJobId(agent.id));
     const idle = running.length === 0 && liveAgents.length === 0;
     const decision = currentDecision(ctx);
     if (!decision.key || !decision.forecast) return;
@@ -1596,7 +1623,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const runByContent = new Map((decision.ownerRunStates ?? []).map((row) => [row.content, row]));
     const jobs = ctx.getAsyncJobSnapshot();
     const receipts = (jobs?.recent ?? [])
-      .filter((job) => job.type === "task")
+      .filter((job) => isTodoTaskWorker(job))
       .slice(-12)
       .map((job) => {
         const id = job.agentId ?? job.id;
@@ -1610,7 +1637,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         ? `${estimate.optimisticSeconds}/${estimate.likelySeconds}/${estimate.pessimisticSeconds}s`
         : "missing";
       const deps = task?.schedule?.dependencies?.length ? task.schedule.dependencies.join(", ") : "[]";
-      const owner = typeof row.owner === "string" ? row.owner : typeof task?.schedule?.owner === "string" ? task.schedule.owner : "";
+      const owner = normalizeTodoOwner(typeof row.owner === "string" ? row.owner : task?.schedule?.owner) ?? "";
       const runs = runByContent.get(row.content)?.running ? "yes" : "no";
       const resources = task?.schedule?.resources?.length ? task.schedule.resources.join(", ") : "[]";
       const p95 = safeTimestamp(row.fixedPathP95Finish ?? row.resourceFinish, decision.deadline?.timezone);
@@ -1709,23 +1736,23 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     if (!addressed) return;
     const jobs = ctx.getAsyncJobSnapshot();
     if (!jobs) return;
-    if (jobs.running.some((job) => job.id === addressed || job.agentId === addressed)) return;
+    if (jobs.running.some((job) => isTodoTaskWorker(job) && (job.id === addressed || job.agentId === addressed))) return;
     const settled = jobs.recent.find((job) =>
-      job.type === "task" &&
-      (job.status === "completed" || job.status === "failed" || job.status === "cancelled") &&
+      isTodoTaskWorker(job) && (job.status === "completed" || job.status === "failed" || job.status === "cancelled") &&
       (job.id === addressed || job.agentId === addressed)
     );
     if (!settled) return;
     const phases = sdk.getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch());
     const row = phases
       .flatMap((phase) => phase.tasks)
-      .find((task) =>
-        task.content === settled.label &&
-        typeof task.schedule?.owner === "string" &&
-        task.schedule.owner !== addressed &&
-        jobs.running.some((job) => job.id === task.schedule?.owner || job.agentId === task.schedule?.owner)
-      );
-    const currentOwner = typeof row?.schedule?.owner === "string" ? row.schedule.owner : undefined;
+      .find((task) => {
+        const owner = normalizeTodoOwner(task.schedule?.owner);
+        return task.content === settled.label && owner !== null && owner.toLowerCase() !== "main" &&
+          owner !== addressed && jobs.running.some((job) =>
+            isTodoTaskWorker(job) && job.status === "running" && (job.id === owner || job.agentId === owner)
+          );
+      });
+    const currentOwner = normalizeTodoOwner(row?.schedule?.owner);
     if (!row || !currentOwner) return;
     const content = typeof input.content === "string" ? input.content : JSON.stringify(input.content ?? "");
     void sendWorkerSteering(ctx, currentOwner, content).then((result) => {
@@ -1743,9 +1770,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const decision = currentDecision(ctx);
     if (!decision.key || !decision.forecast || decision.goalPaused || !decision.staffingSnapshotComplete) return;
     const jobs = ctx.getAsyncJobSnapshot();
-    const runningTasks = (jobs?.running ?? []).filter((job) => job.type === "task" && job.status === "running").length;
+    const runningTasks = (jobs?.running ?? []).filter((job) => isTodoTaskWorker(job) && job.status === "running").length;
     const open = (decision.forecast.rows ?? []).filter((row) => row.status === "pending" || row.status === "in_progress");
-    const parked = open.length - runningTasks;
+    const directOpen = open.filter((row) => typeof row.owner === "string" && row.owner.toLowerCase() === "main").length;
+    const parked = Math.max(0, open.length - directOpen - runningTasks);
     if (!understaffed(ctx, runningTasks, parked)) return;
     if (chiefRefusals >= MAX_CHIEF_REFUSALS) return; // it insists three times in a row: let it through
     chiefRefusals += 1;
@@ -1766,7 +1794,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   const isExistingOwnerName = (ctx: ExtensionContext, name: string) => {
     try {
       return sdk.getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch())
-        .some((phase) => phase.tasks.some((task) => task.schedule?.owner === name));
+        .some((phase) => phase.tasks.some((task) => normalizeTodoOwner(task.schedule?.owner) === name));
     } catch {
       return false;
     }
@@ -1795,7 +1823,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       for (const task of phase.tasks)
         if (typeof task.schedule?.owner === "string") taskByOwner.set(task.schedule.owner, task);
     const running = (ctx.getAsyncJobSnapshot()?.running ?? [])
-      .filter((job) => job.type === "task" && job.status === "running")
+      .filter((job) => isTodoTaskWorker(job) && job.status === "running")
       .flatMap((job) => {
         const candidate = job as typeof job & { agent?: unknown; agentProfile?: unknown; profile?: unknown };
         if (!isLikelyGitPrOwnerJob(candidate)) return [];
@@ -1847,15 +1875,15 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     if (decision.goalPaused) return gateTrace(ctx, "goal-paused");
     if (!pi.getActiveTools().includes("todo")) return gateTrace(ctx, "todo-tool-inactive");
     const jobs = ctx.getAsyncJobSnapshot();
-    const runningTasks = (jobs?.running ?? []).filter((job) => job.type === "task" && job.status === "running").length;
+    const runningTasks = (jobs?.running ?? []).filter((job) => isTodoTaskWorker(job) && job.status === "running").length;
     const open = (decision.forecast.rows ?? []).filter((row) => row.status === "pending" || row.status === "in_progress");
-    const parked = open.length - runningTasks;
+    const directOpen = open.filter((row) => typeof row.owner === "string" && row.owner.toLowerCase() === "main").length;
+    const parked = Math.max(0, open.length - directOpen - runningTasks);
     // Starting every ready row must still fill the free slots; one ready row beside 19 chained ones
     // (seen live: 0 of 20 running) is a chain to split, not a staffed plan.
     const dispatchable = (decision.dispatchableReady ?? []).length;
-    const fillable = Math.min(workerCapacity(ctx), open.length);
-    // Staffing ready rows comes before any replan: a replan demand is met by a todo call, which let
-    // the chief append rows while two ready rows sat without a worker.
+    const fillable = Math.min(workerCapacity(ctx), Math.max(0, open.length - directOpen));
+    // Main-owned rows are direct work, not parked work to be staffed with task workers.
     if (!understaffed(ctx, runningTasks, parked) || dispatchable > 0 || runningTasks + dispatchable >= fillable || parked - dispatchable < 2) {
       pendingReplan = null;
       return gateTrace(ctx, "staffed-or-dispatchable", { dispatchable, runningTasks, parked, capacity: workerCapacity(ctx) });
@@ -2312,7 +2340,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         const settled = pending.turnEnded || pending.checks >= 2;
         const jobs = ctx.getAsyncJobSnapshot();
         const taskJobs = [...(jobs?.recent ?? []), ...(jobs?.running ?? [])]
-          .filter((job) => job.type === "task");
+          .filter((job) => isTodoTaskWorker(job));
         const discovered = taskJobs
           .filter((job) => !pending.baseline.has(job.id) ||
             (pending.baseline.get(job.id) !== "running" && job.status === "running"))
@@ -2327,7 +2355,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         } else {
           const owners = new Set(decision.todoOwnerIds ?? []);
           const activeWorkers = jobs?.running.filter(
-            (job) => job.type === "task" && job.status === "running",
+            (job) => isTodoTaskWorker(job) && job.status === "running",
           ) ?? [];
           const unlinkedWorkers = pending.workers.filter(
             (worker) => !owners.has(worker.id) && (!worker.agentId || !owners.has(worker.agentId)),
@@ -2381,7 +2409,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       const snapshot = ctx.getAsyncJobSnapshot();
       dispatchGateBaseline = new Map(
         [...(snapshot?.recent ?? []), ...(snapshot?.running ?? [])]
-          .filter((job) => job.type === "task")
+          .filter((job) => isTodoTaskWorker(job))
           .map((job) => [job.id, job.status]),
       );
       return {
@@ -2487,7 +2515,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       const open = event.toolName === "task" && MERGE_WORK.test(text) ? gitState(ctx, Date.now()) : null;
       if (open?.mergeHead && !merge) {
         const items = ((event.input as { tasks?: unknown[] } | undefined)?.tasks ?? [event.input]).filter((item) => MERGE_WORK.test(JSON.stringify(item ?? {})));
-        const running = (ctx.getAsyncJobSnapshot()?.running ?? []).filter((job) => job.type === "task" && job.status === "running" && MERGE_WORK.test(`${job.id} ${job.label ?? ""} ${job.agentId ?? ""}`));
+        const running = (ctx.getAsyncJobSnapshot()?.running ?? []).filter((job) => isTodoTaskWorker(job) && job.status === "running" && MERGE_WORK.test(`${job.id} ${job.label ?? ""} ${job.agentId ?? ""}`));
         if (items.length > 1 || running.length > 0) {
           gateTrace(ctx, "merge-fanout-refused", { items: items.length, running: running.map((job) => job.id) });
           return {
@@ -2598,7 +2626,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     }
     const names = (list: Array<{ content: string }>) =>
       list.slice(0, 6).map((row) => JSON.stringify(shorten(row.content))).join(", ") + (list.length > 6 ? `, … ${list.length - 6} more` : "");
-    const running = (ctx.getAsyncJobSnapshot()?.running ?? []).filter((job) => job.type === "task" && job.status === "running");
+    const running = (ctx.getAsyncJobSnapshot()?.running ?? []).filter((job) => isTodoTaskWorker(job) && job.status === "running");
     const owners = new Set(decision.todoOwnerIds ?? []);
     const unlinked = running.filter((job) => !owners.has(job.id) && !(job.agentId && owners.has(job.agentId)));
     const missing = (decision.forecast.planningIssues ?? []).length;
@@ -2610,12 +2638,12 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     // The HUD's "N unresolved": open rows omp cannot forecast. Nobody but the chief can fix them.
     const unresolved = open.filter((row) => (row as { fixedPathP95Finish?: number }).fixedPathP95Finish === undefined);
     const why = (row: unknown) => ((row as { issues?: string[] }).issues ?? [])[0];
-    const deadOwners = (decision.readyCandidates ?? []).filter((row) => row.owner && row.ownership !== "live-owned" && row.ownership !== "shared-live-owner");
+    const deadOwners = (decision.readyCandidates ?? []).filter((row) => row.owner && row.ownership !== "live-owned" && row.ownership !== "shared-live-owner" && row.ownership !== "direct-execution");
     // Few workers and no ready row: the rows wait on running work, which only the chief can unchain
     // (live 2026-09-25 03:35: 1 of 20 workers ran for half an hour and nothing said so).
-    const capacity = workerCapacity(ctx);
-    const waitingCritical = criticalWaitList(ctx, open);
-    const understaffed = running.length < capacity && ready.length === 0 && open.length > running.length;
+    const directExecutionCount = (decision.readyCandidates ?? []).filter((row) => row.ownership === "direct-execution").length;
+    const directOpenCount = (decision.ownerRunStates ?? []).filter((row) => row.owner?.toLowerCase() === "main").length;
+    const understaffed = running.length < capacity && ready.length === 0 && open.length > running.length + directOpenCount;
     const activity = workerActivity(ctx, running, now);
     const activeJobIds = new Set(running.map((job) => job.id));
     for (const id of workerSizingNoticed) if (!activeJobIds.has(id)) workerSizingNoticed.delete(id);
@@ -2725,11 +2753,14 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     }
     // A result that came back is read the turn it arrives (live 2026-09-25 11:14: two preflight
     // results sat unread while the chief added integration rows).
-    const settled = (ctx.getAsyncJobSnapshot()?.recent ?? []).filter((job) => job.type === "task" && job.status === "completed");
+    const settled = (ctx.getAsyncJobSnapshot()?.recent ?? []).filter((job) => isTodoTaskWorker(job) && job.status === "completed");
     const ownerOf = new Map<string, string>();
     try {
       for (const phase of sdk.getLatestTodoPhasesFromEntries([...ctx.sessionManager.getBranch(), ...pending] as never))
-        for (const task of phase.tasks) if (typeof task.schedule?.owner === "string") ownerOf.set(task.content, task.schedule.owner);
+        for (const task of phase.tasks) {
+          const owner = normalizeTodoOwner(task.schedule?.owner);
+          if (owner !== null) ownerOf.set(task.content, owner);
+        }
     } catch {}
     const unread = open.filter((row) => {
       const owner = ownerOf.get(row.content);
@@ -2824,7 +2855,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         recedingSince = undefined;
         pendingFinishDelay = null;
         overdueWorkerEpisodes.clear();
-        sprintState = { ...blankSprintState(), seenJobIds: (ctx.getAsyncJobSnapshot()?.recent ?? []).map(job => job.id) };
+        const jobs = ctx.getAsyncJobSnapshot();
+        sprintState = { ...blankSprintState(), seenJobIds: [...(jobs?.running ?? []), ...(jobs?.recent ?? [])].filter((job) => isTodoTaskWorker(job)).map((job) => job.id) };
         persistSprintState();
       }
       if (!pi.getActiveTools().includes("task")) return;
@@ -2840,7 +2872,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     if (!baseline || event.isError) return;
     const jobs = ctx.getAsyncJobSnapshot();
     const taskJobs = [...(jobs?.recent ?? []), ...(jobs?.running ?? [])]
-      .filter((job) => job.type === "task");
+      .filter((job) => isTodoTaskWorker(job));
     const workers = taskJobs
       .filter((job) => !baseline.has(job.id) || (baseline.get(job.id) !== "running" && job.status === "running"))
       .map((job) => ({ id: job.id, ...(job.agentId ? { agentId: job.agentId } : {}) }));

@@ -406,7 +406,7 @@ describe("todo dispatch supervisor", () => {
     const unknownCapacity = decide({ phases: readyPlan(), jobs: emptyJobs, capacity: undefined });
     expect(unknownCapacity.capacity).toBeUndefined();
     expect(unknownCapacity.prompt).toMatch(/FAIL CLOSED: Task capacity is unknown/);
-    expect(decide({ phases: readyPlan("Main") }).readyCandidates[0]?.ownership).toBe("unverified");
+    expect(decide({ phases: readyPlan("Main") }).readyCandidates[0]?.ownership).toBe("direct-execution");
     expect(
       decide({ phases: readyPlan("ExactWorker"), jobs: { running: [taskJob], recent: [] } })
         .readyCandidates[0]?.ownership,
@@ -463,6 +463,28 @@ describe("todo dispatch supervisor", () => {
         jobs: { running: [taskJob], recent: [] },
       }).readyCandidates[0]?.ownership,
     ).toBe("unverified");
+    const backgroundJob: Jobs["running"][number] = {
+      id: "bg_198",
+      type: "bash",
+      status: "running",
+      label: "Direct shell work",
+      startTime: now,
+    };
+    const backgroundOwner = decide({ phases: readyPlan("bg_198"), jobs: { running: [backgroundJob], recent: [] }, deadline: due });
+    expect(backgroundOwner.readyCandidates[0]).toMatchObject({ owner: "Main", ownership: "direct-execution" });
+    expect(backgroundOwner.forecast?.rows[0]?.owner).toBe("Main");
+    expect(backgroundOwner.todoOwnerIds).toContain("Main");
+    expect(backgroundOwner.todoOwnerIds).not.toContain("bg_198");
+    expect(backgroundOwner.ownerRunStates).toMatchObject([{ owner: "Main", running: false }]);
+    expect(backgroundOwner.activeTaskCount).toBe(0);
+    expect(backgroundOwner.dispatchableReady).toEqual([]);
+    expect(backgroundOwner.prompt).toContain("Ready rows needing distinct live workers (0/1): none");
+    expect(backgroundOwner.prompt).toContain("assigned to Main/direct execution");
+    expect(backgroundOwner.prompt).not.toContain("bg_198");
+    expect(backgroundOwner.prompt).not.toContain('"Safe independent change" [direct-execution');
+    expect(backgroundOwner.prompt).not.toContain("name an owner that is not running");
+    const mainOwner = decide({ phases: readyPlan("Main"), jobs: emptyJobs, deadline: due });
+    expect(mainOwner.readyCandidates[0]?.ownership).toBe("direct-execution");
   });
   test("each ready unstaffed row asks for a worker while blocked and dependency-waiting rows stay out", () => {
     const schedule = (dependencies: string[], owner?: string) => ({
@@ -499,10 +521,13 @@ describe("todo dispatch supervisor", () => {
     ];
     const input = { phases: plan, jobs: emptyJobs, deadline: due };
     const first = decide(input);
-    expect(first.readyCandidates.map((row) => row.content)).toEqual(["Ready one", "Ready two"]);
-    expect(first.readyCandidates.every((row) => row.ownership !== "live-owned")).toBe(true);
-    expect(first.dispatchableReady.map((row) => row.content)).toEqual(["Ready one", "Ready two"]);
-    expect(first.forecast?.rows.find((row) => row.content === "Await ready one")?.ready).toBe(false);
+    expect(first.readyCandidates.map((row) => [row.content, row.ownership])).toEqual([
+      ["Ready one", "unassigned"],
+      ["Ready two", "direct-execution"],
+    ]);
+    expect(first.dispatchableReady.map((row) => row.content)).toEqual(["Ready one"]);
+    expect(first.prompt).toContain('"Ready one" [unassigned; owner=null]');
+    expect(first.prompt).not.toContain('"Ready two" [direct-execution');
     expect(first.rawWakeKey).not.toBeNull();
     expect(decide({ ...input, lastWakeKey: first.rawWakeKey }).wakeKey).toBeNull();
   });
@@ -1095,8 +1120,10 @@ test("an unchanged open plan remains in context on each request and clears on co
   expect(done?.messages[0]?.content).toContain("ROLE: You are the chief of staff");
 });
 
-test("todo schedule result plan check uses the just-returned phases", async () => {
+test("bg proc-job owners are Main/direct execution, never task-worker staffing", async () => {
+  const liveNow = Date.now();
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  let requirementProvider: ((ctx: ExtensionContext) => unknown) | undefined;
   const stale: TodoScheduleInput = [{
     name: "Release",
     tasks: [{ content: "Commit focused Finance release repairs after polish", status: "pending" }],
@@ -1107,47 +1134,45 @@ test("todo schedule result plan check uses the just-returned phases", async () =
       content: "Commit focused Finance release repairs after polish",
       status: "pending",
       schedule: {
-        owner: "MergeCommitPushOwner-3",
+        owner: "bg_198",
         dependencies: [],
         estimate: {
           optimisticSeconds: 120,
           likelySeconds: 360,
           pessimisticSeconds: 1200,
           confidence: "medium",
-          basis: "live git-pr-owner is already running",
-          updatedAt: Date.now(),
+          basis: "direct execution regression",
+          updatedAt: liveNow,
         },
       },
     }],
   }];
+  const branch: unknown[] = [{
+    type: "message",
+    message: { role: "toolResult", toolName: "todo", details: { phases: stale } },
+  }];
   await todoDispatch({
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
       handlers.set(event, handler),
-    getActiveTools: () => ["task"],
-    pi: extensionSdk,
+    getActiveTools: () => ["task", "todo"],
+    registerSoftToolRequirementProvider: (provider: ((ctx: ExtensionContext) => unknown) & { demand?: (ctx: ExtensionContext) => unknown }) => {
+      requirementProvider = provider.demand ?? provider;
+    },
+    pi: {
+      ...extensionSdk,
+      readGoalDeadline: () => ({ goalId: "direct-owner-regression", deadlineAt: liveNow + 3_600_000 }),
+    },
     appendEntry: () => undefined,
   } as unknown as ExtensionAPI);
   const ctx = {
     cwd: "/tmp/no-native-active-goal-fixture",
     sessionManager: {
       getHeader: () => ({ id: "root" }),
-      getBranch: () => [{
-        type: "message",
-        message: { role: "toolResult", toolName: "todo", details: { phases: stale } },
-      }],
+      getBranch: () => branch,
     },
-    getAsyncJobSnapshot: () => ({
-      running: [{
-        id: "MergeCommitPushOwner-3",
-        type: "task" as const,
-        status: "running" as const,
-        label: "MergeCommitPushOwner-3",
-        startTime: Date.now(),
-      }],
-      recent: [],
-      nonJobAgents: [],
-    }),
+    getAsyncJobSnapshot: () => ({ running: [{ id: "bg_198", type: "bash", status: "running", label: "Direct shell work", startTime: liveNow }], recent: [], nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 20,
+    hasPendingMessages: () => false,
   } as unknown as ExtensionContext;
   const result = await handlers.get("tool_result")!({
     toolName: "todo",
@@ -1158,9 +1183,19 @@ test("todo schedule result plan check uses the just-returned phases", async () =
   }, ctx) as { content: Array<{ text?: string }> };
   const text = result.content.map((part) => part.text ?? "").join("\n");
   expect(text).toContain("PLAN CHECK: no problems.");
-  expect(text).not.toContain("missing estimates");
-  expect(text).not.toContain("own no row");
-  expect(text).not.toContain("have no worker");
+  expect(text).not.toContain("bg_198");
+  expect(text).not.toContain("owner is not running");
+  expect(text).not.toContain("ready row(s) have no worker");
+  expect(text).not.toContain("staff them in one task call");
+  branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: scheduled } } };
+  expect(requirementProvider?.(ctx)).toBeUndefined();
+
+  const context = await handlers.get("context")!({ messages: [] }, ctx) as
+    | { messages: Array<{ content: string }> }
+    | undefined;
+  const prompt = context?.messages.map((message) => message.content).join("\n") ?? "";
+  expect(prompt).toContain('owner="Main (direct execution)"');
+  expect(prompt).not.toContain("bg_198");
 });
 
 test("accepted init isolates finish history while failed init and ordinary mutations retain it", async () => {
@@ -1180,8 +1215,9 @@ test("accepted init isolates finish history while failed init and ordinary mutat
     pi: { ...extensionSdk, readGoalDeadline: () => ({ goalId: "unchanged-goal", deadlineAt }) },
     sendMessage: () => undefined,
   } as unknown as ExtensionAPI);
+  let jobs: Jobs = { running: [{ id: "old-objective-worker", type: "task", status: "running", label: "old work", startTime: started }, { id: "bg_201", type: "bash", status: "running", label: "foreground command", startTime: started }], recent: [{ id: "prior-completion", type: "task", status: "completed", label: "old work", startTime: started }, { id: "bg_199", type: "bash", status: "completed", label: "foreground command", startTime: started }], nonJobAgents: [] };
   const ctx = { cwd: "/tmp/todo-objective-epoch", sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
-    getAsyncJobSnapshot: () => emptyJobs, getTaskMaxConcurrency: () => 1 } as unknown as ExtensionContext;
+    getAsyncJobSnapshot: () => jobs, getTaskMaxConcurrency: () => 1 } as unknown as ExtensionContext;
   const result = async (op: string, phases: TodoScheduleInput, isError = false) => {
     const event = { toolName: "todo", toolCallId: `call-${branch.length}`, isError, content: [], details: { op, phases } };
     const amended = await handlers.get("tool_result")!(event, ctx) as { content?: Array<{ text?: string }> } | undefined;
@@ -1191,6 +1227,14 @@ test("accepted init isolates finish history while failed init and ordinary mutat
   try {
     setSystemTime(new Date(started));
     await result("init", plan("First objective"));
+    const initializedState = [...branch].reverse().find((entry) =>
+      typeof entry === "object" && entry !== null && "customType" in entry && entry.customType === "todo-dispatch-sprint-state" &&
+      "data" in entry && typeof entry.data === "object" && entry.data !== null && "seenJobIds" in entry.data);
+    const seenJobIds = initializedState && "data" in initializedState &&
+      typeof initializedState.data === "object" && initializedState.data !== null && "seenJobIds" in initializedState.data
+      ? initializedState.data.seenJobIds
+      : undefined;
+    expect(seenJobIds).toEqual(["old-objective-worker", "prior-completion"]);
     setSystemTime(new Date(started + 46 * 60_000));
     expect(await result("schedule", plan("First objective"))).toContain("finish recedes with the clock");
     await result("init", plan("Rejected objective"), true);
@@ -1199,7 +1243,14 @@ test("accepted init isolates finish history while failed init and ordinary mutat
     const fresh = await result("init", plan("Second objective", 3_600));
     expect(fresh).not.toContain("finish recedes");
     expect(fresh).not.toContain("this change moved the finish");
-    expect(fresh).not.toContain("plan-doctor");
+    jobs = { running: [], recent: [{ id: "old-objective-worker", type: "task", status: "completed", label: "old work", startTime: started }], nonJobAgents: [] };
+    const newObjectiveCheck = await result("schedule", plan("Second objective", 3_600));
+    expect(newObjectiveCheck).not.toContain("retrospective due");
+    const state = branch.filter((entry): entry is { customType: string; data: { workerFinishes?: unknown[] } } =>
+      typeof entry === "object" && entry !== null && "customType" in entry && (entry as { customType?: unknown }).customType === "todo-dispatch-sprint-state")
+      .at(-1)?.data;
+    expect(state?.workerFinishes).toEqual([]);
+    jobs = emptyJobs;
     deadlineAt = Date.now() - 1;
     const overdue = plan("Second objective", 1);
     overdue[0].tasks[0].schedule!.estimate!.updatedAt = Date.now() - 60_000;
