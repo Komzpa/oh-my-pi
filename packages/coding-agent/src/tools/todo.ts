@@ -451,11 +451,14 @@ function replayTodoEdit(
 			if (!replayed) return undefined;
 			updated = replayed.phases;
 		}
-		const archived = new Set(
-			edit.archivedPhases.flatMap(phase => phase.tasks.filter(task => task.status !== "completed").map(task => todoTransitionKey(phase.name, task.content))),
+		const archived = new Map(
+			edit.archivedPhases.flatMap(phase => phase.tasks.filter(task => task.status !== "completed").map(task => [todoTransitionKey(phase.name, task.content), task] as const)),
 		);
 		const live = updated.flatMap(phase => {
-			const tasks = phase.tasks.filter(task => !archived.has(todoTransitionKey(phase.name, task.content)));
+			const tasks = phase.tasks.filter(task => {
+				const removed = archived.get(todoTransitionKey(phase.name, task.content));
+				return !removed || task.status !== removed.status;
+			});
 			return tasks.length > 0 ? [{ name: phase.name, tasks }] : [];
 		});
 		return { phases: live, mutable: true };
@@ -469,6 +472,11 @@ function replayTodoEdit(
 		if (errors.length > 0) return undefined;
 		return { phases: next, mutable: true };
 	}
+	// An accepted legacy rm may target a completion that was already archived out of
+	// the live snapshot. Its archive removal replays separately; the live removal
+	// is idempotent when that task is absent here.
+	if (resolved.op === "rm" && resolved.task && !findTaskByContent(current, resolved.task))
+		return { phases: current, mutable: true };
 	const applied = applyParams(current, resolved, edit.at);
 	if (applied.errors.length > 0) return undefined;
 	return { phases: applied.phases, mutable: true };
@@ -627,87 +635,71 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 	return restored;
 }
 
-/** Recover archived rows from durable archive edits without changing the active live phases. */
-export function getLatestTodoArchiveFromEntries(entries: SessionEntry[]): TodoPhase[] {
-	const archived = new Map<string, Map<string, TodoItem>>();
-	for (const entry of entries) {
-		const edit = compactTodoEditFromEntry(entry);
-		const snapshotInit = entry.type === "message" && canonicalTodoPhases(entry) !== undefined &&
-			isRecord(entry.message) && isRecord(entry.message.details) && entry.message.details.op === "init";
-		if (snapshotInit || (edit?.kind === "op" && edit.op === "init") || (edit?.kind === "archive" && edit.operation?.op === "init"))
-			archived.clear();
+/** Replay archived rows and their timestamps together so the view and summary share removal semantics. */
+function replayTodoArchive(entries: SessionEntry[], additional?: TodoPersistedEdit): Map<string, { task: TodoItem; at: number }> {
+	const archived = new Map<string, { task: TodoItem; at: number }>();
+	const applyEdit = (edit: TodoPersistedEdit | undefined) => {
 		const operation = edit?.kind === "archive" ? edit.operation : edit?.kind === "op" ? edit : undefined;
+		if (operation?.op === "init") archived.clear();
 		if (operation && (operation.op === "rm" || operation.op === "drop") && isRecord(operation.params)) {
 			const params = operation.params;
-			const names = new Set([
-				...(typeof params.task === "string" ? [params.task] : []),
-				...(Array.isArray(params.items) ? params.items.filter((name): name is string => typeof name === "string") : []),
-			]);
-			for (const [name, tasks] of archived) {
-				for (const [content, task] of tasks) {
-					const targeted = names.size > 0 ? names.has(content) : typeof params.phase === "string" ? params.phase === name : operation.op === "rm";
-					if (!targeted) continue;
-					if (operation.op === "rm") tasks.delete(content);
-					else task.status = "abandoned";
+			for (const [key, record] of archived) {
+				const separator = key.indexOf("\u0000");
+				const phase = key.slice(0, separator);
+				const content = key.slice(separator + 1);
+				let targeted: boolean;
+				if (operation.op === "rm") {
+					// Match removeTasks: task wins over phase; items are ignored; neither clears all.
+					targeted = params.task ? params.task === content : params.phase ? params.phase === phase : true;
+				} else if (Array.isArray(params.items) && params.items.length > 0) {
+					targeted = params.task === content || params.items.includes(content);
+				} else {
+					targeted = params.task ? params.task === content : params.phase ? params.phase === phase : false;
 				}
+				if (!targeted) continue;
+				if (operation.op === "rm") archived.delete(key);
+				else record.task.status = "abandoned";
 			}
 		}
-		if (!edit || edit.kind !== "archive") continue;
-		for (const phase of edit.archivedPhases) {
-			let tasks = archived.get(phase.name);
-			if (!tasks) {
-				tasks = new Map();
-				archived.set(phase.name, tasks);
-			}
-			for (const task of phase.tasks) tasks.set(task.content, structuredClone(task));
-		}
+		if (edit?.kind !== "archive") return;
+		for (const phase of edit.archivedPhases)
+			for (const task of phase.tasks)
+				archived.set(todoTransitionKey(phase.name, task.content), { task: cloneTask(task), at: edit.at });
+	};
+	for (const entry of entries) {
+		if (canonicalTodoPhases(entry)) archived.clear();
+		applyEdit(compactTodoEditFromEntry(entry));
 	}
-	return [...archived].map(([name, tasks]) => ({ name, tasks: [...tasks.values()] }));
+	applyEdit(additional);
+	return archived;
+}
+
+/** Recover archived rows from durable archive edits without changing the active live phases. */
+export function getLatestTodoArchiveFromEntries(entries: SessionEntry[]): TodoPhase[] {
+	const phases = new Map<string, TodoItem[]>();
+	for (const [key, { task }] of replayTodoArchive(entries)) {
+		const separator = key.indexOf("\u0000");
+		const phase = key.slice(0, separator);
+		const tasks = phases.get(phase);
+		if (tasks) tasks.push(task);
+		else phases.set(phase, [task]);
+	}
+	return [...phases].map(([name, tasks]) => ({ name, tasks }));
 }
 
 export function getTodoArchiveSummaryFromEntries(
 	entries: SessionEntry[],
 	additional?: TodoPersistedEdit,
 ): TodoArchiveSummary | undefined {
-	const archived = new Map<string, number>();
-	const applyOperation = (operation: TodoOperationPersistedEdit | undefined) => {
-		if (operation?.op === "init") archived.clear();
-		if (operation?.op !== "rm" || !isRecord(operation.params)) return;
-		const params = operation.params;
-		const names = new Set([
-			...(typeof params.task === "string" ? [params.task] : []),
-			...(Array.isArray(params.items) ? params.items.filter((name): name is string => typeof name === "string") : []),
-		]);
-		for (const key of archived.keys()) {
-			const separator = key.indexOf("\u0000");
-			const phase = key.slice(0, separator);
-			const content = key.slice(separator + 1);
-			if (names.size > 0 ? names.has(content) : typeof params.phase === "string" ? params.phase === phase : true)
-				archived.delete(key);
-		}
-	};
-	const addArchived = (edit: TodoArchivePersistedEdit) => {
-		for (const phase of edit.archivedPhases)
-			for (const task of phase.tasks) archived.set(todoTransitionKey(phase.name, task.content), edit.at);
-	};
-	for (const entry of entries) {
-		const edit = compactTodoEditFromEntry(entry);
-		const snapshotInit = entry.type === "message" && canonicalTodoPhases(entry) !== undefined &&
-			isRecord(entry.message) && isRecord(entry.message.details) && entry.message.details.op === "init";
-		if (snapshotInit) archived.clear();
-		const operation = edit?.kind === "archive" ? edit.operation : edit?.kind === "op" ? edit : undefined;
-		applyOperation(operation);
-		if (edit?.kind === "archive") addArchived(edit);
-	}
-	if (additional) {
-		if (additional.kind === "archive") {
-			applyOperation(additional.operation);
-			addArchived(additional);
-		} else if (additional.kind === "op") applyOperation(additional);
-	}
+	const archived = replayTodoArchive(entries, additional);
 	if (archived.size === 0) return undefined;
-	const timestamps = [...archived.values()];
-	return { count: archived.size, fromAt: Math.min(...timestamps), toAt: Math.max(...timestamps) };
+	let fromAt = Number.POSITIVE_INFINITY;
+	let toAt = Number.NEGATIVE_INFINITY;
+	for (const { at } of archived.values()) {
+		fromAt = Math.min(fromAt, at);
+		toAt = Math.max(toAt, at);
+	}
+	return { count: archived.size, fromAt, toAt };
 }
 /** Archived completions remain dependency evidence, not live forecast rows. */
 export function forecastTodoLivePlan(

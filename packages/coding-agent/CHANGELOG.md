@@ -74,6 +74,7 @@
 - Fixed unrelated todo mutations archiving completed singleton phases and breaking later prerequisite lookup; completed rows now stay addressable, including legacy archived completion evidence.
 - Fixed a new accepted todo objective inheriting the previous objective's finish-drift, alarm and retrospective history. Rejected initialization and ordinary mutations preserve history, and real deadlines and overdue warnings remain active.
 - Fixed TODO archive grace handling for mixed completed/abandoned phases and replaying later edits that reuse archived task content; persisted removals now clear archived summaries. Direct Main work no longer treats bg job ids as task owners, and new TODO objectives seed finish-history isolation from both running and recent jobs.
+- Native TODO archive replay now respects explicit full-snapshot replacements, handles removals with the same task/phase precedence as live `rm`, and keeps archive views and summaries in sync after nested operations. Whitespace-only scheduling owners remain invalid alongside background-job IDs.
 
 ## [18.4.1] - 2026-09-28
 

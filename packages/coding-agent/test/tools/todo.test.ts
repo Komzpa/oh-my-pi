@@ -7,6 +7,7 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	archiveTodoPhases,
 	formatTodoView,
+	getLatestTodoArchiveFromEntries,
 	getLatestTodoPhasesFromEntries,
 	markdownToPhases,
 	nextActionableTask,
@@ -200,6 +201,60 @@ describe("todo archive policy", () => {
 			setSystemTime();
 			vi.restoreAllMocks();
 		}
+	});
+});
+
+describe("legacy todo archive replay", () => {
+	const at = Date.parse("2026-09-25T08:00:00.000Z");
+	const archived = { name: "Old", tasks: [{ content: "Prior work", status: "completed" as const }] };
+	const entry = (id: string, edit: unknown): SessionEntry => ({
+		type: "custom",
+		customType: "user_todo_edit",
+		data: { edit },
+		id,
+		parentId: null,
+		timestamp: new Date(at).toISOString(),
+	}) as SessionEntry;
+	const archive = entry("archive", { v: 1, kind: "archive", at, archivedPhases: [archived] });
+	const initial = entry("initial", { v: 1, kind: "op", op: "init", at, params: { op: "init", items: ["New work"] } });
+
+	it("does not resurrect legacy completions after an authoritative replacement snapshot", () => {
+		const snapshot = {
+			type: "custom", customType: "user_todo_edit", data: { phases: [] }, id: "replacement", parentId: null,
+			timestamp: new Date(at).toISOString(),
+		} as SessionEntry;
+		expect(getLatestTodoPhasesFromEntries([initial, archive]).flatMap(phase => phase.tasks.map(task => task.content))).toContain("Prior work");
+		expect(getLatestTodoPhasesFromEntries([initial, archive, snapshot])).toEqual([]);
+		expect(getLatestTodoArchiveFromEntries([initial, archive, snapshot])).toEqual([]);
+		expect(getTodoArchiveSummaryFromEntries([initial, archive, snapshot])).toBeUndefined();
+	});
+
+	it("applies rm target precedence to archived rows and summary, ignoring stray items", () => {
+		const twoArchived = entry("archive-two", {
+			v: 1, kind: "archive", at: at + 1,
+			archivedPhases: [{ name: "Other", tasks: [{ content: "Other work", status: "completed" }] }],
+		});
+		const remove = (id: string, params: unknown) => entry(id, { v: 1, kind: "op", op: "rm", at: at + 2, params });
+		const clear = [initial, archive, twoArchived, remove("clear", { op: "rm", items: ["Prior work"] })];
+		expect(getLatestTodoArchiveFromEntries(clear)).toEqual([]);
+		expect(getTodoArchiveSummaryFromEntries(clear)).toBeUndefined();
+		expect(getLatestTodoPhasesFromEntries(clear).flatMap(group => group.tasks)).toEqual([]);
+		const phase = [initial, archive, twoArchived, remove("phase", { op: "rm", phase: "Old", items: ["Other work"] })];
+		expect(getLatestTodoArchiveFromEntries(phase).flatMap(group => group.tasks.map(task => task.content))).toEqual(["Other work"]);
+		expect(getTodoArchiveSummaryFromEntries(phase)?.count).toBe(1);
+		const task = [initial, archive, twoArchived, remove("task", { op: "rm", task: "Prior work", items: ["Other work"] })];
+		expect(getLatestTodoArchiveFromEntries(task).flatMap(group => group.tasks.map(row => row.content))).toEqual(["Other work"]);
+	});
+
+	it("nested rm archive edit does not restore an explicitly removed legacy completion", () => {
+		const remove = entry("nested", {
+			v: 1, kind: "archive", at: at + 1,
+			operation: { v: 1, kind: "op", op: "rm", at: at + 1, params: { op: "rm", task: "Prior work" } },
+			archivedPhases: [{ name: "Old", tasks: [{ content: "Later drop", status: "abandoned" }] }],
+		});
+		const replay = [initial, archive, remove];
+		expect(getLatestTodoPhasesFromEntries(replay).flatMap(phase => phase.tasks.map(task => task.content))).not.toContain("Prior work");
+		expect(getTodoArchiveSummaryFromEntries(replay)?.count).toBe(1);
 	});
 });
 
@@ -715,6 +770,9 @@ describe("TodoTool operations", () => {
 		const invalid = await tool.execute("bad-bg-owner", { op: "schedule", updates: [{ task: "gate", owner: "bg_198", estimate: { optimisticSeconds: 1, likelySeconds: 2, pessimisticSeconds: 3, confidence: "high", basis: "direct work" } }] });
 		expect(invalid.isError).toBe(true);
 		expect(invalid.details?.phases[0]?.tasks[0]?.schedule?.owner).toBeUndefined();
+		const blank = await tool.execute("blank-owner", { op: "schedule", updates: [{ task: "gate", owner: "  " }] });
+		expect(blank.isError).toBe(true);
+		expect(blank.details?.phases[0]?.tasks[0]?.schedule?.owner).toBeUndefined();
 		const direct = await tool.execute("main-owner", { op: "schedule", updates: [{ task: "gate", owner: "Main", estimate: { optimisticSeconds: 1, likelySeconds: 2, pessimisticSeconds: 3, confidence: "high", basis: "direct work" } }] });
 		expect(direct.isError).toBeUndefined();
 		expect(direct.details?.phases[0]?.tasks[0]?.schedule?.owner).toBe("Main");
