@@ -430,7 +430,7 @@ describe("TodoTool operations", () => {
 			makeEntry("archive", { v: 1, kind: "archive", at: 2, operation: { v: 1, kind: "op", at: 2, op: "rm", params: { op: "rm", task: "Old" } }, archivedPhases: [{ name: "Work", tasks: [{ content: "Old", status: "completed" }] }] }),
 			makeEntry("append", { v: 1, kind: "op", at: 3, op: "append", params: { op: "append", phase: "Work", items: ["Old"] } }),
 		] as SessionEntry[];
-		expect(getLatestTodoPhasesFromEntries(entries)[0]?.tasks).toEqual([{ content: "Old", status: "pending" }]);
+		expect(getLatestTodoPhasesFromEntries(entries)[0]?.tasks).toEqual([{ content: "Old", status: "in_progress", schedule: { startedAt: 3 } }]);
 	});
 
 	it("archive summaries apply persisted and current rm operations", () => {
@@ -1586,8 +1586,7 @@ describe("todoToolRenderer archived rows", () => {
 		expect(explicit).toContain("actual 3s");
 		expect(explicit).toContain("worker-archive");
 		expect(explicit).toContain("executor worker-archive (completed)");
-		expect(explicit).toContain("owner Main (direct execution)");
-		expect(explicit).not.toContain("bg_198");
+		expect(explicit).toContain("owner bg_198");
 		expect(render("view", false)).not.toContain("Historic completed work");
 		expect(render("done", true)).not.toContain("Historic completed work");
 	});

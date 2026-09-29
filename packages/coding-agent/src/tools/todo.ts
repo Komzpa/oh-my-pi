@@ -639,7 +639,10 @@ export function getLatestTodoArchiveFromEntries(entries: SessionEntry[]): TodoPh
 		const operation = edit?.kind === "archive" ? edit.operation : edit?.kind === "op" ? edit : undefined;
 		if (operation && (operation.op === "rm" || operation.op === "drop") && isRecord(operation.params)) {
 			const params = operation.params;
-			const names = new Set([...(typeof params.task === "string" ? [params.task] : []), ...(Array.isArray(params.items) ? params.items : [])]);
+			const names = new Set([
+				...(typeof params.task === "string" ? [params.task] : []),
+				...(Array.isArray(params.items) ? params.items.filter((name): name is string => typeof name === "string") : []),
+			]);
 			for (const [name, tasks] of archived) {
 				for (const [content, task] of tasks) {
 					const targeted = names.size > 0 ? names.has(content) : typeof params.phase === "string" ? params.phase === name : operation.op === "rm";
@@ -986,9 +989,15 @@ function applyScheduleUpdates(
 			errors.push(`Task content "${update.task}" is not unique; schedule requires exact unique identity`);
 			continue;
 		}
-		if (update.owner !== undefined && /^bg_\w+$/.test(update.owner.trim())) {
-			errors.push(`Owner for task "${update.task}" cannot be a background job id; use Main for direct execution`);
-			continue;
+		if (update.owner !== undefined) {
+			if (update.owner !== "" && update.owner.trim() === "") {
+				errors.push(`Owner for task "${update.task}" must be nonblank or the empty string to clear it`);
+				continue;
+			}
+			if (/^bg_\w+$/.test(update.owner.trim())) {
+				errors.push(`Owner for task "${update.task}" cannot be a background job id; use Main for direct execution`);
+				continue;
+			}
 		}
 		if (update.resources) {
 			const seenResources = new Set<string>();
@@ -1266,12 +1275,13 @@ function decodeTodoMetadata(encoded: string): TodoMarkdownMetadata {
  */
 export function formatTodoView(
 	phases: TodoPhase[],
-	options: { now?: number; capacity?: number; all?: boolean; archive?: boolean; archivedPhases?: TodoPhase[] } = {},
+	options: { now?: number; capacity?: number; all?: boolean; archive?: boolean; archivedPhases?: TodoPhase[]; deadlineAt?: number } = {},
 ): string {
 	const now = options.now ?? Date.now();
 	const forecast = forecastTodoLivePlan(phases, options.archivedPhases ?? [], {
 		now,
 		...(options.capacity === undefined ? {} : { capacity: options.capacity }),
+		...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }),
 	});
 	const rows = new Map(forecast.rows.map(row => [row.content, row]));
 	const lines = [formatPlanForecastDisplay(forecast, now)];
@@ -1771,7 +1781,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 		const summary =
 			readOnly && entry.archive
-				? formatTodoView(effective, { now, all: true, archive: true, archivedPhases })
+				? formatTodoView(effective, { now, all: true, archive: true, archivedPhases, ...(deadline ? { deadlineAt: deadline.deadlineAt } : {}) })
 				: op === "init" || readOnly
 					? formatSummary(effective, errors, forecast, readOnly, now, readOnly ? entry.phase : undefined)
 					: formatMutationSummary(op, previousPhases, effective, errors, forecast, now);
