@@ -83,6 +83,7 @@ const LATENCY_SENSITIVE_AGENT_LEVELS = {
 
 const MODEL_FLOORS: Record<string, ThinkingLevel> = {
 	"deepseek/deepseek-v4-flash": "high",
+	"openrouter/xiaomi/mimo-v2.6-flash": "high",
 };
 
 function modelSelectorBase(spec: string): string {
