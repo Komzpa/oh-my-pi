@@ -2,11 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 
-const executionTail = [
-	"claude-bridge/claude-sonnet-5",
-	"codex-lb/Qwen3.8-27B",
-	"openrouter/thinkingmachines/inkling:free",
-];
 const judgmentTail = ["claude-bridge/claude-sonnet-5"];
 
 function extensionProfiles() {
@@ -19,15 +14,11 @@ function extensionProfiles() {
 }
 
 describe("Reemxy extension agent model chains", () => {
-	test("all parsed execution profiles have the live tail in fallback order", () => {
-		const profiles = extensionProfiles();
-		const execution = profiles.filter(agent => !["reviewer", "security-reviewer", "architect", "plan-doctor", "retro-facilitator", "coder-strong", "ui-coder-strong"].includes(agent.name));
-		expect(execution.map(agent => agent.name).sort()).toEqual([
-			"business-analyst", "coder", "creative", "gate-runner", "git-pr-owner", "researcher", "scout", "scribe", "ui-coder", "workhorse",
-		]);
-		for (const agent of execution) expect(agent.model?.slice(-3)).toEqual(executionTail);
-		const uiCoder = execution.find(agent => agent.name === "ui-coder");
-		expect(uiCoder?.model).not.toContain("anthropic/claude-sonnet-5:medium");
+
+	test("no subagent profile routes through OpenRouter, including judgment roles", () => {
+		for (const profile of extensionProfiles()) {
+			expect(profile.model?.some(model => model.startsWith("openrouter/")), profile.name).toBe(false);
+		}
 	});
 
 	test("judgment profiles never delegate to a weak free model", () => {

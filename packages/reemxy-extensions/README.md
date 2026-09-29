@@ -17,6 +17,10 @@ reemxyPresence:
 
 Hours are normalized to `0..23`; absent or invalid fields retain defaults.
 
+## Subagent model rotation
+
+The router shuffles only the first `POOL_SIZES` entries of each agent's `model:` frontmatter; the built-in `task` role has an independent pool. Connected `xiaomi/mimo-v2.6-pro` and `muse-code/muse-spark-1.3-contributor` are first-pick alternatives for coder and task; ui-coder also rotates Xiaomi Pro. Scout, gate-runner, git-pr-owner, scribe, and workhorse rotate `xiaomi/mimo-v2.6-flash`. Keep the existing candidates in order ahead of these additions. No subagent pool or fallback chain uses OpenRouter, including free OpenRouter models. OpenRouter is reserved for Hindsight; keep its separate provider/auth configuration intact.
+
 ## Bounded worker supervision
 
 Every row-executing profile must target about 15 minutes of work. If an assignment clearly will not fit or context approaches compaction, the worker stops at the next checkable result, reports completed work with a receipt, and proposes a split of what remains.
