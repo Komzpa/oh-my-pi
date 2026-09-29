@@ -14,6 +14,7 @@ import {
 	resolveTodoMarkdownPath,
 	TodoTool,
 	forecastTodoLivePlan,
+	getTodoArchiveSummaryFromEntries,
 } from "@oh-my-pi/pi-coding-agent/tools";
 import { forecastTodoPlan } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 
@@ -132,6 +133,22 @@ describe("todo archive policy", () => {
 			"Blocked open work",
 		]);
 		expect(archived.archivedPhases[0]?.tasks.map(task => task.content)).toEqual(["Dated 10", "Dated 11"]);
+	});
+
+	it("archives aged abandoned rows in mixed closed phases but keeps completed evidence", () => {
+		const phases: TodoPhase[] = [{ name: "Mixed closed", tasks: [
+			{ content: "Completed prerequisite", status: "completed", schedule: { finishedAt: now - 60 * 60_000 } },
+			{ content: "Aged abandonment", status: "abandoned", schedule: { finishedAt: now - 10 * 60_000 } },
+		] }];
+		const archived = archiveTodoPhases(phases, now);
+		expect(archived.phases).toEqual([{ name: "Mixed closed", tasks: [phases[0]!.tasks[0]!] }]);
+		expect(archived.archivedPhases).toEqual([{ name: "Mixed closed", tasks: [phases[0]!.tasks[1]!] }]);
+		const beforeGrace = archiveTodoPhases([{ name: "Mixed closed", tasks: [
+			phases[0]!.tasks[0]!,
+			{ content: "Recent abandonment", status: "abandoned", schedule: { finishedAt: now - 10 * 60_000 + 1 } },
+		] }], now);
+		expect(beforeGrace.phases.flatMap(phase => phase.tasks).map(task => task.content)).toEqual(["Completed prerequisite", "Recent abandonment"]);
+		expect(beforeGrace.archivedPhases).toEqual([]);
 	});
 
 	it("archives only on successful mutations and recovers rows in explicit archive view", async () => {
@@ -399,7 +416,41 @@ describe("TodoTool operations", () => {
 		expect(restored[0]?.tasks[2]?.schedule?.progress?.evidence).toBe("Replay compact edit evidence");
 		expect(restored[0]?.tasks[2]?.schedule?.progress?.at).toBe(result.details?.edit?.at);
 	});
+	it("replays append before merging an archived completion with matching content", () => {
+		const makeEntry = (id: string, edit: unknown): SessionEntry => ({
+			type: "custom",
+			customType: "user_todo_edit",
+			data: { edit },
+			id,
+			parentId: null,
+			timestamp: "2026-09-25T11:00:00.000Z",
+		} as SessionEntry);
+		const entries = [
+			makeEntry("init", { v: 1, kind: "op", at: 1, op: "init", params: { op: "init", list: [{ phase: "Work", items: ["Old"] }] } }),
+			makeEntry("archive", { v: 1, kind: "archive", at: 2, operation: { v: 1, kind: "op", at: 2, op: "rm", params: { op: "rm", task: "Old" } }, archivedPhases: [{ name: "Work", tasks: [{ content: "Old", status: "completed" }] }] }),
+			makeEntry("append", { v: 1, kind: "op", at: 3, op: "append", params: { op: "append", phase: "Work", items: ["Old"] } }),
+		] as SessionEntry[];
+		expect(getLatestTodoPhasesFromEntries(entries)[0]?.tasks).toEqual([{ content: "Old", status: "pending" }]);
+	});
 
+	it("archive summaries apply persisted and current rm operations", () => {
+		const entries = [
+			{ type: "custom", customType: "user_todo_edit", id: "archive", parentId: null, timestamp: "2026-09-25T11:00:00.000Z", data: { edit: { v: 1, kind: "archive", at: 10, archivedPhases: [{ name: "Work", tasks: [{ content: "Removed legacy completion", status: "completed" }, { content: "Current removal", status: "completed" }, { content: "Kept legacy completion", status: "completed" }] }] } } },
+			{ type: "custom", customType: "user_todo_edit", id: "rm", parentId: null, timestamp: "2026-09-25T11:01:00.000Z", data: { edit: { v: 1, kind: "op", at: 11, op: "rm", params: { op: "rm", task: "Removed legacy completion" } } } },
+		] as SessionEntry[];
+		const currentRm = { v: 1, kind: "op", at: 12, op: "rm", params: { op: "rm", task: "Current removal" } } as const;
+		expect(getTodoArchiveSummaryFromEntries(entries)).toEqual({ count: 2, fromAt: 10, toAt: 10 });
+		expect(getTodoArchiveSummaryFromEntries(entries, currentRm)).toEqual({ count: 1, fromAt: 10, toAt: 10 });
+	});
+	it("removes an archived row from the live todo archive summary", async () => {
+		const entries = [
+			{ type: "custom", customType: "user_todo_edit", id: "archive", parentId: null, timestamp: "2026-09-25T11:00:00.000Z", data: { edit: { v: 1, kind: "archive", at: 10, archivedPhases: [{ name: "Work", tasks: [{ content: "Current removal", status: "completed" }, { content: "Kept legacy completion", status: "completed" }] }] } } },
+		] as SessionEntry[];
+		const session = createSession([{ name: "Work", tasks: [{ content: "Current removal", status: "completed" }] }]);
+		Object.assign(session, { sessionManager: { getBranch: () => entries } });
+		const result = await new TodoTool(session).execute("remove-archived", { op: "rm", task: "Current removal" });
+		expect(result.details?.archiveSummary).toEqual({ count: 1, fromAt: 10, toAt: 10 });
+	});
 	it("jumps to a specific task out of order", async () => {
 		const tool = new TodoTool(createSession());
 		await tool.execute("call-1", {
@@ -658,6 +709,15 @@ describe("TodoTool operations", () => {
 		expect(scheduled.details?.forecast?.rows.find(row => row.content === "Report result")?.ready).toBe(true);
 		const removed = await tool.execute("explicit-remove", { op: "rm", task: predecessor });
 		expect(removed.details?.phases.flatMap(phase => phase.tasks).some(task => task.content === predecessor)).toBe(false);
+	});
+	it("rejects bg job ids as task owners but accepts Main for direct execution", async () => {
+		const tool = new TodoTool(createSession([{ name: "Work", tasks: [{ content: "gate", status: "pending" }] }]));
+		const invalid = await tool.execute("bad-bg-owner", { op: "schedule", updates: [{ task: "gate", owner: "bg_198", estimate: { optimisticSeconds: 1, likelySeconds: 2, pessimisticSeconds: 3, confidence: "high", basis: "direct work" } }] });
+		expect(invalid.isError).toBe(true);
+		expect(invalid.details?.phases[0]?.tasks[0]?.schedule?.owner).toBeUndefined();
+		const direct = await tool.execute("main-owner", { op: "schedule", updates: [{ task: "gate", owner: "Main", estimate: { optimisticSeconds: 1, likelySeconds: 2, pessimisticSeconds: 3, confidence: "high", basis: "direct work" } }] });
+		expect(direct.isError).toBeUndefined();
+		expect(direct.details?.phases[0]?.tasks[0]?.schedule?.owner).toBe("Main");
 	});
 
 	it("closes and drops a batch of named rows in one call and leaves the rest open", async () => {
@@ -1489,6 +1549,7 @@ describe("todoToolRenderer archived rows", () => {
 						content: "Historic completed work",
 						status: "completed",
 						schedule: {
+							owner: "bg_198",
 							startedAt: 1_000,
 							finishedAt: 4_000,
 							estimate: {
@@ -1525,6 +1586,8 @@ describe("todoToolRenderer archived rows", () => {
 		expect(explicit).toContain("actual 3s");
 		expect(explicit).toContain("worker-archive");
 		expect(explicit).toContain("executor worker-archive (completed)");
+		expect(explicit).toContain("owner Main (direct execution)");
+		expect(explicit).not.toContain("bg_198");
 		expect(render("view", false)).not.toContain("Historic completed work");
 		expect(render("done", true)).not.toContain("Historic completed work");
 	});

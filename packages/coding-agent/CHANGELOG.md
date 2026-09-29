@@ -73,6 +73,7 @@
 - Fixed Cursor native Grep ignoring requested context, Read negative offsets starting at the top, and Delete reporting zero-byte files ([#13600](https://github.com/can1357/oh-my-pi/issues/13600)).
 - Fixed unrelated todo mutations archiving completed singleton phases and breaking later prerequisite lookup; completed rows now stay addressable, including legacy archived completion evidence.
 - Fixed a new accepted todo objective inheriting the previous objective's finish-drift, alarm and retrospective history. Rejected initialization and ordinary mutations preserve history, and real deadlines and overdue warnings remain active.
+- Fixed TODO archive grace handling for mixed completed/abandoned phases and replaying later edits that reuse archived task content; persisted removals now clear archived summaries. Direct Main work no longer treats bg job ids as task owners, and new TODO objectives seed finish-history isolation from both running and recent jobs.
 
 ## [18.4.1] - 2026-09-28
 
