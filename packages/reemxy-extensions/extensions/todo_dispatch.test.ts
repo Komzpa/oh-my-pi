@@ -2105,3 +2105,123 @@ test("a resolved merge left open is committed first, and a merge gets one worker
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("accepted todo init resets sprint state and seeds only real task jobs", async () => {
+  const plan: TodoScheduleInput = [{
+    name: "Work",
+    tasks: [{
+      content: "Ship feature",
+      status: "pending",
+      schedule: {
+        dependencies: [],
+        estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180, confidence: "medium", basis: "init regression", updatedAt: now },
+      },
+    }],
+  }];
+  const branch: unknown[] = [
+    { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } },
+  ];
+  branch.push({
+    type: "custom", customType: "todo-dispatch-sprint-state",
+    data: {
+      version: 1,
+      seenJobIds: ["bg_summarizer", "worker-a"],
+      workerFinishes: [
+        { jobId: "bg_summarizer", id: "bg_summarizer", at: now - 6_000, row: "Background digest" },
+        { jobId: "worker-a", id: "worker-a", at: now - 3_000, row: "Ship feature" },
+      ],
+      lastRetroAt: now - 1_000,
+      goalWorkStartedAt: now - 5_000,
+      correctionPending: true,
+      retroDueReason: "user correction",
+      rowStatuses: { "Ship feature": "pending" },
+    },
+  });
+  let jobs: Jobs = {
+    running: [
+      { id: "bg_scanner", type: "task", status: "running", label: "Background scan", startTime: now, agentId: "bg_scanner" },
+      { id: "worker-b", type: "task", status: "running", label: "Ship feature", startTime: now, agentId: "worker-b" },
+    ],
+    recent: [
+      { id: "bg_crawler", type: "task", status: "completed", label: "Background crawl", startTime: now - 10_000, agentId: "bg_crawler" },
+      { id: "worker-c", type: "task", status: "completed", label: "Ship feature", startTime: now - 8_000, agentId: "worker-c" },
+    ],
+    nonJobAgents: [{ id: "bg_watcher", live: true }],
+  };
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  await todoDispatch({
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
+      handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo"],
+    pi: extensionSdk,
+    appendEntry: (customType: string, data?: unknown) => branch.push({ type: "custom", customType, data }),
+  } as unknown as ExtensionAPI);
+  const ctx = {
+    cwd: "/tmp/todo-init-reset-fixture",
+    sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
+    getAsyncJobSnapshot: () => jobs,
+    getTaskMaxConcurrency: () => 6,
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}) as unknown as ReturnType<typeof setTimeout>,
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  handlers.get("session_start")!({}, ctx);
+  handlers.get("tool_result")!({
+    toolName: "todo",
+    toolCallId: "todo-init",
+    isError: false,
+    content: [{ type: "text", text: "Initialized" }],
+    details: { op: "init", phases: plan },
+  }, ctx);
+  const saved = [...branch].reverse().find((entry) =>
+    typeof entry === "object" && entry !== null &&
+    "customType" in entry && entry.customType === "todo-dispatch-sprint-state",
+  ) as { data?: unknown } | undefined;
+  const state = saved?.data as Record<string, unknown> | undefined;
+  const ids = state?.seenJobIds as string[] | undefined;
+  expect(ids).toContain("worker-b");
+  expect(ids).toContain("worker-c");
+  expect(ids).not.toContain("bg_scanner");
+  expect(ids).not.toContain("bg_crawler");
+  expect(state?.lastRetroAt).toBeNull();
+  expect(state?.goalWorkStartedAt).toBeNull();
+  expect(state?.correctionPending).toBe(false);
+  expect(state?.retroDueReason).toBeNull();
+  expect((state?.reopenedRows as unknown[] | undefined)?.length).toBe(0);
+  expect((state?.workerFinishes as unknown[] | undefined)?.length).toBe(0);
+// Ordinary non-init mutation retains history.
+  const addBranch: unknown[] = [
+    { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } },
+  ];
+  addBranch.push({
+    type: "custom", customType: "todo-dispatch-sprint-state",
+    data: { version: 1, seenJobIds: ["old-worker"], lastRetroAt: now - 1000 },
+  });
+  const addHandlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  await todoDispatch({
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
+      addHandlers.set(event, handler),
+    getActiveTools: () => ["task", "todo"],
+    pi: extensionSdk,
+    appendEntry: (customType: string, data?: unknown) => addBranch.push({ type: "custom", customType, data }),
+  } as unknown as ExtensionAPI);
+  const addCtx = { ...ctx, sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => addBranch } } as ExtensionContext;
+  addHandlers.get("session_start")!({}, addCtx);
+  addHandlers.get("tool_result")!({
+    toolName: "todo",
+    toolCallId: "todo-add",
+    isError: false,
+    content: [{ type: "text", text: "added" }],
+    details: { op: "append", items: [{ content: "New row" }] },
+  }, addCtx);
+  const addState = [...addBranch].reverse().find((entry) =>
+    typeof entry === "object" && entry !== null &&
+    "customType" in entry && entry.customType === "todo-dispatch-sprint-state",
+  ) as { data?: unknown } | undefined;
+  const addData = addState?.data as Record<string, unknown> | undefined;
+  // Ordinary append retains existing history.
+  expect(addData?.lastRetroAt).toBe(now - 1000);
+  expect(addData?.seenJobIds).toBeDefined();
+  expect((addData?.seenJobIds as string[] | undefined)).toContain("old-worker");
+});

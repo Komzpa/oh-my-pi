@@ -267,8 +267,9 @@ function readPersistedChildren(branch: unknown[]): PersistedChild[] {
     const children = data.children.flatMap((child): PersistedChild[] => {
       if (typeof child !== "object" || child === null) return [];
       const item = child as { id?: unknown; owner?: unknown; live?: unknown };
-      return typeof item.id === "string" &&
+      return typeof item.id === "string" && !isBackgroundJobId(item.id) &&
         (typeof item.owner === "string" || item.owner === null) &&
+        (item.owner === null || !isBackgroundJobId(item.owner)) &&
         typeof item.live === "boolean"
         ? [{ id: item.id, owner: item.owner, live: item.live }]
         : [];
