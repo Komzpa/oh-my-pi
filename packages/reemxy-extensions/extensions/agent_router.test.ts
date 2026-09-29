@@ -71,7 +71,6 @@ const LATENCY_SENSITIVE_AGENT_LEVELS = {
 
 const MODEL_FLOORS: Record<string, ThinkingLevel> = {
 	"deepseek/deepseek-v4-flash": "high",
-	"openrouter/xiaomi/mimo-v2.6-flash": "high",
 };
 
 function modelSelectorBase(spec: string): string {
@@ -134,6 +133,46 @@ describe("agent router", () => {
 			expect(result?.note).toBe(`pool pick ${result?.model[0]} (eval)`);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("subscribed Xiaomi and Muse models can each be the first pick, not fallback-only", async () => {
+		const candidates = [
+			["coder", "xiaomi/mimo-v2.6-pro"],
+			["coder", "muse-code/muse-spark-1.3-contributor"],
+			["ui-coder", "xiaomi/mimo-v2.6-pro"],
+			["scout", "xiaomi/mimo-v2.6-flash"],
+			["gate-runner", "xiaomi/mimo-v2.6-flash"],
+			["git-pr-owner", "xiaomi/mimo-v2.6-flash"],
+			["scribe", "xiaomi/mimo-v2.6-flash"],
+			["workhorse", "xiaomi/mimo-v2.6-flash"],
+			["task", "xiaomi/mimo-v2.6-pro"],
+			["task", "muse-code/muse-spark-1.3-contributor"],
+		] as const;
+		const { dir, file } = tempStateFile();
+		try {
+			for (const [agent, candidate] of candidates) {
+				const config = AGENT_POOLS[agent]!;
+				expect(config.pool).toContain(candidate);
+				expect(config.fallbacks).not.toContain(candidate);
+				const result = await routeSubagentSpawn({ agent, spawnKey: `${agent}:${candidate}` }, ctx(), createRouterState(), {
+					stateFile: file,
+					shuffle: items => {
+						const index = items.indexOf(candidate);
+						return [...items.slice(index), ...items.slice(0, index)];
+					},
+				});
+				expect(result?.model[0]).toBe(candidate);
+				expect(result?.model.some(model => model.startsWith("openrouter/"))).toBe(false);
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("every routed pool and fallback chain excludes OpenRouter", () => {
+		for (const [agent, config] of Object.entries(AGENT_POOLS)) {
+			expect([...config.pool, ...config.fallbacks].some(model => model.startsWith("openrouter/")), agent).toBe(false);
 		}
 	});
 
@@ -282,7 +321,7 @@ describe("agent router", () => {
 			});
 			const result = await routeSubagentSpawn({ agent: "scout", spawnKey: "usage-healthy" }, context, createRouterState(), {
 				stateFile: file,
-				shuffle: items => [...items].reverse(),
+				shuffle: items => [items[1]!, ...items.filter((_, index) => index !== 1)],
 			});
 			expect(result?.model[0]).toBe("kimi-code/kimi-for-coding-highspeed:low");
 			expect(readJsonl(file)[0]?.skipped).toBeUndefined();
@@ -291,15 +330,19 @@ describe("agent router", () => {
 		}
 	});
 
-	test("capacity predicate agrees with fallback-only routing and exhausted providers", async () => {
+	test("capacity predicate agrees with subscribed-only routing and exhausted providers", async () => {
 		const { dir, file } = tempStateFile();
 		try {
-			const exhausted = ctxWithHealth(Object.fromEntries(["codex-lb", "deepseek", "kimi-code", "claude-bridge", "openrouter", "anthropic"].map(provider => [provider, { state: "depleted", accounts: [] }])));
+			const exhausted = ctxWithHealth(Object.fromEntries(["codex-lb", "deepseek", "kimi-code", "claude-bridge", "xiaomi", "muse-code"].map(provider => [provider, { state: "depleted", accounts: [] }])));
 			expect(await agentHasLiveModel("coder", exhausted)).toBe(false);
 			expect(await routeSubagentSpawn({ agent: "coder", spawnKey: "all-dead" }, exhausted, createRouterState(), { stateFile: file })).toBeUndefined();
-			const inklingOnly = ctxWithHealth(Object.fromEntries(["codex-lb", "deepseek", "kimi-code", "claude-bridge"].map(provider => [provider, { state: "depleted", accounts: [] }])));
-			expect(await agentHasLiveModel("coder", inklingOnly)).toBe(true);
-			expect((await routeSubagentSpawn({ agent: "coder", spawnKey: "inkling-only" }, inklingOnly, createRouterState(), { stateFile: file }))?.model).toEqual(["openrouter/thinkingmachines/inkling:free"]);
+			const openRouterModel = { provider: "openrouter", id: "thinkingmachines/inkling" };
+			const openRouterOnly = ctx({ models: {
+				list: () => [openRouterModel],
+				resolve: (spec: string) => spec === "openrouter/thinkingmachines/inkling:free" ? openRouterModel : undefined,
+			} as ExtensionContext["models"] });
+			expect(await agentHasLiveModel("coder", openRouterOnly)).toBe(false);
+			expect(await routeSubagentSpawn({ agent: "coder", spawnKey: "openrouter-only" }, openRouterOnly, createRouterState(), { stateFile: file })).toBeUndefined();
 			expect(await agentHasLiveModel("nonexistent", ctx())).toBe(false);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -314,7 +357,7 @@ describe("agent router", () => {
 				const result = await routeSubagentSpawn({ agent: "coder", spawnKey: `depleted-${i}` }, context, createRouterState(), { stateFile: file });
 				expect(result?.model.length).toBeGreaterThan(0);
 				expect(result?.model.every(model => !model.startsWith("codex-lb/") && !model.startsWith("deepseek/"))).toBe(true);
-				expect(result?.model[0]?.startsWith("kimi-code/") || result?.model[0]?.startsWith("claude-bridge/")).toBe(true);
+				expect(["kimi-code/", "claude-bridge/", "xiaomi/", "muse-code/"].some(provider => result?.model[0]?.startsWith(provider))).toBe(true);
 			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -412,7 +455,7 @@ describe("agent router", () => {
 			const context = ctx();
 			await routeSubagentSpawn({ agent: "scout", spawnKey: "fallback-1" }, context, state, {
 				stateFile: file,
-				shuffle: items => [...items].reverse(),
+				shuffle: items => [items[1]!, ...items.filter((_, index) => index !== 1)],
 			});
 			recordRetryFallbackApplied(
 				{

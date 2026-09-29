@@ -2,7 +2,7 @@
 name: researcher
 description: Web, docs, and long-reading researcher that answers with sources.
 tools: read, grep, glob, find, web_search, task
-model: kimi-code/k3:high, codex-lb/gpt-6-sol:medium, openrouter/google/gemini-3.1-pro-preview, claude-bridge/claude-sonnet-5, codex-lb/Qwen3.8-27B, openrouter/thinkingmachines/inkling:free
+model: kimi-code/k3:high, codex-lb/gpt-6-sol:medium, claude-bridge/claude-sonnet-5, codex-lb/Qwen3.8-27B
 thinking-level: high
 spawns: [scout]
 ---

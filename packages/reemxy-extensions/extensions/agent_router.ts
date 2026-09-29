@@ -14,8 +14,8 @@ export interface PoolConfig {
 
 // Pool lengths are routing policy; model selectors and fallback order live in agent frontmatter.
 const POOL_SIZES: Record<string, number> = {
-	coder: 4, "ui-coder": 3, scout: 2, "gate-runner": 2, "git-pr-owner": 2,
-	scribe: 2, reviewer: 3, workhorse: 3, "retro-facilitator": 3,
+	coder: 6, "ui-coder": 4, scout: 3, "gate-runner": 3, "git-pr-owner": 3,
+	scribe: 3, reviewer: 3, workhorse: 4, "retro-facilitator": 3,
 	architect: 4, "plan-doctor": 3, "security-reviewer": 0,
 	researcher: 1, "business-analyst": 3, creative: 2,
 };
@@ -31,8 +31,8 @@ export const AGENT_POOLS: Record<string, PoolConfig> = {
 	...Object.fromEntries(Object.entries(POOL_SIZES).map(([agent, size]) => [agent, profilePool(agent, size)])),
 	// The built-in task agent has no package profile; retain its independent router policy.
 	task: {
-		pool: ["codex-lb/gpt-6-luna:medium", "kimi-code/kimi-for-coding:high", "deepseek/deepseek-v4-pro:high", "kimi-code/k3:high"],
-		fallbacks: ["codex-lb/gpt-6-sol:medium", "claude-bridge/claude-sonnet-5", "codex-lb/Qwen3.8-27B", "openrouter/thinkingmachines/inkling:free"],
+		pool: ["codex-lb/gpt-6-luna:medium", "kimi-code/kimi-for-coding:high", "deepseek/deepseek-v4-pro:high", "kimi-code/k3:high", "xiaomi/mimo-v2.6-pro", "muse-code/muse-spark-1.3-contributor"],
+		fallbacks: ["codex-lb/gpt-6-sol:medium", "claude-bridge/claude-sonnet-5", "codex-lb/Qwen3.8-27B"],
 	},
 };
 
