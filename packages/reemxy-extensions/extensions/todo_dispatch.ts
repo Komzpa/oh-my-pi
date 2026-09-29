@@ -590,7 +590,10 @@ function isBackgroundJobId(id: string): boolean {
   return /^bg_\w+$/.test(id.trim());
 }
 function normalizeTodoOwner(owner: string | null | undefined): string | null {
-  return typeof owner !== "string" ? null : isBackgroundJobId(owner) ? "Main" : owner;
+  if (typeof owner !== "string") return null;
+  const trimmed = owner.trim();
+  if (!trimmed) return null;
+  return isBackgroundJobId(trimmed) ? "Main" : trimmed;
 }
 function isTodoTaskWorker(job: Pick<Jobs["running"][number], "id" | "type" | "agentId">): boolean {
   return job.type === "task" && !isBackgroundJobId(job.id) && !isBackgroundJobId(job.agentId ?? "");
@@ -599,14 +602,14 @@ function taskDetails(task: TaskRow, timeZone?: string): string {
   const schedule = task.schedule && typeof task.schedule === "object" ? task.schedule : undefined;
   const normalizedOwner = normalizeTodoOwner(schedule?.owner);
   const owner = normalizedOwner === "Main" ? "Main (direct execution)" : normalizedOwner;
-  const estimate = schedule.estimate
+  const estimate = schedule?.estimate
     ? `${schedule.estimate.optimisticSeconds}/${schedule.estimate.likelySeconds}/${schedule.estimate.pessimisticSeconds}s ${safeText(schedule.estimate.confidence)}; basis=${safeText(schedule.estimate.basis, 80)}; updated=${safeTimestamp(schedule.estimate.updatedAt, timeZone)}`
     : "MISSING estimate";
-  const dependencies = Array.isArray(schedule.dependencies)
+  const dependencies = Array.isArray(schedule?.dependencies)
     ? JSON.stringify(schedule.dependencies)
     : "unknown";
-  const resources = Array.isArray(schedule.resources) ? JSON.stringify(schedule.resources) : "unknown";
-  const progress = schedule.progress
+  const resources = Array.isArray(schedule?.resources) ? JSON.stringify(schedule.resources) : "unknown";
+  const progress = schedule?.progress
     ? `${safeTimestamp(schedule.progress.at, timeZone)}:${safeText(schedule.progress.evidence, 120)}`
     : "none";
   return `owner=${JSON.stringify(owner)}; dependencies=${dependencies}; resources=${resources}; O/L/P=${estimate}; progress=${progress}`;
@@ -792,6 +795,7 @@ export function decideTodoDispatch(
   const stale = forecast.rows
     .filter((row) => obligatedContent.has(row.content) && row.stale)
     .map((row) => row.content);
+  const openContent = new Set(open.map(({ task }) => task.content));
   const activeTaskJobs =
     jobs?.running.filter((job) => isTodoTaskWorker(job) && job.status === "running") ?? [];
   const nonJobAgents = jobs?.nonJobAgents?.filter((agent) => !isBackgroundJobId(agent.id));
@@ -835,7 +839,10 @@ export function decideTodoDispatch(
   const liveResourceHolders = open
     .filter(({ task }) => {
       const owner = normalizeTodoOwner(task.schedule?.owner);
-      return task.status === "in_progress" && owner !== null && ownerHasActiveTask(owner);
+      if (task.status !== "in_progress" || owner === null) return false;
+      // Main (the session itself) holds the implicit session resources (checkout, …) while in_progress.
+      if (owner.toLowerCase() === "main") return true;
+      return ownerHasActiveTask(owner);
     })
     .map(({ task }) => task);
   const claimedLiveWorkerIds = new Set<string>();
@@ -873,6 +880,7 @@ export function decideTodoDispatch(
                 : owner === null
                   ? "unassigned"
                   : "unverified";
+      if (ownership === "live-owned" && liveWorkerId !== undefined) claimedLiveWorkerIds.add(liveWorkerId);
       return { content: row.content, owner, ownership };
     });
   const ownerlessReady = readyCandidates.filter((row) => row.ownership !== "live-owned" && row.ownership !== "direct-execution");
@@ -929,7 +937,10 @@ export function decideTodoDispatch(
       : [],
   );
   const executableReady = forecast.rows.some(
-    (row) => actionableReadyContents.has(row.content) && row.ready &&
+    (row) => (actionableReadyContents.has(row.content) ||
+               (typeof row.owner === "string" && row.owner.toLowerCase() === "main" &&
+                resourceExecutableContents.has(row.content))) &&
+      row.ready &&
       typeof row.resourceStart === "number" && row.resourceStart <= now,
   );
   const dependencyUnready = forecast.rows.filter(
@@ -941,6 +952,7 @@ export function decideTodoDispatch(
     ...idleOwnerRows.map((row) => row.owner),
     ...restoredOwnerRows.map((row) => row.owner),
   ].filter((owner): owner is string => owner !== null))];
+  const directExecutionCount = readyCandidates.filter((row) => row.ownership === "direct-execution").length;
   const dispatchDirective =
     !taskEnabled
       ? "FAIL CLOSED: the Task tool is inactive; do not dispatch or claim these rows are staffed. Continue bounded safe work directly on the active deliverable."
@@ -990,7 +1002,10 @@ export function decideTodoDispatch(
   }
   const missed = forecast.rows.filter((row) => openContent.has(row.content) && row.overdue);
   const executableMissed = forecast.rows.filter(
-    (row) => actionableReadyContents.has(row.content) && row.ready && row.overdue &&
+    (row) => (actionableReadyContents.has(row.content) ||
+               (typeof row.owner === "string" && row.owner.toLowerCase() === "main" &&
+                resourceExecutableContents.has(row.content))) &&
+      row.ready && row.overdue &&
       typeof row.resourceStart === "number" && row.resourceStart <= now,
   );
   const overdueMinute = Math.floor(now / 60_000);
@@ -2643,6 +2658,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     // (live 2026-09-25 03:35: 1 of 20 workers ran for half an hour and nothing said so).
     const directExecutionCount = (decision.readyCandidates ?? []).filter((row) => row.ownership === "direct-execution").length;
     const directOpenCount = (decision.ownerRunStates ?? []).filter((row) => row.owner?.toLowerCase() === "main").length;
+    const capacity = workerCapacity(ctx);
     const understaffed = running.length < capacity && ready.length === 0 && open.length > running.length + directOpenCount;
     const activity = workerActivity(ctx, running, now);
     const activeJobIds = new Set(running.map((job) => job.id));
@@ -2767,9 +2783,11 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       return owner && !running.some((job) => job.id === owner || job.agentId === owner) && settled.some((job) => job.id === owner || job.agentId === owner);
     });
     const receding = recedingFinish(ctx, open, now, decision.deadline?.timezone);
+    const waitingCritical = criticalWaitList(ctx, open);
     const problems = [
       ...staleWorkers,
       planningAdvice,
+      retroLine,
       unread.length ? `${unread.length} worker result(s) came back and their rows are still open: ${names(unread)}. Read each receipt now and close the row or send it back with the reason, before any other plan change (skill step 4)` : "",
       finishDelayNotice,
       receding,
@@ -2848,7 +2866,13 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       const details = (event as { details?: unknown }).details;
       const edit = details?.edit;
       const operation = edit?.kind === "archive" ? edit.operation : edit;
-      const initialized = details?.op === "init" || (operation?.kind === "op" && operation.op === "init");
+      // When archive wraps a sub-operation (rm, target, …), that operation governs;
+      // details.op is the top-level wrapper and must not override the inner operation.
+      const initialized = operation?.kind === "op" && operation.op === "init"
+        ? true
+        : operation !== undefined
+          ? false
+          : details?.op === "init";
       if (initialized) {
         reset();
         finishSamples.length = 0;
