@@ -2,7 +2,7 @@
 name: gate-runner
 description: Run one named build, test, browser, or install proof after a frozen artifact.
 tools: read, bash
-model: codex-lb/gpt-6-luna:medium, kimi-code/kimi-for-coding-highspeed:medium, deepseek/deepseek-v4-flash:high, claude-bridge/claude-sonnet-5, codex-lb/Qwen3.8-27B, openrouter/thinkingmachines/inkling:free
+model: codex-lb/gpt-6-luna:medium, kimi-code/kimi-for-coding-highspeed:medium, openrouter/xiaomi/mimo-v2.6-flash:high, deepseek/deepseek-v4-flash:high, claude-bridge/claude-sonnet-5, codex-lb/Qwen3.8-27B, openrouter/thinkingmachines/inkling:free
 thinking-level: medium
 spawns: []
 ---

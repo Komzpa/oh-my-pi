@@ -2,7 +2,7 @@
 name: scribe
 description: Keep the repository's plan, backlog, and status documents in step with the todo plan and worker results.
 tools: read, grep, glob, find, edit, write
-model: codex-lb/gpt-6-luna:low, kimi-code/kimi-for-coding-highspeed:low, deepseek/deepseek-v4-flash:high, claude-bridge/claude-sonnet-5, codex-lb/Qwen3.8-27B, openrouter/thinkingmachines/inkling:free
+model: codex-lb/gpt-6-luna:low, kimi-code/kimi-for-coding-highspeed:low, openrouter/xiaomi/mimo-v2.6-flash:high, deepseek/deepseek-v4-flash:high, claude-bridge/claude-sonnet-5, codex-lb/Qwen3.8-27B, openrouter/thinkingmachines/inkling:free
 thinking-level: low
 spawns: []
 ---
