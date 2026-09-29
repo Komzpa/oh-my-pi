@@ -83,10 +83,10 @@ import {
 	type TodoExecutorObservation,
  } from "../tools/todo-executor";
 import {
-TASK_SUBAGENT_LIFECYCLE_CHANNEL,
-TASK_SUBAGENT_PROGRESS_CHANNEL,
-type SubagentLifecyclePayload,
-type SubagentProgressPayload,
+	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+	TASK_SUBAGENT_PROGRESS_CHANNEL,
+	type SubagentLifecyclePayload,
+	type SubagentProgressPayload,
 } from "./types";
 import type { TodoReworkAttempt, TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { SpawnRun, type SpawnPermit } from "./spawn-run";
@@ -1203,14 +1203,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (typeof plan === "string") {
 			return createTaskModeError(plan);
 		}
-const { params, items: spawnItems, spawns: normalizedSpawnParams } = plan;
-
-if (batchEnabled && Array.isArray(params.tasks) && params.tasks.length === 0) {
-return {
-content: [{ type: "text", text: "No tasks selected; nothing to dispatch." }],
-details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
-};
-}
+		const { params, items: spawnItems, spawns: normalizedSpawnParams } = plan;
+		if (batchEnabled && Array.isArray(params.tasks) && params.tasks.length === 0) {
+			return {
+				content: [{ type: "text", text: "No tasks selected; nothing to dispatch." }],
+				details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
+			};
+		}
 		const evalToolNames = spawnItems.flatMap(item => item.tools ?? []);
 		if (evalToolNames.length > 0) {
 			if (this.session.getPlanModeState?.()?.enabled === true) {
@@ -1384,9 +1383,10 @@ details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 			const agentSource = policy.agent.source;
 			const run = adopted.get(index);
 			const route = this.#reworkRoutes.get(`${toolCallId}:${index}`);
-			const agentId = route?.reason && route.rung && !route.rung.model
-				? route.previous.workerId
-				: run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName()));
+			const agentId =
+				route?.reason && route.rung && !route.rung.model
+					? route.previous.workerId
+					: (run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName())));
 			const assignment = (item.task ?? "").trim();
 			spawns.push({
 				agentId,
