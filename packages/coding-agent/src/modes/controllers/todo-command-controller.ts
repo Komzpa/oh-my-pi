@@ -1,12 +1,16 @@
 import * as fs from "node:fs/promises";
 import {
 	applyOpsToPhases,
+	getCompletionTargets,
 	getLatestTodoPhasesFromEntries,
+	getRequirementRowArtifact,
 	markdownToPhases,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
+	type RequirementRowArtifact,
 	USER_TODO_EDIT_CUSTOM_TYPE,
 } from "../../tools/todo";
+import { getLatestRequirements, isFreshRequirementVerdict } from "../../tools/requirements-ledger";
 import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { copyToClipboard } from "../../utils/clipboard";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
@@ -185,10 +189,10 @@ export class TodoCommandController {
 				this.#start(rest);
 				return;
 			case "done":
-				this.#mutateStatus(rest, "completed");
+				await this.#mutateStatus(rest, "completed");
 				return;
 			case "drop":
-				this.#mutateStatus(rest, "abandoned");
+				await this.#mutateStatus(rest, "abandoned");
 				return;
 			case "rm":
 				this.#remove(rest);
@@ -328,12 +332,19 @@ export class TodoCommandController {
 		this.ctx.showStatus(`Started: ${hit.task.content}`);
 	}
 
-	#mutateStatus(rest: string, target: "completed" | "abandoned"): void {
+	async #mutateStatus(rest: string, target: "completed" | "abandoned"): Promise<void> {
 		const op = target === "completed" ? "done" : "drop";
 		const current = this.#currentPhases();
 		const trimmed = rest.trim();
 		if (!trimmed) {
 			// no-arg: apply to all
+			if (op === "done") {
+				const items = current
+					.flatMap(phase => phase.tasks)
+					.filter(task => task.status !== "completed" && task.status !== "abandoned")
+					.map(task => task.content);
+				if (items.length > 0 && !(await this.#assertDoneAllowed(current, { items }))) return;
+			}
 			const { phases, errors } = applyOpsToPhases(current, [{ op }]);
 			if (errors.length > 0) {
 				this.ctx.showError(errors.join("; "));
@@ -346,6 +357,7 @@ export class TodoCommandController {
 
 		const taskHit = findTaskFuzzy(current, trimmed);
 		if (taskHit) {
+			if (op === "done" && !(await this.#assertDoneAllowed(current, { task: taskHit.task.content }))) return;
 			const { phases, errors } = applyOpsToPhases(current, [{ op, task: taskHit.task.content }]);
 			if (errors.length > 0) {
 				this.ctx.showError(errors.join("; "));
@@ -358,7 +370,8 @@ export class TodoCommandController {
 
 		const phaseHit = findPhaseFuzzy(current, trimmed);
 		if (phaseHit) {
-			const { phases, errors } = applyOpsToPhases(current, [{ op, phase: phaseHit.name }]);
+			if (op === "done" && !(await this.#assertDoneAllowed(current, { phase: phaseHit.name }))) return;
+			const { phases, errors } = applyOpsToPhases(current, [{ op, task: phaseHit.name }]);
 			if (errors.length > 0) {
 				this.ctx.showError(errors.join("; "));
 				return;
@@ -369,6 +382,58 @@ export class TodoCommandController {
 		}
 
 		this.ctx.showError(`No task or phase matched "${trimmed}".`);
+	}
+
+	/**
+	 * Slash `done` shares the native TodoTool completion gate so the direct UI
+	 * cannot bypass it: targets resolve through the same core selector, and
+	 * every linked requirement must hold a fresh qa-auditor pass naming the
+	 * current clean artifact of each linked row before the commit may land.
+	 */
+	async #assertDoneAllowed(
+		current: TodoPhase[],
+		todoOp: { task?: string; phase?: string; items?: string[] },
+	): Promise<boolean> {
+		const selectorErrors: string[] = [];
+		const targets = getCompletionTargets(current, todoOp, selectorErrors);
+		// applyOpsToPhases below surfaces selector errors to the user.
+		if (selectorErrors.length > 0) return true;
+		const targetRows = new Set(targets.map(target => target.content));
+		const requirements = getLatestRequirements(this.ctx.sessionManager.getBranch());
+		const applicable = requirements.filter(
+			requirement => requirement.classification === "linked" && requirement.rows.some(row => targetRows.has(row)),
+		);
+		if (applicable.length === 0) return true;
+		const artifacts = new Map<string, Promise<RequirementRowArtifact>>();
+		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
+		for (const requirement of applicable) {
+			const verdict = requirement.verdict;
+			if (!verdict || verdict.status !== "pass" || verdict.auditor !== "qa-auditor") continue;
+			for (const row of requirement.rows) {
+				if (!artifacts.has(row)) {
+					artifacts.set(row, getRequirementRowArtifact(
+						{ cwd: this.ctx.sessionManager.getCwd(), sessionManager: this.ctx.sessionManager },
+						row, current, checkoutCache,
+					));
+				}
+			}
+		}
+		const unmet: string[] = [];
+		for (const requirement of applicable) {
+			const rowArtifacts = await Promise.all(requirement.rows.map(async row => {
+				const artifact = await artifacts.get(row);
+				return artifact ? { row, head: artifact.head, dirty: artifact.dirty } : null;
+			}));
+			if (!isFreshRequirementVerdict(requirement, rowArtifacts.filter(item => item !== null))) {
+				const rows = requirement.rows.filter(row => targetRows.has(row));
+				unmet.push(`${requirement.id} (${rows.map(row => JSON.stringify(row)).join(", ")})`);
+			}
+		}
+		if (unmet.length === 0) return true;
+		this.ctx.showError(
+			`todo done is blocked until every linked requirement has a fresh qa-auditor pass for the current clean row artifact: ${unmet.join("; ")}`,
+		);
+		return false;
 	}
 
 	#remove(rest: string): void {

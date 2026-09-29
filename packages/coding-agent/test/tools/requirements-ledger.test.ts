@@ -248,8 +248,8 @@ describe("canonical requirements ledger", () => {
 		expect(merged.requirements[1]?.verdict).toBeUndefined();
 		expect(requirements[1]?.verdict?.status).toBe("pass");
 		expect(getRequirementAuditSources(merged.requirements, "R2")).toEqual([
-			{ id: "R2", rawText: "second" },
-			{ id: "R1", rawText: "first" },
+			{ id: "R2", at: AT, rawText: "second" },
+			{ id: "R1", at: AT, rawText: "first" },
 		]);
 		expect(classifyRequirement(requirements, "R1", "merged", { mergeInto: "R1" })).toHaveProperty("error");
 		expect(classifyRequirement(requirements, "R8", "not-a-requirement")).toHaveProperty("error");

@@ -42,7 +42,7 @@ export interface RequirementCounts {
 	failed: number;
 }
 
-export type RequirementAuditSource = Pick<RequirementLedgerItem, "id" | "rawText">;
+export type RequirementAuditSource = Pick<RequirementLedgerItem, "id" | "at" | "rawText">;
 
 const REQUIREMENT_ID = /^R([1-9]\d*)$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -357,10 +357,10 @@ export function getRequirementAuditSources(
 ): RequirementAuditSource[] {
 	const target = requirements.find(requirement => requirement.id === id && requirement.classification === "linked");
 	if (!target) return [];
-	const sources: RequirementAuditSource[] = [{ id: target.id, rawText: target.rawText }];
+	const sources: RequirementAuditSource[] = [{ id: target.id, at: target.at, rawText: target.rawText }];
 	for (const requirement of requirements) {
 		if (requirement.classification === "merged" && requirement.mergeInto === id) {
-			sources.push({ id: requirement.id, rawText: requirement.rawText });
+			sources.push({ id: requirement.id, at: requirement.at, rawText: requirement.rawText });
 		}
 	}
 	return sources;
