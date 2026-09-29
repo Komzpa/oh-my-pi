@@ -55,12 +55,15 @@ describe("goal deadline reminders", () => {
 		expect(formatLocalClock(due, "Asia/Tbilisi")).toBe("23:16");
 		expect(formatLocalTimestamp(due, "Asia/Tbilisi")).toBe("2026-09-25 23:16:00 Asia/Tbilisi");
 		expect(resolveTimeZone("not/a-time-zone")).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
-		const reminder = renderDeadlineReminder({
-			...state,
-			timezone: "Asia/Tbilisi",
-			goalStartedAt: due / 1000,
-			stages: [{ id: "ship", label: "Ship", expectedResult: "Verified", deadlineAt: due / 1000 + 60 }],
-		}, due / 1000);
+		const reminder = renderDeadlineReminder(
+			{
+				...state,
+				timezone: "Asia/Tbilisi",
+				goalStartedAt: due / 1000,
+				stages: [{ id: "ship", label: "Ship", expectedResult: "Verified", deadlineAt: due / 1000 + 60 }],
+			},
+			due / 1000,
+		);
 		expect(reminder).toContain("2026-09-25 23:17:00 Asia/Tbilisi");
 	});
 
@@ -499,7 +502,11 @@ test("native lifecycle preserves the original deadline without reviving stale go
 		);
 		expect(schedule.details.state.goalId).toBe(goalState!.goal.id);
 		expect(schedule.details.state.stages[0]?.deadlineAt).toBe(now - 60);
-		expect(readGoalDeadline(branch, cwd)).toEqual({ goalId: goalState!.goal.id, deadlineAt: (now - 60) * 1000, timezone: schedule.details.state.timezone });
+		expect(readGoalDeadline(branch, cwd)).toEqual({
+			goalId: goalState!.goal.id,
+			deadlineAt: (now - 60) * 1000,
+			timezone: schedule.details.state.timezone,
+		});
 		const corruptedDraft: DeadlineState = {
 			...schedule.details.state,
 			stages: schedule.details.state.stages.map(stage =>
@@ -588,7 +595,11 @@ test("native lifecycle preserves the original deadline without reviving stale go
 		);
 		expect(updated.details.state.baselineDeadlineAt).toBe(now - 60);
 		expect(updated.details.state.stages.find(stage => stage.id === "draft")?.deliveredArtifact).toBe("Usable draft");
-		expect(readGoalDeadline(branch, cwd)).toEqual({ goalId: goalState!.goal.id, deadlineAt: (now - 60) * 1000, timezone: updated.details.state.timezone });
+		expect(readGoalDeadline(branch, cwd)).toEqual({
+			goalId: goalState!.goal.id,
+			deadlineAt: (now - 60) * 1000,
+			timezone: updated.details.state.timezone,
+		});
 		const due = formatLocalTimestamp((now - 60) * 1000, updated.details.state.timezone);
 		const expectPresenceOnly = async () => {
 			const messages = (await request())?.messages;
@@ -606,7 +617,11 @@ test("native lifecycle preserves the original deadline without reviving stale go
 		expect(readGoalDeadline(branch, cwd)).toBeUndefined();
 		await runtime.resumeGoal();
 		expect((await request())?.messages?.at(-1)?.content).toContain(due);
-		expect(readGoalDeadline(branch, cwd)).toEqual({ goalId: goalState!.goal.id, deadlineAt: (now - 60) * 1000, timezone: updated.details.state.timezone });
+		expect(readGoalDeadline(branch, cwd)).toEqual({
+			goalId: goalState!.goal.id,
+			deadlineAt: (now - 60) * 1000,
+			timezone: updated.details.state.timezone,
+		});
 		const cleared = await deadlineTool!.execute("clear", { action: "clear" }, undefined, undefined, ctx);
 		expect(cleared.details.state.baselineDeadlineAt).toBeUndefined();
 		expect(cleared.details.state.stages).toEqual([]);
@@ -625,7 +640,11 @@ test("native lifecycle preserves the original deadline without reviving stale go
 			ctx,
 		);
 		expect(restored.details.state.baselineDeadlineAt).toBe(now - 60);
-		expect(readGoalDeadline(branch, cwd)).toEqual({ goalId: goalState!.goal.id, deadlineAt: (now - 60) * 1000, timezone: restored.details.state.timezone });
+		expect(readGoalDeadline(branch, cwd)).toEqual({
+			goalId: goalState!.goal.id,
+			deadlineAt: (now - 60) * 1000,
+			timezone: restored.details.state.timezone,
+		});
 		await runtime.completeGoalFromTool();
 		await expectPresenceOnly();
 		await runtime.createGoal({ objective: "Different goal" });

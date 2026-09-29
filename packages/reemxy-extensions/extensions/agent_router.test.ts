@@ -1,8 +1,8 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import { describe, expect, test } from "bun:test";
-	import { execFileSync } from "node:child_process";
-	import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-	import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import agentRouter, {
@@ -18,22 +18,29 @@ import agentRouter, {
 } from "./agent_router";
 
 function ctx(overrides: Partial<ExtensionContext> = {}): ExtensionContext {
-	const models = Object.values(AGENT_POOLS).flatMap(config => [...config.pool, ...config.fallbacks]).map(spec => {
-		const base = spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
-		const slash = base.indexOf("/");
-		return { provider: base.slice(0, slash), id: base.slice(slash + 1) };
-	});
+	const models = Object.values(AGENT_POOLS)
+		.flatMap(config => [...config.pool, ...config.fallbacks])
+		.map(spec => {
+			const base = spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
+			const slash = base.indexOf("/");
+			return { provider: base.slice(0, slash), id: base.slice(slash + 1) };
+		});
 	return {
 		sessionManager: { getHeader: () => ({ id: "session-1" }) },
 		models: {
 			list: () => models,
-			resolve: (spec: string) => models.find(model => `${model.provider}/${model.id}` === spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "")),
+			resolve: (spec: string) =>
+				models.find(
+					model => `${model.provider}/${model.id}` === spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, ""),
+				),
 		},
 		...overrides,
 	} as unknown as ExtensionContext;
 }
 
-function ctxWithHealth(healthByKey: Record<string, { state: string; accounts: Array<Record<string, unknown>> }>): ExtensionContext {
+function ctxWithHealth(
+	healthByKey: Record<string, { state: string; accounts: Array<Record<string, unknown>> }>,
+): ExtensionContext {
 	const base = ctx();
 	return {
 		...base,
@@ -41,7 +48,8 @@ function ctxWithHealth(healthByKey: Record<string, { state: string; accounts: Ar
 			authStorage: {
 				health: {
 					model: async (provider: string, options: { modelId?: string }) =>
-						healthByKey[`${provider}/${options.modelId}`] ?? healthByKey[provider] ?? { state: "unknown", accounts: [] },
+						healthByKey[`${provider}/${options.modelId}`] ??
+						healthByKey[provider] ?? { state: "unknown", accounts: [] },
 				},
 			},
 		},
@@ -94,7 +102,7 @@ function modelLevel(spec: string): ThinkingLevel | undefined {
 	const separator = spec.lastIndexOf(":");
 	if (separator <= spec.indexOf("/")) return undefined;
 	const level = spec.slice(separator + 1);
-	return THINKING_ORDER.includes(level as ThinkingLevel) ? level as ThinkingLevel : undefined;
+	return THINKING_ORDER.includes(level as ThinkingLevel) ? (level as ThinkingLevel) : undefined;
 }
 
 function levelIndex(level: ThinkingLevel): number {
@@ -108,10 +116,9 @@ function effectiveFloor(spec: string): ThinkingLevel | undefined {
 function canRunAtOrBelow(spec: string, intended: ThinkingLevel): boolean {
 	const requested = modelLevel(spec);
 	const floor = effectiveFloor(spec);
-	const effective = floor && requested && levelIndex(requested) < levelIndex(floor) ? floor : requested ?? floor;
+	const effective = floor && requested && levelIndex(requested) < levelIndex(floor) ? floor : (requested ?? floor);
 	return effective === undefined || levelIndex(effective) <= levelIndex(intended);
 }
-
 
 describe("agent router", () => {
 	test("uniform crypto shuffle can cover every coder pool member as the chosen model", async () => {
@@ -120,7 +127,9 @@ describe("agent router", () => {
 		try {
 			for (let i = 0; i < 600 && seen.size < AGENT_POOLS.coder.pool.length; i++) {
 				const state = createRouterState();
-				const result = await routeSubagentSpawn({ agent: "coder", spawnKey: `coder-${i}` }, ctx(), state, { stateFile: file });
+				const result = await routeSubagentSpawn({ agent: "coder", spawnKey: `coder-${i}` }, ctx(), state, {
+					stateFile: file,
+				});
 				expect(result).toBeDefined();
 				seen.add(result!.model[0]!);
 			}
@@ -138,7 +147,9 @@ describe("agent router", () => {
 				stateFile: file,
 				shuffle: reversed,
 			});
-			expect(result?.model).toEqual([...AGENT_POOLS["ui-coder"].pool].reverse().concat(AGENT_POOLS["ui-coder"].fallbacks));
+			expect(result?.model).toEqual(
+				[...AGENT_POOLS["ui-coder"].pool].reverse().concat(AGENT_POOLS["ui-coder"].fallbacks),
+			);
 			expect(result?.model).toContain("claude-bridge/claude-sonnet-5");
 			expect(result?.model).not.toContain("anthropic/claude-sonnet-5:medium");
 			expect(result?.note).toBe(`pool pick ${result?.model[0]} (eval)`);
@@ -692,7 +703,9 @@ describe("agent router", () => {
 			expect(refused).toMatchObject({ block: true });
 			expect(refused.reason).toContain("empty.txt");
 			expect(refused.reason).toContain("empty");
-			expect(await call({ toolName: "write", input: { path: "empty.txt", content: "", replace: true } }, context)).toBeUndefined();
+			expect(
+				await call({ toolName: "write", input: { path: "empty.txt", content: "", replace: true } }, context),
+			).toBeUndefined();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -710,8 +723,12 @@ describe("agent router", () => {
 			expect(refused).toMatchObject({ block: true });
 			expect(refused.reason).toContain("tracked.txt");
 			expect(refused.reason).toContain("5%");
-			expect(await call({ toolName: "write", input: { path: "tracked.txt", content: "tiny", replace: true } }, context)).toBeUndefined();
-			expect(await call({ toolName: "write", input: { path: "new.txt", content: "normal in-repo write" } }, context)).toBeUndefined();
+			expect(
+				await call({ toolName: "write", input: { path: "tracked.txt", content: "tiny", replace: true } }, context),
+			).toBeUndefined();
+			expect(
+				await call({ toolName: "write", input: { path: "new.txt", content: "normal in-repo write" } }, context),
+			).toBeUndefined();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

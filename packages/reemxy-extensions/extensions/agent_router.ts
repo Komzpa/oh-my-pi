@@ -15,10 +15,21 @@ export interface PoolConfig {
 
 // Pool lengths are routing policy; model selectors and fallback order live in agent frontmatter.
 const POOL_SIZES: Record<string, number> = {
-	coder: 4, "ui-coder": 3, scout: 2, "gate-runner": 2, "git-pr-owner": 2,
-	scribe: 2, reviewer: 3, workhorse: 3, "retro-facilitator": 3,
-	architect: 4, "plan-doctor": 3, "security-reviewer": 0,
-	researcher: 1, "business-analyst": 3, creative: 2,
+	coder: 4,
+	"ui-coder": 3,
+	scout: 2,
+	"gate-runner": 2,
+	"git-pr-owner": 2,
+	scribe: 2,
+	reviewer: 3,
+	workhorse: 3,
+	"retro-facilitator": 3,
+	architect: 4,
+	"plan-doctor": 3,
+	"security-reviewer": 0,
+	researcher: 1,
+	"business-analyst": 3,
+	creative: 2,
 };
 
 const WRITE_CAPABLE_WORKERS = new Set(["coder", "ui-coder", "workhorse", "git-pr-owner"]);
@@ -47,8 +58,18 @@ export const AGENT_POOLS: Record<string, PoolConfig> = {
 	...Object.fromEntries(Object.entries(POOL_SIZES).map(([agent, size]) => [agent, profilePool(agent, size)])),
 	// The built-in task agent has no package profile; retain its independent router policy.
 	task: {
-		pool: ["codex-lb/gpt-6-luna:medium", "kimi-code/kimi-for-coding:high", "deepseek/deepseek-v4-pro:high", "kimi-code/k3:high"],
-		fallbacks: ["codex-lb/gpt-6-sol:medium", "claude-bridge/claude-sonnet-5", "codex-lb/Qwen3.8-27B", "openrouter/thinkingmachines/inkling:free"],
+		pool: [
+			"codex-lb/gpt-6-luna:medium",
+			"kimi-code/kimi-for-coding:high",
+			"deepseek/deepseek-v4-pro:high",
+			"kimi-code/k3:high",
+		],
+		fallbacks: [
+			"codex-lb/gpt-6-sol:medium",
+			"claude-bridge/claude-sonnet-5",
+			"codex-lb/Qwen3.8-27B",
+			"openrouter/thinkingmachines/inkling:free",
+		],
 	},
 };
 
@@ -182,7 +203,8 @@ function canonicalPath(target: string): string {
 
 function fileToolTargets(input: Record<string, unknown>): string[] {
 	const targets = [typeof input.path === "string" ? input.path : undefined];
-	if (Array.isArray(input.paths)) targets.push(...input.paths.filter((target): target is string => typeof target === "string"));
+	if (Array.isArray(input.paths))
+		targets.push(...input.paths.filter((target): target is string => typeof target === "string"));
 	if (Array.isArray(input.edits)) {
 		for (const edit of input.edits) {
 			if (edit && typeof edit === "object" && typeof (edit as Record<string, unknown>).rename === "string") {
@@ -196,7 +218,8 @@ function fileToolTargets(input: Record<string, unknown>): string[] {
 			const patchFile = /^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+)$/.exec(line.trim());
 			const patchMove = /^\*\*\*\s+Move to:\s*(.+)$/.exec(line.trim());
 			const unified = /^(?:--- a\/|\+\+\+ b\/)(.+)$/.exec(line.trim());
-			const target = hashline?.[1]?.replace(/#[0-9a-f]{4}$/i, "") ?? patchFile?.[1] ?? patchMove?.[1] ?? unified?.[1];
+			const target =
+				hashline?.[1]?.replace(/#[0-9a-f]{4}$/i, "") ?? patchFile?.[1] ?? patchMove?.[1] ?? unified?.[1];
 			if (target && target !== "/dev/null") targets.push(target);
 		}
 	}
@@ -219,7 +242,10 @@ async function truncatingWriteRefusal(requestedPath: string, input: Record<strin
 	);
 	const content = typeof input.content === "string" ? input.content : "";
 	if (content.length === 0) {
-		return { block: true, reason: `Refusing write to ${requestedPath}: content is empty; pass replace: true to confirm intentional replacement.` };
+		return {
+			block: true,
+			reason: `Refusing write to ${requestedPath}: content is empty; pass replace: true to confirm intentional replacement.`,
+		};
 	}
 	const targetRepo = vcs.git(target);
 	if (!targetRepo || !existsSync(target)) return undefined;
@@ -307,10 +333,12 @@ export async function agentHasLiveModel(agent: string, ctx: ExtensionContext): P
 export async function countLiveWorkerModels(ctx: ExtensionContext): Promise<number> {
 	const specs = [...new Set(Object.values(AGENT_POOLS).flatMap(config => [...config.pool, ...config.fallbacks]))];
 	const { available } = await availablePoolMembers(specs, ctx);
-	const models = new Set(available.map(spec => {
-		const model = ctx.models?.resolve?.(spec);
-		return model ? `${model.provider}/${model.id}` : spec;
-	}));
+	const models = new Set(
+		available.map(spec => {
+			const model = ctx.models?.resolve?.(spec);
+			return model ? `${model.provider}/${model.id}` : spec;
+		}),
+	);
 	return models.size;
 }
 
@@ -463,7 +491,8 @@ export function recordTaskOutcome(
 			const id = stringValue(job.id);
 			const status = job.status;
 			const durationMs = resultDuration(job);
-			if (!id || !["completed", "failed", "cancelled"].includes(String(status)) || durationMs === undefined) continue;
+			if (!id || !["completed", "failed", "cancelled"].includes(String(status)) || durationMs === undefined)
+				continue;
 			const matching = [...state.spawns.values()].filter(spawn => spawn.spawnKey === id && !spawn.recordedOutcome);
 			if (matching.length !== 1) continue;
 			const spawn = matching[0]!;
@@ -471,11 +500,16 @@ export function recordTaskOutcome(
 			const resolvedModel = stringValue(job.resolvedModel);
 			const fallbackReason = takeFallbackReason(state, spawn, resolvedModel);
 			const record: OutcomeRecord = {
-				kind: "outcome", spawnKey: spawn.spawnKey, jobId: id,
+				kind: "outcome",
+				spawnKey: spawn.spawnKey,
+				jobId: id,
 				at: (options.now ?? (() => new Date()))().toISOString(),
 				sessionId: sessionId(ctx) ?? spawn.sessionId,
-				agent: spawn.agent, chosen: spawn.chosen, order: spawn.order,
-				status: status as OutcomeRecord["status"], durationMs,
+				agent: spawn.agent,
+				chosen: spawn.chosen,
+				order: spawn.order,
+				status: status as OutcomeRecord["status"],
+				durationMs,
 				...(resolvedModel ? { resolvedModel } : {}),
 				...(fallbackReason ? { fallbackReason } : {}),
 			};

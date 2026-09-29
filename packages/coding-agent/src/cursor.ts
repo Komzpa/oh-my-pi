@@ -42,7 +42,7 @@ import {
 	resolveToCwd,
 	splitPathAndSelPreferringLiteral,
 } from "./tools/path-utils";
-import type { TodoPersistedEdit, TodoPhase, TodoStatus } from "@oh-my-pi/pi-tui/tools/todo";9e4572b272 (fix(coding-agent): compact todo persistence)
+import type { TodoPersistedEdit, TodoPhase, TodoStatus } from "@oh-my-pi/pi-tui/tools/todo";
 
 /** Phase used for Cursor-owned tasks with no local phase grouping. */
 const CURSOR_TODO_PHASE = "Tasks";

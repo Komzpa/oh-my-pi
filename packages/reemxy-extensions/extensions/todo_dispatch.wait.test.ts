@@ -69,10 +69,12 @@ function forecastTodoPlan(phases: WaitTestPhase[], { now }: { now: number }) {
 				content: task.content,
 				status,
 				owner: task.schedule.owner ?? null,
-				ready: (status === "pending" || status === "in_progress") && dependencies.every(dependency => {
-					const prerequisite = statusByContent.get(dependency);
-					return prerequisite === "completed" || prerequisite === "abandoned";
-				}),
+				ready:
+					(status === "pending" || status === "in_progress") &&
+					dependencies.every(dependency => {
+						const prerequisite = statusByContent.get(dependency);
+						return prerequisite === "completed" || prerequisite === "abandoned";
+					}),
 				earliestStart: now,
 				earliestFinish: now,
 				latestStart: now,
@@ -130,9 +132,15 @@ async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initia
 		getTaskMaxConcurrency: () => 20,
 		hasPendingMessages: () => false,
 		isIdle: () => true,
-		setInterval: (callback: () => void | Promise<void>) => { intervals.push(callback); return callback; },
+		setInterval: (callback: () => void | Promise<void>) => {
+			intervals.push(callback);
+			return callback;
+		},
 		clearInterval: () => undefined,
-		setTimeout: (callback: () => void | Promise<void>) => { timeouts.push(callback); return callback; },
+		setTimeout: (callback: () => void | Promise<void>) => {
+			timeouts.push(callback);
+			return callback;
+		},
 		clearTimer: () => undefined,
 	} as unknown as ExtensionContext;
 	await handlers.get("session_start")!({}, ctx);
@@ -141,9 +149,15 @@ async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initia
 		ctx,
 		notices,
 		entries,
-		setRecent: (jobs: unknown[]) => { recent = jobs; },
-		tick: async () => { await intervals.at(-1)?.(); },
-		fireIdleWake: async () => { await timeouts.at(-1)?.(); },
+		setRecent: (jobs: unknown[]) => {
+			recent = jobs;
+		},
+		tick: async () => {
+			await intervals.at(-1)?.();
+		},
+		fireIdleWake: async () => {
+			await timeouts.at(-1)?.();
+		},
 		shutdown: () => handlers.get("session_shutdown")?.({}, ctx),
 	};
 }
@@ -182,7 +196,16 @@ test("repeated retro and checkpoint notices do not send another chief turn", asy
 		retroRow.schedule.resources = [];
 		const retro = await noticeHarness(retroPhases, now + 24 * 60 * 60_000);
 		try {
-			await retro.handlers.get("tool_result")!({ toolName: "todo", toolCallId: "retro-init", isError: false, content: [], details: { phases: retroPhases } }, retro.ctx);
+			await retro.handlers.get("tool_result")!(
+				{
+					toolName: "todo",
+					toolCallId: "retro-init",
+					isError: false,
+					content: [],
+					details: { phases: retroPhases },
+				},
+				retro.ctx,
+			);
 			retroRow.status = "completed";
 			await retro.tick();
 			expect(retro.notices).toHaveLength(1);
@@ -219,7 +242,15 @@ test("an identical due notice is suppressed but a new worker failure wakes chief
 			await h.handlers.get("agent_end")!({}, h.ctx);
 			await h.fireIdleWake();
 			expect(h.notices).toHaveLength(1);
-			h.setRecent([{ id: "failed-new-worker", type: "task", status: "failed", agentId: "worker-new", label: "Build verification" }]);
+			h.setRecent([
+				{
+					id: "failed-new-worker",
+					type: "task",
+					status: "failed",
+					agentId: "worker-new",
+					label: "Build verification",
+				},
+			]);
 			await h.handlers.get("agent_end")!({}, h.ctx);
 			await h.fireIdleWake();
 			expect(h.notices).toHaveLength(2);
@@ -270,7 +301,13 @@ test("wait is allowed when open rows depend on running work or user approval", a
 	const api = {
 		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
 		getActiveTools: () => ["task", "todo", "wait"],
-		pi: { forecastTodoPlan, formatPlanForecast, formatTaskForecast, getLatestTodoPhasesFromEntries: () => phases, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
+		pi: {
+			forecastTodoPlan,
+			formatPlanForecast,
+			formatTaskForecast,
+			getLatestTodoPhasesFromEntries: () => phases,
+			readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }),
+		},
 		appendEntry: () => undefined,
 		sendMessage: () => undefined,
 	} as unknown as ExtensionAPI;
@@ -282,14 +319,21 @@ test("wait is allowed when open rows depend on running work or user approval", a
 			getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
 			getSessionFile: () => undefined,
 		},
-		getAsyncJobSnapshot: () => ({ running, recent: [], nonJobAgents: running.map(job => ({ id: job.agentId, live: true })) }),
+		getAsyncJobSnapshot: () => ({
+			running,
+			recent: [],
+			nonJobAgents: running.map(job => ({ id: job.agentId, live: true })),
+		}),
 		getTaskMaxConcurrency: () => 20,
 		hasPendingMessages: () => false,
 		isIdle: () => false,
 		setTimeout: () => ({}),
 		clearTimer: () => undefined,
 	} as unknown as ExtensionContext;
-	const result = await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "wait-on-chained-work", input: {} }, ctx);
+	const result = await handlers.get("tool_call")!(
+		{ toolName: "wait", toolCallId: "wait-on-chained-work", input: {} },
+		ctx,
+	);
 	expect(result).toBeUndefined();
 });
 
@@ -323,7 +367,8 @@ async function waitOnReadyRowWithStaleOwner(): Promise<{ block?: boolean; reason
 		}));
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 		const api = {
-			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
+				handlers.set(event, handler),
 			getActiveTools: () => ["task", "todo", "wait"],
 			pi: {
 				forecastTodoPlan,
@@ -346,7 +391,7 @@ async function waitOnReadyRowWithStaleOwner(): Promise<{ block?: boolean; reason
 			getAsyncJobSnapshot: () => ({
 				running,
 				recent: [],
-				nonJobAgents: running.map((job) => ({ id: job.agentId, live: true })),
+				nonJobAgents: running.map(job => ({ id: job.agentId, live: true })),
 			}),
 			getTaskMaxConcurrency: () => 20,
 			hasPendingMessages: () => false,
@@ -354,7 +399,9 @@ async function waitOnReadyRowWithStaleOwner(): Promise<{ block?: boolean; reason
 			setTimeout: () => ({}),
 			clearTimer: () => undefined,
 		} as unknown as ExtensionContext;
-		return await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "ready", input: {} }, ctx) as { block?: boolean; reason?: string } | undefined;
+		return (await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "ready", input: {} }, ctx)) as
+			| { block?: boolean; reason?: string }
+			| undefined;
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}
@@ -383,7 +430,13 @@ test("capacity reports zero when no authenticated worker profile can start", asy
 	const api = {
 		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
 		getActiveTools: () => ["task", "todo", "wait"],
-		pi: { forecastTodoPlan, formatPlanForecast, formatTaskForecast, getLatestTodoPhasesFromEntries: () => phases, readGoalDeadline: () => undefined },
+		pi: {
+			forecastTodoPlan,
+			formatPlanForecast,
+			formatTaskForecast,
+			getLatestTodoPhasesFromEntries: () => phases,
+			readGoalDeadline: () => undefined,
+		},
 		appendEntry: () => undefined,
 		sendMessage: () => undefined,
 	} as unknown as ExtensionAPI;
@@ -403,7 +456,7 @@ test("capacity reports zero when no authenticated worker profile can start", asy
 		setTimeout: () => ({}),
 		clearTimer: () => undefined,
 	} as unknown as ExtensionContext;
-	const result = await handlers.get("context")!({ messages: [] }, ctx) as { messages?: Array<{ content: string }> };
+	const result = (await handlers.get("context")!({ messages: [] }, ctx)) as { messages?: Array<{ content: string }> };
 	expect(result?.messages?.at(-1)?.content).toContain("Task cap=0");
 	const onlyInklingModel = { provider: "openrouter", id: "thinkingmachines/inkling:free" };
 	const oneProviderCtx = {
@@ -411,20 +464,30 @@ test("capacity reports zero when no authenticated worker profile can start", asy
 		sessionManager: { ...ctx.sessionManager, getHeader: () => ({ id: "capacity-one" }) },
 		models: {
 			list: () => [onlyInklingModel],
-			resolve: (spec: string) => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === "openrouter/thinkingmachines/inkling:free" ? onlyInklingModel : undefined,
+			resolve: (spec: string) =>
+				spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === "openrouter/thinkingmachines/inkling:free"
+					? onlyInklingModel
+					: undefined,
 		},
 	} as unknown as ExtensionContext;
-	const oneResult = await handlers.get("context")!({ messages: [] }, oneProviderCtx) as { messages?: Array<{ content: string }> };
+	const oneResult = (await handlers.get("context")!({ messages: [] }, oneProviderCtx)) as {
+		messages?: Array<{ content: string }>;
+	};
 	expect(oneResult?.messages?.at(-1)?.content).toContain("Task cap=1");
 });
-
 
 test("PLAN CHECK puts stale no-commit workers first and never aborts them", async () => {
 	const worktrees = [0, 1, 2].map(() => fs.mkdtempSync(path.join(os.tmpdir(), "todo-worker-tree-")));
 	const sessions = fs.mkdtempSync(path.join(os.tmpdir(), "todo-worker-session-"));
 	const sessionFile = path.join(sessions, "main.jsonl");
 	fs.mkdirSync(path.join(sessions, "main"));
-	const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "test@example.com" };
+	const gitEnv = {
+		...process.env,
+		GIT_AUTHOR_NAME: "test",
+		GIT_AUTHOR_EMAIL: "test@example.com",
+		GIT_COMMITTER_NAME: "test",
+		GIT_COMMITTER_EMAIL: "test@example.com",
+	};
 	const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: gitEnv });
 	for (const cwd of worktrees) {
 		git(cwd, "init", "-q", "-b", "main");
@@ -478,9 +541,17 @@ test("PLAN CHECK puts stale no-commit workers first and never aborts them", asyn
 	const aborted: string[] = [];
 	vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
 	for (const [index, id] of ["worker-a", "worker-b", "worker-c"].entries())
-		registry.register({ id, displayName: id, kind: "sub", session: { sessionManager: { getCwd: () => worktrees[index] }, abort: () => aborted.push(id) } as never });
+		registry.register({
+			id,
+			displayName: id,
+			kind: "sub",
+			session: { sessionManager: { getCwd: () => worktrees[index] }, abort: () => aborted.push(id) } as never,
+		});
 	for (const id of ["worker-a", "worker-b", "worker-c"])
-		fs.writeFileSync(path.join(sessions, "main", `${id}.jsonl`), `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: "bun run build" } }] } })}\n`);
+		fs.writeFileSync(
+			path.join(sessions, "main", `${id}.jsonl`),
+			`${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: "bun run build" } }] } })}\n`,
+		);
 	let tick: (() => void | Promise<void>) | undefined;
 	const ctx = {
 		cwd: worktrees[0],
@@ -489,12 +560,19 @@ test("PLAN CHECK puts stale no-commit workers first and never aborts them", asyn
 			getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
 			getSessionFile: () => sessionFile,
 		},
-		getAsyncJobSnapshot: () => ({ running, recent: [], nonJobAgents: running.map(job => ({ id: job.agentId, live: true })) }),
+		getAsyncJobSnapshot: () => ({
+			running,
+			recent: [],
+			nonJobAgents: running.map(job => ({ id: job.agentId, live: true })),
+		}),
 		getTaskMaxConcurrency: () => 3,
 		hasPendingMessages: () => false,
 		isIdle: () => true,
 		setTimeout: () => ({}),
-		setInterval: (callback: () => void | Promise<void>) => { tick = callback; return {}; },
+		setInterval: (callback: () => void | Promise<void>) => {
+			tick = callback;
+			return {};
+		},
 		clearTimer: () => undefined,
 	} as unknown as ExtensionContext;
 	try {
@@ -548,7 +626,7 @@ test("dispatcher renders forecast and deadline times in the persisted goal timez
 		setTimeout: () => ({}),
 		clearTimer: () => undefined,
 	} as unknown as ExtensionContext;
-	const result = await handlers.get("context")!({ messages: [] }, ctx) as { messages?: Array<{ content: string }> };
+	const result = (await handlers.get("context")!({ messages: [] }, ctx)) as { messages?: Array<{ content: string }> };
 	const content = result.messages?.at(-1)?.content ?? "";
 	expect(content).toContain("P95=2026-09-25 23:16:00 Asia/Tbilisi");
 	expect(content).toContain("2026-09-25 23:17:00 Asia/Tbilisi");
@@ -563,19 +641,28 @@ test("wait refusals deduplicate by rendered content across plan revisions", asyn
 		const [runningTask, readyTask] = phases[0]!.tasks;
 		readyTask!.schedule.dependencies = [];
 		readyTask!.schedule.resources = [];
-		const running = [{
-			id: "task-1",
-			agentId: "worker-a",
-			type: "task" as const,
-			status: "running" as const,
-			label: runningTask!.content,
-			startTime: now,
-		}];
+		const running = [
+			{
+				id: "task-1",
+				agentId: "worker-a",
+				type: "task" as const,
+				status: "running" as const,
+				label: runningTask!.content,
+				startTime: now,
+			},
+		];
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 		const api = {
-			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
+				handlers.set(event, handler),
 			getActiveTools: () => ["task", "todo", "wait"],
-			pi: { forecastTodoPlan, formatPlanForecast, formatTaskForecast, getLatestTodoPhasesFromEntries: () => phases, readGoalDeadline: () => undefined },
+			pi: {
+				forecastTodoPlan,
+				formatPlanForecast,
+				formatTaskForecast,
+				getLatestTodoPhasesFromEntries: () => phases,
+				readGoalDeadline: () => undefined,
+			},
 			appendEntry: () => undefined,
 			sendMessage: () => undefined,
 		} as unknown as ExtensionAPI;
@@ -594,7 +681,10 @@ test("wait refusals deduplicate by rendered content across plan revisions", asyn
 			setTimeout: () => ({}),
 			clearTimer: () => undefined,
 		} as unknown as ExtensionContext;
-		const callWait = async () => await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "dedup", input: {} }, ctx) as { block?: boolean; reason?: string } | undefined;
+		const callWait = async () =>
+			(await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "dedup", input: {} }, ctx)) as
+				| { block?: boolean; reason?: string }
+				| undefined;
 		const first = await callWait();
 		expect(first?.block).toBe(true);
 		readyTask!.schedule.estimate.updatedAt = now + 1;
@@ -617,7 +707,9 @@ test("OMP_LANE_UNIT suppresses chief gates, retros and continuation nudges", asy
 	row.status = "pending";
 	row.schedule.dependencies = [];
 	row.schedule.owner = undefined;
-	const branch: unknown[] = [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases } } }];
+	const branch: unknown[] = [
+		{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases } } },
+	];
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	let providerRegistered = false;
 	let timers = 0;
@@ -626,11 +718,16 @@ test("OMP_LANE_UNIT suppresses chief gates, retros and continuation nudges", asy
 		try {
 			process.env.OMP_LANE_UNIT = "";
 			await todoDispatch({
-				on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+				on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
+					handlers.set(event, handler),
 				getActiveTools: () => ["task", "todo", "wait"],
-				registerSoftToolRequirementProvider: () => { providerRegistered = true; },
+				registerSoftToolRequirementProvider: () => {
+					providerRegistered = true;
+				},
 				appendEntry: () => undefined,
-				sendMessage: (message: unknown) => { sent.push(message); },
+				sendMessage: (message: unknown) => {
+					sent.push(message);
+				},
 				pi: {
 					forecastTodoPlan,
 					formatPlanForecast,
@@ -651,22 +748,33 @@ test("OMP_LANE_UNIT suppresses chief gates, retros and continuation nudges", asy
 			getTaskMaxConcurrency: () => 16,
 			isIdle: () => true,
 			hasPendingMessages: () => false,
-			setTimeout: () => { timers += 1; return {}; },
+			setTimeout: () => {
+				timers += 1;
+				return {};
+			},
 			clearTimer: () => undefined,
-			setInterval: () => { timers += 1; return {}; },
+			setInterval: () => {
+				timers += 1;
+				return {};
+			},
 			clearInterval: () => undefined,
 		} as unknown as ExtensionContext;
 		handlers.get("session_start")!({}, ctx);
 		handlers.get("input")!({ source: "user", content: "No, that is wrong" }, ctx);
-		const wait = await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "lane-wait", input: {} }, ctx) as { block?: boolean } | undefined;
+		const wait = (await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "lane-wait", input: {} }, ctx)) as
+			| { block?: boolean }
+			| undefined;
 		const context = await handlers.get("context")!({ messages: [] }, ctx);
-		const todoResult = await handlers.get("tool_result")!({
-			toolName: "todo",
-			toolCallId: "lane-todo",
-			isError: false,
-			content: [],
-			details: { phases },
-		}, ctx);
+		const todoResult = await handlers.get("tool_result")!(
+			{
+				toolName: "todo",
+				toolCallId: "lane-todo",
+				isError: false,
+				content: [],
+				details: { phases },
+			},
+			ctx,
+		);
 		await handlers.get("agent_end")!({}, ctx);
 		expect(providerRegistered).toBe(false);
 		expect(wait).toBeUndefined();
@@ -677,7 +785,9 @@ test("OMP_LANE_UNIT suppresses chief gates, retros and continuation nudges", asy
 	} finally {
 		if (previousLane === undefined) delete process.env.OMP_LANE_UNIT;
 		else process.env.OMP_LANE_UNIT = previousLane;
-		handlers.get("session_shutdown")?.({}, { getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }) } as unknown as ExtensionContext);
+		handlers.get("session_shutdown")?.({}, {
+			getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+		} as unknown as ExtensionContext);
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}
 });

@@ -84,7 +84,8 @@ import {
 	findRespawnOwnerRows,
 	type TodoExecutorObservation,
 } from "../tools/todo-executor";
-import {	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+import {
+	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
 	type SubagentLifecyclePayload,
 	type SubagentProgressPayload,
@@ -104,7 +105,8 @@ import {
 	cfgTaskMaxRuntimeMs,
 	cfgTaskReworkLadder,
 	type TaskReworkLadderEntry,
-	cfgTaskSpeculativeLaunch,} from "./settings";
+	cfgTaskSpeculativeLaunch,
+} from "./settings";
 
 function renderSubagentUserPrompt(assignment: string): string {
 	return prompt.render(subagentUserPromptTemplate, {
@@ -402,7 +404,7 @@ function planSpawns(rawParams: unknown, batchEnabled: boolean, defaultAgent: str
 /**
  * One sync-executed spawn: its item, position in the original call, (for mixed
  * calls) a pre-claimed agent id, and a run already started speculatively.
- */interface SyncSpawnRef {
+ */ interface SyncSpawnRef {
 	item: TaskItem;
 	index: number;
 	run?: SpawnRun;
@@ -1294,7 +1296,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				content: [{ type: "text", text: "No tasks selected; nothing to dispatch." }],
 				details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 			};
-		}		const evalToolNames = spawnItems.flatMap(item => item.tools ?? []);
+		}
+		const evalToolNames = spawnItems.flatMap(item => item.tools ?? []);
 		if (evalToolNames.length > 0) {
 			if (this.session.getPlanModeState?.()?.enabled === true) {
 				return createTaskModeError("Task execution failed: Eval-defined tools are unavailable in plan mode.");
@@ -1313,7 +1316,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			if (decision.route)
 				this.#reworkRoutes.set(`${toolCallId}:${normalizedSpawnParams.indexOf(spawn)}`, decision.route);
 		}
-		const resolvedAgents = normalizedSpawnParams.map(spawn => spawn.agent ?? defaultAgent);		// Resolve every item before choosing an execution path. No executor or
+		const resolvedAgents = normalizedSpawnParams.map(spawn => spawn.agent ?? defaultAgent); // Resolve every item before choosing an execution path. No executor or
 		// job manager may observe a batch unless every effective policy is valid.
 		const preflights = await Promise.all(
 			normalizedSpawnParams.map(async spawn => {
@@ -1473,7 +1476,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				route?.reason && route.rung && !route.rung.model
 					? route.previous.workerId
 					: (run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName())));
-			const assignment = (item.task ?? "").trim();			spawns.push({
+			const assignment = (item.task ?? "").trim();
+			spawns.push({
 				agentId,
 				item,
 				index,

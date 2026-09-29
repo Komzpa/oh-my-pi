@@ -186,7 +186,12 @@ export function formatLocalTimestamp(value: number, timeZone?: string): string {
 export function formatLocalClock(value: number, timeZone?: string): string {
 	if (!Number.isFinite(value)) return "unknown";
 	const zone = resolveTimeZone(timeZone);
-	return new Intl.DateTimeFormat("en-GB", { timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(value));
+	return new Intl.DateTimeFormat("en-GB", {
+		timeZone: zone,
+		hour: "2-digit",
+		minute: "2-digit",
+		hourCycle: "h23",
+	}).format(new Date(value));
 }
 
 export function rehydrateDeadlineState(entries: readonly unknown[]): DeadlineState | null {
@@ -242,6 +247,11 @@ export function readGoalDeadline(
 		return undefined;
 	const deadlineAt = state.baselineDeadlineAt ?? Math.max(...state.stages.map(stage => stage.deadlineAt));
 	return Number.isFinite(deadlineAt)
-		? { goalId: goal.id, deadlineAt: deadlineAt * 1_000, timezone: resolveTimeZone(state.timezone), ...(goal.status === "paused" ? { paused: true } : {}) }
+		? {
+				goalId: goal.id,
+				deadlineAt: deadlineAt * 1_000,
+				timezone: resolveTimeZone(state.timezone),
+				...(goal.status === "paused" ? { paused: true } : {}),
+			}
 		: undefined;
 }

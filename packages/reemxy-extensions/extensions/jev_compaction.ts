@@ -56,7 +56,10 @@ function textOf(message: unknown): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
 	return content
-		.filter((part): part is { type: string; text?: unknown } => Boolean(part) && typeof part === "object" && "type" in part)
+		.filter(
+			(part): part is { type: string; text?: unknown } =>
+				Boolean(part) && typeof part === "object" && "type" in part,
+		)
 		.filter(part => part.type === "text" && typeof part.text === "string")
 		.map(part => String(part.text))
 		.join(" ");
@@ -68,7 +71,10 @@ export function conversationTail(messages: readonly unknown[]): string[] {
 			if (!message || typeof message !== "object") return false;
 			return ["user", "assistant"].includes(String((message as { role?: unknown }).role));
 		})
-		.map(message => `${String((message as { role?: unknown }).role)}: ${textOf(message).replace(/\s+/g, " ").trim().slice(0, 1_200)}`)
+		.map(
+			message =>
+				`${String((message as { role?: unknown }).role)}: ${textOf(message).replace(/\s+/g, " ").trim().slice(0, 1_200)}`,
+		)
 		.filter(line => !line.endsWith(": "))
 		.slice(-12);
 }
@@ -85,7 +91,9 @@ export function systemOneEndpoint(): { url: string; model: string; local: boolea
 	const host = new URL(url).hostname;
 	return {
 		url,
-		model: process.env.SYSTEM_ONE_MODEL?.trim() || (host === "127.0.0.1" || host === "localhost" ? "gemma4:12b" : "jev-latest"),
+		model:
+			process.env.SYSTEM_ONE_MODEL?.trim() ||
+			(host === "127.0.0.1" || host === "localhost" ? "gemma4:12b" : "jev-latest"),
 		local: host === "127.0.0.1" || host === "localhost" || host === "[::1]",
 	};
 }
@@ -115,17 +123,20 @@ async function askJev(state: Record<string, unknown>, signal?: AbortSignal): Pro
 			questions: {
 				work_settled: {
 					type: "noul",
-					instructions: "The user's latest request is finished and reported. Nothing is half-done, mid-edit, unverified, or waiting on another step.",
+					instructions:
+						"The user's latest request is finished and reported. Nothing is half-done, mid-edit, unverified, or waiting on another step.",
 					criteria: { true: "clean stopping point", false: "work remains in flight" },
 				},
 				heavy_work_ahead: {
 					type: "noul",
-					instructions: "The next concrete work in this conversation is large enough that reclaiming context now materially reduces the risk of running out of room.",
+					instructions:
+						"The next concrete work in this conversation is large enough that reclaiming context now materially reduces the risk of running out of room.",
 					criteria: { true: "substantial work is lined up", false: "next work is small or unspecified" },
 				},
 				fragile_context: {
 					type: "noul",
-					instructions: "Important detail exists only in this transcript, not in a file, commit, note, task state, or other durable artifact, and compaction could lose it.",
+					instructions:
+						"Important detail exists only in this transcript, not in a file, commit, note, task state, or other durable artifact, and compaction could lose it.",
 					criteria: { true: "load-bearing detail is transcript-only", false: "important state is durable" },
 				},
 			},
@@ -133,7 +144,7 @@ async function askJev(state: Record<string, unknown>, signal?: AbortSignal): Pro
 		signal: combined,
 	});
 	if (!response.ok) throw new Error(`TypeSafe HTTP ${response.status}`);
-	const body = await response.json() as { answers?: unknown };
+	const body = (await response.json()) as { answers?: unknown };
 	return {
 		settled: probability(body.answers, "work_settled"),
 		heavy: probability(body.answers, "heavy_work_ahead"),
@@ -161,20 +172,26 @@ export default function jevCompactionTiming(pi: ExtensionAPI): void {
 		if (!usage || typeof usage.tokens !== "number") return;
 		const band = compactionBand(usage.tokens);
 		if (band.action === "idle") return;
-		if (band.action === "ask" && lastAskedTokens > 0 && usage.tokens - lastAskedTokens < DEFAULTS.askStepTokens) return;
+		if (band.action === "ask" && lastAskedTokens > 0 && usage.tokens - lastAskedTokens < DEFAULTS.askStepTokens)
+			return;
 
 		let verdict = band;
 		if (band.action === "ask") {
 			lastAskedTokens = usage.tokens;
 			try {
-				verdict = semanticVerdict(await askJev({
-					conversation: conversationTail(event.messages),
-					tokens_in_context_now: usage.tokens,
-					model_context_window_tokens: usage.contextWindow,
-					asking_starts_at_tokens: DEFAULTS.floorTokens,
-					compacted_without_asking_at_tokens: DEFAULTS.ceilingTokens,
-					tokens_left_before_ceiling: Math.max(0, DEFAULTS.ceilingTokens - usage.tokens),
-				}, undefined));
+				verdict = semanticVerdict(
+					await askJev(
+						{
+							conversation: conversationTail(event.messages),
+							tokens_in_context_now: usage.tokens,
+							model_context_window_tokens: usage.contextWindow,
+							asking_starts_at_tokens: DEFAULTS.floorTokens,
+							compacted_without_asking_at_tokens: DEFAULTS.ceilingTokens,
+							tokens_left_before_ceiling: Math.max(0, DEFAULTS.ceilingTokens - usage.tokens),
+						},
+						undefined,
+					),
+				);
 			} catch (error) {
 				pi.logger.warn("OMP JEV compaction timing check failed open", {
 					error: error instanceof Error ? error.message : String(error),
@@ -187,7 +204,8 @@ export default function jevCompactionTiming(pi: ExtensionAPI): void {
 		compacting = true;
 		try {
 			await ctx.compact({
-				internalGuidance: "Preserve the active user objective, unfinished work, exact verification state, decisions, artifact paths, and next action. Remove superseded exploration and stale tool output.",
+				internalGuidance:
+					"Preserve the active user objective, unfinished work, exact verification state, decisions, artifact paths, and next action. Remove superseded exploration and stale tool output.",
 			});
 			ctx.ui.notify(`JEV compacted context (${verdict.reason})`, "info");
 		} catch (error) {
