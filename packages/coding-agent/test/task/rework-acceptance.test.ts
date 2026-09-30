@@ -312,7 +312,7 @@ describe("task rework acceptance", () => {
 		expect(run).toHaveBeenCalledTimes(1);
 	});
 
-	it("replays two rejections into the third rung and blocks after the final rung", async () => {
+	it("replays two rejections into the third rung and re-runs the top rung on approved re-dispatch", async () => {
 		const ladder = [":low", ":medium", ":high", "codex-lb/gpt-6-sol:medium"];
 		const harness = createSession([], ladder);
 		const run = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
@@ -383,6 +383,13 @@ describe("task rework acceptance", () => {
 		harness.setPhases(base);
 		harness.edits.length = 0;
 
+		// Negative control: a mid-ladder rework (still has a next rung) and an
+		// ordinary fresh dispatch must NOT require a human approval prompt.
+		expect(
+			tool.approval({ agent: "task", name: firstWorkerId, task: "Improve the cut again.", rework: "Second rejection." } as TaskParams),
+		).toBe("exec");
+		expect(tool.approval({ agent: "task", name: OWNER, task: "Fresh row." } as TaskParams)).toBe("exec");
+
 		const third = await tool.execute("third-dispatch", {
 			agent: "task",
 			name: firstWorkerId,
@@ -449,28 +456,31 @@ describe("task rework acceptance", () => {
 				thinkingLevel: "medium",
 			}),
 		);
-		const top = await tool.execute("top-rung", {
+		const topArgs = {
 			agent: "task",
 			name: thirdWorkerId,
 			task: "Improve the cut once more.",
 			rework: "Third rejection.",
-		} as TaskParams);
-		const topText = text(top);
-		expect(topText).toContain("Rework circuit breaker");
-		expect(topText).toContain("First rejection.");
-		expect(topText).toContain("Second rejection.");
-		expect(topText).toContain("Third rejection.");
-		expect(harness.phases()[0]!.tasks[0]!.status).toBe("blocked");
-		expect(harness.phases()[0]!.tasks[0]!.blocker).toContain("waits for user");
-		expect(run).toHaveBeenCalledTimes(2);
-		const waiting = await tool.execute("after-top-rung", {
-			agent: "task",
-			name: thirdWorkerId,
-			task: "Retry after circuit breaker.",
-			rework: "Fourth rejection.",
-		} as TaskParams);
-		expect(text(waiting)).toContain("ladder is exhausted");
-		expect(text(waiting)).not.toContain("Rework circuit breaker");
-		expect(run).toHaveBeenCalledTimes(2);
+		} as TaskParams;
+		// An exhausted re-dispatch must force a fresh human approval prompt: the
+		// wrapper blocks on `policy: "prompt"` before execute, so the assistant
+		// cannot re-run the top rung without a human grant.
+		expect(tool.approval(topArgs)).toMatchObject({ tier: "exec", override: true, policy: "prompt" });
+
+		const top = await tool.execute("top-rung", topArgs);
+		expect(text(top)).not.toContain("Rework circuit breaker");
+		expect(text(top)).not.toContain("waits for user");
+		expect(run).toHaveBeenCalledTimes(3);
+		expect(run.mock.calls[2]![0].modelOverride).toEqual(["codex-lb/gpt-6-sol"]);
+		expect(run.mock.calls[2]![0].thinkingLevel ?? run.mock.calls[2]![0].exactThinkingLevel).toBe("medium" as Effort);
+		expect(run.mock.calls[2]![0].context).toContain("Previous attempts:");
+		expect(harness.phases()[0]!.tasks[0]!.status).not.toBe("blocked");
+		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toHaveLength(3);
+
+		// The same exhausted row still demands a fresh approval on the next
+		// dispatch; this single approval authorized exactly one top-rung re-run.
+		expect(
+			tool.approval({ agent: "task", name: thirdWorkerId, task: "Retry again.", rework: "Fourth rejection." } as TaskParams),
+		).toMatchObject({ policy: "prompt" });
 	});
 });

@@ -21,6 +21,7 @@ import type {
 	AgentTool,
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	ToolApprovalDecision,
 	ToolSpeculationPolicy,
 } from "@oh-my-pi/pi-agent-core";
 import type { Usage } from "@oh-my-pi/pi-ai";
@@ -593,7 +594,22 @@ export async function refreshAgentDiscovery(cwd: string, extensionRoots?: Effect
  */
 export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetails, Theme> {
 	readonly name = "task";
-	readonly approval = "exec" as const;
+	readonly approval = (args: unknown): ToolApprovalDecision => {
+		const plan = planSpawns(args, this.#isBatchEnabled(), this.#defaultAgent());
+		if (typeof plan === "string") return "exec";
+		for (const spawn of plan.spawns) {
+			const content = this.#isExhaustedTopRung(spawn);
+			if (content !== undefined) {
+				return {
+					tier: "exec",
+					override: true,
+					policy: "prompt",
+					reason: `Rework ladder exhausted for "${content}": re-running the top rung requires approval.`,
+				};
+			}
+		}
+		return "exec";
+	};
 	readonly formatApprovalDetails = (args: unknown): string[] => {
 		const params = args as Partial<TaskParams>;
 		const lines: string[] = [];
@@ -715,6 +731,37 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	readonly #workerSessions = new Map<string, StructuredSubagentResult>();
 	readonly #reflectingWorkers = new Set<string>();
 
+	/**
+	 * Returns the row content when `spawn` re-dispatches a same-row worker whose
+	 * rework ladder is already exhausted — either a row still blocked by the
+	 * circuit-breaker marker, or a completed worker at the top rung dispatched
+	 * with a valid one-line `rework` reason. Mirrors the row resolution and
+	 * validation of `#routeRework` so the approval gate prompts for exactly the
+	 * dispatches that reach the execute-time top-rung re-run.
+	 */
+	#isExhaustedTopRung(spawn: TaskParams): string | undefined {
+		const name = spawn.name?.trim();
+		const phases = this.session.getTodoPhases?.();
+		if (!name || !phases) return undefined;
+		const rows = phases.flatMap(phase => phase.tasks
+			.filter(task => task.status !== "completed" && task.status !== "abandoned" &&
+				(task.schedule?.owner === name || task.schedule?.executor?.workerId === name))
+			.map(task => task));
+		if (rows.length !== 1) return undefined;
+		const task = rows[0]!;
+		const previous = task.schedule?.executor;
+		if (!previous?.resolvedModel || !previous?.thinkingLevel) return undefined;
+		if (task.status === "blocked" && task.blocker?.startsWith("waits for user: Rework ladder exhausted.")) {
+			return task.content;
+		}
+		if (previous.outcome !== "completed") return undefined;
+		const reason = spawn.rework;
+		if (!reason?.trim() || /[\r\n\u2028\u2029]/u.test(reason)) return undefined;
+		if (previous.finishedAt === undefined) return undefined;
+		const rung = nextReworkRung(cfgTaskReworkLadder.get(this.session.settings), previous.resolvedModel, previous.thinkingLevel);
+		return rung === undefined ? task.content : undefined;
+	}
+
 	#routeRework(spawn: TaskParams): { route?: ReworkRoute; error?: string } {
 		const phases = this.session.getTodoPhases?.();
 		const name = spawn.name?.trim();
@@ -725,10 +772,18 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			.map(task => ({ phase: phase.name, task })));
 		if (rows.length !== 1) return {};
 		const { phase, task } = rows[0]!;
-		if (task.status === "blocked" && task.blocker?.startsWith("waits for user: Rework ladder exhausted.")) {
-			return { error: `"${task.content}" is waiting for the user; the rework ladder is exhausted.` };
-		}
 		const previous = task.schedule?.executor;
+		const exhaustedBlocked = task.status === "blocked" && task.blocker?.startsWith("waits for user: Rework ladder exhausted.");
+		if (exhaustedBlocked) {
+			if (!previous?.resolvedModel || !previous?.thinkingLevel) {
+				return { error: `Cannot redispatch "${task.content}": the exhausted worker's resolved model or effort is missing.` };
+			}
+			// The approval gate (task.approval) requires a human prompt before an
+			// exhausted row is re-dispatched; an approved dispatch re-runs the top rung.
+			return { route: { row: { phase, content: task.content }, previous,
+				reason: spawn.rework?.trim() || undefined,
+				rung: { model: previous.resolvedModel, effort: previous.thinkingLevel as Effort } } };
+		}
 		if (!previous?.outcome) return {};
 		if (!previous.resolvedModel || !previous.thinkingLevel) return { error: `Cannot redispatch "${task.content}": the worker's resolved model or effort is missing.` };
 		if (previous.outcome !== "completed") {
@@ -893,13 +948,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const task = phases.find(phase => phase.name === route.row.phase)?.tasks.find(task => task.content === route.row.content);
 		route.context = renderPreviousAttempts(task?.schedule?.attemptHistory ?? []);
 		if (!route.rung) {
-			const reason = "waits for user: Rework ladder exhausted. Review the entire attempt chain and choose how to proceed.";
-			const operation = { op: "block" as const, task: route.row.content, reason };
-			const updated = applyOpsToPhases(phases, [operation]);
-			if (updated.errors.length > 0) throw new Error(updated.errors.join("\n"));
-			this.session.setTodoPhases?.(updated.phases);
-			this.session.persistTodoPhases?.(updated.phases, buildTodoOpPersistedEdit("block", operation));
-			return `Rework circuit breaker for "${route.row.content}": top rung reached. Waiting for the user.\n\n${route.context}`;
+			// The approval gate (task.approval) required a human prompt before this
+			// dispatch; an approved exhausted re-dispatch re-runs the top rung once
+			// instead of re-blocking. `route.previous` is the completed worker that
+			// exhausted the ladder, so its resolved model/effort IS the top rung.
+			route.rung = { model: route.previous.resolvedModel, effort: route.previous.thinkingLevel as Effort };
 		}
 		return undefined;
 	}
