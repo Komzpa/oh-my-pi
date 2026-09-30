@@ -41,6 +41,7 @@ import { truncateForPrompt } from "../tools/approval";
 import { hasWaitTool } from "../tools/wait";
 import { isIrcEnabled } from "../irc/messaging";
 import { isReadOnlyAgent } from "./read-only-policy";
+import { resolveAgentModelSelection, resolveModelOverride } from "../config/model-resolver";
 import { formatTaskResultSummary } from "./result-summary";
 import { isScoutSpawnable, resolveSpawnPolicy } from "./spawn-policy";
 import { type AgentDefinition, canSpawnAtDepth, getTaskSchema, type TaskToolSchemaInstance } from "./types";
@@ -92,6 +93,7 @@ import type { TodoReworkAttempt, TodoSchedule } from "@oh-my-pi/pi-tui/tools/tod
 
 import { cfgAsyncEnabled } from "../tools/settings";
 import {
+	cfgTaskAgentModelOverrides,
 	cfgTaskBatch,
 	cfgTaskDisabledAgents,
 	cfgTaskEnableEffort,
@@ -710,6 +712,31 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (!previous.resolvedModel || !previous.thinkingLevel)
 			return { error: `Cannot redispatch "${task.content}": the worker's resolved model or effort is missing.` };
 		if (previous.outcome !== "completed") {
+			const requestedProfile = spawn.agent ?? previous.agentProfile;
+			const requestedAgent = [...this.#discoveredAgents, ...(this.session.getSessionAgents?.() ?? [])].find(
+				agent => agent.name === requestedProfile,
+			);
+			const modelSelection = resolveAgentModelSelection({
+				agentModel: requestedAgent?.model,
+				settingsOverride: requestedProfile
+					? cfgTaskAgentModelOverrides.get(this.session.settings)[requestedProfile]
+					: undefined,
+				settings: this.session.settings,
+			});
+			const previousModel = this.session.modelRegistry
+				?.getAvailable()
+				.find(model => `${model.provider}/${model.id}` === previous.resolvedModel);
+			const sameProfile = spawn.agent === undefined || spawn.agent === previous.agentProfile;
+			const retryWithinProfile =
+				modelSelection.inheritsParentModel ||
+				Boolean(
+					previousModel &&
+					modelSelection.patterns.some(
+						pattern =>
+							resolveModelOverride([pattern], { getAvailable: () => [previousModel] }, this.session.settings)
+								.model,
+					),
+				);
 			const failed = task.schedule?.attemptHistory?.findLast(
 				attempt => attempt.attemptId === `${previous.workerId}:${previous.startedAt}`,
 			);
@@ -718,7 +745,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					row: { phase, content: task.content },
 					previous,
 					rung:
-						previous.resolvedModel && previous.thinkingLevel
+						sameProfile && retryWithinProfile
 							? { model: previous.resolvedModel, effort: previous.thinkingLevel as Effort }
 							: undefined,
 					failedLine:
