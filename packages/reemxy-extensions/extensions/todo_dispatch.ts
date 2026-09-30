@@ -2718,6 +2718,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     });
     const receding = recedingFinish(ctx, open, now, decision.deadline?.timezone);
     const problems = [
+      retroLine,
       ...staleWorkers,
       planningAdvice,
       unread.length ? `${unread.length} worker result(s) came back and their rows are still open: ${names(unread)}. Read each receipt now and close the row or send it back with the reason, before any other plan change (skill step 4)` : "",

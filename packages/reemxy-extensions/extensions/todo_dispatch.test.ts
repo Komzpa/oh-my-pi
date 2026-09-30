@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
-import { readGoalDeadline } from "./deadlines";
+import { formatLocalTimestamp, readGoalDeadline } from "./deadlines";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
@@ -282,7 +282,7 @@ describe("todo dispatch supervisor", () => {
     });
     expect(second.key).toBe(first.key);
     expect(second.staticPrompt).toBe(first.staticPrompt);
-    expect(second.prompt).toContain(new Date(now + 1_000).toISOString());
+    expect(second.prompt).toContain(formatLocalTimestamp(now + 1_000));
     expect(second.prompt).not.toBe(first.prompt);
   });
 
@@ -910,7 +910,7 @@ test("first context after restart reconciles persisted parked children when the 
     },
     getAsyncJobSnapshot: () => emptyJobs,
   } as unknown as ExtensionContext;
-  handlers.get("session_start")!({}, ctx);
+  (await handlers.get("session_start")!({}, ctx));
   const result = (await handlers.get("context")!({ messages: [] }, ctx)) as
     | { messages: Array<{ content: string }> }
     | undefined;
@@ -970,14 +970,14 @@ test("first-context 13-row dispatch becomes observation-only when paused", async
     (await handlers.get("context")!({ messages: [] }, ctx)) as
       | { messages: Array<{ content: string }> }
       | undefined;
-  handlers.get("session_start")!({}, ctx);
+  (await handlers.get("session_start")!({}, ctx));
   const activePrompt = (await request())?.messages[0]?.content ?? "";
   expect(activePrompt).toContain("#13 [pending] \"Overdue row 13\"");
   expect(activePrompt).toContain("immediately start distinct live workers");
   expect(activePrompt).toContain("fresh-dispatch only ready rows disjoint");
 
   paused = true;
-  handlers.get("session_start")!({}, ctx);
+  (await handlers.get("session_start")!({}, ctx));
   const pausedPrompt = (await request())?.messages[0]?.content ?? "";
   expect(pausedPrompt).toContain("Paused goal: observation only");
   expect(pausedPrompt).toContain("exact Task/non-job worker roster");
@@ -1024,7 +1024,7 @@ test("agent_end and shutdown persist child IDs for an empty-snapshot restart", a
     sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
     getAsyncJobSnapshot: () => jobs,
   } as unknown as ExtensionContext;
-  handlers.get("agent_end")!({}, ctx);
+  (await handlers.get("agent_end")!({}, ctx));
   jobs = {
     running: [secondJob],
     recent: [],
@@ -1053,7 +1053,7 @@ test("agent_end and shutdown persist child IDs for an empty-snapshot restart", a
     pi: extensionSdk,
   } as unknown as ExtensionAPI);
   const resumedCtx = { ...ctx, getAsyncJobSnapshot: () => emptyJobs } as ExtensionContext;
-  resumedHandlers.get("session_start")!({}, resumedCtx);
+  (await resumedHandlers.get("session_start")!({}, resumedCtx));
   const response = (await resumedHandlers.get("context")!({ messages: [] }, resumedCtx)) as
     | { messages: Array<{ content: string }> }
     | undefined;
@@ -1160,13 +1160,13 @@ test("todo schedule result plan check uses the just-returned phases", async () =
     }),
     getTaskMaxConcurrency: () => 20,
   } as unknown as ExtensionContext;
-  const result = handlers.get("tool_result")!({
+  const result = (await handlers.get("tool_result")!({
     toolName: "todo",
     toolCallId: "todo-schedule",
     isError: false,
     content: [{ type: "text", text: "schedule: 1 row(s) changed." }],
     details: { phases: scheduled },
-  }, ctx) as { content: Array<{ text?: string }> };
+  }, ctx)) as { content: Array<{ text?: string }> };
   const text = result.content.map((part) => part.text ?? "").join("\n");
   expect(text).toContain("PLAN CHECK: no problems.");
   expect(text).not.toContain("missing estimates");
@@ -1209,18 +1209,18 @@ test("PLAN CHECK advises executor planning only for three unseen rows and clears
     getAsyncJobSnapshot: () => jobs,
     getTaskMaxConcurrency: () => 6,
   } as unknown as ExtensionContext;
-  const check = (phases: TodoScheduleInput) => {
-    const result = handlers.get("tool_result")!({
+  const check = async (phases: TodoScheduleInput) => {
+    const result = (await handlers.get("tool_result")!({
       toolName: "todo",
       toolCallId: "todo-plan",
       isError: false,
       content: [{ type: "text", text: "schedule: changed" }],
       details: { phases },
-    }, ctx) as { content: Array<{ text?: string }> };
+    }, ctx)) as { content: Array<{ text?: string }> };
     return result.content.map((part) => part.text ?? "").join("\n");
   };
 
-  expect(check(plan)).not.toContain("planning round due");
+  expect((await check(plan))).not.toContain("planning round due");
   plan = [{
     ...plan[0]!,
     tasks: [
@@ -1232,16 +1232,16 @@ test("PLAN CHECK advises executor planning only for three unseen rows and clears
     ],
   }];
   branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-  const dueCheck = check(plan);
+  const dueCheck = (await check(plan));
   expect(dueCheck).toContain('planning round due: 3 rows no executor has looked at: "Alpha preview", "Beta preview", "Gamma preview" (skill://chief-of-staff Planning)');
-  expect(check(plan)).not.toContain("planning round due");
+  expect((await check(plan))).not.toContain("planning round due");
 
   jobs = {
     running: [],
     recent: [{ id: "worker-alpha", type: "task", status: "completed", label: "Finished Alpha preview with receipt", startTime: now }],
     nonJobAgents: [],
   };
-  expect(check(plan)).not.toContain("planning round due");
+  expect((await check(plan))).not.toContain("planning round due");
 });
 
 test("PLAN CHECK advises retrospectives for sprint triggers and clears after retro-facilitator finishes", async () => {
@@ -1288,58 +1288,58 @@ test("PLAN CHECK advises retrospectives for sprint triggers and clears after ret
     getAsyncJobSnapshot: () => jobs,
     getTaskMaxConcurrency: () => 6,
   } as unknown as ExtensionContext;
-  const check = (phases: TodoScheduleInput = plan) => {
-    const result = handlers.get("tool_result")!({
+  const check = async (phases: TodoScheduleInput = plan) => {
+    const result = (await handlers.get("tool_result")!({
       toolName: "todo",
       toolCallId: "todo-retro",
       isError: false,
       content: [{ type: "text", text: "schedule: changed" }],
       details: { phases },
-    }, ctx) as { content: Array<{ text?: string }> };
+    }, ctx)) as { content: Array<{ text?: string }> };
     return result.content.map((part) => part.text ?? "").join("\n");
   };
-  const finishRetro = () => {
-    handlers.get("tool_result")!({
+  const finishRetro = async () => {
+    (await handlers.get("tool_result")!({
       toolName: "task",
       toolCallId: "retro-task",
       isError: false,
       details: { results: [{ agent: "retro-facilitator", exitCode: 0, durationMs: 1000 }] },
-    }, ctx);
+    }, ctx));
   };
   try {
-    expect(check()).not.toContain("retrospective due");
+    expect((await check())).not.toContain("retrospective due");
 
     deadlineAt = liveNow - 1;
-    const overdue = check();
+    const overdue = (await check());
     expect(overdue).toContain("retrospective due (deadline passed): ask the 2 workers who finished since");
     expect(overdue).toContain("worker-a, worker-b");
     expect(overdue).toContain("through agent://, then retro-facilitator (skill://chief-of-staff Retrospective)");
-    finishRetro();
-    expect(check()).not.toContain("retrospective due");
+    (await finishRetro());
+    expect((await check())).not.toContain("retrospective due");
 
     handlers.get("input")!({ source: "user", content: "опять не то, я же просил иначе" }, ctx);
-    expect(check()).toContain("retrospective due (user correction)");
-    finishRetro();
+    expect((await check())).toContain("retrospective due (user correction)");
+    (await finishRetro());
 
     plan = [{ name: "Retro", tasks: [row("Closed one", "completed"), row("Closed two", "completed"), row("Closed three", "completed")] }];
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    expect(check()).toContain("retrospective due (goal delivered)");
-    finishRetro();
+    expect((await check())).toContain("retrospective due (goal delivered)");
+    (await finishRetro());
     plan = [{ name: "Retro", tasks: [row("Closed one"), row("Closed two"), row("Closed three")] }];
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    expect(check()).toContain("retrospective due (3 reopened rows)");
-    finishRetro();
+    expect((await check())).toContain("retrospective due (3 reopened rows)");
+    (await finishRetro());
 
     plan = [{ name: "Retro", tasks: [row("Final close", "completed")] }];
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    expect(check()).toContain("retrospective due (goal delivered)");
-    finishRetro();
+    expect((await check())).toContain("retrospective due (goal delivered)");
+    (await finishRetro());
 
     plan = [{ name: "Retro", tasks: [row("Long work")] }];
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    check();
+    (await check());
     setSystemTime(new Date(liveNow + 3 * 60 * 60_000 + 1));
-    expect(check()).toContain("retrospective due (3h goal work)");
+    expect((await check())).toContain("retrospective due (3h goal work)");
   } finally {
     setSystemTime();
   }
@@ -1440,22 +1440,22 @@ test("idle lifecycle wakes once per active plan/alarm and suppresses paused or c
     },
   } as unknown as ExtensionContext;
   const fireNext = () => timers.shift()?.callback();
-  const agentEnd = () => handlers.get("agent_end")!({}, ctx);
+  const agentEnd = async () => (await handlers.get("agent_end")!({}, ctx));
   const wasPaused = agentPauseGate.paused;
   if (wasPaused) agentPauseGate.resume();
   let pausedHere = false;
   try {
-    agentEnd();
+    (await agentEnd());
     expect(timers[0]?.delay).toBe(0);
     expect(agentPauseGate.pause()).toBe(true);
     pausedHere = true;
-    fireNext();
+    (await fireNext());
     expect(sent).toHaveLength(0);
     agentPauseGate.resume();
     pausedHere = false;
-    agentEnd();
+    (await agentEnd());
     expect(timers[0]?.delay).toBe(0);
-    fireNext();
+    (await fireNext());
     expect(sent).toHaveLength(1);
     expect(sent[0]?.[0]).toMatchObject({
       customType: "agent-focus-gym-eval-sandbox-wake",
@@ -1463,17 +1463,17 @@ test("idle lifecycle wakes once per active plan/alarm and suppresses paused or c
     });
     expect(sent[0]?.[1]).toMatchObject({ deliverAs: "aside" });
     handlers.get("agent_start")!({}, ctx);
-    agentEnd();
+    (await agentEnd());
     expect(timers[0]?.delay).toBe(30_000);
-    fireNext();
+    (await fireNext());
     expect(sent).toHaveLength(1);
 
     pending = true;
-    agentEnd();
+    (await agentEnd());
     expect(timers).toHaveLength(0);
     pending = false;
     idle = false;
-    agentEnd();
+    (await agentEnd());
     expect(timers).toHaveLength(0);
     idle = true;
 
@@ -1482,7 +1482,7 @@ test("idle lifecycle wakes once per active plan/alarm and suppresses paused or c
       mode: "goal_paused",
       data: { goal: { id: "goal-1", status: "paused", createdAt: liveNow } },
     });
-    agentEnd();
+    (await agentEnd());
     expect(timers).toHaveLength(0);
 
     branch.pop();
@@ -1492,32 +1492,32 @@ test("idle lifecycle wakes once per active plan/alarm and suppresses paused or c
       mode: "goal",
       data: { goal: { id: "goal-1", status: "complete", createdAt: liveNow } },
     });
-    agentEnd();
+    (await agentEnd());
     expect(timers).toHaveLength(0);
 
     branch.pop();
     branch.push({ type: "mode_change", mode: "none" });
-    agentEnd();
+    (await agentEnd());
     expect(timers).toHaveLength(0);
 
     branch.pop();
     header = { id: "child", parentSession: "root" };
-    agentEnd();
+    (await agentEnd());
     expect(timers).toHaveLength(0);
     expect(sent).toHaveLength(1);
     header = { id: "root" };
     setSystemTime(new Date(liveNow + 120_000));
-    agentEnd();
+    (await agentEnd());
     expect(timers[0]?.delay).toBe(0);
-    fireNext();
+    (await fireNext());
     expect(sent).toHaveLength(2);
     expect(sent[1]?.[1]).toMatchObject({ deliverAs: "aside" });
-    agentEnd();
+    (await agentEnd());
     expect(timers[0]?.delay).toBeGreaterThan(0);
     setSystemTime(new Date(liveNow + 180_000));
-    agentEnd();
+    (await agentEnd());
     expect(timers[0]?.delay).toBe(0);
-    fireNext();
+    (await fireNext());
     expect(sent).toHaveLength(3);
     expect(sent[2]?.[1]).toMatchObject({ deliverAs: "aside" });
   } finally {
@@ -1613,15 +1613,15 @@ test("overdue follow-through re-arms by minute and dispatches only actionable, r
     const requirement = () => requirementProvider?.(ctx) as { toolName?: string } | undefined;
     setSystemTime(new Date(liveNow));
 
-    handlers.get("agent_end")!({}, ctx);
+    (await handlers.get("agent_end")!({}, ctx));
     expect(timers[0]?.delay).toBe(0);
-    fireNext();
+    (await fireNext());
     expect(sent).toHaveLength(1);
     expect(sent[0]?.[0]).toMatchObject({ customType: "agent-focus-gym-eval-sandbox-wake" });
     expect(requirement()?.toolName).toBe("task");
 
     // Waiting with nothing launched cannot deliver anything: refuse it and name the ready rows.
-    const refused = handlers.get("tool_call")!({ toolName: "wait", toolCallId: "call-wait" }, ctx) as
+    const refused = (await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "call-wait" }, ctx)) as
       | { block?: boolean; reason?: string }
       | undefined;
     expect(refused?.block).toBe(true);
@@ -1634,53 +1634,53 @@ test("overdue follow-through re-arms by minute and dispatches only actionable, r
 
     // A real Task result must reconcile to an exact live owner before another batch is offered.
     const firstJob = { id: "task-export", type: "task" as const, status: "running" as const, label: "export worker", startTime: liveNow, agentId: "worker-export" };
-    handlers.get("tool_call")!({ toolName: "task", toolCallId: "call-export" }, ctx);
+    (await handlers.get("tool_call")!({ toolName: "task", toolCallId: "call-export" }, ctx));
     jobs = { running: [firstJob], recent: [], nonJobAgents: [{ id: "worker-export", live: true }] };
-    handlers.get("tool_result")!({ toolName: "task", toolCallId: "call-export", isError: false }, ctx);
+    (await handlers.get("tool_result")!({ toolName: "task", toolCallId: "call-export", isError: false }, ctx));
     plan = [{ ...plan[0]!, tasks: [{ ...plan[0]!.tasks[0]!, schedule: { ...plan[0]!.tasks[0]!.schedule!, owner: "worker-export" } }, plan[0]!.tasks[1]!] }];
     // Late plan, one worker, another independent row idle: waiting is refused until the plan fans out.
-    const late = handlers.get("tool_call")!({ toolName: "wait", toolCallId: "call-wait-2" }, ctx) as
+    const late = (await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "call-wait-2" }, ctx)) as
       | { block?: boolean; reason?: string }
       | undefined;
     expect(late?.block).toBe(true);
     expect(late?.reason).toContain("Repair retrieval");
     expect(late?.reason).toContain("skill://chief-of-staff");
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    handlers.get("agent_end")!({}, ctx);
+    (await handlers.get("agent_end")!({}, ctx));
     expect(requirement()?.toolName).toBe("task");
 
     // The unowned second row remains actionable, so a new minute/revision may re-arm follow-through.
     setSystemTime(new Date(liveNow + 60_000));
-    handlers.get("agent_end")!({}, ctx);
+    (await handlers.get("agent_end")!({}, ctx));
     expect(timers[0]?.delay).toBe(0);
-    fireNext();
+    (await fireNext());
     expect(sent).toHaveLength(2);
 
     const secondJob = { id: "task-retrieval", type: "task" as const, status: "running" as const, label: "retrieval worker", startTime: liveNow, agentId: "worker-retrieval" };
-    handlers.get("tool_call")!({ toolName: "task", toolCallId: "call-retrieval" }, ctx);
+    (await handlers.get("tool_call")!({ toolName: "task", toolCallId: "call-retrieval" }, ctx));
     jobs = { running: [firstJob, secondJob], recent: [], nonJobAgents: [{ id: "worker-export", live: true }, { id: "worker-retrieval", live: true }] };
-    handlers.get("tool_result")!({ toolName: "task", toolCallId: "call-retrieval", isError: false }, ctx);
+    (await handlers.get("tool_result")!({ toolName: "task", toolCallId: "call-retrieval", isError: false }, ctx));
     plan = [{ ...plan[0]!, tasks: plan[0]!.tasks.map((task, index) => ({ ...task, schedule: { ...task.schedule!, owner: index === 0 ? "worker-export" : "worker-retrieval" } })) }];
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    handlers.get("agent_end")!({}, ctx);
+    (await handlers.get("agent_end")!({}, ctx));
     expect(requirement()).toBeUndefined();
     expect(timers[0]?.delay).toBeGreaterThan(0);
     // Every open row staffed: waiting for the workers is legitimate.
-    expect(handlers.get("tool_call")!({ toolName: "wait", toolCallId: "call-wait-staffed" }, ctx)).toBeUndefined();
+    expect((await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "call-wait-staffed" }, ctx))).toBeUndefined();
 
     // Once both rows have exact live owners, recurring overdue minutes do not create a paid loop.
     setSystemTime(new Date(liveNow + 120_000));
-    fireNext();
+    (await fireNext());
     expect(sent).toHaveLength(2);
 
     // Fail closed under live user intent, pause, unavailable tool/capacity, dependency wait,
     // and resource contention; none can manufacture another Task requirement.
     pending = true;
-    handlers.get("agent_end")!({}, ctx);
+    (await handlers.get("agent_end")!({}, ctx));
     expect(timers).toHaveLength(0);
     pending = false;
     expect(agentPauseGate.pause()).toBe(true);
-    handlers.get("agent_end")!({}, ctx);
+    (await handlers.get("agent_end")!({}, ctx));
     expect(timers).toHaveLength(0);
     agentPauseGate.resume();
     activeTools = [];
@@ -1723,7 +1723,7 @@ test("overdue follow-through re-arms by minute and dispatches only actionable, r
   }
 });
 
-test("a plan that leaves worker slots empty while rows idle is sent back to replanning, at most three times per revision", async () => {
+test("a chained plan receives bounded replanning advice but waiting is blocked only for runnable work", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "todo-dispatch-late-chain-"));
   mkdirSync(join(cwd, ".pi"), { recursive: true });
   const liveNow = now + 120_000;
@@ -1792,23 +1792,23 @@ test("a plan that leaves worker slots empty while rows idle is sent back to repl
     // Until todo is called the same demand stays in force.
     expect((requirementProvider?.(ctx) as { id?: string }).id).toBe(demand?.id);
     // A todo call that changes nothing structural is not a replan: demanded again, and told so.
-    handlers.get("tool_call")!({ toolName: "todo", toolCallId: "t" }, ctx);
+    (await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "t" }, ctx));
     const again = requirementProvider?.(ctx) as { id?: string; reminder?: Array<{ content: string }> } | undefined;
     expect(again?.id).not.toBe(demand?.id);
     expect(again?.reminder?.[0]?.content).toContain("that is not a replan");
     // Decomposing a row answers the demand; a still-chained plan is asked once more without the rebuke.
     plan[0]!.tasks.push(row("Pin capture bundle: hash inputs", ["Replay checkpoint"]));
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    handlers.get("tool_call")!({ toolName: "todo", toolCallId: "t2" }, ctx);
+    (await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "t2" }, ctx));
     const third = requirementProvider?.(ctx) as { reminder?: Array<{ content: string }> } | undefined;
     expect(third?.reminder?.[0]?.content).toContain("MANDATORY REPLAN");
     expect(third?.reminder?.[0]?.content).not.toContain("that is not a replan");
     // At most five forced todo turns per episode.
     for (let i = 0; i < 2; i += 1) {
-      handlers.get("tool_call")!({ toolName: "todo", toolCallId: `t${i + 3}` }, ctx);
+      (await handlers.get("tool_call")!({ toolName: "todo", toolCallId: `t${i + 3}` }, ctx));
       expect(requirementProvider?.(ctx)).toBeDefined();
     }
-    handlers.get("tool_call")!({ toolName: "todo", toolCallId: "t9" }, ctx);
+    (await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "t9" }, ctx));
     // Five rewrites did not unchain it: the plan-doctor is demanded once, then the gate stops.
     const doctor = requirementProvider?.(ctx) as { toolName?: string; reminder?: Array<{ content: string }>; satisfies?: (call: unknown) => boolean } | undefined;
     expect(doctor?.toolName).toBe("task");
@@ -1818,30 +1818,27 @@ test("a plan that leaves worker slots empty while rows idle is sent back to repl
     expect(requirementProvider?.(ctx)).toBeUndefined();
     plan[0]!.tasks.pop();
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    const wait = () => handlers.get("tool_call")!({ toolName: "wait", toolCallId: "w" }, ctx) as { block?: boolean; reason?: string } | undefined;
-    const first = wait();
-    expect(first?.block).toBe(true);
-    // Nothing ready: the todo tool, named as a tool, with the ops to use; a backlog file does not count.
-    expect(first?.reason).toContain("skill://chief-of-staff");
-    expect(first?.reason).toContain("skill://chief-of-staff");
-    expect(first?.reason).toContain("5 open row(s) sit idle");
-    // Repeating a wait against the same decision revision is allowed; a changed revision below is refused again.
-    expect(wait()).toBeUndefined();
-    expect(first?.reason).toContain("past the deadline");
+    const wait = async () => (await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "w" }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    const first = (await wait());
+    expect(first).toBeUndefined();
+    expect((await wait())).toBeUndefined();
     // On time is no excuse: a new plan revision that still chains the backlog is refused again.
     deadlineAt = liveNow + 30 * 24 * 3_600_000;
     plan[0]!.tasks.push(row("Run visual sweep", ["Publish PR checkpoint"]));
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    const onTime = wait();
-    expect(onTime?.block).toBe(true);
-    expect(onTime?.reason).toContain("6 open row(s) sit idle");
-    expect(onTime?.reason).not.toContain("deadline");
+    const onTime = (await wait());
+    expect(onTime).toBeUndefined();
+    plan[0]!.tasks.push(row("Run independent sweep", []));
+    const runnable = await wait();
+    expect(runnable?.block).toBe(true);
+    expect(runnable?.reason).toContain("Run independent sweep");
+    plan[0]!.tasks.pop();
     // Negative control: once every worker slot the machine allows is busy, the rest may wait.
     taskCap = 2;
     jobs.running.push({ ...worker, id: "task-sweep", agentId: "worker-sweep" });
     plan[0]!.tasks.push(row("Archive capture", ["Run visual sweep"]));
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    expect(wait()).toBeUndefined();
+    expect((await wait())).toBeUndefined();
     expect(requirementProvider?.(ctx)).toBeUndefined();
     // Live shape after the 2026-09-24 restart: no worker runs, one row is ready and the rest chain
     // behind it. Staffing the ready row comes first (a todo demand forces todo and cuts off task:
@@ -1909,45 +1906,45 @@ test("the main session is chief of staff: worker tools are refused while worker 
     } as unknown as ExtensionContext;
     setSystemTime(new Date(liveNow));
     if (agentPauseGate.paused) agentPauseGate.resume();
-    const call = (toolName: string, input: unknown) =>
-      handlers.get("tool_call")!({ toolName, toolCallId: toolName, input }, ctx) as { block?: boolean; reason?: string } | undefined;
+    const call = async (toolName: string, input: unknown) =>
+      (await handlers.get("tool_call")!({ toolName, toolCallId: toolName, input }, ctx)) as { block?: boolean; reason?: string } | undefined;
     // The role reaches every request, including autonomous continuations with no user prompt.
-    const roleOf = () => {
-      const out = handlers.get("context")!({ type: "context", messages: [] }, ctx) as { messages?: Array<{ content: string }> } | undefined;
+    const roleOf = async () => {
+      const out = (await handlers.get("context")!({ type: "context", messages: [] }, ctx)) as { messages?: Array<{ content: string }> } | undefined;
       return out?.messages?.at(-1)?.content ?? "";
     };
-    expect(roleOf()).toContain("ROLE: You are the chief of staff");
-    expect(roleOf()).toContain("ROLE: You are the chief of staff");
-    expect(roleOf()).toContain("skill://chief-of-staff");
-    const refused = call("bash", { command: "bun test" });
+    expect((await roleOf())).toContain("ROLE: You are the chief of staff");
+    expect((await roleOf())).toContain("ROLE: You are the chief of staff");
+    expect((await roleOf())).toContain("skill://chief-of-staff");
+    const refused = (await call("bash", { command: "bun test" }));
     expect(refused?.block).toBe(true);
     expect(refused?.reason).toContain("1 of 16 possible workers");
-    expect(call("bash", { command: "git status --short" })).toBeUndefined();
-    expect(call("read", { path: "src/a.ts" })).toBeUndefined();
-    expect(call("write", { path: "agent://worker-merge", content: "go on" })).toBeUndefined();
-    const codeEdit = call("edit", { path: "src/a.ts" });
+    expect((await call("bash", { command: "git status --short" }))).toBeUndefined();
+    expect((await call("read", { path: "src/a.ts" }))).toBeUndefined();
+    expect((await call("write", { path: "agent://worker-merge", content: "go on" }))).toBeUndefined();
+    const codeEdit = (await call("edit", { path: "src/a.ts" }));
     expect(codeEdit?.block).toBe(true);
     expect(codeEdit?.reason).not.toContain("scribe");
-    expect(call("eval", {})?.block).toBe(true);
+    expect((await call("eval", {}))?.block).toBe(true);
     // A backlog document edit is pointed at the scribe worker.
-    call("task", {});
-    const docEdit = call("edit", { path: "docs/backlog.md" });
+    (await call("task", {}));
+    const docEdit = (await call("edit", { path: "docs/backlog.md" }));
     expect(docEdit?.block).toBe(true);
     expect(docEdit?.reason).toContain("skill://chief-of-staff");
-    call("bash", { command: "bun test" });
-    call("bash", { command: "bun test" });
+    (await call("bash", { command: "bun test" }));
+    (await call("bash", { command: "bun test" }));
     // It insisted three times: the fourth goes through; a task call re-arms the gate.
-    expect(call("bash", { command: "bun test" })).toBeUndefined();
-    call("task", {});
-    expect(call("bash", { command: "bun test" })?.block).toBe(true);
+    expect((await call("bash", { command: "bun test" }))).toBeUndefined();
+    (await call("task", {}));
+    expect((await call("bash", { command: "bun test" }))?.block).toBe(true);
     // Every slot busy: the main session may do the work itself.
     taskCap = 1;
-    expect(call("bash", { command: "bun test" })).toBeUndefined();
+    expect((await call("bash", { command: "bun test" }))).toBeUndefined();
     // Subagents are workers, not chiefs.
     taskCap = 16;
     header = { id: "child", parentSession: "root" };
-    expect(call("bash", { command: "bun test" })).toBeUndefined();
-    expect(roleOf()).not.toContain("chief of staff");
+    expect((await call("bash", { command: "bun test" }))).toBeUndefined();
+    expect((await roleOf())).not.toContain("chief of staff");
   } finally {
     setSystemTime();
     handlers.get("session_shutdown")?.({}, { getAsyncJobSnapshot: () => emptyJobs } as unknown as ExtensionContext);
@@ -2007,16 +2004,16 @@ test("a worker started but never linked to a row does not silence dispatch for t
     expect(provide()?.toolName).toBe("task");
     queued = false;
     // The model starts one worker and never writes its ID into the plan; no agent_end follows.
-    handlers.get("tool_call")!({ toolName: "task", toolCallId: "call-capture" }, ctx);
+    (await handlers.get("tool_call")!({ toolName: "task", toolCallId: "call-capture" }, ctx));
     jobs = { running: [{ id: "task-capture", type: "task", status: "running", label: "capture", startTime: liveNow, agentId: "ProvisionalRecoveryOwner" }], recent: [], nonJobAgents: [{ id: "ProvisionalRecoveryOwner", live: true }] };
-    handlers.get("tool_result")!({ toolName: "task", toolCallId: "call-capture", isError: false }, ctx);
+    (await handlers.get("tool_result")!({ toolName: "task", toolCallId: "call-capture", isError: false }, ctx));
     // One request of grace to link it, then the gate asks for the link instead of going quiet.
     expect(provide()).toBeUndefined();
     const link = provide();
     expect(link?.toolName).toBe("todo");
     expect(link?.reminder?.[0]?.content).toContain("ProvisionalRecoveryOwner");
     // The model answers with todo but still does not link: the other ready rows are dispatched anyway.
-    handlers.get("tool_call")!({ toolName: "todo", toolCallId: "call-todo" }, ctx);
+    (await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "call-todo" }, ctx));
     expect(provide()?.toolName).toBe("task");
   } finally {
     setSystemTime();
@@ -2062,18 +2059,18 @@ test("a resolved merge left open is committed first, and a merge gets one worker
       setTimeout: () => ({}),
       clearTimer: () => undefined,
     } as unknown as ExtensionContext;
-    const call = (toolName: string, input: unknown) =>
-      handlers.get("tool_call")!({ toolName, toolCallId: toolName, input }, ctx) as { block?: boolean; reason?: string } | undefined;
-    const context = () => (handlers.get("context")!({ type: "context", messages: [] }, ctx) as { messages: Array<{ content: string }> }).messages.at(-1)!.content;
+    const call = async (toolName: string, input: unknown) =>
+      (await handlers.get("tool_call")!({ toolName, toolCallId: toolName, input }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    const context = async () => ((await handlers.get("context")!({ type: "context", messages: [] }, ctx)) as { messages: Array<{ content: string }> }).messages.at(-1)!.content;
     // Conflicts open: one worker for the whole merge; a per-file batch and a second merge worker are refused.
-    expect(context()).toContain("1 unresolved path(s)");
-    const batch = call("task", { tasks: [{ name: "ResolvePathA", task: "resolve merge conflict in a.txt" }, { name: "ResolvePathB", task: "resolve merge conflict in b.txt" }] });
+    expect((await context())).toContain("1 unresolved path(s)");
+    const batch = (await call("task", { tasks: [{ name: "ResolvePathA", task: "resolve merge conflict in a.txt" }, { name: "ResolvePathB", task: "resolve merge conflict in b.txt" }] }));
     expect(batch?.block).toBe(true);
     expect(batch?.reason).toContain("one merge gets one worker");
-    expect(call("task", { tasks: [{ name: "ResolveAllPaths", task: "resolve every merge conflict" }] })).toBeUndefined();
+    expect((await call("task", { tasks: [{ name: "ResolveAllPaths", task: "resolve every merge conflict" }] }))).toBeUndefined();
     jobs = { running: [{ id: "ResolveAllPaths", type: "task", status: "running", label: "resolve every merge conflict", startTime: Date.now() } as never], recent: [], nonJobAgents: [] };
-    expect(call("task", { tasks: [{ name: "AuditResolvedHead", task: "audit the merge" }] })?.reason).toContain("already has its worker");
-    expect(call("task", { tasks: [{ name: "Docs", task: "update the changelog" }] })).toBeUndefined();
+    expect((await call("task", { tasks: [{ name: "AuditResolvedHead", task: "audit the merge" }] }))?.reason).toContain("already has its worker");
+    expect((await call("task", { tasks: [{ name: "Docs", task: "update the changelog" }] }))).toBeUndefined();
     // Resolved and older than the threshold: the next call must be git commit; more merge work is refused.
     jobs = emptyJobs;
     writeFileSync(join(cwd, "a.txt"), "both\n"); git("add", "a.txt");
@@ -2089,11 +2086,11 @@ test("a resolved merge left open is committed first, and a merge gets one worker
       expect(requirement.satisfies({ name: "bash", arguments: { command: "git commit --no-edit" } })).toBe(true);
       expect(requirement.satisfies({ name: "bash", arguments: { command: "git add ." } })).toBe(false);
       expect(requirement.satisfies({ name: "task", arguments: { tasks: [{ task: "Commit the merge and push the branch" }] } })).toBe(true);
-      expect(call("task", { tasks: [{ name: "CommitResolvedHead", task: "Commit the merge and push the branch" }] })).toBeUndefined();
-      expect(context()).toContain("one git-pr-owner worker");
-      expect(call("task", { tasks: [{ name: "VerifyResolvedHead", task: "verify the merge" }] })?.reason).toContain("skill://chief-of-staff");
-      expect(call("todo", { op: "append", items: [{ content: "Review merge index" }] })?.block).toBe(true);
-      expect(call("todo", { op: "done", task: "Resolve merge" })).toBeUndefined();
+      expect((await call("task", { tasks: [{ name: "CommitResolvedHead", task: "Commit the merge and push the branch" }] }))).toBeUndefined();
+      expect((await context())).toContain("one git-pr-owner worker");
+      expect((await call("task", { tasks: [{ name: "VerifyResolvedHead", task: "verify the merge" }] }))?.reason).toContain("skill://chief-of-staff");
+      expect((await call("todo", { op: "append", items: [{ content: "Review merge index" }] }))?.block).toBe(true);
+      expect((await call("todo", { op: "done", task: "Resolve merge" }))).toBeUndefined();
       git("commit", "-q", "--no-edit");
       Date.now = () => realNow() + 40_000;
       expect(requirementProvider!(ctx)).toBeUndefined();

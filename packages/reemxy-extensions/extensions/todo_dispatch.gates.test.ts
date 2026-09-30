@@ -148,13 +148,13 @@ async function outcome(state: State, cwd: string, call: Call | null, strictDeman
     const demand = provider?.(ctx) as Demand;
     if (!call) {
       const handed = enforced?.(ctx);
-      const note = handlers.get("context")!({ messages: [] }, ctx) as { messages?: Array<{ content: string }> } | undefined;
+      const note = (await handlers.get("context")!({ messages: [] }, ctx)) as { messages?: Array<{ content: string }> } | undefined;
       return { demand, handed, note: note?.messages?.at(-1)?.content ?? "" };
     }
     const satisfies = strictDemand && demand?.toolName ? (c: Call) => c.name === demand.toolName : demand?.satisfies ?? ((c: Call) => c.name === demand?.toolName);
     // omp skips calls only for a demand handed to it; strictDemand simulates the old enforcement.
     const skipped = strictDemand && Boolean(demand?.toolName) && !satisfies(call);
-    const refusedByHook = Boolean((handlers.get("tool_call")!({ toolName: call.name, toolCallId: "c", input: call.arguments }, ctx) as { block?: boolean } | undefined)?.block);
+    const refusedByHook = Boolean(((await handlers.get("tool_call")!({ toolName: call.name, toolCallId: "c", input: call.arguments }, ctx)) as { block?: boolean } | undefined)?.block);
     const refusedByAdmission = !state.admissionOpen && !ADMISSION_ALWAYS.has(call.name);
     return { demand, satisfied: Boolean(demand?.toolName) && satisfies(call), executed: !skipped && !refusedByHook && !refusedByAdmission };
   } finally {
@@ -333,11 +333,11 @@ test("task calls refuse planning-failure worker names but allow verb-first neigh
     setTimeout: () => ({}),
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
-  const call = (name: string) => handlers.get("tool_call")!({
+  const call = async (name: string) => (await handlers.get("tool_call")!({
     toolName: "task",
     toolCallId: `name-${name}`,
     input: { tasks: [{ name, agent: "coder", task: "Row B" }] },
-  }, ctx) as { block?: boolean; reason?: string } | undefined;
+  }, ctx)) as { block?: boolean; reason?: string } | undefined;
   try {
     const blocked: Record<string, string> = {
       BuildOwner: "Owner",
@@ -361,13 +361,13 @@ test("task calls refuse planning-failure worker names but allow verb-first neigh
       RecordFinalVideo: "Final",
     };
     for (const [name, word] of Object.entries(blocked)) {
-      const refusal = call(name);
+      const refusal = (await call(name));
       expect(refusal?.block, name).toBe(true);
       expect(refusal?.reason, name).toContain(word);
       expect(refusal?.reason, name).toContain("skill step 8");
     }
     for (const name of ["CommitFinanceCues", "FitMinimapHeading", "ScanAllDrives", "CompactionTrace", "PromptRoutingAudit", "Worker-2", "OwnershipTrace", "Prefix", "Compile", "Remerge", "FinalizeNothing"]) {
-      expect(call(name)?.block, name).not.toBe(true);
+      expect((await call(name))?.block, name).not.toBe(true);
     }
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -400,11 +400,11 @@ test("task calls allow re-staffing a legacy row whose owner already has the bloc
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   try {
-    const result = handlers.get("tool_call")!({
+    const result = (await handlers.get("tool_call")!({
       toolName: "task",
       toolCallId: "legacy-owner",
       input: { tasks: [{ name: "LegacyRepairOwner", agent: "coder", task: "Row B" }] },
-    }, ctx) as { block?: boolean } | undefined;
+    }, ctx)) as { block?: boolean } | undefined;
     expect(result?.block).not.toBe(true);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -436,7 +436,7 @@ test("every todo result in the main session ends with the plan's problems", asyn
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   try {
-    const out = handlers.get("tool_result")!({ toolName: "todo", toolCallId: "t", input: {}, content: [{ type: "text", text: "done" }], isError: false }, ctx) as { content: Array<{ text: string }> };
+    const out = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "t", input: {}, content: [{ type: "text", text: "done" }], isError: false }, ctx)) as { content: Array<{ text: string }> };
     const text = out.content.at(-1)!.text;
     expect(text).toContain("PLAN CHECK");
     expect(text).toContain("own no row: stray");
@@ -448,46 +448,46 @@ test("every todo result in the main session ends with the plan's problems", asyn
     // The check reads the plan this very todo call produced, not the branch before it.
     const linked = plan("ready", now) as Array<{ message: { details: { phases: Array<{ tasks: Array<{ schedule: { owner?: string } }> }> } } }>;
     linked[0]!.message.details.phases[0]!.tasks[1]!.schedule.owner = "stray";
-    const after = handlers.get("tool_result")!({ toolName: "todo", toolCallId: "t2", input: {}, content: [], details: linked[0]!.message.details, isError: false }, ctx) as { content: Array<{ text: string }> };
+    const after = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "t2", input: {}, content: [], details: linked[0]!.message.details, isError: false }, ctx)) as { content: Array<{ text: string }> };
     expect(after.content.at(-1)!.text).not.toContain("own no row");
     // Rows omp cannot forecast (the header's "unresolved") are named with the reason; forecastable ones are not.
     expect(after.content.at(-1)!.text).not.toContain("no forecast");
     const unestimated = plan("ready", now) as Array<{ message: { details: { phases: Array<{ tasks: Array<{ schedule: { estimate?: unknown } }> }> } } }>;
     delete unestimated[0]!.message.details.phases[0]!.tasks[3]!.schedule.estimate;
-    const gap = handlers.get("tool_result")!({ toolName: "todo", toolCallId: "t3", input: {}, content: [], details: unestimated[0]!.message.details, isError: false }, ctx) as { content: Array<{ text: string }> };
+    const gap = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "t3", input: {}, content: [], details: unestimated[0]!.message.details, isError: false }, ctx)) as { content: Array<{ text: string }> };
     expect(gap.content.at(-1)!.text).toContain("1 row(s) have no forecast");
     expect(gap.content.at(-1)!.text).toContain("\"Row D\" (Estimate is unknown");
     // Row A's owner worker-a runs nowhere and never reported: it is not an unread result.
     expect(gap.content.at(-1)!.text).not.toContain("came back and their rows are still open");
     // Once worker-a has completed, its open row is an unread result that comes first.
     const settledCtx = { ...ctx, getAsyncJobSnapshot: () => ({ running: [], recent: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "completed", label: "Row A", startTime: now } as never], nonJobAgents: [] }) } as unknown as ExtensionContext;
-    const settledOut = handlers.get("tool_result")!({ toolName: "todo", toolCallId: "t5", input: {}, content: [], isError: false }, settledCtx) as { content: Array<{ text: string }> };
+    const settledOut = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "t5", input: {}, content: [], isError: false }, settledCtx)) as { content: Array<{ text: string }> };
     expect(settledOut.content.at(-1)!.text).toContain('1 worker result(s) came back and their rows are still open: "Row A"');
     // Negative control: a call that leaves the finish where it was says nothing about it.
     expect(gap.content.at(-1)!.text).not.toContain("moved the finish");
     // A call that makes the chain longer is told so, with the size of the delay.
     const longer = plan("ready", now) as Array<{ message: { details: { phases: Array<{ tasks: Array<{ schedule: { estimate?: { optimisticSeconds: number; likelySeconds: number; pessimisticSeconds: number } } }> }> } } }>;
     for (const task of longer[0]!.message.details.phases[0]!.tasks) task.schedule.estimate = { ...task.schedule.estimate!, optimisticSeconds: 3600, likelySeconds: 5400, pessimisticSeconds: 7200 };
-    const later = handlers.get("tool_result")!({ toolName: "todo", toolCallId: "t4", input: {}, content: [], details: longer[0]!.message.details, isError: false }, ctx) as { content: Array<{ text: string }> };
+    const later = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "t4", input: {}, content: [], details: longer[0]!.message.details, isError: false }, ctx)) as { content: Array<{ text: string }> };
     expect(later.content.at(-1)!.text).toMatch(/this change moved the finish \d+ min later/);
     // The notice is not advisory-only: the next task/wait call is refused, while todo and reads
     // stay executable so the chief can undo it or justify the user-requested added work.
     for (let i = 0; i < 3; i += 1) {
-      const refused = handlers.get("tool_call")!({ toolName: "task", toolCallId: `late-task-${i}`, input: CALLS.taskRow!.arguments }, ctx) as { block?: boolean; reason?: string };
+      const refused = (await handlers.get("tool_call")!({ toolName: "task", toolCallId: `late-task-${i}`, input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string };
       expect(refused?.block).toBe(true);
       expect(refused?.reason).toContain("this change moved the finish");
       expect(refused?.reason).toContain("undo it, or say in your next todo call which user request the added work serves (evidence field)");
     }
     // At most three refusals for this plan revision.
-    expect(handlers.get("tool_call")!({ toolName: "task", toolCallId: "late-task-4", input: CALLS.taskRow!.arguments }, ctx)).toBeUndefined();
+    expect((await handlers.get("tool_call")!({ toolName: "task", toolCallId: "late-task-4", input: CALLS.taskRow!.arguments }, ctx))).toBeUndefined();
     // Negative controls: reads and todo are not banned by the finish regression gate.
-    expect(handlers.get("tool_call")!({ toolName: "read", toolCallId: "late-read", input: CALLS.read!.arguments }, ctx)).toBeUndefined();
-    expect(handlers.get("tool_call")!({ toolName: "todo", toolCallId: "late-todo", input: { op: "drop", task: "tidy row" } }, ctx)).toBeUndefined();
+    expect((await handlers.get("tool_call")!({ toolName: "read", toolCallId: "late-read", input: CALLS.read!.arguments }, ctx))).toBeUndefined();
+    expect((await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "late-todo", input: { op: "drop", task: "tidy row" } }, ctx))).toBeUndefined();
     // A todo call with a structural evidence field clears the refusal.
-    expect(handlers.get("tool_call")!({ toolName: "todo", toolCallId: "late-evidence", input: { op: "append", task: "extra work", evidence: "user asked for this added row" } }, ctx)).toBeUndefined();
-    expect(handlers.get("tool_call")!({ toolName: "task", toolCallId: "late-task-cleared", input: CALLS.taskRow!.arguments }, ctx)).toBeUndefined();
+    expect((await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "late-evidence", input: { op: "append", task: "extra work", evidence: "user asked for this added row" } }, ctx))).toBeUndefined();
+    expect((await handlers.get("tool_call")!({ toolName: "task", toolCallId: "late-task-cleared", input: CALLS.taskRow!.arguments }, ctx))).toBeUndefined();
     // Neighbour: the task result handler still ignores todo-unrelated tools.
-    expect(handlers.get("tool_result")!({ toolName: "read", toolCallId: "r", input: {}, content: [], isError: false }, ctx)).toBeUndefined();
+    expect((await handlers.get("tool_result")!({ toolName: "read", toolCallId: "r", input: {}, content: [], isError: false }, ctx))).toBeUndefined();
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });
@@ -533,7 +533,7 @@ test("main-session plan snapshots feed plan-doctor from dispatcher-owned state f
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   try {
-    handlers.get("context")!({ messages: [] }, ctx);
+    (await handlers.get("context")!({ messages: [] }, ctx));
     const fromCwd = readFileSync(byCwd, "utf8");
     const fromSession = readFileSync(bySession, "utf8");
     expect(fromCwd).toBe(fromSession);
@@ -549,7 +549,7 @@ test("main-session plan snapshots feed plan-doctor from dispatcher-owned state f
     expect(fromCwd).toContain(join(sessions, "main", "worker-done.jsonl"));
     // The task-call hook refreshes the same file immediately before spawning plan-doctor.
     rmSync(byCwd, { force: true });
-    handlers.get("tool_call")!({ toolName: "task", toolCallId: "doctor", input: { tasks: [{ agent: "plan-doctor", task: "repair the plan" }] } }, ctx);
+    (await handlers.get("tool_call")!({ toolName: "task", toolCallId: "doctor", input: { tasks: [{ agent: "plan-doctor", task: "repair the plan" }] } }, ctx));
     expect(readFileSync(byCwd, "utf8")).toContain("Read by plan-doctor first");
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
@@ -591,21 +591,21 @@ test("a plan with problems is reported once per problem list, and again after te
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   try {
-    handlers.get("session_start")!({}, ctx);
+    (await handlers.get("session_start")!({}, ctx));
     expect(interval).toBe(60_000);
-    tick!();
-    tick!();
+    (await tick!());
+    (await tick!());
     expect(sent).toHaveLength(1);
     expect(sent[0]!.deliverAs).toBe("aside");
     expect(sent[0]!.content).toContain("have no worker");
     idle = true;
-    tick!();
+    (await tick!());
     expect(sent).toHaveLength(1);
     // A changed problem list is news and goes out once.
     branch = plan("chained", now);
     running = [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A" }];
-    tick!();
-    tick!();
+    (await tick!());
+    (await tick!());
     expect(sent).toHaveLength(2);
     // Nothing ready and slots free: the check names the unchaining step, not only pruning.
     expect(sent[1]!.content).toContain("no row is ready");
@@ -625,16 +625,16 @@ test("a plan with problems is reported once per problem list, and again after te
     const realNow = Date.now;
     Date.now = () => realNow() + 11 * 60_000;
     try {
-      tick!();
+      (await tick!());
       expect(sent).toHaveLength(3);
-      tick!();
+      (await tick!());
       expect(sent).toHaveLength(3);
     } finally {
       Date.now = realNow;
     }
     // Negative control: a plan without problems sends nothing.
     branch = plan("none", now);
-    tick!();
+    (await tick!());
     expect(sent).toHaveLength(3);
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
@@ -684,8 +684,8 @@ test("PLAN CHECK names a worker whose session file went quiet, and only that one
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   try {
-    handlers.get("session_start")!({}, ctx);
-    tick!();
+    (await handlers.get("session_start")!({}, ctx));
+    (await tick!());
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain("1 running worker(s) silent: worker-a (last activity 20 min ago)");
     expect(sent[0]).toContain("do not read their history");
@@ -772,7 +772,7 @@ test("PLAN CHECK reports a compacted running worker once with a done/left split 
   } as unknown as ExtensionContext;
   try {
     handlers.session_start!({}, ctx);
-    tick!();
+    (await tick!());
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain("PLAN CHECK:");
     expect(sent[0]).toContain("worker-a");
@@ -780,7 +780,7 @@ test("PLAN CHECK reports a compacted running worker once with a done/left split 
     expect(sent[0]).toContain("write agent://worker-a");
     expect(sent[0]).toContain("done/left");
     expect(sent[0]).toContain("then split");
-    tick!();
+    (await tick!());
     expect(sent.filter(text => text.includes(`compacted at ${compactedClock}`))).toHaveLength(1);
   } finally {
     handlers.session_shutdown?.({}, ctx);
@@ -863,11 +863,11 @@ test("PLAN CHECK asks only workers running longer than fifteen minutes for a don
   } as unknown as ExtensionContext;
   try {
     handlers.session_start!({}, ctx);
-    tick!();
+    (await tick!());
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain("Row C");
     expect(sent[0]).not.toContain("done/left");
-    tick!();
+    (await tick!());
     expect(sent).toHaveLength(2);
     expect(sent[1]).toContain("worker-a");
     expect(sent[1]).toContain("16 min");
@@ -875,7 +875,7 @@ test("PLAN CHECK asks only workers running longer than fifteen minutes for a don
     expect(sent[1]).toContain("done/left");
     expect(sent[1]).toContain("then split");
     expect(sent[1]).not.toContain("write agent://worker-b");
-    tick!();
+    (await tick!());
     expect(sent.filter(text => text.includes("worker sizing:") && text.includes("16 min"))).toHaveLength(1);
   } finally {
     handlers.session_shutdown?.({}, ctx);
@@ -933,10 +933,10 @@ test("PLAN CHECK has the harness ask an overdue worker once instead of telling c
   const realNow = Date.now;
   Date.now = () => liveNow;
   try {
-    handlers.get("session_start")!({}, ctx);
-    tick!();
+    (await handlers.get("session_start")!({}, ctx));
+    (await tick!());
     await Promise.resolve();
-    tick!();
+    (await tick!());
     await Promise.resolve();
     expect(nudges).toHaveLength(1);
     expect(nudges[0]).toMatchObject({ id: "worker-a" });
@@ -998,8 +998,8 @@ test("PLAN CHECK falls back when worker message delivery returns false", async (
   const realNow = Date.now;
   Date.now = () => liveNow;
   try {
-    handlers.get("session_start")!({}, ctx);
-    tick!();
+    (await handlers.get("session_start")!({}, ctx));
+    (await tick!());
     await Promise.resolve();
     await Promise.resolve();
     expect(deliveries).toHaveLength(1);
@@ -1053,8 +1053,8 @@ test("PLAN CHECK keeps the manual fallback when worker messaging is absent", asy
   const realNow = Date.now;
   Date.now = () => liveNow;
   try {
-    handlers.get("session_start")!({}, ctx);
-    tick!();
+    (await handlers.get("session_start")!({}, ctx));
+    (await tick!());
     expect(sent[0]).toContain("overdue check-in blocked for worker-a");
     expect(sent[0]).toContain("omp core exposes no worker-message API to extensions");
     expect(sent[0]).toContain("chief must write agent://worker-a manually");
@@ -1108,8 +1108,8 @@ test("PLAN CHECK does not ask a worker before its own P95", async () => {
   const realNow = Date.now;
   Date.now = () => liveNow;
   try {
-    handlers.get("session_start")!({}, ctx);
-    tick!();
+    (await handlers.get("session_start")!({}, ctx));
+    (await tick!());
     await Promise.resolve();
     expect(nudges).toHaveLength(0);
   } finally {
@@ -1182,8 +1182,8 @@ test("PLAN CHECK includes compact running-worker status from session tool events
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   try {
-    handlers.get("session_start")!({}, ctx);
-    tick!();
+    (await handlers.get("session_start")!({}, ctx));
+    (await tick!());
     const text = sent[0]!;
     expect(text).toContain("Worker status:");
     expect(text).toContain('worker-a row="Row A"');
@@ -1259,10 +1259,10 @@ test("PLAN CHECK warns both live workers and chief once when worker writes overl
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   try {
-    handlers.get("session_start")!({}, ctx);
-    tick!();
+    (await handlers.get("session_start")!({}, ctx));
+    (await tick!());
     await Promise.resolve();
-    tick!();
+    (await tick!());
     await Promise.resolve();
     expect(nudges).toHaveLength(2);
     expect(nudges.map((nudge) => nudge.id).sort()).toEqual(["worker-a", "worker-b"]);
@@ -1312,11 +1312,11 @@ test("write to a settled worker names and redirects to the row's current live ow
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   try {
-    const stale = handlers.get("tool_call")!({
+    const stale = (await handlers.get("tool_call")!({
       toolName: "write",
       toolCallId: "write-old",
       input: { path: "agent://worker-old", content: "what is current proof?" },
-    }, ctx) as { block?: boolean; reason?: string } | undefined;
+    }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(stale?.block).toBe(true);
     expect(stale?.reason).toContain("worker-old is settled");
     expect(stale?.reason).toContain('row "Row A" current live owner is worker-new');
@@ -1324,11 +1324,11 @@ test("write to a settled worker names and redirects to the row's current live ow
     await Promise.resolve();
     expect(redirected).toEqual([{ id: "worker-new", content: "what is current proof?" }]);
     // Negative control: addressing the current live owner is allowed.
-    expect(handlers.get("tool_call")!({
+    expect((await handlers.get("tool_call")!({
       toolName: "write",
       toolCallId: "write-current",
       input: { path: "agent://worker-new", content: "continue" },
-    }, ctx)).toBeUndefined();
+    }, ctx))).toBeUndefined();
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });
@@ -1394,20 +1394,20 @@ test("refuses a second git-pr-owner on the same checkout while allowing another 
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   try {
-    const same = handlers.get("tool_call")!({
+    const same = (await handlers.get("tool_call")!({
       toolName: "task",
       toolCallId: "same-checkout",
       input: { tasks: [{ name: "LandCueTimingSha", agent: "git-pr-owner", task: `Land cue timing fix in ${cwd}` }] },
-    }, ctx) as { block?: boolean; reason?: string } | undefined;
+    }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(same?.block).toBe(true);
     expect(same?.reason).toContain(`checkout ${cwd}`);
     expect(same?.reason).toContain("already has live git-pr-owner LandV3CaptionMirror");
 
-    const different = handlers.get("tool_call")!({
+    const different = (await handlers.get("tool_call")!({
       toolName: "task",
       toolCallId: "other-checkout",
       input: { tasks: [{ name: "LandRiskEdgeSha", agent: "git-pr-owner", task: `Land risk edge fix in ${other}` }] },
-    }, ctx);
+    }, ctx));
     expect(different).toBeUndefined();
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
@@ -1440,19 +1440,19 @@ test("GIT FACTS names commits since previous chief turn and running git jobs", a
     setTimeout: () => ({}),
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
-  const context = () => (handlers.get("context")!({ messages: [] }, ctx) as { messages?: Array<{ content: string }> } | undefined)?.messages?.at(-1)?.content ?? "";
+  const context = async () => ((await handlers.get("context")!({ messages: [] }, ctx)) as { messages?: Array<{ content: string }> } | undefined)?.messages?.at(-1)?.content ?? "";
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
   let child: ReturnType<typeof spawn> | undefined;
   try {
-    handlers.get("session_start")!({}, ctx);
-    expect(context()).not.toContain("commits since previous chief turn");
+    (await handlers.get("session_start")!({}, ctx));
+    expect((await context())).not.toContain("commits since previous chief turn");
     writeFileSync(join(cwd, "b.txt"), "next\n");
     git("add", "b.txt");
     git("commit", "-qm", "landed subject");
     const head = git("rev-parse", "--short=10", "HEAD").trim();
     child = spawn("bash", ["-lc", "exec -a git-hook-test sleep 20"], { cwd, stdio: "ignore" });
-    const text = context();
+    const text = (await context());
     expect(text).toContain("commits since previous chief turn");
     expect(text).toContain(`${head} landed subject`);
     expect(text).toContain("running git job");
@@ -1493,31 +1493,31 @@ test("PLAN CHECK says when the finish recedes with the clock, not before 45 minu
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   const realNow = Date.now;
-  const at = (offsetMin: number) => { Date.now = () => realNow() + offsetMin * 60_000; tick!(); };
+  const at = async (offsetMin: number) => { Date.now = () => realNow() + offsetMin * 60_000; (await tick!()); };
   try {
-    handlers.get("session_start")!({}, ctx);
-    at(0);
+    (await handlers.get("session_start")!({}, ctx));
+    await at(0);
     // Negative control: a plan whose finish holds still is not receding, however long it runs.
-    at(50);
+    await at(50);
     expect(sent.some((text) => text.includes("recedes with the clock"))).toBe(false);
     // Another session starts its own samples. The chief re-plans the same rows from "now" each
     // time: the finish moves with the clock.
     // Twenty minutes of that is not yet a trend.
     sessionId = "gates-receding-2";
     branch = plan("chained", realNow() + 60 * 60_000);
-    at(60);
+    await at(60);
     branch = plan("chained", realNow() + 80 * 60_000);
-    at(80);
+    await at(80);
     expect(sent.some((text) => text.includes("recedes with the clock"))).toBe(false);
     branch = plan("chained", realNow() + 110 * 60_000);
-    at(110);
+    await at(110);
     const last = sent.at(-1)!;
     expect(last).toContain("the finish recedes with the clock");
     expect(last).toContain("Find all remaining defects in one pass");
     expect(last).not.toContain("plan-doctor");
     // Twenty minutes later the finish still recedes: the check hands the plan to plan-doctor.
     branch = plan("chained", realNow() + 135 * 60_000);
-    at(135);
+    await at(135);
     const escalated = sent.at(-1)!;
     expect(escalated).toContain("Run `task` with agent `plan-doctor` now");
     expect(escalated).toContain("samples, now → finish:");
@@ -1574,8 +1574,8 @@ test("the waiting list is the chain that sets the ETA and names a shared resourc
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   try {
-    handlers.get("session_start")!({}, ctx);
-    tick!();
+    (await handlers.get("session_start")!({}, ctx));
+    (await tick!());
     expect(sent).toHaveLength(1);
     const text = sent[0]!;
     expect(text).toContain('- "Shard three" (queued behind "Shard one": both hold resource "slot-a"; not a dependency)');

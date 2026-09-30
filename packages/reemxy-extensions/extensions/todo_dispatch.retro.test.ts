@@ -37,12 +37,12 @@ async function fixture(initial: TodoScheduleInput, jobs: unknown[], deadlineAt =
     setInterval: (fn: () => void) => { intervals.push(fn); return fn as unknown as ReturnType<typeof setInterval>; },
     clearInterval: () => undefined,
   } as unknown as ExtensionContext;
-  const check = (phases: TodoScheduleInput = state.plan) => {
-    const result = handlers.get("tool_result")!({ toolName: "todo", toolCallId: "retro-check", isError: false, content: [{ type: "text", text: "schedule" }], details: { phases } }, ctx) as { content: Array<{ text?: string }> };
+  const check = async (phases: TodoScheduleInput = state.plan) => {
+    const result = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "retro-check", isError: false, content: [{ type: "text", text: "schedule" }], details: { phases } }, ctx)) as { content: Array<{ text?: string }> };
     return result.content.map((part) => part.text ?? "").join("\n");
   };
-  const dispatch = (name: string, agent = "retro-facilitator") => handlers.get("tool_call")!({ toolName: "task", toolCallId: `call-${name}`, input: { tasks: [{ name, agent, task: "facilitate" }] } }, ctx);
-  const finish = (agent = "retro-facilitator", isError = false) => handlers.get("tool_result")!({ toolName: "task", toolCallId: "retro-task", isError, details: { results: [{ agent, exitCode: 0, durationMs: 1000 }] } }, ctx);
+  const dispatch = async (name: string, agent = "retro-facilitator") => (await handlers.get("tool_call")!({ toolName: "task", toolCallId: `call-${name}`, input: { tasks: [{ name, agent, task: "facilitate" }] } }, ctx));
+  const finish = async (agent = "retro-facilitator", isError = false) => (await handlers.get("tool_result")!({ toolName: "task", toolCallId: "retro-task", isError, details: { results: [{ agent, exitCode: 0, durationMs: 1000 }] } }, ctx));
   return { handlers, branch, ctx, check, finish, dispatch, setPlan: (next: TodoScheduleInput) => { state.plan = next; }, setJobs: (next: unknown[]) => { recent = next; }, intervals, notices };
 }
 
@@ -53,9 +53,9 @@ test("successful retro-facilitator settlement clears stale due on the next PLAN 
       { id: "done-a", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" },
       { id: "done-b", type: "task", status: "completed", label: "Review feature", startTime: liveNow - 2000, agentId: "worker-b" },
     ]);
-    expect(f.check()).toContain("retrospective due (deadline passed)");
-    f.finish();
-    const after = f.check();
+    expect((await f.check())).toContain("retrospective due (deadline passed)");
+    (await f.finish());
+    const after = (await f.check());
     expect(after).not.toContain("retrospective due");
     expect(after).not.toContain("worker-a");
     expect(after).not.toContain("worker-b");
@@ -69,7 +69,7 @@ test("aborted worker is excluded while completed worker remains a retro particip
       { id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "completed-worker" },
       { id: "abort", type: "task", status: "cancelled", label: "ShapeHamburgerRailToggle", startTime: liveNow - 2000, agentId: "aborted-worker" },
     ]);
-    const notice = f.check();
+    const notice = (await f.check());
     expect(notice).toContain("completed-worker");
     expect(notice).not.toContain("aborted-worker");
     expect(notice).not.toContain("ShapeHamburgerRailToggle");
@@ -85,11 +85,11 @@ test("unchanged skipped retro trigger notifies once until a genuinely new window
     // A real PLAN CHECK is the trigger; leave the due work unresolved, as when the suggested
     // retrospective was skipped. Repeated checks must not resend the same trigger notice; the
     // embedded PLAN CHECK text in the todo tool_result is the real notice channel, not sendMessage.
-    const repeated = [f.check(), f.check(), f.check()].filter((text) => text.includes("retrospective due"));
+    const repeated = [(await f.check()), (await f.check()), (await f.check())].filter((text) => text.includes("retrospective due"));
     expect(repeated).toHaveLength(1);
     f.setPlan([{ name: "Work", tasks: [row("Ship feature"), row("New delivery window")] }]);
     f.setJobs([{ id: "new-done", type: "task", status: "completed", label: "New delivery window", startTime: liveNow + 1, agentId: "worker-b" }]);
-    const afterNewWindow = f.check();
+    const afterNewWindow = (await f.check());
     expect(afterNewWindow).toContain("retrospective due");
     expect(afterNewWindow).toContain("worker-b");
   } finally { setSystemTime(); }
@@ -104,10 +104,10 @@ test("an async retro-facilitator that settles through wait clears the due notice
       { id: "done-a", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" },
     ];
     const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], workers);
-    expect(f.check()).toContain("retrospective due");
-    f.dispatch("SprintRetro");
+    expect((await f.check())).toContain("retrospective due");
+    (await f.dispatch("SprintRetro"));
     f.setJobs([...workers, { id: "SprintRetro", type: "task", status: "completed", label: "SprintRetro", startTime: liveNow - 1000, agentId: "SprintRetro" }]);
-    const after = f.check();
+    const after = (await f.check());
     expect(after).not.toContain("retrospective due");
     expect(after).not.toContain("SprintRetro");
   } finally { setSystemTime(); }
@@ -120,13 +120,13 @@ test("an async retro-facilitator that failed does not clear the due notice", asy
       { id: "done-a", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" },
     ];
     const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], workers);
-    f.check();
-    f.dispatch("SprintRetro");
+    (await f.check());
+    (await f.dispatch("SprintRetro"));
     f.setJobs([...workers, { id: "SprintRetro", type: "task", status: "failed", label: "SprintRetro", startTime: liveNow - 1000, agentId: "SprintRetro" }]);
     // The trigger is unchanged, so the once-per-trigger notice stays quiet; the state must still be due.
     f.setJobs([...workers, { id: "SprintRetro", type: "task", status: "failed", label: "SprintRetro", startTime: liveNow - 1000, agentId: "SprintRetro" },
       { id: "done-b", type: "task", status: "completed", label: "More work", startTime: liveNow - 500, agentId: "worker-b" }]);
-    expect(f.check()).toContain("retrospective due");
+    expect((await f.check())).toContain("retrospective due");
   } finally { setSystemTime(); }
 });
 
@@ -137,7 +137,7 @@ test("workers that failed on provider errors are not retro participants", async 
       { id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "completed-worker" },
       { id: "quota", type: "task", status: "failed", label: "RetraceExporterEstimateGap", startTime: liveNow - 2000, agentId: "quota-worker" },
     ]);
-    const notice = f.check();
+    const notice = (await f.check());
     expect(notice).toContain("completed-worker");
     expect(notice).not.toContain("quota-worker");
   } finally { setSystemTime(); }
