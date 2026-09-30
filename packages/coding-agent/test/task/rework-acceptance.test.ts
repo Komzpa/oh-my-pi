@@ -340,6 +340,37 @@ describe("task rework acceptance", () => {
 		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toEqual(existing);
 	});
 
+	it.each([
+		["failed", "task"],
+		["aborted", "task"],
+		["failed", "ui-coder-strong"],
+		["aborted", "ui-coder-strong"],
+	] as const)("honors strong routing after a %s attempt on %s", async (outcome, previousProfile) => {
+		const strongAgent: AgentDefinition = {
+			...taskAgent,
+			name: "ui-coder-strong",
+			model: ["codex-lb/gpt-6.1-sol:high"],
+		};
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [taskAgent, strongAgent],
+			projectAgentsDir: null,
+		});
+		const harness = createSession(
+			seededPhase(outcome, [], { resolvedModel: "codex-lb/gpt-6-luna", thinkingLevel: "max" }),
+		);
+		harness.phases()[0]!.tasks[0]!.schedule!.executor!.agentProfile = previousProfile;
+		const run = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? OWNER));
+		const tool = await TaskTool.create(harness.session);
+		await tool.execute("strong-retry", { agent: strongAgent.name, name: OWNER, task: ROW });
+		expect(run).toHaveBeenCalledTimes(1);
+		expect(run.mock.calls[0]![0].modelOverride).toEqual(["codex-lb/gpt-6.1-sol:high"]);
+		expect(run.mock.calls[0]![0].exactThinkingLevel).toBeUndefined();
+		expect(run.mock.calls[0]![0].context).toContain(`failed: ${outcome}`);
+		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toEqual([]);
+	});
+
 	it("advances completed rework in the same worker session and preserves ordinary routing", async () => {
 		const harness = createSession();
 		const run = vi
