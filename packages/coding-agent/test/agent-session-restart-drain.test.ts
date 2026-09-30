@@ -7,6 +7,9 @@ import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { WaitTool } from "@oh-my-pi/pi-coding-agent/tools/wait";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -40,6 +43,45 @@ describe("AgentSession restart drain", () => {
 	afterAll(() => {
 		authStorage.close();
 		removeSyncWithRetries(fixtureDir);
+	});
+
+	it("releases native wait on drain without cancelling or consuming its child job", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const manager = new AsyncJobManager({});
+		const child = Promise.withResolvers<string>();
+		const jobId = manager.register("task", "PendingChild", () => child.promise, { ownerId: "Main" });
+		const settings = Settings.isolated({ "launch.enabled": false });
+		const toolSession = {
+			cwd: fixtureDir,
+			settings,
+			asyncJobManager: manager,
+			getAgentId: () => "Main",
+		} as ToolSession;
+		const mock = createMockModel({ responses: [] });
+		session = new AgentSession({
+			agent: new Agent({
+				initialState: { model, systemPrompt: ["Test"], tools: [] },
+				streamFn: mock.stream,
+				convertToLlm,
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			evalToolSession: toolSession,
+		});
+		const waiting = new WaitTool(toolSession).execute("wait-for-child", {});
+		const lease = session.beginRestartDrain();
+		const result = await waiting;
+		expect(result.details).toMatchObject({ interrupted: true });
+		expect(result.content).toEqual([{ type: "text", text: "Wait interrupted for session restart." }]);
+		expect(manager.getRunningJobs({ ownerId: "Main" }).map(job => job.id)).toEqual([jobId]);
+		expect(manager.isJobResultConsumed(jobId)).toBe(false);
+		await lease.waitForQuiescence();
+		lease.release();
+		child.resolve("preserved child result");
+		await manager.waitForAll();
+		const resumed = await new WaitTool(toolSession).execute("wait-after-cancel", {});
+		expect(resumed.details?.jobs?.[0]).toMatchObject({ id: jobId, resultText: "preserved child result" });
 	});
 
 	it("finishes the current tool batch, checkpoints once, and resumes once on cancel", async () => {

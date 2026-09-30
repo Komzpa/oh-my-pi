@@ -136,6 +136,8 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<CoordinationDetails>,
 	): Promise<AgentToolResult<CoordinationDetails>> {
+		const drainSignal = this.session.getRestartDrainSignal?.();
+		if (drainSignal) signal = signal ? AbortSignal.any([signal, drainSignal]) : drainSignal;
 		const registry = this.session.agentRegistry;
 		const senderId = this.session.getAgentId?.() ?? undefined;
 		const messaging = registry && senderId ? { registry, senderId } : undefined;
@@ -296,7 +298,14 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 				// result. Any other abort stops the run.
 				if (signal.reason === TOOL_INTERRUPT_ABORT_REASON) {
 					return {
-						content: [{ type: "text", text: "Wait interrupted by message." }],
+						content: [
+							{
+								type: "text",
+								text: this.session.getRestartDrainSignal?.().aborted
+									? "Wait interrupted for session restart."
+									: "Wait interrupted by message.",
+							},
+						],
 						details: { op: "wait", jobs: [], interrupted: true },
 						useless: true,
 					};

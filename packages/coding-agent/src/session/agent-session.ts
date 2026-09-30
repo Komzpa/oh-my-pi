@@ -24,6 +24,7 @@ import {
 	type AfterToolCallResult,
 	type Agent,
 	AgentBusyError,
+	TOOL_INTERRUPT_ABORT_REASON,
 	agentPauseGate,
 	type AgentEvent,
 	type AgentMessage,
@@ -955,6 +956,7 @@ export class AgentSession implements SettingsScope {
 	#queuedMessageDrainBlocked = false;
 	#modeExitDrainSuppressionDepth = 0;
 	#restartDrainLeaseCount = 0;
+	#restartWaitAbort = new AbortController();
 	#restartDrainGeneration = 0;
 	#restartDrainQuiescence: Promise<void> | undefined;
 	#restartDrainStoppedRun = false;
@@ -1564,6 +1566,7 @@ export class AgentSession implements SettingsScope {
 			parentSessionId: config.parentEvalSessionId,
 		});
 		this.#evalToolSession = config.evalToolSession;
+		if (this.#evalToolSession) this.#evalToolSession.getRestartDrainSignal = () => this.#restartWaitAbort.signal;
 		const initialEvalStateContext = this.#buildEvalStateContextMessage();
 		if (initialEvalStateContext) this.agent.appendMessage(initialEvalStateContext);
 		const ircHost: IrcBridgeHost = {
@@ -6133,6 +6136,7 @@ export class AgentSession implements SettingsScope {
 	beginRestartDrain(): RestartDrainLease {
 		if (this.#isDisposed) throw new Error("Cannot drain a disposed session for restart");
 		if (this.#restartDrainLeaseCount === 0) {
+			this.#restartWaitAbort.abort(TOOL_INTERRUPT_ABORT_REASON);
 			this.#restartDrainGeneration++;
 			this.#restartDrainQuiescence = undefined;
 			this.#restartDrainStoppedRun = false;
@@ -6155,6 +6159,7 @@ export class AgentSession implements SettingsScope {
 				released = true;
 				if (this.#isDisposed || generation !== this.#restartDrainGeneration) return;
 				if (--this.#restartDrainLeaseCount > 0) return;
+				this.#restartWaitAbort = new AbortController();
 				this.#restartDrainGeneration++;
 				this.#restartDrainQuiescence = undefined;
 				const resume = this.#restartDrainStoppedRun || this.#restartDrainNeedsResume;
