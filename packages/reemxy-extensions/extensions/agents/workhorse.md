@@ -2,7 +2,7 @@
 name: workhorse
 description: Mechanical worker for bulk edits, file moves, data munging, and given commands with no design decisions.
 tools: read, grep, glob, find, edit, write, bash
-model: codex-lb/gpt-6-luna:low, deepseek/deepseek-v4-flash:high, kimi-code/kimi-for-coding-highspeed:medium, xiaomi/mimo-v2.6-flash, claude-bridge/claude-sonnet-5, codex-lb/Qwen3.8-27B
+model: codex-lb/gpt-6-luna:low, deepseek/deepseek-v4-flash:high, kimi-code/kimi-for-coding-highspeed:medium, xiaomi/mimo-v2.6-flash, codex-lb/Qwen3.8-27B
 thinking-level: low
 spawns: []
 ---

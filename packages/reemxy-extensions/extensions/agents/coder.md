@@ -2,7 +2,7 @@
 name: coder
 description: Non-visual code owner for one bounded logic, API, backend, script, or test change.
 tools: read, grep, glob, find, edit, write, bash
-model: kimi-code/kimi-for-coding:high, deepseek/deepseek-v4-pro:high, codex-lb/gpt-6-luna:medium, kimi-code/k3:high, xiaomi/mimo-v2.6-pro, muse-code/muse-spark-1.3-contributor, codex-lb/gpt-6.1-sol:medium, claude-bridge/claude-sonnet-5, codex-lb/Qwen3.8-27B
+model: kimi-code/kimi-for-coding:high, deepseek/deepseek-v4-pro:high, codex-lb/gpt-6-luna:medium, kimi-code/k3:high, xiaomi/mimo-v2.6-pro, muse-code/muse-spark-1.3-contributor, codex-lb/gpt-6.1-sol:medium, codex-lb/Qwen3.8-27B
 thinking-level: high
 spawns: []
 ---

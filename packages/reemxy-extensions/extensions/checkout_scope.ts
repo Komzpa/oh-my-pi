@@ -3,7 +3,10 @@ import * as path from "node:path";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 
 export function normalizeCheckoutKey(value: string) {
-	const trimmed = value.trim().replace(/[),.;:'"`]+$/g, "").replace(/\/+$/g, "");
+	const trimmed = value
+		.trim()
+		.replace(/[),.;:'"`]+$/g, "")
+		.replace(/\/+$/g, "");
 	if (!trimmed) return null;
 	return trimmed.startsWith("/") ? `path:${trimmed}` : `name:${trimmed}`;
 }
