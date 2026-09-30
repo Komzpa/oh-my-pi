@@ -362,7 +362,11 @@ export async function resolveEffectiveSubagentPolicy(
 	// Role identity and patterns come from one call so they cannot be derived
 	// from different sources: the expansion below discards the alias, and the
 	// child's inherited retry-fallback chain is keyed off the role.
-	const { patterns: modelOverride, role: modelRole } = resolveAgentModelSelection(modelResolution);
+	const {
+		patterns: modelOverride,
+		role: modelRole,
+		inheritsParentModel,
+	} = resolveAgentModelSelection(modelResolution);
 	const isolationEnabled = cfgTaskIsolationEnabled.get(request.session.settings);
 	const isIsolated = request.isolation?.requested === true;
 	if (isIsolated && !isolationEnabled) {
@@ -380,7 +384,7 @@ export async function resolveEffectiveSubagentPolicy(
 		modelRole,
 		serviceTierOverride,
 		compactionThresholdOverride,
-		parentActiveModelPattern,
+		parentActiveModelPattern: inheritsParentModel ? parentActiveModelPattern : undefined,
 		schema,
 		planMode,
 		isIsolated,
@@ -432,10 +436,10 @@ async function applySpawnHook(
 	}
 	if (spawnResult?.model === undefined) return policy;
 	// Rework rungs specify both selectors and must not be redirected by extension routing.
-	if (request.model !== undefined && request.thinkingLevel !== undefined) return policy;
+	if (request.model !== undefined) return policy;
 	const replacement = resolveConfiguredModelPatterns(spawnResult.model, request.session.settings);
 	if (replacement.length === 0) return policy;
-	return { ...policy, modelOverride: replacement, modelRoute: spawnResult.note };
+	return { ...policy, modelOverride: replacement, parentActiveModelPattern: undefined, modelRoute: spawnResult.note };
 }
 
 /** Reserve a session-global agent id only after preflight has succeeded. */
