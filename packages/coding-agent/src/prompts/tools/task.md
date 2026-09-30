@@ -15,7 +15,7 @@ Shared edits need one integration owner{{#if ircEnabled}}; siblings coordinate v
 
 `name`: CamelCase ≤32, auto-generated if omitted; address agent by name. `outputSchema` overrides agent/session schemas.
 `solutionSpace`: describe how open-ended the child's problem is: whether the fix or design is given, or which causes or designs remain open. Volume of work does not widen it; NEVER mention sibling agents or coordination. (`one fix: rename, names given`; `one fix: slice end in paginate`; `single-flight cache load; races easy to miss`; `several retry API shapes; error classes to choose`; `deadlock cause open, no repro`)
-`rework`: on a same-row re-dispatch after the prior worker completed, reuse its `name` and supply a one-line rejection reason. Omit it for first dispatches and infrastructure retries (failed, aborted, timeout, provider error); those do not imply rejection.
+`rework`: explicitly reject a completed result using its `name` and a one-line rejection reason. Completed preparation, implementation-to-QA handoff, and ordinary continuation are not rejection: omit `rework` and use ordinary routing. Omit it for first dispatches and infrastructure retries (failed, aborted, timeout, provider error). An already exhausted blocked row still requires fresh approval.
 {{#if evalToolsEnabled}}`tools`: eval-defined, run in your kernel.
 {{/if}}{{#if effortEnabled}}`effort`: `"lo"`|`"med"`|`"hi"` by how open-ended the problem is.
 {{/if}}`schemaMode`: default permissive warns after retries; strict fails.

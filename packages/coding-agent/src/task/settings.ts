@@ -23,12 +23,10 @@ export type TaskReworkEffort = Effort;
 export type TaskReworkLadderEntry = `:${TaskReworkEffort}` | `${string}/${string}:${TaskReworkEffort}`;
 
 const DEFAULT_TASK_REWORK_LADDER: readonly TaskReworkLadderEntry[] = [
-	":minimal",
-	":low",
-	":medium",
-	":high",
-	":xhigh",
-	":max",
+	"codex-lb/gpt-6-luna:medium",
+	"codex-lb/gpt-5.6-terra:medium",
+	"codex-lb/gpt-6.1-sol:medium",
+	"codex-lb/gpt-6-astra:medium",
 ];
 
 /** Validate ordered generic effort rungs and explicit provider/model:effort choices. */

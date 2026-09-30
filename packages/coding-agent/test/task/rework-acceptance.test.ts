@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { Effort } from "@oh-my-pi/pi-ai";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
@@ -10,15 +12,19 @@ import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import * as reflectionModule from "@oh-my-pi/pi-coding-agent/task/rework-reflection";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
-import type { SingleResult, TaskParams } from "@oh-my-pi/pi-tui/tools/task";
+import type { SingleResult, TaskParams, TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { getLatestTodoPhasesFromEntries, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools";
+import { applyOpsToPhases } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { TodoPersistedEdit, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
 const ROW = "Render the accepted cut";
 const OWNER = "RenderCut";
 const MODEL = "anthropic/claude-sonnet-4";
+const FAMILIES = ["codex-lb/gpt-6-luna", "codex-lb/gpt-5.6-terra", "codex-lb/gpt-6.1-sol", "codex-lb/gpt-6-astra"];
+const FAMILY_LADDER = FAMILIES.map(model => `${model}:medium`);
+const EFFORT_LADDER = [":minimal", ":low", ":medium", ":high", ":xhigh", ":max"];
 const taskAgent: AgentDefinition = {
 	name: "task",
 	description: "General-purpose task agent",
@@ -50,7 +56,7 @@ function makeResult(id: string, overrides: Partial<SingleResult> = {}): SingleRe
 
 function createSession(
 	initial: TodoPhase[] = [],
-	ladder?: readonly string[],
+	ladder: readonly string[] = EFFORT_LADDER,
 ): {
 	session: ToolSession;
 	phases: () => TodoPhase[];
@@ -65,6 +71,7 @@ function createSession(
 		hasUI: false,
 		settings: Settings.isolated({
 			"async.enabled": false,
+			"tools.approvalMode": "yolo",
 			...(ladder === undefined ? {} : { "task.reworkLadder": [...ladder] }),
 		}),
 		getSessionFile: () => null,
@@ -132,6 +139,31 @@ function text(result: { content: Array<{ type: string; text?: string }> }): stri
 	return result.content.map(part => (part.type === "text" ? (part.text ?? "") : "")).join("\n");
 }
 
+function wrapTask(tool: TaskTool, session: ToolSession, select?: () => Promise<string | undefined>) {
+	return new ExtensionToolWrapper<TaskTool["parameters"], TaskToolDetails>(
+		{
+			name: tool.name,
+			label: tool.label,
+			description: tool.description,
+			parameters: tool.parameters,
+			approval: tool.approval,
+			formatApprovalDetails: tool.formatApprovalDetails.bind(tool),
+			execute: tool.execute.bind(tool),
+		},
+		{
+			hasHandlers: () => false,
+			consumeToolCallEmitted: () => false,
+			hasUI: () => select !== undefined,
+			getUIContext: () => ({ select }),
+			sessionSettings: session.settings,
+			sessionId: "rework-acceptance",
+			runScoped<T>(fn: () => T): T {
+				return fn();
+			},
+		} as unknown as ExtensionRunner,
+	);
+}
+
 describe("task rework acceptance", () => {
 	beforeEach(() => {
 		AgentRegistry.resetGlobalForTests();
@@ -143,10 +175,132 @@ describe("task rework acceptance", () => {
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
 	});
-	it("teaches the task chief when to provide a rework reason", async () => {
-		const tool = await TaskTool.create(createSession().session);
-		expect(tool.description).toContain("one-line rejection reason");
-		expect(tool.description).toContain("infrastructure retries");
+	it("advances explicit families independently of the previous effort", async () => {
+		const harness = createSession([], FAMILY_LADDER);
+		const run = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? OWNER));
+		vi.spyOn(reflectionModule, "captureReworkReflection").mockResolvedValue({ answer: "Change the approach." });
+		const tool = await TaskTool.create(harness.session);
+		await tool.execute("seed", { name: OWNER, task: ROW });
+		for (let index = 0; index < FAMILIES.length - 1; index++) {
+			harness.setPhases(seededPhase("completed", [], { resolvedModel: FAMILIES[index], thinkingLevel: "high" }));
+			await tool.execute(`family-${index}`, { name: OWNER, task: ROW, rework: "The result is still wrong." });
+			expect(run.mock.calls.at(-1)![0].modelOverride).toEqual([FAMILIES[index + 1]!]);
+		}
+		expect(run).toHaveBeenCalledTimes(4);
+	});
+
+	it("gates exhausted effort mismatch through the wrapper on every call", async () => {
+		const harness = createSession([], FAMILY_LADDER);
+		const run = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? OWNER));
+		vi.spyOn(reflectionModule, "captureReworkReflection").mockResolvedValue({ answer: "Change the approach." });
+		const tool = await TaskTool.create(harness.session);
+		await tool.execute("seed", { name: OWNER, task: ROW });
+		harness.setPhases(seededPhase("completed", [], { resolvedModel: FAMILIES[3], thinkingLevel: "high" }));
+		const params = { name: OWNER, task: ROW, rework: "The final result is wrong." };
+		const select = vi.fn(async () => "Deny");
+		const wrapped = wrapTask(tool, harness.session, select);
+		await expect(wrapped.execute("deny", params)).rejects.toThrow("denied by user");
+		await expect(wrapTask(tool, harness.session).execute("no-ui", params)).rejects.toThrow("no interactive UI");
+		harness.setPhases(
+			applyOpsToPhases(harness.phases(), [
+				{ op: "block", task: ROW, reason: "waits for user: Rework ladder exhausted." },
+			]).phases,
+		);
+		await expect(wrapped.execute("blocked-deny", params)).rejects.toThrow("denied by user");
+		harness.setPhases(applyOpsToPhases(harness.phases(), [{ op: "unblock", task: ROW }]).phases);
+		await expect(wrapped.execute("unblocked-deny", params)).rejects.toThrow("denied by user");
+		await expect(wrapTask(tool, harness.session, async () => undefined).execute("dismiss", params)).rejects.toThrow(
+			"denied by user",
+		);
+		await expect(
+			wrapTask(tool, harness.session, async () => {
+				throw new Error("prompt cancelled");
+			}).execute("cancel", params),
+		).rejects.toThrow("prompt cancelled");
+		expect(run).toHaveBeenCalledTimes(1);
+		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toEqual([]);
+		harness.setPhases(
+			applyOpsToPhases(harness.phases(), [
+				{ op: "block", task: ROW, reason: "waits for user: Rework ladder exhausted." },
+			]).phases,
+		);
+		select.mockResolvedValueOnce("Approve");
+		await wrapped.execute("approve", params);
+		expect(run).toHaveBeenCalledTimes(2);
+		expect(run.mock.calls[1]![0].modelOverride).toEqual([FAMILIES[3]!]);
+		expect(run.mock.calls[1]![0].exactThinkingLevel?.toString()).toBe("high");
+		expect(harness.phases()[0]!.tasks[0]!.status).not.toBe("blocked");
+		expect(harness.phases()[0]!.tasks[0]!.content).toBe(ROW);
+		const history = structuredClone(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory);
+		await expect(wrapped.execute("fresh-prompt", params)).rejects.toThrow("denied by user");
+		expect(select).toHaveBeenCalledTimes(5);
+		expect(run).toHaveBeenCalledTimes(2);
+		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toEqual(history);
+		const restored = await TaskTool.create(createSession(structuredClone(harness.phases()), FAMILY_LADDER).session);
+		await expect(
+			wrapTask(restored, harness.session, async () => "Deny").execute("restored-deny", params),
+		).rejects.toThrow("denied by user");
+		expect(history?.map(attempt => attempt.attemptId)).toEqual([`${OWNER}:100`]);
+		select.mockResolvedValueOnce("Approve");
+		await wrapped.execute("approve-again", params);
+		expect(run).toHaveBeenCalledTimes(3);
+		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toEqual(history);
+	});
+
+	it("rejects a changed completed attempt while approval is pending", async () => {
+		const harness = createSession(
+			seededPhase("completed", [], { resolvedModel: FAMILIES[3], thinkingLevel: "high" }),
+			FAMILY_LADDER,
+		);
+		const run = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? OWNER));
+		const reflection = vi
+			.spyOn(reflectionModule, "captureReworkReflection")
+			.mockResolvedValue({ answer: "No launch expected." });
+		const tool = await TaskTool.create(harness.session);
+		const wrapped = wrapTask(tool, harness.session, async () => {
+			harness.phases()[0]!.tasks[0]!.schedule!.executor!.startedAt = 300;
+			return "Approve";
+		});
+		const result = await wrapped.execute("changed-attempt", { name: OWNER, task: ROW, rework: "Incorrect result." });
+		expect(result.details?.results).toEqual([]);
+		expect(run).not.toHaveBeenCalled();
+		expect(reflection).not.toHaveBeenCalled();
+		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toEqual([]);
+	});
+
+	it("rejects mixed exhausted recovery before reflection or any dispatch", async () => {
+		const harness = createSession(
+			seededPhase("completed", [], { resolvedModel: FAMILIES[3], thinkingLevel: "high" }),
+			FAMILY_LADDER,
+		);
+		const run = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? OWNER));
+		const reflection = vi
+			.spyOn(reflectionModule, "captureReworkReflection")
+			.mockResolvedValue({ answer: "No launch expected." });
+		const tool = await TaskTool.create(harness.session);
+		const params = {
+			context: "Shared work",
+			tasks: [
+				{ name: "FreshWorker", task: ROW },
+				{ name: OWNER, task: ROW, rework: "Incorrect result." },
+			],
+		};
+		const select = vi.fn(async () => "Approve");
+		await expect(wrapTask(tool, harness.session, select).execute("mixed", params)).rejects.toThrow(
+			"exactly one task",
+		);
+		expect((await tool.execute("direct-mixed", params)).details?.results).toEqual([]);
+		expect(select).not.toHaveBeenCalled();
+		expect(run).not.toHaveBeenCalled();
+		expect(reflection).not.toHaveBeenCalled();
 	});
 
 	it("keeps an infrastructure retry on its current rung without rejection history", async () => {
@@ -243,7 +397,7 @@ describe("task rework acceptance", () => {
 			"The motion blur obscures the subject.",
 		);
 	});
-	it("refuses completed rework without a single-line rejection reason", async () => {
+	it("continues a completed phase normally while rejecting invalid explicit rework reasons", async () => {
 		const harness = createSession(seededPhase("completed"));
 		const run = vi
 			.spyOn(executorModule, "runSubprocess")
@@ -268,10 +422,10 @@ describe("task rework acceptance", () => {
 			rework: " \t",
 		} as TaskParams);
 
-		expect(text(missing)).toContain("requires a one-line");
+		expect(missing.details?.results?.[0]?.exitCode).toBe(0);
 		expect(text(multiline)).toContain("requires a one-line");
 		expect(text(blank)).toContain("requires a one-line");
-		expect(run).not.toHaveBeenCalled();
+		expect(run).toHaveBeenCalledTimes(1);
 	});
 
 	it("passes the prior report paragraph when reflection has no answer", async () => {
@@ -312,7 +466,7 @@ describe("task rework acceptance", () => {
 		expect(run).toHaveBeenCalledTimes(1);
 	});
 
-	it("replays two rejections into the third rung and blocks after the final rung", async () => {
+	it("replays ordered rejections durably and gates the final rung after restart", async () => {
 		const ladder = [":low", ":medium", ":high", "codex-lb/gpt-6-sol:medium"];
 		const harness = createSession([], ladder);
 		const run = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
@@ -449,28 +603,29 @@ describe("task rework acceptance", () => {
 				thinkingLevel: "medium",
 			}),
 		);
-		const top = await tool.execute("top-rung", {
+		const topParams = {
 			agent: "task",
 			name: thirdWorkerId,
 			task: "Improve the cut once more.",
 			rework: "Third rejection.",
-		} as TaskParams);
-		const topText = text(top);
-		expect(topText).toContain("Rework circuit breaker");
-		expect(topText).toContain("First rejection.");
-		expect(topText).toContain("Second rejection.");
-		expect(topText).toContain("Third rejection.");
-		expect(harness.phases()[0]!.tasks[0]!.status).toBe("blocked");
-		expect(harness.phases()[0]!.tasks[0]!.blocker).toContain("waits for user");
-		expect(run).toHaveBeenCalledTimes(2);
-		const waiting = await tool.execute("after-top-rung", {
-			agent: "task",
-			name: thirdWorkerId,
-			task: "Retry after circuit breaker.",
-			rework: "Fourth rejection.",
-		} as TaskParams);
-		expect(text(waiting)).toContain("ladder is exhausted");
-		expect(text(waiting)).not.toContain("Rework circuit breaker");
-		expect(run).toHaveBeenCalledTimes(2);
+		};
+		const select = vi.fn(async () => "Approve");
+		await wrapTask(tool, harness.session, select).execute("top-rung", topParams);
+		const history = harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory!;
+		expect(history.map(attempt => attempt.rejectionReason)).toEqual([
+			"First rejection.",
+			"Second rejection.",
+			"Third rejection.",
+		]);
+		expect(history[0]).toEqual(base[0]!.tasks[0]!.schedule!.attemptHistory![0]);
+		expect(new Set(history.map(attempt => attempt.attemptId)).size).toBe(3);
+		expect(run).toHaveBeenCalledTimes(3);
+		const restoredHarness = createSession(structuredClone(harness.phases()), ladder);
+		const restored = await TaskTool.create(restoredHarness.session);
+		await expect(
+			wrapTask(restored, restoredHarness.session, async () => "Deny").execute("after-restart", topParams),
+		).rejects.toThrow("denied by user");
+		expect(restoredHarness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toEqual(history);
+		expect(run).toHaveBeenCalledTimes(3);
 	});
 });
