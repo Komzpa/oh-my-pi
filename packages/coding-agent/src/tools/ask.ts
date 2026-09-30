@@ -566,7 +566,10 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	readonly loadMode = "discoverable";
 	readonly #interactiveAnswer: boolean;
 
-	constructor(private readonly session: ToolSession, options: { interactiveAnswer?: boolean } = {}) {
+	constructor(
+		private readonly session: ToolSession,
+		options: { interactiveAnswer?: boolean } = {},
+	) {
 		this.description = prompt.render(askDescription);
 		this.#interactiveAnswer = options.interactiveAnswer === true;
 		this.concurrency = this.#interactiveAnswer ? "exclusive" : "shared";

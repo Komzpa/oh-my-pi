@@ -13,17 +13,24 @@ import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 
 function session(overrides: Partial<ToolSession> = {}): ToolSession {
 	return {
-		cwd: os.tmpdir(), hasUI: true, getSessionFile: () => null, getSessionSpawns: () => "*",
+		cwd: os.tmpdir(),
+		hasUI: true,
+		getSessionFile: () => null,
+		getSessionSpawns: () => "*",
 		getSessionId: () => "asking-session",
 		settings: Settings.isolated({ "ask.timeout": 0.001, "ask.notify": "off", "speech.enabled": false }),
 		...overrides,
 	};
 }
 
-const questions = [{ id: "choice", question: "Which database?", options: [{ label: "SQLite" }, { label: "Postgres" }], recommended: 0 }];
+const questions = [
+	{ id: "choice", question: "Which database?", options: [{ label: "SQLite" }, { label: "Postgres" }], recommended: 0 },
+];
 
 describe("pending Ask", () => {
-	beforeAll(async () => { await initTheme(false); });
+	beforeAll(async () => {
+		await initTheme(false);
+	});
 
 	it("returns a pending identity without opening modal UI or producing consent", async () => {
 		const unresolved = Promise.withResolvers<undefined>();
@@ -42,7 +49,9 @@ describe("pending Ask", () => {
 		expect(confirm).not.toHaveBeenCalled();
 		expect(abort).not.toHaveBeenCalled();
 		expect(tool.concurrency).toBe("shared");
-		expect(result.content[0]).toMatchObject({ text: expect.stringContaining("No answer or approval has been received") });
+		expect(result.content[0]).toMatchObject({
+			text: expect.stringContaining("No answer or approval has been received"),
+		});
 	});
 
 	it("keeps multiple asks and independent work runnable while all questions are unanswered", async () => {
@@ -52,7 +61,9 @@ describe("pending Ask", () => {
 		const results = await Promise.all([
 			tool.execute("ask-1", { questions }, undefined, undefined, context),
 			tool.execute("ask-2", { questions }, undefined, undefined, context),
-			Promise.resolve().then(() => { workDone = true; }),
+			Promise.resolve().then(() => {
+				workDone = true;
+			}),
 		]);
 		expect(results[0]?.details?.pending?.id).toBe("ask-1");
 		expect(results[1]?.details?.pending?.id).toBe("ask-2");
@@ -60,8 +71,11 @@ describe("pending Ask", () => {
 	});
 
 	it("renders restored pending questions as unanswered rather than cancelled", async () => {
-		const result = await new AskTool(session()).execute("ask-1", { questions }, undefined, undefined,
-			{ hasUI: true, ui: {}, abort: vi.fn() } as unknown as AgentToolContext);
+		const result = await new AskTool(session()).execute("ask-1", { questions }, undefined, undefined, {
+			hasUI: true,
+			ui: {},
+			abort: vi.fn(),
+		} as unknown as AgentToolContext);
 		const restored = JSON.parse(JSON.stringify(result));
 		const rendered = askToolRenderer.renderResult(restored, { expanded: true, isPartial: false }, theme);
 		const text = stripVTControlCharacters(rendered.render(100).join("\n"));
@@ -76,16 +90,38 @@ describe("pending Ask", () => {
 		const manager = SessionManager.create(dir, dir);
 		let restored: SessionManager | undefined;
 		try {
-			const result = await new AskTool(session({ getSessionId: () => manager.getSessionId() })).execute("ask-1", { questions }, undefined, undefined,
-				{ hasUI: true, ui: {}, abort: vi.fn() } as unknown as AgentToolContext);
-			manager.appendMessage({ role: "toolResult", toolCallId: "ask-1", toolName: "ask", ...result, isError: false, timestamp: Date.now() });
+			const result = await new AskTool(session({ getSessionId: () => manager.getSessionId() })).execute(
+				"ask-1",
+				{ questions },
+				undefined,
+				undefined,
+				{ hasUI: true, ui: {}, abort: vi.fn() } as unknown as AgentToolContext,
+			);
+			manager.appendMessage({
+				role: "toolResult",
+				toolCallId: "ask-1",
+				toolName: "ask",
+				...result,
+				isError: false,
+				timestamp: Date.now(),
+			});
 			await manager.ensureOnDisk();
 			await manager.flush();
 			restored = await SessionManager.open(manager.getSessionFile()!, dir, undefined, { suppressBreadcrumb: true });
-			restored.appendMessage({ role: "user", content: [{ type: "text", text: "ask-1: Postgres" }], timestamp: Date.now() });
-			const messages = restored.getBranch().filter(entry => entry.type === "message").map(entry => entry.message);
+			restored.appendMessage({
+				role: "user",
+				content: [{ type: "text", text: "ask-1: Postgres" }],
+				timestamp: Date.now(),
+			});
+			const messages = restored
+				.getBranch()
+				.filter(entry => entry.type === "message")
+				.map(entry => entry.message);
 			expect(restored.getSessionId()).toBe(manager.getSessionId());
-			expect(messages[0]).toMatchObject({ role: "toolResult", details: { pending: { id: "ask-1", sessionId: manager.getSessionId() } } });
+			expect(messages[0]).toMatchObject({
+				role: "toolResult",
+				details: { pending: { id: "ask-1", sessionId: manager.getSessionId() } },
+			});
 			expect(messages[1]).toMatchObject({ role: "user", content: [{ type: "text", text: "ask-1: Postgres" }] });
 		} finally {
 			await restored?.close();

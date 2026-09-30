@@ -2,7 +2,7 @@
 name: architect
 description: Design interfaces and split a large code change into independent parts.
 tools: read, grep, glob, find, task
-model: codex-lb/gpt-6-astra:high, anthropic/claude-opus-5-5:high, deepseek/deepseek-v4-pro:high, anthropic/claude-fable-5-1:high, claude-bridge/claude-sonnet-5
+model: codex-lb/gpt-6-astra:high, anthropic/claude-opus-5-5:high, deepseek/deepseek-v4-pro:high, anthropic/claude-fable-5-1:high
 thinking-level: high
 spawns: [scout, researcher]
 ---

@@ -357,7 +357,8 @@ export const askToolRenderer = {
 		const rawDetails = result.details;
 		if (rawDetails?.pending) {
 			const card = askToolRenderer.renderCall({ questions: rawDetails.pending.questions }, _options, uiTheme);
-			const identity = typeof rawDetails.pending.id === "string" ? sanitizeCarriageReturns(rawDetails.pending.id) : "unknown";
+			const identity =
+				typeof rawDetails.pending.id === "string" ? sanitizeCarriageReturns(rawDetails.pending.id) : "unknown";
 			const status = new Text(uiTheme.fg("muted", `Pending ${identity} · reply in this session's chat`), 0, 0);
 			return {
 				render: width => [...card.render(width), ...status.render(width)],

@@ -2,7 +2,7 @@
 name: git-pr-owner
 description: Sole narrow owner of one checkout, commit, PR, or sync operation.
 tools: read, grep, glob, find, bash
-model: codex-lb/gpt-6-luna:medium, kimi-code/kimi-for-coding-highspeed:medium, deepseek/deepseek-v4-flash:high, claude-bridge/claude-sonnet-5, codex-lb/Qwen3.8-27B, openrouter/thinkingmachines/inkling:free
+model: codex-lb/gpt-6-luna:medium, kimi-code/kimi-for-coding-highspeed:medium, xiaomi/mimo-v2.6-flash, deepseek/deepseek-v4-flash:high, codex-lb/Qwen3.8-27B
 thinking-level: medium
 spawns: []
 ---

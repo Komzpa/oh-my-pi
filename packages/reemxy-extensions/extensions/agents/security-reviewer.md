@@ -2,7 +2,7 @@
 name: security-reviewer
 description: "Read-only security specialist for evidence-backed repository vulnerability discovery"
 tools: read, find, grep, glob, lsp, ast_grep
-model: claude-bridge/claude-sonnet-5
+model: anthropic/claude-sonnet-5:high
 output:
   properties:
     coverage_summary:
