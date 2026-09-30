@@ -7,6 +7,8 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import type { ModelUsageHealth, ModelUsageHealthState } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
+import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { checkoutScopesFromResources } from "./checkout_scope";
 
 export interface PoolConfig {
 	pool: string[];
@@ -23,10 +25,32 @@ const POOL_SIZES: Record<string, number> = {
 
 const WRITE_CAPABLE_WORKERS = new Set(["coder", "ui-coder", "workhorse", "git-pr-owner"]);
 
-function activeWriteWorker(state: RouterState, ctx: ExtensionContext): SpawnState | undefined {
+type LatestTodoGetter = (entries: unknown[]) => TodoScheduleInput;
+
+function ownedCheckoutScopes(event: BeforeSubagentSpawnEvent, ctx: ExtensionContext, latestTodo?: LatestTodoGetter): string[] | undefined {
+	const owner = stringValue(event.spawnKey);
+	if (!owner || !latestTodo || !ctx.sessionManager?.getBranch) return undefined;
+	try {
+		const rows = latestTodo(ctx.sessionManager.getBranch()).flatMap(phase => phase.tasks)
+			.filter(row => (row.status === "pending" || row.status === "in_progress") && row.schedule?.owner === owner);
+		if (!rows.length) return undefined;
+		const scopes = new Set<string>();
+		for (const row of rows) {
+			const owned = checkoutScopesFromResources(row.schedule?.resources);
+			if (!owned) return undefined;
+			for (const scope of owned) scopes.add(scope);
+		}
+		return [...scopes].sort();
+	} catch {
+		return undefined;
+	}
+}
+
+function activeWriteWorker(state: RouterState, ctx: ExtensionContext, checkoutScopes?: string[]): SpawnState | undefined {
 	const runningJobs = ctx.getAsyncJobSnapshot?.()?.running ?? [];
 	return [...state.spawns.values()].find(spawn => {
 		if (spawn.recordedOutcome || spawn.isolated || !WRITE_CAPABLE_WORKERS.has(spawn.agent)) return false;
+		if (checkoutScopes && spawn.checkoutScopes && !checkoutScopes.some(scope => spawn.checkoutScopes!.includes(scope))) return false;
 		return runningJobs.some(job => {
 			const identifiers = [stringValue(job.id), stringValue(job.agentId)];
 			return (
@@ -63,6 +87,7 @@ export interface SpawnRecord {
 	order: string[];
 	skipped?: SkippedModelRecord[];
 	isolated?: boolean;
+	checkoutScopes?: string[];
 }
 
 export interface OutcomeRecord {
@@ -318,14 +343,16 @@ export async function routeSubagentSpawn(
 	event: BeforeSubagentSpawnEvent,
 	ctx: ExtensionContext,
 	state = createRouterState(),
-	options: { stateFile?: string; now?: () => Date; shuffle?: <T>(items: readonly T[]) => T[] } = {},
+	options: { stateFile?: string; now?: () => Date; shuffle?: <T>(items: readonly T[]) => T[]; latestTodo?: LatestTodoGetter } = {},
 ): { model: string[]; note: string } | { block: true; reason: string } | undefined {
 	const agent = stringValue(event.agent);
 	if (!agent) return undefined;
 	const config = AGENT_POOLS[agent];
 	if (!config) return undefined;
+	const checkoutScopes = WRITE_CAPABLE_WORKERS.has(agent) && event.isolated !== true
+		? ownedCheckoutScopes(event, ctx, options.latestTodo) : undefined;
 	if (WRITE_CAPABLE_WORKERS.has(agent) && event.isolated !== true) {
-		const activeWriter = activeWriteWorker(state, ctx);
+		const activeWriter = activeWriteWorker(state, ctx, checkoutScopes);
 		if (activeWriter) {
 			return {
 				block: true,
@@ -352,6 +379,7 @@ export async function routeSubagentSpawn(
 		chosen,
 		order,
 		...(event.isolated === true ? { isolated: true } : {}),
+		...(checkoutScopes ? { checkoutScopes } : {}),
 		...(skipped.length > 0 ? { skipped } : {}),
 	};
 	state.spawns.set(recordKey(spawnKey, agent), { ...record, recordedOutcome: false });
@@ -529,7 +557,9 @@ export default function agentRouter(pi: ExtensionAPI) {
 	const state = createRouterState();
 	pi.setLabel?.("Agent Router");
 	pi.on("tool_call", (event, ctx) => fileToolRefusal(event, ctx));
-	pi.on("before_subagent_spawn", (event, ctx) => routeSubagentSpawn(event as BeforeSubagentSpawnEvent, ctx, state));
+	pi.on("before_subagent_spawn", (event, ctx) => routeSubagentSpawn(event as BeforeSubagentSpawnEvent, ctx, state, {
+		latestTodo: pi.pi?.getLatestTodoPhasesFromEntries,
+	}));
 	pi.on("retry_fallback_applied", (event, ctx) => {
 		recordAndNotifyRetryFallbackApplied(event as RetryFallbackAppliedEvent, ctx, state);
 	});

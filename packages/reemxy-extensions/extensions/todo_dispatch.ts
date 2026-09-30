@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { formatLocalClock, formatLocalTimestamp, lifecycleGoal, readGoalDeadline } from "./deadlines";
 import { countLiveWorkerModels } from "./agent_router";
+import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 
 type DispatchForecastApi = Pick<
   ExtensionAPI["pi"],
@@ -190,16 +191,6 @@ function taskItems(input: unknown): Array<Record<string, unknown>> {
 const CHECKOUT_FIELD = /^(cwd|checkout|worktree|repo|repository|path|targetPath|targetCheckout)$/i;
 const ABSOLUTE_PATH = /\/(?:home|srv|tmp|var|mnt|workspaces|Users)\/[^\s"'`),;]+/g;
 
-function normalizeCheckoutKey(value: string) {
-  const trimmed = value.trim().replace(/[),.;:'"`]+$/g, "").replace(/\/+$/g, "");
-  if (!trimmed) return null;
-  return trimmed.startsWith("/") ? `path:${trimmed}` : `name:${trimmed}`;
-}
-
-function displayCheckoutKey(key: string) {
-  return key.replace(/^(path|name):/, "");
-}
-
 function checkoutKeyFromTaskItem(item: Record<string, unknown>, fallbackCwd: string) {
   const direct: string[] = [];
   const visit = (value: unknown, key = "") => {
@@ -222,16 +213,6 @@ function checkoutKeyFromTaskItem(item: Record<string, unknown>, fallbackCwd: str
   const text = JSON.stringify(item);
   const path = text.match(ABSOLUTE_PATH)?.map((value) => normalizeCheckoutKey(value)).find((key): key is string => Boolean(key));
   return path ?? normalizeCheckoutKey(fallbackCwd)!;
-}
-
-function checkoutKeyFromResources(resources: unknown, fallbackCwd: string) {
-  if (Array.isArray(resources))
-    for (const resource of resources)
-      if (typeof resource === "string") {
-        const key = normalizeCheckoutKey(resource);
-        if (key) return key;
-      }
-  return normalizeCheckoutKey(fallbackCwd)!;
 }
 
 function isGitPrOwnerItem(item: Record<string, unknown>) {
