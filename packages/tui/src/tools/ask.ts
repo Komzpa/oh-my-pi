@@ -1,4 +1,5 @@
 import type { ToolRenderer } from "./renderer";
+import type { ExtensionAskDialogQuestion } from "../overlays/ask-dialog";
 
 import {
 	type Component,
@@ -36,6 +37,7 @@ export interface QuestionResult {
 
 /** Answers and redirect metadata displayed for an ask tool result. */
 export interface AskToolDetails {
+	pending?: { id: string; sessionId?: string; questions: ExtensionAskDialogQuestion[] };
 	question?: string;
 	options?: string[];
 	multi?: boolean;
@@ -353,6 +355,18 @@ export const askToolRenderer = {
 		uiTheme: Theme,
 	): Component {
 		const rawDetails = result.details;
+		if (rawDetails?.pending) {
+			const card = askToolRenderer.renderCall({ questions: rawDetails.pending.questions }, _options, uiTheme);
+			const identity = typeof rawDetails.pending.id === "string" ? sanitizeCarriageReturns(rawDetails.pending.id) : "unknown";
+			const status = new Text(uiTheme.fg("muted", `Pending ${identity} · reply in this session's chat`), 0, 0);
+			return {
+				render: width => [...card.render(width), ...status.render(width)],
+				invalidate: () => {
+					card.invalidate?.();
+					status.invalidate();
+				},
+			};
+		}
 		const mdTheme = getMarkdownTheme();
 		const accentStyle = { color: (t: string) => uiTheme.fg("accent", t) };
 		const md = (text: string, width: number) =>

@@ -1514,7 +1514,7 @@ export class SelectorController {
 			getSessionSpawns: () => null,
 			getPlanModeState: () => this.ctx.session.getPlanModeState(),
 		};
-		const askTool = new AskTool(toolSession);
+		const askTool = new AskTool(toolSession, { interactiveAnswer: true });
 		const context = this.ctx.session.buildAskReanswerContext(uiContext);
 		let result: AgentToolResult<AskToolDetails>;
 		try {

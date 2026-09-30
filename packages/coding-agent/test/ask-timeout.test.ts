@@ -26,7 +26,7 @@ function createAskTool(): AskTool {
 		hasUI: true,
 		settings: Settings.isolated({ "ask.timeout": 0.01, "ask.notify": "off", "speech.enabled": false }),
 		getPlanModeState: () => ({ enabled: false }),
-	} as unknown as ToolSession);
+	} as unknown as ToolSession, { interactiveAnswer: true });
 }
 
 describe("AskTool timeout", () => {
