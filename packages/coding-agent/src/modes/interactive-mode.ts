@@ -4385,6 +4385,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 		this.#armSubagentPreviewTick(view.tickMs);
 		this.#renderTodoList();
+	}
+
+	#buildSubagentHudView(): {
+		sessions: ObservableSession[];
+		lines: string[];
+		order: string[];
+		toggleRow: number | undefined;
+		tickMs: number | undefined;
+	} | undefined {
 		const mode = cfgDisplayPinnedAgents.get(settings);
 		if (mode === "off") return undefined;
 		// The TODO tree already accounts for every live worker (linked to a task,
