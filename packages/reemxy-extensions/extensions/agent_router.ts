@@ -72,7 +72,7 @@ export const AGENT_POOLS: Record<string, PoolConfig> = {
 	// The built-in task agent has no package profile; retain its independent router policy.
 	task: {
 		pool: ["codex-lb/gpt-6-luna:medium", "kimi-code/kimi-for-coding:high", "deepseek/deepseek-v4-pro:high", "kimi-code/k3:high", "xiaomi/mimo-v2.6-pro", "muse-code/muse-spark-1.3-contributor"],
-		fallbacks: ["codex-lb/gpt-6-sol:medium", "claude-bridge/claude-sonnet-5", "codex-lb/Qwen3.8-27B"],
+		fallbacks: ["codex-lb/gpt-6.1-sol:medium", "claude-bridge/claude-sonnet-5", "codex-lb/Qwen3.8-27B"],
 	},
 };
 

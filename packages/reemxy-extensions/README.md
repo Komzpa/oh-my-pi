@@ -19,7 +19,7 @@ Hours are normalized to `0..23`; absent or invalid fields retain defaults.
 
 ## Subagent model rotation
 
-The router shuffles only the first `POOL_SIZES` entries of each agent's `model:` frontmatter; the built-in `task` role has an independent pool. Connected `xiaomi/mimo-v2.6-pro` and `muse-code/muse-spark-1.3-contributor` are first-pick alternatives for coder and task; ui-coder also rotates Xiaomi Pro. Scout, gate-runner, git-pr-owner, scribe, and workhorse rotate `xiaomi/mimo-v2.6-flash`. Keep the existing candidates in order ahead of these additions. No subagent pool or fallback chain uses OpenRouter, including free OpenRouter models. OpenRouter is reserved for Hindsight; keep its separate provider/auth configuration intact.
+The router shuffles only the first `POOL_SIZES` entries of each agent's `model:` frontmatter; the built-in `task` role has an independent pool. Connected `xiaomi/mimo-v2.6-pro` and `muse-code/muse-spark-1.3-contributor` are first-pick alternatives for coder and task; ui-coder also rotates Xiaomi Pro. Scout, gate-runner, git-pr-owner, scribe, and workhorse rotate `xiaomi/mimo-v2.6-flash`. Keep the existing candidates in order ahead of these additions. Every Sol position is GPT-6.1 Sol (`codex-lb/gpt-6.1-sol`): profile `model:` entries, the `task` fallback chain, and the codex-lb provider registry carry `gpt-6.1-sol` in place of the older `gpt-6-sol`, each at its existing effort level and list position. No subagent pool or fallback chain uses OpenRouter, including free OpenRouter models. OpenRouter is reserved for Hindsight; keep its separate provider/auth configuration intact.
 
 ## Bounded worker supervision
 
