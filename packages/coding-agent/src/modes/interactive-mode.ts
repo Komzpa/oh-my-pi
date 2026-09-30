@@ -4240,11 +4240,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		const tailFilled = Math.max(0, Math.min(filled - contentLines.length, tail.length));
 		lines.push(` ${theme.fg("accent", tail.slice(0, tailFilled))}${theme.fg("dim", tail.slice(tailFilled))}`);
-		this.todoHudNative = undefined;
-		const running =
-			cfgDisplayPinnedAgents.get(settings) === "off"
-				? []
-				: this.#observerRegistry.getSessions().filter(isHudSubagent);
+		lineOwners.push(undefined);
+		this.todoContainer.addChild(new SubagentHudComponent(lines, [], undefined, lineOwners));
 	}
 
 	isCompactTodoMode(): boolean {
