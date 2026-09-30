@@ -17,7 +17,12 @@ import { taskSubprocessRenderer } from "@oh-my-pi/pi-tui/tools/subprocess";
  *   - Session artifacts for debugging
  */
 import path from "node:path";
-import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type {
+	AgentTool,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+	ToolApprovalDecision,
+} from "@oh-my-pi/pi-agent-core";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "..";
@@ -353,6 +358,7 @@ interface ReworkRoute {
 	rung?: { model?: string; effort: Effort };
 	failedLine?: string;
 	context?: string;
+	exhausted?: boolean;
 }
 
 function nextReworkRung(ladder: readonly TaskReworkLadderEntry[], model: string, effort: string) {
@@ -360,8 +366,12 @@ function nextReworkRung(ladder: readonly TaskReworkLadderEntry[], model: string,
 		const colon = entry.lastIndexOf(":");
 		return { model: entry.slice(0, colon) || model, effort: entry.slice(colon + 1) as Effort };
 	});
-	const current = choices.findLastIndex(choice => choice.model === model && choice.effort === effort);
-	for (let index = current + 1; index < choices.length; index++) {
+	// Anchor explicit model traversal independently of the actual effort. A
+	// clamped/overridden effort must never restart an already visited family.
+	const exact = choices.findLastIndex(choice => choice.model === model && choice.effort === effort);
+	const explicit = choices.findIndex((choice, index) => !ladder[index]!.startsWith(":") && choice.model === model);
+	const start = Math.max(exact + 1, explicit, 0);
+	for (let index = start; index < choices.length; index++) {
 		const choice = choices[index]!;
 		if (
 			choice.model === model &&
@@ -568,7 +578,30 @@ export async function refreshAgentDiscovery(cwd: string, extensionRoots?: Effect
  */
 export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetails, Theme> {
 	readonly name = "task";
-	readonly approval = "exec" as const;
+	readonly approval = (args: unknown): ToolApprovalDecision => {
+		const params = repairTaskParams(args as TaskParams);
+		const batchEnabled = this.#isBatchEnabled();
+		if (validateShapeParams(batchEnabled, params) ?? validateSpawnParams(params, batchEnabled)) return "exec";
+		if (Array.isArray(params.tasks) && params.tasks.length === 0) return "exec";
+		const defaultAgent = resolveSpawnPolicy(this.session.getSessionSpawns()).defaultAgent;
+		const routes = resolveSpawnItems(params).map(
+			item => this.#routeRework(spawnParamsFor(params, item, defaultAgent)).route,
+		);
+		// This is an in-flight scope snapshot, not a row permission. The wrapper
+		// owns approval; execute consumes the snapshot and rejects changed targets.
+		const exhausted = routes.find(route => route?.exhausted);
+		if (!exhausted) return "exec";
+		if (args && typeof args === "object") this.#approvalRoutes.set(args, structuredClone(routes));
+		return {
+			tier: "exec",
+			override: true,
+			policy: routes.length === 1 ? "prompt" : "deny",
+			reason:
+				routes.length === 1
+					? `Rework ladder exhausted for "${exhausted.row.content}": re-running the top rung requires approval.`
+					: "Exhausted rework recovery requires exactly one task per call.",
+		};
+	};
 	readonly formatApprovalDetails = (args: unknown): string[] => {
 		const params = args as Partial<TaskParams>;
 		const lines: string[] = [];
@@ -652,6 +685,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	readonly #reworkRoutes = new Map<string, ReworkRoute>();
 	readonly #workerSessions = new Map<string, StructuredSubagentResult>();
 	readonly #reflectingWorkers = new Set<string>();
+	readonly #approvalRoutes = new WeakMap<object, (ReworkRoute | undefined)[]>();
 
 	#routeRework(spawn: TaskParams): { route?: ReworkRoute; error?: string } {
 		const phases = this.session.getTodoPhases?.();
@@ -669,10 +703,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		);
 		if (rows.length !== 1) return {};
 		const { phase, task } = rows[0]!;
-		if (task.status === "blocked" && task.blocker?.startsWith("waits for user: Rework ladder exhausted.")) {
-			return { error: `"${task.content}" is waiting for the user; the rework ladder is exhausted.` };
-		}
 		const previous = task.schedule?.executor;
+		const exhaustedBlocked =
+			task.status === "blocked" && task.blocker?.startsWith("waits for user: Rework ladder exhausted.");
 		if (!previous?.outcome) return {};
 		if (!previous.resolvedModel || !previous.thinkingLevel)
 			return { error: `Cannot redispatch "${task.content}": the worker's resolved model or effort is missing.` };
@@ -695,6 +728,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			};
 		}
 		const reason = spawn.rework;
+		if (reason === undefined && !exhaustedBlocked) return {};
 		if (!reason?.trim() || /[\r\n\u2028\u2029]/u.test(reason))
 			return { error: `Rework of "${task.content}" requires a one-line \`rework\` rejection reason.` };
 		if (!previous.resolvedModel || !previous.thinkingLevel || previous.finishedAt === undefined) {
@@ -707,7 +741,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			previous.resolvedModel,
 			previous.thinkingLevel,
 		);
-		return { route: { row: { phase, content: task.content }, previous, reason, rung } };
+		return {
+			route: {
+				row: { phase, content: task.content },
+				previous,
+				reason,
+				rung,
+				exhausted: exhaustedBlocked || rung === undefined,
+			},
+		};
 	}
 
 	#appendAttempt(row: ReworkRoute["row"], attempt: TodoReworkAttempt): void {
@@ -910,15 +952,17 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			.find(phase => phase.name === route.row.phase)
 			?.tasks.find(task => task.content === route.row.content);
 		route.context = renderPreviousAttempts(task?.schedule?.attemptHistory ?? []);
-		if (!route.rung) {
-			const reason =
-				"waits for user: Rework ladder exhausted. Review the entire attempt chain and choose how to proceed.";
-			const operation = { op: "block" as const, task: route.row.content, reason };
-			const updated = applyOpsToPhases(phases, [operation]);
-			if (updated.errors.length > 0) throw new Error(updated.errors.join("\n"));
-			this.session.setTodoPhases?.(updated.phases);
-			this.session.persistTodoPhases?.(updated.phases, buildTodoOpPersistedEdit("block", operation));
-			return `Rework circuit breaker for "${route.row.content}": top rung reached. Waiting for the user.\n\n${route.context}`;
+		if (route.exhausted) {
+			// The native wrapper approved this one execution. Retain the actual
+			// final model and effort, including an effort above the configured rung.
+			route.rung = { model: route.previous.resolvedModel, effort: route.previous.thinkingLevel as Effort };
+			if (task?.status === "blocked") {
+				const operation = { op: "unblock" as const, task: route.row.content };
+				const updated = applyOpsToPhases(phases, [operation]);
+				if (updated.errors.length > 0) throw new Error(updated.errors.join("\n"));
+				this.session.setTodoPhases?.(updated.phases);
+				this.session.persistTodoPhases?.(updated.phases, buildTodoOpPersistedEdit("unblock", operation));
+			}
 		}
 		return undefined;
 	}
@@ -1150,6 +1194,32 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 
 		const spawnItems = resolveSpawnItems(params);
+		const normalizedSpawnParams = spawnItems.map(item => spawnParamsFor(params, item, defaultAgent));
+		const routes = normalizedSpawnParams.map(spawn => this.#routeRework(spawn));
+		const approvedRoutes =
+			rawParams && typeof rawParams === "object" ? this.#approvalRoutes.get(rawParams) : undefined;
+		if (rawParams && typeof rawParams === "object") this.#approvalRoutes.delete(rawParams);
+		if (routes.some(decision => decision.route?.exhausted)) {
+			if (routes.length !== 1)
+				return createTaskModeError("Exhausted rework recovery requires exactly one task per call.");
+			if (
+				!approvedRoutes ||
+				!Bun.deepEquals(
+					approvedRoutes,
+					routes.map(decision => decision.route),
+				)
+			) {
+				return createTaskModeError(
+					"Exhausted rework target changed or requires a fresh native approval. Retry the task call.",
+				);
+			}
+		} else if (approvedRoutes?.some(route => route?.exhausted)) {
+			return createTaskModeError("Exhausted rework target changed; retry the task call for fresh approval.");
+		}
+		for (const [index, decision] of routes.entries()) {
+			if (decision.error) return createTaskModeError(decision.error);
+			if (decision.route) this.#reworkRoutes.set(`${toolCallId}:${index}`, decision.route);
+		}
 		const evalToolNames = spawnItems.flatMap(item => item.tools ?? []);
 		if (evalToolNames.length > 0) {
 			if (this.session.getPlanModeState?.()?.enabled === true) {
@@ -1162,13 +1232,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					`Task execution failed: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
-		}
-		const normalizedSpawnParams = spawnItems.map(item => spawnParamsFor(params, item, defaultAgent));
-		for (const spawn of normalizedSpawnParams) {
-			const decision = this.#routeRework(spawn);
-			if (decision.error) return createTaskModeError(decision.error);
-			if (decision.route)
-				this.#reworkRoutes.set(`${toolCallId}:${normalizedSpawnParams.indexOf(spawn)}`, decision.route);
 		}
 		const resolvedAgents = normalizedSpawnParams.map(spawn => spawn.agent ?? defaultAgent);
 		// Resolve every item before choosing an execution path. No executor or
