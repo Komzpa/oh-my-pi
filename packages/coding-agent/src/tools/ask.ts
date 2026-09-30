@@ -27,6 +27,7 @@ import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-tui/app-keybindings"
 import { editorKey, editorKeys } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
+import askPending from "../prompts/tools/ask-pending.md" with { type: "text" };
 import { vocalizer } from "../tts/vocalizer";
 
 import type { ToolSession } from ".";
@@ -561,16 +562,14 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			},
 		},
 	];
-	// Run alone in its tool batch. The interactive selector/editor is a single
-	// shared UI surface (`ExtensionUiController.showHookSelector` has no queue and
-	// overwrites `ctx.hookSelector` on each call), so two concurrent `ask` calls
-	// would clobber each other: the second steals focus and orphans the first,
-	// whose promise then hangs until the user aborts the whole turn.
-	readonly concurrency = "exclusive";
+	readonly concurrency: "shared" | "exclusive";
 	readonly loadMode = "discoverable";
+	readonly #interactiveAnswer: boolean;
 
-	constructor(private readonly session: ToolSession) {
+	constructor(private readonly session: ToolSession, options: { interactiveAnswer?: boolean } = {}) {
 		this.description = prompt.render(askDescription);
+		this.#interactiveAnswer = options.interactiveAnswer === true;
+		this.concurrency = this.#interactiveAnswer ? "exclusive" : "shared";
 	}
 
 	static createIf(session: ToolSession): AskTool | null {
@@ -592,7 +591,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	}
 
 	async execute(
-		_toolCallId: string,
+		toolCallId: string,
 		params: AskParams,
 		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<AskToolDetails>,
@@ -680,6 +679,23 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				}
 				seenLabels.add(option.label);
 			}
+		}
+
+		if (!this.#interactiveAnswer) {
+			if (signal?.aborted) throw new ToolAbortError("Ask input was cancelled");
+			if (params.questions.length === 0) {
+				return { content: [{ type: "text", text: "Error: questions must not be empty" }], details: {} };
+			}
+			const pending = {
+				id: toolCallId,
+				sessionId: this.session.getSessionId?.() ?? undefined,
+				questions: params.questions,
+			};
+			this.#sendAskNotification();
+			return {
+				content: [{ type: "text", text: prompt.render(askPending, pending) }],
+				details: { pending },
+			};
 		}
 
 		const extensionUi = context.ui;

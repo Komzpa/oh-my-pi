@@ -1,6 +1,14 @@
 # ask
 
-> Prompts the interactive user for one or more option-picker or free-form answers.
+> Posts a pending question in the session transcript and returns immediately. The user replies through that session's normal chat while independent work continues.
+
+## Asynchronous questions
+
+Ordinary `ask` calls return `details.pending` containing the tool-call identity, the owning session identity when available, and the questions. The transcript shows the options without opening a modal or taking editor focus. Multiple pending questions can coexist. The existing persisted tool result preserves the question through session restoration; a later normal user message carries the reply in the same session. Focus the asking session before replying.
+
+Pending means unanswered, never approved. Recommendations and `ask.timeout` do not select an answer on this path. Continue independent work; actions requiring the reply remain blocked by their existing approval or dependency controls. Ask does not modify permission gates.
+
+The selector/editor lifecycle below applies only to explicit `/tree` re-answer, which constructs `AskTool` with `interactiveAnswer: true`. That user-initiated dialog remains exclusive; normal Ask is shared and returns without waiting for input.
 
 ## Source
 - Entry: `packages/coding-agent/src/tools/ask.ts`
@@ -28,6 +36,8 @@
 | `recommended` | `number` | No | Zero-based recommended/default option index. Invalid indexes are ignored for selection; the fallback selector marks a valid single-select option with ` (Recommended)`. |
 
 ## Outputs
+
+Normal calls return a pending result, not an answer: `details.pending.id` is the tool-call ID, `sessionId` identifies the asking session when available, and `questions` preserves the complete question form. The following answered-result variants belong to explicit interactive re-answer.
 - Single-shot result.
 - `content[0].text` is plain text:
   - single question: selected/custom answer plus an optional `User added note: ...`
@@ -39,7 +49,7 @@
   - chat redirect: `{ chatRedirect: true, questions: string[] }`
 - Cancellation and headless cases throw instead of returning a structured success result. The tool does not stream updates.
 
-## Flow
+## Explicit interactive re-answer flow
 1. `AskTool.createIf()` only registers the discoverable tool when `session.hasUI` is true; headless sessions never get it.
 2. `execute()` also requires `context.hasUI` and `context.ui`; if missing it aborts the context and throws `ToolAbortError("Ask tool requires interactive mode")`.
 3. It reads `ask.timeout` from settings, converts seconds to milliseconds (`0` disables timeout), and disables timeout entirely while plan mode is enabled.
@@ -81,7 +91,7 @@
 - Prompt guidance says provide 2–5 options, but code only requires the `options` array field and does not enforce a minimum or maximum length.
 - Option labels must not equal the reserved runtime labels `Other (type your own)`, `Chat about this`, or `Next →`.
 - Fallback timeout only applies to the option picker; once the user chooses `Other`, the editor has no timeout.
-- `AskTool.concurrency = "exclusive"`: the tool runs alone in its tool batch because the selector/editor UI surface is shared and concurrent `ask` calls would clobber each other.
+- Normal Ask uses `concurrency = "shared"` and never waits on a selector/editor. Explicit interactive re-answer uses `"exclusive"` because that user-opened dialog shares the editor surface.
 - The call renderer normalizes incomplete or malformed streamed arguments for display: bare string options become labels and unusable question/option entries are omitted. Execution still receives schema-validated input.
 
 ## Errors
