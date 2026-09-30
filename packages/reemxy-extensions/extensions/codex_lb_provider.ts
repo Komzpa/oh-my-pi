@@ -8,7 +8,7 @@ export const CODEX_LB_ACCOUNT_MODEL_IDS = [
 	"gpt-5.6-terra",
 	"gpt-6-astra",
 	"gpt-6-luna",
-	"gpt-6-sol",
+	"gpt-6.1-sol",
 ] as const;
 
 const effortThinking = (
@@ -67,7 +67,7 @@ export const CODEX_LB_MODELS: ProviderModelConfig[] = [
 		["medium" as Effort.Medium, "high" as Effort.High, "xhigh" as Effort.XHigh, "max" as Effort.Max],
 	),
 	accountModel("gpt-6-luna", "GPT-6 Luna", { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 }),
-	accountModel("gpt-6-sol", "GPT-6 Sol", { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }),
+	accountModel("gpt-6.1-sol", "GPT-6.1 Sol", { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }),
 	{
 		id: "Qwen3.8-27B",
 		name: "Qwen3.8 27B (Hetzner, free, 10 req/min shared)",
