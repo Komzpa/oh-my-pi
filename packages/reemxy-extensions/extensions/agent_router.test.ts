@@ -1,10 +1,11 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import { describe, expect, test } from "bun:test";
 	import { execFileSync } from "node:child_process";
-	import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+	import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 	import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import agentRouter, {
 	AGENT_POOLS,
 	agentHasLiveModel,
@@ -219,6 +220,140 @@ describe("agent router", () => {
 			);
 			expect(afterCompletion?.model).toBeDefined();
 		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("checkout writer scopes allow disjoint repositories and refuse every active collision", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const native = join(dir, "native-clone");
+			const tasksLoop = join(dir, "tasks-loop");
+			for (const repo of [native, tasksLoop]) {
+				mkdirSync(repo);
+				execFileSync("git", ["init", "-q", repo]);
+			}
+			const alias = join(dir, "native-alias");
+			symlinkSync(native, alias);
+			const row = (owner: string, resources: string[]) => ({ content: `Work for ${owner}`, status: "in_progress", schedule: { owner, resources } });
+			let plan = [{ name: "Repair", tasks: [row("native-writer", [`repo:${native}/src/native.ts:source-writer`]), row("tasks-writer", [`${tasksLoop}:updater-writer`])] }];
+			let running = [];
+			const context = ctx({ cwd: tasksLoop, sessionManager: { getHeader: () => ({ id: "session-1" }), getBranch: () => [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } }] }, getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }) });
+			const state = createRouterState();
+			const spawn = (spawnKey: string) => routeSubagentSpawn({ agent: "coder", spawnKey, isolated: false }, context, state, { stateFile: file, latestTodo: getLatestTodoPhasesFromEntries });
+			expect((await spawn("native-writer"))?.model).toBeDefined();
+			running = [{ id: "native-writer", type: "task", status: "running" }];
+			expect((await spawn("tasks-writer"))?.model).toBeDefined();
+			running.push({ id: "tasks-writer", type: "task", status: "running" });
+			for (const resource of [native, `${native}/another.ts:git-owner`, `checkout:${alias}/src/file.ts:source-writer`, tasksLoop, `path:${tasksLoop}/other.ts`, `repository:${tasksLoop}:source-writer`]) {
+				plan[0].tasks.push(row("third-writer", [resource]));
+				const result = await spawn("third-writer");
+				expect(result?.block).toBe(true);
+				expect(result?.reason).toContain(resource.includes("tasks-loop") ? "tasks-writer" : "native-writer");
+				plan[0].tasks.pop();
+			}
+			plan[0].tasks.push(row("third-writer", [native, tasksLoop]));
+			expect((await spawn("third-writer"))?.block).toBe(true);
+			expect(readJsonl(file).filter(record => record.kind === "spawn").map(record => record.checkoutScopes)).toEqual([[native], [tasksLoop]]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("checkout writer scopes stay frozen when the canonical plan changes", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const original = join(dir, "original");
+			const changed = join(dir, "changed");
+			for (const repo of [original, changed]) {
+				mkdirSync(repo);
+				execFileSync("git", ["init", "-q", repo]);
+			}
+			const tasks = [{ content: "Original", status: "in_progress", schedule: { owner: "writer-1", resources: [original] } }];
+			let running = [];
+			const context = ctx({ sessionManager: { getHeader: () => ({ id: "session-1" }), getBranch: () => [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } }] }, getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }) });
+			const state = createRouterState();
+			const spawn = (spawnKey: string, latestTodo = getLatestTodoPhasesFromEntries) => routeSubagentSpawn({ agent: "coder", spawnKey }, context, state, { stateFile: file, latestTodo });
+			expect((await spawn("writer-1"))?.model).toBeDefined();
+			running = [{ id: "writer-1", type: "task", status: "running" }];
+			tasks[0].schedule.resources = [changed];
+			tasks.push({ content: "Next", status: "pending", schedule: { owner: "writer-2", resources: [original] } });
+			expect((await spawn("writer-2"))?.block).toBe(true);
+			tasks[1].schedule.resources = [changed];
+			expect((await spawn("writer-2"))?.model).toBeDefined();
+			expect([...state.spawns.values()][0].checkoutScopes).toEqual([original]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("checkout writer scopes require exact canonical ownership and keep unknown active writers conservative", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const original = join(dir, "original");
+			const other = join(dir, "other");
+			for (const repo of [original, other]) {
+				mkdirSync(repo);
+				execFileSync("git", ["init", "-q", repo]);
+			}
+			const tasks = [{ content: "Original", status: "in_progress", schedule: { owner: "writer-1", resources: [original] } }];
+			let running = [];
+			const context = ctx({ sessionManager: { getHeader: () => ({ id: "session-1" }), getBranch: () => [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } }] }, getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }) });
+			const state = createRouterState();
+			const spawn = (spawnKey: string, latestTodo = getLatestTodoPhasesFromEntries) => routeSubagentSpawn({ agent: "coder", spawnKey }, context, state, { stateFile: file, latestTodo });
+			await spawn("writer-1");
+			running = [{ id: "writer-1", type: "task", status: "running" }];
+			symlinkSync(join(dir, "missing-target"), join(other, "broken-alias"));
+			for (const [owner, resources] of [["writer-2-2", [other]], ["writer-2", []], ["writer-2", ["other:source-writer"]], ["writer-2", [other, "ambiguous"]], ["writer-2", [join(dir, "not-a-repo")]], ["writer-2", [join(other, "broken-alias", "file.ts")]]]) {
+				tasks.push({ content: `Write to ${other}`, status: "pending", schedule: { owner, resources } });
+				expect((await spawn("writer-2"))?.block).toBe(true);
+				tasks.pop();
+			}
+			tasks.push({ content: "Known", status: "pending", schedule: { owner: "writer-2", resources: [other] } });
+			expect((await spawn("writer-2", () => { throw new Error("unavailable"); }))?.block).toBe(true);
+			expect((await routeSubagentSpawn({ agent: "coder", spawnKey: "writer-2" }, context, state, { stateFile: file }))?.block).toBe(true);
+			const unknownState = createRouterState();
+			running = [];
+			await routeSubagentSpawn({ agent: "coder", spawnKey: "writer-1" }, context, unknownState, { stateFile: file });
+			running = [{ id: "writer-1", type: "task", status: "running" }];
+			expect((await routeSubagentSpawn({ agent: "coder", spawnKey: "writer-2" }, context, unknownState, { stateFile: file, latestTodo: getLatestTodoPhasesFromEntries }))?.block).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("checkout writer scopes use the host latest TODO getter and current branch", async () => {
+		const { dir, file } = tempStateFile();
+		const previousStateFile = process.env.OMP_AGENT_ROUTER_STATE;
+		try {
+			process.env.OMP_AGENT_ROUTER_STATE = file;
+			const repositories = [join(dir, "native"), join(dir, "tasks-loop")];
+			for (const repo of repositories) {
+				mkdirSync(repo);
+				execFileSync("git", ["init", "-q", repo]);
+			}
+			const branch = [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks: repositories.map((repo, index) => ({ content: `Work ${index}`, status: "in_progress", schedule: { owner: `writer-${index}`, resources: [repo] } })) }] } } }];
+			let reads = 0;
+			const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+			const api = {
+				setLabel: () => undefined,
+				pi: { getLatestTodoPhasesFromEntries: (entries: unknown[]) => {
+					expect(entries).toBe(branch);
+					reads += 1;
+					return getLatestTodoPhasesFromEntries(entries);
+				} },
+				on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+			} as unknown as ExtensionAPI;
+			agentRouter(api);
+			let running = [];
+			const context = ctx({ sessionManager: { getHeader: () => ({ id: "session-1" }), getBranch: () => branch }, getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }) });
+			expect((await handlers.get("before_subagent_spawn")!({ agent: "coder", spawnKey: "writer-0" }, context))?.model).toBeDefined();
+			running = [{ id: "writer-0", type: "task", status: "running" }];
+			expect((await handlers.get("before_subagent_spawn")!({ agent: "workhorse", spawnKey: "writer-1" }, context))?.model).toBeDefined();
+			expect(reads).toBe(2);
+		} finally {
+			if (previousStateFile === undefined) delete process.env.OMP_AGENT_ROUTER_STATE;
+			else process.env.OMP_AGENT_ROUTER_STATE = previousStateFile;
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
