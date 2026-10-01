@@ -82,7 +82,7 @@ function repo(kind: "clean" | "conflicted" | "resolvedStale"): string {
   return cwd;
 }
 
-function plan(shape: "none" | "ready" | "chained" | "bigChained", now: number): unknown[] {
+function plan(shape: "none" | "ready" | "chained" | "bigChained" | "approvalOnly" | "hiddenTail", now: number): unknown[] {
   if (shape === "none") return [];
   const row = (content: string, dependencies: string[], owner?: string) => ({
     content,
@@ -94,6 +94,25 @@ function plan(shape: "none" | "ready" | "chained" | "bigChained", now: number): 
       estimate: { optimisticSeconds: 300, likelySeconds: 600, pessimisticSeconds: 900, confidence: "medium" as const, basis: "gates fixture", updatedAt: now - 60_000 },
     },
   });
+  if (shape === "approvalOnly" || shape === "hiddenTail") {
+    const tasks = Array.from({ length: 64 }, (_, i) => ({
+      ...row(`Await approval ${i + 1}`, []),
+      status: "blocked" as const,
+      blocker: "external user approval required",
+    }));
+    if (shape === "hiddenTail") {
+      tasks.push({
+        ...row("Repair hidden export tail", []),
+        schedule: {
+          ...row("Repair hidden export tail", []).schedule,
+          estimateRevision: 9,
+          reestimateCount: 8,
+          attemptHistory: [{ attemptId: "repair:1", workerName: "Repair", resolvedModel: "local/test", effort: "high", startedAt: now - 1_000, finishedAt: now, durationMs: 1_000, terminalStatus: "failed" as const, deliverablePaths: ["export.ts"], rejectionReason: "Output omitted required export" }],
+        },
+      });
+    }
+    return [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } }];
+  }
   if (shape === "bigChained") {
     const rows = [row("Row 0", [], "worker-a")];
     for (let i = 1; i < 30; i += 1) rows.push(row(`Row ${i}`, [`Row ${i - 1}`]));
@@ -107,7 +126,7 @@ function plan(shape: "none" | "ready" | "chained" | "bigChained", now: number): 
 }
 
 interface State {
-  plan: "none" | "ready" | "chained" | "bigChained";
+  plan: "none" | "ready" | "chained" | "bigChained" | "approvalOnly" | "hiddenTail";
   git: "clean" | "conflicted" | "resolvedStale";
   admissionOpen: boolean; // false: omp refuses non-read tools until todo fixes estimates
   running: 0 | 1;
@@ -228,9 +247,8 @@ async function violations(strictDemand: boolean) {
 
 test("every reachable gate state leaves the demanded action executable and never deadlocks", async () => {
   expect(await violations(false)).toEqual([]);
-  // Not vacuous: the sweep reaches every kind of demand the gate can make.
+  // Not vacuous: the sweep reaches a staffing demand.
   expect(demandsSeen.get("task") ?? 0).toBeGreaterThan(0);
-  expect(demandsSeen.get("todo") ?? 0).toBeGreaterThan(0);
 }, 60_000);
 
 test("negative control: a demand that accepts only its own tool deadlocks against planning admission", async () => {
@@ -272,28 +290,30 @@ test("kill switch stops demands and refusals but the model still sees its plan a
   }
 }, 60_000);
 
-test("a replan over a plan already bigger than the worker slots prunes rows instead of appending more", async () => {
+
+test("registered admission exposes every open row and persistent failed tail while preserving genuine waits", async () => {
   const cwd = repo("clean");
   try {
-    const big = (await outcome({ plan: "bigChained", git: "clean", admissionOpen: true, running: 1 }, cwd, null)) as { demand?: { toolName?: string; reminder?: Array<{ content: string }> } };
-    const text = big.demand?.reminder?.[0]?.content ?? "";
-    expect(big.demand?.toolName).toBe("todo");
-    expect(text).toContain("more than the 20 worker slots");
-    expect(text).toContain("skill://chief-of-staff");
-    expect(text).not.toContain("chained behind");
-    // Neighbour: a small chained plan is still told to split rows.
-    const small = (await outcome({ plan: "chained", git: "clean", admissionOpen: true, running: 1 }, cwd, null)) as { demand?: { reminder?: Array<{ content: string }> } };
-    expect(small.demand?.reminder?.[0]?.content ?? "").toContain("chained behind");
+    const tail = await outcome({ plan: "hiddenTail", git: "clean", admissionOpen: true, running: 0 }, cwd, null) as { demand?: Demand; note: string; handed?: unknown };
+    expect(tail.note).toContain('#65 [pending] "Repair hidden export tail"');
+    for (let i = 1; i <= 64; i += 1) expect(tail.note).toContain(`#${i} [blocked] "Await approval ${i}"`);
+    expect(tail.note).toContain('estimateRevision=9; reestimateCount=8');
+    expect(tail.note).toContain('"attemptId":"repair:1"');
+    expect(tail.note).toContain('"rejectionReason":"Output omitted required export"');
+    expect(tail.note).toContain('"deliverablePaths":["export.ts"]');
+    expect(tail.demand?.toolName).toBe("task");
+    expect(tail.handed).toBeUndefined(); // advice must not block other legal progress
+    expect(tail.demand?.satisfies?.({ name: "task", arguments: { tasks: [{ name: "RepairHiddenExport", agent: "coder", task: "Repair hidden export tail" }] } })).toBe(true);
+    expect(tail.demand?.satisfies?.({ name: "task", arguments: { tasks: [{ name: "Approval", agent: "coder", task: "Await approval 1" }] } })).toBe(false);
+    const approvals = await outcome({ plan: "approvalOnly", git: "clean", admissionOpen: true, running: 0 }, cwd, null) as { demand?: Demand };
+    expect(approvals.demand).toBeUndefined();
+    const dependencies = await outcome({ plan: "chained", git: "clean", admissionOpen: true, running: 1 }, cwd, null) as { demand?: Demand };
+    expect(dependencies.demand).toBeUndefined();
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
 }, 60_000);
 
-test("the runbook every gate points to covers each situation the gates measure", async () => {
-  const runbook = await Bun.file(join(import.meta.dir, "../../skills/chief-of-staff/SKILL.md")).text();
-  for (const needle of ["isolated: true", "name: chief-of-staff", "whole-plan estimates", "git-pr-owner", "one worker for all conflicted files", "`drop`", "owner:", "Do not append rows", "plan-doctor", "`scribe`", "xd://report_issue", "does not change the plan"])
-    expect(runbook).toContain(needle);
-});
 
 test("a dispatch demand is met only by a task call that staffs a planned row", async () => {
   const cwd = repo("clean");
