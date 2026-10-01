@@ -64,6 +64,7 @@ told the exact paths, the message and the push target. You only read git (status
   to the owner of those files; their files never go into this commit.
 
 ### 4. Finished work is not reconciled
+A row is not blocked on the user while you can check its result yourself: use available sensors (HA power, temperature and state), virtual screens (Xvfb, webcam), logs and history. Rewrite “with Darafei watching” rows as unattended rows verified through those signals. Wait on the user only for a decision or approval no signal can provide; name the missing signal in the plan's blocker reason.
 For each worker result that arrived: read its receipt, judge it against the goal, and close
 the row with `todo` op `done` (accepted) or send the worker back with the reason (rejected).
 Close or drop every row that is ready for it in one call: `todo` op `done`/`drop` with
