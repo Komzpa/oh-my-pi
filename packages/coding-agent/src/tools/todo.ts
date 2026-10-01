@@ -176,6 +176,9 @@ const todoSchema = type({
 		"required concise external blocker (max 160 normalized characters), naming its actor or condition",
 	),
 	"updates?": TodoScheduleUpdateInput.array().describe("atomic batch of task scheduling updates (schedule)"),
+	"override?": type("string").describe(
+		"names the plan-check demand this call answers; the gate suppresses that demand for a few turns",
+	),
 }).describe("apply a single todo operation");
 
 type TodoParams = TodoSchema;

@@ -42,6 +42,7 @@ type SprintState = {
   handledDeadlineAt?: number;
   handledDeliveryKey?: string;
   lastNotices: Record<string, string>;
+  ignoredDemands: Record<string, number>;
 };
 type TaskRow = TodoScheduleInput[number]["tasks"][number];
 type SnapshotRow = { number: number; phase: string; task: TaskRow };
@@ -69,7 +70,7 @@ const MAX_LABEL = 120;
 const MAX_IDLE_RECHECK_MS = 30_000;
 const MAX_TASK_DISPATCH = 20;
 const ROSTER_ENTRY_TYPE = "todo-dispatch-roster";
-const SPRINT_STATE_ENTRY_TYPE = "todo-dispatch-sprint-state";
+export const SPRINT_STATE_ENTRY_TYPE = "todo-dispatch-sprint-state";
 const CHIEF_RULES_ENTRY_TYPE = "chief-rules-after-compaction";
 const WORKER_BRIEF_ENTRY_TYPE = "worker-brief-after-compaction";
 // A merge whose conflicts are all resolved is one `git commit` away. Seen live: a planner kept a
@@ -284,6 +285,7 @@ function blankSprintState(): SprintState {
     correctionPending: false,
     retroDueReason: null,
     lastNotices: {},
+    ignoredDemands: {},
   };
 }
 
@@ -308,6 +310,57 @@ export function boundedNotices(notices: Record<string, string>): Record<string, 
     return [DIGEST.test(rowKey) ? key : noticeKey(kind, rowKey), DIGEST.test(value) ? value : noticeDigest(value)];
   });
   return Object.fromEntries(entries.slice(-MAX_NOTICE_KEYS));
+}
+
+/** Central union-of-remedies gate decision: one allow decision instead of independent refusals. */
+export type GateCall = { name: string; arguments?: Record<string, unknown> };
+export type ActiveGate = { id: string; remedy: string; satisfies: (call: GateCall) => boolean };
+export type GateDecision = { allowed: boolean; remedyGateIds: string[]; reason?: string };
+export const DEMAND_IGNORE_MAX = 3;
+export const DEMAND_IGNORE_MAX_REPLAN = 5;
+export const OVERRIDE_SUPPRESS_TURNS = 5;
+export const GATE_IDS = ["planning-issues", "chief-no-bash", "idle-wait", "checkout", "retro", "escalation", "missed-eta", "receipt", "duplicate-worker"] as const;
+const READ_TIER = new Set(["read", "grep", "glob", "find"]);
+const todoOpOf = (call: GateCall): string | undefined => {
+  const args = call.arguments ?? {};
+  const op = (args as { op?: unknown }).op;
+  return typeof op === "string" ? op : undefined;
+};
+const isKillOrSteering = (call: GateCall): boolean => {
+  if (call.name !== "write") return false;
+  const path = (call.arguments as { path?: unknown } | undefined)?.path;
+  return typeof path === "string" && (path.startsWith("proc://") || path.startsWith("agent://"));
+};
+export function demandClassOf(id: string): string {
+  const base = id.split(":")[0] ?? id;
+  return base.trim() || id;
+}
+export function parseTodoOverride(input: unknown): string | undefined {
+  if (typeof input !== "object" || input === null) return undefined;
+  const override = (input as { override?: unknown }).override;
+  if (typeof override !== "string" || !override.trim()) return undefined;
+  const lowered = override.toLowerCase();
+  for (const id of GATE_IDS) if (lowered.includes(id)) return id;
+  return undefined;
+}
+export function decideGateCall(call: GateCall, gates: readonly ActiveGate[]): GateDecision {
+  if (READ_TIER.has(call.name)) return { allowed: true, remedyGateIds: [] };
+  if (isKillOrSteering(call)) return { allowed: true, remedyGateIds: [] };
+  if (call.name === "todo" && todoOpOf(call) !== "done") return { allowed: true, remedyGateIds: [] };
+  if (gates.length === 0) return { allowed: true, remedyGateIds: [] };
+  const passing = gates.filter((gate) => {
+    try {
+      return gate.satisfies(call);
+    } catch {
+      return false;
+    }
+  });
+  if (passing.length > 0) return { allowed: true, remedyGateIds: passing.map((gate) => gate.id) };
+  return {
+    allowed: false,
+    remedyGateIds: gates.map((gate) => gate.id),
+    reason: `blocked by ${gates.length} gate(s): ${gates.map((gate) => `${gate.id} (remedy: ${gate.remedy})`).join("; ")}`,
+  };
 }
 
 export function readPersistedSprintState(branch: unknown[]): SprintState {
@@ -348,6 +401,9 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
       ...(typeof data.handledDeliveryKey === "string" ? { handledDeliveryKey: data.handledDeliveryKey } : {}),
       lastNotices: typeof data.lastNotices === "object" && data.lastNotices !== null
         ? boundedNotices(Object.fromEntries(Object.entries(data.lastNotices).filter((entry): entry is [string, string] => typeof entry[1] === "string")))
+        : {},
+      ignoredDemands: typeof data.ignoredDemands === "object" && data.ignoredDemands !== null
+        ? Object.fromEntries(Object.entries(data.ignoredDemands).filter((entry): entry is [string, number] => typeof entry[1] === "number").slice(-MAX_NOTICE_KEYS))
         : {},
     };
   }
@@ -1257,6 +1313,37 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     };
     persistSprintState();
   };
+  const demandThreshold = (id: string): number => (id === "todo-replan" ? DEMAND_IGNORE_MAX_REPLAN : DEMAND_IGNORE_MAX);
+  const isDemandEscalated = (id: string): boolean => (sprintState.ignoredDemands[id] ?? 0) >= demandThreshold(id);
+  const trackDemands = (activeIds: string[]): void => {
+    let changed = false;
+    const next: Record<string, number> = { ...sprintState.ignoredDemands };
+    const active = new Set(activeIds);
+    for (const id of new Set([...Object.keys(next), ...activeIds])) {
+      const current = next[id] ?? 0;
+      if (active.has(id)) {
+        if (current < 99) { next[id] = current + 1; changed = true; }
+      } else if (current > 0) { next[id] = 0; changed = true; }
+      else if (current < 0) { next[id] = current + 1; changed = true; }
+    }
+    const keys = Object.keys(next).slice(-MAX_NOTICE_KEYS);
+    const bounded: Record<string, number> = {};
+    for (const key of keys) bounded[key] = next[key] as number;
+    if (changed) { sprintState = { ...sprintState, ignoredDemands: bounded }; persistSprintState(); }
+  };
+  const resetDemand = (id: string): void => {
+    if ((sprintState.ignoredDemands[id] ?? 0) === 0) return;
+    sprintState = { ...sprintState, ignoredDemands: { ...sprintState.ignoredDemands, [id]: 0 } };
+    persistSprintState();
+  };
+  const applyTodoOverride = (input: unknown, ctx: ExtensionContext): string | undefined => {
+    const gate = parseTodoOverride(input);
+    if (!gate) return undefined;
+    sprintState = { ...sprintState, ignoredDemands: { ...sprintState.ignoredDemands, [gate]: -OVERRIDE_SUPPRESS_TURNS } };
+    persistSprintState();
+    gateTrace(ctx, "override", { gate });
+    return gate;
+  };
   const persistRoster = (ctx: ExtensionContext) => {
     const jobs = ctx.getAsyncJobSnapshot();
     if (jobs === null) return;
@@ -1288,6 +1375,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
           liveWorkerModelCheckedAt = Date.now();
         }
         return count;
+      })
+      .catch(() => {
+        if (liveWorkerModelSession === session) liveWorkerModelCheckedAt = Date.now();
+        return liveWorkerModelCount;
       })
       .finally(() => {
         if (liveWorkerModelRefresh?.promise === promise) liveWorkerModelRefresh = null;
@@ -2514,6 +2605,11 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       recedingSince = undefined;
       pendingFinishDelay = null;
     }
+    if (event.toolName === "todo") {
+      applyTodoOverride(event.input, ctx);
+      if (/retro/i.test(JSON.stringify(event.input ?? {}))) resetDemand("retro");
+    }
+    if (event.toolName === "task" && taskItems(event.input).some((item) => item["agent"] === "retro-facilitator")) resetDemand("retro");
     if (event.toolName === "wait") return blockIdleWait(ctx);
     if (event.toolName === "task") chiefRefusals = 0;
     const rerouted = rerouteSettledWorkerWrite(event as { toolName: string; input?: unknown }, ctx);
@@ -2547,6 +2643,26 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         };
       }
     }
+    // Ignored demands escalate: while one stands, only its remedy (a todo call or the
+    // demanded specialist) and the always-allowed calls pass this one union decision.
+    const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) => isDemandEscalated(id));
+    if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused) {
+      const remedyTask = (call: GateCall): boolean =>
+        call.name === "task" && taskItems(call.arguments ?? {}).some((item) => item["agent"] === "retro-facilitator" || item["agent"] === "plan-doctor");
+      const gates: ActiveGate[] = escalatedIds.map((id) => ({
+        id,
+        remedy: id === "retro"
+          ? "staff the retrospective (retro-facilitator) or answer it in a todo call"
+          : "answer it in a todo call, or name it in the todo override field",
+        satisfies: (call: GateCall) => call.name === "todo" || remedyTask(call),
+      }));
+      const gateCall = { name: event.toolName, arguments: (event.input ?? {}) as Record<string, unknown> };
+      const verdict = decideGateCall(gateCall, gates);
+      if (!verdict.allowed) {
+        gateTrace(ctx, "escalation-refused", { toolName: event.toolName, gates: verdict.remedyGateIds });
+        return { block: true, reason: `${verdict.reason}. ${ORDER}` };
+      }
+    }
     if (event.toolName === "todo" && pendingReplan) pendingReplan.answered = pendingReplan.demands;
     if (event.toolName === "todo" && pendingTaskReconciliation?.linkDemanded) pendingTaskReconciliation.linkAnswered = true;
     if (event.toolName === "task")
@@ -2578,6 +2694,23 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       return `the finish has receded with the clock for ${minutes(now - first.at)} and ${minutes(now - recedingSince)} after this was first reported (samples, now → finish: ${history}). Run \`task\` with agent \`plan-doctor\` now: give it the goal, these samples, the open rows with dependencies, owners and receipts, and ask one question: what makes the finish later and which plan change shortens it. Apply its plan in one \`todo\` call; do not add rows of your own before it answers`;
     return `the finish recedes with the clock: ${minutes(now - first.at)} ago it was ${safeTimestamp(first.finish, timeZone)}, now ${safeTimestamp(finish, timeZone)}. Work is being found as fast as it is done, one defect per attempt. Find all remaining defects in one pass (run the whole check once with failures collected instead of stopping at the first), fix them as parallel rows, and take every check that does not consume the stuck output off the chain`;
   };
+  const retroWorkerIds = (): string[] => {
+    const finishes = sprintState.workerFinishes.filter((finish) => sprintState.lastRetroAt === null || finish.at >= sprintState.lastRetroAt);
+    const counts = new Map<string, { count: number; firstAt: number }>();
+    for (const finish of finishes) {
+      const previous = counts.get(finish.id);
+      counts.set(finish.id, { count: (previous?.count ?? 0) + 1, firstAt: Math.min(previous?.firstAt ?? finish.at, finish.at) });
+    }
+    return [...counts.entries()].sort((left, right) => right[1].count - left[1].count || left[1].firstAt - right[1].firstAt || left[0].localeCompare(right[0])).slice(0, 12).map(([id]) => id);
+  };
+  const retroNotifyKey = (): string => `${sprintState.retroDueReason ?? ""}|${sprintState.retroDueDeadlineAt ?? ""}|${sprintState.retroDueDeliveryKey ?? ""}|${retroWorkerIds().join(",")}`;
+  const retroRowStaffed = (phases: TodoScheduleInput): boolean => phases.flatMap((phase) => phase.tasks).some((task) => /retro/i.test(task.content) && typeof task.schedule?.owner === "string" && task.schedule.owner.length > 0);
+  const buildRetroLine = (now: number, timeZone?: string): string => {
+    if (!sprintState.retroDueReason) return "";
+    const since = sprintState.lastRetroAt ?? sprintState.goalWorkStartedAt ?? now;
+    const workerIds = retroWorkerIds();
+    return `retrospective due (${sprintState.retroDueReason}): ask the ${workerIds.length} workers who finished since ${safeTimestamp(since, timeZone)} through agent://, then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}`;
+  };
   const planCheck = (ctx: ExtensionContext, pending: unknown[] = []): string | null => {
     pendingSizingNoticeIds = [];
     const now = Date.now();
@@ -2586,25 +2719,11 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     touchSprintState(ctx, phasesNow, ctx.getAsyncJobSnapshot(), now, decision.deadline);
     const retroAdvice = () => {
       if (!sprintState.retroDueReason) return "";
-      const since = sprintState.lastRetroAt ?? sprintState.goalWorkStartedAt ?? now;
-      const finishes = sprintState.workerFinishes.filter((finish) => sprintState.lastRetroAt === null || finish.at >= sprintState.lastRetroAt);
-      const counts = new Map<string, { count: number; firstAt: number }>();
-      for (const finish of finishes) {
-        const previous = counts.get(finish.id);
-        counts.set(finish.id, {
-          count: (previous?.count ?? 0) + 1,
-          firstAt: Math.min(previous?.firstAt ?? finish.at, finish.at),
-        });
-      }
-      const workerIds = [...counts.entries()]
-        .sort((left, right) => right[1].count - left[1].count || left[1].firstAt - right[1].firstAt || left[0].localeCompare(right[0]))
-        .slice(0, 12)
-        .map(([id]) => id);
-      const notifyKey = `${sprintState.retroDueReason}|${sprintState.retroDueDeadlineAt ?? ""}|${sprintState.retroDueDeliveryKey ?? ""}|${workerIds.join(",")}`;
+      const notifyKey = retroNotifyKey();
       if (sprintState.retroDueNotifiedKey === notifyKey) return "";
       sprintState = { ...sprintState, retroDueNotifiedKey: notifyKey };
       persistSprintState();
-      return `retrospective due (${sprintState.retroDueReason}): ask the ${workerIds.length} workers who finished since ${safeTimestamp(since, decision.deadline?.timezone)} through agent://, then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}`;
+      return buildRetroLine(now, decision.deadline?.timezone);
     };
     const retroLine = retroAdvice();
     if (!decision.forecast)
@@ -2791,6 +2910,14 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       ready.length && running.length < workerCapacity(ctx) ? `${ready.length} ready row(s) have no worker: ${names(ready)}` : "",
       ready.length > capacity - running.length && idle > capacity ? `${idle} idle rows for ${capacity} worker slots: prune before adding` : "",
     ].filter(Boolean);
+    trackDemands([
+      ...(retroLine ? ["retro"] : []),
+      ...(receding.includes("plan-doctor") ? ["todo-plan-doctor"] : []),
+      ...(pendingReplan ? ["todo-replan"] : []),
+      ...(unlinked.length ? ["todo-link"] : []),
+      ...(unread.length ? ["unread-receipts"] : []),
+      ...(overdue.length ? ["missed-eta"] : []),
+    ]);
     return problems.length
       ? `PLAN CHECK: ${problems.length} problem(s). ${problems.map((line, i) => `(${i + 1}) ${line}`).join(" ")}.${workerStatus ? ` ${workerStatus}` : ""} Fix them with the pass of skill://chief-of-staff.`
       : workerStatus
@@ -2893,12 +3020,19 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const attemptedIdleOwners = decision.readyCandidates
       .filter((row) => row.ownership === "idle-live-owner" && row.owner && idleResumeAttempts.has(row.owner))
       .map((row) => row.owner!);
+    const phases = sdk.getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch() as never);
+    const retroDue = sprintState.retroDueReason && !retroRowStaffed(phases) ? buildRetroLine(now, decision.deadline?.timezone) : "";
+    if (retroDue) {
+      sprintState = { ...sprintState, retroDueNotifiedKey: retroNotifyKey() };
+      persistSprintState();
+    }
     const facts = chief ? integrationFacts(ctx, now) : "";
     const content = [
       ...(chief ? [CHIEF_OF_STAFF] : []),
       ...(facts ? [facts] : []),
       ...(chief && lastTaskDispatchRefused ? ["The last task dispatch was refused; bounded work is open to you until the ready row can be dispatched."] : []),
       ...(chief && activeDemand ? [`NEXT STEP (advice; no call is skipped or refused for it): ${activeDemand}`] : []),
+      ...(retroDue ? [retroDue] : []),
       ...(decision.prompt
         ? [`${decision.prompt}${attemptedIdleOwners.length ? `\nFAIL CLOSED: exact idle worker resume already attempted once for ${attemptedIdleOwners.join(", ")}; inspect the exact session/result, do not retry or create a duplicate writer.` : ""}`]
         : []),
