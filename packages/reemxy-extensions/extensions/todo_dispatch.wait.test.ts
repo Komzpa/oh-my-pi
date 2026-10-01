@@ -293,11 +293,12 @@ test("wait is allowed when open rows depend on running work or user approval", a
 	expect(result).toBeUndefined();
 });
 
-async function waitOnReadyRowWithStaleOwner(): Promise<{ block?: boolean; reason?: string } | undefined> {
+async function waitOnReadyRowWithStaleOwner(completeReadyRow = false): Promise<{ block?: boolean; reason?: string } | undefined> {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "todo-wait-ready-"));
 	try {
 		const now = Date.now();
 		const phases = chainedPlan(6, now);
+		let latestPhases = phases;
 		const tasks = phases[0]!.tasks;
 		for (let index = 0; index < 5; index++) {
 			const task = tasks[index]!;
@@ -329,7 +330,7 @@ async function waitOnReadyRowWithStaleOwner(): Promise<{ block?: boolean; reason
 				forecastTodoPlan,
 				formatPlanForecast,
 				formatTaskForecast,
-				getLatestTodoPhasesFromEntries: () => phases,
+				getLatestTodoPhasesFromEntries: () => latestPhases,
 				readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }),
 			},
 			appendEntry: () => undefined,
@@ -354,7 +355,12 @@ async function waitOnReadyRowWithStaleOwner(): Promise<{ block?: boolean; reason
 			setTimeout: () => ({}),
 			clearTimer: () => undefined,
 		} as unknown as ExtensionContext;
-		return await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "ready", input: {} }, ctx) as { block?: boolean; reason?: string } | undefined;
+		const wait = handlers.get("tool_call")!;
+		if (completeReadyRow) await wait({ toolName: "wait", toolCallId: "before-complete", input: {} }, ctx);
+		if (completeReadyRow) {
+			latestPhases = phases.map((phase) => ({ ...phase, tasks: phase.tasks.map((task) => task === ready ? { ...task, status: "completed" } : task) }));
+		}
+		return await wait({ toolName: "wait", toolCallId: "ready", input: {} }, ctx) as { block?: boolean; reason?: string } | undefined;
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}
@@ -374,6 +380,10 @@ test("a dead scheduled owner prompts conditional owner repair", async () => {
 	expect(result?.reason).toContain("not running");
 	expect(result?.reason).toContain("todo schedule");
 	expect(result?.reason).toContain("otherwise start");
+});
+test("wait sees a row completed in the same batch", async () => {
+	const result = await waitOnReadyRowWithStaleOwner(true);
+	expect(result?.block).not.toBe(true);
 });
 
 test("capacity reports zero when no authenticated worker profile can start", async () => {

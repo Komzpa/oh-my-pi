@@ -1314,7 +1314,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   });
   pi.on("agent_start", clearIdleTimer);
 
-  const currentDecision = (ctx: ExtensionContext, now = Date.now(), pending: unknown[] = [], refreshSnapshot = false) => {
+  const currentDecision = (ctx: ExtensionContext, now = Date.now(), pending: unknown[] = [], refreshSnapshot = false, forceRefresh = false) => {
     // `pending`: entries not yet on the branch, such as the todo result a tool_result hook is amending.
     const branch = pending.length ? [...ctx.sessionManager.getBranch(), ...pending] : ctx.sessionManager.getBranch();
     const header = ctx.sessionManager.getHeader();
@@ -1333,7 +1333,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const phases = sdk.getLatestTodoPhasesFromEntries(branch);
     const restored = restoredChildren(persistedChildren, jobs);
     const key = `${staticKey(phases, jobs, deadline, capacity, startableCapacity, goalPaused, restored, persistedChildren)}:${Math.floor(now / 60_000)}`;
-    if (pending.length === 0 && cachedDecision?.key === key) {
+    if (!forceRefresh && pending.length === 0 && cachedDecision?.key === key) {
       if (refreshSnapshot) writeCurrentPlanSnapshot(ctx, cachedDecision.decision, now);
       return cachedDecision.decision;
     }
@@ -1432,7 +1432,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const runningTasks = running.filter((job) => job.type === "task");
     const liveAgents = (jobs.nonJobAgents ?? []).filter((agent) => agent.live);
     const idle = running.length === 0 && liveAgents.length === 0;
-    const decision = currentDecision(ctx);
+    const decision = currentDecision(ctx, Date.now(), [], false, true);
     if (!decision.key || !decision.forecast) return;
     const rows = decision.forecast.rows ?? [];
     const readyRows = decision.dispatchableReady ?? [];
