@@ -1959,6 +1959,96 @@ test("a worker started but never linked to a row does not silence dispatch for t
   }
 });
 
+test("session_compact re-persists the full chief rules exactly once for a main session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "chief-rules-"));
+  const skillFile = join(dir, "SKILL.md");
+  const fullText = "## Critical path first\nThis is the full chief-of-staff runbook sentinel.\n";
+  writeFileSync(skillFile, fullText);
+  const sdk = { ...extensionSdk, getActiveSkills: () => [{ name: "chief-of-staff", filePath: skillFile }] };
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const sent: unknown[][] = [];
+  await todoDispatch({
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task"],
+    pi: sdk,
+    appendEntry: () => undefined,
+    sendMessage: (...args: unknown[]) => sent.push(args),
+  } as unknown as ExtensionAPI);
+  const ctx = {
+    cwd: "/tmp/chief-rules-main-fixture",
+    sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => [] },
+  } as unknown as ExtensionContext;
+  const compact = () => handlers.get("session_compact")!({}, ctx);
+  await compact();
+  expect(sent).toHaveLength(1);
+  expect(sent[0]?.[0]).toMatchObject({ customType: "chief-rules-after-compaction", content: fullText, display: false });
+  expect(sent[0]?.[1]).toMatchObject({ deliverAs: "nextTurn" });
+  // A second compaction emits one fresh copy, not two: the handler is per-event, never accumulating.
+  await compact();
+  expect(sent).toHaveLength(2);
+  expect(sent[1]?.[0]).toMatchObject({ content: fullText });
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("the context hook does not add the chief rules per request, and no entry appears without compaction", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "chief-rules-ctx-"));
+  const skillFile = join(dir, "SKILL.md");
+  const fullText = "## Critical path first\nRun the pass from step 1 every time.\n";
+  writeFileSync(skillFile, fullText);
+  const sdk = { ...extensionSdk, getActiveSkills: () => [{ name: "chief-of-staff", filePath: skillFile }] };
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const sent: unknown[][] = [];
+  await todoDispatch({
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task"],
+    pi: sdk,
+    appendEntry: () => undefined,
+    sendMessage: (...args: unknown[]) => sent.push(args),
+  } as unknown as ExtensionAPI);
+  const ctx = {
+    cwd: "/tmp/chief-rules-ctx-fixture",
+    sessionManager: {
+      getHeader: () => ({ id: "root" }),
+      getBranch: () => [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases } } }],
+    },
+    getAsyncJobSnapshot: () => emptyJobs,
+  } as unknown as ExtensionContext;
+  const request = async () =>
+    (await handlers.get("context")!({ messages: [] }, ctx)) as
+      | { messages: Array<{ content: string }> }
+      | undefined;
+  const first = await request();
+  // The per-request context carries only the CHIEF_OF_STAFF one-liner, never the full runbook text.
+  expect(JSON.stringify(first?.messages)).not.toContain("Run the pass from step 1");
+  // No compaction event → no chief-rules history entry.
+  expect(sent).toHaveLength(0);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("session_compact re-persists a worker's original brief", async () => {
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const sent: unknown[][] = [];
+  await todoDispatch({
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task"],
+    pi: extensionSdk,
+    appendEntry: () => undefined,
+    sendMessage: (...args: unknown[]) => sent.push(args),
+  } as unknown as ExtensionAPI);
+  const brief = "Complete assignment thoroughly:\n\n# Target\nRow X\n\n# Acceptance\nA commit sha and a test log.\n";
+  const ctx = {
+    cwd: "/tmp/chief-rules-worker-fixture",
+    sessionManager: {
+      getHeader: () => ({ id: "sub", parentSession: "root" }),
+      getBranch: () => [{ type: "session_init", task: brief }],
+    },
+  } as unknown as ExtensionContext;
+  await handlers.get("session_compact")!({}, ctx);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]?.[0]).toMatchObject({ customType: "worker-brief-after-compaction", content: brief, display: false });
+  expect(sent[0]?.[1]).toMatchObject({ deliverAs: "nextTurn" });
+});
+
 test("a resolved merge left open is committed first, and a merge gets one worker, not one per file", async () => {
   // Live 2026-09-24: a resolved merge sat uncommitted for two hours behind feature rows while per-file
   // conflict workers, an integrator, an audit and an oracle ran; nothing was pushed for a day.
