@@ -665,6 +665,55 @@ describe("TodoTool operations", () => {
 		expect(blankPhaseReason.details?.phases).toEqual(before);
 	});
 
+	it("done touches only the named row, preserving unrelated completed and in-progress rows", async () => {
+		// Legacy/multi-row in-progress state must survive an unrelated op: only
+		// the named row flips to completed, and no focus promotion steals a row
+		// while in-progress rows exist.
+		const tool = new TodoTool(
+			createSession([
+				{
+					name: "Work",
+					tasks: [
+						{ content: "finish this", status: "pending" },
+						{ content: "already finished", status: "completed" },
+						{ content: "first active row", status: "in_progress" },
+						{ content: "second active row", status: "in_progress" },
+					],
+				},
+			]),
+		);
+
+		const result = await tool.execute("call-1", { op: "done", task: "finish this" });
+		expect(result.details?.phases[0]?.tasks.map(task => [task.content, task.status])).toEqual([
+			["finish this", "completed"],
+			["already finished", "completed"],
+			["first active row", "in_progress"],
+			["second active row", "in_progress"],
+		]);
+	});
+
+	it("unblock preserves unrelated in-progress rows", async () => {
+		const tool = new TodoTool(
+			createSession([
+				{
+					name: "Work",
+					tasks: [
+						{ content: "unblock this", status: "blocked", blocker: "waiting" },
+						{ content: "first active row", status: "in_progress" },
+						{ content: "second active row", status: "in_progress" },
+					],
+				},
+			]),
+		);
+
+		const result = await tool.execute("call-1", { op: "unblock", task: "unblock this" });
+		expect(result.details?.phases[0]?.tasks.map(task => [task.content, task.status])).toEqual([
+			["unblock this", "pending"],
+			["first active row", "in_progress"],
+			["second active row", "in_progress"],
+		]);
+	});
+
 	it("does not auto-promote a blocked task to in_progress", async () => {
 		const tool = new TodoTool(createSession());
 		await tool.execute("call-1", { op: "init", list: [{ phase: "Work", items: ["only"] }] });

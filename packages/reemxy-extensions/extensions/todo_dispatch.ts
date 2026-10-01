@@ -1519,6 +1519,25 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   };
   const understaffed = (ctx: ExtensionContext, runningTasks: number, parked: number) =>
     parked >= 2 && runningTasks < workerCapacity(ctx);
+  // A waiting row is genuinely chained when every dependency names a real plan row (a true
+  // output link, whatever that row's status: open, blocked on an external gate, or already
+  // closed) and the row itself is not externally gated. Only a row whose dependency names no
+  // plan row at all can be freed by rewriting the plan, so only that (or ready work without
+  // a worker, handled on the staffing path) may demand a replan or split advice. Otherwise
+  // the demand manufactures noise while every row waits on real outputs or external gates.
+  const hasReplannableWait = (decision: {
+    openStructure?: Array<[string, string[]]>;
+    forecast: TodoPlanForecast | null;
+  }) => {
+    const rows = decision.forecast?.rows ?? [];
+    const known = rows.map((row) => row.content);
+    return (decision.openStructure ?? []).some(([content, deps]) => {
+      const row = rows.find((candidate) => candidate.content === content);
+      if (!row || row.ready) return false;
+      if (row.blocker || row.waitsForUser) return false;
+      return deps.some((dep) => !known.includes(dep));
+    });
+  };
   const blockIdleWait = (ctx: ExtensionContext) => {
     if (pauseGate?.paused) return;
     const jobs = ctx.getAsyncJobSnapshot();
@@ -1988,7 +2007,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const runningTasks = (jobs?.running ?? []).filter((job) => job.type === "task" && job.status === "running").length;
     if (runningTasks > 0 && decision.readyCandidates.length > 0 &&
       decision.readyCandidates.every((row) => row.ownership === "live-owned") &&
-      (decision.forecast.planningIssues ?? []).length === 0) {
+      (decision.forecast.planningIssues ?? []).length === 0 && !hasReplannableWait(decision)) {
       pendingReplan = null;
       return gateTrace(ctx, "waiting-on-staffed-work");
     }
@@ -2003,6 +2022,17 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     if (!understaffed(ctx, runningTasks, parked) || dispatchable > 0 || runningTasks + dispatchable >= fillable || parked - dispatchable < 2) {
       pendingReplan = null;
       return gateTrace(ctx, "staffed-or-dispatchable", { dispatchable, runningTasks, parked, capacity: workerCapacity(ctx) });
+    }
+    // Grievance rows wait on real outputs or external gates: no rewrite can free them, so a
+    // split demand only manufactures noise. Stay silent unless a row waits on something that
+    // is not a real output (ready work without a worker is handled on the staffing path
+    // above). A resource queue on the critical chain is not an output link either — the
+    // waiting list itself marks it "not a dependency" — and copying the contended resource
+    // can free it, so it stays replannable. A plan bigger than the worker slots still gets
+    // the prune demand: dropping rows is something a rewrite can always do.
+    if (!hasReplannableWait(decision) && !criticalWaitList(ctx, open).includes("queued behind") && parked < workerCapacity(ctx)) {
+      pendingReplan = null;
+      return gateTrace(ctx, "waiting-on-real-outputs", { runningTasks, parked });
     }
     const structure = decision.openStructure ?? [];
     if (!pendingReplan) {
@@ -2901,7 +2931,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       sizing.length ? `worker sizing: ${sizing.map((worker) => `${worker.id} ${worker.fact}; write agent://${worker.id} asking for done/left with a receipt, then split the rest`).join("; ")}` : "",
       ...overlapWarnings,
       silent.length ? `${silent.length} running worker(s) silent: ${silent.slice(0, 6).map((worker) => `${worker.name} (${worker.lastAt === undefined ? "no activity since start" : "last activity"} ${minutes(worker.ageMs)} ago)`).join(", ")}; write agent://<id> asking what it waits on. Workers not named here are active: their results arrive by themselves, so do not read their history` : "",
-      understaffed ? `only ${running.length} of ${capacity} worker slots run and no row is ready: the rest wait on running work. ${waitingCritical ? `Waiting rows on the chain that sets the ETA, in order:${waitingCritical}\n${waitingCritical.includes("queued behind") ? `${RESOURCE_QUEUE}\n` : ""}${WHY_EACH_LINK}\n${SPLIT_EACH} (skill step 7)` : "Split the waiting rows into the part that needs that result and the part that can start now, and dispatch the second part (skill step 7)"}` : "",
+      understaffed && (hasReplannableWait(decision) || waitingCritical.includes("queued behind")) ? `only ${running.length} of ${capacity} worker slots run and no row is ready: the rest wait on running work. ${waitingCritical ? `Waiting rows on the chain that sets the ETA, in order:${waitingCritical}\n${waitingCritical.includes("queued behind") ? `${RESOURCE_QUEUE}\n` : ""}${WHY_EACH_LINK}\n${SPLIT_EACH} (skill step 7)` : "Split the waiting rows into the part that needs that result and the part that can start now, and dispatch the second part (skill step 7)"}` : "",
       missing ? `${missing} planning issue(s) (missing estimates or dependencies) block every non-read tool` : "",
       overdue.length ? `${overdue.length} open row(s) past their time: ${names(overdue)}` : "",
       unresolved.length ? `${unresolved.length} row(s) have no forecast (the TODO header's "unresolved"); fix their estimate, dependencies or resources, or drop them: ${unresolved.slice(0, 4).map((row) => `${JSON.stringify(shorten(row.content))}${why(row) ? ` (${shorten(why(row)!)})` : ""}`).join(", ")}${unresolved.length > 4 ? `, … ${unresolved.length - 4} more` : ""}` : "",

@@ -319,6 +319,44 @@ describe("agent router", () => {
 		}
 	});
 
+	test("grievance 467: coder beside a running git-pr-owner is admitted on disjoint paths, refused on overlap", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const repo = join(dir, "shared-repo");
+			mkdirSync(repo);
+			execFileSync("git", ["init", "-q", repo]);
+			const tasks = [
+				{ content: "Finalize owner work", status: "in_progress", schedule: { owner: "owner-1", resources: [`${repo}/src/owner.ts:source-writer`] } },
+				{ content: "Edit disjoint file", status: "pending", schedule: { owner: "coder-disjoint", resources: [`${repo}/src/coder.ts:source-writer`] } },
+				{ content: "Edit overlapping file", status: "pending", schedule: { owner: "coder-overlap", resources: [`${repo}/src/owner.ts:source-writer`] } },
+			];
+			let running = [];
+			const context = ctx({
+				sessionManager: {
+					getHeader: () => ({ id: "session-1" }),
+					getBranch: () => [
+						{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } },
+					],
+				},
+				getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }),
+			});
+			const state = createRouterState();
+			const spawn = (agent: string, spawnKey: string) =>
+				routeSubagentSpawn({ agent, spawnKey }, context, state, {
+					stateFile: file,
+					latestTodo: getLatestTodoPhasesFromEntries,
+				});
+			expect((await spawn("git-pr-owner", "owner-1"))?.model).toBeDefined();
+			running = [{ id: "owner-1", type: "task", status: "running" }];
+			expect((await spawn("coder", "coder-disjoint"))?.model).toBeDefined();
+			const overlap = await spawn("coder", "coder-overlap");
+			expect(overlap?.block).toBe(true);
+			expect(overlap?.reason).toContain("owner-1");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("checkout writer scopes allow disjoint repositories and refuse every active collision", async () => {
 		const { dir, file } = tempStateFile();
 		try {
@@ -365,27 +403,42 @@ describe("agent router", () => {
 			running = [{ id: "native-writer", type: "task", status: "running" }];
 			expect((await spawn("tasks-writer"))?.model).toBeDefined();
 			running.push({ id: "tasks-writer", type: "task", status: "running" });
-			for (const resource of [
-				native,
-				`${native}/another.ts:git-owner`,
-				`checkout:${alias}/src/file.ts:source-writer`,
-				tasksLoop,
-				`path:${tasksLoop}/other.ts`,
-				`repository:${tasksLoop}:source-writer`,
-			]) {
-				plan[0].tasks.push(row("third-writer", [resource]));
-				const result = await spawn("third-writer");
-				expect(result?.block).toBe(true);
-				expect(result?.reason).toContain(resource.includes("tasks-loop") ? "tasks-writer" : "native-writer");
-				plan[0].tasks.pop();
-			}
-			plan[0].tasks.push(row("third-writer", [native, tasksLoop]));
-			expect((await spawn("third-writer"))?.block).toBe(true);
-			expect(
-				readJsonl(file)
-					.filter(record => record.kind === "spawn")
-					.map(record => record.checkoutScopes),
-			).toEqual([[native], [tasksLoop]]);
+		for (const resource of [
+			native,
+			`${native}/src/native.ts`,
+			`checkout:${alias}/src/native.ts:source-writer`,
+			`${native}/src`,
+			tasksLoop,
+			`path:${tasksLoop}/other.ts`,
+			`repository:${tasksLoop}:source-writer`,
+		]) {
+			plan[0].tasks.push(row("third-writer", [resource]));
+			const result = await spawn("third-writer");
+			expect(result?.block).toBe(true);
+			expect(result?.reason).toContain(resource.includes("tasks-loop") ? "tasks-writer" : "native-writer");
+			plan[0].tasks.pop();
+		}
+		for (const [index, resource] of [
+			`${native}/another.ts:git-owner`,
+			`checkout:${alias}/src/file.ts:source-writer`,
+		].entries()) {
+			const spawnKey = `disjoint-writer-${index}`;
+			plan[0].tasks.push(row(spawnKey, [resource]));
+			expect((await spawn(spawnKey))?.model).toBeDefined();
+			plan[0].tasks.pop();
+		}
+		plan[0].tasks.push(row("third-writer", [native, tasksLoop]));
+		expect((await spawn("third-writer"))?.block).toBe(true);
+		expect(
+			readJsonl(file)
+				.filter(record => record.kind === "spawn")
+				.map(record => record.checkoutScopes),
+		).toEqual([
+			[`${native}\0src/native.ts`],
+			[`${tasksLoop}\0.`],
+			[`${native}\0another.ts`],
+			[`${native}\0src/file.ts`],
+		]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -426,7 +479,7 @@ describe("agent router", () => {
 			expect((await spawn("writer-2"))?.block).toBe(true);
 			tasks[1].schedule.resources = [changed];
 			expect((await spawn("writer-2"))?.model).toBeDefined();
-			expect([...state.spawns.values()][0].checkoutScopes).toEqual([original]);
+		expect([...state.spawns.values()][0].checkoutScopes).toEqual([`${original}\0.`]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

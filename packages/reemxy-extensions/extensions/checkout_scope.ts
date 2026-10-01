@@ -30,27 +30,52 @@ export function checkoutScopesFromResources(resources: unknown): string[] | unde
 		const value = resource.trim().replace(/^(?:path|repo|repository|checkout|worktree):/, "");
 		const key = normalizeCheckoutKey(value.replace(/:[^/]+$/, ""));
 		if (!key?.startsWith("path:")) return undefined;
-		let candidate = displayCheckoutKey(key);
+		let target = path.resolve(displayCheckoutKey(key));
 		try {
+			let existing = target;
+			const suffix: string[] = [];
 			while (true) {
 				try {
-					fs.lstatSync(candidate);
+					fs.lstatSync(existing);
 					break;
 				} catch (error) {
 					if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
-					const parent = path.dirname(candidate);
-					if (parent === candidate) return undefined;
-					candidate = parent;
+					const parent = path.dirname(existing);
+					if (parent === existing) return undefined;
+					suffix.unshift(path.basename(existing));
+					existing = parent;
 				}
 			}
-			candidate = fs.realpathSync(candidate);
-			if (!fs.statSync(candidate).isDirectory()) candidate = path.dirname(candidate);
-			const repo = vcs.git(candidate);
+			target = path.join(fs.realpathSync(existing), ...suffix);
+			const repo = vcs.git(target);
 			if (!repo) return undefined;
-			scopes.add(fs.realpathSync(repo.info().repoRoot));
+			const root = fs.realpathSync(repo.info().repoRoot);
+			const relativeTarget = path.relative(root, target);
+			if (relativeTarget === ".." || relativeTarget.startsWith(`..${path.sep}`) || path.isAbsolute(relativeTarget))
+				return undefined;
+		scopes.add(`${root}\0${relativeTarget || "."}`);
 		} catch {
 			return undefined;
 		}
 	}
 	return scopes.size ? [...scopes].sort() : undefined;
+}
+
+export function checkoutScopesOverlap(left: string[], right: string[]): boolean {
+	for (const leftScope of left) {
+		const [leftRoot, leftPath] = leftScope.split("\0");
+		for (const rightScope of right) {
+			const [rightRoot, rightPath] = rightScope.split("\0");
+			if (leftRoot !== rightRoot || leftPath === undefined || rightPath === undefined) continue;
+			if (
+				leftPath === "." ||
+				rightPath === "." ||
+				leftPath === rightPath ||
+				leftPath.startsWith(`${rightPath}${path.sep}`) ||
+				rightPath.startsWith(`${leftPath}${path.sep}`)
+			)
+				return true;
+		}
+	}
+	return false;
 }

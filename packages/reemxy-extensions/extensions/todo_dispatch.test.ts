@@ -1715,13 +1715,16 @@ test("dependency waits remain allowed until independently runnable work appears"
       },
     },
   });
+  // The last row also waits on an external note that names no plan row: a dependency that is
+  // not a real output, so this chain stays replannable (a genuine output-only chain must stay
+  // silent; see the silence test below).
   const plan: TodoScheduleInput = [{ name: "Release", tasks: [
     row("Merge main into PR branch", [], "worker-merge"),
     row("Replay checkpoint", ["Merge main into PR branch"]),
     row("Pin capture bundle", ["Replay checkpoint"]),
     row("Publish PR checkpoint", ["Pin capture bundle"]),
     row("Record PR receipt", ["Publish PR checkpoint"]),
-    row("Announce PR checkpoint", ["Record PR receipt"]),
+    row("Announce PR checkpoint", ["Record PR receipt", "External sign-off note"]),
   ] }];
   const branch: unknown[] = [
     { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } },
@@ -1788,6 +1791,82 @@ test("dependency waits remain allowed until independently runnable work appears"
     const chained = requirementProvider?.(ctx) as { toolName?: string; reminder?: Array<{ content: string }> } | undefined;
     expect(chained?.toolName).toBe("task");
     expect(chained?.reminder?.[0]?.content).toContain("Merge main into PR branch");
+  } finally {
+    setSystemTime();
+    handlers.get("session_shutdown")?.({}, { getAsyncJobSnapshot: () => emptyJobs } as unknown as ExtensionContext);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+test("a genuine output-chained plan with external gates stays silent instead of demanding a replan", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "todo-dispatch-genuine-chain-"));
+  mkdirSync(join(cwd, ".pi"), { recursive: true });
+  const liveNow = now + 120_000;
+  const row = (content: string, dependencies: string[], status: "pending" | "in_progress" | "blocked" = "pending", extra: Record<string, unknown> = {}) => ({
+    content,
+    status,
+    ...(status === "blocked" ? { blocker: "needs user on site for observation" } : {}),
+    schedule: {
+      dependencies,
+      resources: [],
+      ...(status === "in_progress" ? { owner: "worker-prep" } : {}),
+      estimate: {
+        optimisticSeconds: 300,
+        likelySeconds: 600,
+        pessimisticSeconds: 900,
+        confidence: "medium" as const,
+        basis: "genuine chain fixture",
+        updatedAt: now - 60_000,
+      },
+    },
+    ...extra,
+  });
+  const plan: TodoScheduleInput = [{ name: "Release", tasks: [
+    row("Prepare offline bundle", [], "in_progress"),
+    row("Verify bundle", ["Prepare offline bundle"]),
+    row("User observation", [], "blocked"),
+    row("Record observation receipt", ["User observation"]),
+    row("Publish checkpoint", ["Verify bundle", "Record observation receipt"]),
+  ] }];
+  const branch: unknown[] = [
+    { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } },
+  ];
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  let requirementProvider: ((ctx: ExtensionContext) => unknown) | undefined;
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo"],
+    pi: { ...extensionSdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000 }) },
+    registerSoftToolRequirementProvider: (provider: ((ctx: ExtensionContext) => unknown) & { demand?: (ctx: ExtensionContext) => unknown }) => { requirementProvider = provider.demand ?? provider; },
+    appendEntry: () => undefined,
+    sendMessage: () => undefined,
+  } as unknown as ExtensionAPI;
+  const worker = { id: "task-prep", type: "task" as const, status: "running" as const, label: "prep", startTime: liveNow, agentId: "worker-prep" };
+  const jobs: Jobs = { running: [worker], recent: [], nonJobAgents: [{ id: "worker-prep", live: true }] };
+  try {
+    await todoDispatch(api);
+    const ctx = {
+      cwd,
+      sessionManager: { getHeader: () => ({ id: "genuine-chain" }), getBranch: () => branch },
+      getAsyncJobSnapshot: () => jobs,
+      getTaskMaxConcurrency: () => 16,
+      isIdle: () => false,
+      hasPendingMessages: () => false,
+      setTimeout: () => ({}),
+      clearTimer: () => undefined,
+    } as unknown as ExtensionContext;
+    setSystemTime(new Date(liveNow));
+    const wasPaused = agentPauseGate.paused;
+    if (wasPaused) agentPauseGate.resume();
+    // Every waiting row consumes a real plan output or a user-gated row: no rewrite can free
+    // them, so no replan may be demanded (grievances 419/438/445/453).
+    expect(requirementProvider?.(ctx)).toBeUndefined();
+    // Positive control: a dependency that names no plan row is not a real output, so the same
+    // plan with one dangling link still demands a replan.
+    plan[0]!.tasks[4] = row("Publish checkpoint", ["Verify bundle", "External sign-off note"]);
+    branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
+    const demand = requirementProvider?.(ctx) as { toolName?: string; reminder?: Array<{ content: string }> } | undefined;
+    expect(demand?.toolName).toBe("todo");
+    expect(demand?.reminder?.[0]?.content).toContain("MANDATORY REPLAN");
   } finally {
     setSystemTime();
     handlers.get("session_shutdown")?.({}, { getAsyncJobSnapshot: () => emptyJobs } as unknown as ExtensionContext);
