@@ -264,7 +264,7 @@ mod tests {
 
 	use brush_core::ExternalCommandWrapper;
 
-	use super::{ToolProcessLimit, systemd_property};
+	use super::ToolProcessLimit;
 
 	fn wrapped_command(limit: &ToolProcessLimit, program: &str, args: &[&str]) -> Command {
 		let (runner, wrapped_args) = limit
