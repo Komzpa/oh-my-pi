@@ -454,9 +454,10 @@ describe("task rework acceptance", () => {
 		} as TaskParams);
 
 		expect(missing.details?.results?.[0]?.exitCode).toBe(0);
+		expect(blank.details?.results?.[0]?.exitCode).toBe(0);
+		expect(text(blank)).not.toContain("requires a one-line");
 		expect(text(multiline)).toContain("requires a one-line");
-		expect(text(blank)).toContain("requires a one-line");
-		expect(run).toHaveBeenCalledTimes(1);
+		expect(run).toHaveBeenCalledTimes(2);
 	});
 
 	it("passes the prior report paragraph when reflection has no answer", async () => {

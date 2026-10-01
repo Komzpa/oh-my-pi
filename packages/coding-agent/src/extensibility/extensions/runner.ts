@@ -26,7 +26,8 @@ import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
-import { MAIN_AGENT_ID } from "../../registry/agent-registry";
+import { sendAgentMessageFromSession } from "../../irc/messaging";
+import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { SessionManager } from "../../session/session-manager";
 import { cfgTaskMaxConcurrency } from "../../task/settings";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
@@ -583,10 +584,32 @@ export class ExtensionRunner {
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
-	#sendAgentMessageFn: NonNullable<ExtensionContextActions["sendAgentMessage"]> = async () => ({
-		delivered: false,
-		text: "Peer messaging is unavailable in this session.",
-	});
+	#sendAgentMessageFn: NonNullable<ExtensionContextActions["sendAgentMessage"]> = (to, message) =>
+		this.#defaultSendAgentMessage(to, message);
+	/**
+	 * Fallback peer-messaging route for runners whose host never wired
+	 * `sendAgentMessage` (or never called `initialize`). Uses the same
+	 * session-identity path as `write agent://` — the process registry with
+	 * this runner's own agent id, depth, and settings — so the extension API
+	 * and the URL write agree instead of one side answering "unavailable"
+	 * while the other delivers.
+	 */
+	#defaultSendAgentMessage(
+		to: string,
+		message: string,
+	): Promise<{ delivered: boolean; text: string }> {
+		if (!this.settings) return Promise.resolve({ delivered: false, text: "Peer messaging is unavailable in this session." });
+		return sendAgentMessageFromSession(
+			{
+				agentRegistry: AgentRegistry.global(),
+				settings: this.settings,
+				taskDepth: this.agent.depth,
+				getAgentId: () => this.agent.id,
+			},
+			to,
+			message,
+		);
+	}
 	#runEphemeralTurnFn?: ExtensionContextActions["runEphemeralTurn"];
 	#setSubagentFastModeFn?: ExtensionContextActions["setSubagentFastMode"];
 	#ephemeralTurnBlocker = new AsyncLocalStorage<string | undefined>();
@@ -891,8 +914,7 @@ export class ExtensionRunner {
 		this.#compactFn = contextActions.compact;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
 		this.#sendAgentMessageFn =
-			contextActions.sendAgentMessage ??
-			(async () => ({ delivered: false, text: "Peer messaging is unavailable in this session." }));
+			contextActions.sendAgentMessage ?? ((to, message) => this.#defaultSendAgentMessage(to, message));
 		this.#runEphemeralTurnFn = contextActions.runEphemeralTurn;
 		this.#setSubagentFastModeFn = contextActions.setSubagentFastMode;
 

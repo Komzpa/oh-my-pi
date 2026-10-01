@@ -116,11 +116,14 @@ export async function executeSend(
 	};
 }
 
-export async function sendAgentMessageFromSession(
-	session: AgentMessageSession,
-	to: string,
-	message: string,
-): Promise<AgentMessageDelivery> {
+/**
+ * Shared availability predicate for peer messaging. The extension
+ * `ctx.sendAgentMessage` API and `write agent://` evaluate this same path so
+ * the two channels cannot disagree about whether messaging works in a
+ * session. Returns the user-facing reason when unavailable, `undefined` when
+ * delivery may proceed.
+ */
+export function agentMessagingUnavailableReason(session: AgentMessageSession): string | undefined {
 	const registry = session.agentRegistry;
 	const senderId = session.getAgentId?.() ?? undefined;
 	if (
@@ -129,8 +132,19 @@ export async function sendAgentMessageFromSession(
 		session.enableIrc === false ||
 		!isIrcEnabled(session.settings, session.taskDepth ?? 0)
 	) {
-		return { delivered: false, text: "Peer messaging is unavailable in this session." };
+		return "Peer messaging is unavailable in this session.";
 	}
+	return undefined;
+}
+export async function sendAgentMessageFromSession(
+	session: AgentMessageSession,
+	to: string,
+	message: string,
+): Promise<AgentMessageDelivery> {
+	const registry = session.agentRegistry;
+	const senderId = session.getAgentId?.() ?? undefined;
+	const unavailable = agentMessagingUnavailableReason(session);
+	if (unavailable !== undefined) return { delivered: false, text: unavailable };
 	try {
 		const result = await executeSend(
 			{ registry, senderId, sessionFileHint: session.getSessionFile?.() },

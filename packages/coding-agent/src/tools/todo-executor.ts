@@ -187,19 +187,33 @@ export function appendTodoReworkAttempt(
 
 /**
  * Rows a respawn under a taken name inherits. Re-staffing a row with `name` = its owner collides
- * with the settled job that already holds that id, so the task tool allocates `<name>-<n>`; every
- * open row that still names the requested id belongs to the new worker. Nothing moves while the
- * requested id itself is running: that is a second worker, not a respawn.
+ * with the settled job that already holds that id, so the task tool allocates `<name>-<n>` (under a
+ * parent prefix, `<parent>.<name>-<n>`); every open row that still names the requested id — or a
+ * settled earlier bump with the same base — belongs to the new worker. Nothing moves while the
+ * requested id itself is running: that is a second worker, not a respawn. Rows owned by another
+ * running bump stay with their live worker.
  */
+function respawnCollisionBase(id: string): string {
+	const leaf = id.split(".").at(-1) ?? id;
+	return stripOmpCollisionSuffixChain(leaf);
+}
 export function findRespawnOwnerRows(
 	phases: readonly TodoPhase[],
 	respawn: { requestedName: string; workerId: string; runningWorkerIds: ReadonlySet<string> },
 ): string[] {
 	const { requestedName, workerId, runningWorkerIds } = respawn;
 	if (requestedName === workerId || runningWorkerIds.has(requestedName)) return [];
-	if (!hasSameOmpCollisionBase(workerId, requestedName)) return [];
+	if (respawnCollisionBase(workerId) !== respawnCollisionBase(requestedName)) return [];
+	const base = respawnCollisionBase(requestedName);
 	return phases
 		.flatMap(phase => phase.tasks)
-		.filter(task => isOpenStatus(task.status) && task.schedule?.owner === requestedName)
+		.filter(
+			task =>
+				isOpenStatus(task.status) &&
+				typeof task.schedule?.owner === "string" &&
+				(task.schedule.owner === requestedName ||
+					(respawnCollisionBase(task.schedule.owner) === base &&
+						!runningWorkerIds.has(task.schedule.owner))),
+		)
 		.map(task => task.content);
 }

@@ -709,9 +709,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const exhaustedBlocked =
 			task.status === "blocked" && task.blocker?.startsWith("waits for user: Rework ladder exhausted.");
 		if (!previous?.outcome) return {};
-		if (!previous.resolvedModel || !previous.thinkingLevel)
-			return { error: `Cannot redispatch "${task.content}": the worker's resolved model or effort is missing.` };
 		if (previous.outcome !== "completed") {
+			if (!previous.resolvedModel || !previous.thinkingLevel)
+				return { error: `Cannot redispatch "${task.content}": the worker's resolved model or effort is missing.` };
 			const requestedProfile = spawn.agent ?? previous.agentProfile;
 			const requestedAgent = [...this.#discoveredAgents, ...(this.session.getSessionAgents?.() ?? [])].find(
 				agent => agent.name === requestedProfile,
@@ -755,8 +755,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			};
 		}
 		const reason = spawn.rework;
-		if (reason === undefined && !exhaustedBlocked) return {};
-		if (!reason?.trim() || /[\r\n\u2028\u2029]/u.test(reason))
+		if ((reason === undefined || reason.trim().length === 0) && !exhaustedBlocked) return {};
+		if (reason === undefined || reason.trim().length === 0 || /[\r\n\u2028\u2029]/u.test(reason))
 			return { error: `Rework of "${task.content}" requires a one-line \`rework\` rejection reason.` };
 		if (!previous.resolvedModel || !previous.thinkingLevel || previous.finishedAt === undefined) {
 			return {

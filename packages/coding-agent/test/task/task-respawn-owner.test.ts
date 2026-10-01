@@ -6,6 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import { AgentOutputManager } from "@oh-my-pi/pi-coding-agent/task/output-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -159,6 +160,29 @@ describe("task respawn keeps the TODO owner linked", () => {
 		expect(replayed[0]!.tasks[0]!.schedule?.owner).toBe("RenderR7ZoompanMix-2");
 		expect(replayed[0]!.tasks[1]!.schedule?.owner).toBe("ReviewCut");
 		gate.resolve();
+	});
+	it("relinks the row when a parent prefix pushes the respawn to -3", async () => {
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => makeResult(options.id ?? "?"));
+		const manager = createManager();
+		const edits: TodoPersistedEdit[] = [];
+		const { session, owner } = createSession(manager, plan("RenderR7ZoompanMix"), edits);
+		// Subagent sessions allocate hierarchical ids; both earlier bumps are
+		// taken so this respawn lands on `Parent.RenderR7ZoompanMix-3`.
+		const outputManager = new AgentOutputManager(() => null, { parentPrefix: "Parent" });
+		await outputManager.allocate("RenderR7ZoompanMix");
+		await outputManager.allocate("RenderR7ZoompanMix");
+		session.agentOutputManager = outputManager;
+		const tool = await TaskTool.create(session);
+
+		const second = await tool.execute("tc-2", {
+			agent: "task",
+			name: "RenderR7ZoompanMix",
+			task: "Render it again.",
+		} as TaskParams);
+
+		expect(text(second)).toContain("Spawned agent `Parent.RenderR7ZoompanMix-3`");
+		expect(owner()).toBe("Parent.RenderR7ZoompanMix-3");
+		expect(text(second)).toContain("already names an earlier job");
 	});
 
 	it("leaves the row with the requested owner while that owner is still running", async () => {
