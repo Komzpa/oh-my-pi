@@ -212,14 +212,32 @@ pub fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtensions>(
 		}
 	}
 
-	let mut cmd = std::process::Command::new(command_name);
-
-	// Override argv[0].
-	// NOTE: Not supported on all platforms.
-	cmd.arg0(argv0);
-
-	// Pass through args.
-	cmd.args(args);
+	let command_args = args.iter().map(|arg| arg.as_ref().to_os_string()).collect::<Vec<_>>();
+	let wrapped = context
+		.params
+		.external_command_wrapper()
+		.map(|wrapper| {
+			wrapper.wrap_external_command(
+				OsStr::new(command_name),
+				OsStr::new(argv0),
+				&command_args,
+			)
+		})
+		.transpose()
+		.map_err(|err| error::Error::from(error::ErrorKind::FailedToExecuteCommand(
+			context.command_name.clone(), err,
+		)))?
+		.flatten();
+	let mut cmd = if let Some((program, wrapped_args)) = wrapped {
+		let mut cmd = std::process::Command::new(program);
+		cmd.args(wrapped_args);
+		cmd
+	} else {
+		let mut cmd = std::process::Command::new(command_name);
+		cmd.arg0(argv0);
+		cmd.args(command_args);
+		cmd
+	};
 
 	// Apply `ulimit` overrides to the child only; the host keeps its own limits.
 	#[cfg(unix)]

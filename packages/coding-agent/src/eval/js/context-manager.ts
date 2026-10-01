@@ -1,10 +1,12 @@
 import * as path from "node:path";
+import { ToolResourceScope } from "@oh-my-pi/pi-natives";
 import { logger, Snowflake, workerHostEntry } from "@oh-my-pi/pi-utils";
 import {
 	createWorkerHandle,
 	createWorkerSubprocess,
 	resolveWorkerSpawnCmd,
 	workerEnvFromParent,
+	type SpawnedSubprocess,
 } from "../../subprocess/worker-client";
 import type { ToolSession } from "../../tools";
 import { ToolAbortError } from "../../tools/tool-errors";
@@ -675,9 +677,9 @@ async function acquireSession(
 				// would make synchronous user code impossible to cancel.
 				const failed = session.worker;
 				await failed.terminate().catch(() => undefined);
-				if (failed.mode === "worker") {
+				if (failed.mode === "worker" || process.platform === "linux") {
 					throw new Error(
-						`Failed to initialize isolated JS eval worker: ${error instanceof Error ? error.message : String(error)}`,
+						`Failed to initialize isolated JS eval subprocess: ${error instanceof Error ? error.message : String(error)}`,
 						{ cause: error },
 					);
 				}
@@ -994,6 +996,12 @@ function spawnJsWorker(): JsEvalWorkerHandle {
 	try {
 		return workerFactories.spawnProcess();
 	} catch (error) {
+		if (process.platform === "linux") {
+			throw new Error(
+				`Refusing an unbounded JS eval Worker fallback on Linux: ${error instanceof Error ? error.message : String(error)}`,
+				{ cause: error },
+			);
+		}
 		// A worker thread remains isolated and can interrupt synchronous user code
 		// via terminate(), so it is the only safe recovery from subprocess spawn.
 		logger.warn("JS eval subprocess spawn failed; falling back to a Bun Worker", {
@@ -1019,14 +1027,22 @@ function spawnBunWorker(): JsEvalWorkerHandle {
 }
 
 function spawnJsProcess(): JsEvalWorkerHandle {
-	const spawned = createWorkerSubprocess<WorkerOutbound>({
-		spawnCommand: resolveWorkerSpawnCmd(JS_EVAL_PROCESS_ARG),
-		env: workerEnvFromParent(),
-		exitLabel: "JS eval worker",
-		detached: shouldDetachKernel(process.platform),
-		reportCleanExit: true,
-		unref: false,
-	});
+	const resourceScope = new ToolResourceScope();
+	let spawned: SpawnedSubprocess<WorkerOutbound>;
+	try {
+		spawned = createWorkerSubprocess<WorkerOutbound>({
+			spawnCommand: resolveWorkerSpawnCmd(JS_EVAL_PROCESS_ARG),
+			env: workerEnvFromParent(),
+			exitLabel: "JS eval worker",
+			detached: shouldDetachKernel(process.platform),
+			reportCleanExit: true,
+			unref: false,
+			resourceScope,
+		});
+	} catch (error) {
+		resourceScope.close();
+		throw error;
+	}
 	const base = createWorkerHandle<WorkerInbound, WorkerOutbound>(spawned, message =>
 		safeSendIpc(spawned.proc, message, "js-eval"),
 	);
@@ -1054,7 +1070,13 @@ function spawnJsProcess(): JsEvalWorkerHandle {
 			base.send({ type: "close" });
 			return await promise;
 		},
-		terminate: () => base.terminate(),
+		async terminate() {
+			try {
+				await base.terminate();
+			} finally {
+				resourceScope.close();
+			}
+		},
 	};
 }
 

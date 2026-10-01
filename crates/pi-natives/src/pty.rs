@@ -21,7 +21,7 @@ use napi::{
 };
 use napi_derive::napi;
 use parking_lot::Mutex;
-use pi_shell::output_decode::OutputDecoder;
+use pi_shell::{output_decode::OutputDecoder, process_limit::ToolProcessLimit};
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
 
 use crate::{js::into_string, ps, task};
@@ -369,6 +369,13 @@ fn run_pty_sync(
 			cmd.env(key, value);
 		}
 	}
+	let process_scope = ToolProcessLimit::default();
+	let scoped_argv = process_scope
+		.wrap_scope_command(cmd.get_argv())
+		.map_err(|err| {
+			Error::from_reason(format!("Failed to enforce PTY process boundary: {err}"))
+		})?;
+	*cmd.get_argv_mut() = scoped_argv;
 	ct.heartbeat()
 		.map_err(|err| Error::from_reason(format!("PTY setup cancelled before spawn: {err}")))?;
 

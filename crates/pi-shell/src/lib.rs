@@ -2,6 +2,7 @@ pub mod cancel;
 pub mod minimizer;
 pub mod output_decode;
 pub mod process;
+pub mod process_limit;
 pub mod shell;
 
 #[cfg(windows)]

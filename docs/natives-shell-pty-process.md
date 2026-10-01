@@ -25,6 +25,26 @@ This document covers execution/process/terminal primitives in `@oh-my-pi/pi-nati
 
 ## Shell subsystem (`shell`)
 
+### Per-tool-call process limits
+
+On Linux with cgroup v2 and a working systemd user manager, each shell tool
+call places external commands and their descendants in its own transient slice
+with kernel-enforced `TasksMax=500`, `MemoryMax=min(8 GiB, total RAM / 4)`,
+`MemoryHigh=75%` of that cap, and `MemorySwapMax=0`. All values are read back
+from the cgroup before user code runs. A successful persistent-shell call
+retains its scope while external background work remains live; later runs prune
+empty scopes, and cancellation, timeout, cap-hit, or session teardown stops the
+owned scope. Missing or unverifiable Linux enforcement rejects external
+commands. Git subprocesses and commit hooks, PTY commands, and retained Python/JavaScript eval kernels use the same
+native boundary owner. Scope execution preserves terminal handles, IPC,
+environment, working directory, and inherited resource limits. Linux refuses
+an unbounded JavaScript Worker fallback when subprocess startup fails.
+
+This is resource containment, not an adversarial sandbox. Explicit operations
+against service managers, remote hosts, or existing daemons remain outside the
+child-process boundary; ordinary `systemctl --user` administration still works.
+Other platforms retain normal shell behavior without these resource guarantees.
+
 ### API model
 
 Shell execution modes:

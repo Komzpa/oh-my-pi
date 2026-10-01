@@ -866,6 +866,12 @@ fn run_commit_hook(
 	};
 	#[cfg(not(windows))]
 	let mut command = Command::new(&hook);
+	let resource_scope = pi_shell::process_limit::ToolProcessLimit::default();
+	let mut arguments = vec![command.get_program().to_owned()];
+	arguments.extend(command.get_args().map(OsStr::to_owned));
+	let wrapped = resource_scope.wrap_scope_command(&arguments)?;
+	command = Command::new(&wrapped[0]);
+	command.args(&wrapped[1..]);
 	let output = command
 		.args(args)
 		.current_dir(repository.root())

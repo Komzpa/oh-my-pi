@@ -4,6 +4,7 @@
 
 ### Added
 
+- Linux external tool commands, Git subprocesses, PTY commands, and eval kernels now have kernel-enforced child-task and memory limits to contain runaway process trees.
 - The shell's `cp` builtin accepts macOS's `-c` (clone where possible, else copy; same as `--reflink=auto`).
 
 ### Changed

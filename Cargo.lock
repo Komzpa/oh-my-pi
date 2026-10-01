@@ -6905,6 +6905,7 @@ dependencies = [
  "jj-lib",
  "libc",
  "pi-iso",
+ "pi-shell",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
