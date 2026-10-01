@@ -1762,7 +1762,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       gateTrace(ctx, "planning-failure-worker-name-refused", { name: item.name, word });
       return {
         block: true,
-        reason: `Worker name ${JSON.stringify(item.name)} contains planning-failure word ${JSON.stringify(word)}. ${WORKER_NAME_ACTION[group] ?? WORKER_NAME_ACTION.Owner} (skill step 8: ${WORKER_NAME_GUIDANCE[group] ?? WORKER_NAME_GUIDANCE.Owner}).`,
+        reason: `Worker name ${JSON.stringify(item.name)} contains planning-failure word ${JSON.stringify(word)}: name a semantic noun for the deliverable (e.g. AskOptionPicker, CheckoutLockScope), never a verb like Fix/Repair/Retry; a resend reuses the row owner. ${WORKER_NAME_ACTION[group] ?? WORKER_NAME_ACTION.Owner} (skill step 8: ${WORKER_NAME_GUIDANCE[group] ?? WORKER_NAME_GUIDANCE.Owner}).`,
       };
     }
   };
