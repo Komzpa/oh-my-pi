@@ -46,13 +46,18 @@ export function checkoutScopesFromResources(resources: unknown): string[] | unde
 					existing = parent;
 				}
 			}
-			target = path.join(fs.realpathSync(existing), ...suffix);
-			const repo = vcs.git(target);
-			if (!repo) return undefined;
-			const root = fs.realpathSync(repo.info().repoRoot);
-			const relativeTarget = path.relative(root, target);
-			if (relativeTarget === ".." || relativeTarget.startsWith(`..${path.sep}`) || path.isAbsolute(relativeTarget))
-				return undefined;
+		target = path.join(fs.realpathSync(existing), ...suffix);
+		const repo = vcs.git(target);
+		if (!repo) {
+			scopes.add(`${target}\0.`);
+			continue;
+		}
+		const root = fs.realpathSync(repo.info().repoRoot);
+		const relativeTarget = path.relative(root, target);
+		if (relativeTarget === ".." || relativeTarget.startsWith(`..${path.sep}`) || path.isAbsolute(relativeTarget)) {
+			scopes.add(`${target}\0.`);
+			continue;
+		}
 		scopes.add(`${root}\0${relativeTarget || "."}`);
 		} catch {
 			return undefined;
