@@ -264,7 +264,7 @@ describe("agent router", () => {
 				{ stateFile: file },
 			);
 			expect(isolated?.block).not.toBe(true);
-			recordTaskOutcome(
+			await recordTaskOutcome(
 				{ toolName: "wait", details: { jobs: [{ id: "writer-1", status: "completed", durationMs: 100 }] } },
 				context,
 				state,
@@ -935,11 +935,11 @@ describe("agent router", () => {
 					],
 				},
 			};
-			const rows = recordTaskOutcome(waitEvent, context, state, { stateFile: file });
+			const rows = await recordTaskOutcome(waitEvent, context, state, { stateFile: file });
 			expect(rows).toHaveLength(1);
 			expect(rows[0]?.status).toBe("completed");
 			expect(rows[0]?.resolvedModel).toBe("kimi-code/k3:high");
-			expect(recordTaskOutcome(waitEvent, context, state, { stateFile: file })).toEqual([]);
+			expect(await recordTaskOutcome(waitEvent, context, state, { stateFile: file })).toEqual([]);
 			expect(readJsonl(file)).toHaveLength(2);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -956,7 +956,7 @@ describe("agent router", () => {
 				now: () => new Date("2026-09-24T18:00:00.000Z"),
 				shuffle: items => [...items],
 			});
-			const rows = recordTaskOutcome(
+			const rows = await recordTaskOutcome(
 				{
 					toolName: "task",
 					toolCallId: "call-1",
@@ -1017,7 +1017,7 @@ describe("agent router", () => {
 				state,
 				{ now: () => new Date("2026-09-24T18:00:01.000Z") },
 			);
-			const rows = recordTaskOutcome(
+			const rows = await recordTaskOutcome(
 				{
 					toolName: "task",
 					isError: false,
@@ -1052,7 +1052,7 @@ describe("agent router", () => {
 			const context = ctx();
 			await routeSubagentSpawn({ agent: "coder", spawnKey: "spawn-1" }, context, state, { stateFile: file });
 			await routeSubagentSpawn({ agent: "coder", spawnKey: "spawn-2" }, context, state, { stateFile: file });
-			const rows = recordTaskOutcome(
+			const rows = await recordTaskOutcome(
 				{
 					toolName: "task",
 					isError: false,
@@ -1184,7 +1184,26 @@ describe("agent router", () => {
 				shuffle: xiaomiFirst,
 			});
 			expect(first?.model[0]).toBe("xiaomi/mimo-v2.6-pro");
-			const rows = recordTaskOutcome(
+			const base = ctx();
+			const xiaomiModel = {
+				provider: "xiaomi",
+				id: "mimo-v2.6-pro",
+				baseUrl: "https://api.xiaomimimo.com/v1",
+			};
+			const deadContext = ctx({
+				models: {
+					list: () => [xiaomiModel],
+					resolve: (spec: string) =>
+						spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === "xiaomi/mimo-v2.6-pro"
+							? xiaomiModel
+							: base.models.resolve(spec),
+				},
+				modelRegistry: {
+					authStorage: { health: { model: async () => ({ state: "unknown", accounts: [] }) } },
+					getApiKey: async () => "sk-dead-key",
+				},
+			});
+			const rows = await recordTaskOutcome(
 				{
 					toolName: "task",
 					isError: true,
@@ -1194,14 +1213,15 @@ describe("agent router", () => {
 								agent: "coder",
 								exitCode: 1,
 								durationMs: 200,
+								resolvedModel: "xiaomi/mimo-v2.6-pro",
 								error: "[xiaomi/mimo-v2.6-pro] 401 Invalid API Key",
 							},
 						],
 					},
 				},
-				context,
+				deadContext,
 				state,
-				{ stateFile: file, now: () => t0 },
+				{ stateFile: file, now: () => t0, authProbe: async () => false },
 			);
 			expect(rows).toHaveLength(1);
 			expect(rows[0]?.status).toBe("failed");
@@ -1218,6 +1238,111 @@ describe("agent router", () => {
 				shuffle: xiaomiFirst,
 			});
 			expect(afterTtl?.model[0]).toBe("xiaomi/mimo-v2.6-pro");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a 401 probes the request-resolved plan host and keeps the model when the key is alive", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const t0 = new Date("2026-10-01T15:00:00.000Z");
+			const state = createRouterState();
+			const base = ctx();
+			const xiaomiModel = {
+				provider: "xiaomi",
+				id: "mimo-v2.6-pro",
+				// Bundled cold-start entry: hardcoded standard host before discovery runs.
+				baseUrl: "https://api.xiaomimimo.com/v1",
+			};
+			const context = ctx({
+				models: {
+					list: () => [xiaomiModel],
+					resolve: (spec: string) =>
+						spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === "xiaomi/mimo-v2.6-pro"
+							? xiaomiModel
+							: base.models.resolve(spec),
+				},
+			modelRegistry: {
+				authStorage: { health: { model: async () => ({ state: "unknown", accounts: [] }) } },
+				getApiKey: async () => "tp-test-key",
+			},
+			});
+			const probed: { url: string; authorization: string | null }[] = [];
+			const fetchMock = (async (input: string | URL | Request, init?: RequestInit) => {
+				const headers = new Headers(init?.headers);
+				probed.push({ url: String(input), authorization: headers.get("Authorization") });
+				return new Response(JSON.stringify({ data: [] }), { status: 200 });
+			}) as unknown as typeof fetch;
+			const fail = {
+				toolName: "task",
+				isError: true,
+				details: {
+					results: [{ agent: "coder", exitCode: 1, durationMs: 200, resolvedModel: "xiaomi/mimo-v2.6-pro", error: "[xiaomi/mimo-v2.6-pro] 401 Invalid API Key" }],
+				},
+			};
+			await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-probe-1" }, context, state, {
+				stateFile: file,
+				now: () => t0,
+			});
+			await recordTaskOutcome(fail, context, state, { stateFile: file, now: () => t0, fetch: fetchMock });
+			expect(probed).toEqual([
+				{ url: "https://token-plan-sgp.xiaomimimo.com/v1/models", authorization: "Bearer tp-test-key" },
+			]);
+			expect(state.authDead.has("xiaomi/mimo-v2.6-pro")).toBe(false);
+			await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-probe-2" }, context, state, {
+				stateFile: file,
+				now: () => new Date(t0.getTime() + 30 * 60 * 1000),
+			});
+			await recordTaskOutcome(fail, context, state, {
+				stateFile: file,
+				now: () => new Date(t0.getTime() + 30 * 60 * 1000),
+				fetch: fetchMock,
+			});
+			expect(probed).toHaveLength(1); // probe result cached for the hour
+			expect(state.authDead.has("xiaomi/mimo-v2.6-pro")).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a 401 hides the model only when the probe also rejects the key", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const t0 = new Date("2026-10-01T15:00:00.000Z");
+			const state = createRouterState();
+			const xiaomiModel = {
+				provider: "xiaomi",
+				id: "mimo-v2.6-pro",
+				baseUrl: "https://api.xiaomimimo.com/v1",
+			};
+			const context = ctx({
+				models: {
+					list: () => [xiaomiModel],
+					resolve: () => xiaomiModel,
+				},
+			modelRegistry: {
+				authStorage: { health: { model: async () => ({ state: "unknown", accounts: [] }) } },
+				getApiKey: async () => "sk-dead-key",
+			},
+			});
+			await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-dead-1" }, context, state, {
+				stateFile: file,
+				now: () => t0,
+			});
+			await recordTaskOutcome(
+				{
+					toolName: "task",
+					isError: true,
+					details: {
+					results: [{ agent: "coder", exitCode: 1, durationMs: 200, resolvedModel: "xiaomi/mimo-v2.6-pro", error: "[xiaomi/mimo-v2.6-pro] 401 Invalid API Key" }],
+					},
+				},
+				context,
+				state,
+				{ stateFile: file, now: () => t0, authProbe: async () => false },
+			);
+			expect(state.authDead.has("xiaomi/mimo-v2.6-pro")).toBe(true);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

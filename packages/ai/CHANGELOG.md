@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Xiaomi `tp-` Token Plan keys resolving to the standard API host at request time; they now always route to the Token Plan host (stored login region, else SGP).
+
 ## [18.4.1] - 2026-09-28
 
 ### Fixed

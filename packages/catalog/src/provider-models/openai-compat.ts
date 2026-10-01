@@ -5140,7 +5140,24 @@ const XIAOMI_TOKEN_PLAN_FALLBACK_BASE_URLS = [
 	XIAOMI_TOKEN_PLAN_BASE_URLS.cn,
 ];
 
-/** Builds a Xiaomi model manager, preserving Token Plan region provider ids during discovery. */
+const XIAOMI_TOKEN_PLAN_SERVED_MODELS: Record<string, true> = {
+	"mimo-v2.6-pro": true,
+	"mimo-v2.6-flash": true,
+	"mimo-v2.5-pro": true,
+	"mimo-v2.5": true,
+};
+
+/** True when the Token Plan clusters do not serve this Xiaomi model id. */
+export function isXiaomiTokenPlanUnservedModel(modelId: string): boolean {
+	if (XIAOMI_TOKEN_PLAN_SERVED_MODELS[modelId]) return false;
+	if (modelId.includes("-asr") || modelId.includes("-tts") || modelId.endsWith("asr") || modelId.endsWith("tts")) {
+		return false;
+	}
+	if (modelId.endsWith("-ultraspeed")) return true;
+	if (/^mimo-v2-/.test(modelId)) return true;
+	return /^mimo-v2/.test(modelId);
+}
+
 export function xiaomiModelManagerOptions(
 	config?: XiaomiModelManagerConfig,
 ): ModelManagerOptions<"openai-completions"> {
@@ -5165,7 +5182,11 @@ export function xiaomiModelManagerOptions(
 			provider: providerId,
 			baseUrl: url,
 			apiKey,
-			filterModel: (_entry, model) => !isExcludedModel(providerId, model.id),
+			filterModel: (_entry, model) => {
+				if (isExcludedModel(providerId, model.id)) return false;
+				if (isTokenPlanKey && isXiaomiTokenPlanUnservedModel(model.id)) return false;
+				return true;
+			},
 			mapModel: (entry, defaults) => {
 				const reference = references.get(defaults.id);
 				const model = mapWithBundledReference(entry, defaults, reference);
@@ -5179,8 +5200,16 @@ export function xiaomiModelManagerOptions(
 			},
 			fetch: config?.fetch,
 		});
+	// Under a `tp-` key the plan roster is authoritative: unserved catalog SKUs
+	// (*-ultraspeed, mimo-v2-*) are hidden from bundled rows immediately and the
+	// filtered discovery result prunes cached leftovers once it succeeds.
+	const bundledModels = getBundledModels(providerId as GeneratedProvider) as Model<"openai-completions">[];
+	const staticModels = isTokenPlanKey
+		? bundledModels.filter(model => !isXiaomiTokenPlanUnservedModel(model.id))
+		: bundledModels;
 	return {
 		providerId,
+		...(isTokenPlanKey && { staticModels, dynamicModelsAuthoritative: true }),
 		...(apiKey && {
 			fetchDynamicModels: async () => {
 				if (!isTokenPlanKey) {

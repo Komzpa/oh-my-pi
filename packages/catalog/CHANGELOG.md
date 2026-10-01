@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Filtered Xiaomi Token Plan discovery to models served by Token Plan credentials.
+
 ## [18.4.1] - 2026-09-28
 
 ### Added

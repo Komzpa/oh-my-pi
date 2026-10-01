@@ -6,6 +6,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import type { ModelUsageHealth, ModelUsageHealthState } from "@oh-my-pi/pi-ai";
+import { resolveXiaomiRequestBaseUrl } from "@oh-my-pi/pi-ai/registry/oauth/xiaomi";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { checkoutScopesFromResources, checkoutScopesOverlap } from "./checkout_scope";
@@ -182,12 +183,17 @@ interface SpawnState extends SpawnRecord {
 	recordedOutcome: boolean;
 }
 
+export interface AuthProbeRecord {
+	at: number;
+	alive: boolean;
+}
+
 export interface RouterState {
 	spawns: Map<string, SpawnState>;
 	fallbacks: FallbackRecord[];
 	authDead: Map<string, number>;
+	authProbe: Map<string, AuthProbeRecord>;
 }
-
 export interface BeforeSubagentSpawnEvent {
 	agent?: unknown;
 	spawnKey?: unknown;
@@ -212,10 +218,11 @@ export interface RetryFallbackAppliedEvent {
 export type JsonlRecord = SpawnRecord | OutcomeRecord;
 
 export function createRouterState(): RouterState {
-	return { spawns: new Map(), fallbacks: [], authDead: new Map() };
+	return { spawns: new Map(), fallbacks: [], authDead: new Map(), authProbe: new Map() };
 }
 
 export const AUTH_DEAD_TTL_MS = 6 * 60 * 60 * 1000;
+export const AUTH_PROBE_TTL_MS = 60 * 60 * 1000;
 
 export function defaultStateFile(): string {
 	return process.env.OMP_AGENT_ROUTER_STATE ?? join(homedir(), ".local/state/omp-agent-router/spawns.jsonl");
@@ -606,25 +613,90 @@ function isAuthFailureText(text: string): boolean {
 	return /\b40[13]\b/.test(text) && /auth|unauthor|forbidden|invalid|api.key/i.test(text);
 }
 
-function markAuthDeadAfterFailure(
+export interface AuthProbeInput {
+	baseUrl: string;
+	apiKey: string;
+}
+
+export type AuthProbeFn = (input: AuthProbeInput) => Promise<boolean>;
+
+export interface RecordOutcomeOptions {
+	stateFile?: string;
+	now?: () => Date;
+	authProbe?: AuthProbeFn;
+	fetch?: typeof fetch;
+}
+
+/** Free liveness check: GET <baseUrl>/models with the same key. Alive unless 401/403. */
+export async function probeModelAuthAlive(
+	input: AuthProbeInput,
+	fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+	let response: Response;
+	try {
+		response = await fetchImpl(`${input.baseUrl.replace(/\/+$/, "")}/models`, {
+			headers: { Authorization: `Bearer ${input.apiKey}` },
+		});
+	} catch {
+		return true;
+	}
+	return response.status !== 401 && response.status !== 403;
+}
+
+function failedModelSelector(text: string, fallback: string): string {
+	const match = text.match(/\[([\w.-]+\/[\w./:-]+)\]/);
+	return match?.[1] ?? fallback;
+}
+
+async function markAuthDeadAfterFailure(
+	ctx: ExtensionContext,
 	state: RouterState,
 	spawn: SpawnState,
 	resolvedModel: string | undefined,
 	payload: Record<string, unknown>,
 	now: () => Date,
-): void {
+	options: Pick<RecordOutcomeOptions, "authProbe" | "fetch"> = {},
+): Promise<void> {
 	const text = authFailureText(payload);
 	if (!text || !isAuthFailureText(text)) return;
-	const base = modelSelectorBase(resolvedModel ?? spawn.chosen);
-	state.authDead.set(base, now().getTime() + AUTH_DEAD_TTL_MS);
+	const selector = resolvedModel ?? failedModelSelector(text, spawn.chosen);
+	const base = modelSelectorBase(selector);
+	const nowMs = now().getTime();
+	const cached = state.authProbe.get(base);
+	if (cached && nowMs - cached.at < AUTH_PROBE_TTL_MS) {
+		if (!cached.alive) state.authDead.set(base, nowMs + AUTH_DEAD_TTL_MS);
+		return;
+	}
+	const resolved = ctx.models?.resolve?.(selector) as { provider?: string; baseUrl?: string } | undefined;
+	let apiKey: string | undefined;
+	try {
+		apiKey = resolved ? await ctx.modelRegistry?.getApiKey?.(resolved, sessionId(ctx)) : undefined;
+	} catch {
+		apiKey = undefined;
+	}
+	if (!resolved || !apiKey) return;
+	// Probe the request-resolved host: a Xiaomi `tp-` key rides the Token Plan
+	// cluster, so probing the bundled standard host would 401 and falsely mark
+	// the model dead.
+	const baseUrl = resolveXiaomiRequestBaseUrl({ provider: resolved.provider, baseUrl: resolved.baseUrl }, apiKey);
+	if (!baseUrl) return;
+	const probe = options.authProbe ?? ((probeInput: AuthProbeInput) => probeModelAuthAlive(probeInput, options.fetch));
+	let alive = true;
+	try {
+		alive = await probe({ baseUrl, apiKey });
+	} catch {
+		return;
+	}
+	state.authProbe.set(base, { at: nowMs, alive });
+	if (!alive) state.authDead.set(base, nowMs + AUTH_DEAD_TTL_MS);
 }
 
-export function recordTaskOutcome(
+export async function recordTaskOutcome(
 	event: ToolResultEvent,
 	ctx: ExtensionContext,
 	state: RouterState,
-	options: { stateFile?: string; now?: () => Date } = {},
-): OutcomeRecord[] {
+	options: RecordOutcomeOptions = {},
+): Promise<OutcomeRecord[]> {
 	if (event.toolName === "wait") {
 		const details = event.details;
 		if (!details || typeof details !== "object") return [];
@@ -645,7 +717,8 @@ export function recordTaskOutcome(
 			spawn.recordedOutcome = true;
 			const resolvedModel = stringValue(job.resolvedModel);
 			const fallbackReason = takeFallbackReason(state, spawn, resolvedModel);
-			if (status === "failed") markAuthDeadAfterFailure(state, spawn, resolvedModel, job, options.now ?? (() => new Date()));
+			if (status === "failed")
+				await markAuthDeadAfterFailure(ctx, state, spawn, resolvedModel, job, options.now ?? (() => new Date()), options);
 			const record: OutcomeRecord = {
 				kind: "outcome",
 				spawnKey: spawn.spawnKey,
@@ -686,7 +759,7 @@ export function recordTaskOutcome(
 		const resolvedModel = stringValue(result.resolvedModel);
 		const fallbackReason = stringValue(result.fallbackReason) ?? takeFallbackReason(state, spawn, resolvedModel);
 		if (statusFromResult(result, event.isError === true) === "failed")
-			markAuthDeadAfterFailure(state, spawn, resolvedModel, result, options.now ?? (() => new Date()));
+			await markAuthDeadAfterFailure(ctx, state, spawn, resolvedModel, result, options.now ?? (() => new Date()), options);
 		const record: OutcomeRecord = {
 			kind: "outcome",
 			spawnKey: spawn.spawnKey,
@@ -721,6 +794,6 @@ export default function agentRouter(pi: ExtensionAPI) {
 		recordAndNotifyRetryFallbackApplied(event as RetryFallbackAppliedEvent, ctx, state);
 	});
 	pi.on("tool_result", (event, ctx) => {
-		recordTaskOutcome(event as ToolResultEvent, ctx, state);
+		void recordTaskOutcome(event as ToolResultEvent, ctx, state);
 	});
 }
