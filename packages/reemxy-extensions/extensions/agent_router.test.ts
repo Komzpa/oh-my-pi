@@ -283,6 +283,42 @@ describe("agent router", () => {
 		}
 	});
 
+	test("incoming git-pr-owner bypasses the checkout gate while file writers stay gated", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const state = createRouterState();
+			let running: Array<{ id: string; agentId: string; type: string; status: string }> = [];
+			const context = ctx({ getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }) });
+			const first = await routeSubagentSpawn(
+				{ agent: "coder", spawnKey: "writer-1", isolated: false },
+				context,
+				state,
+				{ stateFile: file },
+			);
+			expect(first?.model).toBeDefined();
+			running = [{ id: "writer-1", agentId: "writer-1", type: "task", status: "running" }];
+			// A second file writer is still refused while the coder runs.
+			const blocked = await routeSubagentSpawn(
+				{ agent: "ui-coder", spawnKey: "writer-2", isolated: false },
+				context,
+				state,
+				{ stateFile: file },
+			);
+			expect(blocked).toMatchObject({ block: true });
+			// git-pr-owner only finalizes VCS state (commit/PR/push) after edits
+			// land, so it must not deadlock on the still-running coder.
+			const owner = await routeSubagentSpawn(
+				{ agent: "git-pr-owner", spawnKey: "pr-1", isolated: false },
+				context,
+				state,
+				{ stateFile: file },
+			);
+			expect(owner?.model).toBeDefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("checkout writer scopes allow disjoint repositories and refuse every active collision", async () => {
 		const { dir, file } = tempStateFile();
 		try {

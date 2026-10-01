@@ -406,7 +406,15 @@ export async function routeSubagentSpawn(
 		WRITE_CAPABLE_WORKERS.has(agent) && event.isolated !== true
 			? ownedCheckoutScopes(event, ctx, options.latestTodo)
 			: undefined;
-	if (WRITE_CAPABLE_WORKERS.has(agent) && event.isolated !== true) {
+	// git-pr-owner only runs VCS finalization (commit/PR/push), sequenced by the
+	// caller after a coder's edits land. Blocking it on a still-"running" coder
+	// deadlocks the commit-after-write flow the gate is meant to serialize, so
+	// the gate covers file-writing spawns and an active git-pr-owner still
+	// blocks later writers via its recorded scopes — the exemption is incoming
+	// only. Simpler alternatives (per-file overlap checks, completion-aware
+	// "files are done" detection) need edit-intent tracking the spawn event
+	// does not carry.
+	if (WRITE_CAPABLE_WORKERS.has(agent) && agent !== "git-pr-owner" && event.isolated !== true) {
 		const activeWriter = activeWriteWorker(state, ctx, checkoutScopes);
 		if (activeWriter) {
 			return {
