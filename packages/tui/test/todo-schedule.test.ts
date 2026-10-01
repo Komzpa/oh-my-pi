@@ -104,6 +104,19 @@ it("uses summed attempts for reopened terminal rows and freezes them", () => {
 	const [legacyRow] = forecastTodoPlan(phases(legacy), { now }).rows;
 	expect(formatTaskForecastDisplay(legacyRow!, now)).toContain("9m / 10m");
 });
+it("counts elapsed time into the badge budget when an in-progress row is reestimated", () => {
+	// Live 2026-10-01 16:51: the row started at 15:31 and the chief reestimated 15m of
+	// remaining work at 16:17; the badge showed `80m / 15m`, comparing total elapsed
+	// against the remaining-only estimate.
+	const now = Date.parse("2026-10-01T16:51:00+04:00");
+	const row = task("reestimated mid-flight", 900, { status: "in_progress", updatedAt: now - 34 * 60_000 });
+	row.schedule!.startedAt = now - 80 * 60_000;
+	row.schedule!.reestimateCount = 1;
+	const [forecast] = forecastTodoPlan(phases(row), { now }).rows;
+	const rendered = formatTaskForecastDisplay(forecast!, now);
+	expect(rendered).toContain("80m / 61m");
+	expect(rendered).not.toContain("80m / 15m");
+});
 
 it("keeps scheduling method details out of rendered TODO lines", () => {
 	const now = Date.parse("2026-09-24T22:00:00Z");
