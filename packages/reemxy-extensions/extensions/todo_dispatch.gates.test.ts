@@ -82,7 +82,7 @@ function repo(kind: "clean" | "conflicted" | "resolvedStale"): string {
   return cwd;
 }
 
-function plan(shape: "none" | "ready" | "chained" | "bigChained" | "approvalOnly" | "hiddenTail", now: number): unknown[] {
+function plan(shape: "none" | "ready" | "chained" | "genuineChained" | "bigChained" | "approvalOnly" | "hiddenTail", now: number): unknown[] {
   if (shape === "none") return [];
   const row = (content: string, dependencies: string[], owner?: string) => ({
     content,
@@ -118,15 +118,23 @@ function plan(shape: "none" | "ready" | "chained" | "bigChained" | "approvalOnly
     for (let i = 1; i < 30; i += 1) rows.push(row(`Row ${i}`, [`Row ${i - 1}`]));
     return [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks: rows }] } } }];
   }
+  // Row F waits on an external note that names no plan row: a dependency that is not a real
+  // output, so the chain stays replannable. It sits off the ETA-critical chain on purpose: a
+  // dangling link on the chain itself would truncate the waiting list the tests below pin.
+  // A genuine output-only chain with no such row must stay silent; "genuineChained" is that
+  // chain, for tests that pin silence of real output waits.
+  const genuineChain = [row("Row A", [], "worker-a"), row("Row B", ["Row A"]), row("Row C", ["Row B"]), row("Row D", ["Row C"]), row("Row E", ["Row D"])];
   const tasks = shape === "ready"
     ? [row("Row A", [], "worker-a"), row("Row B", []), row("Row C", []), row("Row D", [])]
-    : [row("Row A", [], "worker-a"), row("Row B", ["Row A"]), row("Row C", ["Row B"]), row("Row D", ["Row C"]), row("Row E", ["Row D"])];
+    : shape === "genuineChained"
+      ? genuineChain
+      : [...genuineChain, row("Row F", ["Row A", "External sign-off note"])];
   const phases: TodoScheduleInput = [{ name: "Work", tasks }];
   return [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases } } }];
 }
 
 interface State {
-  plan: "none" | "ready" | "chained" | "bigChained" | "approvalOnly" | "hiddenTail";
+  plan: "none" | "ready" | "chained" | "genuineChained" | "bigChained" | "approvalOnly" | "hiddenTail";
   git: "clean" | "conflicted" | "resolvedStale";
   admissionOpen: boolean; // false: omp refuses non-read tools until todo fixes estimates
   running: 0 | 1;
@@ -307,7 +315,8 @@ test("registered admission exposes every open row and persistent failed tail whi
     expect(tail.demand?.satisfies?.({ name: "task", arguments: { tasks: [{ name: "Approval", agent: "coder", task: "Await approval 1" }] } })).toBe(false);
     const approvals = await outcome({ plan: "approvalOnly", git: "clean", admissionOpen: true, running: 0 }, cwd, null) as { demand?: Demand };
     expect(approvals.demand).toBeUndefined();
-    const dependencies = await outcome({ plan: "chained", git: "clean", admissionOpen: true, running: 1 }, cwd, null) as { demand?: Demand };
+    // Genuine output-only chain (no dangling link): waits on real outputs stay silent.
+    const dependencies = await outcome({ plan: "genuineChained", git: "clean", admissionOpen: true, running: 1 }, cwd, null) as { demand?: Demand };
     expect(dependencies.demand).toBeUndefined();
   } finally {
     rmSync(cwd, { recursive: true, force: true });
