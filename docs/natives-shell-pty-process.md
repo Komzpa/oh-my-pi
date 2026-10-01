@@ -29,8 +29,7 @@ This document covers execution/process/terminal primitives in `@oh-my-pi/pi-nati
 
 On Linux with cgroup v2 and a working systemd user manager, each shell tool
 call places external commands and their descendants in its own transient slice
-with kernel-enforced `TasksMax=500`, `MemoryMax=min(8 GiB, total RAM / 4)`,
-`MemoryHigh=75%` of that cap, and `MemorySwapMax=0`. All values are read back
+with kernel-enforced `TasksMax=500`. The task limit is read back
 from the cgroup before user code runs. A successful persistent-shell call
 retains its scope while external background work remains live; later runs prune
 empty scopes, and cancellation, timeout, cap-hit, or session teardown stops the

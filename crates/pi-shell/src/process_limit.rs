@@ -27,7 +27,6 @@ use std::{
 use brush_core::ExternalCommandWrapper;
 
 const DEFAULT_TASK_LIMIT: u32 = 500;
-const MAX_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 static NEXT_SCOPE_ID: AtomicU64 = AtomicU64::new(1);
 
 struct LimitState {
@@ -37,10 +36,9 @@ struct LimitState {
 }
 
 pub struct ToolProcessLimit {
-	slice:           String,
-	limit:           u32,
-	memory_override: Option<u64>,
-	state:           Mutex<LimitState>,
+	slice: String,
+	limit: u32,
+	state: Mutex<LimitState>,
 }
 
 impl Default for ToolProcessLimit {
@@ -91,7 +89,6 @@ impl ToolProcessLimit {
 		Self {
 			slice: format!("omp-tool-call-{}-{id}.slice", std::process::id()),
 			limit,
-			memory_override: None,
 			state: Mutex::new(LimitState {
 				initialized:     false,
 				created:         false,
@@ -113,16 +110,10 @@ impl ToolProcessLimit {
 		}
 		#[cfg(target_os = "linux")]
 		{
-			let memory_max = self.memory_override.map_or_else(memory_max_bytes, Ok)?;
 			state.created = true;
 			let result = Command::new("systemctl")
 				.args(["--user", "set-property", "--runtime", &self.slice])
-				.args([
-					format!("TasksMax={}", self.limit),
-					format!("MemoryMax={memory_max}"),
-					format!("MemoryHigh={}", memory_max * 3 / 4),
-					"MemorySwapMax=0".to_owned(),
-				])
+				.arg(format!("TasksMax={}", self.limit))
 				.output()?;
 			if !result.status.success() {
 				return Err(io::Error::other(format!(
@@ -164,19 +155,6 @@ impl ToolProcessLimit {
 					self.limit,
 					pids_max.trim()
 				)));
-			}
-			for (file, expected) in [
-				("memory.max", memory_max),
-				("memory.high", memory_max * 3 / 4),
-				("memory.swap.max", 0),
-			] {
-				let actual = std::fs::read_to_string(format!("/sys/fs/cgroup{cgroup}/{file}"))?;
-				if actual.trim() != expected.to_string() {
-					return Err(io::Error::other(format!(
-						"per-tool memory limit readback mismatch for {file}: expected {expected}, got {}",
-						actual.trim()
-					)));
-				}
 			}
 			state.initialized = true;
 		}
@@ -276,18 +254,6 @@ fn systemd_property(unit: &str, property: &str) -> io::Result<String> {
 	Ok(value)
 }
 
-fn memory_max_bytes() -> io::Result<u64> {
-	let meminfo = std::fs::read_to_string("/proc/meminfo")?;
-	let total_kib = meminfo
-		.lines()
-		.find_map(|line| {
-			let (key, value) = line.split_once(':')?;
-			(key == "MemTotal").then(|| value.split_whitespace().next()?.parse::<u64>().ok())?
-		})
-		.ok_or_else(|| io::Error::other("could not read total RAM from /proc/meminfo"))?;
-	Ok(MAX_MEMORY_BYTES.min(total_kib.saturating_mul(1024) / 4))
-}
-
 #[cfg(test)]
 mod tests {
 	use std::{
@@ -298,7 +264,7 @@ mod tests {
 
 	use brush_core::ExternalCommandWrapper;
 
-	use super::{ToolProcessLimit, memory_max_bytes, systemd_property};
+	use super::{ToolProcessLimit, systemd_property};
 
 	fn wrapped_command(limit: &ToolProcessLimit, program: &str, args: &[&str]) -> Command {
 		let (runner, wrapped_args) = limit
@@ -407,78 +373,5 @@ mod tests {
 		wait_for_exit(&mut child);
 		let state = std::fs::read_to_string(format!("/proc/{descendant_pid}/stat")).ok();
 		assert!(state.is_none_or(|stat| stat.split_whitespace().nth(2) == Some("Z")));
-	}
-
-	#[cfg(target_os = "linux")]
-	#[test]
-	fn memory_limits_are_kernel_read_back_before_user_command() {
-		let process_limit = ToolProcessLimit::default();
-		let output = wrapped_command(&process_limit, "/usr/bin/true", &[])
-			.output()
-			.expect("run memory-limited command");
-		assert!(output.status.success());
-		let cgroup =
-			systemd_property(&process_limit.slice, "ControlGroup").expect("read test cgroup");
-		let cgroup = format!("/sys/fs/cgroup{cgroup}");
-		assert_eq!(
-			std::fs::read_to_string(format!("{cgroup}/pids.max"))
-				.expect("pids.max")
-				.trim(),
-			"500"
-		);
-		assert_eq!(
-			std::fs::read_to_string(format!("{cgroup}/memory.max"))
-				.expect("memory.max")
-				.trim(),
-			memory_max_bytes()
-				.expect("compute memory limit")
-				.to_string()
-		);
-		assert_eq!(
-			std::fs::read_to_string(format!("{cgroup}/memory.high"))
-				.expect("memory.high")
-				.trim(),
-			(memory_max_bytes().expect("compute memory limit") * 3 / 4).to_string()
-		);
-		assert_eq!(
-			std::fs::read_to_string(format!("{cgroup}/memory.swap.max"))
-				.expect("memory.swap.max")
-				.trim(),
-			"0"
-		);
-	}
-
-	#[cfg(target_os = "linux")]
-	#[test]
-	fn memory_exhaustion_kills_only_the_bounded_call() {
-		let mut bounded = ToolProcessLimit::new(32);
-		bounded.memory_override = Some(128 * 1024 * 1024);
-		let mut command = wrapped_command(&bounded, "/usr/bin/python3", &[
-			"-c",
-			"blocks=[]\nwhile True: blocks.append(bytearray(8*1024*1024))",
-		]);
-		let result = Command::new("systemctl")
-			.args(["--user", "set-property", "--runtime", &bounded.slice, "MemoryHigh=128M"])
-			.status()
-			.expect("remove pre-OOM throttling from the isolated allocation fixture");
-		assert!(result.success());
-		let mut child = command.spawn().expect("bounded allocation fixture");
-		wait_for_exit(&mut child);
-		assert!(!child.wait().expect("bounded allocation exit").success());
-		let cgroup = systemd_property(&bounded.slice, "ControlGroup").expect("memory boundary group");
-		let events = std::fs::read_to_string(format!("/sys/fs/cgroup{cgroup}/memory.events"))
-			.expect("memory events");
-		assert!(
-			events
-				.lines()
-				.any(|line| line.starts_with("oom_kill ") && line != "oom_kill 0"),
-			"{events}"
-		);
-		let neighbor = ToolProcessLimit::new(32);
-		let output = wrapped_command(&neighbor, "/usr/bin/printf", &["neighbor-after-oom"])
-			.output()
-			.expect("neighbor survives contained memory failure");
-		assert!(output.status.success());
-		assert_eq!(output.stdout, b"neighbor-after-oom");
 	}
 }

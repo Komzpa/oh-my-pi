@@ -30,16 +30,12 @@ describe.skipIf(Bun.env.PI_PYTHON_INTEGRATION !== "1")("Python kernel resource s
 				const cgroup = output.trim().split("::")[1];
 				let cgroupPath = path.join("/sys/fs/cgroup", cgroup);
 				let tasksMax = Number.POSITIVE_INFINITY;
-				let memoryMax = Number.POSITIVE_INFINITY;
 				while (cgroupPath !== "/sys/fs/cgroup") {
 					const tasks = Number(await fs.readFile(path.join(cgroupPath, "pids.max"), "utf8"));
-					const memory = Number(await fs.readFile(path.join(cgroupPath, "memory.max"), "utf8"));
 					if (Number.isFinite(tasks)) tasksMax = Math.min(tasksMax, tasks);
-					if (Number.isFinite(memory)) memoryMax = Math.min(memoryMax, memory);
 					cgroupPath = path.dirname(cgroupPath);
 				}
 				expect(tasksMax).toBeLessThanOrEqual(500);
-				expect(memoryMax).toBeLessThanOrEqual(8 * 1024 ** 3);
 			}
 			output = "";
 			const result = await kernel.execute("print(retained + 1)", {
