@@ -2154,6 +2154,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			get cwd() {
 				return sessionManager.getCwd();
 			},
+			submitUserReply:
+				options.hasUI === true
+					? text => {
+							void session?.sendUserMessage(text).catch(error => {
+								logger.warn("Ask reply delivery failed", { error: String(error) });
+							});
+						}
+					: undefined,
 			isToolActive: name => activeToolNames.has(name),
 			setActiveToolNames,
 			toolRegistry,

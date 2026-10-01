@@ -4,7 +4,7 @@
 
 ## Asynchronous questions
 
-Ordinary `ask` calls return `details.pending` containing the tool-call identity, the owning session identity when available, and the questions. The transcript shows the options without opening a modal or taking editor focus. Multiple pending questions can coexist. The existing persisted tool result preserves the question through session restoration; a later normal user message carries the reply in the same session. Focus the asking session before replying.
+Ordinary `ask` calls return `details.pending` containing the tool-call identity, the owning session identity when available, and the questions. In an interactive TUI, a keyboard selector opens asynchronously for each question; choosing an option (or entering a custom answer through “Other”) submits an ordinary user message in the form `Answer to <tool-call-id> [<question-id>]: <answer>`. The tool result remains pending and the agent turn does not wait for this input. Headless sessions retain the pending transcript text and can receive replies through normal chat. Multiple pending questions can coexist; focus the asking session before replying.
 
 Pending means unanswered, never approved. Recommendations and `ask.timeout` do not select an answer on this path. Continue independent work; actions requiring the reply remain blocked by their existing approval or dependency controls. Ask does not modify permission gates.
 

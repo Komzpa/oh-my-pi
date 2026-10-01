@@ -53,6 +53,21 @@ describe("pending Ask", () => {
 			text: expect.stringContaining("No answer or approval has been received"),
 		});
 	});
+	it("returns pending immediately and submits a selected answer as a user reply", async () => {
+		const selected = Promise.withResolvers<string | undefined>();
+		const submitUserReply = vi.fn();
+		const select = vi.fn(() => selected.promise);
+		const tool = new AskTool(session({ submitUserReply }));
+		const context = { hasUI: true, ui: { select }, abort: vi.fn() } as unknown as AgentToolContext;
+		const result = await tool.execute("ask-1", { questions }, undefined, undefined, context);
+		expect(result.details?.pending?.id).toBe("ask-1");
+		expect(select).toHaveBeenCalledTimes(1);
+		expect(submitUserReply).not.toHaveBeenCalled();
+		selected.resolve("Postgres");
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(submitUserReply).toHaveBeenCalledWith("Answer to ask-1 [choice]: Postgres");
+	});
 
 	it("keeps multiple asks and independent work runnable while all questions are unanswered", async () => {
 		const tool = new AskTool(session());

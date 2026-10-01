@@ -20,7 +20,7 @@ import { type as arkType } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { type ToolExample, validateToolArguments } from "@oh-my-pi/pi-ai";
 import { replaceTabs, TERMINAL, truncateToWidth } from "@oh-my-pi/pi-tui";
-import { isRecord, prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 
 import type { ExtensionUISelectItem } from "../extensibility/extensions";
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-tui/app-keybindings";
@@ -600,8 +600,9 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		_onUpdate?: AgentToolUpdateCallback<AskToolDetails>,
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<AskToolDetails>> {
-		// Headless fallback
-		if (!context?.hasUI || !context.ui) {
+		// Only explicit interactive re-answer requires a modal UI. Normal asks can
+		// still return a durable pending result in text-only/headless contexts.
+		if (this.#interactiveAnswer && (!context?.hasUI || !context.ui)) {
 			context?.abort();
 			throw new ToolAbortError("Ask tool requires interactive mode");
 		}
@@ -695,6 +696,33 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				questions: params.questions,
 			};
 			this.#sendAskNotification();
+			const ui = context?.ui;
+			if (ui?.select && this.session.submitUserReply) {
+				void (async () => {
+					const answers: string[] = [];
+					for (const question of pending.questions) {
+						const options: ExtensionUISelectItem[] = [
+							...question.options.map(({ label, description }) => ({ label, description })),
+							OTHER_OPTION,
+						];
+						const selected = await ui.select(question.question, options, {
+							initialIndex:
+								question.recommended !== undefined &&
+								question.recommended >= 0 &&
+								question.recommended < question.options.length
+									? question.recommended
+									: 0,
+						});
+						if (selected === undefined) return;
+						const answer = selected === OTHER_OPTION ? await ui.editor(question.question, "") : selected;
+						if (answer === undefined) return;
+						answers.push(`Answer to ${toolCallId} [${question.id}]: ${answer}`);
+					}
+					this.session.submitUserReply?.(answers.join("\n"));
+				})().catch(error => {
+					logger.warn("Ask pending picker failed", { error: String(error), toolCallId });
+				});
+			}
 			return {
 				content: [{ type: "text", text: prompt.render(askPending, pending) }],
 				details: { pending },
