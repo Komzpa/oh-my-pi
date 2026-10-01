@@ -69,14 +69,18 @@ export type XiaomiTokenPlanModelRef = { provider?: string; baseUrl?: string };
  * stored login region, else SGP. A non-Xiaomi host is a deliberate user override
  * and is kept as-is. Non-`tp-` keys keep the model's own baseUrl.
  */
-export function resolveXiaomiRequestBaseUrl(model: XiaomiTokenPlanModelRef, apiKey: string | undefined): string | undefined {
+export function resolveXiaomiRequestBaseUrl(
+	model: XiaomiTokenPlanModelRef,
+	apiKey: string | undefined,
+): string | undefined {
 	const provider = model.provider ?? "";
 	if (provider !== "xiaomi" && !provider.startsWith("xiaomi-token-plan-")) return model.baseUrl;
 	if (apiKey === undefined || !isTokenPlanKey(apiKey)) return model.baseUrl;
 	if (model.baseUrl !== undefined && !model.baseUrl.includes("xiaomimimo.com")) return model.baseUrl;
 	// Region stored at login: provider id (`xiaomi-token-plan-<region>`) or Token Plan host, else SGP.
 	const storedRegion =
-		/^xiaomi-token-plan-(sgp|ams|cn)$/.exec(provider)?.[1] ?? /token-plan-(sgp|ams|cn)\./.exec(model.baseUrl ?? "")?.[1];
+		/^xiaomi-token-plan-(sgp|ams|cn)$/.exec(provider)?.[1] ??
+		/token-plan-(sgp|ams|cn)\./.exec(model.baseUrl ?? "")?.[1];
 	return resolveXiaomiTokenPlanBaseUrl(storedRegion);
 }
 
