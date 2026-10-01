@@ -1,3 +1,4 @@
+import { expect, it } from "bun:test";
 import { applyTodoExecutorObservation, findRespawnOwnerRows } from "../../src/tools/todo-executor";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 

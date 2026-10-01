@@ -729,6 +729,14 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			};
 		}
 
+		// Interactive re-answer reaches here only with a modal UI present (the
+		// headless/without-UI path throws above); re-assert so the type checker
+		// narrows `context` and its UI for the remaining dialog path.
+		if (!context?.hasUI || !context.ui) {
+			context?.abort();
+			throw new ToolAbortError("Ask tool requires interactive mode");
+		}
+
 		const extensionUi = context.ui;
 		const ui: UIContext = {
 			timeoutStartsOnPresentation: extensionUi.timeoutStartsOnPresentation,

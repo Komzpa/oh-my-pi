@@ -147,7 +147,8 @@ export async function sendAgentMessageFromSession(
 	if (unavailable !== undefined) return { delivered: false, text: unavailable };
 	try {
 		const result = await executeSend(
-			{ registry, senderId, sessionFileHint: session.getSessionFile?.() },
+			// `agentMessagingUnavailableReason` above guarantees both are present.
+			{ registry: registry!, senderId: senderId!, sessionFileHint: session.getSessionFile?.() },
 			{ to, message },
 		);
 		const text = result.content.find(item => item.type === "text")?.text ?? "Message delivery failed.";

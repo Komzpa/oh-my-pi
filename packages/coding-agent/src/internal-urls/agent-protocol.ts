@@ -131,7 +131,8 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		}
 		if (!content.trim()) throw new Error("agent:// messages require non-empty content.");
 		const result = await executeSend(
-			{ registry, senderId, sessionFileHint: session.getSessionFile?.() },
+			// `agentMessagingUnavailableReason` above guarantees both are present.
+			{ registry: registry!, senderId: senderId!, sessionFileHint: session.getSessionFile?.() },
 			{ to, message: content },
 		);
 		return {
