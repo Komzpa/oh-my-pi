@@ -293,8 +293,10 @@ fn run_pty_sync(
 	ct: task::CancelToken,
 ) -> Result<PtyRunResult> {
 	let pty_system = native_pty_system();
-	ct.heartbeat()
-		.map_err(|err| Error::from_reason(format!("PTY setup cancelled before openpty: {err}")))?;
+	if let Err(error) = ct.heartbeat() {
+		let timed_out = error.to_string().contains("Timeout");
+		return Ok(PtyRunResult { exit_code: None, cancelled: !timed_out, timed_out });
+	}
 
 	const PTY_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 	let pair = if cfg!(windows) {
@@ -376,8 +378,10 @@ fn run_pty_sync(
 			Error::from_reason(format!("Failed to enforce PTY process boundary: {err}"))
 		})?;
 	*cmd.get_argv_mut() = scoped_argv;
-	ct.heartbeat()
-		.map_err(|err| Error::from_reason(format!("PTY setup cancelled before spawn: {err}")))?;
+	if let Err(error) = ct.heartbeat() {
+		let timed_out = error.to_string().contains("Timeout");
+		return Ok(PtyRunResult { exit_code: None, cancelled: !timed_out, timed_out });
+	}
 
 	let mut child = pair
 		.slave
