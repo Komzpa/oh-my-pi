@@ -14,7 +14,7 @@ import {
   forecastTodoPlan,
   type TodoScheduleInput,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import todoDispatch, { decideTodoDispatch, type DispatchInput } from "./todo_dispatch";
+import todoDispatch, { checkoutLockOwnerFromMessage, decideTodoDispatch, isDistantWaitReason, todoOverrunBudgetMs, type DispatchInput } from "./todo_dispatch";
 
 type Jobs = Pick<AsyncJobSnapshot, "running" | "recent" | "nonJobAgents">;
 const now = Date.UTC(2026, 0, 1);
@@ -445,6 +445,43 @@ describe("todo dispatch supervisor", () => {
         jobs: { running: [taskJob], recent: [] },
       }).readyCandidates[0]?.ownership,
     ).toBe("unverified");
+  });
+  test("missed-eta stays silent for a live-owned row and exhausted rows ask for receipt plus split", () => {
+    const overdueEstimate = {
+      optimisticSeconds: 60,
+      likelySeconds: 90,
+      pessimisticSeconds: 120,
+      confidence: "medium" as const,
+      basis: "eta regression",
+      updatedAt: now,
+    };
+    const plan: TodoScheduleInput = [{
+      name: "Fixes",
+      tasks: [
+        { content: "Owned running repair", status: "in_progress", schedule: { owner: "ExactWorker", dependencies: [], estimate: overdueEstimate } },
+        { content: "Exhausted repair", status: "pending", schedule: { dependencies: [], estimate: overdueEstimate, reestimateCount: 5, estimateRevision: 6 } },
+      ],
+    }];
+    const workerJob: Jobs["running"][number] = { id: "ExactWorker", type: "task", status: "running", label: "ExactWorker", startTime: now };
+    const decision = decide({ phases: plan, deadline: due, now: now + 600_000, jobs: { running: [workerJob], recent: [], nonJobAgents: [] } });
+    expect(decision.alarms.some((alarm) => alarm.startsWith("missed-eta:") && alarm.includes('"Owned running repair"'))).toBe(false);
+    expect(decision.prompt).not.toMatch(/MISSED ETA "Owned running repair"/);
+    expect(decision.prompt).toMatch(/EXHAUSTED "Exhausted repair"/);
+    expect(decision.prompt).toMatch(/previous attempt's receipt/);
+    expect(decision.prompt).toMatch(/split the remaining scope into new rows/);
+  });
+  test("overrun budget adds elapsed-at-reestimate to the remaining instead of tripling it", () => {
+    const budgetMs = todoOverrunBudgetMs({ startedAt: 0, estimateUpdatedAt: 40_000, reestimateCount: 1, estimateRangeSeconds: { likely: 90, pessimistic: 15 } });
+    expect(budgetMs).toBe(55_000);
+    expect(todoOverrunBudgetMs({ startedAt: 0, reestimateCount: 0, estimateRangeSeconds: { likely: 90, pessimistic: 15 } })).toBe(15_000);
+  });
+  test("checkout-lock refusal extracts the holding owner for NOT STARTED", () => {
+    expect(checkoutLockOwnerFromMessage("Refusing coder: coder worker ExactWorker is running in this checkout; pass isolated: true.")).toBe("ExactWorker");
+    expect(checkoutLockOwnerFromMessage("Task execution failed: boom")).toBeUndefined();
+  });
+  test("a user decision to wait is a distant wait, an hours-long blocker is not", () => {
+    expect(isDistantWaitReason("chose to wait until release next week")).toBe(true);
+    expect(isDistantWaitReason("waiting on review feedback")).toBe(false);
   });
   test("each ready unstaffed row asks for a worker while blocked and dependency-waiting rows stay out", () => {
     const schedule = (dependencies: string[], owner?: string) => ({

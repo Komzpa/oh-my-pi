@@ -737,6 +737,59 @@ describe("TodoTool operations", () => {
 		expect(status("e")).not.toBe("completed");
 		expect(status("e")).not.toBe("abandoned");
 	});
+	it("dropping a prerequisite removes its dependency before the next schedule", async () => {
+		const tool = new TodoTool(createSession());
+		await tool.execute("call-1", { op: "init", list: [{ phase: "Work", items: ["prerequisite", "dependent"] }] });
+		await tool.execute("call-2", {
+			op: "schedule",
+			updates: [
+				{
+					task: "prerequisite",
+					dependencies: [],
+					estimate: {
+						optimisticSeconds: 10,
+						likelySeconds: 20,
+						pessimisticSeconds: 30,
+						confidence: "high",
+						basis: "fixture",
+					},
+				},
+				{
+					task: "dependent",
+					dependencies: ["prerequisite"],
+					estimate: {
+						optimisticSeconds: 10,
+						likelySeconds: 20,
+						pessimisticSeconds: 30,
+						confidence: "high",
+						basis: "fixture",
+					},
+				},
+			],
+		});
+		await tool.execute("call-3", { op: "drop", task: "prerequisite" });
+		const view = await tool.execute("call-4", { op: "view" });
+		expect(view.details?.phases[0]?.tasks.find(task => task.content === "dependent")?.schedule?.dependencies).toEqual(
+			[],
+		);
+		const next = await tool.execute("call-5", {
+			op: "schedule",
+			updates: [
+				{
+					task: "dependent",
+					dependencies: [],
+					estimate: {
+						optimisticSeconds: 10,
+						likelySeconds: 20,
+						pessimisticSeconds: 30,
+						confidence: "high",
+						basis: "fixture",
+					},
+				},
+			],
+		});
+		expect(next.isError).not.toBe(true);
+	});
 
 	it("rejects a batch naming an unknown row", async () => {
 		const tool = new TodoTool(createSession());

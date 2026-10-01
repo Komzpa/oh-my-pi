@@ -571,6 +571,10 @@ export async function refreshAgentDiscovery(cwd: string, extensionRoots?: Effect
 // Tool Class
 // ═══════════════════════════════════════════════════════════════════════════
 
+/** Owner key from a checkout-lock refusal ("Refusing <agent>: <writer> worker <key> is running in this checkout"). */
+export function checkoutLockOwnerFromTaskError(text: string): string | undefined {
+	return text.match(/Refusing \S+: \S+ worker (.+?) is running in this checkout/i)?.[1]?.trim() || undefined;
+}
 /**
  * Task tool - Delegate tasks to specialized agents.
  *
@@ -2148,6 +2152,19 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			);
 		} catch (error) {
 			const message = error instanceof StructuredSubagentError ? error.message : String(error);
+			const lockOwner = checkoutLockOwnerFromTaskError(message);
+			if (lockOwner && Date.now() - startTime < 2000) {
+				this.#reworkRoutes.delete(`${toolCallId}:${spawnIndex}`);
+				return {
+					content: [
+						{
+							type: "text",
+							text: `NOT STARTED: checkout lock held by ${lockOwner}; respawning identically will fail again; wait for ${lockOwner} or give edits to it`,
+						},
+					],
+					details: { projectAgentsDir: null, results: [], totalDurationMs: Date.now() - startTime },
+				};
+			}
 			// A child that finished before the failure keeps its exit status,
 			// usage, and artifact path. `error` is set so nothing reads a zero
 			// exit code as a completed run.

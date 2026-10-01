@@ -311,6 +311,37 @@ export function boundedNotices(notices: Record<string, string>): Record<string, 
   });
   return Object.fromEntries(entries.slice(-MAX_NOTICE_KEYS));
 }
+/** Checkout-lock refusal owner: "Refusing <agent>: <writer> worker <key> is running in this checkout". */
+export function checkoutLockOwnerFromMessage(text: string): string | undefined {
+  return text.match(/Refusing \S+: \S+ worker (.+?) is running in this checkout/i)?.[1]?.trim() || undefined;
+}
+
+/** Overrun budget mirrors the #70 badge: elapsed-at-reestimate plus the rescheduled remaining. */
+export function todoOverrunBudgetMs(row: {
+  startedAt?: number;
+  estimateUpdatedAt?: number;
+  reestimateCount?: number;
+  estimateRangeSeconds?: { likely?: number; pessimistic?: number };
+}): number | undefined {
+  const remainingSeconds = typeof row.estimateRangeSeconds?.pessimistic === "number"
+    ? row.estimateRangeSeconds.pessimistic
+    : typeof row.estimateRangeSeconds?.likely === "number"
+      ? row.estimateRangeSeconds.likely
+      : undefined;
+  if (typeof row.startedAt !== "number" || !Number.isFinite(row.startedAt) || remainingSeconds === undefined) return undefined;
+  const absorbedMs = (row.reestimateCount ?? 0) >= 1
+    && typeof row.estimateUpdatedAt === "number"
+    && Number.isFinite(row.estimateUpdatedAt)
+    && row.estimateUpdatedAt > row.startedAt
+    ? row.estimateUpdatedAt - row.startedAt
+    : 0;
+  return absorbedMs + remainingSeconds * 1000;
+}
+
+/** A blocked reason that records the user's decision to wait for a distant event, not an hours-long wait. */
+export function isDistantWaitReason(blocker: string): boolean {
+  return /chose to wait|waiting (?:until|for)|wait (?:until|for)|release (?:next week|next month|in \d+ days?)|next week|next month|\d{4}-\d\d-\d\d/i.test(blocker);
+}
 
 /** Central union-of-remedies gate decision: one allow decision instead of independent refusals. */
 export type GateCall = { name: string; arguments?: Record<string, unknown> };
@@ -852,6 +883,14 @@ export function decideTodoDispatch(
     const owner = typeof task.schedule?.owner === "string" ? task.schedule.owner : null;
     return { content: task.content, owner, running: owner !== null && activeTaskJobs.some((job) => liveJobMatchesOwner(job, owner)) };
   });
+  const runningOwnedContents = new Set(
+    open
+      .filter(({ task }) => {
+        const owner = typeof task.schedule?.owner === "string" ? task.schedule.owner : null;
+        return owner !== null && ownerHasActiveTask(owner);
+      })
+      .map(({ task }) => task.content),
+  );
   const openTasksByContent = new Map(open.map(({ task }) => [task.content, task]));
   const liveResourceHolders = open
     .filter(({ task }) => {
@@ -999,7 +1038,7 @@ export function decideTodoDispatch(
   for (const job of failedTasks) alarmSet.add(`failed-child:${job.id}:${job.status}`);
   for (const row of forecast.rows) {
     if (!obligatedContent.has(row.content)) continue;
-    if (row.overdue)
+    if (row.overdue && !runningOwnedContents.has(row.content))
       alarmSet.add(`missed-eta:${JSON.stringify(row.content)}:${row.estimateRevision}`);
     if (row.latestStart !== undefined && now >= row.latestStart)
       alarmSet.add(`late-start:${JSON.stringify(row.content)}:${row.latestStart}`);
@@ -1008,9 +1047,9 @@ export function decideTodoDispatch(
         `stale-estimate:${JSON.stringify(row.content)}:${row.estimateUpdatedAt ?? null}`,
       );
   }
-  const missed = forecast.rows.filter((row) => openContent.has(row.content) && row.overdue);
+  const missed = forecast.rows.filter((row) => openContent.has(row.content) && row.overdue && !runningOwnedContents.has(row.content));
   const executableMissed = forecast.rows.filter(
-    (row) => actionableReadyContents.has(row.content) && row.ready && row.overdue &&
+    (row) => actionableReadyContents.has(row.content) && row.ready && row.overdue && !runningOwnedContents.has(row.content) &&
       typeof row.resourceStart === "number" && row.resourceStart <= now,
   );
   const overdueMinute = Math.floor(now / 60_000);
@@ -1062,7 +1101,9 @@ export function decideTodoDispatch(
   const planningIssueLines = planningIssues
     .map((issue) => `- [${issue.code}] ${JSON.stringify(issue.task)}: ${issue.message}`);
   const corrections = missed
-    .map((row) => `- ${JSON.stringify(row.content)}: revision=${row.estimateRevision}; reestimates=${row.reestimateCount}`);
+    .map((row) => row.reestimateCount >= 5
+      ? `EXHAUSTED ${JSON.stringify(row.content)}: reestimates=${row.reestimateCount}. Do not reestimate this same row again; record the previous attempt's receipt and failing acceptance check, then split the remaining scope into new rows.`
+      : `- ${JSON.stringify(row.content)}: revision=${row.estimateRevision}; reestimates=${row.reestimateCount}`);
   const repeatedEstimates = forecastRows.filter((row) => row.reestimateCount >= 3);
   const prompt = [
     ...(!goalPaused && deadlineRisk
@@ -2843,6 +2884,24 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       AgentRegistry.global().setWorktreeWarning(id, undefined);
       noCommitWarnings.delete(id);
     }
+    const overrunWorkers = workerInfos.flatMap(({ id, row }) => {
+      if (!row || row.status !== "in_progress") return [];
+      const budgetMs = todoOverrunBudgetMs({
+        startedAt: typeof row.startedAt === "number" ? row.startedAt : undefined,
+        estimateUpdatedAt: typeof row.estimateUpdatedAt === "number" ? row.estimateUpdatedAt : undefined,
+        reestimateCount: row.reestimateCount,
+        estimateRangeSeconds: row.estimateRangeSeconds,
+      });
+      if (budgetMs === undefined || typeof row.startedAt !== "number") return [];
+      const elapsedMs = now - row.startedAt;
+      return elapsedMs > budgetMs
+        ? [`overrun: ${JSON.stringify(row.content)} elapsed ${minutes(elapsedMs)} exceeds its ${minutes(budgetMs)} budget (elapsed-at-reestimate plus remaining); stop worker ${id}, get done/left receipt, then split the rest into new rows`]
+        : [];
+    });
+    const distantBlocked = phasesNow
+      .flatMap((phase) => phase.tasks.map((task) => ({ phase: phase.name, task })))
+      .filter(({ task }) => task.status === "blocked" && typeof task.blocker === "string" && isDistantWaitReason(task.blocker))
+      .map(({ task }) => `DROP blocked row ${JSON.stringify(task.content)} (${JSON.stringify(task.blocker)}); record a trigger note "when X changes -> do Y". Reserve blocked for waits of hours.`);
     const workerRows = workerInfos.flatMap(({ id, row, trace, age, p95Text }) => {
       if (!row) return [];
       const wrote = trace.wrote.length ? trace.wrote.join(",") : "none";
@@ -2923,6 +2982,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const problems = [
       retroLine,
       ...staleWorkers,
+      ...overrunWorkers,
+      ...distantBlocked,
       planningAdvice,
       unread.length ? `${unread.length} worker result(s) came back and their rows are still open: ${names(unread)}. Read each receipt now and close the row or send it back with the reason, before any other plan change (skill step 4)` : "",
       finishDelayNotice,
