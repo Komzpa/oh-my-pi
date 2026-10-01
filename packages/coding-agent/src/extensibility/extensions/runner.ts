@@ -594,11 +594,9 @@ export class ExtensionRunner {
 	 * and the URL write agree instead of one side answering "unavailable"
 	 * while the other delivers.
 	 */
-	#defaultSendAgentMessage(
-		to: string,
-		message: string,
-	): Promise<{ delivered: boolean; text: string }> {
-		if (!this.settings) return Promise.resolve({ delivered: false, text: "Peer messaging is unavailable in this session." });
+	#defaultSendAgentMessage(to: string, message: string): Promise<{ delivered: boolean; text: string }> {
+		if (!this.settings)
+			return Promise.resolve({ delivered: false, text: "Peer messaging is unavailable in this session." });
 		return sendAgentMessageFromSession(
 			{
 				agentRegistry: AgentRegistry.global(),

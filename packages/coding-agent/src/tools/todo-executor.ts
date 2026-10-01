@@ -212,8 +212,7 @@ export function findRespawnOwnerRows(
 				isOpenStatus(task.status) &&
 				typeof task.schedule?.owner === "string" &&
 				(task.schedule.owner === requestedName ||
-					(respawnCollisionBase(task.schedule.owner) === base &&
-						!runningWorkerIds.has(task.schedule.owner))),
+					(respawnCollisionBase(task.schedule.owner) === base && !runningWorkerIds.has(task.schedule.owner))),
 		)
 		.map(task => task.content);
 }

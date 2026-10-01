@@ -318,7 +318,6 @@ describe("ExtensionRunner", () => {
 		expect(unavailable.text).toContain("unavailable");
 	});
 
-
 	it("routes ctx.sendAgentMessage through the shared IRC path even when the host never wired it", async () => {
 		const registry = AgentRegistry.global();
 		registry.register({ id: "Main", displayName: "main", kind: "main", session: {} as never });
