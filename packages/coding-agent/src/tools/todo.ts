@@ -821,21 +821,35 @@ function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 }
 
 function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
+	const pruneDependencies = (removed: Set<string>) => {
+		if (removed.size === 0) return;
+		for (const phase of phases) {
+			for (const task of phase.tasks) {
+				const deps = task.schedule?.dependencies;
+				if (Array.isArray(deps)) task.schedule!.dependencies = deps.filter(dep => !removed.has(dep));
+			}
+		}
+	};
 	if (entry.task) {
 		const hit = resolveTaskOrError(phases, entry.task, errors);
 		if (!hit) return phases;
 		hit.phase.tasks = hit.phase.tasks.filter(candidate => candidate !== hit.task);
+		pruneDependencies(new Set([hit.task.content]));
 		return phases;
 	}
 	if (entry.phase) {
 		const phase = resolvePhaseOrError(phases, entry.phase, errors);
 		if (!phase) return phases;
+		const removed = new Set(phase.tasks.map(task => task.content));
 		phase.tasks = [];
+		pruneDependencies(removed);
 		return phases;
 	}
+	const removed = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
 	for (const phase of phases) {
 		phase.tasks = [];
 	}
+	pruneDependencies(removed);
 	return phases;
 }
 
@@ -1022,8 +1036,19 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			return phases;
 		}
 		case "drop": {
-			for (const task of getBatchTargets(phases, entry, errors)) {
+			const dropped = getBatchTargets(phases, entry, errors);
+			for (const task of dropped) {
 				task.status = "abandoned";
+			}
+			if (errors.length === 0 && dropped.length > 0) {
+				const droppedTitles = new Set(dropped.map(task => task.content));
+				for (const phase of phases) {
+					for (const task of phase.tasks) {
+						if (droppedTitles.has(task.content)) continue;
+						const deps = task.schedule?.dependencies;
+						if (Array.isArray(deps)) task.schedule!.dependencies = deps.filter(dep => !droppedTitles.has(dep));
+					}
+				}
 			}
 			return phases;
 		}
