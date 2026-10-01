@@ -1,8 +1,8 @@
 ---
 name: coder-strong
-description: Escalation rung of coder: same role on a strong model (Sol, then Opus, then Terra). Use when a coder worker on luna missed, looped, or the user asked for a stronger model.
+description: Escalation rung of coder: same role on a strong model (Sol 6.1, then Opus). Use when a coder worker on luna missed, looped, or the user asked for a stronger model.
 tools: read, grep, glob, find, edit, write, bash
-model: codex-lb/gpt-6.1-sol:high, anthropic/claude-opus-5-5:high, codex-lb/gpt-5.6-terra:high
+model: codex-lb/gpt-6.1-sol:high, anthropic/claude-opus-5-5:high
 thinking-level: high
 spawns: []
 ---
