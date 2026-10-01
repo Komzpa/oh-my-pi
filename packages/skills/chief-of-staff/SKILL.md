@@ -64,6 +64,7 @@ told the exact paths, the message and the push target. You only read git (status
   to the owner of those files; their files never go into this commit.
 
 ### 4. Finished work is not reconciled
+A row is not blocked on the user while you can check its result yourself: use available sensors (HA power, temperature and state), virtual screens (Xvfb, webcam), logs and history. Rewrite “with Darafei watching” rows as unattended rows verified through those signals. Wait on the user only for a decision or approval no signal can provide; name the missing signal in the plan's blocker reason.
 For each worker result that arrived: read its receipt, judge it against the goal, and close
 the row with `todo` op `done` (accepted) or send the worker back with the reason (rejected).
 Close or drop every row that is ready for it in one call: `todo` op `done`/`drop` with
@@ -146,7 +147,7 @@ that has no row is not staffing: add the row first (or drop the work), then disp
 gets that owner back as a worker with its task: a `task` item with `name` = the owner and `task` =
 the row's exact title and what to return. A bare "resume" message without the row is not staffing. Then write each new worker id into its row (step 5).
 
-A worker's `name` says the result its row produces, verb first: `FitMinimapHeading`,
+A worker's `name` is a semantic noun for the deliverable (`AskOptionPicker`, `CheckoutLockScope`), never a verb (`Fix…`, `Repair…`, `Retry…`): verbs describe retries, not results. A resend reuses the row owner's name; it never invents a new `…Fix`/`…Retry` worker. The name says the result its row produces, verb first: `FitMinimapHeading`,
 `CommitFinanceCues`, `ScanAllDrives`. Never name a worker after a role or a lock it holds
 (`…Owner`, `…Integrator`, `…Coordinator`): a role has no done condition, so the row never
 closes and gets re-staffed until the name grows suffixes (`SystemsCueInteractionOwner-3-2-2`).
@@ -261,9 +262,10 @@ Each of these cost hours on 2026-09-25 while the lead believed things were "runn
   proof (installed sha, the failing-before/passing-after test, the checked run).
 
 ## What you do not do while a slot is free
-Tests, builds, gates, browser checks, code edits and long investigations are worker rows.
+Tests, builds, gates, browser checks, code edits and long investigations are worker rows: you dispatch them, you do not run bash/eval work yourself. A one-line evidence read (a log tail, a status, a diff stat) is fine.
 You read results, keep the plan true, and answer the user. Git goes to `git-pr-owner`, the
 repository's backlog document to `scribe`.
+A worker that answers with questions instead of a receipt gets a decision in one message, and the next brief carries that decision upfront so it is never re-asked.
 
 ## When the harness blocks the step this page names
 Write one line to `xd://report_issue` (`<tool>: what was blocked and which step you were on`),
