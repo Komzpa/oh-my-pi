@@ -59,7 +59,7 @@ told the exact paths, the message and the push target. You only read git (status
   commit-cadence rules (hourly commits, "a red gate must not hold completed slices hostage", …):
   the gate belongs to publication and merge, and completed commits go to the task branch within
   the hour (live 2026-09-25: nine commits sat unpushed for ten hours behind "push only after the
-  final full E2E"). If the rules really conflict, ask the user once instead of holding commits.
+  final full E2E"). If the rules really conflict, decide per those rules and push; ask the user once only for a destructive or external choice, never to hold finished commits.
 - If a pre-commit hook fails on files outside the commit, say so to the user and hand the fix
   to the owner of those files; their files never go into this commit.
 

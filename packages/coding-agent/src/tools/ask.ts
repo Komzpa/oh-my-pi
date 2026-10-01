@@ -1,13 +1,12 @@
 import type { AskToolDetails, QuestionResult } from "@oh-my-pi/pi-tui/tools/ask";
 /**
- * Ask Tool - Interactive user prompting during execution
+ * Ask Tool - last resort for choices no source can settle.
  *
- * Use this tool when you need to ask the user questions during execution.
- * This allows you to:
- *   1. Gather user preferences or requirements
- *   2. Clarify ambiguous instructions
- *   3. Get decisions on implementation choices as you work
- *   4. Offer choices to the user about what direction to take
+ * Act first: before asking, try tools, the repository, web search and manuals.
+ * Never ask for a fact (specs, manual meanings, protocol values, file contents).
+ * Ask only for a product or taste choice, or a destructive or external action.
+ * Bundle every open question into one call, never several in a row; while
+ * waiting, keep working on the most likely option.
  *
  * Usage notes:
  *   - Users will always be able to select "Other" to provide custom text input
