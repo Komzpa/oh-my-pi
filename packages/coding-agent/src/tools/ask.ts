@@ -21,7 +21,11 @@ import { type ToolExample, validateToolArguments } from "@oh-my-pi/pi-ai";
 import { replaceTabs, TERMINAL, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { isRecord, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 
-import type { ExtensionUISelectItem } from "../extensibility/extensions";
+import type {
+	ExtensionAskDialogQuestion,
+	ExtensionAskDialogResultItem,
+	ExtensionUISelectItem,
+} from "../extensibility/extensions";
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-tui/app-keybindings";
 import { editorKey, editorKeys } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { theme } from "@oh-my-pi/pi-tui/theme";
@@ -525,6 +529,44 @@ function formatSingleQuestionResponse(result: {
 	return result.multi ? "User did not select any options" : "User cancelled the selection";
 }
 
+/**
+ * Map schema questions into the rich ask dialog shape. Shared by the ordinary
+ * (non-blocking) and explicit interactive re-answer paths so both render the
+ * exact same dialog component for the same question.
+ */
+function toAskDialogQuestions(questions: AskToolInput["questions"]): ExtensionAskDialogQuestion[] {
+	return questions.map(q => ({
+		id: q.id,
+		question: q.question,
+		...(q.header?.trim() ? { header: q.header } : {}),
+		options: q.options.map(option => ({
+			label: option.label,
+			...(option.description?.trim() ? { description: option.description.trim() } : {}),
+			...(option.preview?.trim() ? { preview: option.preview } : {}),
+		})),
+		...(q.multi !== undefined ? { multi: q.multi } : {}),
+		...(q.recommended !== undefined ? { recommended: q.recommended } : {}),
+	}));
+}
+
+/**
+ * Format one rich-dialog answer as the user-chat reply the model correlates
+ * back to the pending question: `Answer to <toolCallId> [<questionId>]: <answer>`,
+ * with an optional ` — note: <text>` suffix.
+ */
+function formatAsyncAnswerReply(toolCallId: string, result: ExtensionAskDialogResultItem): string {
+	const noteSuffix = result.note ? ` — note: ${result.note}` : "";
+	if (result.customInput !== undefined) {
+		return `Answer to ${toolCallId} [${result.id}]: ${result.customInput}${noteSuffix}`;
+	}
+	if (result.selectedOptions.length > 0) {
+		const answer = result.multi ? `[${result.selectedOptions.join(", ")}]` : result.selectedOptions[0];
+		return `Answer to ${toolCallId} [${result.id}]: ${answer}${noteSuffix}`;
+	}
+	const answer = result.multi ? "[]" : "(cancelled)";
+	return `Answer to ${toolCallId} [${result.id}]: ${answer}${noteSuffix}`;
+}
+
 // =============================================================================
 // Tool Class
 // =============================================================================
@@ -696,30 +738,14 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			};
 			this.#sendAskNotification();
 			const ui = context?.ui;
-			if (ui?.select && this.session.submitUserReply) {
+			if (ui?.askDialog && this.session.submitUserReply) {
 				void (async () => {
-					const answers: string[] = [];
-					for (const question of pending.questions) {
-						const options: ExtensionUISelectItem[] = [
-							...question.options.map(({ label, description }) => ({ label, description })),
-							OTHER_OPTION,
-						];
-						const selected = await ui.select(question.question, options, {
-							initialIndex:
-								question.recommended !== undefined &&
-								question.recommended >= 0 &&
-								question.recommended < question.options.length
-									? question.recommended
-									: 0,
-						});
-						if (selected === undefined) return;
-						const answer = selected === OTHER_OPTION ? await ui.editor(question.question, "") : selected;
-						if (answer === undefined) return;
-						answers.push(`Answer to ${toolCallId} [${question.id}]: ${answer}`);
-					}
+					const result = await ui.askDialog(toAskDialogQuestions(params.questions), {});
+					if (!result || result.kind !== "submit") return;
+					const answers = result.results.map(item => formatAsyncAnswerReply(toolCallId, item));
 					this.session.submitUserReply?.(answers.join("\n"));
 				})().catch(error => {
-					logger.warn("Ask pending picker failed", { error: String(error), toolCallId });
+					logger.warn("Ask pending dialog failed", { error: String(error), toolCallId });
 				});
 			}
 			return {
@@ -771,22 +797,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		const richAskDialog = extensionUi.askDialog;
 		if (richAskDialog) {
 			try {
-				const showRichDialog = () =>
-					richAskDialog(
-						params.questions.map(q => ({
-							id: q.id,
-							question: q.question,
-							...(q.header?.trim() ? { header: q.header } : {}),
-							options: q.options.map(option => ({
-								label: option.label,
-								...(option.description?.trim() ? { description: option.description.trim() } : {}),
-								...(option.preview?.trim() ? { preview: option.preview } : {}),
-							})),
-							...(q.multi !== undefined ? { multi: q.multi } : {}),
-							...(q.recommended !== undefined ? { recommended: q.recommended } : {}),
-						})),
-						{ timeout: timeout ?? undefined, signal },
-					);
+				const showRichDialog = () => richAskDialog(toAskDialogQuestions(params.questions), { timeout: timeout ?? undefined, signal });
 				const richResult = signal ? await untilAborted(signal, showRichDialog) : await showRichDialog();
 				if (!richResult) {
 					context.abort();
