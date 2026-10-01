@@ -5,7 +5,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
-import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import { formatTodoModelBadge, InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -81,6 +81,19 @@ describe("rework attempt TODO HUD", () => {
 							},
 						},
 					},
+					...([
+						["flash", "deepseek/deepseek-v4-flash", "minimal", "deepseek-v4-flash · minimal effort"],
+						["luna", "codex-lb/gpt-6-luna", "max", "gpt-6-luna · max effort"],
+						["pro", "deepseek/deepseek-v4-pro", "low", "deepseek-v4-pro · low effort"],
+						["five", "openai/gpt-5", "high", "gpt-5 · high effort"],
+					] as const).map(([content, resolvedModel, thinkingLevel]) => ({
+						content: `${content} model row`,
+						status: "in_progress" as const,
+						schedule: {
+							attemptHistory: prior.slice(0, 1),
+							executor: { workerId: "RenderCut", resolvedModel, thinkingLevel, startedAt: now },
+						},
+					})),
 				],
 			},
 			{ name: "Ordinary", tasks: [{ content: "new first-dispatch row", status: "pending" }] },
@@ -91,7 +104,19 @@ describe("rework attempt TODO HUD", () => {
 			const rendered = mode.todoContainer.render(200).join("\n");
 			const reworkRow = rendered.split("\n").find(line => line.includes("route the rejected row"));
 			const ordinaryRow = rendered.split("\n").find(line => line.includes("new first-dispatch row"));
-			expect(reworkRow).toContain("attempt 3 · sol:medium");
+			expect(reworkRow).toContain("attempt 3 · gpt-6-sol · medium effort");
+			expect(rendered.split("\n").find(line => line.includes("flash model row"))).toContain(
+				"attempt 2 · deepseek-v4-flash · minimal effort",
+			);
+			expect(rendered.split("\n").find(line => line.includes("luna model row"))).toContain(
+				"attempt 2 · gpt-6-luna · max effort",
+			);
+			expect(rendered.split("\n").find(line => line.includes("pro model row"))).toContain(
+				"attempt 2 · deepseek-v4-pro · low effort",
+			);
+			expect(rendered.split("\n").find(line => line.includes("five model row"))).toContain(
+				"attempt 2 · gpt-5 · high effort",
+			);
 			expect(ordinaryRow).toBeDefined();
 			expect(ordinaryRow).not.toContain("attempt ");
 		} finally {
@@ -99,6 +124,18 @@ describe("rework attempt TODO HUD", () => {
 			await session.dispose();
 			auth.close();
 			directory.removeSync();
+		}
+	});
+	it("renders recognizable model names and effort words without cutting model names", () => {
+		const cases = [
+			["deepseek/deepseek-v4-flash", "minimal", "deepseek-v4-flash · minimal effort"],
+			["codex-lb/gpt-6-luna", "max", "gpt-6-luna · max effort"],
+			["deepseek/deepseek-v4-pro", "low", "deepseek-v4-pro · low effort"],
+			["openai/gpt-5", "high", "gpt-5 · high effort"],
+			["codex-lb/gpt-6-luna", undefined, "gpt-6-luna"],
+		] as const;
+		for (const [identity, effort, expected] of cases) {
+			expect(formatTodoModelBadge(identity, effort)).toBe(expected);
 		}
 	});
 });

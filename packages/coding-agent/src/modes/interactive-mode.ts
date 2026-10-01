@@ -1002,6 +1002,15 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
 
+/** TODO-row model badge: provider-free model id plus the effort word (`gpt-5 · high effort`). Never a bare version tail. */
+export function formatTodoModelBadge(identity: string | undefined, effort?: string): string {
+	if (!identity) return "";
+	const model = sanitizeText(identity).split("/").at(-1)?.trim();
+	if (!model) return "";
+	const level = sanitizeText(effort ?? "").trim().toLowerCase();
+	return level ? `${model} · ${level} effort` : model;
+}
+
 export class InteractiveMode implements InteractiveModeContext {
 	#ownsStartedUi: boolean;
 	session: AgentSession;
@@ -3561,9 +3570,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		const history = todo.schedule?.attemptHistory;
 		const executor = todo.schedule?.executor;
 		if (history && history.length > 0 && executor?.resolvedModel && executor.thinkingLevel) {
-			const model = executor.resolvedModel.split("/").at(-1)?.split("-").at(-1);
+			const model = formatTodoModelBadge(executor.resolvedModel, executor.thinkingLevel);
 			if (model) {
-				const badge = sanitizeStatusText(`attempt ${history.length + 1} · ${model}:${executor.thinkingLevel}`);
+				const badge = sanitizeStatusText(`attempt ${history.length + 1} · ${model}`);
 				line += ` ${theme.fg("dim", badge)}`;
 			}
 		}
@@ -3579,15 +3588,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		const detail = description ? worker.description?.trim() || worker.progress?.description?.trim() : undefined;
 		// Which model serves this worker, the same badge and setting as the subagent feed (Darafei
 		// 2026-09-25: "тут бы писать какая модель за каким воркером").
-		const model = isFeedModelBadgeEnabled()
-			? formatFeedModelBadge(
-					worker.progress?.resolvedModelIdentity ?? worker.progress?.resolvedModel,
-					worker.progress?.resolvedThinkingLevel,
-					worker.progress?.advisor,
-					theme,
-					FEED_MODEL_BADGE_WIDTH,
-				)
-			: "";
+		const identity = worker.progress?.resolvedModelIdentity ?? worker.progress?.resolvedModel;
+		const modelName = formatTodoModelBadge(identity, worker.progress?.resolvedThinkingLevel);
+		const advisor = worker.progress?.advisor ? ` ${theme.icon.advisor}` : "";
+		const model = isFeedModelBadgeEnabled() && modelName ? theme.fg("accent", modelName) + theme.fg("dim", advisor) : "";
 		const label = `${formatTaskId(worker.id)}${role ? ` (${role})` : ""}${detail ? `: ${detail}` : ""}`;
 		return `${theme.fg("accent", `${separator ? "· " : ""}◔ ${sanitizeStatusText(label)}`)}${model ? ` ${model}` : ""}`;
 	}
