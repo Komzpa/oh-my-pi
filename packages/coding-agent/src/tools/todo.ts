@@ -259,17 +259,11 @@ export function stampTaskTransitionTimes(previous: TodoPhase[], updated: TodoPha
 }
 
 function normalizeInProgressTask(phases: TodoPhase[]): void {
+	// Operations may preserve legacy/multi-row in-progress state. Never rewrite
+	// unrelated rows to enforce a global single-active-row invariant; only
+	// promote one focus row when no row is currently in progress.
 	const orderedTasks = phases.flatMap(phase => phase.tasks);
-	if (orderedTasks.length === 0) return;
-
-	const inProgressTasks = orderedTasks.filter(task => task.status === "in_progress");
-	if (inProgressTasks.length > 1) {
-		for (const task of inProgressTasks.slice(1)) {
-			task.status = "pending";
-		}
-	}
-
-	if (inProgressTasks.length > 0) return;
+	if (orderedTasks.some(task => task.status === "in_progress")) return;
 
 	const firstPendingTask = orderedTasks.find(task => task.status === "pending");
 	if (firstPendingTask) firstPendingTask.status = "in_progress";
