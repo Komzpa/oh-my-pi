@@ -65,6 +65,8 @@ told the exact paths, the message and the push target. You only read git (status
 
 ### 4. Finished work is not reconciled
 A row is not blocked on the user while you can check its result yourself: use available sensors (HA power, temperature and state), virtual screens (Xvfb, webcam), logs and history. Rewrite “with Darafei watching” rows as unattended rows verified through those signals. Wait on the user only for a decision or approval no signal can provide; name the missing signal in the plan's blocker reason.
+Once a worker reports a proof surface unavailable (tmux, screen capture), do not respawn the same proof: change the method (a unit render test, a snapshot fixture) or ask the user once. (Live 2026-10-01: ProveInstalledTodoRender was spawned three times with the same screen-capture proof until Darafei asked "why are you so locked on screen capture".)
+Never start a new worker on a row while the previous one is still running: first accept its result or stop it through proc kill, and only then dispatch (live 2026-10-01: ~95 worker-minutes on ProveInstalledTodoRender ×3 and 7 minutes of duplicated work on AskOptionPicker-3/-4). If a harness gate refuses the same useful action twice, write report_issue and add a row to fix that gate in the same turn, not workarounds through renames (live 2026-10-01: the checkout lock was worked around from 01:57Z to 04:04Z).
 For each worker result that arrived: read its receipt, judge it against the goal, and close
 the row with `todo` op `done` (accepted) or send the worker back with the reason (rejected).
 Close or drop every row that is ready for it in one call: `todo` op `done`/`drop` with

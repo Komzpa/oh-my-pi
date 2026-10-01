@@ -343,9 +343,19 @@ test("task calls refuse planning-failure worker names but allow verb-first neigh
     sendMessage: () => undefined,
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
+  const branchWithAccepted = plan("ready", now) as Array<{ message: { details: { phases: Array<{ tasks: unknown[] }> } } }>;
+  branchWithAccepted[0]!.message.details.phases[0]!.tasks.push({
+    content: "Export pipeline",
+    status: "completed",
+    schedule: {
+      dependencies: [],
+      resources: ["Export pipeline"],
+      estimate: { optimisticSeconds: 300, likelySeconds: 600, pessimisticSeconds: 900, confidence: "medium" as const, basis: "gates fixture", updatedAt: now - 60_000 },
+    },
+  });
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-name-refusal" }), getBranch: () => plan("ready", now), getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "gates-name-refusal" }), getBranch: () => branchWithAccepted, getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 20,
     isIdle: () => false,
@@ -353,24 +363,16 @@ test("task calls refuse planning-failure worker names but allow verb-first neigh
     setTimeout: () => ({}),
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
-  const call = async (name: string) => (await handlers.get("tool_call")!({
+  const call = async (name: string, task = "Row B") => (await handlers.get("tool_call")!({
     toolName: "task",
     toolCallId: `name-${name}`,
-    input: { tasks: [{ name, agent: "coder", task: "Row B" }] },
+    input: { tasks: [{ name, agent: "coder", task }] },
   }, ctx)) as { block?: boolean; reason?: string } | undefined;
   try {
-    const blocked: Record<string, string> = {
+    const alwaysBlocked: Record<string, string> = {
       BuildOwner: "Owner",
       BuildIntegrator: "Integrator",
       BuildCoordinator: "Coordinator",
-      RepairExport: "Repair",
-      RecoveryExport: "Recovery",
-      RestoreExport: "Restore",
-      FixExport: "Fix",
-      FixupExport: "Fixup",
-      BuildV2: "V2",
-      BuildV12: "V12",
-      CancelExport: "Cancel",
       CheckOracle: "Oracle",
       FixtureArtifact1: "Fixture",
       MergedShardOne: "Shard",
@@ -380,11 +382,33 @@ test("task calls refuse planning-failure worker names but allow verb-first neigh
       PushFinalBranch: "Final",
       RecordFinalVideo: "Final",
     };
-    for (const [name, word] of Object.entries(blocked)) {
+    // Reopen words (Fix/Repair/…) refuse only a staffed row that was accepted before: live
+    // 2026-10-01 "FixAsyncAsk" and "AskSelectorRepair" were refused for a fresh row.
+    const reopenBlocked: Record<string, string> = {
+      RepairExport: "Repair",
+      RecoveryExport: "Recovery",
+      RestoreExport: "Restore",
+      FixExport: "Fix",
+      FixupExport: "Fixup",
+      BuildV2: "V2",
+      BuildV12: "V12",
+      CancelExport: "Cancel",
+    };
+    for (const [name, word] of Object.entries(alwaysBlocked)) {
       const refusal = (await call(name));
       expect(refusal?.block, name).toBe(true);
       expect(refusal?.reason, name).toContain(word);
       expect(refusal?.reason, name).toContain("skill step 8");
+    }
+    for (const [name, word] of Object.entries(reopenBlocked)) {
+      const refusal = (await call(name, "Export pipeline"));
+      expect(refusal?.block, name).toBe(true);
+      expect(refusal?.reason, name).toContain(word);
+      expect(refusal?.reason, name).toContain("skill step 8");
+    }
+    // A fresh row staffed under a Fix/Repair name is new work, not a reopen: it passes.
+    for (const name of ["FixRowB", "AskSelectorRepair"]) {
+      expect((await call(name, "Row B"))?.block, name).not.toBe(true);
     }
     for (const name of ["CommitFinanceCues", "FitMinimapHeading", "ScanAllDrives", "CompactionTrace", "PromptRoutingAudit", "Worker-2", "OwnershipTrace", "Prefix", "Compile", "Remerge", "FinalizeNothing"]) {
       expect((await call(name))?.block, name).not.toBe(true);

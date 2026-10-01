@@ -239,6 +239,11 @@ function planningFailureWorkerWord(name: string): string | null {
   }
   return null;
 }
+// Reopen words (Fix/Repair/…) mean "an earlier row failed acceptance". They must not block a
+// fresh spawn for a new row: live 2026-10-01 "FixAsyncAsk" and "AskSelectorRepair" were refused
+// while FixExtensionGates spawned fine. Block only when the staffed row was accepted before or
+// the worker name targets an accepted row.
+const REOPEN_WORD_GROUPS: Record<string, true> = { Repair: true, Recovery: true, Restore: true, Fix: true, Fixup: true, V: true, Cancel: true };
 
 function readPersistedChildren(branch: unknown[]): PersistedChild[] {
   for (let index = branch.length - 1; index >= 0; index--) {
@@ -1742,6 +1747,32 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       ].filter(Boolean).join(" "),
     };
   };
+  const completedPlanRows = (ctx: ExtensionContext): Array<{ content: string; schedule?: { owner?: unknown } }> => {
+    try {
+      return sdk.getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch())
+        .flatMap((phase) => phase.tasks)
+        .filter((task) => task.status === "completed" || task.status === "abandoned");
+    } catch {
+      return [];
+    }
+  };
+  const reopenWordTargetsAcceptedRow = (ctx: ExtensionContext, workerName: string, word: string, taskText: unknown): boolean => {
+    const completed = completedPlanRows(ctx);
+    if (completed.length === 0) return false;
+    if (typeof taskText === "string") {
+      const needle = taskText.toLowerCase().trim();
+      if (needle && completed.some((row) => row.content.toLowerCase().trim() === needle)) return true;
+    }
+    const tokenize = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length >= 4);
+    const nameTokens = new Set([...tokenize(workerName.replace(word, "")), ...tokenize(workerName)]);
+    return completed.some((row) => {
+      const owner = row.schedule?.owner;
+      if (typeof owner === "string" && owner && workerName.toLowerCase().includes(owner.toLowerCase())) return true;
+      const rowTokens = new Set(tokenize(row.content));
+      for (const token of nameTokens) if (rowTokens.has(token)) return true;
+      return false;
+    });
+  };
   const isExistingOwnerName = (ctx: ExtensionContext, name: string) => {
     try {
       return sdk.getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch())
@@ -1757,6 +1788,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       const word = planningFailureWorkerWord(item.name);
       if (!word) continue;
       const group = /^V\d+$/.test(word) ? "V" : word;
+      if (REOPEN_WORD_GROUPS[group] === true && !reopenWordTargetsAcceptedRow(ctx, item.name, word, item.task)) continue;
       gateTrace(ctx, "planning-failure-worker-name-refused", { name: item.name, word });
       return {
         block: true,
