@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- Fixed async `ask` questions opening a separate keyboard selector with no note support instead of the working sync dialog: an ordinary ask now opens the same rich ask dialog (options, `n` note, custom answer, Enter/Ctrl+Enter/Ctrl+Q submit) non-blockingly, and confirming sends `Answer to <tool-call-id> [<question-id>]: <answer> — note: <text>` through the normal reply path.
 - The sticky TODO HUD now sizes its collapsed task window from the live viewport instead of a fixed five rows, so a tall terminal no longer strands rows behind an `… N more` summary while blank screen space remains; a short non-compact terminal keeps a floored, bounded window with the same summary.
 - Fixed isolated task workers starting from dirty parent checkout files instead of a clean copy of the parent `HEAD` ([#17](https://github.com/Komzpa/oh-my-pi/pull/17) by [@Komzpa](https://github.com/Komzpa)).
 - Fixed `block-clone` task isolation on Windows ReFS and Dev Drive volumes failing on files whose size is not a whole number of clusters, larger than 4 GiB, or sparse.

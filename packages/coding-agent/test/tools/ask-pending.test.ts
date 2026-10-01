@@ -4,6 +4,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import type {
+	ExtensionAskDialogQuestion,
+	ExtensionAskDialogResult,
+} from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { Settings } from "../../src/config/settings";
 import { SessionManager } from "../../src/session/session-manager";
 import type { ToolSession } from "../../src/tools";
@@ -53,20 +57,72 @@ describe("pending Ask", () => {
 			text: expect.stringContaining("No answer or approval has been received"),
 		});
 	});
-	it("returns pending immediately and submits a selected answer as a user reply", async () => {
-		const selected = Promise.withResolvers<string | undefined>();
+	it("returns pending immediately and submits a noted rich-dialog answer as a user reply", async () => {
+		const dialog = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
 		const submitUserReply = vi.fn();
-		const select = vi.fn(() => selected.promise);
+		const askDialog = vi.fn(() => dialog.promise);
 		const tool = new AskTool(session({ submitUserReply }));
-		const context = { hasUI: true, ui: { select }, abort: vi.fn() } as unknown as AgentToolContext;
+		const context = { hasUI: true, ui: { askDialog }, abort: vi.fn() } as unknown as AgentToolContext;
 		const result = await tool.execute("ask-1", { questions }, undefined, undefined, context);
 		expect(result.details?.pending?.id).toBe("ask-1");
-		expect(select).toHaveBeenCalledTimes(1);
+		expect(askDialog).toHaveBeenCalledTimes(1);
 		expect(submitUserReply).not.toHaveBeenCalled();
-		selected.resolve("Postgres");
+		dialog.resolve({
+			kind: "submit",
+			results: [
+				{
+					id: "choice",
+					question: "Which database?",
+					options: ["SQLite", "Postgres"],
+					multi: false,
+					selectedOptions: ["Postgres"],
+					note: "use pgvector",
+				},
+			],
+		});
 		await Promise.resolve();
 		await Promise.resolve();
-		expect(submitUserReply).toHaveBeenCalledWith("Answer to ask-1 [choice]: Postgres");
+		expect(submitUserReply).toHaveBeenCalledWith("Answer to ask-1 [choice]: Postgres — note: use pgvector");
+	});
+
+	it("opens the same rich dialog questions as the interactive re-answer path", async () => {
+		const asyncCaptured: ExtensionAskDialogQuestion[][] = [];
+		const asyncNever = Promise.withResolvers<never>();
+		const asyncAskDialog = vi.fn((questions: ExtensionAskDialogQuestion[]) => {
+			asyncCaptured.push(questions);
+			return asyncNever.promise;
+		});
+		const tool = new AskTool(session({ submitUserReply: vi.fn() }));
+		const result = await tool.execute("ask-1", { questions }, undefined, undefined, {
+			hasUI: true,
+			ui: { askDialog: asyncAskDialog },
+			abort: vi.fn(),
+		} as unknown as AgentToolContext);
+		expect(result.details?.pending?.id).toBe("ask-1");
+		expect(asyncAskDialog).toHaveBeenCalledTimes(1);
+
+		const interactiveCaptured: ExtensionAskDialogQuestion[][] = [];
+		const interactiveAskDialog = vi.fn((qs: ExtensionAskDialogQuestion[]) => {
+			interactiveCaptured.push(qs);
+			return Promise.resolve({
+				kind: "submit" as const,
+				results: qs.map(q => ({
+					id: q.id,
+					question: q.question,
+					options: q.options.map(o => o.label),
+					multi: q.multi ?? false,
+					selectedOptions: [q.options[0]?.label ?? ""],
+				})),
+			});
+		});
+		const interactiveTool = new AskTool(session(), { interactiveAnswer: true });
+		await interactiveTool.execute("ask-1", { questions }, undefined, undefined, {
+			hasUI: true,
+			ui: { askDialog: interactiveAskDialog },
+			abort: vi.fn(),
+		} as unknown as AgentToolContext);
+
+		expect(interactiveCaptured[0]).toEqual(asyncCaptured[0]);
 	});
 
 	it("keeps multiple asks and independent work runnable while all questions are unanswered", async () => {
