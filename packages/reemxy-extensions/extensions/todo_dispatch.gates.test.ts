@@ -431,6 +431,44 @@ test("task calls allow re-staffing a legacy row whose owner already has the bloc
   }
 }, 60_000);
 
+test("a refused task dispatch opens bounded chief work without weakening the staffing gate", async () => {
+  const cwd = repo("clean");
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const now = Date.now();
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: () => undefined,
+  } as unknown as ExtensionAPI;
+  await todoDispatch(api);
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: "gates-chief-refusal" }), getBranch: () => plan("ready", now), getSessionFile: () => undefined },
+    getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => false,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  try {
+    const bash = { command: "bun test extensions/one.test.ts" };
+    const blocked = (await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "understaffed", input: bash }, ctx)) as { block?: boolean; reason?: string };
+    expect(blocked?.block).toBe(true);
+    expect(blocked?.reason).toContain("do not run bash work yourself");
+    await handlers.get("tool_result")!({ toolName: "task", toolCallId: "refused-task", input: {}, content: [], isError: true }, ctx);
+    expect(await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "bounded-after-refusal", input: bash }, ctx)).toBeUndefined();
+    const note = (await handlers.get("context")!({ messages: [] }, ctx)) as { messages: Array<{ content: string }> };
+    expect(note.messages.at(-1)!.content).toContain("The last task dispatch was refused; bounded work is open to you");
+  } finally {
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("every todo result in the main session ends with the plan's problems", async () => {
   const cwd = repo("clean");
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
@@ -449,7 +487,6 @@ test("every todo result in the main session ends with the plan's problems", asyn
     cwd,
     sessionManager: { getHeader: () => ({ id: "gates-check" }), getBranch: () => branch, getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({ running: [{ id: "stray", type: "task", status: "running", label: "x", startTime: now } as never], recent: [], nonJobAgents: [] }),
-    getTaskMaxConcurrency: () => 20,
     isIdle: () => false,
     hasPendingMessages: () => false,
     setTimeout: () => ({}),
@@ -470,6 +507,10 @@ test("every todo result in the main session ends with the plan's problems", asyn
     linked[0]!.message.details.phases[0]!.tasks[1]!.schedule.owner = "stray";
     const after = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "t2", input: {}, content: [], details: linked[0]!.message.details, isError: false }, ctx)) as { content: Array<{ text: string }> };
     expect(after.content.at(-1)!.text).not.toContain("own no row");
+    const respawn = { ...ctx, getAsyncJobSnapshot: () => ({ running: [{ id: "worker-a-3", agentId: "worker-a-3", type: "task", status: "running", label: "Row A", startTime: now } as never], recent: [], nonJobAgents: [] }) } as unknown as ExtensionContext;
+    const respawnOut = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "respawn", input: {}, content: [], isError: false }, respawn)) as { content: Array<{ text: string }> };
+    expect(respawnOut.content.at(-1)!.text).not.toContain("own no row: worker-a-3");
+    expect(respawnOut.content.at(-1)!.text).not.toContain("owner that is not running");
     // Rows omp cannot forecast (the header's "unresolved") are named with the reason; forecastable ones are not.
     expect(after.content.at(-1)!.text).not.toContain("no forecast");
     const unestimated = plan("ready", now) as Array<{ message: { details: { phases: Array<{ tasks: Array<{ schedule: { estimate?: unknown } }> }> } } }>;
@@ -490,22 +531,21 @@ test("every todo result in the main session ends with the plan's problems", asyn
     for (const task of longer[0]!.message.details.phases[0]!.tasks) task.schedule.estimate = { ...task.schedule.estimate!, optimisticSeconds: 3600, likelySeconds: 5400, pessimisticSeconds: 7200 };
     const later = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "t4", input: {}, content: [], details: longer[0]!.message.details, isError: false }, ctx)) as { content: Array<{ text: string }> };
     expect(later.content.at(-1)!.text).toMatch(/this change moved the finish \d+ min later/);
-    // The notice is not advisory-only: the next task/wait call is refused, while todo and reads
-    // stay executable so the chief can undo it or justify the user-requested added work.
-    for (let i = 0; i < 3; i += 1) {
-      const refused = (await handlers.get("tool_call")!({ toolName: "task", toolCallId: `late-task-${i}`, input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string };
-      expect(refused?.block).toBe(true);
-      expect(refused?.reason).toContain("this change moved the finish");
-      expect(refused?.reason).toContain("undo it, or say in your next todo call which user request the added work serves (evidence field)");
-    }
-    // At most three refusals for this plan revision.
-    expect((await handlers.get("tool_call")!({ toolName: "task", toolCallId: "late-task-4", input: CALLS.taskRow!.arguments }, ctx))).toBeUndefined();
-    // Negative controls: reads and todo are not banned by the finish regression gate.
-    expect((await handlers.get("tool_call")!({ toolName: "read", toolCallId: "late-read", input: CALLS.read!.arguments }, ctx))).toBeUndefined();
-    expect((await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "late-todo", input: { op: "drop", task: "tidy row" } }, ctx))).toBeUndefined();
-    // A todo call with a structural evidence field clears the refusal.
+    // Finish-delay guidance is advisory: honest task dispatch and waits stay executable.
+    expect((await handlers.get("tool_call")!({ toolName: "task", toolCallId: "late-task", input: CALLS.taskRow!.arguments }, ctx))).toBeUndefined();
+    const idleWait = (await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "late-wait", input: {} }, ctx)) as { block?: boolean; reason?: string };
+    expect(idleWait.block).toBe(true);
+    expect(idleWait.reason).toContain("ready work lacks a distinct running worker");
+    // New user-requested rows likewise cannot close both task and bounded-work paths.
+    expect((await handlers.get("tool_call")!({ toolName: "task", toolCallId: "late-task-2", input: CALLS.taskRow!.arguments }, ctx))).toBeUndefined();
+    // This todo result remains advisory, not a dispatch refusal.
+    const same = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "late-todo-repeat", input: {}, content: [], details: longer[0]!.message.details, isError: false }, ctx)) as { content: Array<{ text: string }> };
+    expect(same.content.at(-1)!.text).toContain("this change moved the finish");
+    // Evidence clears the pending advisory state for the next addition.
     expect((await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "late-evidence", input: { op: "append", task: "extra work", evidence: "user asked for this added row" } }, ctx))).toBeUndefined();
     expect((await handlers.get("tool_call")!({ toolName: "task", toolCallId: "late-task-cleared", input: CALLS.taskRow!.arguments }, ctx))).toBeUndefined();
+    // Neighboring reads remain allowed.
+    expect((await handlers.get("tool_call")!({ toolName: "read", toolCallId: "late-read", input: CALLS.read!.arguments }, ctx))).toBeUndefined();
     // Neighbour: the task result handler still ignores todo-unrelated tools.
     expect((await handlers.get("tool_result")!({ toolName: "read", toolCallId: "r", input: {}, content: [], isError: false }, ctx))).toBeUndefined();
   } finally {
@@ -563,6 +603,9 @@ test("main-session plan snapshots feed plan-doctor from dispatcher-owned state f
     expect(fromCwd).toContain("Goal: goal-1");
     expect(fromCwd).toContain("Recent ETA samples");
     expect(fromCwd).toContain("| Row A | in_progress | 300/600/900s | [] | worker-a | yes |");
+    const noJob = { ...ctx, getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }) } as unknown as ExtensionContext;
+    (await handlers.get("context")!({ messages: [] }, noJob));
+    expect(readFileSync(byCwd, "utf8")).toContain("| Row A | in_progress | 300/600/900s | [] | worker-a | no |");
     expect(fromCwd).toContain("| Row B | pending | 300/600/900s | Row A |  | no |");
     expect(fromCwd).toContain("consumes output from");
     expect(fromCwd).toContain("worker-done | completed |");
@@ -1541,6 +1584,18 @@ test("PLAN CHECK says when the finish recedes with the clock, not before 45 minu
     const escalated = sent.at(-1)!;
     expect(escalated).toContain("Run `task` with agent `plan-doctor` now");
     expect(escalated).toContain("samples, now → finish:");
+    await handlers.get("tool_call")!({ toolName: "task", toolCallId: "doctor-dispatched", input: { tasks: [{ agent: "plan-doctor", task: "repair the plan" }] } }, ctx);
+    branch = plan("chained", realNow() + 180 * 60_000);
+    await at(180);
+    expect(sent.at(-1)).not.toContain("Run `task` with agent `plan-doctor` now");
+    branch = plan("chained", realNow() + 205 * 60_000);
+    await at(205);
+    branch = plan("chained", realNow() + 230 * 60_000);
+    await at(230);
+    expect(sent.at(-1)).not.toContain("Run `task` with agent `plan-doctor` now");
+    branch = plan("chained", realNow() + 250 * 60_000);
+    await at(250);
+    expect(sent.at(-1)).toContain("Run `task` with agent `plan-doctor` now");
   } finally {
     Date.now = realNow;
     handlers.get("session_shutdown")?.({}, ctx);

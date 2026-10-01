@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { applyTodoExecutorObservation } from "../../src/tools/todo-executor";
+import { applyTodoExecutorObservation, findRespawnOwnerRows } from "../../src/tools/todo-executor";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 it("persists a linked worker's profile, resolved model and actual lifecycle times on one row", () => {
@@ -357,4 +357,43 @@ it("does not treat a different owner that merely starts with the same letters as
 			runningWorkerIds: new Set(["Xyz-2"]),
 		}),
 	).toBeUndefined();
+});
+
+function respawnPhases(owner: string): TodoPhase[] {
+	return [
+		{
+			name: "Video craft",
+			tasks: [{ content: "Render the accepted cut", status: "in_progress", schedule: { owner } }],
+		},
+	];
+}
+
+it("relinks a base-named row to a parent-prefixed -3 respawn", () => {
+	expect(
+		findRespawnOwnerRows(respawnPhases("FooBar"), {
+			requestedName: "FooBar",
+			workerId: "Parent.FooBar-3",
+			runningWorkerIds: new Set(["Parent.FooBar-3"]),
+		}),
+	).toEqual(["Render the accepted cut"]);
+});
+
+it("relinks a settled earlier bump to the newest suffixed respawn", () => {
+	expect(
+		findRespawnOwnerRows(respawnPhases("FooBar-2"), {
+			requestedName: "FooBar",
+			workerId: "FooBar-3",
+			runningWorkerIds: new Set(["FooBar-3"]),
+		}),
+	).toEqual(["Render the accepted cut"]);
+});
+
+it("does not steal a row owned by another still-running bump", () => {
+	expect(
+		findRespawnOwnerRows(respawnPhases("FooBar-2"), {
+			requestedName: "FooBar",
+			workerId: "FooBar-3",
+			runningWorkerIds: new Set(["FooBar-2", "FooBar-3"]),
+		}),
+	).toEqual([]);
 });

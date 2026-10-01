@@ -318,6 +318,58 @@ describe("ExtensionRunner", () => {
 		expect(unavailable.text).toContain("unavailable");
 	});
 
+	it("routes ctx.sendAgentMessage through the shared IRC path even when the host never wired it", async () => {
+		const registry = AgentRegistry.global();
+		registry.register({ id: "Main", displayName: "main", kind: "main", session: {} as never });
+		const deliveredBodies: string[] = [];
+		registry.register({
+			id: "Worker",
+			displayName: "worker",
+			kind: "sub",
+			session: {
+				deliverIrcMessage: async (message: { from: string; body: string }) => {
+					deliveredBodies.push(`${message.from}:${message.body}`);
+					return "injected";
+				},
+			} as never,
+		});
+		// Never initialized: mirrors hosts that construct a runner without
+		// context actions, where ctx.sendAgentMessage used to answer
+		// "unavailable" while `write agent://` delivered.
+		const runner = new ExtensionRunner(
+			[],
+			new ExtensionRuntime(),
+			tempDir.path(),
+			sessionManager,
+			modelRegistry,
+			undefined,
+			Settings.isolated({}),
+			undefined,
+			undefined,
+			{ kind: "sub", id: "Main", name: "Main", depth: 1 },
+		);
+		const ctx = runner.createContext();
+
+		const result = await ctx.sendAgentMessage("Worker", "status?");
+		expect(result).toEqual({ delivered: true, text: "Delivered to Worker." });
+		expect(deliveredBodies).toEqual(["Main:status?"]);
+
+		const missing = await ctx.sendAgentMessage("Nobody", "hello?");
+		expect(missing.delivered).toBe(false);
+
+		const direct = await sendAgentMessageFromSession(
+			{
+				agentRegistry: registry,
+				settings: Settings.isolated({}),
+				taskDepth: 1,
+				getAgentId: () => "Main",
+				getSessionFile: () => null,
+			},
+			"Worker",
+			"status?",
+		);
+		expect(direct).toEqual({ delivered: true, text: "Delivered to Worker." });
+	});
 	describe("shortcut conflicts", () => {
 		it("warns when extension shortcut conflicts with built-in", async () => {
 			const extCode = `

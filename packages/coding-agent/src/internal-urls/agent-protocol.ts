@@ -18,7 +18,7 @@ import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import { AgentRegistry, type AgentRef } from "../registry/agent-registry";
 import { ensurePersistedRoster } from "../registry/persisted-agents";
-import { executeSend, isIrcEnabled } from "../irc/messaging";
+import { agentMessagingUnavailableReason, executeSend } from "../irc/messaging";
 import { formatSessionHistoryMarkdown } from "../session/session-history-format";
 import { loadSessionMessagesReadOnly } from "../session/session-loader";
 import agentPromptDoc from "../prompts/internal-urls/agent.md" with { type: "text" };
@@ -120,16 +120,10 @@ export class AgentProtocolHandler implements ProtocolHandler {
 	async write(url: InternalUrl, content: string, context?: WriteContext): Promise<InternalWriteResult> {
 		const session = context?.session;
 		if (!session) throw new Error("agent:// messaging requires a tool session");
+		const unavailable = agentMessagingUnavailableReason(session);
+		if (unavailable !== undefined) throw new Error(unavailable);
 		const registry = session.agentRegistry;
 		const senderId = session.getAgentId?.();
-		if (
-			!registry ||
-			!senderId ||
-			session.enableIrc === false ||
-			!isIrcEnabled(session.settings, session.taskDepth ?? 0)
-		) {
-			throw new Error("Peer messaging is unavailable in this session.");
-		}
 		const to = url.rawHost || url.hostname;
 		if (!to) throw new Error("agent:// URL requires a recipient: agent://<id>");
 		if (hasPathExtraction(url)) {
@@ -137,7 +131,8 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		}
 		if (!content.trim()) throw new Error("agent:// messages require non-empty content.");
 		const result = await executeSend(
-			{ registry, senderId, sessionFileHint: session.getSessionFile?.() },
+			// `agentMessagingUnavailableReason` above guarantees both are present.
+			{ registry: registry!, senderId: senderId!, sessionFileHint: session.getSessionFile?.() },
 			{ to, message: content },
 		);
 		return {
