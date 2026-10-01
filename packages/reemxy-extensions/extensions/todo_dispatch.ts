@@ -778,14 +778,16 @@ export function decideTodoDispatch(
       return child && !runningTaskWorkerIds.has(child.id) ? [child.id] : [];
     }),
   );
+  const liveJobMatchesOwner = (job: { id: string; agentId?: string }, owner: string) =>
+    job.id === owner || job.agentId === owner || job.id.replace(/-\d+$/, "") === owner;
   const ownerHasActiveTask = (owner: string | null) =>
     owner !== null && (
-      activeTaskJobs.some((job) => job.id === owner || job.agentId === owner) ||
+      activeTaskJobs.some((job) => liveJobMatchesOwner(job, owner)) ||
       livePersistedChildForOwner(owner) !== undefined
     );
   const ownerRunStates = open.map(({ task }) => {
     const owner = typeof task.schedule?.owner === "string" ? task.schedule.owner : null;
-    return { content: task.content, owner, running: ownerHasActiveTask(owner) };
+    return { content: task.content, owner, running: owner !== null && activeTaskJobs.some((job) => liveJobMatchesOwner(job, owner)) };
   });
   const openTasksByContent = new Map(open.map(({ task }) => [task.content, task]));
   const liveResourceHolders = open
@@ -811,7 +813,7 @@ export function decideTodoDispatch(
         : activeTaskJobs.find((active) => active.agentId === owner);
       const jobById = owner === null
         ? undefined
-        : activeTaskJobs.find((active) => active.id === owner);
+        : activeTaskJobs.find((active) => active.id === owner || active.id.replace(/-\d+$/, "") === owner);
       const liveWorkerId =
         jobByAgentId?.agentId || (jobById ? jobById.agentId || jobById.id : undefined) ||
         activeRestoredChild?.id;
@@ -1717,6 +1719,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       reason: `${addressed} is settled; row ${JSON.stringify(shorten(row.content))} current live owner is ${currentOwner}; redirect requested.`,
     };
   };
+  let lastTaskDispatchRefused = false;
   const blockWorkerWork = (event: { toolName: string; input?: unknown }, ctx: ExtensionContext) => {
     if (pauseGate?.paused || !isMain(ctx) || !pi.getActiveTools().includes("task")) return;
     const input = (event.input ?? {}) as { command?: unknown; path?: unknown };
@@ -1727,7 +1730,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const runningTasks = (jobs?.running ?? []).filter((job) => job.type === "task" && job.status === "running").length;
     const open = (decision.forecast.rows ?? []).filter((row) => row.status === "pending" || row.status === "in_progress");
     const parked = open.length - runningTasks;
-    if (!understaffed(ctx, runningTasks, parked)) return;
+    if (!understaffed(ctx, runningTasks, parked) || lastTaskDispatchRefused) return;
     if (chiefRefusals >= MAX_CHIEF_REFUSALS) return; // it insists three times in a row: let it through
     chiefRefusals += 1;
     gateTrace(ctx, `chief-refused-${event.toolName}`, { runningTasks, parked });
@@ -1740,7 +1743,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         ORDER,
         "Read-only looks (read, grep, find, git status/log/show/diff) stay allowed.",
         // Seen live 2026-09-25: the chief ran pgrep on its stalled git worker's hook, which is the worker's job.
-        "A worker that seems stuck is asked, not investigated by you: read its history://<id> tail, write agent://<id> asking what it waits on, and if it cannot answer send a scout or give its row to a new worker.",
+        lastTaskDispatchRefused ? "The last task dispatch was refused: do bounded work yourself until the ready row can be dispatched." : undefined,
       ].filter(Boolean).join(" "),
     };
   };
@@ -2407,29 +2410,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     nativeGateRegistered = true;
   }
 
-  let pendingFinishDelay: {
-    notice: string;
-    allowedFinish: number;
-    key: string | null;
-    refusalKey: string | null;
-    refusals: number;
-  } | null = null;
-  const MAX_FINISH_DELAY_REFUSALS = 3;
-  const finishDelayRefusal = (toolName: string, ctx: ExtensionContext) => {
-    if (!pendingFinishDelay || !isMain(ctx) || (toolName !== "task" && toolName !== "wait")) return;
-    const decision = currentDecision(ctx);
-    if (pendingFinishDelay.refusalKey !== decision.key) {
-      pendingFinishDelay.refusalKey = decision.key;
-      pendingFinishDelay.refusals = 0;
-    }
-    if (pendingFinishDelay.refusals >= MAX_FINISH_DELAY_REFUSALS) return;
-    pendingFinishDelay.refusals += 1;
-    gateTrace(ctx, "finish-delay-refused", { toolName, minutes: Math.round((Date.now() - pendingFinishDelay.allowedFinish) / 60_000) });
-    return {
-      block: true,
-      reason: `${pendingFinishDelay.notice}. undo it, or say in your next todo call which user request the added work serves (evidence field)`,
-    };
-  };
+  let pendingFinishDelay: { notice: string; allowedFinish: number } | null = null;
 
   pi.on("before_subagent_spawn", async (event, ctx) => {
     if (singleWriterLane) return;
@@ -2448,12 +2429,22 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     if (singleWriterLane) return;
     const badWorkerName = refusePlanningFailureWorkerName(event as { toolName: string; input?: unknown }, ctx);
     if (badWorkerName) return badWorkerName;
+    if (event.toolName === "task") lastTaskDispatchRefused = false;
     const gitOwnerConflict = refuseConcurrentGitPrOwner(event as { toolName: string; input?: unknown }, ctx);
     if (gitOwnerConflict) return gitOwnerConflict;
-    if (event.toolName === "task" && isPlanDoctorTaskInput(event.input)) currentDecision(ctx, Date.now(), [], true);
-    if (event.toolName === "todo" && pendingFinishDelay && hasEvidenceField(event.input)) pendingFinishDelay = null;
-    const finishDelay = finishDelayRefusal(event.toolName, ctx);
-    if (finishDelay) return finishDelay;
+    if (event.toolName === "task" && isPlanDoctorTaskInput(event.input)) {
+      currentDecision(ctx, Date.now(), [], true);
+      finishSamples.length = 0;
+      finishSession = ctx.sessionManager.getHeader()?.id;
+      recedingSince = undefined;
+      pendingFinishDelay = null;
+    }
+    if (event.toolName === "todo" && hasEvidenceField(event.input)) {
+      finishSamples.length = 0;
+      finishSession = ctx.sessionManager.getHeader()?.id;
+      recedingSince = undefined;
+      pendingFinishDelay = null;
+    }
     if (event.toolName === "wait") return blockIdleWait(ctx);
     if (event.toolName === "task") chiefRefusals = 0;
     const rerouted = rerouteSettledWorkerWrite(event as { toolName: string; input?: unknown }, ctx);
@@ -2569,19 +2560,13 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     }
     if (laterBy >= 5 * 60_000) {
       finishDelayNotice = `this change moved the finish ${minutes(laterBy)} later. Unless it adds work the user asked for, undo it: a row on the chain that only makes the process tidier (an integration, a checkpoint, a gate, …) lengthens it (skill step 6)`;
-      pendingFinishDelay = {
-        notice: finishDelayNotice,
-        allowedFinish: previousFinish,
-        key: decision.key,
-        refusalKey: null,
-        refusals: 0,
-      };
+      pendingFinishDelay = { notice: finishDelayNotice, allowedFinish: previousFinish };
     }
     const names = (list: Array<{ content: string }>) =>
       list.slice(0, 6).map((row) => JSON.stringify(shorten(row.content))).join(", ") + (list.length > 6 ? `, … ${list.length - 6} more` : "");
     const running = (ctx.getAsyncJobSnapshot()?.running ?? []).filter((job) => job.type === "task" && job.status === "running");
     const owners = new Set(decision.todoOwnerIds ?? []);
-    const unlinked = running.filter((job) => !owners.has(job.id) && !(job.agentId && owners.has(job.agentId)));
+    const unlinked = running.filter((job) => !owners.has(job.id) && !(job.agentId && owners.has(job.agentId)) && ![...owners].some((owner) => job.id.replace(/-\d+$/, "") === owner));
     const missing = (decision.forecast.planningIssues ?? []).length;
     const overdue = open.filter((row) => row.overdue);
     const ready = decision.dispatchableReady ?? [];
@@ -2803,6 +2788,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       return { content: [...event.content, { type: "text" as const, text: check }] };
     }
     if (event.toolName !== "task") return;
+    lastTaskDispatchRefused = Boolean(event.isError);
     if (!event.isError && isRetroFacilitatorTaskResult(event)) finishRetro();
     const baseline = taskCallBaselines.get(event.toolCallId);
     taskCallBaselines.delete(event.toolCallId);
@@ -2842,6 +2828,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const content = [
       ...(chief ? [CHIEF_OF_STAFF] : []),
       ...(facts ? [facts] : []),
+      ...(chief && lastTaskDispatchRefused ? ["The last task dispatch was refused; bounded work is open to you until the ready row can be dispatched."] : []),
       ...(chief && activeDemand ? [`NEXT STEP (advice; no call is skipped or refused for it): ${activeDemand}`] : []),
       ...(decision.prompt
         ? [`${decision.prompt}${attemptedIdleOwners.length ? `\nFAIL CLOSED: exact idle worker resume already attempted once for ${attemptedIdleOwners.join(", ")}; inspect the exact session/result, do not retry or create a duplicate writer.` : ""}`]
