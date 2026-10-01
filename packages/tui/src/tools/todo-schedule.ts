@@ -129,6 +129,8 @@ export interface TodoTaskForecast {
 	progressAt?: number;
 	startedAt?: number;
 	finishedAt?: number;
+	/** Sum of recorded worker-attempt durations, when any are available. */
+	attemptDurationMs?: number;
 }
 
 export type TodoDeadlineStatus = "overdue" | "at-risk" | "on-track" | "unknown";
@@ -1325,6 +1327,10 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 			progressAt: node.schedule?.progress?.at,
 			startedAt: node.schedule?.startedAt,
 			finishedAt: node.schedule?.finishedAt,
+			attemptDurationMs:
+				node.schedule?.attemptHistory && node.schedule.attemptHistory.length > 0
+					? node.schedule.attemptHistory.reduce((total, attempt) => total + attempt.durationMs, 0)
+					: undefined,
 		};
 	});
 
@@ -1530,10 +1536,13 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 						: `forecast unavailable${row.issues[0] ? `: ${safeText(row.issues[0])}` : ""}`;
 	const parts = [label];
 	const workEnd = terminal ? row.finishedAt : row.status === "in_progress" ? now : undefined;
-	const worked =
-		finiteTimestamp(row.startedAt) && finiteTimestamp(workEnd) && workEnd >= row.startedAt
-			? `${Math.floor((workEnd - row.startedAt) / 60_000)}m`
-			: undefined;
+	const workedMs =
+		terminal && row.attemptDurationMs !== undefined
+			? row.attemptDurationMs
+			: finiteTimestamp(row.startedAt) && finiteTimestamp(workEnd) && workEnd >= row.startedAt
+				? workEnd - row.startedAt
+				: undefined;
+	const worked = workedMs === undefined ? undefined : `${Math.round(workedMs / 60_000)}m`;
 	if (row.estimateRangeSeconds)
 		parts.push(`${worked ? `${worked} / ` : ""}${Math.ceil(row.estimateRangeSeconds.likely / 60)}m`);
 	else if (worked) parts.push(worked);

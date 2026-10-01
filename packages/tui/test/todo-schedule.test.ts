@@ -76,6 +76,34 @@ it("shows worked minutes and current likely estimate in the TODO tree", () => {
 	expect(shown.pending).toContain("10m");
 	expect(shown.pending).not.toContain(" / ");
 });
+it("uses summed attempts for reopened terminal rows and freezes them", () => {
+	const now = NOW + 30 * 60_000;
+	const row = task("reopened", 600, { status: "completed" });
+	row.schedule!.startedAt = now - 1002 * 60_000;
+	row.schedule!.finishedAt = now - 2 * 60_000;
+	row.schedule!.attemptHistory = Array.from({ length: 8 }, (_, index) => ({
+		attemptId: `attempt-${index}`,
+		workerName: `worker-${index}`,
+		resolvedModel: "test-model",
+		effort: "high",
+		startedAt: now - 20 * 60_000,
+		finishedAt: now - 19 * 60_000,
+		durationMs: 135_000,
+		terminalStatus: "completed" as const,
+		deliverablePaths: [],
+	}));
+	const forecast = forecastTodoPlan(phases(row), { now });
+	const rendered = formatTaskForecastDisplay(forecast.rows[0]!, now);
+	const later = formatTaskForecastDisplay(forecast.rows[0]!, now + 8 * 60 * 60_000);
+	expect(rendered).toContain("18m / 10m");
+	expect(later).toContain("18m / 10m");
+
+	const legacy = task("legacy", 600, { status: "completed" });
+	legacy.schedule!.startedAt = now - 12 * 60_000;
+	legacy.schedule!.finishedAt = now - 3 * 60_000;
+	const [legacyRow] = forecastTodoPlan(phases(legacy), { now }).rows;
+	expect(formatTaskForecastDisplay(legacyRow!, now)).toContain("9m / 10m");
+});
 
 it("keeps scheduling method details out of rendered TODO lines", () => {
 	const now = Date.parse("2026-09-24T22:00:00Z");

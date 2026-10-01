@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Reopened terminal TODO rows with worker attempts now report summed attempt duration, not elapsed time from their original start.
+
 ## [18.4.1] - 2026-09-28
 
 ### Breaking Changes
