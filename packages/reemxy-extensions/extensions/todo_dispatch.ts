@@ -70,6 +70,8 @@ const MAX_IDLE_RECHECK_MS = 30_000;
 const MAX_TASK_DISPATCH = 20;
 const ROSTER_ENTRY_TYPE = "todo-dispatch-roster";
 const SPRINT_STATE_ENTRY_TYPE = "todo-dispatch-sprint-state";
+const CHIEF_RULES_ENTRY_TYPE = "chief-rules-after-compaction";
+const WORKER_BRIEF_ENTRY_TYPE = "worker-brief-after-compaction";
 // A merge whose conflicts are all resolved is one `git commit` away. Seen live: a planner kept a
 // resolved merge open for hours behind feature rows and gates while main moved on, and spawned a
 // fresh round of merge workers for every move. Past these ages the gate demands commit, then push.
@@ -1675,6 +1677,40 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const header = ctx.sessionManager.getHeader();
     return header !== null && !header.parentSession;
   };
+  // The full chief-of-staff runbook (main) or a worker's original brief (subagent) drops out of
+  // context at compaction — the summary replaces it. Re-persist it once, right after each
+  // compaction, as a custom message entry that joins LLM context without starting a turn
+  // (sendMessage deliverAs "nextTurn", no triggerTurn: appends to session history, no turn).
+  // The per-request CHIEF_OF_STAFF one-liner stays in the `context` hook as the cheap pointer;
+  // this entry carries the full text so the rules survive the compacted prefix.
+  pi.on("session_compact", (_event, ctx) => {
+    if (isMain(ctx)) {
+      const chief = host.getActiveSkills?.().find((skill) => skill.name === "chief-of-staff");
+      let text: string | undefined;
+      if (chief?.filePath) {
+        try {
+          text = readFileSync(chief.filePath, "utf8");
+        } catch {
+          text = undefined;
+        }
+      }
+      if (text) {
+        pi.sendMessage(
+          { customType: CHIEF_RULES_ENTRY_TYPE, content: text, display: false, attribution: "agent" },
+          { deliverAs: "nextTurn" },
+        );
+      }
+      return;
+    }
+    const init = ctx.sessionManager.getBranch().find((entry) => entry.type === "session_init");
+    const brief = init && "task" in init && typeof init.task === "string" ? init.task : undefined;
+    if (brief) {
+      pi.sendMessage(
+        { customType: WORKER_BRIEF_ENTRY_TYPE, content: brief, display: false, attribution: "agent" },
+        { deliverAs: "nextTurn" },
+      );
+    }
+  });
   // Work a worker should do: shell that is neither a quick look nor commit/push, file edits, eval.
   // Messages to workers (write agent://…), reads, todo, task and complaints are the chief's own job.
   const isWorkerWork = (toolName: string, rawInput: unknown) => {
