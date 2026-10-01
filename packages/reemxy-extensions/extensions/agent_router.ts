@@ -8,7 +8,7 @@ import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import type { ModelUsageHealth, ModelUsageHealthState } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { checkoutScopesFromResources } from "./checkout_scope";
+import { checkoutScopesFromResources, checkoutScopesOverlap } from "./checkout_scope";
 
 export interface PoolConfig {
 	pool: string[];
@@ -82,7 +82,7 @@ function activeWriteWorker(
 		if (
 			checkoutScopes &&
 			spawn.checkoutScopes &&
-			!checkoutScopes.some(scope => spawn.checkoutScopes!.includes(scope))
+			!checkoutScopesOverlap(checkoutScopes, spawn.checkoutScopes)
 		)
 			return false;
 		return runningJobs.some(job => {
