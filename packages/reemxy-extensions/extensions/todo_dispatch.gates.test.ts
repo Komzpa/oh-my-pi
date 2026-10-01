@@ -22,7 +22,7 @@ import {
   forecastTodoPlan,
   type TodoScheduleInput,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import todoDispatch from "./todo_dispatch";
+import todoDispatch, { decideGateCall, parseTodoOverride, SPRINT_STATE_ENTRY_TYPE } from "./todo_dispatch";
 
 type Jobs = Pick<AsyncJobSnapshot, "running" | "recent" | "nonJobAgents">;
 type Call = { name: string; arguments: Record<string, unknown> };
@@ -1682,6 +1682,70 @@ test("the waiting list is the chain that sets the ETA and names a shared resourc
     expect(text).toContain("A resource queue on this chain is a limit you set");
     // Shard two has slack behind the slot queue, so it is not on the chain.
     expect(text).not.toContain('- "Shard two"');
+  } finally {
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("decideGateCall: reads, steering and non-done todo pass; other calls need a remedy", () => {
+  expect(decideGateCall({ name: "read", arguments: { path: "README.md" } }, []).allowed).toBe(true);
+  expect(decideGateCall({ name: "write", arguments: { path: "agent://worker-a", content: "status?" } }, []).allowed).toBe(true);
+  expect(decideGateCall({ name: "todo", arguments: { op: "schedule", updates: [] } }, []).allowed).toBe(true);
+  expect(decideGateCall({ name: "bash", arguments: { command: "bun test" } }, []).allowed).toBe(true);
+  const receipt = { id: "receipt", remedy: "read each receipt and close its row", satisfies: (call: { name: string }) => call.name === "todo" };
+  const blocked = decideGateCall({ name: "bash", arguments: { command: "bun test" } }, [receipt]);
+  expect(blocked.allowed).toBe(false);
+  expect(blocked.remedyGateIds).toEqual(["receipt"]);
+  expect(blocked.reason).toContain("receipt");
+  const allowed = decideGateCall({ name: "todo", arguments: { op: "done", task: "Row A" } }, [receipt]);
+  expect(allowed.allowed).toBe(true);
+  expect(allowed.remedyGateIds).toEqual(["receipt"]);
+});
+
+test("parseTodoOverride names a gate id inside the override field", () => {
+  expect(parseTodoOverride({ op: "schedule", override: "answering missed-eta with new estimates" })).toBe("missed-eta");
+  expect(parseTodoOverride({ op: "append", override: "RETRO handled separately" })).toBe("retro");
+  expect(parseTodoOverride({ op: "schedule" })).toBeUndefined();
+  expect(parseTodoOverride({ op: "schedule", override: "something else entirely" })).toBeUndefined();
+  expect(parseTodoOverride(null)).toBeUndefined();
+});
+
+test("escalated demands refuse non-remedy calls until a todo override names them", async () => {
+  const cwd = repo("clean");
+  const now = Date.now();
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: () => undefined,
+  } as unknown as ExtensionAPI;
+  const branch = [...plan("ready", now), { customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "missed-eta": 3 } } }];
+  await todoDispatch(api);
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: "gates-union" }), getBranch: () => branch, getSessionFile: () => undefined },
+    getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => false,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  try {
+    await handlers.get("session_start")!({}, ctx);
+    const toolCall = handlers.get("tool_call")!;
+    const refused = (await toolCall({ toolName: "task", toolCallId: "u1", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    expect(refused?.block).toBe(true);
+    expect(refused?.reason).toContain("missed-eta");
+    expect(await toolCall({ toolName: "read", toolCallId: "u2", input: CALLS.read!.arguments }, ctx)).toBeUndefined();
+    expect(await toolCall({ toolName: "todo", toolCallId: "u3", input: CALLS.todoSchedule!.arguments }, ctx)).toBeUndefined();
+    // Naming the demand in the override field lets later calls through.
+    expect(await toolCall({ toolName: "todo", toolCallId: "u4", input: { ...CALLS.todoSchedule!.arguments, override: "missed-eta re-estimated" } }, ctx)).toBeUndefined();
+    expect(await toolCall({ toolName: "task", toolCallId: "u5", input: CALLS.taskRow!.arguments }, ctx)).toBeUndefined();
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });
