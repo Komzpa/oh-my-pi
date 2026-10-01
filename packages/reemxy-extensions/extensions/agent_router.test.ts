@@ -516,18 +516,20 @@ describe("agent router", () => {
 			await spawn("writer-1");
 			running = [{ id: "writer-1", type: "task", status: "running" }];
 			symlinkSync(join(dir, "missing-target"), join(other, "broken-alias"));
-			for (const [owner, resources] of [
-				["writer-2-2", [other]],
-				["writer-2", []],
-				["writer-2", ["other:source-writer"]],
-				["writer-2", [other, "ambiguous"]],
-				["writer-2", [join(dir, "not-a-repo")]],
-				["writer-2", [join(other, "broken-alias", "file.ts")]],
-			]) {
-				tasks.push({ content: `Write to ${other}`, status: "pending", schedule: { owner, resources } });
-				expect((await spawn("writer-2"))?.block).toBe(true);
-				tasks.pop();
-			}
+		for (const [owner, resources] of [
+			["writer-2-2", [other]],
+			["writer-2", []],
+			["writer-2", ["other:source-writer"]],
+			["writer-2", [other, "ambiguous"]],
+			["writer-2", [join(other, "broken-alias", "file.ts")]],
+		]) {
+			tasks.push({ content: `Write to ${other}`, status: "pending", schedule: { owner, resources } });
+			expect((await spawn("writer-2"))?.block).toBe(true);
+			tasks.pop();
+		}
+		tasks.push({ content: "Write outside any repo", status: "pending", schedule: { owner: "writer-2", resources: [join(dir, "not-a-repo")] } });
+		expect((await spawn("writer-2"))?.model).toBeDefined();
+		tasks.pop();
 			tasks.push({ content: "Known", status: "pending", schedule: { owner: "writer-2", resources: [other] } });
 			expect(
 				(
@@ -1166,4 +1168,144 @@ describe("agent router", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+	test("auth-dead models are skipped for hours after a 401 Invalid API Key failure", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const t0 = new Date("2026-10-01T15:00:00.000Z");
+			const state = createRouterState();
+			const context = ctx();
+			const xiaomiFirst = <T>(items: readonly T[]) => {
+				const index = items.indexOf("xiaomi/mimo-v2.6-pro" as T);
+				return [...items.slice(index), ...items.slice(0, index)];
+			};
+			const first = await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-auth-1" }, context, state, {
+				stateFile: file,
+				now: () => t0,
+				shuffle: xiaomiFirst,
+			});
+			expect(first?.model[0]).toBe("xiaomi/mimo-v2.6-pro");
+			const rows = recordTaskOutcome(
+				{
+					toolName: "task",
+					isError: true,
+					details: {
+						results: [
+							{
+								agent: "coder",
+								exitCode: 1,
+								durationMs: 200,
+								error: "[xiaomi/mimo-v2.6-pro] 401 Invalid API Key",
+							},
+						],
+					},
+				},
+				context,
+				state,
+				{ stateFile: file, now: () => t0 },
+			);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]?.status).toBe("failed");
+			const whileDead = await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-auth-2" }, context, state, {
+				stateFile: file,
+				now: () => new Date(t0.getTime() + 60 * 60 * 1000),
+				shuffle: xiaomiFirst,
+			});
+			expect(whileDead?.model).toBeDefined();
+			expect(whileDead?.model).not.toContain("xiaomi/mimo-v2.6-pro");
+			const afterTtl = await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-auth-3" }, context, state, {
+				stateFile: file,
+				now: () => new Date(t0.getTime() + 7 * 60 * 60 * 1000),
+				shuffle: xiaomiFirst,
+			});
+			expect(afterTtl?.model[0]).toBe("xiaomi/mimo-v2.6-pro");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("unknown-scope holder only blocks writers in the session-cwd repo", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const repoA = join(dir, "repo-a");
+			const repoB = join(dir, "repo-b");
+			for (const repo of [repoA, repoB]) {
+				mkdirSync(repo);
+				execFileSync("git", ["init", "-q", repo]);
+			}
+			const tasks = [
+				{ content: "Holder with no resource paths", status: "in_progress", schedule: { owner: "holder-1", resources: [] } },
+			];
+			let running: Array<{ id: string; type: string; status: string }> = [];
+			const context = ctx({
+				cwd: repoA,
+				sessionManager: {
+					getHeader: () => ({ id: "session-1" }),
+					getBranch: () => [
+						{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } },
+					],
+				},
+				getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }),
+			});
+			const state = createRouterState();
+			const spawn = (spawnKey: string) =>
+				routeSubagentSpawn({ agent: "coder", spawnKey, isolated: false }, context, state, {
+					stateFile: file,
+					latestTodo: getLatestTodoPhasesFromEntries,
+				});
+			expect((await spawn("holder-1"))?.model).toBeDefined();
+			running = [{ id: "holder-1", type: "task", status: "running" }];
+			tasks.push({ content: "Other repo work", status: "pending", schedule: { owner: "other-1", resources: [`${repoB}/src/other.ts:source-writer`] } });
+			expect((await spawn("other-1"))?.model).toBeDefined();
+			tasks.pop();
+			tasks.push({ content: "Outside any repo", status: "pending", schedule: { owner: "tmp-1", resources: [join(dir, "scratch", "newfile.ts")] } });
+			expect((await spawn("tmp-1"))?.model).toBeDefined();
+			tasks.pop();
+			tasks.push({ content: "Same repo work", status: "pending", schedule: { owner: "same-1", resources: [`${repoA}/src/same.ts:source-writer`] } });
+			expect((await spawn("same-1"))?.block).toBe(true);
+			tasks.pop();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("writer refusal names the holder repo and points at row resources", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const repoA = join(dir, "repo-a");
+			mkdirSync(repoA);
+			execFileSync("git", ["init", "-q", repoA]);
+			const tasks = [
+				{ content: "Holder with no resource paths", status: "in_progress", schedule: { owner: "holder-1", resources: [] } },
+				{ content: "Same repo work", status: "pending", schedule: { owner: "same-1", resources: [`${repoA}/src/same.ts:source-writer`] } },
+			];
+			let running: Array<{ id: string; type: string; status: string }> = [];
+			const context = ctx({
+				cwd: repoA,
+				sessionManager: {
+					getHeader: () => ({ id: "session-1" }),
+					getBranch: () => [
+						{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } },
+					],
+				},
+				getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }),
+			});
+			const state = createRouterState();
+			const spawn = (spawnKey: string) =>
+				routeSubagentSpawn({ agent: "coder", spawnKey, isolated: false }, context, state, {
+					stateFile: file,
+					latestTodo: getLatestTodoPhasesFromEntries,
+				});
+			expect((await spawn("holder-1"))?.model).toBeDefined();
+			running = [{ id: "holder-1", type: "task", status: "running" }];
+			const refused = await spawn("same-1");
+			expect(refused).toMatchObject({ block: true });
+			expect(refused?.reason).toContain("holder-1");
+			expect(refused?.reason).toContain(repoA);
+			expect(refused?.reason).toContain("if this row edits another repo, put that repo path in the row resources");
+			expect(refused?.reason).toContain(`isolated: true isolates only ${repoA}`);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 });

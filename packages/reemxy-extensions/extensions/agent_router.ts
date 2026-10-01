@@ -47,27 +47,42 @@ const WRITE_CAPABLE_WORKERS = new Set([
 
 type LatestTodoGetter = (entries: unknown[]) => TodoScheduleInput;
 
+export function sessionCwdScopes(ctx: ExtensionContext): string[] | undefined {
+	const cwd = typeof ctx.cwd === "string" && ctx.cwd.trim() !== "" ? ctx.cwd : undefined;
+	if (!cwd) return undefined;
+	try {
+		const canonical = canonicalPath(cwd);
+		const repo = vcs.git(canonical);
+		if (!repo) return [];
+		const root = realpathSync(repo.info().repoRoot);
+		return [`${root}\0.`];
+	} catch {
+		return undefined;
+	}
+}
+
 function ownedCheckoutScopes(
 	event: BeforeSubagentSpawnEvent,
 	ctx: ExtensionContext,
 	latestTodo?: LatestTodoGetter,
 ): string[] | undefined {
+	const fallback = sessionCwdScopes(ctx);
 	const owner = stringValue(event.spawnKey);
-	if (!owner || !latestTodo || !ctx.sessionManager?.getBranch) return undefined;
+	if (!owner || !latestTodo || !ctx.sessionManager?.getBranch) return fallback;
 	try {
 		const rows = latestTodo(ctx.sessionManager.getBranch())
 			.flatMap(phase => phase.tasks)
 			.filter(row => (row.status === "pending" || row.status === "in_progress") && row.schedule?.owner === owner);
-		if (!rows.length) return undefined;
+		if (!rows.length) return fallback;
 		const scopes = new Set<string>();
 		for (const row of rows) {
 			const owned = checkoutScopesFromResources(row.schedule?.resources);
-			if (!owned) return undefined;
+			if (!owned) return fallback;
 			for (const scope of owned) scopes.add(scope);
 		}
 		return [...scopes].sort();
 	} catch {
-		return undefined;
+		return fallback;
 	}
 }
 
@@ -77,14 +92,12 @@ function activeWriteWorker(
 	checkoutScopes?: string[],
 ): SpawnState | undefined {
 	const runningJobs = ctx.getAsyncJobSnapshot?.()?.running ?? [];
+	const cwdFallback = sessionCwdScopes(ctx);
+	const incoming = checkoutScopes ?? cwdFallback;
 	return [...state.spawns.values()].find(spawn => {
 		if (spawn.recordedOutcome || spawn.isolated || !WRITE_CAPABLE_WORKERS.has(spawn.agent)) return false;
-		if (
-			checkoutScopes &&
-			spawn.checkoutScopes &&
-			!checkoutScopesOverlap(checkoutScopes, spawn.checkoutScopes)
-		)
-			return false;
+		const held = spawn.checkoutScopes ?? cwdFallback;
+		if (incoming !== undefined && held !== undefined && !checkoutScopesOverlap(incoming, held)) return false;
 		return runningJobs.some(job => {
 			const identifiers = [stringValue(job.id), stringValue(job.agentId)];
 			return (
@@ -172,6 +185,7 @@ interface SpawnState extends SpawnRecord {
 export interface RouterState {
 	spawns: Map<string, SpawnState>;
 	fallbacks: FallbackRecord[];
+	authDead: Map<string, number>;
 }
 
 export interface BeforeSubagentSpawnEvent {
@@ -198,8 +212,10 @@ export interface RetryFallbackAppliedEvent {
 export type JsonlRecord = SpawnRecord | OutcomeRecord;
 
 export function createRouterState(): RouterState {
-	return { spawns: new Map(), fallbacks: [] };
+	return { spawns: new Map(), fallbacks: [], authDead: new Map() };
 }
+
+export const AUTH_DEAD_TTL_MS = 6 * 60 * 60 * 1000;
 
 export function defaultStateFile(): string {
 	return process.env.OMP_AGENT_ROUTER_STATE ?? join(homedir(), ".local/state/omp-agent-router/spawns.jsonl");
@@ -347,10 +363,22 @@ async function usageSkipForModel(spec: string, ctx: ExtensionContext): Promise<S
 	}
 }
 
+function authSkipRecord(spec: string, state: RouterState, nowMs: number): SkippedModelRecord | undefined {
+	const deadUntil = state.authDead.get(modelSelectorBase(spec));
+	if (deadUntil === undefined || deadUntil <= nowMs) {
+		if (deadUntil !== undefined) state.authDead.delete(modelSelectorBase(spec));
+		return undefined;
+	}
+	return { model: spec, reason: `auth_failed_retry_after_${new Date(deadUntil).toISOString()}` };
+}
+
 async function availablePoolMembers(
 	pool: readonly string[],
 	ctx: ExtensionContext,
+	state?: RouterState,
+	now?: () => Date,
 ): Promise<{ available: string[]; skipped: SkippedModelRecord[] }> {
+	const nowMs = (now ?? (() => new Date()))().getTime();
 	if (!ctx.models?.resolve || !ctx.models?.list) return { available: [...pool], skipped: [] };
 	const authenticated = new Set(ctx.models.list().map(model => `${model.provider}/${model.id}`));
 	const available: string[] = [];
@@ -358,6 +386,13 @@ async function availablePoolMembers(
 	for (const spec of pool) {
 		const model = ctx.models.resolve(spec);
 		if (model === undefined || !authenticated.has(`${model.provider}/${model.id}`)) continue;
+		if (state) {
+			const authSkip = authSkipRecord(spec, state, nowMs);
+			if (authSkip) {
+				skipped.push(authSkip);
+				continue;
+			}
+		}
 		const usageSkip = await usageSkipForModel(spec, ctx);
 		if (usageSkip) {
 			skipped.push(usageSkip);
@@ -369,15 +404,24 @@ async function availablePoolMembers(
 }
 
 /** True when this routed agent has at least one authenticated, non-depleted pool or fallback model now. */
-export async function agentHasLiveModel(agent: string, ctx: ExtensionContext): Promise<boolean> {
+export async function agentHasLiveModel(
+	agent: string,
+	ctx: ExtensionContext,
+	state?: RouterState,
+	now?: () => Date,
+): Promise<boolean> {
 	const config = AGENT_POOLS[agent];
 	if (!config) return false;
-	return (await availablePoolMembers([...config.pool, ...config.fallbacks], ctx)).available.length > 0;
+	return (await availablePoolMembers([...config.pool, ...config.fallbacks], ctx, state, now)).available.length > 0;
 }
 
-export async function countLiveWorkerModels(ctx: ExtensionContext): Promise<number> {
+export async function countLiveWorkerModels(
+	ctx: ExtensionContext,
+	state?: RouterState,
+	now?: () => Date,
+): Promise<number> {
 	const specs = [...new Set(Object.values(AGENT_POOLS).flatMap(config => [...config.pool, ...config.fallbacks]))];
-	const { available } = await availablePoolMembers(specs, ctx);
+	const { available } = await availablePoolMembers(specs, ctx, state, now);
 	const models = new Set(
 		available.map(spec => {
 			const model = ctx.models?.resolve?.(spec);
@@ -385,6 +429,18 @@ export async function countLiveWorkerModels(ctx: ExtensionContext): Promise<numb
 		}),
 	);
 	return models.size;
+}
+
+export function holderRepoLabel(spawn: SpawnState | undefined, ctx: ExtensionContext): string {
+	const scopes = spawn?.checkoutScopes ?? sessionCwdScopes(ctx);
+	const root = scopes?.[0]?.split("\0")[0];
+	return root && root.trim() !== "" ? root : "this checkout";
+}
+
+export function cwdRepoLabel(ctx: ExtensionContext): string {
+	const root = sessionCwdScopes(ctx)?.[0]?.split("\0")[0];
+	if (root && root.trim() !== "") return root;
+	return typeof ctx.cwd === "string" && ctx.cwd.trim() !== "" ? ctx.cwd : "the session checkout";
 }
 
 export async function routeSubagentSpawn(
@@ -419,13 +475,13 @@ export async function routeSubagentSpawn(
 		if (activeWriter) {
 			return {
 				block: true,
-				reason: `Refusing ${agent}: ${activeWriter.agent} worker ${activeWriter.spawnKey} is running in this checkout; pass isolated: true.`,
+			reason: `Refusing ${agent}: ${activeWriter.agent} worker ${activeWriter.spawnKey} is running in ${holderRepoLabel(activeWriter, ctx)}; if this row edits another repo, put that repo path in the row resources; isolated: true isolates only ${cwdRepoLabel(ctx)}.`,
 			};
 		}
 	}
 	const shuffle = options.shuffle ?? cryptoShuffle;
-	const { available, skipped: poolSkipped } = await availablePoolMembers(config.pool, ctx);
-	const { available: fallbacks, skipped: fallbackSkipped } = await availablePoolMembers(config.fallbacks, ctx);
+	const { available, skipped: poolSkipped } = await availablePoolMembers(config.pool, ctx, state, options.now);
+	const { available: fallbacks, skipped: fallbackSkipped } = await availablePoolMembers(config.fallbacks, ctx, state, options.now);
 	const skipped = [...poolSkipped, ...fallbackSkipped];
 	const poolOrder = shuffle(available);
 	const order = [...poolOrder, ...fallbacks];
@@ -536,6 +592,33 @@ export function recordAndNotifyRetryFallbackApplied(
 	return record;
 }
 
+function authFailureText(payload: Record<string, unknown>): string | undefined {
+	const texts: string[] = [];
+	for (const key of ["error", "message", "stderr", "stdout", "output", "text", "fallbackReason"]) {
+		const value = payload[key];
+		if (typeof value === "string" && value.trim() !== "") texts.push(value);
+	}
+	return texts.length ? texts.join("\n") : undefined;
+}
+
+function isAuthFailureText(text: string): boolean {
+	if (/invalid api key/i.test(text)) return true;
+	return /\b40[13]\b/.test(text) && /auth|unauthor|forbidden|invalid|api.key/i.test(text);
+}
+
+function markAuthDeadAfterFailure(
+	state: RouterState,
+	spawn: SpawnState,
+	resolvedModel: string | undefined,
+	payload: Record<string, unknown>,
+	now: () => Date,
+): void {
+	const text = authFailureText(payload);
+	if (!text || !isAuthFailureText(text)) return;
+	const base = modelSelectorBase(resolvedModel ?? spawn.chosen);
+	state.authDead.set(base, now().getTime() + AUTH_DEAD_TTL_MS);
+}
+
 export function recordTaskOutcome(
 	event: ToolResultEvent,
 	ctx: ExtensionContext,
@@ -562,6 +645,7 @@ export function recordTaskOutcome(
 			spawn.recordedOutcome = true;
 			const resolvedModel = stringValue(job.resolvedModel);
 			const fallbackReason = takeFallbackReason(state, spawn, resolvedModel);
+			if (status === "failed") markAuthDeadAfterFailure(state, spawn, resolvedModel, job, options.now ?? (() => new Date()));
 			const record: OutcomeRecord = {
 				kind: "outcome",
 				spawnKey: spawn.spawnKey,
@@ -601,6 +685,8 @@ export function recordTaskOutcome(
 		spawn.recordedOutcome = true;
 		const resolvedModel = stringValue(result.resolvedModel);
 		const fallbackReason = stringValue(result.fallbackReason) ?? takeFallbackReason(state, spawn, resolvedModel);
+		if (statusFromResult(result, event.isError === true) === "failed")
+			markAuthDeadAfterFailure(state, spawn, resolvedModel, result, options.now ?? (() => new Date()));
 		const record: OutcomeRecord = {
 			kind: "outcome",
 			spawnKey: spawn.spawnKey,
