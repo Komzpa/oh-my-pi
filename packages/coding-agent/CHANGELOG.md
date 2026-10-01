@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- The sticky TODO HUD now sizes its collapsed task window from the live viewport instead of a fixed five rows, so a tall terminal no longer strands rows behind an `… N more` summary while blank screen space remains; a short non-compact terminal keeps a floored, bounded window with the same summary.
 - Fixed isolated task workers starting from dirty parent checkout files instead of a clean copy of the parent `HEAD` ([#17](https://github.com/Komzpa/oh-my-pi/pull/17) by [@Komzpa](https://github.com/Komzpa)).
 - Fixed `block-clone` task isolation on Windows ReFS and Dev Drive volumes failing on files whose size is not a whole number of clusters, larger than 4 GiB, or sparse.
 

@@ -617,6 +617,34 @@ export const TODO_COMPACT_TERMINAL_ROWS_THRESHOLD = 18;
 
 const TODO_FORECAST_REFRESH_MS = 60_000;
 
+/**
+ * Rows the TODO HUD draws around its task rows: the blank + "TODO" header, the
+ * optional plan-forecast summary, the closing tail, and the "… N more" overflow
+ * summary.
+ */
+const TODO_HUD_CHROME_ROWS = 5;
+/** Rows kept below the HUD for the editor's bordered floor and the status line. */
+const TODO_HUD_BELOW_ROWS = EDITOR_MIN_RENDERED_ROWS + 1;
+/** Floor so a non-compact terminal still paints a few rows plus its summary. */
+const TODO_HUD_MIN_TASK_ROWS = 3;
+
+/**
+ * Task rows the collapsed TODO HUD may paint.
+ *
+ * Sized from the live viewport the way collapsed command/code previews are
+ * (`previewWindowRows`): terminal rows minus the HUD's own chrome and the
+ * editor/status floor beneath it. A tall terminal therefore shows every open
+ * row that fits instead of a fixed five — no row is stranded behind "… N more"
+ * while blank screen space remains — while a short terminal keeps a floored,
+ * bounded window with the overflow summary. A transiently tall editor clips the
+ * transcript tail, not this block, because the composer bills transient chrome
+ * at its floor; that is why the editor contributes its floor here, not its cap.
+ */
+export function computeTodoHudTaskRows(terminalRows: number): number {
+	const rows = Number.isFinite(terminalRows) && terminalRows > 0 ? terminalRows : EDITOR_FALLBACK_ROWS;
+	return Math.max(TODO_HUD_MIN_TASK_ROWS, rows - TODO_HUD_CHROME_ROWS - TODO_HUD_BELOW_ROWS);
+}
+
 /** Holds mutable HUD and editor-adjacent chrome outside transcript history. */
 class AnchoredLiveContainer extends Container {}
 
@@ -3771,7 +3799,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const multiPhase = phases.length > 1;
 		const activePhase = this.#getActivePhase(phases) ?? phases[0];
 		const activeIdx = activePhase ? phases.indexOf(activePhase) : -1;
-		const activeTaskCap = 5;
+		const activeTaskCap = computeTodoHudTaskRows(this.ui.terminal.rows);
 
 		const isMatched = (todo: TodoItem): boolean => workers.byTask.has(todo);
 		const orderedTasks = orderTodoTasksForDisplay(phases, this.#todoForecast?.rows);
@@ -3855,6 +3883,11 @@ export class InteractiveMode implements InteractiveModeContext {
 				{
 					items: segment.tasks,
 					expanded,
+					// The collapsed window above already sized this segment from the
+					// viewport (and reports its own "… N more" block), so the list must
+					// not re-cap at its default eight rows and hide a row the caller
+					// decided fits.
+					maxCollapsed: segment.tasks.length,
 					itemType: "task",
 					renderItem: todo =>
 						this.#formatForecastTodoLine(todo, "", isMatched(todo), now, workers.byTask.get(todo)),

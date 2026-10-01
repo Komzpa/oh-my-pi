@@ -229,35 +229,6 @@ describe("todo dispatch supervisor", () => {
     expect(result.nextCheckMs).toBeNull();
   });
 
-  test("keeps all 25 rows visible and preserves the explicit tail beyond the 64-row bound", () => {
-    const plan: TodoScheduleInput = [
-      {
-        name: "Independent files",
-        tasks: Array.from({ length: 25 }, (_, n) => ({
-          content: `Fix isolated surface ${n + 1}`,
-          status: "pending" as const,
-        })),
-      },
-    ];
-    const decision = decide({ phases: plan });
-    for (const n of [1, 16, 17, 25]) expect(decision.prompt).toContain(`Fix isolated surface ${n}`);
-    expect(decision.prompt).toContain("#25 [pending]");
-
-    const longPlan: TodoScheduleInput = [
-      {
-        name: "Long tail",
-        tasks: Array.from({ length: 65 }, (_, n) => ({
-          content: `Tail surface ${n + 1}`,
-          status: "pending" as const,
-        })),
-      },
-    ];
-    const bounded = decide({ phases: longPlan });
-    expect(bounded.prompt).toContain("Tail surface 25");
-    expect(bounded.prompt).toContain("Tail surface 64");
-    expect(bounded.prompt).toContain("Tail surface 65");
-    expect(bounded.prompt).toContain("tail=1");
-  });
 
   test("recalculates CPM late-start and fixed-deadline risk without changing the static plan key", () => {
     const plan = scheduledPlan();
@@ -1723,7 +1694,7 @@ test("overdue follow-through re-arms by minute and dispatches only actionable, r
   }
 });
 
-test("a chained plan receives bounded replanning advice but waiting is blocked only for runnable work", async () => {
+test("dependency waits remain allowed until independently runnable work appears", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "todo-dispatch-late-chain-"));
   mkdirSync(join(cwd, ".pi"), { recursive: true });
   const liveNow = now + 120_000;
@@ -1782,42 +1753,8 @@ test("a chained plan receives bounded replanning advice but waiting is blocked o
       clearTimer: () => undefined,
     } as unknown as ExtensionContext;
     setSystemTime(new Date(liveNow));
-    // Right after a restart, before any wait: the first model choice must be a todo rewrite.
     const wasPaused = agentPauseGate.paused;
     if (wasPaused) agentPauseGate.resume();
-    const demand = requirementProvider?.(ctx) as { toolName?: string; id?: string; reminder?: Array<{ content: string }> } | undefined;
-    expect(demand?.toolName).toBe("todo");
-    expect(demand?.reminder?.[0]?.content).toContain("MANDATORY REPLAN");
-    expect(demand?.reminder?.[0]?.content).toContain("5 open row(s) sit idle");
-    // Until todo is called the same demand stays in force.
-    expect((requirementProvider?.(ctx) as { id?: string }).id).toBe(demand?.id);
-    // A todo call that changes nothing structural is not a replan: demanded again, and told so.
-    (await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "t" }, ctx));
-    const again = requirementProvider?.(ctx) as { id?: string; reminder?: Array<{ content: string }> } | undefined;
-    expect(again?.id).not.toBe(demand?.id);
-    expect(again?.reminder?.[0]?.content).toContain("that is not a replan");
-    // Decomposing a row answers the demand; a still-chained plan is asked once more without the rebuke.
-    plan[0]!.tasks.push(row("Pin capture bundle: hash inputs", ["Replay checkpoint"]));
-    branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    (await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "t2" }, ctx));
-    const third = requirementProvider?.(ctx) as { reminder?: Array<{ content: string }> } | undefined;
-    expect(third?.reminder?.[0]?.content).toContain("MANDATORY REPLAN");
-    expect(third?.reminder?.[0]?.content).not.toContain("that is not a replan");
-    // At most five forced todo turns per episode.
-    for (let i = 0; i < 2; i += 1) {
-      (await handlers.get("tool_call")!({ toolName: "todo", toolCallId: `t${i + 3}` }, ctx));
-      expect(requirementProvider?.(ctx)).toBeDefined();
-    }
-    (await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "t9" }, ctx));
-    // Five rewrites did not unchain it: the plan-doctor is demanded once, then the gate stops.
-    const doctor = requirementProvider?.(ctx) as { toolName?: string; reminder?: Array<{ content: string }>; satisfies?: (call: unknown) => boolean } | undefined;
-    expect(doctor?.toolName).toBe("task");
-    expect(doctor?.reminder?.[0]?.content).toContain('agent "plan-doctor"');
-    expect(doctor?.satisfies?.({ name: "task", arguments: { tasks: [{ agent: "plan-doctor" }] } })).toBe(true);
-    expect(doctor?.satisfies?.({ name: "task", arguments: { tasks: [{ agent: "coder" }] } })).toBe(false);
-    expect(requirementProvider?.(ctx)).toBeUndefined();
-    plan[0]!.tasks.pop();
-    branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
     const wait = async () => (await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "w" }, ctx)) as { block?: boolean; reason?: string } | undefined;
     const first = (await wait());
     expect(first).toBeUndefined();

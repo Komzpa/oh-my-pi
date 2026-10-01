@@ -7,6 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { execFileSync } from "node:child_process";
 import todoDispatch, { noticeDigest } from "./todo_dispatch";
+import { AGENT_POOLS } from "./agent_router";
 
 type WaitTestTask = {
 	content: string;
@@ -405,13 +406,15 @@ test("capacity reports zero when no authenticated worker profile can start", asy
 	} as unknown as ExtensionContext;
 	const result = await handlers.get("context")!({ messages: [] }, ctx) as { messages?: Array<{ content: string }> };
 	expect(result?.messages?.at(-1)?.content).toContain("Task cap=0");
-	const onlyInklingModel = { provider: "openrouter", id: "thinkingmachines/inkling:free" };
+	const route = AGENT_POOLS.coder.pool[0].replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
+	const separator = route.indexOf("/");
+	const onlyModel = { provider: route.slice(0, separator), id: route.slice(separator + 1) };
 	const oneProviderCtx = {
 		...ctx,
 		sessionManager: { ...ctx.sessionManager, getHeader: () => ({ id: "capacity-one" }) },
 		models: {
-			list: () => [onlyInklingModel],
-			resolve: (spec: string) => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === "openrouter/thinkingmachines/inkling:free" ? onlyInklingModel : undefined,
+			list: () => [onlyModel],
+			resolve: (spec: string) => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === route ? onlyModel : undefined,
 		},
 	} as unknown as ExtensionContext;
 	const oneResult = await handlers.get("context")!({ messages: [] }, oneProviderCtx) as { messages?: Array<{ content: string }> };

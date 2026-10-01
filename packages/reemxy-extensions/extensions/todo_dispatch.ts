@@ -567,7 +567,9 @@ function taskDetails(task: TaskRow, timeZone?: string): string {
   const progress = schedule.progress
     ? `${safeTimestamp(schedule.progress.at, timeZone)}:${safeText(schedule.progress.evidence, 120)}`
     : "none";
-  return `owner=${JSON.stringify(schedule.owner ?? null)}; dependencies=${dependencies}; resources=${resources}; O/L/P=${estimate}; progress=${progress}`;
+  const revision = schedule.estimateRevision ?? (schedule.estimate ? 1 : 0);
+  const reestimates = schedule.reestimateCount ?? 0;
+  return `owner=${JSON.stringify(schedule.owner ?? null)}; dependencies=${dependencies}; resources=${resources}; O/L/P=${estimate}; progress=${progress}; estimateRevision=${revision}; reestimateCount=${reestimates}; attemptHistory=${JSON.stringify(schedule.attemptHistory ?? [])}`;
 }
 
 function buildStaticPrompt(
@@ -579,7 +581,9 @@ function buildStaticPrompt(
   goalPaused: boolean,
   restored: PersistedChild[],
 ): string {
-  const snapshotRows = rows.slice(0, MAX_ROWS);
+  const nonclosedCount = rows.filter(({ task }) => isNonClosedRowStatus(task.status)).length;
+  let closedBudget = Math.max(0, MAX_ROWS - nonclosedCount);
+  const snapshotRows = rows.filter(({ task }) => isNonClosedRowStatus(task.status) || closedBudget-- > 0);
   const snapshotLines: string[] = [];
   let lastPhase: string | undefined;
   for (const { number, phase, task } of snapshotRows) {
@@ -589,8 +593,8 @@ function buildStaticPrompt(
     const closed = task.status === "completed" || task.status === "abandoned";
     snapshotLines.push(`  #${number} [${task.status}] ${JSON.stringify(task.content)}${blocker}${closed ? "" : `; ${taskDetails(task, deadline?.timezone)}`}`);
   }
-  if (rows.length > MAX_ROWS)
-    snapshotLines.push(`… ${rows.length - MAX_ROWS} rows beyond the ${MAX_ROWS}-row bound; inspect native todo.view before deciding on the tail`);
+  if (rows.length > snapshotRows.length)
+    snapshotLines.push(`… ${rows.length - snapshotRows.length} closed rows omitted; every nonclosed row is included`);
 
   const running = jobs?.running ?? [];
   const recentTasks = jobs?.recent.filter((job) => job.type === "task") ?? [];
@@ -735,14 +739,10 @@ export function decideTodoDispatch(
   const planningIssues =
     forecast.planningIssues ?? sdk.getTodoPlanningIssues?.(phases) ?? [];
   const obligatedContent = new Set(obligated.map(({ task }) => task.content));
-  const forecastRows = forecast.rows
-    .filter((row) => obligatedContent.has(row.content))
-    .slice(0, MAX_ROWS);
+  const forecastRows = forecast.rows.filter((row) => obligatedContent.has(row.content));
   const forecastLines = forecastRows.map((row) =>
     `- [${row.status}] ${JSON.stringify(shorten(row.content))}: ${compactForecastRow(row, deadline?.timezone)}`,
   );
-  if (obligated.length > MAX_ROWS)
-    forecastLines.push(`- … ${obligated.length - MAX_ROWS} more nonclosed rows; inspect native todo.view`);
   const missing = planningIssues
     .filter((issue) => issue.code === "missing-estimate")
     .map((issue) => issue.task);
@@ -993,19 +993,12 @@ export function decideTodoDispatch(
       : null;
   const wakeKey = rawWakeKey !== null && rawWakeKey !== lastWakeKey ? rawWakeKey : null;
   const planSummary = localizeTimestampText(sdk.formatPlanForecast(forecast, now), deadline?.timezone);
-  const forecastIssues = forecast.issues
-    .slice(0, MAX_ROWS)
-    .map((issue) => `- ${JSON.stringify(issue)}`);
-  if (forecast.issues.length > MAX_ROWS)
-    forecastIssues.push(`- … ${forecast.issues.length - MAX_ROWS} more forecast issues`);
+  const forecastIssues = forecast.issues.map((issue) => `- ${JSON.stringify(issue)}`);
   const planningIssueLines = planningIssues
-    .slice(0, MAX_ROWS)
-    .map((issue) => `- [${issue.code}] ${JSON.stringify(shorten(issue.task))}: ${issue.message}`);
-  if (planningIssues.length > MAX_ROWS)
-    planningIssueLines.push(`- … ${planningIssues.length - MAX_ROWS} more canonical planning issues`);
+    .map((issue) => `- [${issue.code}] ${JSON.stringify(issue.task)}: ${issue.message}`);
   const corrections = missed
-    .slice(0, MAX_ROWS)
-    .map((row) => `- ${JSON.stringify(shorten(row.content))}: revision=${row.estimateRevision}; reestimates=${row.reestimateCount}`);
+    .map((row) => `- ${JSON.stringify(row.content)}: revision=${row.estimateRevision}; reestimates=${row.reestimateCount}`);
+  const repeatedEstimates = forecastRows.filter((row) => row.reestimateCount >= 3);
   const prompt = [
     ...(!goalPaused && deadlineRisk
       ? ["DELIVERY FIRST: the fixed deadline is at risk. Name the exact missing user-visible artifact and its current version; take the shortest safe action that creates or updates it now. Do not re-read the same plan, reforecast, or rerun broad checks without a changed artifact or a specific new diagnostic question. Reconcile workers only to unblock real work; report the remaining gap without moving the deadline or silently shrinking scope. No automatic paid/model escalation."]
@@ -1019,12 +1012,14 @@ export function decideTodoDispatch(
     ...(forecastIssues.length ? forecastIssues : ["- none"]),
     `Nonclosed row timing (${forecastRows.length}/${obligated.length}; CPM ES/EF/LS/LF, float, resource, PERT):`,
     ...(forecastLines.length ? forecastLines : ["- none"]),
-    `Missing estimates (${missing.length}): ${missing.length ? missing.slice(0, MAX_ROWS).map((content) => JSON.stringify(shorten(content))).join(", ") : "none"}; stale (${stale.length}): ${stale.length ? stale.slice(0, MAX_ROWS).map((content) => JSON.stringify(shorten(content))).join(", ") : "none"}`,
-    `Ready rows needing distinct live workers (${ownerlessReady.length}/${readyCandidates.length}): ${ownerlessReady.length ? ownerlessReady.slice(0, MAX_ROWS).map((row) => `${JSON.stringify(shorten(row.content))} [${row.ownership}; owner=${JSON.stringify(row.owner)}]`).join(", ") : "none"}`,
-    `Dependency-waiting rows (${dependencyUnready.length}; do not dispatch): ${dependencyUnready.length ? dependencyUnready.slice(0, MAX_ROWS).map((row) => `${JSON.stringify(shorten(row.content))}${row.awaitingPrerequisite ? ` [awaiting ${JSON.stringify(shorten(row.awaitingPrerequisite))}]` : ""}`).join(", ") : "none"}`,
+    `Missing estimates (${missing.length}): ${missing.length ? missing.map((content) => JSON.stringify(content)).join(", ") : "none"}; stale (${stale.length}): ${stale.length ? stale.map((content) => JSON.stringify(content)).join(", ") : "none"}`,
+    `Ready rows needing distinct live workers (${ownerlessReady.length}/${readyCandidates.length}): ${ownerlessReady.length ? ownerlessReady.map((row) => `${JSON.stringify(row.content)} [${row.ownership}; owner=${JSON.stringify(row.owner)}]`).join(", ") : "none"}`,
+    `Dependency-waiting rows (${dependencyUnready.length}; do not dispatch): ${dependencyUnready.length ? dependencyUnready.map((row) => `${JSON.stringify(row.content)}${row.awaitingPrerequisite ? ` [awaiting ${JSON.stringify(row.awaitingPrerequisite)}]` : ""}`).join(", ") : "none"}`,
     `Dispatch: ${dispatchDirective}`,
     `Alarm facts: ${alarms.length ? alarms.join("; ") : "none"}`,
     ...(corrections.length ? ["MISSED ETA: inspect exact worker/artifact and failed assumption, then schedule evidence-based remaining O/L/P with a falsifiable checkpoint; reestimation does not erase prior misses.", ...corrections] : []),
+    ...(repeatedEstimates.length ? ["Repeated estimate changes are preserved failure evidence even when the current ETA is not overdue. Inspect the exact failed attempts, receipts and assumptions; choose a concrete recovery action or explain the genuine wait. Do not clear the warning by editing the ETA.", ...repeatedEstimates.map((row) => `- ${JSON.stringify(row.content)}: revision=${row.estimateRevision}; reestimates=${row.reestimateCount}`)] : []),
+    "Never claim there is no actionable work from a truncated display: every nonclosed row above must have a next action or a genuine dependency/approval wait. Act on ready unstaffed rows within actual capacity; preserve healthy running owners and external approval gates.",
     "Do not infer staffing from labels or close TODOs from lifecycle/estimates. Verify exact live IDs; preserve user queue/pause and approval gates. Resolve blocked prerequisites safely, split only independently executable work, and retain all parent criteria.",
   ].join("\n");
   return {
@@ -1829,6 +1824,12 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     if (!pi.getActiveTools().includes("todo")) return gateTrace(ctx, "todo-tool-inactive");
     const jobs = ctx.getAsyncJobSnapshot();
     const runningTasks = (jobs?.running ?? []).filter((job) => job.type === "task" && job.status === "running").length;
+    if (runningTasks > 0 && decision.readyCandidates.length > 0 &&
+      decision.readyCandidates.every((row) => row.ownership === "live-owned") &&
+      (decision.forecast.planningIssues ?? []).length === 0) {
+      pendingReplan = null;
+      return gateTrace(ctx, "waiting-on-staffed-work");
+    }
     const open = (decision.forecast.rows ?? []).filter((row) => row.status === "pending" || row.status === "in_progress");
     const parked = open.length - runningTasks;
     // Starting every ready row must still fill the free slots; one ready row beside 19 chained ones
