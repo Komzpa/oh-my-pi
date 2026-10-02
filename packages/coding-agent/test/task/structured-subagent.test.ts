@@ -16,6 +16,8 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { getBundledAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { resolveModelOverrideWithAuthFallback } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import type { AgentCompactionThresholdOverride } from "@oh-my-pi/pi-coding-agent/config/compaction-threshold";
 import type { BeforeSubagentSpawnEvent } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import {
@@ -137,6 +139,46 @@ afterEach(() => {
 });
 
 describe("structured subagent primitive", () => {
+	it("ordinary to strong dispatch resolves the selected family and never authenticates via parent Luna", async () => {
+		const models = ["gpt-6-luna", "gpt-6.1-sol"].map(id =>
+			buildModel({
+				id,
+				name: id,
+				provider: "codex-lb",
+				api: "openai-completions",
+				baseUrl: "http://localhost/v1",
+				reasoning: true,
+				input: ["text"],
+				contextWindow: 128000,
+				maxTokens: 8192,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+		);
+		const parent = session();
+		parent.getActiveModelString = () => "codex-lb/gpt-6-luna:medium";
+		parent.emitBeforeSubagentSpawn = async () => ({ model: ["codex-lb/gpt-6-luna:medium"] });
+		const resolved: string[] = [];
+		let solAuthenticated = true;
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			const selectors =
+				typeof options.modelOverride === "string" ? [options.modelOverride] : (options.modelOverride ?? []);
+			const selected = await resolveModelOverrideWithAuthFallback(selectors, options.parentActiveModelPattern, {
+				getAvailable: () => models,
+				getApiKey: async model => (model.id === "gpt-6-luna" || solAuthenticated ? "test-key" : undefined),
+			});
+			resolved.push(`${selected.model?.id}:${selected.thinkingLevel}`);
+			return result();
+		});
+		mockDiscovery({ ...AGENT, model: ["codex-lb/gpt-6-luna:medium"] });
+		await runStructuredSubagent(request({ session: parent }));
+		await runStructuredSubagent(request({ session: parent, model: "codex-lb/gpt-6.1-sol:high" }));
+		solAuthenticated = false;
+		parent.emitBeforeSubagentSpawn = undefined;
+		mockDiscovery({ ...AGENT, name: "ui-coder-strong", model: ["codex-lb/gpt-6.1-sol:high"] });
+		await runStructuredSubagent(request({ session: parent, agent: "ui-coder-strong" }));
+		expect(resolved).toEqual(["gpt-6-luna:medium", "gpt-6.1-sol:high", "gpt-6.1-sol:high"]);
+	});
+
 	it("resolves user-tagged model agents for task and eval but rejects untagged names", async () => {
 		mockDiscovery();
 		const taggedSession = session();
@@ -627,6 +669,7 @@ describe("structured subagent primitive", () => {
 				invocationKind: "task",
 				modelRole: "definition",
 				patterns: ["anthropic/claude-opus-4-5"],
+				isolated: false,
 			},
 		]);
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
@@ -634,13 +677,20 @@ describe("structured subagent primitive", () => {
 
 	it("rejects dispatch before leasing artifacts when an extension blocks the spawn", async () => {
 		mockDiscovery();
-		const blockedSession = session();
-		blockedSession.emitBeforeSubagentSpawn = async () => ({ block: true, reason: "pool exhausted" });
+		const blockedSession = session({ isolationEnabled: true });
+		const events: BeforeSubagentSpawnEvent[] = [];
+		blockedSession.emitBeforeSubagentSpawn = async event => {
+			events.push(event);
+			return { block: true, reason: "pool exhausted" };
+		};
 		const run = vi.spyOn(executorModule, "runSubprocess");
-		const error = await runStructuredSubagent(request({ session: blockedSession })).catch((cause: unknown) => cause);
+		const error = await runStructuredSubagent(
+			request({ session: blockedSession, isolation: { requested: true } }),
+		).catch((cause: unknown) => cause);
 		expect(error).toBeInstanceOf(StructuredSubagentError);
 		expect(error as StructuredSubagentError).toMatchObject({ kind: "preflight", message: "pool exhausted" });
 		expect(run).not.toHaveBeenCalled();
+		expect(events[0]?.isolated).toBe(true);
 		expect(artifactsDirsFromRegistry()).toEqual([]);
 	});
 

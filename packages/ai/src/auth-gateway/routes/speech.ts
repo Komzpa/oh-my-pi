@@ -9,6 +9,8 @@ import {
 	buildGatewayApiKeyResolver,
 	gatewayRequestLogFields,
 	mirrorRequestAbort,
+	observeGatewayProviderFailure,
+	observeGatewayProviderSuccess,
 	recordGatewayUsage,
 	resolveGatewayApiKey,
 } from "../dispatch";
@@ -78,6 +80,7 @@ export async function handleSpeech(bootOpts: AuthGatewayRouteOptions, req: Reque
 			fetch: bootOpts.fetch,
 			signal: controller.signal,
 		});
+		observeGatewayProviderSuccess(bootOpts.storage, model.provider);
 		recordGatewayUsage(bootOpts.storage, model, client, result.usage);
 		const response = speechWire.encodeResponse(result, parsed.modelId);
 		const responseHeaders = gatewayResponseHeaders(model, {
@@ -89,6 +92,7 @@ export async function handleSpeech(bootOpts: AuthGatewayRouteOptions, req: Reque
 		return response;
 	} catch (error) {
 		if (controller.signal.aborted) return aborted();
+		observeGatewayProviderFailure(bootOpts.storage, model, error);
 		// Adapter validation is a client error: the wire schema admits values the
 		// adapter cannot serve, and the classifier would bill them as a 502.
 		if (error instanceof ValidationError) {

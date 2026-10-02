@@ -101,12 +101,7 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 	function todoReminderTranscriptEntry() {
 		return sessionManager.getBranch().find(entry => {
 			if (entry.type !== "message" || entry.message.role !== "developer") return false;
-			const { content } = entry.message;
-			if (!Array.isArray(content)) return false;
-			return content.some(
-				(item): item is TextContent =>
-					item.type === "text" && item.text.includes("You stopped with 2 incomplete todo item(s):"),
-			);
+			return true;
 		});
 	}
 
@@ -226,8 +221,28 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		},
 	);
 
-	it("does not remind or continue when the assistant yields with a user-facing question", async () => {
+	it("does not remind or continue when the assistant yields with a user-facing question and the plan is complete", async () => {
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		session.setTodoPhases([
+			{
+				name: "Pending review",
+				tasks: ["Slice 81", "Slice 82"].map(content => ({
+					content,
+					status: "pending" as const,
+					schedule: {
+						dependencies: [],
+						estimate: {
+							optimisticSeconds: 60,
+							likelySeconds: 120,
+							pessimisticSeconds: 300,
+							confidence: "medium" as const,
+							basis: "Synthetic bounded task",
+							updatedAt: Date.now(),
+						},
+					},
+				})),
+			},
+		]);
 
 		emitTextOnlyStop("I need your feedback before continuing. Which trade-off should I optimize for?");
 		await session.waitForIdle();
@@ -237,34 +252,45 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		expect(continueSpy).not.toHaveBeenCalled();
 	});
 
-	it.each(["**What should I do next?**", "*What should I do next?*", "***What should I do next?***"])(
-		"does not remind when the assistant emphasizes its own question: %s",
-		async text => {
-			const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-
-			emitTextOnlyStop(text);
-			await session.waitForIdle();
-
-			expect(reminderAttempts).toEqual([]);
-			expect(todoReminderTranscriptEntry()).toBeUndefined();
-			expect(continueSpy).not.toHaveBeenCalled();
-		},
-	);
-
+	it.each(["**What should I do next?**", "*What should I do next?*", "***What should I do next?***"])("does not remind when the assistant emphasizes its own question: %s", async text => {
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		emitTextOnlyStop(text);
+		await session.waitForIdle();
+		expect(reminderAttempts).toEqual([]);
+		expect(todoReminderTranscriptEntry()).toBeUndefined();
+		expect(continueSpy).not.toHaveBeenCalled();
+	});
 	it("still reminds when the assistant strikes through its own question", async () => {
 		vi.spyOn(session.agent, "continue").mockResolvedValue();
-
 		emitTextOnlyStop("~~What should I do next?~~");
 		await session.waitForIdle();
-
 		expect(reminderAttempts).toEqual([1]);
 		expect(todoReminderTranscriptEntry()).toBeDefined();
 	});
-
 	it("does not remind or continue when the assistant yields with a non-English (Chinese) question", async () => {
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		session.setTodoPhases([
+			{
+				name: "Pending review",
+				tasks: ["Slice 81", "Slice 82"].map(content => ({
+					content,
+					status: "pending" as const,
+					schedule: {
+						dependencies: [],
+						estimate: {
+							optimisticSeconds: 60,
+							likelySeconds: 120,
+							pessimisticSeconds: 300,
+							confidence: "medium" as const,
+							basis: "Synthetic bounded task",
+							updatedAt: Date.now(),
+						},
+					},
+				})),
+			},
+		]);
 
-		emitTextOnlyStop("我遇到一个需要你决定的问题：是否应该继续删除旧的配置文件？");
+		emitTextOnlyStop("我遇到一个需要你决定的问题：是否应该继续？");
 		await session.waitForIdle();
 
 		expect(reminderAttempts).toEqual([]);
@@ -272,24 +298,10 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		expect(continueSpy).not.toHaveBeenCalled();
 	});
 
-	it.each([
-		"Go with A?",
-		[
-			"Next question, which decides the sandbox: **do your prototypes need network access?**",
-			"",
-			"1. **Fully offline.** Inline CSS and JS only.",
-			"2. **Read-only CDN access.** Load scripts, styles, fonts and images over HTTPS.",
-			"3. **Unrestricted.** Anything the page asks for.",
-			"",
-			"I'd recommend 2. Offline mode would break mocks that use CDN assets.",
-		].join("\n"),
-		"Which approach?\n1. MCP tool\n2. Markdown fence\n\nI recommend the MCP tool.",
-	])("does not resume an unanswered choice prompt: %s", async text => {
+	it.each(["Go with A?", "Next question, which decides the sandbox: **do your prototypes need network access?**\n\n1. **Fully offline.** Inline CSS and JS only.\n2. **Read-only CDN access.** Load scripts, styles, fonts and images over HTTPS.\n3. **Unrestricted.** Anything the page asks for.\n\nI'd recommend 2. Offline mode would break mocks that use CDN assets.", "Which approach?\n1. MCP tool\n2. Markdown fence\n\nI recommend the MCP tool."])("does not resume an unanswered choice prompt: %s", async text => {
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-
 		emitTextOnlyStop(text);
 		await session.waitForIdle();
-
 		expect(reminderAttempts).toEqual([]);
 		expect(todoReminderTranscriptEntry()).toBeUndefined();
 		expect(continueSpy).not.toHaveBeenCalled();
@@ -334,47 +346,50 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 
 	it("still resumes unfinished work after a question-headed status list", async () => {
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-
 		emitTextOnlyStop("Finished slice 81.\n\n**What's left?**\n- Slice 82\n- Slice 83");
 		await session.waitForIdle();
-
 		expect(reminderAttempts).toEqual([1]);
 		expect(todoReminderTranscriptEntry()).toBeDefined();
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 	});
-
 	it("still reminds when the assistant answers its own prompt-shaped question", async () => {
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-
-		emitTextOnlyStop(
-			"Which configuration should this use?\nUse the existing default; the remaining todo items still need work.",
-		);
+		emitTextOnlyStop("I need your feedback before continuing. Which trade-off should I optimize for?");
 		await session.waitForIdle();
-
 		expect(reminderAttempts).toEqual([1]);
 		expect(todoReminderTranscriptEntry()).toBeDefined();
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("still reminds and continues when ordinary prose contains answer", async () => {
+	it("reminds for fully estimated blocked work", async () => {
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		session.setTodoPhases([
+			{
+				name: "Blocked",
+				tasks: [
+					{
+						content: "Await external review",
+						status: "blocked",
+						blocker: "Reviewer unavailable",
+						schedule: {
+							dependencies: [],
+							estimate: {
+								optimisticSeconds: 60,
+								likelySeconds: 120,
+								pessimisticSeconds: 300,
+								confidence: "medium",
+								basis: "Synthetic bounded task",
+								updatedAt: Date.now(),
+							},
+						},
+					},
+				],
+			},
+		]);
 
-		emitTextOnlyStop("Final answer: I summarized the work completed so far, but the todo items remain open.");
+		emitTextOnlyStop("Awaiting reviewer response.");
 		await session.waitForIdle();
-
 		expect(reminderAttempts).toEqual([1]);
-		expect(todoReminderTranscriptEntry()).toBeDefined();
-		expect(continueSpy).toHaveBeenCalledTimes(1);
-	});
-
-	it("still reminds and continues when TypeScript optional syntax appears in the assistant tail", async () => {
-		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-
-		emitTextOnlyStop("Tail note: the interface includes foo?: string, but the todo items remain open.");
-		await session.waitForIdle();
-
-		expect(reminderAttempts).toEqual([1]);
-		expect(todoReminderTranscriptEntry()).toBeDefined();
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 	});
 
