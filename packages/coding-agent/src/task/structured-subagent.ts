@@ -9,7 +9,12 @@ import * as os from "node:os";
 import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
-import { resolveAgentModelSelection, resolveConfiguredModelPatterns } from "../config/model-resolver";
+import type { Effort } from "@oh-my-pi/pi-ai";
+import {
+	agentInheritsParentModel,
+	resolveAgentModelSelection,
+	resolveConfiguredModelPatterns,
+} from "../config/model-resolver";
 import { type OAuthAccountPools, validateAgentAccountPools } from "../config/account-pools";
 import {
 	type CompactionThresholdPair,
@@ -24,7 +29,6 @@ import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
 import { loadOverallPlanReference } from "../plan-mode/plan-handoff";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
-import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
 import isolationRecoveryHintTemplate from "../prompts/tools/isolation-recovery-hint.md" with { type: "text" };
 import salvagedChildHintTemplate from "../prompts/tools/salvaged-child-hint.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
@@ -128,6 +132,8 @@ export interface StructuredSubagentRequest {
 	effort?: TaskEffort;
 	/** Caller's description of how open-ended the work is; steers the child's `auto` thinking classification. */
 	solutionSpace?: string;
+	/** Exact internal rung effort; wins over coarse effort and model selector defaults. */
+	thinkingLevel?: Effort;
 	identity?: StructuredSubagentIdentity;
 	index?: number;
 	parentToolCallId?: string;
@@ -206,6 +212,8 @@ export interface StructuredSubagentResult {
 	temporaryArtifacts: boolean;
 }
 
+/** Effort suffixes the router appends to its chosen model (`model:effort`). */
+
 /** Machine-readable failure category so adapters can retain their native errors. */
 export class StructuredSubagentError extends Error {
 	readonly kind: "preflight" | "isolation" | "execution";
@@ -225,10 +233,6 @@ export class StructuredSubagentError extends Error {
 }
 
 const PLAN_MODE_TOOLS = ["read", "grep", "glob", "web_search"] as const;
-
-function renderSubagentPrompt(assignment: string): string {
-	return prompt.render(subagentUserPromptTemplate, { assignment: assignment.trim() });
-}
 
 function trimToUndefined(value: string | undefined): string | undefined {
 	const trimmed = value?.trim();
@@ -450,6 +454,7 @@ export async function resolveEffectiveSubagentPolicy(
 			"Subagent isolated execution requires task.isolation.enabled; it is currently false.",
 		);
 	}
+	const inheritsParentModel = agentInheritsParentModel(modelResolution);
 	return {
 		discovery,
 		agentName,
@@ -458,11 +463,11 @@ export async function resolveEffectiveSubagentPolicy(
 		modelOverride,
 		preparedSession: preparedSeance?.session,
 		modelRole,
+		structured,
 		serviceTierOverride,
 		compactionThresholdOverride,
 		oauthAccountPools,
-		parentActiveModelPattern,
-		structured,
+		parentActiveModelPattern: inheritsParentModel ? parentActiveModelPattern : undefined,
 		schema,
 		planMode,
 		isIsolated,
@@ -508,14 +513,22 @@ async function applySpawnHook(
 			modelRole: policy.modelRole,
 			patterns: policy.modelOverride ?? [],
 			spawnKey,
+			isolated: request.isolation?.requested === true,
+			assignment: request.assignment,
 		},
 		request.signal,
 	);
 	if (spawnResult?.block) {
 		throw new StructuredSubagentError("preflight", spawnResult.reason ?? "Subagent spawn blocked by extension.");
 	}
-	if (spawnResult?.model === undefined) return policy;
+	if (spawnResult?.model === undefined) {
+		return policy;
+	}
+	// Explicit rework selectors win over extension routing.
+	if (request.model !== undefined) return policy;
 	const replacement = resolveConfiguredModelPatterns(spawnResult.model, request.session.settings);
+	// A routed replacement ends the parent-model fallback.
+	if (replacement.length > 0) policy = { ...policy, parentActiveModelPattern: undefined };
 	if (replacement.length === 0) return policy;
 	return { ...policy, modelOverride: replacement, modelRoute: spawnResult.note };
 }
@@ -595,8 +608,8 @@ function buildExecutorOptions(
 		getApiKey: session.getApiKey,
 		credentialSourceSessionId: session.getCredentialSourceSessionId?.(),
 		agent: policy.effectiveAgent,
-		task: renderSubagentPrompt(request.assignment),
-		assignment: request.assignment.trim(),
+		task: request.assignment,
+		assignment: request.assignment,
 		preparedSession,
 		context: request.context?.trim() || undefined,
 		planReference: undefined,
@@ -621,6 +634,7 @@ function buildExecutorOptions(
 		effort: request.effort,
 		solutionSpace: request.solutionSpace?.trim() || undefined,
 		structured: policy.structured,
+		exactThinkingLevel: request.thinkingLevel,
 		...(policy.schema.source === "none"
 			? {}
 			: {
@@ -707,8 +721,8 @@ function buildFailureResult(
 			id,
 			agent: policy.agent.name,
 			agentSource: policy.agent.source,
-			task: renderSubagentPrompt(request.assignment),
-			assignment: request.assignment.trim(),
+			task: request.assignment,
+			assignment: request.assignment,
 			description: request.invocationKind === "eval" ? trimToUndefined(request.identity?.label) : undefined,
 			exitCode: 1,
 			output: "",

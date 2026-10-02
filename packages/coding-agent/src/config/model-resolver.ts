@@ -1336,6 +1336,11 @@ export function resolveAgentModelPatterns(options: AgentModelPatternResolutionOp
 	return resolveEffectiveAgentModelSelection(options).patterns;
 }
 
+/** True when no request, settings override or agent profile named a model, so the patterns come from the parent. */
+export function agentInheritsParentModel(options: AgentModelPatternResolutionOptions): boolean {
+	return resolveEffectiveAgentModelSelection(options).source === undefined;
+}
+
 /** Default prewalk hand-off target when no explicit target is configured. */
 export const DEFAULT_PREWALK_TARGET = "@smol";
 
@@ -1742,7 +1747,7 @@ export async function resolveModelOverrideWithAuthFallback(
 		lookupRegistry = { getAvailable: () => enabledModels };
 	}
 	const primary = resolveModelOverride(modelPatterns, lookupRegistry, settings);
-	if (!primary.model || !parentActiveModelPattern) {
+	if (!primary.model) {
 		return { ...primary, authFallbackUsed: false };
 	}
 
@@ -1761,8 +1766,12 @@ export async function resolveModelOverrideWithAuthFallback(
 		}
 	}
 
-	const fallback = resolveModelOverride([parentActiveModelPattern], lookupRegistry, settings);
-	if (!fallback.model) {
+	// The ordered override list is tried by the upstream chain loop (can1357/oh-my-pi#16640);
+	// with no parent model there is nothing further to fall back to.
+	const fallback = parentActiveModelPattern
+		? resolveModelOverride([parentActiveModelPattern], lookupRegistry, settings)
+		: undefined;
+	if (!fallback?.model) {
 		return { ...primary, authFallbackUsed: false };
 	}
 	if (modelsAreEqual(fallback.model, primary.model)) {

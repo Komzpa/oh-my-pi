@@ -1,9 +1,9 @@
 /**
  * Contract: `hasResolvableTranscript` mirrors the availability half of
  * `HistoryProtocolHandler.resolve` — it must return true exactly when a
- * `history://<id>` link would serve a transcript (live session, verified
- * retained session file, or on-disk `.jsonl` under a known artifacts dir),
- * and false otherwise, without ever throwing. Follow-up hints in
+ * `history://<id>` link would resolve (live session, pending running ref,
+ * verified retained session file, or on-disk `.jsonl` under a known artifacts
+ * dir), and false otherwise, without ever throwing. Follow-up hints in
  * `task/index.ts` gate their `history://` links on it.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -47,6 +47,18 @@ describe("hasResolvableTranscript", () => {
 		});
 		expect(await hasResolvableTranscript("Live")).toBe(true);
 		expect(await hasResolvableTranscript("live")).toBe(true);
+	});
+
+	it("returns true for a running ref that has not written its transcript yet", async () => {
+		AgentRegistry.global().register({
+			id: "PendingTranscript",
+			displayName: "task",
+			kind: "sub",
+			session: null,
+			sessionFile: null,
+			status: "running",
+		});
+		expect(await hasResolvableTranscript("PendingTranscript")).toBe(true);
 	});
 
 	it("returns false for an aborted ref with no retained session file", async () => {

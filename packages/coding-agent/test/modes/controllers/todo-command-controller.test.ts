@@ -6,9 +6,15 @@ import { TodoCommandController } from "@oh-my-pi/pi-coding-agent/modes/controlle
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools";
+import {
+	sessionContextEntryMetadata,
+	type SessionContextEntryMetadata,
+} from "@oh-my-pi/pi-coding-agent/session/branch-selection";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 function createContext(cwd: string, phases: TodoPhase[]): InteractiveModeContext {
+	const branch: SessionEntry[] = [];
 	return {
 		agent: {
 			appendMessage: vi.fn(),
@@ -20,7 +26,10 @@ function createContext(cwd: string, phases: TodoPhase[]): InteractiveModeContext
 		sessionManager: {
 			appendCustomEntry: vi.fn(),
 			appendMessage: vi.fn(),
-			getBranch: () => [],
+			getBranch: () => branch,
+			getBranchMatching: (predicate: (metadata: SessionContextEntryMetadata) => boolean) =>
+				branch.filter(entry => predicate(sessionContextEntryMetadata(entry))),
+			getLeafId: () => branch.at(-1)?.id ?? null,
 			getCwd: () => cwd,
 		},
 		setTodos: vi.fn(),
@@ -190,5 +199,56 @@ describe("TodoCommandController", () => {
 		await controller.handleTodoCommand("done");
 
 		expect(reminderTextFrom(ctx)).not.toMatch(/Do NOT/i);
+	});
+
+	it("shows open rows readably, hides closed rows until /todo all, and never prints metadata", async () => {
+		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-tui-todo-view-"));
+		const schedule = {
+			dependencies: [],
+			owner: "WorkerA",
+			estimate: {
+				optimisticSeconds: 60,
+				likelySeconds: 120,
+				pessimisticSeconds: 240,
+				confidence: "medium" as const,
+				basis: "view fixture",
+				updatedAt: Date.now(),
+			},
+		};
+		const phases: TodoPhase[] = [
+			{
+				name: "Done phase",
+				tasks: [{ content: "Old work", status: "completed", schedule: { ...schedule, owner: undefined } }],
+			},
+			{
+				name: "Work",
+				tasks: [
+					{ content: "Finished step", status: "completed", schedule: { ...schedule, owner: undefined } },
+					{ content: "Build it", status: "in_progress", schedule },
+				],
+			},
+		];
+		const ctx = createContext(tempRoot, phases);
+		const controller = new TodoCommandController(ctx);
+
+		await controller.handleTodoCommand("");
+		const view = (ctx.showStatus as Mock<(text: string) => void>).mock.calls.at(-1)![0];
+		expect(view).toContain("Work · 1/2 closed");
+		expect(view).toMatch(/◐ Build it · .*owner WorkerA/);
+		expect(view).not.toContain("Finished step");
+		expect(view).toContain("Closed phases: Done phase (1)");
+		expect(view).toContain("2 closed row(s) hidden; /todo all lists them.");
+		expect(view).not.toContain("omp-todo");
+
+		await controller.handleTodoCommand("all");
+		const all = (ctx.showStatus as Mock<(text: string) => void>).mock.calls.at(-1)![0];
+		expect(all).toContain("☑ Finished step");
+		expect(all).toContain("☑ Old work");
+		expect(all).not.toContain("omp-todo");
+
+		// The reminder sent to the model after a manual edit carries no base64 metadata either.
+		await controller.handleTodoCommand("done Build it");
+		expect(reminderTextFrom(ctx)).toContain("Build it");
+		expect(reminderTextFrom(ctx)).not.toContain("omp-todo");
 	});
 });

@@ -467,7 +467,6 @@ export const cfgTaskMaxEffort = register({
 		options: THINKING_EFFORTS.map(getThinkingLevelMetadata),
 	},
 });
-
 export const cfgTaskDisabledAgents = register({
 	id: "task.disabledAgents",
 	protocolDefault: ["rpc", "acp"],
