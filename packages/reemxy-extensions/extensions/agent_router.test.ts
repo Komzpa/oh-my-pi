@@ -1433,5 +1433,126 @@ describe("agent router", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+	describe("critical row priority-first routing", () => {
+		const NOW_MS = Date.UTC(2026, 9, 2, 10, 0, 0);
+		const estimate = (optimisticSeconds: number, likelySeconds: number, pessimisticSeconds: number) => ({
+			optimisticSeconds,
+			likelySeconds,
+			pessimisticSeconds,
+			confidence: "medium",
+			basis: "test",
+			updatedAt: NOW_MS - 1000,
+		});
+		// "long" is the only zero-natural-float row, so the canonical forecast
+		// marks it critical and "short" non-critical (verified against
+		// forecastTodoPlan directly).
+		const PHASES = [
+			{
+				name: "Work",
+				tasks: [
+					{ content: "long", status: "pending", schedule: { owner: "long-1", dependencies: [], resources: ["repo-a"], estimate: estimate(60, 120, 180) } },
+					{ content: "short", status: "pending", schedule: { owner: "short-1", dependencies: [], resources: ["repo-b"], estimate: estimate(6, 12, 18) } },
+				],
+			},
+		];
+		// Slim { provider, id } stubs cannot classify; enrich with the api and
+		// identity the prod model registry resolve carries.
+		const MODEL_DETAILS: Record<string, { api: string; identity: { class: string } }> = {
+			"codex-lb/gpt-6-luna": { api: "openai-completions", identity: { class: "openai" } },
+			"codex-lb/gpt-6.1-sol": { api: "openai-completions", identity: { class: "openai" } },
+			"codex-lb/Qwen3.8-27B": { api: "openai-completions", identity: { class: "qwen" } },
+			"kimi-code/kimi-for-coding": { api: "anthropic-messages", identity: { class: "kimi" } },
+			"kimi-code/k3": { api: "anthropic-messages", identity: { class: "kimi" } },
+			"deepseek/deepseek-v4-pro": { api: "openai-completions", identity: { class: "deepseek" } },
+			"xiaomi/mimo-v2.6-pro": { api: "openai-completions", identity: { class: "mimo" } },
+			"muse-code/muse-spark-1.3-contributor": { api: "openai-completions", identity: { class: "meta" } },
+			"cerebras/qwen-3.8-27b": { api: "openai-completions", identity: { class: "qwen" } },
+		};
+		function priorityCtx(only?: string[]): ExtensionContext {
+			const base = ctx() as unknown as { models: { list: () => Array<{ provider: string; id: string }> } };
+			const models = base.models
+				.list()
+				.filter(model => !only || only.includes(`${model.provider}/${model.id}`))
+				.map(model => ({ ...model, ...MODEL_DETAILS[`${model.provider}/${model.id}`] }));
+			return {
+				...base,
+				sessionManager: { getHeader: () => ({ id: "session-1" }), getBranch: () => [] },
+				models: {
+					list: () => models,
+					resolve: (spec: string) =>
+						models.find(
+							model => `${model.provider}/${model.id}` === spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, ""),
+						),
+				},
+			} as unknown as ExtensionContext;
+		}
+		const reversed = <T>(items: readonly T[]) => [...items].reverse();
+		const spawnTask = (spawnKey: string, context: ExtensionContext, file: string) =>
+			routeSubagentSpawn({ agent: "task", spawnKey }, context, createRouterState(), {
+				stateFile: file,
+				now: () => new Date(NOW_MS),
+				shuffle: reversed,
+				latestTodo: () => PHASES,
+			});
+		// Only the pool is shuffled; fallbacks keep chain order. Task chain under
+		// a reversed pool shuffle: muse, xiaomi, k3, deepseek, kimi, luna, then
+		// fallbacks sol, Qwen, cerebras.
+		const TASK_ORDER = [
+			"muse-code/muse-spark-1.3-contributor",
+			"xiaomi/mimo-v2.6-pro",
+			"kimi-code/k3:high",
+			"deepseek/deepseek-v4-pro:high",
+			"kimi-code/kimi-for-coding:high",
+			"codex-lb/gpt-6-luna:medium",
+			"codex-lb/gpt-6.1-sol:medium",
+			"codex-lb/Qwen3.8-27B",
+			"cerebras/qwen-3.8-27b",
+		];
+
+		test("critical row moves the earliest priority-capable chain entry first", async () => {
+			const { dir, file } = tempStateFile();
+			try {
+				const result = await spawnTask("long-1", priorityCtx(), file);
+				expect(result?.model?.[0]).toBe("codex-lb/gpt-6-luna:medium");
+				expect(result?.model).toEqual([
+					"codex-lb/gpt-6-luna:medium",
+					...TASK_ORDER.filter(spec => spec !== "codex-lb/gpt-6-luna:medium"),
+				]);
+				expect(result?.note).toContain("critical row");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		test("non-critical row keeps the existing order", async () => {
+			const { dir, file } = tempStateFile();
+			try {
+				const result = await spawnTask("short-1", priorityCtx(), file);
+				expect(result?.model).toEqual(TASK_ORDER);
+				expect(result?.note).not.toContain("critical row");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		test("critical row without a priority-capable entry keeps the existing order", async () => {
+			const { dir, file } = tempStateFile();
+			try {
+				// Unavailable models drop out of the order, so the chain holds
+				// only non-priority entries with Qwen and cerebras last.
+				const withoutPriority = TASK_ORDER.filter(
+					spec => spec !== "codex-lb/gpt-6-luna:medium" && spec !== "codex-lb/gpt-6.1-sol:medium",
+				);
+				const context = priorityCtx(withoutPriority.map(spec => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "")));
+				const result = await spawnTask("long-1", context, file);
+				expect(result?.model).toEqual(withoutPriority);
+				expect(result?.model?.slice(-2)).toEqual(["codex-lb/Qwen3.8-27B", "cerebras/qwen-3.8-27b"]);
+				expect(result?.note).not.toContain("critical row");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	});
+
 
 });

@@ -5,10 +5,11 @@ import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
+import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import type { ModelUsageHealth, ModelUsageHealthState } from "@oh-my-pi/pi-ai";
 import { resolveXiaomiRequestBaseUrl } from "@oh-my-pi/pi-ai/registry/oauth/xiaomi";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { forecastTodoPlan, type TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { checkoutScopesFromResources, checkoutScopesOverlap } from "./checkout_scope";
 
 export interface PoolConfig {
@@ -450,6 +451,54 @@ export function cwdRepoLabel(ctx: ExtensionContext): string {
 	return typeof ctx.cwd === "string" && ctx.cwd.trim() !== "" ? ctx.cwd : "the session checkout";
 }
 
+/** One latestTodo read per spawn: checkout scopes and criticality share it. */
+function memoLatestTodo(getter: LatestTodoGetter | undefined): LatestTodoGetter | undefined {
+	if (!getter) return undefined;
+	let cached: { entries: unknown[]; phases: TodoScheduleInput } | undefined;
+	return (entries: unknown[]) => {
+		if (!cached || cached.entries !== entries) cached = { entries, phases: getter(entries) };
+		return cached.phases;
+	};
+}
+
+/** True when the spawning task item owns a plan row the forecast marks critical. */
+function spawnIsCriticalRow(
+	event: BeforeSubagentSpawnEvent,
+	ctx: ExtensionContext,
+	latestTodo: LatestTodoGetter | undefined,
+	nowMs: number,
+): boolean {
+	const owner = stringValue(event.spawnKey);
+	if (!owner || !latestTodo || !ctx.sessionManager?.getBranch) return false;
+	try {
+		const phases = latestTodo(ctx.sessionManager.getBranch());
+		return forecastTodoPlan(phases, { now: nowMs }).rows.some(row => row.owner === owner && row.critical);
+	} catch {
+		return false;
+	}
+}
+
+/** Index of the earliest chain entry whose model realizes priority service tier. Never cerebras. */
+function firstPriorityCapableIndex(order: readonly string[], ctx: ExtensionContext): number {
+	for (let index = 0; index < order.length; index++) {
+		const spec = order[index]!;
+		if (spec.split("/")[0] === "cerebras") continue;
+		let model: unknown;
+		try {
+			model = ctx.models?.resolve?.(spec);
+		} catch {
+			continue;
+		}
+		if (!model) continue;
+		try {
+			if (realizesPriorityServiceTier("priority", model as never)) return index;
+		} catch {
+			continue;
+		}
+	}
+	return -1;
+}
+
 export async function routeSubagentSpawn(
 	event: BeforeSubagentSpawnEvent,
 	ctx: ExtensionContext,
@@ -465,9 +514,10 @@ export async function routeSubagentSpawn(
 	if (!agent) return undefined;
 	const config = AGENT_POOLS[agent];
 	if (!config) return undefined;
+	const latestTodo = memoLatestTodo(options.latestTodo);
 	const checkoutScopes =
 		WRITE_CAPABLE_WORKERS.has(agent) && event.isolated !== true
-			? ownedCheckoutScopes(event, ctx, options.latestTodo)
+			? ownedCheckoutScopes(event, ctx, latestTodo)
 			: undefined;
 	// git-pr-owner only runs VCS finalization (commit/PR/push), sequenced by the
 	// caller after a coder's edits land. Blocking it on a still-"running" coder
@@ -492,6 +542,19 @@ export async function routeSubagentSpawn(
 	const skipped = [...poolSkipped, ...fallbackSkipped];
 	const poolOrder = shuffle(available);
 	const order = [...poolOrder, ...fallbacks];
+	// A critical-path row starts on the fast lane: the earliest chain entry whose
+	// model realizes priority service tier moves to the front. All other rows keep
+	// the existing order; chains without a priority-capable entry are untouched.
+	const nowMs = (options.now ?? (() => new Date()))().getTime();
+	let criticalFirst = false;
+	if (spawnIsCriticalRow(event, ctx, latestTodo, nowMs)) {
+		const priorityIndex = firstPriorityCapableIndex(order, ctx);
+		if (priorityIndex > 0) {
+			const [prioritySpec] = order.splice(priorityIndex, 1);
+			order.unshift(prioritySpec!);
+			criticalFirst = true;
+		}
+	}
 	const chosen = order[0];
 	if (!chosen) return undefined;
 
@@ -512,7 +575,8 @@ export async function routeSubagentSpawn(
 	appendJsonl(options.stateFile ?? defaultStateFile(), record);
 
 	const skippedNote = skipped.length > 0 ? `; skipped ${skipped.length} by usage preflight` : "";
-	return { model: order, note: `pool pick ${chosen}${skippedNote} (eval)` };
+	const criticalNote = criticalFirst ? "; critical row: priority-capable model first" : "";
+	return { model: order, note: `pool pick ${chosen}${skippedNote}${criticalNote} (eval)` };
 }
 
 function statusFromResult(result: Record<string, unknown>, eventIsError: boolean): OutcomeRecord["status"] {
