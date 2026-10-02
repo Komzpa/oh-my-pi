@@ -824,6 +824,7 @@ describe("agent router", () => {
 						"anthropic",
 						"xiaomi",
 						"muse-code",
+						"cerebras",
 					].map(provider => [provider, { state: "depleted", accounts: [] }]),
 				),
 			);
