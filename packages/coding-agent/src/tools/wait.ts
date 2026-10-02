@@ -141,6 +141,10 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		const messaging = registry && senderId ? { registry, senderId } : undefined;
 		const manager = this.session.asyncJobManager;
 		const ownerFilter = { ownerId: senderId };
+		// A running task job is already listed on its TODO row (or under
+		// "unassigned workers") once a real plan exists, so the wait-tool
+		// roster below should not repeat it.
+		const todoTracksTasks = (this.session.getTodoPhases?.() ?? []).some(phase => phase.tasks.length > 0);
 
 		const pending = takeQueuedMessage(messaging);
 		if (pending && messaging) return messageResult(messaging.senderId, pending);
@@ -162,7 +166,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 				// instead of reporting nothing to wait for.
 				const undelivered = manager ? undeliveredJobs(manager, senderId) : [];
 				if (manager && undelivered.length > 0) {
-					return buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], []);
+					return buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], [], [], todoTracksTasks);
 				}
 				const serviceRunning = hasLiveOwnedService(this.session);
 				const runningPeer =
@@ -182,6 +186,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 					messageWindow: window,
 					signal,
 					onUpdate,
+					todoTracksTasks,
 				});
 				if (result) return result;
 			}
@@ -215,8 +220,9 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		messageWindow: MessageWindow | undefined;
 		signal: AbortSignal | undefined;
 		onUpdate: AgentToolUpdateCallback<CoordinationDetails> | undefined;
+		todoTracksTasks: boolean;
 	}): Promise<AgentToolResult<CoordinationDetails> | undefined> {
-		const { jobs, manager, messaging, serviceRunning, messageWindow, signal, onUpdate } = args;
+		const { jobs, manager, messaging, serviceRunning, messageWindow, signal, onUpdate, todoTracksTasks } = args;
 		const watchedIds = jobs.map(job => job.id);
 		manager?.watchJobs(watchedIds);
 		const serviceAbort = new AbortController();
@@ -253,7 +259,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		const emitProgress = () =>
 			onUpdate?.({
 				content: [{ type: "text", text: "" }],
-				details: { op: "wait", jobs: snapshotJobs(this.session, jobs) },
+				details: { op: "wait", jobs: snapshotJobs(this.session, jobs), todoTracksTasks },
 			});
 		const progressTimer = onUpdate && jobs.length > 0 ? setInterval(emitProgress, PROGRESS_INTERVAL_MS) : undefined;
 		if (jobs.length > 0) emitProgress();
@@ -299,7 +305,8 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 				}
 				throwIfAborted(signal);
 			}
-			if (manager && jobs.length > 0) return buildJobResult(this.session, manager, "wait", jobs, []);
+			if (manager && jobs.length > 0)
+				return buildJobResult(this.session, manager, "wait", jobs, [], [], todoTracksTasks);
 			if (wake === "timeout" && messageWindow) return noMessageResult(messaging, manager, messageWindow);
 			return {
 				content: [

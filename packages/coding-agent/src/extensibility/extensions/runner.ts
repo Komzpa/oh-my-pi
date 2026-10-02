@@ -8,6 +8,7 @@ import {
 	type AgentToolContext,
 	type AgentToolResult,
 	type AgentToolUpdateCallback,
+	type SoftToolRequirement,
 	isNonBlankContext,
 	joinAdditionalContext,
 } from "@oh-my-pi/pi-agent-core";
@@ -34,8 +35,10 @@ import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
-import { MAIN_AGENT_ID } from "../../registry/agent-registry";
+import { sendAgentMessageFromSession } from "../../irc/messaging";
+import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { SessionManager } from "../../session/session-manager";
+import { cfgTaskMaxConcurrency } from "../../task/settings";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { accumulateToolCallResult, buildAggregatedToolCallResult } from "../shared-events";
@@ -498,7 +501,32 @@ export class ExtensionRunner {
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
+	#sendAgentMessageFn: NonNullable<ExtensionContextActions["sendAgentMessage"]> = (to, message) =>
+		this.#defaultSendAgentMessage(to, message);
+	/**
+	 * Fallback peer-messaging route for runners whose host never wired
+	 * `sendAgentMessage` (or never called `initialize`). Uses the same
+	 * session-identity path as `write agent://` — the process registry with
+	 * this runner's own agent id, depth, and settings — so the extension API
+	 * and the URL write agree instead of one side answering "unavailable"
+	 * while the other delivers.
+	 */
+	#defaultSendAgentMessage(to: string, message: string): Promise<{ delivered: boolean; text: string }> {
+		if (!this.settings)
+			return Promise.resolve({ delivered: false, text: "Peer messaging is unavailable in this session." });
+		return sendAgentMessageFromSession(
+			{
+				agentRegistry: AgentRegistry.global(),
+				settings: this.settings,
+				taskDepth: this.agent.depth,
+				getAgentId: () => this.agent.id,
+			},
+			to,
+			message,
+		);
+	}
 	#runEphemeralTurnFn?: ExtensionContextActions["runEphemeralTurn"];
+	#setSubagentFastModeFn?: ExtensionContextActions["setSubagentFastMode"];
 	#ephemeralTurnBlocker = new AsyncLocalStorage<string | undefined>();
 	#getAsyncJobSnapshotFn: () => AsyncJobSnapshot | null = () => null;
 	#newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
@@ -799,7 +827,10 @@ export class ExtensionRunner {
 		this.#getContextUsageFn = contextActions.getContextUsage;
 		this.#compactFn = contextActions.compact;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
+		this.#sendAgentMessageFn =
+			contextActions.sendAgentMessage ?? ((to, message) => this.#defaultSendAgentMessage(to, message));
 		this.#runEphemeralTurnFn = contextActions.runEphemeralTurn;
+		this.#setSubagentFastModeFn = contextActions.setSubagentFastMode;
 
 		// Command context actions (optional, only for interactive mode)
 		if (commandContextActions) {
@@ -1330,6 +1361,29 @@ export class ExtensionRunner {
 	}
 
 	/**
+	 * Evaluate the currently active extension-owned native soft tool requirement.
+	 * Providers share one fresh context and run synchronously at the model-choice boundary.
+	 * More than one active provider is ambiguous, so fail closed instead of silently choosing.
+	 */
+	getSoftToolRequirement(): SoftToolRequirement | undefined {
+		let ctx: ExtensionContext | undefined;
+		let activePath: string | undefined;
+		let activeRequirement: SoftToolRequirement | undefined;
+		for (const extension of this.extensions) {
+			const provider = extension.softToolRequirementProvider;
+			if (!provider) continue;
+			const requirement = withActiveSettings(this.settings, () => provider((ctx ??= this.createContext())));
+			if (requirement === undefined) continue;
+			if (activeRequirement !== undefined) {
+				throw new Error(`Multiple active soft tool requirement providers: ${activePath}, ${extension.path}`);
+			}
+			activePath = extension.path;
+			activeRequirement = requirement;
+		}
+		return activeRequirement;
+	}
+
+	/**
 	 * Creates an extension context, optionally scoped to a provider request model.
 	 *
 	 * `delegation` wires the same-tool `ctx.invokeTool` for a re-registered built-in: when `toolName`
@@ -1356,8 +1410,10 @@ export class ExtensionRunner {
 			ui: this.#uiContext,
 			mode: this.#mode,
 			getContextUsage: () => this.#getContextUsageFn(),
+			getTaskMaxConcurrency: () => (this.settings ? cfgTaskMaxConcurrency.get(this.settings) : undefined),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
+			setSubagentFastMode: this.#setSubagentFastModeFn,
 			hasUI: this.hasUI(),
 			cwd: this.cwd,
 			sessionManager: this.sessionManager,
@@ -1373,6 +1429,7 @@ export class ExtensionRunner {
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
 			shutdown: () => this.#shutdownHandler(),
 			getSystemPrompt: () => this.#getSystemPromptFn(),
+			sendAgentMessage: (to, message) => this.#sendAgentMessageFn(to, message),
 			runEphemeralTurn: runEphemeralTurn
 				? async options => {
 						if (this.#ephemeralTurnBlocker.getStore()) {

@@ -140,6 +140,54 @@ interface ApprovalPreviewGate {
 	started: boolean;
 }
 
+const REPEATED_STATUS_TEXT = "(no change: status repeated)";
+const STATUS_SHA_PATTERN = /\b(?:0x)?[a-f\d]{7,64}\b/gi;
+const STATUS_URL_PATTERN = /\b(?:https?:\/\/|www\.)\S+/i;
+
+function statusHashes(text: string): Set<string> {
+	return new Set(text.match(STATUS_SHA_PATTERN)?.map(hash => hash.toLowerCase()) ?? []);
+}
+
+function statusTokens(text: string, workerNames: readonly string[]): Set<string> {
+	let normalized = text;
+	for (const workerName of workerNames) {
+		const escaped = workerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		normalized = normalized.replace(
+			new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "giu"),
+			" <worker> ",
+		);
+	}
+	normalized = normalized
+		.replace(/\b(?:worker|agent)[-_ ]+[\p{L}\p{N}_-]+/giu, " <worker> ")
+		.replace(STATUS_SHA_PATTERN, " <id> ")
+		.replace(/\d+/g, " <number> ")
+		.toLowerCase();
+	return new Set(normalized.match(/<worker>|<id>|<number>|[\p{L}\p{N}]+/gu) ?? []);
+}
+
+function repeatsUserVisibleStatus(previous: string, current: string, workerNames: readonly string[]): boolean {
+	const currentText = current.trim();
+	if (!currentText) return false;
+	const currentTokens = statusTokens(currentText, workerNames);
+	if (
+		currentTokens.size <= 6 &&
+		!/\d/.test(currentText) &&
+		!STATUS_SHA_PATTERN.test(currentText) &&
+		!STATUS_URL_PATTERN.test(currentText)
+	) {
+		return true;
+	}
+	const currentHashes = statusHashes(currentText);
+	const previousHashes = statusHashes(previous);
+	if (currentHashes.size !== previousHashes.size || [...currentHashes].some(hash => !previousHashes.has(hash))) {
+		return false;
+	}
+	const previousTokens = statusTokens(previous, workerNames);
+	if (previousTokens.size === 0 || currentTokens.size === 0) return false;
+	let shared = 0;
+	for (const token of currentTokens) if (previousTokens.has(token)) shared++;
+	return shared / new Set([...previousTokens, ...currentTokens]).size >= 0.8;
+}
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
 	/** Timestamp of the current turn's user prompt; drives the usage row's prompt→yield delta. */
@@ -148,6 +196,8 @@ export class EventController {
 	readonly #turnUsage = new TurnUsageTally();
 	/** When the last completed run ended; stale `#turnStartedAt` anchors are cleared against it. */
 	#lastAgentEndAt: number | undefined = undefined;
+	#lastUserVisibleReply: string | undefined;
+	#eventWokenTurn = false;
 	// Count of visible assistant content blocks (rendered non-empty text/thinking)
 	// already seen in the current streaming message. A newly appearing one breaks
 	// the read run: the rendered reasoning/answer is a visual separator, so reads
@@ -286,6 +336,10 @@ export class EventController {
 		// vocalizer falls back to mechanical cleanup when unset. Tolerates
 		// partial contexts (tests, minimal embeddings) by wiring null.
 		const session = ctx.session;
+		const previousAssistant = session?.agent?.state?.messages?.findLast(
+			(message): message is AssistantMessage => message.role === "assistant" && message.stopReason !== "toolUse",
+		);
+		if (previousAssistant) this.#lastUserVisibleReply = extractTextContent(previousAssistant).trim();
 		this.#detachToolApprovalPreviewWaiter = session?.extensionRunner?.setToolApprovalPreviewWaiter(toolCallId =>
 			this.#waitForToolApprovalPreview(toolCallId),
 		);
@@ -1001,6 +1055,18 @@ export class EventController {
 
 	async #handleMessageStart(event: Extract<AgentSessionEvent, { type: "message_start" }>): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
+		if (
+			(event.message.role === "user" && event.message.attribution !== "agent") ||
+			(event.message.role === "custom" && isUserTurnInitiator(event.message))
+		) {
+			this.#eventWokenTurn = false;
+		} else if (
+			event.message.role === "custom" &&
+			event.message.attribution !== "user" &&
+			["async-result", "irc:incoming", "harness-notice"].includes(event.message.customType)
+		) {
+			this.#eventWokenTurn = true;
+		}
 		if (event.message.role === "hookMessage" || event.message.role === "custom") {
 			if (event.message.role === "custom" && !this.ctx.initialChatRendered && !this.ctx.viewSession.isStreaming) {
 				// Idle custom append while no transcript render has committed (e.g. a startup
@@ -1147,6 +1213,7 @@ export class EventController {
 	}
 
 	async #handleIrcMessage(event: Extract<AgentSessionEvent, { type: "irc_message" }>): Promise<void> {
+		if (!this.ctx.session.isStreaming) this.#eventWokenTurn = true;
 		const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
 		if (this.#renderedCustomMessages.has(signature)) {
 			return;
@@ -1308,6 +1375,7 @@ export class EventController {
 	}
 
 	async #handleNotice(event: Extract<AgentSessionEvent, { type: "notice" }>): Promise<void> {
+		if (!this.ctx.session.isStreaming && event.source) this.#eventWokenTurn = true;
 		const message = event.source ? `${event.source}: ${event.message}` : event.message;
 		if (event.level === "error") {
 			this.ctx.showError(message);
@@ -2145,6 +2213,63 @@ export class EventController {
 			this.ctx.flushPendingCommandOutput();
 			return;
 		}
+		const finalAssistant = event.messages.findLast(
+			(message): message is AssistantMessage => message.role === "assistant",
+		);
+		if (finalAssistant) {
+			const finalText = extractTextContent(finalAssistant).trim();
+			const hasToolCall =
+				Array.isArray(finalAssistant.content) && finalAssistant.content.some(block => block.type === "toolCall");
+			if (
+				this.#eventWokenTurn &&
+				finalAssistant.stopReason !== "toolUse" &&
+				finalAssistant.stopReason !== "error" &&
+				finalAssistant.stopReason !== "aborted" &&
+				!hasToolCall
+			) {
+				const component = this.ctx.transcriptMessageComponents.get(finalAssistant) ?? this.#lastAssistantComponent;
+				if (
+					!finalText &&
+					component instanceof AssistantMessageComponent &&
+					this.ctx.chatContainer.canRemoveBlock(component)
+				) {
+					this.ctx.chatContainer.removeChild(component);
+					this.ctx.transcriptMessageComponents.delete(finalAssistant);
+					if (this.#lastAssistantComponent === component) this.#lastAssistantComponent = undefined;
+				} else if (finalText) {
+					const jobs = this.ctx.viewSession.getAsyncJobSnapshot?.({ recentLimit: 20 });
+					const workerNames = [...(jobs?.running ?? []), ...(jobs?.recent ?? [])].flatMap(job =>
+						job.agentId ? [job.agentId] : [],
+					);
+					if (repeatsUserVisibleStatus(this.#lastUserVisibleReply ?? "", finalText, workerNames)) {
+						if (component instanceof AssistantMessageComponent) {
+							component.setLinkTargets(new Map());
+							component.updateContent({
+								...finalAssistant,
+								content: [{ type: "text", text: REPEATED_STATUS_TEXT }],
+							});
+							component.setTextColorTransform(text => theme.fg("dim", text));
+							this.ctx.ui.requestComponentRender(component);
+						}
+						void this.ctx.viewSession
+							.sendCustomMessage(
+								{
+									customType: "repeated-status-notice",
+									content: REPEATED_STATUS_TEXT,
+									display: false,
+									attribution: "agent",
+								},
+								{ deliverAs: "nextTurn", triggerTurn: false },
+							)
+							.catch(error => logger.debug("Repeated status notice delivery failed", { error: String(error) }));
+					}
+				}
+			}
+			if (finalText && finalAssistant.stopReason !== "error" && finalAssistant.stopReason !== "aborted") {
+				this.#lastUserVisibleReply = finalText;
+			}
+		}
+		this.#eventWokenTurn = false;
 		setTerminalTitleState("idle");
 
 		await this.#finishAgentEnd(event);

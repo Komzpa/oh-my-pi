@@ -12,18 +12,30 @@ import * as AIError from "../../error";
 import type { FetchImpl } from "../../types";
 import type { OAuthController } from "./types";
 
+export const XIAOMI_STANDARD_API_BASE_URL = "https://api.xiaomimimo.com/v1";
+export const XIAOMI_TOKEN_PLAN_KEY_PREFIX = "tp-";
+export const XIAOMI_TOKEN_PLAN_SGP_API_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1";
+export const XIAOMI_TOKEN_PLAN_AMS_API_BASE_URL = "https://token-plan-ams.xiaomimimo.com/v1";
+export const XIAOMI_TOKEN_PLAN_CN_API_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1";
+
+export type XiaomiTokenPlanRegion = "sgp" | "ams" | "cn";
+
 const PROVIDER_ID = "xiaomi";
 const PROVIDER_NAME = "Xiaomi MiMo";
 const STANDARD_AUTH_URL = "https://platform.xiaomimimo.com/#/console/api-keys";
-const STANDARD_API_BASE_URL = "https://api.xiaomimimo.com/v1";
-const TOKEN_PLAN_KEY_PREFIX = "tp-";
+const STANDARD_API_BASE_URL = XIAOMI_STANDARD_API_BASE_URL;
+const TOKEN_PLAN_KEY_PREFIX = XIAOMI_TOKEN_PLAN_KEY_PREFIX;
 const STANDARD_VALIDATION_MODEL = "mimo-v2.5";
 const TOKEN_PLAN_VALIDATION_MODEL = "mimo-v2.5";
-const TOKEN_PLAN_SGP_API_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1";
-const TOKEN_PLAN_AMS_API_BASE_URL = "https://token-plan-ams.xiaomimimo.com/v1";
-const TOKEN_PLAN_CN_API_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1";
+const TOKEN_PLAN_SGP_API_BASE_URL = XIAOMI_TOKEN_PLAN_SGP_API_BASE_URL;
+const TOKEN_PLAN_AMS_API_BASE_URL = XIAOMI_TOKEN_PLAN_AMS_API_BASE_URL;
+const TOKEN_PLAN_CN_API_BASE_URL = XIAOMI_TOKEN_PLAN_CN_API_BASE_URL;
 
-type XiaomiTokenPlanRegion = "sgp" | "ams" | "cn";
+export const XIAOMI_TOKEN_PLAN_BASE_URLS: Record<XiaomiTokenPlanRegion, string> = {
+	sgp: XIAOMI_TOKEN_PLAN_SGP_API_BASE_URL,
+	ams: XIAOMI_TOKEN_PLAN_AMS_API_BASE_URL,
+	cn: XIAOMI_TOKEN_PLAN_CN_API_BASE_URL,
+};
 
 type XiaomiValidationEndpoint = {
 	baseUrl: string;
@@ -36,8 +48,40 @@ const TOKEN_PLAN_VALIDATION_ENDPOINTS: Record<XiaomiTokenPlanRegion, XiaomiValid
 	cn: { baseUrl: TOKEN_PLAN_CN_API_BASE_URL, model: TOKEN_PLAN_VALIDATION_MODEL },
 };
 
-function isTokenPlanKey(apiKey: string): boolean {
+export function isTokenPlanKey(apiKey: string): boolean {
 	return apiKey.startsWith(TOKEN_PLAN_KEY_PREFIX);
+}
+
+/** Resolve the Token Plan host for a `tp-` key: stored login region, else sgp. */
+export function resolveXiaomiTokenPlanBaseUrl(storedRegion?: string | null): string {
+	if (storedRegion === "ams" || storedRegion === "cn" || storedRegion === "sgp") {
+		return XIAOMI_TOKEN_PLAN_BASE_URLS[storedRegion];
+	}
+	return XIAOMI_TOKEN_PLAN_SGP_API_BASE_URL;
+}
+
+/** Model identity a Xiaomi request resolves against: provider id and stored baseUrl. */
+export type XiaomiTokenPlanModelRef = { provider?: string; baseUrl?: string };
+
+/**
+ * Request-time base URL for a Xiaomi `tp-` key: every Xiaomi host (bundled or
+ * discovered, standard or Token Plan) resolves to the Token Plan cluster for the
+ * stored login region, else SGP. A non-Xiaomi host is a deliberate user override
+ * and is kept as-is. Non-`tp-` keys keep the model's own baseUrl.
+ */
+export function resolveXiaomiRequestBaseUrl(
+	model: XiaomiTokenPlanModelRef,
+	apiKey: string | undefined,
+): string | undefined {
+	const provider = model.provider ?? "";
+	if (provider !== "xiaomi" && !provider.startsWith("xiaomi-token-plan-")) return model.baseUrl;
+	if (apiKey === undefined || !isTokenPlanKey(apiKey)) return model.baseUrl;
+	if (model.baseUrl !== undefined && !model.baseUrl.includes("xiaomimimo.com")) return model.baseUrl;
+	// Region stored at login: provider id (`xiaomi-token-plan-<region>`) or Token Plan host, else SGP.
+	const storedRegion =
+		/^xiaomi-token-plan-(sgp|ams|cn)$/.exec(provider)?.[1] ??
+		/token-plan-(sgp|ams|cn)\./.exec(model.baseUrl ?? "")?.[1];
+	return resolveXiaomiTokenPlanBaseUrl(storedRegion);
 }
 
 const VALIDATION_TIMEOUT_MS = 15_000;

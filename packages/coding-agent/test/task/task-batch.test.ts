@@ -6,7 +6,7 @@
  *    `schemaMode` — live in the items), the flat form exposes those fields
  *    directly. The stale `schema` field is never accepted.
  * 2. Shape validation rejects stale `schema`, `tasks`/`context` while batch
- *    is disabled, top-level `task` in batch calls, empty/invalid items,
+ *    is disabled, top-level `task` in batch calls, and invalid task items,
  *    duplicate names, and a missing shared `context`.
  * 3. With `async.enabled=true`, a batch call registers one background job per
  *    item; with `async.enabled=false`, it blocks and returns merged results.
@@ -222,12 +222,20 @@ describe("task.batch validation", () => {
 			);
 			expect(text).toContain("uses `outputSchema`");
 		}
+
+		const emptyBatchText = await executeText(
+			{ context: "Background.", tasks: [], schema: '{"properties":{}}' },
+			{ "task.batch": true },
+		);
+		expect(emptyBatchText).toContain("uses `outputSchema`");
 	});
 
 	it("rejects tasks and context while task.batch is disabled", async () => {
 		const disabled = { "task.batch": false };
 		const text = await executeText({ agent: "task", tasks: [{ task: "Work." }] }, disabled);
 		expect(text).toContain("task.batch is disabled");
+		const emptyText = await executeText({ tasks: [] }, disabled);
+		expect(emptyText).toContain("task.batch is disabled");
 
 		const contextText = await executeText({ agent: "task", task: "Work.", context: "Background." }, disabled);
 		expect(contextText).toContain("task.batch is disabled");
@@ -236,12 +244,15 @@ describe("task.batch validation", () => {
 	it("rejects top-level task in the batch shape", async () => {
 		const text = await executeText({ task: "Work.", tasks: [{ task: "Other." }] }, { "task.batch": true });
 		expect(text).toContain("not part of the batch shape");
+
+		const emptyBatchText = await executeText(
+			{ task: "Work.", context: "Background.", tasks: [] },
+			{ "task.batch": true },
+		);
+		expect(emptyBatchText).toContain("not part of the batch shape");
 	});
 
-	it("rejects empty task arrays and items without tasks", async () => {
-		const empty = await executeText({ tasks: [] }, { "task.batch": true });
-		expect(empty).toContain("Missing `tasks`");
-
+	it("rejects batch items without tasks", async () => {
 		const missing = await executeText({ tasks: [{ task: "Work." }, { name: "Beta" }] }, { "task.batch": true });
 		expect(missing).toContain("Task 2 (`Beta`) is missing `task`");
 	});
@@ -249,6 +260,9 @@ describe("task.batch validation", () => {
 	it("requires a shared context for batch calls", async () => {
 		const text = await executeText({ tasks: [{ task: "Work." }] }, { "task.batch": true });
 		expect(text).toContain("Missing `context`");
+
+		const emptyBatch = await executeText({ tasks: [] }, { "task.batch": true });
+		expect(emptyBatch).toContain("Missing `context`");
 	});
 
 	it("rejects duplicate provided names case-insensitively", async () => {
@@ -321,7 +335,8 @@ describe("task.batch validation", () => {
 		});
 		await agent.prompt("go");
 
-		expect(spawned).toEqual(["Do A."]);
+		expect(spawned.map(assignment => assignment?.split("\n\n")[0])).toEqual(["Do A."]);
+		expect(spawned[0]).toContain("Is there a much simpler different way?");
 		const toolResult = agent.state.messages.find(message => message.role === "toolResult");
 		expect(toolResult?.role === "toolResult" && toolResult.isError).toBe(false);
 	});
@@ -348,6 +363,47 @@ describe("task.batch spawning", () => {
 		}
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
+	});
+
+	it("returns a no-work result for an empty selected batch without spawning or changing TODO state", async () => {
+		mockDiscovery();
+		const runSubprocess = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? "?"));
+		const todoState = {
+			phases: [{ name: "Selected", tasks: [{ content: "Neighbor task", status: "pending" as const }] }],
+		};
+		let persistedTodoPhases = structuredClone(todoState.phases);
+		const todoPhasesBefore = structuredClone(todoState.phases);
+		const session = {
+			...createSession({ settings: { "async.enabled": false, "task.batch": true } }),
+			subagentEventBus: { on: vi.fn(() => () => {}) },
+			getTodoPhases: () => todoState.phases,
+			setTodoPhases: (phases: typeof todoState.phases) => {
+				todoState.phases = phases;
+			},
+			persistTodoPhases: (phases: typeof todoState.phases) => {
+				persistedTodoPhases = structuredClone(phases);
+			},
+		} as unknown as ToolSession;
+		const tool = await TaskTool.create(session);
+
+		const empty = await tool.execute("tc-empty", { context: "Shared context.", tasks: [] });
+		expect(getFirstText(empty)).toMatch(/no tasks selected/i);
+		expect(empty.isError).not.toBe(true);
+		expect(empty.details?.results).toEqual([]);
+		expect(runSubprocess).not.toHaveBeenCalled();
+		expect(todoState.phases).toEqual(todoPhasesBefore);
+		expect(persistedTodoPhases).toEqual(todoPhasesBefore);
+
+		const neighboring = await tool.execute("tc-neighbor", {
+			context: "Shared context.",
+			tasks: [{ name: "Neighbor", task: "Do the neighboring work." }],
+		});
+		expect(neighboring.details?.results).toHaveLength(1);
+		expect(runSubprocess).toHaveBeenCalledTimes(1);
+		expect(runSubprocess.mock.calls[0]?.[0]?.assignment?.split("\n\n")[0]).toBe("Do the neighboring work.");
+		expect(runSubprocess.mock.calls[0]?.[0]?.assignment).toContain("Is there a much simpler different way?");
 	});
 
 	it("spawns one background job per task item and forwards independent models and schemas with shared context", async () => {
@@ -430,7 +486,9 @@ describe("task.batch spawning", () => {
 		expect(byId.get("Alpha")?.outputSchemaMode).toBe("strict");
 		expect(byId.get("Beta")?.outputSchema).toEqual(betaSchema);
 		expect(byId.get("Beta")?.outputSchemaMode).toBe("permissive");
-		expect(seen.map(spawn => spawn.assignment).sort()).toEqual(["Do A.", "Do B."]);
+		const assignments = seen.map(spawn => spawn.assignment ?? "");
+		expect(assignments.map(assignment => assignment.split("\n\n")[0]).sort()).toEqual(["Do A.", "Do B."]);
+		for (const assignment of assignments) expect(assignment).toContain("Is there a much simpler different way?");
 		for (const spawn of seen) expect(spawn.parentAgentId).toBe("ParentA");
 	});
 
