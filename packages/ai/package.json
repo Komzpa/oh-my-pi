@@ -130,6 +130,10 @@
 			"types": "./src/registry/oauth/index.ts",
 			"import": "./src/registry/oauth/index.ts"
 		},
+		"./registry/oauth/xiaomi": {
+			"types": "./src/registry/oauth/xiaomi.ts",
+			"import": "./src/registry/oauth/xiaomi.ts"
+		},
 		"./utils/schema": {
 			"types": "./src/utils/schema/index.ts",
 			"import": "./src/utils/schema/index.ts"
