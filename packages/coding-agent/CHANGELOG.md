@@ -563,6 +563,10 @@
 
 ### Fixed
 
+- Switching, starting a new session, disposing, and settling subagent tasks (including keep-alive completion, failure, and task abort) await session-owned daemon release. The broker drains accepted launches before stopping all records, late lookups cannot recreate evicted clients, and cleanup errors remain failures even though sockets always close. Resumed agents can acquire fresh clients; ordinary root turn aborts and parent/sibling sessions retain their resources.
+- Broker connect spawns one bounded replacement when the endpoint is still missing past a short grace with no live broker pid, instead of failing blind with ENOENT after 10 s; a live pid keeps waiting for its owner to bind. Releasing a session whose broker acquisition failed no longer starts a fresh broker just for teardown.
+- Process-local Puppeteer fallback Chromium also drops the two user-bus addresses from its own launch environment, preserving its inherited session slice without changing unrelated children.
+
 - Fixed late completion probes rewinding resumed conversations and stale history scans lowering parked subagent costs ([#15594](https://github.com/can1357/oh-my-pi/pull/15594) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
 - Fixed `read.renderMarkdown` having no effect on plain-file reads: inline read previews now render Markdown files as formatted Markdown instead of numbered source ([#15007](https://github.com/can1357/oh-my-pi/issues/15007)).
 - Fixed Claude refusing every turn (`reasoning_extraction`) in a session snapcompacted under Codex, Grok or another reasoning model, after a switch or resume; Claude turns, `/btw`, `/handoff` and compaction now read a reasoning-free copy of the archive ([#15436](https://github.com/can1357/oh-my-pi/pull/15436) by [@will-bogusz](https://github.com/will-bogusz))
@@ -1294,6 +1298,13 @@
 - Fixed the `command` image-URL uploader stripping backslashes from Windows paths in its command template (`C:\tools\upload.exe {file}` ran `C:toolsupload.exe`)
 - Fixed reading a SQLite database (local or by URL) and closing prompt history leaving the database file locked on Windows
 - Fixed RPC mode on Windows freezing when the client stopped reading stdout: the worker blocked on the full stdout pipe and stopped reading stdin, so a client writing a batch of commands before reading replies deadlocked. Output now goes through a non-blocking stdout stream that spools to disk under backpressure, as on Linux and macOS
+- Linux priority prefixes degrade instead of failing: a missing `nice`/`ionice` drops only that prefix for browser launches, and a denied `ioprio_set` no longer stops native children from starting.
+- Reused session ids recover their own (or crash-torn, old) slice marker directory instead of losing ownership; switching sessions pauses the previous session's slice sampling without killing its processes (only dispose stops them); the `systemd-run` shim can no longer resolve to itself; upgrade keeps live daemon records that predate `processStartTime`.
+- Lowered Linux tool subprocesses, including language servers, daemon jobs, runtime probes and installers, to nice 19 and best-effort I/O priority 7 when the priority utilities are available; omp's own interactive UI remains unchanged.
+- Local bash and PTY commands carry their transcript session id into native process boundaries. Tool PATH defaults `systemd-run` to the session slice while preserving explicit slices, including the sole deliberate keep marker `omp-keep.slice`.
+- Session disposal and process exit stop the owned Linux session slice, leaving deliberate `omp-keep.slice` processes running and listed. Startup reaps only slices with proven dead PID/start-time owners; sustained idle/waiting CPU use produces a deduplicated hidden next-turn notice.
+- Browser automation and named bash services use per-session broker runtimes, and Python/Bun eval kernels carry transcript ownership into the existing native resource scopes. Daemon records include Linux process birth ticks and prune dead or reused PIDs.
+- Session disposal and process exit stop the owned Linux session slice, leaving deliberate `omp-keep.slice` processes running and listed. Startup reaps only slices with proven dead PID/start-time owners; sustained idle/waiting CPU use produces a deduplicated hidden next-turn notice plus one visible status line.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 - Fixed resuming a session through a symlink or hard link to a file another omp process is writing: the resumed session no longer mixes its turns into that file and continues in a new file next to it ([#14095](https://github.com/can1357/oh-my-pi/pull/14095) by [@andrebrait](https://github.com/andrebrait))
 - Fixed moving a session to another directory replacing a session file there that another omp process is writing, or moving a session another process is writing; the move now stops with an error and leaves both files untouched ([#14095](https://github.com/can1357/oh-my-pi/pull/14095) by [@andrebrait](https://github.com/andrebrait))
@@ -1310,6 +1321,16 @@
 - Fixed `readlink` in the bash tool printing a provider-backed path (e.g. `local://file`) with a `\\?\` prefix on Windows
 - Fixed the daemon broker on Windows dying with the omp process that started it, which stopped the shared browser relay (and every other broker daemon) while other omp sessions were still using it
 - Fixed the `browser` tool's Tern backend being refused by any Tern newer than the protocol omp was built against; it now speaks Tern's JSON script protocol, which no Tern build ties it to, and a Tern from before it reports as unavailable (update Tern) so the Chromium fallback takes over.
+- Task workers no longer inherit the user's desktop session: subagent `bash` environments drop `WAYLAND_DISPLAY`, `DISPLAY`, and `DBUS_SESSION_BUS_ADDRESS`, and get a per-worker private `XDG_RUNTIME_DIR` instead of `/run/user/<uid>`. The main interactive session's environment is unchanged.
+- Task workers no longer inherit the user's desktop session: subagent bash and JavaScript/Python eval children drop desktop bindings and get a private `XDG_RUNTIME_DIR` instead of `/run/user/<uid>`. Native shell imports and snapshots cannot restore inherited bindings. Main-session commands and explicitly supplied fixture environments are unchanged.
+
+### Fixed: tool subprocess priority
+
+- Lowered Linux Bun Shell tool children (update probes, share gist, IDA probe, gallery render, sshfs mounts, runtime installs) to nice 19 and best-effort I/O priority 7 via a shared shell prefix; interactive UI and terminal spawns are unchanged.
+
+### Fixed: native/tool child priority
+
+- Lowered Linux native utility, isolation, OAuth-helper, and omp-launched browser children to nice 19 and best-effort I/O priority 7 without changing omp's own priority.
 
 ## [18.4.12] - 2026-10-02
 

@@ -439,6 +439,10 @@ describe("runEvalAgent", () => {
 		const order: string[] = [];
 		let disposed = false;
 		const cleanupSession = {
+			// AgentSession.releaseTaskResources(): Promise<void> — finalizeSubagentLifecycle
+			// awaits this unconditionally before any lifecycle branch, so the stub must
+			// satisfy the contract without entering the asserted advisor/dispose order.
+			releaseTaskResources: async () => {},
 			prepareForHeadlessAdvisorDrain: () => {
 				order.push("prepare");
 			},

@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { $which } from "@oh-my-pi/pi-utils";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { isSettingsInitialized, settings } from "../config/settings";
 
 import vaultDoc from "../prompts/internal-urls/vault.md" with { type: "text" };
@@ -243,7 +244,7 @@ export async function spawnObsidian(
 ): Promise<ObsidianSpawnResult> {
 	if (signal?.aborted) throw abortError();
 
-	const proc = Bun.spawn({
+	const proc = spawnBackground({
 		cmd: [bin, ...args],
 		stdout: "pipe",
 		stderr: "pipe",

@@ -15,6 +15,7 @@ rust_library(
     version = "17.1.5",
     deps = all_crate_deps(normal = True) + [
         "//crates/pi-iso",
+        "//crates/vendor/brush-core",
     ],
 )
 

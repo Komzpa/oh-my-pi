@@ -13,6 +13,7 @@ import * as path from "node:path";
 import type { Subprocess } from "bun";
 import { IpcConnection, ipcEndpoint } from "@oh-my-pi/pi-natives";
 import { logger } from "@oh-my-pi/pi-utils";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import type { RefCountedWorkerHandle } from "./worker-client";
 
 const CONNECT_TIMEOUT_MS = 3_000;
@@ -237,7 +238,7 @@ export function spawnDetached(
 ): SpawnedWorker {
 	const log = fs.openSync(logPath, "w");
 	try {
-		const proc = Bun.spawn({
+		const proc = spawnBackground({
 			cmd,
 			cwd,
 			env,

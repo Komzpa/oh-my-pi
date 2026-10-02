@@ -27,6 +27,8 @@ import { getOrCreateSnapshot } from "../utils/shell-snapshot";
 import { TerminalGraphicsDecoder } from "../utils/terminal-graphics";
 import { loadDirenvEnv } from "./direnv";
 import { buildNonInteractiveEnv } from "./non-interactive-env";
+import { DESKTOP_SESSION_ENV_KEYS, ensureSubagentRuntimeDir, stripDesktopSessionEnv } from "@oh-my-pi/pi-utils";
+import { toolSessionEnvironment } from "./session-slice";
 
 import {
 	cfgBashDirenv,
@@ -51,8 +53,12 @@ export interface BashExecutorOptions {
 	signal?: AbortSignal;
 	/** Session key suffix to isolate shell sessions per agent */
 	sessionKey?: string;
+	/** Transcript session owning local processes, independent of the shell/job key. */
+	sessionId?: string;
 	/** Additional environment variables to inject */
 	env?: Record<string, string>;
+	/** Strip desktop-session bindings for task workers (grievance 608). */
+	maskDesktopSession?: boolean;
 	/** Run through the configured user shell instead of brush parsing directly. */
 	useUserShell?: boolean;
 	/** Run supported user shells (zsh/fish) on a headless PTY; requires `useUserShell`. */
@@ -543,9 +549,14 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	const baseShellConfig = settings.getShellConfig();
 	const shellConfig =
 		options?.useUserShell === true ? resolveUserShellConfig(settings, baseShellConfig) : baseShellConfig;
-	const { shell, args, env: shellEnv, prefix } = shellConfig;
+	const { shell, args, env: baseShellEnv, prefix } = shellConfig;
+	// Task workers must not inherit the user's desktop session (grievance 608):
+	// drop WAYLAND_DISPLAY/DISPLAY/DBUS_SESSION_BUS_ADDRESS and point
+	// XDG_RUNTIME_DIR at a per-worker private dir. The main session keeps `baseShellEnv`.
+	const shellEnv = options?.maskDesktopSession
+		? stripDesktopSessionEnv(baseShellEnv, ensureSubagentRuntimeDir(options?.sessionKey ?? "subagent"))
+		: baseShellEnv;
 	const bashShell = isBashShell(shell);
-	// `!` hotkey commands on zsh/fish run in a real PTY: interactive shell
 	// startup (zle, job control, gitstatus) needs a TTY, and tools only emit
 	// color when stdout is one. bash keeps the snapshot + embedded-shell path;
 	// `cd` keeps the persistent shell so the session cwd can follow it.
@@ -582,7 +593,13 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			commandPrefix: prefix,
 		}),
 	]);
-	const commandEnv = buildNonInteractiveEnv(preflight.env);
+	const commandEnv = await toolSessionEnvironment(options?.sessionId, {
+		...buildNonInteractiveEnv(preflight.env),
+		PATH: preflight.env?.PATH ?? shellEnv.PATH ?? process.env.PATH ?? "",
+	});
+	if (options?.maskDesktopSession) {
+		commandEnv.XDG_RUNTIME_DIR ??= shellEnv.XDG_RUNTIME_DIR;
+	}
 	const runCdInPersistentShell = options?.useUserShell === true && !prefix && isPersistentShellCdCommand(command);
 	// Never wrap in cmd.exe: it is only the Windows no-bash fallback for spawn
 	// paths, and the embedded brush shell runs the POSIX line better directly.
@@ -669,6 +686,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	const sessionEnv = options?.gitGuard ? { ...shellEnv, PI_GIT_GUARD: "1" } : shellEnv;
 	const shellOptions = {
 		sessionEnv,
+		unsetEnv: options?.maskDesktopSession ? [...DESKTOP_SESSION_ENV_KEYS, "XDG_RUNTIME_DIR"] : undefined,
 		snapshotPath: snapshotPath ?? undefined,
 		minimizer,
 	};

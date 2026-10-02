@@ -719,8 +719,10 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 		const lastYield = yieldItems[yieldItems.length - 1];
 		if (lastYield?.status === "aborted") {
 			abortedViaYield = true;
-			exitCode = 0;
-			stderr = lastYield.error || "Subagent aborted task";
+			if (!hadFailureBeforeYield) {
+				exitCode = 0;
+				stderr = lastYield.error || "Subagent aborted task";
+			}
 			try {
 				rawOutput = JSON.stringify({ aborted: true, error: lastYield.error }, null, 2);
 			} catch {
@@ -3383,12 +3385,6 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 				providerError ??
 				(thrown instanceof Error ? thrown.message : thrown === undefined ? undefined : String(thrown));
 			turnMonitor.finish();
-			if (yielded) {
-				// Acceptance boundary for an autonomous wake turn (#11079): the
-				// turn's terminal yield is settled, so terminalize the ref here
-				// even when the run-state mirror never delivers `idle`.
-				AgentRegistry.global().markResultAccepted(id, session, turnMonitor.yieldAcceptedAt());
-			}
 			// Read before finalization: a schema-bearing agent that answered in
 			// prose gets a missing-yield warning prepended to `result.output`.
 			// Like a first run's message result, the answer is the final report
@@ -3402,6 +3398,8 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			let result: SingleResult | undefined;
 			let finalizeError: unknown;
 			try {
+				await session.releaseTaskResources();
+				if (yielded) AgentRegistry.global().markResultAccepted(id, session, turnMonitor.yieldAcceptedAt());
 				result = await finalizeRunResult({
 					monitor: turnMonitor,
 					done: {
@@ -3536,10 +3534,24 @@ export async function finalizeSubagentLifecycle(args: {
 	onCleanupDeferred?: (completion: Promise<void>) => void;
 	onRelease?: () => Promise<void>;
 }): Promise<void> {
+	// Bound the turn drain, then await the broker fence outside the soft disposal
+	// deadline. Observe rejection here but surface it after every lifecycle branch.
+	const taskResourcesReleased = args.session.releaseTaskResources();
+	await taskResourcesReleased.catch(() => {});
 	const registry = AgentRegistry.global();
 	const ref = registry.get(args.id);
 	const ownsRef = Boolean(ref && ref.session === args.session);
 	const cleanupDeadlineAt = args.cleanupDeadlineAt ?? Date.now() + 5000;
+	const waitForSessionShutdown = async (completion: Promise<unknown>): Promise<void> => {
+		try {
+			await untilAborted(AbortSignal.timeout(Math.max(0, cleanupDeadlineAt - Date.now())), () => completion);
+		} catch (error) {
+			if (Date.now() < cleanupDeadlineAt) throw error;
+			const deferred = completion.then(() => {});
+			if (args.onCleanupDeferred) args.onCleanupDeferred(deferred);
+			else trackLateCleanup(deferred, { id: args.id, resource: "subagent-session" });
+		}
+	};
 	const disposeSession = async (): Promise<void> => {
 		// On a graceful finish (e.g. a `yield`) the advisor's review of the final
 		// turn was enqueued at turn end but may still be draining. Give it a
@@ -3550,15 +3562,9 @@ export async function finalizeSubagentLifecycle(args: {
 			args.session.prepareForHeadlessAdvisorDrain();
 			await args.session.waitForAdvisorCatchup(Math.max(0, cleanupDeadlineAt - Date.now()));
 		}
-		const disposal = args.session.dispose();
-		const remainingMs = Math.max(0, cleanupDeadlineAt - Date.now());
 		try {
-			await untilAborted(AbortSignal.timeout(remainingMs), () => disposal);
+			await waitForSessionShutdown(args.session.dispose());
 		} catch (error) {
-			if (Date.now() >= cleanupDeadlineAt) {
-				args.onCleanupDeferred?.(disposal);
-				return;
-			}
 			logger.warn("Subagent session cleanup failed", {
 				id: args.id,
 				error: error instanceof Error ? error.message : String(error),
@@ -3581,63 +3587,69 @@ export async function finalizeSubagentLifecycle(args: {
 	// before the run observes its abort, and stays terminal.
 	const resumableAbort =
 		args.abortKind !== "shutdown" && args.keepAlive && args.reviveSession !== null && ref?.status !== "aborted";
-	if (args.aborted && !resumableAbort) {
-		if (ref && ownsRef) {
-			if (args.abortKind === "shutdown") {
-				try {
-					await AgentLifecycleManager.global().release(args.id, ref);
-				} catch (error) {
-					logger.warn("runSubagent: failed to release session during manager shutdown", {
-						id: args.id,
-						error: String(error),
-					});
-					await disposeSession();
-					registry.unregister(args.id, ref);
+	try {
+		if (args.aborted && !resumableAbort) {
+			if (ref && ownsRef) {
+				if (args.abortKind === "shutdown") {
+					try {
+						await waitForSessionShutdown(AgentLifecycleManager.global().release(args.id, ref));
+					} catch (error) {
+						logger.warn("runSubagent: failed to release session during manager shutdown", {
+							id: args.id,
+							error: String(error),
+						});
+						await disposeSession();
+						registry.unregister(args.id, ref);
+					}
+				} else {
+					// Route hard kills through the lifecycle owner so the terminal
+					// decision is durable and a restart cannot rediscover the transcript
+					// as a revivable parked agent.
+					try {
+						await waitForSessionShutdown(
+							AgentLifecycleManager.global().release(args.id, ref, { tombstone: true }),
+						);
+					} catch (error) {
+						logger.warn("runSubagent: failed to persist kill tombstone", { id: args.id, error: String(error) });
+						registry.setStatus(args.id, "aborted", ref);
+						registry.detachSession(args.id, ref);
+						await disposeSession();
+					}
 				}
 			} else {
-				// Route hard kills through the lifecycle owner so the terminal
-				// decision is durable and a restart cannot rediscover the transcript
-				// as a revivable parked agent.
-				try {
-					await AgentLifecycleManager.global().release(args.id, ref, { tombstone: true });
-				} catch (error) {
-					logger.warn("runSubagent: failed to persist kill tombstone", { id: args.id, error: String(error) });
-					registry.setStatus(args.id, "aborted", ref);
-					registry.detachSession(args.id, ref);
-					await disposeSession();
-				}
+				await disposeSession();
 			}
-		} else {
-			await disposeSession();
+			await releaseOwnedResources();
+			return;
 		}
-		await releaseOwnedResources();
-		return;
-	}
 
-	if (!args.keepAlive) {
-		// One-shot helper: dispose and unregister. No IRC, no revival.
-		await disposeSession();
-		if (ref && ownsRef) registry.unregister(args.id, ref);
-		await releaseOwnedResources();
-		return;
-	}
+		if (!args.keepAlive) {
+			// One-shot helper: dispose and unregister. No IRC, no revival.
+			await disposeSession();
+			if (ref && ownsRef) registry.unregister(args.id, ref);
+			await releaseOwnedResources();
+			return;
+		}
 
-	// Keep-alive: finished and failed subagents both stay interrogable.
-	// The lifecycle manager owns idle-TTL parking + revival from here on.
-	if (!ref || !ownsRef || !registry.setStatus(args.id, "idle", ref)) {
-		await disposeSession();
-		await releaseOwnedResources();
-		return;
+		// Keep-alive: finished and failed subagents both stay interrogable.
+		// The lifecycle manager owns idle-TTL parking + revival from here on.
+		if (!ref || !ownsRef || !registry.setStatus(args.id, "idle", ref)) {
+			await disposeSession();
+			await releaseOwnedResources();
+			return;
+		}
+		AgentLifecycleManager.global().adopt(
+			args.id,
+			{
+				idleTtlMs: args.agentIdleTtlMs,
+				revive: args.reviveSession ?? undefined,
+				onRelease: args.onRelease,
+			},
+			ref,
+		);
+	} finally {
+		await taskResourcesReleased;
 	}
-	AgentLifecycleManager.global().adopt(
-		args.id,
-		{
-			idleTtlMs: args.agentIdleTtlMs,
-			revive: args.reviveSession ?? undefined,
-			onRelease: args.onRelease,
-		},
-		ref,
-	);
 }
 
 /** Options for {@link runSubagentFollowUpTurn}. */
@@ -3828,6 +3840,10 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		const active = monitor.takeActiveSession();
 		if (active) monitor.captureSalvage(active);
 		monitor.finish();
+		await session.releaseTaskResources();
+		if (monitor.yieldCalled()) {
+			AgentRegistry.global().markResultAccepted(id, session, monitor.yieldAcceptedAt());
+		}
 	}
 
 	return finalizeRunResult({
@@ -5005,22 +5021,35 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				if (options.keepAlive !== false && (!preparedSession || readyAt !== undefined)) {
 					attachIrcWakeTurnMonitor(session, wakeOptions);
 				}
-				await finalizeSubagentLifecycle({
-					id,
-					session,
-					aborted,
-					abortKind: monitor.abortKind(),
-					keepAlive: options.keepAlive !== false && (!preparedSession || readyAt !== undefined),
-					isolated: worktree !== undefined,
-					agentIdleTtlMs,
-					reviveSession,
-					cleanupDeadlineAt,
-					onRelease: options.onRelease,
-					onCleanupDeferred: completion => {
-						deferredSessionShutdown = completion;
-						deferCleanup(completion);
-					},
-				});
+				try {
+					await finalizeSubagentLifecycle({
+						id,
+						session,
+						aborted,
+						abortKind: monitor.abortKind(),
+						keepAlive: options.keepAlive !== false && (!preparedSession || readyAt !== undefined),
+						isolated: worktree !== undefined,
+						agentIdleTtlMs,
+						reviveSession,
+						cleanupDeadlineAt,
+						onRelease: options.onRelease,
+						onCleanupDeferred: completion => {
+							deferredSessionShutdown = completion;
+							deferCleanup(completion);
+						},
+					});
+				} catch (cleanupError) {
+					// A teardown failure is a failed receipt, not a throw out of this
+					// finally: acceptance, post-shutdown reaping and tracking must run.
+					exitCode = 1;
+					const detail =
+						cleanupError instanceof Error ? cleanupError.stack || cleanupError.message : String(cleanupError);
+					const failure = `Subagent teardown failed: ${detail}`;
+					error = error ? `${error}\n${failure}` : failure;
+				}
+				if (monitor.yieldCalled()) {
+					AgentRegistry.global().markResultAccepted(id, session, monitor.yieldAcceptedAt());
+				}
 			}
 			if (jobManager) {
 				if (deferredSessionShutdown) {

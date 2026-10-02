@@ -9,6 +9,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type FileLockHandle, logger, readLines, untilAborted } from "@oh-my-pi/pi-utils";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { Subprocess } from "bun";
 import { hostHasInheritableConsole, shouldHideKernelWindow } from "../eval/py/spawn-options";
@@ -165,7 +166,7 @@ export class IdaWorker {
 		idleCloseMs: number,
 	): Promise<IdaWorker> {
 		const script = await stageRunnerScript("omp-ida-worker", "py", IDA_WORKER);
-		const proc = Bun.spawn([runtime.pythonPath, "-u", script], {
+		const proc = spawnBackground([runtime.pythonPath, "-u", script], {
 			cwd: loc.dir,
 			env: runtime.env,
 			stdin: "pipe",
