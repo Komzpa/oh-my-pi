@@ -276,6 +276,8 @@ Runtime x64 candidate order also includes the unsuffixed default filename after 
 
 `compileCodingAgent` (`packages/coding-agent/scripts/compile-binary.ts`) calls `embeddedAddonFiles()` for the binary's target and hands the result to `Bun.build({ files })`. Nothing under `native/` is written; the checked-in `embedded-addon.js` stays the null stub.
 
+Compiled bundles retain each split chunk's source directory, basename, and content hash (`chunks/[dir]/[name]-[hash].[ext]`). Identical discovery modules in different directories can share both basename and hash, so neither is sufficient alone to prevent output-path collisions.
+
 1. **Init**: the platform tag comes from the compile target (`CROSS_TARGET` for local builds, the release matrix entry for release builds, else the host).
 2. **Candidate set**:
    - x64 looks for `modern` and `baseline` files;

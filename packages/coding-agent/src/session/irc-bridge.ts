@@ -265,6 +265,7 @@ export class IrcBridge {
 			customType: "irc:incoming",
 			content: prompt.render(ircIncomingTemplate, {
 				from: msg.from,
+				fromName: escapeHarnessTags(msg.fromName ?? ""),
 				message: envelopeBody,
 				replyTo: msg.replyTo ?? "",
 				progress: msg.progress === true,
@@ -275,6 +276,7 @@ export class IrcBridge {
 			details: {
 				id: msg.id,
 				from: msg.from,
+				...(msg.fromName ? { fromName: msg.fromName } : {}),
 				message: msg.body,
 				...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
 				...(msg.wakeRelay ? { wakeRelay: true } : {}),

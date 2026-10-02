@@ -1,5 +1,6 @@
 <irc>
-Incoming IRC message from agent `{{from}}`{{#if replyTo}} (reply to {{replyTo}}){{/if}}{{#if progress}} (progress; its reply follows later){{/if}}:
+Incoming IRC message from {{#if fromName}}{{fromName}} (agent `{{from}}`){{else}}agent `{{from}}`{{/if}}{{#if replyTo}} (reply to {{replyTo}}){{/if}}{{#if progress}} (progress; its reply follows later){{/if}}:
+reply: write agent://{{from}}
 
 {{message}}
 
