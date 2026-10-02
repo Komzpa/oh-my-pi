@@ -68,6 +68,7 @@ import type {
 } from "../../modes/types";
 import { extractVisibleAssistantText } from "../rpc/rpc-live";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
+import { restartNoticeText } from "../../task/restart-queue";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
 	type CustomMessage,
@@ -299,6 +300,22 @@ export class UiHelpers {
 			case "hookMessage":
 			case "custom": {
 				if (message.display) {
+					if (message.customType === "restart-queued") {
+						const details = message.details as { requestId?: unknown } | undefined;
+						const requestId = details?.requestId;
+						const label =
+							typeof requestId === "string"
+								? restartNoticeText(this.ctx.viewSession.sessionManager.getBranch(), requestId)
+								: "Restart queued";
+						const component = new CustomMessageComponent({
+							...message,
+							role: "custom",
+							customType: label,
+							content: "",
+						});
+						this.ctx.chatContainer.addChild(component);
+						break;
+					}
 					if (message.customType === "async-result") {
 						const component = buildAsyncResultBlock(message);
 						this.ctx.chatContainer.addChild(component);

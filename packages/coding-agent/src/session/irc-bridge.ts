@@ -15,6 +15,8 @@ export interface IrcBridgeHost {
 	sessionManager: SessionManager;
 	isDisposed(): boolean;
 	isStreaming(): boolean;
+	isRestartDraining(): boolean;
+	queueForRestart(record: CustomMessage): Promise<void>;
 	planModeEnabled(): boolean;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	wakeForIrc(records: AgentMessage[]): void;
@@ -215,6 +217,10 @@ export class IrcBridge {
 			timestamp: msg.ts,
 		};
 		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
+		if (this.#host.isRestartDraining()) {
+			await this.#host.queueForRestart(record);
+			return "injected";
+		}
 		if (streaming) {
 			if (fromParent) {
 				this.#host.agent.steer({
