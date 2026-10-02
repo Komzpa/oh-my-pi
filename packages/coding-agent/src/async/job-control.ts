@@ -293,6 +293,7 @@ export function buildJobResult(
 	jobs: TrackedJobLike[],
 	cancelOutcomes: CancelOutcome[],
 	agents: AgentActivitySnapshot[] = [],
+	todoTracksTasks = false,
 ): AgentToolResult<CoordinationDetails> {
 	// Deduplicate by id (cancelled jobs may also appear in the watched set).
 	const seen = new Set<string>();
@@ -401,6 +402,7 @@ export function buildJobResult(
 		jobs: jobResults,
 		...(cancelOutcomes.length ? { cancelled: cancelOutcomes.map(({ id, status }) => ({ id, status })) } : {}),
 		...(agents.length ? { agents } : {}),
+		...(todoTracksTasks ? { todoTracksTasks: true } : {}),
 	};
 	return {
 		content: [{ type: "text", text: lines.join("\n").trimEnd() }],

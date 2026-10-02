@@ -10,7 +10,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import { AgentBusyError, recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
-import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
+import type { Api, Effort, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
 import { isCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { isRecord, logger, popLoopPhase, prompt, pushLoopPhase, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import {
@@ -59,6 +59,7 @@ import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
 import type { HindsightSessionStateApi } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { IrcBus } from "../irc/bus";
+import { sendAgentMessageFromSession } from "../irc/messaging";
 import type { MCPManagerApi, MCPToolScope } from "../mcp/manager";
 import type { MnemopiSessionStateApi } from "../mnemopi/state";
 import { initializeExtensions } from "../modes/runtime-init";
@@ -94,6 +95,7 @@ import {
 	assertModelSupportsEffortCeiling,
 	type ConfiguredThinkingLevel,
 	clampThinkingLevelToCeiling,
+	resolveThinkingLevelForModel,
 	prewalkWouldBeNoop,
 	resolveTaskEffortLevel,
 	type TaskEffort,
@@ -484,6 +486,8 @@ export interface ExecutorOptions {
 	 * Default `true`.
 	 */
 	structured?: boolean;
+	/** Internal exact rung selection; takes precedence over coarse effort and model suffixes. */
+	exactThinkingLevel?: Effort;
 	/** Schema used to validate the final structured completion. */
 	outputSchema?: unknown;
 	/** Enforcement policy for {@link outputSchema}; defaults to legacy permissive behavior. */
@@ -3045,10 +3049,14 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	const settledPayload = {
 		id,
 		agent: agent.name,
+		at: Date.now(),
+		resolvedModelIdentity: progress.resolvedModelIdentity,
+		resolvedThinkingLevel: progress.resolvedThinkingLevel,
 		parentToolCallId: args.parentToolCallId,
 		detached: args.detached,
 		agentSource: agent.source,
 		description: progress.description,
+		taskText: assignment ?? task,
 		status: progress.status as "completed" | "failed" | "aborted",
 		sessionFile: args.sessionFile,
 		index,
@@ -3414,10 +3422,12 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		const startedPayload = {
 			id,
 			agent: agent.name,
+			at: Date.now(),
 			parentToolCallId: options.parentToolCallId,
 			detached: true,
 			agentSource: agent.source,
 			description: options.description,
+			taskText: ircTask,
 			status: "started",
 			sessionFile,
 			index,
@@ -3749,6 +3759,8 @@ export interface FollowUpTurnOptions {
 	 * `message` (`omp --restore`: {@link AgentSession.restoreInterruptedTurn}).
 	 */
 	restore?: boolean;
+	/** Effort-only continuation: retain the resolved model and session identity. */
+	thinkingLevel?: Effort;
 	index?: number;
 	description?: string;
 	/** Explicit pre-expansion model role alias retained from the original run. */
@@ -3892,6 +3904,9 @@ async function driveFollowUpTurn(
 		session = live;
 		await acquireOwnership();
 	}
+	// Apply only after revival and turn ownership: never mutate a parked stale
+	// instance or an active peer wake. The session setter persists the selection.
+	if (options.thinkingLevel !== undefined) session.setThinkingLevel(options.thinkingLevel);
 	// A kept-alive session reuses its YieldTool across turns; clear the prior
 	// run's incremental-section flag and retry counters so this turn's guards
 	// evaluate against its own state, not stale accumulators.
@@ -3924,10 +3939,12 @@ async function driveFollowUpTurn(
 	const startedPayload = {
 		id,
 		agent: agent.name,
+		at: Date.now(),
 		parentToolCallId: options.parentToolCallId,
 		detached: true,
 		agentSource: agent.source,
 		description: options.description,
+		taskText: message,
 		status: "started",
 		sessionFile,
 		index,
@@ -4780,12 +4797,19 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			// ceiling, and a model whose lowest effort is above it fails the spawn
 			// exactly as an `effort` hint does.
 			const spawnEffortCeiling =
-				options.effort !== undefined || options.perCallModelGrants ? cfgTaskMaxEffort.get(settings) : undefined;
+				options.exactThinkingLevel !== undefined || options.effort !== undefined || options.perCallModelGrants
+					? cfgTaskMaxEffort.get(settings)
+					: undefined;
 			if (model && spawnEffortCeiling) assertModelSupportsEffortCeiling(model, spawnEffortCeiling);
 			const effortLevel =
-				options.effort !== undefined
-					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
-					: undefined;
+				options.exactThinkingLevel !== undefined
+					? resolveThinkingLevelForModel(
+							model,
+							clampThinkingLevelToCeiling(model, options.exactThinkingLevel, spawnEffortCeiling),
+						)
+					: options.effort !== undefined
+						? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
+						: undefined;
 			const explicitLevel =
 				explicitThinkingLevel && resolvedThinkingLevel !== AUTO_THINKING
 					? clampThinkingLevelToCeiling(model, resolvedThinkingLevel, spawnEffortCeiling)
@@ -4799,9 +4823,8 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 						? formatModelSelectorValue(progress.resolvedModelIdentity, displayLevel)
 						: progress.resolvedModelIdentity;
 			}
-			// Precedence: caller `effort` > explicit `:level` suffix on the resolved
-			// model pattern > agent-definition default (e.g. task's `auto`) >
-			// pattern-derived level.
+			// Precedence: exact rung > coarse caller effort > explicit model
+			// suffix > agent-definition default > pattern-derived level.
 			const effectiveThinkingLevel =
 				effortLevel ?? (explicitThinkingLevel ? explicitLevel : (thinkingLevel ?? resolvedThinkingLevel));
 			resolvedAt = performance.now();
@@ -5133,10 +5156,12 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			const startedPayload = {
 				id,
 				agent: agent.name,
+				at: Date.now(),
 				parentToolCallId: options.parentToolCallId,
 				detached: options.detached,
 				agentSource: agent.source,
 				description: options.description,
+				taskText: assignment ?? options.task,
 				status: "started" as const,
 				sessionFile: subtaskSessionFile,
 				index,

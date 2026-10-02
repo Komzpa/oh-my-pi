@@ -513,8 +513,8 @@ describe("system prompt tool inventory", () => {
 			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
 		});
 		const text = systemPrompt.join("\n\n");
-		expect(text).toContain("MUST use `xd://lsp` for definitions");
-		expect(text).toContain("MUST run `xd://lsp` references first");
+		expect(text).toContain("use `xd://lsp` for definitions");
+		expect(text).toContain("run `xd://lsp` references first");
 		expect(text).not.toContain("`lsp`");
 	});
 

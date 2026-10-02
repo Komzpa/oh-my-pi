@@ -42,6 +42,7 @@ import type { ShellTrace } from "@oh-my-pi/pi-wire";
 import { checkBashInterception } from "./bash-interceptor";
 import { rewriteGitWorktreeAdd } from "./bash-worktree-rewrite";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
+import { isReadOnlyBashCommand } from "./bash-read-only";
 import { resolveEvalBackends } from "./eval-backends";
 import { invalidateGithubCacheForBashCommand, invalidateGithubCacheForBashResult } from "./gh-cache-invalidation";
 import { serviceLogs, startService, type ServiceReady } from "../launch/services";
@@ -555,6 +556,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			? this.session.settings.getShellConfig().shell
 			: undefined;
 		const compoundSegments = shell && isPosixShell(shell) ? extractLiteralAndChainSegments(command) : null;
+		// Allow-listed inspection (git status/diff/log, ls, cat, rg, ...) is `read` tier so planning
+		// admission lets it through; deny and prompt rules below still take precedence.
+		const readOnly = isReadOnlyBashCommand(command) && isPosixShell(this.session.settings.getShellConfig().shell);
 		// Segment rules keep their ordered first-match semantics. Restrictions
 		// matching only the complete chain are aggregated separately: retain the
 		// first prompt, but keep scanning because any later deny takes precedence.
@@ -619,9 +623,10 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				}
 			}
 			// Unmatched segments retain the standalone tool-policy and mode fallback.
+			if (readOnly) return hasUnmatchedSegment ? "read" : { tier: "read", policy: "allow" };
 			return hasUnmatchedSegment ? "exec" : { tier: "write", policy: "allow" };
 		}
-		if (patternRule?.approval === "allow") return { tier: "write", policy: "allow" };
+		if (patternRule?.approval === "allow") return { tier: readOnly ? "read" : "write", policy: "allow" };
 		if (patternRule?.approval === "prompt") {
 			return {
 				tier: "exec",
@@ -630,7 +635,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				reason: `Prompt required by bash pattern: ${patternRule.match}`,
 			};
 		}
-		return "exec";
+		return readOnly ? "read" : "exec";
 	};
 	readonly formatApprovalDetails = (args: unknown): string[] => {
 		const rawCommand = (args as Partial<BashToolInput>).command;
