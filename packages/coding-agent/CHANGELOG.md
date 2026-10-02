@@ -12,6 +12,7 @@
 - On Windows, the shell's `cp` builtin now clones files (copy-on-write) on ReFS and Dev Drive volumes by default, falling back to a regular copy elsewhere; `--reflink` and `-c` no longer fail there.
 
 ### Fixed
+- Fixed compiled Reemxy extensions failing to load nested goals imports by exporting the goals subpaths explicitly.
 
 - Fixed async `ask` questions opening a separate keyboard selector with no note support instead of the working sync dialog: an ordinary ask now opens the same rich ask dialog (options, `n` note, custom answer, Enter/Ctrl+Enter/Ctrl+Q submit) non-blockingly, and confirming sends `Answer to <tool-call-id> [<question-id>]: <answer> — note: <text>` through the normal reply path.
 - The sticky TODO HUD now sizes its collapsed task window from the live viewport instead of a fixed five rows, so a tall terminal no longer strands rows behind an `… N more` summary while blank screen space remains; a short non-compact terminal keeps a floored, bounded window with the same summary.

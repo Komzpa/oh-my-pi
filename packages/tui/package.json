@@ -87,6 +87,10 @@
       "types": "./src/tools/index.ts",
       "import": "./src/tools/index.ts"
     },
+    "./tools/*": {
+      "types": "./src/tools/*.ts",
+      "import": "./src/tools/*.ts"
+    },
     "./status-line": {
       "types": "./src/status-line/index.ts",
       "import": "./src/status-line/index.ts"

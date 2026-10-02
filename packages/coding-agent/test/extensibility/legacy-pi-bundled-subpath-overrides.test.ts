@@ -18,6 +18,20 @@ const bundledModuleKeys = new Set(bundledEntries.map(entry => entry.key));
 // derives every module key from current package exports, so subpaths route to
 // the same `omp-legacy-pi-bundled:` virtual namespace as package roots without
 // a generated registry or duplicate key list.
+it("bundles every runtime @oh-my-pi import used by Reemxy extensions", async () => {
+	const extensionsDir = path.resolve(import.meta.dir, "../../../reemxy-extensions/extensions");
+	const files = (await fs.readdir(extensionsDir)).filter(file => file.endsWith(".ts") && !file.endsWith(".test.ts"));
+	const specifiers = new Set<string>();
+	for (const file of files) {
+		const source = await fs.readFile(path.join(extensionsDir, file), "utf8");
+		for (const match of source.matchAll(/^import\s+(?!type\b)[\s\S]*?\bfrom\s*["'](@oh-my-pi\/[^"']+)["']/gm)) {
+			specifiers.add(match[1]!);
+		}
+	}
+	expect([...specifiers].sort()).not.toEqual([]);
+	for (const specifier of specifiers) expect(bundledModuleKeys.has(specifier), specifier).toBe(true);
+});
+
 describe("legacy pi compat compiled-mode subpath overrides (issue #3442)", () => {
 	it("does not evaluate unrelated host modules while loading the registry", async () => {
 		using tempDir = TempDir.createSync("@omp-legacy-pi-loaders-");
@@ -144,6 +158,18 @@ export const observed = [
 		const overrides = __buildLegacyPiPackageRootOverrides(true, bundledModuleKeys);
 		expect(bundledModuleKeys.has(key)).toBe(true);
 		expect(overrides[key]).toBe(`omp-legacy-pi-bundled:${key}`);
+	});
+	it("bundles nested extension imports from the coding-agent and AI registry exports", () => {
+		const overrides = __buildLegacyPiPackageRootOverrides(true, bundledModuleKeys);
+		const extensionImports = [
+			"@oh-my-pi/pi-coding-agent/registry/agent-registry",
+			"@oh-my-pi/pi-ai/registry/oauth/xiaomi",
+		] as const;
+
+		for (const key of extensionImports) {
+			expect(bundledModuleKeys.has(key)).toBe(true);
+			expect(overrides[key]).toBe(`omp-legacy-pi-bundled:${key}`);
+		}
 	});
 
 	it("does not enumerate root catch-all wildcards (./* / ./*.js)", () => {

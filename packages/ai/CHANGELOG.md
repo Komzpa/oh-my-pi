@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Fixed compiled Reemxy extensions failing to load nested Xiaomi OAuth imports by exposing the registry OAuth provider subpaths.
 
 - Fixed Xiaomi `tp-` Token Plan keys resolving to the standard API host at request time; they now always route to the Token Plan host (stored login region, else SGP).
 
