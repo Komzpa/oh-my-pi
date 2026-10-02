@@ -39,6 +39,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { FileSessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
+import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
 import { PerCallModelError, PerCallModelUnavailableError } from "@oh-my-pi/pi-coding-agent/task/model-approval";
@@ -177,6 +178,9 @@ async function createPersistedSession(
 		resolvedModel?: string;
 		perCallModelIdentity?: string;
 		perCallThinkingLevel?: ConfiguredThinkingLevel | null;
+		retryFallbackRole?: string;
+		retryFallbackPrimary?: string;
+		retryFallbackChain?: string[];
 	},
 ): Promise<string> {
 	const manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
@@ -200,6 +204,11 @@ async function createPersistedSession(
 		...(contract?.compactionThreshold !== undefined
 			? { compactionThreshold: contract.compactionThreshold }
 			: undefined),
+		...(contract?.retryFallbackRole !== undefined ? { retryFallbackRole: contract.retryFallbackRole } : undefined),
+		...(contract?.retryFallbackPrimary !== undefined
+			? { retryFallbackPrimary: contract.retryFallbackPrimary }
+			: undefined),
+		...(contract?.retryFallbackChain !== undefined ? { retryFallbackChain: contract.retryFallbackChain } : undefined),
 	});
 	manager.appendMessage({
 		role: "assistant",
@@ -1688,6 +1697,97 @@ describe("persisted subagent revival", () => {
 			expect(msg?.body).toContain("[some-provider/some-model]");
 			expect(msg?.body).toContain("402 usage balance exhausted");
 			expect(msg?.body).toContain(`history://${ref.id}`);
+			AgentLifecycleManager.resetGlobalForTests();
+			AgentRegistry.resetGlobalForTests();
+			IrcBus.resetGlobalForTests();
+		});
+		it("reinstalls the spawn fallback chain so a quota-403 wake turn can fail over", async () => {
+			// A cold-revived worker builds fresh settings: without the spawn's
+			// `subagent:<id>` chain its wake turn dies on the first quota 403/429
+			// (e.g. `[kimi-code/...] 403 ... 5-hour usage limit`) instead of
+			// failing over to the next profile model like a fresh spawn.
+			const cwd = makeTempDir("@pi-revive-quota-failover-");
+			AgentRegistry.resetGlobalForTests();
+			AgentLifecycleManager.resetGlobalForTests();
+			IrcBus.resetGlobalForTests();
+			const sessionFile = await createPersistedSession(cwd, false, undefined, undefined, {
+				retryFallbackRole: "subagent:persisted-restricted",
+				retryFallbackPrimary: "test-quota/model-a",
+				retryFallbackChain: ["test-quota/model-b", "test-other/model-c"],
+			});
+			MCPManager.setInstance(fakeMcpManager(() => []));
+			let capturedSettings: Settings | undefined;
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+				if (!options) throw new Error("Expected createAgentSession options");
+				capturedSettings = options.settings as Settings;
+				const handle = createRevivedSession([]);
+				return { session: handle.session } as CreateAgentSessionResult;
+			});
+			const ref = createRef(sessionFile);
+			AgentRegistry.global().register({
+				id: "Main",
+				displayName: "Main",
+				kind: "main",
+				session: null,
+				status: "idle",
+			});
+			AgentRegistry.global().register({
+				id: ref.id,
+				displayName: ref.displayName,
+				kind: "sub",
+				session: null,
+				sessionFile,
+				status: "parked",
+			});
+			const reviver = await createFactory(cwd)(ref);
+			if (!reviver) throw new Error("Expected a persisted reviver");
+			await reviver(ref);
+			if (!capturedSettings) throw new Error("Expected createAgentSession to capture settings");
+
+			// The revived settings carry the spawn's chain and role pin...
+			expect(cfgRetryFallbackChains.get(capturedSettings)).toMatchObject({
+				"subagent:persisted-restricted": ["test-quota/model-b", "test-other/model-c"],
+			});
+			expect(capturedSettings.getModelRole("subagent:persisted-restricted")).toBe("test-quota/model-a");
+
+			// ...so the wake turn's recovery routes the quota-dead primary to
+			// its chain and offers the next profile model instead of dying.
+			const quotaModel = (provider: string, id: string): Model =>
+				buildModel({
+					provider,
+					id,
+					name: id,
+					api: "openai-completions",
+					baseUrl: `https://${provider}.example.test`,
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 200_000,
+					maxTokens: 8192,
+				});
+			const bySelector: Record<string, Model> = {
+				"test-quota/model-a": quotaModel("test-quota", "model-a"),
+				"test-quota/model-b": quotaModel("test-quota", "model-b"),
+				"test-other/model-c": quotaModel("test-other", "model-c"),
+			};
+			const settings = capturedSettings;
+			const context = {
+				chains: getRetryFallbackChains(settings),
+				getModelRole: (role: string) => settings.getModelRole(role),
+				modelLookup: {
+					find: (provider: string, id: string) => bySelector[`${provider}/${id}`],
+					hasProvider: () => true,
+				},
+			};
+			const primary = bySelector["test-quota/model-a"];
+			expect(resolveRetryFallbackChainKey(context, "test-quota/model-a", primary)).toBe(
+				"subagent:persisted-restricted",
+			);
+			expect(
+				findRetryFallbackCandidates(context, "subagent:persisted-restricted", "test-quota/model-a", primary).map(
+					selector => selector.raw,
+				),
+			).toEqual(["test-quota/model-b", "test-other/model-c"]);
 			AgentLifecycleManager.resetGlobalForTests();
 			AgentRegistry.resetGlobalForTests();
 			IrcBus.resetGlobalForTests();
