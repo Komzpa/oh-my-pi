@@ -2,7 +2,7 @@
 name: scout
 description: Read-only bounded source, transcript, or repository lookup with exact evidence.
 tools: read, grep, glob, find
-model: codex-lb/gpt-6-luna:low, kimi-code/kimi-for-coding-highspeed:low, xiaomi/mimo-v2.6-flash, anthropic/claude-haiku-4-5:low, deepseek/deepseek-v4-flash:high, codex-lb/Qwen3.8-27B
+model: codex-lb/gpt-6-luna:low, kimi-code/kimi-for-coding-highspeed:low, xiaomi/mimo-v2.6-flash, anthropic/claude-haiku-4-5:low, deepseek/deepseek-v4-flash:high, codex-lb/gpt-6.1-sol:medium, anthropic/claude-sonnet-5-5, codex-lb/Qwen3.8-27B, cerebras/qwen-3.8-27b
 thinking-level: low
 spawns: []
 read-summarize: false
