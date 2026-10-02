@@ -127,7 +127,7 @@ export const AGENT_POOLS: Record<string, PoolConfig> = {
 			"xiaomi/mimo-v2.6-pro",
 			"muse-code/muse-spark-1.3-contributor",
 		],
-		fallbacks: ["codex-lb/gpt-6.1-sol:medium", "codex-lb/Qwen3.8-27B"],
+		fallbacks: ["codex-lb/gpt-6.1-sol:medium", "codex-lb/Qwen3.8-27B", "cerebras/qwen-3.8-27b"],
 	},
 };
 
