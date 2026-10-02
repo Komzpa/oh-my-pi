@@ -2660,6 +2660,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				if (!model) return undefined;
 				return session.getPromptCacheKeyForModel(model) ?? session.agent.sessionId;
 			},
+			agentKind,
 			getToolByName: name => session?.getToolByName(name),
 			getToolForEvalBridge: name => session?.getToolForEvalBridge(name),
 			getAdvertisedEvalToolNames: () => session?.getAdvertisedEvalToolNames() ?? [],
@@ -5584,7 +5585,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							getActiveModelString,
 						};
 						await vibeRegistry.suspendScope(vibeRegistry.ownerScope(vibeParentSession), scopedAsyncJobManager);
-						await AgentLifecycleManager.global().dispose();
+						await AgentLifecycleManager.global().dispose(undefined, disposeOptions?.preserveServices);
 					}
 					await originalDispose(disposeOptions);
 				} finally {

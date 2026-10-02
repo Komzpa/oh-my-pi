@@ -13,6 +13,7 @@ import { isVideoPath } from "@oh-my-pi/pi-tui/prompt/video";
 import { untilAborted } from "@oh-my-pi/pi-utils/abortable";
 import { TempDir } from "@oh-my-pi/pi-utils/temp";
 import { $which } from "@oh-my-pi/pi-utils/which";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 
 const VIDEO_MIME_BY_EXT: Record<string, string> = {
 	".mp4": "video/mp4",
@@ -125,7 +126,7 @@ function ffmpegRelease(): Promise<FfmpegRelease | undefined> {
 
 async function probeFfmpegRelease(binary: string): Promise<FfmpegRelease | undefined> {
 	try {
-		const child = Bun.spawn([binary, "-version"], { stdout: "pipe", stderr: "pipe" });
+		const child = spawnBackground([binary, "-version"], { stdout: "pipe", stderr: "pipe" });
 		const [stdout] = await Promise.all([readStream(child.stdout), readStream(child.stderr), child.exited]);
 		const match = /^ffmpeg version n?(\d+)\.(\d+)/.exec(stdout);
 		return match ? { major: Number(match[1]), minor: Number(match[2]) } : undefined;
@@ -192,7 +193,7 @@ function parseFrameRate(value: string | undefined): number | undefined {
 export async function probeVideo(absolutePath: string, signal?: AbortSignal): Promise<VideoMetadata> {
 	const ffprobe = requireMediaBinary("ffprobe");
 	if (signal?.aborted) throw new VideoError("Video operation aborted.");
-	const child = Bun.spawn(
+	const child = spawnBackground(
 		[
 			ffprobe,
 			"-v",
@@ -326,7 +327,7 @@ export interface VideoPng {
 export async function runFfmpeg(args: string[], signal?: AbortSignal): Promise<void> {
 	const ffmpeg = requireMediaBinary("ffmpeg");
 	if (signal?.aborted) throw new VideoError("Video operation aborted.");
-	const child = Bun.spawn([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", ...args], {
+	const child = spawnBackground([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", ...args], {
 		stdout: "pipe",
 		stderr: "pipe",
 	});

@@ -51,6 +51,8 @@ async function serveDaemon(version: string): Promise<string[]> {
 	);
 	vi.spyOn(launchClient, "daemonClientForGlobal").mockResolvedValue({
 		projectDir: runtimeDir,
+		runtimeDir,
+		closed: false,
 		onCompletion: () => () => {},
 		request: async operation => {
 			if (operation.op === "ping") return { op: "ping", projectDir: runtimeDir };

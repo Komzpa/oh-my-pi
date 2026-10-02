@@ -115,13 +115,23 @@ describe("JS eval isolated startup failures", () => {
 		restoreFactories = setJsEvalWorkerFactoriesForTests(factories);
 
 		const first = await captureStartupError("dual-spawn");
-		expect(first.message).toContain("worker spawn failed on attempt 1");
+		expect(first.message).toContain(
+			process.platform === "linux"
+				? "Refusing an unbounded JS eval Worker fallback on Linux"
+				: "worker spawn failed on attempt 1",
+		);
+		expect(attempt).toBe(process.platform === "linux" ? 0 : 1);
 		expect(process.env[EXECUTION_MARKER]).toBeUndefined();
 
 		// A distinct second failure for the same key proves the rejected startup
 		// and its owner registration were removed instead of being reused.
 		const second = await captureStartupError("dual-spawn");
-		expect(second.message).toContain("worker spawn failed on attempt 2");
+		expect(second.message).toContain(
+			process.platform === "linux"
+				? "Refusing an unbounded JS eval Worker fallback on Linux"
+				: "worker spawn failed on attempt 2",
+		);
+		expect(attempt).toBe(process.platform === "linux" ? 0 : 2);
 		expect(process.env[EXECUTION_MARKER]).toBeUndefined();
 	});
 
@@ -140,13 +150,21 @@ describe("JS eval isolated startup failures", () => {
 		restoreFactories = setJsEvalWorkerFactoriesForTests(factories);
 
 		const first = await captureStartupError("dual-init");
-		expect(first.message).toContain("worker init failed on attempt 1");
-		expect(state).toEqual({ runMessages: 0, terminations: 2 });
+		expect(first.message).toContain(
+			process.platform === "linux"
+				? "Failed to initialize isolated JS eval subprocess"
+				: "worker init failed on attempt 1",
+		);
+		expect(state).toEqual({ runMessages: 0, terminations: process.platform === "linux" ? 1 : 2 });
 		expect(process.env[EXECUTION_MARKER]).toBeUndefined();
 
 		const second = await captureStartupError("dual-init");
-		expect(second.message).toContain("worker init failed on attempt 2");
-		expect(state).toEqual({ runMessages: 0, terminations: 4 });
+		expect(second.message).toContain(
+			process.platform === "linux"
+				? "Failed to initialize isolated JS eval subprocess"
+				: "worker init failed on attempt 2",
+		);
+		expect(state).toEqual({ runMessages: 0, terminations: process.platform === "linux" ? 2 : 4 });
 		expect(process.env[EXECUTION_MARKER]).toBeUndefined();
 	});
 });
