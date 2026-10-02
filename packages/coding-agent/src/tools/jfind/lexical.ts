@@ -24,6 +24,8 @@ export interface GrepIndexOptions {
 	includeHidden: boolean;
 	/** Filesystem URL roots and their entries resolve through. */
 	filesystem: natives.ShellFilesystem;
+	maxScanFiles?: number;
+	maxScanBytes?: number;
 	signal?: AbortSignal;
 	timeoutMs?: number;
 }
@@ -53,6 +55,9 @@ export async function grepIndex(
 		gitignore: true,
 		mode: natives.GrepOutputMode.Content,
 		filesystem: options.filesystem,
+		maxScanFiles: options.maxScanFiles,
+		maxScanBytes: options.maxScanBytes,
+		maxColumns: 512,
 		signal: options.signal,
 		timeoutMs: options.timeoutMs,
 		onMatches: matches => {
