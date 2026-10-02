@@ -30,6 +30,7 @@ import { getSessionSlashCommands } from "../../extensibility/extensions/get-comm
 import { cfgExtensionAssistantTextRenderers } from "../../extensibility/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { ApprovalDialogComponent } from "@oh-my-pi/pi-tui/overlays/approval-dialog";
+import { sendAgentMessageFromSession } from "../../irc/messaging";
 import {
 	type AskDialogPrompt,
 	type AskDialogPromptValue,
@@ -279,8 +280,10 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			sendAgentMessage: (to, message) => sendAgentMessageFromSession(this.ctx.session, to, message),
 			runEphemeralTurn: args => this.ctx.session.runEphemeralTurn(args),
 			startLive: options => this.ctx.startRemoteLive(options),
+			setSubagentFastMode: (id, enabled) => this.ctx.session.setSubagentFastMode(id, enabled),
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -513,8 +516,10 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			sendAgentMessage: (to, message) => sendAgentMessageFromSession(this.ctx.session, to, message),
 			runEphemeralTurn: args => this.ctx.session.runEphemeralTurn(args),
 			startLive: options => this.ctx.startRemoteLive(options),
+			setSubagentFastMode: (id, enabled) => this.ctx.session.setSubagentFastMode(id, enabled),
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),

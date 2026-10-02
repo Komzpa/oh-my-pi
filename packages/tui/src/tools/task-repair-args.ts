@@ -79,17 +79,18 @@ export function repairDoubleEncodedJsonString(value: string): string {
 	return typeof decoded === "string" && decoded !== value ? decoded : value;
 }
 
-/** Repair a single (possibly partial) task item's prose field (`task`). */
+/** Repair double-encoded prose fields in a task item. */
 function repairTaskItem(item: TaskItem): TaskItem {
 	if (item === null || typeof item !== "object") return item;
 	const task = typeof item.task === "string" ? repairDoubleEncodedJsonString(item.task) : item.task;
-	if (task === item.task) return item;
-	return { ...item, task };
+	const rework = typeof item.rework === "string" ? repairDoubleEncodedJsonString(item.rework) : item.rework;
+	if (task === item.task && rework === item.rework) return item;
+	return { ...item, task, rework };
 }
 
 /**
- * Repair double-encoded prose in task-tool params (flat `task`, shared
- * `context`, and each batch task item's `task`). Returns the same reference
+ * Repair double-encoded prose in task-tool params (flat `task` and `rework`, shared
+ * `context`, and each batch task item's `task` and `rework`). Returns the same reference
  * when nothing changed so callers can cheaply skip work. Defensive against
  * partially-streamed args (missing/undefined fields, partial task arrays) so
  * it is safe on the render path as well as on execution.
@@ -98,6 +99,7 @@ export function repairTaskParams(params: TaskParams): TaskParams {
 	if (params === null || typeof params !== "object") return params;
 
 	const task = typeof params.task === "string" ? repairDoubleEncodedJsonString(params.task) : params.task;
+	const rework = typeof params.rework === "string" ? repairDoubleEncodedJsonString(params.rework) : params.rework;
 	const context = typeof params.context === "string" ? repairDoubleEncodedJsonString(params.context) : params.context;
 
 	let tasks = params.tasks;
@@ -111,8 +113,8 @@ export function repairTaskParams(params: TaskParams): TaskParams {
 		if (changed) tasks = repaired;
 	}
 
-	if (task === params.task && context === params.context && tasks === params.tasks) {
+	if (task === params.task && rework === params.rework && context === params.context && tasks === params.tasks) {
 		return params;
 	}
-	return { ...params, task, context, tasks };
+	return { ...params, task, rework, context, tasks };
 }

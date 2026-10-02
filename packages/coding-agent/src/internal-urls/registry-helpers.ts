@@ -79,17 +79,17 @@ export function artifactsDirsFromRegistry(options?: { preferredDir?: string }): 
  */
 export function sessionFilesFromDisk(
 	preferredDir: string | undefined,
-	options: { onlyPreferred?: boolean; preserveDuplicates: true },
+	options: { includeRegistryDirs?: boolean; onlyPreferred?: boolean; preserveDuplicates: true },
 ): Promise<Map<string, string[]>>;
 export function sessionFilesFromDisk(
 	preferredDir?: string,
-	options?: { onlyPreferred?: boolean; preserveDuplicates?: false },
+	options?: { includeRegistryDirs?: boolean; onlyPreferred?: boolean; preserveDuplicates?: false },
 ): Promise<Map<string, string>>;
 export async function sessionFilesFromDisk(
 	preferredDir?: string,
-	options?: { onlyPreferred?: boolean; preserveDuplicates?: boolean },
+	options?: { includeRegistryDirs?: boolean; onlyPreferred?: boolean; preserveDuplicates?: boolean },
 ): Promise<Map<string, string> | Map<string, string[]>> {
-	const dirs = options?.onlyPreferred ? [] : artifactsDirsFromRegistry();
+	const dirs = options?.onlyPreferred || options?.includeRegistryDirs === false ? [] : artifactsDirsFromRegistry();
 	if (preferredDir) dirs.unshift(preferredDir);
 	const listings = new Map<string, Promise<Dirent[] | null>>();
 	const list = (dir: string, depth: number): Promise<Dirent[] | null> => {
@@ -165,14 +165,14 @@ async function readDirEntries(dir: string): Promise<Dirent[] | null> {
 }
 
 /**
- * Availability half of the `history://` resolution semantics: true when a
- * transcript for `agentId` can be served from a registered ref's live session
- * or retained session file, or from an on-disk `.jsonl` under a known
- * artifacts dir. Hint surfaces use this so they only advertise
- * `history://<agentId>` links that `HistoryProtocolHandler` can actually
- * resolve. A retained sessionFile path is verified on disk before it counts,
- * and probing never throws: a stale path or unreadable artifacts subtree
- * reads as unavailable instead of disturbing the caller's delivery path.
+ * Availability half of the `history://` resolution semantics: true when
+ * `agentId` can resolve to a live transcript, a pending running ref, a
+ * retained session file, or an on-disk `.jsonl` under a known artifacts dir.
+ * Hint surfaces use this so they only advertise `history://<agentId>` links
+ * that `HistoryProtocolHandler` can actually resolve. A retained sessionFile
+ * path is verified on disk before it counts, and probing never throws: a
+ * stale path or unreadable artifacts subtree reads as unavailable instead of
+ * disturbing the caller's delivery path.
  */
 export async function hasResolvableTranscript(agentId: string): Promise<boolean> {
 	try {
