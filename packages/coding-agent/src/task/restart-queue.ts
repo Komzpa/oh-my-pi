@@ -1,0 +1,1041 @@
+import { formatDuration, logger } from "@oh-my-pi/pi-utils";
+import restartQueuedPrompt from "../prompts/restart-queued.md" with { type: "text" };
+import type { RestartDrainLease } from "../session/agent-session-types";
+import type { AgentSession } from "../session/agent-session";
+import {
+	captureSubagentsForRestart,
+	getLiveSubagentsForRestart,
+	restoreSubagentsAfterRestart,
+	sendRootContinuationOnce,
+} from "./restart-recovery";
+import type { SessionEntry } from "../session/session-entries";
+
+const RESTART_REQUEST_TRANSITION_TYPE = "restart_request_transition";
+const RESTART_REQUEST_TRANSITION_VERSION = 1;
+const MAX_RESTART_REQUEST_ID_LENGTH = 128;
+const MAX_RESTART_REASON_LENGTH = 1_024;
+const MAX_RESTART_ERROR_LENGTH = 4_096;
+const DEFAULT_RESTART_WORKER_GRACE_MS = 5_000;
+
+export interface RestartControlIdentity {
+	instanceId: string;
+	sessionId: string;
+	generation: number;
+}
+
+export type RestartRequestState =
+	| "queued"
+	| "draining"
+	| "checkpointed"
+	| "restarting"
+	| "completed"
+	| "cancelled"
+	| "failed";
+
+export interface RestartRequestRecord {
+	version: 1;
+	requestId: string;
+	sessionId: string;
+	state: RestartRequestState;
+	requestedAt: number;
+	updatedAt: number;
+	reason?: string;
+	error?: string;
+	rootWasRunning: boolean;
+	runningWorkerCount?: number;
+	drainStatus?: RestartDrainStatus;
+	goalModeBefore?: { goalId: string };
+}
+
+export interface RestartDrainWorkerStatus {
+	id: string;
+	name: string;
+	startedAt: number;
+}
+
+export interface RestartDrainStatus {
+	runningWorkers: RestartDrainWorkerStatus[];
+	queuedInputCount: number;
+	workerGraceDeadlineAt?: number;
+}
+
+export interface RestartControlSnapshot {
+	identity: RestartControlIdentity;
+	pid: number;
+	cwd: string;
+	request: RestartRequestRecord | null;
+}
+
+export interface RestartControlRequest {
+	identity: RestartControlIdentity;
+	op: "request" | "status" | "cancel";
+	requestId?: string;
+	reason?: string;
+}
+
+export interface RestartQueueController {
+	snapshot(): RestartControlSnapshot;
+	handle(request: RestartControlRequest): Promise<RestartControlSnapshot>;
+	restore(): Promise<void>;
+	dispose(): void;
+}
+
+export interface RestartQueueControllerOptions {
+	session: AgentSession;
+	identity: () => RestartControlIdentity;
+	restart: () => Promise<void>;
+	onStateChange?: (record: RestartRequestRecord) => void;
+	captureGoalMode?: () => { goalId: string } | undefined;
+	restoreGoalMode?: (snapshot: { goalId: string }) => Promise<void>;
+	restartWorkerGraceMs?: number;
+}
+
+interface RestartRequestTransition {
+	version: 1;
+	identity: RestartControlIdentity;
+	record: RestartRequestRecord;
+}
+
+interface StoredRestartRequest {
+	identity: RestartControlIdentity;
+	record: RestartRequestRecord;
+	entryIndex: number;
+}
+
+interface RestartJournal {
+	byId: Map<string, StoredRestartRequest>;
+	latest?: StoredRestartRequest;
+	active?: StoredRestartRequest;
+}
+
+interface ActiveRestartDrain {
+	identity: RestartControlIdentity;
+	record: RestartRequestRecord;
+	ack?: Promise<RestartControlSnapshot>;
+	cancelled: boolean;
+	cancelSignal: Promise<void>;
+	resolveCancel(): void;
+	leases: Map<AgentSession, RestartDrainLease>;
+	children: Map<string, AgentSession>;
+	runningAgentIds: Set<string>;
+	workerGraceDeadlineAt?: number;
+	notifications: Promise<void>[];
+	notifiedSessions: Map<AgentSession, Set<string>>;
+	irreversible: boolean;
+	callbackStarted: boolean;
+	cancelNoticeDelivered: boolean;
+}
+
+const VALID_RESTART_STATES: readonly RestartRequestState[] = [
+	"queued",
+	"draining",
+	"checkpointed",
+	"restarting",
+	"completed",
+	"cancelled",
+	"failed",
+];
+
+function isObject(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseIdentity(value: unknown): RestartControlIdentity | undefined {
+	if (!isObject(value)) return undefined;
+	if (
+		typeof value.instanceId !== "string" ||
+		value.instanceId.length === 0 ||
+		value.instanceId.length > 256 ||
+		typeof value.sessionId !== "string" ||
+		value.sessionId.length === 0 ||
+		value.sessionId.length > 256 ||
+		typeof value.generation !== "number" ||
+		!Number.isFinite(value.generation)
+	) {
+		return undefined;
+	}
+	return {
+		instanceId: value.instanceId,
+		sessionId: value.sessionId,
+		generation: value.generation,
+	};
+}
+
+function parseDrainStatus(value: unknown): RestartDrainStatus | undefined {
+	if (!isObject(value) || !Array.isArray(value.runningWorkers)) return undefined;
+	if (
+		typeof value.queuedInputCount !== "number" ||
+		!Number.isInteger(value.queuedInputCount) ||
+		value.queuedInputCount < 0
+	) {
+		return undefined;
+	}
+	const runningWorkers: RestartDrainWorkerStatus[] = [];
+	for (const item of value.runningWorkers) {
+		if (
+			!isObject(item) ||
+			typeof item.id !== "string" ||
+			item.id.length === 0 ||
+			item.id.length > 256 ||
+			typeof item.name !== "string" ||
+			item.name.length === 0 ||
+			item.name.length > 256 ||
+			typeof item.startedAt !== "number" ||
+			!Number.isFinite(item.startedAt)
+		) {
+			return undefined;
+		}
+		runningWorkers.push({ id: item.id, name: item.name, startedAt: item.startedAt });
+	}
+	return {
+		runningWorkers,
+		queuedInputCount: value.queuedInputCount,
+		...(typeof value.workerGraceDeadlineAt === "number" && Number.isFinite(value.workerGraceDeadlineAt)
+			? { workerGraceDeadlineAt: value.workerGraceDeadlineAt }
+			: {}),
+	};
+}
+
+function parseRestartRequestRecord(value: unknown): RestartRequestRecord | undefined {
+	if (!isObject(value)) return undefined;
+	if (
+		value.version !== RESTART_REQUEST_TRANSITION_VERSION ||
+		typeof value.requestId !== "string" ||
+		value.requestId.length === 0 ||
+		value.requestId.length > MAX_RESTART_REQUEST_ID_LENGTH ||
+		typeof value.sessionId !== "string" ||
+		value.sessionId.length === 0 ||
+		value.sessionId.length > 256 ||
+		(value.reason !== undefined &&
+			(typeof value.reason !== "string" || value.reason.length > MAX_RESTART_REASON_LENGTH)) ||
+		(value.error !== undefined &&
+			(typeof value.error !== "string" || value.error.length > MAX_RESTART_ERROR_LENGTH)) ||
+		(value.runningWorkerCount !== undefined &&
+			(typeof value.runningWorkerCount !== "number" ||
+				!Number.isInteger(value.runningWorkerCount) ||
+				value.runningWorkerCount < 0)) ||
+		(value.drainStatus !== undefined && parseDrainStatus(value.drainStatus) === undefined) ||
+		(value.goalModeBefore !== undefined &&
+			(!isObject(value.goalModeBefore) ||
+				typeof value.goalModeBefore.goalId !== "string" ||
+				value.goalModeBefore.goalId.length === 0 ||
+				value.goalModeBefore.goalId.length > 256)) ||
+		!VALID_RESTART_STATES.includes(value.state as RestartRequestState) ||
+		typeof value.requestedAt !== "number" ||
+		!Number.isFinite(value.requestedAt) ||
+		typeof value.updatedAt !== "number" ||
+		!Number.isFinite(value.updatedAt) ||
+		typeof value.rootWasRunning !== "boolean"
+	) {
+		return undefined;
+	}
+	return {
+		version: RESTART_REQUEST_TRANSITION_VERSION,
+		requestId: value.requestId,
+		sessionId: value.sessionId,
+		state: value.state as RestartRequestState,
+		requestedAt: value.requestedAt,
+		updatedAt: value.updatedAt,
+		...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+		...(typeof value.error === "string" ? { error: value.error } : {}),
+		rootWasRunning: value.rootWasRunning,
+		...(typeof value.runningWorkerCount === "number" ? { runningWorkerCount: value.runningWorkerCount } : {}),
+		...(value.drainStatus !== undefined ? { drainStatus: parseDrainStatus(value.drainStatus)! } : {}),
+		...(isObject(value.goalModeBefore) && typeof value.goalModeBefore.goalId === "string"
+			? { goalModeBefore: { goalId: value.goalModeBefore.goalId } }
+			: {}),
+	};
+}
+
+function parseTransition(entry: SessionEntry, entryIndex: number): StoredRestartRequest | undefined {
+	if (entry.type !== "custom" || entry.customType !== RESTART_REQUEST_TRANSITION_TYPE || !isObject(entry.data))
+		return undefined;
+	const data = entry.data;
+	if (data.version !== RESTART_REQUEST_TRANSITION_VERSION) return undefined;
+	const identity = parseIdentity(data.identity);
+	const record = parseRestartRequestRecord(data.record);
+	if (!identity || !record || identity.sessionId !== record.sessionId) return undefined;
+	return { identity, record, entryIndex };
+}
+
+/** Human-facing state for a persisted restart notice; the model prompt remains unchanged. */
+export function restartNoticeText(entries: readonly SessionEntry[], requestId: string): string {
+	let latest: RestartRequestRecord | undefined;
+	for (let index = 0; index < entries.length; index++) {
+		const entry = entries[index];
+		if (!entry) continue;
+		const transition = parseTransition(entry, index);
+		if (transition?.record.requestId === requestId) latest = transition.record;
+	}
+	switch (latest?.state) {
+		case "completed":
+			return "Restarted";
+		case "cancelled":
+			return "Restart cancelled";
+		case "failed":
+			return "Restart failed";
+		case "draining":
+			return "Restart draining";
+		case "checkpointed":
+		case "restarting":
+			return "Restarting";
+		default:
+			return "Restart queued";
+	}
+}
+
+function plural(count: number, singular: string, pluralText = `${singular}s`): string {
+	return count === 1 ? singular : pluralText;
+}
+
+function formatWorker(worker: RestartDrainWorkerStatus, now: number): string {
+	const elapsed = Math.max(0, now - worker.startedAt);
+	return `${worker.name} ${formatDuration(elapsed)}`;
+}
+
+export function formatRestartRequestStatus(record: RestartRequestRecord | null, now = Date.now()): string {
+	if (!record) return "No restart request is queued.";
+	if (record.state !== "queued" && record.state !== "draining") {
+		return `Restart ${record.state} (${record.requestId}).`;
+	}
+	const status = record.drainStatus;
+	const workers = status?.runningWorkers ?? [];
+	const queuedInputCount = status?.queuedInputCount ?? 0;
+	const queued = `${queuedInputCount} queued ${plural(queuedInputCount, "input")}`;
+	if (workers.length > 0) {
+		if (status?.workerGraceDeadlineAt !== undefined) {
+			const remaining = Math.max(0, status.workerGraceDeadlineAt - now);
+			return `Restart waiting up to ${formatDuration(remaining)} for ${workers.length} ${plural(workers.length, "worker")} to reach a safe point: ${workers.map(worker => formatWorker(worker, now)).join(", ")}; ${queued}.`;
+		}
+		return `Restart waiting for ${workers.length} ${plural(workers.length, "worker")}: ${workers.map(worker => formatWorker(worker, now)).join(", ")}; ${queued}.`;
+	}
+	if (queuedInputCount > 0) return `Restart waiting for ${queued}.`;
+	return `Restart ${record.state} (${record.requestId}).`;
+}
+
+/** Only a checkpoint from the previous process licenses active-goal recovery. */
+export function isRestartResumePending(
+	entries: readonly SessionEntry[],
+	sessionId: string,
+	instanceId: string,
+): boolean {
+	let latest: StoredRestartRequest | undefined;
+	for (let index = 0; index < entries.length; index++) {
+		const entry = entries[index];
+		if (!entry) continue;
+		const transition = parseTransition(entry, index);
+		if (transition?.record.sessionId === sessionId) latest = transition;
+	}
+	return (
+		latest !== undefined &&
+		latest.identity.instanceId !== instanceId &&
+		(latest.record.state === "checkpointed" || latest.record.state === "restarting")
+	);
+}
+
+function sameIdentity(left: RestartControlIdentity, right: RestartControlIdentity): boolean {
+	return (
+		left.instanceId === right.instanceId && left.sessionId === right.sessionId && left.generation === right.generation
+	);
+}
+
+function isActiveState(state: RestartRequestState): boolean {
+	return state === "queued" || state === "draining" || state === "checkpointed" || state === "restarting";
+}
+
+function canTransition(from: RestartRequestState, to: RestartRequestState): boolean {
+	if (to === "failed") return isActiveState(from);
+	if (from === "queued") return to === "draining" || to === "cancelled";
+	if (from === "draining") return to === "checkpointed" || to === "cancelled";
+	if (from === "checkpointed") return to === "restarting" || to === "completed";
+	return from === "restarting" && to === "completed";
+}
+
+function makeRun(identity: RestartControlIdentity, record: RestartRequestRecord): ActiveRestartDrain {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	return {
+		identity,
+		record,
+		cancelled: false,
+		cancelSignal: promise,
+		resolveCancel: resolve,
+		leases: new Map(),
+		children: new Map(),
+		runningAgentIds: new Set(),
+		notifications: [],
+		notifiedSessions: new Map(),
+		irreversible: false,
+		callbackStarted: false,
+		cancelNoticeDelivered: false,
+	};
+}
+
+class RestartQueueControllerImpl implements RestartQueueController {
+	readonly #session: AgentSession;
+	readonly #identity: () => RestartControlIdentity;
+	readonly #restart: () => Promise<void>;
+	readonly #onStateChange: ((record: RestartRequestRecord) => void) | undefined;
+	readonly #captureGoalMode: (() => { goalId: string } | undefined) | undefined;
+	readonly #restoreGoalMode: ((snapshot: { goalId: string }) => Promise<void>) | undefined;
+	readonly #restartWorkerGraceMs: number;
+	#serial: Promise<void> = Promise.resolve();
+	#run: ActiveRestartDrain | undefined;
+	#restorePromise: Promise<void> | undefined;
+	#disposed = false;
+
+	constructor(options: RestartQueueControllerOptions) {
+		this.#session = options.session;
+		this.#identity = options.identity;
+		this.#restart = options.restart;
+		this.#onStateChange = options.onStateChange;
+		this.#captureGoalMode = options.captureGoalMode;
+		this.#restoreGoalMode = options.restoreGoalMode;
+		this.#restartWorkerGraceMs =
+			options.restartWorkerGraceMs !== undefined && Number.isFinite(options.restartWorkerGraceMs)
+				? Math.max(0, Math.floor(options.restartWorkerGraceMs))
+				: DEFAULT_RESTART_WORKER_GRACE_MS;
+	}
+
+	snapshot(): RestartControlSnapshot {
+		const identity = this.#identity();
+		const journal = this.#readJournal(identity.sessionId);
+		return this.#makeSnapshot(identity, journal.latest?.record ?? null);
+	}
+
+	async handle(request: RestartControlRequest): Promise<RestartControlSnapshot> {
+		this.#assertUsable();
+		this.#validateControlRequest(request);
+		const identity = this.#assertRequestIdentity(request.identity);
+		if (request.op === "status") {
+			const journal = this.#readJournal(identity.sessionId);
+			const selected = request.requestId
+				? journal.byId.get(request.requestId)?.record
+				: (journal.active?.record ?? journal.latest?.record);
+			return Promise.resolve(this.#makeSnapshot(identity, selected ?? null));
+		}
+		if (request.op === "request") return this.#requestRestart(request, identity);
+		if (request.op === "cancel") return this.#cancelRestart(request, identity);
+		return Promise.reject(new Error("Unsupported restart control operation"));
+	}
+
+	restore(): Promise<void> {
+		this.#assertUsable();
+		if (this.#restorePromise) return this.#restorePromise;
+		const identity = this.#currentIdentity();
+		this.#restorePromise = this.#serialize(async () => {
+			const stored = this.#readJournal(identity.sessionId).latest;
+			let record = stored?.record;
+			let restartCompleted = record?.state === "completed";
+			if (stored && record?.state === "checkpointed") {
+				if (stored.identity.instanceId !== identity.instanceId) {
+					record = await this.#persistStateUnserialized(identity, record, "completed");
+					restartCompleted = true;
+				} else {
+					record = await this.#persistStateUnserialized(identity, record, "restarting");
+					try {
+						this.#assertCurrentIdentity(identity);
+						await this.#restart();
+						record = await this.#persistStateUnserialized(identity, record, "completed");
+						restartCompleted = true;
+					} catch (error) {
+						record = await this.#persistStateUnserialized(
+							identity,
+							record,
+							"failed",
+							`Restart callback failed after checkpoint: ${this.#errorText(error)}`,
+						);
+						this.#notice("error", record.error ?? "Restart callback failed after checkpoint");
+					}
+				}
+			} else if (stored && record?.state === "restarting") {
+				if (stored.identity.instanceId !== identity.instanceId) {
+					record = await this.#persistStateUnserialized(identity, record, "completed");
+					restartCompleted = true;
+				} else {
+					record = await this.#persistStateUnserialized(
+						identity,
+						record,
+						"failed",
+						"Restart callback outcome is unresolved in this process; it was not replayed.",
+					);
+					this.#notice("error", record.error ?? "Restart callback outcome is unresolved; it was not replayed.");
+				}
+			} else if (record?.state === "queued" || record?.state === "draining") {
+				record = await this.#persistStateUnserialized(
+					identity,
+					record,
+					"failed",
+					"Process restarted before the request reached a safe checkpoint; pending effects were not replayed.",
+				);
+				this.#notice("error", record.error ?? "Restart request did not reach a safe checkpoint.");
+			}
+
+			if (!stored || record?.state === "completed") {
+				await restoreSubagentsAfterRestart(this.#session, record ? { requestId: record.requestId } : undefined);
+			}
+			if (record && (record.state === "completed" || record.state === "cancelled" || record.state === "failed")) {
+				await this.#restoreGoalModeFor(record);
+			}
+			if (restartCompleted && record?.rootWasRunning) {
+				await sendRootContinuationOnce(this.#session, record.requestId);
+			}
+		});
+		return this.#restorePromise;
+	}
+
+	dispose(): void {
+		if (this.#disposed) return;
+		this.#disposed = true;
+		const run = this.#run;
+		if (!run || run.irreversible || run.callbackStarted) return;
+		run.cancelled = true;
+		run.resolveCancel();
+		this.#releaseLeases(run);
+	}
+
+	#requestRestart(request: RestartControlRequest, identity: RestartControlIdentity): Promise<RestartControlSnapshot> {
+		const requestId = request.requestId ?? crypto.randomUUID();
+		const reason = request.reason;
+		const journal = this.#readJournal(identity.sessionId);
+		const existing = journal.byId.get(requestId)?.record;
+		if (existing) {
+			if (existing.reason !== reason)
+				return Promise.reject(new Error("Restart request id was already used with a different reason"));
+			return Promise.resolve(this.#makeSnapshot(identity, existing));
+		}
+		if (this.#run && !this.#run.cancelled) {
+			if (this.#run.record.requestId === requestId && this.#run.record.reason === reason) {
+				return this.#run.ack ?? Promise.resolve(this.#makeSnapshot(identity, this.#run.record));
+			}
+			return Promise.reject(new Error(`Restart request ${this.#run.record.requestId} is already active`));
+		}
+		if (journal.active)
+			return Promise.reject(new Error(`Restart request ${journal.active.record.requestId} is already active`));
+
+		const now = Date.now();
+		const goalModeBefore = this.#captureGoalMode?.();
+		const record: RestartRequestRecord = {
+			version: RESTART_REQUEST_TRANSITION_VERSION,
+			requestId,
+			sessionId: identity.sessionId,
+			state: "queued",
+			requestedAt: now,
+			updatedAt: now,
+			...(reason !== undefined ? { reason } : {}),
+			rootWasRunning: this.#session.isStreaming,
+			...(goalModeBefore ? { goalModeBefore } : {}),
+		};
+		const run = makeRun(identity, record);
+		this.#run = run;
+		const ack = this.#serialize(async () => {
+			try {
+				this.#prepareInitialDrain(run);
+				await this.#persistRecord(identity, run.record);
+				if (run.cancelled) {
+					run.record = await this.#persistStateUnserialized(identity, run.record, "cancelled");
+					return this.#makeSnapshot(identity, run.record);
+				}
+				void this.#drain(run).catch(error => this.#reportBackgroundFailure(run, error));
+				return this.#makeSnapshot(identity, run.record);
+			} catch (error) {
+				this.#releaseLeases(run);
+				if (this.#run === run) this.#run = undefined;
+				throw error;
+			}
+		});
+		run.ack = ack;
+		return ack;
+	}
+
+	#cancelRestart(request: RestartControlRequest, identity: RestartControlIdentity): Promise<RestartControlSnapshot> {
+		const journal = this.#readJournal(identity.sessionId);
+		const target = request.requestId
+			? journal.byId.get(request.requestId)?.record
+			: (journal.active?.record ?? journal.latest?.record);
+		const pendingRun = this.#run;
+		const pendingMatches =
+			pendingRun !== undefined &&
+			(request.requestId === undefined || pendingRun.record.requestId === request.requestId);
+		const pendingRecord = pendingMatches && pendingRun ? pendingRun.record : undefined;
+		const record = target ?? pendingRecord;
+		if (!record) return Promise.reject(new Error("No restart request is available to cancel"));
+		const retryNotice = Boolean(
+			pendingRun && pendingMatches && pendingRun.cancelled && !pendingRun.cancelNoticeDelivered,
+		);
+		if (record.state === "cancelled" && !retryNotice) return Promise.resolve(this.#makeSnapshot(identity, record));
+		if (record.state !== "queued" && record.state !== "draining" && !retryNotice) {
+			return Promise.reject(
+				new Error(`Restart request ${record.requestId} can no longer be cancelled in state ${record.state}`),
+			);
+		}
+		if (pendingRun && pendingMatches) {
+			pendingRun.cancelled = true;
+			pendingRun.resolveCancel();
+		}
+		return this.#serialize(async () => {
+			const current = this.#readJournal(identity.sessionId).byId.get(record.requestId)?.record ?? record;
+			const canRetryNotice = Boolean(
+				pendingRun && pendingMatches && pendingRun.cancelled && !pendingRun.cancelNoticeDelivered,
+			);
+			if (current.state === "cancelled" && pendingRun && pendingMatches && pendingRun.cancelNoticeDelivered) {
+				return this.#makeSnapshot(identity, current);
+			}
+			if (
+				current.state !== "queued" &&
+				current.state !== "draining" &&
+				!(current.state === "cancelled" && canRetryNotice)
+			) {
+				throw new Error(
+					`Restart request ${current.requestId} can no longer be cancelled in state ${current.state}`,
+				);
+			}
+			const cancelled =
+				current.state === "cancelled"
+					? current
+					: await this.#persistStateUnserialized(identity, current, "cancelled");
+			if (pendingRun && pendingMatches) {
+				pendingRun.record = cancelled;
+				const firstCancellationNotice = pendingRun.notifications.length;
+				this.#notifySession(pendingRun, this.#session);
+				for (const child of pendingRun.children.values()) this.#notifySession(pendingRun, child);
+				const notices = pendingRun.notifications.splice(firstCancellationNotice);
+				try {
+					await Promise.all(notices);
+				} catch (error) {
+					const blocker = `Restart request ${cancelled.requestId} was durably cancelled, but its cancellation notice could not be delivered; the session drain remains held. ${this.#errorText(error)}`;
+					this.#notice("error", blocker);
+					throw new Error(blocker);
+				}
+				pendingRun.cancelNoticeDelivered = true;
+				this.#releaseLeases(pendingRun);
+				if (this.#run === pendingRun) this.#run = undefined;
+			}
+			await this.#restoreGoalModeFor(cancelled);
+			return this.#makeSnapshot(identity, cancelled);
+		});
+	}
+
+	#prepareInitialDrain(run: ActiveRestartDrain): void {
+		const rootWasStreaming = this.#session.isStreaming;
+		this.#notifySession(run, this.#session);
+		const rootLease = this.#takeLease(run, this.#session);
+		run.record = { ...run.record, rootWasRunning: rootLease.wasRunning || rootWasStreaming };
+		for (const child of getLiveSubagentsForRestart(this.#session))
+			this.#prepareChild(run, child.id, child.status, child.session);
+		run.record = this.#withDrainStatus({ ...run.record, runningWorkerCount: run.runningAgentIds.size }, run);
+	}
+
+	#prepareChild(run: ActiveRestartDrain, id: string, status: string, session: AgentSession): void {
+		const priorSession = run.children.get(id);
+		if (priorSession) {
+			if (priorSession !== session)
+				throw new Error(`Cannot restart safely: live child ${id} changed session identity while draining.`);
+			return;
+		}
+		run.children.set(id, session);
+		if (status === "running" || session.isStreaming) run.runningAgentIds.add(id);
+		this.#notifySession(run, session);
+		const lease = this.#takeLease(run, session);
+		if (lease.wasRunning) run.runningAgentIds.add(id);
+	}
+
+	#notifySession(run: ActiveRestartDrain, session: AgentSession): void {
+		const bucket = run.notifiedSessions.get(session) ?? new Set<string>();
+		const noticeKey =
+			run.record.state === "cancelled" ? `${run.record.requestId}:cancelled` : `${run.record.requestId}:active`;
+		if (bucket.has(noticeKey)) return;
+		bucket.add(noticeKey);
+		run.notifiedSessions.set(session, bucket);
+		let notification: Promise<void>;
+		try {
+			notification = session
+				.sendCustomMessage(
+					{
+						customType: "restart-queued",
+						content: restartQueuedPrompt.trim(),
+						display: true,
+						attribution: "agent",
+						details: { requestId: run.record.requestId, state: run.record.state },
+					},
+					{ deliverAs: "nextTurn", triggerTurn: false },
+				)
+				.then(() => undefined);
+		} catch (error) {
+			notification = Promise.reject(error);
+		}
+		void notification.catch(() => {
+			bucket.delete(noticeKey);
+		});
+		run.notifications.push(notification);
+	}
+
+	#withDrainStatus(record: RestartRequestRecord, run: ActiveRestartDrain): RestartRequestRecord {
+		const liveChildren = getLiveSubagentsForRestart(this.#session);
+		const runningWorkers = liveChildren
+			.filter(child => child.status === "running" || child.session.isStreaming || run.runningAgentIds.has(child.id))
+			.map(child => ({
+				id: child.id,
+				name: child.displayName || child.id,
+				startedAt: child.createdAt,
+			}))
+			.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+		const sessions = new Set<AgentSession>([this.#session, ...run.children.values()]);
+		let queuedInputCount = 0;
+		for (const session of sessions) queuedInputCount += session.agent.getPendingModelNewsCount();
+		return {
+			...record,
+			runningWorkerCount: runningWorkers.length,
+			drainStatus: {
+				runningWorkers,
+				queuedInputCount,
+				...(run.workerGraceDeadlineAt !== undefined ? { workerGraceDeadlineAt: run.workerGraceDeadlineAt } : {}),
+			},
+		};
+	}
+
+	#takeLease(run: ActiveRestartDrain, session: AgentSession): RestartDrainLease {
+		const existing = run.leases.get(session);
+		if (existing) return existing;
+		const lease = session.beginRestartDrain();
+		run.leases.set(session, lease);
+		return lease;
+	}
+
+	async #drain(run: ActiveRestartDrain): Promise<void> {
+		try {
+			if (run.cancelled) return;
+			run.record = await this.#transition(run, "draining");
+			const safe = await this.#settleAndFlush(run);
+			if (!safe || run.cancelled || this.#disposed) return;
+			await captureSubagentsForRestart(this.#session, {
+				runningAgentIds: run.runningAgentIds,
+				requestId: run.record.requestId,
+			});
+			if (run.cancelled || this.#disposed) return;
+			run.record = await this.#transition(run, "checkpointed");
+			if (run.cancelled || this.#disposed) return;
+			run.irreversible = true;
+			run.record = await this.#transition(run, "restarting");
+			run.callbackStarted = true;
+			await this.#restart();
+			if (!this.#disposed) run.record = await this.#transition(run, "completed");
+		} catch (error) {
+			if (!run.cancelled && !this.#disposed) await this.#recordDrainFailure(run, error);
+		} finally {
+			if (run.cancelled ? run.cancelNoticeDelivered : !run.callbackStarted) this.#releaseLeases(run);
+			if (this.#run === run && (!run.cancelled || run.cancelNoticeDelivered)) this.#run = undefined;
+		}
+	}
+
+	async #settleAndFlush(run: ActiveRestartDrain): Promise<boolean> {
+		while (true) {
+			if (run.cancelled || this.#disposed) return false;
+			const notifications = run.notifications.splice(0);
+			await Promise.all(notifications);
+			const settled = await Promise.race([
+				this.#rootLease(run)
+					.waitForQuiescence()
+					.then(() => true),
+				run.cancelSignal.then(() => false),
+			]);
+			if (!settled || run.cancelled || this.#disposed) return false;
+			await this.#waitForWorkerGrace(run);
+			if (run.cancelled || this.#disposed) return false;
+			await this.#flushSessions(run);
+			let added = false;
+			for (const child of getLiveSubagentsForRestart(this.#session)) {
+				if (run.children.has(child.id)) continue;
+				this.#prepareChild(run, child.id, child.status, child.session);
+				added = true;
+			}
+			if (!added) return true;
+		}
+	}
+
+	#rootLease(run: ActiveRestartDrain): RestartDrainLease {
+		const lease = run.leases.get(this.#session);
+		if (!lease) throw new Error("Restart drain has no root session lease");
+		return lease;
+	}
+
+	async #waitForWorkerGrace(run: ActiveRestartDrain): Promise<void> {
+		const childLeases = [...run.children.values()]
+			.map(session => ({ session, lease: run.leases.get(session) }))
+			.filter((item): item is { session: AgentSession; lease: RestartDrainLease } => item.lease !== undefined);
+		if (childLeases.length === 0) return;
+		const graceMs = this.#restartWorkerGraceMs;
+		run.workerGraceDeadlineAt = Date.now() + graceMs;
+		run.record = this.#withDrainStatus(run.record, run);
+		this.#onStateChange?.(run.record);
+		const progressTimer =
+			graceMs > 1_000
+				? setInterval(() => {
+						run.record = this.#withDrainStatus(run.record, run);
+						this.#onStateChange?.(run.record);
+					}, 1_000)
+				: undefined;
+		try {
+			const settledSessions = new Set<AgentSession>();
+			const wait = Promise.all(
+				childLeases.map(async item => {
+					await item.lease.waitForQuiescence();
+					settledSessions.add(item.session);
+				}),
+			).then(() => true);
+			const settled = await Promise.race([
+				wait,
+				Bun.sleep(graceMs).then(() => false),
+				run.cancelSignal.then(() => false),
+			]);
+			if (!settled && !run.cancelled) this.#abortUnsettledWorkers(run, settledSessions);
+		} finally {
+			if (progressTimer) clearInterval(progressTimer);
+			run.workerGraceDeadlineAt = undefined;
+		}
+	}
+
+	#abortUnsettledWorkers(run: ActiveRestartDrain, settledSessions: ReadonlySet<AgentSession>): void {
+		for (const [id, session] of run.children) {
+			if (settledSessions.has(session)) continue;
+			if (!run.runningAgentIds.has(id) && !session.isStreaming) continue;
+			const abort = (session as { abort?: AgentSession["abort"] }).abort;
+			if (typeof abort !== "function") continue;
+			void abort
+				.call(session, {
+					goalReason: "internal",
+					reason: "Restart interrupted this worker; it will resume from its persisted session after relaunch.",
+				})
+				.catch(error => {
+					logger.warn("Restart worker abort request failed", { id, error: this.#errorText(error) });
+				});
+		}
+	}
+
+	async #flushSessions(run: ActiveRestartDrain): Promise<void> {
+		const sessions = [this.#session, ...run.children.values()];
+		await Promise.all(
+			sessions.map(async session => {
+				await session.sessionManager.ensureOnDisk();
+				await session.sessionManager.flush();
+			}),
+		);
+	}
+
+	async #transition(
+		run: ActiveRestartDrain,
+		state: RestartRequestState,
+		error?: string,
+	): Promise<RestartRequestRecord> {
+		if (run.cancelled && state !== "cancelled") throw new Error("Restart request was cancelled before checkpoint");
+		return this.#persistState(run.identity, run.record, state, error, run);
+	}
+
+	async #persistState(
+		identity: RestartControlIdentity,
+		current: RestartRequestRecord,
+		state: RestartRequestState,
+		error?: string,
+		run?: ActiveRestartDrain,
+	): Promise<RestartRequestRecord> {
+		return this.#serialize(() => this.#persistStateUnserialized(identity, current, state, error, run));
+	}
+
+	async #persistStateUnserialized(
+		identity: RestartControlIdentity,
+		current: RestartRequestRecord,
+		state: RestartRequestState,
+		error?: string,
+		run?: ActiveRestartDrain,
+	): Promise<RestartRequestRecord> {
+		if (run?.cancelled && state !== "cancelled") throw new Error("Restart request was cancelled before checkpoint");
+		const latest = this.#readJournal(identity.sessionId).byId.get(current.requestId)?.record;
+		const from = latest?.state ?? current.state;
+		if (!canTransition(from, state)) {
+			if (from === state) return latest ?? current;
+			throw new Error(`Invalid restart request transition ${from} -> ${state}`);
+		}
+		const base = latest ?? current;
+		let next: RestartRequestRecord = {
+			...base,
+			state,
+			updatedAt: Date.now(),
+			...(state === "failed" && error ? { error } : {}),
+		};
+		if (run && (state === "queued" || state === "draining")) next = this.#withDrainStatus(next, run);
+		if (state !== "failed") delete next.error;
+		await this.#persistRecord(identity, next);
+		if (run) run.record = next;
+		this.#onStateChange?.(next);
+		return next;
+	}
+
+	async #persistRecord(identity: RestartControlIdentity, record: RestartRequestRecord): Promise<void> {
+		this.#assertCurrentIdentity(identity);
+		await this.#session.sessionManager.ensureOnDisk();
+		this.#assertCurrentIdentity(identity);
+		this.#session.sessionManager.appendCustomEntry(RESTART_REQUEST_TRANSITION_TYPE, {
+			version: RESTART_REQUEST_TRANSITION_VERSION,
+			identity,
+			record,
+		} satisfies RestartRequestTransition);
+		await this.#session.sessionManager.flush();
+		this.#assertCurrentIdentity(identity);
+	}
+
+	#readJournal(sessionId: string): RestartJournal {
+		const byId = new Map<string, StoredRestartRequest>();
+		let latest: StoredRestartRequest | undefined;
+		let active: StoredRestartRequest | undefined;
+		const entries = this.#session.sessionManager.getBranch();
+		for (let index = 0; index < entries.length; index++) {
+			const entry = entries[index];
+			if (!entry) continue;
+			const parsed = parseTransition(entry, index);
+			if (!parsed || parsed.record.sessionId !== sessionId) continue;
+			byId.set(parsed.record.requestId, parsed);
+			latest = parsed;
+		}
+		for (const stored of byId.values()) {
+			if (isActiveState(stored.record.state) && (!active || stored.entryIndex > active.entryIndex)) active = stored;
+		}
+		return { byId, latest, active };
+	}
+
+	#serialize<T>(work: () => Promise<T>): Promise<T> {
+		const pending = this.#serial.then(work, work);
+		this.#serial = pending.then(
+			() => undefined,
+			() => undefined,
+		);
+		return pending;
+	}
+
+	#releaseLeases(run: ActiveRestartDrain): void {
+		for (const lease of run.leases.values()) {
+			try {
+				lease.release();
+			} catch (error) {
+				logger.error("Failed to release restart drain lease", { error: this.#errorText(error) });
+			}
+		}
+		run.leases.clear();
+	}
+
+	#reportBackgroundFailure(run: ActiveRestartDrain, error: unknown): void {
+		void this.#recordDrainFailure(run, error).catch(persistError => {
+			this.#notice(
+				"error",
+				`Restart request ${run.record.requestId} failed and its failure could not be persisted: ${this.#errorText(persistError)}`,
+			);
+			logger.error("Restart request failure could not be persisted", {
+				requestId: run.record.requestId,
+				error: this.#errorText(persistError),
+			});
+		});
+	}
+
+	async #recordDrainFailure(run: ActiveRestartDrain, error: unknown): Promise<void> {
+		const detail = this.#errorText(error);
+		if (run.cancelled || !sameIdentity(this.#identity(), run.identity)) {
+			if (!run.cancelled) {
+				this.#notice(
+					"error",
+					`Restart request ${run.record.requestId} stopped because the root session identity changed; no restart was issued. ${detail}`,
+				);
+			}
+			return;
+		}
+		try {
+			run.record = await this.#transition(run, "failed", detail);
+			await this.#restoreGoalModeFor(run.record);
+		} catch (persistError) {
+			this.#notice(
+				"error",
+				`Restart request ${run.record.requestId} is blocked: ${detail}. The failure record could not be flushed: ${this.#errorText(persistError)}`,
+			);
+			throw persistError;
+		}
+		this.#notice("error", `Restart request ${run.record.requestId} failed safely: ${detail}`);
+	}
+
+	#validateControlRequest(request: RestartControlRequest): void {
+		if (!isObject(request)) throw new Error("Invalid restart control request");
+		if (request.op !== "request" && request.op !== "status" && request.op !== "cancel") {
+			throw new Error("Unsupported restart control operation");
+		}
+		if (
+			request.requestId !== undefined &&
+			(typeof request.requestId !== "string" ||
+				request.requestId.length === 0 ||
+				request.requestId.length > MAX_RESTART_REQUEST_ID_LENGTH)
+		) {
+			throw new Error(
+				`Restart request id must be a non-empty string of at most ${MAX_RESTART_REQUEST_ID_LENGTH} characters`,
+			);
+		}
+		if (
+			request.reason !== undefined &&
+			(request.op !== "request" ||
+				typeof request.reason !== "string" ||
+				request.reason.length > MAX_RESTART_REASON_LENGTH)
+		) {
+			throw new Error(
+				`Only restart requests may include a reason of at most ${MAX_RESTART_REASON_LENGTH} characters`,
+			);
+		}
+	}
+
+	async #restoreGoalModeFor(record: RestartRequestRecord): Promise<void> {
+		if (!record.goalModeBefore || !this.#restoreGoalMode) return;
+		try {
+			await this.#restoreGoalMode(record.goalModeBefore);
+		} catch (error) {
+			this.#notice(
+				"error",
+				`Restart request ${record.requestId} reached ${record.state}, but its prior goal mode could not be restored: ${this.#errorText(error)}`,
+			);
+		}
+	}
+	#assertRequestIdentity(identity: RestartControlIdentity): RestartControlIdentity {
+		const current = this.#currentIdentity();
+		if (!parseIdentity(identity) || !sameIdentity(identity, current)) {
+			throw new Error("Restart control identity is stale; no request was persisted");
+		}
+		return current;
+	}
+
+	#currentIdentity(): RestartControlIdentity {
+		const identity = parseIdentity(this.#identity());
+		if (!identity) throw new Error("Restart controller identity is invalid");
+		if (identity.sessionId !== this.#session.sessionManager.getSessionId()) {
+			throw new Error("Restart controller session identity does not match its current branch");
+		}
+		return identity;
+	}
+
+	#assertCurrentIdentity(identity: RestartControlIdentity): void {
+		if (!sameIdentity(this.#currentIdentity(), identity)) {
+			throw new Error("Restart controller identity changed before durable state was flushed");
+		}
+	}
+
+	#makeSnapshot(identity: RestartControlIdentity, request: RestartRequestRecord | null): RestartControlSnapshot {
+		return { identity: { ...identity }, pid: process.pid, cwd: this.#session.sessionManager.getCwd(), request };
+	}
+
+	#notice(level: "warning" | "error", message: string): void {
+		this.#session.emitNotice(level, message, "restart-queue");
+	}
+
+	#errorText(error: unknown): string {
+		return (error instanceof Error ? error.message : String(error)).slice(0, MAX_RESTART_ERROR_LENGTH);
+	}
+
+	#assertUsable(): void {
+		if (this.#disposed) throw new Error("Restart controller is disposed");
+	}
+}
+
+export function createRestartQueueController(options: RestartQueueControllerOptions): RestartQueueController {
+	return new RestartQueueControllerImpl(options);
+}

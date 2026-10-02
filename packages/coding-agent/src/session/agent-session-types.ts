@@ -104,6 +104,8 @@ export interface AsyncJobInspection {
 export interface AsyncJobSnapshot {
 	running: AsyncJobSnapshotItem[];
 	recent: AsyncJobSnapshotItem[];
+	/** Exact ids and session-corroborated liveness for registry agents without a running job. */
+	nonJobAgents?: Array<{ id: string; live: boolean }>;
 	delivery: AsyncJobDeliveryState;
 }
 
@@ -115,6 +117,11 @@ export interface AsyncJobTree {
 	rootId?: string;
 	/** Subagents owning listed jobs, with the ancestors linking them to the root. */
 	agents: { id: string; parentId?: string }[];
+/** Stops this session at the next safe model boundary until released. */
+export interface RestartDrainLease {
+	wasRunning: boolean;
+	waitForQuiescence(): Promise<void>;
+	release(): void;
 }
 
 export type { ShakeMode, ShakeResult } from "./shake-types";
