@@ -388,6 +388,14 @@
 			"types": "./src/hindsight/*.ts",
 			"import": "./src/hindsight/*.ts"
 		},
+		"./goals/runtime": {
+			"types": "./src/goals/runtime.ts",
+			"import": "./src/goals/runtime.ts"
+		},
+		"./goals/state": {
+			"types": "./src/goals/state.ts",
+			"import": "./src/goals/state.ts"
+		},
 		"./modes": {
 			"types": "./src/modes/index.ts",
 			"import": "./src/modes/index.ts"
