@@ -1,4 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { ToolResultPruneEntry, ToolResultPruneTarget } from "@oh-my-pi/pi-agent-core/compaction/entries";
+export type { ToolResultPruneEntry, ToolResultPruneTarget };
 import type {
 	ImageContent,
 	MessageAttribution,
@@ -361,7 +363,8 @@ export type SessionEntry =
 	| SessionInitEntry
 	| ModeChangeEntry
 	| CredentialPinEntry
-	| ResetBoundaryEntry;
+	| ResetBoundaryEntry
+	| ToolResultPruneEntry;
 
 /** Leaf selected when replaying one entry; an off-branch entry restores the active leaf captured at append time. */
 export function sessionEntryLeafId(entry: SessionEntry): string | null {

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import type { AssistantMessage, CursorHistoryPayload, ImageContent } from "@oh-my-pi/pi-ai";
 import type { SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { MemorySessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { getBlobsDir, TempDir } from "@oh-my-pi/pi-utils";
 
 function isAssistantSessionEntry(entry: unknown): entry is SessionMessageEntry & { message: AssistantMessage } {
@@ -223,6 +224,70 @@ describe("SessionManager signature persistence", () => {
 		expect(thinking.thinkingSignature).toBeUndefined();
 		expect(await fs.readFile(sessionFile, "utf8")).toBe(persistedBefore);
 		expect((await fs.stat(sessionFile)).mtimeMs).toBe(initialMtimeMs);
+		await reloaded.close();
+	}, 15_000);
+
+	it("sanitizes Copilot replay metadata when reopening non-file storage", async () => {
+		using tempDir = TempDir.createSync("@pi-session-rehydrate-persistence-");
+		const storage = new MemorySessionStorage();
+		const session = SessionManager.create(tempDir.path(), tempDir.path(), storage);
+		const providerPayload = {
+			type: "openaiResponsesHistory" as const,
+			provider: "openai",
+			items: [
+				{ type: "reasoning", encrypted_content: "enc_stale" },
+				{
+					type: "message",
+					role: "assistant",
+					status: "completed",
+					id: "msg_stale_snapshot",
+					content: [{ type: "output_text", text: "done" }],
+				},
+			],
+		};
+
+		session.appendMessage({ role: "user", content: "continue", timestamp: 1 });
+		session.appendMessage({
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "reasoning", thinkingSignature: JSON.stringify(providerPayload.items[0]) },
+				{ type: "text", text: "done" },
+			],
+			api: "openai-responses",
+			provider: "github-copilot",
+			model: "gpt-5-mini",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			providerPayload,
+			timestamp: 2,
+		} satisfies AssistantMessage);
+		await session.flush();
+
+		const sessionFile = session.getSessionFile();
+		if (!sessionFile) throw new Error("Expected persisted session file");
+		const persistedBefore = await storage.readText(sessionFile);
+
+		await session.close();
+
+		const reloaded = await SessionManager.open(sessionFile, undefined, storage);
+		const assistant = getAssistantMessage(reloaded);
+
+		// GitHub Copilot rejects replayed assistant-side native history on a warmed
+		// session, so its replay metadata is stripped in memory after rehydration.
+		expect(assistant.providerPayload).toBeUndefined();
+		const thinking = assistant.content[0];
+		expect(thinking).toMatchObject({ type: "thinking", thinking: "reasoning" });
+		if (thinking?.type !== "thinking") throw new Error("Expected thinking block");
+		expect(thinking.thinkingSignature).toBeUndefined();
+		expect(await storage.readText(sessionFile)).toBe(persistedBefore);
+
 		await reloaded.close();
 	}, 15_000);
 

@@ -57,6 +57,32 @@ function agentEnd(messages: AgentMessage[], isTerminal?: boolean): AgentSessionE
 const agentStart: AgentSessionEvent = { type: "agent_start" };
 
 describe("RpcPromptResults", () => {
+	test("terminal owner disposal does not claim an agent invocation for input that never started", async () => {
+		const { frames, results } = createHarness();
+		const ticket = results.begin("not-started");
+		results.abortOpen(true);
+		results.settle(ticket);
+		await flushFrames();
+		expect(frames).toEqual([
+			{ type: "prompt_result", id: "not-started", agentInvoked: false, status: "aborted", sessionSettled: true },
+		]);
+	});
+
+	test("terminal owner disposal reports an outstanding run once without waiting for a final event", async () => {
+		const { frames, session, results } = createHarness();
+		const ticket = results.begin("active-owner");
+		results.observe(agentStart);
+		session.isStreaming = true;
+		results.abortOpen(true);
+		results.abortOpen(true);
+		results.settle(ticket);
+		results.observe(agentEnd([]));
+		await flushFrames();
+		expect(frames).toEqual([
+			{ type: "prompt_result", id: "active-owner", agentInvoked: true, status: "aborted", sessionSettled: false },
+		]);
+	});
+
 	test("reports a joined prompt only at the terminal agent_end, not a non-terminal settle", async () => {
 		const { frames, session, results } = createHarness();
 		session.isStreaming = true;

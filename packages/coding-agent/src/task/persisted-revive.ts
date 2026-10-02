@@ -51,6 +51,7 @@ import { cfgTaskAgentAccountPools, cfgTaskMaxEffort } from "./settings";
 import { type RestoredSeanceSession, restoreSeanceSession } from "./seance";
 import { seanceIsolationOptions } from "./seance-policy";
 import type { AgentDefinition } from "./types";
+import type { SubagentDiscoveryOptions } from "../sdk";
 
 /**
  * Ambient context the reviver needs at revive time. The top-level session is
@@ -60,6 +61,7 @@ import type { AgentDefinition } from "./types";
  */
 export interface PersistedSubagentReviveContext {
 	session: AgentSession;
+	getSubagentDiscoveryOptions?: (restrictToolNames: boolean) => SubagentDiscoveryOptions;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
 	settings: Settings;
@@ -165,15 +167,14 @@ export function createPersistedSubagentReviverFactory(
 				suppressBreadcrumb: true,
 				throwIfMissing: true,
 			});
-			const entries = reopened.getEntries();
-			const init = extractSessionInit(entries);
+			const init = extractSessionInit([...reopened.iterateEntries("session_init")]);
 			if (!init) {
 				await reopened.close();
 				throw new Error(
 					`Cannot revive subagent "${ref.id}": session file "${sessionFile}" has no persisted session contract. The agent was not revived.`,
 				);
 			}
-			if (!hasConversationalHistory(entries)) {
+			if (!hasConversationalHistory(reopened.iterateEntries("message"))) {
 				await reopened.close();
 				throw new Error(
 					`Cannot revive subagent "${ref.id}": session file "${sessionFile}" has no message history (truncated to header/session_init). The agent was not revived.`,
@@ -398,9 +399,13 @@ export function createPersistedSubagentReviverFactory(
 					restrictToolNames: restrictToolNames || undefined,
 					requireYieldTool: structured,
 					systemPrompt: () => [...init.systemPrompt],
-					// Inherit current owner policy, never extension authority from a transcript.
-					extensionRoots: () => ctx.session.effectiveExtensionRoots,
-					preloadedPreparedExtensions: ctx.session.preparedExtensions,
+					...(ctx.getSubagentDiscoveryOptions
+						? ctx.getSubagentDiscoveryOptions(restrictToolNames)
+						: {
+								extensionRoots: () => ctx.session.effectiveExtensionRoots,
+								preloadedPreparedExtensions: ctx.session.preparedExtensions,
+							}),
+					cacheWarming: false,
 					// Old files predate persisted spawns: deny re-spawning rather than let
 					// createAgentSession default to wildcard ("*").
 					spawns: init.spawns ?? "",

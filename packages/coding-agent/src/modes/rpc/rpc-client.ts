@@ -13,7 +13,8 @@ import type { LogoutAccount } from "@oh-my-pi/pi-tui/overlays/logout-account-sel
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { FileSink } from "bun";
 import type { BashResult } from "../../exec/bash-executor";
-import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { AgentSession, AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { AgentSessionDisposeOptions, PromptOptions } from "../../session/agent-session-types";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
 import type { SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { SessionLeaseReport } from "../../session/session-storage";
@@ -109,6 +110,14 @@ export interface RpcClientOptions {
 }
 
 export type ModelInfo = Pick<Model, "provider" | "id" | "contextWindow" | "reasoning" | "thinking">;
+
+/** A presentation lease; releasing it leaves the owner's pending ask promise intact. */
+export interface RpcAskDialogView {
+	respond(response: RpcExtensionUIResponse): boolean;
+	disconnect(): void;
+}
+
+export type RpcAskDialogRequest = Extract<RpcExtensionUIRequest, { method: "ask" | "cancel" }>;
 
 export type RpcEventListener = (event: AgentEvent) => void;
 export type RpcSessionEventListener = (event: AgentSessionEvent) => void;
@@ -349,6 +358,7 @@ export class RpcClient {
 	#btwDeltaListeners = new Set<(frame: RpcBtwDeltaFrame) => void>();
 	#btwRecordListeners = new Set<(record: RpcBtwHistoryRecord) => void>();
 	#promptResultListeners = new Set<RpcPromptResultListener>();
+	#settleWaiters = new Set<(error: Error) => void>();
 	#sessionSettledListeners = new Set<RpcSessionSettledListener>();
 	#liveListeners = new Set<RpcLiveListener>();
 	#dictationListeners = new Set<RpcDictationListener>();
@@ -363,6 +373,9 @@ export class RpcClient {
 	#requestId = 0;
 	#protocolVersion: RpcProtocolVersion = 1;
 	#extensionUiListeners: Set<(req: RpcExtensionUIRequest) => void> = new Set();
+	#pendingAskDialogs = new Map<string, Extract<RpcExtensionUIRequest, { method: "ask" }>>();
+	#askDialogView: { listener: (request: RpcAskDialogRequest) => void } | undefined;
+
 	#abortController = new AbortController();
 
 	constructor(private options: RpcClientOptions = {}) {
@@ -578,6 +591,10 @@ export class RpcClient {
 
 	/** Fail prompts that were acknowledged but whose `prompt_result` can no longer arrive. */
 	#rejectPromptWaiters(error: Error): void {
+		for (const reject of this.#settleWaiters) reject(error);
+		this.#settleWaiters.clear();
+		this.#pendingAskDialogs.clear();
+		this.#askDialogView = undefined;
 		for (const [id, reject] of this.#promptErrorWaiters) {
 			// Still-unacknowledged prompts fail through their pending request instead.
 			if (!this.#pendingRequests.has(id)) reject(error);
@@ -740,6 +757,47 @@ export class RpcClient {
 		return response.id ?? "";
 	}
 
+	/** Session prompt completion over the existing keyed prompt_result channel.
+	 * The owner, rather than an attached view, retains this waiter. No completion
+	 * timeout: tools and questions can legitimately remain active indefinitely.
+	 */
+	async promptWithResult(message: string, options: PromptOptions = {}): Promise<boolean> {
+		const { onPromptAdmitted, ...serializable } = options;
+		return this.#promptWithCompletion({ type: "prompt", message, options: serializable }, onPromptAdmitted);
+	}
+
+	async promptCustomMessage(
+		message: Parameters<AgentSession["promptCustomMessage"]>[0],
+		options: NonNullable<Parameters<AgentSession["promptCustomMessage"]>[1]> = {},
+	): Promise<boolean> {
+		const { onPromptAdmitted, ...serializable } = options;
+		return this.#promptWithCompletion({ type: "prompt_custom", message, options: serializable }, onPromptAdmitted);
+	}
+
+	async #promptWithCompletion(
+		command: Extract<RpcCommandBody, { type: "prompt" | "prompt_custom" }>,
+		onPromptAdmitted?: () => void,
+	): Promise<boolean> {
+		const id = `req_${++this.#requestId}`;
+		const result = Promise.withResolvers<boolean>();
+		void result.promise.catch(() => {});
+		this.#promptResultWaiters.set(id, frame => {
+			if (frame.status === "error") result.reject(new Error(frame.error?.message ?? "Prompt failed"));
+			else result.resolve(frame.agentInvoked);
+		});
+		this.#promptErrorWaiters.set(id, result.reject);
+		try {
+			const response = await this.#send(command, 30_000, id);
+			const data = this.#getData<{ agentInvoked?: boolean } | undefined>(response);
+			onPromptAdmitted?.();
+			if (data?.agentInvoked === false) return false;
+			return await result.promise;
+		} finally {
+			this.#promptResultWaiters.delete(id);
+			this.#promptErrorWaiters.delete(id);
+		}
+	}
+
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
 	 */
@@ -775,8 +833,8 @@ export class RpcClient {
 	/**
 	 * Abort current operation.
 	 */
-	async abort(): Promise<void> {
-		await this.#send({ type: "abort" });
+	async abort(options?: Parameters<AgentSession["abort"]>[0]): Promise<void> {
+		await this.#send({ type: "abort", options });
 	}
 
 	/**
@@ -825,14 +883,35 @@ export class RpcClient {
 		return this.#getData(response);
 	}
 
-	/**
-	 * Get current session state.
-	 */
-	async getState(): Promise<RpcSessionState> {
-		const response = await this.#send({ type: "get_state" });
+	async beginDispose(): Promise<void> {
+		this.#getData<void>(await this.#send({ type: "begin_dispose" }));
+	}
+
+	async disposeSession(options?: AgentSessionDisposeOptions): Promise<void> {
+		this.#getData<void>(await this.#send({ type: "dispose_session", options }));
+	}
+
+	async checkpointSession(): Promise<void> {
+		this.#getData<void>(await this.#send({ type: "checkpoint_session" }));
+	}
+
+	/** Persist a draft using the runtime owner, propagating storage failures. */
+	async saveDraft(text: string): Promise<void> {
+		this.#getData<void>(await this.#send({ type: "save_draft", text }));
+	}
+
+	async consumeDraft(): Promise<string | null> {
+		const response = await this.#send({ type: "consume_draft" });
+		return this.#getData<{ text: string | null }>(response).text;
+	}
+
+	/** Get current session state. */
+	async getState(view?: { collapseCompactedHistory?: boolean }): Promise<RpcSessionState> {
+		const response = await this.#send({ type: "get_state", ...(view ? { view } : {}) });
 		const state = this.#getData<RpcSessionState>(response);
 		return {
 			...state,
+			hasPostPromptWork: state.hasPostPromptWork === true,
 			fastModeEnabled: state.fastModeEnabled === true,
 			fastModeActive: state.fastModeActive === true,
 			slowModeSupported: state.slowModeSupported === true,
@@ -1339,6 +1418,42 @@ export class RpcClient {
 		}>(response).providers;
 	}
 
+	/** Opt in to the canonical multi-question ask frames. */
+	async setAskDialog(enabled: boolean): Promise<boolean> {
+		const response = await this.#send({ type: "set_ask_dialog", enabled });
+		return this.#getData<{ enabled: boolean }>(response).enabled;
+	}
+
+	/**
+	 * Attach the sole ask presentation to this live transport. A successor reuses
+	 * the original request IDs and promises; it never re-executes the tool.
+	 */
+	attachAskDialogView(listener: (request: RpcAskDialogRequest) => void): RpcAskDialogView {
+		if (!this.#process) throw new Error("Client not started");
+		const view = { listener };
+		this.#askDialogView = view;
+		const pending = [...this.#pendingAskDialogs.values()];
+		// Let the caller retain its lease before a replay callback can answer.
+		queueMicrotask(() => {
+			for (const request of pending) {
+				if (this.#askDialogView !== view) break;
+				if (this.#pendingAskDialogs.get(request.id) === request) listener(request);
+			}
+		});
+		return {
+			disconnect: () => {
+				if (this.#askDialogView === view) this.#askDialogView = undefined;
+			},
+			respond: response => {
+				if (this.#askDialogView !== view || !this.#pendingAskDialogs.has(response.id)) return false;
+				// Consume before writing: a duplicate or a detached view cannot answer twice.
+				this.#pendingAskDialogs.delete(response.id);
+				this.#writeFrame(response);
+				return true;
+			},
+		};
+	}
+
 	/**
 	 * Trigger OAuth login for the given provider.
 	 * The server will emit an `open_url` extension_ui_request for the auth URL.
@@ -1492,19 +1607,26 @@ export class RpcClient {
 	 * `get_state` reports it settled, otherwise at the next `session_settled`.
 	 * Use after {@link promptAndWait} when background jobs may still wake the agent.
 	 */
-	async waitForSettled(timeout = 60000): Promise<void> {
+	async waitForSettled(timeout = 60000, signal?: AbortSignal): Promise<void> {
+		signal?.throwIfAborted();
 		const { promise, resolve, reject } = Promise.withResolvers<void>();
 		const unsubscribe = this.onSessionSettled(resolve);
+		const onAbort = () => reject(signal?.reason ?? new Error("Settlement wait cancelled"));
+		signal?.addEventListener("abort", onAbort, { once: true });
+		this.#settleWaiters.add(reject);
 		let timeoutId: NodeJS.Timeout | undefined;
 		try {
-			// Subscribed before asking, so a settle between the two cannot be missed.
-			if ((await this.getState()).isSettled) return;
-			timeoutId = this.#startTimeout(timeout, () => {
-				reject(new Error(`Timeout waiting for session_settled. Stderr: ${this.#process?.peekStderr() ?? ""}`));
-			});
-			await promise;
+			// Race the query too: a detached view must not retain its listener behind a stalled RPC.
+			if (timeout > 0)
+				timeoutId = this.#startTimeout(timeout, () =>
+					reject(new Error(`Timeout waiting for session_settled. Stderr: ${this.#process?.peekStderr() ?? ""}`)),
+				);
+			const snapshot = this.getState();
+			await Promise.race([promise, snapshot.then(state => (state.isSettled ? undefined : promise))]);
 		} finally {
 			unsubscribe();
+			this.#settleWaiters.delete(reject);
+			signal?.removeEventListener("abort", onAbort);
 			clearTimeout(timeoutId);
 		}
 	}
@@ -1574,6 +1696,12 @@ export class RpcClient {
 		}
 
 		if (isRpcExtensionUiRequest(data)) {
+			if (data.method === "ask") {
+				this.#pendingAskDialogs.set(data.id, data);
+				this.#askDialogView?.listener(data);
+			} else if (data.method === "cancel" && this.#pendingAskDialogs.delete(data.targetId)) {
+				this.#askDialogView?.listener(data);
+			}
 			for (const listener of this.#extensionUiListeners) {
 				listener(data);
 			}
@@ -1654,7 +1782,8 @@ export class RpcClient {
 
 		if (!isAgentSessionEvent(data)) return;
 
-		for (const listener of this.#sessionEventListeners) {
+		// A view may detach during dispatch; preserve delivery to the other views.
+		for (const listener of this.#sessionEventListeners.slice()) {
 			listener(data);
 		}
 

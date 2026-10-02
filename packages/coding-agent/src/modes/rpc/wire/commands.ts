@@ -41,8 +41,21 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 	{
 		name: "prompt",
 		doc: "Submit a prompt; acknowledged once admitted, completed by its `prompt_result`.",
-		params: { message: "string", "images?": IMAGES, "streamingBehavior?": "StreamingBehavior" },
+		params: {
+			message: "string",
+			"images?": IMAGES,
+			"streamingBehavior?": "StreamingBehavior",
+			"options?": "SessionPromptOptions",
+		},
 		result: "PromptAck",
+		clientOmit: ["options"],
+		completion: "prompt_result",
+	},
+	{
+		name: "prompt_custom",
+		doc: "Submit an attributed custom message through the owner admission pipeline.",
+		params: { message: "CustomPromptMessage", "options?": "CustomPromptOptions" },
+		clientOmit: ["options"],
 		completion: "prompt_result",
 	},
 	{ name: "steer", doc: "Queue a steering message.", params: { message: "string", "images?": IMAGES } },
@@ -59,7 +72,12 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		params: { message: "string" },
 		result: "PromoteQueuedMessageResult",
 	},
-	{ name: "abort", doc: "Abort the current run." },
+	{
+		name: "abort",
+		doc: "Abort the current run.",
+		params: { "options?": "SessionAbortOptions" },
+		clientOmit: ["options"],
+	},
 	{
 		name: "abort_and_prompt",
 		doc: "Abort the current run and submit a prompt; completed by its `prompt_result`.",
@@ -84,7 +102,31 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		result: "OpenSessionResult",
 	},
 
-	{ name: "get_state", doc: "Snapshot the session state.", result: "SessionState" },
+	{ name: "begin_dispose", doc: "Stop admitting new owner work before explicit shutdown." },
+	{
+		name: "dispose_session",
+		doc: "Dispose the runtime owner; view detachment does not call this.",
+		params: { "options?": "SessionDisposeOptions" },
+		clientOmit: ["options"],
+	},
+	{ name: "checkpoint_session", doc: "Close and seal the owner journal after restart admission." },
+	{
+		name: "save_draft",
+		doc: "Persist unsent editor text with the runtime session writer.",
+		params: { text: "string" },
+	},
+	{
+		name: "consume_draft",
+		doc: "Restore and remove the unsent editor draft once.",
+		result: { text: "string | null" },
+		unwrap: "text",
+	},
+	{
+		name: "get_state",
+		doc: "Snapshot the session state, optionally including presentation without opening a view writer.",
+		params: { "view?": "InteractiveViewOptions" },
+		result: "SessionState",
+	},
 	{
 		name: "set_fast_mode",
 		doc: "Enable or disable fast mode for the session.",

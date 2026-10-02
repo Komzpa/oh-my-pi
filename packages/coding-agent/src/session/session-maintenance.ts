@@ -594,6 +594,18 @@ export class SessionMaintenance {
 		return resolveModelCompactionSettings(this.#host.settings, this.#model);
 	}
 
+	/** Remove raw images hidden by prune overlays without charging visible token savings. */
+	#dropHiddenPrunedImages(projectedEntries: readonly SessionEntry[]): number {
+		const projected = new Map(projectedEntries.map(entry => [entry.id, entry]));
+		let removed = 0;
+		for (const entry of this.#host.sessionManager.getRawBranch()) {
+			const visible = projected.get(entry.id);
+			if (entry.type !== "message" || visible?.type !== "message" || entry.message === visible.message) continue;
+			removed += stripImagesFromMessage(entry.message);
+		}
+		return removed;
+	}
+
 	get #tokenizer() {
 		return this.#host.agent.tokenizer;
 	}
@@ -699,17 +711,18 @@ export class SessionMaintenance {
 	}
 
 	/**
-	 * Durably commit a prune pass, restoring the blanked results when the rewrite
-	 * fails so live context never diverges from the history its derived state
-	 * (advisor prefix, todo phases, provider sessions) was built from.
+	 * Append the branch-local prune decision, rebuild live state from that
+	 * projection, then await ordinary storage durability. A latched append failure
+	 * propagates without rollback; the in-memory overlay is what later recovery persists.
 	 */
-	async #persistPrune(result: PruneResult): Promise<void> {
-		try {
-			await this.#host.sessionManager.rewriteEntries();
-		} catch (error) {
-			result.undo();
-			throw error;
-		}
+	async #persistPrune(result: PruneResult, reason: string): Promise<void> {
+		this.#host.sessionManager.appendToolResultPrune(result.targets, result.prunedAt);
+		const sessionContext = this.#host.buildDisplaySessionContext();
+		this.#host.agent.replaceMessages(sessionContext.messages);
+		this.#host.rebaseAdvisorPrefix(reason);
+		this.#host.syncTodoPhasesFromBranch();
+		this.#host.closeCodexProviderSessionsForHistoryRewrite();
+		await this.#host.sessionManager.flush();
 	}
 
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
@@ -735,12 +748,7 @@ export class SessionMaintenance {
 			return undefined;
 		}
 
-		await this.#persistPrune(result);
-		const sessionContext = this.#host.buildDisplaySessionContext();
-		this.#host.agent.replaceMessages(sessionContext.messages);
-		this.#host.rebaseAdvisorPrefix("prune-tool-outputs");
-		this.#host.syncTodoPhasesFromBranch();
-		this.#host.closeCodexProviderSessionsForHistoryRewrite();
+		await this.#persistPrune(result, "prune-tool-outputs");
 		return result;
 	}
 
@@ -752,10 +760,8 @@ export class SessionMaintenance {
 	 * provider prompt cache is cold), so it is cheap to run every turn. Gated
 	 * on the `compaction.supersedeReads` and `compaction.dropUseless` settings.
 	 *
-	 * Persists via `rewriteEntries` like every other history rewrite — the
-	 * session file must match the live (pruned) context or file-based forks
-	 * (`/fork`, `/tan`) and resume rebuild a divergent prefix and cold-miss the
-	 * provider prompt cache.
+	 * Persists one append-only overlay so file-based forks and resume reconstruct
+	 * the same pruned prefix without replacing the journal or its original bytes.
 	 */
 	async #pruneStaleToolResults(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const { supersedeReads, dropUseless } = this.#compactionSettings;
@@ -785,12 +791,7 @@ export class SessionMaintenance {
 			return undefined;
 		}
 
-		await this.#persistPrune(result);
-		const sessionContext = this.#host.buildDisplaySessionContext();
-		this.#host.agent.replaceMessages(sessionContext.messages);
-		this.#host.rebaseAdvisorPrefix("prune-stale-tool-results");
-		this.#host.syncTodoPhasesFromBranch();
-		this.#host.closeCodexProviderSessionsForHistoryRewrite();
+		await this.#persistPrune(result, "prune-stale-tool-results");
 		return result;
 	}
 
@@ -803,14 +804,8 @@ export class SessionMaintenance {
 	 * provider sessions caching message identity (Codex Responses) are torn
 	 * down to force a clean replay on the next turn.
 	 *
-	 * Every stripped block is measured with the active tokenizer so callers can
-	 * report real savings, and the share of those savings that predates the
-	 * transcript usage anchor is recorded against it. Without that correction
-	 * the anchor keeps charging the provider-reported prompt for images that are
-	 * gone and the context meter reads stale-high until the next response.
-	 *
-	 * No-op when the branch carries no images; returns `{ removed: 0, tokensFreed: 0 }`
-	 * and skips the disk rewrite.
+	 * No-op when the branch carries no images; returns `{ removed: 0 }` and
+	 * skips the disk rewrite.
 	 */
 	async dropImages(): Promise<{ removed: number; tokensFreed: number }> {
 		const branchEntries = this.#host.sessionManager.getBranch();
@@ -866,6 +861,8 @@ export class SessionMaintenance {
 			tokensFreed += saved;
 			if (anchored) anchoredTokensRemoved += saved;
 		}
+		// Detached prune projections hide raw images from token accounting.
+		removed += this.#dropHiddenPrunedImages(branchEntries);
 		if (removed === 0) {
 			return { removed: 0, tokensFreed: 0 };
 		}
@@ -912,7 +909,13 @@ export class SessionMaintenance {
 			const latestCompaction = getLatestCompactionEntry(branchEntries);
 			const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
 			const hasRemoteReplacementHistory = getOpenAiRemoteCompactionPayload(latestCompaction) !== undefined;
-			const anchorIndex = findUsageAnchorIndex(branchEntries, compactionIndex);
+			let anchorIndex = -1;
+			for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
+				const entry = branchEntries[index];
+				if (entry.type !== "message" || !isTranscriptUsageAnchor(entry.message)) continue;
+				anchorIndex = index;
+				break;
+			}
 			let removed = 0;
 			let tokensFreed = 0;
 			let anchoredTokensRemoved = 0;
@@ -1016,7 +1019,13 @@ export class SessionMaintenance {
 		assertCurrent();
 		const hasRemoteReplacementHistory = getOpenAiRemoteCompactionPayload(latestCompaction) !== undefined;
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
-		const anchorIndex = findUsageAnchorIndex(branchEntries, compactionIndex);
+		let anchorIndex = -1;
+		for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
+			const entry = branchEntries[index];
+			if (entry.type !== "message" || !isTranscriptUsageAnchor(entry.message)) continue;
+			anchorIndex = index;
+			break;
+		}
 		const entryIndexes = new Map(branchEntries.map((entry, index) => [entry, index]));
 
 		let toolResultsDropped = 0;

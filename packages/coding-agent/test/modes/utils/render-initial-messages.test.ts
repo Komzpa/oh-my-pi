@@ -12,7 +12,7 @@
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -83,17 +83,23 @@ function makeCtx(): RenderInitialMessagesTestContext {
 		initialChatRendered: true,
 		session: { buildTranscriptSessionContext: transcriptSpy },
 		viewSession: {
+			agent: new Agent(),
+			isStreaming: false,
 			buildTranscriptSessionContext: transcriptSpy,
 			hasBuiltInTool: () => true,
 			sessionManager: {
 				buildSessionContext: llmContextSpy,
 				getEntries: vi.fn(() => []),
+				getEntryCount: vi.fn(() => 0),
+				iterateEntries: vi.fn(() => [][Symbol.iterator]()),
 				getCwd: vi.fn(() => "/tmp"),
 			},
 		},
 		sessionManager: {
 			buildSessionContext: llmContextSpy,
 			getEntries: vi.fn(() => []),
+			getEntryCount: vi.fn(() => 0),
+			iterateEntries: vi.fn(() => [][Symbol.iterator]()),
 			getCwd: vi.fn(() => "/tmp"),
 		},
 		renderSessionContextIncrementally: renderSessionContextSpy,
@@ -192,6 +198,8 @@ function makeRenderCtx(
 		focusedAgentId: undefined,
 		editor: { addToHistory: vi.fn() },
 		viewSession: {
+			agent: new Agent(),
+			isStreaming: false,
 			getQueuedMessages: () => ({ steering: [], followUp: [] }),
 			buildTranscriptSessionContext: () => transcript,
 			getToolByName: () => undefined,
@@ -199,6 +207,8 @@ function makeRenderCtx(
 			extensionRunner: undefined,
 			sessionManager: {
 				getEntries: vi.fn(() => []),
+				getEntryCount: vi.fn(() => 0),
+				iterateEntries: vi.fn(() => [][Symbol.iterator]()),
 				getCwd: vi.fn(() => "/tmp"),
 				putBlobSync: vi.fn(() => ({
 					hash: "hash",
@@ -210,6 +220,8 @@ function makeRenderCtx(
 		},
 		sessionManager: {
 			getEntries: vi.fn(() => []),
+			getEntryCount: vi.fn(() => 0),
+			iterateEntries: vi.fn(() => [][Symbol.iterator]()),
 			getCwd: vi.fn(() => "/tmp"),
 			putBlobSync: vi.fn(() => ({
 				hash: "hash",
@@ -242,7 +254,7 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 
 		await new UiHelpers(ctx).renderInitialMessages();
 
-		expect(transcriptSpy).toHaveBeenCalledWith({ collapseCompactedHistory: true });
+		expect(transcriptSpy).toHaveBeenCalledWith({ collapseCompactedHistory: true, keepInFlightToolCalls: false });
 		expect(llmContextSpy).not.toHaveBeenCalled();
 		expect(renderSessionContextSpy).toHaveBeenCalledWith(transcript, {
 			updateFooter: true,
@@ -799,17 +811,14 @@ describe("UiHelpers.renderSessionContext — mid-stream tool call rebuild", () =
 });
 
 describe("UiHelpers.renderInitialMessages — replay convergence (issue #7811)", () => {
-	/** getEntries mock whose returned array grows on every call, simulating a
+	/** Entry count mock that grows on every call, simulating a
 	 * source that persists a new session entry during every replay pass. */
 	function growingEntriesCtx(): RenderInitialMessagesTestContext {
 		const made = makeCtx();
 		let calls = 0;
-		const getEntries = vi.fn(() => {
-			calls++;
-			return Array.from({ length: calls }, () => ({ type: "message" }));
-		});
-		(made.ctx.viewSession.sessionManager as unknown as { getEntries: unknown }).getEntries = getEntries;
-		(made.ctx.sessionManager as unknown as { getEntries: unknown }).getEntries = getEntries;
+		const getEntryCount = vi.fn(() => ++calls);
+		(made.ctx.viewSession.sessionManager as unknown as { getEntryCount: unknown }).getEntryCount = getEntryCount;
+		(made.ctx.sessionManager as unknown as { getEntryCount: unknown }).getEntryCount = getEntryCount;
 		return made;
 	}
 
@@ -837,13 +846,13 @@ describe("UiHelpers.renderInitialMessages — replay convergence (issue #7811)",
 		const { ctx, transcriptSpy } = makeCtx();
 		const lengths = [0, 1, 1, 1, 1, 1, 1, 1];
 		let call = 0;
-		const getEntries = vi.fn(() => {
+		const getEntryCount = vi.fn(() => {
 			const length = lengths[Math.min(call, lengths.length - 1)]!;
 			call++;
-			return Array.from({ length }, () => ({ type: "message" }));
+			return length;
 		});
-		(ctx.viewSession.sessionManager as unknown as { getEntries: unknown }).getEntries = getEntries;
-		(ctx.sessionManager as unknown as { getEntries: unknown }).getEntries = getEntries;
+		(ctx.viewSession.sessionManager as unknown as { getEntryCount: unknown }).getEntryCount = getEntryCount;
+		(ctx.sessionManager as unknown as { getEntryCount: unknown }).getEntryCount = getEntryCount;
 
 		await new UiHelpers(ctx).renderInitialMessages();
 

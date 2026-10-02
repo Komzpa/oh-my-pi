@@ -23,6 +23,7 @@ import {
 	takeStartupComposerLease,
 } from "@oh-my-pi/pi-coding-agent/modes/startup-composer";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
@@ -49,6 +50,7 @@ import {
 	cfgTuiMaxInlineImages,
 	cfgTuiResizeScrollback,
 } from "@oh-my-pi/pi-coding-agent/modes/settings";
+import { assistantMsg } from "./utilities";
 
 class CountingTerminal extends VirtualTerminal {
 	starts = 0;
@@ -460,6 +462,192 @@ describe("Composer prepaint", () => {
 			await initTheme();
 		}
 	});
+
+	it("renders history before restart recovery can start a root continuation", async () => {
+		const testSession = await createTestSession();
+		testSession.session.sessionManager.appendMessage({
+			role: "user",
+			content: "saved conversation",
+			timestamp: Date.now(),
+		});
+		const mode = new InteractiveMode(testSession.session, "test");
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		const root = AgentRegistry.global().register({
+			id: "StartupRestoreRoot",
+			displayName: "Root",
+			kind: "main",
+			session: testSession.session,
+			status: "idle",
+		});
+		const sessionId = testSession.session.sessionId;
+		testSession.session.sessionManager.appendCustomEntry("restart_request_transition", {
+			version: 1,
+			identity: { instanceId: "previous-process", sessionId, generation: 1 },
+			record: {
+				version: 1,
+				requestId: "startup-order",
+				sessionId,
+				// Completed replacement still requires its durable root continuation.
+				state: "completed",
+				requestedAt: Date.now(),
+				updatedAt: Date.now(),
+				rootWasRunning: true,
+			},
+		});
+		const recovering = Promise.withResolvers<void>();
+		const rendering = Promise.withResolvers<void>();
+		const finishRender = Promise.withResolvers<void>();
+		const render = mode.renderInitialMessages.bind(mode);
+		vi.spyOn(mode, "renderInitialMessages").mockImplementation(async options => {
+			rendering.resolve();
+			await finishRender.promise;
+			await render(options);
+		});
+		let renderedAtRecovery = false;
+		let historyAtRecovery = "";
+		const continuation = vi.spyOn(testSession.session, "deliverIrcMessage").mockImplementation(async () => {
+			renderedAtRecovery = mode.initialChatRendered;
+			historyAtRecovery = Bun.stripANSI(mode.chatContainer.render(100).join("\n"));
+			recovering.resolve();
+			return "woken";
+		});
+		try {
+			const initializing = mode.init({ suppressWelcomeIntro: true });
+			// Race the real init pipeline: baseline enters the controller before replay.
+			await Promise.race([rendering.promise, recovering.promise]);
+			finishRender.resolve();
+			await initializing;
+			expect(renderedAtRecovery).toBe(true);
+			expect(historyAtRecovery).toContain("saved conversation");
+			expect(continuation).toHaveBeenCalledTimes(1);
+		} finally {
+			finishRender.resolve();
+			mode.stop();
+			AgentRegistry.global().unregister(root.id, root);
+			await testSession.cleanup();
+			vi.restoreAllMocks();
+		}
+	});
+
+	it("submits a held Enter once after init, preserving the restored draft", async () => {
+		class HeldTerminal extends CountingTerminal {
+			readonly tspExpected = true;
+		}
+		const terminal = new HeldTerminal();
+		const composer = new Composer({ preferences: config, terminal });
+		composer.start({ deferInput: true });
+		const lease = new ComposerLease(composer);
+		const testSession = await createTestSession({ inMemory: true });
+		vi.spyOn(testSession.session.sessionManager, "consumeDraft").mockResolvedValue("saved draft");
+		const mode = new InteractiveMode(
+			testSession.session,
+			"test",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			lease.composer,
+		);
+		lease.adopt();
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		const entered = Promise.withResolvers<void>();
+		const proceed = Promise.withResolvers<void>();
+		vi.spyOn(mode, "refreshSlashCommandState").mockImplementation(async () => {
+			entered.resolve();
+			await proceed.promise;
+		});
+		const prompt = vi.spyOn(testSession.session, "prompt").mockResolvedValue(true);
+		try {
+			const initializing = mode.init({ suppressWelcomeIntro: true });
+			await entered.promise;
+			terminal.sendInput(" plus typed");
+			terminal.sendInput("\r");
+			expect(prompt).not.toHaveBeenCalled();
+			proceed.resolve();
+			await initializing;
+			for (let i = 0; i < 50; i++) await Promise.resolve();
+			expect(prompt).toHaveBeenCalledTimes(1);
+			expect(prompt).toHaveBeenCalledWith(
+				"saved draft plus typed",
+				expect.objectContaining({ streamingBehavior: "steer" }),
+			);
+			expect(mode.editor.getExpandedText()).toBe("");
+			mode.ui.releaseHeldInput();
+			expect(prompt).toHaveBeenCalledTimes(1);
+		} finally {
+			proceed.resolve();
+			mode.stop();
+			lease.dispose();
+			await testSession.cleanup();
+			vi.restoreAllMocks();
+		}
+	});
+
+	for (const draft of ["", "unsent draft"])
+		it(`routes restored Ask keys with ${draft ? "a preserved draft" : "an empty composer"}`, async () => {
+			class HeldTerminal extends CountingTerminal {
+				readonly tspExpected = true;
+			}
+			const terminal = new HeldTerminal();
+			const composer = new Composer({ preferences: config, terminal });
+			composer.start({ deferInput: true });
+			const lease = new ComposerLease(composer);
+			const testSession = await createTestSession({ inMemory: true });
+			const question = { id: "destination", question: "Where?", options: [{ label: "Here" }, { label: "There" }] };
+			testSession.session.sessionManager.appendMessage({
+				...assistantMsg(""),
+				stopReason: "toolUse",
+				content: [{ type: "toolCall", id: "saved-ask", name: "ask", arguments: { questions: [question] } }],
+			});
+			vi.spyOn(testSession.session.sessionManager, "consumeDraft").mockResolvedValue(draft);
+			const mode = new InteractiveMode(
+				testSession.session,
+				"test",
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				lease.composer,
+			);
+			lease.adopt();
+			vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+			const prompt = vi.spyOn(testSession.session, "prompt").mockResolvedValue(true);
+			const resumed = vi.spyOn(testSession.session, "resumeAfterAskReanswer").mockImplementation(() => {});
+			try {
+				await mode.init({ suppressWelcomeIntro: true });
+				expect(resumed).not.toHaveBeenCalled();
+				expect(mode.editor.getExpandedText()).toBe(draft);
+				expect(Bun.stripANSI(mode.editorContainer.render(100).join("\n"))).toContain("Where?");
+				// A draft intentionally owns editing until cleared. Ctrl+U retains it
+				// in the editor kill ring, letting Ask receive navigation and Enter.
+				if (draft) terminal.sendInput("\x15");
+				terminal.sendInput("\x1b[B");
+				terminal.sendInput("\r");
+				for (let i = 0; i < 100; i++) await Promise.resolve();
+				const answers = testSession.session.sessionManager
+					.getBranch()
+					.flatMap(entry =>
+						entry.type === "message" &&
+						entry.message.role === "toolResult" &&
+						entry.message.toolCallId === "saved-ask"
+							? [entry.message]
+							: [],
+					);
+				expect(answers).toHaveLength(1);
+				expect(JSON.stringify(answers[0])).toContain("There");
+				expect(resumed).toHaveBeenCalledTimes(1);
+				expect(prompt).not.toHaveBeenCalled();
+				if (draft) terminal.sendInput("\x19");
+				expect(mode.editor.getExpandedText()).toBe(draft);
+			} finally {
+				mode.stop();
+				lease.dispose();
+				await testSession.cleanup();
+				vi.restoreAllMocks();
+			}
+		});
 
 	it("keeps submit gated during initialization, then dispatches with steer", async () => {
 		const terminal = new CountingTerminal();

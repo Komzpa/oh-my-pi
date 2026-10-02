@@ -105,6 +105,8 @@ export interface AsyncJobInspection {
 export interface AsyncJobSnapshot {
 	running: AsyncJobSnapshotItem[];
 	recent: AsyncJobSnapshotItem[];
+	/** Exact ids and session-corroborated liveness for registry agents without a running job. */
+	nonJobAgents?: Array<{ id: string; live: boolean }>;
 	delivery: AsyncJobDeliveryState;
 }
 
@@ -119,6 +121,12 @@ export interface AsyncJobTree {
 }
 
 export type { ShakeMode, ShakeResult } from "./shake-types";
+/** Stops this session at the next safe model boundary until released. */
+export interface RestartDrainLease {
+	wasRunning: boolean;
+	waitForQuiescence(): Promise<void>;
+	release(): void;
+}
 
 /**
  * Prewalk switches an active session one-way from its starting model to a
@@ -505,6 +513,8 @@ export interface FollowUpOptions {
 	attribution?: MessageAttribution;
 	/** Called synchronously with the messages pushed onto the follow-up queue. See {@link PromptOptions.onPromptQueued}. */
 	onPromptQueued?: PromptOptions["onPromptQueued"];
+	/** Called synchronously once the message is on its queue. See {@link PromptOptions.onPromptAdmitted}. */
+	onPromptAdmitted?: () => void;
 }
 
 /** Options for AgentSession.steer(). */

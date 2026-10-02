@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { postmortem } from "@oh-my-pi/pi-utils";
+import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
+import { SessionManager } from "../../src/session/session-manager";
 import { createSessionTeardown } from "../../src/modes/session-teardown";
 
 /**
@@ -12,6 +13,95 @@ import { createSessionTeardown } from "../../src/modes/session-teardown";
  * criteria hold regardless of the trigger.
  */
 describe("createSessionTeardown", () => {
+	it.each(["half typed\nещё не отправлено  ", ""])(
+		"preserves restart draft before close and late UI teardown: %j",
+		async text => {
+			using temp = TempDir.createSync("@omp-restart-draft-");
+			const manager = SessionManager.create(temp.path(), temp.path());
+			manager.appendMessage({ role: "user", content: "already submitted", timestamp: 1 });
+			manager.appendCustomEntry("omp:restart-pending-queues", {
+				steering: [],
+				followUp: [{ role: "user", content: "queued input", timestamp: 2 }],
+				pendingNextTurn: [],
+			});
+			const entries = manager.getEntries();
+			await manager.ensureOnDisk();
+			await manager.saveDraft("obsolete draft");
+			let editorText = text;
+			const teardown = createSessionTeardown({
+				getDraftText: () => editorText,
+				beginDispose: () => {},
+				saveDraft: value => manager.saveDraft(value),
+				disposeSession: () => manager.close(),
+			});
+			// #executeRestart must persist while its original editor/session still owns input.
+			await teardown.saveDraft();
+			await manager.close();
+			manager.seal();
+			editorText = ""; // UI controller teardown can clear or replace the active editor.
+			await teardown();
+			const reopened = await SessionManager.open(manager.getSessionFile()!);
+			try {
+				expect(await reopened.consumeDraft()).toBe(text || null);
+				expect(await reopened.consumeDraft()).toBeNull();
+				expect(reopened.getEntries()).toEqual(entries);
+			} finally {
+				await reopened.close();
+			}
+		},
+	);
+
+	it("waits for the remote admission barrier before saving or disposing", async () => {
+		const admitted = Promise.withResolvers<void>();
+		const events: string[] = [];
+		const teardown = createSessionTeardown({
+			getDraftText: () => "typed 🐈",
+			beginDispose: () => {
+				events.push("begin");
+				return admitted.promise;
+			},
+			saveDraft: async text => {
+				events.push(text);
+			},
+			disposeSession: async () => {
+				events.push("dispose");
+			},
+		});
+		const pending = teardown();
+		expect(events).toEqual(["begin"]);
+		admitted.resolve();
+		await pending;
+		expect(events).toEqual(["begin", "typed 🐈", "dispose"]);
+	});
+
+	it("keeps a failed restart draft save retryable without disposing the active editor", async () => {
+		let editorText = "partial";
+		let attempts = 0;
+		let disposed = false;
+		const saved: string[] = [];
+		const teardown = createSessionTeardown({
+			getDraftText: () => editorText,
+			beginDispose: () => {
+				disposed = true;
+			},
+			saveDraft: async text => {
+				if (++attempts === 1) throw new Error("disk full");
+				saved.push(text);
+			},
+			disposeSession: async () => {
+				disposed = true;
+			},
+		});
+		await expect(teardown.saveDraft()).rejects.toThrow("disk full");
+		expect(disposed).toBe(false);
+		editorText = "partial\nдописано";
+		await teardown.saveDraft();
+		editorText = "";
+		await teardown();
+		expect(saved).toEqual(["partial\nдописано"]);
+		expect(attempts).toBe(2);
+	});
+
 	it("marks the session disposing before awaiting draft persistence", async () => {
 		const order: string[] = [];
 		const release = Promise.withResolvers<void>();

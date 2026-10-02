@@ -6,7 +6,7 @@
  * the replay, so the append is lost if the replay misses its entry and duplicated
  * if the preserved-chat replay also carries a live paint.
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -20,7 +20,9 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Text } from "@oh-my-pi/pi-tui";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { getEditorTheme, initTheme } from "@oh-my-pi/pi-tui/theme";
+import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import { createRestartQueueController } from "@oh-my-pi/pi-coding-agent/task/restart-queue";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
 
@@ -52,19 +54,25 @@ afterEach(async () => {
 });
 
 /** Interactive transcript wired like InteractiveMode before its initial render, with a pre-render banner. */
-function createInteractiveTranscript() {
+function createInteractiveTranscript(durable = false) {
+	let streamCalls = 0;
 	const model = createMockModel({ provider: "openai", id: "gpt-test" }).model;
 	const agent = new Agent({
 		getApiKey: () => "test-key",
 		initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 		convertToLlm,
-		streamFn: () => new AssistantMessageEventStream(),
+		streamFn: () => {
+			streamCalls++;
+			return new AssistantMessageEventStream();
+		},
 	});
 	const settings = Settings.isolated({ "compaction.enabled": false, "todo.enabled": false });
 	settings.setModelRole("default", `${model.provider}/${model.id}`);
 	const created = new AgentSession({
 		agent,
-		sessionManager: SessionManager.inMemory(tempDir.path()),
+		sessionManager: durable
+			? SessionManager.create(tempDir.path(), tempDir.path())
+			: SessionManager.inMemory(tempDir.path()),
 		settings,
 		modelRegistry: new ModelRegistry(authStorage),
 		toolRegistry: new Map(),
@@ -74,6 +82,7 @@ function createInteractiveTranscript() {
 		session: created,
 		sessionManager: created.sessionManager,
 		initialChatRendered: false,
+		editor: new CustomEditor(getEditorTheme()),
 	});
 	const helpers = new UiHelpers(ctx);
 	ctx.addMessageToChat = helpers.addMessageToChat.bind(helpers);
@@ -87,6 +96,7 @@ function createInteractiveTranscript() {
 	ctx.chatContainer.addChild(new Text("WELCOME_BANNER", 0, 0));
 	return {
 		ctx,
+		streamCalls: () => streamCalls,
 		session: created,
 		sendIdleDisplay: (body: string) =>
 			created.sendCustomMessage(
@@ -98,6 +108,83 @@ function createInteractiveTranscript() {
 }
 
 describe("idle display custom message across the initial transcript render", () => {
+	it("renders a supplied runtime snapshot without opening or reconstructing a view journal", async () => {
+		const { ctx, session: current, copiesOf } = createInteractiveTranscript();
+		const context = current.buildTranscriptSessionContext();
+		context.messages = [{ role: "user", content: "REMOTE_OWNER_SCREEN_🐈", timestamp: 1 }];
+		const snapshot = {
+			sessionId: current.sessionId,
+			context,
+			streamMessage: null,
+			pendingToolCallIds: [],
+			isStreaming: false,
+			entryCount: 1,
+			compactionCount: 0,
+		};
+		const helpers = new UiHelpers(ctx, { capture: async () => structuredClone(snapshot) });
+		using rebuild = spyOn(current, "buildTranscriptSessionContext").mockImplementation(() => {
+			throw new Error("frontend reconstructed the runtime transcript");
+		});
+		using journal = spyOn(current.sessionManager, "getEntries").mockImplementation(() => {
+			throw new Error("frontend read its local journal instead of the owner snapshot");
+		});
+		await helpers.renderInitialMessages();
+		expect(copiesOf("REMOTE_OWNER_SCREEN_🐈")).toBe(1);
+		expect(rebuild).not.toHaveBeenCalled();
+		expect(journal).not.toHaveBeenCalled();
+	});
+
+	it("paints an external idle restart without input and preserves the partial draft for its successor", async () => {
+		const { ctx, session: current, copiesOf, streamCalls } = createInteractiveTranscript(true);
+		await ctx.renderInitialMessages({ preserveExistingChat: true });
+		const draft = "unfinished question — ещё печатаю";
+		ctx.editor.setText(draft);
+		const identity = { instanceId: "idle-instance", sessionId: current.sessionManager.getSessionId(), generation: 0 };
+		const restarted = Promise.withResolvers<void>();
+		let restarts = 0;
+		let queuedCopiesBeforeRestart = 0;
+		const controller = createRestartQueueController({
+			session: current,
+			identity: () => identity,
+			restart: async () => {
+				restarts++;
+				queuedCopiesBeforeRestart = copiesOf("Restart queued");
+				await current.sessionManager.saveDraft(ctx.editor.getText());
+				restarted.resolve();
+			},
+		});
+		try {
+			const accepted = await controller.handle({ identity, op: "request", requestId: "external-idle" });
+			expect(accepted.request?.state).toBe("queued");
+			// No editor key, submission or model turn occurs between the external request and restart.
+			await restarted.promise;
+			expect(restarts).toBe(1);
+			expect(queuedCopiesBeforeRestart).toBe(1);
+			expect(ctx.editor.getText()).toBe(draft);
+			expect(streamCalls()).toBe(0);
+			await controller.handle({ identity, op: "request", requestId: "external-idle" });
+			expect(restarts).toBe(1);
+			const file = current.sessionManager.getSessionFile();
+			if (!file) throw new Error("Expected durable checkpoint");
+			await current.dispose();
+			session = undefined;
+			const successor = await SessionManager.open(file, tempDir.path(), undefined, { suppressBreadcrumb: true });
+			try {
+				const editor = new CustomEditor(getEditorTheme());
+				editor.setText((await successor.consumeDraft()) ?? "");
+				expect(editor.getText()).toBe(draft);
+				expect(await successor.consumeDraft()).toBeNull();
+				expect(
+					successor.getEntries().filter(entry => entry.type === "message" && entry.message.role === "user"),
+				).toHaveLength(0);
+			} finally {
+				await successor.close();
+			}
+		} finally {
+			controller.dispose();
+		}
+	});
+
 	it("appears exactly once after the preserved-chat replay when sent before the initial render", async () => {
 		const { ctx, sendIdleDisplay, copiesOf } = createInteractiveTranscript();
 

@@ -419,6 +419,14 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	beforeModelCall?: AgentBeforeModelCall;
 
 	/**
+	 * Whether any installed `beforeModelCall` gate can currently stop a call. A run that is
+	 * already aborted skips its provider call when a gate exists, so a gate that is installed
+	 * but dormant reports `false` here and the aborted turn is still closed by the provider's
+	 * own aborted message. Absent means the gate is always active.
+	 */
+	beforeModelCallActive?: () => boolean;
+
+	/**
 	 * Optional transform applied to tool call arguments before execution.
 	 * Use for deobfuscating secrets or rewriting arguments.
 	 */

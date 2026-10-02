@@ -2229,6 +2229,62 @@ func (v *QueuedMessagesState) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type CustomPromptMessage struct {
+	CustomType  string                          `json:"customType"`
+	Content     MessageContent                  `json:"content"`
+	Display     bool                            `json:"display"`
+	Details     json.RawMessage                 `json:"details,omitempty"`
+	Attribution *CustomPromptMessageAttribution `json:"attribution,omitempty"`
+	// Extra holds undeclared keys and declared keys whose value did not decode (that field stays zero).
+	// Encoding writes them back, over a declared field with the same key.
+	Extra map[string]json.RawMessage `json:"-"`
+}
+
+func (v *CustomPromptMessage) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "CustomPromptMessage", v.decodeFrom)
+}
+
+func (v *CustomPromptMessage) decodeFrom(raw map[string]json.RawMessage) error {
+	var out CustomPromptMessage
+	d := fieldDecoder{raw: raw, owner: "CustomPromptMessage", open: true}
+	d.required("customType", &out.CustomType)
+	d.required("content", &out.Content)
+	d.required("display", &out.Display)
+	d.optional("details", &out.Details)
+	d.optional("attribution", &out.Attribution)
+	out.Extra = d.rest()
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v CustomPromptMessage) MarshalJSON() ([]byte, error) {
+	type plain CustomPromptMessage
+	return encodeObject(plain(v), "", v.Extra)
+}
+
+type CustomPromptMessageAttribution string
+
+const (
+	CustomPromptMessageAttributionUser  CustomPromptMessageAttribution = "user"
+	CustomPromptMessageAttributionAgent CustomPromptMessageAttribution = "agent"
+)
+
+func (v *CustomPromptMessageAttribution) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "CustomPromptMessageAttribution")
+	if err != nil {
+		return err
+	}
+	switch value := CustomPromptMessageAttribution(s); value {
+	case CustomPromptMessageAttributionUser, CustomPromptMessageAttributionAgent:
+		*v = value
+		return nil
+	}
+	return unknownValue("CustomPromptMessageAttribution", s)
+}
+
 type ToolDescriptor struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
@@ -2499,20 +2555,83 @@ func (v *UsageLimitState) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type InteractiveViewOptions struct {
+	CollapseCompactedHistory *bool `json:"collapseCompactedHistory,omitempty"`
+	// Extra holds undeclared keys and declared keys whose value did not decode (that field stays zero).
+	// Encoding writes them back, over a declared field with the same key.
+	Extra map[string]json.RawMessage `json:"-"`
+}
+
+func (v *InteractiveViewOptions) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "InteractiveViewOptions", v.decodeFrom)
+}
+
+func (v *InteractiveViewOptions) decodeFrom(raw map[string]json.RawMessage) error {
+	var out InteractiveViewOptions
+	d := fieldDecoder{raw: raw, owner: "InteractiveViewOptions", open: true}
+	d.optional("collapseCompactedHistory", &out.CollapseCompactedHistory)
+	out.Extra = d.rest()
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v InteractiveViewOptions) MarshalJSON() ([]byte, error) {
+	type plain InteractiveViewOptions
+	return encodeObject(plain(v), "", v.Extra)
+}
+
+type InteractiveViewSnapshot struct {
+	SessionID          string                     `json:"sessionId"`
+	Context            map[string]json.RawMessage `json:"context"`
+	StreamMessage      *AgentMessage              `json:"streamMessage"`
+	PendingToolCallIds []string                   `json:"pendingToolCallIds"`
+	IsStreaming        bool                       `json:"isStreaming"`
+	EntryCount         float64                    `json:"entryCount"`
+	CompactionCount    float64                    `json:"compactionCount"`
+	SessionFile        *string                    `json:"sessionFile,omitempty"`
+}
+
+func (v *InteractiveViewSnapshot) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "InteractiveViewSnapshot", v.decodeFrom)
+}
+
+func (v *InteractiveViewSnapshot) decodeFrom(raw map[string]json.RawMessage) error {
+	var out InteractiveViewSnapshot
+	d := fieldDecoder{raw: raw, owner: "InteractiveViewSnapshot"}
+	d.required("sessionId", &out.SessionID)
+	d.required("context", &out.Context)
+	d.nullable("streamMessage", &out.StreamMessage)
+	d.required("pendingToolCallIds", &out.PendingToolCallIds)
+	d.required("isStreaming", &out.IsStreaming)
+	d.required("entryCount", &out.EntryCount)
+	d.required("compactionCount", &out.CompactionCount)
+	d.optional("sessionFile", &out.SessionFile)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SessionState struct {
-	SessionID             string         `json:"sessionId"`
-	Model                 *ModelInfo     `json:"model,omitempty"`
-	ThinkingLevel         *ThinkingLevel `json:"thinkingLevel,omitempty"`
-	IsStreaming           bool           `json:"isStreaming"`
-	IsCompacting          bool           `json:"isCompacting"`
-	SteeringMode          QueueMode      `json:"steeringMode"`
-	FollowUpMode          QueueMode      `json:"followUpMode"`
-	InterruptMode         InterruptMode  `json:"interruptMode"`
-	SessionFile           *string        `json:"sessionFile,omitempty"`
-	SessionName           *string        `json:"sessionName,omitempty"`
-	AutoCompactionEnabled bool           `json:"autoCompactionEnabled"`
-	FastModeEnabled       bool           `json:"fastModeEnabled"`
-	FastModeActive        bool           `json:"fastModeActive"`
+	SessionID             string                   `json:"sessionId"`
+	View                  *InteractiveViewSnapshot `json:"view,omitempty"`
+	Model                 *ModelInfo               `json:"model,omitempty"`
+	ThinkingLevel         *ThinkingLevel           `json:"thinkingLevel,omitempty"`
+	IsStreaming           bool                     `json:"isStreaming"`
+	IsCompacting          bool                     `json:"isCompacting"`
+	HasPostPromptWork     bool                     `json:"hasPostPromptWork"`
+	SteeringMode          QueueMode                `json:"steeringMode"`
+	FollowUpMode          QueueMode                `json:"followUpMode"`
+	InterruptMode         InterruptMode            `json:"interruptMode"`
+	SessionFile           *string                  `json:"sessionFile,omitempty"`
+	SessionName           *string                  `json:"sessionName,omitempty"`
+	AutoCompactionEnabled bool                     `json:"autoCompactionEnabled"`
+	FastModeEnabled       bool                     `json:"fastModeEnabled"`
+	FastModeActive        bool                     `json:"fastModeActive"`
 	// `/slow` applies to the active model.
 	SlowModeSupported bool `json:"slowModeSupported"`
 	// `/slow` is on for the active model; always `false` when `slowModeSupported` is `false`.
@@ -2546,10 +2665,12 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	var out SessionState
 	d := fieldDecoder{raw: raw, owner: "SessionState"}
 	d.required("sessionId", &out.SessionID)
+	d.optional("view", &out.View)
 	d.optional("model", &out.Model)
 	d.optional("thinkingLevel", &out.ThinkingLevel)
 	d.defaulted("isStreaming", &out.IsStreaming, `false`)
 	d.defaulted("isCompacting", &out.IsCompacting, `false`)
+	d.defaulted("hasPostPromptWork", &out.HasPostPromptWork, `false`)
 	d.defaulted("steeringMode", &out.SteeringMode, `"one-at-a-time"`)
 	d.defaulted("followUpMode", &out.FollowUpMode, `"one-at-a-time"`)
 	d.defaulted("interruptMode", &out.InterruptMode, `"immediate"`)
@@ -7095,6 +7216,25 @@ func (v *NegotiateProtocolResult) decodeFrom(raw map[string]json.RawMessage) err
 	return nil
 }
 
+type ConsumeDraftResult struct {
+	Text *string `json:"text"`
+}
+
+func (v *ConsumeDraftResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ConsumeDraftResult", v.decodeFrom)
+}
+
+func (v *ConsumeDraftResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ConsumeDraftResult
+	d := fieldDecoder{raw: raw, owner: "ConsumeDraftResult"}
+	d.nullable("text", &out.Text)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SetSlowModeResult struct {
 	Enabled bool `json:"enabled"`
 }
@@ -7699,6 +7839,17 @@ func (c Commands) Prompt(ctx context.Context, p PromptCommand) (PromptAck, error
 	return out, err
 }
 
+// PromptCustomCommand holds the parameters of "prompt_custom".
+type PromptCustomCommand struct {
+	Message CustomPromptMessage `json:"message"`
+}
+
+// PromptCustom sends "prompt_custom": Submit an attributed custom message through the owner admission pipeline.
+// Its work completes later with a prompt_result frame carrying the request id (see WithRequestID).
+func (c Commands) PromptCustom(ctx context.Context, p PromptCustomCommand) error {
+	return c.call(ctx, "prompt_custom", p, 0, nil)
+}
+
 // SteerCommand holds the parameters of "steer".
 type SteerCommand struct {
 	Message string `json:"message"`
@@ -7799,10 +7950,47 @@ func (c Commands) OpenSession(ctx context.Context, p OpenSessionCommand) (OpenSe
 	return out, err
 }
 
-// GetState sends "get_state": Snapshot the session state.
-func (c Commands) GetState(ctx context.Context) (SessionState, error) {
+// BeginDispose sends "begin_dispose": Stop admitting new owner work before explicit shutdown.
+func (c Commands) BeginDispose(ctx context.Context) error {
+	return c.call(ctx, "begin_dispose", nil, 0, nil)
+}
+
+// DisposeSession sends "dispose_session": Dispose the runtime owner; view detachment does not call this.
+func (c Commands) DisposeSession(ctx context.Context) error {
+	return c.call(ctx, "dispose_session", nil, 0, nil)
+}
+
+// CheckpointSession sends "checkpoint_session": Close and seal the owner journal after restart admission.
+func (c Commands) CheckpointSession(ctx context.Context) error {
+	return c.call(ctx, "checkpoint_session", nil, 0, nil)
+}
+
+// SaveDraftCommand holds the parameters of "save_draft".
+type SaveDraftCommand struct {
+	Text string `json:"text"`
+}
+
+// SaveDraft sends "save_draft": Persist unsent editor text with the runtime session writer.
+func (c Commands) SaveDraft(ctx context.Context, p SaveDraftCommand) error {
+	return c.call(ctx, "save_draft", p, 0, nil)
+}
+
+// ConsumeDraft sends "consume_draft": Restore and remove the unsent editor draft once.
+func (c Commands) ConsumeDraft(ctx context.Context) (*string, error) {
+	var out ConsumeDraftResult
+	err := c.call(ctx, "consume_draft", nil, 0, &out)
+	return out.Text, err
+}
+
+// GetStateCommand holds the parameters of "get_state".
+type GetStateCommand struct {
+	View *InteractiveViewOptions `json:"view,omitempty"`
+}
+
+// GetState sends "get_state": Snapshot the session state, optionally including presentation without opening a view writer.
+func (c Commands) GetState(ctx context.Context, p GetStateCommand) (SessionState, error) {
 	var out SessionState
-	err := c.call(ctx, "get_state", nil, 0, &out)
+	err := c.call(ctx, "get_state", p, 0, &out)
 	return out, err
 }
 
