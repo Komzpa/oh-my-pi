@@ -504,6 +504,9 @@ async function runExtensionFactory(
 export async function importExtensionModule(extensionPath: string, cwd: string): Promise<PreparedExtension> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
 	try {
+		const sourceHash = new Bun.CryptoHasher("sha256")
+			.update(await Bun.file(resolvedPath).arrayBuffer())
+			.digest("hex");
 		const module = (await withHostGuard(() => loadLegacyPiModule(resolvedPath))) as LoadedExtensionModule;
 		const factory = getExtensionFactory(module);
 
@@ -516,7 +519,7 @@ export async function importExtensionModule(extensionPath: string, cwd: string):
 			};
 		}
 
-		return { path: extensionPath, factory, resolvedPath, error: null };
+		return { path: extensionPath, factory, resolvedPath, sourceHash, error: null };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		return { path: extensionPath, factory: null, resolvedPath, error: `Failed to load extension: ${message}` };
@@ -536,6 +539,7 @@ async function bindExtension(
 	}
 	try {
 		const extension = createExtension(extensionPath, imported.resolvedPath);
+		extension.sourceHash = imported.sourceHash;
 		const api = new ConcreteExtensionAPI(extension, runtime, cwd, eventBus);
 		await withHostGuard(() => runExtensionFactory(factory, api, runtime));
 

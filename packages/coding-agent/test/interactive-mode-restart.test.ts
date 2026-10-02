@@ -9,6 +9,9 @@ import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mod
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import type { ExtensionAskDialogResult, ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { cfgGoalContinuationModes } from "@oh-my-pi/pi-coding-agent/goals/settings";
+import type { SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
 import * as natives from "@oh-my-pi/pi-natives";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
@@ -19,6 +22,7 @@ describe("InteractiveMode restart", () => {
 	let sessionManager: SessionManager;
 	let session: AgentSession | undefined;
 	let originalArgv: string[];
+	let lastRestartErrors: string[] = [];
 
 	beforeAll(() => initTheme());
 	beforeEach(async () => {
@@ -41,7 +45,13 @@ describe("InteractiveMode restart", () => {
 		resetSettingsForTest();
 	});
 
-	async function restart(argv: string[]): Promise<string[]> {
+	/**
+	 * Restart is queue-based: `restart()` files a request that the controller bound by
+	 * `init()` executes once the session is idle. Drive the real queue and stop only at
+	 * the `process.execve` replacement boundary; teardown and argv production run for real.
+	 * Returns `undefined` when no successor was exec'd; `lastRestartErrors` then holds the reasons shown.
+	 */
+	async function restart(argv: string[]): Promise<string[] | undefined> {
 		const modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("expected bundled model");
@@ -55,16 +65,24 @@ describe("InteractiveMode restart", () => {
 		mode.ui.requestRender = () => {};
 		mode.ui.terminal.drainInput = async () => {};
 		process.argv = [originalArgv[0], originalArgv[1], ...argv];
-		// Stop only at the process replacement boundary; teardown and argv production run for real.
-		const exec = vi.spyOn(natives, "execReplace").mockImplementation(() => undefined as never);
-		const spawn = vi.spyOn(Bun, "spawn").mockReturnValue({ exited: Promise.resolve(0) } as never);
+		const executed = Promise.withResolvers<string[]>();
+		vi.spyOn(process, "execve").mockImplementation(((_file: string, args: string[]) => {
+			executed.resolve(args);
+			// Stand in for a successful exec, which never returns to the caller.
+			throw new Error("execve replaced the process");
+		}) as never);
 		vi.spyOn(postmortem, "cleanup").mockResolvedValue();
 		vi.spyOn(postmortem, "drainStdout").mockResolvedValue();
 		vi.spyOn(postmortem, "quit").mockResolvedValue();
+		const showError = vi.spyOn(mode, "showError");
+		await mode.init();
 		await mode.restart();
-		const command = process.platform === "win32" ? spawn.mock.calls[0]?.[0] : exec.mock.calls[0]?.[0];
-		if (!Array.isArray(command)) throw new Error("expected replacement command");
-		return command;
+		const outcome = await Promise.race([executed.promise, Bun.sleep(5_000).then(() => undefined)]);
+		if (outcome === undefined) {
+			// A refused restart reports the reason to the user instead of exiting.
+			lastRestartErrors = showError.mock.calls.map(call => String(call[0]));
+		}
+		return outcome;
 	}
 
 	it("resumes an explicitly opened persona journal without rediscovering its ID", async () => {
@@ -108,6 +126,7 @@ describe("InteractiveMode restart", () => {
 			"openai-codex/gpt-6.1-sol:high",
 			"initial request",
 		]);
+		if (!command) throw new Error("expected replacement command");
 		const parsed = parseArgs(command.slice(command.indexOf("--model")));
 		expect(parsed.model).toBe("openai-codex/gpt-6.1-sol:high");
 		expect(parsed.messages).toEqual([]);
@@ -116,7 +135,11 @@ describe("InteractiveMode restart", () => {
 		try {
 			expect(resumed.getSessionFile()).toBe(file);
 			expect(resumed.getSessionId()).toBe(id);
-			expect(resumed.buildSessionContext().messages).toEqual(transcript);
+			// The journal resumes intact; the only addition is the restart request's own queue notice.
+			expect(resumed.buildSessionContext().messages).toEqual([
+				...transcript,
+				expect.objectContaining({ role: "custom", customType: "restart-queued" }),
+			]);
 		} finally {
 			await resumed.close();
 		}
@@ -132,6 +155,7 @@ describe("InteractiveMode restart", () => {
 		if (!file) throw new Error("expected persisted journal");
 		const id = sessionManager.getSessionId();
 		const command = await restart(["--model", "anthropic/claude-sonnet-4-5", `--session-dir=${relativeDir.path()}`]);
+		if (!command) throw new Error("expected replacement command");
 		const parsed = parseArgs(command.slice(command.indexOf("--model")));
 		const resumed = await createSessionManager(parsed, tempDir.path(), Settings.isolated());
 		if (!resumed) throw new Error("expected resumed journal");
@@ -140,20 +164,124 @@ describe("InteractiveMode restart", () => {
 			expect(resumed.getSessionId()).toBe(id);
 			expect(resumed.buildSessionContext().messages).toEqual([
 				{ role: "user", content: "saved request", timestamp: 1 },
+				expect.objectContaining({ role: "custom", customType: "restart-queued" }),
 			]);
 		} finally {
 			await resumed.close();
 		}
 	});
 
-	it("does not resume a journal that has never materialized", async () => {
+	it("materializes a never-written journal with the restart notice and resumes that exact file", async () => {
 		const file = sessionManager.getSessionFile();
-		const command = await restart(["--model", "anthropic/claude-sonnet-4-5", "initial request"]);
-		const parsed = parseArgs(command.slice(command.indexOf("--model")));
-		expect(parsed.resume).toBeUndefined();
-		expect(parsed.messages).toEqual([]);
-		expect(sessionManager.isSessionOnDisk()).toBe(false);
 		if (!file) throw new Error("expected allocated journal path");
 		expect(await Bun.file(file).exists()).toBe(false);
+		const command = await restart(["--model", "anthropic/claude-sonnet-4-5", "initial request"]);
+		if (!command) throw new Error(`expected replacement command; errors: ${lastRestartErrors.join("; ")}`);
+		const parsed = parseArgs(command.slice(command.indexOf("--model")));
+		// Queueing the restart writes its notice, so the relaunch has a durable journal to resume
+		// and does not replay the original prompt into a fresh session.
+		expect(parsed.resume).toBe(file);
+		expect(parsed.messages).toEqual([]);
+		expect(await Bun.file(file).exists()).toBe(true);
+	});
+
+	it("Escape restores the paused goal without scheduling a continuation on the next input wait", async () => {
+		const modelRegistry = new ModelRegistry(authStorage);
+		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("expected bundled model");
+		session = new AgentSession({
+			agent: new Agent({ initialState: { model, systemPrompt: ["test"], tools: [], messages: [] } }),
+			sessionManager,
+			settings: Settings.isolated(),
+			modelRegistry,
+		});
+		cfgGoalContinuationModes.set(session.settings, ["interactive"]);
+		const goal = await session.goalRuntime.createGoal({ objective: "wait for explicit user direction" });
+		const pausedGoal = await session.goalRuntime.pauseGoal();
+		if (!pausedGoal) throw new Error("expected a paused goal");
+		const askCallId = "escape-paused-goal-ask";
+		const questions = [{ id: "continue", question: "Continue?", options: [{ label: "Yes" }] }];
+		sessionManager.appendMessage({
+			role: "toolResult",
+			toolName: "ask",
+			toolCallId: askCallId,
+			content: [{ type: "text", text: "Pending question; reply in this session's chat" }],
+			details: { pending: { id: askCallId, questions } },
+			timestamp: Date.now(),
+			isError: false,
+		});
+		const requestId = "escape-goal-restart";
+		for (const state of ["queued", "draining", "checkpointed", "restarting", "completed"] as const) {
+			sessionManager.appendCustomEntry("restart_request_transition", {
+				version: 1,
+				identity: { instanceId: "old", sessionId: sessionManager.getSessionId(), generation: 0 },
+				record: {
+					version: 1,
+					requestId,
+					sessionId: sessionManager.getSessionId(),
+					state,
+					requestedAt: Date.now(),
+					updatedAt: Date.now(),
+					rootWasRunning: false,
+					goalModeBefore: { goalId: goal.goal.id },
+				},
+			});
+		}
+
+		const dialog = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
+		const opened = Promise.withResolvers<void>();
+		const ui = {
+			askDialog: () => {
+				opened.resolve();
+				return dialog.promise;
+			},
+		} as unknown as ExtensionUIContext;
+		const mode = new InteractiveMode(session, "test");
+		mode.ui.requestRender = () => {};
+		mode.ui.terminal.drainInput = async () => {};
+		const scheduledSubmission = vi.spyOn(mode, "startPendingSubmission");
+		vi.spyOn(mode, "getToolUIContext").mockReturnValue(ui);
+
+		let firstInput: SubmittedUserInput | undefined;
+		let laterInput: SubmittedUserInput | undefined;
+		let firstWait: Promise<SubmittedUserInput> | undefined;
+		let laterWait: Promise<SubmittedUserInput> | undefined;
+		try {
+			await mode.init();
+			await opened.promise;
+			expect(mode.goalModeEnabled).toBe(false);
+			firstWait = mode.getUserInput().then(input => {
+				firstInput = input;
+				return input;
+			});
+			vi.useFakeTimers();
+			dialog.resolve(undefined);
+			for (let attempt = 0; attempt < 100 && !mode.goalModeEnabled; attempt++) await Promise.resolve();
+			expect(mode.goalModeEnabled).toBe(true);
+			for (let attempt = 0; attempt < 10; attempt++) await Promise.resolve();
+			expect(session.goalRuntime.buildContinuationPrompt()).toBeDefined();
+			vi.advanceTimersByTime(900);
+			await Promise.resolve();
+			expect(scheduledSubmission).not.toHaveBeenCalled();
+			expect(firstInput).toBeUndefined();
+
+			mode.onInputCallback?.({ text: "", cancelled: true, started: false });
+			await firstWait;
+			laterWait = mode.getUserInput().then(input => {
+				laterInput = input;
+				return input;
+			});
+			vi.advanceTimersByTime(900);
+			await Promise.resolve();
+			expect(scheduledSubmission).not.toHaveBeenCalled();
+			expect(laterInput).toBeUndefined();
+		} finally {
+			dialog.resolve(undefined);
+			mode.onInputCallback?.({ text: "", cancelled: true, started: false });
+			if (firstWait) await firstWait;
+			if (laterWait) await laterWait;
+			mode.stop();
+			vi.useRealTimers();
+		}
 	});
 });

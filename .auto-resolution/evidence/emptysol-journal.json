@@ -1,0 +1,614 @@
+{
+  "counts": [
+    {
+      "hour": "2026-11-07T00",
+      "model": "claude-opus-5-5",
+      "total": 53,
+      "empty": 0
+    },
+    {
+      "hour": "2026-11-07T01",
+      "model": "claude-opus-5-5",
+      "total": 46,
+      "empty": 0
+    },
+    {
+      "hour": "2026-11-07T02",
+      "model": "claude-opus-5-5",
+      "total": 73,
+      "empty": 0
+    },
+    {
+      "hour": "2026-11-07T03",
+      "model": "claude-opus-5-5",
+      "total": 84,
+      "empty": 0
+    },
+    {
+      "hour": "2026-11-07T04",
+      "model": "claude-opus-5-5",
+      "total": 78,
+      "empty": 0
+    },
+    {
+      "hour": "2026-11-07T05",
+      "model": "claude-opus-5-5",
+      "total": 54,
+      "empty": 0
+    },
+    {
+      "hour": "2026-11-07T06",
+      "model": "claude-opus-5-5",
+      "total": 32,
+      "empty": 0
+    },
+    {
+      "hour": "2026-11-07T07",
+      "model": "claude-opus-5-5",
+      "total": 41,
+      "empty": 0
+    },
+    {
+      "hour": "2026-11-07T08",
+      "model": "claude-opus-5-5",
+      "total": 44,
+      "empty": 0
+    },
+    {
+      "hour": "2026-11-07T09",
+      "model": "claude-opus-5-5",
+      "total": 41,
+      "empty": 0
+    },
+    {
+      "hour": "2026-11-07T10",
+      "model": "claude-opus-5-5",
+      "total": 44,
+      "empty": 2
+    },
+    {
+      "hour": "2026-11-07T11",
+      "model": "claude-opus-5-5",
+      "total": 53,
+      "empty": 2
+    },
+    {
+      "hour": "2026-11-07T12",
+      "model": "claude-opus-5-5",
+      "total": 33,
+      "empty": 0
+    },
+    {
+      "hour": "2026-11-07T13",
+      "model": "claude-opus-5-5",
+      "total": 53,
+      "empty": 3
+    },
+    {
+      "hour": "2026-11-07T14",
+      "model": "claude-opus-5-5",
+      "total": 10,
+      "empty": 0
+    },
+    {
+      "hour": "2026-11-07T14",
+      "model": "gpt-6.1-sol",
+      "total": 75,
+      "empty": 39
+    },
+    {
+      "hour": "2026-11-07T15",
+      "model": "gpt-6.1-sol",
+      "total": 75,
+      "empty": 30
+    },
+    {
+      "hour": "2026-11-07T15",
+      "model": "claude-opus-5-5",
+      "total": 1,
+      "empty": 0
+    },
+    {
+      "hour": "2026-11-07T16",
+      "model": "gpt-6.1-sol",
+      "total": 25,
+      "empty": 5
+    }
+  ],
+  "samples": [
+    {
+      "line": 128783,
+      "timestamp": "2026-11-07T10:33:36.780Z",
+      "usage": {
+        "input": 2,
+        "output": 89,
+        "cacheRead": 224266,
+        "cacheWrite": 2892,
+        "totalTokens": 227249,
+        "cost": {
+          "input": 8e-06,
+          "output": 0.0017800000000000001,
+          "cacheRead": 0.0448532,
+          "cacheWrite": 0.023136,
+          "total": 0.0697772
+        },
+        "cttl": {
+          "ephemeral1h": 2892
+        }
+      },
+      "stopReason": "stop",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I'm checking the rows, and they all say WAIT, so there's nothing to act on. The user is away and there's no new information since my last message, so I'll end the turn without tools and send no message, leaving the final text empty.\n\n"
+        }
+      ],
+      "providerItems": []
+    },
+    {
+      "line": 128845,
+      "timestamp": "2026-11-07T10:37:06.452Z",
+      "usage": {
+        "input": 2,
+        "output": 18,
+        "cacheRead": 242604,
+        "cacheWrite": 5329,
+        "totalTokens": 247953,
+        "cost": {
+          "input": 8e-06,
+          "output": 0.00036,
+          "cacheRead": 0.0485208,
+          "cacheWrite": 0.042631999999999996,
+          "total": 0.0915208
+        },
+        "cttl": {
+          "ephemeral1h": 5329
+        }
+      },
+      "stopReason": "stop",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The rows all say WAIT, so the next step is to end the turn.\n\n"
+        }
+      ],
+      "providerItems": []
+    },
+    {
+      "line": 129118,
+      "timestamp": "2026-11-07T11:01:07.404Z",
+      "usage": {
+        "input": 2,
+        "output": 20,
+        "cacheRead": 306492,
+        "cacheWrite": 3805,
+        "totalTokens": 310319,
+        "cost": {
+          "input": 8e-06,
+          "output": 0.0004,
+          "cacheRead": 0.0612984,
+          "cacheWrite": 0.03044,
+          "total": 0.0921464
+        },
+        "cttl": {
+          "ephemeral1h": 3805
+        }
+      },
+      "stopReason": "stop",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The next thinking is just a short note to stay quiet and end the turn without sending a message, so I'll do that and skip any reply.\n\n"
+        }
+      ],
+      "providerItems": []
+    },
+    {
+      "line": 132941,
+      "timestamp": "2026-11-07T15:02:00.985Z",
+      "usage": {
+        "input": 14012,
+        "output": 22,
+        "cacheRead": 278272,
+        "cacheWrite": 0,
+        "totalTokens": 292306,
+        "reasoningTokens": 16,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "stopReason": "stop",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "summary": false
+        }
+      ],
+      "providerItems": [
+        {
+          "type": "reasoning",
+          "id": "rs_01fb42e65c2449b7016aef3d5898fc87d2a1b906a884ddc047",
+          "summary": [],
+          "content": []
+        },
+        {
+          "type": "message",
+          "id": "msg_01fb42e65c2449b7016aef3d58c79c87d29f86f1efdf3a7806",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "",
+              "annotations": [],
+              "logprobs": []
+            }
+          ],
+          "phase": "final_answer"
+        }
+      ]
+    },
+    {
+      "line": 132951,
+      "timestamp": "2026-11-07T15:02:22.762Z",
+      "usage": {
+        "input": 4236,
+        "output": 33,
+        "cacheRead": 289920,
+        "cacheWrite": 0,
+        "totalTokens": 294189,
+        "reasoningTokens": 27,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "stopReason": "stop",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "**Waiting for queued work**\n\n",
+          "summary": true
+        }
+      ],
+      "providerItems": [
+        {
+          "type": "reasoning",
+          "id": "rs_0e50350b2e027c7a016aef3d6cb79087d2b30348187ac75527",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "**Waiting for queued work**"
+            }
+          ],
+          "content": []
+        },
+        {
+          "type": "message",
+          "id": "msg_0e50350b2e027c7a016aef3d6d294887d2bdb1c5da52414037",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "",
+              "annotations": [],
+              "logprobs": []
+            }
+          ],
+          "phase": "final_answer"
+        }
+      ]
+    },
+    {
+      "line": 132961,
+      "timestamp": "2026-11-07T15:02:40.976Z",
+      "usage": {
+        "input": 23868,
+        "output": 19,
+        "cacheRead": 272384,
+        "cacheWrite": 0,
+        "totalTokens": 296271,
+        "reasoningTokens": 13,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "stopReason": "stop",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "**Still queued**\n\n",
+          "summary": true
+        }
+      ],
+      "providerItems": [
+        {
+          "type": "reasoning",
+          "id": "rs_04f4071da72e3000016aef3d83f1d487d299ba8565d964a317",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "**Still queued**"
+            }
+          ],
+          "content": []
+        },
+        {
+          "type": "message",
+          "id": "msg_04f4071da72e3000016aef3d8420c087d2a1d347d98657b6d5",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "",
+              "annotations": [],
+              "logprobs": []
+            }
+          ],
+          "phase": "final_answer"
+        }
+      ]
+    },
+    {
+      "line": 132968,
+      "timestamp": "2026-11-07T15:03:00.983Z",
+      "usage": {
+        "input": 21900,
+        "output": 23,
+        "cacheRead": 276224,
+        "cacheWrite": 0,
+        "totalTokens": 298147,
+        "reasoningTokens": 17,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "stopReason": "stop",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "**Waiting for queued restart**\n\n",
+          "summary": true
+        }
+      ],
+      "providerItems": [
+        {
+          "type": "reasoning",
+          "id": "rs_0fecc949ade13bd5016aef3d94be1887d2b0d6ea1e37236036",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "**Waiting for queued restart**"
+            }
+          ],
+          "content": []
+        },
+        {
+          "type": "message",
+          "id": "msg_0fecc949ade13bd5016aef3d94fc4c87d2b938d4d3b052ad0c",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "",
+              "annotations": [],
+              "logprobs": []
+            }
+          ],
+          "phase": "final_answer"
+        }
+      ]
+    },
+    {
+      "line": 132978,
+      "timestamp": "2026-11-07T15:03:21.034Z",
+      "usage": {
+        "input": 299996,
+        "output": 22,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 300018,
+        "reasoningTokens": 16,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "stopReason": "stop",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "**Restart remains queued**\n\n",
+          "summary": true
+        }
+      ],
+      "providerItems": [
+        {
+          "type": "reasoning",
+          "id": "rs_0eaab78eacc9ba32016aef3da9f83487d29c970bec44274364",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "**Restart remains queued**"
+            }
+          ],
+          "content": []
+        },
+        {
+          "type": "message",
+          "id": "msg_0eaab78eacc9ba32016aef3daa5ef487d2acab869fc9bf0e3c",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "",
+              "annotations": [],
+              "logprobs": []
+            }
+          ],
+          "phase": "final_answer"
+        }
+      ]
+    },
+    {
+      "line": 132987,
+      "timestamp": "2026-11-07T15:03:40.943Z",
+      "usage": {
+        "input": 257676,
+        "output": 77,
+        "cacheRead": 44416,
+        "cacheWrite": 0,
+        "totalTokens": 302169,
+        "reasoningTokens": 71,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "stopReason": "stop",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "summary": false
+        }
+      ],
+      "providerItems": [
+        {
+          "type": "reasoning",
+          "id": "rs_05d5eff67eb34b20016aef3dbee6a887d28dda808f8489a837",
+          "summary": [],
+          "content": []
+        },
+        {
+          "type": "message",
+          "id": "msg_05d5eff67eb34b20016aef3dc12c0887d281735660a9ba389a",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "",
+              "annotations": [],
+              "logprobs": []
+            }
+          ],
+          "phase": "final_answer"
+        }
+      ]
+    },
+    {
+      "line": 134152,
+      "timestamp": "2026-11-07T16:06:19.428Z",
+      "usage": {
+        "input": 107515,
+        "output": 4,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 107519,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "stopReason": "stop",
+      "content": [],
+      "providerItems": [
+        {
+          "type": "message",
+          "id": "msg_037777978ffada08016aef4bfc273487d29753a41882b9d59c",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "",
+              "annotations": [],
+              "logprobs": []
+            }
+          ],
+          "phase": "final_answer"
+        }
+      ]
+    },
+    {
+      "line": 134173,
+      "timestamp": "2026-11-07T16:09:09.425Z",
+      "usage": {
+        "input": 68799,
+        "output": 21,
+        "cacheRead": 40064,
+        "cacheWrite": 0,
+        "totalTokens": 108884,
+        "reasoningTokens": 15,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "stopReason": "stop",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "summary": false
+        }
+      ],
+      "providerItems": [
+        {
+          "type": "reasoning",
+          "id": "rs_0f23dd26fa8af2f9016aef4c7f39ac87d2b0400ded8994c2ef",
+          "summary": [],
+          "content": []
+        },
+        {
+          "type": "message",
+          "id": "msg_0f23dd26fa8af2f9016aef4c7f6b6c87d2856b11d9c88509f2",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "",
+              "annotations": [],
+              "logprobs": []
+            }
+          ],
+          "phase": "final_answer"
+        }
+      ]
+    }
+  ]
+}

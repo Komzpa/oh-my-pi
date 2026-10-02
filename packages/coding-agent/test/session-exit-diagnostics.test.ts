@@ -11,11 +11,14 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import {
 	collectPendingToolCalls,
+	collectSessionPendingToolCalls,
 	createInterruptedToolResults,
 	createInterruptedTurnAbortMessage,
+	createSessionInterruptedTurnAbortMessage,
 	describePendingToolCalls,
 	hasRestorableTurn,
 	SESSION_EXIT_CUSTOM_TYPE,
+	type SessionExitData,
 	TOOL_EXECUTION_START_CUSTOM_TYPE,
 	type ToolExecutionStartData,
 } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
@@ -128,17 +131,18 @@ describe("session exit diagnostics", () => {
 			.find(entry => entry.type === "custom" && entry.customType === SESSION_EXIT_CUSTOM_TYPE);
 		await reopened.close();
 		if (exitEntry?.type !== "custom") throw new Error("Expected session exit marker");
-		expect(exitEntry.data).toMatchObject({
-			reason: "dispose",
-			kind: "normal",
-			pendingToolCalls: [
-				{
-					toolCallId: "toolu_repro",
-					toolName: "bash",
-					args: { command: "bun run check:ts" },
-				},
-			],
-		});
+		const exit = exitEntry.data as SessionExitData;
+		expect(exit.reason).toBe("dispose");
+		expect(exit.kind).toBe("normal");
+		expect(exit.pendingToolCalls?.length).toBe(1);
+		const exitPending = exit.pendingToolCalls?.[0];
+		if (!exitPending) throw new Error("Expected pending tool diagnostic");
+		expect(exitPending.toolCallId).toBe("toolu_repro");
+		expect(exitPending.toolName).toBe("bash");
+		if (exitPending.args === null || typeof exitPending.args !== "object" || !("command" in exitPending.args)) {
+			throw new Error("Expected pending command arguments");
+		}
+		expect(exitPending.args.command).toBe("bun run check:ts");
 	});
 
 	it("signal teardown persists the postmortem reason, not the generic dispose", async () => {
@@ -559,4 +563,71 @@ describe("session exit diagnostics", () => {
 		expect(createInterruptedTurnAbortMessage(completedTurn.getBranch())).toBeUndefined();
 		expect(createInterruptedTurnAbortMessage(supersededExit.getBranch())).toBeUndefined();
 	});
+});
+
+describe("selective interrupted-turn recovery", () => {
+	it.each(["pending", "completed", "superseded", "marker-only", "malformed", "branch"])(
+		"preserves pending-call diagnostics for %s tails",
+		kind => {
+			const manager = SessionManager.inMemory();
+			if (kind !== "marker-only") manager.appendMessage(pendingAssistant);
+			const assistantId = manager.getLeafId();
+			manager.appendCustomEntry(TOOL_EXECUTION_START_CUSTOM_TYPE, {
+				toolCallId: "toolu_repro",
+				toolName: "bash",
+				startedAt: "2026-10-16T00:00:00Z",
+				args: { command: "echo test" },
+				intent: "test",
+			});
+			if (kind === "completed" || kind === "branch")
+				manager.appendMessage({
+					role: "toolResult",
+					toolCallId: "toolu_repro",
+					toolName: "bash",
+					content: [{ type: "text", text: "ok" }],
+					isError: false,
+					timestamp: 2,
+				});
+			if (kind === "superseded") manager.appendMessage({ ...pendingAssistant, content: [], stopReason: "stop" });
+			if (kind === "malformed") manager.appendCustomEntry(TOOL_EXECUTION_START_CUSTOM_TYPE, { toolName: 3 });
+			if (kind === "branch" && assistantId) manager.branch(assistantId);
+			manager.appendMessage({ role: "user", content: "continue", timestamp: 3 });
+			manager.appendCustomEntry("unrelated", { payload: "ignored" });
+			expect(collectSessionPendingToolCalls(manager)).toEqual(collectPendingToolCalls(manager.getBranch()));
+		},
+	);
+	it.each(["pending", "normal", "stale", "malformed", "aborted", "first-user", "terminal"])(
+		"preserves full-history recovery for %s tails",
+		kind => {
+			const manager = SessionManager.inMemory();
+			if (kind !== "first-user") {
+				manager.appendMessage({
+					...pendingAssistant,
+					...(kind === "aborted" ? { stopReason: "aborted" as const } : {}),
+					...(kind === "terminal" ? { content: [], stopReason: "stop" as const } : {}),
+				});
+			}
+			if (kind === "first-user") manager.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+			if (kind === "aborted")
+				manager.appendMessage({
+					role: "toolResult",
+					toolCallId: "toolu_repro",
+					toolName: "bash",
+					content: [{ type: "text", text: "interrupted" }],
+					isError: true,
+					timestamp: 2,
+				});
+			manager.appendCustomEntry(SESSION_EXIT_CUSTOM_TYPE, {
+				reason: "test",
+				kind: kind === "normal" ? "normal" : "process_exit",
+				recordedAt: "2026-07-11T02:20:08.800Z",
+			});
+			if (kind === "stale") manager.appendMessage({ role: "user", content: "new turn", timestamp: 3 });
+			if (kind === "malformed") manager.appendCustomEntry(SESSION_EXIT_CUSTOM_TYPE, { kind: "invalid" });
+			manager.appendCustomEntry("unrelated", { payload: "ignored" });
+			expect(createSessionInterruptedTurnAbortMessage(manager, pendingAssistant)).toEqual(
+				createInterruptedTurnAbortMessage(manager.getBranch(), pendingAssistant),
+			);
+		},
+	);
 });

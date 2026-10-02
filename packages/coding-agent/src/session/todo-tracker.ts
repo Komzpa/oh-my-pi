@@ -21,6 +21,7 @@ import type { SessionManager } from "./session-manager";
 
 import { cfgTaskBatch, cfgTaskEager } from "../task/settings";
 import { cfgTodoEager, cfgTodoEnabled, cfgTodoReminders, cfgTodoRemindersMax } from "../tools/settings";
+import { isTodoStateEntryMetadata } from "../tools/todo";
 
 const MID_RUN_NUDGE_MUTATION_THRESHOLD = 12;
 const MID_RUN_NUDGE_MAX_PER_CYCLE = 2;
