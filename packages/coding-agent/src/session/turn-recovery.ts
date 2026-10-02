@@ -2111,11 +2111,15 @@ export class TurnRecovery {
 		currentModel: Model,
 		signal: AbortSignal,
 	): Promise<{ role: string; selector: RetryFallbackSelector; apiKey: string } | undefined> {
+		const currentProviderDepleted = this.#host.modelRegistry.authStorage.health.isProviderDepleted(
+			currentModel.provider,
+		);
 		const stale = () => signal.aborted || !modelsAreEqual(this.#host.model(), currentModel);
 		const ceiling = this.#host.thinkingLevelCeiling();
 		for (const role of this.retryFallbackChainKeys(currentSelector, currentModel)) {
 			for (const candidate of this.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
 				if (this.isRetryFallbackSelectorSuppressed(candidate)) continue;
+				if (currentProviderDepleted && candidate.provider === currentModel.provider) continue;
 				const resolved = resolveModelOverride([candidate.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidateModel = resolved.model ?? this.#host.modelRegistry.find(candidate.provider, candidate.id);
 				if (!candidateModel || !this.#host.modelRegistry.hasConfiguredAuth(candidateModel)) continue;
@@ -2336,6 +2340,9 @@ export class TurnRecovery {
 			!!sourceModel &&
 			sourceModel.provider === latestAssistant.provider &&
 			sourceModel.id === latestAssistant.model;
+		// The active model is the failed request's provider, even when an error wrapper rewrites message.provider.
+		const failedProvider = this.#host.model()?.provider ?? failedMessage.provider;
+		const failedProviderIsDepleted = this.#host.modelRegistry.authStorage.health.isProviderDepleted(failedProvider);
 		for (const role of this.retryFallbackChainKeys(currentSelector)) {
 			for (const selector of this.findRetryFallbackCandidates(role, currentSelector, undefined, options)) {
 				if (this.isRetryFallbackSelectorSuppressed(selector)) continue;
@@ -2346,6 +2353,7 @@ export class TurnRecovery {
 				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 				if (!candidate) continue;
+				if (failedProviderIsDepleted && candidate.provider === failedProvider) continue;
 				// A candidate that would leave the request exactly as it is — same
 				// routed model, same effective thinking level — is not a switch, and
 				// must never be applied: `findRetryFallbackCandidates` excludes the

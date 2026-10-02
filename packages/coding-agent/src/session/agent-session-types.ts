@@ -22,6 +22,7 @@ import type {
 import type { postmortem } from "@oh-my-pi/pi-utils";
 import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import type { AsyncJob, AsyncJobDeliveryState, AsyncJobManager, AsyncJobManagerApi } from "../async";
+import type { AgentRegistryApi } from "../registry/agent-registry";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import type { AgentDefinition } from "../task/types";
 import type { AgentRegistryApi } from "../registry/agent-registry";
@@ -372,6 +373,8 @@ export interface AgentSessionConfig {
 	asyncJobManager?: AsyncJobManagerApi;
 	/** Registry identity used for IRC routing. */
 	agentId?: string;
+	/** Registry holding this session and its live subagents. */
+	agentRegistry?: AgentRegistryApi;
 	/** Whether this is a top-level or subagent session. */
 	agentKind?: "main" | "sub";
 	/** Registry whose awaits table records this agent blocked on the user while a dialog waits for their answer. */

@@ -42,6 +42,29 @@ async function repository() {
 }
 
 describe("in-process VCS bindings", () => {
+	test("reads committer time while slow Git leaves the event loop responsive", async () => {
+		const root = await repository();
+		const repo = vcs.requireGit(root);
+		const expected = Number(await git(root, "log", "-1", "--format=%ct")) * 1000;
+		expect(await vcs.lastCommitTime(repo)).toBe(expected);
+		const bin = join(root, "bin");
+		await mkdir(bin);
+		await writeFile(join(bin, "git"), `#!${process.execPath}\nawait Bun.sleep(150);\nconsole.log('1700000000');\n`, {
+			mode: 0o755,
+		});
+		const originalPath = process.env.PATH;
+		let ticks = 0;
+		const timer = setInterval(() => ticks++, 10);
+		try {
+			process.env.PATH = `${bin}:${originalPath}`;
+			expect(await vcs.lastCommitTime(repo)).toBe(1700000000000);
+			expect(ticks).toBeGreaterThan(0);
+		} finally {
+			clearInterval(timer);
+			process.env.PATH = originalPath;
+		}
+	});
+
 	test("detects staged, unstaged, and untracked working-tree changes", async () => {
 		const root = await repository();
 		const repo = vcsGitDiscover(root)!;

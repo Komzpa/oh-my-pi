@@ -77,6 +77,23 @@ export function gitInfo(dir) {
 	return api().vcsGitRepoInfo(dir);
 }
 
+/** Read the committer time without blocking the interactive event loop. */
+export async function lastCommitTime(repo) {
+	const head = await repo.head();
+	if (!head.commit) return 0;
+	const child = Bun.spawn(["git", "log", "-1", "--format=%ct", head.commit, "--"], {
+		cwd: repo.info().repoRoot,
+		stdout: "pipe",
+		stderr: "ignore",
+		timeout: 5_000,
+		env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+	});
+	const [output, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+	const text = output.trim();
+	const seconds = Number(text);
+	return exitCode === 0 && text !== "" && Number.isFinite(seconds) ? seconds * 1000 : undefined;
+}
+
 /** Discover the Jujutsu workspace containing `dir`; `null` when absent. */
 export function jj(dir) {
 	return api().vcsJjDiscover(dir);
