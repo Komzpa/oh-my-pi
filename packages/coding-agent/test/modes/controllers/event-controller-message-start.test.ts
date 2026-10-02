@@ -1,8 +1,10 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
-import type { ImageContent, UserMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, UserMessage } from "@oh-my-pi/pi-ai";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
@@ -267,5 +269,140 @@ describe("EventController IRC expiry", () => {
 
 		expect(chatContainer.children).toHaveLength(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("EventController event-woken status replies", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		resetSettingsForTest();
+	});
+
+	function assistant(text: string): AssistantMessage {
+		return {
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+	}
+
+	async function renderTurn(
+		currentText: string,
+		userInitiated = false,
+		wakeKind: "worker" | "irc" | "notice" = "worker",
+		includePrevious = true,
+	) {
+		await Settings.init({ inMemory: true });
+		const ctx = createInteractiveModeContext();
+		const previous = assistant("Worker Alpha completed 3 tasks; commit abcdef123456 remains unchanged.");
+		ctx.session.agent.state.messages = includePrevious ? [previous] : [];
+		ctx.session.getAsyncJobSnapshot = vi.fn(() => ({
+			running: [],
+			recent: ["Alpha", "Beta"].map(agentId => ({ agentId })),
+			delivery: {},
+		})) as never;
+		const sendCustomMessage = vi.fn(async () => true);
+		ctx.session.sendCustomMessage = sendCustomMessage as never;
+		const controller = new EventController(ctx);
+		if (wakeKind === "worker") {
+			await controller.handleEvent({
+				type: "message_start",
+				message: {
+					role: "custom",
+					customType: "async-result",
+					content: "worker result received",
+					display: false,
+					attribution: "agent",
+					timestamp: Date.now(),
+				},
+			});
+		} else if (wakeKind === "irc") {
+			await controller.handleEvent({ type: "irc_message", message: createIrcMessage(Date.now()) });
+		} else {
+			await controller.handleEvent({
+				type: "notice",
+				level: "info",
+				message: "Harness update",
+				source: "harness",
+			});
+		}
+		if (userInitiated) {
+			await controller.handleEvent({ type: "message_start", message: createUserMessage("Any update?") });
+		}
+		const final = assistant(currentText);
+		await controller.handleEvent({ type: "message_start", message: final });
+		await controller.handleEvent({ type: "message_end", message: final });
+		await controller.handleEvent({ type: "agent_end", messages: [final], isTerminal: true });
+		const assistantMessages = ctx.chatContainer.children.filter(
+			component => component instanceof AssistantMessageComponent,
+		);
+		const rendered = ctx.chatContainer.children
+			.flatMap(component => component.render(100))
+			.map(line => Bun.stripANSI(line))
+			.join("\n");
+		controller.dispose();
+		return { rendered, sendCustomMessage, assistantMessages };
+	}
+
+	it("collapses normalized repeated event status and tells the chief once", async () => {
+		const setTextColorTransform = vi.spyOn(AssistantMessageComponent.prototype, "setTextColorTransform");
+		const { rendered, sendCustomMessage } = await renderTurn(
+			"Worker Beta completed 7 tasks; commit abcdef123456 remains unchanged.",
+		);
+		expect(rendered).toContain("(no change: status repeated)");
+		const colorTransform = setTextColorTransform.mock.calls[0]?.[0];
+		expect(colorTransform?.("(no change: status repeated)")).toBe(theme.fg("dim", "(no change: status repeated)"));
+		expect(rendered).not.toContain("completed 7 tasks");
+		expect(sendCustomMessage).toHaveBeenCalledTimes(1);
+	});
+
+	it("recognizes IRC and harness events as non-user wake sources", async () => {
+		for (const wakeKind of ["irc", "notice"] as const) {
+			const { rendered } = await renderTurn(
+				"Worker Beta completed 7 tasks; commit abcdef123456 remains unchanged.",
+				false,
+				wakeKind,
+			);
+			expect(rendered).toContain("(no change: status repeated)");
+		}
+	});
+
+	it("keeps a short event reply containing an alphabetic hex id", async () => {
+		const { rendered } = await renderTurn("Release deadbee.", false, "worker", false);
+		expect(rendered).toContain("Release deadbee.");
+		expect(rendered).not.toContain("(no change: status repeated)");
+	});
+	it("does not render an empty event-woken final assistant message", async () => {
+		const { assistantMessages } = await renderTurn("");
+		expect(assistantMessages).toHaveLength(0);
+	});
+
+	it("collapses short event status without history but keeps a changed commit SHA", async () => {
+		const short = await renderTurn("Nothing new.", false, "worker", false);
+		expect(short.rendered).toContain("(no change: status repeated)");
+		const changed = await renderTurn("Worker Beta completed 7 tasks; commit 0123456789ab is ready.");
+		expect(changed.rendered).toContain("0123456789ab");
+		expect(changed.rendered).not.toContain("(no change: status repeated)");
+	});
+
+	it("never collapses a user-initiated turn", async () => {
+		const { rendered, sendCustomMessage } = await renderTurn(
+			"Worker Beta completed 7 tasks; commit abcdef123456 remains unchanged.",
+			true,
+		);
+		expect(rendered).toContain("completed 7 tasks");
+		expect(sendCustomMessage).not.toHaveBeenCalled();
 	});
 });

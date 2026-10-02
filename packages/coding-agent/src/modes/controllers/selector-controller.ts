@@ -1,3 +1,4 @@
+import { selectBranchEntries } from "../../session/branch-selection";
 import { type AgentMessage, type AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Model, UsageReport } from "@oh-my-pi/pi-ai";
@@ -1302,7 +1303,10 @@ export class SelectorController {
 	}
 
 	showUserMessageSelector(): void {
-		const entries = this.ctx.sessionManager.getBranch().filter(isTranscriptEntry);
+		const entries = selectBranchEntries(
+			this.ctx.sessionManager,
+			metadata => metadata.type === "message" || metadata.type === "custom_message",
+		).filter(isTranscriptEntry);
 		if (entries.length === 0) {
 			this.ctx.showStatus("No messages to branch from");
 			return;
@@ -1434,7 +1438,10 @@ export class SelectorController {
 	}
 
 	showCopySelector(): void {
-		const entries = this.ctx.sessionManager.getBranch().filter(isTranscriptEntry);
+		const entries = selectBranchEntries(
+			this.ctx.sessionManager,
+			metadata => metadata.type === "message" || metadata.type === "custom_message",
+		).filter(isTranscriptEntry);
 		if (entries.length === 0) {
 			this.ctx.showStatus("Nothing to copy yet.");
 			return;
@@ -1733,7 +1740,7 @@ export class SelectorController {
 			getSessionSpawns: () => null,
 			getPlanModeState: () => this.ctx.session.getPlanModeState(),
 		};
-		const askTool = new AskTool(toolSession);
+		const askTool = new AskTool(toolSession, { interactiveAnswer: true });
 		const context = this.ctx.session.buildAskReanswerContext(uiContext);
 		let result: AgentToolResult<AskToolDetails>;
 		try {

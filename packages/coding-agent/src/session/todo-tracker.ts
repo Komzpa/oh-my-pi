@@ -5,8 +5,10 @@ import type { Settings } from "../config/settings";
 import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import midRunTodoNudgePrompt from "../prompts/system/mid-run-todo-nudge.md" with { type: "text" };
+import todoCompletionReminderPrompt from "../prompts/system/todo-completion-reminder.md" with { type: "text" };
+import { getTodoPlanningIssues, type TodoPlanningIssue } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries, isTodoPhase } from "../tools/todo";
-import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { SessionManager } from "./session-manager";
@@ -95,6 +97,7 @@ export class TodoTracker {
 	#reminderAwaitingProgress = false;
 	#mutationsSinceLastTouch = 0;
 	#midRunNudgeCount = 0;
+	#planningNudgeSent = false;
 
 	constructor(host: TodoTrackerHost) {
 		this.#host = host;
@@ -105,6 +108,32 @@ export class TodoTracker {
 		return this.#clonePhases(this.#phases);
 	}
 
+	/** Current whole-plan obligations, including blocked unfinished tasks. */
+	get planningIssues(): TodoPlanningIssue[] {
+		return getTodoPlanningIssues(this.#phases);
+	}
+
+	/** Whether any unfinished row still violates the planning contract. */
+	get hasPlanningDebt(): boolean {
+		return this.planningIssues.length > 0;
+	}
+
+	/** Render-ready issues for execution admission and final-reply guards. */
+	get planningRepairMessage(): string | undefined {
+		const issues = this.planningIssues;
+		if (issues.length === 0) return undefined;
+		const rows = [...new Set(issues.map(issue => issue.task))];
+		const action = `Schedule "${rows[0]!.replace(/\s+/g, " ").slice(0, 24)}" first with an estimate and dependencies${rows.length > 1 ? ` (+${rows.length - 1} more below)` : ""}.`;
+		return `${action}\n${issues.map(issue => `- ${issue.task}: ${issue.message}`).join("\n")}`;
+	}
+
+	/** Names of blocked unfinished tasks, independent of metadata validity. */
+	get blockedTasks(): string[] {
+		return this.#phases.flatMap(phase =>
+			phase.tasks.filter(task => task.status === "blocked").map(task => task.content),
+		);
+	}
+
 	/** Replaces todo phases with a defensive clone. */
 	setPhases(phases: TodoPhase[]): void {
 		this.#phases = this.#clonePhases(phases);
@@ -112,6 +141,7 @@ export class TodoTracker {
 		// bridged call — so the nudge budget re-arms on the progress it
 		// rations. Views, failed batches, and unchanged reads never arrive.
 		this.#midRunNudgeCount = 0;
+		this.#planningNudgeSent = false;
 	}
 
 	/** Rehydrates todo phases from the current transcript branch. */
@@ -130,6 +160,7 @@ export class TodoTracker {
 		this.#reminderAwaitingProgress = false;
 		this.#mutationsSinceLastTouch = 0;
 		this.#midRunNudgeCount = 0;
+		this.#planningNudgeSent = false;
 	}
 
 	/** Records a completed tool result before asynchronous event processing begins. */
@@ -259,14 +290,12 @@ export class TodoTracker {
 			this.#reminderAwaitingProgress = false;
 			return false;
 		}
+		const planningIssues = this.planningIssues;
 		const incompleteByPhase = phases
 			.map(phase => ({
 				name: phase.name,
 				tasks: phase.tasks
-					.filter(
-						(task): task is TodoItem & { status: "pending" | "in_progress" } =>
-							task.status === "pending" || task.status === "in_progress",
-					)
+					.filter(task => task.status !== "completed" && task.status !== "abandoned")
 					.map(task => ({ content: task.content, status: task.status })),
 			}))
 			.filter(phase => phase.tasks.length > 0);
@@ -276,7 +305,12 @@ export class TodoTracker {
 			this.#reminderAwaitingProgress = false;
 			return false;
 		}
-		if (isAwaitingUserAnswer(message)) {
+		const pendingUserDecision = isAwaitingUserAnswer(message);
+		if (
+			pendingUserDecision === "cue" ||
+			pendingUserDecision === "request" ||
+			(pendingUserDecision === "question" && planningIssues.length === 0)
+		) {
 			logger.debug("Todo completion: assistant is waiting for user input; skipping reminder", {
 				incomplete: incomplete.length,
 			});
@@ -290,14 +324,16 @@ export class TodoTracker {
 		}
 		this.#reminderCount++;
 		const todoList = incompleteByPhase
-			.map(phase => `- ${phase.name}\n${phase.tasks.map(task => `  - ${task.content}`).join("\n")}`)
+			.map(phase => `- ${phase.name}\n${phase.tasks.map(task => `  - ${task.content} (${task.status})`).join("\n")}`)
 			.join("\n");
-		const reminder =
-			`<system-reminder>\n` +
-			`You stopped with ${incomplete.length} incomplete todo item(s):\n${todoList}\n\n` +
-			`Please continue working on these tasks or mark them complete if finished.\n` +
-			`(Reminder ${this.#reminderCount}/${remindersMax})\n` +
-			`</system-reminder>`;
+		const reminder = prompt.render(todoCompletionReminderPrompt, {
+			incompleteCount: incomplete.length,
+			todoList,
+			planningIssues: planningIssues.map(issue => `- ${issue.task}: ${issue.message}`).join("\n"),
+			hasPlanningDebt: planningIssues.length > 0,
+			reminderCount: this.#reminderCount,
+			remindersMax,
+		});
 		logger.debug("Todo completion: sending reminder", {
 			incomplete: incomplete.length,
 			attempt: this.#reminderCount,
@@ -327,14 +363,21 @@ export class TodoTracker {
 
 	/** Takes the next hidden mid-run reconciliation nudge, if its budget and guards allow. */
 	takeMidRunNudge(): AgentMessage | null {
-		if (this.#mutationsSinceLastTouch < MID_RUN_NUDGE_MUTATION_THRESHOLD) return null;
 		if (this.#midRunNudgeCount >= MID_RUN_NUDGE_MAX_PER_CYCLE) return null;
+		const planningIssues = this.planningIssues;
+		const hasBlockedTasks = this.#phases.some(phase => phase.tasks.some(task => task.status === "blocked"));
+		if (
+			!((planningIssues.length > 0 || hasBlockedTasks) && !this.#planningNudgeSent) &&
+			this.#mutationsSinceLastTouch < MID_RUN_NUDGE_MUTATION_THRESHOLD
+		)
+			return null;
 		if (!cfgTodoEnabled.get(this.#host.settings) || !cfgTodoReminders.get(this.#host.settings)) return null;
 		if (this.#host.planModeEnabled() || !this.#host.getActiveToolNames().includes("todo")) return null;
 		const incomplete = this.#phases
 			.flatMap(phase => phase.tasks)
-			.filter(task => task.status === "pending" || task.status === "in_progress");
+			.filter(task => task.status !== "completed" && task.status !== "abandoned");
 		if (incomplete.length === 0) return null;
+		this.#planningNudgeSent = true;
 		this.#mutationsSinceLastTouch = 0;
 		this.#midRunNudgeCount++;
 		const { toolRefs } = this.#buildEagerPreludeContext();
@@ -342,9 +385,12 @@ export class TodoTracker {
 			toolRefs,
 			incompleteCount: incomplete.length,
 			plural: incomplete.length !== 1,
+			planningIssues: planningIssues.map(issue => `- ${issue.task}: ${issue.message}`).join("\n"),
+			hasPlanningDebt: planningIssues.length > 0,
 		});
 		logger.debug("Mid-run todo nudge fired", {
 			incomplete: incomplete.length,
+			planningIssues: planningIssues.length,
 			nudge: this.#midRunNudgeCount,
 		});
 		return {
@@ -369,14 +415,10 @@ export class TodoTracker {
 	}
 
 	#clonePhases(phases: TodoPhase[]): TodoPhase[] {
-		return phases.map(phase => ({
-			name: phase.name,
-			tasks: phase.tasks.map(task =>
-				task.blocker !== undefined
-					? { content: task.content, status: task.status, blocker: task.blocker }
-					: { content: task.content, status: task.status },
-			),
-		}));
+		return phases.map(phase => {
+			const { tasks, ...metadata } = phase;
+			return { ...structuredClone(metadata), tasks: tasks.map(task => structuredClone(task)) };
+		});
 	}
 }
 
@@ -465,22 +507,23 @@ function closingSentences(paragraph: string): string[] {
 function closingAsk(paragraph: string): ClosingAsk {
 	const lastLine = paragraph.slice(paragraph.lastIndexOf("\n") + 1).trim();
 	const sentences = closingSentences(paragraph);
-	const asks = [askOf(lastLine), ...sentences.slice(-1).map(askOf)];
+	const closing = askOf(sentences.at(-1) ?? lastLine);
 	// No lexicon recognizes a non-English follow-up ("…? Отдельно скажите, …"), and none
 	// recognizes a non-English self-answer either; an open request is the costlier miss.
 	const foreignQuestion =
 		sentences.length === 2 && NON_ASCII_TEXT_RE.test(sentences[0]) && isQuestionPromptLine(sentences[0]);
-	if (asks.includes("cue")) return "cue";
-	if (foreignQuestion || asks.includes("request")) return "request";
-	return asks.includes("question") ? "question" : "none";
+	if (closing === "cue") return "cue";
+	if (foreignQuestion || closing === "request") return "request";
+	return closing;
 }
 
-function isAwaitingUserAnswer(message: AssistantMessage): boolean {
+function isAwaitingUserAnswer(message: AssistantMessage): ClosingAsk {
 	const text = assistantText(message);
-	if (!text) return false;
+	if (!text) return "none";
 	const paragraphs = text.split(/\r?\n\s*\r?\n/);
 	const lastParagraph = paragraphs.at(-1)?.trim() ?? "";
-	if (closingAsk(lastParagraph) !== "none") return true;
+	const closing = closingAsk(lastParagraph);
+	if (closing !== "none") return closing;
 	// A one-line closing note ("Repository unchanged, no commits.") does not withdraw an
 	// instruction in the paragraph before it. A question there may be self-answered by
 	// that note ("Do you need…?\n\nNo, …"), so it does not count.
@@ -491,7 +534,7 @@ function isAwaitingUserAnswer(message: AssistantMessage): boolean {
 		!OPTION_LINE_RE.test(lastParagraph) &&
 		closingAsk(previousParagraph) === "cue"
 	) {
-		return true;
+		return "cue";
 	}
 	const lines = text.split(/\r?\n/);
 
@@ -508,20 +551,20 @@ function isAwaitingUserAnswer(message: AssistantMessage): boolean {
 		}
 		const candidate = promptLine(line);
 		if (optionCount > 0) {
-			return (
-				optionCount >= 2 &&
+			return optionCount >= 2 &&
 				isQuestionPromptLine(line) &&
 				(hasRecommendation ||
 					candidate.hadPromptLabel ||
 					USER_DIRECTED_PROMPT_RE.test(candidate.text) ||
 					CHOICE_CONFIRMATION_RE.test(candidate.text))
-			);
+				? "question"
+				: "none";
 		}
 		if (RECOMMENDATION_RE.test(candidate.text)) {
 			hasRecommendation = true;
 			continue;
 		}
-		return false;
+		return "none";
 	}
-	return false;
+	return "none";
 }

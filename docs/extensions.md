@@ -357,7 +357,9 @@ Handlers and tool `execute` receive `ctx` with:
 - `getContextUsage()`
 - `getAsyncJobSnapshot()` returns the current session's read-only async-job snapshot, or `null` when no session owns the context
 - `compact(instructionsOrOptions?)`: accepts summary focus text or `CompactOptions`, including one-off `mode: "soft" | "remote" | "snapcompact"`, `onComplete`, `onError`, and `suppressContinuation`
+- `sendAgentMessage(to, message)` sends an agent peer message and returns `{ delivered, text }`
 - `isIdle()`, `hasPendingMessages()`, `abort()`
+- `setSubagentFastMode(id, enabled)` (optional; changes a live direct child's `/fast` mode)
 - `shutdown()`
 - `resolvePlanReview(reviewId, choice, input?)`: answer the open interactive plan review; returns `false` when the review or choice is unavailable, `refine` requires non-empty `input.feedback`, and on approvals (`execute`, `compact`, `keep`) `input.role` may name a tier from the event's `tiers` to pick the execution model (an unknown role, or a `role` on any other choice, returns `false`)
 - `getPendingPlanReview()`: the open interactive plan review still awaiting an answer, in the `plan_review_requested` shape, or `undefined`; use it to answer a review that opened before the extension loaded or reconnected
@@ -383,6 +385,16 @@ Handlers and tool `execute` receive `ctx` with:
 - `annotations`: `/annotate` as an API, for boards and remote clients. `submit({ source, notes, deliver?, review?, focus? })` builds the feedback `/annotate` would and delivers it without any UI; `open({ source, deliver?, focus? })` mounts the annotation overlay on the source and resolves with the operator's notes (`undefined` when dismissed; `mode === "tui"` only). Text sources are `{ kind: "text", text, label? }`, `{ kind: "file", path }` (resolved against the live session cwd), or `{ kind: "last" }`; diff sources are `{ kind: "diff", diff, label? }`, `{ kind: "uncommitted" }`, or `{ kind: "pr", ref }` (`ref` is a GitHub PR or GitLab MR URL, `pr://owner/repo/N`, or `mr://<host>/<group>/<project>/N/diff`). `review`/`focus` apply to diff sources only (a type error on text sources). Text notes are `{ note, line?, quote? }` (1-based; whole-source when omitted, and the quoted line is filled in); diff notes are `{ path, note, line?, side?, occurrence?, rawLine? }` (`side` defaults to `"new"`; `rawLine` is the diff row including its `+`/`-`/space prefix). Notes that do not match their source reject rather than being dropped. `text` and `diff` sources are frozen snapshots of what you pass; `file`, `last`, `uncommitted`, and `pr` are re-read at call time and line numbers are matched against the current content, so pass `quote`/`rawLine` to reject a note (naming it) when that content drifted. `deliver` defaults to `"auto"`: pasteable notes go into the composer when the interactive TUI editor is available and are sent otherwise; an LLM review request (`review: true` on a diff) is always sent. Sending uses `pi.sendUserMessage` and queues as a follow-up while the agent is streaming. `"paste"`/`"send"` force a channel and `"none"` only returns `text`. The result is discriminated by `kind`: `"text"` carries `TextReviewAnnotation[]` and, after `open`, `editedText` when the operator replaced the source in the external editor (the feedback then refers to that text); `"diff"` carries `CodeReviewAnnotation[]` and `review` (whether `text` is an LLM review request). Both carry the rendered `text` and the `delivered` channel.
   Explicit paste requires `ctx.ui.supportsEditor === true`: the TUI and non-headless RPC expose composers; ACP and no-op UI contexts do not. Supplied diffs used for LLM review reject above 50,000 characters or 20 reviewable files before delivery, and `open` rejects such a patch before mounting the overlay; split larger patches into smaller requests. Notes-only submissions do not have this review-prompt bound.
 - `setInterval(fn, ms, ...args)` / `setTimeout(fn, ms, ...args)` / `clearTimer(timer)` — managed timers (see below)
+
+### Live subagent fast mode (`ctx.setSubagentFastMode`)
+
+Hosts that support this API let a handler change `/fast` for a live direct child by its exact agent id. It returns `false` when the target is not a live child owned by the current session or the child's model has no service-tier control. A successful change applies to the child's next provider request; an in-flight request keeps its current tier. Older hosts may omit the method.
+
+```ts
+if (ctx.setSubagentFastMode?.(agentId, isCritical)) {
+  // The child's next request will use the selected model's fast tier.
+}
+```
 
 ### Ephemeral side turns (`ctx.runEphemeralTurn`)
 
@@ -433,6 +445,19 @@ The promise resolves once the call is signaled and its control socket is open; a
 omp has no media peer for these calls, so it cannot tell when yours goes away. Call `live.stop()` when the peer disconnects (`connectionstatechange` to `failed` or `closed`, or your relay socket closing); otherwise the call stays open and the TUI keeps the live visualizer up.
 
 Whoever holds the peer steers this session by voice, including delegated work that runs tools, so authenticate the page or relay that hands you the offer.
+
+### Agent peer messages (`ctx.sendAgentMessage`)
+
+Extensions can send the same peer messages that `write agent://<id>` sends:
+
+```ts
+const result = await ctx.sendAgentMessage("Scout", "Status check: are you still blocked?");
+if (!result.delivered) {
+  ctx.ui.notify(result.text, "warning");
+}
+```
+
+`sendAgentMessage(to: string, message: string): Promise<{ delivered: boolean; text: string }>` uses the current session's agent id as the sender. It follows normal peer-messaging availability rules: IRC must be enabled and the session must have an agent registry. Unavailable messaging, an unknown recipient, or another delivery failure resolves with `delivered: false` and a human-readable `text`; it does not throw for ordinary delivery failures.
 
 ### Background work (`ctx.setInterval` / `ctx.setTimeout`)
 

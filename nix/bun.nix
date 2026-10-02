@@ -671,6 +671,7 @@
   "@oh-my-pi/pi-tui" = copyPathToStore ../packages/tui;
   "@oh-my-pi/pi-utils" = copyPathToStore ../packages/utils;
   "@oh-my-pi/pi-wire" = copyPathToStore ../packages/wire;
+  "@oh-my-pi/reemxy-extensions" = copyPathToStore ../packages/reemxy-extensions;
   "@oh-my-pi/snapcompact" = copyPathToStore ../packages/snapcompact;
   "@oh-my-pi/typescript-edit-benchmark" = copyPathToStore ../packages/typescript-edit-benchmark;
   "@opentelemetry/api-logs@0.220.0" = fetchurl {

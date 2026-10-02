@@ -6,6 +6,7 @@ import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models
 import { logger } from "@oh-my-pi/pi-utils";
 import { parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import {
+	agentInheritsParentModel,
 	expandRoleAlias,
 	extractExplicitThinkingSelector,
 	filterAvailableModelsByEnabledPatterns,
@@ -125,6 +126,20 @@ const mockOpenRouterModels: Model<Api>[] = [
 		maxTokens: 8192,
 	}),
 ];
+
+const inklingFree = buildModel({
+	id: "thinkingmachines/inkling:free",
+	name: "Inkling Free",
+	api: "openai-completions",
+	provider: "openrouter",
+	baseUrl: "https://openrouter.ai/api/v1",
+	reasoning: true,
+	thinking: { mode: "effort", efforts: [Effort.Low, Effort.High] },
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 1000000,
+	maxTokens: 8192,
+});
 
 const mockMaxSuffixModels: Model<Api>[] = [
 	buildModel({
@@ -680,6 +695,24 @@ describe("parseModelPattern", () => {
 			const result = parseModelPattern("openrouter/qwen/qwen3-coder:exacto:high", allModels);
 			expect(result.model?.id).toBe("qwen/qwen3-coder:exacto");
 			expect(result.model?.provider).toBe("openrouter");
+			expect(result.thinkingLevel).toBe(Effort.High);
+			expect(result.explicitThinkingLevel).toBe(true);
+			expect(result.warning).toBeUndefined();
+		});
+
+		test("literal Inkling free route remains part of the model id", () => {
+			const result = parseModelPattern("openrouter/thinkingmachines/inkling:free", [inklingFree]);
+			expect(result.model?.provider).toBe("openrouter");
+			expect(result.model?.id).toBe("thinkingmachines/inkling:free");
+			expect(result.thinkingLevel).toBeUndefined();
+			expect(result.explicitThinkingLevel).toBe(false);
+			expect(result.warning).toBeUndefined();
+		});
+
+		test("Inkling free route accepts an explicit high effort after the literal id", () => {
+			const result = parseModelPattern("openrouter/thinkingmachines/inkling:free:high", [inklingFree]);
+			expect(result.model?.provider).toBe("openrouter");
+			expect(result.model?.id).toBe("thinkingmachines/inkling:free");
 			expect(result.thinkingLevel).toBe(Effort.High);
 			expect(result.explicitThinkingLevel).toBe(true);
 			expect(result.warning).toBeUndefined();
@@ -3064,5 +3097,17 @@ describe("Devin selector parity", () => {
 	test("a live raw model still wins over the collapsed carrier routing to it", () => {
 		const withRaw = [...devinModels, devinModel("claude-mythos-9-high")];
 		expect(resolveProviderModelReference("devin", "claude-mythos-9-high", withRaw)?.id).toBe("claude-mythos-9-high");
+	});
+});
+
+describe("agentInheritsParentModel", () => {
+	test("is true only when no request, override or definition named a model", () => {
+		const settings = Settings.isolated({ modelRoles: { default: "anthropic/claude-sonnet-4-5" } });
+		expect(agentInheritsParentModel({ activeModelPattern: "openai/gpt-4o", settings })).toBe(true);
+		expect(
+			agentInheritsParentModel({ agentModel: ["@definition"], activeModelPattern: "openai/gpt-4o", settings }),
+		).toBe(false);
+		expect(agentInheritsParentModel({ requestModel: "openai/gpt-4o", settings })).toBe(false);
+		expect(agentInheritsParentModel({ settingsOverride: "@override", settings })).toBe(false);
 	});
 });

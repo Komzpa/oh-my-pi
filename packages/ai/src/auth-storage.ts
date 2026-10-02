@@ -90,6 +90,7 @@ export class AuthStorage {
 	readonly #overrides: KeyOverrides;
 	readonly #policies: AccountPolicies;
 	readonly #restrictions: SessionRestrictions = new Map();
+	readonly #providerDepletion = new Map<string, number | null>();
 	#modules: AuthStorageModules;
 
 	constructor(store: AuthCredentialStore, options: AuthStorageOptions = {}) {
@@ -260,6 +261,7 @@ export class AuthStorage {
 				refresher,
 				overrides,
 				strategies,
+				providerDepletion: this.#providerDepletion,
 			}),
 			limits,
 			resets: new ResetCredits({ store, pool, oauth, usage, usageCache, blocks }),

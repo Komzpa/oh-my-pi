@@ -399,6 +399,7 @@ export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "a
 export interface TodoItem {
 	content: string;
 	status: TodoStatus;
+	schedule?: TodoSchedule;
 	/** What a `blocked` task is waiting on. */
 	blocker?: string;
 	details?: string;
@@ -408,6 +409,75 @@ export interface TodoItem {
 export interface TodoPhase {
 	name: string;
 	tasks: TodoItem[];
+}
+
+export type TodoConfidence = "low" | "medium" | "high";
+
+export type TodoWorkerOutcome = "completed" | "failed" | "aborted";
+
+/** User-maintained duration estimate in seconds; `updatedAt` is Unix milliseconds. */
+export interface TodoEstimate {
+	optimisticSeconds: number;
+	likelySeconds: number;
+	pessimisticSeconds: number;
+	confidence: TodoConfidence;
+	basis: string;
+	updatedAt: number;
+}
+
+export interface TodoScheduleProgress {
+	at: number;
+	evidence: string;
+}
+
+/** Observed Task worker that executed this row, independent of forecast ownership; timestamps are Unix milliseconds. */
+export interface TodoScheduleExecutor {
+	workerId: string;
+	startedAt: number;
+	agentProfile?: string;
+	resolvedModel?: string;
+	thinkingLevel?: string;
+	finishedAt?: number;
+	outcome?: TodoWorkerOutcome;
+}
+
+/** Immutable terminal worker attempt attached to its exact todo row; timestamps and duration are milliseconds. */
+export interface TodoReworkAttempt {
+	attemptId: string;
+	workerName: string;
+	resolvedModel: string;
+	effort: string;
+	startedAt: number;
+	finishedAt: number;
+	durationMs: number;
+	terminalStatus: TodoWorkerOutcome;
+	deliverablePaths: string[];
+	rejectionReason?: string;
+	reflectionAnswer?: string;
+	noAnswerReason?: string;
+	finalReportParagraph?: string;
+	infraFailureLine?: string;
+	infraFailureError?: string;
+}
+
+/** Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds. */
+export interface TodoSchedule {
+	/** Exact task-content references; absent means unknown, while an empty array explicitly means independent. */
+	dependencies?: string[];
+	/** Exclusive forecast owner while this task is running. */
+	owner?: string;
+	/** Exclusive resource identifiers while running; absent means undeclared. */
+	resources?: string[];
+	estimate?: TodoEstimate;
+	/** Server-owned revision: the first estimate is revision 1. */
+	estimateRevision?: number;
+	reestimateCount?: number;
+	progress?: TodoScheduleProgress;
+	startedAt?: number;
+	finishedAt?: number;
+	/** Append-only durable attempts for this exact row. */
+	attemptHistory?: TodoReworkAttempt[];
+	executor?: TodoScheduleExecutor;
 }
 
 export interface ContextUsage {
@@ -1093,7 +1163,12 @@ export interface SubagentLifecyclePayload {
 	agentSource: AgentSource;
 	status: SubagentLifecycleStatus;
 	index: number;
+	/** Wall clock of the emitted lifecycle transition, in Unix milliseconds. */
+	at?: number;
+	resolvedModelIdentity?: string;
+	resolvedThinkingLevel?: string;
 	description?: string;
+	taskText?: string;
 	sessionFile?: string;
 	parentToolCallId?: string;
 	/** The subagent runs as a detached background job. */

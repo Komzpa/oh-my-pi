@@ -1,3 +1,4 @@
+import { selectBranchNewestFirst } from "./session/branch-selection";
 import * as path from "node:path";
 import {
 	Agent,
@@ -309,7 +310,11 @@ import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { isFilesystemSourcePath } from "./tools/path-utils";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
 import { queueResolveHandler } from "./tools/resolve";
-import { USER_TODO_EDIT_CUSTOM_TYPE } from "./tools/todo";
+import {
+	isTodoSelectionEntryMetadata,
+	shouldPersistTodoFullSnapshotCheckpoint,
+	USER_TODO_EDIT_CUSTOM_TYPE,
+} from "./tools/todo";
 import { ttsTool } from "./tools/tts";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
@@ -2423,6 +2428,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			get costGate() {
 				return currentCostGate();
 			},
+			submitUserReply:
+				options.hasUI === true
+					? text => {
+							void session?.sendUserMessage(text).catch(error => {
+								logger.warn("Ask reply delivery failed", { error: String(error) });
+							});
+						}
+					: undefined,
 			isToolActive: name => activeToolNames.has(name),
 			setActiveToolNames,
 			toolRegistry,
@@ -2547,7 +2560,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getFileMutationVersion: path => fileMutationVersions.get(path) ?? 0,
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
-			persistTodoPhases: phases => sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
+			persistTodoPhases: (phases, edit) => {
+				if (edit) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
+				} else if (
+					shouldPersistTodoFullSnapshotCheckpoint(
+						selectBranchNewestFirst(sessionManager, isTodoSelectionEntryMetadata),
+					)
+				) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				}
+			},
 			getWorkPoolYieldItems: () => session?.getWorkPoolYieldItems() ?? [],
 			getLastAssistantText: () => session?.getLastAssistantText(),
 			getYieldReportText: toolCallId => resolveYieldReportText(session?.messages ?? [], toolCallId),
@@ -3589,6 +3612,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				...(options.parentAgentId ? { parentId: options.parentAgentId } : {}),
 			}),
 			createAnnotationsAPI,
+			() => (hasSession ? structuredClone(session.getTodoPhases()) : undefined),
 		);
 		// A dialog waits for the user, not the agent: the session lets the display sleep while one is open.
 		const trackUserWait: UserWaitTracker = dialog => (hasSession ? session.waitForUser(dialog) : dialog());
@@ -3982,7 +4006,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			emitEvent: event => cursorEventEmitter?.(event),
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
-			persistTodoPhases: phases => sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
+			persistTodoPhases: (phases, edit) => {
+				if (edit) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
+				} else if (
+					shouldPersistTodoFullSnapshotCheckpoint(
+						selectBranchNewestFirst(sessionManager, isTodoSelectionEntryMetadata),
+					)
+				) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				}
+			},
 			// `pi_grep` carries its own context width and match cap, which the
 			// shared grep instance fixed at construction cannot express. Gated on
 			// the grant: the factory builds a fresh tool and `executeTool` prefers
@@ -5014,6 +5048,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			ttsrManager,
 			obfuscator,
 			agentId: resolvedAgentId,
+			agentRegistry,
 			agentKind,
 			providerSessionId: options.providerSessionId,
 			accountPoolScope,
