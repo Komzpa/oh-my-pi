@@ -15,6 +15,8 @@ export interface IrcBridgeHost {
 	sessionManager: SessionManager;
 	isDisposed(): boolean;
 	isStreaming(): boolean;
+	isRestartDraining(): boolean;
+	queueForRestart(record: CustomMessage): Promise<void>;
 	planModeEnabled(): boolean;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	wakeForIrc(records: AgentMessage[]): void;
@@ -30,6 +32,7 @@ export class IrcBridge {
 	/** Queued broadcast legs and progress notes: they ask nothing of the recipient, so they
 	 *  inject at the next step boundary like any record but never cut a `wait` short. */
 	readonly #quietRecords = new WeakSet<AgentMessage>();
+	readonly #nonInterruptingAsides = new WeakSet<AgentMessage>();
 
 	readonly #host: IrcBridgeHost;
 	#interrupts: AgentMessage[] = [];
@@ -61,9 +64,9 @@ export class IrcBridge {
 		return this.#interrupts.some(record => !this.#quietRecords.has(record));
 	}
 
-	/** Whether an aside is ready for step-boundary injection (not a parked wake). */
-	hasAsides(): boolean {
-		return this.#asides.length > 0;
+	/** Whether a queued aside should end an interruptible wait. */
+	hasInterruptingAsides(): boolean {
+		return this.#asides.some(record => !this.#nonInterruptingAsides.has(record));
 	}
 
 	/** Whether any undelivered IRC record remains queued. */
@@ -158,7 +161,11 @@ export class IrcBridge {
 
 	/** Queues records for the next step-boundary aside injection: IRC wakes deferred by a
 	 *  session transition, and extension `deliverAs: "aside"` sends. */
-	queueAside(records: AgentMessage[]): void {
+	queueAside(records: AgentMessage[], options?: { interruptWait?: boolean }): void {
+		for (const record of records) {
+			if (options?.interruptWait === false) this.#nonInterruptingAsides.add(record);
+			else this.#nonInterruptingAsides.delete(record);
+		}
 		this.#asides.push(...records);
 	}
 
@@ -302,6 +309,10 @@ export class IrcBridge {
 		};
 		if (peerMessage) this.#peerMessages.add(record);
 		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
+		if (this.#host.isRestartDraining()) {
+			await this.#host.queueForRestart(record);
+			return "injected";
+		}
 		if (streaming) {
 			if (fromParent && !peerMessage) {
 				const steer: AgentMessage = {

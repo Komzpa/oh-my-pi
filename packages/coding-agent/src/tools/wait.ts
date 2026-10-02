@@ -177,6 +177,8 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		// Any wait ends the idle streak unless its window elapses too (`#elapsed`).
 		const idle = this.#idle;
 		this.#idle = undefined;
+		const drainSignal = this.session.getRestartDrainSignal?.();
+		if (drainSignal) signal = signal ? AbortSignal.any([signal, drainSignal]) : drainSignal;
 		const registry = this.session.agentRegistry;
 		const senderId = this.session.getAgentId?.() ?? undefined;
 		const messaging = registry && senderId ? { registry, senderId } : undefined;
@@ -388,7 +390,14 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 					// Not `useless`: a message woke the agent, which the loop guard
 					// must treat as progress rather than an idle poll.
 					return {
-						content: [{ type: "text", text: "Wait interrupted by message." }],
+						content: [
+							{
+								type: "text",
+								text: this.session.getRestartDrainSignal?.().aborted
+									? "Wait interrupted for session restart."
+									: "Wait interrupted by message.",
+							},
+						],
 						details: { op: "wait", jobs: [], interrupted: true },
 					};
 				}

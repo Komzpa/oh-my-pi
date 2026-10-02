@@ -1,7 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { Tokenizer } from "@oh-my-pi/pi-agent-core";
-import type { SessionMessageEntry } from "@oh-my-pi/pi-agent-core/compaction/entries";
-import { DEFAULT_PRUNE_CONFIG, pruneToolOutputs } from "@oh-my-pi/pi-agent-core/compaction/pruning";
+import type { SessionEntry, SessionMessageEntry } from "@oh-my-pi/pi-agent-core/compaction/entries";
+import {
+	DEFAULT_PRUNE_CONFIG,
+	projectToolResultPrunes,
+	pruneToolOutputs,
+} from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import { AGGRESSIVE_SHAKE_CONFIG, collectShakeRegions } from "@oh-my-pi/pi-agent-core/compaction/shake";
 import type { AssistantMessage, TextContent, ToolResultMessage, Usage } from "@oh-my-pi/pi-ai";
 
@@ -71,12 +75,26 @@ describe("conditional tool-result protection", () => {
 		});
 
 		expect(result.prunedCount).toBe(1);
+		const projected = projectToolResultPrunes<SessionEntry>([
+			...entries,
+			{
+				type: "tool_result_prune",
+				id: "prune",
+				parentId: fileResult.id,
+				timestamp: new Date(result.prunedAt).toISOString(),
+				prunedAt: result.prunedAt,
+				targets: result.targets,
+			},
+		]);
+		const projectedFile = projected[3] as SessionMessageEntry;
+		expect(projected[1]).toBe(skillResult);
+		expect((fileResult.message as ToolResultMessage).prunedAt).toBeUndefined();
 		expect((skillResult.message as ToolResultMessage).prunedAt).toBeUndefined();
 		expect((skillResult.message as ToolResultMessage).content).toEqual([
 			{ type: "text", text: "skill read output that must remain intact" },
 		]);
-		expect(typeof (fileResult.message as ToolResultMessage).prunedAt).toBe("number");
-		expect(((fileResult.message as ToolResultMessage).content[0] as TextContent).text).toStartWith(
+		expect((projectedFile.message as ToolResultMessage).prunedAt).toBe(result.prunedAt);
+		expect(((projectedFile.message as ToolResultMessage).content[0] as TextContent).text).toStartWith(
 			"[Output truncated - ",
 		);
 	});

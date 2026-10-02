@@ -40,6 +40,7 @@ import { eventBlockId, PresentedBlock } from "@oh-my-pi/pi-tui/chat/transcript-p
 import { createUsageRowBlock, TurnUsageTally, turnElapsedMs } from "@oh-my-pi/pi-tui/overlays/usage-row";
 import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { getSymbolTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { createLocalInteractiveSessionConnection, type InteractiveSessionConnection } from "../interactive-session";
 import type { InteractiveModeContext } from "../../modes/types";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { AgentSessionEvent } from "../../session/agent-session";
@@ -382,6 +383,7 @@ export class EventController {
 	/** Bumped at every `agent_start`; a settle watch stands down once a new run begins. */
 	#runEpoch = 0;
 	/** Epoch of the in-flight {@link #finishWhenRunSettles} watch, if any. */
+	#settleWait: AbortController | undefined;
 	#settleWatchEpoch: number | undefined = undefined;
 	/**
 	 * The settle that handed control back to background work only
@@ -418,7 +420,10 @@ export class EventController {
 	#vocalizedMessageUpdates = new WeakSet<object>();
 	static readonly #MESSAGE_UPDATE_COALESCE_MS = 33;
 
-	constructor(private ctx: InteractiveModeContext) {
+	constructor(
+		private ctx: InteractiveModeContext,
+		private sessionConnection: InteractiveSessionConnection = createLocalInteractiveSessionConnection(ctx.session),
+	) {
 		// Enhanced speech (`speech.enhanced`) rewrites blocks through the
 		// tiny/smol role with this session's registry and credentials; the
 		// vocalizer falls back to mechanical cleanup when unset. Tolerates
@@ -948,7 +953,11 @@ export class EventController {
 		// the listener's first await, preserving the timing the coalescing
 		// tests assert on. `message_update` enqueue is itself synchronous and
 		// needs no serialization.
-		this.ctx.unsubscribe = this.ctx.session.subscribe(event => this.dispatchSessionEvent(event));
+		const unsubscribe = this.sessionConnection.subscribe(event => this.dispatchSessionEvent(event));
+		this.ctx.unsubscribe = () => {
+			this.#settleWait?.abort();
+			unsubscribe();
+		};
 	}
 
 	/**
@@ -1115,6 +1124,7 @@ export class EventController {
 	 * session's transcript and must not bleed into the new one.
 	 */
 	resetTranscriptAnchors(): void {
+		this.#settleWait?.abort();
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
@@ -1259,6 +1269,7 @@ export class EventController {
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
+		this.#settleWait?.abort();
 		this.#runEpoch += 1;
 		// A run with no user prompt in it (synthetic-only: `/goal` kickoff,
 		// approved-plan execution) must not measure prompt→yield from an unrelated
@@ -2542,7 +2553,7 @@ export class EventController {
 		// leaving "Working…" gone while the agent keeps running. The live turn owns
 		// the loader and finalizes it at its own agent_end (isStreaming === false by
 		// then). Mirrors the collab guest's !isStreaming loader reconciler.
-		if (this.ctx.session.isStreaming) {
+		if (this.sessionConnection.isStreaming) {
 			// A focused worker can end while the main session streams; its run is
 			// over even though main's is not. Tear down only what the viewed worker
 			// owns (its loader); main-owned work waits for main's own settle.
@@ -2667,21 +2678,22 @@ export class EventController {
 		const epoch = this.#runEpoch;
 		if (this.#settleWatchEpoch === epoch) return;
 		this.#settleWatchEpoch = epoch;
-		const session = this.ctx.session;
+		const localSession = this.ctx.session;
+		const session = this.sessionConnection;
+		const wait = new AbortController();
+		this.#settleWait = wait;
 		// No `hasAdmittedSubmission` gate: this very settle is emitted while the
 		// prompt that produced it is still admitted, and a new submission starts a
 		// run whose `agent_start` bumps the epoch anyway.
 		const superseded = () =>
 			this.#runEpoch !== epoch ||
 			this.#settleWatchEpoch !== epoch ||
-			this.ctx.session !== session ||
+			this.ctx.session !== localSession ||
+			this.sessionConnection !== session ||
 			session.isStreaming;
 		try {
-			while (!superseded()) {
-				await session.waitForIdle();
-				if (superseded() || !session.hasPendingAsyncWork()) break;
-				await session.settleAsyncWork();
-			}
+			if (superseded()) return;
+			await session.waitForSettled(wait.signal);
 			await this.#runSerialized(async () => {
 				if (
 					superseded() ||
@@ -2696,9 +2708,10 @@ export class EventController {
 				if (this.ctx.shutdownRequested) this.ctx.requestShutdown();
 			});
 		} catch (error) {
-			logger.warn("Non-terminal settle teardown failed", { error: String(error) });
+			if (!wait.signal.aborted) logger.warn("Non-terminal settle teardown failed", { error: String(error) });
 		} finally {
 			if (this.#settleWatchEpoch === epoch) this.#settleWatchEpoch = undefined;
+			if (this.#settleWait === wait) this.#settleWait = undefined;
 		}
 	}
 
@@ -2739,6 +2752,7 @@ export class EventController {
 		if (!event) return;
 		this.#asyncWaitEnd = undefined;
 		this.#settleWatchEpoch = undefined;
+		this.#settleWait?.abort();
 		const session = this.ctx.session;
 		try {
 			// Ending this wait means "stay quiet until I prompt"; latch before awaiting the

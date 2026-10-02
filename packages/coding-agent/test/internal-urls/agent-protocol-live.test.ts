@@ -166,6 +166,46 @@ describe("agent:// for agents without a published output", () => {
 		expect(text).toContain("parked mid-run");
 	});
 
+	it("reads an older persisted agent outside the retained roster after restart", async () => {
+		const timestamp = new Date().toISOString();
+		const transcript = (id: string, text: string) =>
+			[
+				JSON.stringify({ type: "session", version: CURRENT_SESSION_VERSION, id, timestamp, cwd: "/tmp" }),
+				JSON.stringify({
+					type: "message",
+					id: "m1",
+					parentId: null,
+					timestamp,
+					message: { role: "user", content: "go", timestamp: 1 },
+				}),
+				JSON.stringify({ type: "message", id: "m2", parentId: "m1", timestamp, message: assistantText(text) }),
+			].join("\n");
+		await Bun.write(
+			path.join(artifactsDir, "SurfaceDroppedFact.jsonl"),
+			transcript("old-worker", "retained worker progress"),
+		);
+		await fs.utimes(path.join(artifactsDir, "SurfaceDroppedFact.jsonl"), 1, 1);
+		for (let index = 0; index < 129; index++) {
+			await Bun.write(path.join(artifactsDir, `Recent${index}.jsonl`), transcript(`recent-${index}`, "recent work"));
+		}
+		// Populate the normal bounded roster before the targeted read.
+		await InternalUrlRouter.instance().resolve("agent://Recent0", { sessionFile: rootSessionFile });
+		expect(AgentRegistry.global().get("SurfaceDroppedFact")).toBeUndefined();
+
+		const resource = await InternalUrlRouter.instance().resolve("agent://SurfaceDroppedFact", {
+			sessionFile: rootSessionFile,
+		});
+
+		expect(resource.content).toContain("SurfaceDroppedFact (parked)");
+		expect(resource.content).toContain("retained worker progress");
+		expect(AgentRegistry.global().get("SurfaceDroppedFact")?.sessionFile).toBe(
+			path.join(artifactsDir, "SurfaceDroppedFact.jsonl"),
+		);
+		await expect(
+			InternalUrlRouter.instance().resolve("agent://MissingWorker", { sessionFile: rootSessionFile }),
+		).rejects.toThrow("Not found: MissingWorker");
+	});
+
 	it("serves the published output over progress once <id>.md exists", async () => {
 		registerSub("Builder", "Main", liveSession([assistantText("still talking")]), "idle");
 		await Bun.write(path.join(artifactsDir, "Builder.md"), "final report");

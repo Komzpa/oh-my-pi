@@ -1,9 +1,11 @@
+import { createLocalInteractiveViewSource } from "./modes/interactive-view";
 /**
  * Main entry point for the coding agent CLI.
  *
  * This file handles CLI argument parsing and translates them into
  * createAgentSession() options. The SDK does the heavy lifting.
  */
+import { waitForRestartAdmission } from "./restart-admission";
 import * as fsSync from "node:fs";
 import * as os from "node:os";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
@@ -80,6 +82,10 @@ import {
 } from "./extensibility/plugins/marketplace-auto-update";
 import { registerDaemonProjectPresence } from "./launch/presence";
 import type { MCPManager } from "./mcp";
+import {
+	createLocalInteractiveSessionConnection,
+	type InteractiveSessionConnection,
+} from "./modes/interactive-session";
 import type { InteractiveMode } from "./modes/interactive-mode";
 import { formatSessionContinuationNotice } from "./modes/persistence-failure";
 import type { PrintModeOptions } from "./modes/print-mode";
@@ -111,7 +117,7 @@ import {
 import type { AgentSession } from "./session/agent-session";
 import { createAuthStorageSettingsSync, describeAuthBrokerStartupError } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
-import { describePendingToolCalls } from "./session/exit-diagnostics";
+import { describeSessionPendingToolCalls } from "./session/exit-diagnostics";
 import {
 	createForeignSessionStore,
 	foreignSessionInfoToSessionInfo,
@@ -439,7 +445,7 @@ export async function submitInteractiveInput(
 		| "restoreDroppedPrompt"
 	> &
 		Partial<Pick<InteractiveMode, "loopPrompt" | "pauseLoop">>,
-	session: Pick<AgentSession, "buildUserSkillPrompt" | "prompt" | "promptCustomMessage" | "resume" | "isStreaming">,
+	session: Pick<InteractiveSessionConnection, "buildUserSkillPrompt" | "prompt" | "promptCustomMessage" | "resume" | "isStreaming">,
 	input: SubmittedUserInput,
 ): Promise<void> {
 	if (input.cancelled) {
@@ -646,7 +652,7 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 	};
 }
 
-async function runInteractiveMode(
+export async function runInteractiveMode(
 	session: AgentSession,
 	version: string,
 	notifs: (InteractiveModeNotify | null)[],
@@ -668,6 +674,8 @@ async function runInteractiveMode(
 	startupGoal?: string,
 	startupRestore?: () => Promise<RestoreOutcome>,
 ): Promise<void> {
+	// The launcher retains the runtime connection independently of any terminal view.
+	const sessionConnection = createLocalInteractiveSessionConnection(session);
 	const InteractiveModeConstructor = await loadInteractiveModeConstructor();
 	let mode: InteractiveMode;
 	try {
@@ -680,6 +688,8 @@ async function runInteractiveMode(
 			eventBus,
 			startupLease?.composer,
 			subagentEventBus,
+			sessionConnection,
+			createLocalInteractiveViewSource(session),
 		);
 		startupLease?.adopt();
 	} catch (error) {
@@ -751,13 +761,6 @@ async function runInteractiveMode(
 		// Consume failures immediately, but defer any banner until the transcript is stable.
 		const checkedVersionPromise = versionCheckPromise.catch(() => undefined);
 
-		// `init` already cleared native history before painting the startup frame.
-		// Replaying resumed transcript rows and repainting the viewport is enough;
-		// another clear would only archive the startup frame. In-process session
-		// replacements still request `clearTerminalHistory` at their own callsites.
-		await logger.time("InteractiveMode.renderInitialMessages", () =>
-			mode.renderInitialMessages({ preserveExistingChat: true }),
-		);
 		// A resolved version check must not insert its banner into a partial transcript.
 		const notifyNewVersion = (newVersion: string): void => {
 			if (cfgStartupCheckUpdate.get(settings)) mode.showNewVersionNotification(newVersion);
@@ -854,7 +857,7 @@ async function runInteractiveMode(
 			// before this dispatch runs (the composer accepts input as soon as the
 			// first turn starts): the CLI message queues into that turn instead of
 			// dying with AgentBusyError.
-			await session.prompt(initialMessage, { images: initialImages, streamingBehavior: "steer" });
+			await sessionConnection.prompt(initialMessage, { images: initialImages, streamingBehavior: "steer" });
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 			mode.showError(errorMessage);
@@ -863,7 +866,7 @@ async function runInteractiveMode(
 
 	for (const message of initialMessages) {
 		try {
-			await session.prompt(message, { streamingBehavior: "steer" });
+			await sessionConnection.prompt(message, { streamingBehavior: "steer" });
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 			mode.showError(errorMessage);
@@ -873,7 +876,7 @@ async function runInteractiveMode(
 
 	while (true) {
 		const input = await mode.getUserInput();
-		await submitInteractiveInput(mode, session, input);
+		await submitInteractiveInput(mode, sessionConnection, input);
 	}
 }
 
@@ -1391,7 +1394,7 @@ export async function createSessionManager(
 			}),
 			parsed.sessionDir,
 		);
-		if (manager.getEntries().length > 0) {
+		if (manager.getEntryCount() > 0) {
 			parsed.continue = true;
 		}
 		return manager;
@@ -1840,6 +1843,8 @@ export async function runRootCommand(
 	rawArgs: string[],
 	deps: RunRootCommandDependencies = DEFAULT_RUN_ROOT_DEPENDENCIES,
 ): Promise<void> {
+	// A preloaded successor must not open the active writer or run startup hooks before commit.
+	await waitForRestartAdmission(parsed.resume);
 	logger.startTiming();
 	startStartupWatchdog();
 	try {
@@ -2345,7 +2350,7 @@ export async function runRootCommand(
 			else process.stderr.write(`${chalk.yellow(notice)}\n`);
 		}
 		if (sessionManager && (parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || foreignSource)) {
-			const pendingToolWarning = describePendingToolCalls(sessionManager.getBranch());
+			const pendingToolWarning = describeSessionPendingToolCalls(sessionManager);
 			if (pendingToolWarning) {
 				logger.warn("Resumed session has pending tool calls", {
 					sessionId: sessionManager.getSessionId(),
@@ -2668,6 +2673,7 @@ export async function runRootCommand(
 				lspServers,
 				mcpManager,
 				startBackgroundModelDiscovery,
+				getSubagentDiscoveryOptions,
 			} = createdSession;
 			if (!isInteractive) session.validateRetryFallbackChains();
 
@@ -2699,6 +2705,7 @@ export async function runRootCommand(
 					authStorage,
 					modelRegistry,
 					settings: settingsInstance,
+					getSubagentDiscoveryOptions,
 					enableLsp: sessionOptions.enableLsp ?? true,
 					eventBus,
 					subagentEventBus,
