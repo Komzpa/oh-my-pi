@@ -953,10 +953,10 @@ function timestampRange(values: readonly (number | undefined)[]): { earliest: nu
 	return values.length > 0 ? { earliest, latest } : undefined;
 }
 
-function componentData(validNodes: PlanNode[]): { nodes: PlanNode[]; complete: boolean; finish: number }[] {
+function componentData(validNodes: PlanNode[]): { nodes: PlanNode[]; complete: boolean }[] {
 	const valid = new Set(validNodes);
 	const visited = new Set<PlanNode>();
-	const components: { nodes: PlanNode[]; complete: boolean; finish: number }[] = [];
+	const components: { nodes: PlanNode[]; complete: boolean }[] = [];
 	for (const start of validNodes) {
 		if (visited.has(start)) continue;
 		const component: PlanNode[] = [];
@@ -974,11 +974,7 @@ function componentData(validNodes: PlanNode[]): { nodes: PlanNode[]; complete: b
 				}
 			}
 		}
-		components.push({
-			nodes: component,
-			complete,
-			finish: Math.max(...component.map(node => node.earliestFinish ?? 0)),
-		});
+		components.push({ nodes: component, complete });
 	}
 	return components;
 }
@@ -1051,9 +1047,12 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 	}
 	const knownProjectFinish = latestTimestamp(validNodes.map(node => node.earliestFinish));
 
+	// Virtual "everything done" milestone: every valid sink's natural late finish is the latest
+	// earliest finish over all forecastable rows. Unrelated blocked/invalid rows must not push
+	// disconnected components back onto their own finish (which would zero their natural float);
+	// components feeding unresolved work stay criticality-unknown via `component.complete`.
+	const projectMilestone = knownProjectFinish ?? 0;
 	const components = componentData(validNodes);
-	if (!hasUnresolvedOpen && knownProjectFinish !== undefined)
-		for (const component of components) component.finish = knownProjectFinish;
 	const componentFor = new Map<PlanNode, (typeof components)[number]>();
 	for (const component of components) for (const node of component.nodes) componentFor.set(node, component);
 	for (let index = validTopological.length - 1; index >= 0; index--) {
@@ -1063,10 +1062,10 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 		const successors = node.successors.filter(successor => validSet.has(successor));
 		const naturalLateFinish = successors.length
 			? Math.min(...successors.map(successor => successor.naturalLatestStart!))
-			: component.finish;
+			: projectMilestone;
 		const deadlineLateFinish = successors.length
 			? Math.min(...successors.map(successor => successor.latestStart!))
-			: (deadlineAt ?? component.finish);
+			: (deadlineAt ?? projectMilestone);
 		node.naturalLatestStart = naturalLateFinish - durationMs(node);
 		node.latestFinish = deadlineLateFinish;
 		node.latestStart = deadlineLateFinish - durationMs(node);
@@ -1079,7 +1078,7 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 			node.freeFloatSeconds =
 				(Math.min(...successors.map(successor => successor.earliestStart ?? now)) - node.earliestFinish!) / 1000;
 		} else if (component.complete) {
-			node.freeFloatSeconds = (component.finish - node.earliestFinish!) / 1000;
+			node.freeFloatSeconds = (projectMilestone - node.earliestFinish!) / 1000;
 		}
 	}
 

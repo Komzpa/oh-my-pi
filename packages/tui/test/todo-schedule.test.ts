@@ -527,6 +527,55 @@ describe("todo schedule forecast", () => {
 		expect(long.critical).toBe(true);
 	});
 
+	it("keeps the global finish milestone for disconnected rows when another row is blocked", () => {
+		// Live 2026-10-02: one blocked row anywhere flipped every disconnected open row to
+		// float=0 critical=yes, because the global finish milestone was withheld whenever any
+		// open row was unresolved and each isolated component fell back to its own finish.
+		const plan = forecastTodoPlan(
+			phases(
+				task("quick", 600),
+				task("medium", 1_200),
+				task("slow", 1_800),
+				task("stuck", 600, { status: "blocked" }),
+			),
+			{ now: NOW },
+		);
+		const byName = new Map(plan.rows.map(row => [row.content, row]));
+
+		expect(byName.get("quick")?.freeFloatSeconds).toBe(1_200);
+		expect(byName.get("quick")?.totalFloatSeconds).toBe(1_200);
+		expect(byName.get("quick")?.critical).toBe(false);
+		expect(byName.get("medium")?.freeFloatSeconds).toBe(600);
+		expect(byName.get("medium")?.totalFloatSeconds).toBe(600);
+		expect(byName.get("medium")?.critical).toBe(false);
+		expect(byName.get("slow")?.freeFloatSeconds).toBe(0);
+		expect(byName.get("slow")?.totalFloatSeconds).toBe(0);
+		expect(byName.get("slow")?.critical).toBe(true);
+		expect(byName.get("stuck")?.criticalityKnown).toBe(false);
+		expect(byName.get("stuck")?.critical).toBe(false);
+	});
+
+	it("keeps a chain critical beside a shorter independent row when another row is blocked", () => {
+		const plan = forecastTodoPlan(
+			phases(
+				task("chain-a", 900),
+				task("chain-b", 900, { dependencies: ["chain-a"] }),
+				task("side", 600),
+				task("stuck", 600, { status: "blocked" }),
+			),
+			{ now: NOW },
+		);
+		const byName = new Map(plan.rows.map(row => [row.content, row]));
+
+		expect(byName.get("chain-a")?.critical).toBe(true);
+		expect(byName.get("chain-a")?.freeFloatSeconds).toBe(0);
+		expect(byName.get("chain-b")?.critical).toBe(true);
+		expect(byName.get("chain-b")?.freeFloatSeconds).toBe(0);
+		expect(byName.get("side")?.critical).toBe(false);
+		expect(byName.get("side")?.freeFloatSeconds).toBe(1_200);
+		expect(byName.get("side")?.totalFloatSeconds).toBe(1_200);
+	});
+
 	it("does not label a partial known finish on-track while required work is unknown", () => {
 		const unknown: TodoScheduleInputTask = {
 			content: "unknown row",
