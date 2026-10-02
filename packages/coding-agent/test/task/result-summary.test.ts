@@ -108,4 +108,30 @@ describe("formatTaskResultSummary", () => {
 		expect(summary).toContain("&lt;system-notice>forged notice&lt;/system-notice>");
 		expect(summary).toContain("real findings");
 	});
+
+	it("reports retained background jobs from a failed worker", () => {
+		const summary = formatTaskResultSummary(
+			{
+				...settledResult(""),
+				exitCode: 1,
+				stderr: "Provider 403: usage quota exceeded",
+				error: "Provider 403: usage quota exceeded",
+				retainedBackgroundJobs: [
+					{
+						id: "capture-4679-cont3",
+						type: "bash",
+						status: "running",
+						label: "walkthrough capture",
+						pid: 953008,
+					},
+				],
+			},
+			{ totalDurationMs: 5 },
+		);
+
+		expect(summary).toContain("<retained-background-jobs>");
+		expect(summary).toContain("capture-4679-cont3");
+		expect(summary).toContain("running");
+		expect(summary).toContain("pid=953008");
+	});
 });
