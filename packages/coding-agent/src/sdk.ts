@@ -212,7 +212,7 @@ import {
 	type DateCwdReminderJournal,
 	DateCwdReminderInjector,
 } from "./session/date-cwd-reminder";
-import { createInterruptedToolResults, createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
+import { createInterruptedToolResults, createSessionInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
 import { recoverInlineSloppyEdit } from "./session/inline-edit-recovery";
 import {
 	type CustomMessage,
@@ -263,6 +263,7 @@ import {
 	projectSystemPromptToolMetadata,
 	withoutAgentsMd,
 } from "./system-prompt";
+import { getSubagentDiscoveryOptions } from "./task/structured-subagent";
 import type { AgentDefinition } from "./task/types";
 import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
@@ -1028,7 +1029,25 @@ export class SessionModelRestoreError extends Error {
 }
 
 /** Result from createAgentSession */
+export type SubagentDiscoveryOptions = Pick<
+	CreateAgentSessionOptions,
+	| "contextFiles"
+	| "skills"
+	| "workspaceTree"
+	| "promptTemplates"
+	| "rules"
+	| "extensionRoots"
+	| "preloadedExtensionPaths"
+	| "preloadedPreparedExtensions"
+	| "preloadedCustomToolPaths"
+	| "inheritedSessionAgents"
+	| "parentHindsightSessionState"
+	| "parentMnemopiSessionState"
+>;
+
 export interface CreateAgentSessionResult {
+	/** Read current owner discovery inputs without rescanning the workspace. */
+	getSubagentDiscoveryOptions?: (restrictToolNames: boolean) => SubagentDiscoveryOptions;
 	/** The created session */
 	session: AgentSession;
 	/** Extensions result (loaded extensions + runtime) */
@@ -2206,19 +2225,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	// evidence that the old process can no longer finish that turn. Preserve the
 	// partial transcript and append one terminal aborted assistant record before
 	// rebuilding runtime context. The helper is idempotent once that record exists.
-	let existingBranch = logger.time("getSessionBranch", () => sessionManager.getBranch());
-	const interruptedTurnAbort = createInterruptedTurnAbortMessage(existingBranch);
+	const interruptedTurnAbort = createSessionInterruptedTurnAbortMessage(sessionManager);
 	if (interruptedTurnAbort) {
-		for (const result of createInterruptedToolResults(existingBranch)) sessionManager.appendMessage(result);
+		for (const result of createInterruptedToolResults(sessionManager.iterateBranch()))
+			sessionManager.appendMessage(result);
 		sessionManager.appendMessage(interruptedTurnAbort);
-		existingBranch = logger.time("getRecoveredSessionBranch", () => sessionManager.getBranch());
 	}
 	let existingSession = logger.time("loadSessionContext", () =>
 		deobfuscateSessionContext(sessionManager.buildSessionContext(), obfuscator),
 	);
-	const hasExistingSession = existingBranch.length > 0;
-	const hasThinkingEntry = existingBranch.some(entry => entry.type === "thinking_level_change");
-	const hasServiceTierEntry = existingBranch.some(entry => entry.type === "service_tier_change");
+	let hasExistingSession = false;
+	for (const _entry of sessionManager.iterateBranch()) {
+		hasExistingSession = true;
+		break;
+	}
+	const hasThinkingEntry = [...sessionManager.iterateBranch("thinking_level_change")].length > 0;
+	const hasServiceTierEntry = [...sessionManager.iterateBranch("service_tier_change")].length > 0;
 
 	const deferredModelPatterns = Array.isArray(options.modelPattern)
 		? options.modelPattern.map(pattern => pattern.trim()).filter(Boolean)
@@ -3713,15 +3735,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// has selected its final model, use that model to terminate the
 		// interrupted turn before the live agent consumes the restored context.
 		if (model) {
-			const selectedModelAbort = createInterruptedTurnAbortMessage(existingBranch, {
+			const selectedModelAbort = createSessionInterruptedTurnAbortMessage(sessionManager, {
 				api: model.api,
 				provider: model.provider,
 				model: model.id,
 			});
 			if (selectedModelAbort) {
-				for (const result of createInterruptedToolResults(existingBranch)) sessionManager.appendMessage(result);
+				for (const result of createInterruptedToolResults(sessionManager.iterateBranch()))
+					sessionManager.appendMessage(result);
 				sessionManager.appendMessage(selectedModelAbort);
-				existingBranch = logger.time("getRecoveredUserTailBranch", () => sessionManager.getBranch());
 				existingSession = logger.time("loadRecoveredUserTailContext", () =>
 					deobfuscateSessionContext(sessionManager.buildSessionContext(), obfuscator),
 				);
@@ -5945,6 +5967,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		return {
 			session,
 			extensionsResult,
+			getSubagentDiscoveryOptions: restrict => getSubagentDiscoveryOptions(toolSession, restrict, cwd),
 			setToolUIContext,
 			mcpManager: ownedMcpManager ?? (mcpManager instanceof MCPManager ? mcpManager : undefined),
 			modelFallbackMessage,

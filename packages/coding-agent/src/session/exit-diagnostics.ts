@@ -1,6 +1,7 @@
 import { createSyntheticToolResultMessage, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type { SessionEntry } from "./session-entries";
+import type { SessionManager } from "./session-manager";
 
 export const TOOL_EXECUTION_START_CUSTOM_TYPE = "tool_execution_start";
 export const SESSION_EXIT_CUSTOM_TYPE = "session_exit";
@@ -125,27 +126,27 @@ interface UnfinishedTurn {
  * close an aborted or failed turn leave nothing unfinished.
  */
 function findUnfinishedTurn(
-	entries: readonly SessionEntry[],
+	entries: Iterable<SessionEntry>,
 	options?: InterruptedTurnOptions,
 ): UnfinishedTurn | undefined {
 	let exitIndex = -1;
 	let exit: SessionExitData | undefined;
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const candidate = readSessionExit(entries[index]!);
-		if (!candidate) continue;
-		exitIndex = index;
-		exit = candidate;
-		break;
-	}
-
 	let tailIndex = -1;
 	let tail: AgentMessage | undefined;
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const entry = entries[index]!;
-		if (entry.type !== "message") continue;
-		tailIndex = index;
-		tail = entry.message;
-		break;
+	let previousAssistant: AssistantMessage | undefined;
+	let index = 0;
+	for (const entry of entries) {
+		const candidate = readSessionExit(entry);
+		if (candidate) {
+			exitIndex = index;
+			exit = candidate;
+		}
+		if (entry.type === "message") {
+			tailIndex = index;
+			tail = entry.message;
+			if (entry.message.role === "assistant") previousAssistant = entry.message;
+		}
+		index++;
 	}
 	if (!tail) return undefined;
 	if (!exit || tailIndex > exitIndex) {
@@ -155,14 +156,6 @@ function findUnfinishedTurn(
 		return undefined;
 	}
 	if (tail.role === "assistant" && !tail.content.some(isToolCallContent)) return undefined;
-
-	let previousAssistant: AssistantMessage | undefined;
-	for (let index = tailIndex; index >= 0; index--) {
-		const entry = entries[index]!;
-		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-		previousAssistant = entry.message;
-		break;
-	}
 	if (
 		tail.role === "toolResult" &&
 		(previousAssistant?.stopReason === "error" || previousAssistant?.stopReason === "aborted")
@@ -204,7 +197,7 @@ export function hasRestorableTurn(entries: readonly SessionEntry[]): boolean {
  * ({@link findUnfinishedTurn}; with `assumeExit`, also when no exit was recorded).
  */
 export function createInterruptedTurnAbortMessage(
-	entries: readonly SessionEntry[],
+	entries: Iterable<SessionEntry>,
 	fallbackModel?: AssistantModelMetadata,
 	options?: InterruptedTurnOptions,
 ): AssistantMessage | undefined {
@@ -234,40 +227,75 @@ export function createInterruptedTurnAbortMessage(
 	};
 }
 
-/**
- * Whether a persisted process exit follows the branch's last message: the
- * branch's writer is gone, so resume recovery owns its interrupted tail.
- */
-export function sessionExitFollowsLastMessage(entries: readonly SessionEntry[]): boolean {
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const entry = entries[index]!;
-		if (entry.type === "message") return false;
-		if (readSessionExit(entry)) return true;
+/** Read only the tail, its assistant metadata and a subsequent valid exit. */
+export function createSessionInterruptedTurnAbortMessage(
+	session: Pick<SessionManager, "iterateBranchMatchingNewestFirst">,
+	fallbackModel?: AssistantModelMetadata,
+	options?: InterruptedTurnOptions,
+): AssistantMessage | undefined {
+	const entries: SessionEntry[] = [];
+	let haveTail = false;
+	let haveExit = false;
+	for (const entry of session.iterateBranchMatchingNewestFirst(metadata =>
+		metadata.type === "message"
+			? !haveTail || metadata.messageRole === "assistant"
+			: !haveTail && !haveExit && metadata.type === "custom" && metadata.customType === SESSION_EXIT_CUSTOM_TYPE,
+	)) {
+		if (entry.type === "message") {
+			entries.push(entry);
+			haveTail = true;
+			if (entry.message.role === "assistant") break;
+		} else if (readSessionExit(entry)) {
+			entries.push(entry);
+			haveExit = true;
+		}
 	}
-	return false;
+	return createInterruptedTurnAbortMessage(entries.reverse(), fallbackModel, options);
+}
+
+/** Whether a persisted process exit follows the branch's last message. */
+export function sessionExitFollowsLastMessage(entries: Iterable<SessionEntry>): boolean {
+	let follows = false;
+	for (const entry of entries) {
+		if (entry.type === "message") follows = false;
+		else if (readSessionExit(entry)) follows = true;
+	}
+	return follows;
+}
+
+const INTERRUPTED_TOOL_RESULT_TEXT = "Previous OMP process exited before this tool returned; its outcome is unknown.";
+
+/** A process-exit placeholder, rather than an answer or an explicit cancellation. */
+export function isInterruptedToolResult(message: AgentMessage): boolean {
+	return (
+		message.role === "toolResult" &&
+		message.isError === true &&
+		message.content.length === 1 &&
+		message.content[0]?.type === "text" &&
+		message.content[0].text === INTERRUPTED_TOOL_RESULT_TEXT
+	);
 }
 
 /** Pairs unresolved calls at the end of an interrupted turn with result messages. */
 export function createInterruptedToolResults(
-	entries: readonly SessionEntry[],
+	entries: Iterable<SessionEntry>,
 	context: "process-exit" | "fork" = "process-exit",
 ): ToolResultMessage[] {
 	let tail: AgentMessage | undefined;
 	let assistant: AssistantMessage | undefined;
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const entry = entries[index];
-		if (entry?.type !== "message") continue;
-		tail ??= entry.message;
-		if (entry.message.role === "assistant") {
-			assistant = entry.message;
-			break;
+	const pending = new Map<string, PendingToolCallRecord>();
+	for (const entry of entries) {
+		if (entry.type === "message") {
+			tail = entry.message;
+			if (entry.message.role === "assistant") assistant = entry.message;
+			applyMessageEntry(pending, entry.message);
+		} else {
+			const marker = readToolExecutionStart(entry);
+			if (marker) applyToolExecutionStart(pending, marker);
 		}
 	}
 	if (!assistant || (context !== "fork" && tail?.role !== "assistant" && tail?.role !== "toolResult")) return [];
-	const pendingById = new Map<string, PendingToolCallDiagnostic>();
-	for (const call of collectPendingToolCalls(entries)) {
-		if (call.toolCallId) pendingById.set(call.toolCallId, call);
-	}
+	const pendingById = pending;
 	const results: ToolResultMessage[] = [];
 	for (const call of assistant.content) {
 		if (call.type !== "toolCall" || !pendingById.has(call.id)) continue;
@@ -288,7 +316,7 @@ export function createInterruptedToolResults(
 					text:
 						context === "fork"
 							? "The parent session may still be running this tool; its outcome is unknown."
-							: "Previous OMP process exited before this tool returned; its outcome is unknown.",
+							: INTERRUPTED_TOOL_RESULT_TEXT,
 				},
 			],
 			isError: true,
@@ -401,7 +429,7 @@ function applyMessageEntry(pending: Map<string, PendingToolCallRecord>, message:
 }
 
 /** Finds tool calls left pending at the end of a session branch. */
-export function collectPendingToolCalls(entries: readonly SessionEntry[]): PendingToolCallDiagnostic[] {
+export function collectPendingToolCalls(entries: Iterable<SessionEntry>): PendingToolCallDiagnostic[] {
 	const pending = new Map<string, PendingToolCallRecord>();
 	for (const entry of entries) {
 		if (entry.type === "message") {
@@ -412,6 +440,22 @@ export function collectPendingToolCalls(entries: readonly SessionEntry[]): Pendi
 		if (marker) applyToolExecutionStart(pending, marker);
 	}
 	return [...pending.values()].map(({ key: _key, ...toolCall }) => toolCall);
+}
+
+/** Only the latest assistant and subsequent results/markers affect pending calls. */
+export function collectSessionPendingToolCalls(
+	session: Pick<SessionManager, "iterateBranchMatchingNewestFirst">,
+): PendingToolCallDiagnostic[] {
+	const entries: SessionEntry[] = [];
+	for (const entry of session.iterateBranchMatchingNewestFirst(metadata =>
+		metadata.type === "message"
+			? metadata.messageRole === "assistant" || metadata.messageRole === "toolResult"
+			: metadata.type === "custom" && metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE,
+	)) {
+		entries.push(entry);
+		if (entry.type === "message" && entry.message.role === "assistant") break;
+	}
+	return collectPendingToolCalls(entries.reverse());
 }
 
 function appendArgumentSummary(parts: string[], args: unknown): void {
@@ -433,8 +477,17 @@ function formatPendingToolCall(call: PendingToolCallDiagnostic): string {
 }
 
 /** Builds the resume warning shown when a prior branch ended mid-tool-call. */
-export function describePendingToolCalls(entries: readonly SessionEntry[]): string | undefined {
-	const pending = collectPendingToolCalls(entries);
+export function describePendingToolCalls(entries: Iterable<SessionEntry>): string | undefined {
+	return formatPendingToolCalls(collectPendingToolCalls(entries));
+}
+
+export function describeSessionPendingToolCalls(
+	session: Pick<SessionManager, "iterateBranchMatchingNewestFirst">,
+): string | undefined {
+	return formatPendingToolCalls(collectSessionPendingToolCalls(session));
+}
+
+function formatPendingToolCalls(pending: PendingToolCallDiagnostic[]): string | undefined {
 	if (pending.length === 0) return undefined;
 	const formatted = pending.map(formatPendingToolCall).join(", ");
 	const noun = pending.length === 1 ? "tool call" : "tool calls";

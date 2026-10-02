@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { customMessageEntryMessage, isUserRequestEntry } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { getAnthropicCompactionPayload, isTurnStartEntry } from "@oh-my-pi/pi-agent-core/compaction";
+import { projectToolResultPrunes } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import {
 	coerceServiceTierByFamily,
 	type OpenAIResponsesHistoryPayload,
@@ -18,6 +19,7 @@ import {
 	REWIND_REPORT_MESSAGE_TYPE,
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
+import { isInterruptedToolResult } from "./exit-diagnostics";
 import { CONTEXT_NOTES_ENTRY_TYPE, getContextNotes, renderContextNotes } from "./context-notes";
 import {
 	type CompactionEntry,
@@ -37,6 +39,92 @@ const LEGACY_SNAPCOMPACT_ARCHIVE_TEXT_GUARD = 250_000;
 const LEGACY_SNAPCOMPACT_TRUNCATED_CHARS_GUARD = 1_000_000;
 const SUPERSEDED_COMPACTION_SUMMARY = "[Superseded compaction summary elided after a newer compaction]";
 const SUPERSEDED_COMPACTION_SHORT_SUMMARY = "Superseded compaction elided";
+const RESTART_QUEUED_NOTICE_TYPE = "restart-queued";
+const RESTART_REQUEST_TRANSITION_TYPE = "restart_request_transition";
+const RESTART_TERMINAL_STATE: Record<string, true> = { completed: true, cancelled: true, failed: true };
+
+function restartNoticeTextContent(content: CustomMessageEntry["content"]): string {
+	if (typeof content === "string") return content;
+	let text = "";
+	for (const block of content) {
+		if (typeof block === "string") text += block;
+		else if (block && typeof block === "object" && "text" in block && typeof block.text === "string") {
+			text += block.text;
+		}
+	}
+	return text;
+}
+
+function restartNoticeRequestId(entry: Pick<CustomMessageEntry, "details" | "content">): string | undefined {
+	const details = entry.details;
+	if (details && typeof details === "object" && "requestId" in details) {
+		const requestId = details.requestId;
+		if (typeof requestId === "string" && requestId.length > 0) return requestId;
+	}
+	const text = restartNoticeTextContent(entry.content);
+	const detailed = /omp-update-[0-9a-fA-F-]{8,}/.exec(text)?.[0];
+	if (detailed) return detailed;
+	return /Restart ([A-Za-z0-9_.:-]+)/.exec(text)?.[1];
+}
+
+function restartNoticeDetailState(entry: Pick<CustomMessageEntry, "details">): string | undefined {
+	const details = entry.details;
+	if (details && typeof details === "object" && "state" in details) {
+		const state = details.state;
+		return typeof state === "string" ? state : undefined;
+	}
+	return undefined;
+}
+
+function restartTransitionRecord(entry: SessionEntry): { requestId: string; state: string } | undefined {
+	if (entry.type !== "custom") return undefined;
+	if (entry.customType !== RESTART_REQUEST_TRANSITION_TYPE) return undefined;
+	const data = entry.data;
+	if (!data || typeof data !== "object" || !("record" in data)) return undefined;
+	const record = data.record;
+	if (!record || typeof record !== "object") return undefined;
+	if (!("requestId" in record) || !("state" in record)) return undefined;
+	const requestId = record.requestId;
+	const state = record.state;
+	if (typeof requestId !== "string" || typeof state !== "string") return undefined;
+	return { requestId, state };
+}
+
+/** Reconcile transcript and pending-queue notices against the same restart journal. */
+export function createRestartNoticeFilter(
+	entries: readonly SessionEntry[],
+): (notice: Pick<CustomMessageEntry, "customType" | "content" | "details">) => boolean {
+	const restartLatestStateById = new Map<string, string>();
+	const restartLastIndexById = new Map<string, number>();
+	for (let index = 0; index < entries.length; index++) {
+		const entry = entries[index];
+		if (!entry) continue;
+		const record = restartTransitionRecord(entry);
+		if (!record) continue;
+		restartLatestStateById.set(record.requestId, record.state);
+		restartLastIndexById.set(record.requestId, index);
+	}
+	let latestRestartRequestId: string | undefined;
+	let latestRestartIndex = -1;
+	for (const requestId of restartLastIndexById.keys()) {
+		const index = restartLastIndexById.get(requestId) ?? -1;
+		if (index > latestRestartIndex) {
+			latestRestartIndex = index;
+			latestRestartRequestId = requestId;
+		}
+	}
+
+	return entry => {
+		if (entry.customType !== RESTART_QUEUED_NOTICE_TYPE) return true;
+		const detailState = restartNoticeDetailState(entry);
+		if (detailState !== undefined && RESTART_TERMINAL_STATE[detailState] === true) return true;
+		const requestId = restartNoticeRequestId(entry);
+		if (requestId === undefined) return true;
+		const latestState = restartLatestStateById.get(requestId);
+		if (latestState !== undefined && RESTART_TERMINAL_STATE[latestState] === true) return false;
+		return latestRestartRequestId === undefined || requestId === latestRestartRequestId;
+	};
+}
 
 function isRolloverRequestEntry(entry: SessionEntry): boolean {
 	return (
@@ -150,13 +238,10 @@ export function getRestorableSessionModels(
 	return [roleModel, defaultModel];
 }
 
-export function getLatestCompactionEntry(entries: readonly SessionEntry[]): CompactionEntry | null {
-	for (let i = entries.length - 1; i >= 0; i--) {
-		if (entries[i].type === "compaction") {
-			return entries[i] as CompactionEntry;
-		}
-	}
-	return null;
+export function getLatestCompactionEntry(entries: Iterable<SessionEntry>): CompactionEntry | null {
+	let latest: CompactionEntry | null = null;
+	for (const entry of entries) if (entry.type === "compaction") latest = entry;
+	return latest;
 }
 
 export interface BuildSessionContextOptions {
@@ -237,6 +322,124 @@ export function isTranscriptEntry(entry: SessionEntry): entry is TranscriptEntry
 	return entry.type === "message" || entry.type === "custom_message";
 }
 
+/** Payload-free facts needed to select the model/display dependency closure. */
+export interface SessionContextEntryMetadata {
+	id: string;
+	parentId: string | null;
+	type: SessionEntry["type"];
+	messageRole?: string;
+	toolName?: string;
+	userRequest?: boolean;
+	customType?: string;
+	assistantProvider?: string;
+	assistantTimestamp?: number;
+	activeLeafId?: string | null;
+}
+
+export function sessionContextEntryMetadata(entry: SessionEntry): SessionContextEntryMetadata {
+	return {
+		id: entry.id,
+		parentId: entry.parentId,
+		type: entry.type,
+		messageRole: entry.type === "message" ? entry.message.role : undefined,
+		toolName: entry.type === "message" && entry.message.role === "toolResult" ? entry.message.toolName : undefined,
+		userRequest: isRolloverRequestEntry(entry),
+		customType: entry.type === "custom" ? entry.customType : undefined,
+		assistantProvider:
+			entry.type === "message" && entry.message.role === "assistant" ? entry.message.provider : undefined,
+		assistantTimestamp:
+			entry.type === "message" && entry.message.role === "assistant" ? entry.message.timestamp : undefined,
+		activeLeafId: entry.type === "model_usage" ? entry.activeLeafId : undefined,
+	};
+}
+
+/** Select leaf-to-root payloads before reading them; replay uses the canonical builder below. */
+export function selectSessionContextEntriesFromLeafPath(
+	path: readonly SessionContextEntryMetadata[],
+	read: (id: string) => SessionEntry,
+	options?: BuildSessionContextOptions,
+): SessionEntry[] {
+	if (options?.transcript && !options.collapseCompactedHistory) return path.map(entry => read(entry.id));
+	let compactionIdx = -1;
+	let resetIdx = -1;
+	for (let i = 0; i < path.length; i++) {
+		if (compactionIdx < 0 && path[i].type === "compaction") compactionIdx = i;
+		if (resetIdx < 0 && path[i].type === "reset_boundary") resetIdx = i;
+	}
+	const selected = new Set<string>();
+	const selectRange = (start: number, end: number) => {
+		for (let i = start; i < end; i++) selected.add(path[i].id);
+	};
+	if (resetIdx >= 0 && (compactionIdx < 0 || resetIdx < compactionIdx)) {
+		selectRange(0, resetIdx + 1);
+	} else if (compactionIdx >= 0) {
+		const compaction = read(path[compactionIdx].id) as CompactionEntry;
+		selectRange(0, compactionIdx + 1);
+		const keptIdx = path.findIndex((entry, i) => i > compactionIdx && entry.id === compaction.firstKeptEntryId);
+		const snapshotIdx = compaction.providerReplayThroughEntryId
+			? path.findIndex((entry, i) => i > compactionIdx && entry.id === compaction.providerReplayThroughEntryId)
+			: -1;
+		const remote = getOpenAiRemoteCompactionPayload(compaction);
+		const anthropic = getAnthropicCompactionPayload(compaction.preserveData);
+		if (!remote || options?.transcript) {
+			if (keptIdx >= 0) selectRange(compactionIdx + 1, keptIdx + 1);
+			else if (anthropic && compaction.firstKeptEntryId === "" && snapshotIdx >= 0)
+				selectRange(compactionIdx + 1, snapshotIdx + 1);
+		} else if (snapshotIdx >= 0) selectRange(compactionIdx + 1, snapshotIdx + 1);
+		// Active model-call usage includes metadata immediately before the kept
+		// message, up to (but not through) the previous transcript boundary.
+		if (keptIdx >= 0) {
+			for (let i = keptIdx + 1; i < path.length; i++) {
+				const entry = path[i];
+				if (["message", "custom_message", "branch_summary", "compaction", "reset_boundary"].includes(entry.type))
+					break;
+				if (entry.type === "model_usage") selected.add(entry.id);
+			}
+		}
+		if (isRecord(compaction.details) && compaction.details.kind === "experimental-context-rollover") {
+			for (let i = compactionIdx + 1; i < (resetIdx < 0 ? path.length : resetIdx); i++) {
+				if (path[i].userRequest) {
+					selected.add(path[i].id);
+					break;
+				}
+			}
+		}
+	} else selectRange(0, path.length);
+	// Settings precede the emission boundary. Keep one legacy model-inference
+	// assistant only when no explicit default model has superseded it.
+	let inferredAssistant: string | undefined;
+	let explicitDefault = false;
+	for (let i = path.length - 1; i >= 0; i--) {
+		const entry = path[i];
+		if (
+			["thinking_level_change", "model_change", "service_tier_change", "ttsr_injection", "mode_change"].includes(
+				entry.type,
+			)
+		) {
+			selected.add(entry.id);
+			if (entry.type === "model_change") {
+				const model = read(entry.id);
+				if (model.type === "model_change" && model.model && (model.role ?? "default") === "default")
+					explicitDefault = true;
+			}
+		} else if (!explicitDefault && entry.messageRole === "assistant") inferredAssistant = entry.id;
+	}
+	if (!explicitDefault && inferredAssistant) selected.add(inferredAssistant);
+	// The notebook may live before a compaction, but never before a reset.
+	for (let i = 0; i < (resetIdx < 0 ? path.length : resetIdx); i++) {
+		if (path[i].customType !== CONTEXT_NOTES_ENTRY_TYPE) continue;
+		const entry = read(path[i].id);
+		if (getContextNotes([entry])) {
+			selected.add(entry.id);
+			break;
+		}
+	}
+	// Keep the latest reset marker even when a later compaction wins, so notes
+	// and rollover request attribution retain their original lower bound.
+	if (resetIdx >= 0) selected.add(path[resetIdx].id);
+	return path.filter(entry => selected.has(entry.id)).map(entry => read(entry.id));
+}
+
 export function buildSessionContext(
 	entries: SessionEntry[],
 	leafId?: string | null,
@@ -290,6 +493,14 @@ export function buildSessionContext(
 		path.push(current);
 		current = current.parentId ? byId.get(current.parentId) : undefined;
 	}
+	return buildSessionContextFromLeafPath(path, options);
+}
+
+/** Build an already-selected leaf-to-root path, reversing it in place without re-walking historical parents. */
+export function buildSessionContextFromLeafPath(
+	path: SessionEntry[],
+	options?: BuildSessionContextOptions,
+): SessionContext {
 	path.reverse();
 
 	// Extract settings and find compaction
@@ -310,7 +521,9 @@ export function buildSessionContext(
 	// resume (issue #849).
 	let hasExplicitDefaultModel = false;
 
-	for (const entry of path) {
+	const projectedPath = projectToolResultPrunes(path);
+	const keepRestartNotice = createRestartNoticeFilter(projectedPath);
+	for (const entry of projectedPath) {
 		if (entry.type === "thinking_level_change") {
 			thinkingLevel = entry.thinkingLevel ?? "off";
 			configuredThinkingLevel = entry.configured ?? entry.thinkingLevel ?? undefined;
@@ -354,7 +567,10 @@ export function buildSessionContext(
 	// collapsed live transcript and the model-context rebuild start emission
 	// after it (see the emission branch below); the full-history export path
 	// ignores it.
-	const resetBoundaryIdx = path.reduce((latest, entry, i) => (entry.type === "reset_boundary" ? i : latest), -1);
+	const resetBoundaryIdx = projectedPath.reduce(
+		(latest, entry, i) => (entry.type === "reset_boundary" ? i : latest),
+		-1,
+	);
 
 	// Build messages and collect corresponding entries
 	// When there's a compaction, we need to:
@@ -434,6 +650,7 @@ export function buildSessionContext(
 			) {
 				return;
 			}
+			if (!options?.transcript && !keepRestartNotice(entry)) return;
 			const message = customMessageEntryMessage(entry);
 			if (message) pushMessage(message);
 		} else if (entry.type === "branch_summary" && entry.summary && !rewindSummaryIds.has(entry.id)) {
@@ -447,11 +664,11 @@ export function buildSessionContext(
 		// TUI) at the point it fired, with any snapcompact frames re-attached so
 		// the component can report them. An immediate frame-rescue replacement is
 		// the same compaction point and supersedes its source entry below.
-		for (let index = 0; index < path.length; index++) {
-			const entry = path[index];
+		for (let index = 0; index < projectedPath.length; index++) {
+			const entry = projectedPath[index];
 			handleEntryResetTracking(entry);
 			if (entry.type === "compaction") {
-				const replacement = path[index + 1];
+				const replacement = projectedPath[index + 1];
 				if (
 					replacement?.type === "compaction" &&
 					entry.method === "snapcompact" &&
@@ -484,7 +701,8 @@ export function buildSessionContext(
 		}
 	} else if (
 		resetBoundaryIdx >= 0 &&
-		resetBoundaryIdx > (compaction ? path.findIndex(e => e.type === "compaction" && e.id === compaction.id) : -1)
+		resetBoundaryIdx >
+			(compaction ? projectedPath.findIndex(e => e.type === "compaction" && e.id === compaction.id) : -1)
 	) {
 		// A `/clear` boundary durably starts emission after it — for BOTH the
 		// collapsed live transcript AND the model context (non-transcript) rebuild
@@ -499,8 +717,8 @@ export function buildSessionContext(
 		// (and its kept tail) too, so only genuinely post-reset entries emit; a
 		// boundary before the latest compaction is superseded by it (the
 		// `else if (compaction)` branch below handles that case via this guard).
-		for (let i = resetBoundaryIdx + 1; i < path.length; i++) {
-			appendMessage(path[i]);
+		for (let i = resetBoundaryIdx + 1; i < projectedPath.length; i++) {
+			appendMessage(projectedPath[i]);
 		}
 	} else if (compaction) {
 		const remotePayload = getOpenAiRemoteCompactionPayload(compaction);
@@ -511,7 +729,7 @@ export function buildSessionContext(
 		const providerPayload = remotePayload ?? anthropicPayload;
 
 		// Find compaction index in path
-		const compactionIdx = path.findIndex(e => e.type === "compaction" && e.id === compaction.id);
+		const compactionIdx = projectedPath.findIndex(e => e.type === "compaction" && e.id === compaction.id);
 
 		// A natively replayed summary must not invalidate the retained tail's
 		// bound thinking: the commit timestamp as historyRewriteAt would be newer
@@ -521,15 +739,15 @@ export function buildSessionContext(
 		// still retires the tail's pre-compaction usage reports.
 		let historyRewriteAt: number | undefined;
 		if (anthropicPayload !== undefined) {
-			const firstKeptIdx = path.findIndex(entry => entry.id === compaction.firstKeptEntryId);
+			const firstKeptIdx = projectedPath.findIndex(entry => entry.id === compaction.firstKeptEntryId);
 			const snapshotIdx =
 				compaction.firstKeptEntryId === "" && compaction.providerReplayThroughEntryId
-					? path.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId)
+					? projectedPath.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId)
 					: -1;
 			const firstRetained =
-				(firstKeptIdx >= 0 && firstKeptIdx < compactionIdx ? path[firstKeptIdx] : undefined) ??
-				(snapshotIdx >= 0 && snapshotIdx < compactionIdx - 1 ? path[snapshotIdx + 1] : undefined) ??
-				path[compactionIdx + 1];
+				(firstKeptIdx >= 0 && firstKeptIdx < compactionIdx ? projectedPath[firstKeptIdx] : undefined) ??
+				(snapshotIdx >= 0 && snapshotIdx < compactionIdx - 1 ? projectedPath[snapshotIdx + 1] : undefined) ??
+				projectedPath[compactionIdx + 1];
 			// The message's own time, not the entry's: an assistant message is
 			// stamped when its stream starts and saved after it ends, so a marker
 			// derived from the entry would postdate that turn and strip its thinking.
@@ -581,9 +799,9 @@ export function buildSessionContext(
 			isRecord(compaction.details) &&
 			compaction.details.kind === "experimental-context-rollover"
 		) {
-			const firstKeptIdx = path.findIndex(entry => entry.id === compaction.firstKeptEntryId);
+			const firstKeptIdx = projectedPath.findIndex(entry => entry.id === compaction.firstKeptEntryId);
 			for (let i = compactionIdx - 1; i > resetBoundaryIdx; i--) {
-				const entry = path[i];
+				const entry = projectedPath[i];
 				if (!isRolloverRequestEntry(entry)) continue;
 				if (i < firstKeptIdx) appendMessage(entry);
 				break;
@@ -597,12 +815,12 @@ export function buildSessionContext(
 		// turns visible instead of showing only the summary and post-compaction.
 		if (!remoteReplacementHistory || options?.transcript) {
 			// Emit kept messages (before compaction, starting from firstKeptEntryId).
-			const firstKeptIdx = path.findIndex(
+			const firstKeptIdx = projectedPath.findIndex(
 				(entry, index) => index < compactionIdx && entry.id === compaction.firstKeptEntryId,
 			);
 			const snapshotIdx =
 				anthropicPayload && compaction.firstKeptEntryId === "" && compaction.providerReplayThroughEntryId
-					? path.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId)
+					? projectedPath.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId)
 					: -1;
 			const retainedStart = firstKeptIdx >= 0 ? firstKeptIdx : snapshotIdx >= 0 ? snapshotIdx + 1 : -1;
 			if (retainedStart >= 0 && retainedStart < compactionIdx) {
@@ -615,7 +833,7 @@ export function buildSessionContext(
 					// suffix when there is no later boundary, because the summary
 					// does not include that kept content.
 					for (let i = retainedStart; i < compactionIdx; i++) {
-						const entry = path[i];
+						const entry = projectedPath[i];
 						if (isTurnStartEntry(entry) && (entry.type !== "custom_message" || isUserRequestEntry(entry))) {
 							displayStartIdx = i;
 							break;
@@ -623,7 +841,7 @@ export function buildSessionContext(
 					}
 				}
 				for (let i = retainedStart; i < compactionIdx; i++) {
-					const entry = path[i];
+					const entry = projectedPath[i];
 					if (i < displayStartIdx) {
 						// Hidden assistants still consume pending resets and update the
 						// previous-model state exactly as they do in the visible walk.
@@ -635,10 +853,12 @@ export function buildSessionContext(
 				}
 			}
 		} else if (compaction.providerReplayThroughEntryId) {
-			const replayThroughIdx = path.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId);
+			const replayThroughIdx = projectedPath.findIndex(
+				entry => entry.id === compaction.providerReplayThroughEntryId,
+			);
 			if (replayThroughIdx >= 0 && replayThroughIdx < compactionIdx) {
 				for (let i = replayThroughIdx + 1; i < compactionIdx; i++) {
-					appendMessage(path[i]);
+					appendMessage(projectedPath[i]);
 				}
 			}
 		}
@@ -654,22 +874,22 @@ export function buildSessionContext(
 		}
 
 		// Emit messages after compaction
-		for (let i = compactionIdx + 1; i < path.length; i++) {
-			const entry = path[i];
+		for (let i = compactionIdx + 1; i < projectedPath.length; i++) {
+			const entry = projectedPath[i];
 			appendMessage(entry);
 		}
 	} else {
 		// No compaction - emit all messages, handle branch summaries and custom messages
-		for (const entry of path) {
+		for (const entry of projectedPath) {
 			appendMessage(entry);
 		}
 	}
 
 	if (!options?.transcript) {
-		const notes = getContextNotes(path);
-		const renderedNotes = renderContextNotes(path);
+		const notes = getContextNotes(projectedPath);
+		const renderedNotes = renderContextNotes(projectedPath);
 		if (notes && renderedNotes.length > 0) {
-			const sourceEntry = path.find(entry => entry.id === notes.entryId);
+			const sourceEntry = projectedPath.find(entry => entry.id === notes.entryId);
 			if (sourceEntry) {
 				// A native Anthropic compaction block must open the request, and the
 				// provider folds it into a directly following retained assistant turn
@@ -689,6 +909,20 @@ export function buildSessionContext(
 					createCustomMessage(CONTEXT_NOTES_ENTRY_TYPE, renderedNotes, false, undefined, sourceEntry.timestamp),
 				);
 			}
+		}
+	}
+
+	// Ask recovery appends the real answer without rewriting the journal or moving
+	// its branch. Superseded process-exit placeholders are not answers to display
+	// or send to the provider; real results (including cancellation) stay intact.
+	const answeredAskIds = new Set<string>();
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message?.role !== "toolResult" || message.toolName !== "ask") continue;
+		if (isInterruptedToolResult(message)) {
+			if (answeredAskIds.has(message.toolCallId)) messages.splice(index, 1);
+		} else {
+			answeredAskIds.add(message.toolCallId);
 		}
 	}
 

@@ -4,6 +4,7 @@
  * the main thread's mirror of a worker-homed session, which scopes the same
  * root manager to the child's agent id.
  */
+import { runningAgentsFromRegistryOutsideJobs } from "../async/job-control";
 import type { AsyncJob, AsyncJobManagerApi } from "../async";
 import type { JobWidgetRegistry } from "../job-widgets/types";
 import { AgentRegistry } from "../registry/agent-registry";
@@ -39,7 +40,10 @@ export function asyncJobSnapshot(
 		.getRecentJobs(options?.recentLimit ?? 5, ownerFilter)
 		.map(job => jobSnapshotItem(job, manager.widgets));
 	const delivery = manager.getDeliveryState(ownerFilter);
-	return { running, recent, delivery };
+	const nonJobAgents = runningAgentsFromRegistryOutsideJobs(AgentRegistry.global(), manager, agentId).map(
+		({ id, live }) => ({ id, live }),
+	);
+	return { running, recent, delivery, nonJobAgents };
 }
 
 /**

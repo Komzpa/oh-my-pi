@@ -53,58 +53,63 @@ describe("AgentSession idle custom message render", () => {
 		return { session: created, streamCalls: () => streamCallCount };
 	}
 
-	it("idle display:true no-trigger append paints exactly once without a turn", async () => {
-		const created = createSession();
-		session = created.session;
+	it.each([undefined, "nextTurn"] as const)(
+		"idle display:true paints once without a turn (delivery=%s)",
+		async deliverAs => {
+			const created = createSession();
+			session = created.session;
 
-		const events: { type: string; customType?: string }[] = [];
-		session.subscribe(event => {
-			if (event.type === "message_start" || event.type === "message_end") {
-				events.push({
-					type: event.type,
-					customType: event.message.role === "custom" ? event.message.customType : undefined,
-				});
-			} else {
-				events.push({ type: event.type });
-			}
-		});
+			const events: { type: string; customType?: string }[] = [];
+			session.subscribe(event => {
+				if (event.type === "message_start" || event.type === "message_end") {
+					events.push({
+						type: event.type,
+						customType: event.message.role === "custom" ? event.message.customType : undefined,
+					});
+				} else {
+					events.push({ type: event.type });
+				}
+			});
 
-		expect(session.isStreaming).toBe(false);
-		const dispatched = await session.sendCustomMessage(
-			{ customType: "idle-status", content: "IDLE_DISPLAY_BODY", display: true, attribution: "agent" },
-			{ triggerTurn: false },
-		);
+			expect(session.isStreaming).toBe(false);
+			const dispatched = await session.sendCustomMessage(
+				{ customType: "idle-status", content: "IDLE_DISPLAY_BODY", display: true, attribution: "agent" },
+				{ triggerTurn: false, deliverAs },
+			);
 
-		// No turn started.
-		expect(dispatched).toBe(false);
-		expect(session.isStreaming).toBe(false);
-		expect(created.streamCalls()).toBe(0);
-		expect(events.some(e => e.type === "agent_start" || e.type === "agent_end")).toBe(false);
+			// No turn started.
+			expect(dispatched).toBe(false);
+			expect(session.isStreaming).toBe(false);
+			expect(created.streamCalls()).toBe(0);
+			expect(events.some(e => e.type === "agent_start" || e.type === "agent_end")).toBe(false);
 
-		// Painted exactly once via a message_start/message_end pair (fails pre-fix: no events).
-		const starts = events.filter(e => e.type === "message_start" && e.customType === "idle-status");
-		const ends = events.filter(e => e.type === "message_end" && e.customType === "idle-status");
-		expect(starts.length).toBe(1);
-		expect(ends.length).toBe(1);
+			// Painted exactly once via a message_start/message_end pair (fails pre-fix: no events).
+			const starts = events.filter(e => e.type === "message_start" && e.customType === "idle-status");
+			const ends = events.filter(e => e.type === "message_end" && e.customType === "idle-status");
+			expect(starts.length).toBe(1);
+			expect(ends.length).toBe(1);
 
-		// Present exactly once in agent state.
-		const inState = session.agent.state.messages.filter(m => m.role === "custom" && m.customType === "idle-status");
-		expect(inState.length).toBe(1);
+			// Present exactly once in agent state.
+			const inState = session.agent.state.messages.filter(
+				m => m.role === "custom" && m.customType === "idle-status",
+			);
+			expect(inState.length).toBe(1);
 
-		// Persisted exactly once by the time the promise resolves.
-		const persisted = session.sessionManager
-			.getEntries()
-			.filter(e => e.type === "custom_message" && e.customType === "idle-status");
-		expect(persisted.length).toBe(1);
+			// Persisted exactly once by the time the promise resolves.
+			const persisted = session.sessionManager
+				.getEntries()
+				.filter(e => e.type === "custom_message" && e.customType === "idle-status");
+			expect(persisted.length).toBe(1);
 
-		// Rebuild-from-entries yields one copy — no duplicate after a reload/re-enter.
-		const rebuilt = session
-			.buildDisplaySessionContext()
-			.messages.filter(m => m.role === "custom" && m.customType === "idle-status");
-		expect(rebuilt.length).toBe(1);
-	});
+			// Rebuild-from-entries yields one copy — no duplicate after a reload/re-enter.
+			const rebuilt = session
+				.buildDisplaySessionContext()
+				.messages.filter(m => m.role === "custom" && m.customType === "idle-status");
+			expect(rebuilt.length).toBe(1);
+		},
+	);
 
-	it("idle display:false no-trigger append stays silent", async () => {
+	it.each([undefined, "nextTurn"] as const)("idle display:false stays silent (delivery=%s)", async deliverAs => {
 		const created = createSession();
 		session = created.session;
 
@@ -120,7 +125,7 @@ describe("AgentSession idle custom message render", () => {
 
 		const dispatched = await session.sendCustomMessage(
 			{ customType: "idle-hidden", content: "IDLE_HIDDEN_BODY", display: false, attribution: "agent" },
-			{ triggerTurn: false },
+			{ triggerTurn: false, deliverAs },
 		);
 
 		expect(dispatched).toBe(false);
