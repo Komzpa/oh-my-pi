@@ -2379,6 +2379,7 @@ export async function runRootCommand(
 			options.modelRegistry = modelRegistry;
 			options.hasUI = isInteractive || mode === "rpc-ui";
 			options.allowSessionModelFallback = isInteractive;
+			options.publishPeerSession = isInteractive || mode === "rpc-ui" || parsedArgs.print || autoPrint;
 			options.settingsApproval = isInteractive;
 			options.tuiTranscript = isInteractive;
 			options.autoTitle = isInteractive;
