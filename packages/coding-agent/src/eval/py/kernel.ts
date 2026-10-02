@@ -8,6 +8,7 @@
  * timeout.
  */
 import * as path from "node:path";
+import { ToolResourceScope } from "@oh-my-pi/pi-natives";
 import { $flag, isBunTestRuntime, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../config/settings";
 import {
@@ -15,6 +16,8 @@ import {
 	getRemainingTimeMs,
 	type KernelExecuteOptions,
 	type KernelExecuteResult,
+	type KernelShutdownOptions,
+	type KernelShutdownResult,
 	type KernelStartOptions,
 } from "../kernel-base";
 import { type BackendProbeOptions, probeCandidates } from "../probe";
@@ -176,6 +179,20 @@ async function probePythonKernelAvailability(
 
 export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 	#installedPreludes = new Map<string, PythonPreludeSource>();
+	#resourceScope: ToolResourceScope | null = null;
+
+	#closeResourceScope(): void {
+		this.#resourceScope?.close();
+		this.#resourceScope = null;
+	}
+
+	override async shutdown(options?: KernelShutdownOptions): Promise<KernelShutdownResult> {
+		try {
+			return await super.shutdown(options);
+		} finally {
+			this.#closeResourceScope();
+		}
+	}
 
 	private constructor(id: string) {
 		super(id, {
@@ -305,25 +322,30 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 		const scriptPath = await stageRunnerScript("omp-python-runner", "py", RUNNER_SCRIPT);
 		const kernel = new PythonKernel(Snowflake.next());
 
-		const proc = Bun.spawn([runtime.pythonPath, "-u", scriptPath], {
-			cwd: options.cwd,
-			detached: shouldDetachKernel(process.platform),
-			env: spawnEnv,
-			stdin: "pipe",
-			stdout: "pipe",
-			stderr: "pipe",
-			windowsHide: shouldHideKernelWindow({
-				platform: process.platform,
-				hostHasInheritableConsole: hostHasInheritableConsole(),
-			}),
-		});
-
-		kernel.setProcess(proc);
-
-		const startup = { signal: options.signal, deadlineMs: options.deadlineMs };
-		const startupBudget = Math.min(getRemainingTimeMs(startup.deadlineMs) ?? STARTUP_TIMEOUT_MS, STARTUP_TIMEOUT_MS);
-
 		try {
+			kernel.#resourceScope = new ToolResourceScope();
+			const proc = Bun.spawn(kernel.#resourceScope.wrapCommand([runtime.pythonPath, "-u", scriptPath]), {
+				cwd: options.cwd,
+				detached: shouldDetachKernel(process.platform),
+				env: spawnEnv,
+				stdin: "pipe",
+				stdout: "pipe",
+				stderr: "pipe",
+				windowsHide: shouldHideKernelWindow({
+					platform: process.platform,
+					hostHasInheritableConsole: hostHasInheritableConsole(),
+				}),
+			});
+
+			kernel.setProcess(proc);
+			void proc.exited.then(() => kernel.#closeResourceScope());
+
+			const startup = { signal: options.signal, deadlineMs: options.deadlineMs };
+			const startupBudget = Math.min(
+				getRemainingTimeMs(startup.deadlineMs) ?? STARTUP_TIMEOUT_MS,
+				STARTUP_TIMEOUT_MS,
+			);
+
 			const initScript = buildInitScript(options.cwd, options.env);
 			await kernel.executeWithBudget(initScript, startup.signal, startupBudget, "Python kernel init");
 			await kernel.executeWithBudget(PYTHON_PRELUDE, startup.signal, startupBudget, "Python kernel prelude");

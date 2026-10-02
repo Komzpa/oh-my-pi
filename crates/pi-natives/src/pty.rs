@@ -22,7 +22,8 @@ use napi::{
 use napi_derive::napi;
 use parking_lot::Mutex;
 use pi_shell::output_decode::OutputDecoder;
-use portable_pty::{CommandBuilder, ExitStatus, PtySize, native_pty_system};
+use pi_vcs::process_limit::ToolProcessLimit;
+use portable_pty::{Child, CommandBuilder, ExitStatus, PtySize, native_pty_system};
 
 use crate::{
 	js::into_string,
@@ -305,8 +306,10 @@ fn run_pty_sync(
 	ct: task::CancelToken,
 ) -> Result<PtyRunResult> {
 	let pty_system = native_pty_system();
-	ct.heartbeat()
-		.map_err(|err| Error::from_reason(format!("PTY setup cancelled before openpty: {err}")))?;
+	if let Err(error) = ct.heartbeat() {
+		let timed_out = error.to_string().contains("Timeout");
+		return Ok(PtyRunResult { exit_code: None, cancelled: !timed_out, timed_out });
+	}
 
 	const PTY_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 	let pair = if cfg!(windows) {
@@ -381,8 +384,17 @@ fn run_pty_sync(
 			cmd.env(key, value);
 		}
 	}
-	ct.heartbeat()
-		.map_err(|err| Error::from_reason(format!("PTY setup cancelled before spawn: {err}")))?;
+	let process_scope = ToolProcessLimit::default();
+	let scoped_argv = process_scope
+		.wrap_scope_command(cmd.get_argv())
+		.map_err(|err| {
+			Error::from_reason(format!("Failed to enforce PTY process boundary: {err}"))
+		})?;
+	*cmd.get_argv_mut() = scoped_argv;
+	if let Err(error) = ct.heartbeat() {
+		let timed_out = error.to_string().contains("Timeout");
+		return Ok(PtyRunResult { exit_code: None, cancelled: !timed_out, timed_out });
+	}
 
 	let mut child = pair
 		.slave

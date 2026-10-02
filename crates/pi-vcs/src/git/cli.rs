@@ -188,8 +188,11 @@ fn is_utf8_locale(value: &str) -> bool {
 /// Non-zero exits are returned in [`CliOutput`], not raised.
 pub(crate) async fn run(cwd: &Path, args: &[String], options: &RunOptions) -> Result<CliOutput> {
 	let argv = hardened_args(args, options.read_only);
-	let mut cmd = tokio::process::Command::new("git");
-	cmd.args(&argv)
+	let resource_scope = crate::process_limit::ToolProcessLimit::default();
+	let command = resource_scope.wrap_scope_command(&[std::ffi::OsString::from("git")])?;
+	let mut cmd = tokio::process::Command::new(&command[0]);
+	cmd.args(&command[1..])
+		.args(&argv)
 		.current_dir(cwd)
 		.stdin(if options.stdin.is_some() {
 			Stdio::piped()
@@ -334,6 +337,7 @@ pub(crate) fn run_sync_capped(
 	timeout: Duration,
 	limit: usize,
 ) -> Result<CliOutput> {
+<<<<<<< New base: Merge PR #15313: fix(compaction): skipped long provider retry waits (@roboomp)
 	run_sync_impl(cwd, args, timeout, limit, None)
 }
 
@@ -348,6 +352,18 @@ fn run_sync_impl(
 	let argv = hardened_args(args, write.is_none());
 	let mut cmd = std::process::Command::new("git");
 	cmd.args(&argv)
+||||||| Common ancestor
+	let argv = hardened_args(args, true);
+	let mut cmd = std::process::Command::new("git");
+	cmd.args(&argv)
+=======
+	let argv = hardened_args(args, true);
+	let resource_scope = crate::process_limit::ToolProcessLimit::default();
+	let command = resource_scope.wrap_scope_command(&[std::ffi::OsString::from("git")])?;
+	let mut cmd = std::process::Command::new(&command[0]);
+	cmd.args(&command[1..])
+		.args(&argv)
+>>>>>>> Current commit: Contain Linux child processes; pty/vcs hardening
 		.current_dir(cwd)
 		.stdin(if write.is_some() {
 			Stdio::piped()
