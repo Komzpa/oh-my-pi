@@ -20,7 +20,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentsHubDeps } from "@oh-my-pi/pi-coding-agent/modes/agents-hub-deps";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
+import { TaskTool, checkoutLockOwnerFromTaskError } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import * as isolationRunner from "@oh-my-pi/pi-coding-agent/task/isolation-runner";
@@ -1006,5 +1006,16 @@ describe("task spawn routing", () => {
 
 		gates.get("Fifth")!.resolve();
 		await Promise.all(jobs.map(job => job.promise));
+	});
+});
+
+describe("checkout-lock fast refusal", () => {
+	it("extracts the holding owner so the tool can return NOT STARTED", () => {
+		expect(
+			checkoutLockOwnerFromTaskError(
+				"Refusing coder: coder worker ExactWorker is running in this checkout; pass isolated: true.",
+			),
+		).toBe("ExactWorker");
+		expect(checkoutLockOwnerFromTaskError("Task execution failed: boom")).toBeUndefined();
 	});
 });

@@ -29,7 +29,7 @@ System-prompt principles:
 - SHOULD include concrete examples when they clarify behavior.
 - MUST balance comprehensiveness and clarity; every instruction MUST add value.
 - MUST provide enough context for task variations.
-- MUST make the agent proactive in seeking clarification when needed.
+- MUST make the agent act first from tools, repo, search and manuals, seeking clarification only for a product/taste choice or destructive/external action.
 - MUST build in quality assurance and self-correction.
 
 Created agents MUST be autonomous experts handling designated tasks with minimal additional guidance. Their system prompts: complete operational manuals.
