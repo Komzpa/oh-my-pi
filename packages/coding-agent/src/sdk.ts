@@ -64,6 +64,7 @@ import {
 import { bucketRules } from "./capability/rule-buckets";
 import type { EffectiveExtensionRoots } from "./capability/types";
 import { type OAuthAccountPools, SessionAccountPoolScope } from "./config/account-pools";
+import { publishPeerSession } from "./collab/registry";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
 import { isAuthenticated, kNoAuth, ModelRegistry } from "./config/model-registry";
@@ -144,6 +145,7 @@ import {
 } from "./extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import type { HindsightSessionState } from "./hindsight/state";
+import { IrcBus } from "./irc/bus";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
 import { setSharedLspEnabled } from "./lsp/client";
@@ -867,6 +869,8 @@ export interface CreateAgentSessionOptions {
 
 	/** Whether UI is available (enables interactive tools like ask). Default: false */
 	hasUI?: boolean;
+	/** Publish this top-level session in the owner-private local peer-session registry. Default: false. */
+	publishPeerSession?: boolean;
 	/**
 	 * When a resumed session's saved models cannot be restored even after
 	 * discovery, allow continuing with a warning on another model: the settings
@@ -5155,6 +5159,24 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// process-global postmortem list.
 		let unsubscribeMcpNotifications: (() => void) | undefined;
 		let unregisterMcpPostmortem: (() => void) | undefined;
+		let closePeerPublication: (() => Promise<void>) | undefined;
+
+		if (agentKind === "main" && options.publishPeerSession === true && options.agentRegistry === undefined) {
+			try {
+				const publication = await publishPeerSession({
+					sessionId: sessionManager.getSessionId(),
+					cwd: () => sessionManager.getCwd(),
+					title: () => sessionManager.getSessionName() ?? null,
+					mainAgentId: resolvedAgentId,
+					registry: agentRegistry,
+					irc: new IrcBus(agentRegistry),
+					isBusy: () => session.isStreaming,
+				});
+				closePeerPublication = () => publication.close();
+			} catch (error) {
+				logger.warn("Failed to publish peer session", { error: String(error) });
+			}
+		}
 
 		{
 			const originalDispose = session.dispose.bind(session);
@@ -5203,6 +5225,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					restoreProviderToggles?.();
 					unsubscribeMcpNotifications?.();
 					unregisterMcpPostmortem?.();
+					await closePeerPublication?.();
+					closePeerPublication = undefined;
 					for (const callback of disposeCallbacks) callback();
 					disposeCallbacks.clear();
 					// Drop refs so the process-global postmortem list doesn't retain
