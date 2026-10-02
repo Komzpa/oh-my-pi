@@ -87,9 +87,9 @@
       "types": "./src/tools/index.ts",
       "import": "./src/tools/index.ts"
     },
-    "./tools/*": {
-      "types": "./src/tools/*.ts",
-      "import": "./src/tools/*.ts"
+    "./tools/todo-schedule": {
+      "types": "./src/tools/todo-schedule.ts",
+      "import": "./src/tools/todo-schedule.ts"
     },
     "./status-line": {
       "types": "./src/status-line/index.ts",

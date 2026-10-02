@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
-- Fixed compiled Reemxy extensions failing to load nested TUI tools imports by exporting tool subpaths explicitly.
+- Fixed compiled Reemxy extensions failing to load nested TUI tools imports by exporting `./tools/todo-schedule` explicitly.
 
 - An in-progress TODO row reestimated while running now shows its badge budget as elapsed-at-reestimate plus the new remaining time (`80m / 61m`), instead of comparing total elapsed against the remaining-only estimate (`80m / 15m`).
 - Reopened terminal TODO rows with worker attempts now report summed attempt duration, not elapsed time from their original start.
