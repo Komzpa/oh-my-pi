@@ -1,6 +1,7 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { availableParallelism } from "node:os";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
@@ -1165,6 +1166,57 @@ export function decideTodoDispatch(
   };
 
 }
+/** Per-worker bookkeeping for critical-path /fast: the (wanted, model) pair last sent to
+ * setSubagentFastMode and whether priority is actually realized for it. */
+export type CriticalFastState = Map<string, { modelKey: string | undefined; wanted: boolean; on: boolean }>;
+
+// A worker whose row is on the critical path gets /fast; the harness sets it from the plan, not the
+// model (user 2026-09-24: "If a worker's task is on the critical path, it gets /fast"). Needs omp's
+// ctx.setSubagentFastMode (fork PR #8); older builds skip this silently. setFastMode returns false —
+// and emits "The current model has no service-tier control" — for models without a tier knob
+// (muse-code/kimi-code), so a failed attempt is retried only when the worker's model changes (a
+// fallback to another family re-applies /fast for the new model), never every request. Fast counts
+// as on only when the call succeeded AND the worker's model realizes priority on the wire.
+export function syncCriticalFast(
+  ctx: ExtensionContext,
+  decision: { forecast?: { rows?: TodoTaskForecast[] } | null },
+  fastByWorker: CriticalFastState,
+): void {
+  const setFast = (ctx as { setSubagentFastMode?: (id: string, enabled: boolean) => unknown }).setSubagentFastMode;
+  if (typeof setFast !== "function" || !decision.forecast) return;
+  const running = ctx.getAsyncJobSnapshot()?.running.filter((job) => job.type === "task" && job.status === "running") ?? [];
+  const want = new Map<string, boolean>();
+  for (const row of decision.forecast.rows ?? []) {
+    if (row.status !== "in_progress" && row.status !== "pending") continue;
+    if (typeof row.owner !== "string") continue;
+    const job = running.find((active) => active.id === row.owner || active.agentId === row.owner);
+    if (!job) continue;
+    const id = job.agentId || job.id;
+    want.set(id, (want.get(id) ?? false) || row.critical === true);
+  }
+  for (const [id, enabled] of want) {
+    const model = AgentRegistry.global().get(id)?.session?.model;
+    const modelKey = model ? `${model.provider}/${model.id}` : undefined;
+    const prior = fastByWorker.get(id);
+    // Re-apply only when the wanted state or the worker's model changed: a failed attempt must not
+    // repeat every request (each call re-emits the no-service-tier notice on tier-less models), but
+    // a fallback to another family re-applies /fast.
+    if (prior && prior.wanted === enabled && prior.modelKey === modelKey) continue;
+    try {
+      const ok = setFast.call(ctx, id, enabled) === true;
+      fastByWorker.set(id, {
+        modelKey,
+        wanted: enabled,
+        on: ok && (!enabled || (model ? realizesPriorityServiceTier("priority", model) : false)),
+      });
+    } catch {
+      // Not our child or already gone: leave no record so the next request retries if it is listed.
+      fastByWorker.delete(id);
+    }
+  }
+  for (const id of [...fastByWorker.keys()]) if (!want.has(id)) fastByWorker.delete(id);
+}
+
 export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   const singleWriterLane = process.env.OMP_LANE_UNIT !== undefined;
   const host = pi.pi;
@@ -1501,31 +1553,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   // A worker whose row is on the critical path gets /fast; the harness sets it from the plan, not
   // the model (user 2026-09-24: "If a worker's task is on the critical path, it gets /fast").
   // Needs omp's ctx.setSubagentFastMode (fork PR #8); older builds skip this silently.
-  const fastByWorker = new Map<string, boolean>();
-  const syncCriticalFast = (ctx: ExtensionContext, decision: ReturnType<typeof currentDecision>) => {
-    const setFast = (ctx as { setSubagentFastMode?: (id: string, enabled: boolean) => unknown }).setSubagentFastMode;
-    if (typeof setFast !== "function" || !decision.forecast) return;
-    const running = ctx.getAsyncJobSnapshot()?.running.filter((job) => job.type === "task" && job.status === "running") ?? [];
-    const want = new Map<string, boolean>();
-    for (const row of decision.forecast.rows ?? []) {
-      if (row.status !== "in_progress" && row.status !== "pending") continue;
-      if (typeof row.owner !== "string") continue;
-      const job = running.find((active) => active.id === row.owner || active.agentId === row.owner);
-      if (!job) continue;
-      const id = job.agentId || job.id;
-      want.set(id, (want.get(id) ?? false) || row.critical === true);
-    }
-    for (const [id, enabled] of want) {
-      if (fastByWorker.get(id) === enabled) continue;
-      try {
-        setFast.call(ctx, id, enabled);
-        fastByWorker.set(id, enabled);
-      } catch {
-        // Not our child or already gone: leave it; the next request retries if it is still listed.
-      }
-    }
-    for (const id of [...fastByWorker.keys()]) if (!want.has(id)) fastByWorker.delete(id);
-  };
+  const fastByWorker: CriticalFastState = new Map();
   // `wait` with nothing launched only burns the deadline: a dev server or an idle peer is not a
   // worker whose result will arrive. A plan that parks its backlog behind one worker is a bad plan,
   // not a reason to wait: refuse and send the model back to replanning.
@@ -2499,7 +2527,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       if (userQueued) return gateTrace(ctx, "pending-user-message");
       const now = Date.now();
       const decision = currentDecision(ctx, now);
-      if (isMain(ctx)) syncCriticalFast(ctx, decision);
+      if (isMain(ctx)) syncCriticalFast(ctx, decision, fastByWorker);
       if (isMain(ctx)) {
         const integration = integrationRequirement(ctx, Boolean(decision.key) && !decision.goalPaused, now);
         if (integration) return integration;
