@@ -38,10 +38,19 @@ use crate::{
 };
 
 struct ShellSessionCore {
-	shell:      BrushShell,
+	shell:          BrushShell,
 	/// Session filesystem; each run installs a cancellation-scoped view of it
 	/// (or of the run's own override) and restores it afterwards.
-	filesystem: Fs,
+	filesystem:     Fs,
+	process_scopes: Vec<Arc<process::SpawnRegistry>>,
+}
+
+impl ShellSessionCore {
+	fn prune_process_scopes(&mut self) {
+		self
+			.process_scopes
+			.retain(|registry| registry.has_live_processes().unwrap_or(true));
+	}
 }
 
 impl Drop for ShellSessionCore {
@@ -427,8 +436,15 @@ async fn run_shell_session(
 					.await?,
 				),
 			};
+			session.prune_process_scopes();
 			abort_state.set(at).await;
-			run_shell_command(session, &run_config, on_chunk, tokio_cancel, spawn_registry).await
+			let result =
+				run_shell_command(session, &run_config, on_chunk, tokio_cancel, spawn_registry.clone())
+					.await;
+			if result.is_ok() && spawn_registry.has_live_processes().unwrap_or(true) {
+				session.process_scopes.push(spawn_registry);
+			}
+			result
 		}
 	});
 
@@ -898,7 +914,7 @@ async fn create_session_for_run(
 		source_snapshot(&mut shell, snapshot_path, spawn_registry, cancel_token).await?;
 	}
 
-	Ok(ShellSessionCore { shell, filesystem: config.filesystem.clone() })
+	Ok(ShellSessionCore { shell, filesystem: config.filesystem.clone(), process_scopes: Vec::new() })
 }
 
 async fn source_snapshot(
@@ -916,7 +932,8 @@ async fn source_snapshot(
 		params.set_cancel_token(cancel_token);
 	}
 	if let Some(spawn_registry) = spawn_registry {
-		params.set_spawn_observer(spawn_registry);
+		params.set_spawn_observer(spawn_registry.clone());
+		params.set_external_command_wrapper(spawn_registry);
 	}
 
 	let escaped = snapshot_path.replace('\'', "'\\''");
@@ -1053,8 +1070,14 @@ async fn run_shell_command_in_filesystem(
 
 	let result = match minimizer_mode {
 		minimizer::engine::MinimizerMode::SegmentedChain => {
-			run_shell_command_segmented_chain(session, options, on_chunk, cancel_token, spawn_registry)
-				.await
+			run_shell_command_segmented_chain(
+				session,
+				options,
+				on_chunk,
+				cancel_token,
+				spawn_registry.clone(),
+			)
+			.await
 		},
 		minimizer::engine::MinimizerMode::WholeCommand | minimizer::engine::MinimizerMode::None => {
 			run_shell_command_single(
@@ -1062,19 +1085,24 @@ async fn run_shell_command_in_filesystem(
 				options,
 				on_chunk,
 				cancel_token,
-				spawn_registry,
+				spawn_registry.clone(),
 				minimizer_mode,
 			)
 			.await
 		},
 	};
-
 	if env_scope_pushed {
 		session
 			.shell
 			.env_mut()
 			.pop_scope(EnvironmentScope::Command)
 			.map_err(|err| Error::msg(format!("Failed to pop env scope: {err}")))?;
+	}
+	if spawn_registry.process_limit_was_hit()? {
+		return Err(Error::msg(
+			"tool process limit exceeded: Linux cgroup pids.max blocked process creation at 500 \
+			 tasks; reduce concurrent child processes and retry",
+		));
 	}
 
 	result.map(|(exec, minimized)| {
@@ -1336,6 +1364,7 @@ async fn run_shell_command_once(
 	params.process_group_policy = ProcessGroupPolicy::NewProcessGroup;
 	params.set_cancel_token(cancel_token.clone());
 	params.set_spawn_observer(spawn_registry.clone());
+	params.set_external_command_wrapper(spawn_registry.clone());
 	let reader_cancel = CancellationToken::new();
 	let (activity_tx, activity_rx) = flume::bounded::<()>(1);
 	let reader_callback = on_chunk;
@@ -1396,6 +1425,12 @@ async fn run_shell_command_once(
 
 	if cancel_token.is_cancelled() {
 		terminate_background_jobs(&mut session.shell);
+	}
+	if spawn_registry.process_limit_was_hit()? {
+		return Err(Error::msg(
+			"tool process limit exceeded: Linux cgroup pids.max blocked process creation at 500 \
+			 tasks; reduce concurrent child processes and retry",
+		));
 	}
 
 	drop(params);
@@ -1503,6 +1538,7 @@ async fn run_shell_command_streams_in_filesystem(
 	params.process_group_policy = ProcessGroupPolicy::NewProcessGroup;
 	params.set_cancel_token(cancel_token.clone());
 	params.set_spawn_observer(spawn_registry.clone());
+	params.set_external_command_wrapper(spawn_registry.clone());
 	let reader_cancel = CancellationToken::new();
 	let (activity_tx, activity_rx) = flume::bounded::<()>(1);
 
@@ -1552,6 +1588,12 @@ async fn run_shell_command_streams_in_filesystem(
 			.env_mut()
 			.pop_scope(EnvironmentScope::Command)
 			.map_err(|err| Error::msg(format!("Failed to pop env scope: {err}")))?;
+	}
+	if spawn_registry.process_limit_was_hit()? {
+		return Err(Error::msg(
+			"tool process limit exceeded: Linux cgroup pids.max blocked process creation at 500 \
+			 tasks; reduce concurrent child processes and retry",
+		));
 	}
 
 	drop(params);
@@ -6042,6 +6084,39 @@ replace = [{ pattern = "hello", replacement = "HI" }]
 		// Dropping the shell at scope end reaps the child via kill-on-drop.
 		shell.abort().await;
 	}
+	#[cfg(target_os = "linux")]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn completed_background_scope_is_pruned_on_next_run() {
+		let _guard = shell_test_lock().lock().await;
+		let shell = Shell::new(None);
+		shell
+			.run(
+				ShellRunOptions { command: "sh -c 'sleep 0.2' &".into(), ..Default::default() },
+				None,
+				CancelToken::default(),
+			)
+			.await
+			.expect("start background process");
+		{
+			let session = shell.session.lock().await;
+			assert_eq!(session.as_ref().expect("session").process_scopes.len(), 1);
+		}
+		let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+		while shell.live_background_job_count().await > 0 {
+			assert!(tokio::time::Instant::now() < deadline, "background job did not finish");
+			time::sleep(Duration::from_millis(25)).await;
+		}
+		shell
+			.run(
+				ShellRunOptions { command: "true".into(), ..Default::default() },
+				None,
+				CancelToken::default(),
+			)
+			.await
+			.expect("run after background completion");
+		let mut session = shell.session.lock().await;
+		assert!(session.as_mut().expect("session").process_scopes.is_empty());
+	}
 
 	/// `Shell::pids` reports the in-flight run's live external children without
 	/// waiting on the session lock that the running command holds, and goes
@@ -6911,6 +6986,50 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		}
 		assert_eq!(stdout, b"out\n");
 		assert_eq!(stderr, b"err\n");
+	}
+
+	#[cfg(target_os = "linux")]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn external_bash_python_and_eval_share_the_kernel_boundary() {
+		let command = "sh -c 'printf bash-path\\n'; python3 -c 'print(\"python-path\")'; eval \
+		               'python3 -c \"print(\\\"eval-path\\\")\"'";
+		let (result, output) = execute_captured(command.to_string()).await;
+		assert_eq!(result.exit_code, Some(0));
+		assert!(output.contains("bash-path"));
+		assert!(output.contains("python-path"));
+		assert!(output.contains("eval-path"));
+	}
+
+	#[cfg(target_os = "linux")]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn cap_hit_returns_actionable_tool_error() {
+		let config = ShellConfig {
+			session_env:   None,
+			snapshot_path: None,
+			minimizer:     None,
+			filesystem:    Fs::native(),
+		};
+		let mut session = create_session(&config).await.expect("create shell session");
+		let options = ShellRunConfig {
+			command:    "python3 -c 'import os,time; children=[]; exec(\"for _ in range(256):\\n \
+			             try: pid=os.fork()\\n except OSError: print(\\\"blocked\\\",flush=True); \
+			             break\\n if pid==0: time.sleep(1); os._exit(0)\\n children.append(pid)\"); \
+			             [os.waitpid(pid,0) for pid in children]'"
+				.into(),
+			cwd:        None,
+			env:        None,
+			minimizer:  None,
+			filesystem: None,
+		};
+		let registry = Arc::new(process::SpawnRegistry::with_task_limit(32));
+		let result =
+			run_shell_command(&mut session, &options, None, CancellationToken::new(), registry).await;
+		let error = match result {
+			Err(error) => error.to_string(),
+			Ok(_) => panic!("fork limit must fail the tool call"),
+		};
+		assert!(error.contains("tool process limit exceeded"), "{error}");
+		assert!(error.contains("reduce concurrent child processes"), "{error}");
 	}
 
 	#[cfg(unix)]

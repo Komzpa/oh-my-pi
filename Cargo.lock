@@ -6900,6 +6900,7 @@ dependencies = [
 name = "pi-vcs"
 version = "18.4.12"
 dependencies = [
+ "brush-core",
  "futures",
  "gix",
  "gix-utils",

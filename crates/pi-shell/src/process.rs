@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::Result;
+use brush_core::ExternalCommandWrapper;
 use parking_lot::Mutex;
 /// Current state of a process reference.
 ///
@@ -13,6 +14,7 @@ use parking_lot::Mutex;
 /// builtins read, and re-exported here so this module — and `pi-natives`
 /// through it — keeps one status type for both concerns.
 pub use pi_builtins::ProcessStatus;
+use pi_vcs::process_limit::ToolProcessLimit;
 
 use crate::cancel::CancelToken;
 
@@ -1770,7 +1772,8 @@ struct RegistryState {
 
 #[derive(Default)]
 pub struct SpawnRegistry {
-	state: Mutex<RegistryState>,
+	state:         Mutex<RegistryState>,
+	process_limit: ToolProcessLimit,
 }
 
 impl SpawnRegistry {
@@ -1793,7 +1796,21 @@ impl SpawnRegistry {
 	/// Create an empty registry.
 	#[must_use]
 	pub fn new() -> Self {
-		Self::default()
+		Self { state: Mutex::default(), process_limit: ToolProcessLimit::default() }
+	}
+
+	#[cfg(test)]
+	pub(crate) fn with_task_limit(task_limit: u32) -> Self {
+		Self { state: Mutex::default(), process_limit: ToolProcessLimit::new(task_limit) }
+	}
+
+	/// Reports whether the kernel rejected a process creation at the tool cap.
+	pub fn process_limit_was_hit(&self) -> std::io::Result<bool> {
+		self.process_limit.limit_was_hit()
+	}
+
+	pub(crate) fn has_live_processes(&self) -> std::io::Result<bool> {
+		Ok(self.process_limit.has_live_tasks()? || !self.build_targets().is_empty())
 	}
 
 	/// Record a freshly spawned child. Called from the spawn-observer hook.
@@ -1882,6 +1899,19 @@ impl SpawnRegistry {
 			}
 		}
 		targets
+	}
+}
+
+impl ExternalCommandWrapper for SpawnRegistry {
+	fn wrap_external_command(
+		&self,
+		executable: &std::ffi::OsStr,
+		argv0: &std::ffi::OsStr,
+		args: &[std::ffi::OsString],
+	) -> std::io::Result<Option<(std::ffi::OsString, Vec<std::ffi::OsString>)>> {
+		self
+			.process_limit
+			.wrap_external_command(executable, argv0, args)
 	}
 }
 

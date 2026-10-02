@@ -906,6 +906,12 @@ fn run_commit_hook(repository: &GitRepo, name: &str, args: &[&OsStr]) -> Result<
 	};
 	#[cfg(not(windows))]
 	let mut command = Command::new(&hook);
+	let resource_scope = crate::process_limit::ToolProcessLimit::default();
+	let mut arguments = vec![command.get_program().to_owned()];
+	arguments.extend(command.get_args().map(OsStr::to_owned));
+	let wrapped = resource_scope.wrap_scope_command(&arguments)?;
+	command = Command::new(&wrapped[0]);
+	command.args(&wrapped[1..]);
 	let output = command
 		.args(args)
 		.current_dir(repository.root())
@@ -960,6 +966,265 @@ fn read_optional_file(path: &Path) -> Result<Option<Vec<u8>>> {
 	}
 }
 
+fn canonical_of(path: &Path) -> PathBuf {
+	fs::canonicalize(path).unwrap_or_else(|_| normalize_path(path))
+}
+
+/// Resolve one alternates entry the way git does: absolute entries stand
+/// alone, relative entries resolve against the object store holding them.
+fn resolve_alternate(objects_dir: &Path, line: &str) -> PathBuf {
+	let path = Path::new(line);
+	if path.is_absolute() {
+		path.to_owned()
+	} else {
+		objects_dir.join(path)
+	}
+}
+
+/// Walk the transitively reachable object stores starting at
+/// `source_common/objects` using only filesystem reads. Returns true when the
+/// walk leads back to a visited store or to the destination's own object
+/// directory — i.e. borrowing any of these stores would reproduce git's
+/// "Alternates form a cycle" failure. This runs before any gix open because
+/// even opening the copied metadata fails once it inherits the cycle.
+fn alternates_chain_is_cyclic(source_common: &Path, own_objects: &Path) -> bool {
+	let own_key = canonical_of(own_objects);
+	let mut seen: Vec<PathBuf> = Vec::new();
+	let mut stack: Vec<PathBuf> = vec![canonical_of(&source_common.join("objects"))];
+	while let Some(current) = stack.pop() {
+		if current == own_key || seen.contains(&current) {
+			return true;
+		}
+		seen.push(current.clone());
+		let Ok(contents) = fs::read_to_string(current.join("info/alternates")) else {
+			continue;
+		};
+		for line in contents
+			.lines()
+			.map(str::trim)
+			.filter(|line| !line.is_empty())
+		{
+			stack.push(canonical_of(&resolve_alternate(&current, line)));
+		}
+	}
+	false
+}
+
+/// Copy an object store without its `info/alternates` pointer, breaking any
+/// borrow cycle by materializing objects locally.
+fn copy_objects_non_borrowing(src: &Path, dst: &Path) -> Result<()> {
+	fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
+		fs::create_dir_all(dst)?;
+		for entry in fs::read_dir(src)? {
+			let entry = entry?;
+			let file_type = entry.file_type()?;
+			let dst_path = dst.join(entry.file_name());
+			if file_type.is_dir() {
+				copy_tree(&entry.path(), &dst_path)?;
+			} else if file_type.is_file() {
+				fs::copy(entry.path(), dst_path)?;
+			}
+		}
+		Ok(())
+	}
+	let excluded = src.join("info/alternates");
+	for entry in fs::read_dir(src)? {
+		let entry = entry?;
+		let entry_path = entry.path();
+		if entry_path == excluded {
+			continue;
+		}
+		let dst_path = dst.join(entry.file_name());
+		let file_type = entry.file_type()?;
+		if file_type.is_dir() {
+			if entry_path == src.join("info") {
+				fs::create_dir_all(&dst_path)?;
+				for inner in fs::read_dir(&entry_path)? {
+					let inner = inner?;
+					if inner.path() == excluded {
+						continue;
+					}
+					let inner_dst = dst_path.join(inner.file_name());
+					let inner_type = inner.file_type()?;
+					if inner_type.is_dir() {
+						copy_tree(&inner.path(), &inner_dst)?;
+					} else if inner_type.is_file() {
+						fs::copy(inner.path(), inner_dst)?;
+					}
+				}
+			} else {
+				copy_tree(&entry_path, &dst_path)?;
+			}
+		} else if file_type.is_file() {
+			fs::copy(entry_path, dst_path)?;
+		}
+	}
+	Ok(())
+}
+
+const DETACH_CONFIG_KEYS: [&str; 6] = [
+	"user.name",
+	"user.email",
+	"core.fileMode",
+	"core.splitIndex",
+	"core.sparseCheckout",
+	"core.sparseCheckoutCone",
+];
+
+/// Recursively collect every file under `dir` as `(relative_path, bytes)`,
+/// following the shape of a refs or objects tree. Symlinks are skipped: only
+/// regular files and directories are materialized.
+fn collect_tree_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
+	fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Result<()> {
+		let entries = match fs::read_dir(dir) {
+			Ok(entries) => entries,
+			Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+			Err(err) => return Err(err.into()),
+		};
+		for entry in entries {
+			let entry = entry?;
+			let file_type = entry.file_type()?;
+			if file_type.is_dir() {
+				walk(base, &entry.path(), out)?;
+			} else if file_type.is_file() {
+				let rel = entry
+					.path()
+					.strip_prefix(base)
+					.map_err(|err| Error::backend("git detach", err))?
+					.to_string_lossy()
+					.into_owned();
+				out.push((rel, fs::read(entry.path())?));
+			}
+		}
+		Ok(())
+	}
+	let mut out = Vec::new();
+	walk(dir, dir, &mut out)?;
+	Ok(out)
+}
+
+/// Filesystem-only detach for a source whose alternates chain is cyclic.
+/// Nothing here opens the repository with gix (even opening fails once the
+/// copy inherits the cycle), so HEAD/refs/config are carried over as plain
+/// files and objects are materialized locally with no alternates pointer.
+fn detach_without_borrowing(
+	worktree_root: &Path,
+	git_entry: &Path,
+	git_entry_is_file: bool,
+	source_common: &Path,
+) -> Result<DetachGitDirResult> {
+	let pointer_admin = if git_entry_is_file {
+		let text = fs::read_to_string(git_entry)?;
+		let Some(raw) = text.trim().strip_prefix("gitdir:") else {
+			return Err(Error::backend("git detach", "expected gitdir pointer"));
+		};
+		Some(normalize_path(
+			&git_entry
+				.parent()
+				.unwrap_or_else(|| Path::new("."))
+				.join(raw.trim()),
+		))
+	} else {
+		None
+	};
+	// The admin dir holds HEAD/index for linked worktrees; a full `.git` dir
+	// copy holds them directly.
+	let admin_dir = pointer_admin
+		.clone()
+		.unwrap_or_else(|| git_entry.to_owned());
+	// Refs and config live in the common dir for linked worktrees. Prefer the
+	// admin's `commondir` pointer, falling back to the known source common.
+	let mut common_dir = source_common.to_owned();
+	if let Ok(text) = fs::read_to_string(admin_dir.join("commondir")) {
+		let raw = text.trim();
+		if !raw.is_empty() {
+			let path = Path::new(raw);
+			common_dir = if path.is_absolute() {
+				path.to_owned()
+			} else {
+				normalize_path(&admin_dir.join(raw))
+			};
+		}
+	}
+	let head = read_optional_file(&admin_dir.join("HEAD"))?;
+	let index = read_optional_file(&admin_dir.join("index"))?;
+	let refs_files = collect_tree_files(&common_dir.join("refs"))?;
+	let packed_refs = read_optional_file(&common_dir.join("packed-refs"))?;
+	let config_values = match fs::read_to_string(common_dir.join("config")) {
+		Ok(_) => {
+			let file = gix::config::File::from_path_no_includes(
+				common_dir.join("config"),
+				gix::config::Source::Local,
+			)
+			.map_err(|e| Error::backend("git config", e))?;
+			DETACH_CONFIG_KEYS
+				.into_iter()
+				.filter_map(|key| {
+					file
+						.string(key)
+						.map(|v| (key, v.to_str_lossy().into_owned()))
+				})
+				.collect::<Vec<_>>()
+		},
+		Err(_) => Vec::new(),
+	};
+	let shared = copy_named_files(&admin_dir, "sharedindex.")?;
+	let sparse = read_optional_file(&admin_dir.join("info/sparse-checkout"))?;
+	let shallow = read_optional_file(&source_common.join("shallow"))?;
+	if git_entry_is_file {
+		fs::remove_file(git_entry)?;
+	} else {
+		fs::remove_dir_all(git_entry)?;
+	}
+	if let Some(admin) = pointer_admin {
+		// Best-effort unregistration mirrors the borrowing path: only remove
+		// the admin dir when it belongs to this copy.
+		if let Ok(back) = fs::read_to_string(admin.join("gitdir")) {
+			let real_back = fs::canonicalize(back.trim())
+				.unwrap_or_else(|_| normalize_path(Path::new(back.trim())));
+			let real_entry = fs::canonicalize(git_entry).unwrap_or_else(|_| normalize_path(git_entry));
+			if real_back == real_entry {
+				let _ = fs::remove_dir_all(admin);
+			}
+		}
+	}
+	gix::init(worktree_root).map_err(|e| Error::backend("git init", e))?;
+	copy_objects_non_borrowing(&source_common.join("objects"), &git_entry.join("objects"))?;
+	for (rel, bytes) in refs_files {
+		let dest = git_entry.join("refs").join(&rel);
+		if let Some(parent) = dest.parent() {
+			fs::create_dir_all(parent)?;
+		}
+		fs::write(dest, bytes)?;
+	}
+	if let Some(bytes) = packed_refs {
+		fs::write(git_entry.join("packed-refs"), bytes)?;
+	}
+	if let Some(head) = head {
+		fs::write(git_entry.join("HEAD"), head)?;
+	}
+	for (key, value) in config_values {
+		set_config_file(&git_entry.join("config"), key, &value)?;
+	}
+	if let Some(bytes) = shallow {
+		fs::write(git_entry.join("shallow"), bytes)?;
+	}
+	if let Some(bytes) = sparse {
+		fs::create_dir_all(git_entry.join("info"))?;
+		fs::write(git_entry.join("info/sparse-checkout"), bytes)?;
+	}
+	for (name, bytes) in shared {
+		fs::write(git_entry.join(name), bytes)?;
+	}
+	if let Some(bytes) = index {
+		fs::write(git_entry.join("index"), bytes)?;
+	} else if let Ok(detached) = GitRepo::require(worktree_root)
+		&& resolve_commit(&detached.gix()?, "HEAD").is_ok()
+	{
+		detached.read_tree("HEAD", None)?;
+	}
+	Ok(DetachGitDirResult::Detached)
+}
 /// Sever a copied linked worktree from its source metadata without copying
 /// objects.
 pub fn detach_git_dir(
@@ -974,6 +1239,9 @@ pub fn detach_git_dir(
 	};
 	let source_common =
 		fs::canonicalize(source_common_dir).unwrap_or_else(|_| normalize_path(source_common_dir));
+	if alternates_chain_is_cyclic(&source_common, &worktree_root.join(".git/objects")) {
+		return detach_without_borrowing(worktree_root, &git_entry, meta.is_file(), &source_common);
+	}
 	let original = GitRepo::require(worktree_root)?;
 	let iso_common = fs::canonicalize(&original.info().common_dir)
 		.unwrap_or_else(|_| normalize_path(&original.info().common_dir));
@@ -1034,6 +1302,23 @@ pub fn detach_git_dir(
 			});
 		}
 	}
+	// Never borrow an object store that resolves to the new repository's own
+	// object directory; such an entry would make the new repo depend on
+	// itself. (A transitive source-side cycle is handled before any gix open
+	// by `detach_without_borrowing` below.)
+	let own_key = canonical_of(&git_entry.join("objects"));
+	let mut seen_text: Vec<String> = Vec::new();
+	alternates.retain(|candidate| {
+		if canonical_of(candidate) == own_key {
+			return false;
+		}
+		let text = candidate.to_string_lossy().into_owned();
+		if seen_text.contains(&text) {
+			return false;
+		}
+		seen_text.push(text);
+		true
+	});
 	let alternate_text = alternates
 		.iter()
 		.map(|p| p.to_string_lossy())
@@ -2817,5 +3102,49 @@ mod tests {
 		);
 		assert!(repo.worktree_prune().is_ok());
 		let _ = fs::remove_dir_all(linked);
+	}
+
+	#[test]
+	fn detach_git_dir_breaks_alternates_cycle() {
+		let (temp, repo) = fixture();
+		let common = fs::canonicalize(repo.info().common_dir.clone()).unwrap();
+		let source_head = git(temp.path(), &["rev-parse", "HEAD"]);
+		// Linked-worktree copy first, while the source is still healthy: any
+		// gix open after the cycle is planted below would fail.
+		let linked = temp.path().join("../linked-cycle");
+		let _ = fs::remove_dir_all(&linked);
+		repo
+			.worktree_add(&linked, "main", WorktreeAddOptions {
+				detach:       true,
+				clone:        WorktreeClone::Off,
+				keep_changes: false,
+			})
+			.unwrap();
+		let iso = temp.path().join("../iso-cycle");
+		let _ = fs::remove_dir_all(&iso);
+		let output = Command::new("cp")
+			.args(["-a", linked.to_str().unwrap(), iso.to_str().unwrap()])
+			.output()
+			.unwrap();
+		assert!(output.status.success());
+		let _ = fs::remove_dir_all(&linked);
+		// Simulate two tmp repos whose alternates point at each other: the
+		// source store leads back to itself through its own chain.
+		let source_objects = common.join("objects");
+		let decoy = tempfile::tempdir().unwrap();
+		let decoy_objects = decoy.path().join("objects");
+		fs::create_dir_all(decoy_objects.join("info")).unwrap();
+		fs::write(source_objects.join("info/alternates"), format!("{}\n", decoy_objects.display()))
+			.unwrap();
+		fs::write(decoy_objects.join("info/alternates"), format!("{}\n", source_objects.display()))
+			.unwrap();
+		assert_eq!(detach_git_dir(&iso, &common).unwrap(), DetachGitDirResult::Detached);
+		// No borrowed store: the cyclic pointer is not inherited.
+		let alternates_path = iso.join(".git/objects/info/alternates");
+		assert!(!fs::exists(&alternates_path).unwrap_or(false));
+		// Objects are materialized locally, so HEAD still resolves.
+		assert_eq!(git(&iso, &["rev-parse", "HEAD"]), git(temp.path(), &["rev-parse", "HEAD"]));
+		assert_eq!(git(temp.path(), &["rev-parse", "HEAD"]), source_head);
+		let _ = fs::remove_dir_all(&iso);
 	}
 }
