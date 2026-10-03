@@ -557,7 +557,13 @@ describe("native todo schedule operation", () => {
 	it("rejects blank and colliding rename targets atomically", async () => {
 		for (const content of ["Already exists", "  "]) {
 			const harness = createHarness([
-				{ name: "Work", tasks: [{ content: "Rename me", status: "pending" }, { content: "Already exists", status: "pending" }] },
+				{
+					name: "Work",
+					tasks: [
+						{ content: "Rename me", status: "pending" },
+						{ content: "Already exists", status: "pending" },
+					],
+				},
 			]);
 			const before = structuredClone(harness.phases());
 			const result = await harness.tool.execute(`bad-rename-${content}`, {
@@ -571,5 +577,4 @@ describe("native todo schedule operation", () => {
 			expect(harness.phases()).toEqual(before);
 		}
 	});
-
 });
