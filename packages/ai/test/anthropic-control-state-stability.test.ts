@@ -273,4 +273,18 @@ describe("Anthropic controls derived from the transcript", () => {
 		expectCacheStableContinuation(steered.payload, next.payload);
 		expectValidSystemPlacement(next.payload);
 	});
+	it("records controls at the retained-history index with a provider-only elapsed note", async () => {
+		const withElapsedNote: Message[] = [
+			user("start"),
+			{
+				role: "developer",
+				content: "elapsed 5s / 900s",
+				synthetic: true,
+				timestamp: clock++,
+			},
+		];
+		const first = await capture(withElapsedNote, Effort.High);
+
+		expect(first.message.requestControls?.messageIndex).toBe(1);
+	});
 });

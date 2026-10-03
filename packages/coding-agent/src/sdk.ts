@@ -5305,11 +5305,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						transformed = await dropUnreadableContextImages(transformed, transformModel);
 						transformed = await blobBroker.decorateContext(transformed, transformModel);
 						transformed = clampProviderContextImageBytes(transformed, transformModel);
-						return captureDateCwdReminder.transform(
+						const withDateReminder = captureDateCwdReminder.transform(
 							transformed,
 							formatLocalCalendarDate(),
 							normalizePromptPath(sessionManager.getCwd()),
 						);
+						return options.transformProviderContext
+							? options.transformProviderContext(withDateReminder, transformModel)
+							: withDateReminder;
 					},
 					temperature: agent.temperature,
 					topP: agent.topP,
