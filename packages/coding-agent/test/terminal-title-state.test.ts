@@ -11,7 +11,9 @@ import {
 	setSessionTerminalTitle,
 	setTerminalTitleSpinnerStyle,
 	setTerminalTitleState,
+	setTerminalTitleTaskNow,
 } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
+import { setNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 import { mockWindowsConsoleTitle, type WindowsConsoleTitleMock } from "./terminal-title-test-utils";
 
@@ -119,12 +121,26 @@ describe("session label carries the project", () => {
 		return dir;
 	}
 
-	it("combines the project and the session name", () => {
-		const project = makeProject("tasks-loop");
-		expect(buildSessionTerminalLabel("Independent fork PRs", project)).toBe("tasks-loop · Independent fork PRs");
+	it("puts the project first in the label", () => {
+		const project = makeProject("demo-repo");
+		expect(buildSessionTerminalLabel("Fix the build", project)).toBe("demo-repo · Fix the build");
 		expect(
-			buildTerminalTitleWithState(buildSessionTerminalLabel("Independent fork PRs", project), "idle", 0, true),
-		).toBe(`${BRAND} > tasks-loop · Independent fork PRs`);
+			buildTerminalTitleWithState(buildSessionTerminalLabel("Fix the build", project), "idle", 0, true),
+		).toBe(`${BRAND} > demo-repo · Fix the build`);
+	});
+
+	it("keeps the project inside a 25-character truncation", () => {
+		const project = makeProject("demo-repo");
+		const label = buildSessionTerminalLabel("Investigate the flaky upstream job", project);
+		expect(label!.slice(0, 25).startsWith("demo-repo")).toBe(true);
+	});
+
+	it("keeps the task half at about forty characters", () => {
+		const project = makeProject("demo-repo");
+		const label = buildSessionTerminalLabel("a".repeat(60), project);
+		expect(label?.startsWith("demo-repo · ")).toBe(true);
+		expect(label?.endsWith("…")).toBe(true);
+		expect(label!.slice("demo-repo · ".length).length).toBeLessThanOrEqual(40);
 	});
 
 	it("uses the session name alone when there is no cwd", () => {
@@ -142,14 +158,35 @@ describe("session label carries the project", () => {
 		}
 	});
 
-	it("resolves the project from a subdirectory of the git root", () => {
-		const project = makeProject("tasks-loop");
+	it("resolves the project from a subdirectory of the repo root", () => {
+		const project = makeProject("demo-repo");
 		const nested = path.join(project, "sub", "dir");
 		fs.mkdirSync(nested, { recursive: true });
-		expect(buildSessionTerminalLabel("Deep fix", nested)).toBe("tasks-loop · Deep fix");
+		expect(buildSessionTerminalLabel("Deep fix", nested)).toBe("demo-repo · Deep fix");
 	});
 
-	it("falls back to the directory name outside a git repo", () => {
+	it("resolves the project from a jujutsu workspace root", () => {
+		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tabtitle-"));
+		scratchDirs.push(scratch);
+		const project = path.join(scratch, "demo-repo");
+		fs.mkdirSync(path.join(project, ".jj"), { recursive: true });
+		expect(buildSessionTerminalLabel("Deep fix", project)).toBe("demo-repo · Deep fix");
+	});
+
+	it("resolves the project through a symlinked cwd", () => {
+		const project = makeProject("demo-repo");
+		const link = path.join(path.dirname(project), "linked-dir");
+		fs.symlinkSync(project, link);
+		expect(buildSessionTerminalLabel("Deep fix", link)).toBe("demo-repo · Deep fix");
+	});
+
+	it("uses only the basename for a cwd absent on this machine", () => {
+		// A collab guest echoing the host's remote cwd must not walk the local
+		// filesystem: the remote path's basename is the whole project hint.
+		expect(buildSessionTerminalLabel("Fix thing", "/nonexistent/host/path/my-tool")).toBe("my-tool · Fix thing");
+	});
+
+	it("falls back to the directory name outside a repo", () => {
 		// Same stub as above: pin the true no-repo branch.
 		const existsSpy = spyOn(fs, "existsSync").mockReturnValue(false);
 		try {
@@ -159,18 +196,99 @@ describe("session label carries the project", () => {
 		}
 	});
 
-	it("truncates a long session name but never the project", () => {
-		const project = makeProject("tasks-loop");
-		const label = buildSessionTerminalLabel("a".repeat(60), project);
-		expect(label?.startsWith("tasks-loop · ")).toBe(true);
-		expect(label?.endsWith("…")).toBe(true);
-		expect(label!.length).toBeLessThanOrEqual(48);
+	it("keeps the project across a rename", () => {
+		const project = makeProject("demo-repo");
+		expect(buildSessionTerminalLabel("Topic A", project)).toBe("demo-repo · Topic A");
+		expect(buildSessionTerminalLabel("Topic B", project)).toBe("demo-repo · Topic B");
+	});
+
+	it("shows the in-progress todo row as the task half", () => {
+		const project = makeProject("demo-repo");
+		expect(buildSessionTerminalLabel("Topic A", project, "Collect statistics")).toBe(
+			"demo-repo · Collect statistics",
+		);
 	});
 
 	it("does not duplicate the project when the session name already carries it", () => {
-		const project = makeProject("tasks-loop");
-		expect(buildSessionTerminalLabel("tasks-loop · Something", project)).toBe("tasks-loop · Something");
-		expect(buildSessionTerminalLabel("tasks-loop", project)).toBe("tasks-loop");
+		const project = makeProject("demo-repo");
+		expect(buildSessionTerminalLabel("demo-repo · Something", project)).toBe("demo-repo · Something");
+		expect(buildSessionTerminalLabel("demo-repo", project)).toBe("demo-repo");
+	});
+});
+
+describe("label tracks what the session is doing now", () => {
+	let scratchDirs: string[] = [];
+	let writes: string[] = [];
+	let stdoutSpy: { mockRestore(): void } | undefined;
+	let prevHeadless = false;
+	let ttyDescriptor: PropertyDescriptor | undefined;
+
+	function makeProject(projectName: string): string {
+		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tabtitle-"));
+		scratchDirs.push(scratch);
+		const project = path.join(scratch, projectName);
+		fs.mkdirSync(path.join(project, ".git"), { recursive: true });
+		return project;
+	}
+
+	function lastTitle(): string | undefined {
+		return writes
+			.map(payload => /\x1b\]0;([\s\S]*?)\x07/.exec(payload)?.[1])
+			.filter((t): t is string => t !== undefined)
+			.at(-1);
+	}
+
+	beforeEach(() => {
+		prevHeadless = setTerminalHeadless(false);
+		ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+		Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+		writes = [];
+		stdoutSpy = spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+			writes.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk as Uint8Array));
+			return true;
+		});
+		initTerminalTitleState();
+		setTerminalTitleSpinnerStyle("braille");
+		setTerminalTitleState("idle");
+	});
+
+	afterEach(() => {
+		disposeTerminalTitleState();
+		stdoutSpy?.mockRestore();
+		stdoutSpy = undefined;
+		if (ttyDescriptor) Object.defineProperty(process.stdout, "isTTY", ttyDescriptor);
+		else Reflect.deleteProperty(process.stdout, "isTTY");
+		setTerminalHeadless(prevHeadless);
+		for (const dir of scratchDirs) fs.rmSync(dir, { recursive: true, force: true });
+		scratchDirs = [];
+	});
+
+	it("moves the OSC title to the in-progress todo row and back", () => {
+		const project = makeProject("demo-repo");
+		setSessionTerminalTitle("Topic A", project);
+		expect(lastTitle()).toBe(`${BRAND} > demo-repo · Topic A`);
+		setTerminalTitleTaskNow("Collect statistics");
+		expect(lastTitle()).toBe(`${BRAND} > demo-repo · Collect statistics`);
+		setTerminalTitleTaskNow(undefined);
+		expect(lastTitle()).toBe(`${BRAND} > demo-repo · Topic A`);
+	});
+
+	it("keeps the project in the OSC title when the session is renamed", () => {
+		const project = makeProject("demo-repo");
+		setSessionTerminalTitle("Topic A", project);
+		setSessionTerminalTitle("Topic B", project);
+		expect(lastTitle()).toBe(`${BRAND} > demo-repo · Topic B`);
+	});
+
+	it("carries the composed label into the native TSP title", () => {
+		const project = makeProject("demo-repo");
+		try {
+			setNativeRendering(true);
+			setSessionTerminalTitle("Topic A", project);
+			expect(lastTitle()).toBe("demo-repo · Topic A");
+		} finally {
+			setNativeRendering(false);
+		}
 	});
 });
 
