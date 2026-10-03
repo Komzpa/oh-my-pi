@@ -374,11 +374,7 @@ function selectCompletionBatchTargets(
 }
 
 /** Resolve done targets once for native mutation and the extension safety gate. */
-export function getCompletionTargets(
-	phases: TodoPhase[],
-	entry: TodoCompletionSelector,
-	errors: string[],
-): TodoItem[] {
+export function getCompletionTargets(phases: TodoPhase[], entry: TodoCompletionSelector, errors: string[]): TodoItem[] {
 	if (entry.items !== undefined) {
 		return selectCompletionBatchTargets(phases, { op: "done", task: entry.task, items: entry.items }, errors);
 	}
@@ -1118,8 +1114,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			for (const target of targets) targetRows.add(target.content);
 			const requirements = getLatestRequirements(sessionManager.getBranch());
 			const applicable = requirements.filter(
-				requirement =>
-					requirement.classification === "linked" && requirement.rows.some(row => targetRows.has(row)),
+				requirement => requirement.classification === "linked" && requirement.rows.some(row => targetRows.has(row)),
 			);
 			const artifacts = new Map<string, Promise<RequirementRowArtifact>>();
 			const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
