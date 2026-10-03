@@ -54,7 +54,7 @@ import { AsyncJobError, type AsyncJobManager } from "../async";
 import { hasResolvableTranscript } from "../internal-urls/registry-helpers";
 import { AgentRegistry } from "../registry/agent-registry";
 import { type DiscoveryResult, discoverAgents } from "./discovery";
-import { createEvalCustomTools, describeEvalTools, evalToolsEnabled } from "./eval-tools";
+import { createEvalCustomTools, describeEvalTools, evalToolsEnabled, isBuiltinToolAvailable, stripBuiltinToolNames } from "./eval-tools";
 import { generateTaskName } from "./name-generator";
 import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
@@ -93,6 +93,27 @@ function createUsageTotals(): Usage {
 		totalTokens: 0,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
+}
+
+/** Built-in tool names stripped from a spawn item before eval validation, keyed by item. */
+const strippedBuiltinTools = new WeakMap<object, string[]>();
+
+function appendTaskNotices(
+	result: AgentToolResult<TaskToolDetails>,
+	notices: readonly string[],
+): AgentToolResult<TaskToolDetails> {
+	if (notices.length === 0) return result;
+	const noticeText = notices.join("\n");
+	let appended = false;
+	const content = result.content.map(part => {
+		if (!appended && part.type === "text" && typeof part.text === "string") {
+			appended = true;
+			return { ...part, text: `${part.text}\n\n${noticeText}` };
+		}
+		return part;
+	});
+	if (!appended) content.push({ type: "text", text: noticeText });
+	return { ...result, content };
 }
 
 function addUsageTotals(target: Usage, usage: Partial<Usage>): void {
@@ -282,6 +303,7 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
  */
 function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if (Array.isArray(params.tasks) && params.tasks.length > 0) {
+		for (const item of params.tasks) stripBuiltinToolNames(item, strippedBuiltinTools);
 		return params.tasks;
 	}
 	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task };
@@ -291,6 +313,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if ("tools" in params) item.tools = params.tools;
 	if ("effort" in params) item.effort = params.effort;
 	if ("isolated" in params) item.isolated = params.isolated;
+	stripBuiltinToolNames(item, strippedBuiltinTools);
 	return [item];
 }
 
@@ -894,6 +917,42 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 		const policies = preflights.map(preflight => preflight.policy!);
 		const itemBlocking = policies.map(policy => policy.effectiveAgent.blocking === true);
+		const toolNotices: string[] = [];
+		const unavailableBuiltins: string[] = [];
+		spawnItems.forEach((item, index) => {
+			const policy = policies[index]!;
+			for (const name of strippedBuiltinTools.get(item) ?? []) {
+				if (isBuiltinToolAvailable(name, policy.effectiveAgent)) {
+					toolNotices.push(
+						`Note: \`${name}\` is a built-in tool provided by agent \`${policy.agentName}\`; it was removed from \`tools\`, which accepts eval-defined tools only.`,
+					);
+				} else {
+					unavailableBuiltins.push(name);
+					item.tools = [...(item.tools ?? []), name];
+					const spawn = normalizedSpawnParams[index]!;
+					spawn.tools = [...(spawn.tools ?? []), name];
+				}
+			}
+		});
+		if (unavailableBuiltins.length > 0) {
+			try {
+				await describeEvalTools(this.session, unavailableBuiltins, signal);
+			} catch (error) {
+				return appendTaskNotices(
+					createTaskModeError(`Task execution failed: ${error instanceof Error ? error.message : String(error)}`),
+					toolNotices,
+				);
+			}
+		}
+		if (
+			this.session.getPlanModeState?.()?.enabled === true &&
+			(toolNotices.length > 0 || unavailableBuiltins.length > 0)
+		) {
+			return appendTaskNotices(
+				createTaskModeError("Task execution failed: Eval-defined tools are unavailable in plan mode."),
+				toolNotices,
+			);
+		}
 
 		// Execution mode is per item: an item whose agent type declares
 		// `blocking: true` runs inline on this turn (the parent waits on its
@@ -945,7 +1004,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				signal,
 				onUpdate,
 			);
-			if (!advisory) return result;
+			if (!advisory) return appendTaskNotices(result, toolNotices);
 			let appended = false;
 			const content = result.content.map(part => {
 				if (!appended && part.type === "text" && typeof part.text === "string") {
@@ -955,7 +1014,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				return part;
 			});
 			if (!appended) content.push({ type: "text", text: advisory });
-			return { ...result, content };
+			return appendTaskNotices({ ...result, content }, toolNotices);
 		}
 
 		// Coordination only makes sense for spawns that keep running after this
@@ -1140,7 +1199,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					content: [{ type: "text", text: `Spawned agent \`${agentId}\`...` }],
 					details: buildAsyncDetails(),
 				});
-				return withAdvisory({
+			return appendTaskNotices(
+				withAdvisory({
 					content: [
 						{
 							type: "text",
@@ -1148,13 +1208,16 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						},
 					],
 					details: buildAsyncDetails(),
-				});
+				}),
+				toolNotices,
+			);
 			}
 			onUpdate?.({
 				content: [{ type: "text", text: `Spawned ${started.length} agents...` }],
 				details: buildAsyncDetails(),
 			});
-			return withAdvisory({
+		return appendTaskNotices(
+			withAdvisory({
 				content: [
 					{
 						type: "text",
@@ -1162,7 +1225,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					},
 				],
 				details: buildAsyncDetails(),
-			});
+			}),
+			toolNotices,
+		);
 		}
 
 		// Mixed call: the async jobs above already run detached; the blocking
@@ -1229,10 +1294,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const text = [merged.contentParts.join("\n\n"), spawnedSummary]
 			.filter(section => section.trim().length > 0)
 			.join("\n\n");
-		return withAdvisory({
+	return appendTaskNotices(
+		withAdvisory({
 			content: [{ type: "text", text: text.length > 0 ? text : "No results." }],
 			details: buildAsyncDetails(),
-		});
+		}),
+		toolNotices,
+	);
 	}
 
 	/**

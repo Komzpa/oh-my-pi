@@ -42,6 +42,9 @@ export interface SubagentEventPayload {
 
 // Keep this explicit: ArkType serializes `unknown` as a boolean subschema, which llama.cpp grammars reject.
 const outputSchemaInputSchema = type("object | boolean | string | null");
+const evalToolsField = type("string[]").describe(
+	"Names of eval-defined tools only; built-in tools come from the agent profile.",
+);
 // Coarse per-spawn thinking effort; must stay in sync with TASK_EFFORTS in ../thinking.
 const effortRule = '"lo" | "med" | "hi"' as const;
 
@@ -52,7 +55,7 @@ export const taskItemSchema = type({
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
+	"tools?": evalToolsField,
 	"+": "delete",
 });
 const taskItemSchemaIsolated = type({
@@ -62,7 +65,7 @@ const taskItemSchemaIsolated = type({
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
+	"tools?": evalToolsField,
 	"isolated?": "boolean",
 	"+": "delete",
 });
@@ -74,7 +77,7 @@ export const taskSchema = type({
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
+	"tools?": evalToolsField,
 	"isolated?": "boolean",
 	"+": "delete",
 });
@@ -85,7 +88,7 @@ const taskSchemaNoIsolation = type({
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
+	"tools?": evalToolsField,
 	"+": "delete",
 });
 const taskSchemaBatch = type({
@@ -125,7 +128,7 @@ function createTaskSchema(options: {
 }): BaseType {
 	const agent = taskAgentSchemaRule(options.defaultAgent);
 	const effortField = options.effortEnabled ? { "effort?": effortRule } : {};
-	const toolsField = options.evalToolsEnabled ? { "tools?": "string[]" } : {};
+	const toolsField = options.evalToolsEnabled ? { "tools?": evalToolsField } : {};
 	if (options.batchEnabled) {
 		if (options.isolationEnabled) {
 			const item = type.raw({
