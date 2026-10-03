@@ -3390,10 +3390,6 @@ export class AgentSession implements SettingsScope {
 		};
 	}
 
-	#captureRawRequirementCandidate(rawText: string): void {
-		this.#requirementsLedger.captureCandidate(rawText);
-	}
-
 	#persistMessageEnd(message: AgentMessage, promptGeneration: number): void {
 		// Session transitions may replace the transcript before a queued commit
 		// runs. Never append the previous conversation to the replacement session.
@@ -3432,10 +3428,6 @@ export class AgentSession implements SettingsScope {
 			return;
 		}
 		this.#persistSessionMessageIfMissing(message);
-		if (message.role === "user" && message.attribution === "user") {
-			const rawText = this.#queuedMessageRawText.get(message);
-			if (rawText !== undefined) this.#captureRawRequirementCandidate(rawText);
-		}
 	}
 
 	/**
@@ -3789,6 +3781,10 @@ export class AgentSession implements SettingsScope {
 		if (event.type === "message_end") {
 			await messageEndPersistence;
 			if (this.#promptGeneration !== eventPromptGeneration) return;
+			if (event.message.role === "user" && event.message.attribution === "user") {
+				const rawText = this.#queuedMessageRawText.get(event.message);
+				if (rawText !== undefined) this.#captureRawRequirementCandidate(rawText);
+			}
 			if (interruptedThinkingMessage) {
 				this.sessionManager.appendCustomMessageEntry(
 					interruptedThinkingMessage.customType,
@@ -12961,5 +12957,8 @@ export class AgentSession implements SettingsScope {
 	 */
 	consumeActiveFallbackCreditRedemption(targetModel?: Model): AnthropicFallbackCreditHandle | undefined {
 		return this.#recovery.consumeActiveFallbackCreditRedemption(targetModel);
+	}
+	#captureRawRequirementCandidate(rawText: string): void {
+		this.#requirementsLedger.captureCandidate(rawText);
 	}
 }
