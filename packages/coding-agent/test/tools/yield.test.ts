@@ -735,7 +735,9 @@ describe("YieldTool", () => {
 		await expect(tool.execute("call-empty-type", { type: [] } as never)).rejects.toThrow(
 			"type must be a string or non-empty array of strings",
 		);
-		const bothError = await tool.execute("call-both", { data: { ok: true }, error: "boom" } as never).catch(err => err);
+		const bothError = await tool
+			.execute("call-both", { data: { ok: true }, error: "boom" } as never)
+			.catch(err => err);
 		expect(bothError).toBeInstanceOf(Error);
 		expect(String(bothError.message)).toContain("Resubmit exactly one outcome");
 		expect(String(bothError.message)).toContain(
@@ -772,7 +774,11 @@ describe("YieldTool", () => {
 	it("rejects data alongside ambiguous error text with exact resend guidance", async () => {
 		const tool = new YieldTool(createSession());
 		const failure = await tool
-			.execute("call-ambiguous-error", { type: "result", data: { ok: true }, error: "invalid output shape" } as never)
+			.execute("call-ambiguous-error", {
+				type: "result",
+				data: { ok: true },
+				error: "invalid output shape",
+			} as never)
 			.catch(err => err);
 		expect(failure).toBeInstanceOf(Error);
 		expect(String(failure.message)).toContain("non-placeholder error");
