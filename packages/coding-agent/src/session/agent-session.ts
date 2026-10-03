@@ -45,6 +45,10 @@ import {
 	type ToolChoiceDirective,
 } from "@oh-my-pi/pi-agent-core";
 import {
+	getAssistantPublicationGate,
+	setAssistantPublicationGate,
+} from "@oh-my-pi/pi-agent-core/assistant-publication";
+import {
 	type CompactionPreparation,
 	type CompactionResult,
 	calculatePromptTokens,
@@ -154,7 +158,11 @@ import { emitSessionShutdownEvent, TOP_LEVEL_AGENT } from "../extensibility/exte
 import { extensionEventFromSessionEvent } from "../extensibility/extensions/lifecycle-mirror";
 import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
-import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
+import type {
+	BeforeAssistantMessageEventResult,
+	CompactOptions,
+	ContextUsage,
+} from "../extensibility/extensions/types";
 import type { CustomCommandContext } from "../extensibility/custom-commands/types";
 import { SkillDescriptionCatalog } from "../extensibility/skill-descriptions";
 import type { Skill, SkillWarning } from "../extensibility/skills";
@@ -236,6 +244,12 @@ import {
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";
 import { supportsExternalThinking } from "../tools/think";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import {
+	appendRequirementsSnapshot,
+	createRequirementCandidates,
+	getLatestRequirements,
+	getOverdueRequirementCandidates,
+} from "../tools/requirements-ledger";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { AgentDefinition } from "../task/types";
@@ -414,6 +428,7 @@ import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
 import { YieldQueue } from "./yield-queue";
+import { RequirementsLedgerRuntime, type RequirementPublicationGate } from "./requirements-ledger-runtime";
 
 export * from "./agent-session-events";
 export * from "./agent-session-types";
@@ -714,16 +729,10 @@ export class AgentSession implements SettingsScope {
 	/** Tail of the serialized {@link refreshSkillsAndCommands} chain. */
 	#skillsAndCommandsRefresh: Promise<void> = Promise.resolve();
 	/**
-	 * Raw text the caller originally submitted for a queued plain `role: "user"`
-	 * message — before slash/custom-command rewriting, prompt-template expansion,
-	 * or `^model` mention substitution. Recorded by `#queueUserMessage`, the same
-	 * point `#queueCustomMessage` stamps `__queueChipText` for skill invocations;
-	 * a side map (not a message field) because `UserMessage` has no free-form
-	 * details slot to carry it, and it must never reach the model or persisted
-	 * session content. `removeQueuedMessage` matches against it so an RPC client
-	 * removing by the exact text it submitted can find its own transformed queued
-	 * entry without unsafely replaying a (possibly side-effecting) slash/custom
-	 * command.
+	 * Raw text the caller originally submitted for a user message, before slash/custom-command
+	 * rewriting, prompt-template expansion, or `^model` mention substitution. The side map
+	 * keeps it out of provider and persisted message content; queued prompts also use it for
+	 * exact `removeQueuedMessage` matching.
 	 */
 	readonly #queuedMessageRawText = new WeakMap<AgentMessage, string>();
 
@@ -786,6 +795,8 @@ export class AgentSession implements SettingsScope {
 	#planModeReminderCount = 0;
 	#planModeReminderAwaitingProgress = false;
 	readonly #todo: TodoTracker;
+	readonly #requirementsLedger: RequirementsLedgerRuntime;
+	#requirementsPublicationGate: RequirementPublicationGate | undefined;
 	readonly #modelMentions: ModelMentionRegistry;
 	#workPoolYieldItems: readonly WorkPoolYieldItem[] = [];
 	/** Item set matching the last successfully rebuilt provider prompt. The base
@@ -863,6 +874,8 @@ export class AgentSession implements SettingsScope {
 	#adoptedResetMarkers = new Map<string, number>();
 	// Extension system
 	#extensionRunner: ExtensionRunner | undefined = undefined;
+	/** Out-of-band receipts tied to the exact finalized messages admitted by the native gate. */
+	#settledAssistantStatuses = new WeakSet<AssistantMessage>();
 	#getEvalPreludes: (() => readonly EvalPreludeDefinition[]) | undefined;
 	#reconcileBrowserMcpFilter: AgentSessionConfig["reconcileBrowserMcpFilter"];
 	#skillDescriptions: SkillDescriptionCatalog;
@@ -1918,6 +1931,18 @@ export class AgentSession implements SettingsScope {
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
 		this.#agentKind = config.agentKind ?? "main";
+		this.#requirementsLedger = new RequirementsLedgerRuntime({
+			agent: this.agent,
+			agentKind: () => this.#agentKind,
+			cwd: () => this.sessionManager.getCwd(),
+			sessionManager: this.sessionManager,
+			onSettledAssistantMessage: message => this.#settledAssistantStatuses.add(message),
+			setPublicationGate: gate => {
+				this.#requirementsPublicationGate = gate;
+				this.#syncAssistantPublicationGate();
+			},
+		});
+		this.#syncAssistantPublicationGate();
 		// A subagent's streamed text reaches no output sink until the run settles
 		// (the parent sees only the yield), so a failed turn's partial prose is
 		// replay-safe and transient provider errors after it stay retryable —
@@ -1944,6 +1969,22 @@ export class AgentSession implements SettingsScope {
 		}
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
 			this.#loopGuards.onAssistantEvent(message, assistantMessageEvent);
+			if (getAssistantPublicationGate(this.agent)) {
+				// Withheld streams still drive internal safety and token accounting, never public delivery.
+				if (assistantMessageEvent.type === "start") {
+					this.#ttsr.onAssistantMessageStart();
+					this.tokenRate.begin(message.timestamp);
+				} else if (
+					assistantMessageEvent.type === "text_delta" ||
+					assistantMessageEvent.type === "thinking_delta" ||
+					assistantMessageEvent.type === "toolcall_delta"
+				) {
+					this.tokenRate.push(assistantMessageEvent.delta);
+				}
+				void this.#ttsr
+					.checkMessageUpdate({ type: "message_update", message, assistantMessageEvent })
+					.catch(error => logger.warn("TTSR raw stream check failed", { error }));
+			}
 		});
 		// Tool-result hook owns synchronous post-tool actions that must affect the current loop.
 		this.agent.afterToolCall = ctx => this.#afterToolCall(ctx);
@@ -3379,6 +3420,11 @@ export class AgentSession implements SettingsScope {
 			if (message.role === "custom" && message.customType === "ttsr-injection") {
 				this.#ttsr.markInjectedFromDetails(message.details);
 			}
+			if (message.role === "custom" && message.customType === ASYNC_RESULT_MESSAGE_TYPE) {
+				void this.#requirementsLedger
+					.consumeAsyncResult(message)
+					.catch(error => logger.warn("Requirements ledger async consume failed", { error }));
+			}
 			return;
 		}
 		this.#persistSessionMessageIfMissing(message);
@@ -3640,14 +3686,28 @@ export class AgentSession implements SettingsScope {
 		// concurrently and message_update skips the await, so a reset placed after
 		// it could land behind the new message's first deltas and clear them.
 		if (event.type === "turn_start") this.#ttsr.onTurnStart();
-		if (event.type === "message_start" && event.message.role === "assistant") this.#ttsr.onAssistantMessageStart();
+		if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_start" &&
+			event.message.role === "assistant"
+		) {
+			this.#ttsr.onAssistantMessageStart();
+		}
 
 		// Meter generation per session: each session tracks its own stream, so a
 		// background subagent holds a live reading by the time it is focused and
 		// the main session's reading survives focus round-trips.
-		if (event.type === "message_start" && event.message.role === "assistant") {
+		if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_start" &&
+			event.message.role === "assistant"
+		) {
 			this.tokenRate.begin(event.message.timestamp);
-		} else if (event.type === "message_update" && event.message.role === "assistant") {
+		} else if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_update" &&
+			event.message.role === "assistant"
+		) {
 			const delta = event.assistantMessageEvent;
 			if (delta.type === "text_delta" || delta.type === "thinking_delta" || delta.type === "toolcall_delta") {
 				this.tokenRate.push(delta.delta);
@@ -3715,12 +3775,16 @@ export class AgentSession implements SettingsScope {
 
 		if (event.type === "tool_stream_update") this.#streamingEditGuard.maybeAbort(event);
 
-		if (await this.#ttsr.checkMessageUpdate(event)) return;
+		if (!getAssistantPublicationGate(this.agent) && (await this.#ttsr.checkMessageUpdate(event))) return;
 
 		// Handle session persistence
 		if (event.type === "message_end") {
 			await messageEndPersistence;
 			if (this.#promptGeneration !== eventPromptGeneration) return;
+			if (event.message.role === "user" && event.message.attribution === "user") {
+				const rawText = this.#queuedMessageRawText.get(event.message);
+				if (rawText !== undefined) this.#captureRawRequirementCandidate(rawText);
+			}
 			if (interruptedThinkingMessage) {
 				this.sessionManager.appendCustomMessageEntry(
 					interruptedThinkingMessage.customType,
@@ -4201,7 +4265,8 @@ export class AgentSession implements SettingsScope {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
 				}
-				const todoContinuationScheduled = await this.#todo.checkCompletion(msg);
+				const todoContinuationScheduled =
+					!this.#settledAssistantStatuses.has(msg) && (await this.#todo.checkCompletion(msg));
 				if (todoContinuationScheduled) {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
@@ -4548,7 +4613,7 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
-	#afterToolCall(ctx: AfterToolCallContext): AfterToolCallResult | undefined {
+	async #afterToolCall(ctx: AfterToolCallContext): Promise<AfterToolCallResult | undefined> {
 		if (
 			this.#isTerminalYieldToolResult({
 				toolName: ctx.toolCall.name,
@@ -4561,7 +4626,15 @@ export class AgentSession implements SettingsScope {
 			this.#synchronouslyTerminatedYieldToolCallIds.add(ctx.toolCall.id);
 			this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
 		}
-		return this.#ttsr.afterToolCall(ctx);
+		const receipt = await this.#requirementsLedger.afterToolCall(ctx);
+		const ttsrResult = this.#ttsr.afterToolCall(ctx);
+		if (!receipt) return ttsrResult;
+		if (!ttsrResult) return receipt;
+		return {
+			...ttsrResult,
+			...receipt,
+			...(receipt.content && ttsrResult.content ? { content: [...ttsrResult.content, ...receipt.content] } : {}),
+		};
 	}
 	/**
 	 * Emits the extension `tool_call` event for a loop-dispatched call at
@@ -4576,6 +4649,26 @@ export class AgentSession implements SettingsScope {
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
 		const runner = this.#extensionRunner;
 		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
+		if (this.#agentKind === "main" && ctx.tool.name !== "todo") {
+			const overdue = getOverdueRequirementCandidates(this.sessionManager.getBranch());
+			if (overdue.length > 0) {
+				runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
+				return {
+					block: true,
+					reason: `Non-todo tools are blocked until older requirement candidate(s) ${overdue.map(item => item.id).join(", ")} are classified with todo. Todo remains legal.`,
+				};
+			}
+		}
+		if (this.#agentKind === "main" && ctx.tool.name === "task") {
+			const revised = await this.#requirementsLedger.prepareAuditorTaskCall(
+				ctx.tool.name,
+				ctx.toolCall.id,
+				ctx.args,
+				signal,
+			);
+			if (revised !== undefined) return { args: revised };
+		}
+
 		const ttsrResult = await this.#ttsr.beforeToolCall(ctx);
 		if (ttsrResult) {
 			runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
@@ -4735,6 +4828,14 @@ export class AgentSession implements SettingsScope {
 			signal: this.#postPromptTasksAbortController.signal,
 		});
 		if (this.#promptGeneration !== generation || this.#abortInProgress || this.#isDisposed) {
+			this.#resetSessionStopContinuationState();
+			return false;
+		}
+		if (
+			lastAssistantMessage &&
+			this.#settledAssistantStatuses.has(lastAssistantMessage) &&
+			result?.decision !== "block"
+		) {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}
@@ -5023,6 +5124,40 @@ export class AgentSession implements SettingsScope {
 	 * (login/logout, token refresh that surfaces a new account UUID) without
 	 * needing to re-call `#syncAgentSessionId()` on every such event.
 	 */
+	/** Compose the extension pre-publication gate with the requirements-ledger gate. */
+	#syncAssistantPublicationGate(): void {
+		const runner = this.#extensionRunner;
+		const requirementsGate = this.#agentKind === "main" ? this.#requirementsPublicationGate : undefined;
+		const hasExtensionGate = this.#agentKind === "main" && runner?.hasHandlers("before_assistant_message") === true;
+		if (!hasExtensionGate && !requirementsGate) {
+			setAssistantPublicationGate(this.agent, undefined);
+			return;
+		}
+		setAssistantPublicationGate(this.agent, async (message, signal) => {
+			let extensionResult: BeforeAssistantMessageEventResult | undefined;
+			if (hasExtensionGate && runner) {
+				extensionResult = await runner.emitBeforeAssistantMessage({
+					type: "before_assistant_message",
+					message,
+					signal,
+				});
+				if (
+					extensionResult?.settled === true &&
+					!signal.aborted &&
+					message.stopReason !== "aborted" &&
+					!message.content.some(block => block.type === "toolCall")
+				) {
+					this.#settledAssistantStatuses.add(message);
+				}
+			}
+			if (requirementsGate) {
+				const requirementsResult = await requirementsGate(message, signal);
+				if (requirementsResult !== undefined) return requirementsResult;
+			}
+			return extensionResult;
+		});
+	}
+
 	#syncAgentSessionId(sessionId?: string, notifyChange = true): void {
 		const currentSessionId = this.sessionManager.getSessionId();
 		if (this.#observedSessionId === undefined) {
@@ -5123,6 +5258,7 @@ export class AgentSession implements SettingsScope {
 	 */
 	beginDispose(): void {
 		this.#isDisposed = true;
+		setAssistantPublicationGate(this.agent, undefined);
 		for (const dispose of this.#disposers.splice(0)) dispose();
 		this.#modelDiscoveryAbortController.abort();
 		this.#queuedMessageDrainBlocked = false;
@@ -7051,6 +7187,7 @@ export class AgentSession implements SettingsScope {
 					userInitiated: options?.userInitiated === true ? true : undefined,
 				}
 			: { role: "user" as const, content: userContent, attribution: promptAttribution, timestamp: submittedAt };
+		if (message.role === "user") this.#queuedMessageRawText.set(message, typedText);
 
 		const preludeMessages: AgentMessage[] = [];
 		if (eagerTodoPrelude) {
@@ -7963,8 +8100,8 @@ export class AgentSession implements SettingsScope {
 			if (imageDescriptionNotice) records.push(imageDescriptionNotice);
 			const userMessage: AgentMessage = { role: "user", content, attribution, timestamp: timestamp ?? Date.now() };
 			this.#queuedMessageRawText.set(userMessage, rawText);
+			this.#requirementsLedger.captureCandidate(rawText);
 			records.push(userMessage);
-			this.#irc.queueAside(records);
 			options?.onPromptAdmitted?.();
 			// The awaits above (image normalization / vision description) can span the run's
 			// settle, so the run may already be idle by the time the record lands in the aside
@@ -7986,6 +8123,7 @@ export class AgentSession implements SettingsScope {
 				timestamp: timestamp ?? Date.now(),
 			};
 			this.#queuedMessageRawText.set(userMessage, rawText);
+			this.#requirementsLedger.captureCandidate(rawText);
 			this.agent.followUp(userMessage);
 		} else {
 			for (const notice of prependMessages) this.agent.steer(notice);
@@ -7999,6 +8137,7 @@ export class AgentSession implements SettingsScope {
 				timestamp: timestamp ?? Date.now(),
 			};
 			this.#queuedMessageRawText.set(userMessage, rawText);
+			this.#requirementsLedger.captureCandidate(rawText);
 			this.agent.steer(userMessage);
 		}
 		options?.onPromptAdmitted?.();
@@ -12818,5 +12957,8 @@ export class AgentSession implements SettingsScope {
 	 */
 	consumeActiveFallbackCreditRedemption(targetModel?: Model): AnthropicFallbackCreditHandle | undefined {
 		return this.#recovery.consumeActiveFallbackCreditRedemption(targetModel);
+	}
+	#captureRawRequirementCandidate(rawText: string): void {
+		this.#requirementsLedger.captureCandidate(rawText);
 	}
 }

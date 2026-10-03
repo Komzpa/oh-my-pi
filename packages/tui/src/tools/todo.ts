@@ -43,6 +43,14 @@ export interface TodoPhase {
 	tasks: TodoItem[];
 }
 
+/** Requirement artifact bindings persisted per row (requirements ledger). */
+export interface TodoItem {
+	/** Persisted checkout whose clean HEAD is the row's QA artifact; independent of schedule reservations. */
+	artifactCwd?: string;
+	/** Owner whose checkout was last verified as artifactCwd; a later schedule reassignment invalidates it. */
+	artifactOwner?: string;
+}
+
 /** A task that became complete in the latest update. */
 export interface TodoCompletionTransition {
 	phase: string;

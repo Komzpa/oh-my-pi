@@ -50,6 +50,7 @@ import {
 	type TaskParams,
 	type TaskToolDetails,
 } from "@oh-my-pi/pi-tui/tools/task";
+import { isFailedTaskSingleResult } from "./result-summary";
 import { AsyncJobError, type AsyncJobManager } from "../async";
 import { hasResolvableTranscript } from "../internal-urls/registry-helpers";
 import { AgentRegistry } from "../registry/agent-registry";
@@ -1375,12 +1376,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					// recovery, which a "completed" job would hide. Mirrors the sync
 					// path's status derivation. `isError` marks a child that finished
 					// before a later step (isolation merge, nested patch apply) threw.
-					const resultFailed =
-						result.isError === true ||
-						!singleResult ||
-						(singleResult.aborted ?? false) ||
-						singleResult.exitCode !== 0 ||
-						singleResult.error !== undefined;
+					const resultFailed = isFailedTaskSingleResult(result, singleResult);
 					progress.status = singleResult?.aborted ? "aborted" : resultFailed ? "failed" : "completed";
 					progress.durationMs = singleResult?.durationMs ?? Math.max(0, Date.now() - startedAt);
 					progress.tokens = singleResult?.tokens ?? 0;
