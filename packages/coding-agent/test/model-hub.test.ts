@@ -1762,6 +1762,42 @@ describe("ModelHub", () => {
 		});
 	});
 
+	describe("mouse clicks", () => {
+		test("a click on the locked OAuth login row requests login", () => {
+			const anthropicModel = makeModel("anthropic", "claude-locked-test");
+			const { hub, onLoginRequest } = createHub({
+				models: [anthropicModel],
+				registry: { getAvailable: () => [] },
+			});
+
+			hub.handleInput(DOWN); // All models → locked anthropic
+			const frame = hub.render(220).map(line => stripVTControlCharacters(line));
+			const loginRow = frame.findIndex(line => line.includes("Log in with OAuth"));
+			expect(loginRow).toBeGreaterThanOrEqual(0);
+			// Click one row below the login row: the off-by-one hit must not fire.
+			hub.handleInput(`\x1b[<0;100;${loginRow + 2}M`);
+			expect(onLoginRequest).not.toHaveBeenCalled();
+			// Click the visible login row at its own screen row; SGR rows are 1-based.
+			hub.handleInput(`\x1b[<0;100;${loginRow + 1}M`);
+			expect(onLoginRequest).toHaveBeenCalledWith("anthropic");
+		});
+
+		test("a click on an individual role-picker chip applies that role", () => {
+			const model = makeModel("test", "chip-click-model");
+			const { hub, onAssign } = createHub({ models: [model], scoped: true });
+
+			hub.handleInput("\n"); // Sidebar → model list.
+			hub.handleInput(ALT_R); // role strip
+			const frame = hub.render(220).map(line => stripVTControlCharacters(line));
+			const footer = frame[frame.length - 2] ?? "";
+			const chipCol = footer.indexOf("smol");
+			expect(chipCol).toBeGreaterThanOrEqual(0);
+			// Click the chip at its own visible column; SGR columns are 1-based.
+			hub.handleInput(`\x1b[<0;${chipCol + 1};${frame.length - 1}M`);
+			expect(onAssign.mock.calls[0]?.[1]).toBe("smol");
+		});
+	});
+
 	describe("locked providers", () => {
 		test("catalog providers without credentials appear locked and forward to login", () => {
 			const anthropicModel = makeModel("anthropic", "claude-locked-test");

@@ -2520,7 +2520,10 @@ export class ModelHubComponent implements Component {
 			lines.push(truncateToWidth(theme.fg("muted", "  Add an API key for this provider in config."), width));
 		}
 		if (entry.oauth) {
-			this.#lockedLoginLine = lines.length + 1; // +1 for the status row offset handled by caller
+			// `bodyLine` in the mouse router is already view-local (the frame drops
+			// the status and session-facts rows), so the login row's own push index
+			// is its click row.
+			this.#lockedLoginLine = lines.length;
 			lines.push(
 				truncateToWidth(
 					theme.fg("accent", `  ${theme.nav.cursor} Log in with OAuth (${formatKeyHint("enter")})`),
