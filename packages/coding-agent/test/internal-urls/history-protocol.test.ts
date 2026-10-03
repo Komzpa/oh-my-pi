@@ -8,6 +8,7 @@
  *   the JSONL session file.
  * - An unknown id fails with an error listing the known ids.
  */
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
