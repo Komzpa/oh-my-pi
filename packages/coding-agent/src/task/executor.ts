@@ -142,7 +142,7 @@ import { cfgDisabledProviders } from "../config/model-settings";
 import { getRetryFallbackRole, installRetryFallbackRole } from "../session/retry-fallback-chains";
 import { cfgCompactionThresholdPercent, cfgCompactionThresholdTokens } from "../session/context-settings";
 
-import { Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
+import { Effort as CatalogEffort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 export type { YieldItem } from "@oh-my-pi/pi-tui/tools/task";
 
 const TASK_ABORT_CLEANUP_GRACE_MS = 10_000;
@@ -3724,7 +3724,9 @@ function capImplementationWorkerEffortCeiling(
 		return ceiling;
 	}
 	const configured = ceiling ?? configuredCeiling;
-	return THINKING_EFFORTS.indexOf(configured) <= THINKING_EFFORTS.indexOf(Effort.High) ? configured : Effort.High;
+	return THINKING_EFFORTS.indexOf(configured) <= THINKING_EFFORTS.indexOf(CatalogEffort.High)
+		? configured
+		: CatalogEffort.High;
 }
 
 function capImplementationWorkerThinkingLevel(
@@ -3741,8 +3743,8 @@ function capImplementationWorkerThinkingLevel(
 		return level;
 	}
 	const effort = THINKING_EFFORTS.find(candidate => candidate === level);
-	return effort !== undefined && THINKING_EFFORTS.indexOf(effort) > THINKING_EFFORTS.indexOf(Effort.High)
-		? Effort.High
+	return effort !== undefined && THINKING_EFFORTS.indexOf(effort) > THINKING_EFFORTS.indexOf(CatalogEffort.High)
+		? CatalogEffort.High
 		: level;
 }
 
