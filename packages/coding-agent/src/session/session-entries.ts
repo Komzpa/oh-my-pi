@@ -266,6 +266,12 @@ export interface SessionInitEntry extends SessionEntryBase {
 	compactionThreshold?: { thresholdPercent: number; thresholdTokens: number };
 	/** True when the subagent ran inside an isolation worktree: never revivable, transcript-only after park. Absent on older files. */
 	isolated?: boolean;
+	/** Spawn-installed `subagent:<id>` retry-fallback role, so cold revival can reinstall the same chain. Absent when the spawn installed none. */
+	retryFallbackRole?: string;
+	/** Primary model selector the retry-fallback role is pinned to. Absent when no chain was installed. */
+	retryFallbackPrimary?: string;
+	/** Model selectors after the primary in the spawn's profile ladder. Absent or empty when no chain was installed. */
+	retryFallbackChain?: string[];
 }
 
 /** Mode change entry - tracks agent mode transitions (e.g. plan mode). */

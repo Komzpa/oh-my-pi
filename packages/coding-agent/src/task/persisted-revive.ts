@@ -135,11 +135,31 @@ export function createPersistedSubagentReviverFactory(
 					: undefined),
 				...compactionThresholdSettings(init.compactionThreshold),
 			});
-			// Restore the `subagent:<id>` fallback chain the spawn installed; the
-			// transcript alone cannot rebuild it (multi-model agent patterns and
-			// inherited role chains are resolved only at spawn).
-			if (init.retryFallback) {
-				installRetryFallbackRole(subagentSettings, subagentRetryFallbackRole(ref.id), init.retryFallback);
+			// Restore the spawn's retry-fallback chain: the fresh settings above
+			// carry none, so without this a woken worker's wake turn dies on the
+			// first quota 403/429 instead of failing over to the next profile
+			// model like a fresh spawn. The combined `retryFallback` is the current
+			// persisted form; the separate `retryFallbackRole/Primary/Chain` fields
+			// cover older transcripts. Entries are revalidated as plain strings
+			// because they arrive from a persisted transcript.
+			const revalidated = (entries: readonly unknown[] | undefined): string[] =>
+				(Array.isArray(entries) ? entries : []).filter(
+					(entry): entry is string => typeof entry === "string" && entry.length > 0,
+				);
+			const restoredChain = revalidated(init.retryFallbackChain ?? init.retryFallback?.chain);
+			const restoredPrimary =
+				(typeof init.retryFallbackPrimary === "string" && init.retryFallbackPrimary.length > 0
+					? init.retryFallbackPrimary
+					: undefined) ?? init.retryFallback?.primary;
+			const restoredRole =
+				(typeof init.retryFallbackRole === "string" && init.retryFallbackRole.length > 0
+					? init.retryFallbackRole
+					: undefined) ?? subagentRetryFallbackRole(ref.id);
+			if (restoredPrimary && restoredPrimary.length > 0 && restoredChain.length > 0) {
+				installRetryFallbackRole(subagentSettings, restoredRole, {
+					primary: restoredPrimary,
+					chain: restoredChain,
+				});
 			}
 			const persistedModelPattern =
 				init.modelRole && init.modelRole !== "default"
