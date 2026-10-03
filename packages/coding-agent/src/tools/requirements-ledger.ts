@@ -61,7 +61,9 @@ function parseRequirement(value: unknown): RequirementLedgerItem | undefined {
 		!isRecord(value) ||
 		typeof value.id !== "string" ||
 		!REQUIREMENT_ID.test(value.id) ||
-		(typeof value.at !== "string" || !ISO_TIMESTAMP.test(value.at) || !Number.isFinite(Date.parse(value.at))) ||
+		typeof value.at !== "string" ||
+		!ISO_TIMESTAMP.test(value.at) ||
+		!Number.isFinite(Date.parse(value.at)) ||
 		typeof value.rawText !== "string" ||
 		value.rawText.trim().length === 0 ||
 		typeof value.classification !== "string" ||
@@ -80,7 +82,10 @@ function parseRequirement(value: unknown): RequirementLedgerItem | undefined {
 	) {
 		return undefined;
 	}
-	if (value.mergeInto !== undefined && (typeof value.mergeInto !== "string" || !REQUIREMENT_ID.test(value.mergeInto))) {
+	if (
+		value.mergeInto !== undefined &&
+		(typeof value.mergeInto !== "string" || !REQUIREMENT_ID.test(value.mergeInto))
+	) {
 		return undefined;
 	}
 	if ((value.classification === "merged") !== (value.mergeInto !== undefined)) return undefined;
@@ -298,9 +303,7 @@ export function countRequirements(requirements: readonly RequirementLedgerItem[]
 
 /** Linked rows remain open until the extension records QA evidence for the current artifact. */
 export function isRequirementLinkedToRow(requirements: readonly RequirementLedgerItem[], row: string): boolean {
-	return requirements.some(
-		requirement => requirement.classification === "linked" && requirement.rows.includes(row),
-	);
+	return requirements.some(requirement => requirement.classification === "linked" && requirement.rows.includes(row));
 }
 
 /**
@@ -345,9 +348,11 @@ export function isFreshRequirementVerdict(
 	const auditedHeads = new Set(
 		[...verdict.artifact.matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!.toLowerCase()),
 	);
-	return auditedHeads.size > 0 &&
+	return (
+		auditedHeads.size > 0 &&
 		auditedHeads.size === currentHeads.size &&
-		[...auditedHeads].every(head => currentHeads.has(head));
+		[...auditedHeads].every(head => currentHeads.has(head))
+	);
 }
 
 /** Return the linked ask and every merged raw ask for QA, retaining each source ID. */
@@ -366,7 +371,16 @@ export function getRequirementAuditSources(
 	return sources;
 }
 
+export const REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE = "requirements_auditor_assignments";
 
+export interface RequirementAuditAssignment {
+	ids: string[];
+	snapshot: string;
+	sessionId: string;
+	agent: "qa-auditor";
+	workerId?: string;
+	index?: number;
+}
 /** Candidates become overdue after an assistant turn ends later in the same branch. */
 export function getOverdueRequirementCandidates(entries: readonly SessionEntry[]): RequirementLedgerItem[] {
 	const capturedAt = new Map<string, number>();
@@ -378,16 +392,148 @@ export function getOverdueRequirementCandidates(entries: readonly SessionEntry[]
 				if (!capturedAt.has(requirement.id)) capturedAt.set(requirement.id, index);
 			}
 		}
-		if (
-			entry.type === "message" &&
-			entry.message.role === "assistant" &&
-			entry.message.stopReason === "stop"
-		) {
+		if (entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "stop") {
 			latestAssistantStop = index;
 		}
 	}
 	return getLatestRequirements(entries).filter(
-		requirement => requirement.classification === "candidate" && (capturedAt.get(requirement.id) ?? Infinity) < latestAssistantStop,
+		requirement =>
+			requirement.classification === "candidate" &&
+			(capturedAt.get(requirement.id) ?? Infinity) < latestAssistantStop,
+	);
+}
+function requirementTableCells(line: string): string[] | null {
+	const trimmed = line.trim();
+	if (!trimmed.includes("|")) return null;
+	return trimmed
+		.replace(/^\|/, "")
+		.replace(/\|$/, "")
+		.split("|")
+		.map(cell => {
+			const value = cell.trim();
+			return value.startsWith("`") && value.endsWith("`") ? value.slice(1, -1).trim() : value;
+		});
+}
+
+/** Accept exactly one complete verdict table for the requirements assigned to this worker. */
+export function parseRequirementReceipt(
+	output: string,
+	expectedIds: readonly string[],
+): Array<{ id: string; status: RequirementVerdictStatus; evidence: string; artifact: string }> | null {
+	const expected = new Set(expectedIds);
+	if (expected.size === 0 || expected.size !== expectedIds.length) return null;
+	const lines = output.split(/\r?\n/);
+	const headers: Array<{
+		line: number;
+		id: number;
+		status: number;
+		evidence: number;
+		artifact: number;
+		width: number;
+	}> = [];
+	for (let line = 0; line < lines.length - 1; line++) {
+		const cells = requirementTableCells(lines[line]!);
+		const separator = requirementTableCells(lines[line + 1]!);
+		if (
+			!cells ||
+			!separator ||
+			separator.length !== cells.length ||
+			!separator.every(cell => /^:?-{3,}:?$/.test(cell))
+		)
+			continue;
+		const normalized = cells.map(cell => cell.toLowerCase().replace(/[^a-z]/g, ""));
+		const find = (names: string[]) => {
+			const matches = normalized.flatMap((name, index) => (names.includes(name) ? [index] : []));
+			return matches.length === 1 ? matches[0]! : -1;
+		};
+		const id = find(["id"]);
+		const status = find(["status", "verdict"]);
+		const evidence = find(["evidence"]);
+		const artifact = find(["artifact", "artifactidentity"]);
+		if (id >= 0 && status >= 0 && evidence >= 0 && artifact >= 0) {
+			headers.push({ line, id, status, evidence, artifact, width: cells.length });
+		}
+	}
+	if (headers.length !== 1) return null;
+	const header = headers[0]!;
+	const rows: Array<{ id: string; status: RequirementVerdictStatus; evidence: string; artifact: string }> = [];
+	for (let line = header.line + 2; line < lines.length; line++) {
+		if (!lines[line]!.trim()) break;
+		const cells = requirementTableCells(lines[line]!);
+		if (!cells) break;
+		if (cells.length !== header.width) return null;
+		const id = cells[header.id]!;
+		const status = cells[header.status]!.toLowerCase();
+		const evidence = cells[header.evidence]!;
+		const artifact = cells[header.artifact]!;
+		if (
+			!/^R[1-9]\d*$/.test(id) ||
+			!expected.has(id) ||
+			!Object.hasOwn(VERDICT_STATUSES, status) ||
+			!evidence ||
+			!artifact
+		) {
+			return null;
+		}
+		rows.push({ id, status: status as RequirementVerdictStatus, evidence, artifact });
+	}
+	if (rows.length !== expected.size || new Set(rows.map(row => row.id)).size !== expected.size) return null;
+	return rows;
+}
+
+/** Fingerprint immutable asks and current links so a worker cannot approve changed requirements. */
+export function requirementAuditSnapshot(
+	requirements: readonly RequirementLedgerItem[],
+	ids: readonly string[],
+): string {
+	return JSON.stringify(
+		ids.map(id => {
+			const requirement = requirements.find(entry => entry.id === id);
+			return [id, requirement?.classification, requirement?.rows, getRequirementAuditSources(requirements, id)];
+		}),
 	);
 }
 
+/** Restore only exact, current-session auditor assignments from the newest valid snapshot. */
+export function getPersistedRequirementAuditorAssignments(
+	entries: readonly SessionEntry[],
+	sessionId: string | null,
+	requirements: readonly RequirementLedgerItem[],
+): Map<string, RequirementAuditAssignment> {
+	const restored = new Map<string, RequirementAuditAssignment>();
+	if (!sessionId) return restored;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index]!;
+		if (entry.type !== "custom" || entry.customType !== REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE) continue;
+		if (!isRecord(entry.data) || entry.data.sessionId !== sessionId) continue;
+		if (entry.data.version !== 1 || !Array.isArray(entry.data.jobs)) return restored;
+		for (const value of entry.data.jobs) {
+			if (!isRecord(value)) continue;
+			const { workerId, agent, ids, snapshot } = value;
+			if (
+				typeof workerId !== "string" ||
+				!workerId ||
+				agent !== "qa-auditor" ||
+				!Array.isArray(ids) ||
+				ids.length === 0 ||
+				ids.some(id => typeof id !== "string" || !/^R[1-9]\d*$/.test(id)) ||
+				new Set(ids).size !== ids.length ||
+				typeof snapshot !== "string"
+			) {
+				continue;
+			}
+			const requirementIds = ids as string[];
+			if (
+				requirementIds.some(
+					id => requirements.find(requirement => requirement.id === id)?.classification !== "linked",
+				) ||
+				requirementAuditSnapshot(requirements, requirementIds) !== snapshot
+			) {
+				continue;
+			}
+			restored.set(workerId, { workerId, agent, ids: [...requirementIds], snapshot, sessionId });
+		}
+		return restored;
+	}
+	return restored;
+}

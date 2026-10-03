@@ -35,13 +35,23 @@ const AT = "2026-09-28T12:00:00.000Z";
 describe("canonical todo row metadata", () => {
 	it("retains main and worker owner/resources through the persisted phase reader", () => {
 		const manager = SessionManager.inMemory();
-		const phases = [{
-			name: "Plan",
-			tasks: [
-				{ content: "Main row", status: "pending", schedule: { owner: "main", resources: ["/tmp/main-checkout"], dependencies: [] } },
-				{ content: "Worker row", status: "in_progress", schedule: { owner: "BuildWorker", resources: ["/tmp/worker-checkout"], dependencies: ["Main row"] } },
-			],
-		}];
+		const phases = [
+			{
+				name: "Plan",
+				tasks: [
+					{
+						content: "Main row",
+						status: "pending",
+						schedule: { owner: "main", resources: ["/tmp/main-checkout"], dependencies: [] },
+					},
+					{
+						content: "Worker row",
+						status: "in_progress",
+						schedule: { owner: "BuildWorker", resources: ["/tmp/worker-checkout"], dependencies: ["Main row"] },
+					},
+				],
+			},
+		];
 		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 		const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
 		const rows = persisted[0]!.tasks as Array<TodoPhase["tasks"][number] & { schedule: unknown }>;
@@ -61,18 +71,37 @@ describe("canonical todo row metadata", () => {
 				execFileSync("git", ["init", "--initial-branch=main"], { cwd });
 				writeFileSync(join(cwd, "artifact.txt"), cwd);
 				execFileSync("git", ["add", "artifact.txt"], { cwd });
-				execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "artifact"], { cwd });
+				execFileSync(
+					"git",
+					["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "artifact"],
+					{ cwd },
+				);
 			}
 			const manager = SessionManager.inMemory();
-			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: [{ name: "Plan", tasks: [
-				{ content: "Main row", status: "pending", schedule: { owner: "main", resources: [main] } },
-				{ content: "Worker row", status: "in_progress", schedule: { owner: "BuildWorker", resources: [worker] } },
-			] }] });
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+				phases: [
+					{
+						name: "Plan",
+						tasks: [
+							{ content: "Main row", status: "pending", schedule: { owner: "main", resources: [main] } },
+							{
+								content: "Worker row",
+								status: "in_progress",
+								schedule: { owner: "BuildWorker", resources: [worker] },
+							},
+						],
+					},
+				],
+			});
 			const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
-			for (const [row, cwd] of [["Main row", main], ["Worker row", worker]] as const) {
+			for (const [row, cwd] of [
+				["Main row", main],
+				["Worker row", worker],
+			] as const) {
 				const artifact = await getRequirementRowArtifact({ cwd: main }, row, persisted);
 				expect(artifact).toEqual({
-					cwd, dirty: false,
+					cwd,
+					dirty: false,
 					head: execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim(),
 				});
 			}
@@ -86,13 +115,25 @@ describe("canonical todo row metadata", () => {
 			execFileSync("git", ["init", "--initial-branch=main"], { cwd });
 			writeFileSync(join(cwd, "artifact.txt"), "audited\n");
 			execFileSync("git", ["add", "artifact.txt"], { cwd });
-			execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "audited"], { cwd });
+			execFileSync(
+				"git",
+				["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "audited"],
+				{ cwd },
+			);
 			const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
 			const manager = SessionManager.inMemory();
 			let phases: TodoPhase[] = [];
 			const session: ToolSession = {
-				cwd, hasUI: false, getSessionFile: () => null, settings: Settings.isolated(), getSessionSpawns: () => "*",
-				sessionManager: manager, getTodoPhases: () => phases, setTodoPhases: next => { phases = next; },
+				cwd,
+				hasUI: false,
+				getSessionFile: () => null,
+				settings: Settings.isolated(),
+				getSessionSpawns: () => "*",
+				sessionManager: manager,
+				getTodoPhases: () => phases,
+				setTodoPhases: next => {
+					phases = next;
+				},
 			};
 			const tool = new TodoTool(session);
 			await tool.execute("init", { op: "init", items: ["Build artifact"] });
@@ -101,7 +142,8 @@ describe("canonical todo row metadata", () => {
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 			const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
 			expect(persisted[0]?.tasks.map(task => [task.content, task.artifactCwd, task.artifactOwner])).toEqual([
-				["Build artifact", cwd, "main"], ["Review artifact", cwd, "main"],
+				["Build artifact", cwd, "main"],
+				["Review artifact", cwd, "main"],
 			]);
 			Object.assign(persisted[0]!.tasks[0]!, { schedule: { resources: [] } });
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: persisted });
@@ -109,10 +151,19 @@ describe("canonical todo row metadata", () => {
 			expect(current).toEqual({ cwd, head, dirty: false });
 			const requirement: RequirementLedgerItem = {
 				...createRequirementCandidates([], ["build this artifact"], AT)[0]!,
-				classification: "linked", rows: ["Build artifact"],
-				verdict: { status: "pass", evidence: "qa evidence", artifact: head, workerId: "qa-1", auditor: "qa-auditor" },
+				classification: "linked",
+				rows: ["Build artifact"],
+				verdict: {
+					status: "pass",
+					evidence: "qa evidence",
+					artifact: head,
+					workerId: "qa-1",
+					auditor: "qa-auditor",
+				},
 			};
-			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [requirement]);
+			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [
+				requirement,
+			]);
 			const done = await tool.execute("done", { op: "done", task: "Build artifact" });
 			expect(done.isError).toBeUndefined();
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
@@ -120,16 +171,29 @@ describe("canonical todo row metadata", () => {
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 			const archived = await getRequirementRowArtifact({ cwd, sessionManager: manager }, "Build artifact", phases);
 			expect(isFreshRequirementVerdict(requirement, [{ row: "Build artifact", ...archived }])).toBe(true);
-			const unknown = await getRequirementRowArtifact({ cwd }, "legacy row", [{ name: "Legacy", tasks: [
-				{ content: "legacy row", status: "completed", schedule: { resources: [] } } as TodoPhase["tasks"][number],
-			] }]);
+			const unknown = await getRequirementRowArtifact({ cwd }, "legacy row", [
+				{
+					name: "Legacy",
+					tasks: [
+						{
+							content: "legacy row",
+							status: "completed",
+							schedule: { resources: [] },
+						} as TodoPhase["tasks"][number],
+					],
+				},
+			]);
 			expect(unknown.head).toBeNull();
 			writeFileSync(join(cwd, "artifact.txt"), "committed change\n");
 			const dirty = await getRequirementRowArtifact({ cwd, sessionManager: manager }, "Build artifact", phases);
 			expect(dirty).toMatchObject({ cwd, head, dirty: true });
 			expect(isFreshRequirementVerdict(requirement, [{ row: "Build artifact", ...dirty }])).toBe(false);
 			execFileSync("git", ["add", "artifact.txt"], { cwd });
-			execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "changed"], { cwd });
+			execFileSync(
+				"git",
+				["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "changed"],
+				{ cwd },
+			);
 			const changed = await getRequirementRowArtifact({ cwd, sessionManager: manager }, "Build artifact", phases);
 			expect(changed.head).not.toBe(head);
 			expect(isFreshRequirementVerdict(requirement, [{ row: "Build artifact", ...changed }])).toBe(false);
@@ -150,20 +214,40 @@ describe("canonical todo row metadata", () => {
 				execFileSync("git", ["init", "--initial-branch=main"], { cwd });
 				writeFileSync(join(cwd, "artifact.txt"), cwd);
 				execFileSync("git", ["add", "artifact.txt"], { cwd });
-				execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "artifact"], { cwd });
+				execFileSync(
+					"git",
+					["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "artifact"],
+					{ cwd },
+				);
 			}
 			const manager = SessionManager.inMemory();
-			const phases = [{ name: "Plan", tasks: [{
-				content: "Worker result", status: "in_progress", artifactCwd: main, artifactOwner: "main",
-				schedule: { owner, resources: [] },
-			}] }] as TodoPhase[];
+			const phases = [
+				{
+					name: "Plan",
+					tasks: [
+						{
+							content: "Worker result",
+							status: "in_progress",
+							artifactCwd: main,
+							artifactOwner: "main",
+							schedule: { owner, resources: [] },
+						},
+					],
+				},
+			] as unknown as TodoPhase[];
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 			const ctx = { cwd: main, sessionManager: manager };
 			const unknown = await getRequirementRowArtifact(ctx, "Worker result", phases);
 			expect(unknown.head).toBeNull();
-			registry.register({ id: owner, displayName: owner, kind: "sub", status: "idle", session: {
-				sessionManager: { getCwd: () => worker },
-			} as never });
+			registry.register({
+				id: owner,
+				displayName: owner,
+				kind: "sub",
+				status: "idle",
+				session: {
+					sessionManager: { getCwd: () => worker },
+				} as never,
+			});
 			const bound = await bindRequirementRowArtifact(ctx, "Worker result", phases, {
 				appendEntry: (type, data) => manager.appendCustomEntry(type, data),
 			});
@@ -175,15 +259,24 @@ describe("canonical todo row metadata", () => {
 			expect(await getRequirementRowArtifact(ctx, "Worker result", persisted)).toEqual(bound);
 			persisted[0]!.tasks[0]!.status = "completed";
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: persisted });
-			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: [{ name: "Next", tasks: [
-				{ content: "Different row", status: "pending", artifactCwd: main, artifactOwner: "main" },
-			] }] });
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+				phases: [
+					{
+						name: "Next",
+						tasks: [{ content: "Different row", status: "pending", artifactCwd: main, artifactOwner: "main" }],
+					},
+				],
+			});
 			const latest = getLatestTodoPhasesFromEntries(manager.getBranch());
 			const archived = await getRequirementRowArtifact(ctx, "Worker result", latest);
 			expect(archived).toEqual(bound);
 			writeFileSync(join(worker, "artifact.txt"), "new worker commit\n");
 			execFileSync("git", ["add", "artifact.txt"], { cwd: worker });
-			execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "worker changed"], { cwd: worker });
+			execFileSync(
+				"git",
+				["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "worker changed"],
+				{ cwd: worker },
+			);
 			const changed = await getRequirementRowArtifact(ctx, "Worker result", latest);
 			expect(changed.cwd).toBe(worker);
 			expect(changed.head).not.toBe(auditedHead);
@@ -201,7 +294,9 @@ describe("canonical requirements ledger", () => {
 		const requirements = createRequirementCandidates([], asks, AT);
 		appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, requirements);
 		expect(getLatestRequirements(manager.getBranch()).map(item => [item.id, item.rawText])).toEqual([
-			["R1", asks[0]], ["R2", asks[1]], ["R3", asks[2]],
+			["R1", asks[0]],
+			["R2", asks[1]],
+			["R3", asks[2]],
 		]);
 		const next = createRequirementCandidates(getLatestRequirements(manager.getBranch()), ["fourth"], AT);
 		expect(next.map(item => item.id)).toEqual(["R1", "R2", "R3", "R4"]);
@@ -214,8 +309,12 @@ describe("canonical requirements ledger", () => {
 	it("rejects malformed and duplicate IDs without silently deleting asks", () => {
 		const requirements = createRequirementCandidates([], ["keep these words"], AT);
 		expect(parseRequirementsLedger({ version: 1, requirements: [...requirements, requirements[0]] })).toBeUndefined();
-		expect(parseRequirementsLedger({ version: 1, requirements: [{ ...requirements[0], at: "yesterday" }] })).toBeUndefined();
-		expect(parseRequirementsLedger({ version: 1, requirements: [{ ...requirements[0], verdict: { status: "pass" } }] })).toBeUndefined();
+		expect(
+			parseRequirementsLedger({ version: 1, requirements: [{ ...requirements[0], at: "yesterday" }] }),
+		).toBeUndefined();
+		expect(
+			parseRequirementsLedger({ version: 1, requirements: [{ ...requirements[0], verdict: { status: "pass" } }] }),
+		).toBeUndefined();
 		const passVerdict = { status: "pass" as const, evidence: "observed", artifact: "artifact", workerId: "QA" };
 		for (const verdict of [
 			{ ...passVerdict, evidence: "   " },
@@ -229,21 +328,47 @@ describe("canonical requirements ledger", () => {
 				}),
 			).toBeUndefined();
 		}
-		expect(parseRequirementsLedger({ version: 1, requirements: [{ ...requirements[0]!, classification: "not-a-requirement" }] })).toBeUndefined();
-		expect(parseRequirementsLedger({ version: 1, requirements: [{ ...requirements[0]!, classification: "not-a-requirement", reason: "  " }] })).toBeUndefined();
+		expect(
+			parseRequirementsLedger({
+				version: 1,
+				requirements: [{ ...requirements[0]!, classification: "not-a-requirement" }],
+			}),
+		).toBeUndefined();
+		expect(
+			parseRequirementsLedger({
+				version: 1,
+				requirements: [{ ...requirements[0]!, classification: "not-a-requirement", reason: "  " }],
+			}),
+		).toBeUndefined();
 		expect(classifyRequirement(requirements, "R1", "not-a-requirement")).toHaveProperty("error");
-		expect(() => appendRequirementsSnapshot({ appendEntry() { throw new Error("must not write"); } }, [{ ...requirements[0]!, id: "task-1" }])).toThrow("Invalid requirements ledger");
+		expect(() =>
+			appendRequirementsSnapshot(
+				{
+					appendEntry() {
+						throw new Error("must not write");
+					},
+				},
+				[{ ...requirements[0]!, id: "task-1" }],
+			),
+		).toThrow("Invalid requirements ledger");
 	});
 
 	it("merges candidate identities without dropping raw words or linked rows", () => {
 		const requirements = createRequirementCandidates([], ["first", "second"], AT);
 		requirements[1] = {
-			...requirements[1]!, classification: "linked", rows: ["row B"],
+			...requirements[1]!,
+			classification: "linked",
+			rows: ["row B"],
 			verdict: { status: "pass", evidence: "old audit", artifact: "old artifact", workerId: "QA" },
 		};
 		const merged = classifyRequirement(requirements, "R1", "merged", { mergeInto: "R2" });
 		if ("error" in merged) throw new Error(merged.error);
-		expect(merged.requirements[0]).toEqual({ ...requirements[0]!, classification: "merged", rows: [], mergeInto: "R2" });
+		expect(merged.requirements[0]).toEqual({
+			...requirements[0]!,
+			classification: "merged",
+			rows: [],
+			mergeInto: "R2",
+		});
 		expect(merged.requirements[1]?.rows).toEqual(["row B"]);
 		expect(merged.requirements[1]?.verdict).toBeUndefined();
 		expect(requirements[1]?.verdict?.status).toBe("pass");
@@ -256,14 +381,26 @@ describe("canonical requirements ledger", () => {
 	});
 
 	it("counts candidates and unverifiable verdicts as open, excluding merged and rejected asks", () => {
-		const requirements = createRequirementCandidates([], ["candidate", "pass", "fail", "unverifiable", "rejected", "merged"], AT);
+		const requirements = createRequirementCandidates(
+			[],
+			["candidate", "pass", "fail", "unverifiable", "rejected", "merged"],
+			AT,
+		);
 		const verdict = (status: "pass" | "fail" | "unverifiable") => ({
-			status, evidence: "observed", artifact: "r2", workerId: "QA",
+			status,
+			evidence: "observed",
+			artifact: "r2",
+			workerId: "QA",
 			...(status === "pass" ? { auditor: "qa-auditor" as const } : {}),
 		});
 		requirements[1] = { ...requirements[1]!, classification: "linked", rows: ["B"], verdict: verdict("pass") };
 		requirements[2] = { ...requirements[2]!, classification: "linked", rows: ["C"], verdict: verdict("fail") };
-		requirements[3] = { ...requirements[3]!, classification: "linked", rows: ["D"], verdict: verdict("unverifiable") };
+		requirements[3] = {
+			...requirements[3]!,
+			classification: "linked",
+			rows: ["D"],
+			verdict: verdict("unverifiable"),
+		};
 		requirements[4] = { ...requirements[4]!, classification: "not-a-requirement", reason: "question" };
 		requirements[5] = { ...requirements[5]!, classification: "merged", mergeInto: "R2" };
 		expect(countRequirements(requirements)).toEqual({ total: 4, passed: 1, open: 2, failed: 1 });
@@ -281,21 +418,33 @@ describe("canonical requirements ledger", () => {
 		const ledger = parseRequirementsLedger({ version: 1, requirements });
 		expect(ledger?.requirements[0]?.rawText).toBe("legacy pass");
 		expect(countRequirements(ledger!.requirements)).toEqual({ total: 1, passed: 0, open: 1, failed: 0 });
-		expect(isFreshRequirementVerdict(ledger!.requirements[0]!, [{ row: "Row", head: sha, dirty: false }])).toBe(false);
+		expect(isFreshRequirementVerdict(ledger!.requirements[0]!, [{ row: "Row", head: sha, dirty: false }])).toBe(
+			false,
+		);
 	});
 });
 
 describe("todo requirement classification", () => {
 	function harness(cwd = "/tmp", initialPhases?: TodoPhase[]) {
 		const manager = SessionManager.inMemory();
-		let phases: TodoPhase[] = initialPhases ?? [{ name: "Work", tasks: [{ content: "Build artifact", status: "pending" }] }];
+		let phases: TodoPhase[] = initialPhases ?? [
+			{ name: "Work", tasks: [{ content: "Build artifact", status: "pending" }] },
+		];
 		manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
-			version: 1, requirements: createRequirementCandidates([], ["  preserve the ask  ", "second ask", "third ask"], AT),
+			version: 1,
+			requirements: createRequirementCandidates([], ["  preserve the ask  ", "second ask", "third ask"], AT),
 		});
 		const session: ToolSession = {
-			cwd, hasUI: false, getSessionFile: () => null,
-			settings: Settings.isolated(), getSessionSpawns: () => "*",
-			sessionManager: manager, getTodoPhases: () => phases, setTodoPhases: next => { phases = next; },
+			cwd,
+			hasUI: false,
+			getSessionFile: () => null,
+			settings: Settings.isolated(),
+			getSessionSpawns: () => "*",
+			sessionManager: manager,
+			getTodoPhases: () => phases,
+			setTodoPhases: next => {
+				phases = next;
+			},
 		};
 		return { manager, tool: new TodoTool(session), getPhases: () => phases };
 	}
@@ -303,26 +452,43 @@ describe("todo requirement classification", () => {
 	it("persists classifications and keeps TODO phases unchanged", async () => {
 		const { manager, tool, getPhases } = harness();
 		const before = getPhases();
-		const linked = await tool.execute("link", { op: "classify", id: "R1", classification: "linked", rows: ["Build artifact"] });
+		const linked = await tool.execute("link", {
+			op: "classify",
+			id: "R1",
+			classification: "linked",
+			rows: ["Build artifact"],
+		});
 		expect(linked.isError).toBeUndefined();
-		const snapshotsBefore = manager.getBranch().filter(
-			entry => entry.type === "custom" && entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
-		).length;
+		const snapshotsBefore = manager
+			.getBranch()
+			.filter(entry => entry.type === "custom" && entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE).length;
 		const reclassification = await tool.execute("reclassify", {
-			op: "classify", id: "R1", classification: "not-a-requirement", reason: "later change",
+			op: "classify",
+			id: "R1",
+			classification: "not-a-requirement",
+			reason: "later change",
 		});
 		expect(reclassification.isError).toBe(true);
 		expect(
-			manager.getBranch().filter(entry => entry.type === "custom" && entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE),
+			manager
+				.getBranch()
+				.filter(entry => entry.type === "custom" && entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE),
 		).toHaveLength(snapshotsBefore);
 		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("linked");
 		expect(committedTodoPhases(linked)).toBeUndefined();
 		expect(getPhases()).toBe(before);
-		await tool.execute("reject", { op: "classify", id: "R2", classification: "not-a-requirement", reason: "just a question" });
+		await tool.execute("reject", {
+			op: "classify",
+			id: "R2",
+			classification: "not-a-requirement",
+			reason: "just a question",
+		});
 		await tool.execute("merge", { op: "classify", id: "R3", classification: "merged", mergeInto: "R1" });
 		const persisted = getLatestRequirements(manager.getBranch());
 		expect(persisted.map(item => [item.id, item.classification, item.rawText])).toEqual([
-			["R1", "linked", "  preserve the ask  "], ["R2", "not-a-requirement", "second ask"], ["R3", "merged", "third ask"],
+			["R1", "linked", "  preserve the ask  "],
+			["R2", "not-a-requirement", "second ask"],
+			["R3", "merged", "third ask"],
 		]);
 		expect(persisted[0]?.rows).toEqual(["Build artifact"]);
 		expect(persisted[2]?.mergeInto).toBe("R1");
@@ -347,14 +513,19 @@ describe("todo requirement classification", () => {
 			{ classification: "merged" as const, mergeInto: "R1" },
 		]) {
 			const { manager, tool } = harness();
-			const merged = classifyRequirement(getLatestRequirements(manager.getBranch()), "R3", "merged", { mergeInto: "R2" });
+			const merged = classifyRequirement(getLatestRequirements(manager.getBranch()), "R3", "merged", {
+				mergeInto: "R2",
+			});
 			if ("error" in merged) throw new Error(merged.error);
-			appendRequirementsSnapshot({ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) }, merged.requirements);
+			appendRequirementsSnapshot(
+				{ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) },
+				merged.requirements,
+			);
 			const before = getLatestRequirements(manager.getBranch());
 			const result = await tool.execute("invalid-merge-target", { op: "classify", id: "R2", ...transition });
 			expect(result.isError).toBe(true);
-			expect(result.content[0]?.text).toContain("R3 is merged into it");
-			expect(getLatestRequirements(manager.getBranch())).toEqual(before);
+			const first = result.content[0];
+			expect(first?.type === "text" ? first.text : undefined).toContain("R3 is merged into it");
 			expect(parseRequirementsLedger({ version: 1, requirements: before })).toBeDefined();
 		}
 	});
@@ -376,14 +547,19 @@ describe("todo requirement classification", () => {
 			runGit("add", "artifact.txt");
 			runGit("commit", "-m", "changed artifact");
 			const currentHead = runGit("rev-parse", "HEAD").trim();
-			const phases = [{
-				name: "Work",
-				tasks: [{ content: "Build artifact", status: "pending", schedule: { owner: "main", resources: [cwd] } }],
-			}] as TodoPhase[];
+			const phases = [
+				{
+					name: "Work",
+					tasks: [{ content: "Build artifact", status: "pending", schedule: { owner: "main", resources: [cwd] } }],
+				},
+			] as unknown as TodoPhase[];
 			const { manager, tool, getPhases } = harness(cwd, phases);
 			const linked = getLatestRequirements(manager.getBranch());
 			linked[0] = { ...linked[0]!, classification: "linked", rows: ["Build artifact"] };
-			appendRequirementsSnapshot({ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) }, linked);
+			appendRequirementsSnapshot(
+				{ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) },
+				linked,
+			);
 			const blocked = await tool.execute("without-pass", { op: "done", task: "Build artifact" });
 			expect(blocked.isError).toBe(true);
 			function appendPass(artifact: string, workerId: string, auditor?: "qa-auditor") {
@@ -391,11 +567,17 @@ describe("todo requirement classification", () => {
 				requirements[0] = {
 					...requirements[0]!,
 					verdict: {
-						status: "pass", evidence: "audited", artifact, workerId,
+						status: "pass",
+						evidence: "audited",
+						artifact,
+						workerId,
 						...(auditor ? { auditor } : {}),
 					},
 				};
-				appendRequirementsSnapshot({ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) }, requirements);
+				appendRequirementsSnapshot(
+					{ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) },
+					requirements,
+				);
 			}
 			appendPass(auditedHead, "qa-run", "qa-auditor");
 			const stale = await tool.execute("stale-pass", { op: "done", task: "Build artifact" });
@@ -428,15 +610,23 @@ describe("todo requirement classification", () => {
 	});
 
 	it("uses exact explicit batches for direct mutation and linked-row gating", async () => {
-		const phases: TodoPhase[] = [{ name: "Work", tasks: [
-			{ content: "Row A", status: "pending" },
-			{ content: "Row B", status: "pending" },
-			{ content: "Row C", status: "pending" },
-		] }];
+		const phases: TodoPhase[] = [
+			{
+				name: "Work",
+				tasks: [
+					{ content: "Row A", status: "pending" },
+					{ content: "Row B", status: "pending" },
+					{ content: "Row C", status: "pending" },
+				],
+			},
+		];
 		const { manager, tool, getPhases } = harness("/tmp", phases);
 		const requirements = getLatestRequirements(manager.getBranch());
 		requirements[0] = { ...requirements[0]!, classification: "linked", rows: ["Row A"] };
-		appendRequirementsSnapshot({ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) }, requirements);
+		appendRequirementsSnapshot(
+			{ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) },
+			requirements,
+		);
 		const beforeEmptyBatch = structuredClone(getPhases());
 		const emptyBatch = await tool.execute("done-empty-batch", { op: "done", items: [] });
 		expect(emptyBatch.isError).toBe(true);

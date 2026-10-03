@@ -40,7 +40,7 @@ import { truncateForPrompt } from "../tools/approval";
 import { hasWaitTool } from "../tools/wait";
 import { isIrcEnabled } from "../irc/messaging";
 import { isReadOnlyAgent } from "./read-only-policy";
-import { formatTaskResultSummary } from "./result-summary";
+import { formatTaskResultSummary, isFailedTaskSingleResult } from "./result-summary";
 import { isScoutSpawnable, resolveSpawnPolicy } from "./spawn-policy";
 import { type AgentDefinition, canSpawnAtDepth, getTaskSchema, type TaskToolSchemaInstance } from "./types";
 import {
@@ -1375,12 +1375,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					// recovery, which a "completed" job would hide. Mirrors the sync
 					// path's status derivation. `isError` marks a child that finished
 					// before a later step (isolation merge, nested patch apply) threw.
-					const resultFailed =
-						result.isError === true ||
-						!singleResult ||
-						(singleResult.aborted ?? false) ||
-						singleResult.exitCode !== 0 ||
-						singleResult.error !== undefined;
+					const resultFailed = isFailedTaskSingleResult(result, singleResult);
 					progress.status = singleResult?.aborted ? "aborted" : resultFailed ? "failed" : "completed";
 					progress.durationMs = singleResult?.durationMs ?? Math.max(0, Date.now() - startedAt);
 					progress.tokens = singleResult?.tokens ?? 0;

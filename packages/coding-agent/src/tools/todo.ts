@@ -30,7 +30,6 @@ import {
 	type RequirementsLedgerAppender,
 } from "./requirements-ledger";
 
-
 /** Whether an unknown value is a persisted todo phase. */
 export function isTodoPhase(value: unknown): value is TodoPhase {
 	if (!isRecord(value) || typeof value.name !== "string" || !Array.isArray(value.tasks)) return false;
@@ -305,31 +304,56 @@ export async function getRequirementRowArtifact(
 	if (!agent && activeJob?.agentId) agent = registry.get(activeJob.agentId);
 	if (!agent && !archived) {
 		for (const reference of registry.list()) {
-			if (reference.todoRow !== row) continue;
+			if (!("todoRow" in reference) || reference.todoRow !== row) continue;
 			if (agent) return unknownRequirementArtifact(`ambiguous registered owners for ${JSON.stringify(row)}`);
 			agent = reference;
 		}
-		if (agent && owner !== undefined && owner !== agent.id && owner !== activeJob?.id && owner !== activeJob?.agentId) {
-			return unknownRequirementArtifact(`owner ${JSON.stringify(owner)} conflicts with registered row owner ${JSON.stringify(agent.id)}`);
+		if (
+			agent &&
+			owner !== undefined &&
+			owner !== agent.id &&
+			owner !== activeJob?.id &&
+			owner !== activeJob?.agentId
+		) {
+			return unknownRequirementArtifact(
+				`owner ${JSON.stringify(owner)} conflicts with registered row owner ${JSON.stringify(agent.id)}`,
+			);
 		}
 	}
 	const effectiveOwner = owner ?? "main";
-	const persistedCwd = typeof task.artifactCwd === "string" && isAbsolute(task.artifactCwd) &&
-		task.artifactOwner === effectiveOwner ? task.artifactCwd : undefined;
-	const ownerCwd = owner === "main"
-		? (archived || paths.length || persistedCwd ? undefined : ctx.cwd)
-		: agent?.session?.sessionManager.getCwd();
+	const persistedCwd =
+		typeof task.artifactCwd === "string" && isAbsolute(task.artifactCwd) && task.artifactOwner === effectiveOwner
+			? task.artifactCwd
+			: undefined;
+	const ownerCwd =
+		owner === "main"
+			? archived || paths.length || persistedCwd
+				? undefined
+				: ctx.cwd
+			: agent?.session?.sessionManager.getCwd();
 	// A reassigned worker whose checkout is not known must not inherit the row's initial main checkout.
-	if (!archived && owner && owner !== "main" && !ownerCwd && !persistedCwd && paths.length === 0 && branchNames.length === 0) {
+	if (
+		!archived &&
+		owner &&
+		owner !== "main" &&
+		!ownerCwd &&
+		!persistedCwd &&
+		paths.length === 0 &&
+		branchNames.length === 0
+	) {
 		return unknownRequirementArtifact(`unknown checkout for owner ${JSON.stringify(owner)}`);
 	}
 	if (branchNames.length > 0) {
-		const anchor = ownerCwd ?? paths[0] ??
+		const anchor =
+			ownerCwd ??
+			paths[0] ??
 			(typeof task.artifactCwd === "string" && isAbsolute(task.artifactCwd) ? task.artifactCwd : undefined);
 		if (!anchor) return unknownRequirementArtifact(`unknown worktree for ${branchNames.join(", ")}`);
 		try {
 			const worktrees = await vcs.requireGit(anchor).worktrees(ctx.signal);
-			const matches = worktrees.filter(worktree => branchNames.includes(worktree.branch?.replace(/^refs\/heads\//, "") ?? ""));
+			const matches = worktrees.filter(worktree =>
+				branchNames.includes(worktree.branch?.replace(/^refs\/heads\//, "") ?? ""),
+			);
 			if (matches.length !== 1) return unknownRequirementArtifact(`unknown worktree for ${branchNames.join(", ")}`);
 			paths.push(matches[0]!.path);
 		} catch {
@@ -339,7 +363,10 @@ export async function getRequirementRowArtifact(
 	const uniquePaths = [...new Set(paths)];
 	if (uniquePaths.length > 1) return unknownRequirementArtifact(uniquePaths.join(", "));
 	const path = uniquePaths[0] ?? ownerCwd ?? persistedCwd;
-	if (!path) return unknownRequirementArtifact(`unknown artifact mapping for ${JSON.stringify(row)} (owner ${JSON.stringify(owner ?? null)})`);
+	if (!path)
+		return unknownRequirementArtifact(
+			`unknown artifact mapping for ${JSON.stringify(row)} (owner ${JSON.stringify(owner ?? null)})`,
+		);
 
 	let cwd = path;
 	try {
@@ -393,10 +420,14 @@ export async function bindRequirementRowArtifact(
 			current = task;
 		}
 	}
-	if (!current || current.status !== original.status ||
+	if (
+		!current ||
+		current.status !== original.status ||
 		JSON.stringify((current as TodoItem & { schedule?: unknown }).schedule) !==
-		JSON.stringify((original as TodoItem & { schedule?: unknown }).schedule) ||
-		current.artifactCwd !== original.artifactCwd || current.artifactOwner !== original.artifactOwner) {
+			JSON.stringify((original as TodoItem & { schedule?: unknown }).schedule) ||
+		current.artifactCwd !== original.artifactCwd ||
+		current.artifactOwner !== original.artifactOwner
+	) {
 		return unknownRequirementArtifact(`TODO row ${JSON.stringify(row)} changed during artifact binding`);
 	}
 	const owner = (original as TodoItem & { schedule?: { owner?: unknown } }).schedule?.owner;
@@ -615,7 +646,12 @@ function initPhases(entry: TodoOpEntryValue, errors: string[], artifactCwd?: str
 	}));
 }
 
-function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[], artifactCwd?: string): TodoPhase[] {
+function appendItems(
+	phases: TodoPhase[],
+	entry: TodoOpEntryValue,
+	errors: string[],
+	artifactCwd?: string,
+): TodoPhase[] {
 	if (!entry.phase) {
 		errors.push("Missing phase name for append operation");
 		return phases;
@@ -789,7 +825,11 @@ function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoOpEntr
 	return `Invalid todo arguments: ${direct.summary}`;
 }
 
-function applyParams(phases: TodoPhase[], params: TodoOpEntryValue, artifactCwd?: string): { phases: TodoPhase[]; errors: string[] } {
+function applyParams(
+	phases: TodoPhase[],
+	params: TodoOpEntryValue,
+	artifactCwd?: string,
+): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
 	const next = applyEntry(phases, params, errors, artifactCwd);
 	normalizeInProgressTask(next);
@@ -1042,11 +1082,19 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			const id = entry.id;
 			const classification = entry.classification;
 			if (!id || !classification) {
-				return { content: [{ type: "text", text: "classify requires an Rn id and classification" }], details, isError: true };
+				return {
+					content: [{ type: "text", text: "classify requires an Rn id and classification" }],
+					details,
+					isError: true,
+				};
 			}
 			const sessionManager = this.session.sessionManager;
 			if (!sessionManager) {
-				return { content: [{ type: "text", text: "classify requires persistent session storage" }], details, isError: true };
+				return {
+					content: [{ type: "text", text: "classify requires persistent session storage" }],
+					details,
+					isError: true,
+				};
 			}
 			if (classification === "linked") {
 				const unknownRows = (entry.rows ?? []).filter(row => !findTaskByContent(previousPhases, row));
@@ -1084,8 +1132,8 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 				for (const target of targets) targetRows.add(target.content);
 				const requirements = getLatestRequirements(this.session.sessionManager.getBranch());
 				const applicable = requirements.filter(
-					requirement => requirement.classification === "linked" &&
-						requirement.rows.some(row => targetRows.has(row)),
+					requirement =>
+						requirement.classification === "linked" && requirement.rows.some(row => targetRows.has(row)),
 				);
 				const artifacts = new Map<string, Promise<RequirementRowArtifact>>();
 				const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
@@ -1094,30 +1142,44 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 					if (!verdict || verdict.status !== "pass" || verdict.auditor !== "qa-auditor") continue;
 					for (const row of requirement.rows) {
 						if (!artifacts.has(row)) {
-							artifacts.set(row, getRequirementRowArtifact(
-								{ cwd: this.session.cwd, sessionManager: this.session.sessionManager, signal: _signal },
-								row, previousPhases, checkoutCache,
-							));
+							artifacts.set(
+								row,
+								getRequirementRowArtifact(
+									{ cwd: this.session.cwd, sessionManager: this.session.sessionManager, signal: _signal },
+									row,
+									previousPhases,
+									checkoutCache,
+								),
+							);
 						}
 					}
 				}
 				const unmet: string[] = [];
 				for (const requirement of applicable) {
-					const rowArtifacts = await Promise.all(requirement.rows.map(async row => {
-						const artifact = await artifacts.get(row);
-						return artifact ? { row, head: artifact.head, dirty: artifact.dirty } : null;
-					}));
-					if (!isFreshRequirementVerdict(requirement, rowArtifacts.filter(item => item !== null))) {
+					const rowArtifacts = await Promise.all(
+						requirement.rows.map(async row => {
+							const artifact = await artifacts.get(row);
+							return artifact ? { row, head: artifact.head, dirty: artifact.dirty } : null;
+						}),
+					);
+					if (
+						!isFreshRequirementVerdict(
+							requirement,
+							rowArtifacts.filter(item => item !== null),
+						)
+					) {
 						const rows = requirement.rows.filter(row => targetRows.has(row));
 						unmet.push(`${requirement.id} (${rows.map(row => JSON.stringify(row)).join(", ")})`);
 					}
 				}
 				if (unmet.length > 0) {
 					return {
-						content: [{
-							type: "text",
-							text: `todo done is blocked until every linked requirement has a fresh qa-auditor pass for the current clean row artifact: ${unmet.join("; ")}`,
-						}],
+						content: [
+							{
+								type: "text",
+								text: `todo done is blocked until every linked requirement has a fresh qa-auditor pass for the current clean row artifact: ${unmet.join("; ")}`,
+							},
+						],
 						details: { op, phases: previousPhases, storage },
 						isError: true,
 					};
