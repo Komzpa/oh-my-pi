@@ -425,6 +425,9 @@ describe("canonical requirements ledger", () => {
 });
 
 describe("todo requirement classification", () => {
+	// The classify op stays outside TodoOperation on purpose (converged with
+	// runtime-core's "schedule" rewrite; see tools/todo.ts) and reaches the tool
+	// cast-only, exactly as the implementation does.
 	function harness(cwd = "/tmp", initialPhases?: TodoPhase[]) {
 		const manager = SessionManager.inMemory();
 		let phases: TodoPhase[] = initialPhases ?? [
@@ -446,7 +449,12 @@ describe("todo requirement classification", () => {
 				phases = next;
 			},
 		};
-		return { manager, tool: new TodoTool(session), getPhases: () => phases };
+		// The tests' cast boundary: classify payloads keep their real shape here.
+		const rawTool = new TodoTool(session);
+		const tool = {
+			execute: (name: string, params: Record<string, unknown>) => rawTool.execute(name, params as never),
+		};
+		return { manager, tool, getPhases: () => phases };
 	}
 
 	it("persists classifications and keeps TODO phases unchanged", async () => {
@@ -502,7 +510,7 @@ describe("todo requirement classification", () => {
 			{ op: "classify" as const, id: "R1", classification: "linked" as const, rows: ["not a row"] },
 			{ op: "classify" as const, id: "R1", classification: "merged" as const, mergeInto: "R9" },
 		]) {
-			expect((await tool.execute("invalid", params)).isError).toBe(true);
+			expect((await tool.execute("invalid", params as never)).isError).toBe(true);
 			expect(getLatestRequirements(manager.getBranch())).toEqual(before);
 		}
 	});
