@@ -160,7 +160,7 @@ console.log(JSON.stringify(result, null, 2));
 // blocks, so cloneBytes must stay flat regardless of content size.
 const cloneBytesGrowthRatio = (large.cloneBytes + 1) / (small.cloneBytes + 1);
 const contentGrowthRatio = CONTENT_BYTES / 64;
-if (cloneBytesGrowthRatio > contentGrowthRatio / 10) {
+if (cloneBytesGrowthRatio > Math.max(1, contentGrowthRatio / 10)) {
 	throw new Error(
 		`structuredClone byte volume scaled with side-channel history content ` +
 			`(${cloneBytesGrowthRatio.toFixed(1)}x for a ${contentGrowthRatio.toFixed(1)}x content increase) ` +
