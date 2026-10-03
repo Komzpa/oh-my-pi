@@ -2914,7 +2914,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     if (!sprintState.retroDueReason) return "";
     const since = sprintState.lastRetroAt ?? sprintState.goalWorkStartedAt ?? now;
     const workerIds = retroWorkerIds();
-    return `retrospective due (${sprintState.retroDueReason}): ask the ${workerIds.length} workers who finished since ${safeTimestamp(since, timeZone)} through agent://, then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}`;
+    return `retrospective due (${sprintState.retroDueReason}): read the Retro block in the final answer of the ${workerIds.length} workers who finished since ${safeTimestamp(since, timeZone)} from agent://<id> (do not write to them; a missing block is recorded as missing), then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}`;
   };
   const planCheck = (ctx: ExtensionContext, pending: unknown[] = []): string | null => {
     pendingSizingNoticeIds = [];
