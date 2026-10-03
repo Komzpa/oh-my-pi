@@ -209,6 +209,32 @@ describe("agentLoop soft tool requirement", () => {
 		});
 	});
 
+	it("does not execute read-only detours from truncated turns while a soft requirement is pending", async () => {
+		const h = makeSoftResolveHarness();
+		const context: AgentContext = { systemPrompt: ["sys"], messages: [], tools: h.tools };
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "read-truncated", name: "read", arguments: {} }], stopReason: "length" },
+				{ content: [{ type: "toolCall", id: "resolve-after-truncation", name: "resolve", arguments: {} }] },
+				{ content: ["done"] },
+			],
+		});
+		const stream = agentLoop(
+			[createUserMessage("go")],
+			context,
+			{ model: mock.model, convertToLlm: identityConverter, getToolChoice: h.getToolChoice },
+			undefined,
+			mock.stream,
+		);
+		for await (const _ of stream) {
+			// drain
+		}
+		const messages = await stream.result();
+
+		expect(h.readRuns).toBe(0);
+		expect(messages.find(m => m.role === "toolResult" && m.toolCallId === "read-truncated")?.role).toBe("toolResult");
+	});
+
 	it("executes read-only detours without escalating, then satisfies the requirement", async () => {
 		const h = makeSoftResolveHarness();
 		const context: AgentContext = { systemPrompt: ["sys"], messages: [], tools: h.tools };

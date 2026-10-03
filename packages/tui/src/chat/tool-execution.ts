@@ -910,7 +910,7 @@ export class ToolExecutionComponent extends Container {
 	 * mounted so toggling it is one prop change.
 	 */
 	override describe(cx?: DescribeContext): NativeNode {
-		if (this.#toolName === "wait" && this.#isBenignSkip()) return EMPTY_NODE;
+		if (this.#toolName === "wait" && this.#isBenignSkip() && this.#softRequirementWaitTarget() === undefined) return EMPTY_NODE;
 		const dataFirst = cx?.supports("tool") === true;
 		const key = [
 			dataFirst,

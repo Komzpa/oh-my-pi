@@ -1583,8 +1583,8 @@ async function runLoopBody(
 					softRequiredTool !== undefined && !hardToolChoiceBlocks(config.toolChoice, softRequiredTool);
 				const softReadOnlyDetour =
 					softGateActive &&
+					hasMoreToolCalls &&
 					!calledOnlyRequiredTool &&
-					toolCalls.length > 0 &&
 					toolCalls.every(toolCall =>
 						isReadOnlyToolCall(currentContext.tools, toolCall, config.resolveFallbackTool),
 					);
@@ -1628,7 +1628,7 @@ async function runLoopBody(
 					softRequirementState.forcedToolChoice = { type: "tool", name: softRequiredTool };
 					softRequirementState.escalations++;
 					hasMoreToolCalls = true;
-				} else if (hasMoreToolCalls || softReadOnlyDetour) {
+				} else if (hasMoreToolCalls) {
 					const executionResult = await executeToolCalls(
 						currentContext,
 						message,
@@ -1676,7 +1676,6 @@ async function runLoopBody(
 					if (message.stopReason === "length" && toolResults.length > 0 && !deadlinePassed) {
 						hasMoreToolCalls = true;
 					}
-					if (softReadOnlyDetour) hasMoreToolCalls = true;
 				}
 
 				// A tool hook may mark its completed result as terminal (e.g. subagent yield).

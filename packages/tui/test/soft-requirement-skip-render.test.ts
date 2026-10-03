@@ -29,4 +29,24 @@ describe("soft requirement skip rendering", () => {
 			component.stopAnimation();
 		}
 	});
+
+	it("keeps the waiting status for a soft-skipped wait call", () => {
+		const ui = { requestRender() {}, requestComponentRender() {}, resetDisplay() {} } as unknown as TUI;
+		const component = new ToolExecutionComponent("wait", {}, {}, undefined, ui);
+		try {
+			component.updateResult(
+				{
+					content: [{ type: "text", text: "Tool call was skipped: waiting for todo." }],
+					details: { __synthetic: true, source: "soft_requirement_skipped", waitingFor: "todo", executed: false },
+					isError: true,
+				},
+				false,
+			);
+			const described = component.describe();
+			expect(described.k).toBe("card");
+			expect(JSON.stringify(described)).toContain("Tool call was skipped: waiting for todo.");
+		} finally {
+			component.stopAnimation();
+		}
+	});
 });
