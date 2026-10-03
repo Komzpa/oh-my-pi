@@ -27,17 +27,19 @@ The params object **is** a single op — the discriminator and its fields live a
 | `unblock` | `task` or `phase` | None | Returns blocked target tasks to `pending` and clears their blocker notes. |
 | `rm` | `task` or `phase` or neither | None | Removes the target task, clears the phase's task list, or clears all task lists. |
 | `append` | `phase`, `items` | None | Appends new `pending` tasks to a phase; creates the phase if missing. |
+| `schedule` | `updates` | None | Atomically updates scheduling metadata without changing status. An update may rename a row with `content`; status and executor history stay attached, dependencies follow the new name, and blank/colliding names reject the whole batch. |
 | `view` | None | `archive` | Reads the live list without changing state. `archive: true` additionally shows event-log-recoverable archived rows. |
 
 ### Fields
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `op` | `"init" \| "start" \| "done" \| "rm" \| "drop" \| "block" \| "unblock" \| "append" \| "view"` | Yes in the schema | Operation discriminator. At execution time, an omitted op is repaired only for unambiguous `list`/`items` payloads (see Flow). |
+| `op` | `"init" | "start" | "done" | "block" | "rm" | "drop" | "unblock" | "append" | "schedule" | "view"` | Yes in the schema | Operation discriminator. At execution time, an omitted op is repaired only for unambiguous `list`/`items` payloads (see Flow). |
 | `list` | `{ phase: string; items: string[] }[]` | For `init` (unless a flat `items` list is given) | Full replacement payload. Each phase's `items` has `minItems: 1`; an explicit `list: []` clears all phases. |
 | `task` | `string` | For `start`; for task-targeted `done`/`drop`/`block`/`unblock`/`rm` | Exact task content match. |
 | `phase` | `string` | For `append`; for phase-targeted `done`/`drop`/`block`/`unblock`/`rm`; optional for a flat `init` | Exact phase name match, except `append` lazily creates a missing phase and a flat `init` synthesizes one (default `Tasks`). |
 | `items` | `string[]` | For `append`; or as a flat `init` payload | Tasks to append, or the full task list for a flat `init`. Op-specific validation requires at least one item; a stray empty array on an unrelated op is schema-valid and ignored. |
+| `updates` | schedule-update objects | For `schedule` | Each update targets a task by exact unique `task` content; optional `content` renames it and rewrites dependent references atomically. |
 | `reason` | `string` | No | Optional blocker note for `block`; normalized to a single trimmed line. |
 | `archive` | `boolean` | No | On `view` only, explicitly includes archived rows; ordinary results expose only a count and timestamp summary. |
 

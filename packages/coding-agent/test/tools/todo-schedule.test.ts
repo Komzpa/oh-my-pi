@@ -456,4 +456,120 @@ describe("native todo schedule operation", () => {
 		expect(self.isError).toBe(true);
 		expect(harness.phases()).toEqual(before);
 	});
+	it("renames scheduled rows without detaching metadata or dependencies", async () => {
+		const attempt = {
+			attemptId: "worker:100",
+			workerName: "worker",
+			resolvedModel: "model",
+			effort: "high",
+			startedAt: 100,
+			finishedAt: 200,
+			durationMs: 100,
+			terminalStatus: "failed" as const,
+			deliverablePaths: ["result.txt"],
+		};
+		const initial: TodoPhase[] = [
+			{
+				name: "Work",
+				tasks: [
+					{
+						content: "Old title",
+						status: "in_progress",
+						schedule: {
+							owner: "worker",
+							resources: ["checkout"],
+							dependencies: [],
+							estimate: {
+								optimisticSeconds: 10,
+								likelySeconds: 20,
+								pessimisticSeconds: 30,
+								confidence: "high",
+								basis: "Measured",
+								updatedAt: 90,
+							},
+							attemptHistory: [attempt],
+							executor: { workerId: "worker", startedAt: 100 },
+							startedAt: 80,
+							progress: { at: 110, evidence: "Worker is editing" },
+						},
+					},
+					{ content: "Dependent", status: "pending", schedule: { dependencies: ["Old title"] } },
+					{ content: "Closed title", status: "completed", schedule: { finishedAt: 70 } },
+				],
+			},
+		];
+		const harness = createHarness(initial);
+		const result = await harness.tool.execute("rename", {
+			op: "schedule",
+			updates: [
+				{ task: "Old title", content: "New title" },
+				{ task: "Closed title", content: "Closed title renamed" },
+			],
+		});
+
+		expect(result.isError).not.toBe(true);
+		expect(harness.phases()[0]?.tasks[0]).toMatchObject({
+			content: "New title",
+			status: "in_progress",
+			schedule: {
+				owner: "worker",
+				resources: ["checkout"],
+				attemptHistory: [attempt],
+				executor: { workerId: "worker", startedAt: 100 },
+				startedAt: 80,
+				progress: { evidence: "Worker is editing" },
+			},
+		});
+		expect(harness.phases()[0]?.tasks[1]?.schedule?.dependencies).toEqual(["New title"]);
+		expect(harness.phases()[0]?.tasks[2]).toMatchObject({ content: "Closed title renamed", status: "completed" });
+
+		const serialized = JSON.parse(JSON.stringify(result)) as { details: unknown; content: unknown };
+		const restored = getLatestTodoPhasesFromEntries([
+			{
+				type: "custom",
+				id: "base",
+				parentId: null,
+				timestamp: "2026-09-25T11:00:00.000Z",
+				customType: "user_todo_edit",
+				data: { phases: initial },
+			},
+			{
+				type: "message",
+				id: "rename",
+				parentId: "base",
+				timestamp: "2026-09-25T11:00:01.000Z",
+				message: {
+					role: "toolResult",
+					toolName: "todo",
+					content: serialized.content,
+					details: serialized.details,
+					isError: false,
+				},
+			},
+		] as unknown as SessionEntry[]);
+		expect(restored[0]?.tasks[0]?.content).toBe("New title");
+		expect(restored[0]?.tasks[0]?.schedule?.owner).toBe("worker");
+		expect(restored[0]?.tasks[0]?.schedule?.attemptHistory).toEqual([attempt]);
+		expect(restored[0]?.tasks[1]?.schedule?.dependencies).toEqual(["New title"]);
+		expect(restored[0]?.tasks[2]).toMatchObject({ content: "Closed title renamed", status: "completed" });
+	});
+
+	it("rejects blank and colliding rename targets atomically", async () => {
+		for (const content of ["Already exists", "  "]) {
+			const harness = createHarness([
+				{ name: "Work", tasks: [{ content: "Rename me", status: "pending" }, { content: "Already exists", status: "pending" }] },
+			]);
+			const before = structuredClone(harness.phases());
+			const result = await harness.tool.execute(`bad-rename-${content}`, {
+				op: "schedule",
+				updates: [{ task: "Rename me", owner: "changed-owner", content }],
+			});
+			expect(result.isError).toBe(true);
+			const message = result.content.find(part => part.type === "text");
+			if (message?.type !== "text") throw new Error("Expected rename validation error");
+			expect(message.text).toContain(content.trim() ? "another row already has that content" : "must be nonblank");
+			expect(harness.phases()).toEqual(before);
+		}
+	});
+
 });
