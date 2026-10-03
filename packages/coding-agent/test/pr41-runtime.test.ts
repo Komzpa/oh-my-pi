@@ -12,6 +12,8 @@ import {
 	classifyRequirement,
 	createRequirementCandidates,
 	getLatestRequirements,
+	requirementAuditSnapshot,
+	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
@@ -91,18 +93,26 @@ describe("PR 41 requirements-ledger runtime", () => {
 	});
 	it("persists async rejection details before consuming a pending auditor", async () => {
 		const { cwd, manager, runtime } = fixture();
-		const previousHome = process.env.HOME;
-		process.env.HOME = cwd;
 		try {
-			await runtime.prepareAuditorTaskCall("task", "call-async", {
-				agent: "qa-auditor",
-				task: "Audit R1",
+			// `consumeAsyncResult` restores pending auditors from the persisted
+			// `requirements_auditor_assignments` snapshot (the same snapshot
+			// `afterToolCall` writes), so seed that snapshot directly: resolving
+			// the bundled qa-auditor through agent discovery is shadowed by any
+			// same-named user profile on the host, which is not this test's subject.
+			const sessionId = manager.getHeader()?.id;
+			if (!sessionId) throw new Error("fixture session has no id");
+			manager.appendCustomEntry(REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE, {
+				version: 1,
+				sessionId,
+				jobs: [
+					{
+						workerId: "worker-async",
+						agent: "qa-auditor",
+						ids: ["R1"],
+						snapshot: requirementAuditSnapshot(getLatestRequirements(manager.getBranch()), ["R1"]),
+					},
+				],
 			});
-			await runtime.afterToolCall({
-				toolCall: { id: "call-async", name: "task" },
-				result: { content: [], details: { progress: [{ index: 0, agent: "qa-auditor", id: "worker-async" }] } },
-				isError: false,
-			} as never);
 			await runtime.consumeAsyncResult({
 				role: "custom",
 				customType: ASYNC_RESULT_MESSAGE_TYPE,
@@ -115,13 +125,11 @@ describe("PR 41 requirements-ledger runtime", () => {
 				.find(
 					entry =>
 						entry.type === "custom" &&
-						entry.customType === "requirements_auditor_assignments" &&
+						entry.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE &&
 						JSON.stringify(entry).includes("async result was incomplete"),
 				);
 			expect(rejection).toBeDefined();
 		} finally {
-			if (previousHome === undefined) delete process.env.HOME;
-			else process.env.HOME = previousHome;
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});

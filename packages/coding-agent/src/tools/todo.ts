@@ -231,9 +231,14 @@ export async function getRequirementRowArtifact(
 		typeof task.artifactCwd === "string" && isAbsolute(task.artifactCwd) && task.artifactOwner === effectiveOwner
 			? task.artifactCwd
 			: undefined;
+	// Only a row that declares no resource set at all is a pre-scheduling legacy
+	// row: it falls back to the main checkout (c7a645a9c1). A row that declares
+	// `resources` explicitly is bound to that set alone and must stay unknown
+	// when it is empty, so a bare schedule edit can never silently rebind it.
+	const declaredResources = Array.isArray(metadata?.resources);
 	const ownerCwd =
 		effectiveOwner === "main"
-			? archived || paths.length || persistedCwd
+			? archived || paths.length || persistedCwd || declaredResources
 				? undefined
 				: ctx.cwd
 			: agent?.session?.sessionManager.getCwd();
