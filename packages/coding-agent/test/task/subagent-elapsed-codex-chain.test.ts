@@ -200,7 +200,11 @@ function turnIdOf(body: Record<string, unknown> | undefined): unknown {
 }
 
 /** Two text turns through the real Codex request builder over the loopback socket. */
-async function runTwoTextTurns(sessionId: string, noteSeconds: [number, number] | null) {
+async function runTwoTextTurns(
+	sessionId: string,
+	noteSeconds: [number, number] | null,
+	includeSyntheticDirective = false,
+) {
 	const tempDir = TempDir.createSync("@pi-pr39-chain-");
 	setAgentDir(tempDir.path());
 	const token = createCodexTestToken();
@@ -250,6 +254,9 @@ async function runTwoTextTurns(sessionId: string, noteSeconds: [number, number] 
 			{ role: "user", content: "First question", timestamp: Date.now() - 1000 },
 			firstResponse,
 			{ role: "user", content: "Second question", timestamp: Date.now() },
+			...(includeSyntheticDirective
+				? [{ role: "developer" as const, content: "Start a fresh run.", synthetic: true, timestamp: Date.now() }]
+				: []),
 		],
 	};
 	const secondContext = noteSeconds ? withSubagentElapsedSignal(secondBase, noteSeconds[1]) : secondBase;
@@ -309,6 +316,15 @@ describe("subagent elapsed note keeps Codex chaining", () => {
 		expect(turnIdOf(noted.sent[1])).not.toBe(turnIdOf(noted.sent[0]));
 		expect(turnIdOf(plain.sent[1])).not.toBe(turnIdOf(plain.sent[0]));
 	});
+	it("does not mistake an unrelated synthetic directive for elapsed scaffolding", async () => {
+		const { sent } = await runTwoTextTurns("pr39-directive", [5, 12], true);
+
+		expect(turnIdOf(sent[1])).not.toBe(turnIdOf(sent[0]));
+		const input = inputItems(sent[1] as Record<string, unknown>);
+		expect(JSON.stringify(input)).toContain("Start a fresh run.");
+		expect(JSON.stringify(input)).toContain("elapsed 12s / 900s");
+	});
+
 
 	it("keeps mid-turn continuation (turn_id and delta) identical to the no-note run", async () => {
 		const run = async (sessionId: string, noteSeconds: [number, number] | null) => {

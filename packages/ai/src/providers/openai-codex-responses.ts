@@ -1955,15 +1955,25 @@ function getCodexTurnStartedAtUnixMs(context: Context): number {
  * Mirrors codex-rs, which scopes `x-codex-turn-state` to a single turn and
  * clears it when the next one begins.
  *
- * Trailing synthetic developer notes (e.g. the per-request subagent elapsed
- * signal) are scaffolding, not conversation: skipping them keeps a
- * tool-result continuation from looking like a new turn.
+ * The trailing subagent elapsed signal is provider-only scaffolding, not
+ * conversation: skipping it keeps tool-result continuations within the turn.
  */
+const CODEX_SUBAGENT_ELAPSED_NOTE = /^elapsed \d+s \/ 900s$/;
+
+function isCodexSubagentElapsedNote(message: Context["messages"][number] | undefined): boolean {
+	return (
+		message?.role === "developer" &&
+		message.synthetic === true &&
+		typeof message.content === "string" &&
+		CODEX_SUBAGENT_ELAPSED_NOTE.test(message.content)
+	);
+}
+
 function isCodexWithinTurnContinuation(context: Context): boolean {
 	for (let i = context.messages.length - 1; i >= 0; i--) {
 		const message = context.messages[i];
 		if (message?.role === "toolResult") continue;
-		if (message?.role === "developer" && message.synthetic === true) continue;
+		if (isCodexSubagentElapsedNote(message)) continue;
 		return message?.role === "assistant";
 	}
 	return false;
@@ -4976,9 +4986,9 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 			const normalizedContent = normalizeInputMessageContent(model, msg.content);
 			if (normalizedContent.length === 0) continue;
 			const inputItem: CodexMarkableInputItem = { role: msg.role, content: normalizedContent };
-			if (msg.role === "developer" && msg.synthetic === true) {
-				// Per-request scaffolding (e.g. the subagent elapsed signal): it
-				// rides the wire but stays out of the chain baseline/prefix walk.
+			if (isCodexSubagentElapsedNote(msg)) {
+				// Per-request elapsed scaffolding rides the wire but stays out of the
+				// chain baseline/prefix walk.
 				inputItem[CODEX_TRANSIENT_INPUT_ITEM] = true;
 			}
 			messages.push(inputItem);
