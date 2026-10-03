@@ -55,8 +55,6 @@ function createSession(options: {
 	} as unknown as ToolSession;
 }
 
-
-
 function getFirstText(result: { content: Array<{ type: string; text?: string }> }): string {
 	const content = result.content.find(part => part.type === "text");
 	return content?.type === "text" ? (content.text ?? "") : "";

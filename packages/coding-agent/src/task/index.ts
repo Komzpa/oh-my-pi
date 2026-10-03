@@ -861,7 +861,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 		const evalToolNames = [
 			...(spawn.tools ?? []),
-			...(speculativeBuiltinTools.get(spawn) ?? []).filter(name => !isBuiltinToolAvailable(name, policy.effectiveAgent)),
+			...(speculativeBuiltinTools.get(spawn) ?? []).filter(
+				name => !isBuiltinToolAvailable(name, policy.effectiveAgent),
+			),
 		];
 		if (evalToolNames.length > 0) {
 			if (this.session.getPlanModeState?.()?.enabled === true) return undefined;
@@ -1027,10 +1029,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				);
 			}
 		}
-		if (
-			this.session.getPlanModeState?.()?.enabled === true &&
-			unavailableBuiltins.length > 0
-		) {
+		if (this.session.getPlanModeState?.()?.enabled === true && unavailableBuiltins.length > 0) {
 			return appendTaskNotices(
 				createTaskModeError("Task execution failed: Eval-defined tools are unavailable in plan mode."),
 				toolNotices,
