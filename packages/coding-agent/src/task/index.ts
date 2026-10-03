@@ -2167,7 +2167,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		onArtifactsRetained?: (cleanup: () => Promise<void>) => void,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
-		const assignment = `${(params.task ?? "").trim()}\n\nEvery message to the lead MUST answer exactly this question: Is there a much simpler different way?`;
+		const assignment = `${(params.task ?? "").trim()}\n\nEvery message to the lead MUST answer exactly this question: Is there a much simpler different way?\n\nEnd your final answer with a \`Retro\` block of at most five lines: what worked and should be repeated, what failed and should be banned, what blocked you, and the exact receipt.`;
 		const route = this.#reworkRoutes.get(`${toolCallId}:${spawnIndex}`);
 		const context =
 			[this.#isBatchEnabled() ? params.context?.trim() : undefined, route?.context].filter(Boolean).join("\n\n") ||
