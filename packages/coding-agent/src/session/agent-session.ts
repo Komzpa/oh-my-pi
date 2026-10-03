@@ -3392,7 +3392,7 @@ export class AgentSession implements SettingsScope {
 		};
 	}
 
-	#persistMessageEnd(message: AgentMessage, promptGeneration: number): void {
+	async #persistMessageEnd(message: AgentMessage, promptGeneration: number): Promise<void> {
 		// Session transitions may replace the transcript before a queued commit
 		// runs. Never append the previous conversation to the replacement session.
 		if (this.#promptGeneration !== promptGeneration) {
@@ -3423,7 +3423,7 @@ export class AgentSession implements SettingsScope {
 				this.#ttsr.markInjectedFromDetails(message.details);
 			}
 			if (message.role === "custom" && message.customType === ASYNC_RESULT_MESSAGE_TYPE) {
-				void this.#requirementsLedger
+				await this.#requirementsLedger
 					.consumeAsyncResult(message)
 					.catch(error => logger.warn("Requirements ledger async consume failed", { error }));
 			}
@@ -4651,7 +4651,7 @@ export class AgentSession implements SettingsScope {
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
 		const runner = this.#extensionRunner;
 		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
-		if (this.#agentKind === "main" && ctx.tool.name !== "todo") {
+		if (this.#agentKind === "main" && this.getActiveToolNames().includes("todo") && ctx.tool.name !== "todo") {
 			const branch = this.sessionManager.getBranch();
 			const overdue = getOverdueRequirementCandidates(branch);
 			if (overdue.length > 0) {
@@ -4663,17 +4663,18 @@ export class AgentSession implements SettingsScope {
 				};
 			}
 		}
+		let preparedArgs = ctx.args;
 		if (this.#agentKind === "main" && ctx.tool.name === "task") {
 			const revised = await this.#requirementsLedger.prepareAuditorTaskCall(
 				ctx.tool.name,
 				ctx.toolCall.id,
-				ctx.args,
+				preparedArgs,
 				signal,
 			);
-			if (revised !== undefined) return { args: revised };
+			if (revised !== undefined) preparedArgs = revised;
 		}
-
-		const ttsrResult = await this.#ttsr.beforeToolCall(ctx);
+		const preparedContext = { ...ctx, args: preparedArgs };
+		const ttsrResult = await this.#ttsr.beforeToolCall(preparedContext);
 		if (ttsrResult) {
 			runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 			return ttsrResult;
@@ -4686,13 +4687,13 @@ export class AgentSession implements SettingsScope {
 		// or user policy), so resolving under the most permissive mode is exact;
 		// the wrapper still enforces the mode-accurate gate before execution.
 		const userPolicies: Record<string, unknown> = cfgToolsApproval.get(this.settings);
-		const approvalArgs = computer ? { actions: computer.actions } : ctx.args;
+		const approvalArgs = computer ? { actions: computer.actions } : preparedArgs;
 		if (resolveApproval(ctx.tool, approvalArgs, "yolo", userPolicies).policy === "deny") {
 			return undefined;
 		}
 		const eventArgs = computer
 			? { actions: computer.actions, pendingSafetyChecks: computer.pendingSafetyChecks }
-			: ctx.args;
+			: preparedArgs;
 		runner.markToolCallEmitted(ctx.toolCall.id, ctx.tool.name);
 		let callResult: Awaited<ReturnType<ExtensionRunner["emitToolCall"]>>;
 		try {
@@ -4715,10 +4716,10 @@ export class AgentSession implements SettingsScope {
 		}
 		// A computer call's event input is a synthetic {actions, pendingSafetyChecks}
 		// view, not the execution params — a revision cannot map back onto them.
-		const args = callResult?.input !== undefined && !computer ? callResult.input : undefined;
+		const revisedArgs = callResult?.input !== undefined && !computer ? callResult.input : undefined;
 		const additionalContext = callResult?.additionalContext;
-		if (args === undefined && additionalContext === undefined) return undefined;
-		return { args, additionalContext };
+		if (revisedArgs === undefined && additionalContext === undefined) return undefined;
+		return { args: revisedArgs, additionalContext };
 	}
 
 	/** Find the last assistant message in agent state (including aborted ones) */
@@ -7191,7 +7192,9 @@ export class AgentSession implements SettingsScope {
 					userInitiated: options?.userInitiated === true ? true : undefined,
 				}
 			: { role: "user" as const, content: userContent, attribution: promptAttribution, timestamp: submittedAt };
-		if (message.role === "user") this.#queuedMessageRawText.set(message, typedText);
+		if (message.role === "user" && message.attribution === "user" && this.getActiveToolNames().includes("todo")) {
+			this.#captureRawRequirementCandidate(typedText);
+		}
 
 		const preludeMessages: AgentMessage[] = [];
 		if (eagerTodoPrelude) {
@@ -8104,8 +8107,8 @@ export class AgentSession implements SettingsScope {
 			if (imageDescriptionNotice) records.push(imageDescriptionNotice);
 			const userMessage: AgentMessage = { role: "user", content, attribution, timestamp: timestamp ?? Date.now() };
 			this.#queuedMessageRawText.set(userMessage, rawText);
-			this.#requirementsLedger.captureCandidate(rawText);
 			records.push(userMessage);
+			this.#irc.queueAside(records);
 			options?.onPromptAdmitted?.();
 			// The awaits above (image normalization / vision description) can span the run's
 			// settle, so the run may already be idle by the time the record lands in the aside
@@ -8127,7 +8130,6 @@ export class AgentSession implements SettingsScope {
 				timestamp: timestamp ?? Date.now(),
 			};
 			this.#queuedMessageRawText.set(userMessage, rawText);
-			this.#requirementsLedger.captureCandidate(rawText);
 			this.agent.followUp(userMessage);
 		} else {
 			for (const notice of prependMessages) this.agent.steer(notice);
@@ -8141,7 +8143,6 @@ export class AgentSession implements SettingsScope {
 				timestamp: timestamp ?? Date.now(),
 			};
 			this.#queuedMessageRawText.set(userMessage, rawText);
-			this.#requirementsLedger.captureCandidate(rawText);
 			this.agent.steer(userMessage);
 		}
 		options?.onPromptAdmitted?.();
@@ -9363,6 +9364,7 @@ export class AgentSession implements SettingsScope {
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			// Re-apply the configured selector so the new session does not inherit
 			// the previous session's auto-classified effort: auto stays auto but
 			// restarts at the provisional level; a pinned level re-resolves to itself.
@@ -9519,6 +9521,7 @@ export class AgentSession implements SettingsScope {
 			this.#freshProviderSessionId = undefined;
 			this.#adoptInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			this.#advisors.reattachRecorderFeeds();
 			advisorRecordersDetached = false;
@@ -10033,6 +10036,7 @@ export class AgentSession implements SettingsScope {
 				this.sessionManager.branchWithSummary(null, report, { startedAt: checkpointState.startedAt });
 			}
 		});
+		this.#requirementsLedger.syncPublicationGate();
 
 		const rewoundAt = new Date().toISOString();
 		const details = { report, startedAt: checkpointState.startedAt, rewoundAt };
@@ -11009,6 +11013,7 @@ export class AgentSession implements SettingsScope {
 					error: String(error),
 				});
 			}
+			this.#requirementsLedger.syncPublicationGate();
 			// Refresh the workspace-roots block to match the resumed session's directory set.
 			// Wrapped so a rebuild failure (e.g. a gate that intentionally fails in tests)
 			// doesn't roll back an otherwise-successful session switch.
@@ -11237,6 +11242,7 @@ export class AgentSession implements SettingsScope {
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			await this.#memory.resetContextForNewTranscript();
 
@@ -11359,6 +11365,7 @@ export class AgentSession implements SettingsScope {
 			this.#modelMentions.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			await this.#memory.resetContextForNewTranscript();
 
@@ -11701,6 +11708,7 @@ export class AgentSession implements SettingsScope {
 		this.#advisors.resetSessionState({ preserveCost: true });
 		this.#todo.syncFromBranch();
 		this.#modelMentions.syncFromBranch();
+		this.#requirementsLedger.syncPublicationGate();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 
 		this.#branchSummaryAbortController = undefined;
@@ -12963,6 +12971,6 @@ export class AgentSession implements SettingsScope {
 		return this.#recovery.consumeActiveFallbackCreditRedemption(targetModel);
 	}
 	#captureRawRequirementCandidate(rawText: string): void {
-		this.#requirementsLedger.captureCandidate(rawText);
+		if (this.getActiveToolNames().includes("todo")) this.#requirementsLedger.captureCandidate(rawText);
 	}
 }
