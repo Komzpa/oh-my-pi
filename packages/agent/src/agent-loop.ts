@@ -75,6 +75,7 @@ import {
 } from "./telemetry";
 import {
 	admitAssistantMessage,
+	getAssistantPublicationGate,
 	ASSISTANT_GATE_REFUSAL,
 	isAssistantNarrativeReplaced,
 	replaceAssistantNarrative,
@@ -1183,6 +1184,7 @@ async function runLoopBody(
 	initialMessages: AgentMessage[],
 	streamFn?: StreamFn,
 ): Promise<void> {
+	const publicationGate = getAssistantPublicationGate(config);
 	let deadlineTimer: Timer | undefined;
 	if (config.deadline !== undefined) {
 		const deadlineAbortController = new AbortController();
@@ -1488,15 +1490,15 @@ async function runLoopBody(
 				if (recovered) {
 					message = snapshotAssistantMessage(message);
 					await config.transformAssistantMessage?.(message, signal);
-					await admitAssistantMessage(message, config.beforeAssistantMessage, signal, abortReasonText);
+					await admitAssistantMessage(message, publicationGate, signal, abortReasonText);
 					currentContext.messages.push(message);
 					stream.push({
 						type: "message_start",
-						message: config.beforeAssistantMessage ? message : snapshotAssistantMessage(message),
+						message: publicationGate ? message : snapshotAssistantMessage(message),
 					});
 					stream.push({
 						type: "message_end",
-						message: config.beforeAssistantMessage ? message : snapshotAssistantMessage(message),
+						message: publicationGate ? message : snapshotAssistantMessage(message),
 					});
 				}
 				newMessages.push(message);
@@ -1958,6 +1960,7 @@ async function streamAssistantResponse(
 	prepared?: PreparedProviderCall,
 	canDispatchFinalToolCalls?: (message: AssistantMessage) => boolean,
 ): Promise<AssistantMessage> {
+	const publicationGate = getAssistantPublicationGate(config);
 	const providerCall = prepared ?? (await prepareProviderCall(context, config, signal));
 	const { model, context: llmContext, promptToolWireTools, ownedDialect } = providerCall;
 
@@ -2157,7 +2160,7 @@ async function streamAssistantResponse(
 				} catch {
 					replaceAssistantNarrative(failed, ASSISTANT_GATE_REFUSAL);
 				}
-				await admitAssistantMessage(failed, config.beforeAssistantMessage, requestSignal, abortReasonText);
+				await admitAssistantMessage(failed, publicationGate, requestSignal, abortReasonText);
 				context.messages.push(failed);
 				finalMessagePublished = true;
 				stream.push({ type: "message_start", message: failed });
@@ -2230,7 +2233,7 @@ async function streamAssistantResponse(
 						if (config.transformAssistantMessage) {
 							await config.transformAssistantMessage(finalMessage, requestSignal);
 						}
-						await admitAssistantMessage(finalMessage, config.beforeAssistantMessage, requestSignal, abortReasonText);
+						await admitAssistantMessage(finalMessage, publicationGate, requestSignal, abortReasonText);
 						// A pre-dispatch hook may request approval or change external state, so
 						// do not run it until the outer loop has established this tool turn can
 						// actually dispatch. The same gate keeps host-deferred speculation from
@@ -2273,9 +2276,9 @@ async function streamAssistantResponse(
 						}
 						finalMessagePublished = true;
 						if (!addedPartial) {
-							stream.push({ type: "message_start", message: config.beforeAssistantMessage ? finalMessage : snapshotAssistantMessage(finalMessage) });
+							stream.push({ type: "message_start", message: publicationGate ? finalMessage : snapshotAssistantMessage(finalMessage) });
 						}
-						stream.push({ type: "message_end", message: config.beforeAssistantMessage ? finalMessage : snapshotAssistantMessage(finalMessage) });
+						stream.push({ type: "message_end", message: publicationGate ? finalMessage : snapshotAssistantMessage(finalMessage) });
 						await finishChat(finalMessage);
 						speculationSettled = true;
 						providerStreamSettled = true;
@@ -2338,7 +2341,7 @@ async function streamAssistantResponse(
 					switch (event.type) {
 						case "start":
 							partialMessage = event.partial;
-							if (config.beforeAssistantMessage) {
+							if (publicationGate) {
 								config.onAssistantMessageEvent?.(partialMessage, event);
 								break;
 							}
@@ -2439,7 +2442,7 @@ async function streamAssistantResponse(
 								partialMessage = event.partial;
 								if (addedPartial) context.messages[context.messages.length - 1] = partialMessage;
 								config.onAssistantMessageEvent?.(partialMessage, event);
-								if (!config.beforeAssistantMessage) {
+								if (!publicationGate) {
 									// Track which blocks are still streaming: open blocks are
 									// re-cloned on every delta, finalized blocks are shared.
 									const contentIndex = event.contentIndex;
@@ -2487,7 +2490,7 @@ async function streamAssistantResponse(
 					}
 				}
 			} catch (error) {
-				if (!config.beforeAssistantMessage || finalMessagePublished || error instanceof HarmonyLeakInterruption) throw error;
+				if (!publicationGate || finalMessagePublished || error instanceof HarmonyLeakInterruption) throw error;
 				return await finishFailedStream(error);
 			} finally {
 				detachAbortListener?.();
@@ -2521,7 +2524,7 @@ async function streamAssistantResponse(
 					await config.transformAssistantMessage(trailing, requestSignal);
 				}
 				trailing = snapshotAssistantMessage(trailing);
-				await admitAssistantMessage(trailing, config.beforeAssistantMessage, requestSignal, abortReasonText);
+				await admitAssistantMessage(trailing, publicationGate, requestSignal, abortReasonText);
 				const finalToolCallsCanDispatch =
 					!requestSignal?.aborted &&
 					(canDispatchFinalToolCalls?.(trailing) ??
@@ -2557,16 +2560,16 @@ async function streamAssistantResponse(
 					context.messages[context.messages.length - 1] = trailing;
 				} else {
 					context.messages.push(trailing);
-					stream.push({ type: "message_start", message: config.beforeAssistantMessage ? trailing : snapshotAssistantMessage(trailing) });
+					stream.push({ type: "message_start", message: publicationGate ? trailing : snapshotAssistantMessage(trailing) });
 				}
-				stream.push({ type: "message_end", message: config.beforeAssistantMessage ? trailing : snapshotAssistantMessage(trailing) });
+				stream.push({ type: "message_end", message: publicationGate ? trailing : snapshotAssistantMessage(trailing) });
 				finalMessagePublished = true;
 				await finishChat(trailing);
 				speculationSettled = true;
 				providerStreamSettled = true;
 				return trailing;
 			} catch (error) {
-				if (config.beforeAssistantMessage && !finalMessagePublished && !(error instanceof HarmonyLeakInterruption)) {
+				if (publicationGate && !finalMessagePublished && !(error instanceof HarmonyLeakInterruption)) {
 					return await finishFailedStream(error);
 				}
 				if (!speculationSettled) {
@@ -2725,6 +2728,7 @@ async function emitAbortedAssistantMessage(
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	requestSignal: AbortSignal | undefined,
 ): Promise<AssistantMessage> {
+	const publicationGate = getAssistantPublicationGate(config);
 	const model = config.getModel?.() ?? config.model;
 	const errorMessage = abortReasonText(requestSignal);
 	const errorId =
@@ -2762,21 +2766,21 @@ async function emitAbortedAssistantMessage(
 		retained.toolCallAbortMessages = toolCallAbortMessages;
 	}
 	const abortedMessage = snapshotAssistantMessage(retained);
-	if (config.beforeAssistantMessage) {
+	if (publicationGate) {
 		try {
 			await config.transformAssistantMessage?.(abortedMessage, requestSignal);
 		} catch {
 			replaceAssistantNarrative(abortedMessage, ASSISTANT_GATE_REFUSAL);
 		}
-		await admitAssistantMessage(abortedMessage, config.beforeAssistantMessage, requestSignal, abortReasonText);
+		await admitAssistantMessage(abortedMessage, publicationGate, requestSignal, abortReasonText);
 	}
 	if (addedPartial) {
 		context.messages[context.messages.length - 1] = abortedMessage;
 	} else {
 		context.messages.push(abortedMessage);
-		stream.push({ type: "message_start", message: config.beforeAssistantMessage ? abortedMessage : snapshotAssistantMessage(abortedMessage) });
+		stream.push({ type: "message_start", message: publicationGate ? abortedMessage : snapshotAssistantMessage(abortedMessage) });
 	}
-	stream.push({ type: "message_end", message: config.beforeAssistantMessage ? abortedMessage : snapshotAssistantMessage(abortedMessage) });
+	stream.push({ type: "message_end", message: publicationGate ? abortedMessage : snapshotAssistantMessage(abortedMessage) });
 	return abortedMessage;
 }
 

@@ -44,6 +44,7 @@ import {
 	type ThinkingLevel,
 	type ToolChoiceDirective,
 } from "@oh-my-pi/pi-agent-core";
+import { getAssistantPublicationGate, setAssistantPublicationGate } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import {
 	type CompactionPreparation,
 	type CompactionResult,
@@ -236,6 +237,12 @@ import {
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";
 import { supportsExternalThinking } from "../tools/think";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import {
+	appendRequirementsSnapshot,
+	createRequirementCandidates,
+	getLatestRequirements,
+	getOverdueRequirementCandidates,
+} from "../tools/requirements-ledger";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { AgentDefinition } from "../task/types";
@@ -714,16 +721,10 @@ export class AgentSession implements SettingsScope {
 	/** Tail of the serialized {@link refreshSkillsAndCommands} chain. */
 	#skillsAndCommandsRefresh: Promise<void> = Promise.resolve();
 	/**
-	 * Raw text the caller originally submitted for a queued plain `role: "user"`
-	 * message — before slash/custom-command rewriting, prompt-template expansion,
-	 * or `^model` mention substitution. Recorded by `#queueUserMessage`, the same
-	 * point `#queueCustomMessage` stamps `__queueChipText` for skill invocations;
-	 * a side map (not a message field) because `UserMessage` has no free-form
-	 * details slot to carry it, and it must never reach the model or persisted
-	 * session content. `removeQueuedMessage` matches against it so an RPC client
-	 * removing by the exact text it submitted can find its own transformed queued
-	 * entry without unsafely replaying a (possibly side-effecting) slash/custom
-	 * command.
+	 * Raw text the caller originally submitted for a user message, before slash/custom-command
+	 * rewriting, prompt-template expansion, or `^model` mention substitution. The side map
+	 * keeps it out of provider and persisted message content; queued prompts also use it for
+	 * exact `removeQueuedMessage` matching.
 	 */
 	readonly #queuedMessageRawText = new WeakMap<AgentMessage, string>();
 
@@ -1922,7 +1923,7 @@ export class AgentSession implements SettingsScope {
 		this.#agentKind = config.agentKind ?? "main";
 		if (this.#agentKind === "main" && this.#extensionRunner?.hasHandlers("before_assistant_message")) {
 			const runner = this.#extensionRunner;
-			this.agent.beforeAssistantMessage = async (message, signal) => {
+			setAssistantPublicationGate(this.agent, async (message, signal) => {
 				const result = await runner.emitBeforeAssistantMessage({ type: "before_assistant_message", message, signal });
 				if (
 					result?.settled === true &&
@@ -1933,7 +1934,7 @@ export class AgentSession implements SettingsScope {
 					this.#settledAssistantStatuses.add(message);
 				}
 				return result;
-			};
+			});
 		}
 		// A subagent's streamed text reaches no output sink until the run settles
 		// (the parent sees only the yield), so a failed turn's partial prose is
@@ -1961,7 +1962,7 @@ export class AgentSession implements SettingsScope {
 		}
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
 			this.#loopGuards.onAssistantEvent(message, assistantMessageEvent);
-			if (this.agent.beforeAssistantMessage) {
+			if (getAssistantPublicationGate(this.agent)) {
 				// Withheld streams still drive internal safety and token accounting, never public delivery.
 				if (assistantMessageEvent.type === "start") {
 					this.#ttsr.onAssistantMessageStart();
@@ -3382,6 +3383,14 @@ export class AgentSession implements SettingsScope {
 		};
 	}
 
+	#captureRawRequirementCandidate(rawText: string): void {
+		if (this.#agentKind !== "main" || !rawText.trim()) return;
+		appendRequirementsSnapshot(
+			{ appendEntry: (customType, data) => this.sessionManager.appendCustomEntry(customType, data) },
+			createRequirementCandidates(getLatestRequirements(this.sessionManager.getBranch()), [rawText]),
+		);
+	}
+
 	#persistMessageEnd(message: AgentMessage, promptGeneration: number): void {
 		// Session transitions may replace the transcript before a queued commit
 		// runs. Never append the previous conversation to the replacement session.
@@ -3415,6 +3424,10 @@ export class AgentSession implements SettingsScope {
 			return;
 		}
 		this.#persistSessionMessageIfMissing(message);
+		if (message.role === "user" && message.attribution === "user") {
+			const rawText = this.#queuedMessageRawText.get(message);
+			if (rawText !== undefined) this.#captureRawRequirementCandidate(rawText);
+		}
 	}
 
 	/**
@@ -3673,16 +3686,16 @@ export class AgentSession implements SettingsScope {
 		// concurrently and message_update skips the await, so a reset placed after
 		// it could land behind the new message's first deltas and clear them.
 		if (event.type === "turn_start") this.#ttsr.onTurnStart();
-		if (!this.agent.beforeAssistantMessage && event.type === "message_start" && event.message.role === "assistant") {
+		if (!getAssistantPublicationGate(this.agent) && event.type === "message_start" && event.message.role === "assistant") {
 			this.#ttsr.onAssistantMessageStart();
 		}
 
 		// Meter generation per session: each session tracks its own stream, so a
 		// background subagent holds a live reading by the time it is focused and
 		// the main session's reading survives focus round-trips.
-		if (!this.agent.beforeAssistantMessage && event.type === "message_start" && event.message.role === "assistant") {
+		if (!getAssistantPublicationGate(this.agent) && event.type === "message_start" && event.message.role === "assistant") {
 			this.tokenRate.begin(event.message.timestamp);
-		} else if (!this.agent.beforeAssistantMessage && event.type === "message_update" && event.message.role === "assistant") {
+		} else if (!getAssistantPublicationGate(this.agent) && event.type === "message_update" && event.message.role === "assistant") {
 			const delta = event.assistantMessageEvent;
 			if (delta.type === "text_delta" || delta.type === "thinking_delta" || delta.type === "toolcall_delta") {
 				this.tokenRate.push(delta.delta);
@@ -3750,7 +3763,7 @@ export class AgentSession implements SettingsScope {
 
 		if (event.type === "tool_stream_update") this.#streamingEditGuard.maybeAbort(event);
 
-		if (!this.agent.beforeAssistantMessage && (await this.#ttsr.checkMessageUpdate(event))) return;
+		if (!getAssistantPublicationGate(this.agent) && (await this.#ttsr.checkMessageUpdate(event))) return;
 
 		// Handle session persistence
 		if (event.type === "message_end") {
@@ -4612,6 +4625,17 @@ export class AgentSession implements SettingsScope {
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
 		const runner = this.#extensionRunner;
 		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
+		if (this.#agentKind === "main" && ctx.tool.name !== "todo") {
+			const overdue = getOverdueRequirementCandidates(this.sessionManager.getBranch());
+			if (overdue.length > 0) {
+				runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
+				return {
+					block: true,
+					reason: `Non-todo tools are blocked until older requirement candidate(s) ${overdue.map(item => item.id).join(", ")} are classified with todo. Todo remains legal.`,
+				};
+			}
+		}
+
 		const ttsrResult = await this.#ttsr.beforeToolCall(ctx);
 		if (ttsrResult) {
 			runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
@@ -5163,6 +5187,7 @@ export class AgentSession implements SettingsScope {
 	 */
 	beginDispose(): void {
 		this.#isDisposed = true;
+		setAssistantPublicationGate(this.agent, undefined);
 		for (const dispose of this.#disposers.splice(0)) dispose();
 		this.#modelDiscoveryAbortController.abort();
 		this.#queuedMessageDrainBlocked = false;
@@ -7091,6 +7116,7 @@ export class AgentSession implements SettingsScope {
 					userInitiated: options?.userInitiated === true ? true : undefined,
 				}
 			: { role: "user" as const, content: userContent, attribution: promptAttribution, timestamp: submittedAt };
+		if (message.role === "user") this.#queuedMessageRawText.set(message, typedText);
 
 		const preludeMessages: AgentMessage[] = [];
 		if (eagerTodoPrelude) {

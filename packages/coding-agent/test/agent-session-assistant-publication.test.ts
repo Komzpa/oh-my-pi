@@ -24,12 +24,19 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session-events";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { getLatestRequirements } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const UNSAFE = "Everything is complete, including unaudited R7.";
 const STATUS = "Requirements remain open: R7. No completion can be approved.";
 type DraftHandler = (event: BeforeAssistantMessageEvent) => unknown;
 type StopHandler = (event: SessionStopEvent) => unknown;
+
+function isAssistantMessageEvent(event: unknown): boolean {
+	if (typeof event !== "object" || event === null || !("message" in event)) return false;
+	const message = event.message;
+	return typeof message === "object" && message !== null && "role" in message && message.role === "assistant";
+}
 
 function assistantTexts(messages: readonly { role: string; content?: unknown }[]): string[] {
 	return messages.flatMap(message => {
@@ -66,10 +73,10 @@ describe("assistant publication bridge", () => {
 		const extension: Extension = {
 			path: extensionPath,
 			resolvedPath: extensionPath,
-			handlers: new Map([
+			handlers: new Map<string, unknown[]>([
 				["before_assistant_message", handlers.map(handler => async (...args: unknown[]) => handler(args[0] as BeforeAssistantMessageEvent))],
-				...(stop ? [["session_stop", [async (...args: unknown[]) => stop(args[0] as SessionStopEvent)]] as const] : []),
-			]),
+				...(stop ? [["session_stop", [async (...args: unknown[]) => stop(args[0] as SessionStopEvent)]] as [string, unknown[]]] : []),
+			]) as unknown as Extension["handlers"],
 			tools: new Map(),
 			assistantThinkingRenderers: [],
 			fileWriteFallbackHandlers: [],
@@ -150,8 +157,8 @@ describe("assistant publication bridge", () => {
 		try {
 			await Promise.race([entered.promise, prompt.then(() => false)]);
 			expect(assistantTexts(agent.state.messages)).toEqual([]);
-			expect(native.filter(event => "message" in event && event.message.role === "assistant")).toEqual([]);
-			expect(publicEvents.filter(event => "message" in event && event.message.role === "assistant")).toEqual([]);
+			expect(native.filter(event => isAssistantMessageEvent(event))).toEqual([]);
+			expect(publicEvents.filter(event => isAssistantMessageEvent(event))).toEqual([]);
 			expect(assistantTexts(manager.buildSessionContext().messages)).toEqual([]);
 			expect(agent.state.streamMessage).toBeNull();
 			expect(receivedSignal).toBeInstanceOf(AbortSignal);
@@ -174,6 +181,44 @@ describe("assistant publication bridge", () => {
 			stopRelease.resolve();
 			await prompt;
 		}
+	});
+
+	it("records exact user text and blocks non-todo calls after a candidate becomes overdue", async () => {
+		const parameters = Type.Object({});
+		let probeCalls = 0;
+		const probe: AgentTool<typeof parameters> = {
+			name: "probe",
+			label: "Probe",
+			description: "Record a probe",
+			parameters,
+			execute: async () => {
+				probeCalls++;
+				return { content: [{ type: "text", text: "probe ran" }], details: {} };
+			},
+		};
+		const rawText = "  preserve these exact words\n";
+		const { session, agent, manager } = harness({
+			tools: [probe],
+			responses: [
+				{ content: ["First turn complete"] },
+				{ content: [{ type: "toolCall", id: "probe-overdue", name: "probe", arguments: {} }] },
+				{ content: ["Classify the older request with todo"] },
+			],
+		});
+		await session.prompt(rawText);
+		await session.waitForIdle();
+		expect(getLatestRequirements(manager.getBranch())).toMatchObject([
+			{ id: "R1", classification: "candidate", rawText },
+		]);
+
+		await session.prompt("Try the blocked tool");
+		await session.waitForIdle();
+		expect(probeCalls).toBe(0);
+		const result = agent.state.messages.find(
+			message => message.role === "toolResult" && message.toolCallId === "probe-overdue",
+		);
+		expect(JSON.stringify(result)).toContain("Non-todo tools are blocked");
+		expect(JSON.stringify(result)).toContain("R1");
 	});
 
 	it("isolates handler draft mutations and does not let a later permissive handler release the original", async () => {
@@ -286,7 +331,7 @@ describe("assistant publication bridge", () => {
 		expect(triggered).toEqual(["raw-stream-rule"]);
 		expect(mock.calls).toHaveLength(2);
 		expect(assistantTexts(agent.state.messages)).toEqual([ASSISTANT_GATE_REFUSAL, STATUS]);
-		expect(publicEvents.filter(event => "message" in event && event.message.role === "assistant")
+		expect(publicEvents.filter(event => isAssistantMessageEvent(event))
 			.some(event => JSON.stringify(event).includes("FORBIDDEN"))).toBe(false);
 	});
 

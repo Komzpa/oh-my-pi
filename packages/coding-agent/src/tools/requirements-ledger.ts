@@ -159,7 +159,7 @@ export function getLatestRequirements(entries: readonly SessionEntry[]): Require
 	return [];
 }
 
-/** Append one canonical snapshot entry through the extension `pi.appendEntry` API. */
+/** Append one canonical snapshot entry through the owning session's custom-entry API. */
 export function appendRequirementsSnapshot(
 	pi: RequirementsLedgerAppender,
 	requirements: readonly RequirementLedgerItem[],
@@ -364,5 +364,30 @@ export function getRequirementAuditSources(
 		}
 	}
 	return sources;
+}
+
+
+/** Candidates become overdue after an assistant turn ends later in the same branch. */
+export function getOverdueRequirementCandidates(entries: readonly SessionEntry[]): RequirementLedgerItem[] {
+	const capturedAt = new Map<string, number>();
+	let latestAssistantStop = -1;
+	for (let index = 0; index < entries.length; index++) {
+		const entry = entries[index]!;
+		if (entry.type === "custom" && entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) {
+			for (const requirement of getLatestRequirements([entry])) {
+				if (!capturedAt.has(requirement.id)) capturedAt.set(requirement.id, index);
+			}
+		}
+		if (
+			entry.type === "message" &&
+			entry.message.role === "assistant" &&
+			entry.message.stopReason === "stop"
+		) {
+			latestAssistantStop = index;
+		}
+	}
+	return getLatestRequirements(entries).filter(
+		requirement => requirement.classification === "candidate" && (capturedAt.get(requirement.id) ?? Infinity) < latestAssistantStop,
+	);
 }
 

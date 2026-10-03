@@ -37,7 +37,11 @@ import {
 	steeringQueueState,
 	unpairedToolCallTail,
 } from "./agent-loop";
-import { admitAssistantMessage } from "./assistant-publication";
+import {
+	admitAssistantMessage,
+	getAssistantPublicationGate,
+	setAssistantPublicationGate,
+} from "./assistant-publication";
 import type { AppendOnlyContextManager } from "./append-only-context";
 import { isProviderRefusalMessage } from "./replay-policy";
 import { SentToolDefinitions } from "./sent-tool-definitions";
@@ -350,8 +354,6 @@ export interface AgentOptions {
 	/** See {@link AgentLoopConfig.transformAssistantMessagePreservesToolCalls}. */
 	transformAssistantMessagePreservesToolCalls?: boolean;
 
-	/** Awaited pre-publication gate; installing it disables public assistant deltas. */
-	beforeAssistantMessage?: AgentLoopConfig["beforeAssistantMessage"];
 
 	/**
 	 * Opt-in OpenTelemetry instrumentation. Passing `{}` enables the loop's
@@ -521,8 +523,6 @@ export class Agent {
 	transformAssistantMessage?: AgentLoopConfig["transformAssistantMessage"];
 	/** Declares {@link transformAssistantMessage} never rewrites streamed tool calls; reassign alongside it. */
 	transformAssistantMessagePreservesToolCalls?: boolean;
-	/** Sampled at run start so removing a hook cannot release an in-flight draft. */
-	beforeAssistantMessage?: AgentLoopConfig["beforeAssistantMessage"];
 	/**
 	 * Hook that peeks whether interrupting IRC asides are queued for the next boundary.
 	 */
@@ -589,7 +589,6 @@ export class Agent {
 		this.afterToolCall = opts.afterToolCall;
 		this.transformAssistantMessage = opts.transformAssistantMessage;
 		this.transformAssistantMessagePreservesToolCalls = opts.transformAssistantMessagePreservesToolCalls;
-		this.beforeAssistantMessage = opts.beforeAssistantMessage;
 		this.#telemetry = opts.telemetry;
 		this.#appendOnlyContext = opts.appendOnlyContext;
 		this.#transformProviderContext = opts.transformProviderContext;
@@ -1841,7 +1840,6 @@ export class Agent {
 				? (message, signal) => this.transformAssistantMessage?.(message, signal)
 				: undefined,
 			transformAssistantMessagePreservesToolCalls: this.transformAssistantMessagePreservesToolCalls,
-			beforeAssistantMessage: this.beforeAssistantMessage,
 			onAssistantMessageEvent: this.#onAssistantMessageEvent,
 			onHarmonyLeak: this.#onHarmonyLeak,
 			onTurnEnd: (messages, signal, context) => this.#onTurnEnd?.(messages, signal, context),
@@ -1877,6 +1875,7 @@ export class Agent {
 			onBeforeYield: () => this.#onBeforeYield?.(),
 			telemetry: this.#telemetry,
 		};
+		setAssistantPublicationGate(config, getAssistantPublicationGate(this));
 
 		let partial: AgentMessage | null = null;
 		const completedToolCallIds = new Set<string>();
@@ -2012,7 +2011,7 @@ export class Agent {
 							errorMessage,
 							timestamp: Date.now(),
 						};
-			await admitAssistantMessage(errorMsg, config.beforeAssistantMessage, loopSignal, abortReasonText);
+			await admitAssistantMessage(errorMsg, getAssistantPublicationGate(config), loopSignal, abortReasonText);
 
 			if (shouldEmitVisibleError) {
 				if (!turnOpen) {

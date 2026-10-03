@@ -1,11 +1,29 @@
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import type { AgentBeforeAssistantMessage } from "./types";
+
+type AssistantPublicationGateResult = { replacementText: string; settled?: true };
+type AssistantPublicationGate = (
+	message: AssistantMessage,
+	signal: AbortSignal,
+) => void | AssistantPublicationGateResult | Promise<void | AssistantPublicationGateResult>;
+
+const gates = new WeakMap<object, AssistantPublicationGate>();
+
+/** Internal bridge for coding-agent; intentionally not re-exported from the SDK entry point. */
+export function setAssistantPublicationGate(owner: object, gate: AssistantPublicationGate | undefined): void {
+	if (gate) gates.set(owner, gate);
+	else gates.delete(owner);
+}
+
+export function getAssistantPublicationGate(owner: object): AssistantPublicationGate | undefined {
+	return gates.get(owner);
+}
+
+const NEVER_ABORTED_SIGNAL = new AbortController().signal;
+const narrativeReplacedMessages = new WeakSet<AssistantMessage>();
 
 /** Safe narrative used when the publication gate cannot approve a draft. */
 export const ASSISTANT_GATE_REFUSAL = "Assistant response withheld because its delivery could not be approved.";
-const NEVER_ABORTED_SIGNAL = new AbortController().signal;
-const narrativeReplacedMessages = new WeakSet<AssistantMessage>();
 
 export function isAssistantNarrativeReplaced(message: AssistantMessage): boolean {
 	return narrativeReplacedMessages.has(message);
@@ -33,7 +51,7 @@ export function replaceAssistantNarrative(message: AssistantMessage, replacement
 /** Preserve the callback's exact message identity through final public events. */
 export async function admitAssistantMessage(
 	message: AssistantMessage,
-	gate: AgentBeforeAssistantMessage | undefined,
+	gate: AssistantPublicationGate | undefined,
 	signal: AbortSignal | undefined,
 	abortReasonText: (signal: AbortSignal | undefined) => string,
 ): Promise<void> {

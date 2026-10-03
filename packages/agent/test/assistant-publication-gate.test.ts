@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentEvent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import { setAssistantPublicationGate } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
@@ -42,13 +43,6 @@ describe("assistant publication gate", () => {
 				if (event.type === "image_end") rawSeen.resolve();
 			},
 			transformAssistantMessage: message => { message.content[0] = { type: "text", text: "transformed draft" }; },
-			beforeAssistantMessage: async message => {
-				expect(message.content[0]).toEqual({ type: "text", text: "transformed draft" });
-				admitted = message;
-				gateEntered.resolve();
-				await releaseGate.promise;
-				return { replacementText: approved, settled: true };
-			},
 			streamFn: () => {
 				const stream = new AssistantMessageEventStream();
 				queueMicrotask(async () => {
@@ -62,6 +56,14 @@ describe("assistant publication gate", () => {
 				return stream;
 			},
 		});
+		setAssistantPublicationGate(agent, async message => {
+			expect(message.content[0]).toEqual({ type: "text", text: "transformed draft" });
+			admitted = message;
+			gateEntered.resolve();
+			await releaseGate.promise;
+			return { replacementText: approved, settled: true };
+		});
+
 		const events: AgentEvent[] = [];
 		const promptRecorded = Promise.withResolvers<void>();
 		agent.subscribe(event => {
@@ -90,9 +92,19 @@ describe("assistant publication gate", () => {
 		expect(JSON.stringify(events)).not.toContain(unsafe);
 		expect(JSON.stringify(events)).not.toContain("unsafe private reasoning");
 		expect(JSON.stringify(events)).not.toContain("unsafe-image");
+		const admittedMessage = admitted;
+		if (!admittedMessage) throw new Error("publication gate did not admit a message");
 		for (const event of assistantEvents(events)) {
-			if (event.type === "agent_end") expect(event.messages.at(-1)).toBe(admitted);
-			else if ("message" in event) expect(event.message).toBe(admitted);
+			if (event.type === "agent_end") {
+				const finalMessage = event.messages.at(-1);
+				if (!finalMessage) throw new Error("agent_end did not include the admitted message");
+				expect(finalMessage).toBe(admittedMessage);
+			} else if (
+				(event.type === "message_start" || event.type === "message_end") &&
+				event.message.role === "assistant"
+			) {
+				expect(event.message).toBe(admittedMessage);
+			}
 		}
 	});
 
@@ -107,7 +119,7 @@ describe("assistant publication gate", () => {
 		stream.push({ type: "start", partial: draft });
 		stream.push({ type: "text_delta", contentIndex: 0, delta: "ordinary stream", partial: draft });
 		await started.promise;
-		expect(agent.state.streamMessage?.content).toEqual(draft.content);
+		expect(agent.state.streamMessage).toMatchObject({ content: draft.content });
 		stream.push({ type: "done", reason: "stop", message: draft });
 		await run;
 		expect(agent.state.messages.at(-1)).toMatchObject({ content: draft.content });
@@ -146,8 +158,9 @@ describe("assistant publication gate", () => {
 					block.rawBlock = 'call echo with {"value":"after"}';
 				}
 			},
-			beforeAssistantMessage: message => ({ replacementText: message.content.some(block => block.type === "toolCall") ? "" : approved }),
 		});
+		setAssistantPublicationGate(agent, message => ({ replacementText: message.content.some(block => block.type === "toolCall") ? "" : approved }));
+
 		const events: AgentEvent[] = [];
 		agent.subscribe(event => { events.push(event); });
 		await agent.prompt("echo");
@@ -159,7 +172,9 @@ describe("assistant publication gate", () => {
 		expect(agent.state.messages.map(message => message.role)).toEqual(["user", "assistant", "toolResult", "assistant"]);
 		expect(agent.state.messages[1]).toMatchObject({ content: [{ type: "toolCall", id: "call-1", name: "echo", arguments: { value: "after" } }] });
 		expect(agent.state.messages[1]).toMatchObject({ content: [{ type: "toolCall", id: "call-1", name: "echo", rawBlock: 'call echo with {"value":"after"}', arguments: { value: "after" } }] });
-		expect(agent.state.messages[1].content[0]).not.toHaveProperty("intent");
+		const admittedToolTurn = agent.state.messages[1];
+		if (!admittedToolTurn || admittedToolTurn.role !== "assistant") throw new Error("tool turn was not persisted");
+		expect(admittedToolTurn.content[0]).not.toHaveProperty("intent");
 		expect(agent.state.messages[2]).toMatchObject({ toolCallId: "call-1", content: [{ type: "text", text: "after" }] });
 		expect(JSON.stringify(events)).not.toContain(unsafe);
 	});
@@ -180,8 +195,9 @@ describe("assistant publication gate", () => {
 		] });
 		const agent = new Agent({
 			initialState: { model: mock.model, tools: [tool] }, streamFn: mock.stream,
-			beforeAssistantMessage: () => { throw new Error("delivery handler failed"); },
 		});
+		setAssistantPublicationGate(agent, () => { throw new Error("delivery handler failed"); });
+
 		const events: AgentEvent[] = [];
 		agent.subscribe(event => { events.push(event); });
 		await agent.prompt("echo");
@@ -199,12 +215,13 @@ describe("assistant publication gate", () => {
 			const pending = Promise.withResolvers<void>();
 			const agent = new Agent({
 				initialState: { model: mock.model }, streamFn: mock.stream,
-				beforeAssistantMessage: async () => {
-					entered.resolve();
-					if (failure === "reject") throw new Error("gate failed");
-					await pending.promise;
-				},
 			});
+			setAssistantPublicationGate(agent, async () => {
+				entered.resolve();
+				if (failure === "reject") throw new Error("gate failed");
+				await pending.promise;
+			});
+
 			const events: AgentEvent[] = [];
 			agent.subscribe(event => { events.push(event); });
 			const run = agent.prompt("implement");
@@ -228,7 +245,6 @@ describe("assistant publication gate", () => {
 			const seen = Promise.withResolvers<void>();
 			const agent = new Agent({
 				initialState: { model: mock.model },
-				beforeAssistantMessage: () => ({ replacementText: approved }),
 				onAssistantMessageEvent: () => { seen.resolve(); },
 				streamFn: (_model, _context, options) => {
 					const stream = new AssistantMessageEventStream();
@@ -242,6 +258,8 @@ describe("assistant publication gate", () => {
 					return stream;
 				},
 			});
+			setAssistantPublicationGate(agent, () => ({ replacementText: approved }));
+
 			const events: AgentEvent[] = [];
 			agent.subscribe(event => { events.push(event); });
 			const run = agent.prompt("pwd");
@@ -262,16 +280,17 @@ describe("assistant publication gate", () => {
 		let admitted: AssistantMessage | undefined;
 		const agent = new Agent({
 			initialState: { model: mock.model },
-			beforeAssistantMessage: message => {
-				admitted = message;
-				return { replacementText: approved };
-			},
 			streamFn: () => {
 				const stream = new AssistantMessageEventStream();
 				stream.end(draft);
 				return stream;
 			},
 		});
+		setAssistantPublicationGate(agent, message => {
+			admitted = message;
+			return { replacementText: approved };
+		});
+
 		const events: AgentEvent[] = [];
 		agent.subscribe(event => { events.push(event); });
 		await agent.prompt("implement");
@@ -283,7 +302,8 @@ describe("assistant publication gate", () => {
 	it("never publishes discarded Harmony attempts before gating the clean retry", async () => {
 		const leak = `${unsafe} analysis to=functions.edit code`;
 		const mock = createMockModel({ provider: "openai-codex", responses: [{ content: [leak] }, { content: [unsafe] }] });
-		const agent = new Agent({ initialState: { model: createHarmonyMitigationModel() }, streamFn: mock.stream, beforeAssistantMessage: () => ({ replacementText: approved }) });
+		const agent = new Agent({ initialState: { model: createHarmonyMitigationModel() }, streamFn: mock.stream });
+		setAssistantPublicationGate(agent, () => ({ replacementText: approved }));
 		const events: AgentEvent[] = [];
 		agent.subscribe(event => { events.push(event); });
 		await agent.prompt("implement");
