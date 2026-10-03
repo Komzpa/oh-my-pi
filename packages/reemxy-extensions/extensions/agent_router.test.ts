@@ -1556,3 +1556,21 @@ describe("agent router", () => {
 
 
 });
+
+test("R3: internal control URIs bypass the empty-write guard so proc:// kill passes", async () => {
+	const { dir } = tempStateFile();
+	try {
+		const call = toolCallHandler();
+		const context = ctx({ cwd: dir });
+		// The chief-of-staff runbook's exact kill call, with empty or omitted content.
+		expect(await call({ toolName: "write", input: { path: "proc://IntegrateFacilityCallouts/kill", content: "" } }, context)).toBeUndefined();
+		expect(await call({ toolName: "write", input: { path: "proc://FixR8LastFails/kill" } }, context)).toBeUndefined();
+		expect(await call({ toolName: "write", input: { path: "agent://Main", content: "" } }, context)).toBeUndefined();
+		expect(await call({ toolName: "write", input: { path: "xd://report_issue", content: "" } }, context)).toBeUndefined();
+		// Negative control: a real file keeps the guard.
+		const refused = await call({ toolName: "write", input: { path: "empty.txt", content: "" } }, context);
+		expect(refused).toMatchObject({ block: true });
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

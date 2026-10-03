@@ -1809,9 +1809,122 @@ test("escalated demands refuse non-remedy calls until a todo override names them
     expect(await toolCall({ toolName: "todo", toolCallId: "u3", input: CALLS.todoSchedule!.arguments }, ctx)).toBeUndefined();
     // Naming the demand in the override field lets later calls through.
     expect(await toolCall({ toolName: "todo", toolCallId: "u4", input: { ...CALLS.todoSchedule!.arguments, override: "missed-eta re-estimated" } }, ctx)).toBeUndefined();
-    expect(await toolCall({ toolName: "task", toolCallId: "u5", input: CALLS.taskRow!.arguments }, ctx)).toBeUndefined();
+    expect(await toolCall({ toolName: "todo", toolCallId: "u5", input: CALLS.taskRow!.arguments }, ctx)).toBeUndefined();
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });
   }
 }, 60_000);
+
+// ---------------------------------------------------------------------------
+// First-slip intervention (R1-R4). Live 2026-10-03: case A row "Force-layout
+// callouts" ran 65m with 4 reestimates under worker IntegrateFacilityCallouts on
+// ui-coder and every slip only moved the ETA; case B row "Report r8 REQ-7 and
+// REQ-11 fails fixed" hid behind its 5th reestimate (worker FixR8LastFails).
+// A same-owner reestimate on a slipping row is refused with one exact action.
+
+const slipRow = (content: string, owner: string, reestimateCount: number, updatedAt: number) => ({
+  content,
+  status: "in_progress",
+  schedule: {
+    owner,
+    dependencies: [],
+    resources: [content],
+    estimate: { optimisticSeconds: 600, likelySeconds: 900, pessimisticSeconds: 1200, confidence: "medium" as const, basis: "slip fixture", updatedAt },
+    estimateRevision: reestimateCount + 1,
+    reestimateCount,
+    startedAt: updatedAt,
+  },
+});
+
+const slipJobs = (id: string, profile: string, startedAt: number) => ({
+  running: [{ id, type: "task", status: "running", label: "row", startTime: startedAt, agentId: id, agentProfile: profile } as never],
+  recent: [],
+  nonJobAgents: [{ id, live: true }],
+}) as unknown as Jobs;
+
+const reestimateCall = (task: string, extra: Record<string, unknown> = {}): Call => ({
+  name: "todo",
+  arguments: {
+    op: "schedule",
+    updates: [{
+      task,
+      estimate: { optimisticSeconds: 600, likelySeconds: 900, pessimisticSeconds: 1200, confidence: "medium", basis: "slip", updatedAt: Date.now() },
+      ...extra,
+    }],
+  },
+});
+
+async function slipCall(tasks: unknown[], jobs: Jobs, call: Call) {
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "write", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => undefined },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: () => undefined,
+  } as unknown as ExtensionAPI;
+  await todoDispatch(api);
+  const branch = [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } }];
+  const cwd = mkdtempSync(join(tmpdir(), "slip-"));
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: "slip-root" }), getBranch: () => branch, getSessionFile: () => undefined },
+    getAsyncJobSnapshot: () => jobs,
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => false,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  try {
+    return (await handlers.get("tool_call")!({ toolName: call.name, toolCallId: "c", input: call.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
+  } finally {
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}
+
+test("R1 (case A): a same-owner reestimate on a slipping running row is refused with one exact action", async () => {
+  const stale = Date.now() - 65 * 60_000;
+  const tasks = () => [slipRow("Force-layout callouts", "IntegrateFacilityCallouts", 2, stale)];
+  const jobs = slipJobs("IntegrateFacilityCallouts", "ui-coder", stale);
+  const refused = await slipCall(tasks(), jobs, reestimateCall("Force-layout callouts"));
+  expect(refused?.block).toBe(true);
+  expect(refused?.reason).toContain("Exactly: write proc://IntegrateFacilityCallouts/kill");
+  expect(refused?.reason).toContain("ui-coder-strong");
+  expect(refused?.reason).toContain("new owner");
+  // Allowed: the same call changes the owner in the same update.
+  expect(await slipCall(tasks(), jobs, reestimateCall("Force-layout callouts", { owner: "CalloutRestaff" }))).toBeUndefined();
+  // Allowed: the same call drops the row.
+  expect(await slipCall(tasks(), jobs, reestimateCall("Force-layout callouts", { status: "abandoned" }))).toBeUndefined();
+  // Allowed: the row is split into new rows.
+  expect(await slipCall(tasks(), jobs, { name: "todo", arguments: { op: "schedule", updates: [{ task: "Force-layout callouts (markup)" }, { task: "Force-layout callouts (positions)" }] } })).toBeUndefined();
+});
+
+test("R2 (case B): the sixth reestimate under the same owner is refused, overdue or not", async () => {
+  const fresh = Date.now() - 60_000;
+  const jobs = slipJobs("FixR8LastFails", "coder", fresh);
+  const refused = await slipCall([slipRow("Report r8 REQ-7 and REQ-11 fails fixed", "FixR8LastFails", 5, fresh)], jobs, reestimateCall("Report r8 REQ-7 and REQ-11 fails fixed"));
+  expect(refused?.block).toBe(true);
+  expect(refused?.reason).toContain("reestimates");
+  expect(refused?.reason).toContain("Exactly: write proc://FixR8LastFails/kill");
+  // Negative control: under three reestimates the same reestimate passes.
+  expect(await slipCall([slipRow("Report r8 REQ-7 and REQ-11 fails fixed", "FixR8LastFails", 2, fresh)], jobs, reestimateCall("Report r8 REQ-7 and REQ-11 fails fixed"))).toBeUndefined();
+});
+
+test("R4: the slip refusal is one exact action whose calls compose with the escalation gate", async () => {
+  const stale = Date.now() - 65 * 60_000;
+  const refused = await slipCall([slipRow("Force-layout callouts", "IntegrateFacilityCallouts", 2, stale)], slipJobs("IntegrateFacilityCallouts", "ui-coder", stale), reestimateCall("Force-layout callouts"));
+  const reason = refused?.reason ?? "";
+  expect(reason.startsWith("Refusing todo schedule:")).toBe(true);
+  expect(reason.split("Refusing").length - 1).toBe(1);
+  expect(reason.length).toBeLessThan(400);
+  expect(reason).toContain("Exactly: write proc://IntegrateFacilityCallouts/kill");
+  expect(reason).toContain("todo schedule the row with a new owner");
+  const escalated = [{ id: "retro", remedy: "staff the retrospective (retro-facilitator) or answer it in a todo call", satisfies: (call: Call) => call.name === "todo" }];
+  expect(decideGateCall({ name: "write", arguments: { path: "proc://IntegrateFacilityCallouts/kill", content: "" } }, escalated).allowed).toBe(true);
+  expect(decideGateCall(reestimateCall("Force-layout callouts", { owner: "CalloutRestaff" }), escalated).allowed).toBe(true);
+  expect(decideGateCall({ name: "bash", arguments: { command: "git commit" } }, escalated).allowed).toBe(false);
+});
