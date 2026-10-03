@@ -959,7 +959,9 @@ function applyScheduleUpdates(
 			} else if (update.content !== task.content) {
 				const collision = renamedTitles.has(update.content) || tasksByContent.has(update.content);
 				if (collision) {
-					errors.push(`Cannot rename task "${update.task}" to "${update.content}": another row already has that content`);
+					errors.push(
+						`Cannot rename task "${update.task}" to "${update.content}": another row already has that content`,
+					);
 				} else {
 					renamedTasks.set(task, update.content);
 					renamedContent.set(task.content, update.content);
@@ -1751,7 +1753,8 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const newArchive = archived?.archivedPhases ?? [];
 		// A schedule rename changes titles, not statuses: content-keyed completion
 		// diffing must not report renamed closed rows as newly completed.
-		const completedTasks = readOnly || failed || op === "schedule" ? [] : getCompletionTransitions(previousPhases, updated);
+		const completedTasks =
+			readOnly || failed || op === "schedule" ? [] : getCompletionTransitions(previousPhases, updated);
 		if (archived) this.session.setTodoPhases?.(effective);
 		const operation = !readOnly && !failed ? buildTodoOpPersistedEdit(op, entry, now) : undefined;
 		const archiveEdit: TodoArchivePersistedEdit | undefined =
