@@ -142,6 +142,7 @@ import { cfgDisabledProviders } from "../config/model-settings";
 import { getRetryFallbackRole, installRetryFallbackRole } from "../session/retry-fallback-chains";
 import { cfgCompactionThresholdPercent, cfgCompactionThresholdTokens } from "../session/context-settings";
 
+import { Effort as CatalogEffort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 export type { YieldItem } from "@oh-my-pi/pi-tui/tools/task";
 
 const TASK_ABORT_CLEANUP_GRACE_MS = 10_000;
@@ -3692,6 +3693,62 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 }
 
 /**
+ * Implementation roles that must never run a Claude model above high effort
+ * (see the spawn-ceiling clamp in `runSubprocess`). `AgentDefinition` carries
+ * no role/category field, so this is an explicit allowlist: review/judgment
+ * roles (reviewer, qa-auditor, adversarial-review profiles, …) stay out and
+ * remain unclamped.
+ */
+const IMPL_WORKER_EFFORT_CAP_AGENTS: Record<string, true> = {
+	coder: true,
+	"ui-coder": true,
+	"coder-strong": true,
+	"ui-coder-strong": true,
+	task: true,
+	workhorse: true,
+	sonic: true,
+	deepseek: true,
+};
+
+function capImplementationWorkerEffortCeiling(
+	agentName: string,
+	model: Model | undefined,
+	ceiling: (typeof THINKING_EFFORTS)[number] | undefined,
+	configuredCeiling: (typeof THINKING_EFFORTS)[number],
+): (typeof THINKING_EFFORTS)[number] | undefined {
+	if (
+		IMPL_WORKER_EFFORT_CAP_AGENTS[agentName] !== true ||
+		model === undefined ||
+		(model.provider !== "anthropic" && !model.id.startsWith("claude-"))
+	) {
+		return ceiling;
+	}
+	const configured = ceiling ?? configuredCeiling;
+	return THINKING_EFFORTS.indexOf(configured) <= THINKING_EFFORTS.indexOf(CatalogEffort.High)
+		? configured
+		: CatalogEffort.High;
+}
+
+function capImplementationWorkerThinkingLevel(
+	agentName: string,
+	model: Model | undefined,
+	level: ConfiguredThinkingLevel | undefined,
+): ConfiguredThinkingLevel | undefined {
+	if (
+		IMPL_WORKER_EFFORT_CAP_AGENTS[agentName] !== true ||
+		model === undefined ||
+		(model.provider !== "anthropic" && !model.id.startsWith("claude-")) ||
+		level === undefined
+	) {
+		return level;
+	}
+	const effort = THINKING_EFFORTS.find(candidate => candidate === level);
+	return effort !== undefined && THINKING_EFFORTS.indexOf(effort) > THINKING_EFFORTS.indexOf(CatalogEffort.High)
+		? CatalogEffort.High
+		: level;
+}
+
+/**
  * Run a single agent in-process.
  */
 export async function runSubprocess(options: ExecutorOptions): Promise<SingleResult> {
@@ -4149,8 +4206,13 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						model || modelOverride === undefined ? undefined : subagentRetryFallbackRole(id),
 					modelPatternDefaultFallbackChain:
 						model || modelOverride === undefined ? undefined : inheritedRetryFallbackChain,
-					thinkingLevel: effectiveThinkingLevel,
-					thinkingLevelCeiling: spawnEffortCeiling,
+					thinkingLevel: capImplementationWorkerThinkingLevel(agent.name, model, effectiveThinkingLevel),
+					thinkingLevelCeiling: capImplementationWorkerEffortCeiling(
+						agent.name,
+						model,
+						spawnEffortCeiling,
+						cfgTaskMaxEffort.get(settings),
+					),
 					// Subagents are short-lived; never schedule background warm requests.
 					cacheWarming: false,
 					toolNames,
