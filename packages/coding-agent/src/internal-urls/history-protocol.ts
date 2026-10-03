@@ -520,9 +520,51 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		let messages: unknown[];
 		if (ref.session) {
 			messages = ref.session.messages;
-			notes.push("Source: live session");
+			if (messages.length === 0 && ref.status === "running") {
+				const fileMessages = ref.sessionFile ? await loadSessionMessagesReadOnly(ref.sessionFile) : [];
+				if (fileMessages.length === 0) {
+					const disk = await this.#resolveFromDisk(ref.id, preferredArtifactDir);
+					if (disk) return { ...disk, url: url.href };
+					const content = [
+						`# ${ref.id} (${ref.status})`,
+						"",
+						"No transcript has been written yet.",
+						`Started ${formatAgo(ref.createdAt)}.`,
+						"",
+					].join("\n");
+					return {
+						url: url.href,
+						content,
+						contentType: "text/markdown",
+						size: Buffer.byteLength(content, "utf-8"),
+						notes: ["Source: agent registry (no transcript yet)"],
+					};
+				}
+				messages = fileMessages;
+				notes.push(`Source: session file (read-only, ${ref.status})`);
+			} else {
+				notes.push("Source: live session");
+			}
 		} else if (ref.sessionFile) {
 			messages = await loadSessionMessagesReadOnly(ref.sessionFile);
+			if (messages.length === 0 && ref.status === "running") {
+				const disk = await this.#resolveFromDisk(ref.id, preferredArtifactDir);
+				if (disk) return { ...disk, url: url.href };
+				const content = [
+					`# ${ref.id} (${ref.status})`,
+					"",
+					"No transcript has been written yet.",
+					`Started ${formatAgo(ref.createdAt)}.`,
+					"",
+				].join("\n");
+				return {
+					url: url.href,
+					content,
+					contentType: "text/markdown",
+					size: Buffer.byteLength(content, "utf-8"),
+					notes: ["Source: agent registry (no transcript yet)"],
+				};
+			}
 			notes.push(`Source: session file (read-only, ${ref.status})`);
 		} else {
 			// No live session and no retained sessionFile — try the disk scan before

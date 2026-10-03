@@ -8,7 +8,9 @@
  *   the JSONL session file.
  * - An unknown id fails with an error listing the known ids.
  */
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { createAgentSession } from "@oh-my-pi/pi-coding-agent";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -564,6 +566,41 @@ describe("history:// protocol", () => {
 
 		expect(resource.content).toContain("# FacilityHeaderMigrationOwner (running)");
 		expect(resource.content).toContain("No transcript has been written yet.");
+	});
+
+	it("history://<id> reports a real pre-registered running worker before its JSONL exists", async () => {
+		await withTempDir(async dir => {
+			const registry = new AgentRegistry();
+			const sm = SessionManager.create(dir, path.join(dir, "sessions"));
+			const { session } = await createAgentSession({
+				cwd: dir,
+				agentDir: path.join(dir, "agent"),
+				model: getBundledModel("openai", "gpt-5.2"),
+				agentRegistry: registry,
+				sessionManager: sm,
+				settings: Settings.isolated({}),
+				disableExtensionDiscovery: true,
+				enableMCP: false,
+				hasUI: false,
+				agentId: "RealWorker",
+				taskDepth: 1,
+				parentTaskPrefix: "RealWorker",
+				parentAgentId: "Main",
+			} as never);
+			try {
+				const ref = registry.get("RealWorker")!;
+				expect(ref.status).toBe("running");
+				expect(ref.sessionFile).toBeDefined();
+				registry.detachSession("RealWorker");
+				const resource = await InternalUrlRouter.instance().resolve("history://RealWorker", {
+					agentRegistry: registry,
+				});
+				expect(resource.content).toContain("# RealWorker (running)");
+				expect(resource.content).toContain("No transcript has been written yet.");
+			} finally {
+				await session.dispose();
+			}
+		});
 	});
 
 	it("rejects an unknown id with the list of known agents", async () => {
