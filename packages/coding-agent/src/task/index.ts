@@ -54,7 +54,13 @@ import { AsyncJobError, type AsyncJobManager } from "../async";
 import { hasResolvableTranscript } from "../internal-urls/registry-helpers";
 import { AgentRegistry } from "../registry/agent-registry";
 import { type DiscoveryResult, discoverAgents } from "./discovery";
-import { createEvalCustomTools, describeEvalTools, evalToolsEnabled, isBuiltinToolAvailable, stripBuiltinToolNames } from "./eval-tools";
+import {
+	createEvalCustomTools,
+	describeEvalTools,
+	evalToolsEnabled,
+	isBuiltinToolAvailable,
+	stripBuiltinToolNames,
+} from "./eval-tools";
 import { generateTaskName } from "./name-generator";
 import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
@@ -1199,6 +1205,23 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					content: [{ type: "text", text: `Spawned agent \`${agentId}\`...` }],
 					details: buildAsyncDetails(),
 				});
+				return appendTaskNotices(
+					withAdvisory({
+						content: [
+							{
+								type: "text",
+								text: renderSpawnFeedback(false),
+							},
+						],
+						details: buildAsyncDetails(),
+					}),
+					toolNotices,
+				);
+			}
+			onUpdate?.({
+				content: [{ type: "text", text: `Spawned ${started.length} agents...` }],
+				details: buildAsyncDetails(),
+			});
 			return appendTaskNotices(
 				withAdvisory({
 					content: [
@@ -1211,23 +1234,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				}),
 				toolNotices,
 			);
-			}
-			onUpdate?.({
-				content: [{ type: "text", text: `Spawned ${started.length} agents...` }],
-				details: buildAsyncDetails(),
-			});
-		return appendTaskNotices(
-			withAdvisory({
-				content: [
-					{
-						type: "text",
-						text: renderSpawnFeedback(false),
-					},
-				],
-				details: buildAsyncDetails(),
-			}),
-			toolNotices,
-		);
 		}
 
 		// Mixed call: the async jobs above already run detached; the blocking
@@ -1294,13 +1300,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const text = [merged.contentParts.join("\n\n"), spawnedSummary]
 			.filter(section => section.trim().length > 0)
 			.join("\n\n");
-	return appendTaskNotices(
-		withAdvisory({
-			content: [{ type: "text", text: text.length > 0 ? text : "No results." }],
-			details: buildAsyncDetails(),
-		}),
-		toolNotices,
-	);
+		return appendTaskNotices(
+			withAdvisory({
+				content: [{ type: "text", text: text.length > 0 ? text : "No results." }],
+				details: buildAsyncDetails(),
+			}),
+			toolNotices,
+		);
 	}
 
 	/**
