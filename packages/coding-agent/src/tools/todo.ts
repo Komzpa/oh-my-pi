@@ -777,9 +777,6 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			return appendItems(phases, entry, errors);
 		case "view":
 			return phases;
-		case "classify":
-			// Handled on raw args before schema resolution in execute(); never reaches applyParams.
-			return phases;
 	}
 }
 
