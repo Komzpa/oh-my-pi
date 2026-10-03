@@ -667,9 +667,12 @@ class TodoHudContainer extends AnchoredLiveContainer {
 	 * has one, else the phase tree. The short-terminal fold is ANSI layout only.
 	 */
 	override describe(cx: DescribeContext): NativeNode {
+		const requirement = this.mode.describeRequirementHudSummary();
 		const hud = this.mode.todoHudNative;
-		if (!hud) return EMPTY_HUD;
-		return cx.supports("checklist") ? hud.checklist : hud.fallback;
+		if (!hud) return requirement ?? EMPTY_HUD;
+		const body = cx.supports("checklist") ? hud.checklist : hud.fallback;
+		if (!requirement) return body;
+		return col([requirement, body], { role: "omp.hud.todo" });
 	}
 }
 
@@ -8267,6 +8270,22 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	requirementHudSegment = "";
 
+	/**
+	 * Native requirement-summary line mirroring the ANSI `req …` segment, so
+	 * native terminals see requirement counts even when checklist rows are
+	 * absent (`todoHudNative` is `undefined` with no phases).
+	 */
+	describeRequirementHudSummary(): NativeNode | undefined {
+		const counts = countRequirements(
+			getLatestRequirements((this.#todoPhasesOwner ?? this.session).sessionManager.getBranch()),
+		);
+		if (counts.total === 0) return undefined;
+		return text([
+			span("TODO", "accent strong"),
+			span(` · req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗`, "dim"),
+		]);
+	}
+
 	renderRequirementHudSegment(renderBase: (width: number) => readonly string[], width: number): readonly string[] {
 		const counts = countRequirements(
 			getLatestRequirements((this.#todoPhasesOwner ?? this.session).sessionManager.getBranch()),
@@ -8308,17 +8327,20 @@ export class InteractiveMode implements InteractiveModeContext {
 			"dim",
 			` · req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗`,
 		);
-		if (lines.length === 0) return [`\n${title}${requirementSummary}`];
+		if (lines.length === 0) return ["", truncateToWidth(`${title}${requirementSummary}`, width)];
 
 		let inserted = false;
 		const rendered = lines.map(line => {
-			if (inserted) return line;
+			if (inserted) return truncateToWidth(line, width);
 			const titleIndex = line.indexOf(title);
-			if (titleIndex < 0) return line;
+			if (titleIndex < 0) return truncateToWidth(line, width);
 			inserted = true;
-			return `${line.slice(0, titleIndex)}${title}${requirementSummary}${line.slice(titleIndex + title.length)}`;
+			return truncateToWidth(
+				`${line.slice(0, titleIndex)}${title}${requirementSummary}${line.slice(titleIndex + title.length)}`,
+				width,
+			);
 		});
-		return inserted ? rendered : [`${title}${requirementSummary}`, ...rendered];
+		return inserted ? rendered : [truncateToWidth(`${title}${requirementSummary}`, width), ...rendered];
 	}
 
 	#subscribeToAgent(): void {
