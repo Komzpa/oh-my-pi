@@ -145,8 +145,6 @@ import { withSubagentElapsedSignal } from "./subagent-elapsed-signal";
 
 export type { YieldItem } from "@oh-my-pi/pi-tui/tools/task";
 
-
-const MCP_CALL_TIMEOUT_MS = 60_000;
 const TASK_ABORT_CLEANUP_GRACE_MS = 10_000;
 
 /**

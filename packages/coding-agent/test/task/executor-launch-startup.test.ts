@@ -1,5 +1,13 @@
 import { afterEach, expect, it, vi } from "bun:test";
-import { AuthStorage, clearCustomApis, registerCustomApi, type Api, type Context, type Model, type ModelSpec } from "@oh-my-pi/pi-ai";
+import {
+	AuthStorage,
+	clearCustomApis,
+	registerCustomApi,
+	type Api,
+	type Context,
+	type Model,
+	type ModelSpec,
+} from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -176,7 +184,9 @@ it("applies async subagent provider transforms after SDK date/cwd shaping", asyn
 			synthetic: true,
 		});
 		const userContent = providerContexts[0]!.messages[0]!.content;
-		expect(typeof userContent === "string" ? userContent : JSON.stringify(userContent)).toContain("<system-reminder>");
+		expect(typeof userContent === "string" ? userContent : JSON.stringify(userContent)).toContain(
+			"<system-reminder>",
+		);
 	} finally {
 		await session.dispose();
 	}
