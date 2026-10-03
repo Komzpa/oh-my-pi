@@ -39,6 +39,14 @@ use smallvec::SmallVec;
 use crate::{glob_util, iofs, shell::vfs::ShellFilesystem, task};
 
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+/// Raw listing safety bounds for `WalkRequest::scan_limits`. The walker applies
+/// them while buffering and sorting one directory's entries, before grep's
+/// filters run, so they bound walker memory rather than search scope. The
+/// caller's candidate budgets (`max_scan_files` / `max_scan_bytes`) are enforced
+/// on filtered candidates in the search callbacks and must not be spent by
+/// entries the filters discard.
+const RAW_WALK_MAX_ENTRIES: usize = 65_536;
+const RAW_WALK_MAX_BYTES: usize = 128 * 1024 * 1024;
 /// PCRE2 JIT toggle: `OMP_PCRE2_JIT=1` forces JIT on, `0`/`false` forces it
 /// off. Unset, JIT stays on everywhere except macOS, where PCRE2's SLJIT
 /// executable allocator can fault while compiling patterns (issue #7399).
@@ -1720,12 +1728,13 @@ fn run_parallel_streaming_grep<M: Matcher + Sync>(
 		pi_walker::WalkOrder::Unordered,
 	)?;
 	if max_scan_files.is_some() || max_scan_bytes.is_some() {
-		request = request.scan_limits(
-			max_scan_files.map_or(usize::MAX, |max| max as usize),
-			max_scan_bytes.map_or(usize::MAX, |max| max as usize),
-		);
+		// Candidate budgets are enforced on filtered candidates in the sink
+		// below; the walker limits only bound its buffered raw listings.
+		request = request.scan_limits(RAW_WALK_MAX_ENTRIES, RAW_WALK_MAX_BYTES);
 	}
 	let file_params = per_file_params(params);
+	let scanned_files = AtomicU64::new(0);
+	let scanned_bytes = AtomicU64::new(0);
 
 	request
 		.for_each_file_candidate_parallel(
@@ -1734,6 +1743,27 @@ fn run_parallel_streaming_grep<M: Matcher + Sync>(
 					&& !matches_type_filter_str(&file.relative, filter)
 				{
 					return Ok(pi_walker::ParallelWalkControl::Continue);
+				}
+				let size = file_size_hint(file.size)
+					.or_else(|| {
+						state.fs.metadata(file.path.as_path()).ok().map(|m| m.len())
+					})
+					.unwrap_or(MAX_FILE_BYTES);
+				let previous_files = scanned_files.fetch_add(1, Ordering::Relaxed);
+				let over_files = max_scan_files.is_some_and(|max| previous_files >= u64::from(max));
+				let over_bytes = !over_files
+					&& max_scan_bytes.is_some_and(|max| {
+						scanned_bytes
+							.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+								(current.saturating_add(size) <= u64::from(max))
+									.then_some(current.saturating_add(size))
+							})
+							.is_err()
+					});
+				if over_files || over_bytes {
+					return Err(Error::from_reason(
+						"Grep scan limit reached; narrow the search path".to_string(),
+					));
 				}
 				with_parallel_grep_searcher(file_params, |searcher| {
 					handle_file(file, searcher, matcher, file_params, ReadPolicy::Full, None, state, ct)
@@ -1784,10 +1814,9 @@ fn run_bounded_grep<M: Matcher + Sync>(
 		skip_node_modules,
 		pi_walker::WalkOrder::Path,
 	)?
-	.scan_limits(
-		max_scan_files.map_or(usize::MAX, |max| max as usize),
-		max_scan_bytes.map_or(usize::MAX, |max| max as usize),
-	);
+	// Candidate budgets are enforced on filtered candidates in the visitor
+	// below; the walker limits only bound its buffered raw listings.
+	.scan_limits(RAW_WALK_MAX_ENTRIES, RAW_WALK_MAX_BYTES);
 	let file_params = per_file_params(params);
 	let stop_after_matches = streaming_stop_after(params);
 	let state = PassState::new(fs);
@@ -3142,6 +3171,28 @@ mod tests {
 			.err()
 			.expect("scan must stop at file cap");
 		assert!(error.to_string().contains("narrow the search path"), "{error}");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn scan_budget_counts_candidates_after_filters() {
+		let root = TempDirGuard::new();
+		// Many entries the walk's filters discard must not consume the
+		// caller's candidate budget: the budget counts candidates that survive
+		// the filters, not raw directory entries.
+		for index in 0..32 {
+			write_file(&root.path().join(format!(".hidden{index:02}")), "needle\n");
+		}
+		for name in ["a.txt", "b.txt", "c.txt"] {
+			write_file(&root.path().join(name), "needle\n");
+		}
+		let mut config = base_grep_config(root.path());
+		config.hidden = Some(false);
+		config.max_scan_files = Some(3);
+		config.max_count = Some(8192);
+		let result = grep_sync(config, None, task::CancelToken::default())
+			.expect("filtered entries must not consume the candidate budget");
+		assert_eq!(result.files_with_matches, 3);
 	}
 
 	#[cfg(unix)]
