@@ -39,16 +39,23 @@ const taskAgent: AgentDefinition = {
 	source: "bundled",
 };
 
-function createSession(options: { manager?: AsyncJobManager; settings?: Record<string, unknown> }): ToolSession {
+function createSession(options: {
+	manager?: AsyncJobManager;
+	settings?: Record<string, unknown>;
+	planMode?: boolean;
+}): ToolSession {
 	return {
 		cwd: "/tmp",
 		hasUI: false,
 		settings: Settings.isolated(options.settings ?? {}),
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
+		getPlanModeState: options.planMode ? () => ({ enabled: true }) : undefined,
 		asyncJobManager: options.manager,
 	} as unknown as ToolSession;
 }
+
+
 
 function getFirstText(result: { content: Array<{ type: string; text?: string }> }): string {
 	const content = result.content.find(part => part.type === "text");
@@ -141,6 +148,25 @@ describe("task spawn routing", () => {
 		expect(getFirstText(result)).toContain(
 			"Note: `read` is a built-in tool provided by agent `task`; it was removed from `tools`, which accepts eval-defined tools only.",
 		);
+	});
+	it("allows an available built-in tool in plan mode", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [{ ...taskAgent, tools: ["read"] }],
+			projectAgentsDir: null,
+		});
+		const runSpy = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? "?"));
+		const tool = await TaskTool.create(createSession({ planMode: true, settings: { "async.enabled": false } }));
+
+		const result = await tool.execute("plan-mode-builtin", {
+			agent: "task",
+			task: "Read the assigned file.",
+			tools: ["read"],
+		} as TaskParams);
+
+		expect(runSpy).toHaveBeenCalledTimes(1);
+		expect(getFirstText(result)).not.toContain("Eval-defined tools are unavailable in plan mode.");
 	});
 
 	it("keeps rejecting unknown eval tool names", async () => {
