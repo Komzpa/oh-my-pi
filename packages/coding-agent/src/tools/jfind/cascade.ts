@@ -179,13 +179,18 @@ class Cascade {
 
 		onProgress?.("lexical scan");
 		const native = filesystem.shellFilesystem();
+		// One deadline covers the whole lexical scan phase: the listing and the
+		// grep pass must not each receive the full budget. A remaining value of
+		// zero means "already expired", so an overdrawn deadline cancels the
+		// second scan instead of disabling its timeout.
+		const scanDeadline = Date.now() + SCAN_TIMEOUT_MS;
 		const entries = await listFiles(root, {
 			includeHidden,
 			filesystem: native,
 			maxScanEntries: SCAN_MAX_FILES,
 			maxScanBytes: SCAN_MAX_BYTES,
 			signal,
-			timeoutMs: SCAN_TIMEOUT_MS,
+			timeoutMs: Math.max(0, scanDeadline - Date.now()),
 		});
 		throwIfAborted(signal);
 		const index = await grepIndex(root.path, keywords, {
@@ -194,7 +199,7 @@ class Cascade {
 			maxScanFiles: SCAN_MAX_FILES,
 			maxScanBytes: SCAN_MAX_BYTES,
 			signal,
-			timeoutMs: SCAN_TIMEOUT_MS,
+			timeoutMs: Math.max(0, scanDeadline - Date.now()),
 		});
 		this.stats.listed = entries.length;
 		const weights = idf(index);

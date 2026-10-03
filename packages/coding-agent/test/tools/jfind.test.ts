@@ -198,6 +198,23 @@ describe("jfind lexical index", () => {
 			await removeWithRetries(dir);
 		}
 	});
+	it("counts keyword occurrences past the truncated matching-line prefix", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jfind-lexical-"));
+		try {
+			// The native stream truncates matching lines to 512 columns, so the
+			// occurrences live past the retained prefix.
+			await Bun.write(path.join(dir, "long.txt"), `${"z".repeat(2000)} needle needle\n`);
+			await Bun.write(path.join(dir, "short.txt"), "needle\n");
+			const index = await grepIndex(dir, ["needle"], {
+				includeHidden: false,
+				filesystem: urlFs(dir).shellFilesystem(),
+			});
+			expect(index.filesScanned).toBe(2);
+			expect(Object.fromEntries(index.perFileKw)).toEqual({ "long.txt": [2], "short.txt": [1] });
+		} finally {
+			await removeWithRetries(dir);
+		}
+	});
 });
 
 /** Judge that answers every noul from `answer(request, key)` and records concurrency. */
