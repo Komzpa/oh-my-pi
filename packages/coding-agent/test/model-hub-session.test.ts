@@ -150,12 +150,14 @@ describe("model hub primary Enter is session-only", () => {
 		expect(session.model?.provider).toBe(targetModel.provider);
 		expect(session.model?.id).toBe(targetModel.id);
 		const changes = session.sessionManager.getBranch().filter(entry => entry.type === "model_change");
-		expect(changes).toContainEqual(expect.objectContaining({
-			type: "model_change",
-			model: "session-test/model-hub-session-target",
-			role: "temporary",
-			resolvedModelIsFallback: false,
-		}));
+		expect(changes).toContainEqual(
+			expect.objectContaining({
+				type: "model_change",
+				model: "session-test/model-hub-session-target",
+				role: "temporary",
+				resolvedModelIsFallback: false,
+			}),
+		);
 		expect(settings.getGlobalModelRole("default")).toBe("global-session-baseline");
 		expect(settings.getProjectModelRole("smol")).toBe("project-session-baseline");
 		expect(await fs.readFile(globalConfigPath, "utf8")).toBe(globalConfig);

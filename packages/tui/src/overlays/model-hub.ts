@@ -2326,10 +2326,14 @@ export class ModelHubComponent implements Component {
 
 	#routeMouseEvent(event: SgrMouseEvent): boolean {
 		if (this.#assignmentPending) return true;
-		const { footerColumn, bodyHeight, contentLine, overSidebar, overBody, bodyLine: rawBodyLine } = this.#frame.locate(
-			event.row,
-			event.col,
-		);
+		const {
+			footerColumn,
+			bodyHeight,
+			contentLine,
+			overSidebar,
+			overBody,
+			bodyLine: rawBodyLine,
+		} = this.#frame.locate(event.row, event.col);
 		// The session-facts row sits above the status row, which the shared frame's own bodyLine offset accounts for.
 		const bodyLine = rawBodyLine - 1;
 		const entry = this.#activeEntry();
@@ -2583,7 +2587,9 @@ export class ModelHubComponent implements Component {
 			? `${this.#currentSessionModel.provider}/${this.#currentSessionModel.id}`
 			: "—";
 		const defaultAssignment = this.#roles.default;
-		const defaultLabel = defaultAssignment ? `${defaultAssignment.model.provider}/${defaultAssignment.model.id}` : "—";
+		const defaultLabel = defaultAssignment
+			? `${defaultAssignment.model.provider}/${defaultAssignment.model.id}`
+			: "—";
 		const text = ` ${theme.fg("dim", "Session:")} ${sessionLabel}   ${theme.fg("dim", "New sessions:")} ${defaultLabel}`;
 		return truncateToWidth(text, width);
 	}
