@@ -115,6 +115,27 @@ function clonePhases(phases: TodoPhase[]): TodoPhase[] {
 	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
 }
 
+/** Side channel: artifact root for rows created by the in-flight op. Set by the
+ *  tool's execute() around the shared apply call and read by the row factories,
+ *  so the shared helpers keep the signatures runtime-core rewrites. */
+let pendingArtifactCwd: string | undefined;
+
+export function withArtifactCwd<T>(cwd: string | undefined, run: () => T): T {
+	pendingArtifactCwd = cwd;
+	try {
+		return run();
+	} finally {
+		pendingArtifactCwd = undefined;
+	}
+}
+
+function bindArtifactCwd(task: TodoItem): void {
+	if (pendingArtifactCwd) {
+		task.artifactCwd = pendingArtifactCwd;
+		task.artifactOwner = "main";
+	}
+}
+
 export interface RequirementRowArtifact {
 	cwd: string;
 	head: string | null;
