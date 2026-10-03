@@ -111,19 +111,10 @@ function clonePhases(phases: TodoPhase[]): TodoPhase[] {
 	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
 }
 
-/** Side channel: artifact root for rows created by the in-flight op. Set by the
- *  tool's execute() around the shared apply call and read by the row factories,
- *  so the shared helpers keep the signatures runtime-core rewrites. */
+/** Side channel: artifact root for rows created by the in-flight op. Set at
+ *  execute() entry and read by the row factories, so the shared helpers keep
+ *  the signatures runtime-core rewrites. */
 let pendingArtifactCwd: string | undefined;
-
-export function withArtifactCwd<T>(cwd: string | undefined, run: () => T): T {
-	pendingArtifactCwd = cwd;
-	try {
-		return run();
-	} finally {
-		pendingArtifactCwd = undefined;
-	}
-}
 
 function bindArtifactCwd(task: TodoItem): void {
 	if (pendingArtifactCwd) {
@@ -170,7 +161,7 @@ export async function getRequirementRowArtifact(
 	if (!task && ctx.sessionManager) {
 		let historical: TodoItem | undefined;
 		let ambiguous = false;
-		getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch(), snapshot => {
+		observeLatestTodoPhases(ctx.sessionManager.getBranch(), snapshot => {
 			let match: TodoItem | undefined;
 			for (const phase of snapshot) {
 				for (const candidate of phase.tasks) {
@@ -351,19 +342,19 @@ export async function bindRequirementRowArtifact(
 	return artifact;
 }
 
-export interface TodoTaskSelector {
+export interface TodoCompletionSelector {
 	task?: string;
 	phase?: string;
-}
-
-export interface TodoBatchTargetSelector {
-	op?: string;
-	task?: string;
 	items?: string[];
 }
 
-/** Select explicit batch targets for done/drop; these ops require at least one row. */
-export function getBatchTargets(phases: TodoPhase[], entry: TodoBatchTargetSelector, errors: string[]): TodoItem[] {
+/** Select the exact rows a `done`/`drop` batch names; an empty batch is an
+ *  error, not a request to close every row. */
+function selectCompletionBatchTargets(
+	phases: TodoPhase[],
+	entry: { op?: string; task?: string; items?: string[] },
+	errors: string[],
+): TodoItem[] {
 	if (!entry.task && (entry.items?.length ?? 0) === 0) {
 		errors.push(`${entry.op === "drop" ? "drop" : "done"} requires a task or items target`);
 		return [];
@@ -385,13 +376,13 @@ export function getBatchTargets(phases: TodoPhase[], entry: TodoBatchTargetSelec
 /** Resolve done targets once for native mutation and the extension safety gate. */
 export function getCompletionTargets(
 	phases: TodoPhase[],
-	entry: TodoTaskSelector & { items?: string[] },
+	entry: TodoCompletionSelector,
 	errors: string[],
 ): TodoItem[] {
 	if (entry.items !== undefined) {
-		return getBatchTargets(phases, { op: "done", task: entry.task, items: entry.items }, errors);
+		return selectCompletionBatchTargets(phases, { op: "done", task: entry.task, items: entry.items }, errors);
 	}
-	return getTaskTargets(phases, entry, errors);
+	return getTaskTargets(phases, { op: "done", task: entry.task, phase: entry.phase }, errors);
 }
 
 function todoTransitionKey(phase: string, content: string): string {
@@ -543,26 +534,27 @@ export function createTodoHudStateData(
 	return { ...snapshot, visibility };
 }
 
-/** Read the active phases; a snapshot observer can inspect historical states on the same session branch. */
-export function getLatestTodoPhasesFromEntries(
-	entries: SessionEntry[],
-	onSnapshot?: (phases: readonly TodoPhase[]) => void,
-): TodoPhase[] {
-	if (onSnapshot) {
-		let latest: TodoPhase[] | undefined;
-		for (const entry of entries) {
-			const phases = canonicalTodoPhases(entry);
-			if (!phases) continue;
-			onSnapshot(phases);
-			latest = phases;
-		}
-		return latest ? clonePhases(latest) : [];
-	}
+export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPhase[] {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const phases = canonicalTodoPhases(entries[i]);
 		if (phases) return clonePhases(phases);
 	}
 	return [];
+}
+
+/** Walk every canonical snapshot on the branch in order, then return the active phases. */
+export function observeLatestTodoPhases(
+	entries: SessionEntry[],
+	onSnapshot: (phases: readonly TodoPhase[]) => void,
+): TodoPhase[] {
+	let latest: TodoPhase[] | undefined;
+	for (const entry of entries) {
+		const phases = canonicalTodoPhases(entry);
+		if (!phases) continue;
+		onSnapshot(phases);
+		latest = phases;
+	}
+	return latest ? clonePhases(latest) : [];
 }
 
 function resolveTaskOrError(
@@ -599,8 +591,12 @@ function resolvePhaseOrError(phases: TodoPhase[], name: string | undefined, erro
 	return phase;
 }
 
-/** Select the targets used by task/phase operations; omitting both selects all rows. */
-export function getTaskTargets(phases: TodoPhase[], entry: TodoTaskSelector, errors: string[]): TodoItem[] {
+function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoItem[] {
+	// #41: `done`/`drop` select exact batch rows from `items`; all other
+	// targeting keeps base selection.
+	if ((entry.op === "done" || entry.op === "drop") && entry.items !== undefined) {
+		return selectCompletionBatchTargets(phases, entry, errors);
+	}
 	if (entry.task) {
 		const hit = resolveTaskOrError(phases, entry.task, errors);
 		return hit ? [hit.task] : [];
@@ -729,7 +725,7 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			return phases;
 		}
 		case "done": {
-			for (const task of getCompletionTargets(phases, entry, errors)) {
+			for (const task of getTaskTargets(phases, entry, errors)) {
 				task.status = "completed";
 			}
 			return phases;
@@ -1049,6 +1045,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
+		pendingArtifactCwd = this.session.cwd;
 		let boundPhases: TodoPhase[] | undefined;
 		const branch = this.session.sessionManager?.getBranch();
 		if (branch) {
@@ -1061,8 +1058,9 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		}
 		const previousPhases = clonePhases(boundPhases ?? this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
-		if (isRecord(params) && params.op === "classify") return this.#classify(params, previousPhases, storage);
-		if (isRecord(params) && params.op === "done") {
+		const rawOp: unknown = params.op;
+		if (rawOp === "classify") return this.#classify(params, previousPhases, storage);
+		if (rawOp === "done") {
 			const gate = await this.#doneGate(params, previousPhases, storage, _signal);
 			if (gate) return gate;
 		}
@@ -1080,7 +1078,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
-			: withArtifactCwd(this.session.cwd, () => applyParams(clonePhases(previousPhases), entry));
+			: applyParams(clonePhases(previousPhases), entry);
 		// A batch with any error is discarded wholesale: persisting a
 		// half-applied batch makes the natural retry hit "already exists" for
 		// the ops that did land. State and rendered summary stay at previous.
@@ -1103,7 +1101,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	async #doneGate(
 		params: Record<string, unknown>,
 		previousPhases: TodoPhase[],
-		storage: string,
+		storage: "memory" | "session",
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<TodoToolDetails> | undefined> {
 		const sessionManager = this.session.sessionManager;
