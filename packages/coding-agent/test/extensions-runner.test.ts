@@ -23,8 +23,12 @@ import {
 	testSetExtensionHandlerTimeoutMs,
 	testSetSessionShutdownHandlerTimeoutMs,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { sendAgentMessageFromSession } from "@oh-my-pi/pi-coding-agent/irc/messaging";
+import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type {
 	Extension,
+	ExtensionContext,
 	ExtensionError,
 	ExtensionUIContext,
 	InputEvent,
@@ -69,6 +73,8 @@ describe("ExtensionRunner", () => {
 	afterEach(() => {
 		testSetExtensionHandlerTimeoutMs(EXTENSION_HANDLER_TIMEOUT_MS);
 		testSetSessionShutdownHandlerTimeoutMs(SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS);
+		IrcBus.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
 		tempDir.removeSync();
 	});
 
@@ -115,7 +121,7 @@ describe("ExtensionRunner", () => {
 		expect(runner.createContext().cwd).toBe(dirB);
 	});
 
-	it("exposes the initialized host mode to extension contexts", async () => {
+	it("exposes initialized mode and forwards subagent fast-mode changes", async () => {
 		const result = await loadTestExtensions();
 		const runner = new ExtensionRunner(
 			result.extensions,
@@ -139,6 +145,7 @@ describe("ExtensionRunner", () => {
 			getSessionName: () => undefined,
 			setSessionName: async () => {},
 		};
+		const setSubagentFastMode = vi.fn((_id: string, _enabled: boolean) => true);
 		const contextActions = {
 			getModel: () => undefined,
 			isIdle: () => true,
@@ -148,12 +155,15 @@ describe("ExtensionRunner", () => {
 			getContextUsage: () => undefined,
 			compact: async () => {},
 			getSystemPrompt: () => [],
+			setSubagentFastMode,
 		};
 
 		expect(runner.createContext().mode).toBe("print");
 
 		runner.initialize(actions, contextActions, undefined, undefined, "rpc");
 		expect(runner.createContext().mode).toBe("rpc");
+		expect(runner.createContext().setSubagentFastMode?.("worker-1", true)).toBe(true);
+		expect(setSubagentFastMode).toHaveBeenCalledWith("worker-1", true);
 
 		runner.initialize(actions, contextActions, undefined, undefined, "json");
 		expect(runner.createContext().mode).toBe("json");
@@ -207,6 +217,161 @@ describe("ExtensionRunner", () => {
 		expect(compact).toHaveBeenCalledWith("preserve current task");
 	});
 
+	it("lets extension handlers send agent messages through the session IRC path", async () => {
+		const deliveredBodies: string[] = [];
+		const registry = AgentRegistry.global();
+		registry.register({
+			id: "Main",
+			displayName: "main",
+			kind: "main",
+			session: {} as never,
+		});
+		registry.register({
+			id: "Worker",
+			displayName: "worker",
+			kind: "sub",
+			session: {
+				deliverIrcMessage: async (message: { from: string; body: string }) => {
+					deliveredBodies.push(`${message.from}:${message.body}`);
+					return "injected";
+				},
+			} as never,
+		});
+
+		const results: Array<{ delivered: boolean; text: string }> = [];
+		const messageSession = {
+			agentRegistry: registry,
+			settings: Settings.isolated({}),
+			taskDepth: 1,
+			getAgentId: () => "Main",
+			getSessionFile: () => null,
+		};
+		const extensionPath = path.join(extensionsDir, "agent-message.ts");
+		const extension: Extension = {
+			path: extensionPath,
+			resolvedPath: extensionPath,
+			handlers: new Map([
+				[
+					"session_start",
+					[
+						async (...args: unknown[]) => {
+							const ctx = args[1] as ExtensionContext;
+							results.push(await ctx.sendAgentMessage("Worker", "status?"));
+							results.push(await ctx.sendAgentMessage("Missing", "status?"));
+						},
+					],
+				],
+			]),
+			tools: new Map(),
+			assistantThinkingRenderers: [],
+			fileWriteFallbackHandlers: [],
+			fileDeleteFallbackHandlers: [],
+			messageRenderers: new Map(),
+			composerShapes: new Map(),
+			commands: new Map(),
+			flags: new Map(),
+			shortcuts: new Map(),
+		};
+		const runner = new ExtensionRunner(
+			[extension],
+			new ExtensionRuntime(),
+			tempDir.path(),
+			sessionManager,
+			modelRegistry,
+		);
+		runner.initialize(
+			{
+				sendMessage: () => {},
+				sendUserMessage: () => {},
+				appendEntry: () => {},
+				setLabel: () => {},
+				getActiveTools: () => [],
+				getAllTools: () => [],
+				setActiveTools: async () => {},
+				getCommands: () => [],
+				setModel: async () => false,
+				getThinkingLevel: () => undefined,
+				setThinkingLevel: () => {},
+				getSessionName: () => undefined,
+				setSessionName: async () => {},
+			},
+			{
+				getModel: () => undefined,
+				isIdle: () => true,
+				abort: () => {},
+				hasPendingMessages: () => false,
+				shutdown: () => {},
+				getContextUsage: () => undefined,
+				compact: async () => {},
+				getSystemPrompt: () => [],
+				sendAgentMessage: (to, message) => sendAgentMessageFromSession(messageSession, to, message),
+			},
+		);
+
+		await runner.emit({ type: "session_start" });
+
+		expect(results[0]).toEqual({ delivered: true, text: "Delivered to Worker." });
+		expect(deliveredBodies).toEqual(["Main:status?"]);
+		expect(results[1]?.delivered).toBe(false);
+		expect(results[1]?.text).toContain("Unknown agent");
+
+		const unavailable = await sendAgentMessageFromSession({ ...messageSession, enableIrc: false }, "Worker", "later");
+		expect(unavailable.delivered).toBe(false);
+		expect(unavailable.text).toContain("unavailable");
+	});
+
+	it("routes ctx.sendAgentMessage through the shared IRC path even when the host never wired it", async () => {
+		const registry = AgentRegistry.global();
+		registry.register({ id: "Main", displayName: "main", kind: "main", session: {} as never });
+		const deliveredBodies: string[] = [];
+		registry.register({
+			id: "Worker",
+			displayName: "worker",
+			kind: "sub",
+			session: {
+				deliverIrcMessage: async (message: { from: string; body: string }) => {
+					deliveredBodies.push(`${message.from}:${message.body}`);
+					return "injected";
+				},
+			} as never,
+		});
+		// Never initialized: mirrors hosts that construct a runner without
+		// context actions, where ctx.sendAgentMessage used to answer
+		// "unavailable" while `write agent://` delivered.
+		const runner = new ExtensionRunner(
+			[],
+			new ExtensionRuntime(),
+			tempDir.path(),
+			sessionManager,
+			modelRegistry,
+			undefined,
+			Settings.isolated({}),
+			undefined,
+			undefined,
+			{ kind: "sub", id: "Main", name: "Main", depth: 1 },
+		);
+		const ctx = runner.createContext();
+
+		const result = await ctx.sendAgentMessage("Worker", "status?");
+		expect(result).toEqual({ delivered: true, text: "Delivered to Worker." });
+		expect(deliveredBodies).toEqual(["Main:status?"]);
+
+		const missing = await ctx.sendAgentMessage("Nobody", "hello?");
+		expect(missing.delivered).toBe(false);
+
+		const direct = await sendAgentMessageFromSession(
+			{
+				agentRegistry: registry,
+				settings: Settings.isolated({}),
+				taskDepth: 1,
+				getAgentId: () => "Main",
+				getSessionFile: () => null,
+			},
+			"Worker",
+			"status?",
+		);
+		expect(direct).toEqual({ delivered: true, text: "Delivered to Worker." });
+	});
 	describe("shortcut conflicts", () => {
 		it("warns when extension shortcut conflicts with built-in", async () => {
 			const extCode = `

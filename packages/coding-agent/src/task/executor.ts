@@ -8,7 +8,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import { AgentBusyError, EventLoopKeepalive, recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
-import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
+import type { Api, Effort, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
 import { isRecord, logger, popLoopPhase, prompt, pushLoopPhase, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobError, AsyncJobManager, type AsyncJobRunResult } from "../async";
 import type { Rule } from "../capability/rule";
@@ -49,6 +49,7 @@ import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
 import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { IrcBus } from "../irc/bus";
+import { sendAgentMessageFromSession } from "../irc/messaging";
 import type { MCPManager } from "../mcp/manager";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import { initializeExtensions } from "../modes/runtime-init";
@@ -74,6 +75,8 @@ import { hasConversationalHistory, SessionManager } from "../session/session-man
 import { truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import {
 	type ConfiguredThinkingLevel,
+	clampThinkingLevelToCeiling,
+	resolveThinkingLevelForModel,
 	prewalkWouldBeNoop,
 	resolveTaskEffortLevel,
 	type TaskEffort,
@@ -422,6 +425,8 @@ export interface ExecutorOptions {
 	effort?: TaskEffort;
 	/** Caller's description of how open-ended the work is; rides the initial prompt into the child's `auto` thinking classifier. */
 	solutionSpace?: string;
+	/** Internal exact rung selection; takes precedence over coarse effort and model suffixes. */
+	exactThinkingLevel?: Effort;
 	/** Schema used to validate the final structured completion. */
 	outputSchema?: unknown;
 	/** Enforcement policy for {@link outputSchema}; defaults to legacy permissive behavior. */
@@ -2739,10 +2744,14 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	const settledPayload = {
 		id,
 		agent: agent.name,
+		at: Date.now(),
+		resolvedModelIdentity: progress.resolvedModelIdentity,
+		resolvedThinkingLevel: progress.resolvedThinkingLevel,
 		parentToolCallId: args.parentToolCallId,
 		detached: args.detached,
 		agentSource: agent.source,
 		description: progress.description,
+		taskText: assignment ?? task,
 		status: progress.status as "completed" | "failed" | "aborted",
 		sessionFile: args.sessionFile,
 		index,
@@ -3047,10 +3056,12 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		const startedPayload = {
 			id,
 			agent: agent.name,
+			at: Date.now(),
 			parentToolCallId: options.parentToolCallId,
 			detached: true,
 			agentSource: agent.source,
 			description: options.description,
+			taskText: ircTask,
 			status: "started",
 			sessionFile,
 			index,
@@ -3309,6 +3320,8 @@ export interface FollowUpTurnOptions {
 	agent: AgentDefinition;
 	/** The follow-up message; sent as the turn's user prompt. */
 	message: string;
+	/** Effort-only continuation: retain the resolved model and session identity. */
+	thinkingLevel?: Effort;
 	index?: number;
 	description?: string;
 	/** Explicit pre-expansion model role alias retained from the original run. */
@@ -3394,6 +3407,9 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		session = live;
 		await acquireOwnership();
 	}
+	// Apply only after revival and turn ownership: never mutate a parked stale
+	// instance or an active peer wake. The session setter persists the selection.
+	if (options.thinkingLevel !== undefined) session.setThinkingLevel(options.thinkingLevel);
 	// A kept-alive session reuses its YieldTool across turns; clear the prior
 	// run's incremental-section flag and retry counters so this turn's guards
 	// evaluate against its own state, not stale accumulators.
@@ -3424,10 +3440,12 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 	const startedPayload = {
 		id,
 		agent: agent.name,
+		at: Date.now(),
 		parentToolCallId: options.parentToolCallId,
 		detached: true,
 		agentSource: agent.source,
 		description: options.description,
+		taskText: message,
 		status: "started",
 		sessionFile,
 		index,
@@ -4023,11 +4041,19 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// through to the normal selectors below.
 			// The ceiling outlives initial resolution: it rides into the session so
 			// retry-fallback recovery can never clamp effort back up past it.
-			const spawnEffortCeiling = options.effort !== undefined ? cfgTaskMaxEffort.get(settings) : undefined;
-			const effortLevel =
-				options.effort !== undefined
-					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
+			const spawnEffortCeiling =
+				options.exactThinkingLevel !== undefined || options.effort !== undefined
+					? cfgTaskMaxEffort.get(settings)
 					: undefined;
+			const effortLevel =
+				options.exactThinkingLevel !== undefined
+					? resolveThinkingLevelForModel(
+							model,
+							clampThinkingLevelToCeiling(model, options.exactThinkingLevel, spawnEffortCeiling),
+						)
+					: options.effort !== undefined
+						? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
+						: undefined;
 			if (model) {
 				const displayLevel = effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : undefined);
 				progress.resolvedModelIdentity = formatModelStringWithRouting(model);
@@ -4037,9 +4063,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						? formatModelSelectorValue(progress.resolvedModelIdentity, displayLevel)
 						: progress.resolvedModelIdentity;
 			}
-			// Precedence: caller `effort` > explicit `:level` suffix on the resolved
-			// model pattern > agent-definition default (e.g. task's `auto`) >
-			// pattern-derived level.
+			// Precedence: exact rung > coarse caller effort > explicit model
+			// suffix > agent-definition default > pattern-derived level.
 			const effectiveThinkingLevel =
 				effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : (thinkingLevel ?? resolvedThinkingLevel));
 			resolvedAt = performance.now();
@@ -4290,10 +4315,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			const startedPayload = {
 				id,
 				agent: agent.name,
+				at: Date.now(),
 				parentToolCallId: options.parentToolCallId,
 				detached: options.detached,
 				agentSource: agent.source,
 				description: options.description,
+				taskText: assignment ?? options.task,
 				status: "started" as const,
 				sessionFile: subtaskSessionFile,
 				index,

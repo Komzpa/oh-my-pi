@@ -21,6 +21,7 @@ import type {
 	AgentTool,
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	ToolApprovalDecision,
 	ToolSpeculationPolicy,
 } from "@oh-my-pi/pi-agent-core";
 import type { Usage } from "@oh-my-pi/pi-ai";
@@ -36,10 +37,12 @@ import taskSpawnFeedbackTemplate from "../prompts/tools/task-spawn-feedback.md" 
 import taskSpecializationAdvisoryTemplate from "../prompts/tools/task-specialization-advisory.md" with { type: "text" };
 import taskFollowUpTemplate from "../prompts/tools/task-follow-up.md" with { type: "text" };
 import { TASK_EFFORTS, type TaskEffort } from "@oh-my-pi/pi-tui/thinking";
+import { THINKING_EFFORTS, type Effort } from "@oh-my-pi/pi-catalog/effort";
 import { truncateForPrompt } from "../tools/approval";
 import { hasWaitTool } from "../tools/wait";
 import { isIrcEnabled } from "../irc/messaging";
 import { isReadOnlyAgent } from "./read-only-policy";
+import { resolveAgentModelSelection, resolveModelOverride } from "../config/model-resolver";
 import { formatTaskResultSummary } from "./result-summary";
 import { isScoutSpawnable, resolveSpawnPolicy } from "./spawn-policy";
 import { type AgentDefinition, canSpawnAtDepth, getTaskSchema, type TaskToolSchemaInstance } from "./types";
@@ -60,12 +63,40 @@ import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
 import { renderResult, renderCall as renderTaskCall } from "@oh-my-pi/pi-tui/tools/task";
 import { repairTaskParams } from "@oh-my-pi/pi-tui/tools/task-repair-args";
-import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
+import { captureReworkReflection, renderPreviousAttempts, type ReworkReflectionResult } from "./rework-reflection";
+import {
+	resolveEffectiveSubagentPolicy,
+	resumeStructuredSubagent,
+	runStructuredSubagent,
+	StructuredSubagentError,
+	type StructuredSubagentResult,
+	type EffectiveSubagentPolicy,
+} from "./structured-subagent";
 import { SpawnRun, type SpawnPermit } from "./spawn-run";
 import { type TaskLauncher, TaskLaunchSession } from "./speculative-launch";
+import {
+	applyOpsToPhases,
+	buildTodoExecutorPersistedEdit,
+	buildTodoOpPersistedEdit,
+	buildTodoReworkAttemptPersistedEdit,
+} from "../tools/todo";
+import {
+	applyTodoExecutorObservation,
+	appendTodoReworkAttempt,
+	findRespawnOwnerRows,
+	type TodoExecutorObservation,
+} from "../tools/todo-executor";
+import {
+	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+	TASK_SUBAGENT_PROGRESS_CHANNEL,
+	type SubagentLifecyclePayload,
+	type SubagentProgressPayload,
+} from "./types";
+import type { TodoReworkAttempt, TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 
 import { cfgAsyncEnabled } from "../tools/settings";
 import {
+	cfgTaskAgentModelOverrides,
 	cfgTaskBatch,
 	cfgTaskDisabledAgents,
 	cfgTaskEnableEffort,
@@ -75,6 +106,8 @@ import {
 	cfgTaskMaxConcurrency,
 	cfgTaskMaxRecursionDepth,
 	cfgTaskMaxRuntimeMs,
+	cfgTaskReworkLadder,
+	type TaskReworkLadderEntry,
 	cfgTaskSpeculativeLaunch,
 } from "./settings";
 
@@ -217,13 +250,13 @@ function validateShapeParams(batchEnabled: boolean, params: TaskParams): string 
 
 /**
  * Validate the spawn parameter contract against the wire shapes. With
- * `task.batch` the model-facing shape is `{ context, tasks[] }` — `tasks`
- * non-empty with per-item `task` instructions and unique names, `context`
- * non-empty, no top-level `task` alongside. The flat `{ agent?, ...item }`
- * form stays accepted at runtime under either setting (internal callers, stale
- * transcripts). Missing `agent` values resolve against the session spawn
- * policy later, in `spawnParamsFor`. Returns a problem description, or
- * undefined when valid.
+ * `task.batch` the model-facing shape is `{ context, tasks[] }` with per-item
+ * `task` instructions and unique names, a non-empty `context`, and no
+ * top-level `task` alongside. An empty `tasks` array with valid `context`
+ * represents no work. The flat `{ agent?, ...item }` form stays accepted at
+ * runtime under either setting (internal callers, stale transcripts). Missing
+ * `agent` values resolve against the session spawn policy later, in
+ * `spawnParamsFor`. Returns a problem description, or undefined when valid.
  */
 
 /** Reject an out-of-range `effort` selector on internal/stale-transcript calls that bypass the wire schema. */
@@ -236,7 +269,7 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 	const hasTask = typeof params.task === "string" && params.task.trim() !== "";
 	const tasks = params.tasks;
 	if (batchEnabled && tasks !== undefined) {
-		if (!Array.isArray(tasks) || tasks.length === 0) {
+		if (!Array.isArray(tasks)) {
 			return "Missing `tasks`. Provide at least one task item ({ name?, agent?, task }).";
 		}
 		if (hasTask) {
@@ -275,10 +308,11 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 }
 
 /**
- * Normalize a validated call into its spawn list: the `tasks[]` batch when
- * provided, otherwise the single top-level spawn. The flat form's `isolated`
- * flag is only materialized when the caller sent one — `#runSpawn`
- * distinguishes an absent key from an explicit value.
+ * Normalize a validated, non-empty call into its spawn list: the `tasks[]`
+ * batch when provided, otherwise the single top-level spawn. `execute()`
+ * returns the no-work result before calling this for an empty batch. The flat
+ * form's `isolated` flag is only materialized when the caller sent one —
+ * `#runSpawn` distinguishes an absent key from an explicit value.
  */
 function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if (Array.isArray(params.tasks) && params.tasks.length > 0) {
@@ -286,6 +320,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	}
 	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task };
 	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
+	if ("rework" in params) item.rework = params.rework;
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
 	if ("tools" in params) item.tools = params.tools;
@@ -308,6 +343,7 @@ function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string
 	if (item.name !== undefined) spawn.name = item.name;
 	if (item.task !== undefined) spawn.task = item.task;
 	if (item.solutionSpace !== undefined) spawn.solutionSpace = item.solutionSpace;
+	if (item.rework !== undefined) spawn.rework = item.rework;
 	if (params.context !== undefined) spawn.context = params.context;
 	if ("outputSchema" in item) spawn.outputSchema = item.outputSchema;
 	if ("schemaMode" in item) spawn.schemaMode = item.schemaMode;
@@ -339,6 +375,38 @@ function planSpawns(rawParams: unknown, batchEnabled: boolean, defaultAgent: str
 	if (error) return error;
 	const items = resolveSpawnItems(params);
 	return { params, items, spawns: items.map(item => spawnParamsFor(params, item, defaultAgent)) };
+}
+
+interface ReworkRoute {
+	row: { phase: string; content: string };
+	previous: NonNullable<TodoSchedule["executor"]>;
+	reason?: string;
+	rung?: { model?: string; effort: Effort };
+	failedLine?: string;
+	context?: string;
+	exhausted?: boolean;
+}
+
+function nextReworkRung(ladder: readonly TaskReworkLadderEntry[], model: string, effort: string) {
+	const choices = ladder.map(entry => {
+		const colon = entry.lastIndexOf(":");
+		return { model: entry.slice(0, colon) || model, effort: entry.slice(colon + 1) as Effort };
+	});
+	// Anchor explicit model traversal independently of the actual effort. A
+	// clamped/overridden effort must never restart an already visited family.
+	const exact = choices.findLastIndex(choice => choice.model === model && choice.effort === effort);
+	const explicit = choices.findIndex((choice, index) => !ladder[index]!.startsWith(":") && choice.model === model);
+	const start = Math.max(exact + 1, explicit, 0);
+	for (let index = start; index < choices.length; index++) {
+		const choice = choices[index]!;
+		if (
+			choice.model === model &&
+			THINKING_EFFORTS.indexOf(choice.effort) <= THINKING_EFFORTS.indexOf(effort as Effort)
+		)
+			continue;
+		return { model: ladder[index]!.startsWith(":") ? undefined : choice.model, effort: choice.effort };
+	}
+	return undefined;
 }
 
 /**
@@ -531,6 +599,10 @@ export async function refreshAgentDiscovery(cwd: string, extensionRoots?: Effect
 // Tool Class
 // ═══════════════════════════════════════════════════════════════════════════
 
+/** Owner key from a checkout-lock refusal ("Refusing <agent>: <writer> worker <key> is running in this checkout"). */
+export function checkoutLockOwnerFromTaskError(text: string): string | undefined {
+	return text.match(/Refusing \S+: \S+ worker (.+?) is running in this checkout/i)?.[1]?.trim() || undefined;
+}
 /**
  * Task tool - Delegate tasks to specialized agents.
  *
@@ -540,7 +612,30 @@ export async function refreshAgentDiscovery(cwd: string, extensionRoots?: Effect
  */
 export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetails, Theme> {
 	readonly name = "task";
-	readonly approval = "exec" as const;
+	readonly approval = (args: unknown): ToolApprovalDecision => {
+		const params = repairTaskParams(args as TaskParams);
+		const batchEnabled = this.#isBatchEnabled();
+		if (validateShapeParams(batchEnabled, params) ?? validateSpawnParams(params, batchEnabled)) return "exec";
+		if (Array.isArray(params.tasks) && params.tasks.length === 0) return "exec";
+		const defaultAgent = resolveSpawnPolicy(this.session.getSessionSpawns()).defaultAgent;
+		const routes = resolveSpawnItems(params).map(
+			item => this.#routeRework(spawnParamsFor(params, item, defaultAgent)).route,
+		);
+		// This is an in-flight scope snapshot, not a row permission. The wrapper
+		// owns approval; execute consumes the snapshot and rejects changed targets.
+		const exhausted = routes.find(route => route?.exhausted);
+		if (!exhausted) return "exec";
+		if (args && typeof args === "object") this.#approvalRoutes.set(args, structuredClone(routes));
+		return {
+			tier: "exec",
+			override: true,
+			policy: routes.length === 1 ? "prompt" : "deny",
+			reason:
+				routes.length === 1
+					? `Rework ladder exhausted for "${exhausted.row.content}": re-running the top rung requires approval.`
+					: "Exhausted rework recovery requires exactly one task per call.",
+		};
+	};
 	readonly formatApprovalDetails = (args: unknown): string[] => {
 		const params = args as Partial<TaskParams>;
 		const lines: string[] = [];
@@ -657,6 +752,316 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			},
 		},
 	};
+	readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
+	readonly #reworkRoutes = new Map<string, ReworkRoute>();
+	readonly #workerSessions = new Map<string, StructuredSubagentResult>();
+	readonly #reflectingWorkers = new Set<string>();
+	readonly #approvalRoutes = new WeakMap<object, (ReworkRoute | undefined)[]>();
+
+	#routeRework(spawn: TaskParams): { route?: ReworkRoute; error?: string } {
+		const phases = this.session.getTodoPhases?.();
+		const name = spawn.name?.trim();
+		if (!phases || !name) return {};
+		const rows = phases.flatMap(phase =>
+			phase.tasks
+				.filter(
+					task =>
+						task.status !== "completed" &&
+						task.status !== "abandoned" &&
+						(task.schedule?.owner === name || task.schedule?.executor?.workerId === name),
+				)
+				.map(task => ({ phase: phase.name, task })),
+		);
+		if (rows.length !== 1) return {};
+		const { phase, task } = rows[0]!;
+		const previous = task.schedule?.executor;
+		const exhaustedBlocked =
+			task.status === "blocked" && task.blocker?.startsWith("waits for user: Rework ladder exhausted.");
+		if (!previous?.outcome) return {};
+		if (previous.outcome !== "completed") {
+			if (!previous.resolvedModel || !previous.thinkingLevel)
+				return { error: `Cannot redispatch "${task.content}": the worker's resolved model or effort is missing.` };
+			const requestedProfile = spawn.agent ?? previous.agentProfile;
+			const requestedAgent = [...this.#discoveredAgents, ...(this.session.getSessionAgents?.() ?? [])].find(
+				agent => agent.name === requestedProfile,
+			);
+			const modelSelection = resolveAgentModelSelection({
+				agentModel: requestedAgent?.model,
+				settingsOverride: requestedProfile
+					? cfgTaskAgentModelOverrides.get(this.session.settings)[requestedProfile]
+					: undefined,
+				settings: this.session.settings,
+			});
+			const previousModel = this.session.modelRegistry
+				?.getAvailable()
+				.find(model => `${model.provider}/${model.id}` === previous.resolvedModel);
+			const sameProfile = spawn.agent === undefined || spawn.agent === previous.agentProfile;
+			const retryWithinProfile =
+				modelSelection.inheritsParentModel ||
+				Boolean(
+					previousModel &&
+					modelSelection.patterns.some(
+						pattern =>
+							resolveModelOverride([pattern], { getAvailable: () => [previousModel] }, this.session.settings)
+								.model,
+					),
+				);
+			const failed = task.schedule?.attemptHistory?.findLast(
+				attempt => attempt.attemptId === `${previous.workerId}:${previous.startedAt}`,
+			);
+			return {
+				route: {
+					row: { phase, content: task.content },
+					previous,
+					rung:
+						sameProfile && retryWithinProfile
+							? { model: previous.resolvedModel, effort: previous.thinkingLevel as Effort }
+							: undefined,
+					failedLine:
+						failed?.infraFailureLine ??
+						`attempt ${(task.schedule?.attemptHistory?.length ?? 0) + 1} failed: ${previous.outcome}`,
+				},
+			};
+		}
+		const reason = spawn.rework;
+		if ((reason === undefined || reason.trim().length === 0) && !exhaustedBlocked) return {};
+		if (reason === undefined || reason.trim().length === 0 || /[\r\n\u2028\u2029]/u.test(reason))
+			return { error: `Rework of "${task.content}" requires a one-line \`rework\` rejection reason.` };
+		if (!previous.resolvedModel || !previous.thinkingLevel || previous.finishedAt === undefined) {
+			return {
+				error: `Cannot rework "${task.content}": the completed worker's resolved model, effort, or finish time is missing.`,
+			};
+		}
+		const rung = nextReworkRung(
+			cfgTaskReworkLadder.get(this.session.settings),
+			previous.resolvedModel,
+			previous.thinkingLevel,
+		);
+		return {
+			route: {
+				row: { phase, content: task.content },
+				previous,
+				reason,
+				rung,
+				exhausted: exhaustedBlocked || rung === undefined,
+			},
+		};
+	}
+
+	#appendAttempt(row: ReworkRoute["row"], attempt: TodoReworkAttempt): void {
+		const phases = this.session.getTodoPhases?.();
+		if (!phases || !this.session.setTodoPhases || !this.session.persistTodoPhases) {
+			throw new Error("Rework requires durable Todo persistence.");
+		}
+		const updated = appendTodoReworkAttempt(phases, row, attempt);
+		if (!updated) {
+			const matches = phases.flatMap(phase =>
+				phase.name === row.phase ? phase.tasks.filter(task => task.content === row.content) : [],
+			);
+			if (
+				matches.length === 1 &&
+				matches[0]!.schedule?.attemptHistory?.some(previous => previous.attemptId === attempt.attemptId)
+			)
+				return;
+			throw new Error(`Cannot persist rework attempt: exact Todo row "${row.content}" is no longer unique.`);
+		}
+		this.session.setTodoPhases(updated);
+		this.session.persistTodoPhases(updated, buildTodoReworkAttemptPersistedEdit(row, attempt));
+	}
+
+	#recordFailedAttempt(
+		result: Pick<
+			SingleResult,
+			| "id"
+			| "exitCode"
+			| "error"
+			| "aborted"
+			| "abortReason"
+			| "stderr"
+			| "output"
+			| "outputPath"
+			| "durationMs"
+			| "resolvedModelIdentity"
+			| "resolvedThinkingLevel"
+		>,
+	): void {
+		if (!result.aborted && result.exitCode === 0 && !result.error) return;
+		const phases = this.session.getTodoPhases?.();
+		if (!phases) return;
+		const rows = phases.flatMap(phase =>
+			phase.tasks
+				.filter(task => task.schedule?.executor?.workerId === result.id)
+				.map(task => ({ phase: phase.name, task })),
+		);
+		if (rows.length !== 1) return;
+		const { phase, task } = rows[0]!;
+		const previous = task.schedule!.executor!;
+		this.#persistTodoExecutor({
+			...previous,
+			resolvedModel: result.resolvedModelIdentity ?? previous.resolvedModel,
+			thinkingLevel: result.resolvedThinkingLevel ?? previous.thinkingLevel,
+			finishedAt: previous.finishedAt ?? Date.now(),
+			outcome: result.aborted ? "aborted" : "failed",
+		});
+		const error =
+			(result.error ?? result.abortReason ?? result.stderr ?? result.output)
+				.replace(/[\r\n\u2028\u2029]+/gu, " ")
+				.trim() || "worker failed";
+		this.#appendAttempt(
+			{ phase, content: task.content },
+			{
+				attemptId: `${result.id}:${previous.startedAt}`,
+				workerName: result.id,
+				resolvedModel: result.resolvedModelIdentity ?? previous.resolvedModel ?? "unresolved",
+				effort: result.resolvedThinkingLevel ?? previous.thinkingLevel ?? "unresolved",
+				startedAt: previous.startedAt,
+				finishedAt: previous.finishedAt ?? Date.now(),
+				durationMs: result.durationMs,
+				terminalStatus: result.aborted ? "aborted" : "failed",
+				deliverablePaths: result.outputPath ? [result.outputPath] : [],
+				infraFailureError: error,
+				infraFailureLine: `attempt ${(task.schedule?.attemptHistory?.length ?? 0) + 1} failed: ${error}`,
+			},
+		);
+	}
+
+	async #restoreWorker(route: ReworkRoute, policy: EffectiveSubagentPolicy): Promise<StructuredSubagentResult> {
+		const cached = this.#workerSessions.get(route.previous.workerId);
+		if (cached) return cached;
+		const ref = AgentRegistry.global().get(route.previous.workerId);
+		const artifactsDir = ref?.sessionFile ? path.dirname(ref.sessionFile) : this.session.getArtifactsDir?.();
+		if (!artifactsDir)
+			throw new Error(`Cannot restore report for ${route.previous.workerId}: artifacts directory is unavailable.`);
+		const outputPath = ref?.history?.outputPath ?? path.join(artifactsDir, `${route.previous.workerId}.md`);
+		const output = await Bun.file(outputPath).text();
+		const restored: StructuredSubagentResult = {
+			policy: {
+				...policy,
+				effectiveAgent: { ...policy.effectiveAgent, name: route.previous.agentProfile ?? policy.agentName },
+			},
+			artifactsDir,
+			temporaryArtifacts: false,
+			changesApplied: null,
+			mergeSummary: "",
+			result: {
+				index: 0,
+				id: route.previous.workerId,
+				agent: route.previous.agentProfile ?? policy.agentName,
+				agentSource: policy.agent.source,
+				task: route.row.content,
+				exitCode: route.previous.outcome === "completed" ? 0 : 1,
+				output,
+				outputPath,
+				stderr: "",
+				truncated: false,
+				durationMs: Math.max(0, (route.previous.finishedAt ?? route.previous.startedAt) - route.previous.startedAt),
+				tokens: 0,
+				requests: 0,
+				resolvedModelIdentity: route.previous.resolvedModel,
+				resolvedThinkingLevel: route.previous.thinkingLevel as Effort,
+			},
+		};
+		this.#workerSessions.set(route.previous.workerId, restored);
+		return restored;
+	}
+
+	async #prepareRework(
+		route: ReworkRoute,
+		policy: EffectiveSubagentPolicy,
+		signal?: AbortSignal,
+	): Promise<string | undefined> {
+		if (route.failedLine) {
+			route.context = route.failedLine;
+			return undefined;
+		}
+		const previous = await this.#restoreWorker(route, policy);
+		// Save the rejected report before reflection can overwrite the same worker artifact.
+		const report = previous.result.outputPath
+			? await Bun.file(previous.result.outputPath).text()
+			: previous.result.output;
+		const attemptId = `${route.previous.workerId}:${route.previous.startedAt}`;
+		const phasesBefore = this.session.getTodoPhases?.() ?? [];
+		const priorRecord = phasesBefore
+			.find(phase => phase.name === route.row.phase)
+			?.tasks.find(task => task.content === route.row.content)
+			?.schedule?.attemptHistory?.find(attempt => attempt.attemptId === attemptId);
+		if (!priorRecord) {
+			this.#reflectingWorkers.add(route.previous.workerId);
+			let reflection: ReworkReflectionResult;
+			try {
+				reflection = await captureReworkReflection({
+					session: this.session,
+					previous,
+					reason: route.reason!,
+					signal,
+				});
+			} finally {
+				this.#reflectingWorkers.delete(route.previous.workerId);
+			}
+			if (reflection.resumed) this.#workerSessions.set(route.previous.workerId, reflection.resumed);
+			const paths = new Set<string>();
+			if (previous.result.outputPath) paths.add(previous.result.outputPath);
+			if (previous.result.patchPath) paths.add(previous.result.patchPath);
+			for (const deliverable of previous.result.nestedPatchPaths ?? []) paths.add(deliverable);
+			const collectPaths = (value: unknown, pathField = false): void => {
+				if (typeof value === "string") {
+					if (pathField && value.trim()) paths.add(value);
+				} else if (Array.isArray(value)) {
+					for (const item of value) collectPaths(item, pathField);
+				} else if (value && typeof value === "object") {
+					for (const [key, item] of Object.entries(value)) collectPaths(item, /(?:paths?|files?)$/iu.test(key));
+				}
+			};
+			collectPaths(previous.result.structuredOutput?.data);
+			try {
+				collectPaths(JSON.parse(report));
+			} catch {
+				// Prose reports are inspected below; JSON reports also preserve explicit path fields.
+			}
+			for (const match of report.matchAll(/`([^`\r\n]+)`/gu)) {
+				const candidate = match[1]!;
+				if (!/\s/u.test(candidate) && (candidate.includes("/") || /\.[a-z0-9]+$/iu.test(candidate)))
+					paths.add(candidate);
+			}
+			this.#appendAttempt(route.row, {
+				attemptId,
+				workerName: route.previous.workerId,
+				resolvedModel: route.previous.resolvedModel!,
+				effort: route.previous.thinkingLevel!,
+				startedAt: route.previous.startedAt,
+				finishedAt: route.previous.finishedAt!,
+				durationMs: Math.max(0, route.previous.finishedAt! - route.previous.startedAt),
+				terminalStatus: "completed",
+				deliverablePaths: [...paths],
+				rejectionReason: route.reason,
+				reflectionAnswer: reflection.answer,
+				noAnswerReason: reflection.noAnswerReason,
+				finalReportParagraph:
+					report
+						.trimEnd()
+						.split(/\n\s*\n/u)
+						.at(-1) ?? "",
+			});
+		}
+		const phases = this.session.getTodoPhases?.() ?? [];
+		const task = phases
+			.find(phase => phase.name === route.row.phase)
+			?.tasks.find(task => task.content === route.row.content);
+		route.context = renderPreviousAttempts(task?.schedule?.attemptHistory ?? []);
+		if (route.exhausted) {
+			// The native wrapper approved this one execution. Retain the actual
+			// final model and effort, including an effort above the configured rung.
+			route.rung = { model: route.previous.resolvedModel, effort: route.previous.thinkingLevel as Effort };
+			if (task?.status === "blocked") {
+				const operation = { op: "unblock" as const, task: route.row.content };
+				const updated = applyOpsToPhases(phases, [operation]);
+				if (updated.errors.length > 0) throw new Error(updated.errors.join("\n"));
+				this.session.setTodoPhases?.(updated.phases);
+				this.session.persistTodoPhases?.(updated.phases, buildTodoOpPersistedEdit("unblock", operation));
+			}
+		}
+		return undefined;
+	}
 
 	get parameters(): TaskToolSchemaInstance {
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
@@ -701,6 +1106,112 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	) {
 		this.#blockedAgent = $env.PI_BLOCKED_AGENT;
 		this.#discoveredAgents = discoveredAgents;
+		const bus = session.subagentEventBus ?? session.eventBus;
+		if (bus && session.getTodoPhases && session.setTodoPhases && session.persistTodoPhases) {
+			const stopLifecycle = bus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
+				if (!data || typeof data !== "object") return;
+				const event = data as Partial<SubagentLifecyclePayload>;
+				if (typeof event.id !== "string" || typeof event.agent !== "string") return;
+				if (this.#reflectingWorkers.has(event.id)) return;
+				if (event.status === "started") {
+					const observed: TodoExecutorObservation = {
+						workerId: event.id,
+						agentProfile: event.agent,
+						description: event.description,
+						taskText: event.taskText,
+						startedAt: event.at ?? Date.now(),
+					};
+					this.#todoExecutors.set(event.id, observed);
+					this.#persistTodoExecutor(observed);
+				} else if (event.status === "completed" || event.status === "failed" || event.status === "aborted") {
+					const prior = this.#todoExecutors.get(event.id);
+					if (!prior) return;
+					const observed = {
+						...prior,
+						resolvedModel: event.resolvedModelIdentity ?? prior.resolvedModel,
+						thinkingLevel: event.resolvedThinkingLevel ?? prior.thinkingLevel,
+						finishedAt: event.at ?? Date.now(),
+						outcome: event.status,
+					};
+					this.#persistTodoExecutor(observed);
+					this.#todoExecutors.delete(event.id);
+				}
+			});
+			const stopProgress = bus.on(TASK_SUBAGENT_PROGRESS_CHANNEL, data => {
+				if (!data || typeof data !== "object") return;
+				const event = data as Partial<SubagentProgressPayload>;
+				const workerId = event.progress?.id;
+				if (typeof workerId !== "string") return;
+				if (this.#reflectingWorkers.has(workerId)) return;
+				const prior = this.#todoExecutors.get(workerId);
+				if (!prior) return;
+				const observed = {
+					...prior,
+					resolvedModel:
+						event.progress?.resolvedModelIdentity ?? event.progress?.resolvedModel ?? prior.resolvedModel,
+					thinkingLevel: event.progress?.resolvedThinkingLevel ?? prior.thinkingLevel,
+				};
+				this.#todoExecutors.set(workerId, observed);
+				this.#persistTodoExecutor(observed);
+			});
+			session.registerDisposeCallback?.(() => {
+				stopLifecycle();
+				stopProgress();
+			});
+		}
+	}
+
+	#persistTodoExecutor(observation: TodoExecutorObservation): void {
+		const phases = this.session.getTodoPhases?.();
+		if (!phases) return;
+		const updated = applyTodoExecutorObservation(phases, {
+			...observation,
+			runningWorkerIds: new Set(this.#todoExecutors.keys()),
+		});
+		if (!updated) return;
+		this.session.setTodoPhases?.(updated);
+		this.session.persistTodoPhases?.(
+			updated,
+			buildTodoExecutorPersistedEdit({
+				...observation,
+				runningWorkerIds: new Set(this.#todoExecutors.keys()),
+			}),
+		);
+	}
+
+	/**
+	 * Hand open rows owned by a settled worker to its respawn. Re-staffing a row under its owner's
+	 * name gets `<name>-<n>` from the output manager; the row moves in the same tool call so the
+	 * caller never sees an owner that names a finished job. Returns the note for the tool result.
+	 */
+	#relinkRespawnOwners(
+		spawns: ReadonlyArray<{ requestedName: string; workerId: string }>,
+		manager: AsyncJobManager,
+	): string | undefined {
+		const phases = this.session.getTodoPhases?.();
+		if (!phases || !this.session.setTodoPhases || !this.session.persistTodoPhases) return undefined;
+		const running = new Set([...this.#todoExecutors.keys(), ...manager.getRunningJobs().map(job => job.id)]);
+		const notes: string[] = [];
+		let current = phases;
+		for (const { requestedName, workerId } of spawns) {
+			if (!requestedName) continue;
+			// The new worker's own job is already registered as running; only the requested id counts.
+			running.delete(workerId);
+			const rows = findRespawnOwnerRows(current, { requestedName, workerId, runningWorkerIds: running });
+			running.add(workerId);
+			if (rows.length === 0) continue;
+			const params = { op: "schedule" as const, updates: rows.map(task => ({ task, owner: workerId })) };
+			const applied = applyOpsToPhases(current, [params]);
+			if (applied.errors.length > 0) continue;
+			current = applied.phases;
+			this.session.setTodoPhases(current);
+			this.session.persistTodoPhases(current, buildTodoOpPersistedEdit("schedule", params));
+			const rowList = rows.map(row => `"${row}"`).join(", ");
+			notes.push(
+				`\`${requestedName}\` already names an earlier job, so this worker is \`${workerId}\`; TODO ${rows.length === 1 ? "row" : "rows"} ${rowList} now ${rows.length === 1 ? "names" : "name"} \`${workerId}\` as owner.`,
+			);
+		}
+		return notes.length > 0 ? notes.join("\n") : undefined;
 	}
 
 	#isBatchEnabled(): boolean {
@@ -851,6 +1362,39 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			return createTaskModeError(plan);
 		}
 		const { params, items: spawnItems, spawns: normalizedSpawnParams } = plan;
+
+		if (batchEnabled && Array.isArray(params.tasks) && params.tasks.length === 0) {
+			return {
+				content: [{ type: "text", text: "No tasks selected; nothing to dispatch." }],
+				details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
+			};
+		}
+
+		const routes = normalizedSpawnParams.map(spawn => this.#routeRework(spawn));
+		const approvedRoutes =
+			rawParams && typeof rawParams === "object" ? this.#approvalRoutes.get(rawParams) : undefined;
+		if (rawParams && typeof rawParams === "object") this.#approvalRoutes.delete(rawParams);
+		if (routes.some(decision => decision.route?.exhausted)) {
+			if (routes.length !== 1)
+				return createTaskModeError("Exhausted rework recovery requires exactly one task per call.");
+			if (
+				!approvedRoutes ||
+				!Bun.deepEquals(
+					approvedRoutes,
+					routes.map(decision => decision.route),
+				)
+			) {
+				return createTaskModeError(
+					"Exhausted rework target changed or requires a fresh native approval. Retry the task call.",
+				);
+			}
+		} else if (approvedRoutes?.some(route => route?.exhausted)) {
+			return createTaskModeError("Exhausted rework target changed; retry the task call for fresh approval.");
+		}
+		for (const [index, decision] of routes.entries()) {
+			if (decision.error) return createTaskModeError(decision.error);
+			if (decision.route) this.#reworkRoutes.set(`${toolCallId}:${index}`, decision.route);
+		}
 		const evalToolNames = spawnItems.flatMap(item => item.tools ?? []);
 		if (evalToolNames.length > 0) {
 			if (this.session.getPlanModeState?.()?.enabled === true) {
@@ -893,6 +1437,18 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			);
 		}
 		const policies = preflights.map(preflight => preflight.policy!);
+		try {
+			for (const [index, policy] of policies.entries()) {
+				const route = this.#reworkRoutes.get(`${toolCallId}:${index}`);
+				if (!route) continue;
+				const blocked = await this.#prepareRework(route, policy, signal);
+				if (blocked) return createTaskModeError(blocked);
+			}
+		} catch (error) {
+			return createTaskModeError(
+				`Rework preparation failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 		const itemBlocking = policies.map(policy => policy.effectiveAgent.blocking === true);
 
 		// Execution mode is per item: an item whose agent type declares
@@ -977,17 +1533,20 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// Returns a fresh result (copied content array, copied text part) rather
 		// than mutating the caller's — task results are short-lived here, but an
 		// in-place edit on a shared/cached AgentToolResult would be a hidden trap.
+		// oxlint-disable-next-line prefer-const -- read by withAdvisory, assigned once spawns are registered
+		let respawnNote: string | undefined;
 		const withAdvisory = (result: AgentToolResult<TaskToolDetails>): AgentToolResult<TaskToolDetails> => {
-			if (!advisory) return result;
+			const note = [respawnNote, advisory].filter(Boolean).join("\n\n");
+			if (!note) return result;
 			let appended = false;
 			const content = result.content.map(part => {
 				if (!appended && part.type === "text" && typeof part.text === "string") {
 					appended = true;
-					return { ...part, text: `${part.text}\n\n${advisory}` };
+					return { ...part, text: `${part.text}\n\n${note}` };
 				}
 				return part;
 			});
-			if (!appended) content.push({ type: "text", text: advisory });
+			if (!appended) content.push({ type: "text", text: note });
 			return { ...result, content };
 		};
 		const outputManager = this.#outputManager();
@@ -1005,8 +1564,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const policy = policies[index]!;
 			const agentSource = policy.agent.source;
 			const run = adopted.get(index);
+			const route = this.#reworkRoutes.get(`${toolCallId}:${index}`);
 			const agentId =
-				run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName()));
+				route?.reason && route.rung && !route.rung.model
+					? route.previous.workerId
+					: (run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName())));
 			const assignment = (item.task ?? "").trim();
 			spawns.push({
 				agentId,
@@ -1096,6 +1658,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				failedCount += 1;
 			}
 		}
+
+		respawnNote = this.#relinkRespawnOwners(
+			spawns
+				.filter(spawn => spawn.blocking || started.some(entry => entry.agentId === spawn.agentId))
+				.map(spawn => ({ requestedName: spawn.item.name?.trim() ?? "", workerId: spawn.agentId })),
+			manager,
+		);
 
 		if (started.length === 0 && syncSpawns.length === 0) {
 			return {
@@ -1598,13 +2167,16 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		onArtifactsRetained?: (cleanup: () => Promise<void>) => void,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
-		const assignment = (params.task ?? "").trim();
-		const context = this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined;
+		const assignment = `${(params.task ?? "").trim()}\n\nEvery message to the lead MUST answer exactly this question: Is there a much simpler different way?\n\nEnd your final answer with a \`Retro\` block of at most five lines: what worked and should be repeated, what failed and should be banned, what blocked you, and the exact receipt.`;
+		const route = this.#reworkRoutes.get(`${toolCallId}:${spawnIndex}`);
+		const context =
+			[this.#isBatchEnabled() ? params.context?.trim() : undefined, route?.context].filter(Boolean).join("\n\n") ||
+			undefined;
 		let latestProgress: AgentProgress | undefined;
 		try {
-			const execution = await runStructuredSubagent({
+			const request = {
 				session: this.session,
-				invocationKind: "task",
+				invocationKind: "task" as const,
 				assignment,
 				context,
 				agent: params.agent,
@@ -1612,6 +2184,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				...(Object.hasOwn(params, "schemaMode") ? { schemaMode: params.schemaMode } : {}),
 				...(params.effort !== undefined ? { effort: params.effort } : {}),
 				solutionSpace: params.solutionSpace,
+				...(route?.rung ? { model: route.rung.model, thinkingLevel: route.rung.effort } : {}),
 				...(params.tools?.length
 					? {
 							customTools: createEvalCustomTools(
@@ -1626,13 +2199,17 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				index: spawnIndex,
 				parentToolCallId: toolCallId,
 				detached,
-				// Detached (async) spawns advertise `agent://<id>` handles in the
-				// eventual async-result delivery, which can land well after this
-				// call returns. Without this, a temporary (in-memory session)
-				// artifacts directory is deleted immediately on completion and the
-				// advertised URL 404s by the time delivery happens.
-				retainArtifacts: detached,
-				...(onArtifactsRetained ? { onArtifactsRetained } : {}),
+				// Rework may resume this worker after the async job is evicted.
+				// Retain the worker's artifacts for the parent session, not one invocation.
+				keepAlive: true,
+				retainArtifacts: true,
+				onArtifactsRetained: (cleanup: () => Promise<void>) => {
+					if (this.session.registerDisposeCallback)
+						this.session.registerDisposeCallback(() => {
+							void cleanup();
+						});
+					else onArtifactsRetained?.(cleanup);
+				},
 				invokedAt: launchTiming?.invokedAt,
 				acquiredAt: launchTiming?.acquiredAt,
 				...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
@@ -1641,7 +2218,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
 				maxRuntimeMs: cfgTaskMaxRuntimeMs.get(this.session.settings),
 				signal,
-				onProgress: progress => {
+				onProgress: (progress: AgentProgress) => {
 					latestProgress = { ...progress, recentTools: progress.recentTools.slice() };
 					onUpdate?.({
 						content: [{ type: "text", text: `Running agent ${progress.id}...` }],
@@ -1653,7 +2230,22 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						},
 					});
 				},
-			});
+			};
+			let execution: StructuredSubagentResult;
+			if (route?.reason && route.rung && !route.rung.model) {
+				const previous = this.#workerSessions.get(route.previous.workerId);
+				if (!previous) throw new Error(`Rework session ${route.previous.workerId} is unavailable.`);
+				execution = await resumeStructuredSubagent(
+					{ ...request, assignment: [context, assignment].filter(Boolean).join("\n\n") },
+					previous,
+					route.rung.effort,
+				);
+			} else {
+				execution = await runStructuredSubagent(request);
+			}
+			this.#workerSessions.set(execution.result.id, execution);
+			this.#recordFailedAttempt(execution.result);
+			this.#reworkRoutes.delete(`${toolCallId}:${spawnIndex}`);
 			return this.#buildResultPayload(
 				execution.result,
 				execution.policy.discovery.projectAgentsDir,
@@ -1662,6 +2254,19 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			);
 		} catch (error) {
 			const message = error instanceof StructuredSubagentError ? error.message : String(error);
+			const lockOwner = checkoutLockOwnerFromTaskError(message);
+			if (lockOwner && Date.now() - startTime < 2000) {
+				this.#reworkRoutes.delete(`${toolCallId}:${spawnIndex}`);
+				return {
+					content: [
+						{
+							type: "text",
+							text: `NOT STARTED: checkout lock held by ${lockOwner}; respawning identically will fail again; wait for ${lockOwner} or give edits to it`,
+						},
+					],
+					details: { projectAgentsDir: null, results: [], totalDurationMs: Date.now() - startTime },
+				};
+			}
 			// A child that finished before the failure keeps its exit status,
 			// usage, and artifact path. `error` is set so nothing reads a zero
 			// exit code as a completed run.
@@ -1670,6 +2275,18 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const salvaged = settled
 				? { ...settled, error: settled.error ?? (cause instanceof Error ? cause.message : message) }
 				: undefined;
+			const workerId = latestProgress?.id ?? preAllocatedId;
+			if (workerId)
+				this.#recordFailedAttempt({
+					id: workerId,
+					exitCode: 1,
+					error: message,
+					output: "",
+					stderr: message,
+					durationMs: Date.now() - startTime,
+					aborted: signal?.aborted,
+				});
+			this.#reworkRoutes.delete(`${toolCallId}:${spawnIndex}`);
 			return {
 				content: [{ type: "text", text: `Task execution failed: ${message}` }],
 				isError: true,

@@ -42,7 +42,7 @@ import {
 	resolveToCwd,
 	splitPathAndSelPreferringLiteral,
 } from "./tools/path-utils";
-import type { TodoPhase, TodoStatus } from "@oh-my-pi/pi-tui/tools/todo";
+import type { TodoPersistedEdit, TodoPhase, TodoStatus } from "@oh-my-pi/pi-tui/tools/todo";
 
 /** Phase used for Cursor-owned tasks with no local phase grouping. */
 const CURSOR_TODO_PHASE = "Tasks";
@@ -117,7 +117,7 @@ interface CursorExecBridgeOptions {
 	 * Persist the mirrored list to the session branch so it survives reloads.
 	 * Cursor emits no local `todo` toolResult, so nothing else records it.
 	 */
-	persistTodoPhases?: (phases: TodoPhase[]) => void;
+	persistTodoPhases?: (phases: TodoPhase[], edit?: TodoPersistedEdit) => void;
 	/**
 	 * Build a `grep` tool honoring a frame's own context width and match cap.
 	 *
@@ -500,6 +500,7 @@ function buildTodoSyncResult(
 	phases: TodoPhase[] | undefined,
 	error: string | null,
 ): ToolResultMessage {
+	const details = phases ? { phases, storage: "session" as const } : undefined;
 	return {
 		role: "toolResult",
 		toolCallId,
@@ -507,7 +508,7 @@ function buildTodoSyncResult(
 		content: [
 			{ type: "text", text: error ?? (phases ? formatTodoSyncSummary(phases) : "Todo snapshot not mirrored") },
 		],
-		details: phases ? { phases, storage: "session" } : undefined,
+		details,
 		isError: error !== null,
 		timestamp: Date.now(),
 	};
