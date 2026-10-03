@@ -50,6 +50,7 @@
 - Fixed the `read` tool hanging and the TUI becoming unresponsive when asked to read standard input, FIFOs, or other non-regular files; these paths are now rejected.
 - Fixed project configuration from `~/.omp` being incorrectly applied to unrelated working directories under the user's home directory.
 - Fixed `omp update` failing on standalone-binary installs when npm advertised a version whose GitHub release was never published; the updater now installs the newest published release instead ([#12913](https://github.com/can1357/oh-my-pi/issues/12913)).
+ - Clarified that the task `tools` field accepts eval-defined tools, and ignores built-in names already provided by the selected agent with a correction notice ([#9](https://github.com/Komzpa/oh-my-pi/pull/9) by [@Komzpa](https://github.com/Komzpa)).
 
 ## [18.4.10] - 2026-10-02
 
