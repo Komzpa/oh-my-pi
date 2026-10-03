@@ -244,9 +244,11 @@ import {
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";
 import { supportsExternalThinking } from "../tools/think";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { getLatestTodoPhasesFromEntries } from "../tools/todo";
 import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
+	formatOverdueClassifyRefusal,
 	getLatestRequirements,
 	getOverdueRequirementCandidates,
 } from "../tools/requirements-ledger";
@@ -4650,12 +4652,14 @@ export class AgentSession implements SettingsScope {
 		const runner = this.#extensionRunner;
 		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 		if (this.#agentKind === "main" && ctx.tool.name !== "todo") {
-			const overdue = getOverdueRequirementCandidates(this.sessionManager.getBranch());
+			const branch = this.sessionManager.getBranch();
+			const overdue = getOverdueRequirementCandidates(branch);
 			if (overdue.length > 0) {
 				runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
+				const rows = getLatestTodoPhasesFromEntries(branch).flatMap(phase => phase.tasks.map(task => task.content));
 				return {
 					block: true,
-					reason: `Non-todo tools are blocked until older requirement candidate(s) ${overdue.map(item => item.id).join(", ")} are classified with todo. Todo remains legal.`,
+					reason: formatOverdueClassifyRefusal(ctx.tool.name, overdue, rows),
 				};
 			}
 		}

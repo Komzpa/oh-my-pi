@@ -5,6 +5,8 @@ import { isRecord } from "@oh-my-pi/pi-utils";
 import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
+	formatOverdueClassifyRefusal,
+	formatPublicationReplacement,
 	getLatestRequirements,
 	getOverdueRequirementCandidates,
 	getPersistedRequirementAuditorAssignments,
@@ -61,11 +63,13 @@ export class RequirementsLedgerRuntime {
 
 	refuseOverdueCandidate(toolName: string): BeforeToolCallResult | undefined {
 		if (this.#host.agentKind() !== "main" || toolName === "todo") return undefined;
-		const overdue = getOverdueRequirementCandidates(this.#host.sessionManager.getBranch());
+		const branch = this.#host.sessionManager.getBranch();
+		const overdue = getOverdueRequirementCandidates(branch);
 		if (overdue.length === 0) return undefined;
+		const rows = getLatestTodoPhasesFromEntries(branch).flatMap(phase => phase.tasks.map(task => task.content));
 		return {
 			block: true,
-			reason: `Non-todo tools are blocked until older requirement candidate(s) ${overdue.map(item => item.id).join(", ")} are classified with todo. Todo remains legal.`,
+			reason: formatOverdueClassifyRefusal(toolName, overdue, rows),
 		};
 	}
 
@@ -197,7 +201,7 @@ export class RequirementsLedgerRuntime {
 				...context.result.content,
 				{
 					type: "text",
-					text: `REQUIREMENTS RECEIPT REJECTED: ${rejected.join("; ")}. Request a complete qa-auditor table at the current row HEAD.`,
+					text: `Blocked: requirements receipt rejected: ${rejected.join("; ")}. Call task with agent="qa-auditor", task="Audit <Rn> at the current clean row HEAD" returning one complete Markdown table with columns id | raw words | verdict | evidence | artifact identity (one row per linked Rn; each artifact identity must include the full current commit SHA from every corresponding linked row). Then retry`,
 				},
 			],
 		};
@@ -271,17 +275,19 @@ export class RequirementsLedgerRuntime {
 		if (this.#host.agentKind() !== "main" || message.stopReason === "error" || message.stopReason === "aborted") {
 			return;
 		}
-		const { requirements, staleById } = await this.#refreshRequirementFreshness(signal);
-		const open = this.#openRequirements(requirements, staleById);
-		this.#syncPublicationGate();
-		if (open.length === 0) return;
-		if (message.content.some(block => block.type === "toolCall")) return { replacementText: "" };
-		const details = open.map(({ requirement, issues }) => `${requirement.id} (${issues.join("; ")})`).join(", ");
-		this.#host.onSettledAssistantMessage(message);
-		return {
-			replacementText: `Requested work is not verified complete. requirements open: ${open.map(({ requirement }) => requirement.id).join(", ")}. ${details}. Classify candidates with todo; every linked requirement needs a fresh qa-auditor pass for the current row HEAD before row or final completion.`,
-			settled: true,
-		};
+	const { requirements, staleById } = await this.#refreshRequirementFreshness(signal);
+	const open = this.#openRequirements(requirements, staleById);
+	this.#syncPublicationGate();
+	if (open.length === 0) return;
+	if (message.content.some(block => block.type === "toolCall")) return { replacementText: "" };
+	const rows = getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch()).flatMap(phase =>
+		phase.tasks.map(task => task.content),
+	);
+	this.#host.onSettledAssistantMessage(message);
+	return {
+		replacementText: formatPublicationReplacement(open, rows),
+		settled: true,
+	};
 	}
 
 	async #refreshRequirementFreshness(

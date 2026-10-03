@@ -22,6 +22,7 @@ import { dirname, isAbsolute } from "node:path";
 import {
 	appendRequirementsSnapshot,
 	classifyRequirement,
+	formatDoneGateRefusal,
 	getLatestRequirements,
 	isFreshRequirementVerdict,
 	type RequirementsLedgerAppender,
@@ -63,7 +64,13 @@ export function committedTodoPhases(result: AgentToolResult): TodoPhase[] | unde
 // Schema
 // =============================================================================
 
-const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view"');
+// Local TodoOp extends the shared base (`@oh-my-pi/pi-tui/tools/todo` TodoOperation
+// stays at base text): classify is dispatched on raw args before todoSchema, so
+// adding it only here keeps the tui contract untouched while making the op and
+// its fields visible to the model in the tool definition it receives.
+const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view" | "classify"');
+
+const ClassifyClassification = type('"linked" | "not-a-requirement" | "merged"');
 
 const InitListEntry = type({
 	phase: type("string"),
@@ -79,7 +86,13 @@ const todoSchema = type({
 	// and both enforce non-empty with op-specific errors. A stray `items: []` on
 	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
 	"items?": type("string").array().describe("tasks for flat init or append"),
-	"reason?": type("string").describe("blocker note for block"),
+	"reason?": type("string").describe("blocker note for block; required reason when classify uses classification not-a-requirement"),
+	"id?": type("string").describe("requirement id (Rn) for classify"),
+	"classification?": ClassifyClassification.describe(
+		"classify decision: linked needs rows, not-a-requirement needs reason, merged needs mergeInto",
+	),
+	"rows?": type("string").array().describe("exact todo row contents for classify linked"),
+	"mergeInto?": type("string").describe("target Rn for classify merged"),
 });
 
 type TodoParams = TodoSchema;
@@ -356,7 +369,7 @@ function selectCompletionBatchTargets(
 	errors: string[],
 ): TodoItem[] {
 	if (!entry.task && (entry.items?.length ?? 0) === 0) {
-		errors.push(`${entry.op === "drop" ? "drop" : "done"} requires a task or items target`);
+		errors.push(`${entry.op === "drop" ? "drop" : "done"} requires a task or items target; call todo with op="done", task="<exact row>" (or op="done", items=["<row1>", ...])`);
 		return [];
 	}
 	const targets: TodoItem[] = [];
@@ -773,6 +786,9 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			return appendItems(phases, entry, errors);
 		case "view":
 			return phases;
+		case "classify":
+			// Handled on raw args before schema resolution in execute(); never reaches applyParams.
+			return phases;
 	}
 }
 
@@ -1158,7 +1174,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 					content: [
 						{
 							type: "text",
-							text: `todo done is blocked until every linked requirement has a fresh qa-auditor pass for the current clean row artifact: ${unmet.join("; ")}`,
+							text: formatDoneGateRefusal(unmet),
 						},
 					],
 					details: { op: "done", phases: previousPhases, storage },
@@ -1169,8 +1185,9 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		return undefined;
 	}
 
-	/** #41's classify path, dispatched on raw args before the shared schema so
-	 *  the shared TodoOp union and todoSchema stay at base text. */
+	/** #41's classify path, dispatched on raw args before the shared schema. The shared
+	 *  TodoOp union and TodoOperation in `@oh-my-pi/pi-tui/tools/todo` stay at base text;
+	 *  only this tool's local TodoOp/todoSchema expose classify so the model can see the op. */
 	async #classify(
 		params: Record<string, unknown>,
 		previousPhases: TodoPhase[],
@@ -1190,7 +1207,12 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const mergeInto = typeof params.mergeInto === "string" ? params.mergeInto : undefined;
 		if (!id || !classification) {
 			return {
-				content: [{ type: "text", text: "classify requires an Rn id and classification" }],
+				content: [
+					{
+						type: "text",
+						text: `Blocked: classify requires an Rn id and classification. Call todo with op="classify", id="<Rn>", classification="linked", rows=["<exact todo row>"] (or classification="not-a-requirement" with reason="<why this is not a requirement>", or classification="merged" with mergeInto="<other Rn>"). Then retry`,
+					},
+				],
 				details,
 				isError: true,
 			};
@@ -1198,7 +1220,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const sessionManager = this.session.sessionManager;
 		if (!sessionManager) {
 			return {
-				content: [{ type: "text", text: "classify requires persistent session storage" }],
+				content: [{ type: "text", text: `Blocked: classify requires persistent session storage. Retry the same call todo with op="classify", id="${id ?? "<Rn>"}", classification="<linked|not-a-requirement|merged>" in a persisted session` }],
 				details,
 				isError: true,
 			};
@@ -1206,8 +1228,14 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		if (classification === "linked") {
 			const unknownRows = (rows ?? []).filter(row => !findTaskByContent(previousPhases, row));
 			if (unknownRows.length > 0) {
+				const available = previousPhases.flatMap(phase => phase.tasks.map(task => JSON.stringify(task.content)));
 				return {
-					content: [{ type: "text", text: `Unknown TODO rows: ${unknownRows.join(", ")}` }],
+					content: [
+						{
+							type: "text",
+							text: `Blocked: unknown TODO rows for ${id}: ${unknownRows.map(row => JSON.stringify(row)).join(", ")}. Available rows: ${available.length > 0 ? available.join(", ") : '(none: first create one with todo op="append", items=["<exact todo row>"] (or op="init"))'}. Call todo with op="classify", id="${id}", classification="linked", rows=[<exact existing row>]. Then retry`,
+						},
+					],
 					details,
 					isError: true,
 				};

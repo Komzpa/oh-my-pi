@@ -242,8 +242,18 @@ describe("assistant publication bridge", () => {
 		const result = agent.state.messages.find(
 			message => message.role === "toolResult" && message.toolCallId === "probe-overdue",
 		);
-		expect(JSON.stringify(result)).toContain("Non-todo tools are blocked");
-		expect(JSON.stringify(result)).toContain("R1");
+		const parts = result && typeof result === "object" && "content" in result && Array.isArray(result.content) ? result.content : [];
+		const refusalText = parts
+			.map(part =>
+				part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part
+					? String(part.text)
+					: "",
+			)
+			.join("\n");
+		expect(refusalText).toContain("Blocked:");
+		expect(refusalText).toContain('op="classify"');
+		expect(refusalText).toContain('id="R1"');
+		expect(refusalText).toContain("Then retry");
 	});
 
 	it("isolates handler draft mutations and does not let a later permissive handler release the original", async () => {
@@ -370,7 +380,11 @@ describe("assistant publication bridge", () => {
 		await session.waitForIdle();
 		expect(triggered).toEqual(["raw-stream-rule"]);
 		expect(mock.calls).toHaveLength(2);
-		expect(assistantTexts(agent.state.messages)).toEqual([ASSISTANT_GATE_REFUSAL, STATUS]);
+		const settledTexts = assistantTexts(agent.state.messages);
+		expect(settledTexts[0]).toBe(ASSISTANT_GATE_REFUSAL);
+		expect(settledTexts).toHaveLength(2);
+		expect(settledTexts[1]).toContain('op="classify"');
+		expect(settledTexts[1]).toContain("Then retry");
 		expect(
 			publicEvents
 				.filter(event => isAssistantMessageEvent(event))

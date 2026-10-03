@@ -220,14 +220,15 @@ export function classifyRequirement(
 	classification: RequirementDecision,
 	options: ClassifyRequirementOptions = {},
 ): ClassifyRequirementResult {
+	const classifyForm = `todo op="classify", id="${id}", classification="linked", rows=["<exact todo row>"] (or classification="not-a-requirement" with reason="...", or classification="merged" with mergeInto="<other Rn>")`;
 	const sourceIndex = requirements.findIndex(requirement => requirement.id === id);
-	if (sourceIndex < 0) return { error: `Unknown requirement ${id}` };
+	if (sourceIndex < 0) return { error: `Blocked: requirement ${id} is unknown. No classify call can target it; call todo op="view" to list current requirements and rows, then ${classifyForm}` };
 	const source = requirements[sourceIndex]!;
 	if (source.classification !== "candidate") {
-		return { error: `${id} has already been classified as ${source.classification}` };
+		return { error: `Blocked: ${id} has already been classified as ${source.classification}; no further classify call can target it` };
 	}
 	if (classification === "not-a-requirement" && !options.reason?.trim()) {
-		return { error: `Classifying ${id} as not-a-requirement requires a reason` };
+		return { error: `Blocked: classifying ${id} ("${source.rawText}") as not-a-requirement requires a reason. Call todo with op="classify", id="${id}", classification="not-a-requirement", reason="<why this is not a requirement>". Then retry` };
 	}
 
 	const incomingMerges = requirements.filter(
@@ -235,7 +236,7 @@ export function classifyRequirement(
 	);
 	if (classification !== "linked" && incomingMerges.length > 0) {
 		return {
-			error: `Cannot reclassify ${id} while ${incomingMerges.map(requirement => requirement.id).join(", ")} is merged into it; the ledger would lose its active target`,
+			error: `Blocked: cannot classify ${id} ("${source.rawText}") while ${incomingMerges.map(requirement => requirement.id).join(", ")} is merged into it; the ledger would lose its active target. Reclassify the merged requirement(s) first, then call todo with op="classify", id="${id}", classification="<linked|not-a-requirement|merged>", rows=["<exact todo row>"]`,
 		};
 	}
 	const next = requirements.map(requirement => ({ ...requirement, rows: [...requirement.rows] }));
@@ -255,7 +256,7 @@ export function classifyRequirement(
 			options.rows.length === 0 ||
 			options.rows.some(row => typeof row !== "string" || row.trim() === "")
 		) {
-			return { error: `Linking ${id} requires at least one TODO row` };
+			return { error: `Blocked: linking ${id} ("${source.rawText}") requires at least one TODO row. Call todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"]. When no matching row exists yet, first create it with todo op="append", items=["<exact todo row>"] (or op="init"), then retry the classify call` };
 		}
 		updatedSource.rows = [...new Set(options.rows)];
 	}
@@ -263,13 +264,13 @@ export function classifyRequirement(
 	if (classification === "merged") {
 		const mergeInto = options.mergeInto;
 		if (!mergeInto || mergeInto === id) {
-			return { error: `Merging ${id} requires a different existing Rn in mergeInto` };
+			return { error: `Blocked: merging ${id} ("${source.rawText}") requires a different existing Rn in mergeInto. Call todo with op="classify", id="${id}", classification="merged", mergeInto="<other Rn>". Then retry` };
 		}
 		const targetIndex = next.findIndex(requirement => requirement.id === mergeInto);
-		if (targetIndex < 0) return { error: `Unknown merge target ${mergeInto}` };
+		if (targetIndex < 0) return { error: `Blocked: unknown merge target ${mergeInto} for ${id}. Call todo op="view" to list current requirements, then call todo with op="classify", id="${id}", classification="merged", mergeInto="<existing Rn>". Then retry` };
 		const target = next[targetIndex]!;
 		if (target.classification === "merged" || target.classification === "not-a-requirement") {
-			return { error: `Merge target ${mergeInto} is not an active requirement` };
+			return { error: `Blocked: merge target ${mergeInto} is not an active requirement. Call todo with op="classify", id="${id}", classification="merged", mergeInto="<active Rn>". Then retry` };
 		}
 		const mergedRows = [...new Set([...target.rows, ...source.rows])];
 		next[targetIndex] = {
@@ -536,4 +537,47 @@ export function getPersistedRequirementAuditorAssignments(
 		return restored;
 	}
 	return restored;
+}
+
+/** Exact `todo classify` call for one unclassified candidate, filled with its real id and words. */
+export function formatClassifyCall(
+	requirement: Pick<RequirementLedgerItem, "id" | "rawText">,
+	rows: readonly string[],
+): string {
+	if (rows.length > 0) {
+		return `todo with op="classify", id="${requirement.id}", classification="linked", rows=${JSON.stringify(rows)} (or classification="not-a-requirement" with reason="<why this is not a requirement>")`;
+	}
+	return `todo with op="classify", id="${requirement.id}", classification="linked", rows=["<exact todo row>"] (no todo row exists yet: first create one with todo op="append", items=["<exact todo row>"] (or op="init"), then retry the classify call; or classification="not-a-requirement" with reason="<why this is not a requirement>")`;
+}
+
+/** Gate refusal naming the blocked tool, the reason, and the exact call that unblocks it. */
+export function formatOverdueClassifyRefusal(
+	toolName: string,
+	overdue: readonly RequirementLedgerItem[],
+	rows: readonly string[],
+): string {
+	const parts = overdue.map(
+		requirement =>
+			`requirement ${requirement.id} (${JSON.stringify(requirement.rawText)}) is an unclassified candidate. Call ${formatClassifyCall(requirement, rows)}`,
+	);
+	return `Blocked: ${toolName} is blocked because ${parts.join("; ")}. Then retry ${toolName}`;
+}
+
+/** Publication-gate replacement text: what is blocked, why, and the exact call per open requirement. */
+export function formatPublicationReplacement(
+	open: readonly { requirement: RequirementLedgerItem; issues: string[] }[],
+	rows: readonly string[],
+): string {
+	const parts = open.map(({ requirement, issues }) => {
+		if (requirement.classification === "candidate") {
+			return `${requirement.id} (${JSON.stringify(requirement.rawText)}) is unclassified (${issues.join("; ")}). Call ${formatClassifyCall(requirement, rows)}`;
+		}
+		return `${requirement.id} (${JSON.stringify(requirement.rawText)}) is linked but not verified complete (${issues.join("; ")}). Request a fresh qa-auditor pass with task agent="qa-auditor", task="Audit ${requirement.id} at the current clean row HEAD", then retry`;
+	});
+	return `Blocked: requested work is not verified complete. ${parts.join("; ")}. Then retry`;
+}
+
+/** Done-gate refusal for linked rows without a fresh qa-auditor pass. */
+export function formatDoneGateRefusal(unmet: readonly string[]): string {
+	return `Blocked: todo done is blocked until every linked requirement has a fresh qa-auditor pass for the current clean row artifact: ${unmet.join("; ")}. Request a fresh qa-auditor pass with task agent="qa-auditor", task="Audit <Rn> at the current clean row HEAD", then retry todo with op="done", task="<exact row>" (or op="done", items=["<row1>", ...])`;
 }

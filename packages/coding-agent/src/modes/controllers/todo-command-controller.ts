@@ -14,7 +14,7 @@ import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { copyToClipboard } from "../../utils/clipboard";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import type { InteractiveModeContext } from "../types";
-import { getLatestRequirements, isFreshRequirementVerdict } from "../../tools/requirements-ledger";
+import { formatDoneGateRefusal, getLatestRequirements, isFreshRequirementVerdict } from "../../tools/requirements-ledger";
 
 const USAGE = [
 	"Usage: /todo <verb> [args]",
@@ -458,7 +458,7 @@ export class TodoCommandController {
 		}
 		if (unmet.length === 0) return true;
 		this.ctx.showError(
-			`todo done is blocked until every linked requirement has a fresh qa-auditor pass for the current clean row artifact: ${unmet.join("; ")}`,
+			formatDoneGateRefusal(unmet),
 		);
 		return false;
 	}

@@ -3,3 +3,4 @@ Before work, init for 3+ steps, requested task sets, or new instructions. MUST l
 After successful mutation: no active means earliest pending starts (phase order); multiple active means only earliest stays. Blocked NEVER starts automatically; unblock returns pending. Done out of order may rewind pointer but NEVER reopen completed. Mark done immediately; follow phase order.
 External waits (user/agent/service): block with optional reason suppresses stop reminder, starts next pending. Unblock when actionable; append a clearing task for agent-actionable blocker.
 NEVER call todo alone: init with first work; done/start with next action.
+Classify requirement candidates with op="classify": id is the Rn, classification is linked (needs rows with exact todo row contents), not-a-requirement (needs reason), or merged (needs mergeInto with another Rn). Example: op="classify", id="R1", classification="linked", rows=["<exact todo row>"].
