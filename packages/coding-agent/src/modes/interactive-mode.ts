@@ -209,6 +209,7 @@ import {
 	setTerminalTitlePullRequest,
 	setTerminalTitleSpinnerStyle,
 	setTerminalTitleStateEnabled,
+	setTerminalTitleTaskNow,
 } from "../utils/title-generator";
 import {
 	aggregateVibeWorkerTokensPerSecond,
@@ -4407,6 +4408,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	async #loadTodoList(source: AgentSession = this.session): Promise<void> {
 		this.todoPhases = source.getTodoPhases();
 		this.#todoPhasesOwner = source;
+		// A focus/session switch lands the previous session's in-progress row in
+		// the title runtime; recompute from this list so the task half always
+		// describes the session the tab is showing.
+		const inProgress = this.todoPhases.flatMap(phase => phase.tasks).find(task => task.status === "in_progress");
+		setTerminalTitleTaskNow(inProgress?.content);
 		this.#syncTodoHudState(source);
 		this.#renderTodoList();
 	}

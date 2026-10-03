@@ -2,6 +2,7 @@
  * Generate session titles using a smol, fast model.
  */
 import { dlopen, FFIType, ptr } from "bun:ffi";
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 import {
@@ -16,6 +17,7 @@ import { StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing
 import { writeThroughActiveTerminal } from "@oh-my-pi/pi-tui";
 import { isNativeRendering, onNativeRenderingChange } from "@oh-my-pi/pi-tui/native/state";
 import { SPINNER_FRAMES } from "@oh-my-pi/pi-tui/theme/symbols";
+import { truncateToWidth } from "@oh-my-pi/pi-tui/utils";
 import { $env, isTerminalHeadless, isWsl, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 
@@ -572,8 +574,102 @@ function getFallbackTerminalTitle(cwd: string | undefined): string | undefined {
 	return sanitizeTerminalTitlePart(baseName);
 }
 
+/** The task half of the label stays one short subject, in terminal columns. */
+const SESSION_TASK_MAX_COLUMNS = 40;
+/** Separates the project from the task in the tab label. */
+const SESSION_LABEL_PROJECT_SEPARATOR = " · ";
+
+/**
+ * Basename of the repo root containing each resolved cwd, cached so a title
+ * write never walks the filesystem twice for the same directory and never
+ * spawns a subprocess. Entries live for the process lifetime: renames are
+ * already covered because a rename re-emits the title through a fresh cwd.
+ */
+const gitProjectCache = new Map<string, string | undefined>();
+
+/** Test seam: drop cached repo-root lookups. */
+export function clearSessionTitleProjectCache(): void {
+	gitProjectCache.clear();
+}
+
+/**
+ * Walk up to the first directory containing `.git` or `.jj` (sync, no
+ * subprocess). Starts from the real path so symlinked cwds resolve inside the
+ * repo they point into; `.git` may be a file (worktree) or a directory.
+ */
+function findRepoRoot(from: string): string | undefined {
+	let dir: string;
+	try {
+		dir = fs.realpathSync(from);
+	} catch {
+		dir = from;
+	}
+	for (;;) {
+		if (fs.existsSync(path.join(dir, ".git")) || fs.existsSync(path.join(dir, ".jj"))) return dir;
+		const parent = path.dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+}
+
+/**
+ * The project owning `cwd`: basename of the containing repo root, falling back
+ * to basename(cwd) outside a repo. A cwd that does not exist on this machine
+ * (e.g. a collab host's remote path echoed back to a guest) never walks the
+ * local filesystem — only the basename is used, so a remote path can neither
+ * match an unrelated local repo uphill nor inherit its name. Returns undefined
+ * when neither yields a name.
+ */
+function resolveProjectName(cwd: string): string | undefined {
+	const resolved = path.resolve(cwd);
+	if (gitProjectCache.has(resolved)) return gitProjectCache.get(resolved);
+	const project = fs.existsSync(resolved)
+		? sanitizeTerminalTitlePart(path.basename(findRepoRoot(resolved) ?? resolved))
+		: getFallbackTerminalTitle(cwd);
+	gitProjectCache.set(resolved, project);
+	return project;
+}
+
+/**
+ * Tab-label requirements (R1–R5). The tab label for a session is
+ * `<project> · <task>`:
+ *   R1. The label begins with the project name: the basename of the repo root
+ *       containing the cwd, or the cwd basename outside a repo. Project-first
+ *       ordering means a label truncated at 25 characters still shows the
+ *       project; the project itself is never truncated.
+ *   R2. The task part is short, one subject, about 40 columns or less. An
+ *       overlong generated title is shortened with `…` rather than kept as a
+ *       long sentence.
+ *   R3. The composed title keeps the `π <state>` prefix, and the label never
+ *       loses the project when the session is renamed or a new title is
+ *       generated — every recompose resolves the project from the stored cwd.
+ *   R4. Generic code: no hardcoded project names; the project always comes
+ *       from the filesystem, never from a literal.
+ *   R5. The task part shows what the session is doing now: the current
+ *       in-progress todo row when one exists, the session title otherwise.
+ * Pure (no I/O beyond the cached repo-root lookup) so the contract is
+ * directly testable.
+ */
+export function buildSessionTerminalLabel(
+	sessionName: string | undefined,
+	cwd?: string,
+	taskNow?: string,
+): string | undefined {
+	const name = sanitizeTerminalTitlePart(sessionName);
+	const task = sanitizeTerminalTitlePart(taskNow) ?? name;
+	if (!task) return cwd === undefined ? undefined : (resolveProjectName(cwd) ?? getFallbackTerminalTitle(cwd));
+	if (cwd === undefined) return truncateToWidth(task, SESSION_TASK_MAX_COLUMNS);
+	const project = resolveProjectName(cwd);
+	if (!project || project === task) return truncateToWidth(task, SESSION_TASK_MAX_COLUMNS);
+	const bare = task.startsWith(project + SESSION_LABEL_PROJECT_SEPARATOR)
+		? task.slice(project.length + SESSION_LABEL_PROJECT_SEPARATOR.length)
+		: task;
+	if (!sanitizeTerminalTitlePart(bare)) return project;
+	return `${project}${SESSION_LABEL_PROJECT_SEPARATOR}${truncateToWidth(bare, SESSION_TASK_MAX_COLUMNS)}`;
+}
+
 export function formatSessionTerminalTitle(sessionName: string | undefined, cwd?: string): string {
-	const label = sanitizeTerminalTitlePart(sessionName) ?? getFallbackTerminalTitle(cwd);
+	const label = buildSessionTerminalLabel(sessionName, cwd);
 	return label ? `${DEFAULT_TERMINAL_TITLE}: ${label}` : DEFAULT_TERMINAL_TITLE;
 }
 
@@ -655,9 +751,26 @@ export function setSessionTerminalTitle(sessionName: string | undefined, cwd?: s
 	// explicit terminal-ownership path, releases the latch.
 	terminalTitleRuntime.extensionOverride = undefined;
 	terminalTitleRuntime.sessionName = sanitizeTerminalTitlePart(sessionName);
-	terminalTitleRuntime.label = terminalTitleRuntime.sessionName ?? getFallbackTerminalTitle(cwd);
+	terminalTitleRuntime.cwd = cwd;
+	terminalTitleRuntime.label = buildSessionTerminalLabel(sessionName, cwd, terminalTitleRuntime.taskNow);
 	emitTerminalTitle();
 	reportTernSessionFile();
+}
+
+/**
+ * Point the label's task half at what the session is doing now — the current
+ * in-progress todo row — or clear it back to the session title. Renames and
+ * new titles keep flowing through `setSessionTerminalTitle`, which recomposes
+ * against the same stored cwd, so the project is never lost either way.
+ */
+export function setTerminalTitleTaskNow(task: string | undefined): void {
+	terminalTitleRuntime.taskNow = sanitizeTerminalTitlePart(task);
+	terminalTitleRuntime.label = buildSessionTerminalLabel(
+		terminalTitleRuntime.sessionName,
+		terminalTitleRuntime.cwd,
+		terminalTitleRuntime.taskNow,
+	);
+	emitTerminalTitle();
 }
 
 /** The OSC 1337 user variable Tern reads the session file from. */
@@ -755,6 +868,10 @@ const terminalTitleRuntime: {
 	label: string | undefined;
 	/** The session's own name, without the cwd fallback `label` uses. */
 	sessionName: string | undefined;
+	/** The cwd the label's project resolves from, stored so a later task update recomposes without losing the project. */
+	cwd: string | undefined;
+	/** The current in-progress todo row; shown as the task half while set. */
+	taskNow: string | undefined;
 	/** The branch's pull request, shown in the native title only. */
 	pullRequest: number | undefined;
 	/** Unsubscribes the native-rendering watch taken by `initTerminalTitleState()`. */
@@ -784,6 +901,8 @@ const terminalTitleRuntime: {
 } = {
 	label: undefined,
 	sessionName: undefined,
+	cwd: undefined,
+	taskNow: undefined,
 	pullRequest: undefined,
 	unwatchNative: undefined,
 	state: "idle",
@@ -850,7 +969,10 @@ function emitTerminalTitle(): void {
 	const next =
 		terminalTitleRuntime.extensionOverride ??
 		(native
-			? buildNativeTerminalTitle(terminalTitleRuntime.sessionName, terminalTitleRuntime.pullRequest)
+			? buildNativeTerminalTitle(
+					terminalTitleRuntime.label ?? terminalTitleRuntime.sessionName,
+					terminalTitleRuntime.pullRequest,
+				)
 			: buildTerminalTitleWithState(
 					terminalTitleRuntime.label,
 					terminalTitleRuntime.state,
