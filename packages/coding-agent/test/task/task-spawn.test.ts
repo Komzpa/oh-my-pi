@@ -183,6 +183,79 @@ describe("task spawn routing", () => {
 		expect(runSpy.mock.calls[0]?.[0].customTools?.map(customTool => customTool.name)).toEqual(["word_count"]);
 	});
 
+	it("drops built-in names from batch Task.tools and reports the correction after pre-execute planning", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [{ ...taskAgent, tools: ["read"] }],
+			projectAgentsDir: null,
+		});
+		const runSpy = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? "?"));
+		const tool = await TaskTool.create(createSession({ settings: { "task.batch": true, "async.enabled": false } }));
+
+		const args = {
+			i: "Spawning audit child",
+			context: "audit",
+			tasks: [{ name: "AuditChild", agent: "task", task: "Read the assigned file.", tools: ["read"] }],
+		};
+		// Pre-execute planning (the approval-stage spawn resolution) runs
+		// `resolveSpawnItems` over the call args before `execute` dispatches.
+		const session = await tool.speculation.stream?.open?.({
+			coordinator: {
+				maxInFlight: 1,
+				admit: async () => undefined,
+				authorizeLaunch: async () => ({ allowed: false, reason: "test denies speculative launches" }),
+				close: () => {},
+				discardChildren: async () => {},
+			},
+			parentToolCallId: "batch-builtin",
+		});
+		expect(session).toBeDefined();
+		session?.matchesFinalArgs?.(args);
+		// The pre-execute pass must not rewrite the caller's args: the
+		// transcript keeps the requested names for the correction notice.
+		expect(args.tasks.map(item => item.tools)).toEqual([["read"]]);
+		session?.discard("regression test finished");
+
+		// `execute` receives a validated copy of the call args (fresh items).
+		const result = await tool.execute("batch-builtin", structuredClone(args));
+
+		expect(runSpy).toHaveBeenCalledTimes(1);
+		expect(runSpy.mock.calls[0]?.[0].customTools).toBeUndefined();
+		expect(getFirstText(result)).toContain(
+			"Note: `read` is a built-in tool provided by agent `task`; it was removed from `tools`, which accepts eval-defined tools only.",
+		);
+	});
+
+	it("keeps rejecting unknown eval tool names in batch form", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [taskAgent], projectAgentsDir: null });
+		const runSpy = vi.spyOn(executorModule, "runSubprocess");
+		const tool = await TaskTool.create(createSession({ settings: { "task.batch": true, "async.enabled": false } }));
+
+		const args = {
+			i: "Spawning audit child",
+			context: "audit",
+			tasks: [{ name: "AuditChild", agent: "task", task: "Use the requested tool.", tools: ["nope_audit_tool"] }],
+		};
+		const session = await tool.speculation.stream?.open?.({
+			coordinator: {
+				maxInFlight: 1,
+				admit: async () => undefined,
+				authorizeLaunch: async () => ({ allowed: false, reason: "test denies speculative launches" }),
+				close: () => {},
+				discardChildren: async () => {},
+			},
+			parentToolCallId: "batch-unknown",
+		});
+		session?.matchesFinalArgs?.(args);
+		session?.discard("regression test finished");
+
+		const result = await tool.execute("batch-unknown", structuredClone(args));
+
+		expect(getFirstText(result)).toContain("Task execution failed: Unknown eval tool(s): nope_audit_tool.");
+		expect(runSpy).not.toHaveBeenCalled();
+	});
+
 	it("returns immediately on spawn and delivers the follow-up hint when the job completes", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
 			agents: [{ ...taskAgent, model: ["anthropic/claude-sonnet-4"] }],

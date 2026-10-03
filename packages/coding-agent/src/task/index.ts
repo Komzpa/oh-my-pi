@@ -309,8 +309,15 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
  */
 function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if (Array.isArray(params.tasks) && params.tasks.length > 0) {
-		for (const item of params.tasks) stripBuiltinToolNames(item, strippedBuiltinTools);
-		return params.tasks;
+		// Copy each item before stripping: pre-execute planning and `execute`
+		// resolve separately, and the correction record keys on the stripped
+		// item — mutating the caller's `tasks[]` in place would leave the later
+		// resolve with nothing to strip and no notice to report.
+		return params.tasks.map(source => {
+			const item: TaskItem = { ...source };
+			stripBuiltinToolNames(item, strippedBuiltinTools);
+			return item;
+		});
 	}
 	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task };
 	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
