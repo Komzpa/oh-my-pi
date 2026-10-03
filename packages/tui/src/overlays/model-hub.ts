@@ -2819,12 +2819,7 @@ export class ModelHubComponent implements Component {
 		return node(
 			"text",
 			{
-				spans: [
-					span("Session: ", "dim"),
-					span(sessionLabel),
-					span("   New sessions: ", "dim"),
-					span(defaultLabel),
-				],
+				spans: [span("Session: ", "dim"), span(sessionLabel), span("   New sessions: ", "dim"), span(defaultLabel)],
 				truncate: "end",
 			},
 			undefined,
@@ -3087,9 +3082,7 @@ export class ModelHubComponent implements Component {
 		const { sessionLabel, defaultLabel } = this.#sessionFactsLabels();
 		const props: TspPickerProps = {
 			title: "Models",
-			subtitle:
-				this.#pickerSubtitle(entry, rolesView) ??
-				`Session: ${sessionLabel}   New sessions: ${defaultLabel}`,
+			subtitle: this.#pickerSubtitle(entry, rolesView) ?? `Session: ${sessionLabel}   New sessions: ${defaultLabel}`,
 			icon: "cpu",
 			noun: rolesView ? "roles" : "models",
 			size: "lg",
