@@ -283,7 +283,8 @@ Handlers and tool `execute` receive `ctx` with:
 - `getContextUsage()`
 - `getAsyncJobSnapshot()` returns the current session's read-only async-job snapshot, or `null` when no session owns the context
 - `compact(instructionsOrOptions?)`: accepts summary focus text or `CompactOptions`, including one-off `mode: "soft" | "remote" | "snapcompact"`, `onComplete`, `onError`, and `suppressContinuation`
-- `isIdle()`, `hasPendingMessages()`, `abort()`
+ - `isIdle()`, `hasPendingMessages()`, `abort()`
+ - `setSubagentFastMode(id, enabled)` (optional; changes a live direct child's `/fast` mode)
 - `shutdown()`
 - `getSystemPrompt()`
 - `isProjectTrusted()` — always `true`; OMP does not ask for per-directory trust before loading project inputs
@@ -291,6 +292,16 @@ Handlers and tool `execute` receive `ctx` with:
 - `runEphemeralTurn(...)` (optional; see below)
 - `memory` (optional structured memory runtime — status/search/save across the configured backend)
 - `setInterval(fn, ms, ...args)` / `setTimeout(fn, ms, ...args)` / `clearTimer(timer)` — managed timers (see below)
+
+### Live subagent fast mode (`ctx.setSubagentFastMode`)
+
+Hosts that support this API let a handler change `/fast` for a live direct child by its exact agent id. It returns `false` when the target is not a live child owned by the current session or the child's model has no service-tier control. A successful change applies to the child's next provider request; an in-flight request keeps its current tier. Older hosts may omit the method.
+
+```ts
+if (ctx.setSubagentFastMode?.(agentId, isCritical)) {
+  // The child's next request will use the selected model's fast tier.
+}
+```
 
 ### Ephemeral side turns (`ctx.runEphemeralTurn`)
 

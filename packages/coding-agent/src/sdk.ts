@@ -4540,6 +4540,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			ttsrManager,
 			obfuscator,
 			agentId: resolvedAgentId,
+			agentRegistry,
 			agentKind,
 			providerSessionId: options.providerSessionId,
 			providerPromptCacheKeySource,

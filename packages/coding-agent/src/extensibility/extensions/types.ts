@@ -511,6 +511,12 @@ export interface ExtensionContext {
 	abort(): void;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
+	/**
+	 * Set `/fast` for a live direct subagent owned by this session. Returns false
+	 * when the id is not an owned live subagent or its model has no tier control.
+	 * The change applies to the subagent's next provider request.
+	 */
+	setSubagentFastMode?(id: string, enabled: boolean): boolean;
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
 	/** Identity of the agent this session runs: the top-level session or a subagent. */
@@ -1893,6 +1899,7 @@ export interface ExtensionContextActions {
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	getSystemPrompt: () => string[];
 	runEphemeralTurn?: (options: EphemeralTurnOptions) => Promise<EphemeralTurnResult>;
+	setSubagentFastMode?: (id: string, enabled: boolean) => boolean;
 }
 
 /** Actions for ExtensionCommandContext (ctx.* in command handlers). */
