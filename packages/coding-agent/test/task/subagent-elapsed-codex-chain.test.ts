@@ -250,14 +250,17 @@ async function runTwoTextTurns(
 
 	const secondBase: Context = {
 		systemPrompt,
-		messages: [
-			{ role: "user", content: "First question", timestamp: Date.now() - 1000 },
-			firstResponse,
-			{ role: "user", content: "Second question", timestamp: Date.now() },
-			...(includeSyntheticDirective
-				? [{ role: "developer" as const, content: "Start a fresh run.", synthetic: true, timestamp: Date.now() }]
-				: []),
-		],
+		messages: includeSyntheticDirective
+			? [
+					{ role: "user", content: "First question", timestamp: Date.now() - 1000 },
+					firstResponse,
+					{ role: "developer", content: "Start a fresh run.", synthetic: true, timestamp: Date.now() },
+				]
+			: [
+					{ role: "user", content: "First question", timestamp: Date.now() - 1000 },
+					firstResponse,
+					{ role: "user", content: "Second question", timestamp: Date.now() },
+				],
 	};
 	const secondContext = noteSeconds ? withSubagentElapsedSignal(secondBase, noteSeconds[1]) : secondBase;
 	const secondResponse = await streamOpenAICodexResponses(model, secondContext, {
@@ -319,12 +322,16 @@ describe("subagent elapsed note keeps Codex chaining", () => {
 	it("does not mistake an unrelated synthetic directive for elapsed scaffolding", async () => {
 		const { sent } = await runTwoTextTurns("pr39-directive", [5, 12], true);
 
+		// The directive is a run initiator, not elapsed scaffolding: the turn must
+		// rotate even though the directive (unlike the note) stays in the baseline.
+		expect(sent[1]?.previous_response_id).toBe("resp_1");
 		expect(turnIdOf(sent[1])).not.toBe(turnIdOf(sent[0]));
 		const input = inputItems(sent[1] as Record<string, unknown>);
-		expect(JSON.stringify(input)).toContain("Start a fresh run.");
-		expect(JSON.stringify(input)).toContain("elapsed 12s / 900s");
+		const inputJson = JSON.stringify(input);
+		expect(inputJson).toContain("Start a fresh run.");
+		expect(inputJson).toContain("elapsed 12s / 900s");
+		expect(inputJson).not.toContain("First question");
 	});
-
 
 	it("keeps mid-turn continuation (turn_id and delta) identical to the no-note run", async () => {
 		const run = async (sessionId: string, noteSeconds: [number, number] | null) => {
