@@ -40,7 +40,7 @@ import { truncateForPrompt } from "../tools/approval";
 import { hasWaitTool } from "../tools/wait";
 import { isIrcEnabled } from "../irc/messaging";
 import { isReadOnlyAgent } from "./read-only-policy";
-import { formatTaskResultSummary, isFailedTaskSingleResult } from "./result-summary";
+import { formatTaskResultSummary } from "./result-summary";
 import { isScoutSpawnable, resolveSpawnPolicy } from "./spawn-policy";
 import { type AgentDefinition, canSpawnAtDepth, getTaskSchema, type TaskToolSchemaInstance } from "./types";
 import {
@@ -50,6 +50,7 @@ import {
 	type TaskParams,
 	type TaskToolDetails,
 } from "@oh-my-pi/pi-tui/tools/task";
+import { isFailedTaskSingleResult } from "./result-summary";
 import { AsyncJobError, type AsyncJobManager } from "../async";
 import { hasResolvableTranscript } from "../internal-urls/registry-helpers";
 import { AgentRegistry } from "../registry/agent-registry";

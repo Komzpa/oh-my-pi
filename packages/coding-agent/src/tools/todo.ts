@@ -1073,7 +1073,8 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const entry = resolved;
 		const op = entry.op;
 		if (op === "classify") {
-			const details: TodoToolDetails = { op: "classify", phases: previousPhases, storage };
+			// "classify" stays out of TodoOperation (converged with runtime-core's "schedule" rewrite); cast only.
+			const details = { op: "classify", phases: previousPhases, storage } as unknown as TodoToolDetails;
 			const id = entry.id;
 			const classification = entry.classification;
 			if (!id || !classification) {
