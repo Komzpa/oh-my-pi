@@ -164,6 +164,7 @@ Artifacts and side channels:
 - Hard wall clock: `task.maxRuntimeMs` applies to every spawn; default `0` disables it.
 - Recursion depth: `task.maxRecursionDepth` defaults to `2`; negative values disable the cap. The tool registry and shared preflight enforce it, and `runSubprocess(...)` strips child `task` access at max depth.
 - Inline summaries use `FULL_OUTPUT_THRESHOLD = 5000` characters in `packages/coding-agent/src/task/result-summary.ts`; truncation requires a full output artifact. `agent://<id>` points to that artifact.
+  - Child provider requests append a transient synthetic developer message `elapsed Ns / 900s` at the end of provider context, measured from the original assignment start and refreshed on every request, including follow-ups and lifecycle revival. This advisory leaves the system/tool prefix unchanged, does not abort or otherwise change runtime, effort, or model selection, does not accumulate in persisted history, and does not appear in the root session.
 
 ## Errors
 - Shape/preflight failures return `isError: true`, explanatory text, and empty `results`:

@@ -10,6 +10,7 @@ import { initializeExtensions } from "../modes/runtime-init";
 import type { PersistedSubagentReviverFactory } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { createAgentSession } from "../sdk";
+import { withSubagentElapsedSignal } from "./subagent-elapsed-signal";
 import type { AgentSession } from "../session/agent-session";
 import { installRetryFallbackRole } from "../session/retry-fallback-chains";
 import type { AuthStorage } from "../session/auth-storage";
@@ -206,7 +207,11 @@ export function createPersistedSubagentReviverFactory(
 				// Old files predate persisted spawns: deny re-spawning rather than let
 				// createAgentSession default to wildcard ("*").
 				spawns: init.spawns ?? "",
-				hasUI: false,
+				transformProviderContext: context =>
+					withSubagentElapsedSignal(
+						context,
+						Math.floor(Math.max(0, Date.now() - (init.assignmentStartedAt ?? ref.createdAt)) / 1000),
+					),
 				enableLsp: restrictToolNames ? false : ctx.enableLsp,
 				...(restrictToolNames
 					? {
