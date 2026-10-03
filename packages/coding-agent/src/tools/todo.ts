@@ -112,6 +112,13 @@ function clonePhases(phases: TodoPhase[]): TodoPhase[] {
 	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
 }
 
+// Session checkout for rows created by the current `TodoTool.execute()` call.
+// Set at the top of execute() (a region #92 leaves alone) and read by
+// initPhases/appendItems, so #41 never touches #92's applyEntry/applyParams
+// threading or execute-tail hunks. Stays undefined for standalone
+// applyOpsToPhases use (which clears it on entry).
+let activeArtifactCwd: string | undefined;
+
 function bindArtifactCwd(task: TodoItem, artifactCwd?: string): void {
 	if (artifactCwd) {
 		task.artifactCwd = artifactCwd;
@@ -636,7 +643,11 @@ function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	}
 	return list.map(listEntry => ({
 		name: listEntry.phase,
-		tasks: listEntry.items.map<TodoItem>(content => ({ content, status: "pending" })),
+		tasks: listEntry.items.map<TodoItem>(content => {
+			const task: TodoItem = { content, status: "pending" };
+			bindArtifactCwd(task, activeArtifactCwd);
+			return task;
+		}),
 	}));
 }
 
@@ -670,7 +681,9 @@ function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 	}
 
 	for (const content of entry.items) {
-		phase.tasks.push({ content, status: "pending" });
+		const task: TodoItem = { content, status: "pending" };
+		bindArtifactCwd(task, activeArtifactCwd);
+		phase.tasks.push(task);
 	}
 	return phases;
 }
@@ -822,6 +835,8 @@ export function applyOpsToPhases(
 	ops: TodoOpEntryValue[],
 ): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
+	// Standalone use has no session checkout: never inherit a stale slot value.
+	activeArtifactCwd = undefined;
 	let next = clonePhases(currentPhases);
 	for (const op of ops) {
 		next = applyEntry(next, op, errors);
@@ -1055,7 +1070,10 @@ export class TodoTool implements AgentTool<typeof todoToolSchema, TodoToolDetail
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
-		const artifactCwd = this.session.cwd;
+		// Publish the session checkout for rows created below. Set here at the
+		// top of execute() (untouched by #92); row-creating ops reach
+		// applyParams synchronously, and todo concurrency is exclusive.
+		activeArtifactCwd = this.session.cwd;
 		let boundPhases: TodoPhase[] | undefined;
 		const branch = this.session.sessionManager?.getBranch();
 		if (branch) {
@@ -1132,13 +1150,6 @@ export class TodoTool implements AgentTool<typeof todoToolSchema, TodoToolDetail
 		if (!readOnly && !failed) this.session.setTodoPhases?.(updated);
 		const details: TodoToolDetails = { op, phases: effective, storage };
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
-		// Bind the session checkout on newly added rows here (outside #92's
-		// applyParams/archival hunk) so the merge stays clean.
-		if (!readOnly && errors.length === 0 && (op === "init" || op === "append")) {
-			for (const phase of updated) for (const task of phase.tasks) bindArtifactCwd(task, artifactCwd);
-			this.session.setTodoPhases?.(updated);
-			details.phases = updated;
-		}
 
 		return {
 			content: [{ type: "text", text: formatSummary(effective, errors, readOnly) }],
