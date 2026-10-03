@@ -239,7 +239,7 @@ export async function getRequirementRowArtifact(
 			? task.artifactCwd
 			: undefined;
 	const ownerCwd =
-		owner === "main"
+		effectiveOwner === "main"
 			? archived || paths.length || persistedCwd
 				? undefined
 				: ctx.cwd

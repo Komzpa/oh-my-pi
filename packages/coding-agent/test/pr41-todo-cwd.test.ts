@@ -1,7 +1,12 @@
-import { describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { applyOpsToPhases, TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { applyOpsToPhases, getRequirementRowArtifact, TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
+
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 describe("PR #41 todo artifact cwd", () => {
 	it("keeps sequential execution cwd local and does not leak it into standalone todo ops", async () => {
@@ -34,5 +39,23 @@ describe("PR #41 todo artifact cwd", () => {
 
 		const standalone = applyOpsToPhases([], [{ op: "init", items: ["Independent row"] } as never]);
 		expect(standalone.phases[0]?.tasks[0]?.artifactCwd).toBeUndefined();
+	});
+	it("resolves ownerless rows against the main checkout", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "omp-pr41-ownerless-row-"));
+		try {
+			execFileSync("git", ["init", "--initial-branch=main"], { cwd });
+			writeFileSync(join(cwd, "artifact.txt"), "artifact\n");
+			execFileSync("git", ["add", "artifact.txt"], { cwd });
+			execFileSync(
+				"git",
+				["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "artifact"],
+				{ cwd },
+			);
+			const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+			const phases: TodoPhase[] = [{ name: "Plan", tasks: [{ content: "Ownerless", status: "pending" }] }];
+			expect(await getRequirementRowArtifact({ cwd }, "Ownerless", phases)).toEqual({ cwd, head, dirty: false });
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 });
