@@ -3364,6 +3364,20 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
+	/** Keep async QA receipts serialized after a successful transcript commit. */
+	#queueRequirementMessageEndPersistence(message: AgentMessage, promptGeneration: number): Promise<void> {
+		const persistence = this.#queueMessageEndPersistence(message, promptGeneration);
+		if (message.role !== "custom" || message.customType !== ASYNC_RESULT_MESSAGE_TYPE) return persistence;
+		const pending = persistence.then(async () => {
+			if (this.#promptGeneration !== promptGeneration) return;
+			await this.#requirementsLedger
+				.consumeAsyncResult(message)
+				.catch(error => logger.warn("Requirements ledger async consume failed", { error }));
+		});
+		this.#messageEndPersistenceTail = pending.catch(() => {});
+		return pending;
+	}
+
 	/**
 	 * Builds the transient checkpoint-active reminder for a successful
 	 * checkpoint tool result, or undefined otherwise. The reminder is queued as
@@ -3392,7 +3406,7 @@ export class AgentSession implements SettingsScope {
 		};
 	}
 
-	async #persistMessageEnd(message: AgentMessage, promptGeneration: number): Promise<void> {
+	#persistMessageEnd(message: AgentMessage, promptGeneration: number): void {
 		// Session transitions may replace the transcript before a queued commit
 		// runs. Never append the previous conversation to the replacement session.
 		if (this.#promptGeneration !== promptGeneration) {
@@ -3421,11 +3435,6 @@ export class AgentSession implements SettingsScope {
 			}
 			if (message.role === "custom" && message.customType === "ttsr-injection") {
 				this.#ttsr.markInjectedFromDetails(message.details);
-			}
-			if (message.role === "custom" && message.customType === ASYNC_RESULT_MESSAGE_TYPE) {
-				await this.#requirementsLedger
-					.consumeAsyncResult(message)
-					.catch(error => logger.warn("Requirements ledger async consume failed", { error }));
 			}
 			return;
 		}
@@ -3651,7 +3660,7 @@ export class AgentSession implements SettingsScope {
 		// extension notifications must not own or delay the persistence work.
 		const messageEndPersistence =
 			event.type === "message_end"
-				? this.#queueMessageEndPersistence(event.message, eventPromptGeneration)
+				? this.#queueRequirementMessageEndPersistence(event.message, eventPromptGeneration)
 				: undefined;
 
 		// Deobfuscate assistant message content for display emission — the LLM echoes back

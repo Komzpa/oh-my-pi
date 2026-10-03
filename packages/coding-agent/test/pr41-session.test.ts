@@ -8,7 +8,16 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { getLatestRequirements, type RequirementLedgerItem } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
+import {
+	classifyRequirement,
+	createRequirementCandidates,
+	getLatestRequirements,
+	requirementAuditSnapshot,
+	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+	type RequirementLedgerItem,
+} from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
+import { ASYNC_RESULT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 describe("PR 41 session requirement capture", () => {
@@ -126,4 +135,61 @@ describe("PR 41 session requirement capture", () => {
 		await session.dispose();
 		session = undefined;
 	});
+	it.each([ASYNC_RESULT_MESSAGE_TYPE, "unrelated-result"])(
+		"consumes persisted auditor receipts only for async-result messages (%s)",
+		async customType => {
+			const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+			if (!model) throw new Error("Expected bundled test model");
+			const manager = SessionManager.inMemory(tempDir.path());
+			const linked = classifyRequirement(createRequirementCandidates([], ["Audit the artifact"]), "R1", "linked", {
+				rows: ["Build artifact"],
+			});
+			if ("error" in linked) throw new Error(linked.error);
+			const requirements = linked.requirements;
+			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: 1, requirements });
+			manager.appendCustomEntry(REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE, {
+				version: 1,
+				sessionId: manager.getHeader()!.id,
+				jobs: [
+					{
+						workerId: "worker-persisted",
+						agent: "qa-auditor",
+						ids: ["R1"],
+						snapshot: requirementAuditSnapshot(requirements, ["R1"]),
+					},
+				],
+			});
+			const agent = new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } });
+			const settings = Settings.isolated({ "compaction.enabled": false, "retry.enabled": false });
+			settings.setModelRole("default", `${model.provider}/${model.id}`);
+			const receiptSession = new AgentSession({ agent, sessionManager: manager, settings, modelRegistry });
+			agent.emitExternalEvent({
+				type: "message_end",
+				message: {
+					role: "custom",
+					customType,
+					attribution: "agent",
+					content: "missing task-result envelope",
+					display: false,
+					timestamp: Date.now(),
+					details: { jobs: [{ type: "task", jobId: "job-persisted", agentId: "worker-persisted" }] },
+				},
+			});
+			await receiptSession.waitForIdle();
+			const branch = manager.getBranch();
+			const receiptIndex = branch.findIndex(
+				entry => entry.type === "custom_message" && entry.customType === customType,
+			);
+			const rejectionIndex = branch.findIndex(
+				entry =>
+					entry.type === "custom" &&
+					entry.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE &&
+					JSON.stringify(entry).includes("async result was incomplete"),
+			);
+			expect(receiptIndex).toBeGreaterThan(-1);
+			if (customType === ASYNC_RESULT_MESSAGE_TYPE) expect(rejectionIndex).toBeGreaterThan(receiptIndex);
+			else expect(rejectionIndex).toBe(-1);
+			await receiptSession.dispose();
+		},
+	);
 });
