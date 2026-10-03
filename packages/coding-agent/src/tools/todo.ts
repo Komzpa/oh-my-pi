@@ -64,13 +64,7 @@ export function committedTodoPhases(result: AgentToolResult): TodoPhase[] | unde
 // Schema
 // =============================================================================
 
-// Local TodoOp extends the shared base (`@oh-my-pi/pi-tui/tools/todo` TodoOperation
-// stays at base text): classify is dispatched on raw args before todoSchema, so
-// adding it only here keeps the tui contract untouched while making the op and
-// its fields visible to the model in the tool definition it receives.
-const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view" | "classify"');
-
-const ClassifyClassification = type('"linked" | "not-a-requirement" | "merged"');
+const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view"');
 
 const InitListEntry = type({
 	phase: type("string"),
@@ -86,15 +80,7 @@ const todoSchema = type({
 	// and both enforce non-empty with op-specific errors. A stray `items: []` on
 	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
 	"items?": type("string").array().describe("tasks for flat init or append"),
-	"reason?": type("string").describe(
-		"blocker note for block; required reason when classify uses classification not-a-requirement",
-	),
-	"id?": type("string").describe("requirement id (Rn) for classify"),
-	"classification?": ClassifyClassification.describe(
-		"classify decision: linked needs rows, not-a-requirement needs reason, merged needs mergeInto",
-	),
-	"rows?": type("string").array().describe("exact todo row contents for classify linked"),
-	"mergeInto?": type("string").describe("target Rn for classify merged"),
+	"reason?": type("string").describe("blocker note for block"),
 });
 
 type TodoParams = TodoSchema;
@@ -619,8 +605,7 @@ function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: st
 /** Phase name for `init` given a flat `items` list with no explicit `phase`. */
 const DEFAULT_INIT_PHASE = "Tasks";
 
-function initPhases(entry: TodoOpEntryValue, errors: string[], artifactCwd?: string): TodoPhase[] {
-	// Models routinely flatten the single-phase init into `{op:"init", items:[...]}`
+function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	// (optionally with a bare `phase`) instead of the canonical
 	// `list: [{phase, items}]`. Accept that shape by synthesizing a one-phase list
 	// so a common, recoverable mistake isn't a hard error.
@@ -651,20 +636,11 @@ function initPhases(entry: TodoOpEntryValue, errors: string[], artifactCwd?: str
 	}
 	return list.map(listEntry => ({
 		name: listEntry.phase,
-		tasks: listEntry.items.map<TodoItem>(content => {
-			const task: TodoItem = { content, status: "pending" };
-			bindArtifactCwd(task, artifactCwd);
-			return task;
-		}),
+		tasks: listEntry.items.map<TodoItem>(content => ({ content, status: "pending" })),
 	}));
 }
 
-function appendItems(
-	phases: TodoPhase[],
-	entry: TodoOpEntryValue,
-	errors: string[],
-	artifactCwd?: string,
-): TodoPhase[] {
+function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	if (!entry.phase) {
 		errors.push("Missing phase name for append operation");
 		return phases;
@@ -694,9 +670,7 @@ function appendItems(
 	}
 
 	for (const content of entry.items) {
-		const task: TodoItem = { content, status: "pending" };
-		bindArtifactCwd(task, artifactCwd);
-		phase.tasks.push(task);
+		phase.tasks.push({ content, status: "pending" });
 	}
 	return phases;
 }
@@ -720,10 +694,10 @@ function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 	return phases;
 }
 
-function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[], artifactCwd?: string): TodoPhase[] {
+function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	switch (entry.op) {
 		case "init":
-			return initPhases(entry, errors, artifactCwd);
+			return initPhases(entry, errors);
 		case "start": {
 			const hit = resolveTaskOrError(phases, entry.task, errors);
 			if (!hit) return phases;
@@ -787,7 +761,7 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 		case "rm":
 			return removeTasks(phases, entry, errors);
 		case "append":
-			return appendItems(phases, entry, errors, artifactCwd);
+			return appendItems(phases, entry, errors);
 		case "view":
 			return phases;
 		case "classify":
@@ -835,13 +809,9 @@ function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoOpEntr
 	return `Invalid todo arguments: ${direct.summary}`;
 }
 
-function applyParams(
-	phases: TodoPhase[],
-	params: TodoOpEntryValue,
-	artifactCwd?: string,
-): { phases: TodoPhase[]; errors: string[] } {
+function applyParams(phases: TodoPhase[], params: TodoOpEntryValue): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
-	const next = applyEntry(phases, params, errors, artifactCwd);
+	const next = applyEntry(phases, params, errors);
 	normalizeInProgressTask(next);
 	return { phases: next, errors };
 }
@@ -1037,16 +1007,36 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 }
 
 // =============================================================================
+// #41 classify extension (kept clear of #92's TodoOp/todoSchema hunks)
+// =============================================================================
+const ClassifyClassification = type('"linked" | "not-a-requirement" | "merged"');
+
+const classifyTodoSchema = type({
+	op: type.unit("classify"),
+	"id?": type("string").describe("requirement id (Rn) for classify"),
+	"classification?": ClassifyClassification.describe(
+		"classify decision: linked needs rows, not-a-requirement needs reason, merged needs mergeInto",
+	),
+	"rows?": type("string").array().describe("exact todo row contents for classify linked"),
+	"mergeInto?": type("string").describe("target Rn for classify merged"),
+	"reason?": type("string").describe("reason required when classify uses not-a-requirement"),
+});
+
+const todoToolSchema = todoSchema.or(classifyTodoSchema);
+
+type TodoToolParams = typeof todoToolSchema.infer;
+
+// =============================================================================
 // Tool Class
 // =============================================================================
 
-export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
+export class TodoTool implements AgentTool<typeof todoToolSchema, TodoToolDetails> {
 	readonly name = "todo";
 	readonly approval = "read" as const;
 	readonly label = "Todo";
 	readonly summary = "Track structured todos and classify requirements";
 	readonly description: string;
-	readonly parameters = todoSchema;
+	readonly parameters = todoToolSchema;
 	readonly concurrency = "exclusive";
 	readonly strict = true;
 	// Raw args reach execute() on schema failure; resolveTodoParams re-validates
@@ -1055,12 +1045,12 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 
 	readonly loadMode = "discoverable";
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(todoDescription);
+		this.description = `${prompt.render(todoDescription)}\n\nClassify requirement candidates with op="classify": id is the Rn, classification is linked (needs rows with exact todo row contents), not-a-requirement (needs reason), or merged (needs mergeInto with another Rn). Example: op="classify", id="R1", classification="linked", rows=["<exact todo row>"].`;
 	}
 
 	async execute(
 		_toolCallId: string,
-		params: TodoParams,
+		params: TodoToolParams,
 		_signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
@@ -1132,7 +1122,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
-			: applyParams(clonePhases(previousPhases), entry, artifactCwd);
+			: applyParams(clonePhases(previousPhases), entry);
 		// A batch with any error is discarded wholesale: persisting a
 		// half-applied batch makes the natural retry hit "already exists" for
 		// the ops that did land. State and rendered summary stay at previous.
@@ -1142,6 +1132,13 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		if (!readOnly && !failed) this.session.setTodoPhases?.(updated);
 		const details: TodoToolDetails = { op, phases: effective, storage };
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
+		// Bind the session checkout on newly added rows here (outside #92's
+		// applyParams/archival hunk) so the merge stays clean.
+		if (!readOnly && errors.length === 0 && (op === "init" || op === "append")) {
+			for (const phase of updated) for (const task of phase.tasks) bindArtifactCwd(task, artifactCwd);
+			this.session.setTodoPhases?.(updated);
+			details.phases = updated;
+		}
 
 		return {
 			content: [{ type: "text", text: formatSummary(effective, errors, readOnly) }],
