@@ -153,9 +153,12 @@ import {
 	cfgCompactionThresholdPercent,
 	cfgCompactionThresholdTokens,
 } from "../session/context-settings";
+import { withSubagentElapsedSignal } from "./subagent-elapsed-signal";
 
 export type { YieldItem } from "@oh-my-pi/pi-tui/tools/task";
 
+
+const MCP_CALL_TIMEOUT_MS = 60_000;
 const TASK_ABORT_CLEANUP_GRACE_MS = 10_000;
 
 /**
@@ -3974,6 +3977,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const cleanupGraceMs = options.cleanupGraceMs ?? TASK_ABORT_CLEANUP_GRACE_MS;
 	const structured = options.structured !== false;
 	const startTime = Date.now();
+	const assignmentStartedAt = options.invokedAt ?? startTime;
 	// Set by the session's onFirstChatDispatch hook the first time the agent
 	// loop dispatches a chat request to the provider — the launch-complete boundary.
 	let firstChatDispatchAt: number | undefined;
@@ -4467,6 +4471,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					customTools: options.customTools,
 					localProtocolOptions: options.localProtocolOptions,
 					telemetry: subagentTelemetry,
+					transformProviderContext: context =>
+						withSubagentElapsedSignal(context, Math.floor(Math.max(0, Date.now() - assignmentStartedAt) / 1000)),
 				},
 				prompt: {
 					id,
@@ -4624,6 +4630,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				outputSchema,
 				outputSchemaMode: options.outputSchemaMode,
 				restrictToolNames: restrictToolNames || undefined,
+				assignmentStartedAt,
 				// Isolated runs are never revivable (worktree merged + cleaned):
 				// stamp the contract so cold revival leaves them transcript-only
 				// even when the workspace was retained for recovery.
