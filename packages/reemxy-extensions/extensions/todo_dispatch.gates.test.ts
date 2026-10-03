@@ -1629,6 +1629,61 @@ test("PLAN CHECK says when the finish recedes with the clock, not before 45 minu
     branch = plan("chained", realNow() + 250 * 60_000);
     await at(250);
     expect(sent.at(-1)).toContain("Run `task` with agent `plan-doctor` now");
+    const acceptedInput = { op: "init", list: [{ phase: "New objective", items: ["new work"] }] };
+    const newObjective = plan("chained", realNow() + 250 * 60_000)[0] as { message: { details: Record<string, unknown> } };
+    branch = [newObjective];
+    await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "accepted-init", input: acceptedInput }, ctx);
+    await handlers.get("tool_result")!({
+      toolName: "todo",
+      toolCallId: "accepted-init",
+      input: acceptedInput,
+      content: [],
+      isError: false,
+      details: { ...newObjective.message.details, op: "init" },
+    }, ctx);
+    const afterInit = sent.length;
+    branch = plan("chained", realNow() + 290 * 60_000);
+    await at(290);
+    expect(sent.slice(afterInit).join("\n")).not.toMatch(/the finish recedes with the clock|Run `task` with agent `plan-doctor` now/);
+
+    const scheduleInput = {
+      op: "schedule",
+      updates: [{ task: "Row A", dependencies: [], evidence: "Completed objective work" }],
+    };
+    const beforeSchedule = sent.length;
+    const scheduled = plan("chained", realNow() + 290 * 60_000)[0] as { message: { details: Record<string, unknown> } };
+    branch = [scheduled];
+    await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "schedule-evidence", input: scheduleInput }, ctx);
+    await handlers.get("tool_result")!({
+      toolName: "todo",
+      toolCallId: "schedule-evidence",
+      input: scheduleInput,
+      content: [],
+      isError: false,
+      details: { ...scheduled.message.details, op: "schedule" },
+    }, ctx);
+    branch = plan("chained", realNow() + 340 * 60_000);
+    await at(340);
+    expect(sent.slice(beforeSchedule).join("\n")).toContain("the finish recedes with the clock");
+
+    const failedInitInput = {
+      op: "init",
+      list: [{ phase: "Rejected objective", items: ["unaccepted work"] }],
+      evidence: "unaccepted init must not reset history",
+    };
+    const beforeFailedInit = sent.length;
+    await handlers.get("tool_call")!({ toolName: "todo", toolCallId: "failed-init", input: failedInitInput }, ctx);
+    await handlers.get("tool_result")!({
+      toolName: "todo",
+      toolCallId: "failed-init",
+      input: failedInitInput,
+      content: [],
+      isError: true,
+      details: undefined,
+    }, ctx);
+    branch = plan("chained", realNow() + 360 * 60_000);
+    await at(360);
+    expect(sent.slice(beforeFailedInit).join("\n")).toContain("Run `task` with agent `plan-doctor` now");
   } finally {
     Date.now = realNow;
     handlers.get("session_shutdown")?.({}, ctx);

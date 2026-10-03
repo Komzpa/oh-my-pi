@@ -501,15 +501,6 @@ function containsExactString(value: unknown, expected: string): boolean {
   return false;
 }
 
-function hasEvidenceField(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some((item) => hasEvidenceField(item));
-  if (typeof value !== "object" || value === null) return false;
-  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (key === "evidence" && typeof item === "string" && item.trim()) return true;
-    if (hasEvidenceField(item)) return true;
-  }
-  return false;
-}
 
 function isPlanDoctorTaskInput(value: unknown): boolean {
   if (typeof value === "string") return value === "plan-doctor";
@@ -2788,6 +2779,12 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   }
 
   let pendingFinishDelay: { notice: string; allowedFinish: number } | null = null;
+  const resetFinishHistory = (ctx: ExtensionContext) => {
+    finishSamples.length = 0;
+    finishSession = ctx.sessionManager.getHeader()?.id;
+    recedingSince = undefined;
+    pendingFinishDelay = null;
+  };
 
   pi.on("before_subagent_spawn", async (event, ctx) => {
     if (singleWriterLane) return;
@@ -2811,16 +2808,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     if (gitOwnerConflict) return gitOwnerConflict;
     if (event.toolName === "task" && isPlanDoctorTaskInput(event.input)) {
       currentDecision(ctx, Date.now(), [], true);
-      finishSamples.length = 0;
-      finishSession = ctx.sessionManager.getHeader()?.id;
-      recedingSince = undefined;
-      pendingFinishDelay = null;
-    }
-    if (event.toolName === "todo" && hasEvidenceField(event.input)) {
-      finishSamples.length = 0;
-      finishSession = ctx.sessionManager.getHeader()?.id;
-      recedingSince = undefined;
-      pendingFinishDelay = null;
+      resetFinishHistory(ctx);
     }
     if (event.toolName === "todo") {
       applyTodoOverride(event.input, ctx);
@@ -3211,6 +3199,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     await refreshLiveWorkerModels(ctx);
     if (singleWriterLane) return;
     if (event.toolName === "todo") {
+      // Only a successful tool result proves init passed validation and began a new objective.
+      if (!event.isError && isMain(ctx) && (event.details as { op?: unknown } | undefined)?.op === "init")
+        resetFinishHistory(ctx);
       if (event.isError || !isMain(ctx) || !pi.getActiveTools().includes("task")) return;
       // The hook runs before this result joins the branch: check the plan the call just produced
       // (live 21:32: an owner written by this very call was reported as missing).
