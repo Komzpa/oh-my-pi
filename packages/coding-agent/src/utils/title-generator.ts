@@ -970,9 +970,9 @@ function emitTerminalTitle(): void {
 		terminalTitleRuntime.extensionOverride ??
 		(native
 			? buildNativeTerminalTitle(
-				terminalTitleRuntime.label ?? terminalTitleRuntime.sessionName,
-				terminalTitleRuntime.pullRequest,
-			)
+					terminalTitleRuntime.label ?? terminalTitleRuntime.sessionName,
+					terminalTitleRuntime.pullRequest,
+				)
 			: buildTerminalTitleWithState(
 					terminalTitleRuntime.label,
 					terminalTitleRuntime.state,

@@ -124,9 +124,9 @@ describe("session label carries the project", () => {
 	it("puts the project first in the label", () => {
 		const project = makeProject("demo-repo");
 		expect(buildSessionTerminalLabel("Fix the build", project)).toBe("demo-repo · Fix the build");
-		expect(
-			buildTerminalTitleWithState(buildSessionTerminalLabel("Fix the build", project), "idle", 0, true),
-		).toBe(`${BRAND} > demo-repo · Fix the build`);
+		expect(buildTerminalTitleWithState(buildSessionTerminalLabel("Fix the build", project), "idle", 0, true)).toBe(
+			`${BRAND} > demo-repo · Fix the build`,
+		);
 	});
 
 	it("keeps the project inside a 25-character truncation", () => {
