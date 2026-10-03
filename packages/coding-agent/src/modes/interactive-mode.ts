@@ -394,6 +394,11 @@ import {
 	cfgCompactionIdleTimeoutSeconds,
 	cfgCompactionMethodOrder,
 } from "../session/context-settings";
+import {
+	countRequirements,
+	getLatestRequirements,
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+} from "../tools/requirements-ledger";
 
 /**
  * Settings with live interactive-UI side effects, keyed by id. One coalesced listener applies
@@ -651,15 +656,15 @@ class DescribedComponent implements Component {
 }
 
 class TodoHudContainer extends AnchoredLiveContainer {
+	#renderBase: (width: number) => readonly string[];
+
 	constructor(private readonly mode: InteractiveMode) {
 		super();
+		this.#renderBase = super.render.bind(this);
 	}
 
 	override render(width: number): readonly string[] {
-		if (this.mode.isCompactTodoMode()) {
-			return [];
-		}
-		return super.render(width);
+		return this.mode.renderRequirementHudSegment(this.#renderBase, width);
 	}
 
 	/**
@@ -745,7 +750,9 @@ class StatusHudContainer extends AnchoredLiveContainer {
 			}
 			return childLines;
 		}
-		return this.mode.renderCompactStatusLine(width, childLines);
+		const requirementSegment = this.mode.requirementHudSegment;
+		const compactLines = requirementSegment ? [...childLines, requirementSegment] : childLines;
+		return this.mode.renderCompactStatusLine(width, compactLines);
 	}
 }
 
@@ -4153,16 +4160,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	#renderTodoList(): void {
 		this.todoContainer.clear();
 		this.todoHudNative = undefined;
-		const counts = countRequirements(getLatestRequirements((this.#todoPhasesOwner ?? this.session).sessionManager.getBranch()));
-		const requirementSummary = counts.total > 0
-			? theme.fg("dim", ` · req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗`)
-			: "";
-		if (this.#todoHudHidden && counts.open === 0 && counts.failed === 0) return;
+		if (this.#todoHudHidden) return;
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
-		if (phases.length === 0) {
-			if (counts.total > 0) this.todoContainer.addChild(new Text(`\n${theme.bold(theme.fg("accent", "TODO"))}${requirementSummary}`, 1, 0));
-			return;
-		}
+		if (phases.length === 0) return;
 		const expanded = this.todoExpanded;
 		const multiPhase = phases.length > 1;
 		const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
@@ -4266,7 +4266,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (closedTasks > 0) filled = Math.max(filled, 1);
 		if (closedTasks < totalTasks) filled = Math.min(filled, pathLen - 1);
 
-		const lines = ["", theme.bold(theme.fg("accent", "TODO")) + requirementSummary];
+		const lines = ["", theme.bold(theme.fg("accent", "TODO"))];
 		for (let i = 0; i < contentLines.length; i++) {
 			lines.push(` ${theme.fg(i < filled ? "accent" : "dim", spineGlyphs[i]!)}${contentLines[i]}`);
 		}
@@ -4366,9 +4366,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	renderCompactStatusLine(width: number, childLines: readonly string[]): readonly string[] {
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
-		const counts = countRequirements(getLatestRequirements((this.#todoPhasesOwner ?? this.session).sessionManager.getBranch()));
-		const requirementSummary = counts.total > 0 ? ` · req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗` : "";
-		if (phases.length === 0 && counts.total === 0) return childLines;
+		if (phases.length === 0) return childLines;
 
 		const activeDescs = this.#getActiveSubagentDescriptions();
 		const isMatched = (todo: TodoItem): boolean =>
@@ -4378,15 +4376,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		const closedTasks = phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
 		const activeTask = nextActionableTask(phases);
 
-		const header =
-			`${theme.bold(theme.fg("accent", "TODO"))}` +
-			(totalTasks > 0 ? ` ${theme.fg("dim", `${closedTasks}/${totalTasks}`)}` : "") +
-			(requirementSummary ? theme.fg("dim", requirementSummary) : "");
+		const header = `${theme.bold(theme.fg("accent", "TODO"))} ${theme.fg("dim", `${closedTasks}/${totalTasks}`)}`;
 		const taskStr = activeTask
 			? this.#formatTodoLine(activeTask, "", isMatched(activeTask))
-			: counts.open > 0 || counts.failed > 0
-				? theme.fg("warning", "requirements pending")
-				: theme.fg("success", `${theme.checkbox.checked} done`);
+			: theme.fg("success", `${theme.checkbox.checked} done`);
 		const rightLine = `${header} ${theme.fg("dim", "·")} ${taskStr}`;
 
 		const rightPad = " ";
@@ -8275,6 +8268,61 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showToolError(toolName: string, error: string): void {
 		this.#extensionUiController.showToolError(toolName, error);
+	}
+
+	requirementHudSegment = "";
+
+	renderRequirementHudSegment(
+		renderBase: (width: number) => readonly string[],
+		width: number,
+	): readonly string[] {
+		const counts = countRequirements(getLatestRequirements((this.#todoPhasesOwner ?? this.session).sessionManager.getBranch()));
+		const wasHidden = this.#todoHudHidden;
+		const compact = this.isCompactTodoMode();
+		const hasOutstandingRequirements = counts.open > 0 || counts.failed > 0;
+		const showRequirements = counts.total > 0 && (!wasHidden || hasOutstandingRequirements);
+		this.requirementHudSegment = "";
+
+		if (showRequirements) {
+			const title = theme.bold(theme.fg("accent", "TODO"));
+			const requirementText = `req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗`;
+			const requirementSummary = theme.fg("dim", ` · ${requirementText}`);
+			if (compact) {
+				const hasVisibleTasks = !wasHidden && this.todoPhases.some(phase => phase.tasks.length > 0);
+				this.requirementHudSegment = hasVisibleTasks ? theme.fg("dim", requirementText) : `${title}${requirementSummary}`;
+			} else {
+				this.requirementHudSegment = `${title}${requirementSummary}`;
+			}
+		}
+
+		if (compact) return [];
+		if (wasHidden && hasOutstandingRequirements) {
+			this.#todoHudHidden = false;
+			try {
+				this.#renderTodoList();
+			} finally {
+				this.#todoHudHidden = wasHidden;
+			}
+		}
+
+		const lines = renderBase(width);
+		if (!showRequirements) return lines;
+		const title = theme.bold(theme.fg("accent", "TODO"));
+		const requirementSummary = theme.fg(
+			"dim",
+			` · req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗`,
+		);
+		if (lines.length === 0) return [`\n${title}${requirementSummary}`];
+
+		let inserted = false;
+		const rendered = lines.map(line => {
+			if (inserted) return line;
+			const titleIndex = line.indexOf(title);
+			if (titleIndex < 0) return line;
+			inserted = true;
+			return `${line.slice(0, titleIndex)}${title}${requirementSummary}${line.slice(titleIndex + title.length)}`;
+		});
+		return inserted ? rendered : [`${title}${requirementSummary}`, ...rendered];
 	}
 
 	#subscribeToAgent(): void {

@@ -85,31 +85,6 @@ describe("InteractiveMode todo HUD persistence", () => {
 		cfgTasksTodoClearDelay.override(session.settings, todoClearDelay);
 	}
 
-	it("renders requirement counts in the TODO HUD and compact header", async () => {
-		await replaceMode();
-		setTodoClearDelay(-1);
-		const at = "2026-09-28T12:00:00.000Z";
-		const requirements = [
-			{ id: "R1", at, rawText: "candidate ask", classification: "candidate", rows: [] },
-			{ id: "R2", at, rawText: "passed ask", classification: "linked", rows: ["Build artifact"], verdict: { status: "pass", evidence: "observed", artifact: "r2", workerId: "QA", auditor: "qa-auditor" } },
-			{ id: "R3", at, rawText: "failed ask", classification: "linked", rows: ["Build artifact"], verdict: { status: "fail", evidence: "broken", artifact: "r2", workerId: "QA" } },
-			{ id: "R4", at, rawText: "uncertain ask", classification: "linked", rows: ["Build artifact"], verdict: { status: "unverifiable", evidence: "missing access", artifact: "r2", workerId: "QA" } },
-		];
-		session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements });
-		try {
-			mode.setTodos([{ name: "Work", tasks: [{ content: "Build artifact", status: "in_progress" }] }]);
-			expect(renderTodos(mode)).toContain("TODO · req 4 · 1 ✓ · 2 open · 1 ✗");
-			expect(Bun.stripANSI(mode.renderCompactStatusLine(180, []).join("\n"))).toContain("req 4 · 1 ✓ · 2 open · 1 ✗");
-			// Lifecycle invalidation persists absence of the stale verdict, not a UI-only discount.
-			session.sessionManager.appendCustomEntry("requirements_ledger", {
-				version: 1, requirements: requirements.map(item => item.id === "R2" ? { ...item, verdict: undefined } : item),
-			});
-			mode.setTodos(session.getTodoPhases());
-			expect(renderTodos(mode)).toContain("req 4 · 0 ✓ · 3 open · 1 ✗");
-		} finally {
-			session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements: [] });
-		}
-	});
 
 
 	it("clears closed todos from the panel instantly without mutating session history", async () => {
@@ -720,6 +695,40 @@ describe("InteractiveMode todo HUD anchor", () => {
 		} finally {
 			manager.onEntryAppended = previousAppendHook;
 			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: 1, requirements: [] });
+		}
+	});
+	it("renders requirement counts in the TODO HUD and compact header", async () => {
+		cfgTasksTodoClearDelay.override(session.settings, -1);
+		const at = "2026-09-28T12:00:00.000Z";
+		const requirements = [
+			{ id: "R1", at, rawText: "candidate ask", classification: "candidate", rows: [] },
+			{ id: "R2", at, rawText: "passed ask", classification: "linked", rows: ["Build artifact"], verdict: { status: "pass", evidence: "observed", artifact: "r2", workerId: "QA", auditor: "qa-auditor" } },
+			{ id: "R3", at, rawText: "failed ask", classification: "linked", rows: ["Build artifact"], verdict: { status: "fail", evidence: "broken", artifact: "r2", workerId: "QA" } },
+			{ id: "R4", at, rawText: "uncertain ask", classification: "linked", rows: ["Build artifact"], verdict: { status: "unverifiable", evidence: "missing access", artifact: "r2", workerId: "QA" } },
+		];
+		session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements });
+		try {
+			mode.setTodos([{ name: "Work", tasks: [{ content: "Build artifact", status: "in_progress" }] }]);
+			expect(renderTodos(mode)).toContain("TODO · req 4 · 1 ✓ · 2 open · 1 ✗");
+			const terminal = mode.ui.terminal;
+			const originalRows = Object.getOwnPropertyDescriptor(terminal, "rows");
+			Object.defineProperty(terminal, "rows", { get: () => 10, configurable: true });
+			try {
+				renderTodos(mode);
+				const compact = Bun.stripANSI(mode.statusContainer.render(180).join("\n"));
+				expect(compact).toContain("req 4 · 1 ✓ · 2 open · 1 ✗");
+			} finally {
+				if (originalRows) Object.defineProperty(terminal, "rows", originalRows);
+				else Reflect.deleteProperty(terminal, "rows");
+			}
+			// Lifecycle invalidation persists absence of the stale verdict, not a UI-only discount.
+			session.sessionManager.appendCustomEntry("requirements_ledger", {
+				version: 1, requirements: requirements.map(item => item.id === "R2" ? { ...item, verdict: undefined } : item),
+			});
+			mode.setTodos(session.getTodoPhases());
+			expect(renderTodos(mode)).toContain("req 4 · 0 ✓ · 3 open · 1 ✗");
+		} finally {
+			session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements: [] });
 		}
 	});
 
