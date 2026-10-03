@@ -1319,9 +1319,9 @@ test("PLAN CHECK advises retrospectives for sprint triggers and clears after ret
 
     deadlineAt = liveNow - 1;
     const overdue = (await check());
-    expect(overdue).toContain("retrospective due (deadline passed): ask the 2 workers who finished since");
+    expect(overdue).toContain("retrospective due (deadline passed): read the Retro block in the final answer of the 2 workers who finished since");
     expect(overdue).toContain("worker-a, worker-b");
-    expect(overdue).toContain("through agent://, then retro-facilitator (skill://chief-of-staff Retrospective)");
+    expect(overdue).toContain("from agent://<id> (do not write to them; a missing block is recorded as missing), then retro-facilitator (skill://chief-of-staff Retrospective)");
     (await finishRetro());
     expect((await check())).not.toContain("retrospective due");
 
