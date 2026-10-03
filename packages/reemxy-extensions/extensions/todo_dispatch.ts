@@ -8,7 +8,7 @@ import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-s
 import { parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { formatLocalClock, formatLocalTimestamp, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState } from "./deadlines";
@@ -340,6 +340,61 @@ export function todoOverrunBudgetMs(row: {
     ? row.estimateUpdatedAt - row.startedAt
     : 0;
   return absorbedMs + remainingSeconds * 1000;
+}
+
+/** Extract the row updates a `todo schedule` call carries, across its accepted shapes. */
+function todoScheduleUpdates(input: unknown): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  const collect = (value: unknown) => {
+    if (!Array.isArray(value)) return;
+    for (const item of value) if (item && typeof item === "object") out.push(item as Record<string, unknown>);
+  };
+  if (!input || typeof input !== "object") return out;
+  const obj = input as { updates?: unknown; phases?: unknown; tasks?: unknown };
+  collect(obj.updates);
+  if (Array.isArray(obj.phases)) for (const phase of obj.phases) collect((phase as { tasks?: unknown } | undefined)?.tasks);
+  collect(obj.tasks);
+  return out;
+}
+
+/** R1/R2: a same-owner reestimate on a slipping row is refused with one exact recovery action. */
+export function slipReestimateRefusal(args: {
+  updates: readonly Record<string, unknown>[];
+  rows: readonly TodoTaskForecast[];
+  runningProfiles: ReadonlyMap<string, string | undefined>;
+  now: number;
+}): string | undefined {
+  for (const update of args.updates) {
+    const content = typeof update.task === "string" ? update.task : typeof update.content === "string" ? update.content : undefined;
+    if (content === undefined) continue;
+    const row = args.rows.find((candidate) => candidate.content === content);
+    if (!row) continue;
+    const status = typeof update.status === "string" ? update.status : undefined;
+    if (status === "completed" || status === "abandoned") continue;
+    const nextOwner = typeof update.owner === "string" ? update.owner : row.owner;
+    if (typeof row.owner !== "string" || nextOwner !== row.owner) continue;
+    const estimate = update.estimate as { optimisticSeconds?: unknown; likelySeconds?: unknown; pessimisticSeconds?: unknown; updatedAt?: unknown } | undefined;
+    if (!estimate || typeof estimate !== "object") continue;
+    const differs = (typeof estimate.updatedAt === "number" && estimate.updatedAt !== row.estimateUpdatedAt)
+      || (row.estimateRangeSeconds !== undefined && (
+        (typeof estimate.optimisticSeconds === "number" && estimate.optimisticSeconds !== row.estimateRangeSeconds.optimistic)
+        || (typeof estimate.likelySeconds === "number" && estimate.likelySeconds !== row.estimateRangeSeconds.likely)
+        || (typeof estimate.pessimisticSeconds === "number" && estimate.pessimisticSeconds !== row.estimateRangeSeconds.pessimistic)));
+    const reestimate = (row.estimateUpdatedAt !== undefined || row.estimateRangeSeconds !== undefined) && differs;
+    if (!reestimate) continue;
+    const budgetMs = todoOverrunBudgetMs({ startedAt: row.startedAt, estimateUpdatedAt: row.estimateUpdatedAt, reestimateCount: row.reestimateCount, estimateRangeSeconds: row.estimateRangeSeconds });
+    const overBudget = typeof row.startedAt === "number" && budgetMs !== undefined && args.now - row.startedAt > budgetMs;
+    const exhausted = row.reestimateCount >= 3;
+    const slipping = row.status === "in_progress" && args.runningProfiles.has(row.owner) && (row.overdue || overBudget);
+    if (!exhausted && !slipping) continue;
+    const profile = args.runningProfiles.get(row.owner);
+    const strong = typeof profile === "string" && existsSync(new URL(`./agents/${profile}-strong.md`, import.meta.url)) ? `${profile}-strong` : undefined;
+    const why = exhausted
+      ? `has ${row.reestimateCount} reestimates under owner ${row.owner}`
+      : `is past its ETA under running owner ${row.owner}`;
+    return `Refusing todo schedule: ${JSON.stringify(content)} ${why}. Exactly: write proc://${row.owner}/kill (empty content), read its receipt, then todo schedule the row with a new owner${strong ? ` (${strong})` : ""} or split the remainder into new rows.`;
+  }
+  return undefined;
 }
 
 /** A blocked reason that records the user's decision to wait for a distant event, not an hours-long wait. */
@@ -1176,7 +1231,7 @@ export function decideTodoDispatch(
       ? [`Rows proceeding on a proposal (re-check each when the user answers): ${[...parking.onProposal].slice(0, MAX_ROWS).map(([content, on]) => `${JSON.stringify(shorten(content))} on proposal of ${on.map((row) => JSON.stringify(shorten(row))).join(", ")}`).join("; ")}`]
       : []),
     `Alarm facts: ${alarms.length ? alarms.join("; ") : "none"}`,
-    ...(corrections.length ? ["MISSED ETA: inspect exact worker/artifact and failed assumption, then schedule evidence-based remaining O/L/P with a falsifiable checkpoint; reestimation does not erase prior misses.", ...corrections] : []),
+    ...(corrections.length ? ["MISSED ETA: inspect exact worker/artifact and failed assumption, then write proc://<owner>/kill, read its receipt and schedule the remainder under a new owner (name the -strong variant when one exists) or split it into new rows; reestimating the same owner is refused.", ...corrections] : []),
     ...(repeatedEstimates.length ? ["Repeated estimate changes are preserved failure evidence even when the current ETA is not overdue. Inspect the exact failed attempts, receipts and assumptions; choose a concrete recovery action or explain the genuine wait. Do not clear the warning by editing the ETA.", ...repeatedEstimates.map((row) => `- ${JSON.stringify(row.content)}: revision=${row.estimateRevision}; reestimates=${row.reestimateCount}`)] : []),
     "Never claim there is no actionable work from a truncated display: every nonclosed row above must have a next action or a genuine dependency/approval wait. Act on ready unstaffed rows within actual capacity; preserve healthy running owners and external approval gates.",
     "Do not infer staffing from labels or close TODOs from lifecycle/estimates. Verify exact live IDs; preserve user queue/pause and approval gates. Resolve blocked prerequisites safely, split only independently executable work, and retain all parent criteria.",
@@ -2813,6 +2868,27 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     if (event.toolName === "todo") {
       applyTodoOverride(event.input, ctx);
       if (/retro/i.test(JSON.stringify(event.input ?? {}))) resetDemand("retro");
+      // R1/R2: refuse the same-owner reestimate on a slipping row before any other todo handling.
+      if (!pauseGate?.paused) {
+        const runningProfiles = new Map<string, string | undefined>();
+        for (const job of ctx.getAsyncJobSnapshot()?.running ?? []) {
+          const candidate = job as typeof job & { agent?: unknown; agentProfile?: unknown; profile?: unknown };
+          const profile = typeof candidate.agent === "string" ? candidate.agent
+            : typeof candidate.agentProfile === "string" ? candidate.agentProfile
+              : typeof candidate.profile === "string" ? candidate.profile : undefined;
+          runningProfiles.set(job.agentId ?? job.id, profile);
+        }
+        const slip = slipReestimateRefusal({
+          updates: todoScheduleUpdates(event.input),
+          rows: currentDecision(ctx, Date.now(), [], true).forecast?.rows ?? [],
+          runningProfiles,
+          now: Date.now(),
+        });
+        if (slip) {
+          gateTrace(ctx, "slip-reestimate-refused", {});
+          return { block: true, reason: slip };
+        }
+      }
     }
     if (event.toolName === "task" && taskItems(event.input).some((item) => item["agent"] === "retro-facilitator")) resetDemand("retro");
     if (event.toolName === "wait") return blockIdleWait(ctx);
