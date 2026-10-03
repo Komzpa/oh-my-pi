@@ -168,7 +168,7 @@ function assistant(content: AssistantMessage["content"]): AssistantMessage {
 }
 
 const settings = await Settings.init({ inMemory: true, cwd: process.cwd() });
-await initTheme("dark");
+await initTheme(false);
 const manager = SessionManager.inMemory(process.cwd());
 const db = new Database(":memory:");
 const registry = new ModelRegistry(new AuthStorage(new SqliteAuthCredentialStore(db)));

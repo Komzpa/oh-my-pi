@@ -23,6 +23,29 @@ const EMPTY_AWS_ENV = {
 };
 
 describe("AWS provider availability", () => {
+	test("caches the DMI instance-role probe across repeated availability checks", async () => {
+		const readFileSyncSpy = vi.spyOn(nodeFsSync, "readFileSync");
+		try {
+			await withEnv(
+				{
+					...EMPTY_AWS_ENV,
+					AWS_SHARED_CREDENTIALS_FILE: "/missing/aws-credentials",
+					AWS_CONFIG_FILE: "/missing/aws-config",
+					AWS_EC2_METADATA_DISABLED: undefined,
+				},
+				async () => {
+					getEnvApiKey("bedrock-mantle");
+					const afterFirst = readFileSyncSpy.mock.calls.filter(call => String(call[0]).includes("/sys/")).length;
+					expect(afterFirst).toBeGreaterThan(0);
+					getEnvApiKey("bedrock-mantle");
+					const afterMore = readFileSyncSpy.mock.calls.filter(call => String(call[0]).includes("/sys/")).length;
+					expect(afterMore).toBe(afterFirst);
+				},
+			);
+		} finally {
+			readFileSyncSpy.mockRestore();
+		}
+	});
 	test("recognizes the Bedrock auth bypass without AWS credentials", async () => {
 		await withEnv(
 			{
@@ -221,27 +244,4 @@ describe("AWS provider availability", () => {
 		);
 	});
 
-	test("caches the DMI instance-role probe across repeated availability checks", async () => {
-		const readFileSyncSpy = vi.spyOn(nodeFsSync, "readFileSync");
-		try {
-			await withEnv(
-				{
-					...EMPTY_AWS_ENV,
-					AWS_SHARED_CREDENTIALS_FILE: "/missing/aws-credentials",
-					AWS_CONFIG_FILE: "/missing/aws-config",
-					AWS_EC2_METADATA_DISABLED: undefined,
-				},
-				async () => {
-					getEnvApiKey("bedrock-mantle");
-					const afterFirst = readFileSyncSpy.mock.calls.filter(call => String(call[0]).includes("/sys/")).length;
-					getEnvApiKey("bedrock-mantle");
-					getEnvApiKey("bedrock-mantle");
-					const afterMore = readFileSyncSpy.mock.calls.filter(call => String(call[0]).includes("/sys/")).length;
-					expect(afterMore).toBe(afterFirst);
-				},
-			);
-		} finally {
-			readFileSyncSpy.mockRestore();
-		}
-	});
 });
