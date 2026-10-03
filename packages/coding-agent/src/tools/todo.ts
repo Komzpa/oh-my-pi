@@ -86,7 +86,9 @@ const todoSchema = type({
 	// and both enforce non-empty with op-specific errors. A stray `items: []` on
 	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
 	"items?": type("string").array().describe("tasks for flat init or append"),
-	"reason?": type("string").describe("blocker note for block; required reason when classify uses classification not-a-requirement"),
+	"reason?": type("string").describe(
+		"blocker note for block; required reason when classify uses classification not-a-requirement",
+	),
 	"id?": type("string").describe("requirement id (Rn) for classify"),
 	"classification?": ClassifyClassification.describe(
 		"classify decision: linked needs rows, not-a-requirement needs reason, merged needs mergeInto",
@@ -124,14 +126,9 @@ function clonePhases(phases: TodoPhase[]): TodoPhase[] {
 	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
 }
 
-/** Side channel: artifact root for rows created by the in-flight op. Set at
- *  execute() entry and read by the row factories, so the shared helpers keep
- *  the signatures runtime-core rewrites. */
-let pendingArtifactCwd: string | undefined;
-
-function bindArtifactCwd(task: TodoItem): void {
-	if (pendingArtifactCwd) {
-		task.artifactCwd = pendingArtifactCwd;
+function bindArtifactCwd(task: TodoItem, artifactCwd?: string): void {
+	if (artifactCwd) {
+		task.artifactCwd = artifactCwd;
 		task.artifactOwner = "main";
 	}
 }
@@ -369,7 +366,9 @@ function selectCompletionBatchTargets(
 	errors: string[],
 ): TodoItem[] {
 	if (!entry.task && (entry.items?.length ?? 0) === 0) {
-		errors.push(`${entry.op === "drop" ? "drop" : "done"} requires a task or items target; call todo with op="done", task="<exact row>" (or op="done", items=["<row1>", ...])`);
+		errors.push(
+			`${entry.op === "drop" ? "drop" : "done"} requires a task or items target; call todo with op="done", task="<exact row>" (or op="done", items=["<row1>", ...])`,
+		);
 		return [];
 	}
 	const targets: TodoItem[] = [];
@@ -620,7 +619,7 @@ function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: st
 /** Phase name for `init` given a flat `items` list with no explicit `phase`. */
 const DEFAULT_INIT_PHASE = "Tasks";
 
-function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
+function initPhases(entry: TodoOpEntryValue, errors: string[], artifactCwd?: string): TodoPhase[] {
 	// Models routinely flatten the single-phase init into `{op:"init", items:[...]}`
 	// (optionally with a bare `phase`) instead of the canonical
 	// `list: [{phase, items}]`. Accept that shape by synthesizing a one-phase list
@@ -654,13 +653,18 @@ function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 		name: listEntry.phase,
 		tasks: listEntry.items.map<TodoItem>(content => {
 			const task: TodoItem = { content, status: "pending" };
-			bindArtifactCwd(task);
+			bindArtifactCwd(task, artifactCwd);
 			return task;
 		}),
 	}));
 }
 
-function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
+function appendItems(
+	phases: TodoPhase[],
+	entry: TodoOpEntryValue,
+	errors: string[],
+	artifactCwd?: string,
+): TodoPhase[] {
 	if (!entry.phase) {
 		errors.push("Missing phase name for append operation");
 		return phases;
@@ -691,7 +695,7 @@ function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 
 	for (const content of entry.items) {
 		const task: TodoItem = { content, status: "pending" };
-		bindArtifactCwd(task);
+		bindArtifactCwd(task, artifactCwd);
 		phase.tasks.push(task);
 	}
 	return phases;
@@ -716,10 +720,10 @@ function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 	return phases;
 }
 
-function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
+function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[], artifactCwd?: string): TodoPhase[] {
 	switch (entry.op) {
 		case "init":
-			return initPhases(entry, errors);
+			return initPhases(entry, errors, artifactCwd);
 		case "start": {
 			const hit = resolveTaskOrError(phases, entry.task, errors);
 			if (!hit) return phases;
@@ -783,7 +787,7 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 		case "rm":
 			return removeTasks(phases, entry, errors);
 		case "append":
-			return appendItems(phases, entry, errors);
+			return appendItems(phases, entry, errors, artifactCwd);
 		case "view":
 			return phases;
 		case "classify":
@@ -831,9 +835,13 @@ function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoOpEntr
 	return `Invalid todo arguments: ${direct.summary}`;
 }
 
-function applyParams(phases: TodoPhase[], params: TodoOpEntryValue): { phases: TodoPhase[]; errors: string[] } {
+function applyParams(
+	phases: TodoPhase[],
+	params: TodoOpEntryValue,
+	artifactCwd?: string,
+): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
-	const next = applyEntry(phases, params, errors);
+	const next = applyEntry(phases, params, errors, artifactCwd);
 	normalizeInProgressTask(next);
 	return { phases: next, errors };
 }
@@ -1057,7 +1065,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
-		pendingArtifactCwd = this.session.cwd;
+		const artifactCwd = this.session.cwd;
 		let boundPhases: TodoPhase[] | undefined;
 		const branch = this.session.sessionManager?.getBranch();
 		if (branch) {
@@ -1085,12 +1093,15 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			};
 		}
 		const entry = resolved;
+		// classify already dispatched on rawOp above; narrow it out here so the
+		// shared TodoOperation contract stays at base text.
+		if (entry.op === "classify") return this.#classify(params, previousPhases, storage);
 		const op = entry.op;
 		// Pure-view calls are reads: no normalization, no state write.
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
-			: applyParams(clonePhases(previousPhases), entry);
+			: applyParams(clonePhases(previousPhases), entry, artifactCwd);
 		// A batch with any error is discarded wholesale: persisting a
 		// half-applied batch makes the natural retry hit "already exists" for
 		// the ops that did land. State and rendered summary stay at previous.
@@ -1220,7 +1231,12 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const sessionManager = this.session.sessionManager;
 		if (!sessionManager) {
 			return {
-				content: [{ type: "text", text: `Blocked: classify requires persistent session storage. Retry the same call todo with op="classify", id="${id ?? "<Rn>"}", classification="<linked|not-a-requirement|merged>" in a persisted session` }],
+				content: [
+					{
+						type: "text",
+						text: `Blocked: classify requires persistent session storage. Retry the same call todo with op="classify", id="${id ?? "<Rn>"}", classification="<linked|not-a-requirement|merged>" in a persisted session`,
+					},
+				],
 				details,
 				isError: true,
 			};
