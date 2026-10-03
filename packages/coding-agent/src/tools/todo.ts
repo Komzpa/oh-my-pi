@@ -63,7 +63,7 @@ export function committedTodoPhases(result: AgentToolResult): TodoPhase[] | unde
 // Schema
 // =============================================================================
 
-const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view" | "classify"');
+const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view"');
 
 const InitListEntry = type({
 	phase: type("string"),
@@ -79,11 +79,7 @@ const todoSchema = type({
 	// and both enforce non-empty with op-specific errors. A stray `items: []` on
 	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
 	"items?": type("string").array().describe("tasks for flat init or append"),
-	"reason?": type("string").describe("blocker note for block or classification note"),
-	"id?": type("string").describe("requirement ID for classify, e.g. R1"),
-	"classification?": type('"linked" | "not-a-requirement" | "merged"').describe("classification for classify"),
-	"rows?": type("string").array().describe("TODO row contents linked to a requirement"),
-	"mergeInto?": type("string").describe("existing requirement ID for merged classification"),
+	"reason?": type("string").describe("blocker note for block"),
 });
 
 type TodoParams = TodoSchema;
@@ -619,7 +615,7 @@ export function getTaskTargets(phases: TodoPhase[], entry: TodoTaskSelector, err
 /** Phase name for `init` given a flat `items` list with no explicit `phase`. */
 const DEFAULT_INIT_PHASE = "Tasks";
 
-function initPhases(entry: TodoOpEntryValue, errors: string[], artifactCwd?: string): TodoPhase[] {
+function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	// Models routinely flatten the single-phase init into `{op:"init", items:[...]}`
 	// (optionally with a bare `phase`) instead of the canonical
 	// `list: [{phase, items}]`. Accept that shape by synthesizing a one-phase list
@@ -653,21 +649,13 @@ function initPhases(entry: TodoOpEntryValue, errors: string[], artifactCwd?: str
 		name: listEntry.phase,
 		tasks: listEntry.items.map<TodoItem>(content => {
 			const task: TodoItem = { content, status: "pending" };
-			if (artifactCwd) {
-				task.artifactCwd = artifactCwd;
-				task.artifactOwner = "main";
-			}
+			bindArtifactCwd(task);
 			return task;
 		}),
 	}));
 }
 
-function appendItems(
-	phases: TodoPhase[],
-	entry: TodoOpEntryValue,
-	errors: string[],
-	artifactCwd?: string,
-): TodoPhase[] {
+function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	if (!entry.phase) {
 		errors.push("Missing phase name for append operation");
 		return phases;
@@ -698,10 +686,7 @@ function appendItems(
 
 	for (const content of entry.items) {
 		const task: TodoItem = { content, status: "pending" };
-		if (artifactCwd) {
-			task.artifactCwd = artifactCwd;
-			task.artifactOwner = "main";
-		}
+		bindArtifactCwd(task);
 		phase.tasks.push(task);
 	}
 	return phases;
@@ -726,10 +711,10 @@ function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 	return phases;
 }
 
-function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[], artifactCwd?: string): TodoPhase[] {
+function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	switch (entry.op) {
 		case "init":
-			return initPhases(entry, errors, artifactCwd);
+			return initPhases(entry, errors);
 		case "start": {
 			const hit = resolveTaskOrError(phases, entry.task, errors);
 			if (!hit) return phases;
@@ -793,11 +778,8 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 		case "rm":
 			return removeTasks(phases, entry, errors);
 		case "append":
-			return appendItems(phases, entry, errors, artifactCwd);
+			return appendItems(phases, entry, errors);
 		case "view":
-			return phases;
-		case "classify":
-			errors.push("classify requires the session-backed todo tool");
 			return phases;
 	}
 }
@@ -841,13 +823,9 @@ function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoOpEntr
 	return `Invalid todo arguments: ${direct.summary}`;
 }
 
-function applyParams(
-	phases: TodoPhase[],
-	params: TodoOpEntryValue,
-	artifactCwd?: string,
-): { phases: TodoPhase[]; errors: string[] } {
+function applyParams(phases: TodoPhase[], params: TodoOpEntryValue): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
-	const next = applyEntry(phases, params, errors, artifactCwd);
+	const next = applyEntry(phases, params, errors);
 	normalizeInProgressTask(next);
 	return { phases: next, errors };
 }
@@ -1083,6 +1061,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		}
 		const previousPhases = clonePhases(boundPhases ?? this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
+		if (isRecord(params) && params.op === "classify") return this.#classify(params, previousPhases, storage);
 		const resolved = resolveTodoParams(params, previousPhases.length > 0);
 		if (typeof resolved === "string") {
 			return {
@@ -1093,53 +1072,6 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		}
 		const entry = resolved;
 		const op = entry.op;
-		if (op === "classify") {
-			// "classify" stays out of TodoOperation (converged with runtime-core's "schedule" rewrite); cast only.
-			const details = { op: "classify", phases: previousPhases, storage } as unknown as TodoToolDetails;
-			const id = entry.id;
-			const classification = entry.classification;
-			if (!id || !classification) {
-				return {
-					content: [{ type: "text", text: "classify requires an Rn id and classification" }],
-					details,
-					isError: true,
-				};
-			}
-			const sessionManager = this.session.sessionManager;
-			if (!sessionManager) {
-				return {
-					content: [{ type: "text", text: "classify requires persistent session storage" }],
-					details,
-					isError: true,
-				};
-			}
-			if (classification === "linked") {
-				const unknownRows = (entry.rows ?? []).filter(row => !findTaskByContent(previousPhases, row));
-				if (unknownRows.length > 0) {
-					return {
-						content: [{ type: "text", text: `Unknown TODO rows: ${unknownRows.join(", ")}` }],
-						details,
-						isError: true,
-					};
-				}
-			}
-			const requirements = getLatestRequirements(sessionManager.getBranch());
-			const result = classifyRequirement(requirements, id, classification, {
-				rows: entry.rows,
-				reason: entry.reason,
-				mergeInto: entry.mergeInto,
-			});
-			if ("error" in result) return { content: [{ type: "text", text: result.error }], details, isError: true };
-			appendRequirementsSnapshot(
-				{ appendEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data) },
-				result.requirements,
-			);
-			await sessionManager.flush();
-			return {
-				content: [{ type: "text", text: `Classified ${id} as ${classification}.` }],
-				details,
-			};
-		}
 		// The extension and direct native path share the same target and fresh-artifact checks.
 		if (op === "done" && this.session.sessionManager) {
 			const selectorErrors: string[] = [];
@@ -1207,7 +1139,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
-			: applyParams(clonePhases(previousPhases), entry, this.session.cwd);
+			: withArtifactCwd(this.session.cwd, () => applyParams(clonePhases(previousPhases), entry));
 		// A batch with any error is discarded wholesale: persisting a
 		// half-applied batch makes the natural retry hit "already exists" for
 		// the ops that did land. State and rendered summary stay at previous.
@@ -1222,6 +1154,68 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			content: [{ type: "text", text: formatSummary(effective, errors, readOnly) }],
 			details,
 			isError: errors.length > 0 ? true : undefined,
+		};
+	}
+
+	/** #41's classify path, dispatched on raw args before the shared schema so
+	 *  the shared TodoOp union and todoSchema stay at base text. */
+	async #classify(
+		params: Record<string, unknown>,
+		previousPhases: TodoPhase[],
+		storage: string,
+	): Promise<AgentToolResult<TodoToolDetails>> {
+		const details = { op: "classify", phases: previousPhases, storage } as unknown as TodoToolDetails;
+		const id = typeof params.id === "string" ? params.id : undefined;
+		const rawClassification = params.classification;
+		const classification =
+			rawClassification === "linked" || rawClassification === "not-a-requirement" || rawClassification === "merged"
+				? rawClassification
+				: undefined;
+		const rows = Array.isArray(params.rows)
+			? params.rows.filter((row): row is string => typeof row === "string")
+			: undefined;
+		const reason = typeof params.reason === "string" ? params.reason : undefined;
+		const mergeInto = typeof params.mergeInto === "string" ? params.mergeInto : undefined;
+		if (!id || !classification) {
+			return {
+				content: [{ type: "text", text: "classify requires an Rn id and classification" }],
+				details,
+				isError: true,
+			};
+		}
+		const sessionManager = this.session.sessionManager;
+		if (!sessionManager) {
+			return {
+				content: [{ type: "text", text: "classify requires persistent session storage" }],
+				details,
+				isError: true,
+			};
+		}
+		if (classification === "linked") {
+			const unknownRows = (rows ?? []).filter(row => !findTaskByContent(previousPhases, row));
+			if (unknownRows.length > 0) {
+				return {
+					content: [{ type: "text", text: `Unknown TODO rows: ${unknownRows.join(", ")}` }],
+					details,
+					isError: true,
+				};
+			}
+		}
+		const requirements = getLatestRequirements(sessionManager.getBranch());
+		const result = classifyRequirement(requirements, id, classification, {
+			rows,
+			reason,
+			mergeInto,
+		});
+		if ("error" in result) return { content: [{ type: "text", text: result.error }], details, isError: true };
+		appendRequirementsSnapshot(
+			{ appendEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data) },
+			result.requirements,
+		);
+		await sessionManager.flush();
+		return {
+			content: [{ type: "text", text: `Classified ${id} as ${classification}.` }],
+			details,
 		};
 	}
 }
