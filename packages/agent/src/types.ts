@@ -97,7 +97,6 @@ export type AgentBeforeModelCall = (
 	signal?: AbortSignal,
 ) => AgentPreModelCallResult | void | Promise<AgentPreModelCallResult | void>;
 
-
 /**
  * A soft tool requirement: the host wants `toolName` called before the loop
  * runs other tools or yields, but WITHOUT paying the forced-`toolChoice` cost
@@ -603,7 +602,6 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * calls, so they stay disabled under a transform unless this is set.
 	 */
 	transformAssistantMessagePreservesToolCalls?: boolean;
-
 
 	/**
 	 * Called after a tool finishes executing, before `tool_execution_end` and the

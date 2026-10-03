@@ -321,11 +321,6 @@ import type {
 } from "./types";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { UiHelpers } from "./utils/ui-helpers";
-import {
-	countRequirements,
-	getLatestRequirements,
-	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
-} from "../tools/requirements-ledger";
 
 import {
 	cfgAutocompleteMaxVisible,
@@ -8272,11 +8267,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	requirementHudSegment = "";
 
-	renderRequirementHudSegment(
-		renderBase: (width: number) => readonly string[],
-		width: number,
-	): readonly string[] {
-		const counts = countRequirements(getLatestRequirements((this.#todoPhasesOwner ?? this.session).sessionManager.getBranch()));
+	renderRequirementHudSegment(renderBase: (width: number) => readonly string[], width: number): readonly string[] {
+		const counts = countRequirements(
+			getLatestRequirements((this.#todoPhasesOwner ?? this.session).sessionManager.getBranch()),
+		);
 		const wasHidden = this.#todoHudHidden;
 		const compact = this.isCompactTodoMode();
 		const hasOutstandingRequirements = counts.open > 0 || counts.failed > 0;
@@ -8289,7 +8283,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			const requirementSummary = theme.fg("dim", ` · ${requirementText}`);
 			if (compact) {
 				const hasVisibleTasks = !wasHidden && this.todoPhases.some(phase => phase.tasks.length > 0);
-				this.requirementHudSegment = hasVisibleTasks ? theme.fg("dim", requirementText) : `${title}${requirementSummary}`;
+				this.requirementHudSegment = hasVisibleTasks
+					? theme.fg("dim", requirementText)
+					: `${title}${requirementSummary}`;
 			} else {
 				this.requirementHudSegment = `${title}${requirementSummary}`;
 			}

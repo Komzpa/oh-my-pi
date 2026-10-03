@@ -4532,12 +4532,23 @@ describe("ExtensionRunner", () => {
 	});
 
 	describe("input attachment transforms", () => {
-		const inputRunner = (...handlers: Array<(event: InputEvent) => InputEventResult | undefined>): ExtensionRunner => {
+		const inputRunner = (
+			...handlers: Array<(event: InputEvent) => InputEventResult | undefined>
+		): ExtensionRunner => {
 			const extensionPath = path.join(extensionsDir, "input-transform.ts");
 			const extension: Extension = {
 				path: extensionPath,
 				resolvedPath: extensionPath,
-				handlers: new Map([["input", handlers.map(handler => async (...args: unknown[]) => handler(args[0] as InputEvent))]]),
+				handlers: new Map([
+					[
+						"input",
+						handlers.map(
+							handler =>
+								async (...args: unknown[]) =>
+									handler(args[0] as InputEvent),
+						),
+					],
+				]),
 				tools: new Map(),
 				assistantThinkingRenderers: [],
 				fileWriteFallbackHandlers: [],

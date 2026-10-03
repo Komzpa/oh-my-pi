@@ -354,7 +354,6 @@ export interface AgentOptions {
 	/** See {@link AgentLoopConfig.transformAssistantMessagePreservesToolCalls}. */
 	transformAssistantMessagePreservesToolCalls?: boolean;
 
-
 	/**
 	 * Opt-in OpenTelemetry instrumentation. Passing `{}` enables the loop's
 	 * GenAI-semantic-convention spans using the global tracer provider. See

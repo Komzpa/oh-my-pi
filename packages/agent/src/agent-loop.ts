@@ -419,7 +419,6 @@ function snapshotAssistantMessage(message: AssistantMessage): AssistantMessage {
 	};
 }
 
-
 /**
  * Incremental variant of `snapshotAssistantMessage` for per-delta
  * `message_update` events.
@@ -2150,11 +2149,20 @@ async function streamAssistantResponse(
 				speculationSettled = true;
 				// A throwing iterator/result has no terminal event. Preserve its private
 				// draft's completed calls, usage, and real error without a raw fallback.
-				const failed = snapshotAssistantMessage(retainCompletedToolCalls({
-					...(partialMessage ?? createGateStopMessage(model, undefined)),
-					stopReason: requestSignal?.aborted ? "aborted" : "error",
-					errorMessage: requestSignal?.aborted ? abortReasonText(requestSignal) : error instanceof Error ? error.message : String(error),
-				}, completedToolCallIds));
+				const failed = snapshotAssistantMessage(
+					retainCompletedToolCalls(
+						{
+							...(partialMessage ?? createGateStopMessage(model, undefined)),
+							stopReason: requestSignal?.aborted ? "aborted" : "error",
+							errorMessage: requestSignal?.aborted
+								? abortReasonText(requestSignal)
+								: error instanceof Error
+									? error.message
+									: String(error),
+						},
+						completedToolCallIds,
+					),
+				);
 				try {
 					await config.transformAssistantMessage?.(failed, requestSignal);
 				} catch {
@@ -2276,9 +2284,15 @@ async function streamAssistantResponse(
 						}
 						finalMessagePublished = true;
 						if (!addedPartial) {
-							stream.push({ type: "message_start", message: publicationGate ? finalMessage : snapshotAssistantMessage(finalMessage) });
+							stream.push({
+								type: "message_start",
+								message: publicationGate ? finalMessage : snapshotAssistantMessage(finalMessage),
+							});
 						}
-						stream.push({ type: "message_end", message: publicationGate ? finalMessage : snapshotAssistantMessage(finalMessage) });
+						stream.push({
+							type: "message_end",
+							message: publicationGate ? finalMessage : snapshotAssistantMessage(finalMessage),
+						});
 						await finishChat(finalMessage);
 						speculationSettled = true;
 						providerStreamSettled = true;
@@ -2560,9 +2574,15 @@ async function streamAssistantResponse(
 					context.messages[context.messages.length - 1] = trailing;
 				} else {
 					context.messages.push(trailing);
-					stream.push({ type: "message_start", message: publicationGate ? trailing : snapshotAssistantMessage(trailing) });
+					stream.push({
+						type: "message_start",
+						message: publicationGate ? trailing : snapshotAssistantMessage(trailing),
+					});
 				}
-				stream.push({ type: "message_end", message: publicationGate ? trailing : snapshotAssistantMessage(trailing) });
+				stream.push({
+					type: "message_end",
+					message: publicationGate ? trailing : snapshotAssistantMessage(trailing),
+				});
 				finalMessagePublished = true;
 				await finishChat(trailing);
 				speculationSettled = true;
@@ -2596,7 +2616,8 @@ function retainCompletedToolCalls(
 	let droppedIncompleteToolCall = false;
 	const content = message.content.filter(block => {
 		if (block.type !== "toolCall") return true;
-		const keep = completedToolCallIds.has(block.id) || (block as CursorExecResolvedCarrier)[kCursorExecResolved] === true;
+		const keep =
+			completedToolCallIds.has(block.id) || (block as CursorExecResolvedCarrier)[kCursorExecResolved] === true;
 		if (!keep) droppedIncompleteToolCall = true;
 		return keep;
 	});
@@ -2778,9 +2799,15 @@ async function emitAbortedAssistantMessage(
 		context.messages[context.messages.length - 1] = abortedMessage;
 	} else {
 		context.messages.push(abortedMessage);
-		stream.push({ type: "message_start", message: publicationGate ? abortedMessage : snapshotAssistantMessage(abortedMessage) });
+		stream.push({
+			type: "message_start",
+			message: publicationGate ? abortedMessage : snapshotAssistantMessage(abortedMessage),
+		});
 	}
-	stream.push({ type: "message_end", message: publicationGate ? abortedMessage : snapshotAssistantMessage(abortedMessage) });
+	stream.push({
+		type: "message_end",
+		message: publicationGate ? abortedMessage : snapshotAssistantMessage(abortedMessage),
+	});
 	return abortedMessage;
 }
 

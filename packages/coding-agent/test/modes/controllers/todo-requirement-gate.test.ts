@@ -24,170 +24,177 @@ describe("TodoCommandController linked-requirement gate", () => {
 		tempRoot = "";
 	});
 
+	// ------------------------------------------------------------------
+	// Linked-requirement gate: slash `/todo done` shares the native gate.
+	// ------------------------------------------------------------------
 
-// ------------------------------------------------------------------
-// Linked-requirement gate: slash `/todo done` shares the native gate.
-// ------------------------------------------------------------------
+	const LEDGER_AT = "2026-09-28T12:00:00.000Z";
 
-const LEDGER_AT = "2026-09-28T12:00:00.000Z";
+	function createLedgerContext(manager: SessionManager): InteractiveModeContext {
+		return {
+			agent: {
+				appendMessage: vi.fn(),
+			},
+			session: {
+				getTodoPhases: () => getLatestTodoPhasesFromEntries(manager.getBranch()),
+				setTodoPhases: vi.fn(),
+			},
+			sessionManager: manager,
+			setTodos: vi.fn(),
+			showError: vi.fn(),
+			showStatus: vi.fn(),
+			showWarning: vi.fn(),
+		} as unknown as InteractiveModeContext;
+	}
 
-function createLedgerContext(manager: SessionManager): InteractiveModeContext {
-	return {
-		agent: {
-			appendMessage: vi.fn(),
-		},
-		session: {
-			getTodoPhases: () => getLatestTodoPhasesFromEntries(manager.getBranch()),
-			setTodoPhases: vi.fn(),
-		},
-		sessionManager: manager,
-		setTodos: vi.fn(),
-		showError: vi.fn(),
-		showStatus: vi.fn(),
-		showWarning: vi.fn(),
-	} as unknown as InteractiveModeContext;
-}
+	function linkedRequirement(
+		rawAsk: string,
+		rows: string[],
+		verdict?: RequirementLedgerItem["verdict"],
+	): RequirementLedgerItem {
+		return {
+			...createRequirementCandidates([], [rawAsk], LEDGER_AT)[0]!,
+			classification: "linked",
+			rows,
+			...(verdict ? { verdict } : {}),
+		};
+	}
 
-function linkedRequirement(
-	rawAsk: string,
-	rows: string[],
-	verdict?: RequirementLedgerItem["verdict"],
-): RequirementLedgerItem {
-	return {
-		...createRequirementCandidates([], [rawAsk], LEDGER_AT)[0]!,
-		classification: "linked",
-		rows,
-		...(verdict ? { verdict } : {}),
-	};
-}
+	function appendLedger(manager: SessionManager, requirements: RequirementLedgerItem[]): void {
+		appendRequirementsSnapshot(
+			{ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) },
+			requirements,
+		);
+	}
 
-function appendLedger(manager: SessionManager, requirements: RequirementLedgerItem[]): void {
-	appendRequirementsSnapshot(
-		{ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) },
-		requirements,
-	);
-}
+	function initArtifactRepo(cwd: string): string {
+		mkdirSync(cwd, { recursive: true });
+		execFileSync("git", ["init", "--initial-branch=main"], { cwd });
+		writeFileSync(path.join(cwd, "artifact.txt"), "audited\n");
+		execFileSync("git", ["add", "artifact.txt"], { cwd });
+		execFileSync(
+			"git",
+			["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "audited"],
+			{ cwd },
+		);
+		return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	}
 
-function initArtifactRepo(cwd: string): string {
-	mkdirSync(cwd, { recursive: true });
-	execFileSync("git", ["init", "--initial-branch=main"], { cwd });
-	writeFileSync(path.join(cwd, "artifact.txt"), "audited\n");
-	execFileSync("git", ["add", "artifact.txt"], { cwd });
-	execFileSync(
-		"git",
-		["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "audited"],
-		{ cwd },
-	);
-	return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
-}
+	function commitArtifactBump(cwd: string): string {
+		writeFileSync(path.join(cwd, "artifact.txt"), "superseded\n");
+		execFileSync("git", ["add", "artifact.txt"], { cwd });
+		execFileSync(
+			"git",
+			["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "superseded"],
+			{ cwd },
+		);
+		return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+	}
 
-function commitArtifactBump(cwd: string): string {
-	writeFileSync(path.join(cwd, "artifact.txt"), "superseded\n");
-	execFileSync("git", ["add", "artifact.txt"], { cwd });
-	execFileSync(
-		"git",
-		["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "superseded"],
-		{ cwd },
-	);
-	return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
-}
+	it("blocks /todo done while a linked requirement has no qa pass", async () => {
+		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-gate-open-"));
+		const manager = SessionManager.inMemory(tempRoot);
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			phases: [{ name: "Plan", tasks: [{ content: "Gate artifact", status: "pending" }] }],
+		});
+		appendLedger(manager, [linkedRequirement("gate the artifact", ["Gate artifact"])]);
+		const ctx = createLedgerContext(manager);
+		const controller = new TodoCommandController(ctx);
 
-it("blocks /todo done while a linked requirement has no qa pass", async () => {
-	tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-gate-open-"));
-	const manager = SessionManager.inMemory(tempRoot);
-	manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
-		phases: [{ name: "Plan", tasks: [{ content: "Gate artifact", status: "pending" }] }],
+		await controller.handleTodoCommand("done Gate artifact");
+
+		expect(ctx.showError).toHaveBeenCalledWith(
+			expect.stringContaining("blocked until every linked requirement has a fresh qa-auditor pass"),
+		);
+		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining('R1 ("Gate artifact")'));
+		expect(ctx.setTodos).not.toHaveBeenCalled();
+		const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
+		expect(persisted[0]!.tasks[0]!.status).toBe("pending");
 	});
-	appendLedger(manager, [linkedRequirement("gate the artifact", ["Gate artifact"])]);
-	const ctx = createLedgerContext(manager);
-	const controller = new TodoCommandController(ctx);
 
-	await controller.handleTodoCommand("done Gate artifact");
+	it("blocks /todo done when the linked pass names a superseded artifact", async () => {
+		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-gate-stale-"));
+		const repo = path.join(tempRoot, "repo");
+		const auditedHead = initArtifactRepo(repo);
+		const manager = SessionManager.inMemory(repo);
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			phases: [
+				{
+					name: "Plan",
+					tasks: [{ content: "Gate artifact", status: "pending", artifactCwd: repo, artifactOwner: "main" }],
+				},
+			],
+		});
+		appendLedger(manager, [
+			linkedRequirement("gate the artifact", ["Gate artifact"], {
+				status: "pass",
+				evidence: "qa evidence",
+				artifact: auditedHead,
+				workerId: "qa-1",
+				auditor: "qa-auditor",
+			}),
+		]);
+		const currentHead = commitArtifactBump(repo);
+		expect(currentHead).not.toBe(auditedHead);
+		const ctx = createLedgerContext(manager);
+		const controller = new TodoCommandController(ctx);
 
-	expect(ctx.showError).toHaveBeenCalledWith(
-		expect.stringContaining("blocked until every linked requirement has a fresh qa-auditor pass"),
-	);
-	expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining('R1 ("Gate artifact")'));
-	expect(ctx.setTodos).not.toHaveBeenCalled();
-	const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
-	expect(persisted[0]!.tasks[0]!.status).toBe("pending");
-});
+		await controller.handleTodoCommand("done Gate artifact");
 
-it("blocks /todo done when the linked pass names a superseded artifact", async () => {
-	tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-gate-stale-"));
-	const repo = path.join(tempRoot, "repo");
-	const auditedHead = initArtifactRepo(repo);
-	const manager = SessionManager.inMemory(repo);
-	manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
-		phases: [{
-			name: "Plan",
-			tasks: [{ content: "Gate artifact", status: "pending", artifactCwd: repo, artifactOwner: "main" }],
-		}],
+		expect(ctx.showError).toHaveBeenCalledWith(
+			expect.stringContaining("blocked until every linked requirement has a fresh qa-auditor pass"),
+		);
+		expect(ctx.setTodos).not.toHaveBeenCalled();
+		const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
+		expect(persisted[0]!.tasks[0]!.status).toBe("pending");
 	});
-	appendLedger(manager, [linkedRequirement("gate the artifact", ["Gate artifact"], {
-		status: "pass",
-		evidence: "qa evidence",
-		artifact: auditedHead,
-		workerId: "qa-1",
-		auditor: "qa-auditor",
-	})]);
-	const currentHead = commitArtifactBump(repo);
-	expect(currentHead).not.toBe(auditedHead);
-	const ctx = createLedgerContext(manager);
-	const controller = new TodoCommandController(ctx);
 
-	await controller.handleTodoCommand("done Gate artifact");
+	it("completes /todo done with a fresh qa-auditor pass for the current clean artifact", async () => {
+		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-gate-fresh-"));
+		const repo = path.join(tempRoot, "repo");
+		const head = initArtifactRepo(repo);
+		const manager = SessionManager.inMemory(repo);
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			phases: [
+				{
+					name: "Plan",
+					tasks: [{ content: "Gate artifact", status: "pending", artifactCwd: repo, artifactOwner: "main" }],
+				},
+			],
+		});
+		appendLedger(manager, [
+			linkedRequirement("gate the artifact", ["Gate artifact"], {
+				status: "pass",
+				evidence: "qa evidence",
+				artifact: head,
+				workerId: "qa-1",
+				auditor: "qa-auditor",
+			}),
+		]);
+		const ctx = createLedgerContext(manager);
+		const controller = new TodoCommandController(ctx);
 
-	expect(ctx.showError).toHaveBeenCalledWith(
-		expect.stringContaining("blocked until every linked requirement has a fresh qa-auditor pass"),
-	);
-	expect(ctx.setTodos).not.toHaveBeenCalled();
-	const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
-	expect(persisted[0]!.tasks[0]!.status).toBe("pending");
-});
+		await controller.handleTodoCommand("done Gate artifact");
 
-it("completes /todo done with a fresh qa-auditor pass for the current clean artifact", async () => {
-	tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-gate-fresh-"));
-	const repo = path.join(tempRoot, "repo");
-	const head = initArtifactRepo(repo);
-	const manager = SessionManager.inMemory(repo);
-	manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
-		phases: [{
-			name: "Plan",
-			tasks: [{ content: "Gate artifact", status: "pending", artifactCwd: repo, artifactOwner: "main" }],
-		}],
+		expect(ctx.showError).not.toHaveBeenCalled();
+		const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
+		expect(persisted[0]!.tasks[0]!.status).toBe("completed");
 	});
-	appendLedger(manager, [linkedRequirement("gate the artifact", ["Gate artifact"], {
-		status: "pass",
-		evidence: "qa evidence",
-		artifact: head,
-		workerId: "qa-1",
-		auditor: "qa-auditor",
-	})]);
-	const ctx = createLedgerContext(manager);
-	const controller = new TodoCommandController(ctx);
 
-	await controller.handleTodoCommand("done Gate artifact");
+	it("completes /todo done when no requirement links the row", async () => {
+		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-gate-unlinked-"));
+		const manager = SessionManager.inMemory(tempRoot);
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			phases: [{ name: "Plan", tasks: [{ content: "Gate artifact", status: "pending" }] }],
+		});
+		appendLedger(manager, createRequirementCandidates([], ["unclassified ask"], LEDGER_AT));
+		const ctx = createLedgerContext(manager);
+		const controller = new TodoCommandController(ctx);
 
-	expect(ctx.showError).not.toHaveBeenCalled();
-	const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
-	expect(persisted[0]!.tasks[0]!.status).toBe("completed");
-});
+		await controller.handleTodoCommand("done Gate artifact");
 
-it("completes /todo done when no requirement links the row", async () => {
-	tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-gate-unlinked-"));
-	const manager = SessionManager.inMemory(tempRoot);
-	manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
-		phases: [{ name: "Plan", tasks: [{ content: "Gate artifact", status: "pending" }] }],
+		expect(ctx.showError).not.toHaveBeenCalled();
+		const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
+		expect(persisted[0]!.tasks[0]!.status).toBe("completed");
 	});
-	appendLedger(manager, createRequirementCandidates([], ["unclassified ask"], LEDGER_AT));
-	const ctx = createLedgerContext(manager);
-	const controller = new TodoCommandController(ctx);
-
-	await controller.handleTodoCommand("done Gate artifact");
-
-	expect(ctx.showError).not.toHaveBeenCalled();
-	const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
-	expect(persisted[0]!.tasks[0]!.status).toBe("completed");
-});
 });

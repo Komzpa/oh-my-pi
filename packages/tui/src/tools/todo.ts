@@ -25,7 +25,17 @@ import type { NativeToolView, ToolRenderResult } from "./renderer";
 export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 
 /** Operation names accepted by the todo tool and echoed in successful result details. */
-export type TodoOperation = "init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view" | "classify";
+export type TodoOperation =
+	| "init"
+	| "start"
+	| "done"
+	| "rm"
+	| "drop"
+	| "block"
+	| "unblock"
+	| "append"
+	| "view"
+	| "classify";
 
 /** A task displayed within a todo phase. */
 export interface TodoItem {

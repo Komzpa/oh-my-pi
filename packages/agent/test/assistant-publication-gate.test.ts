@@ -12,10 +12,12 @@ const unsafe = "All requested work is done without QA.";
 const approved = "Requirements R1 and R2 remain open.";
 
 function assistantEvents(events: AgentEvent[]): AgentEvent[] {
-	return events.filter(event =>
-		event.type === "message_update" ||
-		((event.type === "message_start" || event.type === "message_end") && event.message.role === "assistant") ||
-		event.type === "turn_end" || event.type === "agent_end",
+	return events.filter(
+		event =>
+			event.type === "message_update" ||
+			((event.type === "message_start" || event.type === "message_end") && event.message.role === "assistant") ||
+			event.type === "turn_end" ||
+			event.type === "agent_end",
 	);
 }
 
@@ -42,14 +44,26 @@ describe("assistant publication gate", () => {
 				interceptedEvents.push(event.type);
 				if (event.type === "image_end") rawSeen.resolve();
 			},
-			transformAssistantMessage: message => { message.content[0] = { type: "text", text: "transformed draft" }; },
+			transformAssistantMessage: message => {
+				message.content[0] = { type: "text", text: "transformed draft" };
+			},
 			streamFn: () => {
 				const stream = new AssistantMessageEventStream();
 				queueMicrotask(async () => {
 					stream.push({ type: "start", partial: draft });
 					stream.push({ type: "text_delta", contentIndex: 0, delta: unsafe, partial: draft });
-					stream.push({ type: "thinking_delta", contentIndex: 1, delta: "unsafe private reasoning", partial: draft });
-					stream.push({ type: "image_end", contentIndex: 2, content: { type: "image", data: "unsafe-image", mimeType: "image/png" }, partial: draft });
+					stream.push({
+						type: "thinking_delta",
+						contentIndex: 1,
+						delta: "unsafe private reasoning",
+						partial: draft,
+					});
+					stream.push({
+						type: "image_end",
+						contentIndex: 2,
+						content: { type: "image", data: "unsafe-image", mimeType: "image/png" },
+						partial: draft,
+					});
 					await finishProvider.promise;
 					stream.push({ type: "done", reason: "stop", message: draft });
 				});
@@ -84,7 +98,12 @@ describe("assistant publication gate", () => {
 		expect(agent.state.messages.map(message => message.role)).toEqual(["user"]);
 		releaseGate.resolve();
 		await run;
-		expect(assistantEvents(events).map(event => event.type)).toEqual(["message_start", "message_end", "turn_end", "agent_end"]);
+		expect(assistantEvents(events).map(event => event.type)).toEqual([
+			"message_start",
+			"message_end",
+			"turn_end",
+			"agent_end",
+		]);
 		expect(agent.state.messages.at(-1)).toBe(admitted);
 		expect(admitted?.content).toEqual([{ type: "text", text: approved }]);
 		expect(admitted?.providerPayload).toBeUndefined();
@@ -114,7 +133,9 @@ describe("assistant publication gate", () => {
 		const stream = new AssistantMessageEventStream();
 		const draft = createAssistantMessage([{ type: "text", text: "ordinary stream" }]);
 		const agent = new Agent({ initialState: { model: mock.model }, streamFn: () => stream });
-		agent.subscribe(event => { if (event.type === "message_update") started.resolve(); });
+		agent.subscribe(event => {
+			if (event.type === "message_update") started.resolve();
+		});
 		const run = agent.prompt("hello");
 		stream.push({ type: "start", partial: draft });
 		stream.push({ type: "text_delta", contentIndex: 0, delta: "ordinary stream", partial: draft });
@@ -132,24 +153,37 @@ describe("assistant publication gate", () => {
 		const completedArgs: unknown[] = [];
 		let argumentStreamCancelled = false;
 		const tool: AgentTool<typeof schema> = {
-			name: "echo", label: "Echo", description: "Echo", parameters: schema,
+			name: "echo",
+			label: "Echo",
+			description: "Echo",
+			parameters: schema,
 			intent: () => unsafe,
 			openArgStream: () => ({
-				push: delta => { wireFragments.push(delta); },
-				end: args => { completedArgs.push(args); },
-				cancel: () => { argumentStreamCancelled = true; },
+				push: delta => {
+					wireFragments.push(delta);
+				},
+				end: args => {
+					completedArgs.push(args);
+				},
+				cancel: () => {
+					argumentStreamCancelled = true;
+				},
 			}),
 			async execute(id, args) {
 				executed.push({ id, args });
 				return { content: [{ type: "text", text: args.value }], details: {} };
 			},
 		};
-		const mock = createMockModel({ responses: [
-			{ content: [unsafe, { type: "toolCall", id: "call-1", name: "echo", arguments: { value: "before" } }] },
-			{ content: [unsafe] },
-		] });
+		const mock = createMockModel({
+			responses: [
+				{ content: [unsafe, { type: "toolCall", id: "call-1", name: "echo", arguments: { value: "before" } }] },
+				{ content: [unsafe] },
+			],
+		});
 		const agent = new Agent({
-			initialState: { model: mock.model, tools: [tool] }, streamFn: mock.stream, intentTracing: true,
+			initialState: { model: mock.model, tools: [tool] },
+			streamFn: mock.stream,
+			intentTracing: true,
 			transformAssistantMessage: message => {
 				for (const block of message.content) {
 					if (block.type !== "toolCall") continue;
@@ -159,23 +193,49 @@ describe("assistant publication gate", () => {
 				}
 			},
 		});
-		setAssistantPublicationGate(agent, message => ({ replacementText: message.content.some(block => block.type === "toolCall") ? "" : approved }));
+		setAssistantPublicationGate(agent, message => ({
+			replacementText: message.content.some(block => block.type === "toolCall") ? "" : approved,
+		}));
 
 		const events: AgentEvent[] = [];
-		agent.subscribe(event => { events.push(event); });
+		agent.subscribe(event => {
+			events.push(event);
+		});
 		await agent.prompt("echo");
 		expect(executed).toEqual([{ id: "call-1", args: { value: "after" } }]);
-		expect(events).toContainEqual(expect.objectContaining({ type: "tool_execution_start", toolCallId: "call-1", toolName: "echo" }));
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "tool_execution_start", toolCallId: "call-1", toolName: "echo" }),
+		);
 		expect(JSON.parse(wireFragments.join(""))).toEqual({ value: "before" });
 		expect(completedArgs).toEqual([{ value: "before" }]);
 		expect(argumentStreamCancelled).toBe(false);
-		expect(agent.state.messages.map(message => message.role)).toEqual(["user", "assistant", "toolResult", "assistant"]);
-		expect(agent.state.messages[1]).toMatchObject({ content: [{ type: "toolCall", id: "call-1", name: "echo", arguments: { value: "after" } }] });
-		expect(agent.state.messages[1]).toMatchObject({ content: [{ type: "toolCall", id: "call-1", name: "echo", rawBlock: 'call echo with {"value":"after"}', arguments: { value: "after" } }] });
+		expect(agent.state.messages.map(message => message.role)).toEqual([
+			"user",
+			"assistant",
+			"toolResult",
+			"assistant",
+		]);
+		expect(agent.state.messages[1]).toMatchObject({
+			content: [{ type: "toolCall", id: "call-1", name: "echo", arguments: { value: "after" } }],
+		});
+		expect(agent.state.messages[1]).toMatchObject({
+			content: [
+				{
+					type: "toolCall",
+					id: "call-1",
+					name: "echo",
+					rawBlock: 'call echo with {"value":"after"}',
+					arguments: { value: "after" },
+				},
+			],
+		});
 		const admittedToolTurn = agent.state.messages[1];
 		if (!admittedToolTurn || admittedToolTurn.role !== "assistant") throw new Error("tool turn was not persisted");
 		expect(admittedToolTurn.content[0]).not.toHaveProperty("intent");
-		expect(agent.state.messages[2]).toMatchObject({ toolCallId: "call-1", content: [{ type: "text", text: "after" }] });
+		expect(agent.state.messages[2]).toMatchObject({
+			toolCallId: "call-1",
+			content: [{ type: "text", text: "after" }],
+		});
 		expect(JSON.stringify(events)).not.toContain(unsafe);
 	});
 
@@ -183,26 +243,43 @@ describe("assistant publication gate", () => {
 		const schema = type({ value: "string" });
 		const executed: unknown[] = [];
 		const tool: AgentTool<typeof schema> = {
-			name: "echo", label: "Echo", description: "Echo", parameters: schema,
+			name: "echo",
+			label: "Echo",
+			description: "Echo",
+			parameters: schema,
 			async execute(id, args) {
 				executed.push({ id, args });
 				return { content: [{ type: "text", text: args.value }], details: {} };
 			},
 		};
-		const mock = createMockModel({ responses: [
-			{ content: [unsafe, { type: "toolCall", id: "rejected-call", name: "echo", arguments: { value: "keep" } }] },
-			{ content: [unsafe] },
-		] });
-		const agent = new Agent({
-			initialState: { model: mock.model, tools: [tool] }, streamFn: mock.stream,
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [unsafe, { type: "toolCall", id: "rejected-call", name: "echo", arguments: { value: "keep" } }],
+				},
+				{ content: [unsafe] },
+			],
 		});
-		setAssistantPublicationGate(agent, () => { throw new Error("delivery handler failed"); });
+		const agent = new Agent({
+			initialState: { model: mock.model, tools: [tool] },
+			streamFn: mock.stream,
+		});
+		setAssistantPublicationGate(agent, () => {
+			throw new Error("delivery handler failed");
+		});
 
 		const events: AgentEvent[] = [];
-		agent.subscribe(event => { events.push(event); });
+		agent.subscribe(event => {
+			events.push(event);
+		});
 		await agent.prompt("echo");
 		expect(executed).toEqual([{ id: "rejected-call", args: { value: "keep" } }]);
-		expect(agent.state.messages.map(message => message.role)).toEqual(["user", "assistant", "toolResult", "assistant"]);
+		expect(agent.state.messages.map(message => message.role)).toEqual([
+			"user",
+			"assistant",
+			"toolResult",
+			"assistant",
+		]);
 		expect(agent.state.messages[2]).toMatchObject({ toolCallId: "rejected-call" });
 		expect(mock.calls).toHaveLength(2);
 		expect(JSON.stringify(events)).not.toContain(unsafe);
@@ -214,7 +291,8 @@ describe("assistant publication gate", () => {
 			const entered = Promise.withResolvers<void>();
 			const pending = Promise.withResolvers<void>();
 			const agent = new Agent({
-				initialState: { model: mock.model }, streamFn: mock.stream,
+				initialState: { model: mock.model },
+				streamFn: mock.stream,
 			});
 			setAssistantPublicationGate(agent, async () => {
 				entered.resolve();
@@ -223,7 +301,9 @@ describe("assistant publication gate", () => {
 			});
 
 			const events: AgentEvent[] = [];
-			agent.subscribe(event => { events.push(event); });
+			agent.subscribe(event => {
+				events.push(event);
+			});
 			const run = agent.prompt("implement");
 			await entered.promise;
 			if (failure === "abort") agent.abort();
@@ -239,13 +319,28 @@ describe("assistant publication gate", () => {
 	for (const outcome of ["done", "fail", "abort"] as const) {
 		it(`gates Cursor ${outcome} finalization while retaining the executed tool result`, async () => {
 			const mock = createMockModel({ responses: [] });
-			const toolCall = { type: "toolCall" as const, id: "cursor-1", name: "shell", arguments: { command: "pwd" }, [kCursorExecResolved]: true };
+			const toolCall = {
+				type: "toolCall" as const,
+				id: "cursor-1",
+				name: "shell",
+				arguments: { command: "pwd" },
+				[kCursorExecResolved]: true,
+			};
 			const draft = createAssistantMessage([{ type: "text", text: unsafe }, toolCall]);
-			const result: ToolResultMessage = { role: "toolResult", toolCallId: "cursor-1", toolName: "shell", content: [{ type: "text", text: "/workspace" }], timestamp: 1, isError: false };
+			const result: ToolResultMessage = {
+				role: "toolResult",
+				toolCallId: "cursor-1",
+				toolName: "shell",
+				content: [{ type: "text", text: "/workspace" }],
+				timestamp: 1,
+				isError: false,
+			};
 			const seen = Promise.withResolvers<void>();
 			const agent = new Agent({
 				initialState: { model: mock.model },
-				onAssistantMessageEvent: () => { seen.resolve(); },
+				onAssistantMessageEvent: () => {
+					seen.resolve();
+				},
 				streamFn: (_model, _context, options) => {
 					const stream = new AssistantMessageEventStream();
 					queueMicrotask(async () => {
@@ -261,7 +356,9 @@ describe("assistant publication gate", () => {
 			setAssistantPublicationGate(agent, () => ({ replacementText: approved }));
 
 			const events: AgentEvent[] = [];
-			agent.subscribe(event => { events.push(event); });
+			agent.subscribe(event => {
+				events.push(event);
+			});
 			const run = agent.prompt("pwd");
 			await seen.promise;
 			if (outcome === "abort") agent.abort();
@@ -292,7 +389,9 @@ describe("assistant publication gate", () => {
 		});
 
 		const events: AgentEvent[] = [];
-		agent.subscribe(event => { events.push(event); });
+		agent.subscribe(event => {
+			events.push(event);
+		});
 		await agent.prompt("implement");
 		expect(agent.state.messages.at(-1)).toBe(admitted);
 		expect(admitted?.content).toEqual([{ type: "text", text: approved }]);
@@ -301,11 +400,16 @@ describe("assistant publication gate", () => {
 
 	it("never publishes discarded Harmony attempts before gating the clean retry", async () => {
 		const leak = `${unsafe} analysis to=functions.edit code`;
-		const mock = createMockModel({ provider: "openai-codex", responses: [{ content: [leak] }, { content: [unsafe] }] });
+		const mock = createMockModel({
+			provider: "openai-codex",
+			responses: [{ content: [leak] }, { content: [unsafe] }],
+		});
 		const agent = new Agent({ initialState: { model: createHarmonyMitigationModel() }, streamFn: mock.stream });
 		setAssistantPublicationGate(agent, () => ({ replacementText: approved }));
 		const events: AgentEvent[] = [];
-		agent.subscribe(event => { events.push(event); });
+		agent.subscribe(event => {
+			events.push(event);
+		});
 		await agent.prompt("implement");
 		expect(mock.calls).toHaveLength(2);
 		expect(JSON.stringify(events)).not.toContain(unsafe);

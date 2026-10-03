@@ -426,20 +426,32 @@ export class TodoCommandController {
 			if (!verdict || verdict.status !== "pass" || verdict.auditor !== "qa-auditor") continue;
 			for (const row of requirement.rows) {
 				if (!artifacts.has(row)) {
-					artifacts.set(row, getRequirementRowArtifact(
-						{ cwd: this.ctx.sessionManager.getCwd(), sessionManager: this.ctx.sessionManager },
-						row, current, checkoutCache,
-					));
+					artifacts.set(
+						row,
+						getRequirementRowArtifact(
+							{ cwd: this.ctx.sessionManager.getCwd(), sessionManager: this.ctx.sessionManager },
+							row,
+							current,
+							checkoutCache,
+						),
+					);
 				}
 			}
 		}
 		const unmet: string[] = [];
 		for (const requirement of applicable) {
-			const rowArtifacts = await Promise.all(requirement.rows.map(async row => {
-				const artifact = await artifacts.get(row);
-				return artifact ? { row, head: artifact.head, dirty: artifact.dirty } : null;
-			}));
-			if (!isFreshRequirementVerdict(requirement, rowArtifacts.filter(item => item !== null))) {
+			const rowArtifacts = await Promise.all(
+				requirement.rows.map(async row => {
+					const artifact = await artifacts.get(row);
+					return artifact ? { row, head: artifact.head, dirty: artifact.dirty } : null;
+				}),
+			);
+			if (
+				!isFreshRequirementVerdict(
+					requirement,
+					rowArtifacts.filter(item => item !== null),
+				)
+			) {
 				const rows = requirement.rows.filter(row => targetRows.has(row));
 				unmet.push(`${requirement.id} (${rows.map(row => JSON.stringify(row)).join(", ")})`);
 			}

@@ -74,8 +74,22 @@ describe("assistant publication bridge", () => {
 			path: extensionPath,
 			resolvedPath: extensionPath,
 			handlers: new Map<string, unknown[]>([
-				["before_assistant_message", handlers.map(handler => async (...args: unknown[]) => handler(args[0] as BeforeAssistantMessageEvent))],
-				...(stop ? [["session_stop", [async (...args: unknown[]) => stop(args[0] as SessionStopEvent)]] as [string, unknown[]]] : []),
+				[
+					"before_assistant_message",
+					handlers.map(
+						handler =>
+							async (...args: unknown[]) =>
+								handler(args[0] as BeforeAssistantMessageEvent),
+					),
+				],
+				...(stop
+					? [
+							["session_stop", [async (...args: unknown[]) => stop(args[0] as SessionStopEvent)]] as [
+								string,
+								unknown[],
+							],
+						]
+					: []),
 			]) as unknown as Extension["handlers"],
 			tools: new Map(),
 			assistantThinkingRenderers: [],
@@ -90,15 +104,17 @@ describe("assistant publication bridge", () => {
 		return new ExtensionRunner([extension], new ExtensionRuntime(), tempDir.path(), manager, modelRegistry);
 	}
 
-	function harness(options: {
-		handlers?: DraftHandler[];
-		stop?: StopHandler;
-		responses?: MockResponse[];
-		tools?: AgentTool[];
-		todos?: boolean;
-		kind?: "main" | "sub";
-		ttsr?: TtsrManager;
-	} = {}) {
+	function harness(
+		options: {
+			handlers?: DraftHandler[];
+			stop?: StopHandler;
+			responses?: MockResponse[];
+			tools?: AgentTool[];
+			todos?: boolean;
+			kind?: "main" | "sub";
+			ttsr?: TtsrManager;
+		} = {},
+	) {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected bundled test model");
 		const mock = createMockModel({ responses: options.responses ?? [{ content: [UNSAFE] }] });
@@ -118,8 +134,13 @@ describe("assistant publication bridge", () => {
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
 		const session = new AgentSession({
-			agent, sessionManager: manager, settings, modelRegistry, extensionRunner: runner,
-			agentKind: options.kind, ttsrManager: options.ttsr,
+			agent,
+			sessionManager: manager,
+			settings,
+			modelRegistry,
+			extensionRunner: runner,
+			agentKind: options.kind,
+			ttsrManager: options.ttsr,
 		});
 		sessions.push(session);
 		return { session, agent, manager, runner, mock };
@@ -134,12 +155,14 @@ describe("assistant publication bridge", () => {
 		let stopCalls = 0;
 		const { session, agent, manager, mock } = harness({
 			todos: true,
-			handlers: [async event => {
-				receivedSignal = event.signal;
-				entered.resolve(true);
-				await approval.promise;
-				return { replacementText: STATUS, settled: true };
-			}],
+			handlers: [
+				async event => {
+					receivedSignal = event.signal;
+					entered.resolve(true);
+					await approval.promise;
+					return { replacementText: STATUS, settled: true };
+				},
+			],
 			stop: async () => {
 				stopCalls++;
 				stopEntered.resolve(true);
@@ -153,7 +176,9 @@ describe("assistant publication bridge", () => {
 		agent.subscribe(event => native.push(event));
 		session.subscribe(event => publicEvents.push(event));
 		let settled = false;
-		const prompt = session.prompt("Report completion").then(() => { settled = true; });
+		const prompt = session.prompt("Report completion").then(() => {
+			settled = true;
+		});
 		try {
 			await Promise.race([entered.promise, prompt.then(() => false)]);
 			expect(assistantTexts(agent.state.messages)).toEqual([]);
@@ -222,18 +247,20 @@ describe("assistant publication bridge", () => {
 	});
 
 	it("isolates handler draft mutations and does not let a later permissive handler release the original", async () => {
-		const { session, agent } = harness({ handlers: [
-			event => {
-				const text = event.message.content[0];
-				if (text.type === "text") text.text = "MUTATED DRAFT";
-				return { replacementText: STATUS, settled: true };
-			},
-			event => {
-				expect(assistantTexts([event.message])).toEqual([UNSAFE]);
-				return undefined;
-			},
-			event => ({ replacementText: assistantTexts([event.message]).join("") }),
-		] });
+		const { session, agent } = harness({
+			handlers: [
+				event => {
+					const text = event.message.content[0];
+					if (text.type === "text") text.text = "MUTATED DRAFT";
+					return { replacementText: STATUS, settled: true };
+				},
+				event => {
+					expect(assistantTexts([event.message])).toEqual([UNSAFE]);
+					return undefined;
+				},
+				event => ({ replacementText: assistantTexts([event.message]).join("") }),
+			],
+		});
 		await session.prompt("Report completion");
 		await session.waitForIdle();
 		expect(assistantTexts(agent.state.messages)).toEqual([STATUS]);
@@ -254,10 +281,16 @@ describe("assistant publication bridge", () => {
 		};
 		const { session, agent, mock } = harness({
 			tools: [tool],
-			responses: [{ content: [UNSAFE, { type: "toolCall", id: "probe-7", name: "probe", arguments: { value: "R7" } }] }, { content: [UNSAFE] }],
-			handlers: [event => event.message.content.some(block => block.type === "toolCall")
-				? { replacementText: "", settled: true }
-				: { replacementText: STATUS, settled: true }],
+			responses: [
+				{ content: [UNSAFE, { type: "toolCall", id: "probe-7", name: "probe", arguments: { value: "R7" } }] },
+				{ content: [UNSAFE] },
+			],
+			handlers: [
+				event =>
+					event.message.content.some(block => block.type === "toolCall")
+						? { replacementText: "", settled: true }
+						: { replacementText: STATUS, settled: true },
+			],
 		});
 		await session.prompt("Run the probe");
 		await session.waitForIdle();
@@ -265,7 +298,9 @@ describe("assistant publication bridge", () => {
 		expect(mock.calls).toHaveLength(2);
 		expect(JSON.stringify(mock.calls[1].context.messages)).not.toContain(UNSAFE);
 		expect(assistantTexts(agent.state.messages)).toEqual([STATUS]);
-		expect(agent.state.messages.filter(message => message.role === "toolResult").map(message => message.toolCallId)).toEqual(["probe-7"]);
+		expect(
+			agent.state.messages.filter(message => message.role === "toolResult").map(message => message.toolCallId),
+		).toEqual(["probe-7"]);
 	});
 
 	it("retains an unrelated explicit session_stop block after a settled replacement", async () => {
@@ -273,7 +308,7 @@ describe("assistant publication bridge", () => {
 		const { session, mock } = harness({
 			handlers: [() => ({ replacementText: STATUS, settled: true })],
 			responses: [{ content: [UNSAFE] }, { content: [UNSAFE] }],
-			stop: () => ++stops === 1 ? { decision: "block", reason: "Required hard check" } : undefined,
+			stop: () => (++stops === 1 ? { decision: "block", reason: "Required hard check" } : undefined),
 		});
 		await session.prompt("Report completion");
 		await session.waitForIdle();
@@ -286,7 +321,7 @@ describe("assistant publication bridge", () => {
 		const { session, mock } = harness({
 			handlers: [() => undefined],
 			responses: [{ content: ["Work remains"] }, { content: ["Second status"] }],
-			stop: () => ++stops === 1 ? { continue: true, additionalContext: "Continue ordinary work" } : undefined,
+			stop: () => (++stops === 1 ? { continue: true, additionalContext: "Continue ordinary work" } : undefined),
 		});
 		await session.prompt("Report status");
 		await session.waitForIdle();
@@ -301,7 +336,9 @@ describe("assistant publication bridge", () => {
 		});
 		session.setTodoPhases([{ name: "Work", tasks: [{ content: "Audit R7", status: "in_progress" }] }]);
 		let reminders = 0;
-		session.subscribe(event => { if (event.type === "todo_reminder") reminders++; });
+		session.subscribe(event => {
+			if (event.type === "todo_reminder") reminders++;
+		});
 		await session.prompt("Report completion");
 		await session.waitForIdle();
 		expect(reminders).toBe(1);
@@ -311,8 +348,11 @@ describe("assistant publication bridge", () => {
 	it("interrupts withheld raw text for TTSR and retains the rule retry without publishing that text", async () => {
 		const ttsr = new TtsrManager({ enabled: true, interruptMode: "always", contextMode: "keep", repeatMode: "once" });
 		ttsr.addRule({
-			name: "raw-stream-rule", path: "raw-stream-rule.md", content: "Avoid forbidden tokens.",
-			condition: ["FORBIDDEN"], scope: ["text"],
+			name: "raw-stream-rule",
+			path: "raw-stream-rule.md",
+			content: "Avoid forbidden tokens.",
+			condition: ["FORBIDDEN"],
+			scope: ["text"],
 			_source: { provider: "test", providerName: "test", path: "raw-stream-rule.md", level: "project" },
 		});
 		const { session, mock, agent } = harness({
@@ -331,21 +371,36 @@ describe("assistant publication bridge", () => {
 		expect(triggered).toEqual(["raw-stream-rule"]);
 		expect(mock.calls).toHaveLength(2);
 		expect(assistantTexts(agent.state.messages)).toEqual([ASSISTANT_GATE_REFUSAL, STATUS]);
-		expect(publicEvents.filter(event => isAssistantMessageEvent(event))
-			.some(event => JSON.stringify(event).includes("FORBIDDEN"))).toBe(false);
+		expect(
+			publicEvents
+				.filter(event => isAssistantMessageEvent(event))
+				.some(event => JSON.stringify(event).includes("FORBIDDEN")),
+		).toBe(false);
 	});
 
 	it.each(["unguarded", "subagent"] as const)("retains streaming for the %s negative control", async kind => {
 		let gateCalls = 0;
 		const { session, agent } = harness({
 			kind: kind === "subagent" ? "sub" : "main",
-			handlers: kind === "subagent" ? [() => { gateCalls++; return { replacementText: STATUS }; }] : [],
+			handlers:
+				kind === "subagent"
+					? [
+							() => {
+								gateCalls++;
+								return { replacementText: STATUS };
+							},
+						]
+					: [],
 		});
 		const updates: AgentEvent[] = [];
-		agent.subscribe(event => { if (event.type === "message_update") updates.push(event); });
+		agent.subscribe(event => {
+			if (event.type === "message_update") updates.push(event);
+		});
 		await session.prompt("Stream normally");
 		await session.waitForIdle();
-		expect(updates.some(event => event.type === "message_update" && event.assistantMessageEvent.type === "text_delta")).toBe(true);
+		expect(
+			updates.some(event => event.type === "message_update" && event.assistantMessageEvent.type === "text_delta"),
+		).toBe(true);
 		expect(assistantTexts(agent.state.messages)).toEqual([UNSAFE]);
 		expect(gateCalls).toBe(0);
 	});
@@ -354,12 +409,17 @@ describe("assistant publication bridge", () => {
 		const pending = Promise.withResolvers<void>();
 		let signal: AbortSignal | undefined;
 		testSetExtensionHandlerTimeoutMs(25);
-		const { session, agent } = harness({ handlers: [event => {
-			signal = event.signal;
-			if (failure === "error") throw new Error("Gate failed");
-			if (failure === "malformed") return { replacementText: 7 };
-			return pending.promise;
-		}, () => undefined] });
+		const { session, agent } = harness({
+			handlers: [
+				event => {
+					signal = event.signal;
+					if (failure === "error") throw new Error("Gate failed");
+					if (failure === "malformed") return { replacementText: 7 };
+					return pending.promise;
+				},
+				() => undefined,
+			],
+		});
 		try {
 			await session.prompt("Report completion");
 			await session.waitForIdle();
@@ -374,12 +434,16 @@ describe("assistant publication bridge", () => {
 		const entered = Promise.withResolvers<boolean>();
 		const release = Promise.withResolvers<void>();
 		let signal: AbortSignal | undefined;
-		const { session, agent, manager } = harness({ handlers: [async event => {
-			signal = event.signal;
-			entered.resolve(true);
-			await release.promise;
-			return undefined;
-		}] });
+		const { session, agent, manager } = harness({
+			handlers: [
+				async event => {
+					signal = event.signal;
+					entered.resolve(true);
+					await release.promise;
+					return undefined;
+				},
+			],
+		});
 		const prompt = session.prompt("Report completion");
 		try {
 			expect(await Promise.race([entered.promise, prompt.then(() => false)])).toBe(true);
