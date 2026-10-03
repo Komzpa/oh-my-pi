@@ -422,6 +422,12 @@ export declare class TextPredictor {
   persist(): Promise<void>
 }
 
+export declare class ToolResourceScope {
+  constructor()
+  wrapCommand(command: Array<string>): Array<string>
+  close(): void
+}
+
 /**
  * Dedicated writer thread for one terminal fd.
  *
