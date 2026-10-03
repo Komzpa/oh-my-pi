@@ -34,7 +34,13 @@ export function replaceAssistantNarrative(message: AssistantMessage, replacement
 	narrativeReplacedMessages.add(message);
 	let addedReplacement = false;
 	for (const block of message.content) {
-		if (block.type === "toolCall" || block.type === "fallback" || block.type === "anthropicServerTool") {
+		if (
+			block.type === "toolCall" ||
+			block.type === "fallback" ||
+			block.type === "anthropicServerTool" ||
+			block.type === "redactedThinking" ||
+			(block.type === "thinking" && block.thinkingSignature !== undefined)
+		) {
 			if (block.type === "toolCall") delete block.intent;
 			content.push(block);
 		} else if (replacementText && !addedReplacement) {
@@ -60,12 +66,11 @@ export async function admitAssistantMessage(
 	let detachAbort: (() => void) | undefined;
 	try {
 		if (gateSignal.aborted) throw gateSignal.reason;
-		const aborted = new Promise<never>((_resolve, reject) => {
-			const onAbort = () => reject(gateSignal.reason);
-			gateSignal.addEventListener("abort", onAbort, { once: true });
-			detachAbort = () => gateSignal.removeEventListener("abort", onAbort);
-		});
-		const result = await Promise.race([gate(message, gateSignal), aborted]);
+		const aborted = Promise.withResolvers<never>();
+		const onAbort = () => aborted.reject(gateSignal.reason);
+		gateSignal.addEventListener("abort", onAbort, { once: true });
+		detachAbort = () => gateSignal.removeEventListener("abort", onAbort);
+		const result = await Promise.race([gate(message, gateSignal), aborted.promise]);
 		if (gateSignal.aborted) throw gateSignal.reason;
 		if (result !== undefined) {
 			if (
