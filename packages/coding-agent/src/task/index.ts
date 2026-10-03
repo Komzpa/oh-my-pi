@@ -104,6 +104,9 @@ function createUsageTotals(): Usage {
 /** Built-in tool names stripped from a spawn item before eval validation, keyed by item. */
 const strippedBuiltinTools = new WeakMap<object, string[]>();
 
+/** Built-ins removed from streamed spawn params, retained for speculative validation. */
+const speculativeBuiltinTools = new WeakMap<object, string[]>();
+
 function appendTaskNotices(
 	result: AgentToolResult<TaskToolDetails>,
 	notices: readonly string[],
@@ -665,7 +668,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	readonly #launcher: TaskLauncher = {
 		spawns: args => {
 			const plan = planSpawns(args, this.#isBatchEnabled(), this.#defaultAgent());
-			return typeof plan === "string" ? undefined : plan.spawns;
+			if (typeof plan === "string") return undefined;
+			return plan.spawns.map((spawn, index) => {
+				const builtins = strippedBuiltinTools.get(plan.items[index]!);
+				if (builtins) speculativeBuiltinTools.set(spawn, builtins);
+				return spawn;
+			});
 		},
 		start: (toolCallId, spawn, index, signal) => this.#startSpeculative(toolCallId, spawn, index, signal),
 	};
@@ -794,13 +802,25 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		index: number,
 		signal: AbortSignal,
 	): Promise<SpawnRun | undefined> {
-		if (spawn.tools?.length && this.session.getPlanModeState?.()?.enabled === true) return undefined;
-		let blocking: boolean;
+		let policy;
 		try {
-			blocking = (await this.#resolveSpawnPreflight(spawn)).effectiveAgent.blocking === true;
+			policy = await this.#resolveSpawnPreflight(spawn);
 		} catch {
 			return undefined;
 		}
+		const evalToolNames = [
+			...(spawn.tools ?? []),
+			...(speculativeBuiltinTools.get(spawn) ?? []).filter(name => !isBuiltinToolAvailable(name, policy.effectiveAgent)),
+		];
+		if (evalToolNames.length > 0) {
+			if (this.session.getPlanModeState?.()?.enabled === true) return undefined;
+			try {
+				await describeEvalTools(this.session, evalToolNames, signal);
+			} catch {
+				return undefined;
+			}
+		}
+		const blocking = policy.effectiveAgent.blocking === true;
 		const detached =
 			cfgAsyncEnabled.get(this.session.settings) && this.session.asyncJobManager !== undefined && !blocking;
 		const agentId = await this.#outputManager().allocate(spawn.name?.trim() || generateTaskName());
@@ -959,7 +979,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 		if (
 			this.session.getPlanModeState?.()?.enabled === true &&
-			(toolNotices.length > 0 || unavailableBuiltins.length > 0)
+			unavailableBuiltins.length > 0
 		) {
 			return appendTaskNotices(
 				createTaskModeError("Task execution failed: Eval-defined tools are unavailable in plan mode."),
