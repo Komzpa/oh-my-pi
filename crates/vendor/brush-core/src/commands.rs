@@ -213,21 +213,30 @@ pub fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtensions>(
 	}
 
 	let command_args = args.iter().map(|arg| arg.as_ref().to_os_string()).collect::<Vec<_>>();
-	let wrapped = context
-		.params
-		.external_command_wrapper()
-		.map(|wrapper| {
-			wrapper.wrap_external_command(
-				OsStr::new(command_name),
-				OsStr::new(argv0),
-				&command_args,
-			)
-		})
-		.transpose()
-		.map_err(|err| error::Error::from(error::ErrorKind::FailedToExecuteCommand(
-			context.command_name.clone(), err,
-		)))?
-		.flatten();
+	// Reparented launches (`detach_reparent`, e.g. `nohup cmd &`) double-fork
+	// out of the descendant tree and must survive the host's teardown. A
+	// per-call scope (e.g. the tool process-limit slice, stopped on drop)
+	// would still contain them via cgroup membership and kill them when the
+	// call ends, so they bypass the external-command wrapper entirely.
+	let wrapped = if context.params.detach_reparent {
+		None
+	} else {
+		context
+			.params
+			.external_command_wrapper()
+			.map(|wrapper| {
+				wrapper.wrap_external_command(
+					OsStr::new(command_name),
+					OsStr::new(argv0),
+					&command_args,
+				)
+			})
+			.transpose()
+			.map_err(|err| error::Error::from(error::ErrorKind::FailedToExecuteCommand(
+				context.command_name.clone(), err,
+			)))?
+			.flatten()
+	};
 	let mut cmd = if let Some((program, wrapped_args)) = wrapped {
 		let mut cmd = std::process::Command::new(program);
 		cmd.args(wrapped_args);

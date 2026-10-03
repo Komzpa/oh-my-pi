@@ -425,6 +425,17 @@ export declare class TextPredictor {
 export declare class ToolResourceScope {
   constructor()
   wrapCommand(command: Array<string>): Array<string>
+  /**
+   * Off-thread variant of [`ToolResourceScope::wrap_command`]: the systemd
+   * subprocesses behind first-use enforcement run on libuv's thread pool,
+   * so the JS event loop is never blocked. Resolves to the same argv.
+   */
+  wrapCommandAsync(command: Array<string>): Promise<Array<string>>
+  /**
+   * Dropping the owner only hands teardown to a detached thread
+   * ([`ToolProcessLimit`] never blocks the dropping thread), so this
+   * returns immediately; no async variant is needed.
+   */
   close(): void
 }
 

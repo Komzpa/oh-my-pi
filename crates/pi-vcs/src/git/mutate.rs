@@ -906,7 +906,7 @@ fn run_commit_hook(repository: &GitRepo, name: &str, args: &[&OsStr]) -> Result<
 	};
 	#[cfg(not(windows))]
 	let mut command = Command::new(&hook);
-	let resource_scope = crate::process_limit::ToolProcessLimit::default();
+	let resource_scope = crate::process_limit::shared();
 	let mut arguments = vec![command.get_program().to_owned()];
 	arguments.extend(command.get_args().map(OsStr::to_owned));
 	let wrapped = resource_scope.wrap_scope_command(&arguments)?;
@@ -1010,54 +1010,59 @@ fn alternates_chain_is_cyclic(source_common: &Path, own_objects: &Path) -> bool 
 	false
 }
 
+/// Transitively reachable object stores starting at `source_common/objects`,
+/// deduplicated by canonical path. Shared by the cycle check and the
+/// non-borrowing copy so both agree on the reachable set.
+fn reachable_object_stores(source_common: &Path) -> Vec<PathBuf> {
+	let mut stores = Vec::new();
+	let mut stack = vec![canonical_of(&source_common.join("objects"))];
+	while let Some(current) = stack.pop() {
+		if stores.contains(&current) {
+			continue;
+		}
+		stores.push(current.clone());
+		let Ok(contents) = fs::read_to_string(current.join("info/alternates")) else {
+			continue;
+		};
+		for line in contents.lines().map(str::trim).filter(|line| !line.is_empty()) {
+			stack.push(canonical_of(&resolve_alternate(&current, line)));
+		}
+	}
+	stores
+}
+
 /// Copy an object store without its `info/alternates` pointer, breaking any
-/// borrow cycle by materializing objects locally.
-fn copy_objects_non_borrowing(src: &Path, dst: &Path) -> Result<()> {
-	fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
+/// borrow cycle by materializing objects locally. Every store reachable
+/// through the source's alternates chain contributes its loose objects and
+/// packs: a borrowed source (`--shared`, `--reference`) keeps objects only
+/// in the alternate stores, and copying just the top store would leave a
+/// corrupt clone whose history fails to resolve.
+fn copy_objects_non_borrowing(source_common: &Path, dst: &Path) -> Result<()> {
+	fn copy_store_tree(src: &Path, dst: &Path, skipped: &Path) -> Result<()> {
 		fs::create_dir_all(dst)?;
 		for entry in fs::read_dir(src)? {
 			let entry = entry?;
-			let file_type = entry.file_type()?;
+			let src_path = entry.path();
+			// Never inherit a borrow pointer (`info/alternates`) or a pack
+			// index (`info/packs`) that describes a different store's pack
+			// set; packs are discovered by scanning the merged directory.
+			if src_path == skipped
+				|| src_path.file_name().is_some_and(|name| name == "packs")
+			{
+				continue;
+			}
 			let dst_path = dst.join(entry.file_name());
+			let file_type = entry.file_type()?;
 			if file_type.is_dir() {
-				copy_tree(&entry.path(), &dst_path)?;
+				copy_store_tree(&src_path, &dst_path, skipped)?;
 			} else if file_type.is_file() {
-				fs::copy(entry.path(), dst_path)?;
+				fs::copy(&src_path, &dst_path)?;
 			}
 		}
 		Ok(())
 	}
-	let excluded = src.join("info/alternates");
-	for entry in fs::read_dir(src)? {
-		let entry = entry?;
-		let entry_path = entry.path();
-		if entry_path == excluded {
-			continue;
-		}
-		let dst_path = dst.join(entry.file_name());
-		let file_type = entry.file_type()?;
-		if file_type.is_dir() {
-			if entry_path == src.join("info") {
-				fs::create_dir_all(&dst_path)?;
-				for inner in fs::read_dir(&entry_path)? {
-					let inner = inner?;
-					if inner.path() == excluded {
-						continue;
-					}
-					let inner_dst = dst_path.join(inner.file_name());
-					let inner_type = inner.file_type()?;
-					if inner_type.is_dir() {
-						copy_tree(&inner.path(), &inner_dst)?;
-					} else if inner_type.is_file() {
-						fs::copy(inner.path(), inner_dst)?;
-					}
-				}
-			} else {
-				copy_tree(&entry_path, &dst_path)?;
-			}
-		} else if file_type.is_file() {
-			fs::copy(entry_path, dst_path)?;
-		}
+	for store in reachable_object_stores(source_common) {
+		copy_store_tree(&store, dst, &store.join("info/alternates"))?;
 	}
 	Ok(())
 }
@@ -1113,6 +1118,36 @@ fn detach_without_borrowing(
 	git_entry_is_file: bool,
 	source_common: &Path,
 ) -> Result<DetachGitDirResult> {
+	// The cyclic-alternates branch in `detach_git_dir` runs before its
+	// `Independent` guard, which needs an opened repository. Resolve this
+	// worktree's common dir from the filesystem first and bail out when it
+	// is not the source: otherwise an unrelated repository (or a full `.git`
+	// copy) would have its `.git` deleted and rebuilt from the source's
+	// refs, objects and config. An unresolvable layout falls through to the
+	// historical behavior below.
+	let own_common: Option<PathBuf> = if git_entry_is_file {
+		fs::read_to_string(git_entry).ok().and_then(|text| {
+			let admin = git_entry
+				.parent()
+				.unwrap_or_else(|| Path::new("."))
+				.join(text.trim().strip_prefix("gitdir:")?.trim());
+			fs::read_to_string(admin.join("commondir")).ok().and_then(|text| {
+				let raw = text.trim();
+				if raw.is_empty() {
+					return None;
+				}
+				let path = PathBuf::from(raw);
+				Some(if path.is_absolute() { path } else { normalize_path(&admin.join(path)) })
+			})
+		})
+	} else {
+		Some(git_entry.to_owned())
+	};
+	if let Some(own) = own_common.as_ref()
+		&& canonical_of(own) != canonical_of(source_common)
+	{
+		return Ok(DetachGitDirResult::Independent);
+	}
 	let pointer_admin = if git_entry_is_file {
 		let text = fs::read_to_string(git_entry)?;
 		let Some(raw) = text.trim().strip_prefix("gitdir:") else {
@@ -1189,7 +1224,7 @@ fn detach_without_borrowing(
 		}
 	}
 	gix::init(worktree_root).map_err(|e| Error::backend("git init", e))?;
-	copy_objects_non_borrowing(&source_common.join("objects"), &git_entry.join("objects"))?;
+	copy_objects_non_borrowing(source_common, &git_entry.join("objects"))?;
 	for (rel, bytes) in refs_files {
 		let dest = git_entry.join("refs").join(&rel);
 		if let Some(parent) = dest.parent() {
@@ -3147,4 +3182,55 @@ mod tests {
 		assert_eq!(git(temp.path(), &["rev-parse", "HEAD"]), source_head);
 		let _ = fs::remove_dir_all(&iso);
 	}
+	#[test]
+	fn detach_without_borrowing_leaves_unrelated_repo_alone() {
+		let (source_temp, _) = fixture();
+		let source_common = fs::canonicalize(source_temp.path().join(".git")).unwrap();
+		// Plant a cyclic alternates chain on the source: without the
+		// `Independent` guard any worktree would take the non-borrowing
+		// branch, including an unrelated repository.
+		let source_objects = source_common.join("objects");
+		let decoy = tempfile::tempdir().unwrap();
+		let decoy_objects = decoy.path().join("objects");
+		fs::create_dir_all(decoy_objects.join("info")).unwrap();
+		fs::write(source_objects.join("info/alternates"), format!("{}\n", decoy_objects.display()))
+			.unwrap();
+		fs::write(decoy_objects.join("info/alternates"), format!("{}\n", source_objects.display()))
+			.unwrap();
+		let (other_temp, _) = fixture();
+		let other_git = other_temp.path().join(".git");
+		let head_before = git(other_temp.path(), &["rev-parse", "HEAD"]);
+		assert_eq!(
+			detach_without_borrowing(other_temp.path(), &other_git, false, &source_common).unwrap(),
+			DetachGitDirResult::Independent
+		);
+		assert_eq!(git(other_temp.path(), &["rev-parse", "HEAD"]), head_before);
+	}
+
+	#[test]
+	fn copy_objects_non_borrowing_merges_alternate_stores() {
+		let temp = tempfile::tempdir().unwrap();
+		let source_common = temp.path().join("common");
+		let source_objects = source_common.join("objects");
+		fs::create_dir_all(source_objects.join("info")).unwrap();
+		fs::create_dir_all(source_objects.join("pack")).unwrap();
+		fs::write(source_objects.join("pack").join("top.pack"), b"top").unwrap();
+		// A borrowed source keeps objects only in the alternate store.
+		let alt = tempfile::tempdir().unwrap();
+		let alt_objects = alt.path().join("objects");
+		fs::create_dir_all(alt_objects.join("ab")).unwrap();
+		fs::create_dir_all(alt_objects.join("info")).unwrap();
+		fs::write(alt_objects.join("ab").join("cdef"), b"borrowed").unwrap();
+		fs::write(
+			source_objects.join("info/alternates"),
+			format!("{}\n", alt_objects.display()),
+		)
+		.unwrap();
+		let dst = temp.path().join("copy");
+		copy_objects_non_borrowing(&source_common, &dst).unwrap();
+		assert_eq!(fs::read(dst.join("ab/cdef")).unwrap(), b"borrowed");
+		assert_eq!(fs::read(dst.join("pack/top.pack")).unwrap(), b"top");
+		assert!(!dst.join("info/alternates").exists());
+	}
+
 }

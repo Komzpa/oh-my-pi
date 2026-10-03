@@ -1426,12 +1426,11 @@ async fn run_shell_command_once(
 	if cancel_token.is_cancelled() {
 		terminate_background_jobs(&mut session.shell);
 	}
-	if spawn_registry.process_limit_was_hit()? {
-		return Err(Error::msg(
-			"tool process limit exceeded: Linux cgroup pids.max blocked process creation at 500 \
-			 tasks; reduce concurrent child processes and retry",
-		));
-	}
+	// The per-tool limit is reported by the `run_shell_command_in_filesystem`
+	// wrapper after this returns, so every buffered path (single and
+	// segmented chain) is covered without an early return here: returning
+	// before `drop(params)` and the reader shutdown below would detach the
+	// reader and `cancel_bridge` tasks instead of cleaning them up.
 
 	drop(params);
 
@@ -1589,12 +1588,9 @@ async fn run_shell_command_streams_in_filesystem(
 			.pop_scope(EnvironmentScope::Command)
 			.map_err(|err| Error::msg(format!("Failed to pop env scope: {err}")))?;
 	}
-	if spawn_registry.process_limit_was_hit()? {
-		return Err(Error::msg(
-			"tool process limit exceeded: Linux cgroup pids.max blocked process creation at 500 \
-			 tasks; reduce concurrent child processes and retry",
-		));
-	}
+	// The per-tool limit is reported below, after the reader handles and
+	// `cancel_bridge` are shut down: returning here would detach those tasks
+	// instead of cleaning them up.
 
 	drop(params);
 
@@ -1652,6 +1648,13 @@ async fn run_shell_command_streams_in_filesystem(
 	}
 	cancel_bridge.abort();
 	let _ = cancel_bridge.await;
+
+	if spawn_registry.process_limit_was_hit()? {
+		return Err(Error::msg(
+			"tool process limit exceeded: Linux cgroup pids.max blocked process creation at 500 \
+			 tasks; reduce concurrent child processes and retry",
+		));
+	}
 
 	let result = result.map_err(|err| Error::msg(format!("Shell execution failed: {err}")))?;
 	let working_dir = Some(session.shell.working_dir().to_string_lossy().into_owned());

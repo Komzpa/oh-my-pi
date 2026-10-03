@@ -14,7 +14,7 @@
 //! disabled for writes, ambient `GIT_DIR`-family vars stripped, bounded output
 //! capture, and deadline + SIGTERM→SIGKILL termination via tokio.
 
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
 
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
@@ -77,6 +77,10 @@ pub(crate) struct RunOptions {
 	pub stdin:     Option<Vec<u8>>,
 	/// Cooperative cancellation: the child is terminated when triggered.
 	pub cancel:    Option<CancellationToken>,
+	/// Verified process boundary reused across invocations. When unset, the
+	/// process-wide shared boundary is used, so repeated status/diff/log
+	/// calls verify the slice once instead of per call.
+	pub scope:     Option<Arc<crate::process_limit::ToolProcessLimit>>,
 }
 
 /// Build the hardened argv prefix.
@@ -188,8 +192,15 @@ fn is_utf8_locale(value: &str) -> bool {
 /// Non-zero exits are returned in [`CliOutput`], not raised.
 pub(crate) async fn run(cwd: &Path, args: &[String], options: &RunOptions) -> Result<CliOutput> {
 	let argv = hardened_args(args, options.read_only);
-	let resource_scope = crate::process_limit::ToolProcessLimit::default();
-	let command = resource_scope.wrap_scope_command(&[std::ffi::OsString::from("git")])?;
+	let scope = options.scope.clone().unwrap_or_else(crate::process_limit::shared);
+	let probe = vec![std::ffi::OsString::from("git")];
+	// First-use enforcement runs manager subprocesses; keep them off the
+	// async worker. Reuse of the verified boundary makes this a no-op after
+	// the first call, and the shared owner is never dropped per call, so no
+	// per-invocation slice create/verify/stop cycle remains.
+	let command = tokio::task::spawn_blocking(move || scope.wrap_scope_command(&probe))
+		.await
+		.map_err(|err| Error::backend("git scope", err))??;
 	let mut cmd = tokio::process::Command::new(&command[0]);
 	cmd.args(&command[1..])
 		.args(&argv)
@@ -319,8 +330,8 @@ pub(crate) fn run_sync_capped(
 	limit: usize,
 ) -> Result<CliOutput> {
 	let argv = hardened_args(args, true);
-	let resource_scope = crate::process_limit::ToolProcessLimit::default();
-	let command = resource_scope.wrap_scope_command(&[std::ffi::OsString::from("git")])?;
+	let command =
+		crate::process_limit::shared().wrap_scope_command(&[std::ffi::OsString::from("git")])?;
 	let mut cmd = std::process::Command::new(&command[0]);
 	cmd.args(&command[1..])
 		.args(&argv)
