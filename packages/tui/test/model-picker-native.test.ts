@@ -91,7 +91,10 @@ afterEach(() => {
 	for (const hub of hubs.splice(0)) hub.dispose();
 });
 
-function openHub(calls: { assign: string[]; cancel: number; select: string[] }, models: Model[] = MODELS): ModelHubComponent {
+function openHub(
+	calls: { assign: string[]; cancel: number; select: string[] },
+	models: Model[] = MODELS,
+): ModelHubComponent {
 	const hub = new ModelHubComponent(
 		ui,
 		source({ default: "demo/demo" }, ["demo/demo"]),
