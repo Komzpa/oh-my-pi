@@ -12,7 +12,14 @@ export interface AwsBedrockProviderOptions extends Readonly<Record<string, unkno
 	bearerToken?: string;
 }
 
+let cachedIsEc2Host: boolean | undefined;
+
+/** Hardware/hypervisor identity never changes for a running process, so the
+ *  DMI probe below is cached after the first call — otherwise every
+ *  {@link hasAwsCredentialSource} / `getEnvApiKey("amazon-bedrock" | "bedrock-mantle")`
+ *  call re-reads the same five sysfs files from scratch. */
 function isEc2Host(): boolean {
+	if (cachedIsEc2Host !== undefined) return cachedIsEc2Host;
 	// Xen instances tag DMI/hypervisor UUIDs with an `ec2` prefix. Nitro instances
 	// (EKS, modern EC2) expose the instance id in board_asset_tag (`i-...`) and
 	// "Amazon EC2" in the DMI vendor fields; cover both so Nitro/EKS hosts aren't
@@ -24,15 +31,19 @@ function isEc2Host(): boolean {
 		["/sys/devices/virtual/dmi/id/sys_vendor", v => v.includes("amazon ec2")],
 		["/sys/devices/virtual/dmi/id/bios_vendor", v => v.includes("amazon ec2")],
 	];
+	cachedIsEc2Host = false;
 	for (const [candidate, matches] of checks) {
 		try {
 			const value = fs.readFileSync(candidate, "utf8").trim().toLowerCase();
-			if (matches(value)) return true;
+			if (matches(value)) {
+				cachedIsEc2Host = true;
+				break;
+			}
 		} catch {
 			// Missing/unreadable DMI metadata means this probe is inconclusive.
 		}
 	}
-	return false;
+	return cachedIsEc2Host;
 }
 
 export function hasAwsCredentialSource(): boolean {

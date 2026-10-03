@@ -10586,8 +10586,25 @@ export class AgentSession implements SettingsScope {
 			timestamp: Date.now(),
 		});
 		if (history?.length) {
-			// Detach before the conversion pipeline can await or mutate caller-owned messages.
-			messages.push(...structuredClone(history));
+			// Detach before the conversion pipeline can await or mutate caller-owned
+			// messages, without paying to walk every nested content block. A full
+			// `structuredClone` here is O(bytes of caller-supplied history): with a
+			// large or growing side-channel thread (BTW follow-ups, an extension's
+			// own peer-conversation cache), that cost is repeated on every ephemeral
+			// turn. Content blocks are treated as immutable after construction
+			// throughout this codebase (see `convertOneCached`'s identity-keyed
+			// cache), so a one-level detach — new message wrapper, new content
+			// array — is enough to stop a caller mutating what we hand to the
+			// conversion pipeline while it awaits.
+			messages.push(
+				...history.map(
+					message =>
+						({
+							...message,
+							content: Array.isArray(message.content) ? [...message.content] : message.content,
+						}) as AgentMessage,
+				),
+			);
 		}
 		messages.push({
 			role: "user",
