@@ -1,6 +1,3 @@
-import { stat } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
-
 import {
 	type TodoStatus,
 	type TodoOperation,
@@ -20,8 +17,8 @@ import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
 
 import { AgentRegistry } from "../registry/agent-registry";
-
-import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
+import { stat } from "node:fs/promises";
+import { dirname, isAbsolute } from "node:path";
 import {
 	appendRequirementsSnapshot,
 	classifyRequirement,
@@ -29,6 +26,8 @@ import {
 	isFreshRequirementVerdict,
 	type RequirementsLedgerAppender,
 } from "./requirements-ledger";
+
+import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
 
 /** Whether an unknown value is a persisted todo phase. */
 export function isTodoPhase(value: unknown): value is TodoPhase {
@@ -109,115 +108,11 @@ function findPhaseByName(phases: TodoPhase[], name: string): TodoPhase | undefin
 }
 
 function cloneTask(task: TodoItem): TodoItem {
-	const clone = { ...task };
-	if (task.notes) clone.notes = [...task.notes];
-	const schedule = (task as TodoItem & { schedule?: unknown }).schedule;
-	if (schedule !== undefined) Object.assign(clone, { schedule: structuredClone(schedule) });
-	return clone;
+	return structuredClone(task);
 }
 
 function clonePhases(phases: TodoPhase[]): TodoPhase[] {
 	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
-}
-
-function todoTransitionKey(phase: string, content: string): string {
-	return `${phase}\u0000${content}`;
-}
-
-function getCompletionTransitions(previous: TodoPhase[], updated: TodoPhase[]): TodoCompletionTransition[] {
-	const previousStatuses = new Map<string, TodoStatus>();
-	for (const phase of previous) {
-		for (const task of phase.tasks) {
-			previousStatuses.set(todoTransitionKey(phase.name, task.content), task.status);
-		}
-	}
-
-	const transitions: TodoCompletionTransition[] = [];
-	for (const phase of updated) {
-		for (const task of phase.tasks) {
-			if (task.status !== "completed") continue;
-			const previousStatus = previousStatuses.get(todoTransitionKey(phase.name, task.content));
-			if (previousStatus && previousStatus !== "completed") {
-				transitions.push({ phase: phase.name, content: task.content });
-			}
-		}
-	}
-	return transitions;
-}
-
-function normalizeInProgressTask(phases: TodoPhase[]): void {
-	const orderedTasks = phases.flatMap(phase => phase.tasks);
-	if (orderedTasks.length === 0) return;
-
-	const inProgressTasks = orderedTasks.filter(task => task.status === "in_progress");
-	if (inProgressTasks.length > 1) {
-		for (const task of inProgressTasks.slice(1)) {
-			task.status = "pending";
-		}
-	}
-
-	if (inProgressTasks.length > 0) return;
-
-	const firstPendingTask = orderedTasks.find(task => task.status === "pending");
-	if (firstPendingTask) firstPendingTask.status = "in_progress";
-}
-
-/** Return the active todo task, preferring an in-progress item over the first pending item. */
-export function nextActionableTask(phases: readonly TodoPhase[]): TodoItem | undefined {
-	let firstPending: TodoItem | undefined;
-	for (const phase of phases) {
-		for (const task of phase.tasks) {
-			if (task.status === "in_progress") return task;
-			if (!firstPending && task.status === "pending") firstPending = task;
-		}
-	}
-	return firstPending;
-}
-
-export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
-
-export const TODO_HUD_STATE_CUSTOM_TYPE = "todo_hud_state";
-
-export type TodoHudVisibility = "dismissed" | "revealed";
-
-export interface TodoSnapshotIdentity {
-	sourceEntryId: string;
-	fingerprint: string;
-}
-
-export interface TodoHudStateEntryData extends TodoSnapshotIdentity {
-	visibility: TodoHudVisibility;
-}
-
-function todoPhasesFingerprint(phases: readonly TodoPhase[]): string {
-	return JSON.stringify(
-		phases.map(phase => ({
-			name: phase.name,
-			tasks: phase.tasks.map(task =>
-				task.blocker === undefined
-					? { content: task.content, status: task.status }
-					: { content: task.content, status: task.status, blocker: task.blocker },
-			),
-		})),
-	);
-}
-
-function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
-	if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
-		const phases = (entry.data as { phases?: unknown } | undefined)?.phases;
-		return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
-	}
-	if (entry.type !== "message") return undefined;
-	const message = entry.message as {
-		role?: string;
-		toolName?: string;
-		details?: { op?: unknown; phases?: unknown };
-		isError?: boolean;
-	};
-	if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) return undefined;
-	if (message.details?.op === "view") return undefined;
-	const phases = message.details?.phases;
-	return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
 }
 
 export interface RequirementRowArtifact {
@@ -439,6 +334,149 @@ export async function bindRequirementRowArtifact(
 	return artifact;
 }
 
+export interface TodoTaskSelector {
+	task?: string;
+	phase?: string;
+}
+
+export interface TodoBatchTargetSelector {
+	op?: string;
+	task?: string;
+	items?: string[];
+}
+
+/** Select explicit batch targets for done/drop; these ops require at least one row. */
+export function getBatchTargets(phases: TodoPhase[], entry: TodoBatchTargetSelector, errors: string[]): TodoItem[] {
+	if (!entry.task && (entry.items?.length ?? 0) === 0) {
+		errors.push(`${entry.op === "drop" ? "drop" : "done"} requires a task or items target`);
+		return [];
+	}
+	const targets: TodoItem[] = [];
+	const seen = new Set<TodoItem>();
+	const addTarget = (content: string) => {
+		const hit = resolveTaskOrError(phases, content, errors);
+		if (hit && !seen.has(hit.task)) {
+			seen.add(hit.task);
+			targets.push(hit.task);
+		}
+	};
+	if (entry.task) addTarget(entry.task);
+	for (const content of entry.items ?? []) addTarget(content);
+	return targets;
+}
+
+/** Resolve done targets once for native mutation and the extension safety gate. */
+export function getCompletionTargets(
+	phases: TodoPhase[],
+	entry: TodoTaskSelector & { items?: string[] },
+	errors: string[],
+): TodoItem[] {
+	if (entry.items !== undefined) {
+		return getBatchTargets(phases, { op: "done", task: entry.task, items: entry.items }, errors);
+	}
+	return getTaskTargets(phases, entry, errors);
+}
+
+function todoTransitionKey(phase: string, content: string): string {
+	return `${phase}\u0000${content}`;
+}
+
+function getCompletionTransitions(previous: TodoPhase[], updated: TodoPhase[]): TodoCompletionTransition[] {
+	const previousStatuses = new Map<string, TodoStatus>();
+	for (const phase of previous) {
+		for (const task of phase.tasks) {
+			previousStatuses.set(todoTransitionKey(phase.name, task.content), task.status);
+		}
+	}
+
+	const transitions: TodoCompletionTransition[] = [];
+	for (const phase of updated) {
+		for (const task of phase.tasks) {
+			if (task.status !== "completed") continue;
+			const previousStatus = previousStatuses.get(todoTransitionKey(phase.name, task.content));
+			if (previousStatus && previousStatus !== "completed") {
+				transitions.push({ phase: phase.name, content: task.content });
+			}
+		}
+	}
+	return transitions;
+}
+
+function normalizeInProgressTask(phases: TodoPhase[]): void {
+	const orderedTasks = phases.flatMap(phase => phase.tasks);
+	if (orderedTasks.length === 0) return;
+
+	const inProgressTasks = orderedTasks.filter(task => task.status === "in_progress");
+	if (inProgressTasks.length > 1) {
+		for (const task of inProgressTasks.slice(1)) {
+			task.status = "pending";
+		}
+	}
+
+	if (inProgressTasks.length > 0) return;
+
+	const firstPendingTask = orderedTasks.find(task => task.status === "pending");
+	if (firstPendingTask) firstPendingTask.status = "in_progress";
+}
+
+/** Return the active todo task, preferring an in-progress item over the first pending item. */
+export function nextActionableTask(phases: readonly TodoPhase[]): TodoItem | undefined {
+	let firstPending: TodoItem | undefined;
+	for (const phase of phases) {
+		for (const task of phase.tasks) {
+			if (task.status === "in_progress") return task;
+			if (!firstPending && task.status === "pending") firstPending = task;
+		}
+	}
+	return firstPending;
+}
+
+export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
+
+export const TODO_HUD_STATE_CUSTOM_TYPE = "todo_hud_state";
+
+export type TodoHudVisibility = "dismissed" | "revealed";
+
+export interface TodoSnapshotIdentity {
+	sourceEntryId: string;
+	fingerprint: string;
+}
+
+export interface TodoHudStateEntryData extends TodoSnapshotIdentity {
+	visibility: TodoHudVisibility;
+}
+
+function todoPhasesFingerprint(phases: readonly TodoPhase[]): string {
+	return JSON.stringify(
+		phases.map(phase => ({
+			name: phase.name,
+			tasks: phase.tasks.map(task =>
+				task.blocker === undefined
+					? { content: task.content, status: task.status }
+					: { content: task.content, status: task.status, blocker: task.blocker },
+			),
+		})),
+	);
+}
+
+function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
+	if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
+		const phases = (entry.data as { phases?: unknown } | undefined)?.phases;
+		return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
+	}
+	if (entry.type !== "message") return undefined;
+	const message = entry.message as {
+		role?: string;
+		toolName?: string;
+		details?: { op?: unknown; phases?: unknown };
+		isError?: boolean;
+	};
+	if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) return undefined;
+	if (message.details?.op === "view") return undefined;
+	const phases = message.details?.phases;
+	return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
+}
+
 /** Identify the latest durable canonical todo snapshot on the active branch. */
 export function getLatestTodoSnapshotIdentity(entries: SessionEntry[]): TodoSnapshotIdentity | undefined {
 	let latest: TodoPhase[] | undefined;
@@ -544,17 +582,6 @@ function resolvePhaseOrError(phases: TodoPhase[], name: string | undefined, erro
 	return phase;
 }
 
-export interface TodoTaskSelector {
-	task?: string;
-	phase?: string;
-}
-
-export interface TodoBatchTargetSelector {
-	op?: string;
-	task?: string;
-	items?: string[];
-}
-
 /** Select the targets used by task/phase operations; omitting both selects all rows. */
 export function getTaskTargets(phases: TodoPhase[], entry: TodoTaskSelector, errors: string[]): TodoItem[] {
 	if (entry.task) {
@@ -566,38 +593,6 @@ export function getTaskTargets(phases: TodoPhase[], entry: TodoTaskSelector, err
 		return phase ? [...phase.tasks] : [];
 	}
 	return phases.flatMap(phase => phase.tasks);
-}
-
-/** Select explicit batch targets for done/drop; these ops require at least one row. */
-export function getBatchTargets(phases: TodoPhase[], entry: TodoBatchTargetSelector, errors: string[]): TodoItem[] {
-	if (!entry.task && (entry.items?.length ?? 0) === 0) {
-		errors.push(`${entry.op === "drop" ? "drop" : "done"} requires a task or items target`);
-		return [];
-	}
-	const targets: TodoItem[] = [];
-	const seen = new Set<TodoItem>();
-	const addTarget = (content: string) => {
-		const hit = resolveTaskOrError(phases, content, errors);
-		if (hit && !seen.has(hit.task)) {
-			seen.add(hit.task);
-			targets.push(hit.task);
-		}
-	};
-	if (entry.task) addTarget(entry.task);
-	for (const content of entry.items ?? []) addTarget(content);
-	return targets;
-}
-
-/** Resolve done targets once for native mutation and the extension safety gate. */
-export function getCompletionTargets(
-	phases: TodoPhase[],
-	entry: TodoTaskSelector & { items?: string[] },
-	errors: string[],
-): TodoItem[] {
-	if (entry.items !== undefined) {
-		return getBatchTargets(phases, { op: "done", task: entry.task, items: entry.items }, errors);
-	}
-	return getTaskTargets(phases, entry, errors);
 }
 
 /** Phase name for `init` given a flat `items` list with no explicit `phase`. */
