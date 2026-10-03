@@ -679,6 +679,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#collabStatus: CollabStatus | null = null;
 	#streamStatus: { viewers: number } | null = null;
 	#recording = false;
+	#fpsText = "";
 	#focusedAgentId: string | undefined;
 	#activeRepoCache: ActiveRepoCache | undefined;
 
@@ -876,6 +877,12 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	setAutoCompactEnabled(enabled: boolean): void {
 		if (this.#autoCompactEnabled === enabled) return;
 		this.#autoCompactEnabled = enabled;
+		this.#invalidateStatusLineRenderCache();
+	}
+
+	setFpsText(text: string): void {
+		if (this.#fpsText === text) return;
+		this.#fpsText = text;
 		this.#invalidateStatusLineRenderCache();
 	}
 
@@ -2394,6 +2401,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			collab: this.#collabStatus,
 			stream: this.#streamStatus,
 			recording: this.#recording,
+			fpsText: this.#fpsText,
 			usageStats,
 			contextPercent,
 			contextTokens,
@@ -2444,12 +2452,20 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			};
 		}
 
-		const leftSegments = useCustomSegments
+		const baseLeftSegments = useCustomSegments
 			? (this.#settings.leftSegments ?? presetDef.leftSegments)
 			: presetDef.leftSegments;
-		const rightSegments = useCustomSegments
+		const baseRightSegments = useCustomSegments
 			? (this.#settings.rightSegments ?? presetDef.rightSegments)
 			: presetDef.rightSegments;
+		const leftSegments =
+			this.#settings.showFpsMeter === false
+				? baseLeftSegments.filter(segment => segment !== "fps")
+				: baseLeftSegments;
+		const rightSegments =
+			this.#settings.showFpsMeter === false
+				? baseRightSegments.filter(segment => segment !== "fps")
+				: baseRightSegments;
 
 		return {
 			...this.#settings,
