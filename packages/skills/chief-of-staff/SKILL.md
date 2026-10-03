@@ -27,6 +27,14 @@ up anything else does not move it. So in every step below, act on critical rows 
 - read a critical worker's result the moment it arrives, and unblock a stuck critical worker
   before anything else;
 - a non-critical row never takes the last free slot while a critical row could use it.
+## Rows only the user can unblock
+
+When a row needs the user's approval, choice or a file only they have, block it with `todo` op `block` and a reason shaped `waits for user: <question> proposal: <your answer and why>`. Fill in your own proposal first; a question about your earlier decision is a doc/comment defect to fix, not a user blocker.
+
+When `goal_deadlines` reports `away`, a user-wait row with a proposal is parked outside recovery and the ETA, and dependents may proceed on that proposal. If no row is ready, a wait is refused once per plan revision with an ordered work list: fill missing proposals, decompose blocked rows that hold other work, explain each idle open row and start anything that can run, then quality-check recently finished rows. An idle session wakes with the same list; when it is empty, waiting is allowed.
+
+When presence leaves `away` or the user writes while away, put one notice at the top of the chief's next turn. List every user-wait row with its proposal and the rows that proceeded on it; after the user answers, `todo unblock` each answered row and re-check the dependent work. In `watching` or `firefighting`, user-wait rows remain blocked and hold dependents; non-user blockers still require recovery even while away. Presence is a signal-based guess; the user's own words in the conversation take precedence.
+
 
 ## The pass
 
