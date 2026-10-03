@@ -1390,7 +1390,7 @@ struct ParallelWalkContext {
 
 struct ParallelWalkShared<'a, E, S, H> {
 	stop:      AtomicBool,
-	error:     Mutex<Option<E>>,
+	error:     Mutex<Option<WalkError<E>>>,
 	sink:      &'a S,
 	heartbeat: &'a H,
 }
@@ -1409,6 +1409,12 @@ impl<'a, E, S, H> ParallelWalkShared<'a, E, S, H> {
 	}
 
 	fn record_error(&self, error: E) {
+		self.record_walk_error(WalkError::Interrupted(error));
+	}
+
+	/// Record a walker-level error so the parallel walk surfaces it instead of
+	/// returning partial results as a complete walk.
+	fn record_walk_error(&self, error: WalkError<E>) {
 		let mut slot = match self.error.lock() {
 			Ok(slot) => slot,
 			Err(poisoned) => poisoned.into_inner(),
@@ -1419,7 +1425,7 @@ impl<'a, E, S, H> ParallelWalkShared<'a, E, S, H> {
 		self.request_stop();
 	}
 
-	fn take_error(&self) -> Option<E> {
+	fn take_error(&self) -> Option<WalkError<E>> {
 		match self.error.lock() {
 			Ok(mut slot) => slot.take(),
 			Err(poisoned) => poisoned.into_inner().take(),
@@ -1496,7 +1502,7 @@ where
 	}
 
 	if let Some(error) = shared.take_error() {
-		Err(WalkError::Interrupted(error))
+		Err(error)
 	} else if shared.should_stop() {
 		Ok(WalkStatus::Stopped)
 	} else {
@@ -1653,12 +1659,15 @@ fn walk_parallel_dir<'scope, E, S, H>(
 			recycle_parallel_scratch(scratch);
 			return;
 		},
-		Err(ReadDirError::Io(_) | ReadDirError::Walk(WalkError::InvalidData { .. })) => {
+		Err(ReadDirError::Io(_)) => {
 			recycle_parallel_scratch(scratch);
 			return;
 		},
-		Err(ReadDirError::Walk(WalkError::Interrupted(error))) => {
-			shared.record_error(error);
+		Err(ReadDirError::Walk(err)) => {
+			// The serial walker propagates walk errors (a scan-limit stop among
+			// them); dropping one here would return partial results as a
+			// complete walk.
+			shared.record_walk_error(err);
 			recycle_parallel_scratch(scratch);
 			return;
 		},
@@ -3226,18 +3235,19 @@ fn collect_directory_entries<E>(
 	let track_ignore_entries = derive_ignore_from_entries && matcher.use_gitignore;
 	let mut read_buffer = std::mem::take(&mut scratch.read_buffer);
 	let mut scanned = 0usize;
-	let mut file_bytes = 0usize;
 	let mut limit_reached = false;
 	let result = {
 		let emit = |entry: RawDirEntry<'_>| -> std::result::Result<ReadDirControl, WalkError<E>> {
-			if let Some((max_entries, max_file_bytes)) = scan_limits {
-				let entry_bytes = entry.size.unwrap_or(0.0).max(0.0) as usize;
-				if scanned >= max_entries || file_bytes.saturating_add(entry_bytes) > max_file_bytes {
+			// Only the raw entry count bounds this buffered listing; byte
+			// budgets apply to entries that reach collection, after hidden,
+			// `skip_git`, and ignore filtering, so an excluded entry cannot
+			// consume them.
+			if let Some((max_entries, _)) = scan_limits {
+				if scanned >= max_entries {
 					limit_reached = true;
 					return Ok(ReadDirControl::Stop);
 				}
 				scanned += 1;
-				file_bytes = file_bytes.saturating_add(entry_bytes);
 			}
 			if track_ignore_entries {
 				ignore_entries.record(entry.name.as_ref(), entry.file_type);
@@ -3257,10 +3267,8 @@ fn collect_directory_entries<E>(
 		return Err(ReadDirError::Walk(WalkError::InvalidData {
 			path:    dir.to_path_buf(),
 			message: format!(
-				"scan limit reached ({max_entries} entries or {max_file_bytes} file bytes); narrow \
-				 the search path",
+				"scan limit reached ({max_entries} directory entries); narrow the search path",
 				max_entries = scan_limits.map_or(usize::MAX, |limits| limits.0),
-				max_file_bytes = scan_limits.map_or(usize::MAX, |limits| limits.1),
 			),
 		}));
 	}
