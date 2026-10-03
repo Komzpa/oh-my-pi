@@ -40,6 +40,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import { createSessionDefaults } from "../helpers/session-defaults";
 
 import { cfgAdvisorEnabled } from "@oh-my-pi/pi-coding-agent/advisor/settings";
+import type { Context } from "@oh-my-pi/pi-ai";
 
 const tempDirs: TempDir[] = [];
 
@@ -141,6 +142,7 @@ async function createPersistedSession(
 	modelRole?: string,
 	advisor?: string,
 	contract?: {
+		assignmentStartedAt?: number;
 		tools?: string[];
 		readOnly?: boolean;
 		agent?: string;
@@ -155,6 +157,7 @@ async function createPersistedSession(
 	manager.appendSessionInit({
 		systemPrompt: "persisted prompt",
 		task: "persisted task",
+		assignmentStartedAt: contract?.assignmentStartedAt,
 		tools: contract?.tools ?? ["read", "yield"],
 		restrictToolNames,
 		modelRole,
@@ -476,6 +479,34 @@ describe("persisted subagent revival", () => {
 		expect(activeToolNames).toEqual([["read", "yield"]]);
 	});
 
+	it("restores the original assignment clock for cold-revived elapsed signals", async () => {
+		const cwd = makeTempDir("@pi-elapsed-revive-");
+		const assignmentStartedAt = 1_000;
+		const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, { assignmentStartedAt });
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+
+		const ref = createRef(sessionFile);
+		const reviver = await createFactory(cwd)(ref);
+		if (!reviver) throw new Error("Expected a persisted reviver");
+		await reviver(ref);
+
+		const now = vi.spyOn(Date, "now").mockReturnValue(21_000);
+		try {
+			const context: Context = { systemPrompt: ["stable"], messages: [], tools: [] };
+			const transformed = await capturedOptions?.transformProviderContext?.(context, {} as never);
+			expect(transformed?.messages.at(-1)).toMatchObject({
+				role: "developer",
+				content: "elapsed 20s / 900s",
+				synthetic: true,
+			});
+		} finally {
+			now.mockRestore();
+		}
+	});
 	it("preserves explicitly writable cold-revival contracts", async () => {
 		const cwd = makeTempDir("@pi-write-revive-");
 		const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, {
