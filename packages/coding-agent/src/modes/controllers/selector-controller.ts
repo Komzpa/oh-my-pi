@@ -788,6 +788,11 @@ export class SelectorController {
 			this.ctx.session.modelRegistry,
 			this.ctx.session.scopedModels,
 			{
+				onSelectForSession: model => {
+					void this.switchSessionModel(model).catch(error => {
+						this.ctx.showError(error instanceof Error ? error.message : String(error));
+					});
+				},
 				onAssign: async (model, role, thinkingLevel, selector, scope?: ModelRoleSelectionScope) => {
 					const releaseDefaultMutation = role === "default" ? await this.#acquireDefaultRoleMutation() : undefined;
 					const configuredStorage = cfgModelRoleStorage.get(this.ctx.settings);
@@ -996,6 +1001,7 @@ export class SelectorController {
 				currentSelector: this.ctx.session.model
 					? `${this.ctx.session.model.provider}/${this.ctx.session.model.id}`
 					: undefined,
+				currentSessionModel: this.ctx.session.model,
 			},
 		);
 		const overlayHandle = this.#showFullscreenMenu(hub);
