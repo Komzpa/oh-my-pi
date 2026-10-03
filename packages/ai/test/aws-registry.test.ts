@@ -268,5 +268,4 @@ describe("AWS provider availability", () => {
 			async () => expect(getEnvApiKey("bedrock-mantle")).toBeDefined(),
 		);
 	});
-
 });
