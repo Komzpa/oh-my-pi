@@ -1,20 +1,20 @@
 import * as fs from "node:fs/promises";
 import {
 	applyOpsToPhases,
-	getCompletionTargets,
 	getLatestTodoPhasesFromEntries,
-	getRequirementRowArtifact,
 	markdownToPhases,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
-	type RequirementRowArtifact,
 	USER_TODO_EDIT_CUSTOM_TYPE,
+	getCompletionTargets,
+	getRequirementRowArtifact,
+	type RequirementRowArtifact,
 } from "../../tools/todo";
-import { getLatestRequirements, isFreshRequirementVerdict } from "../../tools/requirements-ledger";
 import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { copyToClipboard } from "../../utils/clipboard";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import type { InteractiveModeContext } from "../types";
+import { getLatestRequirements, isFreshRequirementVerdict } from "../../tools/requirements-ledger";
 
 const USAGE = [
 	"Usage: /todo <verb> [args]",
@@ -189,10 +189,10 @@ export class TodoCommandController {
 				this.#start(rest);
 				return;
 			case "done":
-				await this.#mutateStatus(rest, "completed");
+				await this.#mutateStatusGated(rest, "completed");
 				return;
 			case "drop":
-				await this.#mutateStatus(rest, "abandoned");
+				await this.#mutateStatusGated(rest, "abandoned");
 				return;
 			case "rm":
 				this.#remove(rest);
@@ -332,19 +332,12 @@ export class TodoCommandController {
 		this.ctx.showStatus(`Started: ${hit.task.content}`);
 	}
 
-	async #mutateStatus(rest: string, target: "completed" | "abandoned"): Promise<void> {
+	#mutateStatus(rest: string, target: "completed" | "abandoned"): void {
 		const op = target === "completed" ? "done" : "drop";
 		const current = this.#currentPhases();
 		const trimmed = rest.trim();
 		if (!trimmed) {
 			// no-arg: apply to all
-			if (op === "done") {
-				const items = current
-					.flatMap(phase => phase.tasks)
-					.filter(task => task.status !== "completed" && task.status !== "abandoned")
-					.map(task => task.content);
-				if (items.length > 0 && !(await this.#assertDoneAllowed(current, { items }))) return;
-			}
 			const { phases, errors } = applyOpsToPhases(current, [{ op }]);
 			if (errors.length > 0) {
 				this.ctx.showError(errors.join("; "));
@@ -357,7 +350,6 @@ export class TodoCommandController {
 
 		const taskHit = findTaskFuzzy(current, trimmed);
 		if (taskHit) {
-			if (op === "done" && !(await this.#assertDoneAllowed(current, { task: taskHit.task.content }))) return;
 			const { phases, errors } = applyOpsToPhases(current, [{ op, task: taskHit.task.content }]);
 			if (errors.length > 0) {
 				this.ctx.showError(errors.join("; "));
@@ -370,8 +362,7 @@ export class TodoCommandController {
 
 		const phaseHit = findPhaseFuzzy(current, trimmed);
 		if (phaseHit) {
-			if (op === "done" && !(await this.#assertDoneAllowed(current, { phase: phaseHit.name }))) return;
-			const { phases, errors } = applyOpsToPhases(current, [{ op, task: phaseHit.name }]);
+			const { phases, errors } = applyOpsToPhases(current, [{ op, phase: phaseHit.name }]);
 			if (errors.length > 0) {
 				this.ctx.showError(errors.join("; "));
 				return;
@@ -382,6 +373,30 @@ export class TodoCommandController {
 		}
 
 		this.ctx.showError(`No task or phase matched "${trimmed}".`);
+	}
+
+	/** Gate interactive completion through the same core selector as the native tool. */
+	async #mutateStatusGated(rest: string, target: "completed" | "abandoned"): Promise<void> {
+		if (target === "completed") {
+			const current = this.#currentPhases();
+			const trimmed = rest.trim();
+			if (!trimmed) {
+				const items = current
+					.flatMap(phase => phase.tasks)
+					.filter(task => task.status !== "completed" && task.status !== "abandoned")
+					.map(task => task.content);
+				if (items.length > 0 && !(await this.#assertDoneAllowed(current, { items }))) return;
+			} else {
+				const taskHit = findTaskFuzzy(current, trimmed);
+				if (taskHit) {
+					if (!(await this.#assertDoneAllowed(current, { task: taskHit.task.content }))) return;
+				} else {
+					const phaseHit = findPhaseFuzzy(current, trimmed);
+					if (phaseHit && !(await this.#assertDoneAllowed(current, { phase: phaseHit.name }))) return;
+				}
+			}
+		}
+		this.#mutateStatus(rest, target);
 	}
 
 	/**
