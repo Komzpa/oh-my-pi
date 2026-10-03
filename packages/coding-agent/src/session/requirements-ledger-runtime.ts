@@ -27,6 +27,7 @@ import {
 import { ASYNC_RESULT_MESSAGE_TYPE } from "./async-job-delivery";
 import type { SessionManager } from "./session-manager";
 import { isFailedTaskSingleResult } from "../task/result-summary";
+import { discoverAgents, getAgent } from "../task/discovery";
 
 export type RequirementPublicationGate = (
 	message: AssistantMessage,
@@ -47,18 +48,21 @@ export class RequirementsLedgerRuntime {
 	readonly #host: RequirementsLedgerRuntimeHost;
 	readonly #auditCalls = new Map<string, RequirementAuditAssignment[]>();
 	readonly #pendingAuditors = new Map<string, RequirementAuditAssignment>();
+	readonly #auditorRefusals = new Map<string, { ids: string[]; source: string }>();
+	#publicationGeneration = 0;
+	#publicationState = "";
 
 	constructor(host: RequirementsLedgerRuntimeHost) {
 		this.#host = host;
 		this.#restorePendingAuditors();
-		this.#syncPublicationGate();
+		this.syncPublicationGate();
 	}
 
 	captureCandidate(rawText: string): void {
-		if (this.#host.agentKind() !== "main" || !rawText.trim()) return;
+		if (this.#host.agentKind() !== "main" || !rawText.trim() || rawText.trimStart().startsWith("/")) return;
 		const requirements = getLatestRequirements(this.#host.sessionManager.getBranch());
 		appendRequirementsSnapshot(this.#appender(), createRequirementCandidates(requirements, [rawText]));
-		this.#syncPublicationGate();
+		this.syncPublicationGate();
 	}
 
 	refuseOverdueCandidate(toolName: string): BeforeToolCallResult | undefined {
@@ -94,6 +98,25 @@ export class RequirementsLedgerRuntime {
 		const assignments: RequirementAuditAssignment[] = [];
 		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
 
+		const hasAuditorTask = items.some(item => isRecord(item) && item.agent === "qa-auditor");
+		const resolvedAuditor = hasAuditorTask
+			? getAgent((await discoverAgents(this.#host.cwd())).agents, "qa-auditor")
+			: undefined;
+		if (hasAuditorTask && resolvedAuditor?.source !== "bundled") {
+			const citedIds = new Set(
+				items.flatMap(item =>
+					isRecord(item) && item.agent === "qa-auditor" && typeof item.task === "string"
+						? (`${item.task}\n${sharedContext}`.match(/\bR[1-9]\d*\b/g) ?? [])
+						: [],
+				),
+			);
+			const ids = requirements
+				.filter(requirement => requirement.classification === "linked" && citedIds.has(requirement.id))
+				.map(requirement => requirement.id);
+			if (ids.length > 0)
+				this.#auditorRefusals.set(toolCallId, { ids, source: resolvedAuditor?.source ?? "unavailable" });
+			return undefined;
+		}
 		for (let index = 0; index < items.length; index++) {
 			const item = items[index];
 			if (!isRecord(item) || item.agent !== "qa-auditor" || typeof item.task !== "string") continue;
@@ -151,6 +174,19 @@ export class RequirementsLedgerRuntime {
 
 	async afterToolCall(context: AfterToolCallContext): Promise<AfterToolCallResult | undefined> {
 		if (this.#host.agentKind() !== "main" || context.toolCall.name !== "task") return undefined;
+		const refusal = this.#auditorRefusals.get(context.toolCall.id);
+		if (refusal) {
+			this.#auditorRefusals.delete(context.toolCall.id);
+			return {
+				content: [
+					...context.result.content,
+					{
+						type: "text",
+						text: `Blocked: resolved qa-auditor profile is ${refusal.source}, not the bundled auditor. ${refusal.ids.map(id => `Call task with agent="qa-auditor", task="Audit ${id} at the current clean row HEAD". Then retry`).join("; ")}`,
+					},
+				],
+			};
+		}
 		const assignments = this.#auditCalls.get(context.toolCall.id);
 		if (!assignments) return undefined;
 		this.#auditCalls.delete(context.toolCall.id);
@@ -238,32 +274,36 @@ export class RequirementsLedgerRuntime {
 			const workerId = typeof job.agentId === "string" && job.agentId ? job.agentId : job.jobId;
 			const assignment = this.#pendingAuditors.get(workerId);
 			if (!assignment) continue;
-			this.#pendingAuditors.delete(workerId);
-			pendingChanged = true;
+			let rejection: string | undefined;
 			if (
 				!sessionId ||
 				assignment.sessionId !== sessionId ||
 				assignment.agent !== "qa-auditor" ||
 				assignment.workerId !== workerId
 			) {
-				continue;
+				rejection = "async result session or worker identity did not match";
+			} else {
+				const envelope = (content.match(/<task-result id="[^"]+"[\s\S]*?<\/task-result>/g) ?? []).find(candidate =>
+					candidate.startsWith(`<task-result id="${workerId}" `),
+				);
+				const match = envelope?.match(
+					/^<task-result id="([^"]+)" agent="([^"]+)" status="([^"]+)"[^>]*>[\s\S]*?<output>\s*([\s\S]*?)\s*<\/output>[\s\S]*?<\/task-result>$/,
+				);
+				if (
+					!match ||
+					match[1] !== workerId ||
+					match[2] !== "qa-auditor" ||
+					match[3] !== "completed" ||
+					envelope?.includes("<preview")
+				) {
+					rejection = "async result was incomplete, truncated, or not from qa-auditor";
+				} else {
+					rejection = (await this.#acceptReceipt(workerId, assignment, match[4]!)) ?? undefined;
+				}
 			}
-			const envelope = (content.match(/<task-result id="[^"]+"[\s\S]*?<\/task-result>/g) ?? []).find(candidate =>
-				candidate.startsWith(`<task-result id="${workerId}" `),
-			);
-			const match = envelope?.match(
-				/^<task-result id="([^"]+)" agent="([^"]+)" status="([^"]+)"[^>]*>[\s\S]*?<output>\s*([\s\S]*?)\s*<\/output>[\s\S]*?<\/task-result>$/,
-			);
-			if (
-				!match ||
-				match[1] !== workerId ||
-				match[2] !== "qa-auditor" ||
-				match[3] !== "completed" ||
-				envelope?.includes("<preview")
-			) {
-				continue;
-			}
-			await this.#acceptReceipt(workerId, assignment, match[4]!);
+			if (rejection) this.#persistPendingAuditors({ workerId, ids: assignment.ids, reason: rejection });
+			this.#pendingAuditors.delete(workerId);
+			pendingChanged = true;
 		}
 		if (pendingChanged) this.#persistPendingAuditors();
 	}
@@ -275,19 +315,28 @@ export class RequirementsLedgerRuntime {
 		if (this.#host.agentKind() !== "main" || message.stopReason === "error" || message.stopReason === "aborted") {
 			return;
 		}
-	const { requirements, staleById } = await this.#refreshRequirementFreshness(signal);
-	const open = this.#openRequirements(requirements, staleById);
-	this.#syncPublicationGate();
-	if (open.length === 0) return;
-	if (message.content.some(block => block.type === "toolCall")) return { replacementText: "" };
-	const rows = getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch()).flatMap(phase =>
-		phase.tasks.map(task => task.content),
-	);
-	this.#host.onSettledAssistantMessage(message);
-	return {
-		replacementText: formatPublicationReplacement(open, rows),
-		settled: true,
-	};
+		let generation = this.#getPublicationGeneration();
+		let freshness = await this.#refreshRequirementFreshness(signal);
+		if (this.#getPublicationGeneration() !== generation) {
+			generation = this.#getPublicationGeneration();
+			freshness = await this.#refreshRequirementFreshness(signal);
+			if (this.#getPublicationGeneration() !== generation) return { replacementText: "" };
+		}
+		const decisionGeneration = this.#getPublicationGeneration();
+		const { requirements, staleById } = freshness;
+		const open = this.#openRequirements(requirements, staleById);
+		this.syncPublicationGate();
+		if (this.#getPublicationGeneration() !== decisionGeneration) return { replacementText: "" };
+		if (open.length === 0) return;
+		if (message.content.some(block => block.type === "toolCall")) return { replacementText: "" };
+		const rows = getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch()).flatMap(phase =>
+			phase.tasks.map(task => task.content),
+		);
+		this.#host.onSettledAssistantMessage(message);
+		return {
+			replacementText: formatPublicationReplacement(open, rows),
+			settled: true,
+		};
 	}
 
 	async #refreshRequirementFreshness(
@@ -452,7 +501,7 @@ export class RequirementsLedgerRuntime {
 					: requirement;
 			}),
 		);
-		this.#syncPublicationGate();
+		this.syncPublicationGate();
 		return null;
 	}
 
@@ -466,20 +515,28 @@ export class RequirementsLedgerRuntime {
 		for (const [workerId, assignment] of restored) this.#pendingAuditors.set(workerId, assignment);
 	}
 
-	#persistPendingAuditors(): void {
+	#persistPendingAuditors(rejected?: { workerId: string; ids: string[]; reason: string }): void {
 		const sessionId = this.#sessionId();
 		if (!sessionId) return;
 		this.#host.sessionManager.appendCustomEntry(REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE, {
 			version: 1,
 			sessionId,
 			jobs: [...this.#pendingAuditors.values()]
-				.filter(assignment => assignment.sessionId === sessionId && assignment.workerId)
+				.filter(
+					assignment =>
+						assignment.sessionId === sessionId &&
+						assignment.workerId &&
+						assignment.workerId !== rejected?.workerId,
+				)
 				.map(assignment => ({
 					workerId: assignment.workerId,
 					agent: assignment.agent,
 					ids: assignment.ids,
 					snapshot: assignment.snapshot,
 				})),
+			...(rejected
+				? { rejected: [{ workerId: rejected.workerId, ids: rejected.ids, reason: rejected.reason }] }
+				: {}),
 		});
 	}
 
@@ -495,7 +552,16 @@ export class RequirementsLedgerRuntime {
 		};
 	}
 
-	#syncPublicationGate(): void {
+	#getPublicationGeneration(): number {
+		const branch = this.#host.sessionManager.getBranch();
+		const state = JSON.stringify([getLatestRequirements(branch), getLatestTodoPhasesFromEntries(branch)]);
+		if (state !== this.#publicationState) {
+			this.#publicationState = state;
+			this.#publicationGeneration++;
+		}
+		return this.#publicationGeneration;
+	}
+	syncPublicationGate(): void {
 		const requirements = getLatestRequirements(this.#host.sessionManager.getBranch());
 		const active =
 			this.#host.agentKind() === "main" &&
