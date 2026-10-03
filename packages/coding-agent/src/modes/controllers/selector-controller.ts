@@ -789,9 +789,20 @@ export class SelectorController {
 			this.ctx.session.scopedModels,
 			{
 				onSelectForSession: model => {
-					void this.switchSessionModel(model).catch(error => {
-						this.ctx.showError(error instanceof Error ? error.message : String(error));
-					});
+					// Over-context pick: close the hub first so the compaction
+					// loader is visible and a second Enter cannot start a
+					// competing switch (mirrors #showModelPicker).
+					const contextTokens = this.ctx.session.getContextUsage()?.tokens ?? 0;
+					const contextWindow = model.contextWindow ?? 0;
+					const overContext = contextWindow > 0 && contextTokens > contextWindow;
+					if (overContext) done();
+					void this.switchSessionModel(model)
+						.catch(error => {
+							this.ctx.showError(error instanceof Error ? error.message : String(error));
+						})
+						.finally(() => {
+							if (!overContext) done();
+						});
 				},
 				onAssign: async (model, role, thinkingLevel, selector, scope?: ModelRoleSelectionScope) => {
 					const releaseDefaultMutation = role === "default" ? await this.#acquireDefaultRoleMutation() : undefined;

@@ -1103,6 +1103,9 @@ export class ModelHubComponent implements Component {
 			}
 			return;
 		}
+		this.#currentSessionModel = item.model;
+		this.#currentSelector = `${item.model.provider}/${item.model.id}`;
+		this.#requestRender();
 		this.#callbacks.onSelectForSession(item.model);
 	}
 
@@ -2782,7 +2785,7 @@ export class ModelHubComponent implements Component {
 	};
 
 	#describeBody(): NativeNode {
-		const children: NativeChild[] = [this.#describeStatus()];
+		const children: NativeChild[] = [this.#describeStatus(), this.#describeSessionFacts()];
 		const entry = this.#activeEntry();
 		if (entry.kind === "roles" && this.#assigning === null) {
 			children.push(...this.#describeRolesView());
@@ -2808,6 +2811,36 @@ export class ModelHubComponent implements Component {
 			);
 		}
 		return node("col", { gap: "sm", grow: 1 }, children, "body");
+	}
+
+	/** Session/default facts for native surfaces (mirrors #renderSessionFactsRow). */
+	#describeSessionFacts(): NativeNode {
+		const { sessionLabel, defaultLabel } = this.#sessionFactsLabels();
+		return node(
+			"text",
+			{
+				spans: [
+					span("Session: ", "dim"),
+					span(sessionLabel),
+					span("   New sessions: ", "dim"),
+					span(defaultLabel),
+				],
+				truncate: "end",
+			},
+			undefined,
+			"sessionFacts",
+		);
+	}
+
+	#sessionFactsLabels(): { sessionLabel: string; defaultLabel: string } {
+		const sessionLabel = this.#currentSessionModel
+			? `${this.#currentSessionModel.provider}/${this.#currentSessionModel.id}`
+			: "—";
+		const defaultAssignment = this.#roles.default;
+		const defaultLabel = defaultAssignment
+			? `${defaultAssignment.model.provider}/${defaultAssignment.model.id}`
+			: "—";
+		return { sessionLabel, defaultLabel };
 	}
 
 	#describeStatus(): NativeNode {
@@ -3051,9 +3084,12 @@ export class ModelHubComponent implements Component {
 		const rolesView = entry.kind === "roles" && this.#assigning === null;
 		const lockedView = entry.kind === "provider" && entry.locked === true && this.#assigning === null;
 		const strip = this.#strip;
+		const { sessionLabel, defaultLabel } = this.#sessionFactsLabels();
 		const props: TspPickerProps = {
 			title: "Models",
-			subtitle: this.#pickerSubtitle(entry, rolesView),
+			subtitle:
+				this.#pickerSubtitle(entry, rolesView) ??
+				`Session: ${sessionLabel}   New sessions: ${defaultLabel}`,
 			icon: "cpu",
 			noun: rolesView ? "roles" : "models",
 			size: "lg",
@@ -3353,7 +3389,7 @@ export class ModelHubComponent implements Component {
 		return compact([
 			pickerAction(
 				"assign",
-				"Assign role",
+				"Use for session",
 				"enter",
 				this.#browser.pickerSelected ? { primary: true } : { primary: true, disabled: "No model selected" },
 			),
@@ -3862,7 +3898,7 @@ export class ModelHubComponent implements Component {
 			return [keys("models", "enter", "right"), upDown("providers"), search, kind, refresh, cancel("close")];
 		}
 		return [
-			keys("assign roles", "enter"),
+			keys("use for session", "enter"),
 			upDown("models"),
 			keys("providers", "left"),
 			search,
