@@ -214,7 +214,10 @@ describe("agentLoop soft tool requirement", () => {
 		const context: AgentContext = { systemPrompt: ["sys"], messages: [], tools: h.tools };
 		const mock = createMockModel({
 			responses: [
-				{ content: [{ type: "toolCall", id: "read-truncated", name: "read", arguments: {} }], stopReason: "length" },
+				{
+					content: [{ type: "toolCall", id: "read-truncated", name: "read", arguments: {} }],
+					stopReason: "length",
+				},
 				{ content: [{ type: "toolCall", id: "resolve-after-truncation", name: "resolve", arguments: {} }] },
 				{ content: ["done"] },
 			],
