@@ -895,6 +895,8 @@ const MARKER_TO_STATUS: Record<string, TodoStatus> = {
 	"!": "blocked",
 };
 
+import { classifyTodoSchema } from "./todo-classify-schema";
+
 /** Parse a Markdown checklist back into todo phases. */
 export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
@@ -1022,22 +1024,6 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 	}
 	return lines.join("\n");
 }
-
-// =============================================================================
-// #41 classify extension (kept clear of #92's TodoOp/todoSchema hunks)
-// =============================================================================
-const ClassifyClassification = type('"linked" | "not-a-requirement" | "merged"');
-
-const classifyTodoSchema = type({
-	op: type.unit("classify"),
-	"id?": type("string").describe("requirement id (Rn) for classify"),
-	"classification?": ClassifyClassification.describe(
-		"classify decision: linked needs rows, not-a-requirement needs reason, merged needs mergeInto",
-	),
-	"rows?": type("string").array().describe("exact todo row contents for classify linked"),
-	"mergeInto?": type("string").describe("target Rn for classify merged"),
-	"reason?": type("string").describe("reason required when classify uses not-a-requirement"),
-});
 
 const todoToolSchema = todoSchema.or(classifyTodoSchema);
 
