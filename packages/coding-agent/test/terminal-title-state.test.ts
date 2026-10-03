@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn, vi } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
+	buildSessionTerminalLabel,
 	buildTerminalTitleWithState,
 	disposeTerminalTitleState,
 	setTerminalTitle,
@@ -88,6 +92,85 @@ describe("buildTerminalTitleWithState", () => {
 			`${BRAND} : ${LABEL}`,
 		);
 		expect(buildTerminalTitleWithState(undefined, "working", 1, true, "linux", "line", wslEnv)).toBe(`${BRAND} :`);
+	});
+});
+
+describe("session label carries the project", () => {
+	let scratchDirs: string[] = [];
+
+	afterEach(() => {
+		for (const dir of scratchDirs) fs.rmSync(dir, { recursive: true, force: true });
+		scratchDirs = [];
+	});
+
+	function makeProject(projectName: string): string {
+		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tabtitle-"));
+		scratchDirs.push(scratch);
+		const project = path.join(scratch, projectName);
+		fs.mkdirSync(path.join(project, ".git"), { recursive: true });
+		return project;
+	}
+
+	function makePlainDir(dirName: string): string {
+		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tabtitle-"));
+		scratchDirs.push(scratch);
+		const dir = path.join(scratch, dirName);
+		fs.mkdirSync(dir, { recursive: true });
+		return dir;
+	}
+
+	it("combines the project and the session name", () => {
+		const project = makeProject("tasks-loop");
+		expect(buildSessionTerminalLabel("Independent fork PRs", project)).toBe("tasks-loop · Independent fork PRs");
+		expect(
+			buildTerminalTitleWithState(buildSessionTerminalLabel("Independent fork PRs", project), "idle", 0, true),
+		).toBe(`${BRAND} > tasks-loop · Independent fork PRs`);
+	});
+
+	it("uses the session name alone when there is no cwd", () => {
+		expect(buildSessionTerminalLabel("my-session", undefined)).toBe("my-session");
+	});
+
+	it("falls back to the directory name when there is no session name", () => {
+		// Stubbed: the scratch dir lives under /tmp, which has its own `.git`
+		// uphill on this machine — pin the true no-repo branch instead.
+		const existsSpy = spyOn(fs, "existsSync").mockReturnValue(false);
+		try {
+			expect(buildSessionTerminalLabel(undefined, makePlainDir("lonely-dir"))).toBe("lonely-dir");
+		} finally {
+			existsSpy.mockRestore();
+		}
+	});
+
+	it("resolves the project from a subdirectory of the git root", () => {
+		const project = makeProject("tasks-loop");
+		const nested = path.join(project, "sub", "dir");
+		fs.mkdirSync(nested, { recursive: true });
+		expect(buildSessionTerminalLabel("Deep fix", nested)).toBe("tasks-loop · Deep fix");
+	});
+
+	it("falls back to the directory name outside a git repo", () => {
+		// Same stub as above: pin the true no-repo branch.
+		const existsSpy = spyOn(fs, "existsSync").mockReturnValue(false);
+		try {
+			expect(buildSessionTerminalLabel("Fix thing", makePlainDir("lonely"))).toBe("lonely · Fix thing");
+		} finally {
+			existsSpy.mockRestore();
+		}
+	});
+
+	it("truncates a long session name but never the project", () => {
+		const project = makeProject("tasks-loop");
+		const label = buildSessionTerminalLabel("a".repeat(60), project);
+		expect(label?.startsWith("tasks-loop · ")).toBe(true);
+		expect(label?.endsWith("…")).toBe(true);
+		expect(label!.length).toBeLessThanOrEqual(48);
+	});
+
+	it("does not duplicate the project when the session name already carries it", () => {
+		const project = makeProject("tasks-loop");
+		expect(buildSessionTerminalLabel("tasks-loop · Something", project)).toBe("tasks-loop · Something");
+		expect(buildSessionTerminalLabel("tasks-loop", project)).toBe("tasks-loop");
 	});
 });
 
