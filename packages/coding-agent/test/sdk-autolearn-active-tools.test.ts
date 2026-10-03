@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AuthStorage } from "@oh-my-pi/pi-ai";
+import { AuthStorage, type Context } from "@oh-my-pi/pi-ai";
+import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -40,6 +41,7 @@ describe("createAgentSession auto-learn tool activation", () => {
 		registryDir = path.join(os.tmpdir(), `pi-autolearn-active-${Snowflake.next()}`);
 		fs.mkdirSync(registryDir, { recursive: true });
 		authStorage = await AuthStorage.create(path.join(registryDir, "auth.db"));
+		authStorage.keys.setRuntime("mock", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 	});
 
@@ -70,6 +72,54 @@ describe("createAgentSession auto-learn tool activation", () => {
 		// Built by createTools' force-include AND activated by the SDK's explicit-list
 		// re-inclusion, so guidance/controller point at a callable tool.
 		expect(names).toContain("manage_skill");
+	});
+	it("applies the public provider transform to the private auto-learn request", async () => {
+		registerMockApi();
+		const fixture = path.join(registryDir, "capture-hook.txt");
+		fs.writeFileSync(fixture, "capture hook fixture");
+		const captureContext = Promise.withResolvers<Context>();
+		const mock = createMockModel({
+			responses: [
+				{
+					content: Array.from({ length: 5 }, () => ({
+						type: "toolCall" as const,
+						name: "read",
+						arguments: { path: fixture },
+					})),
+				},
+				{ content: ["Primary done"] },
+				// The auto-learn capture request: its stream context is the transformed
+				// provider context, so the marker below must already be in it.
+				context => {
+					captureContext.resolve(context);
+					return { content: ["Capture done"] };
+				},
+			],
+		});
+		const { session } = await createAgentSession({
+			cwd: registryDir,
+			agentDir: registryDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "autolearn.enabled": true, "autolearn.autoContinue": true }),
+			model: mock.model,
+			getApiKey: () => "test-key",
+			...noDiscoveryOptions(),
+			cacheWarming: false,
+			transformProviderContext: context => ({
+				...context,
+				messages: [
+					...context.messages,
+					{ role: "developer", content: "SDK capture transform applied", synthetic: true, timestamp: Date.now() },
+				],
+			}),
+		});
+		sessions.push(session);
+
+		await session.prompt("Read the fixture five times.");
+		const transformedCaptureContext = await captureContext.promise;
+
+		expect(JSON.stringify(transformedCaptureContext.messages)).toContain("SDK capture transform applied");
 	});
 
 	it("initializes the selected memory backend before an auto-learn session can run", async () => {
