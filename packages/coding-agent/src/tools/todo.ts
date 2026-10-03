@@ -1093,9 +1093,40 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			};
 		}
 		const entry = resolved;
-		// classify already dispatched on rawOp above; narrow it out here so the
-		// shared TodoOperation contract stays at base text.
-		if (entry.op === "classify") return this.#classify(params, previousPhases, storage);
+		const sessionManager = this.session.sessionManager;
+		if ((entry.op === "rm" || entry.op === "init") && sessionManager) {
+			const linkedRequirements = getLatestRequirements(sessionManager.getBranch()).filter(
+				requirement => requirement.classification === "linked",
+			);
+			const targetErrors: string[] = [];
+			const removedRows = new Set<string>();
+			if (entry.op === "rm") {
+				for (const task of getTaskTargets(previousPhases, entry, targetErrors)) removedRows.add(task.content);
+			} else {
+				const replacementRows = new Set(entry.list?.flatMap(item => item.items) ?? entry.items ?? []);
+				for (const requirement of linkedRequirements) {
+					for (const row of requirement.rows) {
+						if (!replacementRows.has(row) && findTaskByContent(previousPhases, row)) removedRows.add(row);
+					}
+				}
+			}
+			const blocked = linkedRequirements.flatMap(requirement =>
+				requirement.rows.filter(row => removedRows.has(row)).map(row => ({ requirement, row })),
+			);
+			if (targetErrors.length === 0 && blocked.length > 0) {
+				const { requirement, row } = blocked[0]!;
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Blocked: cannot remove requirement-linked TODO row ${JSON.stringify(row)} (${requirement.id}). Call todo with op="classify", id="${requirement.id}", classification="not-a-requirement", reason="<why this is no longer a requirement>". Then retry`,
+						},
+					],
+					details: { op: entry.op, phases: previousPhases, storage },
+					isError: true,
+				};
+			}
+		}
 		const op = entry.op;
 		// Pure-view calls are reads: no normalization, no state write.
 		const readOnly = op === "view";
