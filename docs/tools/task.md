@@ -154,6 +154,7 @@ Artifacts and side channels:
 ## Limits & Caps
 - Tool mode: `approval="exec"`, `strict=false`, `lenientArgValidation=true`, `loadMode="essential"`.
 - Per-spawn effort is opt-in: `task.enableEffort` defaults to `false`; when false, `effort` is omitted from the dynamic model-facing schema.
+- Implementation workers MUST NOT run a Claude model above high effort: when the spawned agent is an implementation role (`coder`, `ui-coder`, `coder-strong`, `ui-coder-strong`, `task`, `workhorse`, `sonic`, `deepseek`) and the resolved model is a Claude model (anthropic provider or `claude-*` id), the spawn ceiling is clamped to `high` — caller `effort: "hi"` resolves to high, and the cap rides into the child session so profile/model defaults are clamped too. Review/judgment roles (reviewer, qa-auditor, adversarial-review profiles, …) stay unclamped.
 - Concurrency: `task.maxConcurrency` defaults to `32`; `0` means unlimited. One session-scoped `Semaphore` is resized from the live setting before every acquire/release and bounds every `SpawnRun` across task calls, including sync and speculative runs.
 - Isolation baseline: each repository's uncommitted snapshot is capped at `1 GiB` (`ISOLATION_BASELINE_MAX_CONTENT_BYTES` in `task/worktree.ts`). Oversized snapshots fail before spawning rather than buffering unbounded content.
 - Idle TTL: `task.agentIdleTtlMs`, default `420_000` ms (7 min); `<= 0` disables parking and keeps idle sessions live until exit.
