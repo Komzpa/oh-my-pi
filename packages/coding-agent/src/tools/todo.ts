@@ -1062,6 +1062,10 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const previousPhases = clonePhases(boundPhases ?? this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
 		if (isRecord(params) && params.op === "classify") return this.#classify(params, previousPhases, storage);
+		if (isRecord(params) && params.op === "done") {
+			const gate = await this.#doneGate(params, previousPhases, storage, _signal);
+			if (gate) return gate;
+		}
 		const resolved = resolveTodoParams(params, previousPhases.length > 0);
 		if (typeof resolved === "string") {
 			return {
@@ -1072,69 +1076,6 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		}
 		const entry = resolved;
 		const op = entry.op;
-		// The extension and direct native path share the same target and fresh-artifact checks.
-		if (op === "done" && this.session.sessionManager) {
-			const selectorErrors: string[] = [];
-			const targets = getCompletionTargets(previousPhases, entry, selectorErrors);
-			if (selectorErrors.length === 0) {
-				const targetRows = new Set<string>();
-				for (const target of targets) targetRows.add(target.content);
-				const requirements = getLatestRequirements(this.session.sessionManager.getBranch());
-				const applicable = requirements.filter(
-					requirement =>
-						requirement.classification === "linked" && requirement.rows.some(row => targetRows.has(row)),
-				);
-				const artifacts = new Map<string, Promise<RequirementRowArtifact>>();
-				const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
-				for (const requirement of applicable) {
-					const verdict = requirement.verdict;
-					if (!verdict || verdict.status !== "pass" || verdict.auditor !== "qa-auditor") continue;
-					for (const row of requirement.rows) {
-						if (!artifacts.has(row)) {
-							artifacts.set(
-								row,
-								getRequirementRowArtifact(
-									{ cwd: this.session.cwd, sessionManager: this.session.sessionManager, signal: _signal },
-									row,
-									previousPhases,
-									checkoutCache,
-								),
-							);
-						}
-					}
-				}
-				const unmet: string[] = [];
-				for (const requirement of applicable) {
-					const rowArtifacts = await Promise.all(
-						requirement.rows.map(async row => {
-							const artifact = await artifacts.get(row);
-							return artifact ? { row, head: artifact.head, dirty: artifact.dirty } : null;
-						}),
-					);
-					if (
-						!isFreshRequirementVerdict(
-							requirement,
-							rowArtifacts.filter(item => item !== null),
-						)
-					) {
-						const rows = requirement.rows.filter(row => targetRows.has(row));
-						unmet.push(`${requirement.id} (${rows.map(row => JSON.stringify(row)).join(", ")})`);
-					}
-				}
-				if (unmet.length > 0) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `todo done is blocked until every linked requirement has a fresh qa-auditor pass for the current clean row artifact: ${unmet.join("; ")}`,
-							},
-						],
-						details: { op, phases: previousPhases, storage },
-						isError: true,
-					};
-				}
-			}
-		}
 		// Pure-view calls are reads: no normalization, no state write.
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
@@ -1155,6 +1096,84 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			details,
 			isError: errors.length > 0 ? true : undefined,
 		};
+	}
+
+	/** #41's done gate: the extension and direct native path share the same
+	 *  target and fresh-artifact checks before a `done` batch can commit. */
+	async #doneGate(
+		params: Record<string, unknown>,
+		previousPhases: TodoPhase[],
+		storage: string,
+		signal?: AbortSignal,
+	): Promise<AgentToolResult<TodoToolDetails> | undefined> {
+		const sessionManager = this.session.sessionManager;
+		if (!sessionManager) return undefined;
+		const task = typeof params.task === "string" ? params.task : undefined;
+		const phase = typeof params.phase === "string" ? params.phase : undefined;
+		const items = Array.isArray(params.items)
+			? params.items.filter((item): item is string => typeof item === "string")
+			: undefined;
+		const selectorErrors: string[] = [];
+		const targets = getCompletionTargets(previousPhases, { task, phase, items }, selectorErrors);
+		if (selectorErrors.length === 0) {
+			const targetRows = new Set<string>();
+			for (const target of targets) targetRows.add(target.content);
+			const requirements = getLatestRequirements(sessionManager.getBranch());
+			const applicable = requirements.filter(
+				requirement =>
+					requirement.classification === "linked" && requirement.rows.some(row => targetRows.has(row)),
+			);
+			const artifacts = new Map<string, Promise<RequirementRowArtifact>>();
+			const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
+			for (const requirement of applicable) {
+				const verdict = requirement.verdict;
+				if (!verdict || verdict.status !== "pass" || verdict.auditor !== "qa-auditor") continue;
+				for (const row of requirement.rows) {
+					if (!artifacts.has(row)) {
+						artifacts.set(
+							row,
+							getRequirementRowArtifact(
+								{ cwd: this.session.cwd, sessionManager, signal },
+								row,
+								previousPhases,
+								checkoutCache,
+							),
+						);
+					}
+				}
+			}
+			const unmet: string[] = [];
+			for (const requirement of applicable) {
+				const rowArtifacts = await Promise.all(
+					requirement.rows.map(async row => {
+						const artifact = await artifacts.get(row);
+						return artifact ? { row, head: artifact.head, dirty: artifact.dirty } : null;
+					}),
+				);
+				if (
+					!isFreshRequirementVerdict(
+						requirement,
+						rowArtifacts.filter(item => item !== null),
+					)
+				) {
+					const rows = requirement.rows.filter(row => targetRows.has(row));
+					unmet.push(`${requirement.id} (${rows.map(row => JSON.stringify(row)).join(", ")})`);
+				}
+			}
+			if (unmet.length > 0) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `todo done is blocked until every linked requirement has a fresh qa-auditor pass for the current clean row artifact: ${unmet.join("; ")}`,
+						},
+					],
+					details: { op: "done", phases: previousPhases, storage },
+					isError: true,
+				};
+			}
+		}
+		return undefined;
 	}
 
 	/** #41's classify path, dispatched on raw args before the shared schema so
