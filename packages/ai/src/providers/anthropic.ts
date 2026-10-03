@@ -4215,6 +4215,25 @@ type AnthropicControlSpec = { toolChanges: AnthropicToolChange[]; effort?: Anthr
 
 type AnthropicControlCarrier = object & { [ANTHROPIC_CONTROL]?: AnthropicControlSpec };
 
+const ANTHROPIC_SUBAGENT_ELAPSED_NOTE = /^elapsed \d+s \/ 900s$/;
+
+function isAnthropicSubagentElapsedNote(message: Message): boolean {
+	return (
+		message.role === "developer" &&
+		message.synthetic === true &&
+		typeof message.content === "string" &&
+		ANTHROPIC_SUBAGENT_ELAPSED_NOTE.test(message.content)
+	);
+}
+
+function anthropicRetainedMessageCount(messages: readonly Message[]): number {
+	let count = 0;
+	for (const message of messages) {
+		if (!isAnthropicSubagentElapsedNote(message)) count++;
+	}
+	return count;
+}
+
 /**
  * An assistant message in `context.messages` whose request declared controls.
  * `live` when it still sits at the index it was written at: the history before
@@ -4802,7 +4821,7 @@ function buildParams(
 	const requestControls: AnthropicRequestControls | undefined =
 		toolPlan.record || effortPlan.record
 			? {
-					messageIndex: context.messages.length,
+					messageIndex: anthropicRetainedMessageCount(context.messages),
 					...(toolPlan.record && { tools: toolPlan.record }),
 					...(effortPlan.record && { effort: effortPlan.record }),
 				}

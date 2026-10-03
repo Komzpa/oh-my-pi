@@ -280,6 +280,8 @@
 
 ### Added
 
+- Added a per-request, child-only elapsed-time context signal (`elapsed Ns / 900s`) as a transient provider-context tail message, preserving the original assignment clock without changing the stable system/tool prefix or hard runtime behavior.
+- Added a per-request, child-only elapsed-time context signal (`elapsed Ns / 900s`) as a transient provider-context tail message, preserving the original assignment clock across cold revival without changing the stable system/tool prefix or hard runtime behavior.
 - The shell's `cp` builtin accepts macOS's `-c` (clone where possible, else copy; same as `--reflink=auto`).
 
 ### Changed
