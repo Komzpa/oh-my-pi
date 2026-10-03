@@ -54,6 +54,9 @@ const SKETCH_CARDS_MAX = 48;
 const VERIFY_STATE_BYTES = 24 * 1024;
 /** Wall-clock budget for the native lexical scan. */
 const SCAN_TIMEOUT_MS = 30_000;
+/** Native walk limits keep the initial scan and its retained results bounded. */
+const SCAN_MAX_FILES = 20_000;
+const SCAN_MAX_BYTES = 256 * 1024 * 1024;
 /** Distinct failure messages retained for the report. */
 const FAILURES_KEPT = 5;
 
@@ -176,10 +179,23 @@ class Cascade {
 
 		onProgress?.("lexical scan");
 		const native = filesystem.shellFilesystem();
-		const [entries, index] = await Promise.all([
-			listFiles(root, { includeHidden, filesystem: native, signal }),
-			grepIndex(root.path, keywords, { includeHidden, filesystem: native, signal, timeoutMs: SCAN_TIMEOUT_MS }),
-		]);
+		const entries = await listFiles(root, {
+			includeHidden,
+			filesystem: native,
+			maxScanEntries: SCAN_MAX_FILES,
+			maxScanBytes: SCAN_MAX_BYTES,
+			signal,
+			timeoutMs: SCAN_TIMEOUT_MS,
+		});
+		throwIfAborted(signal);
+		const index = await grepIndex(root.path, keywords, {
+			includeHidden,
+			filesystem: native,
+			maxScanFiles: SCAN_MAX_FILES,
+			maxScanBytes: SCAN_MAX_BYTES,
+			signal,
+			timeoutMs: SCAN_TIMEOUT_MS,
+		});
 		this.stats.listed = entries.length;
 		const weights = idf(index);
 		const noCounts = Array.from({ length: keywords.length }, () => 0);
