@@ -2,6 +2,7 @@
  * Generate session titles using a smol, fast model.
  */
 import { dlopen, FFIType, ptr } from "bun:ffi";
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 import {
@@ -572,8 +573,69 @@ function getFallbackTerminalTitle(cwd: string | undefined): string | undefined {
 	return sanitizeTerminalTitlePart(baseName);
 }
 
+/** The composed `project · session` label stays short enough for a tab. */
+const SESSION_LABEL_MAX_LENGTH = 48;
+/** Separates the project from the session name in the tab label. */
+const SESSION_LABEL_PROJECT_SEPARATOR = " · ";
+
+/**
+ * Basename of the git root containing each resolved cwd, cached so a title
+ * write never walks the filesystem twice for the same directory and never
+ * spawns a subprocess. Entries live for the process lifetime: renames are
+ * already covered because a rename re-emits the title through a fresh cwd.
+ */
+const gitProjectCache = new Map<string, string | undefined>();
+
+/** Test seam: drop cached git-root lookups. */
+export function clearSessionTitleProjectCache(): void {
+	gitProjectCache.clear();
+}
+
+/** Walk up to the first directory containing `.git` (sync, no subprocess). */
+function findGitRoot(from: string): string | undefined {
+	let dir = from;
+	for (;;) {
+		if (fs.existsSync(path.join(dir, ".git"))) return dir;
+		const parent = path.dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+}
+
+/**
+ * The project owning `cwd`: basename of the containing git root, falling back
+ * to basename(cwd) outside a repo. Returns undefined when neither yields a name.
+ */
+function resolveProjectName(cwd: string): string | undefined {
+	const resolved = path.resolve(cwd);
+	if (gitProjectCache.has(resolved)) return gitProjectCache.get(resolved);
+	const project = sanitizeTerminalTitlePart(path.basename(findGitRoot(resolved) ?? resolved));
+	gitProjectCache.set(resolved, project);
+	return project;
+}
+
+/**
+ * The tab label for a session: `<project> · <session name>` when both exist
+ * so the tab reads which project the session is doing what in; whichever half
+ * is missing falls back to the other. overlong labels truncate the session-name
+ * part with `…` — the project is never truncated. Pure (no I/O beyond the
+ * cached git-root lookup) so the contract is directly testable.
+ */
+export function buildSessionTerminalLabel(sessionName: string | undefined, cwd?: string): string | undefined {
+	const name = sanitizeTerminalTitlePart(sessionName);
+	if (!name) return cwd === undefined ? undefined : (resolveProjectName(cwd) ?? getFallbackTerminalTitle(cwd));
+	if (cwd === undefined) return name;
+	const project = resolveProjectName(cwd);
+	if (!project || project === name || name.startsWith(project + SESSION_LABEL_PROJECT_SEPARATOR)) return name;
+	const composed = `${project}${SESSION_LABEL_PROJECT_SEPARATOR}${name}`;
+	if (composed.length <= SESSION_LABEL_MAX_LENGTH) return composed;
+	const keep = SESSION_LABEL_MAX_LENGTH - project.length - SESSION_LABEL_PROJECT_SEPARATOR.length - 1;
+	if (keep <= 0) return composed;
+	return `${project}${SESSION_LABEL_PROJECT_SEPARATOR}${name.slice(0, keep)}…`;
+}
+
 export function formatSessionTerminalTitle(sessionName: string | undefined, cwd?: string): string {
-	const label = sanitizeTerminalTitlePart(sessionName) ?? getFallbackTerminalTitle(cwd);
+	const label = buildSessionTerminalLabel(sessionName, cwd);
 	return label ? `${DEFAULT_TERMINAL_TITLE}: ${label}` : DEFAULT_TERMINAL_TITLE;
 }
 
@@ -655,7 +717,7 @@ export function setSessionTerminalTitle(sessionName: string | undefined, cwd?: s
 	// explicit terminal-ownership path, releases the latch.
 	terminalTitleRuntime.extensionOverride = undefined;
 	terminalTitleRuntime.sessionName = sanitizeTerminalTitlePart(sessionName);
-	terminalTitleRuntime.label = terminalTitleRuntime.sessionName ?? getFallbackTerminalTitle(cwd);
+	terminalTitleRuntime.label = buildSessionTerminalLabel(sessionName, cwd);
 	emitTerminalTitle();
 	reportTernSessionFile();
 }
