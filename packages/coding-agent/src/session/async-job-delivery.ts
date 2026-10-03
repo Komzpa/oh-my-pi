@@ -99,6 +99,7 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 		const structuredJson = structured && structured.status !== "valid" ? renderStructuredJson(structured) : undefined;
 		return {
 			jobId: entry.jobId,
+			result: entry.result,
 			agentId: entry.job?.agentId,
 			// The job manager disambiguates a requested job id when it collides
 			// with another live job (e.g. a task job reusing a vibe turn's job
