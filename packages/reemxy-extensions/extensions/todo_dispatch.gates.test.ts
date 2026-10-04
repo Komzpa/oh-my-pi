@@ -1928,3 +1928,63 @@ test("R4: the slip refusal is one exact action whose calls compose with the esca
   expect(decideGateCall(reestimateCall("Force-layout callouts", { owner: "CalloutRestaff" }), escalated).allowed).toBe(true);
   expect(decideGateCall({ name: "bash", arguments: { command: "git commit" } }, escalated).allowed).toBe(false);
 });
+
+test("a resumed live non-task worker staffs its row and allows wait", async () => {
+  const cwd = repo("clean");
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const now = Date.now();
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: () => undefined,
+  } as unknown as ExtensionAPI;
+  await todoDispatch(api);
+  const branch = plan("ready", now);
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: "gates-resumed-nontask-owner" }), getBranch: () => branch, getSessionFile: () => undefined },
+    getAsyncJobSnapshot: () => ({
+      running: [{ id: "worker-a", agentId: "worker-a", type: "bash", status: "running", label: "resumed worker", startTime: now }],
+      recent: [],
+      nonJobAgents: [{ id: "worker-a", live: true }],
+    }),
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => false,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  try {
+    const requirement = await handlers.get("context")!({ messages: [] }, ctx) as { messages?: Array<{ content: string }> } | undefined;
+    expect(requirement?.messages?.at(-1)?.content).not.toContain("idle-live-owner");
+    expect(await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "resumed-wait", input: {} }, ctx)).toBeUndefined();
+  } finally {
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a fresh running owner may reestimate a slipping row; stale owners remain refused", async () => {
+  const now = Date.now();
+  const fresh = now - 5 * 60_000;
+  const stale = now - 20 * 60_000;
+  const freshRow = slipRow("Fresh recovery row", "FreshRecoveryOwner", 2, now - 65 * 60_000);
+  const freshResult = await slipCall(
+    [freshRow],
+    slipJobs("FreshRecoveryOwner", "coder", fresh),
+    reestimateCall("Fresh recovery row"),
+  );
+  expect(freshResult).toBeUndefined();
+
+  const staleRow = slipRow("Stale slipping row", "StaleSlippingOwner", 2, now - 65 * 60_000);
+  const staleResult = await slipCall(
+    [staleRow],
+    slipJobs("StaleSlippingOwner", "coder", stale),
+    reestimateCall("Stale slipping row"),
+  );
+  expect(staleResult?.block).toBe(true);
+  expect(staleResult?.reason).toContain("Exactly: write proc://StaleSlippingOwner/kill");
+});
