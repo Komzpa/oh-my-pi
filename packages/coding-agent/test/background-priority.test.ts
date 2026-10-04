@@ -4,10 +4,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ptree } from "@oh-my-pi/pi-utils";
 import { runBoundedProbe } from "../src/eval/probe";
+import { backgroundShellPrefix } from "@oh-my-pi/pi-utils/background-priority";
+import { $ } from "bun";
 
 // The child records its own priority: field 19 of /proc/<pid>/stat is nice,
 // and `ionice -p` prints the I/O scheduling class and level.
 const REPORT = 'echo "$(cut -d" " -f19 /proc/$$/stat) $(ionice -p $$)"';
+// Bun Shell escapes raw `$$`, so the shell probe reads /proc/self/stat (the
+// `cut` child, which inherits the lowered priority) and sh expands `$$` itself.
+const SHELL_REPORT = 'echo "$(cut -d" " -f19 /proc/self/stat) $(ionice -p $$)"';
 
 const readOwnStat = () => fs.readFileSync("/proc/self/stat", "utf8");
 const OWN_NICE_FIELD = 18;
@@ -33,6 +38,14 @@ describe.skipIf(process.platform !== "linux" || !Bun.which("nice") || !Bun.which
 			} finally {
 				fs.rmSync(dir, { recursive: true, force: true });
 			}
+		});
+
+		it("lowers Bun Shell `$` tool paths (gh, probes, mounts, installs)", async () => {
+			const before = readOwnStat().split(" ")[OWN_NICE_FIELD];
+			const result = await $`${backgroundShellPrefix} sh -c ${SHELL_REPORT}`.quiet().nothrow();
+			expect(result.exitCode).toBe(0);
+			expect(result.text().trim()).toBe("19 best-effort: prio 7");
+			expect(readOwnStat().split(" ")[OWN_NICE_FIELD]).toBe(before);
 		});
 	},
 );
