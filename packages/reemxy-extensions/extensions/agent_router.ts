@@ -21,19 +21,19 @@ export interface PoolConfig {
 const POOL_SIZES: Record<string, number> = {
 	coder: 6,
 	"ui-coder": 4,
-	scout: 3,
-	"gate-runner": 3,
+	scout: 5,
+	"gate-runner": 5,
 	"git-pr-owner": 3,
-	scribe: 3,
+	scribe: 5,
 	reviewer: 3,
-	workhorse: 4,
+	workhorse: 6,
 	"retro-facilitator": 3,
 	architect: 4,
 	"plan-doctor": 3,
 	"security-reviewer": 0,
 	"coder-strong": 0,
 	"ui-coder-strong": 0,
-	researcher: 1,
+	researcher: 3,
 	"business-analyst": 3,
 	creative: 2,
 };
@@ -121,6 +121,8 @@ export const AGENT_POOLS: Record<string, PoolConfig> = {
 	// The built-in task agent has no package profile; retain its independent router policy.
 	task: {
 		pool: [
+			"openrouter/inclusionai/ling-3.0-flash-sante:free",
+			"openrouter/dots-studio/dots-3-note-preview:free",
 			"codex-lb/gpt-6-luna:medium",
 			"kimi-code/kimi-for-coding:high",
 			"deepseek/deepseek-v4-pro:high",
@@ -536,13 +538,18 @@ export async function routeSubagentSpawn(
 		if (activeWriter) {
 			return {
 				block: true,
-			reason: `Refusing ${agent}: ${activeWriter.agent} worker ${activeWriter.spawnKey} is running in ${holderRepoLabel(activeWriter, ctx)}; if this row edits another repo, put that repo path in the row resources; isolated: true isolates only ${cwdRepoLabel(ctx)}.`,
+				reason: `Refusing ${agent}: ${activeWriter.agent} worker ${activeWriter.spawnKey} is running in ${holderRepoLabel(activeWriter, ctx)}; if this row edits another repo, put that repo path in the row resources; isolated: true isolates only ${cwdRepoLabel(ctx)}.`,
 			};
 		}
 	}
 	const shuffle = options.shuffle ?? cryptoShuffle;
 	const { available, skipped: poolSkipped } = await availablePoolMembers(config.pool, ctx, state, options.now);
-	const { available: fallbacks, skipped: fallbackSkipped } = await availablePoolMembers(config.fallbacks, ctx, state, options.now);
+	const { available: fallbacks, skipped: fallbackSkipped } = await availablePoolMembers(
+		config.fallbacks,
+		ctx,
+		state,
+		options.now,
+	);
 	const skipped = [...poolSkipped, ...fallbackSkipped];
 	const poolOrder = shuffle(available);
 	const order = [...poolOrder, ...fallbacks];
@@ -696,10 +703,7 @@ export interface RecordOutcomeOptions {
 }
 
 /** Free liveness check: GET <baseUrl>/models with the same key. Alive unless 401/403. */
-export async function probeModelAuthAlive(
-	input: AuthProbeInput,
-	fetchImpl: typeof fetch = fetch,
-): Promise<boolean> {
+export async function probeModelAuthAlive(input: AuthProbeInput, fetchImpl: typeof fetch = fetch): Promise<boolean> {
 	let response: Response;
 	try {
 		response = await fetchImpl(`${input.baseUrl.replace(/\/+$/, "")}/models`, {
@@ -786,7 +790,15 @@ export async function recordTaskOutcome(
 			const resolvedModel = stringValue(job.resolvedModel);
 			const fallbackReason = takeFallbackReason(state, spawn, resolvedModel);
 			if (status === "failed")
-				await markAuthDeadAfterFailure(ctx, state, spawn, resolvedModel, job, options.now ?? (() => new Date()), options);
+				await markAuthDeadAfterFailure(
+					ctx,
+					state,
+					spawn,
+					resolvedModel,
+					job,
+					options.now ?? (() => new Date()),
+					options,
+				);
 			const record: OutcomeRecord = {
 				kind: "outcome",
 				spawnKey: spawn.spawnKey,
@@ -827,7 +839,15 @@ export async function recordTaskOutcome(
 		const resolvedModel = stringValue(result.resolvedModel);
 		const fallbackReason = stringValue(result.fallbackReason) ?? takeFallbackReason(state, spawn, resolvedModel);
 		if (statusFromResult(result, event.isError === true) === "failed")
-			await markAuthDeadAfterFailure(ctx, state, spawn, resolvedModel, result, options.now ?? (() => new Date()), options);
+			await markAuthDeadAfterFailure(
+				ctx,
+				state,
+				spawn,
+				resolvedModel,
+				result,
+				options.now ?? (() => new Date()),
+				options,
+			);
 		const record: OutcomeRecord = {
 			kind: "outcome",
 			spawnKey: spawn.spawnKey,
