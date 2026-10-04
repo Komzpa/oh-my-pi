@@ -1244,6 +1244,7 @@
 - Fixed `readlink` in the bash tool printing a provider-backed path (e.g. `local://file`) with a `\\?\` prefix on Windows
 - Fixed the daemon broker on Windows dying with the omp process that started it, which stopped the shared browser relay (and every other broker daemon) while other omp sessions were still using it
 - Fixed the `browser` tool's Tern backend being refused by any Tern newer than the protocol omp was built against; it now speaks Tern's JSON script protocol, which no Tern build ties it to, and a Tern from before it reports as unavailable (update Tern) so the Chromium fallback takes over.
+- Fixed `bash` service mode rejecting calls that carry materialized `async: false` / `timeout: 0` placeholders the caller never passed, and fixed `env` being ignored on finite non-service commands: `env` is now accepted on every bash schema and threaded through the executor, PTY, ACP terminal, and service-daemon backends (caller values win over direnv/shell defaults). Explicit `async: true` or a nonzero `timeout` with a service `name` still rejects per the documented contract.
 
 ## [18.4.12] - 2026-10-02
 
