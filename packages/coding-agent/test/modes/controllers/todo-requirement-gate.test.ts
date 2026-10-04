@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { TodoCommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/todo-command-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { bindRequirementRowArtifact, getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
@@ -166,15 +166,29 @@ describe("TodoCommandController linked-requirement gate", () => {
 			phases: [
 				{
 					name: "Plan",
-					tasks: [{ content: "Gate artifact", status: "pending", artifactCwd: repo, artifactOwner: "main" }],
+					tasks: [
+						{
+							content: "Gate artifact",
+							status: "pending",
+							schedule: { owner: "main", resources: [repo] },
+						},
+					],
 				},
 			],
 		});
+		const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
+		const bound = await bindRequirementRowArtifact(
+			{ cwd: repo, sessionManager: manager },
+			"Gate artifact",
+			phases,
+			{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
+		);
+		expect(bound).toEqual({ cwd: repo, head, dirty: false });
 		appendLedger(manager, [
 			linkedRequirement("gate the artifact", ["Gate artifact"], {
 				status: "pass",
 				evidence: "qa evidence",
-				artifact: head,
+				artifact: bound.head!,
 				workerId: "qa-1",
 				auditor: "qa-auditor",
 			}),

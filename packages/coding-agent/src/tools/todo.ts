@@ -241,7 +241,9 @@ export async function getRequirementRowArtifact(
 			? archived || paths.length || persistedCwd || declaredResources
 				? undefined
 				: ctx.cwd
-			: agent?.session?.sessionManager.getCwd();
+			: resources.length > 0
+				? undefined
+				: agent?.session?.sessionManager.getCwd();
 	// A reassigned worker whose checkout is not known must not inherit the row's initial main checkout.
 	if (
 		!archived &&
@@ -333,15 +335,12 @@ export async function bindRequirementRowArtifact(
 	}
 	if (
 		!current ||
-		current.status !== original.status ||
-		JSON.stringify((current as TodoItem & { schedule?: unknown }).schedule) !==
-			JSON.stringify((original as TodoItem & { schedule?: unknown }).schedule) ||
-		current.artifactCwd !== original.artifactCwd ||
-		current.artifactOwner !== original.artifactOwner
+		JSON.stringify((current as TodoItem & { schedule?: { resources?: unknown } }).schedule?.resources) !==
+			JSON.stringify((original as TodoItem & { schedule?: { resources?: unknown } }).schedule?.resources)
 	) {
 		return unknownRequirementArtifact(`TODO row ${JSON.stringify(row)} changed during artifact binding`);
 	}
-	const owner = (original as TodoItem & { schedule?: { owner?: unknown } }).schedule?.owner;
+	const owner = (current as TodoItem & { schedule?: { owner?: unknown } }).schedule?.owner;
 	const artifactOwner = typeof owner === "string" ? owner : "main";
 	if (original.artifactCwd === artifact.cwd && original.artifactOwner === artifactOwner) return artifact;
 	current.artifactCwd = artifact.cwd;

@@ -110,6 +110,92 @@ describe("canonical todo row metadata", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+	it("binds the resource HEAD when dispatch rewrites only the row owner", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "omp-ledger-dispatch-owner-"));
+		try {
+			execFileSync("git", ["init", "--initial-branch=main"], { cwd });
+			writeFileSync(join(cwd, "artifact.txt"), "audited\n");
+			execFileSync("git", ["add", "artifact.txt"], { cwd });
+			execFileSync(
+				"git",
+				["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "audited"],
+				{ cwd },
+			);
+			const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+			const manager = SessionManager.inMemory(cwd);
+			const original: TodoPhase[] = [
+				{
+					name: "Plan",
+					tasks: [{ content: "Dispatch row", status: "pending", schedule: { owner: "main", resources: [cwd] } }],
+				},
+			];
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+				phases: [
+					{
+						name: "Plan",
+						tasks: [
+							{ content: "Dispatch row", status: "pending", schedule: { owner: "qa-worker", resources: [cwd] } },
+						],
+					},
+				],
+			});
+			const bound = await bindRequirementRowArtifact(
+				{ cwd, sessionManager: manager },
+				"Dispatch row",
+				original,
+				{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
+			);
+			expect(bound).toEqual({ cwd, head, dirty: false });
+			const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
+			expect(persisted[0]?.tasks[0]).toMatchObject({ artifactCwd: cwd, artifactOwner: "qa-worker" });
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+	it("uses declared resources instead of adding the registered owner's session cwd", async () => {
+		const root = mkdtempSync(join(tmpdir(), "omp-ledger-resource-owner-"));
+		const owner = `worker-${root.slice(root.lastIndexOf("/") + 1)}`;
+		const registry = AgentRegistry.global();
+		try {
+			const resource = join(root, "resource");
+			const sessionCwd = join(root, "session");
+			for (const cwd of [resource, sessionCwd]) {
+				mkdirSync(cwd);
+				execFileSync("git", ["init", "--initial-branch=main"], { cwd });
+				writeFileSync(join(cwd, "artifact.txt"), cwd);
+				execFileSync("git", ["add", "artifact.txt"], { cwd });
+				execFileSync(
+					"git",
+					["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "artifact"],
+					{ cwd },
+				);
+			}
+			registry.register({
+				id: owner,
+				displayName: owner,
+				kind: "sub",
+				status: "idle",
+				session: { sessionManager: { getCwd: () => sessionCwd } } as never,
+			});
+			const phases: TodoPhase[] = [
+				{
+					name: "Plan",
+					tasks: [
+						{ content: "Resource row", status: "in_progress", schedule: { owner, resources: [resource] } } as TodoPhase["tasks"][number],
+					],
+				},
+			];
+			const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: resource, encoding: "utf8" }).trim();
+			expect(await getRequirementRowArtifact({ cwd: sessionCwd }, "Resource row", phases)).toEqual({
+				cwd: resource,
+				head,
+				dirty: false,
+			});
+		} finally {
+			registry.unregister(owner);
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 	it("keeps a native row auditable after schedule edits and plan replacement, but stales a later commit", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "omp-ledger-native-owner-"));
 		try {
