@@ -587,6 +587,53 @@ test("every todo result in the main session ends with the plan's problems", asyn
   }
 }, 60_000);
 
+test("PLAN CHECK excludes forecast rows closed in the current TODO phases", async () => {
+  const cwd = repo("clean");
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const now = Date.now();
+  const currentPlan = plan("ready", now)[0]!.message.details.phases;
+  const closedSnapshot = currentPlan.map((phase) => ({
+    ...phase,
+    tasks: phase.tasks.map((task) => task.content === "Row B" ? { ...task, status: "completed" } : task),
+  }));
+  let phaseReads = 0;
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "read"],
+    pi: {
+      ...sdk,
+      readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }),
+      getLatestTodoPhasesFromEntries: (entries: unknown[]) => {
+        phaseReads += 1;
+        return phaseReads > 1 ? closedSnapshot : getLatestTodoPhasesFromEntries(entries as never);
+      },
+    },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: () => undefined,
+  } as unknown as ExtensionAPI;
+  await todoDispatch(api);
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: "plancheck-closed" }), getBranch: () => plan("ready", now) },
+    getAsyncJobSnapshot: () => ({ running: [], recent: [{ id: "worker-a", type: "task", status: "completed", label: "Row A", startTime: now }], nonJobAgents: [] }),
+    getTaskMaxConcurrency: () => 6,
+  } as unknown as ExtensionContext;
+  phaseReads = 0;
+  try {
+    const result = (await handlers.get("tool_result")!({
+      toolName: "todo", toolCallId: "closed-row", input: {}, isError: false,
+      content: [{ type: "text", text: "done Row B" }], details: { phases: currentPlan },
+    }, ctx)) as { content: Array<{ text: string }> };
+    const text = result.content.at(-1)!.text;
+    expect(text).not.toContain('"Row B"');
+    expect(text).toContain('1 worker result(s) came back and their rows are still open: "Row A"');
+  } finally {
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("main-session plan snapshots feed plan-doctor from dispatcher-owned state files", async () => {
   const cwd = repo("clean");
   const sessions = mkdtempSync(join(tmpdir(), "gates-plan-snapshot-"));
