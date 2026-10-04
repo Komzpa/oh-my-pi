@@ -1024,7 +1024,11 @@ fn reachable_object_stores(source_common: &Path) -> Vec<PathBuf> {
 		let Ok(contents) = fs::read_to_string(current.join("info/alternates")) else {
 			continue;
 		};
-		for line in contents.lines().map(str::trim).filter(|line| !line.is_empty()) {
+		for line in contents
+			.lines()
+			.map(str::trim)
+			.filter(|line| !line.is_empty())
+		{
 			stack.push(canonical_of(&resolve_alternate(&current, line)));
 		}
 	}
@@ -1046,9 +1050,7 @@ fn copy_objects_non_borrowing(source_common: &Path, dst: &Path) -> Result<()> {
 			// Never inherit a borrow pointer (`info/alternates`) or a pack
 			// index (`info/packs`) that describes a different store's pack
 			// set; packs are discovered by scanning the merged directory.
-			if src_path == skipped
-				|| src_path.file_name().is_some_and(|name| name == "packs")
-			{
+			if src_path == skipped || src_path.file_name().is_some_and(|name| name == "packs") {
 				continue;
 			}
 			let dst_path = dst.join(entry.file_name());
@@ -1131,14 +1133,20 @@ fn detach_without_borrowing(
 				.parent()
 				.unwrap_or_else(|| Path::new("."))
 				.join(text.trim().strip_prefix("gitdir:")?.trim());
-			fs::read_to_string(admin.join("commondir")).ok().and_then(|text| {
-				let raw = text.trim();
-				if raw.is_empty() {
-					return None;
-				}
-				let path = PathBuf::from(raw);
-				Some(if path.is_absolute() { path } else { normalize_path(&admin.join(path)) })
-			})
+			fs::read_to_string(admin.join("commondir"))
+				.ok()
+				.and_then(|text| {
+					let raw = text.trim();
+					if raw.is_empty() {
+						return None;
+					}
+					let path = PathBuf::from(raw);
+					Some(if path.is_absolute() {
+						path
+					} else {
+						normalize_path(&admin.join(path))
+					})
+				})
 		})
 	} else {
 		Some(git_entry.to_owned())
@@ -3221,16 +3229,12 @@ mod tests {
 		fs::create_dir_all(alt_objects.join("ab")).unwrap();
 		fs::create_dir_all(alt_objects.join("info")).unwrap();
 		fs::write(alt_objects.join("ab").join("cdef"), b"borrowed").unwrap();
-		fs::write(
-			source_objects.join("info/alternates"),
-			format!("{}\n", alt_objects.display()),
-		)
-		.unwrap();
+		fs::write(source_objects.join("info/alternates"), format!("{}\n", alt_objects.display()))
+			.unwrap();
 		let dst = temp.path().join("copy");
 		copy_objects_non_borrowing(&source_common, &dst).unwrap();
 		assert_eq!(fs::read(dst.join("ab/cdef")).unwrap(), b"borrowed");
 		assert_eq!(fs::read(dst.join("pack/top.pack")).unwrap(), b"top");
 		assert!(!dst.join("info/alternates").exists());
 	}
-
 }

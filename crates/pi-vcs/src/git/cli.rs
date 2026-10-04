@@ -192,7 +192,10 @@ fn is_utf8_locale(value: &str) -> bool {
 /// Non-zero exits are returned in [`CliOutput`], not raised.
 pub(crate) async fn run(cwd: &Path, args: &[String], options: &RunOptions) -> Result<CliOutput> {
 	let argv = hardened_args(args, options.read_only);
-	let scope = options.scope.clone().unwrap_or_else(crate::process_limit::shared);
+	let scope = options
+		.scope
+		.clone()
+		.unwrap_or_else(crate::process_limit::shared);
 	let probe = vec![std::ffi::OsString::from("git")];
 	// First-use enforcement runs manager subprocesses; keep them off the
 	// async worker. Reuse of the verified boundary makes this a no-op after
