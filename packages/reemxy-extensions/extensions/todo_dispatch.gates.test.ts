@@ -1770,6 +1770,13 @@ test("decideGateCall: reads, steering and non-done todo pass; other calls need a
 test("parseTodoOverride names a gate id inside the override field", () => {
   expect(parseTodoOverride({ op: "schedule", override: "answering missed-eta with new estimates" })).toBe("missed-eta");
   expect(parseTodoOverride({ op: "append", override: "RETRO handled separately" })).toBe("retro");
+  // Grievances 547/590: overrides naming tracked demands must resolve to their demand keys.
+  expect(parseTodoOverride({ op: "schedule", override: "todo-plan-doctor" })).toBe("todo-plan-doctor");
+  expect(parseTodoOverride({ op: "schedule", override: "plan-doctor consulted offline" })).toBe("todo-plan-doctor");
+  expect(parseTodoOverride({ op: "schedule", override: "todo-replan done above" })).toBe("todo-replan");
+  expect(parseTodoOverride({ op: "schedule", override: "todo-link fixed" })).toBe("todo-link");
+  expect(parseTodoOverride({ op: "schedule", override: "unread-receipts read" })).toBe("unread-receipts");
+  expect(parseTodoOverride({ op: "schedule", override: "idle-wait: single writer lane" })).toBe("idle-wait");
   expect(parseTodoOverride({ op: "schedule" })).toBeUndefined();
   expect(parseTodoOverride({ op: "schedule", override: "something else entirely" })).toBeUndefined();
   expect(parseTodoOverride(null)).toBeUndefined();
@@ -1810,6 +1817,50 @@ test("escalated demands refuse non-remedy calls until a todo override names them
     // Naming the demand in the override field lets later calls through.
     expect(await toolCall({ toolName: "todo", toolCallId: "u4", input: { ...CALLS.todoSchedule!.arguments, override: "missed-eta re-estimated" } }, ctx)).toBeUndefined();
     expect(await toolCall({ toolName: "todo", toolCallId: "u5", input: CALLS.taskRow!.arguments }, ctx)).toBeUndefined();
+  } finally {
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("grievance 590: override naming todo-plan-doctor lets task dispatch through", async () => {
+  const cwd = repo("clean");
+  const now = Date.now();
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: () => undefined,
+  } as unknown as ExtensionAPI;
+  const branch = [...plan("ready", now), { customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "todo-plan-doctor": 3 } } }];
+  await todoDispatch(api);
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: "gates-plan-doctor" }), getBranch: () => branch, getSessionFile: () => undefined },
+    getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => false,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  try {
+    await handlers.get("session_start")!({}, ctx);
+    const toolCall = handlers.get("tool_call")!;
+    const refused = (await toolCall({ toolName: "task", toolCallId: "u1", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    expect(refused?.block).toBe(true);
+    expect(refused?.reason).toContain("todo-plan-doctor");
+    // Negative control: an override naming a different gate leaves the refusal standing.
+    expect(await toolCall({ toolName: "todo", toolCallId: "u2", input: { ...CALLS.todoSchedule!.arguments, override: "missed-eta re-estimated" } }, ctx)).toBeUndefined();
+    const stillRefused = (await toolCall({ toolName: "task", toolCallId: "u3", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    expect(stillRefused?.block).toBe(true);
+    expect(stillRefused?.reason).toContain("todo-plan-doctor");
+    // Naming the escalated demand in the override field lets later task calls through.
+    expect(await toolCall({ toolName: "todo", toolCallId: "u4", input: { ...CALLS.todoSchedule!.arguments, override: "todo-plan-doctor" } }, ctx)).toBeUndefined();
+    expect(await toolCall({ toolName: "task", toolCallId: "u5", input: CALLS.taskRow!.arguments }, ctx)).toBeUndefined();
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });
