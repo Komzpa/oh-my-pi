@@ -955,6 +955,10 @@
 - Task workers no longer inherit the user's desktop session: subagent `bash` environments drop `WAYLAND_DISPLAY`, `DISPLAY`, and `DBUS_SESSION_BUS_ADDRESS`, and get a per-worker private `XDG_RUNTIME_DIR` instead of `/run/user/<uid>`. The main interactive session's environment is unchanged.
 - Task workers no longer inherit the user's desktop session: subagent bash and JavaScript/Python eval children drop desktop bindings and get a private `XDG_RUNTIME_DIR` instead of `/run/user/<uid>`. Native shell imports and snapshots cannot restore inherited bindings. Main-session commands and explicitly supplied fixture environments are unchanged.
 
+### Fixed: tool subprocess priority
+
+- Lowered Linux Bun Shell tool children (update probes, share gist, IDA probe, gallery render, sshfs mounts, runtime installs) to nice 19 and best-effort I/O priority 7 via a shared shell prefix; interactive UI and terminal spawns are unchanged.
+
 ## [18.4.12] - 2026-10-02
 
 ### Added
