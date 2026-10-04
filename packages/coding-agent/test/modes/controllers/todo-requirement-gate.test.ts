@@ -178,12 +178,9 @@ describe("TodoCommandController linked-requirement gate", () => {
 		});
 		const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
 		Object.assign(phases[0]!.tasks[0]!, { schedule: { owner: "main", resources: [repo] } });
-		const bound = await bindRequirementRowArtifact(
-			{ cwd: repo, sessionManager: manager },
-			"Gate artifact",
-			phases,
-			{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
-		);
+		const bound = await bindRequirementRowArtifact({ cwd: repo, sessionManager: manager }, "Gate artifact", phases, {
+			appendEntry: (type, data) => manager.appendCustomEntry(type, data),
+		});
 		expect(bound).toEqual({ cwd: repo, head, dirty: false });
 		appendLedger(manager, [
 			linkedRequirement("gate the artifact", ["Gate artifact"], {

@@ -123,12 +123,12 @@ describe("canonical todo row metadata", () => {
 			);
 			const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
 			const manager = SessionManager.inMemory(cwd);
-			const original: TodoPhase[] = [
+			const original = [
 				{
 					name: "Plan",
 					tasks: [{ content: "Dispatch row", status: "pending", schedule: { owner: "main", resources: [cwd] } }],
 				},
-			];
+			] as unknown as TodoPhase[];
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
 				phases: [
 					{
@@ -139,12 +139,9 @@ describe("canonical todo row metadata", () => {
 					},
 				],
 			});
-			const bound = await bindRequirementRowArtifact(
-				{ cwd, sessionManager: manager },
-				"Dispatch row",
-				original,
-				{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
-			);
+			const bound = await bindRequirementRowArtifact({ cwd, sessionManager: manager }, "Dispatch row", original, {
+				appendEntry: (type, data) => manager.appendCustomEntry(type, data),
+			});
 			expect(bound).toEqual({ cwd, head, dirty: false });
 			const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
 			expect(persisted[0]?.tasks[0]).toMatchObject({ artifactCwd: cwd, artifactOwner: "qa-worker" });
@@ -181,7 +178,11 @@ describe("canonical todo row metadata", () => {
 				{
 					name: "Plan",
 					tasks: [
-						{ content: "Resource row", status: "in_progress", schedule: { owner, resources: [resource] } } as TodoPhase["tasks"][number],
+						{
+							content: "Resource row",
+							status: "in_progress",
+							schedule: { owner, resources: [resource] },
+						} as TodoPhase["tasks"][number],
 					],
 				},
 			];
