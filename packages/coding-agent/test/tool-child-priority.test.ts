@@ -86,7 +86,11 @@ describe.skipIf(process.platform !== "linux")("native tool-child background prio
 		try {
 			const result = await kernel.execute(
 				"import pathlib, subprocess, os\nprint(pathlib.Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()[16])\nprint(subprocess.check_output(['/usr/bin/ionice', '-p', str(os.getpid())], text=True).strip())",
-				{ onChunk: text => (output += text) },
+				{
+					onChunk: text => {
+						output += text;
+					},
+				},
 			);
 			expect(result.status).toBe("ok");
 			expectBackgroundPriority(output);
