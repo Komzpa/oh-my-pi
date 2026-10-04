@@ -208,7 +208,10 @@ function cloneTask(task: TodoItem): TodoItem {
 }
 
 function clonePhases(phases: TodoPhase[]): TodoPhase[] {
-	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
+	return phases.map(phase => {
+		const { tasks, ...metadata } = phase;
+		return { ...structuredClone(metadata), tasks: tasks.map(cloneTask) };
+	});
 }
 
 function todoTransitionKey(phase: string, content: string): string {
