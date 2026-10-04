@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Run Linux scoped tool children (external shell commands, PTYs, git hooks, and Python/JavaScript eval kernels) at CPU niceness 19 and best-effort IO priority 7 without lowering omp's own priority.
+
 ## [18.4.10] - 2026-10-02
 
 ### Fixed

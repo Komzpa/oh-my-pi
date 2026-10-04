@@ -41,6 +41,14 @@ native boundary owner. Scope execution preserves terminal handles, IPC,
 environment, working directory, and inherited resource limits. Linux refuses
 an unbounded JavaScript Worker fallback when subprocess startup fails.
 
+The shared Linux scope argv starts user work through `nice -n19 ionice -c2 -n7`:
+children and their ordinary descendants run at niceness 19 and best-effort IO
+priority 7, while omp's own CPU and IO priority are unchanged. Helpers are
+resolved against the host PATH before the command's environment is applied.
+These per-process priorities are distinct from cgroup CPU/IO weights, which do
+not set niceness or IO scheduling class. Non-scoped launch paths are separate
+owners and do not acquire priority changes from this boundary.
+
 This is resource containment, not an adversarial sandbox. Explicit operations
 against service managers, remote hosts, or existing daemons remain outside the
 child-process boundary; ordinary `systemctl --user` administration still works.
