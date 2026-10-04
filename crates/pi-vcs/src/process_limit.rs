@@ -74,6 +74,24 @@ fn true_bin() -> &'static OsString {
 	&BIN
 }
 
+/// Lower only the scoped child, before it can run user code. Scope units do
+/// not apply service execution properties such as `Nice=`; cgroup weights
+/// also do not set per-process CPU/IO priorities. Resolve helpers against
+/// the host PATH, not the command's possibly cleared environment.
+#[cfg(target_os = "linux")]
+fn background_priority_prefix() -> &'static [OsString; 5] {
+	static PREFIX: std::sync::LazyLock<[OsString; 5]> = std::sync::LazyLock::new(|| {
+		[
+			resolved_binary("nice"),
+			OsString::from("-n19"),
+			resolved_binary("ionice"),
+			OsString::from("-c2"),
+			OsString::from("-n7"),
+		]
+	});
+	&PREFIX
+}
+
 /// Parsed `systemctl --version` (`systemd 252 (...)` → `252`), probed once.
 /// Unknown (no manager, unparsable output) means "assume old": the
 /// `--expand-environment` flag is omitted and `$` is escaped instead.
@@ -233,7 +251,7 @@ impl ToolProcessLimit {
 				false,
 				true,
 			);
-			wrapped.extend(command.iter().map(|arg| {
+			wrapped.extend(background_priority_prefix().iter().chain(command).map(|arg| {
 				if expand_environment_flag().is_none() {
 					escape_manager_expansion(arg)
 				} else {
