@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed: Finished background job lookup
+
+- Keep delivered background jobs readable through `proc://<id>` until normal retention expires, while omitting consumed jobs from listings and preserving owner isolation.
+
 ### Added
 
 - `/dump all` writes a zip to the temp directory with the main transcript, the LLM request JSON, and one file per subagent transcript (nested subagents included, killed ones marked aborted); the TUI copies the archive path to the clipboard. Plain `/dump` is unchanged ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
