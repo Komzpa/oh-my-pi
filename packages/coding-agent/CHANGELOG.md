@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed todo restoration and copying dropping persisted task and phase metadata, including scheduling fields, after a restart.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02

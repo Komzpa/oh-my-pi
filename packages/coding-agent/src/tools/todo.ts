@@ -90,14 +90,9 @@ function findPhaseByName(phases: TodoPhase[], name: string): TodoPhase | undefin
 	return phases.find(phase => phase.name === name);
 }
 
-function cloneTask(task: TodoItem): TodoItem {
-	return task.blocker !== undefined
-		? { content: task.content, status: task.status, blocker: task.blocker }
-		: { content: task.content, status: task.status };
-}
-
-function clonePhases(phases: TodoPhase[]): TodoPhase[] {
-	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
+/** Clone complete persisted todo state, including nested scheduling metadata. */
+export function cloneTodoPhases(phases: TodoPhase[]): TodoPhase[] {
+	return structuredClone(phases);
 }
 
 function todoTransitionKey(phase: string, content: string): string {
@@ -252,7 +247,7 @@ export function createTodoHudStateData(
 export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPhase[] {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const phases = canonicalTodoPhases(entries[i]);
-		if (phases) return clonePhases(phases);
+		if (phases) return cloneTodoPhases(phases);
 	}
 	return [];
 }
@@ -521,7 +516,7 @@ export function applyOpsToPhases(
 	ops: TodoOpEntryValue[],
 ): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
-	let next = clonePhases(currentPhases);
+	let next = cloneTodoPhases(currentPhases);
 	for (const op of ops) {
 		next = applyEntry(next, op, errors);
 	}
@@ -734,7 +729,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
-		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
+		const previousPhases = cloneTodoPhases(this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
 		const resolved = resolveTodoParams(params, previousPhases.length > 0);
 		if (typeof resolved === "string") {
@@ -750,7 +745,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
-			: applyParams(clonePhases(previousPhases), entry);
+			: applyParams(cloneTodoPhases(previousPhases), entry);
 		// A batch with any error is discarded wholesale: persisting a
 		// half-applied batch makes the natural retry hit "already exists" for
 		// the ops that did land. State and rendered summary stay at previous.

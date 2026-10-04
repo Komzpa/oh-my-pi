@@ -5,7 +5,7 @@ import type { Settings } from "../config/settings";
 import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import midRunTodoNudgePrompt from "../prompts/system/mid-run-todo-nudge.md" with { type: "text" };
-import { getLatestTodoPhasesFromEntries, isTodoPhase } from "../tools/todo";
+import { cloneTodoPhases, getLatestTodoPhasesFromEntries, isTodoPhase } from "../tools/todo";
 import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AgentSessionEvent } from "./agent-session-events";
@@ -81,12 +81,12 @@ export class TodoTracker {
 
 	/** Returns a defensive clone of the current todo phases. */
 	get phases(): TodoPhase[] {
-		return this.#clonePhases(this.#phases);
+		return cloneTodoPhases(this.#phases);
 	}
 
 	/** Replaces todo phases with a defensive clone. */
 	setPhases(phases: TodoPhase[]): void {
-		this.#phases = this.#clonePhases(phases);
+		this.#phases = cloneTodoPhases(phases);
 	}
 
 	/** Rehydrates todo phases from the current transcript branch. */
@@ -96,7 +96,7 @@ export class TodoTracker {
 
 	/** Returns a defensive clone suitable for snapshots and branch state. */
 	clonePhases(phases: TodoPhase[]): TodoPhase[] {
-		return this.#clonePhases(phases);
+		return cloneTodoPhases(phases);
 	}
 
 	/** Resets per-prompt reminder and mutation budgets. */
@@ -337,17 +337,6 @@ export class TodoTracker {
 			toolRefs: { task: wireName("task"), todo: wireName("todo") },
 			taskBatch: cfgTaskBatch.get(this.#host.settings),
 		};
-	}
-
-	#clonePhases(phases: TodoPhase[]): TodoPhase[] {
-		return phases.map(phase => ({
-			name: phase.name,
-			tasks: phase.tasks.map(task =>
-				task.blocker !== undefined
-					? { content: task.content, status: task.status, blocker: task.blocker }
-					: { content: task.content, status: task.status },
-			),
-		}));
 	}
 }
 
