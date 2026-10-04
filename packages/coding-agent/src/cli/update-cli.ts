@@ -11,6 +11,7 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { $env, $which, APP_NAME, compareVersions, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { spawnBackgroundSync } from "@oh-my-pi/pi-utils/background-priority";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { $ } from "bun";
 import { settings } from "../config/settings";
@@ -1253,7 +1254,7 @@ interface MuslDetectionOptions {
 
 function detectLddOutput(): string | undefined {
 	try {
-		const result = Bun.spawnSync(["ldd", "--version"], { stdout: "pipe", stderr: "pipe" });
+		const result = spawnBackgroundSync(["ldd", "--version"], { stdout: "pipe", stderr: "pipe" });
 		return `${result.stdout.toString("utf-8")}\n${result.stderr.toString("utf-8")}`;
 	} catch {
 		return undefined;

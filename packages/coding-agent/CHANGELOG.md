@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Lowered Linux tool subprocesses, including language servers, daemon jobs, runtime probes and installers, to nice 19 and best-effort I/O priority 7 when the priority utilities are available; omp's own interactive UI remains unchanged.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02
