@@ -7,6 +7,8 @@ export function backgroundCommand(command: string[]): string[] {
 	if (!nice && !ionice) return command;
 	return [...(nice ? [nice, "-n", "19"] : []), ...(ionice ? [ionice, "-c2", "-n7"] : []), ...command];
 }
+/** Prefix words for Bun Shell `$` templates: interpolate `${backgroundShellPrefix}` first. Empty off Linux. */
+export const backgroundShellPrefix: string[] = backgroundCommand([]);
 
 // Preserve Bun's overloads and stream types at each caller. Both forms share
 // the same argv policy; no child environment or stdio options are changed.
