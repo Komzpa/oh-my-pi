@@ -326,9 +326,6 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 		const scriptPath = await stageRunnerScript("omp-python-runner", "py", RUNNER_SCRIPT);
 		const kernel = new PythonKernel(Snowflake.next());
 
-
-
-
 		try {
 			kernel.#resourceScope = new ToolResourceScope();
 			const proc = Bun.spawn(kernel.#resourceScope.wrapCommand([runtime.pythonPath, "-u", scriptPath]), {
