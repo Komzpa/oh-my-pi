@@ -15,6 +15,8 @@ const tempRoots: string[] = [];
 
 afterEach(async () => {
 	vi.restoreAllMocks();
+	AgentLifecycleManager.resetGlobalForTests();
+	AgentRegistry.resetGlobalForTests();
 	await Promise.all(tempRoots.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true })));
 });
 
@@ -41,15 +43,24 @@ function result(id: string): SingleResult {
  * `runEndPatch` when it finishes and `releasePatch` when it is released, and
  * returns how many times a task branch was committed.
  */
-async function commitsAcrossRelease(id: string, runEndPatch: string, releasePatch: string): Promise<number> {
+async function commitsAcrossRelease(
+	id: string,
+	runEndPatch: string,
+	releasePatch: string,
+	failInitialCapture = false,
+): Promise<number> {
 	const artifactsDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-isolation-release-"));
 	tempRoots.push(artifactsDir);
+	const workspace = path.join(artifactsDir, "isolation", "m");
+	await fs.mkdir(workspace, { recursive: true });
+	const taskFile = path.join(workspace, "task.txt");
+	await Bun.write(taskFile, runEndPatch);
 	const baseline = {
 		root: { repoRoot: "/repo", headCommit: "base", staged: "", unstaged: "", untracked: [], untrackedPatch: "" },
 		nested: [],
 	};
 	vi.spyOn(worktreeModule, "ensureIsolation").mockResolvedValue({
-		mergedDir: "/repo/isolated",
+		mergedDir: workspace,
 		backend: natives.IsoBackendKind.Rcopy,
 		fellBack: false,
 		fallbackReason: null,
@@ -63,6 +74,13 @@ async function commitsAcrossRelease(id: string, runEndPatch: string, releasePatc
 		rootPatch: runEndPatch,
 		nestedPatches: [],
 	});
+	if (failInitialCapture) {
+		commitSpy.mockRejectedValueOnce(new Error("branch capture failed"));
+		vi.spyOn(worktreeModule, "captureDeltaPatch").mockImplementation(async () => ({
+			rootPatch: await Bun.file(taskFile).text(),
+			nestedPatches: [],
+		}));
+	}
 	const session = {
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
@@ -90,7 +108,7 @@ async function commitsAcrossRelease(id: string, runEndPatch: string, releasePatc
 		return result(options.id);
 	});
 
-	await runIsolatedSubprocess({
+	const runResult = await runIsolatedSubprocess({
 		baseOptions: {
 			cwd: "/repo",
 			agent: { name: "task", description: "Task agent", systemPrompt: "test", source: "bundled" },
@@ -105,12 +123,29 @@ async function commitsAcrossRelease(id: string, runEndPatch: string, releasePatc
 		artifactsDir,
 		buildFailureResult: error => ({ ...result(id), exitCode: 1, error: String(error) }),
 	});
+	if (failInitialCapture) {
+		expect(runResult.error).toContain("branch capture failed");
+		expect(await Bun.file(runResult.patchPath!).text()).toBe(runEndPatch);
+		// A follow-up turn still uses the effectiveCwd that was adopted at run end.
+		expect(await Bun.file(taskFile).exists()).toBe(true);
+		await Bun.write(taskFile, releasePatch);
+	}
 	await AgentLifecycleManager.global().release(id);
+	if (failInitialCapture) {
+		const finalPatch = runResult.patchPath;
+		expect(finalPatch).toBeDefined();
+		expect(await Bun.file(finalPatch!).text()).toBe(releasePatch);
+		expect(worktreeModule.cleanupIsolation).toHaveBeenCalledWith(expect.objectContaining({ mergedDir: workspace }));
+	}
 	return commitSpy.mock.calls.length;
 }
 
 describe("isolated agent release", () => {
 	const patch = "diff --git a/task.txt b/task.txt\n+work\n";
+
+	it("keeps a failed branch-capture workspace usable until release and captures follow-up work", async () => {
+		expect(await commitsAcrossRelease("ReleaseCaptureFailure", patch, `${patch}+follow-up\n`, true)).toBe(2);
+	});
 
 	it("does not re-commit a workspace that is unchanged since the run-end branch", async () => {
 		expect(await commitsAcrossRelease("ReleaseUnchanged", patch, patch)).toBe(1);
