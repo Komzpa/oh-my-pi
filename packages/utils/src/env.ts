@@ -66,6 +66,55 @@ export function filterProcessEnv(env: Record<string, string | undefined>): Recor
 	return result;
 }
 /**
+ * Desktop-session variables that bind a shell to the user's live graphical
+ * session. A task worker that inherits them can open windows or notifications
+ * on the user's screen (grievance 608), so subagent tool environments must not
+ * carry them. The main interactive session keeps its own values untouched.
+ */
+export const DESKTOP_SESSION_ENV_KEYS = [
+	"WAYLAND_DISPLAY",
+	"DISPLAY",
+	"DBUS_SESSION_BUS_ADDRESS",
+] as const;
+
+/**
+ * Copy `env` with the desktop-session bindings removed. `XDG_RUNTIME_DIR` is
+ * replaced with a per-worker private directory when `runtimeDir` is supplied;
+ * otherwise it is dropped as well so the worker cannot reach the user's
+ * `/run/user/<uid>` sockets (Wayland, bus) through it.
+ */
+export function stripDesktopSessionEnv(
+	env: Record<string, string>,
+	runtimeDir?: string,
+): Record<string, string> {
+	const result = { ...env };
+	for (const key of DESKTOP_SESSION_ENV_KEYS) {
+		delete result[key];
+	}
+	if (runtimeDir !== undefined) {
+		result.XDG_RUNTIME_DIR = runtimeDir;
+	} else {
+		delete result.XDG_RUNTIME_DIR;
+	}
+	return result;
+}
+/**
+ * Per-worker private replacement for `XDG_RUNTIME_DIR` (grievance 608). Sibling
+ * workers get distinct directories so one worker's sockets never leak into
+ * another's view; the directory is created 0700 like the shell-snapshot dir.
+ */
+export function ensureSubagentRuntimeDir(token: string): string {
+	const safe = token.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64) || "subagent";
+	const dir = path.join(os.tmpdir(), `omp-worker-runtime-${safe}-${process.getuid?.() ?? "u"}`);
+	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	try {
+		fs.chmodSync(dir, 0o700);
+	} catch {
+		// best-effort: pre-existing dir owned by this uid is already private.
+	}
+	return dir;
+}
+/**
  * Git variables that pin a repository location. They describe the checkout the
  * agent process itself was launched from (git hooks, `git --git-dir` wrappers),
  * so forwarding them to a child shell makes `git` ignore the command's `cwd`

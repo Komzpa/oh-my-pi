@@ -851,6 +851,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
 						sessionKey: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
+						maskDesktopSession: this.session.agentKind === "sub",
 						timeout: options.timeoutMs ?? 0,
 						signal: runSignal,
 						// Bound to the job's own signal: the job outlives the call that started it.
@@ -1515,6 +1516,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				await executeBash(command, {
 					cwd: commandCwd,
 					sessionKey: this.session.getSessionId?.() ?? undefined,
+					maskDesktopSession: this.session.agentKind === "sub",
 					timeout: timeoutMs ?? 0,
 					signal,
 					filesystem: this.#urlFilesystem(signal, approvalTier).shellFilesystem(),
