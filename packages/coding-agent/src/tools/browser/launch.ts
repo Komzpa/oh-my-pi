@@ -30,6 +30,7 @@ import stealthCodecsScript from "../puppeteer/12_stealth_codecs.txt" with { type
 import stealthWorkerScript from "../puppeteer/13_stealth_worker.txt" with { type: "text" };
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { withDownload } from "../../downloads/activity";
+import { launchBackgroundBrowser } from "./priority";
 
 export const DEFAULT_VIEWPORT = { width: 1365, height: 768, deviceScaleFactor: 1.25 };
 
@@ -538,7 +539,7 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 	}
 	try {
 		const executablePath = await ensureChromiumExecutable();
-		const browser = await puppeteer.launch({
+		const browser = await launchBackgroundBrowser(puppeteer, {
 			headless: opts.headless,
 			defaultViewport: opts.headless ? initialViewport : null,
 			executablePath,

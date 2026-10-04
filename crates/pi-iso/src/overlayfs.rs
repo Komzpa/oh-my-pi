@@ -78,7 +78,7 @@ mod imp {
 		fs,
 		os::unix::ffi::OsStrExt,
 		path::{Path, PathBuf},
-		process::{Command, Stdio},
+		process::Stdio,
 		sync::LazyLock,
 	};
 
@@ -239,7 +239,7 @@ mod imp {
 			upper.display(),
 			work.display()
 		);
-		let output = Command::new("fuse-overlayfs")
+		let output = crate::process::background_command("fuse-overlayfs")
 			.args(["-o", &opts])
 			.arg(merged)
 			.stdin(Stdio::null())
@@ -267,7 +267,7 @@ mod imp {
 
 	fn fuse_umount(merged: &Path) -> IsoResult<()> {
 		for binary in ["fusermount3", "fusermount"] {
-			let result = Command::new(binary)
+			let result = crate::process::background_command(binary)
 				.arg("-u")
 				.arg(merged)
 				.stdin(Stdio::null())
@@ -296,7 +296,7 @@ mod imp {
 	}
 
 	fn fuse_overlayfs_available() -> bool {
-		Command::new("fuse-overlayfs")
+		crate::process::background_command("fuse-overlayfs")
 			.arg("--version")
 			.stdin(Stdio::null())
 			.stdout(Stdio::null())

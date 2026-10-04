@@ -66,13 +66,13 @@ mod imp {
 	use std::{
 		fs,
 		path::{Path, PathBuf},
-		process::{Command, Stdio},
+		process::Stdio,
 	};
 
 	use crate::{IsoError, IsoResult, ProbeResult};
 
 	pub fn probe() -> ProbeResult {
-		match Command::new("btrfs")
+		match crate::process::background_command("btrfs")
 			.arg("version")
 			.stdin(Stdio::null())
 			.stdout(Stdio::null())
@@ -95,7 +95,7 @@ mod imp {
 		let lower = canonical_existing_dir(lower)?;
 		prepare_destination(merged)?;
 
-		let output = Command::new("btrfs")
+		let output = crate::process::background_command("btrfs")
 			.args(["subvolume", "snapshot"])
 			.arg(&lower)
 			.arg(merged)
@@ -174,7 +174,7 @@ mod imp {
 			return Ok(());
 		}
 
-		match Command::new("btrfs")
+		match crate::process::background_command("btrfs")
 			.args(["subvolume", "delete"])
 			.arg(path)
 			.stdin(Stdio::null())
