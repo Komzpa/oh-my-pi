@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- The hashline `edit` tool rejects malformed operation headers such as `PUT 351*=357` with a parse error naming the line instead of inserting them (and their bodies) verbatim as payload; body rows start with `+`.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02
