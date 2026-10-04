@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ## [18.11.2] - 2026-10-16
+### Fixed: read-only agent replies
+
+- Read-only agents can reply to lead and peer messages: `write` is now mounted for them restricted to `agent://` targets (`agent://<id>` messages, `agent://all` broadcasts); filesystem, device, and other writes plus `edit` stay refused.
 
 ### Added
 
