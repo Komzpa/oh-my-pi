@@ -19,11 +19,11 @@ export interface PoolConfig {
 
 // Pool lengths are routing policy; model selectors and fallback order live in agent frontmatter.
 const POOL_SIZES: Record<string, number> = {
-	coder: 6,
-	"ui-coder": 4,
+	coder: 8,
+	"ui-coder": 5,
 	scout: 5,
 	"gate-runner": 5,
-	"git-pr-owner": 3,
+	"git-pr-owner": 5,
 	scribe: 5,
 	reviewer: 3,
 	workhorse: 6,
