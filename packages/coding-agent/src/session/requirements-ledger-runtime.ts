@@ -1,3 +1,7 @@
+import { readFile, realpath } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+
+
 import type { Agent, AfterToolCallContext, AfterToolCallResult, BeforeToolCallResult } from "@oh-my-pi/pi-agent-core";
 import { setAssistantPublicationGate } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
@@ -29,6 +33,22 @@ import {
 	type RequirementRowArtifact,
 } from "../tools/todo";
 import { READ_ONLY_TOOL_NAMES } from "../task/read-only-policy";
+
+const BUNDLED_QA_AUDITOR_PATH = fileURLToPath(new URL("../prompts/agents/qa-auditor.md", import.meta.url));
+
+async function isBundledQaAuditor(agent: AgentDefinition | undefined): Promise<boolean> {
+	if (!agent) return false;
+	if (agent.source === "bundled") return true;
+	if (!agent.filePath) return false;
+	try {
+		const [agentPath, bundledPath] = await Promise.all([realpath(agent.filePath), realpath(BUNDLED_QA_AUDITOR_PATH)]);
+		if (agentPath === bundledPath) return true;
+		const [agentContent, bundledContent] = await Promise.all([readFile(agent.filePath), readFile(BUNDLED_QA_AUDITOR_PATH)]);
+		return agentContent.equals(bundledContent);
+	} catch {
+		return false;
+	}
+}
 /** Open todo rows only: completed/abandoned rows never unblock a classify call. */
 function openTodoRowContents(entries: Parameters<typeof getLatestTodoPhasesFromEntries>[0]): string[] {
 	return getLatestTodoPhasesFromEntries(entries).flatMap(phase =>
@@ -115,7 +135,7 @@ export class RequirementsLedgerRuntime {
 		const resolvedAuditor = hasAuditorTask
 			? getAgent((await discoverAgents(this.#host.cwd())).agents, "qa-auditor")
 			: undefined;
-		if (hasAuditorTask && resolvedAuditor?.source !== "bundled") {
+		if (hasAuditorTask && !(await isBundledQaAuditor(resolvedAuditor))) {
 			const citedIds = new Set(
 				items.flatMap(item =>
 					isRecord(item) && item.agent === "qa-auditor" && typeof item.task === "string"
