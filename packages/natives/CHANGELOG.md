@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `unsetEnv` to native shell session and one-shot options to remove inherited environment variables after session imports and snapshot sourcing.
+
 ## [18.4.10] - 2026-10-02
 
 ### Fixed

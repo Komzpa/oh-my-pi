@@ -9,7 +9,7 @@
 ### Fixed
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
-- Task workers no longer inherit the user's desktop session: subagent `bash` environments drop `WAYLAND_DISPLAY`, `DISPLAY`, and `DBUS_SESSION_BUS_ADDRESS`, and get a per-worker private `XDG_RUNTIME_DIR` instead of `/run/user/<uid>`. The main interactive session's environment is unchanged.
+- Task workers no longer inherit the user's desktop session: subagent bash and JavaScript/Python eval children drop desktop bindings and get a private `XDG_RUNTIME_DIR` instead of `/run/user/<uid>`. Native shell imports and snapshots cannot restore inherited bindings. Main-session commands and explicitly supplied fixture environments are unchanged.
 
 ## [18.4.12] - 2026-10-02
 

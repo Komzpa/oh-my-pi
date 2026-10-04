@@ -73,8 +73,18 @@ export function filterProcessEnv(env: Record<string, string | undefined>): Recor
  */
 export const DESKTOP_SESSION_ENV_KEYS = [
 	"WAYLAND_DISPLAY",
+	"WAYLAND_SOCKET",
 	"DISPLAY",
+	"XAUTHORITY",
+	"ICEAUTHORITY",
 	"DBUS_SESSION_BUS_ADDRESS",
+	"DBUS_SESSION_BUS_PID",
+	"DBUS_SESSION_BUS_WINDOWID",
+	"DBUS_STARTER_ADDRESS",
+	"DBUS_STARTER_BUS_TYPE",
+	"SESSION_MANAGER",
+	"SWAYSOCK",
+	"I3SOCK",
 ] as const;
 
 /**
@@ -83,10 +93,7 @@ export const DESKTOP_SESSION_ENV_KEYS = [
  * otherwise it is dropped as well so the worker cannot reach the user's
  * `/run/user/<uid>` sockets (Wayland, bus) through it.
  */
-export function stripDesktopSessionEnv(
-	env: Record<string, string>,
-	runtimeDir?: string,
-): Record<string, string> {
+export function stripDesktopSessionEnv(env: Record<string, string>, runtimeDir?: string): Record<string, string> {
 	const result = { ...env };
 	for (const key of DESKTOP_SESSION_ENV_KEYS) {
 		delete result[key];

@@ -30,6 +30,7 @@ import {
 	resolvePythonRuntime,
 } from "./runtime";
 import { hostHasInheritableConsole, shouldDetachKernel, shouldHideKernelWindow } from "./spawn-options";
+import { ensureSubagentRuntimeDir, stripDesktopSessionEnv } from "@oh-my-pi/pi-utils";
 import type { PythonToolRequest } from "./executor";
 
 export type {
@@ -296,11 +297,14 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 		for (const [key, value] of Object.entries(runtime.env)) {
 			if (typeof value === "string") spawnEnv[key] = value;
 		}
+		const maskedEnv = options.maskDesktopSession
+			? stripDesktopSessionEnv(spawnEnv, ensureSubagentRuntimeDir(options.cwd))
+			: spawnEnv;
 		for (const [key, value] of Object.entries(options.env ?? {})) {
-			if (typeof value === "string") spawnEnv[key] = value;
+			if (typeof value === "string") maskedEnv[key] = value;
 		}
-		spawnEnv.PYTHONUNBUFFERED = "1";
-		spawnEnv.PYTHONIOENCODING = "utf-8";
+		maskedEnv.PYTHONUNBUFFERED = "1";
+		maskedEnv.PYTHONIOENCODING = "utf-8";
 
 		const scriptPath = await stageRunnerScript("omp-python-runner", "py", RUNNER_SCRIPT);
 		const kernel = new PythonKernel(Snowflake.next());
@@ -308,7 +312,7 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 		const proc = Bun.spawn([runtime.pythonPath, "-u", scriptPath], {
 			cwd: options.cwd,
 			detached: shouldDetachKernel(process.platform),
-			env: spawnEnv,
+			env: maskedEnv,
 			stdin: "pipe",
 			stdout: "pipe",
 			stderr: "pipe",

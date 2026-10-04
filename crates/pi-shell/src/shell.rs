@@ -105,6 +105,7 @@ async fn set_shell_working_dir_if_changed(shell: &mut BrushShell, cwd: &str) -> 
 #[derive(Clone)]
 struct ShellConfig {
 	session_env:   Option<HashMap<String, String>>,
+	unset_env:     Option<Vec<String>>,
 	snapshot_path: Option<String>,
 	minimizer:     Option<minimizer::MinimizerConfig>,
 	filesystem:    Fs,
@@ -113,6 +114,8 @@ struct ShellConfig {
 #[derive(Debug, Clone, Default)]
 pub struct ShellOptions {
 	pub session_env:   Option<HashMap<String, String>>,
+	/// Environment names removed after session import and snapshot sourcing.
+	pub unset_env:     Option<Vec<String>>,
 	pub snapshot_path: Option<String>,
 	pub minimizer:     Option<minimizer::MinimizerOptions>,
 	/// Filesystem backing every run of the session (native by default).
@@ -162,6 +165,7 @@ pub struct ShellExecuteOptions {
 	pub cwd:           Option<String>,
 	pub env:           Option<HashMap<String, String>>,
 	pub session_env:   Option<HashMap<String, String>>,
+	pub unset_env:     Option<Vec<String>>,
 	pub timeout_ms:    Option<u32>,
 	pub snapshot_path: Option<String>,
 	pub minimizer:     Option<minimizer::MinimizerOptions>,
@@ -208,6 +212,7 @@ impl Shell {
 		let config = match options {
 			None => ShellConfig {
 				session_env:   None,
+				unset_env:     None,
 				snapshot_path: None,
 				minimizer:     None,
 				filesystem:    Fs::native(),
@@ -219,6 +224,7 @@ impl Shell {
 					.map(minimizer::MinimizerConfig::from_options);
 				ShellConfig {
 					session_env: opt.session_env,
+					unset_env: opt.unset_env,
 					snapshot_path: opt.snapshot_path,
 					minimizer,
 					filesystem: opt.filesystem,
@@ -316,6 +322,7 @@ pub async fn execute_shell(
 		.map(minimizer::MinimizerConfig::from_options);
 	let config = ShellConfig {
 		session_env:   options.session_env,
+		unset_env:     options.unset_env,
 		snapshot_path: options.snapshot_path,
 		minimizer:     minimizer.clone(),
 		filesystem:    options.filesystem,
@@ -354,6 +361,7 @@ pub async fn execute_shell_streams(
 ) -> Result<ShellExecuteResult> {
 	let config = ShellConfig {
 		session_env:   options.session_env,
+		unset_env:     options.unset_env,
 		snapshot_path: options.snapshot_path,
 		minimizer:     None,
 		filesystem:    options.filesystem,
@@ -888,6 +896,7 @@ async fn create_session_for_run(
 				.map_err(|err| Error::msg(format!("Failed to set env: {err}")))?;
 		}
 	}
+	unset_session_env(&mut shell, config)?;
 	apply_env_fallback(&mut shell)?;
 	// `nohup` is registered above, with the rest of the process builtins.
 
@@ -897,8 +906,21 @@ async fn create_session_for_run(
 	if let Some(snapshot_path) = config.snapshot_path.as_ref() {
 		source_snapshot(&mut shell, snapshot_path, spawn_registry, cancel_token).await?;
 	}
+	unset_session_env(&mut shell, config)?;
 
 	Ok(ShellSessionCore { shell, filesystem: config.filesystem.clone() })
+}
+
+fn unset_session_env(shell: &mut BrushShell, config: &ShellConfig) -> Result<()> {
+	if let Some(keys) = &config.unset_env {
+		for key in keys {
+			shell
+				.env_mut()
+				.unset(normalize_inherited_env_key(key))
+				.map_err(|err| Error::msg(format!("Failed to unset env {key}: {err}")))?;
+		}
+	}
+	Ok(())
 }
 
 async fn source_snapshot(
@@ -2355,6 +2377,7 @@ mod tests {
 			.collect();
 		let config = ShellConfig {
 			session_env:   Some(env),
+			unset_env:     None,
 			snapshot_path: None,
 			minimizer:     None,
 			filesystem:    Fs::native(),
@@ -2422,6 +2445,7 @@ mod tests {
 	async fn kill_test_context() -> (ShellSessionCore, ExecutionParameters) {
 		let config = ShellConfig {
 			session_env:   None,
+			unset_env:     None,
 			snapshot_path: None,
 			minimizer:     None,
 			filesystem:    Fs::native(),
@@ -2483,6 +2507,7 @@ mod tests {
 	) -> (ShellSessionCore, ExecutionParameters) {
 		let config = ShellConfig {
 			session_env:   None,
+			unset_env:     None,
 			snapshot_path: None,
 			minimizer:     None,
 			filesystem:    Fs::native(),
@@ -2554,6 +2579,7 @@ mod tests {
 
 		let config = ShellConfig {
 			session_env:   None,
+			unset_env:     None,
 			snapshot_path: None,
 			minimizer:     None,
 			filesystem:    Fs::native(),
@@ -2693,6 +2719,7 @@ mod tests {
 		env.insert("OMP_GIT_ENV_PROBE".to_string(), "kept".to_string());
 		let config = ShellConfig {
 			session_env:   Some(env),
+			unset_env:     None,
 			snapshot_path: None,
 			minimizer:     None,
 			filesystem:    Fs::native(),
@@ -4145,6 +4172,7 @@ mod tests {
 
 		let config = ShellConfig {
 			session_env:   None,
+			unset_env:     None,
 			snapshot_path: None,
 			minimizer:     None,
 			filesystem:    Fs::native(),
@@ -4187,6 +4215,7 @@ mod tests {
 
 		let config = ShellConfig {
 			session_env:   None,
+			unset_env:     None,
 			snapshot_path: None,
 			minimizer:     None,
 			filesystem:    Fs::native(),
@@ -4269,6 +4298,7 @@ mod tests {
 
 		let config = ShellConfig {
 			session_env:   None,
+			unset_env:     None,
 			snapshot_path: None,
 			minimizer:     None,
 			filesystem:    Fs::native(),
@@ -4338,6 +4368,7 @@ mod tests {
 
 		let config = ShellConfig {
 			session_env:   None,
+			unset_env:     None,
 			snapshot_path: None,
 			minimizer:     None,
 			filesystem:    Fs::native(),
@@ -4390,6 +4421,7 @@ mod tests {
 
 		let config = ShellConfig {
 			session_env:   None,
+			unset_env:     None,
 			snapshot_path: None,
 			minimizer:     None,
 			filesystem:    Fs::native(),
