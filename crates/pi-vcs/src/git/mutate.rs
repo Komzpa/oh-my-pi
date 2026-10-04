@@ -1019,27 +1019,15 @@ pub fn detach_git_dir(
 	gix::init(worktree_root).map_err(|e| Error::backend("git init", e))?;
 	let objects_info = git_entry.join("objects/info");
 	fs::create_dir_all(&objects_info)?;
-	let mut alternates = vec![source_common.join("objects")];
-	if let Ok(chained) = fs::read_to_string(source_common.join("objects/info/alternates")) {
-		for line in chained
-			.lines()
-			.map(str::trim)
-			.filter(|line| !line.is_empty())
-		{
-			let path = Path::new(line);
-			alternates.push(if path.is_absolute() {
-				path.to_owned()
-			} else {
-				source_common.join("objects").join(path)
-			});
-		}
-	}
-	let alternate_text = alternates
-		.iter()
-		.map(|p| p.to_string_lossy())
-		.collect::<Vec<_>>()
-		.join("\n")
-		+ "\n";
+	// Borrow the source object DB through exactly one alternates entry. Do not
+	// copy the source's own chained alternates: git and gix both walk alternates
+	// transitively, and gix rejects any object directory it sees twice as a
+	// cycle ("Alternates form a cycle"). Flattening the parent's `--reference`
+	// chain here created exactly that diamond — the chain's entries are
+	// reachable again through the source's own alternates file — so every
+	// isolated task in a `--reference` clone failed on its first repository
+	// operation.
+	let alternate_text = format!("{}\n", source_common.join("objects").to_string_lossy());
 	fs::write(objects_info.join("alternates"), alternate_text)?;
 	for (name, id) in refs {
 		write_loose_ref(&git_entry, &name, id)?;
