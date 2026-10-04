@@ -9,7 +9,6 @@
 ### Fixed
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
-- Fixed context-notes saves failing when the session branch grows during disk preparation; saving now accepts benign transcript appends.
 
 ## [18.4.12] - 2026-10-02
 
