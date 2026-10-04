@@ -114,4 +114,71 @@ describe("bash service async/env passthrough (grievances 552/578/607/631/645/651
 		});
 		expect(textOf(result)).toContain("bar");
 	});
+
+	it("passes env through on auto-backgrounded and async commands", async () => {
+		const autoBgSession = {
+			cwd: process.cwd(),
+			hasUI: false,
+			getAgentId: () => "Main",
+			getSessionId: () => "Main",
+			getSessionFile: () => null,
+			asyncJobManager: new AsyncJobManager({}),
+			settings: Settings.isolated({
+				"launch.enabled": false,
+				"async.enabled": false,
+				"bash.autoBackground.enabled": true,
+				"bash.autoBackground.thresholdMs": 60_000,
+				"bashInterceptor.enabled": false,
+				"worktree.clone": false,
+				"bash.direnv": "off",
+				shellPath: "/bin/sh",
+			}),
+		} as unknown as ToolSession;
+		try {
+			const autoBg = new BashTool(autoBgSession);
+			const result = await autoBg.execute("autobg-env", {
+				command: "echo $OMP_TEST_AUTOBG",
+				env: { OMP_TEST_AUTOBG: "autobg-ok" },
+				timeout: 30,
+				pty: false,
+			});
+			expect(textOf(result)).toContain("autobg-ok");
+		} finally {
+			await autoBgSession.asyncJobManager?.dispose({ timeoutMs: 1_000 });
+		}
+		const asyncManager = new AsyncJobManager({});
+		const asyncSession = {
+			cwd: process.cwd(),
+			hasUI: false,
+			getAgentId: () => "Main",
+			getSessionId: () => "Main",
+			getSessionFile: () => null,
+			asyncJobManager: asyncManager,
+			settings: Settings.isolated({
+				"launch.enabled": false,
+				"async.enabled": true,
+				"bash.autoBackground.enabled": false,
+				"bashInterceptor.enabled": false,
+				"worktree.clone": false,
+				"bash.direnv": "off",
+				shellPath: "/bin/sh",
+			}),
+		} as unknown as ToolSession;
+		try {
+			const asyncBash = new BashTool(asyncSession);
+			const started = await asyncBash.execute("async-env", {
+				command: "echo $OMP_TEST_ASYNC_BG",
+				env: { OMP_TEST_ASYNC_BG: "async-ok" },
+				async: true,
+				timeout: 30,
+				pty: false,
+			});
+			const jobId = (started.details as { async?: { jobId?: string } } | undefined)?.async?.jobId;
+			expect(jobId).toBeDefined();
+			await asyncManager.waitForAll();
+			expect(asyncManager.getJob(jobId!)?.resultText).toContain("async-ok");
+		} finally {
+			await asyncManager.dispose({ timeoutMs: 1_000 });
+		}
+	}, 25_000);
 });
