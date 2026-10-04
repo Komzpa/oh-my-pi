@@ -211,3 +211,115 @@ describe("requirements ledger auditor binding", () => {
 		}
 	});
 });
+
+describe("overdue-classify gate read-only exemption and open-row remedies", () => {
+	function overdueFixture(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>) {
+		const cwd = mkdtempSync(join(tmpdir(), "omp-ledger-gate-"));
+		git(cwd, "init", "--initial-branch=main");
+		git(cwd, "config", "user.email", "tester@example.invalid");
+		git(cwd, "config", "user.name", "Ledger Gate Test");
+		writeFileSync(join(cwd, "artifact.txt"), "audited\n");
+		git(cwd, "add", "artifact.txt");
+		git(cwd, "commit", "-m", "audited artifact");
+		const manager = SessionManager.inMemory();
+		manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
+			version: 1,
+			requirements: createRequirementCandidates([], ["please handle the new request"], AT),
+		});
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+		manager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "draft answer" }],
+			stopReason: "stop",
+		} as never);
+		let gate: RequirementPublicationGate | undefined;
+		const runtime = new RequirementsLedgerRuntime({
+			agent: {} as never,
+			agentKind: () => "main",
+			cwd: () => cwd,
+			sessionManager: manager,
+			onSettledAssistantMessage: () => {},
+			setPublicationGate: next => {
+				gate = next;
+			},
+		});
+		return { cwd, manager, runtime, gate: () => gate };
+	}
+
+	it("allows read-only tools and points the remedy at todo append when every row is completed", async () => {
+		const { cwd, runtime, gate } = overdueFixture([
+			{
+				name: "Old goal",
+				tasks: [
+					{ content: "Finished row alpha", status: "completed" },
+					{ content: "Finished row beta", status: "completed" },
+				],
+			},
+		]);
+		try {
+			expect(runtime.refuseOverdueCandidate("read")).toBeUndefined();
+			expect(runtime.refuseOverdueCandidate("grep")).toBeUndefined();
+			expect(runtime.refuseOverdueCandidate("peers")).toBeUndefined();
+			expect(runtime.refuseOverdueCandidate("ask")).toBeUndefined();
+			expect(runtime.refuseOverdueCandidate("todo")).toBeUndefined();
+			const refusal = runtime.refuseOverdueCandidate("bash");
+			expect(refusal?.block).toBe(true);
+			expect(refusal?.reason).toContain('op="append"');
+			expect(refusal?.reason).not.toContain("Finished row alpha");
+			expect(refusal?.reason).not.toContain("Finished row beta");
+			const publicationGate = gate();
+			expect(publicationGate).toBeDefined();
+			const published = (await publicationGate?.(
+				{ content: [{ type: "text", text: "answer text" }], stopReason: "stop" } as never,
+				new AbortController().signal,
+			)) as { replacementText: string; settled?: true } | undefined;
+			expect(published?.replacementText).toContain("answer text");
+			expect(published?.replacementText).toContain('op="append"');
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("lists only the open row in the remedy when one row is still open", () => {
+		const { cwd, runtime } = overdueFixture([
+			{
+				name: "Mixed",
+				tasks: [
+					{ content: "Finished row alpha", status: "completed" },
+					{ content: "Live row gamma", status: "in_progress" },
+				],
+			},
+		]);
+		try {
+			const refusal = runtime.refuseOverdueCandidate("bash");
+			expect(refusal?.block).toBe(true);
+			expect(refusal?.reason).toContain("Live row gamma");
+			expect(refusal?.reason).not.toContain("Finished row alpha");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps message text with tool calls unchanged while requirements stay open", async () => {
+		const { cwd, gate } = overdueFixture([
+			{ name: "Work", tasks: [{ content: "Live row gamma", status: "pending" }] },
+		]);
+		try {
+			const publicationGate = gate();
+			expect(publicationGate).toBeDefined();
+			const published = await publicationGate?.(
+				{
+					content: [
+						{ type: "text", text: "answer text" },
+						{ type: "toolCall", id: "call-1", name: "read", arguments: {} },
+					],
+					stopReason: "toolUse",
+				} as never,
+				new AbortController().signal,
+			);
+			expect(published).toBeUndefined();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});

@@ -18,16 +18,25 @@ import {
 	type RequirementAuditAssignment,
 	type RequirementLedgerItem,
 } from "../tools/requirements-ledger";
+import { ASYNC_RESULT_MESSAGE_TYPE } from "./async-job-delivery";
+import type { SessionManager } from "./session-manager";
+import { isFailedTaskSingleResult } from "../task/result-summary";
+import { discoverAgents, getAgent } from "../task/discovery";
 import {
 	bindRequirementRowArtifact,
 	getLatestTodoPhasesFromEntries,
 	getRequirementRowArtifact,
 	type RequirementRowArtifact,
 } from "../tools/todo";
-import { ASYNC_RESULT_MESSAGE_TYPE } from "./async-job-delivery";
-import type { SessionManager } from "./session-manager";
-import { isFailedTaskSingleResult } from "../task/result-summary";
-import { discoverAgents, getAgent } from "../task/discovery";
+import { READ_ONLY_TOOL_NAMES } from "../task/read-only-policy";
+/** Open todo rows only: completed/abandoned rows never unblock a classify call. */
+function openTodoRowContents(entries: Parameters<typeof getLatestTodoPhasesFromEntries>[0]): string[] {
+	return getLatestTodoPhasesFromEntries(entries).flatMap(phase =>
+		phase.tasks
+			.filter(task => task.status === "pending" || task.status === "in_progress" || task.status === "blocked")
+			.map(task => task.content),
+	);
+}
 
 export type RequirementPublicationGate = (
 	message: AssistantMessage,
@@ -67,10 +76,14 @@ export class RequirementsLedgerRuntime {
 
 	refuseOverdueCandidate(toolName: string): BeforeToolCallResult | undefined {
 		if (this.#host.agentKind() !== "main" || toolName === "todo") return undefined;
+		// The overdue-classify gate never blocks read-only tools: observation must
+		// stay possible while a candidate awaits classification. `peers` is the
+		// live-roster list (not in READ_ONLY_TOOL_NAMES); `ask` is already there.
+		if (toolName === "peers" || READ_ONLY_TOOL_NAMES.has(toolName)) return undefined;
 		const branch = this.#host.sessionManager.getBranch();
 		const overdue = getOverdueRequirementCandidates(branch);
 		if (overdue.length === 0) return undefined;
-		const rows = getLatestTodoPhasesFromEntries(branch).flatMap(phase => phase.tasks.map(task => task.content));
+		const rows = openTodoRowContents(branch);
 		return {
 			block: true,
 			reason: formatOverdueClassifyRefusal(toolName, overdue, rows),
@@ -320,21 +333,28 @@ export class RequirementsLedgerRuntime {
 		if (this.#getPublicationGeneration() !== generation) {
 			generation = this.#getPublicationGeneration();
 			freshness = await this.#refreshRequirementFreshness(signal);
-			if (this.#getPublicationGeneration() !== generation) return { replacementText: "" };
+			// Never erase the assistant's own text on a generation race: publish unchanged.
+			if (this.#getPublicationGeneration() !== generation) return;
 		}
 		const decisionGeneration = this.#getPublicationGeneration();
 		const { requirements, staleById } = freshness;
 		const open = this.#openRequirements(requirements, staleById);
 		this.syncPublicationGate();
-		if (this.#getPublicationGeneration() !== decisionGeneration) return { replacementText: "" };
+		// Never erase the assistant's own text on a generation race: publish unchanged.
+		if (this.#getPublicationGeneration() !== decisionGeneration) return;
 		if (open.length === 0) return;
-		if (message.content.some(block => block.type === "toolCall")) return { replacementText: "" };
-		const rows = getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch()).flatMap(phase =>
-			phase.tasks.map(task => task.content),
-		);
+		// With tool calls the text stays as it is: the gate only appends to final text.
+		if (message.content.some(block => block.type === "toolCall")) return;
+		const rows = openTodoRowContents(this.#host.sessionManager.getBranch());
 		this.#host.onSettledAssistantMessage(message);
+		const notice = formatPublicationReplacement(open, rows);
+		const original = message.content
+			.filter(block => block.type === "text")
+			.map(block => block.text)
+			.join("")
+			.trim();
 		return {
-			replacementText: formatPublicationReplacement(open, rows),
+			replacementText: original ? `${original}\n\n${notice}` : notice,
 			settled: true,
 		};
 	}

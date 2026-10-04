@@ -244,13 +244,10 @@ import {
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";
 import { supportsExternalThinking } from "../tools/think";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
-import { getLatestTodoPhasesFromEntries } from "../tools/todo";
 import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
-	formatOverdueClassifyRefusal,
 	getLatestRequirements,
-	getOverdueRequirementCandidates,
 } from "../tools/requirements-ledger";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
@@ -4661,15 +4658,10 @@ export class AgentSession implements SettingsScope {
 		const runner = this.#extensionRunner;
 		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 		if (this.#agentKind === "main" && this.getActiveToolNames().includes("todo") && ctx.tool.name !== "todo") {
-			const branch = this.sessionManager.getBranch();
-			const overdue = getOverdueRequirementCandidates(branch);
-			if (overdue.length > 0) {
+			const refusal = this.#requirementsLedger.refuseOverdueCandidate(ctx.tool.name);
+			if (refusal) {
 				runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
-				const rows = getLatestTodoPhasesFromEntries(branch).flatMap(phase => phase.tasks.map(task => task.content));
-				return {
-					block: true,
-					reason: formatOverdueClassifyRefusal(ctx.tool.name, overdue, rows),
-				};
+				return refusal;
 			}
 		}
 		let preparedArgs = ctx.args;
