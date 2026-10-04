@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { IpcConnection } from "@oh-my-pi/pi-natives";
 import { getGlobalDaemonRuntimeDir, isEexist, isEnoent, logger, postmortem } from "@oh-my-pi/pi-utils";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { resolveWorkerSpawnCmd, workerEnvFromParent } from "../subprocess/worker-client";
 import { canonicalProjectDir, daemonBrokerEndpoint, daemonRuntimeDir } from "./paths";
 import {
@@ -310,7 +311,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			[DAEMON_RUNTIME_DIR_ENV]: this.#runtimeDir,
 		};
 		if (this.#idleGraceMs !== undefined) overlay[DAEMON_IDLE_GRACE_ENV] = String(this.#idleGraceMs);
-		const child = Bun.spawn(spawn.cmd, {
+		const child = spawnBackground(spawn.cmd, {
 			cwd: spawn.cwd,
 			env: workerEnvFromParent(overlay),
 			stdin: "ignore",
