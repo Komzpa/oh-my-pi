@@ -1054,13 +1054,6 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 				);
 				return phases;
 			}
-			for (const phase of phases) {
-				for (const candidate of phase.tasks) {
-					if (candidate.status === "in_progress" && candidate !== hit.task) {
-						candidate.status = "pending";
-					}
-				}
-			}
 			hit.task.status = "in_progress";
 			return phases;
 		}

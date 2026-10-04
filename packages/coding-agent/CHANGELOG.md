@@ -1007,6 +1007,7 @@
 - Fixed `readlink` in the bash tool printing a provider-backed path (e.g. `local://file`) with a `\\?\` prefix on Windows
 - Fixed the daemon broker on Windows dying with the omp process that started it, which stopped the shared browser relay (and every other broker daemon) while other omp sessions were still using it
 - Fixed the `browser` tool's Tern backend being refused by any Tern newer than the protocol omp was built against; it now speaks Tern's JSON script protocol, which no Tern build ties it to, and a Tern from before it reports as unavailable (update Tern) so the Chromium fallback takes over.
+- Starting a TODO task now preserves other in-progress rows while still refusing starts when planning repairs remain.
 - Fixed stale TODO finish-drift alerts crossing objective boundaries: a successful main-session `init` resets the prior objective's history, while ordinary TODO edits and rejected initialization preserve it.
 - Fixed coder checkout-lock false conflicts for same-batch spawns whose row owners are not recorded yet: the router now scopes unowned spawns from the spawn's own row title and lane path instead of falling back to the session cwd, and the refusal names the compared holder and spawn scopes.
 - Fixed overdue peer check-ins reporting messaging unavailable from an AgentSession command context by passing its private registry and identity to the shared delivery route.
