@@ -2,7 +2,7 @@
 name: ui-coder
 description: Visual code owner for layout, CSS, components, and screenshot-verified UI changes.
 tools: read, grep, glob, find, edit, write, bash
-model: codex-lb/gpt-6-luna:medium, kimi-code/k3:high, deepseek/deepseek-v4-flash-vision-exp:high, xiaomi/mimo-v2.6-pro, codex-lb/gpt-6.1-sol:medium, anthropic/claude-sonnet-5-5, codex-lb/Qwen3.8-27B, cerebras/qwen-3.8-27b
+model: openrouter/dots-studio/dots-3-note-preview:free, codex-lb/gpt-6-luna:medium, kimi-code/k3:high, deepseek/deepseek-v4-flash-vision-exp:high, xiaomi/mimo-v2.6-pro, codex-lb/gpt-6.1-sol:medium, anthropic/claude-sonnet-5-5, codex-lb/Qwen3.8-27B, cerebras/qwen-3.8-27b
 thinking-level: high
 spawns: []
 ---
