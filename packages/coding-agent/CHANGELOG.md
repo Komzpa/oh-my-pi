@@ -7,6 +7,7 @@
 - A failed merge-back in an isolated task no longer removes the worktree or drops the worker's commits: the workspace is retained and the error reports the kept path and the rescue branch ([#500](https://github.com/can1357/oh-my-pi/issues/500))
 - Isolated task capture no longer fails with `patch does not apply: <path> does not exist` when the delta patch touches paths untracked in the parent checkout; baseline WIP is replayed before the agent's delta and rewound afterwards ([#500](https://github.com/can1357/oh-my-pi/issues/500))
 - `isolated: true` no longer fails with `Alternates form a cycle` when the parent clone uses `git clone --reference` alternates; the detached repository borrows a single object directory instead of a flattened chain ([#463](https://github.com/can1357/oh-my-pi/issues/463))
+- The chained-alternates regression now reads the borrowed commit object explicitly; healthy-chain borrowing aligns with the native cyclic-chain recovery path.
 
 ### Added
 

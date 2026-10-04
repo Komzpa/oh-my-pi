@@ -843,6 +843,7 @@ describe("detachGitDir", () => {
 		// alternates file triggers "Alternates form a cycle" here.
 		await expect(vcs.requireGit(iso).headSha()).resolves.toBe(baseSha);
 		await expect(vcs.requireGit(iso).revListRange(baseSha, baseSha)).resolves.toEqual([]);
+		await expect(vcs.requireGit(iso).commitDetails(baseSha)).resolves.toMatchObject({ sha: baseSha, message: "base" });
 		// The isolation borrows exactly one object directory; the rest of the
 		// chain stays reachable transitively through it.
 		const alternates = await fs.readFile(path.join(iso, ".git", "objects", "info", "alternates"), "utf8");
