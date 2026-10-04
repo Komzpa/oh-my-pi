@@ -58,7 +58,13 @@ beforeEach(() => {
 	AgentLifecycleManager.resetGlobalForTests();
 	IrcBus.resetGlobalForTests();
 	registry = AgentRegistry.global();
-	registry.register({ id: "ReadOnlyWorker", displayName: "ReadOnlyWorker", kind: "sub", parentId: "Main", session: null });
+	registry.register({
+		id: "ReadOnlyWorker",
+		displayName: "ReadOnlyWorker",
+		kind: "sub",
+		parentId: "Main",
+		session: null,
+	});
 	received.clear();
 });
 afterEach(() => {
