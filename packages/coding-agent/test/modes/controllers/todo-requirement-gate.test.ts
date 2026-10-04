@@ -157,7 +157,7 @@ describe("TodoCommandController linked-requirement gate", () => {
 		expect(persisted[0]!.tasks[0]!.status).toBe("pending");
 	});
 
-	it("completes /todo done with a fresh qa-auditor pass for the current clean artifact", async () => {
+	it("completes /todo done with a pass for the resource HEAD bound across an owner rewrite", async () => {
 		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-gate-fresh-"));
 		const repo = path.join(tempRoot, "repo");
 		const head = initArtifactRepo(repo);
@@ -170,13 +170,14 @@ describe("TodoCommandController linked-requirement gate", () => {
 						{
 							content: "Gate artifact",
 							status: "pending",
-							schedule: { owner: "main", resources: [repo] },
+							schedule: { owner: "qa-worker", resources: [repo] },
 						},
 					],
 				},
 			],
 		});
 		const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
+		Object.assign(phases[0]!.tasks[0]!, { schedule: { owner: "main", resources: [repo] } });
 		const bound = await bindRequirementRowArtifact(
 			{ cwd: repo, sessionManager: manager },
 			"Gate artifact",
