@@ -241,11 +241,11 @@ impl EditStore {
 	pub fn record_seen_lines(&self, path: &Path, hash: &str, lines: &[u32]) {
 		let mut state = self.inner.lock();
 		touch(&mut state, path);
-		if let Some(version) = state
-			.histories
-			.get_mut(path)
-			.and_then(|h| h.versions.iter_mut().find(|v| v.snapshot.hash.eq_ignore_ascii_case(hash)))
-		{
+		if let Some(version) = state.histories.get_mut(path).and_then(|h| {
+			h.versions
+				.iter_mut()
+				.find(|v| v.snapshot.hash.eq_ignore_ascii_case(hash))
+		}) {
 			merge_seen(&mut version.snapshot, Some(lines));
 		}
 	}
@@ -265,6 +265,7 @@ impl EditStore {
 	/// Return the most recent version matching a tag and refresh path recency.
 	pub fn by_hash(&self, path: &Path, hash: &str) -> Option<Snapshot> {
 		let mut state = self.inner.lock();
+		touch(&mut state, path);
 		state
 			.histories
 			.get(path)?
@@ -629,7 +630,12 @@ mod tests {
 		assert_eq!(store.find_by_hash(&lower).len(), 1);
 		store.record_seen_lines(path, &lower, &[1]);
 		assert_eq!(
-			store.by_hash(path, &tag).unwrap().seen_lines.as_ref().map(|s| s.len()),
+			store
+				.by_hash(path, &tag)
+				.unwrap()
+				.seen_lines
+				.as_ref()
+				.map(|s| s.len()),
 			Some(1)
 		);
 		assert!(store.by_hash(path, "0000").is_none());
