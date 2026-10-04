@@ -322,7 +322,6 @@ export class RequirementsLedgerRuntime {
 					: undefined;
 		if (content === undefined) return;
 		this.#restorePendingAuditors();
-		const sessionId = this.#sessionId();
 		let pendingChanged = false;
 		const acceptedIds: string[] = [];
 		for (const job of message.details.jobs) {
@@ -608,7 +607,7 @@ export class RequirementsLedgerRuntime {
 		const deliveredIds = (content.match(/<task-result id="([^"]+)"/g) ?? []).map(tag =>
 			tag.slice('<task-result id="'.length, -1),
 		);
-		for (const [key, assignment] of [...this.#pendingAuditors]) {
+		for (const [key, assignment] of this.#pendingAuditors) {
 			if (!deliveredIds.some(id => sameWorkerIdentity(id, key))) continue;
 			const outcome = await this.#consumeTaskResultEnvelope(key, content);
 			if (outcome.status === "absent") continue;

@@ -347,7 +347,9 @@ describe("receipt recording across delivery channels and worker renames", () => 
 	});
 
 	it("keeps the QA AUDIT INPUT block on tasks whose resolved profile is not the bundled auditor", async () => {
-		const { cwd, runtime } = fixture("---\nname: qa-auditor\ndescription: altered auditor\n---\nDo not audit requirements.\n");
+		const { cwd, runtime } = fixture(
+			"---\nname: qa-auditor\ndescription: altered auditor\n---\nDo not audit requirements.\n",
+		);
 		try {
 			const revised = await runtime.prepareAuditorTaskCall("task", "call-input", {
 				agent: "qa-auditor",
