@@ -399,11 +399,18 @@ export function slipReestimateRefusal(args: {
     const freshOwner = startedAt !== undefined && args.now - startedAt < FRESH_OWNER_MS;
     const slipping = !freshOwner && row.status === "in_progress" && args.runningProfiles.has(row.owner) && (row.overdue || overBudget);
     if (!exhausted && !slipping) continue;
+    // A slipping row may be reestimated under the same owner when the update
+    // records the failure reason as evidence (658): the lead keeps a worker
+    // that is making progress and still logs a new estimate. The counter
+    // increment happens on the normal schedule path.
+    const hasEvidence = typeof update.evidence === "string" && update.evidence.trim().length > 0;
+    if (slipping && !exhausted && hasEvidence) continue;
     const profile = args.runningProfiles.get(row.owner);
     const strong = typeof profile === "string" && existsSync(new URL(`./agents/${profile}-strong.md`, import.meta.url)) ? `${profile}-strong` : undefined;
-    const why = exhausted
-      ? `has ${row.reestimateCount} reestimates under owner ${row.owner}`
-      : `is past its ETA under running owner ${row.owner}`;
+    if (!exhausted) {
+      return `Refusing todo schedule: ${JSON.stringify(content)} is past its ETA under running owner ${row.owner}. Exactly: todo schedule the row with evidence (the failure reason) plus a new estimate, or with a new owner${strong ? ` (${strong})` : ""} or split the remainder into new rows.`;
+    }
+    const why = `has ${row.reestimateCount} reestimates under owner ${row.owner}`;
     return `Refusing todo schedule: ${JSON.stringify(content)} ${why}. Exactly: write proc://${row.owner}/kill (empty content), read its receipt, then todo schedule the row with a new owner${strong ? ` (${strong})` : ""} or split the remainder into new rows.`;
   }
   return undefined;

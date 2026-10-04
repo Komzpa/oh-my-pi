@@ -1990,15 +1990,26 @@ test("R1 (case A): a same-owner reestimate on a slipping running row is refused 
   const jobs = slipJobs("IntegrateFacilityCallouts", "ui-coder", stale);
   const refused = await slipCall(tasks(), jobs, reestimateCall("Force-layout callouts"));
   expect(refused?.block).toBe(true);
-  expect(refused?.reason).toContain("Exactly: write proc://IntegrateFacilityCallouts/kill");
-  expect(refused?.reason).toContain("ui-coder-strong");
-  expect(refused?.reason).toContain("new owner");
+  expect(refused?.reason).toContain("is past its ETA under running owner IntegrateFacilityCallouts");
+  expect(refused?.reason).not.toContain("proc://IntegrateFacilityCallouts/kill");
+  expect(refused?.reason).toContain("with evidence (the failure reason) plus a new estimate");
   // Allowed: the same call changes the owner in the same update.
   expect(await slipCall(tasks(), jobs, reestimateCall("Force-layout callouts", { owner: "CalloutRestaff" }))).toBeUndefined();
   // Allowed: the same call drops the row.
   expect(await slipCall(tasks(), jobs, reestimateCall("Force-layout callouts", { status: "abandoned" }))).toBeUndefined();
   // Allowed: the row is split into new rows.
   expect(await slipCall(tasks(), jobs, { name: "todo", arguments: { op: "schedule", updates: [{ task: "Force-layout callouts (markup)" }, { task: "Force-layout callouts (positions)" }] } })).toBeUndefined();
+});
+test("an overdue running row accepts an evidence-backed reestimate; bare reestimate does not demand a kill", async () => {
+  const stale = Date.now() - 65 * 60_000;
+  const jobs = slipJobs("EvidenceOwner", "coder", stale);
+  const row = slipRow("Record scene inputs", "EvidenceOwner", 1, stale);
+  const accepted = await slipCall([row], jobs, reestimateCall("Record scene inputs", { evidence: "The earlier estimate missed scene parsing failures." }));
+  expect(accepted).toBeUndefined();
+
+  const bare = await slipCall([row], jobs, reestimateCall("Record scene inputs"));
+  expect(bare?.block).toBe(true);
+  expect(bare?.reason).not.toContain("proc://EvidenceOwner/kill");
 });
 
 test("R2 (case B): the sixth reestimate under the same owner is refused, overdue or not", async () => {
@@ -2019,8 +2030,8 @@ test("R4: the slip refusal is one exact action whose calls compose with the esca
   expect(reason.startsWith("Refusing todo schedule:")).toBe(true);
   expect(reason.split("Refusing").length - 1).toBe(1);
   expect(reason.length).toBeLessThan(400);
-  expect(reason).toContain("Exactly: write proc://IntegrateFacilityCallouts/kill");
-  expect(reason).toContain("todo schedule the row with a new owner");
+  expect(reason).toContain("Exactly: todo schedule the row with evidence");
+  expect(reason).not.toContain("proc://IntegrateFacilityCallouts/kill");
   const escalated = [{ id: "retro", remedy: "staff the retrospective (retro-facilitator) or answer it in a todo call", satisfies: (call: Call) => call.name === "todo" }];
   expect(decideGateCall({ name: "write", arguments: { path: "proc://IntegrateFacilityCallouts/kill", content: "" } }, escalated).allowed).toBe(true);
   expect(decideGateCall(reestimateCall("Force-layout callouts", { owner: "CalloutRestaff" }), escalated).allowed).toBe(true);
@@ -2084,5 +2095,5 @@ test("a fresh running owner may reestimate a slipping row; stale owners remain r
     reestimateCall("Stale slipping row"),
   );
   expect(staleResult?.block).toBe(true);
-  expect(staleResult?.reason).toContain("Exactly: write proc://StaleSlippingOwner/kill");
+  expect(staleResult?.reason).toContain("Exactly: todo schedule the row with evidence");
 });
