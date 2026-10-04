@@ -37,6 +37,7 @@ type SprintState = {
   reopenedRows: string[];
   workerFinishes: SprintWorkerFinish[];
   seenJobIds: string[];
+  retroFacilitatorJobs: string[];
   correctionPending: boolean;
   retroDueReason: string | null;
   retroDueDeadlineAt?: number;
@@ -286,6 +287,7 @@ function blankSprintState(): SprintState {
     reopenedRows: [],
     workerFinishes: [],
     seenJobIds: [],
+    retroFacilitatorJobs: [],
     correctionPending: false,
     retroDueReason: null,
     lastNotices: {},
@@ -498,6 +500,7 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
           })
         : [],
       seenJobIds: Array.isArray(data.seenJobIds) ? data.seenJobIds.filter((item): item is string => typeof item === "string") : [],
+      retroFacilitatorJobs: Array.isArray(data.retroFacilitatorJobs) ? data.retroFacilitatorJobs.filter((item): item is string => typeof item === "string") : [],
       correctionPending: data.correctionPending === true,
       retroDueReason: typeof data.retroDueReason === "string" ? data.retroDueReason : null,
       ...(typeof data.retroDueDeadlineAt === "number" ? { retroDueDeadlineAt: data.retroDueDeadlineAt } : {}),
@@ -1541,9 +1544,11 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       retroDueDeliveryKey: undefined,
       retroDueNotifiedKey: undefined,
       reopenedRows: [],
+      retroFacilitatorJobs: [],
       ...(handledDeadlineAt === undefined ? {} : { handledDeadlineAt }),
       ...(handledDeliveryKey === undefined ? {} : { handledDeliveryKey }),
     };
+    retroFacilitatorJobs.clear();
     persistSprintState();
   };
   const demandThreshold = (id: string): number => (id === "todo-replan" ? DEMAND_IGNORE_MAX_REPLAN : DEMAND_IGNORE_MAX);
@@ -1623,6 +1628,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     reset();
     persistedChildren = readPersistedChildren(ctx.sessionManager.getBranch());
     sprintState = readPersistedSprintState(ctx.sessionManager.getBranch());
+    retroFacilitatorJobs.clear();
+    for (const name of sprintState.retroFacilitatorJobs) retroFacilitatorJobs.add(name);
     persistedSprintStateJson = JSON.stringify(sprintState);
     if (!singleWriterLane) armPlanTicker(ctx);
   };
@@ -2977,8 +2984,13 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     if (event.toolName === "todo" && pendingReplan) pendingReplan.answered = pendingReplan.demands;
     if (event.toolName === "todo" && pendingTaskReconciliation?.linkDemanded) pendingTaskReconciliation.linkAnswered = true;
     if (event.toolName === "task")
-      for (const item of taskItems(event.input))
-        if (item.agent === "retro-facilitator" && typeof item.name === "string") retroFacilitatorJobs.add(item.name);
+      for (const item of taskItems(event.input)) {
+        if (item.agent === "retro-facilitator" && typeof item.name === "string") {
+          retroFacilitatorJobs.add(item.name);
+          sprintState = { ...sprintState, retroFacilitatorJobs: [...retroFacilitatorJobs] };
+          persistSprintState();
+        }
+      }
     if (event.toolName !== "task" || !dispatchGateBaseline) return;
     if (pendingIdleResumeOwner) idleResumeAttempts.add(pendingIdleResumeOwner);
     taskCallBaselines.set(event.toolCallId, new Map(dispatchGateBaseline));
