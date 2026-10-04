@@ -122,6 +122,27 @@ export function ensureSubagentRuntimeDir(token: string): string {
 	return dir;
 }
 /**
+ * Mask the desktop-session bindings in the live environment and return a
+ * restore function that must be called synchronously on every exit path (also
+ * on throw). Env snapshots taken between enter and restore (e.g.
+ * `workerEnvFromParent()`) cannot leak the user's graphical session into
+ * worker children.
+ */
+export function enterMaskedDesktopSessionEnv(runtimeDir: string): () => void {
+	const saved: Record<string, string | undefined> = {};
+	for (const key of DESKTOP_SESSION_ENV_KEYS) saved[key] = $env[key];
+	saved.XDG_RUNTIME_DIR = $env.XDG_RUNTIME_DIR;
+	for (const key of DESKTOP_SESSION_ENV_KEYS) delete $env[key];
+	$env.XDG_RUNTIME_DIR = runtimeDir;
+	return () => {
+		for (const key in saved) {
+			const value = saved[key];
+			if (value === undefined) delete $env[key];
+			else $env[key] = value;
+		}
+	};
+}
+/**
  * Git variables that pin a repository location. They describe the checkout the
  * agent process itself was launched from (git hooks, `git --git-dir` wrappers),
  * so forwarding them to a child shell makes `git` ignore the command's `cwd`
