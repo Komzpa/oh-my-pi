@@ -105,11 +105,15 @@ describe("exact todo restoration", () => {
 		const original = structuredClone(phases);
 		const tracker = new TodoTracker({} as TodoTrackerHost);
 		tracker.setPhases(original);
-		original[0].tasks[0].schedule!.resources.push("changed input");
+		const scheduleOf = (task: { content: string; schedule?: { resources: string[]; dependencies: string[] } }) => {
+			if (!task.schedule) throw new Error("expected scheduled task");
+			return task.schedule;
+		};
+		scheduleOf(original[0].tasks[0]).resources.push("changed input");
 		const read = tracker.phases as typeof phases;
-		read[0].tasks[0].schedule!.resources.push("changed output");
+		scheduleOf(read[0].tasks[0]).resources.push("changed output");
 		const snapshot = tracker.clonePhases(tracker.phases) as typeof phases;
-		snapshot[0].tasks[0].schedule!.dependencies.push("changed snapshot");
+		scheduleOf(snapshot[0].tasks[0]).dependencies.push("changed snapshot");
 		expect(tracker.phases).toEqual(phases);
 	});
 });
