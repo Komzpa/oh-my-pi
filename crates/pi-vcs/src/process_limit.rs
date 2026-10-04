@@ -180,10 +180,11 @@ fn env_exec(executable: &OsStr, argv0: &OsStr, extra: &[OsString]) -> Vec<OsStri
 	command
 }
 
-/// Process-wide verified boundary for short-lived host invocations (git CLI,
-/// commit hooks). Creating, verifying and stopping a fresh slice per call
-/// costs four or more manager round-trips each; the shared slice is verified
-/// once and lives until process exit.
+/// Shared process limit for short-lived host invocations.
+///
+/// Creating, verifying and stopping a fresh slice per call costs four or more
+/// manager round-trips each; the shared slice is verified once and lives
+/// until process exit.
 pub fn shared() -> std::sync::Arc<ToolProcessLimit> {
 	static SHARED: std::sync::LazyLock<std::sync::Arc<ToolProcessLimit>> =
 		std::sync::LazyLock::new(|| std::sync::Arc::new(ToolProcessLimit::default()));
