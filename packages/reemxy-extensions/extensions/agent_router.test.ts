@@ -383,6 +383,81 @@ describe("agent router", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+	test("unowned batch coders scope from spawn row title and lane path", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const laneA = join(dir, "lane-a");
+			const laneB = join(dir, "lane-b");
+			for (const repo of [laneA, laneB]) {
+				mkdirSync(repo);
+				execFileSync("git", ["init", "-q", repo]);
+			}
+			const tasks = [
+				{ content: "# Row: Fix alpha lane", status: "pending", schedule: { resources: [`${laneA}`] } },
+				{ content: "# Row: Fix beta lane", status: "pending", schedule: { resources: [`${laneB}`] } },
+			];
+			let running: Array<Record<string, string>> = [];
+			const context = ctx({
+				cwd: laneA,
+				sessionManager: {
+					getHeader: () => ({ id: "session-1" }),
+					getBranch: () => [
+						{
+							type: "message",
+							message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } },
+						},
+					],
+				},
+				getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }),
+			});
+			const state = createRouterState();
+			const spawn = (spawnKey: string, assignment: string) =>
+				routeSubagentSpawn({ agent: "coder", spawnKey, assignment }, context, state, {
+					stateFile: file,
+					latestTodo: getLatestTodoPhasesFromEntries,
+				});
+			const first = await spawn("batch-unowned-1", `# Row: Fix alpha lane\nLane: ${laneA}\nDo the work.`);
+			expect(first?.model).toBeDefined();
+			running = [{ id: "batch-unowned-1", type: "task", status: "running" }];
+			const second = await spawn("batch-unowned-2", `# Row: Fix beta lane\nLane: ${laneB}\nDo the work.`);
+			expect(second?.model).toBeDefined();
+			const controlState = createRouterState();
+			let controlRunning: Array<Record<string, string>> = [];
+			const controlContext = ctx({
+				cwd: laneA,
+				sessionManager: {
+					getHeader: () => ({ id: "session-1" }),
+					getBranch: () => [
+						{
+							type: "message",
+							message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } },
+						},
+					],
+				},
+				getAsyncJobSnapshot: () => ({ running: controlRunning, recent: [], delivery: {} }),
+			});
+			const controlFirst = await routeSubagentSpawn(
+				{ agent: "coder", spawnKey: "control-1", assignment: `# Row: Fix alpha lane\nLane: ${laneA}\nDo the work.` },
+				controlContext,
+				controlState,
+				{ stateFile: file, latestTodo: getLatestTodoPhasesFromEntries },
+			);
+			expect(controlFirst?.model).toBeDefined();
+			controlRunning = [{ id: "control-1", type: "task", status: "running" }];
+			const controlSecond = await routeSubagentSpawn(
+				{ agent: "coder", spawnKey: "control-2", assignment: `# Row: Fix alpha lane\nLane: ${laneA}\nDo the follow-up.` },
+				controlContext,
+				controlState,
+				{ stateFile: file, latestTodo: getLatestTodoPhasesFromEntries },
+			);
+			expect(controlSecond?.block).toBe(true);
+			expect(controlSecond?.reason).toContain("control-1");
+			expect(controlSecond?.reason).toContain("this spawn scope");
+			expect(controlSecond?.reason).toContain(laneA);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 
 	test("checkout writer scopes allow disjoint repositories and refuse every active collision", async () => {
 		const { dir, file } = tempStateFile();
