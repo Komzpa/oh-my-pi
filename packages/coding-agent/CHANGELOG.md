@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed: read-only agent replies
+
+- Read-only agents can reply to lead and peer messages: `write` is now mounted for them restricted to `agent://` targets (`agent://<id>` messages, `agent://all` broadcasts); filesystem, device, and other writes plus `edit` stay refused.
+
 ### Added
 
 - `/dump all` writes a zip to the temp directory with the main transcript, the LLM request JSON, and one file per subagent transcript (nested subagents included, killed ones marked aborted); the TUI copies the archive path to the clipboard. Plain `/dump` is unchanged ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
