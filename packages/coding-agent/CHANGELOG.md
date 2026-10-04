@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed: Bash services
+
+- Fixed `bash` service mode rejecting calls that carry materialized `async: false` / `timeout: 0` placeholders the caller never passed, and fixed `env` being ignored on finite non-service commands: `env` is now accepted on every bash schema and threaded through the executor, PTY, ACP terminal, and service-daemon backends (caller values win over direnv/shell defaults). Explicit `async: true` or a nonzero `timeout` with a service `name` still rejects per the documented contract.
+
 ### Added
 
 - `/dump all` writes a zip to the temp directory with the main transcript, the LLM request JSON, and one file per subagent transcript (nested subagents included, killed ones marked aborted); the TUI copies the archive path to the clipboard. Plain `/dump` is unchanged ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
@@ -9,7 +13,6 @@
 ### Fixed
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
-- Fixed `bash` service mode rejecting calls that carry materialized `async: false` / `timeout: 0` placeholders the caller never passed, and fixed `env` being ignored on finite non-service commands: `env` is now accepted on every bash schema and threaded through the executor, PTY, ACP terminal, and service-daemon backends (caller values win over direnv/shell defaults). Explicit `async: true` or a nonzero `timeout` with a service `name` still rejects per the documented contract.
 
 ## [18.4.12] - 2026-10-02
 
