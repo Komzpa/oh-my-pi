@@ -9,7 +9,6 @@
  */
 import * as path from "node:path";
 import { $flag, isBunTestRuntime, logger, Snowflake } from "@oh-my-pi/pi-utils";
-import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { Settings } from "../../config/settings";
 import {
 	BaseKernel,
@@ -306,7 +305,7 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 		const scriptPath = await stageRunnerScript("omp-python-runner", "py", RUNNER_SCRIPT);
 		const kernel = new PythonKernel(Snowflake.next());
 
-		const proc = spawnBackground([runtime.pythonPath, "-u", scriptPath], {
+		const proc = Bun.spawn([runtime.pythonPath, "-u", scriptPath], {
 			cwd: options.cwd,
 			detached: shouldDetachKernel(process.platform),
 			env: spawnEnv,

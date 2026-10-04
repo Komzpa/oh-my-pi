@@ -15,7 +15,6 @@ import {
 	WhichCachePolicy,
 	workerHostEntry,
 } from "@oh-my-pi/pi-utils";
-import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { stripGitRepoLocationEnv } from "@oh-my-pi/pi-utils/env";
 import type { Subprocess } from "bun";
 
@@ -270,7 +269,7 @@ export function createWorkerSubprocess<Outbound>(options: {
 		stderrDrainStarted = true;
 		void drainStderrCapture(stderrCapture, options.exitLabel, stderrTail).finally(() => stderrDrained.resolve());
 	};
-	const proc = spawnBackground({
+	const proc = Bun.spawn({
 		cmd: options.spawnCommand.cmd,
 		cwd: options.spawnCommand.cwd,
 		detached: options.detached,
