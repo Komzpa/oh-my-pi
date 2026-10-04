@@ -38,7 +38,7 @@ function setupOverdueSession(): { manager: SessionManager; runtime: Requirements
 		version: 1,
 		requirements: createRequirementCandidates([], [RAW], AT),
 	});
-	let phases: TodoPhase[] = [{ name: "Work", tasks: [{ content: ROW, status: "pending" }] }];
+	const phases: TodoPhase[] = [{ name: "Work", tasks: [{ content: ROW, status: "pending" }] }];
 	manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 	manager.appendMessage(assistantStop());
 	const runtime = new RequirementsLedgerRuntime({
