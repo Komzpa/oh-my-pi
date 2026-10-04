@@ -132,6 +132,25 @@ describe("experimental context notes", () => {
 		const advisorBound = toolSession(settings, SessionManager.inMemory(), "advisor-session");
 		expect(ContextNotesTool.createIf(advisorBound)).toBeNull();
 	});
+	it("saves notes when the branch is extended while disk preparation is pending", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
+		const tool = ContextNotesTool.createIf(toolSession(settings, sessionManager));
+		if (!tool) throw new Error("expected context notes tool");
+		const pendingEnsure = Promise.withResolvers<void>();
+		const ensureSpy = vi.spyOn(sessionManager, "ensureOnDisk").mockImplementation(() => pendingEnsure.promise);
+		try {
+			const pendingWrite = tool.execute("concurrent-append", { text: "save despite journal append" });
+			await Promise.resolve();
+			sessionManager.appendCustomEntry("concurrent_journal_entry");
+			pendingEnsure.resolve();
+			await expect(pendingWrite).resolves.toMatchObject({ details: { text: "save despite journal append" } });
+			expect(getContextNotes(sessionManager.getBranch())).toMatchObject({ text: "save despite journal append" });
+		} finally {
+			ensureSpy.mockRestore();
+			await sessionManager.close();
+		}
+	});
 	it("does not append notes when the branch changes while disk preparation is pending", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
@@ -140,9 +159,11 @@ describe("experimental context notes", () => {
 		const pendingEnsure = Promise.withResolvers<void>();
 		const ensureSpy = vi.spyOn(sessionManager, "ensureOnDisk").mockImplementation(() => pendingEnsure.promise);
 		try {
+			const base = sessionManager.appendCustomEntry("test_branch_base");
+			sessionManager.appendCustomEntry("test_branch_tip");
 			const pendingWrite = tool.execute("stale-branch", { text: "must not persist" });
 			await Promise.resolve();
-			sessionManager.appendCustomEntry("test_branch_change");
+			sessionManager.branch(base);
 			pendingEnsure.resolve();
 			await expect(pendingWrite).rejects.toThrow("session branch changed");
 			expect(getContextNotes(sessionManager.getBranch())).toBeUndefined();
