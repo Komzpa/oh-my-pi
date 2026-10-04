@@ -50,13 +50,15 @@ fn resolved_binary(name: &str) -> OsString {
 
 #[cfg(target_os = "linux")]
 fn systemd_run_bin() -> &'static OsString {
-	static BIN: std::sync::LazyLock<OsString> = std::sync::LazyLock::new(|| resolved_binary("systemd-run"));
+	static BIN: std::sync::LazyLock<OsString> =
+		std::sync::LazyLock::new(|| resolved_binary("systemd-run"));
 	&BIN
 }
 
 #[cfg(target_os = "linux")]
 fn systemctl_bin() -> &'static OsString {
-	static BIN: std::sync::LazyLock<OsString> = std::sync::LazyLock::new(|| resolved_binary("systemctl"));
+	static BIN: std::sync::LazyLock<OsString> =
+		std::sync::LazyLock::new(|| resolved_binary("systemctl"));
 	&BIN
 }
 
@@ -78,11 +80,18 @@ fn true_bin() -> &'static OsString {
 #[cfg(target_os = "linux")]
 fn systemd_version() -> Option<u32> {
 	static VERSION: std::sync::LazyLock<Option<u32>> = std::sync::LazyLock::new(|| {
-		let output = Command::new(systemctl_bin()).arg("--version").output().ok()?;
+		let output = Command::new(systemctl_bin())
+			.arg("--version")
+			.output()
+			.ok()?;
 		if !output.status.success() {
 			return None;
 		}
-		let mut parts = String::from_utf8_lossy(&output.stdout).split_whitespace().map(str::to_owned).collect::<Vec<_>>().into_iter();
+		let mut parts = String::from_utf8_lossy(&output.stdout)
+			.split_whitespace()
+			.map(str::to_owned)
+			.collect::<Vec<_>>()
+			.into_iter();
 		if parts.next().as_deref() != Some("systemd") {
 			return None;
 		}
@@ -219,10 +228,7 @@ impl ToolProcessLimit {
 			state.next_command_id += 1;
 			let mut wrapped = scope_prefix(
 				&self.slice,
-				&format!(
-					"omp-tool-call-{}-{command_id}.scope",
-					self.slice.trim_end_matches(".slice")
-				),
+				&format!("omp-tool-call-{}-{command_id}.scope", self.slice.trim_end_matches(".slice")),
 				false,
 				true,
 			);
@@ -381,7 +387,9 @@ impl Drop for ToolProcessLimit {
 			// (`ToolResourceScope::close`), async workers, and scope guards.
 			// Teardown is best-effort; `TimeoutStopSec` bounds it server-side.
 			let _ = std::thread::spawn(move || {
-				let _ = Command::new(systemctl).args(["--user", "stop", &slice]).status();
+				let _ = Command::new(systemctl)
+					.args(["--user", "stop", &slice])
+					.status();
 			});
 		}
 	}
