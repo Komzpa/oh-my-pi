@@ -24,6 +24,7 @@ import {
 	getLatestRequirements,
 	getRequirementAuditSources,
 	isFreshRequirementVerdict,
+	parseRequirementReceipt,
 	parseRequirementsLedger,
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 	type RequirementLedgerItem,
@@ -304,6 +305,21 @@ describe("canonical requirements ledger", () => {
 		expect(getLatestRequirements(manager.getBranch())).toEqual(requirements);
 		manager.appendCustomEntry("other", { version: 1, requirements: [] });
 		expect(getLatestRequirements(manager.getBranch())).toEqual(requirements);
+	});
+
+	it("accepts a verdict table inside JSON string values but rejects objects without a table", () => {
+		const table = [
+			"| id | raw words | verdict | evidence | artifact identity |",
+			"| --- | --- | --- | --- | --- |",
+			`| R1 | audit artifact | pass | inspected the build | ${"a".repeat(40)} |`,
+		].join("\n");
+		expect(parseRequirementReceipt(table, ["R1"])).not.toBeNull();
+		expect(parseRequirementReceipt(JSON.stringify({ result: table }), ["R1"])).toEqual(
+			parseRequirementReceipt(table, ["R1"]),
+		);
+		expect(
+			parseRequirementReceipt(JSON.stringify({ result: { requirement: "R1", verdict: "pass" } }), ["R1"]),
+		).toBeNull();
 	});
 
 	it("rejects malformed and duplicate IDs without silently deleting asks", () => {

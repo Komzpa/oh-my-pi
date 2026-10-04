@@ -163,7 +163,7 @@ describe("requirements ledger auditor binding", () => {
 				isError: false,
 			} as never);
 			expect(pending).toBeUndefined();
-			const envelope = `<task-result id="worker-async" agent="qa-auditor" status="completed"><output>\n${receiptTable(head)}\n</output></task-result>`;
+			const envelope = `<task-result id="worker-async" agent="qa-auditor" status="completed"><output>${JSON.stringify({ result: receiptTable(head) })}</output></task-result>`;
 			await runtime.consumeAsyncResult({
 				role: "custom",
 				customType: ASYNC_RESULT_MESSAGE_TYPE,
@@ -174,6 +174,41 @@ describe("requirements ledger auditor binding", () => {
 			const verdict = getLatestRequirements(manager.getBranch())[0]?.verdict;
 			expect(verdict?.status).toBe("pass");
 			expect(verdict?.workerId).toBe("worker-async");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("publishes the persisted reason for an async JSON object without a verdict table", async () => {
+		const { cwd, manager, runtime, gate } = fixture();
+		try {
+			await runtime.prepareAuditorTaskCall("task", "call-invalid", {
+				agent: "qa-auditor",
+				task: "Audit R1 in background",
+				context: "",
+			});
+			await runtime.afterToolCall({
+				toolCall: { id: "call-invalid", name: "task" },
+				result: { content: [], details: { progress: [{ index: 0, agent: "qa-auditor", id: "worker-invalid" }] } },
+				isError: false,
+			} as never);
+			await runtime.consumeAsyncResult({
+				role: "custom",
+				customType: ASYNC_RESULT_MESSAGE_TYPE,
+				attribution: "agent",
+				content: `<task-result id="worker-invalid" agent="qa-auditor" status="completed"><output>${JSON.stringify({
+					result: { requirement: "R1", verdict: "pass" },
+				})}</output></task-result>`,
+				details: { jobs: [{ type: "task", jobId: "job-invalid", agentId: "worker-invalid" }] },
+			});
+			const notice = await gate()?.(
+				{ content: [{ type: "text", text: "done" }], stopReason: "stop" } as never,
+				new AbortController().signal,
+			);
+			expect(JSON.stringify(notice)).toContain(
+				"R1 needs a fresh qa-auditor pass; rejected receipt: R1: malformed or partial verdict table",
+			);
+			expect(getLatestRequirements(manager.getBranch())[0]?.verdict).toBeUndefined();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

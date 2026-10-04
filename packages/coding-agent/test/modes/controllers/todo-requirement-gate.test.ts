@@ -11,6 +11,7 @@ import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/
 import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
+	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
 	type RequirementLedgerItem,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools";
@@ -98,6 +99,12 @@ describe("TodoCommandController linked-requirement gate", () => {
 			phases: [{ name: "Plan", tasks: [{ content: "Gate artifact", status: "pending" }] }],
 		});
 		appendLedger(manager, [linkedRequirement("gate the artifact", ["Gate artifact"])]);
+		manager.appendCustomEntry(REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE, {
+			version: 1,
+			sessionId: manager.getHeader()?.id,
+			jobs: [],
+			rejected: [{ workerId: "worker-1", ids: ["R1"], reason: "R1: malformed or partial verdict table" }],
+		});
 		const ctx = createLedgerContext(manager);
 		const controller = new TodoCommandController(ctx);
 
@@ -107,6 +114,7 @@ describe("TodoCommandController linked-requirement gate", () => {
 			expect.stringContaining("blocked until every linked requirement has a fresh qa-auditor pass"),
 		);
 		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining('R1 ("Gate artifact")'));
+		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining("R1: malformed or partial verdict table"));
 		expect(ctx.setTodos).not.toHaveBeenCalled();
 		const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
 		expect(persisted[0]!.tasks[0]!.status).toBe("pending");

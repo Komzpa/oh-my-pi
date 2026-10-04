@@ -12,6 +12,7 @@ import {
 	getLatestRequirements,
 	getOverdueRequirementCandidates,
 	getPersistedRequirementAuditorAssignments,
+	getPersistedRequirementAuditRejections,
 	getRequirementAuditSources,
 	isFreshRequirementVerdict,
 	parseRequirementReceipt,
@@ -298,6 +299,7 @@ export class RequirementsLedgerRuntime {
 		this.#restorePendingAuditors();
 		const sessionId = this.#sessionId();
 		let pendingChanged = false;
+		const acceptedIds: string[] = [];
 		for (const job of message.details.jobs) {
 			if (!isRecord(job) || job.type !== "task" || typeof job.jobId !== "string") continue;
 			const workerId = typeof job.agentId === "string" && job.agentId ? job.agentId : job.jobId;
@@ -333,8 +335,9 @@ export class RequirementsLedgerRuntime {
 			if (rejection) this.#persistPendingAuditors({ workerId, ids: assignment.ids, reason: rejection });
 			this.#pendingAuditors.delete(workerId);
 			pendingChanged = true;
+			if (!rejection) acceptedIds.push(...assignment.ids);
 		}
-		if (pendingChanged) this.#persistPendingAuditors();
+		if (pendingChanged) this.#persistPendingAuditors(undefined, acceptedIds);
 	}
 
 	async #publicationGate(
@@ -448,8 +451,18 @@ export class RequirementsLedgerRuntime {
 				continue;
 			}
 			const verdict = requirement.verdict;
-			if (!verdict) open.push({ requirement, issues: [`${requirement.id} needs a fresh qa-auditor pass`] });
-			else if (verdict.status === "fail")
+			if (!verdict) {
+				const rejection = getPersistedRequirementAuditRejections(
+					this.#host.sessionManager.getBranch(),
+					this.#sessionId(),
+				).get(requirement.id);
+				open.push({
+					requirement,
+					issues: [
+						`${requirement.id} needs a fresh qa-auditor pass${rejection ? `; rejected receipt: ${rejection}` : ""}`,
+					],
+				});
+			} else if (verdict.status === "fail")
 				open.push({ requirement, issues: [`${requirement.id} failed: ${verdict.evidence}`] });
 			else if (verdict.status === "unverifiable")
 				open.push({ requirement, issues: [`${requirement.id} unverifiable: ${verdict.evidence}`] });
@@ -551,9 +564,17 @@ export class RequirementsLedgerRuntime {
 		for (const [workerId, assignment] of restored) this.#pendingAuditors.set(workerId, assignment);
 	}
 
-	#persistPendingAuditors(rejected?: { workerId: string; ids: string[]; reason: string }): void {
+	#persistPendingAuditors(
+		rejected?: { workerId: string; ids: string[]; reason: string },
+		acceptedIds: readonly string[] = [],
+	): void {
 		const sessionId = this.#sessionId();
 		if (!sessionId) return;
+		const rejections = getPersistedRequirementAuditRejections(this.#host.sessionManager.getBranch(), sessionId);
+		for (const id of acceptedIds) rejections.delete(id);
+		if (rejected) {
+			for (const id of rejected.ids) rejections.set(id, rejected.reason);
+		}
 		this.#host.sessionManager.appendCustomEntry(REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE, {
 			version: 1,
 			sessionId,
@@ -570,9 +591,7 @@ export class RequirementsLedgerRuntime {
 					ids: assignment.ids,
 					snapshot: assignment.snapshot,
 				})),
-			...(rejected
-				? { rejected: [{ workerId: rejected.workerId, ids: rejected.ids, reason: rejected.reason }] }
-				: {}),
+			rejected: [...rejections].map(([id, reason]) => ({ workerId: "", ids: [id], reason })),
 		});
 	}
 

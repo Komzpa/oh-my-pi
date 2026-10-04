@@ -18,6 +18,7 @@ import {
 	formatDoneGateRefusal,
 	getLatestRequirements,
 	isFreshRequirementVerdict,
+	getPersistedRequirementAuditRejections,
 } from "../../tools/requirements-ledger";
 
 const USAGE = [
@@ -457,7 +458,13 @@ export class TodoCommandController {
 				)
 			) {
 				const rows = requirement.rows.filter(row => targetRows.has(row));
-				unmet.push(`${requirement.id} (${rows.map(row => JSON.stringify(row)).join(", ")})`);
+				const rejection = getPersistedRequirementAuditRejections(
+					this.ctx.sessionManager.getBranch(),
+					this.ctx.sessionManager.getHeader()?.id ?? null,
+				).get(requirement.id);
+				unmet.push(
+					`${requirement.id} (${rows.map(row => JSON.stringify(row)).join(", ")})${rejection ? `: rejected receipt: ${rejection}` : ""}`,
+				);
 			}
 		}
 		if (unmet.length === 0) return true;

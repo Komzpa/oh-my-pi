@@ -478,7 +478,20 @@ export function parseRequirementReceipt(
 }> | null {
 	const expected = new Set(expectedIds);
 	if (expected.size === 0 || expected.size !== expectedIds.length) return null;
-	const lines = output.split(/\r?\n/);
+	let parsedOutput: unknown;
+	try {
+		parsedOutput = JSON.parse(output);
+	} catch {
+		parsedOutput = undefined;
+	}
+	const strings: string[] = [];
+	const collectStrings = (value: unknown): void => {
+		if (typeof value === "string") strings.push(value);
+		else if (Array.isArray(value)) value.forEach(collectStrings);
+		else if (isRecord(value)) Object.values(value).forEach(collectStrings);
+	};
+	collectStrings(parsedOutput);
+	const lines = (strings.length > 0 ? strings.join("\n") : output).split(/\r?\n/);
 	const headers: Array<{
 		line: number;
 		id: number;
@@ -545,6 +558,28 @@ export function parseRequirementReceipt(
 	}
 	if (rows.length !== expected.size || new Set(rows.map(row => row.id)).size !== expected.size) return null;
 	return rows;
+}
+
+/** Restore rejected QA receipt reasons from the newest assignment snapshot. */
+export function getPersistedRequirementAuditRejections(
+	entries: readonly SessionEntry[],
+	sessionId: string | null,
+): Map<string, string> {
+	const rejected = new Map<string, string>();
+	if (!sessionId) return rejected;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index]!;
+		if (entry.type !== "custom" || entry.customType !== REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE) continue;
+		if (!isRecord(entry.data) || entry.data.sessionId !== sessionId || !Array.isArray(entry.data.rejected)) continue;
+		for (const value of entry.data.rejected) {
+			if (!isRecord(value) || !Array.isArray(value.ids) || typeof value.reason !== "string") continue;
+			for (const id of value.ids) {
+				if (typeof id === "string" && /^R[1-9]\d*$/.test(id)) rejected.set(id, value.reason);
+			}
+		}
+		return rejected;
+	}
+	return rejected;
 }
 
 /** Fingerprint immutable asks and current links so a worker cannot approve changed requirements. */
