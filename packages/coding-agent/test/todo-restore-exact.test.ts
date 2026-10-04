@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TodoTracker, type TodoTrackerHost } from "@oh-my-pi/pi-coding-agent/session/todo-tracker";
 import { applyOpsToPhases, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
-import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 const phases = [
 	{
@@ -20,8 +20,15 @@ const phases = [
 				schedule: {
 					owner: "RestoreTodoList",
 					resources: ["cpu", "reviewer"],
-					estimate: { optimistic: 10, likely: 20, pessimistic: 30 },
-					evidence: [{ command: "bun test", exit: 0 }],
+					estimate: {
+						optimisticSeconds: 10,
+						likelySeconds: 20,
+						pessimisticSeconds: 30,
+						confidence: "high",
+						basis: "Restore test fixture",
+						updatedAt: 1_725_000_000_000,
+					},
+					progress: { at: 1_725_000_000_000, evidence: "bun test exited 0" },
 					dependencies: ["Inspect"],
 				},
 			},
@@ -36,7 +43,7 @@ const phases = [
 			{ content: "Rewrite", status: "abandoned" as const },
 		],
 	},
-];
+] as unknown as TodoPhase[];
 
 const plainPhases: TodoPhase[] = [
 	{
@@ -105,15 +112,16 @@ describe("exact todo restoration", () => {
 		const original = structuredClone(phases);
 		const tracker = new TodoTracker({} as TodoTrackerHost);
 		tracker.setPhases(original);
-		const scheduleOf = (task: { content: string; schedule?: { resources: string[]; dependencies: string[] } }) => {
-			if (!task.schedule) throw new Error("expected scheduled task");
-			return task.schedule;
+		const scheduleOf = (task: TodoItem) => {
+			const schedule = task.schedule;
+			if (!schedule?.resources || !schedule.dependencies) throw new Error("expected scheduled task metadata");
+			return schedule;
 		};
-		scheduleOf(original[0].tasks[0]).resources.push("changed input");
+		scheduleOf(original[0]!.tasks[0]!).resources.push("changed input");
 		const read = tracker.phases as typeof phases;
-		scheduleOf(read[0].tasks[0]).resources.push("changed output");
+		scheduleOf(read[0]!.tasks[0]!).resources.push("changed output");
 		const snapshot = tracker.clonePhases(tracker.phases) as typeof phases;
-		scheduleOf(snapshot[0].tasks[0]).dependencies.push("changed snapshot");
+		scheduleOf(snapshot[0]!.tasks[0]!).dependencies.push("changed snapshot");
 		expect(tracker.phases).toEqual(phases);
 	});
 });
