@@ -68,6 +68,8 @@ export interface KernelStartOptions {
 	env?: Record<string, string | undefined>;
 	/** Explicit interpreter path; skips discovery when set. */
 	interpreter?: string;
+	/** Keep subagent kernels out of the user's desktop session. */
+	maskDesktopSession?: boolean;
 	signal?: AbortSignal;
 	deadlineMs?: number;
 }
