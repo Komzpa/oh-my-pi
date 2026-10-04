@@ -9,6 +9,9 @@
 ### Fixed
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
+
+### Fixed: native/tool child priority
+
 - Lowered Linux native utility, isolation, OAuth-helper, and omp-launched browser children to nice 19 and best-effort I/O priority 7 without changing omp's own priority.
 
 ## [18.4.12] - 2026-10-02
