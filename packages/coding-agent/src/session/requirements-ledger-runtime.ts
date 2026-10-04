@@ -35,6 +35,23 @@ import { READ_ONLY_TOOL_NAMES } from "../task/read-only-policy";
 import { BUNDLED_QA_AUDITOR_TEMPLATE } from "../task/agents";
 import type { AgentDefinition } from "../task/types";
 
+/** The harness renames a worker whose requested name is taken by appending `-<n>`. */
+function sameWorkerIdentity(a: string, b: string): boolean {
+	if (a === b) return true;
+	const [long, short] = a.length >= b.length ? [a, b] : [b, a];
+	return long.startsWith(`${short}-`) && /^\d+$/.test(long.slice(short.length + 1));
+}
+
+function resultText(result: unknown): string | undefined {
+	const content = isRecord(result) && "content" in result ? result.content : undefined;
+	if (typeof content === "string") return content;
+	if (Array.isArray(content))
+		return content
+			.flatMap(part => (isRecord(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : []))
+			.join("\n");
+	return undefined;
+}
+
 async function isBundledQaAuditor(agent: AgentDefinition | undefined): Promise<boolean> {
 	if (!agent) return false;
 	if (agent.source === "bundled") return true;
@@ -145,7 +162,9 @@ export class RequirementsLedgerRuntime {
 				.map(requirement => requirement.id);
 			if (ids.length > 0)
 				this.#auditorRefusals.set(toolCallId, { ids, source: resolvedAuditor?.source ?? "unavailable" });
-			return undefined;
+			// The audit input stays on the task even for a non-bundled profile: a
+			// worker must never be dispatched without the immutable QA AUDIT INPUT
+			// block. The refusal above still rejects any receipt it returns.
 		}
 		for (let index = 0; index < items.length; index++) {
 			const item = items[index];
@@ -203,10 +222,16 @@ export class RequirementsLedgerRuntime {
 	}
 
 	async afterToolCall(context: AfterToolCallContext): Promise<AfterToolCallResult | undefined> {
-		if (this.#host.agentKind() !== "main" || context.toolCall.name !== "task") return undefined;
+		if (this.#host.agentKind() !== "main") return undefined;
+		if (context.toolCall.name === "wait") {
+			await this.#consumeWaitSnapshot(context.result);
+			return undefined;
+		}
+		if (context.toolCall.name !== "task") return undefined;
 		const refusal = this.#auditorRefusals.get(context.toolCall.id);
 		if (refusal) {
 			this.#auditorRefusals.delete(context.toolCall.id);
+			this.#auditCalls.delete(context.toolCall.id);
 			return {
 				content: [
 					...context.result.content,
@@ -303,37 +328,18 @@ export class RequirementsLedgerRuntime {
 		for (const job of message.details.jobs) {
 			if (!isRecord(job) || job.type !== "task" || typeof job.jobId !== "string") continue;
 			const workerId = typeof job.agentId === "string" && job.agentId ? job.agentId : job.jobId;
-			const assignment = this.#pendingAuditors.get(workerId);
-			if (!assignment) continue;
-			let rejection: string | undefined;
-			if (
-				!sessionId ||
-				assignment.sessionId !== sessionId ||
-				assignment.agent !== "qa-auditor" ||
-				assignment.workerId !== workerId
-			) {
-				rejection = "async result session or worker identity did not match";
-			} else {
-				const envelope = (content.match(/<task-result id="[^"]+"[\s\S]*?<\/task-result>/g) ?? []).find(candidate =>
-					candidate.startsWith(`<task-result id="${workerId}" `),
-				);
-				const match = envelope?.match(
-					/^<task-result id="([^"]+)" agent="([^"]+)" status="([^"]+)"[^>]*>[\s\S]*?<output>\s*([\s\S]*?)\s*<\/output>[\s\S]*?<\/task-result>$/,
-				);
-				if (
-					!match ||
-					match[1] !== workerId ||
-					match[2] !== "qa-auditor" ||
-					match[3] !== "completed" ||
-					envelope?.includes("<preview")
-				) {
-					rejection = "async result was incomplete, truncated, or not from qa-auditor";
-				} else {
-					rejection = (await this.#acceptReceipt(workerId, assignment, match[4]!)) ?? undefined;
-				}
-			}
-			if (rejection) this.#persistPendingAuditors({ workerId, ids: assignment.ids, reason: rejection });
-			this.#pendingAuditors.delete(workerId);
+			const key = this.#resolvePendingAuditorKey(workerId);
+			const assignment = key ? this.#pendingAuditors.get(key) : undefined;
+			if (!key || !assignment) continue;
+			const outcome = await this.#consumeTaskResultEnvelope(workerId, content);
+			const rejection =
+				outcome.status === "accepted"
+					? undefined
+					: outcome.status === "rejected"
+						? outcome.reason
+						: "async result was incomplete, truncated, or not from qa-auditor";
+			if (rejection) this.#persistPendingAuditors({ workerId: key, ids: assignment.ids, reason: rejection });
+			this.#pendingAuditors.delete(key);
 			pendingChanged = true;
 			if (!rejection) acceptedIds.push(...assignment.ids);
 		}
@@ -487,13 +493,16 @@ export class RequirementsLedgerRuntime {
 			!sessionId ||
 			assignment.sessionId !== sessionId ||
 			assignment.agent !== "qa-auditor" ||
-			(assignment.workerId !== undefined && assignment.workerId !== workerId)
+			(assignment.workerId !== undefined && !sameWorkerIdentity(assignment.workerId, workerId))
 		) {
 			return `${expectedIds.join(", ")}: auditor assignment session or worker identity did not match`;
 		}
 		const receipts = parseRequirementReceipt(output, expectedIds);
-		if (!receipts)
-			return `${expectedIds.join(", ")}: malformed or partial verdict table (expected id, verdict, evidence, artifact)`;
+		if (!receipts) {
+			const covered = new Set([...output.matchAll(/\|\s*(R[1-9]\d*)\s*\|/g)].map(match => match[1]!));
+			const missing = expectedIds.filter(id => !covered.has(id));
+			return `${expectedIds.join(", ")}: malformed or partial verdict table (expected id, verdict, evidence, artifact)${missing.length > 0 ? `; missing rows for ${missing.join(", ")}` : ""}`;
+		}
 		const branch = this.#host.sessionManager.getBranch();
 		const requirements = getLatestRequirements(branch);
 		const expected = expectedIds.map(id => requirements.find(requirement => requirement.id === id));
@@ -552,6 +561,69 @@ export class RequirementsLedgerRuntime {
 		);
 		this.syncPublicationGate();
 		return null;
+	}
+
+	/**
+	 * Records or rejects one delivered `<task-result>` envelope for a pending
+	 * auditor, whichever channel carried it (async batch or `wait` snapshot).
+	 */
+	async #consumeTaskResultEnvelope(
+		workerId: string,
+		content: string,
+	): Promise<{ status: "accepted" } | { status: "rejected"; reason: string } | { status: "absent" }> {
+		const key = this.#resolvePendingAuditorKey(workerId);
+		const assignment = key ? this.#pendingAuditors.get(key) : undefined;
+		if (!key || !assignment) return { status: "absent" };
+		const envelope = (content.match(/<task-result id="[^"]+"[\s\S]*?<\/task-result>/g) ?? []).find(candidate => {
+			const id = candidate.match(/^<task-result id="([^"]+)"/)?.[1];
+			return typeof id === "string" && sameWorkerIdentity(id, workerId);
+		});
+		if (!envelope) return { status: "absent" };
+		const sessionId = this.#sessionId();
+		if (
+			!sessionId ||
+			assignment.sessionId !== sessionId ||
+			assignment.agent !== "qa-auditor" ||
+			(assignment.workerId !== undefined && !sameWorkerIdentity(assignment.workerId, workerId))
+		) {
+			return { status: "rejected", reason: "session or worker identity did not match" };
+		}
+		const match = envelope.match(
+			/^<task-result id="([^"]+)" agent="([^"]+)" status="([^"]+)"[^>]*>[\s\S]*?<output>\s*([\s\S]*?)\s*<\/output>[\s\S]*?<\/task-result>$/,
+		);
+		if (!match || match[2] !== "qa-auditor" || match[3] !== "completed" || envelope.includes("<preview")) {
+			return { status: "rejected", reason: "result was incomplete, truncated, or not from qa-auditor" };
+		}
+		const issue = await this.#acceptReceipt(match[1]!, assignment, match[4]!);
+		return issue ? { status: "rejected", reason: issue } : { status: "accepted" };
+	}
+
+	/** A `wait` snapshot can recover a result the delivery path never auto-delivered. */
+	async #consumeWaitSnapshot(result: unknown): Promise<void> {
+		const content = resultText(result);
+		if (!content || !content.includes("<task-result ")) return;
+		this.#restorePendingAuditors();
+		let pendingChanged = false;
+		const acceptedIds: string[] = [];
+		const deliveredIds = (content.match(/<task-result id="([^"]+)"/g) ?? []).map(tag =>
+			tag.slice('<task-result id="'.length, -1),
+		);
+		for (const [key, assignment] of [...this.#pendingAuditors]) {
+			if (!deliveredIds.some(id => sameWorkerIdentity(id, key))) continue;
+			const outcome = await this.#consumeTaskResultEnvelope(key, content);
+			if (outcome.status === "absent") continue;
+			if (outcome.status === "accepted") acceptedIds.push(...assignment.ids);
+			else this.#persistPendingAuditors({ workerId: key, ids: assignment.ids, reason: outcome.reason });
+			this.#pendingAuditors.delete(key);
+			pendingChanged = true;
+		}
+		if (pendingChanged) this.#persistPendingAuditors(undefined, acceptedIds);
+	}
+
+	#resolvePendingAuditorKey(workerId: string): string | undefined {
+		if (this.#pendingAuditors.has(workerId)) return workerId;
+		for (const key of this.#pendingAuditors.keys()) if (sameWorkerIdentity(key, workerId)) return key;
+		return undefined;
 	}
 
 	#restorePendingAuditors(): void {

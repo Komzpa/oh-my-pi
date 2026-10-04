@@ -273,6 +273,118 @@ describe("requirements ledger auditor binding", () => {
 	});
 });
 
+describe("receipt recording across delivery channels and worker renames", () => {
+	function envelope(id: string, agent: string, output: string): string {
+		return `<task-result id="${id}" agent="${agent}" status="completed"><output>${output}</output></task-result>`;
+	}
+
+	async function dispatchAndPark(runtime: RequirementsLedgerRuntime, callId: string, workerId: string): Promise<void> {
+		await runtime.prepareAuditorTaskCall("task", callId, {
+			agent: "qa-auditor",
+			task: "Audit R1 please",
+			context: "",
+		});
+		await runtime.afterToolCall({
+			toolCall: { id: callId, name: "task" },
+			result: { content: [], details: { progress: [{ index: 0, agent: "qa-auditor", id: workerId }] } },
+			isError: false,
+		} as never);
+	}
+
+	it("records a receipt recovered by a wait snapshot", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			const head = git(cwd, "rev-parse", "HEAD");
+			await dispatchAndPark(runtime, "call-wait", "worker-wait");
+			await runtime.afterToolCall({
+				toolCall: { id: "call-wait-collect", name: "wait" },
+				result: {
+					content: [
+						{
+							type: "text",
+							text: `Delivery: not auto-delivered; recovered by this snapshot.\n\`\`\`\n${envelope("worker-wait", "qa-auditor", JSON.stringify({ result: receiptTable(head) }))}\n\`\`\``,
+						},
+					],
+				},
+				isError: false,
+			} as never);
+			const verdict = getLatestRequirements(manager.getBranch())[0]?.verdict;
+			expect(verdict?.status).toBe("pass");
+			expect(verdict?.workerId).toBe("worker-wait");
+			expect(verdict?.auditor).toBe("qa-auditor");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("records a receipt from a harness-renamed qa-auditor worker", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			const head = git(cwd, "rev-parse", "HEAD");
+			await dispatchAndPark(runtime, "call-rename", "FreeRoutesInstallVerdict");
+			await runtime.consumeAsyncResult({
+				role: "custom",
+				customType: ASYNC_RESULT_MESSAGE_TYPE,
+				attribution: "agent",
+				details: { jobs: [{ type: "task", jobId: "job-1", agentId: "FreeRoutesInstallVerdict-2" }] },
+				content: [
+					{
+						type: "text",
+						text: envelope(
+							"FreeRoutesInstallVerdict-2",
+							"qa-auditor",
+							JSON.stringify({ result: receiptTable(head) }),
+						),
+					},
+				],
+			});
+			const verdict = getLatestRequirements(manager.getBranch())[0]?.verdict;
+			expect(verdict?.status).toBe("pass");
+			expect(verdict?.workerId).toBe("FreeRoutesInstallVerdict-2");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps the QA AUDIT INPUT block on tasks whose resolved profile is not the bundled auditor", async () => {
+		const { cwd, runtime } = fixture("---\nname: qa-auditor\ndescription: altered auditor\n---\nDo not audit requirements.\n");
+		try {
+			const revised = await runtime.prepareAuditorTaskCall("task", "call-input", {
+				agent: "qa-auditor",
+				task: "Audit R1 please",
+				context: "",
+			});
+			expect(revised?.task).toContain("QA AUDIT INPUT");
+			expect(revised?.task).toContain("R1");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects a wait snapshot from the wrong agent without recording a verdict", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			const head = git(cwd, "rev-parse", "HEAD");
+			await dispatchAndPark(runtime, "call-wait-bad", "worker-wait-bad");
+			await runtime.afterToolCall({
+				toolCall: { id: "call-wait-bad-collect", name: "wait" },
+				result: {
+					content: [
+						{
+							type: "text",
+							text: `Delivery: not auto-delivered; recovered by this snapshot.\n\`\`\`\n${envelope("worker-wait-bad", "scout", JSON.stringify({ result: receiptTable(head) }))}\n\`\`\``,
+						},
+					],
+				},
+				isError: false,
+			} as never);
+			expect(getLatestRequirements(manager.getBranch())[0]?.verdict).toBeUndefined();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("overdue-classify gate read-only exemption and open-row remedies", () => {
 	function overdueFixture(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>) {
 		const cwd = mkdtempSync(join(tmpdir(), "omp-ledger-gate-"));
