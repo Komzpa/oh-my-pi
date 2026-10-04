@@ -200,22 +200,14 @@ describe("agent router", () => {
 		}
 	});
 
-	test("every openrouter entry ends with :free and appears only in light worker roles", () => {
-		const lightRoles: Record<string, true> = {
-			scout: true,
-			scribe: true,
-			workhorse: true,
-			"gate-runner": true,
-			researcher: true,
-			task: true,
-		};
+	test("every openrouter entry ends with :free and judgment roles use no openrouter entry", () => {
+		const judgmentRoles: Record<string, true> = { reviewer: true, adversary: true, "qa-auditor": true };
 		for (const [agent, config] of Object.entries(AGENT_POOLS)) {
 			for (const model of [...config.pool, ...config.fallbacks]) {
 				if (!model.startsWith("openrouter/")) continue;
 				expect(model.endsWith(":free"), `${agent}: ${model}`).toBe(true);
-				expect(lightRoles[agent] === true, agent).toBe(true);
+				expect(judgmentRoles[agent] === true || agent.endsWith("-strong"), agent).toBe(false);
 			}
-			if (lightRoles[agent] === true) expect(config.pool[0]?.startsWith("openrouter/"), agent).toBe(true);
 		}
 	});
 
@@ -996,7 +988,7 @@ describe("agent router", () => {
 					true,
 				);
 				expect(
-					["kimi-code/", "claude-bridge/", "xiaomi/", "muse-code/"].some(provider =>
+					["openrouter/", "kimi-code/", "claude-bridge/", "xiaomi/", "muse-code/"].some(provider =>
 						result?.model[0]?.startsWith(provider),
 					),
 				).toBe(true);
