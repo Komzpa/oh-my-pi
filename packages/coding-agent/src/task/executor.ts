@@ -4,6 +4,7 @@
  * Runs each subagent on the main thread and forwards AgentEvents for progress tracking.
  */
 
+import { isProviderExhausted } from "../session/provider-exhaustion";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
@@ -153,7 +154,6 @@ import {
 	cfgCompactionThresholdPercent,
 	cfgCompactionThresholdTokens,
 } from "../session/context-settings";
-import { isProviderExhausted } from "../session/provider-exhaustion";
 
 export type { YieldItem } from "@oh-my-pi/pi-tui/tools/task";
 
