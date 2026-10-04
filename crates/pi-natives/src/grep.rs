@@ -1752,7 +1752,7 @@ fn run_parallel_streaming_grep<M: Matcher + Sync>(
 				let over_bytes = !over_files
 					&& max_scan_bytes.is_some_and(|max| {
 						scanned_bytes
-							.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+							.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
 								(current.saturating_add(size) <= u64::from(max))
 									.then_some(current.saturating_add(size))
 							})
