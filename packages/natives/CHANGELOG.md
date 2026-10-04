@@ -5,6 +5,8 @@
 ### Fixed
 
 - Run Linux scoped tool children (external shell commands, PTYs, git hooks, and Python/JavaScript eval kernels) at CPU niceness 19 and best-effort IO priority 7 without lowering omp's own priority.
+- Detached repositories borrow a single transitive object store for healthy `--reference` chains; genuinely cyclic chains are materialized locally without inheriting an alternates pointer.
+
 ### Added
 
 - Added `unsetEnv` to native shell session and one-shot options to remove inherited environment variables after session imports and snapshot sourcing.

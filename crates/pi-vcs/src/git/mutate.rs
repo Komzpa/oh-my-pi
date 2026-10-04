@@ -1330,44 +1330,15 @@ pub fn detach_git_dir(
 	gix::init(worktree_root).map_err(|e| Error::backend("git init", e))?;
 	let objects_info = git_entry.join("objects/info");
 	fs::create_dir_all(&objects_info)?;
-	let mut alternates = vec![source_common.join("objects")];
-	if let Ok(chained) = fs::read_to_string(source_common.join("objects/info/alternates")) {
-		for line in chained
-			.lines()
-			.map(str::trim)
-			.filter(|line| !line.is_empty())
-		{
-			let path = Path::new(line);
-			alternates.push(if path.is_absolute() {
-				path.to_owned()
-			} else {
-				source_common.join("objects").join(path)
-			});
-		}
-	}
-	// Never borrow an object store that resolves to the new repository's own
-	// object directory; such an entry would make the new repo depend on
-	// itself. (A transitive source-side cycle is handled before any gix open
-	// by `detach_without_borrowing` below.)
-	let own_key = canonical_of(&git_entry.join("objects"));
-	let mut seen_text: Vec<String> = Vec::new();
-	alternates.retain(|candidate| {
-		if canonical_of(candidate) == own_key {
-			return false;
-		}
-		let text = candidate.to_string_lossy().into_owned();
-		if seen_text.contains(&text) {
-			return false;
-		}
-		seen_text.push(text);
-		true
-	});
-	let alternate_text = alternates
-		.iter()
-		.map(|p| p.to_string_lossy())
-		.collect::<Vec<_>>()
-		.join("\n")
-		+ "\n";
+	// Borrow the source object DB through exactly one alternates entry. Do not
+	// copy the source's own chained alternates: git and gix both walk alternates
+	// transitively, and gix rejects any object directory it sees twice as a
+	// cycle ("Alternates form a cycle"). Flattening the parent's `--reference`
+	// chain here created exactly that diamond — the chain's entries are
+	// reachable again through the source's own alternates file — so every
+	// isolated task in a `--reference` clone failed on its first repository
+	// operation.
+	let alternate_text = format!("{}\n", source_common.join("objects").to_string_lossy());
 	fs::write(objects_info.join("alternates"), alternate_text)?;
 	for (name, id) in refs {
 		write_loose_ref(&git_entry, &name, id)?;
