@@ -5078,14 +5078,12 @@ use std::{
 	str,
 };
 
-#[cfg(unix)]
-use memchr::memchr;
-#[cfg(unix)]
-use memmap2::Mmap;
-#[cfg(unix)]
-use pi_vfs::File;
-use pi_vfs::BlockingFs;
-use crate::{host::Host, sed::error_handling::SedError};
+	#[cfg(unix)]
+	use memchr::memchr;
+	#[cfg(unix)]
+	use pi_vfs::File;
+	use pi_vfs::BlockingFs;
+	use crate::{host::Host, sed::error_handling::SedError};
 
 // Define two cursors for iterating over lines:
 // - MmapLineCursor based on mmap(2),
@@ -5374,13 +5372,14 @@ impl IOChunkContent<'_> {
 // driving write(2)/copy_file_range(2) output fast paths) is removed, because
 // the output writer is a plain `Write` handle without a file descriptor.
 
-/// Unified reader that uses mmap when possible, falls back to buffered reading.
-pub enum LineReader<'a> {
-	#[cfg(unix)]
-	MmapInput {
-		_mapped_file: Mmap, // A handle that can derive the mapped file slice
-		cursor:      MmapLineCursor<'a>,
-	},
+	/// Unified reader: file contents are read into an owned buffer up front,
+	/// so concurrent truncation cannot raise SIGBUS inside this process.
+	pub enum LineReader<'a> {
+		#[cfg(unix)]
+		MmapInput {
+			_owned: Box<[u8]>, // Owned file contents backing the cursor slice
+			cursor: MmapLineCursor<'a>,
+		},
 	ReadInput(ReadLineCursor),
 	#[cfg(not(unix))]
 	_Phantom(std::marker::PhantomData<&'a ()>),
@@ -5408,17 +5407,22 @@ impl<'a> LineReader<'a> {
 		// against the shell working directory.
 		let file = host.fs().open(host.resolve(path))?;
 
-		// Only a handle the filesystem declares host-native can be mapped;
-		// provider files, and native ones mmap rejects (pipes), stream.
+		// Read the whole file into an owned buffer: a memory map would raise
+		// SIGBUS in this process if the file shrinks under the mapping.
 		#[cfg(unix)]
-		if let Some(Ok(mapped_file)) = file.native().map(|native| unsafe { Mmap::map(native) }) {
-			// SAFETY: mmap owns the data and lives in the same variant
+		{
+			let mut bytes = Vec::new();
+			let mut file = file;
+			file.read_to_end(&mut bytes)?;
+			let owned: Box<[u8]> = bytes.into_boxed_slice();
+			// SAFETY: `owned` lives in the same enum variant as the cursor and
+			// is never replaced while borrowed; the slice never outlives it.
 			let slice: &'static [u8] =
-				unsafe { std::slice::from_raw_parts(mapped_file.as_ptr(), mapped_file.len()) };
+				unsafe { std::slice::from_raw_parts(owned.as_ptr(), owned.len()) };
 			let cursor = MmapLineCursor::new(file, slice);
-			return Ok(LineReader::MmapInput { _mapped_file: mapped_file, cursor });
+			return Ok(LineReader::MmapInput { _owned: owned, cursor });
 		}
-
+		#[cfg(not(unix))]
 		line_reader_read_input(file)
 	}
 

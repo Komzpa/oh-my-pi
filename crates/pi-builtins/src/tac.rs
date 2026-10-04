@@ -10,8 +10,6 @@ use std::{
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use memchr::memmem;
-use memmap2::Mmap;
-use pi_vfs::File;
 use thiserror::Error;
 use uucore::display::Quotable;
 
@@ -319,7 +317,6 @@ fn tac(
 		if host.is_cancelled() {
 			break;
 		}
-		let mmap;
 		let buffer;
 		let data: &[u8] = if filename == "-" {
 			let mut contents = Vec::new();
@@ -343,21 +340,16 @@ fn tac(
 				},
 			};
 
-			if let Some(mapping) = try_mmap_file(&file) {
-				mmap = mapping;
-				&mmap
-			} else {
-				let mut contents = Vec::new();
-				match file.read_to_end(&mut contents) {
-					Ok(_) => {
-						buffer = contents;
-						&buffer
-					},
-					Err(error) => {
-						show(host, &TacError::Read(filename.clone(), error));
-						continue;
-					},
-				}
+			let mut contents = Vec::new();
+			match file.read_to_end(&mut contents) {
+				Ok(_) => {
+					buffer = contents;
+					&buffer
+				},
+				Err(error) => {
+					show(host, &TacError::Read(filename.clone(), error));
+					continue;
+				},
 			}
 		};
 
@@ -372,14 +364,6 @@ fn tac(
 	Ok(())
 }
 
-/// Maps `file` when its provider exposes a native host handle; provider-backed
-/// files are read into memory instead.
-fn try_mmap_file(file: &File) -> Option<Mmap> {
-	let native = file.native()?;
-	// SAFETY: If the file is truncated while mapped, SIGBUS terminates the
-	// process before invalid memory can be accessed.
-	unsafe { Mmap::map(native).ok() }
-}
 
 /// Creates the `tac` builtin registration.
 pub(crate) fn tac_builtin<SE: ShellExtensions>() -> Registration<SE> {
