@@ -66,7 +66,7 @@ mod imp {
 	use std::{
 		fs, io,
 		path::Path,
-		process::{Command, Output},
+		process::Output,
 		sync::atomic::{AtomicBool, Ordering},
 	};
 
@@ -278,7 +278,9 @@ mod imp {
 	}
 
 	fn run_zfs_status<const N: usize>(args: [&str; N]) -> io::Result<Output> {
-		Command::new("zfs").args(args).output()
+		crate::process::background_command("zfs")
+			.args(args)
+			.output()
 	}
 
 	fn command_available<const N: usize>(args: [&str; N]) -> bool {
