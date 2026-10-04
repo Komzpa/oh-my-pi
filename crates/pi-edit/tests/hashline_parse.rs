@@ -501,9 +501,10 @@ fn valid_put_with_body_still_applies() {
 	// applying while malformed op headers are rejected.
 	let parsed = parse_patch("PUT 3.=4:\n+ok").unwrap();
 	assert!(
-		parsed.edits.iter().any(
-			|edit| matches!(edit, Edit::Insert { text, replacement: true, .. } if text == "ok")
-		),
+		parsed
+			.edits
+			.iter()
+			.any(|edit| matches!(edit, Edit::Insert { text, replacement: true, .. } if text == "ok")),
 		"{:?}",
 		parsed.edits
 	);
