@@ -1,6 +1,4 @@
-import { readFile, realpath } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-
+import { readFile } from "node:fs/promises";
 
 import type { Agent, AfterToolCallContext, AfterToolCallResult, BeforeToolCallResult } from "@oh-my-pi/pi-agent-core";
 import { setAssistantPublicationGate } from "@oh-my-pi/pi-agent-core/assistant-publication";
@@ -33,18 +31,16 @@ import {
 	type RequirementRowArtifact,
 } from "../tools/todo";
 import { READ_ONLY_TOOL_NAMES } from "../task/read-only-policy";
-
-const BUNDLED_QA_AUDITOR_PATH = fileURLToPath(new URL("../prompts/agents/qa-auditor.md", import.meta.url));
+import { BUNDLED_QA_AUDITOR_TEMPLATE } from "../task/agents";
+import type { AgentDefinition } from "../task/types";
 
 async function isBundledQaAuditor(agent: AgentDefinition | undefined): Promise<boolean> {
 	if (!agent) return false;
 	if (agent.source === "bundled") return true;
 	if (!agent.filePath) return false;
 	try {
-		const [agentPath, bundledPath] = await Promise.all([realpath(agent.filePath), realpath(BUNDLED_QA_AUDITOR_PATH)]);
-		if (agentPath === bundledPath) return true;
-		const [agentContent, bundledContent] = await Promise.all([readFile(agent.filePath), readFile(BUNDLED_QA_AUDITOR_PATH)]);
-		return agentContent.equals(bundledContent);
+		const agentContent = await readFile(agent.filePath);
+		return agentContent.equals(Buffer.from(BUNDLED_QA_AUDITOR_TEMPLATE, "utf8"));
 	} catch {
 		return false;
 	}

@@ -42,6 +42,9 @@ function buildAgentContent(def: EmbeddedAgentDef): string {
 	return prompt.render(agentFrontmatterTemplate, { ...def.frontmatter, body });
 }
 
+/** Raw embedded bytes of the bundled qa-auditor profile (source text, with frontmatter). */
+export const BUNDLED_QA_AUDITOR_TEMPLATE = qaAuditorMd;
+
 const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "qa-auditor.md", template: qaAuditorMd },
 	{ fileName: "scout.md", template: scoutMd },
