@@ -846,7 +846,7 @@ function isHudSubagent(session: ObservableSession): boolean {
 	return session.kind === "subagent" && session.status === "active";
 }
 
-/** A worker is shown on one todo row at most; an explicit id wins over a description match. */
+/** An explicit owner is shown on every row it owns; a description match needs one unambiguous row. */
 export function linkTodoWorkers(
 	phases: readonly TodoPhase[],
 	sessions: readonly ObservableSession[],
@@ -859,15 +859,26 @@ export function linkTodoWorkers(
 		const explicit = tasks.filter(task =>
 			todoMatchesObservedWorker(task, { workerId: session.id, runningWorkerIds }),
 		);
+		let linked = false;
+		if (explicit.length > 0) {
+			// An explicit owner is listed on each row it owns, even when it owns
+			// several: byTask maps item→session, so one session may own many rows.
+			// A row already claimed by another explicit owner keeps its first claimant.
+			for (const task of explicit) {
+				if (byTask.has(task)) continue;
+				byTask.set(task, session);
+				linked = true;
+			}
+			if (!linked) unassigned.push(session);
+			continue;
+		}
 		const description = session.description?.trim() || session.progress?.description?.trim();
-		const candidates =
-			explicit.length > 0
-				? explicit
-				: description
-					? tasks.filter(task => !isClosedTodo(task) && todoMatchesAnyDescription(task.content, [description]))
-					: [];
-		const matched = candidates.length === 1 ? candidates[0] : undefined;
-		if (matched && !byTask.has(matched)) byTask.set(matched, session);
+		const candidates = description
+			? tasks.filter(task => !isClosedTodo(task) && todoMatchesAnyDescription(task.content, [description]))
+			: [];
+		// The description fallback needs one unambiguous, unclaimed row.
+		const matched = candidates.length === 1 && !byTask.has(candidates[0]) ? candidates[0] : undefined;
+		if (matched) byTask.set(matched, session);
 		else unassigned.push(session);
 	}
 	return { byTask, unassigned };
