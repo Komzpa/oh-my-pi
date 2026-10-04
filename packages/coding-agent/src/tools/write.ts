@@ -31,6 +31,7 @@ import { getLspBatchRequest } from "../lsp/batch";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
 
 import writeDescription from "../prompts/tools/write.md" with { type: "text" };
+import writeAgentOnlyDescription from "../prompts/tools/write-agent-only.md" with { type: "text" };
 import writeDeviceOnlyDescription from "../prompts/tools/write-device-only.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 
@@ -458,6 +459,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 	};
 	readonly label = "Write";
 	get description(): string {
+		if (this.session.agentOnlyWrite === true && this.session.pendingFullWriteDescription !== true) {
+			return prompt.render(writeAgentOnlyDescription);
+		}
 		const deviceOnly = this.session.deviceOnlyWrite === true && this.session.pendingFullWriteDescription !== true;
 		return prompt.render(deviceOnly ? writeDeviceOnlyDescription : writeDescription);
 	}
@@ -760,6 +764,17 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			throw new ToolError(`content is required for ${path}.`);
 		}
 		const content = rawContent ?? "";
+		// A read-only agent's `write` grant is the agent:// message transport
+		// only (see createTools): peer messages and `agent://all` broadcasts
+		// proceed, every other target is rejected before any handler, guard,
+		// conflict resolver, or bridge sees it. Narrower than the device-only
+		// transport and checked first: a read-only agent may write messages and
+		// nothing else.
+		if (this.session.agentOnlyWrite === true && policy?.scope !== "coordination") {
+			throw new ToolError(
+				"This `write` tool is limited to agent:// messages: call it with path `agent://<id>` and the message text in `content` (`agent://all` broadcasts to all peers). Filesystem, device, and every other write are not available to read-only agents.",
+			);
+		}
 		// A device-only session grants `write` purely as the device transport (see
 		// createTools): device dispatches and coordination messages proceed, every
 		// other target is rejected before any handler, guard, conflict resolver, or
