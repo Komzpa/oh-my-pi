@@ -4678,9 +4678,12 @@ export class AgentSession implements SettingsScope {
 		const ttsrResult = await this.#ttsr.beforeToolCall(preparedContext);
 		if (ttsrResult) {
 			runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
+			if (!ttsrResult.block && ttsrResult.args === undefined && preparedArgs !== ctx.args) {
+				return { ...ttsrResult, args: preparedArgs };
+			}
 			return ttsrResult;
 		}
-		if (!runner?.hasHandlers("tool_call")) return undefined;
+		if (!runner?.hasHandlers("tool_call")) return preparedArgs !== ctx.args ? { args: preparedArgs } : undefined;
 		const metadata = ctx.toolCall.providerMetadata;
 		const computer = metadata?.type === "computer" ? metadata : undefined;
 		// Parity with the wrapper's pre-emit short-circuit: an already-denied
@@ -4719,8 +4722,9 @@ export class AgentSession implements SettingsScope {
 		// view, not the execution params — a revision cannot map back onto them.
 		const revisedArgs = callResult?.input !== undefined && !computer ? callResult.input : undefined;
 		const additionalContext = callResult?.additionalContext;
-		if (revisedArgs === undefined && additionalContext === undefined) return undefined;
-		return { args: revisedArgs, additionalContext };
+		const finalArgs = revisedArgs ?? (preparedArgs !== ctx.args ? preparedArgs : undefined);
+		if (finalArgs === undefined && additionalContext === undefined) return undefined;
+		return { args: finalArgs, additionalContext };
 	}
 
 	/** Find the last assistant message in agent state (including aborted ones) */
