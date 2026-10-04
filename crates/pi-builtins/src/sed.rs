@@ -5432,7 +5432,7 @@ impl<'a> LineReader<'a> {
 		if file.native().is_some() && file.metadata().is_ok_and(|meta| meta.is_file()) {
 			return line_reader_slice_input(file);
 		}
-
+		#[cfg(not(unix))]
 		line_reader_read_input(file)
 	}
 

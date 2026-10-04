@@ -405,6 +405,7 @@ fn tac(
 	Ok(())
 }
 
+
 /// Creates the `tac` builtin registration.
 pub(crate) fn tac_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Tac, SE>()
