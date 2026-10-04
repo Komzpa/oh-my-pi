@@ -7,6 +7,7 @@
 - Blocked worker rework messages when an active gate refuses the corresponding task dispatch.
 
 - Cover resumed non-task workers as wait-eligible staffing, plus fresh-owner slip reestimates and the stale-owner refusal control.
+- `todo_dispatch`: a `todo schedule` reestimate on a past-ETA running row that carries `evidence` (the failure reason) plus a new `estimate` is accepted under the same owner; a bare reestimate stays refused but the message names the evidence repair instead of demanding a kill (658).
 - `todo_dispatch`: a `todo` override naming `todo-plan-doctor`, `todo-replan`, `todo-link`, `unread-receipts` (or `idle-wait`) now clears the refusal it answers: the parser maps it to its demand key, the escalation gate skips suppressed demands, and the wait refusal stands down while `idle-wait` is suppressed (547, 590).
 - `todo_dispatch`: PLAN CHECK now intersects forecast, ready, unread-result, and overdue rows with the current TODO statuses, so completed or dropped rows are not reported from stale forecasts.
 ## Unreleased
