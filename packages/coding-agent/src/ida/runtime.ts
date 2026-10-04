@@ -1,5 +1,6 @@
 import { $env, logger } from "@oh-my-pi/pi-utils";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
+import { backgroundShellPrefix } from "@oh-my-pi/pi-utils/background-priority";
 import { $ } from "bun";
 import { Settings } from "../config/settings";
 import {
@@ -73,7 +74,10 @@ async function probeIdaRuntime(python: string | undefined, installDir: string, c
 
 async function probeCandidate(candidate: PythonRuntime): Promise<boolean> {
 	try {
-		const result = await $`${candidate.pythonPath} -c ${PROBE}`.env(candidate.env).quiet().nothrow();
+		const result = await $`${backgroundShellPrefix} ${candidate.pythonPath} -c ${PROBE}`
+			.env(candidate.env)
+			.quiet()
+			.nothrow();
 		return result.exitCode === 0;
 	} catch (error) {
 		logger.debug("IDA python probe failed", { pythonPath: candidate.pythonPath, error });
