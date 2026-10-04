@@ -15,12 +15,12 @@ use super::{
 		self, BARE_BODY_AUTO_PIPED_WARNING, BARE_RANGE_AUTO_PUT_WARNING, COLON_ON_REGISTER_PUT,
 		COLONLESS_PUT_TAKES_NO_BODY, COLONLESS_SPAN_PUT, CUT_COLON_IGNORED_WARNING,
 		CUT_TAKES_NO_BODY, DIFF_OLD_ROWS_IGNORED_WARNING, EMPTY_INSERT, EMPTY_PUT_AUTO_CUT_WARNING,
-		MINUS_BULLET_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED, MOVE_TAKES_NO_BODY,
-		READ_METADATA_IGNORED_WARNING, REGISTER_PUT_TAKES_NO_BODY, REM_TAKES_NO_BODY,
-		REPLACE_PAIR_COALESCED_WARNING, SNAPSHOT_ROWS_AUTO_PUT_WARNING,
+		MINUS_BULLET_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED, MALFORMED_OP_HEADER,
+		MOVE_TAKES_NO_BODY, READ_METADATA_IGNORED_WARNING, REGISTER_PUT_TAKES_NO_BODY,
+		REM_TAKES_NO_BODY, REPLACE_PAIR_COALESCED_WARNING, SNAPSHOT_ROWS_AUTO_PUT_WARNING,
 	},
 	prefixes::{is_read_metadata_line, strip_one_leading_hashline_prefix},
-	tokenizer::{BlockTarget, Token, Tokenizer, is_hunk_header_text},
+	tokenizer::{BlockTarget, Token, Tokenizer, is_hunk_header_text, is_malformed_op_header},
 	types::{Anchor, BlockMode, BlockSpan, Cursor, Edit, FileOp, ParsedRange, PasteTarget},
 };
 use crate::error::EditError;
@@ -312,6 +312,15 @@ impl Executor {
 	}
 
 	fn handle_raw(&mut self, text: &str, line_num: u32) -> Result<(), ParseFailure> {
+		// A row naming an op keyword is a header attempt, never body content:
+		// `PUT 351*=357` must fail here rather than be spliced into the file as
+		// a bare payload row (body rows start with `+`).
+		if is_malformed_op_header(text) {
+			return fail_at(
+				line_num,
+				&format!("{} Got {}.", MALFORMED_OP_HEADER, messages::json_quote(text)),
+			);
+		}
 		if self.pending.is_none() && is_read_metadata_line(text) {
 			self.warn_once(READ_METADATA_IGNORED_WARNING);
 			return Ok(());
