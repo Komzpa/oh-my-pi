@@ -42,9 +42,9 @@ const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 /// Raw listing safety bounds for `WalkRequest::scan_limits`. The walker applies
 /// them while buffering and sorting one directory's entries, before grep's
 /// filters run, so they bound walker memory rather than search scope. The
-/// caller's candidate budgets (`max_scan_files` / `max_scan_bytes`) are enforced
-/// on filtered candidates in the search callbacks and must not be spent by
-/// entries the filters discard.
+/// caller's candidate budgets (`max_scan_files` / `max_scan_bytes`) are
+/// enforced on filtered candidates in the search callbacks and must not be
+/// spent by entries the filters discard.
 const RAW_WALK_MAX_ENTRIES: usize = 65_536;
 const RAW_WALK_MAX_BYTES: usize = 128 * 1024 * 1024;
 /// PCRE2 JIT toggle: `OMP_PCRE2_JIT=1` forces JIT on, `0`/`false` forces it
@@ -1745,9 +1745,7 @@ fn run_parallel_streaming_grep<M: Matcher + Sync>(
 					return Ok(pi_walker::ParallelWalkControl::Continue);
 				}
 				let size = file_size_hint(file.size)
-					.or_else(|| {
-						state.fs.metadata(file.path.as_path()).ok().map(|m| m.len())
-					})
+					.or_else(|| state.fs.metadata(file.path.as_path()).ok().map(|m| m.len()))
 					.unwrap_or(MAX_FILE_BYTES);
 				let previous_files = scanned_files.fetch_add(1, Ordering::Relaxed);
 				let over_files = max_scan_files.is_some_and(|max| previous_files >= u64::from(max));
