@@ -477,6 +477,40 @@ fn removed_del_and_copy_headers_are_orphan_rows() {
 }
 
 #[test]
+fn malformed_put_op_headers_fail_instead_of_becoming_body() {
+	// A row naming an op keyword but parsing as no target (grievance 558:
+	// `PUT 351*=357`) must raise a parse error naming the line. It must never
+	// fall through as a bare body row and be spliced into the file verbatim;
+	// body rows start with `+`.
+	for header in ["PUT 351*=357", "PUT 371*=394"] {
+		let error = parse_patch(&format!("[a.ts]\nPUT 3.=4:\n+ok\n{header}\n+bad"))
+			.unwrap_err()
+			.to_string();
+		assert!(error.contains("malformed operation header"), "{header}: {error}");
+		assert!(error.contains("line 4"), "{header}: {error}");
+	}
+	// With no hunk open the row likewise fails a parse error naming the line
+	// (legacy message) instead of being taken as content.
+	let error = parse_patch("PUT 351*=357\n+bad").unwrap_err().to_string();
+	assert!(error.contains("line 1"), "{error}");
+}
+
+#[test]
+fn valid_put_with_body_still_applies() {
+	// Negative control: a well-formed `PUT 3.=4:` with body rows keeps
+	// applying while malformed op headers are rejected.
+	let parsed = parse_patch("PUT 3.=4:\n+ok").unwrap();
+	assert!(
+		parsed
+			.edits
+			.iter()
+			.any(|edit| matches!(edit, Edit::Insert { text, replacement: true, .. } if text == "ok")),
+		"{:?}",
+		parsed.edits
+	);
+}
+
+#[test]
 fn detects_and_coalesces_overlapping_hunks() {
 	let error = parse_patch("PUT 2.=4:\n+A\nPUT 3.=5:\n+B")
 		.unwrap_err()

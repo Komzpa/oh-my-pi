@@ -6,6 +6,13 @@
 
 - `/dump all` writes a zip to the temp directory with the main transcript, the LLM request JSON, and one file per subagent transcript (nested subagents included, killed ones marked aborted); the TUI copies the archive path to the clipboard. Plain `/dump` is unchanged ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
+### Fixed: hashline edit correctness
+
+- The hashline `edit` tool rejects malformed operation headers such as `PUT 351*=357` with a parse error naming the line instead of inserting them (and their bodies) verbatim as payload; body rows start with `+`.
+- Fixed hashline `edit` rejecting a fresh snapshot tag when the tag reached the snapshot store in non-uppercase form; `by_hash`, `find_by_hash`, and seen-line recording now compare tags case-insensitively.
+- Fixed `PUT N*`/`CUT N*` refusing multi-line openers in QML files (such as `Item {` in `qt/tests/*.qml`) as unsupported syntax: QML has no tree-sitter grammar, so its brace blocks are now resolved by brace matching, and `PUT >N*` lands as a sibling after the block.
+- Fixed `PUT >N`/`PUT >N*` anchored on a closing line sliding a shallower body past the enclosing closer (for example a `private:` block landing after the class closer, producing invalid C++): inserts anchored on structural closers now stay at the specified gap.
+
 ### Fixed
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
