@@ -357,11 +357,16 @@ function todoScheduleUpdates(input: unknown): Array<Record<string, unknown>> {
   return out;
 }
 
+/** Owners running for less than this are a fresh attempt (e.g. crash recovery,
+ * 658): the missed ETA belongs to the killed attempt, so a reestimate is
+ * legitimate replanning, not a slip. */
+export const FRESH_OWNER_MS = 15 * 60_000;
 /** R1/R2: a same-owner reestimate on a slipping row is refused with one exact recovery action. */
 export function slipReestimateRefusal(args: {
   updates: readonly Record<string, unknown>[];
   rows: readonly TodoTaskForecast[];
   runningProfiles: ReadonlyMap<string, string | undefined>;
+  runningStartedAt?: ReadonlyMap<string, number>;
   now: number;
 }): string | undefined {
   for (const update of args.updates) {
@@ -385,7 +390,12 @@ export function slipReestimateRefusal(args: {
     const budgetMs = todoOverrunBudgetMs({ startedAt: row.startedAt, estimateUpdatedAt: row.estimateUpdatedAt, reestimateCount: row.reestimateCount, estimateRangeSeconds: row.estimateRangeSeconds });
     const overBudget = typeof row.startedAt === "number" && budgetMs !== undefined && args.now - row.startedAt > budgetMs;
     const exhausted = row.reestimateCount >= 3;
-    const slipping = row.status === "in_progress" && args.runningProfiles.has(row.owner) && (row.overdue || overBudget);
+    const startedAt = args.runningStartedAt?.get(row.owner);
+    // A freshly started owner is a new attempt after crash recovery (658): its
+    // reestimate replans the remainder, it does not slip the old ETA. Only the
+    // exhausted cap still applies to fresh owners.
+    const freshOwner = startedAt !== undefined && args.now - startedAt < FRESH_OWNER_MS;
+    const slipping = !freshOwner && row.status === "in_progress" && args.runningProfiles.has(row.owner) && (row.overdue || overBudget);
     if (!exhausted && !slipping) continue;
     const profile = args.runningProfiles.get(row.owner);
     const strong = typeof profile === "string" && existsSync(new URL(`./agents/${profile}-strong.md`, import.meta.url)) ? `${profile}-strong` : undefined;
@@ -987,6 +997,10 @@ export function decideTodoDispatch(
       const restoredOwner = owner === null
         ? undefined
         : input.restoredChildren?.find((child) => child.id === owner || child.owner === owner);
+      const jobAnyRunning = owner === null
+        ? undefined
+        : jobs?.running.find((active) => active.status === "running" &&
+          (active.agentId === owner || active.id === owner || active.id.replace(/-\d+$/, "") === owner));
       const jobByAgentId = owner === null
         ? undefined
         : activeTaskJobs.find((active) => active.agentId === owner);
@@ -995,6 +1009,13 @@ export function decideTodoDispatch(
         : activeTaskJobs.find((active) => active.id === owner || active.id.replace(/-\d+$/, "") === owner);
       const liveWorkerId =
         jobByAgentId?.agentId || (jobById ? jobById.agentId || jobById.id : undefined) ||
+        // A resumed live worker (write agent://) runs without a task job: proc:// shows
+        // running and the registry entry is live (522, 546). Count any running job
+        // under the owner's name as staffing so wait is allowed and no second
+        // writer is demanded on the same worktree.
+        (jobAnyRunning && registryAgent !== undefined
+          ? (jobAnyRunning.agentId || jobAnyRunning.id)
+          : undefined) ||
         activeRestoredChild?.id;
       const sharedLiveOwner = liveWorkerId !== undefined && claimedLiveWorkerIds.has(liveWorkerId);
       if (liveWorkerId !== undefined && !sharedLiveOwner) claimedLiveWorkerIds.add(liveWorkerId);
@@ -2877,17 +2898,20 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       // R1/R2: refuse the same-owner reestimate on a slipping row before any other todo handling.
       if (!pauseGate?.paused) {
         const runningProfiles = new Map<string, string | undefined>();
+        const runningStartedAt = new Map<string, number>();
         for (const job of ctx.getAsyncJobSnapshot()?.running ?? []) {
-          const candidate = job as typeof job & { agent?: unknown; agentProfile?: unknown; profile?: unknown };
+          const candidate = job as typeof job & { agent?: unknown; agentProfile?: unknown; profile?: unknown; startTime?: unknown };
           const profile = typeof candidate.agent === "string" ? candidate.agent
             : typeof candidate.agentProfile === "string" ? candidate.agentProfile
               : typeof candidate.profile === "string" ? candidate.profile : undefined;
           runningProfiles.set(job.agentId ?? job.id, profile);
+          if (typeof candidate.startTime === "number") runningStartedAt.set(job.agentId ?? job.id, candidate.startTime);
         }
         const slip = slipReestimateRefusal({
           updates: todoScheduleUpdates(event.input),
           rows: currentDecision(ctx, Date.now(), [], true).forecast?.rows ?? [],
           runningProfiles,
+          runningStartedAt,
           now: Date.now(),
         });
         if (slip) {
