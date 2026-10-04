@@ -444,10 +444,18 @@ export function demandClassOf(id: string): string {
   return base.trim() || id;
 }
 export function parseTodoOverride(input: unknown): string | undefined {
-  if (typeof input !== "object" || input === null) return undefined;
-  const override = (input as { override?: unknown }).override;
+  if (typeof input !== "object" || input === null || !("override" in input)) return undefined;
+  const override = input.override;
   if (typeof override !== "string" || !override.trim()) return undefined;
   const lowered = override.toLowerCase();
+  // Grievances 547/590: the tracked demands below never matched a GATE_ID, so an
+  // override naming them was silently dropped and the refusal stood. Map each to
+  // the ignoredDemands key that trackDemands/isDemandEscalated use. These run first:
+  // "unread-receipts" contains the GATE_ID "receipt" and must win over it.
+  if (lowered.includes("plan-doctor")) return "todo-plan-doctor";
+  if (lowered.includes("todo-replan") || lowered.includes("replan")) return "todo-replan";
+  if (lowered.includes("todo-link")) return "todo-link";
+  if (lowered.includes("unread-receipts") || lowered.includes("unread receipt")) return "unread-receipts";
   for (const id of GATE_IDS) if (lowered.includes(id)) return id;
   return undefined;
 }
@@ -1553,6 +1561,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   };
   const demandThreshold = (id: string): number => (id === "todo-replan" ? DEMAND_IGNORE_MAX_REPLAN : DEMAND_IGNORE_MAX);
   const isDemandEscalated = (id: string): boolean => (sprintState.ignoredDemands[id] ?? 0) >= demandThreshold(id);
+  // Grievances 547/590: a todo override names the gate it answers and suppresses it
+  // for OVERRIDE_SUPPRESS_TURNS turns (negative count). Both refusal sites consult
+  // this so the named refusal stops blocking task and wait within that window.
+  const isOverrideSuppressed = (id: string): boolean => (sprintState.ignoredDemands[demandClassOf(id)] ?? 0) < 0;
   const trackDemands = (activeIds: string[]): void => {
     let changed = false;
     const next: Record<string, number> = { ...sprintState.ignoredDemands };
@@ -1789,6 +1801,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   };
   const blockIdleWait = (ctx: ExtensionContext) => {
     if (pauseGate?.paused) return;
+    // Grievance 547: a todo override naming idle-wait answers this refusal; let
+    // the wait through for the same few-turn window instead of deadlocking.
+    if (isOverrideSuppressed("idle-wait")) return;
     const jobs = ctx.getAsyncJobSnapshot();
     if (!jobs) return;
     const running = jobs.running.filter((job) => job.status === "running");
@@ -2963,7 +2978,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     }
     // Ignored demands escalate: while one stands, only its remedy (a todo call or the
     // demanded specialist) and the always-allowed calls pass this one union decision.
-    const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) => isDemandEscalated(id));
+    // Grievance 590: a demand the todo override names stays suppressed for the same
+    // few-turn window, so it must not escalate while the override is active.
+    const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) => isDemandEscalated(id) && !isOverrideSuppressed(id));
     if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused) {
       const remedyTask = (call: GateCall): boolean =>
         call.name === "task" && taskItems(call.arguments ?? {}).some((item) => item["agent"] === "retro-facilitator" || item["agent"] === "plan-doctor");
