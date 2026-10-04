@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
+- Fixed hashline `edit` rejecting a fresh snapshot tag when the tag reached the snapshot store in non-uppercase form; `by_hash`, `find_by_hash`, and seen-line recording now compare tags case-insensitively.
 
 ## [18.4.12] - 2026-10-02
 
