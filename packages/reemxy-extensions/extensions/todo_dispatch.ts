@@ -3071,7 +3071,10 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
         ? `PLAN CHECK: 1 problem(s). (1) ${retroLine}. Fix them with the pass of skill://chief-of-staff.`
         : null;
     const rows = decision.forecast.rows ?? [];
-    const open = rows.filter((row) => row.status === "pending" || row.status === "in_progress");
+    const openContents = new Set(
+      phasesNow.flatMap((phase) => phase.tasks.filter((task) => task.status === "pending" || task.status === "in_progress").map((task) => task.content)),
+    );
+    const open = rows.filter((row) => (row.status === "pending" || row.status === "in_progress") && openContents.has(row.content));
     // A todo call is judged by the finish it produces (live 2026-09-25: 13:24 -> 13:44 while the
     // chief added workers, each correction inserting another serial row mid-chain).
     let laterBy = 0;
@@ -3097,14 +3100,14 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const unlinked = running.filter((job) => !owners.has(job.id) && !(job.agentId && owners.has(job.agentId)) && ![...owners].some((owner) => job.id.replace(/-\d+$/, "") === owner));
     const missing = (decision.forecast.planningIssues ?? []).length;
     const overdue = open.filter((row) => row.overdue);
-    const ready = decision.dispatchableReady ?? [];
+    const ready = (decision.dispatchableReady ?? []).filter((row) => openContents.has(row.content));
     const idle = open.length - running.length;
     // A row naming an owner that runs nowhere looks staffed in the HUD and is not (user 2026-09-25:
     // "Owner not running - run it!!!!"): name each one so it is resumed by its exact name.
     // The HUD's "N unresolved": open rows omp cannot forecast. Nobody but the chief can fix them.
     const unresolved = open.filter((row) => (row as { fixedPathP95Finish?: number }).fixedPathP95Finish === undefined);
     const why = (row: unknown) => ((row as { issues?: string[] }).issues ?? [])[0];
-    const deadOwners = (decision.readyCandidates ?? []).filter((row) => row.owner && row.ownership !== "live-owned" && row.ownership !== "shared-live-owner");
+    const deadOwners = (decision.readyCandidates ?? []).filter((row) => openContents.has(row.content) && row.owner && row.ownership !== "live-owned" && row.ownership !== "shared-live-owner");
     // Few workers and no ready row: the rows wait on running work, which only the chief can unchain
     // (live 2026-09-25 03:35: 1 of 20 workers ran for half an hour and nothing said so).
     const capacity = workerCapacity(ctx);
