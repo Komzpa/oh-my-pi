@@ -251,13 +251,18 @@ impl ToolProcessLimit {
 				false,
 				true,
 			);
-			wrapped.extend(background_priority_prefix().iter().chain(command).map(|arg| {
-				if expand_environment_flag().is_none() {
-					escape_manager_expansion(arg)
-				} else {
-					arg.clone()
-				}
-			}));
+			wrapped.extend(
+				background_priority_prefix()
+					.iter()
+					.chain(command)
+					.map(|arg| {
+						if expand_environment_flag().is_none() {
+							escape_manager_expansion(arg)
+						} else {
+							arg.clone()
+						}
+					}),
+			);
 			Ok(wrapped)
 		}
 	}
