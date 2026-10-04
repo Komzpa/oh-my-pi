@@ -141,6 +141,7 @@ import {
 import { cfgDisabledProviders } from "../config/model-settings";
 import { getRetryFallbackRole, installRetryFallbackRole } from "../session/retry-fallback-chains";
 import { cfgCompactionThresholdPercent, cfgCompactionThresholdTokens } from "../session/context-settings";
+import { isProviderExhausted } from "../session/provider-exhaustion";
 
 export type { YieldItem } from "@oh-my-pi/pi-tui/tools/task";
 
@@ -228,7 +229,7 @@ interface SubagentRetryFallbackCandidate {
 	selector: string;
 }
 
-function resolveSubagentRetryFallbackCandidates(
+export function resolveSubagentRetryFallbackCandidates(
 	modelPatterns: string[],
 	modelRegistry: ModelRegistry,
 	settings: Settings,
@@ -239,7 +240,7 @@ function resolveSubagentRetryFallbackCandidates(
 	for (const pattern of modelPatterns) {
 		const resolved = resolveModelOverride([pattern], modelRegistry, settings);
 		if (!resolved.model) continue;
-		if (disabledProviders.has(resolved.model.provider)) continue;
+		if (disabledProviders.has(resolved.model.provider) || isProviderExhausted(resolved.model.provider)) continue;
 		const selector = resolved.explicitThinkingLevel
 			? formatModelSelectorValue(formatModelStringWithRouting(resolved.model), resolved.thinkingLevel)
 			: formatModelStringWithRouting(resolved.model);
@@ -285,7 +286,10 @@ function resolveSubagentInheritedRetryFallbackChain(
 	const disabledProviders = new Set(cfgDisabledProviders.get(settings));
 	return fallbackChain.filter(entry => {
 		const resolved = resolveModelOverride([entry], modelRegistry, settings);
-		return !resolved.model || !disabledProviders.has(resolved.model.provider);
+		return (
+			!resolved.model ||
+			(!disabledProviders.has(resolved.model.provider) && !isProviderExhausted(resolved.model.provider))
+		);
 	});
 }
 
@@ -3956,6 +3960,16 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 							modelRole ?? resolveExplicitModelRole(modelPatterns, subagentSettings),
 						)
 					: undefined;
+			const hasExhaustedRequestedProvider = configuredModelPatterns.some(pattern => {
+				const resolved = resolveModelOverride([pattern], modelRegistry, settings);
+				return resolved.model && isProviderExhausted(resolved.model.provider);
+			});
+			const startupModelPatterns = hasExhaustedRequestedProvider
+				? configuredModelPatterns.filter(pattern => {
+						const resolved = resolveModelOverride([pattern], modelRegistry, settings);
+						return !resolved.model || !isProviderExhausted(resolved.model.provider);
+					})
+				: modelPatterns;
 			const {
 				model,
 				thinkingLevel: resolvedThinkingLevel,
@@ -3964,7 +3978,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				warning: modelResolutionWarning,
 			} = await awaitAbortable(
 				resolveModelOverrideWithAuthFallback(
-					modelPatterns,
+					startupModelPatterns,
 					options.parentActiveModelPattern,
 					modelRegistry,
 					settings,

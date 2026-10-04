@@ -53,6 +53,7 @@ import { convertMessageToLlm } from "@oh-my-pi/pi-agent-core/compaction/messages
 import type { AssistantMessage, ImageContent, Message, TextContent, UserMessage } from "@oh-my-pi/pi-ai";
 import { copyPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
+import { coolDownExhaustedProvider, isProviderExhaustionError } from "./provider-exhaustion";
 import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
@@ -73,8 +74,9 @@ import { titleTextFromSkillPrompt } from "@oh-my-pi/pi-tui/chat/skill-title-inpu
  * Logs provider-error turns so their actual cause is available outside the
  * session transcript. No-op for non-error stop reasons.
  */
-export function logProviderTurnError(msg: AssistantMessage): void {
+export function logProviderTurnError(msg: AssistantMessage, activeProvider = msg.provider): void {
 	if (msg.stopReason !== "error") return;
+	if (isProviderExhaustionError(msg.errorStatus, msg.errorMessage)) coolDownExhaustedProvider(activeProvider);
 	logger.warn("agent turn ended with provider error", {
 		provider: msg.provider,
 		model: msg.model,

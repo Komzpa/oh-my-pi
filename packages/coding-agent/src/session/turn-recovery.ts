@@ -68,6 +68,7 @@ import {
 	type ServingModel,
 	validateRetryFallbackChains,
 } from "./retry-fallback-chains";
+import { coolDownExhaustedProvider, isProviderExhaustionError } from "./provider-exhaustion";
 import { describeUsageFallback } from "./retry-fallback-reason";
 import { getLatestCompactionEntry } from "./session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
@@ -2078,6 +2079,9 @@ export class TurnRecovery {
 			wrapAround?: boolean;
 		},
 	): Promise<boolean> {
+		if (isProviderExhaustionError(failedMessage.errorStatus, failedMessage.errorMessage)) {
+			coolDownExhaustedProvider(this.#host.model()?.provider ?? failedMessage.provider);
+		}
 		const ceiling = this.#host.thinkingLevelCeiling();
 		const latestAssistant = options?.preserveFailedTurn
 			? failedMessage
