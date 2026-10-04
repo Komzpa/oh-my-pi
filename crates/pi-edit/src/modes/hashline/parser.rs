@@ -312,15 +312,6 @@ impl Executor {
 	}
 
 	fn handle_raw(&mut self, text: &str, line_num: u32) -> Result<(), ParseFailure> {
-		// A row naming an op keyword is a header attempt, never body content:
-		// `PUT 351*=357` must fail here rather than be spliced into the file as
-		// a bare payload row (body rows start with `+`).
-		if is_malformed_op_header(text) {
-			return fail_at(
-				line_num,
-				&format!("{} Got {}.", MALFORMED_OP_HEADER, messages::json_quote(text)),
-			);
-		}
 		if self.pending.is_none() && is_read_metadata_line(text) {
 			self.warn_once(READ_METADATA_IGNORED_WARNING);
 			return Ok(());
@@ -338,6 +329,18 @@ impl Executor {
 			}
 			if let Some(message) = bodyless_message(&pending.target, pending.had_colon) {
 				return fail_at(line_num, message);
+			}
+			// A malformed op header (grievance 558: `PUT 351*=357`) names an op
+			// keyword but parses as no target. Absorbing it here would splice the
+			// row and its body verbatim into the file; body rows start with `+`.
+			// Only this absorption path changes: with no hunk open the row already
+			// fails with the legacy "no preceding hunk header" error, which the
+			// legacy parity fixtures pin byte-for-byte.
+			if is_malformed_op_header(text) {
+				return fail_at(
+					line_num,
+					&format!("{} Got {}.", MALFORMED_OP_HEADER, messages::json_quote(text)),
+				);
 			}
 			let minus = text.trim_start().starts_with('-');
 			if !minus {
