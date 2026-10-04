@@ -879,6 +879,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		sessionEnv: Record<string, string>;
 		/** The model's `i` intent on the call, for the job's widget author. */
 		intent?: string;
+		/** Caller-supplied extra environment; threaded to executeBash so async/auto-background runs match the foreground path. */
+		env?: Record<string, string>;
 	}): ManagedBashJobHandle {
 		const manager = this.session.asyncJobManager;
 		if (!manager) {
@@ -934,6 +936,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 						timeout: options.timeoutMs ?? 0,
 						signal: runSignal,
 						gitGuard: cfgBashGitGuard.get(this.session.settings),
+						...(options.env !== undefined ? { env: options.env } : {}),
 						// Bound to the job's own signal: the job outlives the call that started it.
 						filesystem: this.#urlFilesystem(runSignal, options.approvalTier).shellFilesystem(),
 						artifactPath,
@@ -1228,6 +1231,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				sessionId,
 				sessionEnv,
 				intent: this.session.getToolCallIntent?.(toolCallId),
+				...(env !== undefined ? { env } : {}),
 			});
 			return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {
 				requestedTimeoutSec,
@@ -1271,6 +1275,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				sessionId,
 				sessionEnv,
 				intent: this.session.getToolCallIntent?.(toolCallId),
+				...(env !== undefined ? { env } : {}),
 			});
 			if (startBackgrounded) {
 				return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {
