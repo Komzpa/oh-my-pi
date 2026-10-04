@@ -117,11 +117,11 @@ describe("exact todo restoration", () => {
 			if (!schedule?.resources || !schedule.dependencies) throw new Error("expected scheduled task metadata");
 			return schedule;
 		};
-		scheduleOf(original[0]!.tasks[0]!).resources.push("changed input");
+		scheduleOf(original[0]!.tasks[0]!).resources!.push("changed input");
 		const read = tracker.phases as typeof phases;
-		scheduleOf(read[0]!.tasks[0]!).resources.push("changed output");
+		scheduleOf(read[0]!.tasks[0]!).resources!.push("changed output");
 		const snapshot = tracker.clonePhases(tracker.phases) as typeof phases;
-		scheduleOf(snapshot[0]!.tasks[0]!).dependencies.push("changed snapshot");
+		scheduleOf(snapshot[0]!.tasks[0]!).dependencies!.push("changed snapshot");
 		expect(tracker.phases).toEqual(phases);
 	});
 });
