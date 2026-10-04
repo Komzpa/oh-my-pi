@@ -951,6 +951,7 @@
 - Fixed `readlink` in the bash tool printing a provider-backed path (e.g. `local://file`) with a `\\?\` prefix on Windows
 - Fixed the daemon broker on Windows dying with the omp process that started it, which stopped the shared browser relay (and every other broker daemon) while other omp sessions were still using it
 - Fixed the `browser` tool's Tern backend being refused by any Tern newer than the protocol omp was built against; it now speaks Tern's JSON script protocol, which no Tern build ties it to, and a Tern from before it reports as unavailable (update Tern) so the Chromium fallback takes over.
+- Temporarily cool down providers after balance or monthly quota exhaustion so new subagents skip dead fallback-chain heads; transient rate limits and server failures retain their existing retries.
 
 ## [18.4.12] - 2026-10-02
 

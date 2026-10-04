@@ -14,6 +14,7 @@ import { resolveConfiguredModelPatterns, resolveModelRoleValue } from "../config
 import { getRoleInfo, isKindRole } from "../config/model-roles";
 
 import { cfgRetryFallbackChains, cfgRetryFallbackRevertPolicy, type RetrySettings } from "./settings";
+import { isProviderExhausted } from "./provider-exhaustion";
 
 /** Configured fallback chains keyed by role or model selector. */
 export type RetryFallbackChains = Record<string, string[]>;
@@ -634,7 +635,7 @@ export function findRetryFallbackCandidates(
 	const parsedCurrent =
 		parsedConfigured ??
 		(currentPlainSelector ? parseRetryFallbackSelector(currentPlainSelector, context.modelLookup) : undefined);
-	if (!parsedCurrent) return chain;
+	if (!parsedCurrent) return chain.filter(selector => !isProviderExhausted(selector.provider));
 	if (chain.length <= 1) return [];
 	const currentBaseSelector = formatRetryFallbackBaseSelector(parsedCurrent);
 	const currentPlainBaseSelector =
@@ -646,7 +647,8 @@ export function findRetryFallbackCandidates(
 	);
 	if (exactIndex >= 0) {
 		const candidatesAfter = chain.slice(exactIndex + 1);
-		return options?.wrapAround ? [...candidatesAfter, ...chain.slice(0, exactIndex)] : candidatesAfter;
+		const candidates = options?.wrapAround ? [...candidatesAfter, ...chain.slice(0, exactIndex)] : candidatesAfter;
+		return candidates.filter(selector => !isProviderExhausted(selector.provider));
 	}
 	const baseIndex = currentBaseSelector
 		? chain.findIndex(selector => {
@@ -656,7 +658,8 @@ export function findRetryFallbackCandidates(
 		: -1;
 	if (baseIndex >= 0) {
 		const candidatesAfter = chain.slice(baseIndex + 1);
-		return options?.wrapAround ? [...candidatesAfter, ...chain.slice(0, baseIndex)] : candidatesAfter;
+		const candidates = options?.wrapAround ? [...candidatesAfter, ...chain.slice(0, baseIndex)] : candidatesAfter;
+		return candidates.filter(selector => !isProviderExhausted(selector.provider));
 	}
-	return chain;
+	return chain.filter(selector => !isProviderExhausted(selector.provider));
 }
