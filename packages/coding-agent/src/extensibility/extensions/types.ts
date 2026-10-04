@@ -1071,6 +1071,8 @@ export interface BeforeSubagentSpawnEvent {
 	spawnKey?: string;
 	/** Whether the caller explicitly requested an isolated worktree. */
 	isolated?: boolean;
+	/** Verbatim task assignment text; lets routing gates scope checkouts before row owners are recorded. */
+	assignment?: string;
 }
 
 export type {

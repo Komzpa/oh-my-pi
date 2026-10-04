@@ -513,6 +513,7 @@ async function applySpawnHook(
 			patterns: policy.modelOverride ?? [],
 			spawnKey,
 			isolated: request.isolation?.requested === true,
+			assignment: request.assignment,
 		},
 		request.signal,
 	);
