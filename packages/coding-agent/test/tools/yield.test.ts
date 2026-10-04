@@ -9,7 +9,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { buildOutputValidator } from "@oh-my-pi/pi-coding-agent/tools/output-schema-validator";
-import { resetYieldTurnState, YieldTool } from "@oh-my-pi/pi-coding-agent/tools/yield";
+import { YieldTool } from "@oh-my-pi/pi-coding-agent/tools/yield";
 import { buildWorkPoolOutputSchema } from "../../src/task/workpool-yield";
 import { yieldSectionShapes } from "../../src/task/yield-assembly";
 import { assembleYieldResult } from "@oh-my-pi/pi-tui/tools/task-yield-assembly";
@@ -856,16 +856,14 @@ describe("YieldTool", () => {
 		expect(String(failure.message)).not.toContain('"type"');
 	it("accepts data alongside an empty-string error (non-strict OpenAI-compatible backends)", async () => {
 		const tool = new YieldTool(createSession());
-		// Order matters: a terminal result is one-shot, so the structural check runs
-		// first (it throws without latching) and the accepting call runs last.
-		const failure = await tool.execute("call-only-empty-error", { error: "" } as never).catch(err => err);
-		expect(failure).toBeInstanceOf(Error);
-		expect(String(failure.message)).toContain("yield must contain either `data` or `error`");
-
 		const result = await tool.execute("call-empty-error", { type: "result", data: { ok: true }, error: "" } as never);
 		expect(result.details?.status).toBe("success");
 		expect(result.details?.data).toEqual({ ok: true });
 		expect(result.details?.error).toBeUndefined();
+
+		const failure = await tool.execute("call-only-empty-error", { error: "" } as never).catch(err => err);
+		expect(failure).toBeInstanceOf(Error);
+		expect(String(failure.message)).toContain("yield must contain either `data` or `error`");
 	});
 
 	it("aborts instead of throwing forever after repeated untyped empty results", async () => {
@@ -897,14 +895,8 @@ describe("YieldTool", () => {
 			);
 		}
 
-		// A valid incremental section submission resets the budget the same way a
-		// valid terminal result would — without latching the one-shot terminal
-		// result, so the untyped finalize ladder below stays reachable.
-		const validResult = await tool.execute("call-valid-reset", {
-			type: ["notes"],
-			data: { ok: true },
-		} as never);
-		expect(validResult.details).toMatchObject({ data: { ok: true }, status: "success", error: undefined });
+		const validResult = await tool.execute("call-valid-reset", { data: { ok: true } } as never);
+		expect(validResult.details).toEqual({ data: { ok: true }, status: "success", error: undefined });
 
 		for (let attempt = 1; attempt <= 3; attempt++) {
 			await expect(tool.execute(`call-empty-after-valid-${attempt}`, {} as never)).rejects.toThrow(expectedGuidance);
@@ -1138,10 +1130,7 @@ describe("YieldTool", () => {
 		const primitiveResult = await tool.execute("call-true-number", { data: 42 } as never);
 		expect(primitiveResult.details).toEqual({ data: 42, status: "success", error: undefined });
 
-		// Terminal results are one-shot per tool, so the array submission uses a
-		// fresh tool with the same unconstrained configuration.
-		const freshTool = new YieldTool(createSession({ outputSchema: true }));
-		const arrayResult = await freshTool.execute("call-true-array", { data: ["ok", 1, false] } as never);
+		const arrayResult = await tool.execute("call-true-array", { data: ["ok", 1, false] } as never);
 		expect(arrayResult.details).toEqual({
 			data: ["ok", 1, false],
 			status: "success",
@@ -1246,14 +1235,12 @@ describe("YieldTool", () => {
 		expect(resultsSchema.elements).toBeUndefined();
 		expect(issueSchema.type).toBe("integer");
 
-		// Invalid first: the schema-reject throws without latching the one-shot
-		// terminal result, leaving the accepting call reachable afterwards.
-		await expect(
-			tool.execute("call-mixed-invalid", { data: { results: [{ issue: "185" }] } } as never),
-		).rejects.toThrow("Output does not match schema");
 		await expect(
 			tool.execute("call-mixed-valid", { data: { results: [{ issue: 185 }] } } as never),
 		).resolves.toBeDefined();
+		await expect(
+			tool.execute("call-mixed-invalid", { data: { results: [{ issue: "185" }] } } as never),
+		).rejects.toThrow("Output does not match schema");
 	});
 
 	it("expands section variants so a strict reviewer can submit one incremental section", () => {
@@ -1567,13 +1554,10 @@ describe("YieldTool", () => {
 		};
 		const tool = new YieldTool(createSession({ outputSchema }));
 
-		// Valid incremental section submissions: same counter-reset path, but they
-		// do not latch the one-shot terminal result, so the invalid terminal
-		// submission below still exercises the degradation counter.
-		const firstResult = await tool.execute("call-valid-1", { type: ["token"], data: "abcd" } as never);
+		const firstResult = await tool.execute("call-valid-1", { data: { token: "abcd" } } as never);
 		expect(firstResult.content).toEqual([{ type: "text", text: "Result submitted." }]);
 
-		const secondResult = await tool.execute("call-valid-2", { type: ["token"], data: "abcde" } as never);
+		const secondResult = await tool.execute("call-valid-2", { data: { token: "abcde" } } as never);
 		expect(secondResult.content).toEqual([{ type: "text", text: "Result submitted." }]);
 
 		await expect(tool.execute("call-invalid-after-valid", { data: { token: "ab" } } as never)).rejects.toThrow(
@@ -1645,10 +1629,10 @@ describe("YieldTool", () => {
 		}
 		await expect(tool.execute("call-struct-override", { data: { token: "ab" } } as never)).resolves.toBeDefined();
 
-		// The override accepted the terminal result. Under the one-shot terminal
-		// contract every later terminal yield — even a structurally invalid one —
-		// is rejected with the stop instruction instead of resuming the ladders.
-		await expect(tool.execute("call-struct-missing", {} as never)).rejects.toThrow("Stop now");
+		// Structural errors (empty untyped submission) still throw even after override.
+		await expect(tool.execute("call-struct-missing", {} as never)).rejects.toThrow(
+			"yield must contain either `data` or `error`",
+		);
 	});
 	it("falls back to loose schema when outputSchema contains unresolved external $ref", async () => {
 		const tool = new YieldTool(
@@ -1798,16 +1782,14 @@ describe("YieldTool", () => {
 		// enum value is treated as opaque data (not mistaken for an unresolved
 		// schema reference that would discard the enum entirely).
 		expect(tool.strict).toBe(false);
-		// Invalid first: the enum mismatch throws without latching the one-shot
-		// terminal result, leaving the accepting call reachable afterwards.
+		const result = await tool.execute("call-literal-ref-enum", {
+			data: { $ref: "literal" },
+		} as never);
+		expect(result.details?.data).toEqual({ $ref: "literal" });
 		await expect(
 			tool.execute("call-invalid-literal-ref-enum", {
 				data: { $ref: "different" },
 			} as never),
 		).rejects.toThrow("Output does not match schema");
-		const result = await tool.execute("call-literal-ref-enum", {
-			data: { $ref: "literal" },
-		} as never);
-		expect(result.details?.data).toEqual({ $ref: "literal" });
 	});
 });
