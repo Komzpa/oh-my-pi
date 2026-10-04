@@ -14,11 +14,15 @@ function extensionProfiles() {
 describe("Reemxy extension agent model chains", () => {
 	test("every openrouter entry ends with :free and appears only in light worker roles", () => {
 		const lightRoles: Record<string, true> = {
+			coder: true,
+			"ui-coder": true,
 			scout: true,
 			scribe: true,
 			workhorse: true,
 			"gate-runner": true,
+			"git-pr-owner": true,
 			researcher: true,
+			task: true,
 		};
 		for (const profile of extensionProfiles()) {
 			for (const model of profile.model ?? []) {
