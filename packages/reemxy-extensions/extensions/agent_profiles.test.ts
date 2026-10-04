@@ -12,12 +12,24 @@ function extensionProfiles() {
 }
 
 describe("Reemxy extension agent model chains", () => {
-	test("no subagent profile routes through OpenRouter, including judgment roles", () => {
+	test("every openrouter entry ends with :free and appears only in light worker roles", () => {
+		const lightRoles: Record<string, true> = {
+			scout: true,
+			scribe: true,
+			workhorse: true,
+			"gate-runner": true,
+			researcher: true,
+		};
 		for (const profile of extensionProfiles()) {
-			expect(
-				profile.model?.some(model => model.startsWith("openrouter/")),
-				profile.name,
-			).toBe(false);
+			for (const model of profile.model ?? []) {
+				if (!model.startsWith("openrouter/")) continue;
+				expect(model.endsWith(":free"), `${profile.name}: ${model}`).toBe(true);
+				expect(lightRoles[profile.name] === true, profile.name).toBe(true);
+			}
+		}
+		for (const profile of extensionProfiles()) {
+			if (lightRoles[profile.name] !== true) continue;
+			expect(profile.model?.[0]?.startsWith("openrouter/"), profile.name).toBe(true);
 		}
 	});
 

@@ -191,19 +191,31 @@ describe("agent router", () => {
 					},
 				);
 				expect(result?.model[0]).toBe(candidate);
-				expect(result?.model.some(model => model.startsWith("openrouter/"))).toBe(false);
+				expect(
+					result?.model.filter(model => model.startsWith("openrouter/")).every(model => model.endsWith(":free")),
+				).toBe(true);
 			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
-	test("every routed pool and fallback chain excludes OpenRouter", () => {
+	test("every openrouter entry ends with :free and appears only in light worker roles", () => {
+		const lightRoles: Record<string, true> = {
+			scout: true,
+			scribe: true,
+			workhorse: true,
+			"gate-runner": true,
+			researcher: true,
+			task: true,
+		};
 		for (const [agent, config] of Object.entries(AGENT_POOLS)) {
-			expect(
-				[...config.pool, ...config.fallbacks].some(model => model.startsWith("openrouter/")),
-				agent,
-			).toBe(false);
+			for (const model of [...config.pool, ...config.fallbacks]) {
+				if (!model.startsWith("openrouter/")) continue;
+				expect(model.endsWith(":free"), `${agent}: ${model}`).toBe(true);
+				expect(lightRoles[agent] === true, agent).toBe(true);
+			}
+			if (lightRoles[agent] === true) expect(config.pool[0]?.startsWith("openrouter/"), agent).toBe(true);
 		}
 	});
 
@@ -326,16 +338,31 @@ describe("agent router", () => {
 			mkdirSync(repo);
 			execFileSync("git", ["init", "-q", repo]);
 			const tasks = [
-				{ content: "Finalize owner work", status: "in_progress", schedule: { owner: "owner-1", resources: [`${repo}/src/owner.ts:source-writer`] } },
-				{ content: "Edit disjoint file", status: "pending", schedule: { owner: "coder-disjoint", resources: [`${repo}/src/coder.ts:source-writer`] } },
-				{ content: "Edit overlapping file", status: "pending", schedule: { owner: "coder-overlap", resources: [`${repo}/src/owner.ts:source-writer`] } },
+				{
+					content: "Finalize owner work",
+					status: "in_progress",
+					schedule: { owner: "owner-1", resources: [`${repo}/src/owner.ts:source-writer`] },
+				},
+				{
+					content: "Edit disjoint file",
+					status: "pending",
+					schedule: { owner: "coder-disjoint", resources: [`${repo}/src/coder.ts:source-writer`] },
+				},
+				{
+					content: "Edit overlapping file",
+					status: "pending",
+					schedule: { owner: "coder-overlap", resources: [`${repo}/src/owner.ts:source-writer`] },
+				},
 			];
 			let running = [];
 			const context = ctx({
 				sessionManager: {
 					getHeader: () => ({ id: "session-1" }),
 					getBranch: () => [
-						{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } },
+						{
+							type: "message",
+							message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } },
+						},
 					],
 				},
 				getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }),
@@ -403,42 +430,42 @@ describe("agent router", () => {
 			running = [{ id: "native-writer", type: "task", status: "running" }];
 			expect((await spawn("tasks-writer"))?.model).toBeDefined();
 			running.push({ id: "tasks-writer", type: "task", status: "running" });
-		for (const resource of [
-			native,
-			`${native}/src/native.ts`,
-			`checkout:${alias}/src/native.ts:source-writer`,
-			`${native}/src`,
-			tasksLoop,
-			`path:${tasksLoop}/other.ts`,
-			`repository:${tasksLoop}:source-writer`,
-		]) {
-			plan[0].tasks.push(row("third-writer", [resource]));
-			const result = await spawn("third-writer");
-			expect(result?.block).toBe(true);
-			expect(result?.reason).toContain(resource.includes("tasks-loop") ? "tasks-writer" : "native-writer");
-			plan[0].tasks.pop();
-		}
-		for (const [index, resource] of [
-			`${native}/another.ts:git-owner`,
-			`checkout:${alias}/src/file.ts:source-writer`,
-		].entries()) {
-			const spawnKey = `disjoint-writer-${index}`;
-			plan[0].tasks.push(row(spawnKey, [resource]));
-			expect((await spawn(spawnKey))?.model).toBeDefined();
-			plan[0].tasks.pop();
-		}
-		plan[0].tasks.push(row("third-writer", [native, tasksLoop]));
-		expect((await spawn("third-writer"))?.block).toBe(true);
-		expect(
-			readJsonl(file)
-				.filter(record => record.kind === "spawn")
-				.map(record => record.checkoutScopes),
-		).toEqual([
-			[`${native}\0src/native.ts`],
-			[`${tasksLoop}\0.`],
-			[`${native}\0another.ts`],
-			[`${native}\0src/file.ts`],
-		]);
+			for (const resource of [
+				native,
+				`${native}/src/native.ts`,
+				`checkout:${alias}/src/native.ts:source-writer`,
+				`${native}/src`,
+				tasksLoop,
+				`path:${tasksLoop}/other.ts`,
+				`repository:${tasksLoop}:source-writer`,
+			]) {
+				plan[0].tasks.push(row("third-writer", [resource]));
+				const result = await spawn("third-writer");
+				expect(result?.block).toBe(true);
+				expect(result?.reason).toContain(resource.includes("tasks-loop") ? "tasks-writer" : "native-writer");
+				plan[0].tasks.pop();
+			}
+			for (const [index, resource] of [
+				`${native}/another.ts:git-owner`,
+				`checkout:${alias}/src/file.ts:source-writer`,
+			].entries()) {
+				const spawnKey = `disjoint-writer-${index}`;
+				plan[0].tasks.push(row(spawnKey, [resource]));
+				expect((await spawn(spawnKey))?.model).toBeDefined();
+				plan[0].tasks.pop();
+			}
+			plan[0].tasks.push(row("third-writer", [native, tasksLoop]));
+			expect((await spawn("third-writer"))?.block).toBe(true);
+			expect(
+				readJsonl(file)
+					.filter(record => record.kind === "spawn")
+					.map(record => record.checkoutScopes),
+			).toEqual([
+				[`${native}\0src/native.ts`],
+				[`${tasksLoop}\0.`],
+				[`${native}\0another.ts`],
+				[`${native}\0src/file.ts`],
+			]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -479,7 +506,7 @@ describe("agent router", () => {
 			expect((await spawn("writer-2"))?.block).toBe(true);
 			tasks[1].schedule.resources = [changed];
 			expect((await spawn("writer-2"))?.model).toBeDefined();
-		expect([...state.spawns.values()][0].checkoutScopes).toEqual([`${original}\0.`]);
+			expect([...state.spawns.values()][0].checkoutScopes).toEqual([`${original}\0.`]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -516,20 +543,24 @@ describe("agent router", () => {
 			await spawn("writer-1");
 			running = [{ id: "writer-1", type: "task", status: "running" }];
 			symlinkSync(join(dir, "missing-target"), join(other, "broken-alias"));
-		for (const [owner, resources] of [
-			["writer-2-2", [other]],
-			["writer-2", []],
-			["writer-2", ["other:source-writer"]],
-			["writer-2", [other, "ambiguous"]],
-			["writer-2", [join(other, "broken-alias", "file.ts")]],
-		]) {
-			tasks.push({ content: `Write to ${other}`, status: "pending", schedule: { owner, resources } });
-			expect((await spawn("writer-2"))?.block).toBe(true);
+			for (const [owner, resources] of [
+				["writer-2-2", [other]],
+				["writer-2", []],
+				["writer-2", ["other:source-writer"]],
+				["writer-2", [other, "ambiguous"]],
+				["writer-2", [join(other, "broken-alias", "file.ts")]],
+			]) {
+				tasks.push({ content: `Write to ${other}`, status: "pending", schedule: { owner, resources } });
+				expect((await spawn("writer-2"))?.block).toBe(true);
+				tasks.pop();
+			}
+			tasks.push({
+				content: "Write outside any repo",
+				status: "pending",
+				schedule: { owner: "writer-2", resources: [join(dir, "not-a-repo")] },
+			});
+			expect((await spawn("writer-2"))?.model).toBeDefined();
 			tasks.pop();
-		}
-		tasks.push({ content: "Write outside any repo", status: "pending", schedule: { owner: "writer-2", resources: [join(dir, "not-a-repo")] } });
-		expect((await spawn("writer-2"))?.model).toBeDefined();
-		tasks.pop();
 			tasks.push({ content: "Known", status: "pending", schedule: { owner: "writer-2", resources: [other] } });
 			expect(
 				(
@@ -766,11 +797,13 @@ describe("agent router", () => {
 					shuffle: items => [...items],
 				},
 			);
-			expect(result?.model[0]).toBe("codex-lb/gpt-6-luna:low");
-			expect(result?.note).toBe("pool pick codex-lb/gpt-6-luna:low; skipped 1 by usage preflight (eval)");
+			expect(result?.model[0]).toBe("openrouter/inclusionai/ling-3.0-flash-sante:free");
+			expect(result?.note).toBe(
+				"pool pick openrouter/inclusionai/ling-3.0-flash-sante:free; skipped 1 by usage preflight (eval)",
+			);
 			expect(readJsonl(file)[0]).toMatchObject({
 				kind: "spawn",
-				chosen: "codex-lb/gpt-6-luna:low",
+				chosen: "openrouter/inclusionai/ling-3.0-flash-sante:free",
 				skipped: [
 					{
 						model: "kimi-code/kimi-for-coding-highspeed:low",
@@ -800,7 +833,10 @@ describe("agent router", () => {
 				createRouterState(),
 				{
 					stateFile: file,
-					shuffle: items => [items[1]!, ...items.filter((_, index) => index !== 1)],
+					shuffle: items => {
+						const index = items.indexOf("kimi-code/kimi-for-coding-highspeed:low");
+						return [...items.slice(index), ...items.slice(0, index)];
+					},
 				},
 			);
 			expect(result?.model[0]).toBe("kimi-code/kimi-for-coding-highspeed:low");
@@ -1006,7 +1042,10 @@ describe("agent router", () => {
 			const context = ctx();
 			await routeSubagentSpawn({ agent: "scout", spawnKey: "fallback-1" }, context, state, {
 				stateFile: file,
-				shuffle: items => [items[1]!, ...items.filter((_, index) => index !== 1)],
+				shuffle: items => {
+					const index = items.indexOf("kimi-code/kimi-for-coding-highspeed:low");
+					return [...items.slice(index), ...items.slice(0, index)];
+				},
 			});
 			recordRetryFallbackApplied(
 				{
@@ -1264,10 +1303,10 @@ describe("agent router", () => {
 							? xiaomiModel
 							: base.models.resolve(spec),
 				},
-			modelRegistry: {
-				authStorage: { health: { model: async () => ({ state: "unknown", accounts: [] }) } },
-				getApiKey: async () => "tp-test-key",
-			},
+				modelRegistry: {
+					authStorage: { health: { model: async () => ({ state: "unknown", accounts: [] }) } },
+					getApiKey: async () => "tp-test-key",
+				},
 			});
 			const probed: { url: string; authorization: string | null }[] = [];
 			const fetchMock = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -1279,7 +1318,15 @@ describe("agent router", () => {
 				toolName: "task",
 				isError: true,
 				details: {
-					results: [{ agent: "coder", exitCode: 1, durationMs: 200, resolvedModel: "xiaomi/mimo-v2.6-pro", error: "[xiaomi/mimo-v2.6-pro] 401 Invalid API Key" }],
+					results: [
+						{
+							agent: "coder",
+							exitCode: 1,
+							durationMs: 200,
+							resolvedModel: "xiaomi/mimo-v2.6-pro",
+							error: "[xiaomi/mimo-v2.6-pro] 401 Invalid API Key",
+						},
+					],
 				},
 			};
 			await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-probe-1" }, context, state, {
@@ -1322,10 +1369,10 @@ describe("agent router", () => {
 					list: () => [xiaomiModel],
 					resolve: () => xiaomiModel,
 				},
-			modelRegistry: {
-				authStorage: { health: { model: async () => ({ state: "unknown", accounts: [] }) } },
-				getApiKey: async () => "sk-dead-key",
-			},
+				modelRegistry: {
+					authStorage: { health: { model: async () => ({ state: "unknown", accounts: [] }) } },
+					getApiKey: async () => "sk-dead-key",
+				},
 			});
 			await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-dead-1" }, context, state, {
 				stateFile: file,
@@ -1336,7 +1383,15 @@ describe("agent router", () => {
 					toolName: "task",
 					isError: true,
 					details: {
-					results: [{ agent: "coder", exitCode: 1, durationMs: 200, resolvedModel: "xiaomi/mimo-v2.6-pro", error: "[xiaomi/mimo-v2.6-pro] 401 Invalid API Key" }],
+						results: [
+							{
+								agent: "coder",
+								exitCode: 1,
+								durationMs: 200,
+								resolvedModel: "xiaomi/mimo-v2.6-pro",
+								error: "[xiaomi/mimo-v2.6-pro] 401 Invalid API Key",
+							},
+						],
 					},
 				},
 				context,
@@ -1359,7 +1414,11 @@ describe("agent router", () => {
 				execFileSync("git", ["init", "-q", repo]);
 			}
 			const tasks = [
-				{ content: "Holder with no resource paths", status: "in_progress", schedule: { owner: "holder-1", resources: [] } },
+				{
+					content: "Holder with no resource paths",
+					status: "in_progress",
+					schedule: { owner: "holder-1", resources: [] },
+				},
 			];
 			let running: Array<{ id: string; type: string; status: string }> = [];
 			const context = ctx({
@@ -1367,7 +1426,10 @@ describe("agent router", () => {
 				sessionManager: {
 					getHeader: () => ({ id: "session-1" }),
 					getBranch: () => [
-						{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } },
+						{
+							type: "message",
+							message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } },
+						},
 					],
 				},
 				getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }),
@@ -1380,13 +1442,25 @@ describe("agent router", () => {
 				});
 			expect((await spawn("holder-1"))?.model).toBeDefined();
 			running = [{ id: "holder-1", type: "task", status: "running" }];
-			tasks.push({ content: "Other repo work", status: "pending", schedule: { owner: "other-1", resources: [`${repoB}/src/other.ts:source-writer`] } });
+			tasks.push({
+				content: "Other repo work",
+				status: "pending",
+				schedule: { owner: "other-1", resources: [`${repoB}/src/other.ts:source-writer`] },
+			});
 			expect((await spawn("other-1"))?.model).toBeDefined();
 			tasks.pop();
-			tasks.push({ content: "Outside any repo", status: "pending", schedule: { owner: "tmp-1", resources: [join(dir, "scratch", "newfile.ts")] } });
+			tasks.push({
+				content: "Outside any repo",
+				status: "pending",
+				schedule: { owner: "tmp-1", resources: [join(dir, "scratch", "newfile.ts")] },
+			});
 			expect((await spawn("tmp-1"))?.model).toBeDefined();
 			tasks.pop();
-			tasks.push({ content: "Same repo work", status: "pending", schedule: { owner: "same-1", resources: [`${repoA}/src/same.ts:source-writer`] } });
+			tasks.push({
+				content: "Same repo work",
+				status: "pending",
+				schedule: { owner: "same-1", resources: [`${repoA}/src/same.ts:source-writer`] },
+			});
 			expect((await spawn("same-1"))?.block).toBe(true);
 			tasks.pop();
 		} finally {
@@ -1401,8 +1475,16 @@ describe("agent router", () => {
 			mkdirSync(repoA);
 			execFileSync("git", ["init", "-q", repoA]);
 			const tasks = [
-				{ content: "Holder with no resource paths", status: "in_progress", schedule: { owner: "holder-1", resources: [] } },
-				{ content: "Same repo work", status: "pending", schedule: { owner: "same-1", resources: [`${repoA}/src/same.ts:source-writer`] } },
+				{
+					content: "Holder with no resource paths",
+					status: "in_progress",
+					schedule: { owner: "holder-1", resources: [] },
+				},
+				{
+					content: "Same repo work",
+					status: "pending",
+					schedule: { owner: "same-1", resources: [`${repoA}/src/same.ts:source-writer`] },
+				},
 			];
 			let running: Array<{ id: string; type: string; status: string }> = [];
 			const context = ctx({
@@ -1410,7 +1492,10 @@ describe("agent router", () => {
 				sessionManager: {
 					getHeader: () => ({ id: "session-1" }),
 					getBranch: () => [
-						{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } },
+						{
+							type: "message",
+							message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } },
+						},
 					],
 				},
 				getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }),
@@ -1450,8 +1535,26 @@ describe("agent router", () => {
 			{
 				name: "Work",
 				tasks: [
-					{ content: "long", status: "pending", schedule: { owner: "long-1", dependencies: [], resources: ["repo-a"], estimate: estimate(60, 120, 180) } },
-					{ content: "short", status: "pending", schedule: { owner: "short-1", dependencies: [], resources: ["repo-b"], estimate: estimate(6, 12, 18) } },
+					{
+						content: "long",
+						status: "pending",
+						schedule: {
+							owner: "long-1",
+							dependencies: [],
+							resources: ["repo-a"],
+							estimate: estimate(60, 120, 180),
+						},
+					},
+					{
+						content: "short",
+						status: "pending",
+						schedule: {
+							owner: "short-1",
+							dependencies: [],
+							resources: ["repo-b"],
+							estimate: estimate(6, 12, 18),
+						},
+					},
 				],
 			},
 		];
@@ -1481,7 +1584,8 @@ describe("agent router", () => {
 					list: () => models,
 					resolve: (spec: string) =>
 						models.find(
-							model => `${model.provider}/${model.id}` === spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, ""),
+							model =>
+								`${model.provider}/${model.id}` === spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, ""),
 						),
 				},
 			} as unknown as ExtensionContext;
@@ -1495,8 +1599,8 @@ describe("agent router", () => {
 				latestTodo: () => PHASES,
 			});
 		// Only the pool is shuffled; fallbacks keep chain order. Task chain under
-		// a reversed pool shuffle: muse, xiaomi, k3, deepseek, kimi, luna, then
-		// fallbacks sol, Qwen, cerebras.
+		// a reversed pool shuffle: muse, xiaomi, k3, deepseek, kimi, luna,
+		// dots-free, ling-free, then fallbacks sol, Qwen, cerebras.
 		const TASK_ORDER = [
 			"muse-code/muse-spark-1.3-contributor",
 			"xiaomi/mimo-v2.6-pro",
@@ -1504,6 +1608,8 @@ describe("agent router", () => {
 			"deepseek/deepseek-v4-pro:high",
 			"kimi-code/kimi-for-coding:high",
 			"codex-lb/gpt-6-luna:medium",
+			"openrouter/dots-studio/dots-3-note-preview:free",
+			"openrouter/inclusionai/ling-3.0-flash-sante:free",
 			"codex-lb/gpt-6.1-sol:medium",
 			"codex-lb/Qwen3.8-27B",
 			"cerebras/qwen-3.8-27b",
@@ -1543,7 +1649,9 @@ describe("agent router", () => {
 				const withoutPriority = TASK_ORDER.filter(
 					spec => spec !== "codex-lb/gpt-6-luna:medium" && spec !== "codex-lb/gpt-6.1-sol:medium",
 				);
-				const context = priorityCtx(withoutPriority.map(spec => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "")));
+				const context = priorityCtx(
+					withoutPriority.map(spec => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "")),
+				);
 				const result = await spawnTask("long-1", context, file);
 				expect(result?.model).toEqual(withoutPriority);
 				expect(result?.model?.slice(-2)).toEqual(["codex-lb/Qwen3.8-27B", "cerebras/qwen-3.8-27b"]);
@@ -1553,8 +1661,6 @@ describe("agent router", () => {
 			}
 		});
 	});
-
-
 });
 
 test("R3: internal control URIs bypass the empty-write guard so proc:// kill passes", async () => {
@@ -1563,10 +1669,17 @@ test("R3: internal control URIs bypass the empty-write guard so proc:// kill pas
 		const call = toolCallHandler();
 		const context = ctx({ cwd: dir });
 		// The chief-of-staff runbook's exact kill call, with empty or omitted content.
-		expect(await call({ toolName: "write", input: { path: "proc://IntegrateFacilityCallouts/kill", content: "" } }, context)).toBeUndefined();
+		expect(
+			await call(
+				{ toolName: "write", input: { path: "proc://IntegrateFacilityCallouts/kill", content: "" } },
+				context,
+			),
+		).toBeUndefined();
 		expect(await call({ toolName: "write", input: { path: "proc://FixR8LastFails/kill" } }, context)).toBeUndefined();
 		expect(await call({ toolName: "write", input: { path: "agent://Main", content: "" } }, context)).toBeUndefined();
-		expect(await call({ toolName: "write", input: { path: "xd://report_issue", content: "" } }, context)).toBeUndefined();
+		expect(
+			await call({ toolName: "write", input: { path: "xd://report_issue", content: "" } }, context),
+		).toBeUndefined();
 		// Negative control: a real file keeps the guard.
 		const refused = await call({ toolName: "write", input: { path: "empty.txt", content: "" } }, context);
 		expect(refused).toMatchObject({ block: true });

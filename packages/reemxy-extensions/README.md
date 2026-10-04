@@ -8,14 +8,18 @@ Optional `reemxyPresence` is the package’s single settings key. Put it in OMP 
 
 ```yaml
 reemxyPresence:
-  activeMinutes: 15
-  awayMinutes: 30
-  quietStartHour: 23
-  quietEndHour: 9
-  atRiskMinutes: 60
+   activeMinutes: 15
+   awayMinutes: 30
+   quietStartHour: 23
+   quietEndHour: 9
+   atRiskMinutes: 60
 ```
 
 Hours are normalized to `0..23`; absent or invalid fields retain defaults.
+
+## Subagent model rotation
+
+Paid OpenRouter models are not used. Only zero-price `:free` slugs go first in light roles (scout, scribe, workhorse, gate-runner, researcher, task), chosen by fewest requests per finished task because the free quota is 1,000 requests/day shared across all free models per account (20 requests/minute); their results need a strong reviewer before a row closes. Keep the existing candidates in order after them. Keep the Hindsight provider/auth configuration intact.
 
 ## Bounded worker supervision
 
