@@ -11,7 +11,12 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 function ownNiceness(): number {
 	const stat = fs.readFileSync("/proc/self/stat", "utf8");
 	// Field 3 follows the parenthesized comm; field 19 is offset 16 from there.
-	return Number(stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/)[16]);
+	return Number(
+		stat
+			.slice(stat.lastIndexOf(")") + 1)
+			.trim()
+			.split(/\s+/)[16],
+	);
 }
 
 function ownIoPriority(): string {
@@ -27,7 +32,7 @@ function expectBackgroundPriority(output: string): void {
 	console.log(`child nice=${niceness}, ionice=${ioPriority}`);
 }
 
-const bashProbe = 'read -r stat < /proc/self/stat; set -- $stat; printf "%s\\n" "${19}"; /usr/bin/ionice -p $$';
+const bashProbe = 'read -r stat < /proc/self/stat; set -- $stat; shift 18; printf "%s\\n" "$1"; /usr/bin/ionice -p $$';
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
 describe.skipIf(process.platform !== "linux")("native tool-child background priority", () => {
