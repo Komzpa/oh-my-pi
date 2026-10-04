@@ -9,7 +9,6 @@
 ### Fixed
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
-- Temporarily cool down providers after balance or monthly quota exhaustion so new subagents skip dead fallback-chain heads; transient rate limits and server failures retain their existing retries.
 
 ## [18.4.12] - 2026-10-02
 
