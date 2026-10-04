@@ -63,29 +63,110 @@ export function sessionCwdScopes(ctx: ExtensionContext): string[] | undefined {
 	}
 }
 
+function spawnTaskText(event: BeforeSubagentSpawnEvent): string | undefined {
+	const record = event as Record<string, unknown>;
+	for (const key of ["assignment", "task", "prompt", "text", "message"]) {
+		const value = record[key];
+		if (typeof value === "string" && value.trim() !== "") return value;
+	}
+	return undefined;
+}
+
+function spawnTextMatchesRowTitle(text: string, title: unknown): boolean {
+	if (typeof title !== "string" || title.trim() === "") return false;
+	const trimmed = text.trim();
+	const clean = title.trim();
+	if (trimmed.startsWith(clean)) return true;
+	const firstLine = trimmed.split("\n", 1)[0]!.trim();
+	const normalizedText = firstLine.replace(/^#\s*row\s*:\s*/i, "").trim();
+	const normalizedTitle = clean.replace(/^#\s*row\s*:\s*/i, "").trim();
+	return (
+		normalizedText !== "" && normalizedTitle !== "" && (normalizedText === normalizedTitle || normalizedText.startsWith(normalizedTitle))
+	);
+}
+
+function lanePathsFromText(text: string): string[] {
+	const found: string[] = [];
+	const pattern = /(~\/[^\s'"`,;]+|\/[A-Za-z0-9_.-]+(?:\/[^\s'"`,;]+)*)/g;
+	for (const match of text.matchAll(pattern)) {
+		let candidate = (match[1] ?? "").replace(/[),.;'"`\]}]+$/g, "").replace(/\/+$/g, "");
+		if (!candidate || candidate === "~" || candidate === "/") continue;
+		if (candidate === "~" || candidate.startsWith("~/")) candidate = join(homedir(), candidate.slice(2));
+		if (!candidate.startsWith("/")) continue;
+		if (!found.includes(candidate)) found.push(candidate);
+	}
+	return found;
+}
+
 function ownedCheckoutScopes(
 	event: BeforeSubagentSpawnEvent,
 	ctx: ExtensionContext,
 	latestTodo?: LatestTodoGetter,
 ): string[] | undefined {
 	const fallback = sessionCwdScopes(ctx);
-	const owner = stringValue(event.spawnKey);
-	if (!owner || !latestTodo || !ctx.sessionManager?.getBranch) return fallback;
-	try {
-		const rows = latestTodo(ctx.sessionManager.getBranch())
-			.flatMap(phase => phase.tasks)
-			.filter(row => (row.status === "pending" || row.status === "in_progress") && row.schedule?.owner === owner);
-		if (!rows.length) return fallback;
-		const scopes = new Set<string>();
-		for (const row of rows) {
-			const owned = checkoutScopesFromResources(row.schedule?.resources);
-			if (!owned) return fallback;
-			for (const scope of owned) scopes.add(scope);
+	const readPhases = (): TodoScheduleInput | undefined => {
+		if (!latestTodo || !ctx.sessionManager?.getBranch) return undefined;
+		try {
+			return latestTodo(ctx.sessionManager.getBranch());
+		} catch {
+			return undefined;
 		}
-		return [...scopes].sort();
-	} catch {
-		return fallback;
+	};
+	const owner = stringValue(event.spawnKey);
+	if (owner) {
+		try {
+			const phases = readPhases();
+			const rows = phases
+				?.flatMap(phase => phase.tasks)
+				.filter(row => (row.status === "pending" || row.status === "in_progress") && row.schedule?.owner === owner);
+			if (rows?.length) {
+				const scopes = new Set<string>();
+				let complete = true;
+				for (const row of rows) {
+					const owned = checkoutScopesFromResources(row.schedule?.resources);
+					if (!owned) {
+						complete = false;
+						break;
+					}
+					for (const scope of owned) scopes.add(scope);
+				}
+				if (complete && scopes.size) return [...scopes].sort();
+			}
+		} catch {
+			// Fall through to the spawn-text scope below.
+		}
 	}
+	const text = spawnTaskText(event);
+	if (text) {
+		try {
+			const phases = readPhases();
+			const open = phases
+				?.flatMap(phase => phase.tasks)
+				.filter(row => row.status === "pending" || row.status === "in_progress");
+			const matched = open?.filter(row => spawnTextMatchesRowTitle(text, row.content));
+			if (matched?.length) {
+				const scopes = new Set<string>();
+				let complete = true;
+				for (const row of matched) {
+					const owned = checkoutScopesFromResources(row.schedule?.resources);
+					if (!owned) {
+						complete = false;
+						break;
+					}
+					for (const scope of owned) scopes.add(scope);
+				}
+				if (complete && scopes.size) return [...scopes].sort();
+			}
+		} catch {
+			// Fall through to the lane-path scope below.
+		}
+		const paths = lanePathsFromText(text);
+		if (paths.length) {
+			const fromPaths = checkoutScopesFromResources(paths);
+			if (fromPaths) return fromPaths;
+		}
+	}
+	return fallback;
 }
 
 function activeWriteWorker(
@@ -202,6 +283,11 @@ export interface BeforeSubagentSpawnEvent {
 	spawnKey?: unknown;
 	patterns?: unknown;
 	isolated?: unknown;
+	assignment?: unknown;
+	task?: unknown;
+	prompt?: unknown;
+	text?: unknown;
+	message?: unknown;
 }
 
 export interface ToolResultEvent {
@@ -536,9 +622,15 @@ export async function routeSubagentSpawn(
 	if (WRITE_CAPABLE_WORKERS.has(agent) && agent !== "git-pr-owner" && event.isolated !== true) {
 		const activeWriter = activeWriteWorker(state, ctx, checkoutScopes);
 		if (activeWriter) {
+			const heldScopes = activeWriter.checkoutScopes ?? sessionCwdScopes(ctx);
+			const heldFirst = heldScopes?.[0]?.split("\0") ?? [];
+			const heldScope = heldFirst[0] && heldFirst[0].trim() !== "" ? (heldFirst[1] && heldFirst[1] !== "." ? `${heldFirst[0]}/${heldFirst[1]}` : heldFirst[0]) : holderRepoLabel(activeWriter, ctx);
+			const incomingScopes = checkoutScopes ?? sessionCwdScopes(ctx);
+			const incomingFirst = incomingScopes?.[0]?.split("\0") ?? [];
+			const incomingScope = incomingFirst[0] && incomingFirst[0].trim() !== "" ? (incomingFirst[1] && incomingFirst[1] !== "." ? `${incomingFirst[0]}/${incomingFirst[1]}` : incomingFirst[0]) : cwdRepoLabel(ctx);
 			return {
 				block: true,
-				reason: `Refusing ${agent}: ${activeWriter.agent} worker ${activeWriter.spawnKey} is running in ${holderRepoLabel(activeWriter, ctx)}; if this row edits another repo, put that repo path in the row resources; isolated: true isolates only ${cwdRepoLabel(ctx)}.`,
+				reason: `Refusing ${agent}: ${activeWriter.agent} worker ${activeWriter.spawnKey} is running in ${holderRepoLabel(activeWriter, ctx)} (holder scope ${heldScope}); this spawn scope is ${incomingScope}; if this row edits another repo, put that repo path in the row resources; isolated: true isolates only ${cwdRepoLabel(ctx)}.`,
 			};
 		}
 	}
