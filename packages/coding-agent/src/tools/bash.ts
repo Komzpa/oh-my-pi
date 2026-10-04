@@ -49,7 +49,16 @@ import { formatArtifactErrorNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { formatOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { resolveInlineByteCapBudget } from "./output-meta";
 import { resolveToCwd } from "./path-utils";
-import { extractLeadingCdTarget, extractLiteralAndChainSegments, tokenizeShellSegments } from "./shell-tokenize";
+import {
+	decodeShellEscapes,
+	extractLeadingCdTarget,
+	extractLiteralAndChainSegments,
+	readShellWord,
+	shellHereDocumentSubstitutions,
+	splitEnvCommand,
+	tokenizeShellExecutionSegments,
+	tokenizeShellSegments,
+} from "./shell-tokenize";
 import { ToolAbortError } from "./tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { toolResult } from "./tool-result";
@@ -288,6 +297,418 @@ function bashCommandSegments(command: string): string[] {
 		.filter(segment => segment.length > 0);
 }
 
+const SESSION_INFRASTRUCTURE_REFUSAL =
+	"Session infrastructure is off-limits: report the anomaly to the lead; do not repair the host.";
+const SESSION_PROCESS_TARGET =
+	/(?:^|[\s/`(^|-])(?:dbus-broker|dbus-daemon|kwin[^\s)]*|plasmashell|Xwayland|yakuake)(?:$|[\s)`.*$|@])|\bsystemd\s+--user\b/u;
+const SESSION_RUNTIME_TARGET = /^(?:\/run\/user\/[^/]+(?:\/|$)|\$\{?XDG_RUNTIME_DIR\}?(?:\/|$))/u;
+// Only these wrapper options consume a separate operand. In particular,
+// sudo -n is a flag, whereas nice -n consumes a priority.
+const SESSION_COMMAND_WRAPPERS: Record<string, readonly string[]> = {
+	sudo: [
+		"u",
+		"g",
+		"h",
+		"p",
+		"C",
+		"T",
+		"R",
+		"D",
+		"r",
+		"t",
+		"--user",
+		"--group",
+		"--host",
+		"--prompt",
+		"--chdir",
+		"--chroot",
+	],
+	env: ["u", "C", "a", "--unset", "--chdir", "--argv0"],
+	command: [],
+	builtin: [],
+	exec: ["a"],
+	nice: ["n", "--adjustment"],
+	ionice: ["c", "n", "p", "P", "u", "--class", "--classdata", "--pid", "--pgid", "--uid"],
+	nohup: [],
+	time: ["f", "o", "--format", "--output"],
+	busybox: [],
+	timeout: ["s", "k", "--signal", "--kill-after"],
+	setsid: [],
+	stdbuf: ["i", "o", "e", "--input", "--output", "--error"],
+	doas: ["u", "C"],
+	xargs: [
+		"a",
+		"d",
+		"E",
+		"I",
+		"L",
+		"n",
+		"P",
+		"s",
+		"--arg-file",
+		"--delimiter",
+		"--max-lines",
+		"--max-args",
+		"--max-procs",
+		"--max-chars",
+	],
+};
+
+/** xargs passes input as argv; only a shell child interprets it as code. */
+function xargsInvocations(
+	args: string[],
+	input: string | undefined,
+	delimiter?: string,
+	replacement?: string,
+	maxArgs?: number,
+	eof?: string,
+): string[][] {
+	if (input === undefined) return [args];
+	if (delimiter === undefined && eof) {
+		const lines = input.split("\n");
+		const end = lines.findIndex(line => line.trim() === eof);
+		if (end >= 0) input = lines.slice(0, end).join("\n");
+	}
+	const values: string[] = [];
+	if (delimiter !== undefined)
+		values.push(...input.split(delimiter).filter((value, i, all) => value !== "" || i < all.length - 1));
+	else {
+		let rest = input;
+		while (rest) {
+			const word = readShellWord(rest);
+			if (!word || word === "unterminated") break;
+			values.push(word.value);
+			rest = word.rest;
+		}
+	}
+	if (!replacement) {
+		if (!maxArgs || maxArgs < 1) return [[...args, ...values]];
+		const commands: string[][] = [];
+		for (let i = 0; i < values.length; i += maxArgs) commands.push([...args, ...values.slice(i, i + maxArgs)]);
+		return commands;
+	}
+	// -I consumes complete input lines, whereas -0/-d consume literal records.
+	const records =
+		delimiter === undefined
+			? input
+					.split("\n")
+					.filter(line => line.trim())
+					.map(line => {
+						const words = xargsInvocations([], line)[0];
+						return words.join(" ");
+					})
+			: values;
+	return records.map(value => args.map(arg => arg.replaceAll(replacement, value)));
+}
+
+const SESSION_MAX_PAYLOAD_DEPTH = 4;
+const SESSION_PAYLOAD_SHELLS: Record<string, true> = {
+	sh: true,
+	bash: true,
+	zsh: true,
+	dash: true,
+	ksh: true,
+	ash: true,
+};
+
+/** Parse invocation options once: everything after a command string or script is data. */
+function shellInvocation(
+	executable: string | undefined,
+	args: string[],
+): { payloads: string[]; stdin: boolean; script?: string } {
+	if (executable === "eval") return { payloads: [(args[0] === "--" ? args.slice(1) : args).join(" ")], stdin: false };
+	if (!executable || !Object.hasOwn(SESSION_PAYLOAD_SHELLS, executable)) return { payloads: [], stdin: false };
+	let stdin = false;
+	let commandString = false;
+	let i = 0;
+	for (; i < args.length; i++) {
+		const arg = args[i];
+		if (arg === "--" || arg === "-") {
+			i++;
+			break;
+		}
+		if (!/^[+-]./u.test(arg)) break;
+		if (arg.startsWith("--")) {
+			if (arg === "--rcfile" || arg === "--init-file") i++;
+			continue;
+		}
+		for (let flag = 1; flag < arg.length; flag++) {
+			const option = arg[flag];
+			if (option === "c") commandString = true;
+			if (option === "s" && arg[0] === "-") stdin = true;
+			if (option === "o" || option === "O") {
+				if ((executable === "zsh" || executable === "ksh") && flag + 1 < arg.length) break;
+				i++; // Shell option names are operands, even if they happen to contain c.
+			}
+		}
+	}
+	return commandString
+		? { payloads: [args[i] ?? ""], stdin: false }
+		: { payloads: [], stdin: stdin || i === args.length, script: stdin ? undefined : args[i] };
+}
+
+/** Recover literal stream producers without executing anything during approval. */
+function shellLiteralOutput(
+	executable: string | undefined,
+	args: string[],
+	stdin: string | undefined,
+	streams: Map<string, string>,
+): string | undefined {
+	if (executable === "cat") {
+		const parts = (args.length ? args : ["-"]).map(arg => (arg === "-" ? stdin : streams.get(arg)));
+		return parts.every(part => part !== undefined) ? parts.join("") : undefined;
+	}
+	if (executable === "echo") {
+		let index = 0;
+		let escapes = false;
+		let newline = true;
+		while (/^-[neE]+$/u.test(args[index] ?? "")) {
+			for (const option of args[index++].slice(1)) {
+				if (option === "n") newline = false;
+				else escapes = option === "e";
+			}
+		}
+		const text = args.slice(index).join(" ");
+		return (escapes ? decodeShellEscapes(text.split("\\c")[0]) : text) + (newline ? "\n" : "");
+	}
+	if (executable !== "printf") return undefined;
+	let index = args[0] === "--" ? 1 : 0;
+	const format = args[index++];
+	if (format === undefined || /%(?![%sb])/u.test(format)) return undefined;
+	let output = "";
+	do {
+		const before = index;
+		output += decodeShellEscapes(format).replace(/%[%sb]/gu, specifier => {
+			if (specifier === "%%") return "%";
+			const value = args[index++] ?? "";
+			return specifier === "%b"
+				? decodeShellEscapes(value.split("\\c")[0].replace(/\\0([0-7]{1,3})/gu, "\\$1"))
+				: value;
+		});
+		if (before === index) break;
+	} while (index < args.length);
+	return output;
+}
+
+/** Default denies precede user allows and apply to every execution backend. */
+function targetsSessionInfrastructure(
+	command: string,
+	depth = 0,
+	stdin?: string,
+	output?: { value?: string },
+): boolean {
+	// Nested `sh -c` payloads are inspected recursively; absurd nesting is refused
+	// outright instead of being trusted as unparseable.
+	if (depth > SESSION_MAX_PAYLOAD_DEPTH) return true;
+	const segments = tokenizeShellExecutionSegments(command);
+	let pipelineOutput: string | undefined;
+	let first = true;
+	for (const { words, pipedStdin } of segments) {
+		const streams = new Map<string, string>();
+		for (const word of words) {
+			for (const substitution of word.substitutions ?? []) {
+				const stream: { value?: string } = {};
+				if (targetsSessionInfrastructure(substitution, depth + 1, undefined, stream)) return true;
+				if (word.value === `<(${substitution})` && stream.value !== undefined)
+					streams.set(word.value, stream.value);
+			}
+		}
+		const inputSources = new Map<number, string>();
+		if (first && stdin !== undefined) inputSources.set(0, stdin);
+		first = false;
+		if (pipedStdin && pipelineOutput !== undefined) inputSources.set(0, pipelineOutput);
+		const executableWords = words.filter((word, i) => {
+			if (word.hereDocument) {
+				inputSources.set(word.hereDocument.fd, word.hereDocument.body);
+				return false;
+			}
+			if (word.redirection) {
+				const { operator, fd } = word.redirection;
+				const target = words[i + 1]?.value ?? "";
+				const source =
+					operator === "<<<"
+						? target
+						: operator === "<&"
+							? inputSources.get(Number(target))
+							: operator === "<"
+								? streams.get(target)
+								: undefined;
+				inputSources.delete(fd);
+				if (source !== undefined) inputSources.set(fd, source);
+				return false;
+			}
+			return !words[i - 1]?.redirection;
+		});
+		const tokens = executableWords.map(word => word.value);
+		let start = 0;
+		// Reserved words introduce command positions only when unquoted and at
+		// the start of a segment. An echo argument named `then` stays data.
+		while (
+			executableWords[start]?.raw === tokens[start] &&
+			["if", "then", "elif", "else", "while", "until", "do", "{", "!"].includes(tokens[start])
+		)
+			start++;
+		// Keep command position: an echo containing a dangerous command is not execution.
+		while (start < tokens.length) {
+			const token = tokens[start];
+			const name = token.slice(token.lastIndexOf("/") + 1);
+			if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token)) {
+				start++;
+				continue;
+			}
+			if (Object.hasOwn(SESSION_COMMAND_WRAPPERS, name)) {
+				start++;
+				let replacement: string | undefined;
+				let delimiter: string | undefined;
+				let maxArgs: number | undefined;
+				let eof: string | undefined;
+				let input = inputSources.get(0);
+				let describesOnly = false;
+				while (tokens[start]?.startsWith("-")) {
+					let option = tokens[start++];
+					if (option === "--") break;
+					if (option === "--help" || option === "--version") describesOnly = true;
+					if (name === "doas" && /^-[^-]*C/u.test(option)) describesOnly = true;
+					if (name === "xargs") {
+						if (/^-[^-]/u.test(option)) {
+							const flags = /^-[0rptx]*/u.exec(option)![0];
+							if (flags.includes("0")) delimiter = "\0";
+							if (flags.length > 1 && flags.length < option.length) option = `-${option.slice(flags.length)}`;
+						}
+						if (/^-n/u.test(option) || option === "--max-args" || option.startsWith("--max-args=")) {
+							maxArgs = Number(
+								option === "-n" || option === "--max-args"
+									? tokens[start++]
+									: option.startsWith("--")
+										? option.slice(11)
+										: option.slice(2),
+							);
+							continue;
+						}
+						if (option === "-E") {
+							eof = tokens[start++];
+							continue;
+						}
+						if (option.startsWith("-E")) eof = option.slice(2);
+						if (option.startsWith("-e")) eof = option.slice(2);
+						if (option.startsWith("--eof=")) eof = option.slice(6);
+						if (option === "-0" || option === "--null") delimiter = "\0";
+						if (option === "-I" || option === "-d") {
+							const value = tokens[start++];
+							if (option === "-I") replacement = value;
+							else delimiter = decodeShellEscapes(value ?? "");
+							continue;
+						}
+						if (option.startsWith("-I")) replacement = option.slice(2);
+						if (option === "-i" || option === "--replace") replacement = "{}";
+						if (option.startsWith("-i") && option.length > 2) replacement = option.slice(2);
+						if (option.startsWith("--replace=")) replacement = option.slice(10);
+						if (option.startsWith("-d")) delimiter = decodeShellEscapes(option.slice(2));
+						if (option.startsWith("--delimiter=")) delimiter = decodeShellEscapes(option.slice(12));
+						if (option === "--delimiter") {
+							delimiter = decodeShellEscapes(tokens[start++] ?? "");
+							continue;
+						}
+						if (/^(?:-a|--arg-file)/u.test(option)) input = undefined;
+					}
+					if (
+						name === "env" &&
+						(option === "--split-string" || option.startsWith("--split-string=") || /^-[^-]*S/u.test(option))
+					) {
+						const attached = option.startsWith("--") ? option.slice(15) : option.slice(option.indexOf("S") + 1);
+						const text = attached || tokens[start] || "";
+						// env -S performs quote removal and word splitting, not shell execution.
+						const split = splitEnvCommand(text);
+						tokens.splice(start, attached ? 0 : 1, ...split);
+						continue;
+					}
+					if (name === "command" && /^-[p]*[vV]/u.test(option)) {
+						start = tokens.length; // command -v/-V only describes its operands.
+						break;
+					}
+					const operands = SESSION_COMMAND_WRAPPERS[name];
+					if (option.startsWith("--")) {
+						if (operands.includes(option)) start++;
+					} else {
+						const operand = [...option.slice(1)].findIndex(flag => operands.includes(flag));
+						if (operand >= 0 && operand === option.length - 2) start++;
+					}
+				}
+				if (describesOnly) start = tokens.length;
+				if (name === "timeout") start++; // Duration is a required positional operand.
+				if (name === "xargs") {
+					const command = tokens.slice(start);
+					for (const argv of xargsInvocations(
+						command.length ? command : ["echo"],
+						input,
+						delimiter,
+						replacement,
+						maxArgs,
+						eof,
+					)) {
+						const child = (argv.length ? argv : ["echo"])
+							.map(arg => `'${arg.replaceAll("'", `'\\''`)}'`)
+							.join(" ");
+						if (targetsSessionInfrastructure(child, depth + 1)) return true;
+					}
+					start = tokens.length;
+				}
+				continue;
+			}
+			break;
+		}
+		const executable = tokens[start]?.split("/").pop();
+		const args = tokens.slice(start + 1);
+		if (executable === "kill" || executable === "pkill" || executable === "killall") {
+			if (SESSION_PROCESS_TARGET.test(args.join(" "))) return true;
+		}
+		// `sh -c '<payload>'`, `bash -lc '<payload>'`, `eval '<payload>'`: the
+		// protected operation lives inside the payload token, so re-run the detector on it.
+		const invocation = shellInvocation(executable, args);
+		if (invocation.script && streams.has(invocation.script))
+			invocation.payloads.push(streams.get(invocation.script)!);
+		const stdinPayload = inputSources.get(0);
+		const shellOutput: { value?: string } = {};
+		for (const payload of invocation.payloads) {
+			if (targetsSessionInfrastructure(payload, depth + 1, stdinPayload, shellOutput)) return true;
+		}
+		const documents = words.flatMap(word => (word.hereDocument ? [word.hereDocument] : []));
+		for (const document of documents) {
+			// Every unquoted document expands, including superseded redirects and
+			// non-stdin descriptors. Bare text is code only for a shell reading stdin.
+			if (!document.quoted) {
+				for (const substitution of shellHereDocumentSubstitutions(document.body)) {
+					if (targetsSessionInfrastructure(substitution, depth + 1)) return true;
+				}
+			}
+		}
+		if (
+			invocation.stdin &&
+			stdinPayload !== undefined &&
+			targetsSessionInfrastructure(stdinPayload, depth + 1, undefined, shellOutput)
+		)
+			return true;
+		if (executable === "rm" && args.some(arg => SESSION_RUNTIME_TARGET.test(arg))) return true;
+		if (
+			executable === "systemctl" &&
+			args.includes("--user") &&
+			args.some(arg => arg === "stop" || arg === "restart" || arg === "kill") &&
+			args.some(arg => /^dbus/u.test(arg) || SESSION_PROCESS_TARGET.test(arg))
+		) {
+			return true;
+		}
+		pipelineOutput =
+			executableWords.some(word => word.dynamic && !streams.has(word.value)) ||
+			words.some(word => word.redirection?.fd === 1)
+				? undefined
+				: invocation.payloads.length || invocation.stdin
+					? shellOutput.value
+					: shellLiteralOutput(executable, args, stdinPayload, streams);
+	}
+	if (output) output.value = pipelineOutput;
+	return false;
+}
+
 // `deny`/`prompt` matching: the rule fires when its glob matches the whole
 // command or any single segment of a compound command.
 function commandSegmentMatchesBashApprovalPattern(command: string, pattern: string): boolean {
@@ -514,6 +935,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 	readonly approval = (args: unknown): ToolApprovalDecision => {
 		const rawCommand = (args as Partial<BashToolInput>).command;
 		const command = typeof rawCommand === "string" ? rawCommand : "";
+		if (targetsSessionInfrastructure(command)) {
+			return { tier: "exec", override: true, policy: "deny", reason: SESSION_INFRASTRUCTURE_REFUSAL };
+		}
 		const patternRules = getBashApprovalPatternRules(cfgBashPatterns.get(this.session.settings));
 		const shell = cfgBashAllowCompoundCommands.get(this.session.settings)
 			? this.session.settings.getShellConfig().shell
@@ -1011,6 +1435,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		ctx?: AgentToolContext,
 	): Promise<AgentToolResult<BashToolDetails>> {
 		let command = rawCommand;
+		if (targetsSessionInfrastructure(rawCommand)) throw new ToolError(SESSION_INFRASTRUCTURE_REFUSAL);
 		// The session this call belongs to, captured before any await: a session
 		// change while the call waits must not move it into the new session's
 		// shell, nor hand it the new session's identity.
@@ -1040,10 +1465,10 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		const pendingNotices: string[] = [];
 		if (name !== undefined) {
 			if (!this.#launchEnabled) throw new ToolError("Service launch is disabled in this session.");
-			if (rawTimeout !== undefined)
-				pendingNotices.push("Ignored timeout: service-only; readiness follows ready.timeout.");
-			if (asyncRequested)
-				pendingNotices.push("Ignored async: service-only; a service start is asynchronous already.");
+			// `timeout: 0` ("no deadline") is how layers that materialize every
+			// optional argument spell "not set"; only a real deadline is rejected.
+			if (asyncRequested || (rawTimeout !== undefined && rawTimeout !== 0))
+				throw new ToolError("Service mode does not accept async or timeout; use ready.timeout for readiness.");
 		} else if (ready !== undefined && (ready.log !== undefined || (ready.port !== undefined && ready.port !== 0))) {
 			// Host/timeout only configure a readiness condition; neither requests one,
 			// and tool-call layers may materialize an unset port as zero. Keep service

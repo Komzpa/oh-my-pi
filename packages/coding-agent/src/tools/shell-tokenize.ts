@@ -27,8 +27,228 @@ export function tokenizeShellSegments(command: string): string[][] {
 	return segments;
 }
 
-/** One lexical piece of a shell command: a word, or the whitespace/operator run between words. */
-export type ShellToken = { kind: "word"; raw: string; value: string } | { kind: "separator"; raw: string };
+interface ShellHereDocument {
+	body: string;
+	quoted: boolean;
+	fd: number;
+}
+
+interface PendingShellHereDocument {
+	delimiter: string;
+	stripTabs: boolean;
+	document: ShellHereDocument;
+}
+
+function readShellHereDocumentHeader(
+	command: string,
+	start: number,
+): { length: number; pending: PendingShellHereDocument } | undefined {
+	if (command[start - 1] === "<" || command[start + 2] === "<") return undefined;
+	const operator = /^<<-?[ \t]*/u.exec(command.slice(start))?.[0];
+	if (!operator) return undefined;
+	const delimiter = lexShellCommand(command.slice(start + operator.length))[0];
+	if (delimiter?.kind !== "word") return undefined;
+	const normalized = lexShellCommand(delimiter.raw, true)[0];
+	return {
+		length: operator.length + delimiter.raw.length,
+		pending: {
+			delimiter: normalized?.kind === "word" ? normalized.value : delimiter.value,
+			stripTabs: operator.startsWith("<<-"),
+			document: { body: "", quoted: /['"\\]/u.test(delimiter.raw), fd: 0 },
+		},
+	};
+}
+
+function readShellHereDocumentBodies(command: string, start: number, pending: PendingShellHereDocument[]): number {
+	let cursor = start;
+	for (const { delimiter, stripTabs, document } of pending.splice(0)) {
+		while (cursor < command.length) {
+			const end = command.indexOf("\n", cursor);
+			const next = end < 0 ? command.length : end + 1;
+			const line = command.slice(cursor, end < 0 ? command.length : end);
+			cursor = next;
+			const content = stripTabs ? line.replace(/^\t+/u, "") : line;
+			if (content === delimiter) break;
+			document.body += content + (end < 0 ? "" : "\n");
+		}
+	}
+	return cursor;
+}
+
+interface ShellWordToken {
+	kind: "word";
+	raw: string;
+	value: string;
+	hereDocument?: ShellHereDocument;
+	/** Active substitutions are code even when the containing word is data. */
+	substitutions?: string[];
+	/** The following word is the redirect operand, not an argv entry. */
+	redirection?: { operator: string; fd: number };
+	dynamic?: boolean;
+}
+
+/** Bash ANSI-C quoting and printf share the basic backslash escape alphabet. */
+export function decodeShellEscapes(text: string): string {
+	const escapes: Record<string, string> = {
+		a: "\x07",
+		b: "\b",
+		e: "\x1b",
+		E: "\x1b",
+		f: "\f",
+		n: "\n",
+		r: "\r",
+		t: "\t",
+		v: "\v",
+		"\\": "\\",
+		"'": "'",
+		'"': '"',
+		"?": "?",
+	};
+	return text.replace(
+		/\\(?:x[\da-fA-F]{1,2}|u[\da-fA-F]{1,4}|U[\da-fA-F]{1,8}|[0-7]{1,3}|c[\s\S]|[\s\S])/gu,
+		escape => {
+			const code = escape[1];
+			if (code === "x" || code === "u" || code === "U") {
+				const point = Number.parseInt(escape.slice(2), 16);
+				return point <= 0x10ffff ? String.fromCodePoint(point) : escape;
+			}
+			if (/[0-7]/u.test(code)) return String.fromCharCode(Number.parseInt(escape.slice(1), 8) & 255);
+			if (code === "c") return String.fromCharCode(escape[2] === "?" ? 127 : escape.charCodeAt(2) & 31);
+			return escapes[code] ?? escape;
+		},
+	);
+}
+
+/** Read one substitution without letting its quotes or operators alter the outer command. */
+function readShellSubstitution(command: string, start: number, depth = 0): { end: number; body: string } | undefined {
+	const backtick = command[start] === "`";
+	if (!backtick && !("$<>".includes(command[start]) && command[start + 1] === "(")) return undefined;
+	const bodyStart = start + (backtick ? 1 : 2);
+	if (depth > 64) return { end: command.length, body: command.slice(bodyStart) };
+	let quote: "'" | '"' | undefined;
+	let nesting = 1;
+	const pending: PendingShellHereDocument[] = [];
+	for (let i = bodyStart; i < command.length; i++) {
+		const ch = command[i];
+		if (ch === "\\" && quote !== "'") {
+			i++;
+			continue;
+		}
+		// Backticks terminate even inside quotes; their escaped spelling is
+		// unescaped once before the shell parses the contained command.
+		if (backtick && ch === "`") {
+			return { end: i + 1, body: command.slice(bodyStart, i).replace(/\\([\\$`])/gu, "$1") };
+		}
+		if (quote === "'") {
+			if (ch === "'") quote = undefined;
+			continue;
+		}
+		if (!quote && ch === "$" && command[i + 1] === "'") {
+			i += 2;
+			for (; i < command.length && command[i] !== "'"; i++) {
+				if (command[i] === "\\") i++;
+			}
+			continue;
+		}
+		const nested = readShellSubstitution(command, i, depth + 1);
+		if (nested) {
+			i = nested.end - 1;
+			continue;
+		}
+		if (quote === '"') {
+			if (ch === '"') quote = undefined;
+			continue;
+		}
+		const document = ch === "<" ? readShellHereDocumentHeader(command, i) : undefined;
+		if (document) {
+			pending.push(document.pending);
+			i += document.length - 1;
+			continue;
+		}
+		if (ch === "\n" && pending.length) {
+			i = readShellHereDocumentBodies(command, i + 1, pending) - 1;
+			continue;
+		}
+		if (ch === "#" && (i === bodyStart || /[\s;|&()]/u.test(command[i - 1]))) {
+			const newline = command.indexOf("\n", i);
+			i = (newline < 0 ? command.length : newline) - 1;
+			continue;
+		}
+		if (ch === "'" || ch === '"') quote = ch;
+		else if (!backtick && ch === "(") nesting++;
+		else if (!backtick && ch === ")" && --nesting === 0) return { end: i + 1, body: command.slice(bodyStart, i) };
+	}
+	return { end: command.length, body: command.slice(bodyStart) };
+}
+
+/** Heredoc text has no quoting syntax: only backslash, $, and backticks are special. */
+export function shellHereDocumentSubstitutions(body: string): string[] {
+	const substitutions: string[] = [];
+	for (let i = 0; i < body.length; i++) {
+		if (body[i] === "\\" && /[\\$`\n]/u.test(body[i + 1] ?? "")) {
+			i++;
+			continue;
+		}
+		if (body[i] !== "$" && body[i] !== "`") continue;
+		const substitution = readShellSubstitution(body, i);
+		if (!substitution) continue;
+		substitutions.push(substitution.body);
+		i = substitution.end - 1;
+	}
+	return substitutions;
+}
+
+/** One lexical piece of a shell command: a word, or its intervening separators. */
+export type ShellToken = ShellWordToken | { kind: "separator"; raw: string };
+
+/** env -S has quote removal, but shell operators are literal and \_ splits words. */
+export function splitEnvCommand(command: string): string[] {
+	let quoted: "'" | '"' | undefined;
+	let literal = "";
+	for (let i = 0; i < command.length; i++) {
+		const ch = command[i];
+		if (quoted === "'") {
+			literal += ch;
+			if (ch === "'") quoted = undefined;
+			continue;
+		}
+		if (ch === "\\") {
+			const next = command[++i] ?? "";
+			if (next === "c") break;
+			if (next === "_") literal += " ";
+			else {
+				const escapes: Record<string, string> = { f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" };
+				literal += `\\${escapes[next] ?? next}`;
+			}
+			continue;
+		}
+		if (ch === quoted) quoted = undefined;
+		else if (!quoted && (ch === "'" || ch === '"')) quoted = ch;
+		else if (!quoted && ch === "#" && (i === 0 || /\s/u.test(command[i - 1]))) break;
+		if (!quoted && /[;&|()<>]/u.test(ch)) literal += "\\";
+		literal += ch;
+	}
+	return lexShellCommand(literal).flatMap(token => (token.kind === "word" ? [token.value] : []));
+}
+
+/** Execution-oriented segments retain quoting and attach stdin to its owning command.
+ * Other lexical consumers keep their existing, lossless token stream.
+ */
+export function tokenizeShellExecutionSegments(command: string): { words: ShellWordToken[]; pipedStdin: boolean }[] {
+	const segments: { words: ShellWordToken[]; pipedStdin: boolean }[] = [];
+	let current: ShellWordToken[] = [];
+	let pipedStdin = false;
+	for (const token of lexShellCommand(command, true)) {
+		if (token.kind === "word") current.push(token);
+		else if (/[\n;&|()]/.test(token.raw) && current.length > 0) {
+			segments.push({ words: current, pipedStdin });
+			current = [];
+			pipedStdin = /^\s*\|&?\s*$/u.test(token.raw);
+		}
+	}
+	if (current.length > 0) segments.push({ words: current, pipedStdin });
+	return segments;
+}
 
 /**
  * Lex a command into words and separators with their source text, so callers can rewrite words
@@ -36,13 +256,16 @@ export type ShellToken = { kind: "word"; raw: string; value: string } | { kind: 
  * quote/escape-removed word, `raw` its verbatim spelling; separators are runs of spaces, tabs, and
  * the operator characters `\n ; & | ( )`.
  */
-export function lexShellCommand(command: string): ShellToken[] {
+export function lexShellCommand(command: string, hereDocuments = false): ShellToken[] {
 	const tokens: ShellToken[] = [];
+	const pending: PendingShellHereDocument[] = [];
 	let value = "";
 	let wordStart = -1;
 	let separatorStart = -1;
 	let inSingle = false;
 	let inDouble = false;
+	let substitutions: string[] = [];
+	let dynamic = false;
 	const startWord = (index: number) => {
 		if (wordStart >= 0) return;
 		if (separatorStart >= 0) {
@@ -53,7 +276,15 @@ export function lexShellCommand(command: string): ShellToken[] {
 	};
 	const endWord = (index: number) => {
 		if (wordStart < 0) return;
-		tokens.push({ kind: "word", raw: command.slice(wordStart, index), value });
+		tokens.push({
+			kind: "word",
+			raw: command.slice(wordStart, index),
+			value,
+			...(substitutions.length ? { substitutions } : {}),
+			...(dynamic ? { dynamic } : {}),
+		});
+		substitutions = [];
+		dynamic = false;
 		value = "";
 		wordStart = -1;
 	};
@@ -64,6 +295,38 @@ export function lexShellCommand(command: string): ShellToken[] {
 			else value += ch;
 			continue;
 		}
+		if (hereDocuments && ch === "\\" && command[i + 1] === "\n") {
+			i++;
+			continue;
+		}
+		if (hereDocuments && !inDouble && ch === "$" && command[i + 1] === "'") {
+			startWord(i);
+			const start = i + 2;
+			i = start;
+			for (; i < command.length && command[i] !== "'"; i++) {
+				if (command[i] === "\\") i++;
+			}
+			value += decodeShellEscapes(command.slice(start, i)).split("\0")[0];
+			continue;
+		}
+		if (hereDocuments && !inDouble && ch === "$" && command[i + 1] === '"') {
+			startWord(i);
+			inDouble = true;
+			i++;
+			continue;
+		}
+		if (hereDocuments && (inDouble ? ch === "$" || ch === "`" : "$`<>".includes(ch))) {
+			const substitution = readShellSubstitution(command, i);
+			if (substitution) {
+				startWord(i);
+				value += command.slice(i, substitution.end);
+				dynamic = true;
+				substitutions.push(substitution.body);
+				i = substitution.end - 1;
+				continue;
+			}
+		}
+		if (hereDocuments && ch === "$" && /[A-Za-z_\d{*@$?!#-]/u.test(command[i + 1] ?? "")) dynamic = true;
 		if (inDouble) {
 			if (ch === "\\" && i + 1 < command.length) {
 				const next = command[i + 1];
@@ -75,6 +338,65 @@ export function lexShellCommand(command: string): ShellToken[] {
 			}
 			if (ch === '"') inDouble = false;
 			else value += ch;
+			continue;
+		}
+		// Delimiter words use shell quote removal, but their bodies are data until
+		// the next unquoted newline. Never lex literal bodies as commands.
+		if (hereDocuments && ch === "<" && command[i - 1] !== "<" && command[i + 1] === "<" && command[i + 2] !== "<") {
+			const redirectStart = wordStart >= 0 && /^\d+$/u.test(value) ? wordStart : i;
+			if (redirectStart < i) {
+				value = "";
+				wordStart = -1;
+			} else endWord(i);
+			const header = readShellHereDocumentHeader(command, i);
+			if (header) {
+				startWord(redirectStart);
+				const document = header.pending.document;
+				document.fd = Number(command.slice(redirectStart, i) || "0");
+				tokens.push({
+					kind: "word",
+					raw: command.slice(redirectStart, i + header.length),
+					value: "",
+					hereDocument: document,
+				});
+				pending.push(header.pending);
+				wordStart = -1;
+				i += header.length - 1;
+				continue;
+			}
+		}
+		if (hereDocuments && (ch === "<" || ch === ">" || (ch === "&" && command[i + 1] === ">"))) {
+			const fdStart = wordStart >= 0 && /^(?:\d+|\{\w+\})$/u.test(value) ? wordStart : i;
+			if (fdStart < i) {
+				value = "";
+				wordStart = -1;
+			} else endWord(i);
+			const operator = /^(?:&>>?|<<<|>>|<>|[<>][&|]?)/u.exec(command.slice(i))![0];
+			startWord(fdStart);
+			tokens.push({
+				kind: "word",
+				raw: command.slice(fdStart, i + operator.length),
+				value: "",
+				redirection: {
+					operator,
+					fd: Number(command.slice(fdStart, i) || (ch === "<" ? "0" : "1")),
+				},
+			});
+			wordStart = -1;
+			i += operator.length - 1;
+			continue;
+		}
+		if (hereDocuments && ch === "#" && wordStart < 0) {
+			// A comment may itself contain quotes or fake heredoc operators.
+			if (separatorStart < 0) separatorStart = i;
+			const newline = command.indexOf("\n", i);
+			i = (newline < 0 ? command.length : newline) - 1;
+			continue;
+		}
+		if (hereDocuments && ch === "\n" && pending.length > 0) {
+			endWord(i);
+			if (separatorStart < 0) separatorStart = i;
+			i = readShellHereDocumentBodies(command, i + 1, pending) - 1;
 			continue;
 		}
 		if (
