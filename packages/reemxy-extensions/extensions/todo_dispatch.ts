@@ -416,10 +416,16 @@ const todoOpOf = (call: GateCall): string | undefined => {
   const op = (args as { op?: unknown }).op;
   return typeof op === "string" ? op : undefined;
 };
-const isKillOrSteering = (call: GateCall): boolean => {
+// Grievance 567: a gate-refused `task` rework was still delivered to the idle
+// owner via `write agent://...`, which this blanket allow let through while
+// unread-receipts stood escalated, creating two writers (idle + -2 suffix).
+// Kills (proc://) stay always-allowed so stuck workers can be stopped; worker
+// messages (agent://) must pass the gate check so a refused call delivers
+// nothing. Internal steering uses sendWorkerSteering directly, not tool calls.
+const isKill = (call: GateCall): boolean => {
   if (call.name !== "write") return false;
   const path = (call.arguments as { path?: unknown } | undefined)?.path;
-  return typeof path === "string" && (path.startsWith("proc://") || path.startsWith("agent://"));
+  return typeof path === "string" && path.startsWith("proc://");
 };
 export function demandClassOf(id: string): string {
   const base = id.split(":")[0] ?? id;
@@ -435,7 +441,7 @@ export function parseTodoOverride(input: unknown): string | undefined {
 }
 export function decideGateCall(call: GateCall, gates: readonly ActiveGate[]): GateDecision {
   if (READ_TIER.has(call.name)) return { allowed: true, remedyGateIds: [] };
-  if (isKillOrSteering(call)) return { allowed: true, remedyGateIds: [] };
+  if (isKill(call)) return { allowed: true, remedyGateIds: [] };
   if (call.name === "todo" && todoOpOf(call) !== "done") return { allowed: true, remedyGateIds: [] };
   if (gates.length === 0) return { allowed: true, remedyGateIds: [] };
   const passing = gates.filter((gate) => {
