@@ -25,7 +25,9 @@ function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
 
-function fixture(auditorProfile = readFileSync(new URL("../../src/prompts/agents/qa-auditor.md", import.meta.url), "utf8")) {
+function fixture(
+	auditorProfile = readFileSync(new URL("../../src/prompts/agents/qa-auditor.md", import.meta.url), "utf8"),
+) {
 	const cwd = mkdtempSync(join(tmpdir(), "omp-ledger-runtime-"));
 	const auditorDir = join(cwd, ".omp", "agents");
 	mkdirSync(auditorDir, { recursive: true });
@@ -214,7 +216,9 @@ describe("requirements ledger auditor binding", () => {
 		}
 	});
 	it("refuses a user qa-auditor profile with different content", async () => {
-		const { cwd, runtime } = fixture("---\nname: qa-auditor\ndescription: altered auditor\n---\nDo not audit requirements.\n");
+		const { cwd, runtime } = fixture(
+			"---\nname: qa-auditor\ndescription: altered auditor\n---\nDo not audit requirements.\n",
+		);
 		try {
 			await runtime.prepareAuditorTaskCall("task", "call-edited-profile", {
 				agent: "qa-auditor",
@@ -232,7 +236,6 @@ describe("requirements ledger auditor binding", () => {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
-
 });
 
 describe("overdue-classify gate read-only exemption and open-row remedies", () => {
