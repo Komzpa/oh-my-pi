@@ -4,10 +4,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { RequirementsLedgerRuntime } from "@oh-my-pi/pi-coding-agent/session/requirements-ledger-runtime";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import {
-	TodoTool,
-	USER_TODO_EDIT_CUSTOM_TYPE,
-} from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { TodoTool, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
@@ -27,7 +24,14 @@ function assistantStop(): Parameters<SessionManager["appendMessage"]>[0] {
 		api: "anthropic-messages",
 		provider: "anthropic",
 		model: "claude-sonnet-4-5",
-		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 		stopReason: "stop",
 		timestamp: 1,
 	} as unknown as Parameters<SessionManager["appendMessage"]>[0];

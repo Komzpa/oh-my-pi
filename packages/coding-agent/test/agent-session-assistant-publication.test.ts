@@ -242,7 +242,10 @@ describe("assistant publication bridge", () => {
 		const result = agent.state.messages.find(
 			message => message.role === "toolResult" && message.toolCallId === "probe-overdue",
 		);
-		const parts = result && typeof result === "object" && "content" in result && Array.isArray(result.content) ? result.content : [];
+		const parts =
+			result && typeof result === "object" && "content" in result && Array.isArray(result.content)
+				? result.content
+				: [];
 		const refusalText = parts
 			.map(part =>
 				part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part
