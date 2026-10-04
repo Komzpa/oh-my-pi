@@ -26,7 +26,7 @@ import { getOrCreateSnapshot } from "../utils/shell-snapshot";
 import { TerminalGraphicsDecoder } from "../utils/terminal-graphics";
 import { loadDirenvEnv } from "./direnv";
 import { buildNonInteractiveEnv } from "./non-interactive-env";
-import { ensureSubagentRuntimeDir, stripDesktopSessionEnv } from "@oh-my-pi/pi-utils";
+import { DESKTOP_SESSION_ENV_KEYS, ensureSubagentRuntimeDir, stripDesktopSessionEnv } from "@oh-my-pi/pi-utils";
 
 import {
 	cfgBashDirenv,
@@ -573,6 +573,9 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		}),
 	]);
 	const commandEnv = buildNonInteractiveEnv(preflight.env);
+	if (options?.maskDesktopSession) {
+		commandEnv.XDG_RUNTIME_DIR ??= shellEnv.XDG_RUNTIME_DIR;
+	}
 	const runCdInPersistentShell = options?.useUserShell === true && !prefix && isPersistentShellCdCommand(command);
 	// Never wrap in cmd.exe: it is only the Windows no-bash fallback for spawn
 	// paths, and the embedded brush shell runs the POSIX line better directly.
@@ -659,6 +662,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	const sessionEnv = options?.gitGuard ? { ...shellEnv, PI_GIT_GUARD: "1" } : shellEnv;
 	const shellOptions = {
 		sessionEnv,
+		unsetEnv: options?.maskDesktopSession ? [...DESKTOP_SESSION_ENV_KEYS, "XDG_RUNTIME_DIR"] : undefined,
 		snapshotPath: snapshotPath ?? undefined,
 		minimizer,
 	};

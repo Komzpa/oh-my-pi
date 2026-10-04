@@ -952,6 +952,7 @@
 - Fixed the daemon broker on Windows dying with the omp process that started it, which stopped the shared browser relay (and every other broker daemon) while other omp sessions were still using it
 - Fixed the `browser` tool's Tern backend being refused by any Tern newer than the protocol omp was built against; it now speaks Tern's JSON script protocol, which no Tern build ties it to, and a Tern from before it reports as unavailable (update Tern) so the Chromium fallback takes over.
 - Task workers no longer inherit the user's desktop session: subagent `bash` environments drop `WAYLAND_DISPLAY`, `DISPLAY`, and `DBUS_SESSION_BUS_ADDRESS`, and get a per-worker private `XDG_RUNTIME_DIR` instead of `/run/user/<uid>`. The main interactive session's environment is unchanged.
+- Task workers no longer inherit the user's desktop session: subagent bash and JavaScript/Python eval children drop desktop bindings and get a private `XDG_RUNTIME_DIR` instead of `/run/user/<uid>`. Native shell imports and snapshots cannot restore inherited bindings. Main-session commands and explicitly supplied fixture environments are unchanged.
 
 ## [18.4.12] - 2026-10-02
 

@@ -3110,6 +3110,8 @@ export interface ShellExecuteOptions {
   env?: Record<string, string>
   /** Environment variables to apply once per session. */
   sessionEnv?: Record<string, string>
+  /** Environment names removed after session import and snapshot sourcing. */
+  unsetEnv?: Array<string>
   /** Timeout in milliseconds before cancelling the command. */
   timeoutMs?: number
   /** Optional snapshot file to source on session creation. */
@@ -3443,6 +3445,8 @@ export interface ShellFsStatFs {
 export interface ShellOptions {
   /** Environment variables to apply once per session. */
   sessionEnv?: Record<string, string>
+  /** Environment names removed after session import and snapshot sourcing. */
+  unsetEnv?: Array<string>
   /** Optional snapshot file to source on session creation. */
   snapshotPath?: string
   /** Optional per-command output minimizer configuration. */

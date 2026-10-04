@@ -236,6 +236,7 @@ async function startKernel(cwd: string, options: PythonExecutorOptions): Promise
 	return await PythonKernel.start({
 		cwd,
 		env: buildManagedKernelEnv(options),
+		maskDesktopSession: options.toolSession?.agentKind === "sub",
 		signal: options.signal,
 		deadlineMs: options.deadlineMs,
 		interpreter: options.interpreter,

@@ -33,6 +33,7 @@ import {
 	resolvePythonRuntime,
 } from "./runtime";
 import { hostHasInheritableConsole, shouldDetachKernel, shouldHideKernelWindow } from "./spawn-options";
+import { ensureSubagentRuntimeDir, stripDesktopSessionEnv } from "@oh-my-pi/pi-utils";
 import type { PythonToolRequest } from "./executor";
 
 export type {
@@ -309,9 +310,12 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 				? resolveExplicitPythonRuntime(options.interpreter, options.cwd, filterEnv(shellEnv))
 				: resolvePythonRuntime(options.cwd, filterEnv(shellEnv));
 		}
-		const spawnEnv: Record<string, string> = {};
+		let spawnEnv: Record<string, string> = {};
 		for (const [key, value] of Object.entries(runtime.env)) {
 			if (typeof value === "string") spawnEnv[key] = value;
+		}
+		if (options.maskDesktopSession) {
+			spawnEnv = stripDesktopSessionEnv(spawnEnv, ensureSubagentRuntimeDir(options.cwd));
 		}
 		for (const [key, value] of Object.entries(options.env ?? {})) {
 			if (typeof value === "string") spawnEnv[key] = value;
@@ -321,6 +325,7 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 
 		const scriptPath = await stageRunnerScript("omp-python-runner", "py", RUNNER_SCRIPT);
 		const kernel = new PythonKernel(Snowflake.next());
+
 
 		try {
 			kernel.#resourceScope = new ToolResourceScope();
