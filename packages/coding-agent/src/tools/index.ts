@@ -359,6 +359,13 @@ export interface ToolSession {
 	getAgentId?: () => string | null;
 	/** Parent cache identity for sibling sharing, only when the parent model opts in. */
 	getPromptCacheKey?: () => string | undefined;
+	/**
+	 * Which agent owns this tool session. `bash`/`eval` tool environments strip
+	 * the desktop-session bindings (`WAYLAND_DISPLAY`, `DISPLAY`,
+	 * `DBUS_SESSION_BUS_ADDRESS`, user `XDG_RUNTIME_DIR`) when this is `"sub"`;
+	 * the main interactive session keeps its environment unchanged.
+	 */
+	agentKind?: "main" | "sub";
 	/** Look up a registered tool by name (used by the eval js backend's tool bridge). */
 	getToolByName?: (name: string) => AgentTool | undefined;
 	/** Look up an enabled tool through the eval bridge's normal permission pipeline. */

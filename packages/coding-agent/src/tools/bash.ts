@@ -869,6 +869,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
 						sessionKey: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
+						maskDesktopSession: this.session.agentKind === "sub",
 						timeout: options.timeoutMs ?? 0,
 						signal: runSignal,
 						gitGuard: cfgBashGitGuard.get(this.session.settings),
@@ -1547,6 +1548,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				await executeBash(command, {
 					cwd: commandCwd,
 					sessionKey: this.session.getSessionId?.() ?? undefined,
+					maskDesktopSession: this.session.agentKind === "sub",
 					timeout: timeoutMs ?? 0,
 					signal,
 					gitGuard: cfgBashGitGuard.get(this.session.settings),
