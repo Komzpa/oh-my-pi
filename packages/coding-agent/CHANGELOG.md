@@ -202,6 +202,11 @@
 
 - Tool approval prompts now replace the composer like `ask`, show one row per detail, and approve with `Ctrl+Enter` (or `Ctrl+Q`) instead of `Enter` ([#15548](https://github.com/can1357/oh-my-pi/pull/15548) by [@H4vC](https://github.com/H4vC))
 
+### Fixed: hashline block selection
+
+- Fixed `PUT N*`/`CUT N*` refusing multi-line openers in QML files (such as `Item {` in `qt/tests/*.qml`) as unsupported syntax: QML has no tree-sitter grammar, so its brace blocks are now resolved by brace matching, and `PUT >N*` lands as a sibling after the block.
+- Fixed `PUT >N`/`PUT >N*` anchored on a closing line sliding a shallower body past the enclosing closer (for example a `private:` block landing after the class closer, producing invalid C++): inserts anchored on a structural closer now stay at the specified gap.
+
 ### Fixed
 
 - Fixed late completion probes rewinding resumed conversations and stale history scans lowering parked subagent costs ([#15594](https://github.com/can1357/oh-my-pi/pull/15594) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
