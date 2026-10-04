@@ -15,6 +15,9 @@
 ### Fixed: tool subprocess priority
 
 - Lowered Linux Bun Shell tool children (update probes, share gist, IDA probe, gallery render, sshfs mounts, runtime installs) to nice 19 and best-effort I/O priority 7 via a shared shell prefix; interactive UI and terminal spawns are unchanged.
+
+### Fixed: native/tool child priority
+
 - Lowered Linux native utility, isolation, OAuth-helper, and omp-launched browser children to nice 19 and best-effort I/O priority 7 without changing omp's own priority.
 
 ## [18.4.12] - 2026-10-02
