@@ -118,7 +118,7 @@ fn is_git_worktree(path: &Path) -> bool {
 }
 
 fn git_worktree_add(lower: &Path, merged: &Path) -> IsoResult<()> {
-	let output = std::process::Command::new("git")
+	let output = crate::process::background_command("git")
 		.arg("-C")
 		.arg(lower)
 		.args(["worktree", "add", "--detach"])
@@ -144,7 +144,7 @@ fn git_worktree_add(lower: &Path, merged: &Path) -> IsoResult<()> {
 }
 
 fn git_worktree_remove(merged: &Path) -> IsoResult<()> {
-	let output = std::process::Command::new("git")
+	let output = crate::process::background_command("git")
 		.arg("-C")
 		.arg(merged)
 		.args(["worktree", "remove", "--force"])
@@ -208,7 +208,7 @@ fn seed_dirty_state(lower: &Path, merged: &Path) -> IsoResult<()> {
 }
 
 fn git_capture(cwd: &Path, args: &[&str]) -> IsoResult<Vec<u8>> {
-	let output = std::process::Command::new("git")
+	let output = crate::process::background_command("git")
 		.arg("-C")
 		.arg(cwd)
 		.args(args)
@@ -246,7 +246,7 @@ fn git_apply_with_program(
 	extra: &[&str],
 ) -> IsoResult<()> {
 	use std::io::{Read as _, Write as _};
-	let mut child = std::process::Command::new(program)
+	let mut child = crate::process::background_command(program)
 		.arg("-C")
 		.arg(cwd)
 		.args(["apply", "--binary", "--whitespace=nowarn"])
@@ -532,5 +532,49 @@ mod tests {
 			.expect_err("fake git apply should fail after consuming stdin");
 		let message = err.to_string();
 		assert!(message.starts_with("git apply (exit 42): simulated apply failure"));
+	}
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod background_priority_tests {
+	#[test]
+	fn git_capture_background_priority_preserves_parent() {
+		let parent_pid = std::process::id();
+		let parent_before = std::fs::read_to_string(format!("/proc/{parent_pid}/stat")).unwrap();
+		let output = super::git_capture(&std::env::temp_dir(), &[
+			"-c",
+			"alias.priority=!cat /proc/$$/stat; ionice -p $$",
+			"priority",
+		])
+		.unwrap();
+		let output = String::from_utf8(output).unwrap();
+		let mut lines = output.lines();
+		let child_stat = lines.next().unwrap();
+		let child_nice = child_stat
+			.rsplit_once(')')
+			.unwrap()
+			.1
+			.split_whitespace()
+			.nth(16)
+			.unwrap();
+		assert_eq!(child_nice, "19", "child stat: {child_stat}");
+		let child_io = lines.next().unwrap();
+		assert_eq!(child_io, "best-effort: prio 7");
+		let parent_after = std::fs::read_to_string(format!("/proc/{parent_pid}/stat")).unwrap();
+		let nice = |stat: &str| {
+			stat
+				.rsplit_once(')')
+				.unwrap()
+				.1
+				.split_whitespace()
+				.nth(16)
+				.unwrap()
+				.to_owned()
+		};
+		assert_eq!(nice(&parent_after), nice(&parent_before));
+		println!(
+			"child nice={child_nice}; child io={child_io}; parent nice={} unchanged",
+			nice(&parent_after)
+		);
 	}
 }

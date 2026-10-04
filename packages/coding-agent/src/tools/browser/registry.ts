@@ -16,6 +16,7 @@ import {
 	type UserAgentOverride,
 } from "./launch";
 import { reapOrphanSharedTargets } from "./orphan-registry";
+import { backgroundBrowserCommand } from "./priority";
 import { ensureRelayDaemon, isLoopbackRelayUrl } from "./relay/daemon";
 import type { RelayKind } from "./relay/kind";
 import { waitForRelayExtension } from "./relay/probe";
@@ -291,7 +292,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 	} else {
 		const port = await findFreeCdpPort();
 		const launchArgs = [...appArgs, `--remote-debugging-port=${port}`];
-		const child = Bun.spawn([exe, ...launchArgs], {
+		const child = Bun.spawn(backgroundBrowserCommand(exe, launchArgs), {
 			cwd: opts.cwd,
 			stdout: "ignore",
 			stderr: "ignore",
