@@ -12,6 +12,10 @@
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 - Task workers no longer inherit the user's desktop session: subagent bash and JavaScript/Python eval children drop desktop bindings and get a private `XDG_RUNTIME_DIR` instead of `/run/user/<uid>`. Native shell imports and snapshots cannot restore inherited bindings. Main-session commands and explicitly supplied fixture environments are unchanged.
 
+### Fixed: tool subprocess priority
+
+- Lowered Linux Bun Shell tool children (update probes, share gist, IDA probe, gallery render, sshfs mounts, runtime installs) to nice 19 and best-effort I/O priority 7 via a shared shell prefix; interactive UI and terminal spawns are unchanged.
+
 ## [18.4.12] - 2026-10-02
 
 ### Added
