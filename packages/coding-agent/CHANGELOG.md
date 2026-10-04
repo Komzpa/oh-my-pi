@@ -133,6 +133,9 @@
 - Fixed startup without an explicit model picking an unrelated authenticated provider instead of the first available model in the configured default fallback chain ([#15781](https://github.com/can1357/oh-my-pi/pull/15781) by [@mvid](https://github.com/mvid))
 
 ## [18.11.0] - 2026-10-14
+### Fixed: Finished background job lookup
+
+- Keep delivered background jobs readable through `proc://<id>` until normal retention expires, while omitting consumed jobs from listings and preserving owner isolation.
 
 ### Added
 
