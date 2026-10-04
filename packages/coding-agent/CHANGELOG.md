@@ -202,10 +202,12 @@
 
 - Tool approval prompts now replace the composer like `ask`, show one row per detail, and approve with `Ctrl+Enter` (or `Ctrl+Q`) instead of `Enter` ([#15548](https://github.com/can1357/oh-my-pi/pull/15548) by [@H4vC](https://github.com/H4vC))
 
-### Fixed: hashline block selection
+### Fixed: hashline edit correctness
 
+- The hashline `edit` tool rejects malformed operation headers such as `PUT 351*=357` with a parse error naming the line instead of inserting them (and their bodies) verbatim as payload; body rows start with `+`.
+- Fixed hashline `edit` rejecting a fresh snapshot tag when the tag reached the snapshot store in non-uppercase form; `by_hash`, `find_by_hash`, and seen-line recording now compare tags case-insensitively.
 - Fixed `PUT N*`/`CUT N*` refusing multi-line openers in QML files (such as `Item {` in `qt/tests/*.qml`) as unsupported syntax: QML has no tree-sitter grammar, so its brace blocks are now resolved by brace matching, and `PUT >N*` lands as a sibling after the block.
-- Fixed `PUT >N`/`PUT >N*` anchored on a closing line sliding a shallower body past the enclosing closer (for example a `private:` block landing after the class closer, producing invalid C++): inserts anchored on a structural closer now stay at the specified gap.
+- Fixed `PUT >N`/`PUT >N*` anchored on a closing line sliding a shallower body past the enclosing closer (for example a `private:` block landing after the class closer, producing invalid C++): inserts anchored on structural closers now stay at the specified gap.
 
 ### Fixed
 
@@ -958,6 +960,7 @@
 - Fixed the daemon broker on Windows dying with the omp process that started it, which stopped the shared browser relay (and every other broker daemon) while other omp sessions were still using it
 - Fixed the `browser` tool's Tern backend being refused by any Tern newer than the protocol omp was built against; it now speaks Tern's JSON script protocol, which no Tern build ties it to, and a Tern from before it reports as unavailable (update Tern) so the Chromium fallback takes over.
 - Fixed hashline `edit` rejecting a fresh snapshot tag when the tag reached the snapshot store in non-uppercase form; `by_hash`, `find_by_hash`, and seen-line recording now compare tags case-insensitively.
+- Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02
 
