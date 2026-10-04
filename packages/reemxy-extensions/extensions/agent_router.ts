@@ -81,7 +81,9 @@ function spawnTextMatchesRowTitle(text: string, title: unknown): boolean {
 	const normalizedText = firstLine.replace(/^#\s*row\s*:\s*/i, "").trim();
 	const normalizedTitle = clean.replace(/^#\s*row\s*:\s*/i, "").trim();
 	return (
-		normalizedText !== "" && normalizedTitle !== "" && (normalizedText === normalizedTitle || normalizedText.startsWith(normalizedTitle))
+		normalizedText !== "" &&
+		normalizedTitle !== "" &&
+		(normalizedText === normalizedTitle || normalizedText.startsWith(normalizedTitle))
 	);
 }
 
@@ -190,30 +192,43 @@ function activeWriteWorker(
 	});
 }
 
-function profilePool(agent: string, poolSize: number): PoolConfig {
-	const file = new URL(`./agents/${agent}.md`, import.meta.url);
-	const chain = parseAgent(file.pathname, readFileSync(file, "utf8"), "user").model;
+function profilePool(agent: string, poolSize: number, profileDir?: string): PoolConfig {
+	const filePath = profileDir
+		? join(profileDir, `${agent}.md`)
+		: new URL(`./agents/${agent}.md`, import.meta.url).pathname;
+	const chain = parseAgent(filePath, readFileSync(filePath, "utf8"), "user").model;
 	if (!chain?.length) throw new Error(`Missing model frontmatter for ${agent}`);
 	return { pool: chain.slice(0, poolSize), fallbacks: chain.slice(poolSize) };
 }
 
-export const AGENT_POOLS: Record<string, PoolConfig> = {
-	...Object.fromEntries(Object.entries(POOL_SIZES).map(([agent, size]) => [agent, profilePool(agent, size)])),
-	// The built-in task agent has no package profile; retain its independent router policy.
-	task: {
-		pool: [
-			"openrouter/inclusionai/ling-3.0-flash-sante:free",
-			"openrouter/dots-studio/dots-3-note-preview:free",
-			"codex-lb/gpt-6-luna:medium",
-			"kimi-code/kimi-for-coding:high",
-			"deepseek/deepseek-v4-pro:high",
-			"kimi-code/k3:high",
-			"xiaomi/mimo-v2.6-pro",
-			"muse-code/muse-spark-1.3-contributor",
-		],
-		fallbacks: ["codex-lb/gpt-6.1-sol:medium", "codex-lb/Qwen3.8-27B", "cerebras/qwen-3.8-27b"],
-	},
+const TASK_POOL: PoolConfig = {
+	pool: [
+		"openrouter/inclusionai/ling-3.0-flash-sante:free",
+		"openrouter/dots-studio/dots-3-note-preview:free",
+		"codex-lb/gpt-6-luna:medium",
+		"kimi-code/kimi-for-coding:high",
+		"deepseek/deepseek-v4-pro:high",
+		"kimi-code/k3:high",
+		"xiaomi/mimo-v2.6-pro",
+		"muse-code/muse-spark-1.3-contributor",
+	],
+	fallbacks: ["codex-lb/gpt-6.1-sol:medium", "codex-lb/Qwen3.8-27B", "cerebras/qwen-3.8-27b"],
 };
+
+export function getAgentPools(profileDir?: string): Record<string, PoolConfig> {
+	return {
+		...Object.fromEntries(
+			Object.entries(POOL_SIZES).map(([agent, size]) => [agent, profilePool(agent, size, profileDir)]),
+		),
+		task: TASK_POOL,
+	};
+}
+
+export function getAgentPool(agent: string, profileDir?: string): PoolConfig | undefined {
+	if (agent === "task") return TASK_POOL;
+	const size = POOL_SIZES[agent];
+	return size === undefined ? undefined : profilePool(agent, size, profileDir);
+}
 
 export interface SpawnRecord {
 	kind: "spawn";
@@ -510,7 +525,7 @@ export async function agentHasLiveModel(
 	state?: RouterState,
 	now?: () => Date,
 ): Promise<boolean> {
-	const config = AGENT_POOLS[agent];
+	const config = getAgentPool(agent);
 	if (!config) return false;
 	return (await availablePoolMembers([...config.pool, ...config.fallbacks], ctx, state, now)).available.length > 0;
 }
@@ -520,7 +535,7 @@ export async function countLiveWorkerModels(
 	state?: RouterState,
 	now?: () => Date,
 ): Promise<number> {
-	const specs = [...new Set(Object.values(AGENT_POOLS).flatMap(config => [...config.pool, ...config.fallbacks]))];
+	const specs = [...new Set(Object.values(getAgentPools()).flatMap(config => [...config.pool, ...config.fallbacks]))];
 	const { available } = await availablePoolMembers(specs, ctx, state, now);
 	const models = new Set(
 		available.map(spec => {
@@ -600,11 +615,12 @@ export async function routeSubagentSpawn(
 		now?: () => Date;
 		shuffle?: <T>(items: readonly T[]) => T[];
 		latestTodo?: LatestTodoGetter;
+		profileDir?: string;
 	} = {},
 ): { model: string[]; note: string } | { block: true; reason: string } | undefined {
 	const agent = stringValue(event.agent);
 	if (!agent) return undefined;
-	const config = AGENT_POOLS[agent];
+	const config = getAgentPool(agent, options.profileDir);
 	if (!config) return undefined;
 	const latestTodo = memoLatestTodo(options.latestTodo);
 	const checkoutScopes =
@@ -624,10 +640,20 @@ export async function routeSubagentSpawn(
 		if (activeWriter) {
 			const heldScopes = activeWriter.checkoutScopes ?? sessionCwdScopes(ctx);
 			const heldFirst = heldScopes?.[0]?.split("\0") ?? [];
-			const heldScope = heldFirst[0] && heldFirst[0].trim() !== "" ? (heldFirst[1] && heldFirst[1] !== "." ? `${heldFirst[0]}/${heldFirst[1]}` : heldFirst[0]) : holderRepoLabel(activeWriter, ctx);
+			const heldScope =
+				heldFirst[0] && heldFirst[0].trim() !== ""
+					? heldFirst[1] && heldFirst[1] !== "."
+						? `${heldFirst[0]}/${heldFirst[1]}`
+						: heldFirst[0]
+					: holderRepoLabel(activeWriter, ctx);
 			const incomingScopes = checkoutScopes ?? sessionCwdScopes(ctx);
 			const incomingFirst = incomingScopes?.[0]?.split("\0") ?? [];
-			const incomingScope = incomingFirst[0] && incomingFirst[0].trim() !== "" ? (incomingFirst[1] && incomingFirst[1] !== "." ? `${incomingFirst[0]}/${incomingFirst[1]}` : incomingFirst[0]) : cwdRepoLabel(ctx);
+			const incomingScope =
+				incomingFirst[0] && incomingFirst[0].trim() !== ""
+					? incomingFirst[1] && incomingFirst[1] !== "."
+						? `${incomingFirst[0]}/${incomingFirst[1]}`
+						: incomingFirst[0]
+					: cwdRepoLabel(ctx);
 			return {
 				block: true,
 				reason: `Refusing ${agent}: ${activeWriter.agent} worker ${activeWriter.spawnKey} is running in ${holderRepoLabel(activeWriter, ctx)} (holder scope ${heldScope}); this spawn scope is ${incomingScope}; if this row edits another repo, put that repo path in the row resources; isolated: true isolates only ${cwdRepoLabel(ctx)}.`,
@@ -643,7 +669,10 @@ export async function routeSubagentSpawn(
 		options.now,
 	);
 	const skipped = [...poolSkipped, ...fallbackSkipped];
-	const poolOrder = shuffle(available);
+	const poolOrder = [
+		...available.filter(spec => spec.endsWith(":free")),
+		...shuffle(available.filter(spec => !spec.endsWith(":free"))),
+	];
 	const order = [...poolOrder, ...fallbacks];
 	// A critical-path row starts on the fast lane: the earliest chain entry whose
 	// model realizes priority service tier moves to the front. All other rows keep

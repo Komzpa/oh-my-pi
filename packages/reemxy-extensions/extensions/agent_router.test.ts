@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import agentRouter, {
-	AGENT_POOLS,
+	getAgentPools,
 	agentHasLiveModel,
 	countLiveWorkerModels,
 	createRouterState,
@@ -17,6 +17,8 @@ import agentRouter, {
 	type BeforeSubagentSpawnEvent,
 	type ToolResultEvent,
 } from "./agent_router";
+
+const AGENT_POOLS = getAgentPools();
 
 function ctx(overrides: Partial<ExtensionContext> = {}): ExtensionContext {
 	const models = Object.values(AGENT_POOLS)
@@ -126,15 +128,16 @@ describe("agent router", () => {
 		const seen = new Set<string>();
 		const { dir, file } = tempStateFile();
 		try {
-			for (let i = 0; i < 600 && seen.size < AGENT_POOLS.coder.pool.length; i++) {
+			const nonFreePool = AGENT_POOLS.coder.pool.filter(spec => !spec.endsWith(":free"));
+			for (let i = 0; i < 600 && seen.size < nonFreePool.length; i++) {
 				const state = createRouterState();
 				const result = await routeSubagentSpawn({ agent: "coder", spawnKey: `coder-${i}` }, ctx(), state, {
 					stateFile: file,
 				});
 				expect(result).toBeDefined();
-				seen.add(result!.model[0]!);
+				seen.add(result!.model.find(spec => !spec.endsWith(":free"))!);
 			}
-			expect(seen).toEqual(new Set(AGENT_POOLS.coder.pool));
+			expect(seen).toEqual(new Set(nonFreePool));
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -148,12 +151,72 @@ describe("agent router", () => {
 				stateFile: file,
 				shuffle: reversed,
 			});
-			expect(result?.model).toEqual(
-				[...AGENT_POOLS["ui-coder"].pool].reverse().concat(AGENT_POOLS["ui-coder"].fallbacks),
-			);
+			expect(result?.model).toEqual([
+				...AGENT_POOLS["ui-coder"].pool.filter(spec => spec.endsWith(":free")),
+				...AGENT_POOLS["ui-coder"].pool.filter(spec => !spec.endsWith(":free")).reverse(),
+				...AGENT_POOLS["ui-coder"].fallbacks,
+			]);
 			expect(result?.model).toContain("codex-lb/gpt-6.1-sol:medium");
 			expect(result?.model).not.toContain("anthropic/claude-sonnet-5:medium");
 			expect(result?.note).toBe(`pool pick ${result?.model[0]} (eval)`);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	test("reads an edited profile chain at the next spawn", async () => {
+		const { dir, file } = tempStateFile();
+		const profileDir = join(dir, "profiles");
+		mkdirSync(profileDir);
+		const profilePath = join(profileDir, "coder.md");
+		const profile = readFileSync(new URL("./agents/coder.md", import.meta.url), "utf8");
+		try {
+			writeFileSync(profilePath, profile);
+			const before = await routeSubagentSpawn(
+				{ agent: "coder", spawnKey: "profile-before" },
+				ctx(),
+				createRouterState(),
+				{
+					stateFile: file,
+					profileDir,
+				},
+			);
+			expect(before?.model[0]).toBe("openrouter/inclusionai/ling-3.0-flash-sante:free");
+			writeFileSync(
+				profilePath,
+				profile.replace(/^model:.*$/m, "model: xiaomi/mimo-v2.6-pro, kimi-code/kimi-for-coding:high"),
+			);
+			const after = await routeSubagentSpawn(
+				{ agent: "coder", spawnKey: "profile-after" },
+				ctx(),
+				createRouterState(),
+				{
+					stateFile: file,
+					profileDir,
+				},
+			);
+			expect(after?.model).toContain("xiaomi/mimo-v2.6-pro");
+			expect(after?.model).toContain("kimi-code/kimi-for-coding:high");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("keeps the first healthy free model first across repeated picks", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const firstFree = AGENT_POOLS.coder.pool.find(spec => spec.endsWith(":free"))!;
+			const modelKey = firstFree.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
+			const secondFree = AGENT_POOLS.coder.pool.find(spec => spec.endsWith(":free") && spec !== firstFree)!;
+			const unavailableFirstFree = ctxWithHealth({ [modelKey]: { state: "depleted", accounts: [] } });
+			for (let i = 0; i < 50; i++) {
+				const result = await routeSubagentSpawn(
+					{ agent: "coder", spawnKey: `free-first-${i}` },
+					unavailableFirstFree,
+					createRouterState(),
+					{ stateFile: file },
+				);
+				expect(result?.model[0]).toBe(secondFree);
+			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -190,7 +253,7 @@ describe("agent router", () => {
 						},
 					},
 				);
-				expect(result?.model[0]).toBe(candidate);
+				expect(result?.model).toContain(candidate);
 				expect(
 					result?.model.filter(model => model.startsWith("openrouter/")).every(model => model.endsWith(":free")),
 				).toBe(true);
@@ -429,7 +492,11 @@ describe("agent router", () => {
 				getAsyncJobSnapshot: () => ({ running: controlRunning, recent: [], delivery: {} }),
 			});
 			const controlFirst = await routeSubagentSpawn(
-				{ agent: "coder", spawnKey: "control-1", assignment: `# Row: Fix alpha lane\nLane: ${laneA}\nDo the work.` },
+				{
+					agent: "coder",
+					spawnKey: "control-1",
+					assignment: `# Row: Fix alpha lane\nLane: ${laneA}\nDo the work.`,
+				},
 				controlContext,
 				controlState,
 				{ stateFile: file, latestTodo: getLatestTodoPhasesFromEntries },
@@ -437,7 +504,11 @@ describe("agent router", () => {
 			expect(controlFirst?.model).toBeDefined();
 			controlRunning = [{ id: "control-1", type: "task", status: "running" }];
 			const controlSecond = await routeSubagentSpawn(
-				{ agent: "coder", spawnKey: "control-2", assignment: `# Row: Fix alpha lane\nLane: ${laneA}\nDo the follow-up.` },
+				{
+					agent: "coder",
+					spawnKey: "control-2",
+					assignment: `# Row: Fix alpha lane\nLane: ${laneA}\nDo the follow-up.`,
+				},
 				controlContext,
 				controlState,
 				{ stateFile: file, latestTodo: getLatestTodoPhasesFromEntries },
@@ -906,7 +977,7 @@ describe("agent router", () => {
 					},
 				},
 			);
-			expect(result?.model[0]).toBe("kimi-code/kimi-for-coding-highspeed:low");
+			expect(result?.model).toContain("kimi-code/kimi-for-coding-highspeed:low");
 			expect(readJsonl(file)[0]?.skipped).toBeUndefined();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -1143,7 +1214,7 @@ describe("agent router", () => {
 		try {
 			const state = createRouterState();
 			const context = ctx();
-			await routeSubagentSpawn({ agent: "scout", spawnKey: "fallback-1" }, context, state, {
+			const routed = await routeSubagentSpawn({ agent: "scout", spawnKey: "fallback-1" }, context, state, {
 				stateFile: file,
 				shuffle: items => {
 					const index = items.indexOf("kimi-code/kimi-for-coding-highspeed:low");
@@ -1152,7 +1223,7 @@ describe("agent router", () => {
 			});
 			recordRetryFallbackApplied(
 				{
-					from: "kimi-code/kimi-for-coding-highspeed:low",
+					from: routed!.model[0]!,
 					to: "deepseek/deepseek-v4-flash:low",
 					role: "fallback",
 					reason: "Usage preflight: available quota is at or below the 10% reserve.",
@@ -1326,7 +1397,7 @@ describe("agent router", () => {
 				now: () => t0,
 				shuffle: xiaomiFirst,
 			});
-			expect(first?.model[0]).toBe("xiaomi/mimo-v2.6-pro");
+			expect(first?.model[0]).toBe("openrouter/inclusionai/ling-3.0-flash-sante:free");
 			const base = ctx();
 			const xiaomiModel = {
 				provider: "xiaomi",
@@ -1380,7 +1451,7 @@ describe("agent router", () => {
 				now: () => new Date(t0.getTime() + 7 * 60 * 60 * 1000),
 				shuffle: xiaomiFirst,
 			});
-			expect(afterTtl?.model[0]).toBe("xiaomi/mimo-v2.6-pro");
+			expect(afterTtl?.model[0]).toBe("openrouter/inclusionai/ling-3.0-flash-sante:free");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -1701,18 +1772,16 @@ describe("agent router", () => {
 				shuffle: reversed,
 				latestTodo: () => PHASES,
 			});
-		// Only the pool is shuffled; fallbacks keep chain order. Task chain under
-		// a reversed pool shuffle: muse, xiaomi, k3, deepseek, kimi, luna,
-		// dots-free, ling-free, then fallbacks sol, Qwen, cerebras.
+		// Free pool members stay first; only non-free pool members are shuffled.
 		const TASK_ORDER = [
+			"openrouter/inclusionai/ling-3.0-flash-sante:free",
+			"openrouter/dots-studio/dots-3-note-preview:free",
 			"muse-code/muse-spark-1.3-contributor",
 			"xiaomi/mimo-v2.6-pro",
 			"kimi-code/k3:high",
 			"deepseek/deepseek-v4-pro:high",
 			"kimi-code/kimi-for-coding:high",
 			"codex-lb/gpt-6-luna:medium",
-			"openrouter/dots-studio/dots-3-note-preview:free",
-			"openrouter/inclusionai/ling-3.0-flash-sante:free",
 			"codex-lb/gpt-6.1-sol:medium",
 			"codex-lb/Qwen3.8-27B",
 			"cerebras/qwen-3.8-27b",
