@@ -951,6 +951,42 @@ describe("agent router", () => {
 		}
 	});
 
+	test("coder spawn with a fixed shuffle resolves to a free model", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const result = await routeSubagentSpawn(
+				{ agent: "coder", spawnKey: "FreeFirst" },
+				ctx(),
+				createRouterState(),
+				{ stateFile: file, shuffle: items => [...items] },
+			);
+			expect(result?.model[0]).toBe("openrouter/inclusionai/ling-3.0-flash-sante:free");
+			expect(result?.model[1]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
+			expect(result?.model.filter(model => model.endsWith(":free"))).toEqual([
+				"openrouter/inclusionai/ling-3.0-flash-sante:free",
+				"openrouter/dots-studio/dots-3-note-preview:free",
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("reviewer spawn never resolves to a free model (control)", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const result = await routeSubagentSpawn(
+				{ agent: "reviewer", spawnKey: "ReviewNoFree" },
+				ctx(),
+				createRouterState(),
+				{ stateFile: file, shuffle: items => [...items] },
+			);
+			expect(result?.model.length).toBeGreaterThan(0);
+			expect(result?.model.every(model => !model.endsWith(":free"))).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("records exact settled wait job outcome once", async () => {
 		const { dir, file } = tempStateFile();
 		try {
