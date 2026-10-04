@@ -6184,6 +6184,56 @@ mod tests {
 		Ok(())
 	}
 
+	#[test]
+	#[cfg(unix)]
+	fn sed_input_truncation_does_not_kill_process() {
+		use std::{path::PathBuf, process::Command, thread, time::Duration};
+
+		const INPUT: &str = "OMP_SED_TRUNCATION_INPUT";
+		const READY: &str = "OMP_SED_TRUNCATION_READY";
+		const RELEASE: &str = "OMP_SED_TRUNCATION_RELEASE";
+		if let (Some(input), Some(ready), Some(release)) = (
+			std::env::var_os(INPUT), std::env::var_os(READY), std::env::var_os(RELEASE),
+		) {
+			let input = PathBuf::from(input);
+			let mut reader = LineReader::open(&input).expect("open sed input");
+			fs::write(ready, b"ready").unwrap();
+			let release = PathBuf::from(release);
+			while !release.exists() {
+				thread::sleep(Duration::from_millis(1));
+			}
+			let mut total = 0usize;
+			while let Some(chunk) = reader.get_line().expect("read sed input") {
+				total += chunk.as_bytes().len();
+			}
+			std::hint::black_box(total);
+			return;
+		}
+
+		let dir = tempfile::tempdir().unwrap();
+		let input = dir.path().join("input.txt");
+		let ready = dir.path().join("ready");
+		let release = dir.path().join("release");
+		let mut body = vec![b'a'; 1024 * 1024 - 1];
+		body.push(b'\n');
+		fs::write(&input, &body).unwrap();
+		let mut child = Command::new(std::env::current_exe().unwrap())
+			.args(["--exact", "sed::fast_io::tests::sed_input_truncation_does_not_kill_process", "--nocapture"])
+			.env(INPUT, &input)
+			.env(READY, &ready)
+			.env(RELEASE, &release)
+			.spawn()
+			.unwrap();
+		while !ready.exists() {
+			assert!(child.try_wait().unwrap().is_none(), "child exited before reading");
+			thread::sleep(Duration::from_millis(1));
+		}
+		fs::write(&input, b"y\n").unwrap();
+		fs::write(&release, b"go").unwrap();
+		let status = child.wait().unwrap();
+		assert!(status.success(), "child terminated by input truncation: {status}");
+	}
+
 	// is_newline_terminated, is_empty
 	#[test]
 	fn test_owned_newline_terminated_non_empty() {
