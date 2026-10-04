@@ -10,7 +10,6 @@
 import * as path from "node:path";
 import { ToolResourceScope } from "@oh-my-pi/pi-natives";
 import { $flag, isBunTestRuntime, logger, Snowflake } from "@oh-my-pi/pi-utils";
-import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { Settings } from "../../config/settings";
 import {
 	BaseKernel,
@@ -326,6 +325,7 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 
 		const scriptPath = await stageRunnerScript("omp-python-runner", "py", RUNNER_SCRIPT);
 		const kernel = new PythonKernel(Snowflake.next());
+
 
 
 
