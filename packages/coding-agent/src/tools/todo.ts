@@ -895,7 +895,11 @@ const MARKER_TO_STATUS: Record<string, TodoStatus> = {
 	"!": "blocked",
 };
 
-import { classifyTodoSchema } from "./todo-classify-schema";
+import {
+	createTodoToolSchema,
+	type TodoToolParams as TodoToolParamsType,
+	type TodoToolSchema,
+} from "./todo-classify-schema";
 
 /** Parse a Markdown checklist back into todo phases. */
 export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: string[] } {
@@ -1025,21 +1029,18 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 	return lines.join("\n");
 }
 
-const todoToolSchema = todoSchema.or(classifyTodoSchema);
-
-type TodoToolParams = typeof todoToolSchema.infer;
-
 // =============================================================================
 // Tool Class
 // =============================================================================
 
-export class TodoTool implements AgentTool<typeof todoToolSchema, TodoToolDetails> {
+export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolDetails> {
+	private static readonly schema: TodoToolSchema<TodoSchema> = createTodoToolSchema(todoSchema);
 	readonly name = "todo";
 	readonly approval = "read" as const;
 	readonly label = "Todo";
 	readonly summary = "Track structured todos and classify requirements";
 	readonly description: string;
-	readonly parameters = todoToolSchema;
+	readonly parameters = TodoTool.schema;
 	readonly concurrency = "exclusive";
 	readonly strict = true;
 	// Raw args reach execute() on schema failure; resolveTodoParams re-validates
@@ -1053,7 +1054,7 @@ export class TodoTool implements AgentTool<typeof todoToolSchema, TodoToolDetail
 
 	async execute(
 		_toolCallId: string,
-		params: TodoToolParams,
+		params: TodoToolParamsType<TodoSchema>,
 		_signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
