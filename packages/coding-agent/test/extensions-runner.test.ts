@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "@oh-my-pi/omptype/typebox";
 import type { AgentMessage, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import { Agent } from "@oh-my-pi/pi-agent-core";
 import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import type { MessageCreateParams } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
@@ -36,6 +37,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getProjectAgentDir, logger, TempDir } from "@oh-my-pi/pi-utils";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
@@ -371,6 +373,57 @@ describe("ExtensionRunner", () => {
 			"status?",
 		);
 		expect(direct).toEqual({ delivered: true, text: "Delivered to Worker." });
+	});
+
+	it("delivers check-ins through a real AgentSession command context", async () => {
+		const registry = AgentRegistry.global();
+		const deliveredBodies: string[] = [];
+		registry.register({
+			id: "Worker",
+			displayName: "worker",
+			kind: "sub",
+			session: {
+				deliverIrcMessage: async (message: { from: string; body: string }) => {
+					deliveredBodies.push(`${message.from}:${message.body}`);
+					return "injected";
+				},
+			} as never,
+		});
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+		const results: Array<{ delivered: boolean; text: string }> = [];
+		const commandPath = path.join(extensionsDir, "check-in.ts");
+		const session = new AgentSession({
+			agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
+			sessionManager,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+			agentId: "Main",
+			agentRegistry: registry,
+			customCommands: [
+				{
+					path: commandPath,
+					resolvedPath: commandPath,
+					source: "project",
+					command: {
+						name: "check-in",
+						description: "Deliver an overdue check-in",
+						execute: async (_args, ctx) => {
+							results.push(await (ctx as unknown as ExtensionContext).sendAgentMessage("Worker", "status?"));
+							return undefined;
+						},
+					},
+				},
+			],
+		});
+		registry.register({ id: "Main", displayName: "main", kind: "main", session });
+		try {
+			await session.prompt("/check-in");
+			expect(results).toEqual([{ delivered: true, text: "Delivered to Worker." }]);
+			expect(deliveredBodies).toEqual(["Main:status?"]);
+		} finally {
+			await session.dispose();
+		}
 	});
 	describe("shortcut conflicts", () => {
 		it("warns when extension shortcut conflicts with built-in", async () => {

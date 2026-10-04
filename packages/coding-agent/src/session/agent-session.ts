@@ -7728,7 +7728,18 @@ export class AgentSession implements SettingsScope {
 			getContextUsage: () => this.getContextUsage(),
 			getTaskMaxConcurrency: () => cfgTaskMaxConcurrency.get(this.settings),
 			getAsyncJobSnapshot: () => this.getAsyncJobSnapshot(),
-			sendAgentMessage: (to, message) => sendAgentMessageFromSession(this, to, message),
+			sendAgentMessage: (to, message) =>
+				sendAgentMessageFromSession(
+					{
+						agentRegistry: this.#agentRegistry,
+						settings: this.settings,
+						taskDepth: 0,
+						getAgentId: () => this.getAgentId(),
+						getSessionFile: () => this.sessionManager.getSessionFile(),
+					},
+					to,
+					message,
+				),
 			waitForIdle: () => this.waitForIdle(),
 			newSession: async options => {
 				const success = await this.newSession({ parentSession: options?.parentSession });
