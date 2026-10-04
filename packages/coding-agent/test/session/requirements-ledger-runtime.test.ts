@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { describe, expect, it } from "bun:test";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
 import {
@@ -17,7 +18,11 @@ import {
 	getLatestRequirements,
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
-import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import {
+	getLatestTodoPhasesFromEntries,
+	TodoTool,
+	USER_TODO_EDIT_CUSTOM_TYPE,
+} from "@oh-my-pi/pi-coding-agent/tools/todo";
 
 const AT = "2026-09-28T12:00:00.000Z";
 
@@ -163,7 +168,7 @@ describe("requirements ledger auditor binding", () => {
 				isError: false,
 			} as never);
 			expect(pending).toBeUndefined();
-			const envelope = `<task-result id="worker-async" agent="qa-auditor" status="completed"><output>${JSON.stringify({ result: receiptTable(head) })}</output></task-result>`;
+			const envelope = `<task-result id="worker-async" agent="qa-auditor" status="completed"><output>${JSON.stringify({ report: receiptTable(head) })}</output></task-result>`;
 			await runtime.consumeAsyncResult({
 				role: "custom",
 				customType: ASYNC_RESULT_MESSAGE_TYPE,
@@ -250,6 +255,85 @@ describe("requirements ledger auditor binding", () => {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
+	it("accepts the dispatch-time HEAD after a clean row advance and rejects unrelated SHAs", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			const boundHead = git(cwd, "rev-parse", "HEAD");
+			await runtime.prepareAuditorTaskCall("task", "call-bound-head", {
+				agent: "qa-auditor",
+				task: "Audit R1 please",
+				context: "",
+			});
+			writeFileSync(join(cwd, "artifact.txt"), "advanced after dispatch\n");
+			git(cwd, "add", "artifact.txt");
+			git(cwd, "commit", "-m", "advance after dispatch");
+			const accepted = await runtime.afterToolCall({
+				toolCall: { id: "call-bound-head", name: "task" },
+				result: {
+					content: [],
+					details: {
+						results: [
+							{
+								index: 0,
+								agent: "qa-auditor",
+								id: "worker-bound",
+								exitCode: 0,
+								output: receiptTable(boundHead),
+							},
+						],
+					},
+				},
+				isError: false,
+			} as never);
+			expect(accepted).toBeUndefined();
+			const todo = new TodoTool({
+				cwd,
+				hasUI: false,
+				getSessionFile: () => null,
+				sessionManager: manager,
+				getTodoPhases: () => getLatestTodoPhasesFromEntries(manager.getBranch()),
+				setTodoPhases: (phases: TodoPhase[]) => manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
+			} as never);
+			const done = await todo.execute("done-bound-head", { op: "done", task: "Build artifact" } as never);
+			expect(done.isError).toBeUndefined();
+			expect(getLatestTodoPhasesFromEntries(manager.getBranch())[0]?.tasks[0]?.status).toBe("completed");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects an auditor receipt citing a SHA outside the dispatch/current HEADs", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			await runtime.prepareAuditorTaskCall("task", "call-unrelated-head", {
+				agent: "qa-auditor",
+				task: "Audit R1 please",
+				context: "",
+			});
+			const outcome = await runtime.afterToolCall({
+				toolCall: { id: "call-unrelated-head", name: "task" },
+				result: {
+					content: [],
+					details: {
+						results: [
+							{
+								index: 0,
+								agent: "qa-auditor",
+								id: "worker-unrelated",
+								exitCode: 0,
+								output: receiptTable("f".repeat(40)),
+							},
+						],
+					},
+				},
+				isError: false,
+			} as never);
+			expect(outcome?.content?.[0]).toMatchObject({ type: "text" });
+			expect(getLatestRequirements(manager.getBranch())[0]?.verdict).toBeUndefined();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
 	it("refuses a user qa-auditor profile with different content", async () => {
 		const { cwd, runtime } = fixture(
 			"---\nname: qa-auditor\ndescription: altered auditor\n---\nDo not audit requirements.\n",
@@ -302,7 +386,7 @@ describe("receipt recording across delivery channels and worker renames", () => 
 					content: [
 						{
 							type: "text",
-							text: `Delivery: not auto-delivered; recovered by this snapshot.\n\`\`\`\n${envelope("worker-wait", "qa-auditor", JSON.stringify({ result: receiptTable(head) }))}\n\`\`\``,
+							text: `Delivery: not auto-delivered; recovered by this snapshot.\n\`\`\`\n${`<task-result id="worker-wait" agent="qa-auditor" status="completed"><preview full-output="agent://worker-wait">${receiptTable(head)}</preview></task-result>`}\n\`\`\``,
 						},
 					],
 				},

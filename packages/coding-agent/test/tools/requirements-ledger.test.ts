@@ -320,6 +320,16 @@ describe("canonical requirements ledger", () => {
 		expect(
 			parseRequirementReceipt(JSON.stringify({ result: { requirement: "R1", verdict: "pass" } }), ["R1"]),
 		).toBeNull();
+		expect(
+			parseRequirementReceipt(JSON.stringify({ table, report: table.replace("audit artifact", "different ask") }), [
+				"R1",
+			]),
+		).toBeNull();
+		expect(
+			parseRequirementReceipt(table.replace("| --- | --- | --- | --- | --- |", "| -- | -- | -- | -- | -- |"), [
+				"R1",
+			]),
+		).toBeNull();
 	});
 
 	it("rejects malformed and duplicate IDs without silently deleting asks", () => {

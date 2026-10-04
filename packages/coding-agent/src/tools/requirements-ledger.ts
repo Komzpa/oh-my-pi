@@ -15,6 +15,8 @@ export interface RequirementVerdict {
 	auditor?: "qa-auditor";
 	/** Receipt echo of the immutable ask; a pass is stale when it differs from `rawText`. */
 	rawWords?: string;
+	/** Clean row HEADs captured when QA was dispatched, keyed by linked row. */
+	boundHeads?: Record<string, string>;
 }
 
 export interface RequirementLedgerItem {
@@ -117,9 +119,12 @@ function parseRequirement(value: unknown): RequirementLedgerItem | undefined {
 			...(typeof value.verdict.rawWords === "string" && value.verdict.rawWords.trim().length > 0
 				? { rawWords: value.verdict.rawWords }
 				: {}),
+			...(isRecord(value.verdict.boundHeads) &&
+			Object.values(value.verdict.boundHeads).every(head => typeof head === "string" && FULL_COMMIT_SHA.test(head))
+				? { boundHeads: value.verdict.boundHeads as Record<string, string> }
+				: {}),
 		};
 	}
-
 	return {
 		id: value.id,
 		at: value.at,
@@ -377,17 +382,18 @@ export function isFreshRequirementVerdict(
 
 	const auditedHeads = [...verdict.artifact.matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!.toLowerCase());
 	if (auditedHeads.length === 0) return false;
+	const allowedHead = (row: string, audited: string) =>
+		audited === currentHeadByRow.get(row) || audited === verdict.boundHeads?.[row]?.toLowerCase();
 	if (requirement.rows.length === 1) {
 		const audited = new Set(auditedHeads);
-		return audited.size === 1 && audited.has(currentHeadByRow.get(requirement.rows[0]!)!);
+		return audited.size === 1 && allowedHead(requirement.rows[0]!, [...audited][0]!);
 	}
 	return (
 		auditedHeads.length === requirement.rows.length &&
-		requirement.rows.every((row, index) => auditedHeads[index] === currentHeadByRow.get(row))
+		requirement.rows.every((row, index) => allowedHead(row, auditedHeads[index]!))
 	);
 }
 
-/** Return the linked ask and every merged raw ask for QA, retaining each source ID. */
 export function getRequirementAuditSources(
 	requirements: readonly RequirementLedgerItem[],
 	id: string,
@@ -412,6 +418,7 @@ export interface RequirementAuditAssignment {
 	agent: "qa-auditor";
 	workerId?: string;
 	index?: number;
+	boundHeads?: Record<string, string>;
 }
 /** Candidates become overdue after an assistant turn ends later in the same branch. */
 export function getOverdueRequirementCandidates(entries: readonly SessionEntry[]): RequirementLedgerItem[] {
@@ -491,7 +498,9 @@ export function parseRequirementReceipt(
 		else if (isRecord(value)) Object.values(value).forEach(collectStrings);
 	};
 	collectStrings(parsedOutput);
-	const lines = (strings.length > 0 ? strings.join("\n") : output).split(/\r?\n/);
+	const tableStrings = [...new Set(strings.filter(value => /\|\s*id\s*\|/i.test(value)))];
+	if (parsedOutput !== undefined && tableStrings.length !== 1) return null;
+	const lines = (parsedOutput === undefined ? output : tableStrings[0]!).split(/\r?\n/);
 	const headers: Array<{
 		line: number;
 		id: number;
@@ -619,7 +628,12 @@ export function getPersistedRequirementAuditorAssignments(
 				ids.length === 0 ||
 				ids.some(id => typeof id !== "string" || !/^R[1-9]\d*$/.test(id)) ||
 				new Set(ids).size !== ids.length ||
-				typeof snapshot !== "string"
+				typeof snapshot !== "string" ||
+				(value.boundHeads !== undefined &&
+					(!isRecord(value.boundHeads) ||
+						!Object.values(value.boundHeads).every(
+							head => typeof head === "string" && FULL_COMMIT_SHA.test(head),
+						)))
 			) {
 				continue;
 			}
@@ -632,7 +646,14 @@ export function getPersistedRequirementAuditorAssignments(
 			) {
 				continue;
 			}
-			restored.set(workerId, { workerId, agent, ids: [...requirementIds], snapshot, sessionId });
+			restored.set(workerId, {
+				workerId,
+				agent,
+				ids: [...requirementIds],
+				snapshot,
+				sessionId,
+				...(isRecord(value.boundHeads) ? { boundHeads: value.boundHeads as Record<string, string> } : {}),
+			});
 		}
 		return restored;
 	}

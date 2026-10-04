@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import type { Agent, AfterToolCallContext, AfterToolCallResult, BeforeToolCallResult } from "@oh-my-pi/pi-agent-core";
 import { setAssistantPublicationGate } from "@oh-my-pi/pi-agent-core/assistant-publication";
@@ -34,6 +35,7 @@ import {
 import { READ_ONLY_TOOL_NAMES } from "../task/read-only-policy";
 import { BUNDLED_QA_AUDITOR_TEMPLATE } from "../task/agents";
 import type { AgentDefinition } from "../task/types";
+import { artifactsDirsFromRegistry } from "../internal-urls/registry-helpers";
 
 /** The harness renames a worker whose requested name is taken by appending `-<n>`. */
 function sameWorkerIdentity(a: string, b: string): boolean {
@@ -183,6 +185,7 @@ export class RequirementsLedgerRuntime {
 				).values(),
 			];
 			const rowHeads: string[] = [];
+			const boundHeads: Record<string, string> = {};
 			for (const id of ids) {
 				const requirement = requirements.find(candidate => candidate.id === id)!;
 				for (const row of requirement.rows) {
@@ -193,6 +196,7 @@ export class RequirementsLedgerRuntime {
 						this.#appender(),
 						checkoutCache,
 					);
+					if (artifact.head && !artifact.dirty) boundHeads[row] = artifact.head;
 					rowHeads.push(
 						`${id} row ${JSON.stringify(row)} at ${artifact.cwd}: ${artifact.head ?? "HEAD unavailable"}${artifact.dirty ? " (dirty)" : ""}`,
 					);
@@ -213,6 +217,7 @@ export class RequirementsLedgerRuntime {
 				sessionId,
 				agent: "qa-auditor",
 				index,
+				boundHeads,
 			});
 		}
 
@@ -513,6 +518,7 @@ export class RequirementsLedgerRuntime {
 		}
 		const phases = getLatestTodoPhasesFromEntries(branch);
 		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
+		const acceptedBoundHeads: Record<string, string> = {};
 		for (const receipt of receipts) {
 			const requirement = expected.find(entry => entry?.id === receipt.id)!;
 			const artifacts: Array<{ row: string } & RequirementRowArtifact> = [];
@@ -528,11 +534,23 @@ export class RequirementsLedgerRuntime {
 					)),
 				});
 			}
+			for (const artifact of artifacts) {
+				const boundHead = assignment.boundHeads?.[artifact.row];
+				if (artifact.head && boundHead && artifact.head.toLowerCase() !== boundHead.toLowerCase()) {
+					acceptedBoundHeads[artifact.row] = boundHead;
+				}
+			}
 			if (
 				!isFreshRequirementVerdict(
 					{
 						...requirement,
-						verdict: { ...receipt, status: "pass", workerId, auditor: "qa-auditor" },
+						verdict: {
+							...receipt,
+							status: "pass",
+							workerId,
+							auditor: "qa-auditor",
+							boundHeads: assignment.boundHeads,
+						},
 					},
 					artifacts,
 				)
@@ -554,7 +572,15 @@ export class RequirementsLedgerRuntime {
 			currentRequirements.map(requirement => {
 				const receipt = receipts.find(item => item.id === requirement.id);
 				return receipt
-					? { ...requirement, verdict: { ...receipt, workerId, auditor: "qa-auditor" as const } }
+					? {
+							...requirement,
+							verdict: {
+								...receipt,
+								workerId,
+								auditor: "qa-auditor" as const,
+								...(Object.keys(acceptedBoundHeads).length > 0 ? { boundHeads: acceptedBoundHeads } : {}),
+							},
+						}
 					: requirement;
 			}),
 		);
@@ -587,13 +613,24 @@ export class RequirementsLedgerRuntime {
 		) {
 			return { status: "rejected", reason: "session or worker identity did not match" };
 		}
-		const match = envelope.match(
-			/^<task-result id="([^"]+)" agent="([^"]+)" status="([^"]+)"[^>]*>[\s\S]*?<output>\s*([\s\S]*?)\s*<\/output>[\s\S]*?<\/task-result>$/,
-		);
-		if (!match || match[2] !== "qa-auditor" || match[3] !== "completed" || envelope.includes("<preview")) {
+		const header = envelope.match(/^<task-result id="([^"]+)" agent="([^"]+)" status="([^"]+)"[^>]*>/);
+		if (!header || header[2] !== "qa-auditor" || header[3] !== "completed") {
 			return { status: "rejected", reason: "result was incomplete, truncated, or not from qa-auditor" };
 		}
-		const issue = await this.#acceptReceipt(match[1]!, assignment, match[4]!);
+		const preview = envelope.match(/<preview(?:\s[^>]*)?>([\s\S]*?)<\/preview>/)?.[1];
+		const output = envelope.match(/<output>\s*([\s\S]*?)\s*<\/output>/)?.[1];
+		let fullOutput: string | undefined;
+		if (preview !== undefined) {
+			for (const directory of artifactsDirsFromRegistry()) {
+				try {
+					fullOutput = await readFile(join(directory, `${header[1]}.md`), "utf8");
+					break;
+				} catch {}
+			}
+		}
+		const receiptOutput = fullOutput ?? output ?? preview;
+		if (receiptOutput === undefined) return { status: "rejected", reason: "result did not contain auditor output" };
+		const issue = await this.#acceptReceipt(header[1]!, assignment, receiptOutput);
 		return issue ? { status: "rejected", reason: issue } : { status: "accepted" };
 	}
 
@@ -661,6 +698,7 @@ export class RequirementsLedgerRuntime {
 					agent: assignment.agent,
 					ids: assignment.ids,
 					snapshot: assignment.snapshot,
+					boundHeads: assignment.boundHeads,
 				})),
 			rejected: [...rejections].map(([id, reason]) => ({ workerId: "", ids: [id], reason })),
 		});
