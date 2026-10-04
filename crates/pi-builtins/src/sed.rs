@@ -5386,6 +5386,7 @@ impl IOChunkContent<'_> {
 }
 
 /// Return a LineReader that uses the ReadInput method fot the specified file.
+#[cfg(any(not(unix), test))]
 fn line_reader_read_input(file: impl Read + 'static) -> io::Result<LineReader<'static>> {
 	let boxed: Box<dyn Read> = Box::new(file);
 	let reader = BufReader::new(boxed);
