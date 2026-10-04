@@ -1096,7 +1096,27 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(at("release first")).toBeLessThan(at("release second"));
 	});
 
-	it("keeps ambiguous description and repeated owner matches unassigned", () => {
+	it("links a worker to every row it owns and never lists it unassigned", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		mode.setTodos([
+			{
+				name: "Work",
+				tasks: [
+					{ content: "job 0", status: "in_progress", schedule: { owner: "MultiRow" } },
+					{ content: "job 1", status: "pending", schedule: { owner: "MultiRow" } },
+				],
+			},
+		]);
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("MultiRow", 0, "Multi job"));
+		await Promise.resolve();
+		mode.applyPinnedAgentsSetting();
+		const hud = Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
+		expect(hud.split("\n").find(line => line.includes("job 0"))).toContain("MultiRow (task)");
+		expect(hud.split("\n").find(line => line.includes("job 1"))).toContain("MultiRow (task)");
+		expect(hud).not.toContain("unassigned workers");
+	});
+
+	it("keeps an ambiguous description match unassigned while an explicit owner links every owned row", () => {
 		const tasks = [
 			{ content: "Review code", status: "pending" as const },
 			{ content: "Review tests", status: "pending" as const },
@@ -1107,8 +1127,9 @@ describe("InteractiveMode subagent observer UI sync", () => {
 			[{ name: "Work", tasks }],
 			[makeSession({ id: "Reviewer", description: "Review" }), makeSession({ id: "Shared" })],
 		);
-		expect(linked.byTask.size).toBe(0);
-		expect(linked.unassigned.map(worker => worker.id)).toEqual(["Reviewer", "Shared"]);
+		expect(linked.unassigned.map(worker => worker.id)).toEqual(["Reviewer"]);
+		expect(linked.byTask.get(tasks[2])?.id).toBe("Shared");
+		expect(linked.byTask.get(tasks[3])?.id).toBe("Shared");
 	});
 
 	it("links a collision-suffixed restarted worker to its stale-owner todo row", () => {
