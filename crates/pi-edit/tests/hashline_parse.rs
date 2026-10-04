@@ -489,6 +489,10 @@ fn malformed_put_op_headers_fail_instead_of_becoming_body() {
 		assert!(error.contains("malformed operation header"), "{header}: {error}");
 		assert!(error.contains("line 4"), "{header}: {error}");
 	}
+	// With no hunk open the row likewise fails a parse error naming the line
+	// (legacy message) instead of being taken as content.
+	let error = parse_patch("PUT 351*=357\n+bad").unwrap_err().to_string();
+	assert!(error.contains("line 1"), "{error}");
 }
 
 #[test]
