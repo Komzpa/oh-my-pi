@@ -286,6 +286,9 @@
 - Removed the built-in `rs-parking-lot` rule; Rust edits using `std::sync::{Mutex, RwLock}` with `.lock().unwrap()` are no longer steered to `parking_lot`
 
 ## [18.11.2] - 2026-10-16
+### Fixed: Bash services
+
+- Fixed `bash` service mode rejecting calls that carry materialized `async: false` / `timeout: 0` placeholders the caller never passed, and fixed `env` being ignored on finite non-service commands: `env` is now accepted on every bash schema and threaded through the executor, PTY, ACP terminal, and service-daemon backends (caller values win over direnv/shell defaults). Explicit `async: true` or a nonzero `timeout` with a service `name` still rejects per the documented contract.
 
 ### Added
 
