@@ -5,6 +5,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getBaseConfigRoot, isEnoent } from "@oh-my-pi/pi-utils";
+import type { Subprocess } from "bun";
 import type { RestartControlIdentity, RestartControlRequest, RestartControlSnapshot } from "./task/restart-queue";
 
 export const RESTART_CONTROL_PROTOCOL_VERSION = 1;
@@ -476,4 +477,109 @@ export async function sendRestartControl(
 	if (!snapshot) throw new RestartControlError("malformed_response");
 	if (!sameIdentity(snapshot.identity, request.identity)) throw new RestartControlError("stale_identity");
 	return snapshot;
+}
+
+/** Follow only this accepted request across its same-session handoff, never retarget a stale request. */
+export async function waitForRestartResult(
+	accepted: RestartControlSnapshot,
+	options?: RestartControlOptions,
+): Promise<RestartControlSnapshot> {
+	const requestId = accepted.request?.requestId;
+	if (!requestId) throw new RestartControlError("malformed_response");
+	let current = accepted;
+	for (;;) {
+		if (
+			current.request?.requestId === requestId &&
+			["completed", "failed", "cancelled"].includes(current.request.state)
+		)
+			return current;
+		await Bun.sleep(100);
+		try {
+			current = await sendRestartControl({ identity: accepted.identity, op: "status", requestId }, options);
+		} catch (error) {
+			if (!(error instanceof RestartControlError) || !["target_not_found", "unreachable"].includes(error.code))
+				throw error;
+			current = { ...current, request: null };
+		}
+		if (!current.request) {
+			const successor = (await listRestartControls(options)).find(
+				snapshot =>
+					snapshot.identity.sessionId === accepted.identity.sessionId && snapshot.request?.requestId === requestId,
+			);
+			if (successor) current = successor;
+		}
+	}
+}
+
+const RESTART_SESSION_ENV = "OMP_RESTART_SESSION_ID";
+const SUCCESSOR_TIMEOUT_MS = 30_000;
+
+/** Spawn the real CLI, retaining the caller until it has resumed the exact session. */
+export async function spawnRestartSuccessor(
+	cmd: string[],
+	sessionId: string,
+): Promise<Subprocess<"inherit", "inherit", "inherit">> {
+	const ready = Promise.withResolvers<void>();
+	const child = Bun.spawn(cmd, {
+		stdin: "inherit",
+		stdout: "inherit",
+		stderr: "inherit",
+		env: { ...process.env, [RESTART_SESSION_ENV]: sessionId },
+		ipc(message: unknown) {
+			if (typeof message !== "object" || message === null) return;
+			const frame = message as { type?: unknown; sessionId?: unknown };
+			if (frame.type !== "restart-ready") return;
+			if (frame.sessionId !== sessionId) ready.reject(new Error("Restart successor resumed a different session"));
+			else ready.resolve();
+		},
+		onExit(_proc, code, signal) {
+			ready.reject(new Error(`Restart successor exited before confirming the session (${code ?? signal})`));
+		},
+	});
+	const timer = setTimeout(
+		() => ready.reject(new Error("Restart successor did not confirm the session in time")),
+		SUCCESSOR_TIMEOUT_MS,
+	);
+	try {
+		await ready.promise;
+		if (child.exitCode !== null) throw new Error("Restart successor exited before handoff");
+		return child;
+	} catch (error) {
+		if (child.exitCode === null) child.kill();
+		await child.exited;
+		throw error;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/** The successor is initialized but must not take terminal ownership until the parent releases it. */
+export async function waitForRestartCommit(sessionId: string): Promise<void> {
+	const expected = process.env[RESTART_SESSION_ENV];
+	if (!expected) return;
+	delete process.env[RESTART_SESSION_ENV];
+	if (expected !== sessionId || !process.send || !process.connected) {
+		throw new Error("Restart successor could not resume the exact parent session");
+	}
+	const commit = Promise.withResolvers<void>();
+	const onMessage = (message: unknown): void => {
+		if (typeof message !== "object" || message === null) return;
+		const frame = message as { type?: unknown; sessionId?: unknown };
+		if (frame.type === "restart-commit" && frame.sessionId === sessionId) commit.resolve();
+	};
+	const onDisconnect = (): void => commit.reject(new Error("Restart parent disconnected before handoff"));
+	process.on("message", onMessage);
+	process.once("disconnect", onDisconnect);
+	const timer = setTimeout(
+		() => commit.reject(new Error("Restart parent did not commit the handoff")),
+		SUCCESSOR_TIMEOUT_MS,
+	);
+	try {
+		process.send({ type: "restart-ready", sessionId });
+		await commit.promise;
+	} finally {
+		clearTimeout(timer);
+		process.off("message", onMessage);
+		process.off("disconnect", onDisconnect);
+	}
 }
