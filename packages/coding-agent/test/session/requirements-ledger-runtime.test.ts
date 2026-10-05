@@ -595,11 +595,23 @@ describe("awaiting-user publication gate", () => {
 		const { cwd, manager, gate } = fixture();
 		try {
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
-				phases: [{ name: "Work", tasks: [{ content: "Build artifact", status: "blocked",
-					awaitingUser: { action: "Press Archive on both cards", ids: ["card-a", "card-b"] },
-				}] }],
+				phases: [
+					{
+						name: "Work",
+						tasks: [
+							{
+								content: "Build artifact",
+								status: "blocked",
+								awaitingUser: { action: "Press Archive on both cards", ids: ["card-a", "card-b"] },
+							},
+						],
+					},
+				],
 			});
-			const message = { content: [{ type: "text", text: "Server-side work is ready" }], stopReason: "stop" } as never;
+			const message = {
+				content: [{ type: "text", text: "Server-side work is ready" }],
+				stopReason: "stop",
+			} as never;
 			const signal = new AbortController().signal;
 			const first = await gate()?.(message, signal);
 			expect(first?.replacementText).toContain("Blocked:");
@@ -633,17 +645,29 @@ describe("awaiting-user publication gate", () => {
 			const head = git(cwd, "rev-parse", "HEAD");
 			const appender = { appendEntry: (type: string, data?: unknown) => manager.appendCustomEntry(type, data) };
 			const requirement = getLatestRequirements(manager.getBranch())[0]!;
-			const verdict = { status: "pass" as const, evidence: "server-side QA", artifact: head,
-				workerId: "qa-before", auditor: "qa-auditor" as const, receivedAt: AT };
+			const verdict = {
+				status: "pass" as const,
+				evidence: "server-side QA",
+				artifact: head,
+				workerId: "qa-before",
+				auditor: "qa-auditor" as const,
+				receivedAt: AT,
+			};
 			appendRequirementsSnapshot(appender, [{ ...requirement, rowVerdicts: { [row]: verdict } }]);
 			const tool = new TodoTool({
-				cwd, hasUI: false, settings: Settings.isolated(), getSessionFile: () => null,
-				getSessionSpawns: () => "*", sessionManager: manager,
+				cwd,
+				hasUI: false,
+				settings: Settings.isolated(),
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				sessionManager: manager,
 				getTodoPhases: () => getLatestTodoPhasesFromEntries(manager.getBranch()),
 				setTodoPhases: phases => manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
 			} as ToolSession);
 			const pending = { action: "Press Archive", ids: ["card-a", "card-b"] };
-			expect((await tool.execute("block-user", { op: "block", task: row, awaitingUser: pending })).isError).toBeUndefined();
+			expect(
+				(await tool.execute("block-user", { op: "block", task: row, awaitingUser: pending })).isError,
+			).toBeUndefined();
 			expect(getLatestTodoPhasesFromEntries(manager.getBranch())[0]?.tasks[0]?.awaitingUser).toEqual(pending);
 			expect((await tool.execute("done-before", { op: "done", task: row })).isError).toBe(true);
 			expect((await tool.execute("done-again", { op: "done", task: row })).isError).toBe(true);
@@ -663,18 +687,43 @@ describe("awaiting-user publication gate", () => {
 	it("accepts a fresh QA pass after a pending check was recorded", async () => {
 		const { cwd, manager, gate } = fixture();
 		try {
-			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: [{ name: "Work", tasks: [{
-				content: "Build artifact", status: "blocked", schedule: { owner: "main", resources: [cwd] },
-				awaitingUser: { action: "Press Archive", ids: ["card-a"] },
-			}] }] });
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+				phases: [
+					{
+						name: "Work",
+						tasks: [
+							{
+								content: "Build artifact",
+								status: "blocked",
+								schedule: { owner: "main", resources: [cwd] },
+								awaitingUser: { action: "Press Archive", ids: ["card-a"] },
+							},
+						],
+					},
+				],
+			});
 			const requirement = getLatestRequirements(manager.getBranch())[0]!;
-			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [{
-				...requirement, rowVerdicts: { "Build artifact": { status: "pass", evidence: "Archive exercised",
-					artifact: git(cwd, "rev-parse", "HEAD"), workerId: "qa-after", auditor: "qa-auditor",
-					receivedAt: new Date(Date.now() + 1000).toISOString() } },
-			}]);
-			expect(await gate()?.({ content: [{ type: "text", text: "verified" }], stopReason: "stop" } as never,
-				new AbortController().signal)).toBeUndefined();
+			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [
+				{
+					...requirement,
+					rowVerdicts: {
+						"Build artifact": {
+							status: "pass",
+							evidence: "Archive exercised",
+							artifact: git(cwd, "rev-parse", "HEAD"),
+							workerId: "qa-after",
+							auditor: "qa-auditor",
+							receivedAt: new Date(Date.now() + 1000).toISOString(),
+						},
+					},
+				},
+			]);
+			expect(
+				await gate()?.(
+					{ content: [{ type: "text", text: "verified" }], stopReason: "stop" } as never,
+					new AbortController().signal,
+				),
+			).toBeUndefined();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

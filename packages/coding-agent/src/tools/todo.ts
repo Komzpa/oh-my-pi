@@ -77,7 +77,9 @@ const InitListEntry = type({
 
 const todoSchema = type({
 	op: TodoOp,
-	"awaitingUser?": type({ action: "string", "ids?": type("string").array() }).describe("user-owned pending check for block: exact action and optional card or other ids"),
+	"awaitingUser?": type({ action: "string", "ids?": type("string").array() }).describe(
+		"user-owned pending check for block: exact action and optional card or other ids",
+	),
 	"list?": InitListEntry.array().describe("phases for init"),
 	"task?": type("string").describe("verbatim task content"),
 	"phase?": type("string"),

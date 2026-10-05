@@ -391,8 +391,14 @@ export class RequirementsLedgerRuntime {
 		const userMessage = branch.findLast(entry => entry.type === "message" && entry.message.role === "user");
 		const announced = new Set<string>();
 		for (const entry of branch) {
-			if (entry.type !== "custom" || entry.customType !== "requirements_awaiting_user_notice" || !isRecord(entry.data)) continue;
-			if (Array.isArray(entry.data.keys)) for (const key of entry.data.keys) if (typeof key === "string") announced.add(key);
+			if (
+				entry.type !== "custom" ||
+				entry.customType !== "requirements_awaiting_user_notice" ||
+				!isRecord(entry.data)
+			)
+				continue;
+			if (Array.isArray(entry.data.keys))
+				for (const key of entry.data.keys) if (typeof key === "string") announced.add(key);
 		}
 		const newKeys: string[] = [];
 		const visible = open.flatMap(item => {
@@ -404,10 +410,13 @@ export class RequirementsLedgerRuntime {
 				newKeys.push(key);
 				return true;
 			});
-			return issues.length ? [{ ...item, issues, awaitingUser: issues.every(issue => awaitingUserIssues.has(issue)) }] : [];
+			return issues.length
+				? [{ ...item, issues, awaitingUser: issues.every(issue => awaitingUserIssues.has(issue)) }]
+				: [];
 		});
 		if (visible.length === 0) return;
-		if (newKeys.length) this.#host.sessionManager.appendCustomEntry("requirements_awaiting_user_notice", { keys: newKeys });
+		if (newKeys.length)
+			this.#host.sessionManager.appendCustomEntry("requirements_awaiting_user_notice", { keys: newKeys });
 		const rows = openTodoRowContents(branch);
 		this.#host.onSettledAssistantMessage(message);
 		const notice = formatPublicationReplacement(visible, rows);
@@ -422,9 +431,11 @@ export class RequirementsLedgerRuntime {
 		};
 	}
 
-	async #refreshRequirementFreshness(
-		signal?: AbortSignal,
-	): Promise<{ requirements: RequirementLedgerItem[]; staleById: Map<string, string[]>; awaitingUserIssues: Set<string> }> {
+	async #refreshRequirementFreshness(signal?: AbortSignal): Promise<{
+		requirements: RequirementLedgerItem[];
+		staleById: Map<string, string[]>;
+		awaitingUserIssues: Set<string>;
+	}> {
 		const branch = this.#host.sessionManager.getBranch();
 		const requirements = getLatestRequirements(branch);
 		const phases = getLatestTodoPhasesFromEntries(branch);

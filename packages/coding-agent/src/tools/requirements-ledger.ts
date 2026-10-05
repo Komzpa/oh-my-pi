@@ -416,8 +416,10 @@ export function getRequirementRowVerdict(
 	row: string,
 ): RequirementVerdict | undefined {
 	if (!requirement.rows.includes(row)) return undefined;
-	const verdict = requirement.rowVerdicts && Object.hasOwn(requirement.rowVerdicts, row)
-		? requirement.rowVerdicts[row] : requirement.verdict;
+	const verdict =
+		requirement.rowVerdicts && Object.hasOwn(requirement.rowVerdicts, row)
+			? requirement.rowVerdicts[row]
+			: requirement.verdict;
 	if (!verdict) return undefined;
 	const artifact = getRequirementRowArtifactIdentity(verdict.artifact, row, requirement.rows);
 	return artifact === undefined ? undefined : { ...verdict, artifact };
@@ -502,7 +504,10 @@ export async function evaluateRequirementDoneGate(
 			}
 			const current = await artifact;
 			const pending = current.awaitingUser;
-			const auditedAfterCheck = verdict?.status === "pass" && !!verdict.receivedAt && !!current.lastChange &&
+			const auditedAfterCheck =
+				verdict?.status === "pass" &&
+				!!verdict.receivedAt &&
+				!!current.lastChange &&
 				Date.parse(verdict.receivedAt) >= Date.parse(current.lastChange.at);
 			let reason: string | undefined;
 			if (pending && !auditedAfterCheck)
