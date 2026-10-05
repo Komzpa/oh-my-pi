@@ -441,8 +441,8 @@ function replayTodoEdit(
 		let updated = current;
 		if (edit.operation) {
 			const replayed = replayTodoEdit(updated, edit.operation, { mutable: true });
-			if (!replayed) return undefined;
-			updated = replayed.phases;
+			// The committed archive is authoritative even when an operation target is already absent.
+			if (replayed) updated = replayed.phases;
 		}
 		const archived = new Set(
 			edit.archivedPhases.flatMap(phase => phase.tasks.map(task => todoTransitionKey(phase.name, task.content))),
@@ -453,9 +453,15 @@ function replayTodoEdit(
 		});
 		return { phases: live, mutable: true };
 	}
-	const resolved = resolveTodoParams(edit.params, current.length > 0);
+	let resolved = resolveTodoParams(edit.params, current.length > 0);
 	if (typeof resolved === "string") return undefined;
 	if (resolved.op !== edit.op || resolved.op === "view") return undefined;
+	if (resolved.op === "append" && resolved.items) {
+		// Replay additions idempotently; live calls still reject duplicate rows.
+		const items = resolved.items.filter(content => !findTaskByContent(current, content));
+		if (items.length === 0) return { phases: current, mutable: true };
+		resolved = { ...resolved, items };
+	}
 	if (resolved.op === "schedule") {
 		const errors: string[] = [];
 		const next = applyEntry(current, resolved, errors, edit.at);

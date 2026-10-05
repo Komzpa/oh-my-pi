@@ -108,6 +108,126 @@ describe("exact todo restoration", () => {
 		}
 	}
 
+	it("restores committed compact edits, renames and archives after a restart checkpoint", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "omp-todo-restart-"));
+		directories.push(directory);
+		const manager = SessionManager.create(directory, directory);
+		managers.push(manager);
+		const snapshot: TodoPhase[] = [
+			{
+				name: "Work",
+				tasks: [
+					{ content: "Peer routing", status: "completed" },
+					{ content: "Obsolete", status: "abandoned" },
+					{ content: "Restore", status: "in_progress" },
+					{ content: "Restart wave 10", status: "pending" },
+				],
+			},
+		];
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: snapshot });
+		const at = 1_791_200_000_000;
+		// Successful old calls can overlap already-replayed rows after a stale view reset.
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			edit: {
+				v: 1,
+				kind: "op",
+				at,
+				op: "append",
+				params: { op: "append", phase: "Work", items: ["Peer routing", "New work"] },
+			},
+		});
+		manager.appendMessage({
+			role: "toolResult",
+			toolName: "todo",
+			toolCallId: "archive",
+			content: [],
+			isError: false,
+			timestamp: at,
+			details: {
+				op: "drop",
+				edit: {
+					v: 1,
+					kind: "archive",
+					at,
+					operation: {
+						v: 1,
+						kind: "op",
+						at,
+						op: "drop",
+						params: { op: "drop", items: ["Already archived", "Obsolete"] },
+					},
+					archivedPhases: [{ name: "Work", tasks: [snapshot[0]!.tasks[1]!] }],
+				},
+			},
+		});
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			edit: { v: 1, kind: "op", at, op: "done", params: { op: "done", task: "Restore" } },
+		});
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			edit: {
+				v: 1,
+				kind: "op",
+				at,
+				op: "schedule",
+				params: { op: "schedule", updates: [{ task: "Restart wave 10", content: "Restart wave 11" }] },
+			},
+		});
+		manager.appendCustomEntry("restart_request_transition", { record: { state: "checkpointed" } });
+		await manager.ensureOnDisk();
+		await manager.close();
+		const restored = await SessionManager.open(manager.getSessionFile()!);
+		managers.push(restored);
+		const tracker = new TodoTracker({ sessionManager: restored } as TodoTrackerHost);
+		tracker.syncFromBranch();
+		const rows = tracker.phases.flatMap(phase =>
+			phase.tasks.map(task => ({ content: task.content, status: task.status })),
+		);
+		expect(rows).toEqual([
+			{ content: "Peer routing", status: "completed" },
+			{ content: "Restore", status: "completed" },
+			{ content: "Restart wave 11", status: "in_progress" },
+			{ content: "New work", status: "pending" },
+		]);
+	});
+
+	it("replays new rows from a committed append overlapping an existing title", () => {
+		const manager = SessionManager.inMemory(import.meta.dir);
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			phases: [{ name: "Work", tasks: [{ content: "Existing", status: "in_progress" }] }],
+		});
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			edit: {
+				v: 1,
+				kind: "op",
+				at: 1,
+				op: "append",
+				params: { op: "append", phase: "Work", items: ["Existing", "New"] },
+			},
+		});
+		const tracker = new TodoTracker({ sessionManager: manager } as TodoTrackerHost);
+		tracker.syncFromBranch();
+		expect(tracker.phases[0]!.tasks.map(task => task.content)).toEqual(["Existing", "New"]);
+	});
+
+	it("replays committed archive removals when an operation target is already absent", () => {
+		const manager = SessionManager.inMemory(import.meta.dir);
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			phases: [{ name: "Work", tasks: [{ content: "Obsolete", status: "abandoned" }] }],
+		});
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			edit: {
+				v: 1,
+				kind: "archive",
+				at: 1,
+				operation: { v: 1, kind: "op", at: 1, op: "done", params: { op: "done", task: "Absent" } },
+				archivedPhases: [{ name: "Work", tasks: [{ content: "Obsolete", status: "abandoned" }] }],
+			},
+		});
+		const tracker = new TodoTracker({ sessionManager: manager } as TodoTrackerHost);
+		tracker.syncFromBranch();
+		expect(tracker.phases).toEqual([]);
+	});
+
 	it("defensively copies nested metadata on set, get, and snapshot", () => {
 		const original = structuredClone(phases);
 		const tracker = new TodoTracker({} as TodoTrackerHost);
