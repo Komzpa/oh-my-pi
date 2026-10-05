@@ -114,8 +114,6 @@ export interface StructuredSubagentRequest {
 	effort?: TaskEffort;
 	/** Caller's description of how open-ended the work is; steers the child's `auto` thinking classification. */
 	solutionSpace?: string;
-	/** Image attachments delivered as real image content parts in the child's first prompt. */
-	images?: TaskImage[];
 	identity?: StructuredSubagentIdentity;
 	index?: number;
 	parentToolCallId?: string;
@@ -147,6 +145,8 @@ export interface StructuredSubagentRequest {
 	customTools?: CustomTool[];
 	/** Workpool items accepted by the child yield tool during this turn. */
 	workPoolYieldItems?: WorkPoolYieldItem[];
+	/** Image attachments delivered as real image content parts in the child's first prompt. */
+	images?: TaskImage[];
 	signal?: AbortSignal;
 	onProgress?: (progress: AgentProgress) => void;
 }

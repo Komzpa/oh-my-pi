@@ -62,6 +62,7 @@ const taskImageSchema = type({
 const taskImagesRule = taskImageSchema.array();
 
 export const taskItemSchema = type({
+	"images?": taskImagesRule,
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
@@ -69,7 +70,6 @@ export const taskItemSchema = type({
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
-	"images?": taskImagesRule,
 	"+": "delete",
 });
 const taskItemSchemaIsolated = type({
@@ -98,6 +98,7 @@ export const taskSchema = type({
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
+	"images?": taskImagesRule,
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
@@ -105,7 +106,6 @@ const taskSchemaNoIsolation = type({
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
-	"images?": taskImagesRule,
 	"+": "delete",
 });
 const taskSchemaBatch = type({
