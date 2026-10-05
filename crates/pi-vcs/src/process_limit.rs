@@ -29,6 +29,30 @@ use brush_core::ExternalCommandWrapper;
 const DEFAULT_TASK_LIMIT: u32 = 500;
 static NEXT_SCOPE_ID: AtomicU64 = AtomicU64::new(1);
 
+/// The two session bindings from the payload's effective environment.
+///
+/// `None` is absent; `Some("")` is present with an empty value. Manager access
+/// uses separate bindings and must never become the payload's environment.
+#[derive(Clone, Debug, Default)]
+pub struct ScopeEnvironment {
+	pub bus_address: Option<OsString>,
+	pub runtime_dir: Option<OsString>,
+}
+
+impl ScopeEnvironment {
+	pub fn from_lookup(mut lookup: impl FnMut(&str) -> Option<OsString>) -> Self {
+		Self {
+			bus_address: lookup("DBUS_SESSION_BUS_ADDRESS"),
+			runtime_dir: lookup("XDG_RUNTIME_DIR"),
+		}
+	}
+
+	/// Only for launches that inherit these bindings without overrides.
+	pub fn inherited() -> Self {
+		Self::from_lookup(|name| std::env::var_os(name))
+	}
+}
+
 /// Resolve a service-manager helper (`systemd-run`, `systemctl`, `env`,
 /// `true`) against the host `PATH` once, so wrapped commands keep working
 /// when the child clears or overrides `PATH`, and on layouts without
@@ -183,7 +207,7 @@ fn escape_manager_expansion(arg: &OsString) -> OsString {
 }
 
 /// One launcher for real scopes and the enforcement probe. Manager credentials
-/// precede systemd-run; the inner env removes them before the payload executes.
+/// precede systemd-run; the inner env restores the payload's own bindings.
 #[cfg(target_os = "linux")]
 fn build_scope_argv(
 	slice: &str,
@@ -191,6 +215,7 @@ fn build_scope_argv(
 	wait_service: bool,
 	stop_timeout: bool,
 	command: &[OsString],
+	payload_env: &ScopeEnvironment,
 ) -> Vec<OsString> {
 	// SAFETY: geteuid has no preconditions and does not access pointers.
 	let uid = unsafe { libc::geteuid() };
@@ -231,6 +256,16 @@ fn build_scope_argv(
 		OsString::from("-u"),
 		OsString::from("XDG_RUNTIME_DIR"),
 	]);
+	for (name, value) in [
+		("DBUS_SESSION_BUS_ADDRESS=", &payload_env.bus_address),
+		("XDG_RUNTIME_DIR=", &payload_env.runtime_dir),
+	] {
+		if let Some(value) = value {
+			let mut assignment = OsString::from(name);
+			assignment.push(value);
+			args.push(assignment);
+		}
+	}
 	let priority = if wait_service {
 		&[][..]
 	} else {
@@ -295,12 +330,19 @@ impl Default for ToolProcessLimit {
 }
 
 impl ToolProcessLimit {
-	pub fn wrap_scope_command(&self, command: &[OsString]) -> io::Result<Vec<OsString>> {
+	pub fn wrap_scope_command(
+		&self,
+		command: &[OsString],
+		payload_env: &ScopeEnvironment,
+	) -> io::Result<Vec<OsString>> {
 		if command.is_empty() {
 			return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty scoped command"));
 		}
 		#[cfg(not(target_os = "linux"))]
-		return Ok(command.to_vec());
+		{
+			let _ = payload_env;
+			return Ok(command.to_vec());
+		}
 		#[cfg(target_os = "linux")]
 		{
 			let mut state = self
@@ -316,6 +358,7 @@ impl ToolProcessLimit {
 				false,
 				true,
 				command,
+				payload_env,
 			))
 		}
 	}
@@ -365,6 +408,7 @@ impl ToolProcessLimit {
 				true,
 				false,
 				&env_exec(true_bin(), OsStr::new("omp-process-limit-probe"), &[]),
+				&ScopeEnvironment::default(),
 			);
 			let result = Command::new(&probe[0]).args(&probe[1..]).output()?;
 			if !result.status.success() {
@@ -433,15 +477,22 @@ impl ExternalCommandWrapper for ToolProcessLimit {
 		executable: &OsStr,
 		argv0: &OsStr,
 		args: &[OsString],
+		env: &[(OsString, OsString)],
 	) -> io::Result<Option<(OsString, Vec<OsString>)>> {
 		#[cfg(not(target_os = "linux"))]
 		{
+			let _ = env;
 			return Ok(None);
 		}
 		#[cfg(target_os = "linux")]
 		{
 			let command = env_exec(executable, argv0, args);
-			let mut wrapped = self.wrap_scope_command(&command)?;
+			let payload_env = ScopeEnvironment::from_lookup(|name| {
+				env.iter()
+					.find(|(key, _)| key.as_os_str() == OsStr::new(name))
+					.map(|(_, value)| value.clone())
+			});
+			let mut wrapped = self.wrap_scope_command(&command, &payload_env)?;
 			let runner = wrapped.remove(0);
 			Ok(Some((runner, wrapped)))
 		}
@@ -531,12 +582,143 @@ mod tests {
 		}
 	}
 
+	/// Manager access must not replace the environment observed by user code.
+	/// Re-exec keeps PATH and the helper LazyLocks isolated from other tests.
 	#[cfg(target_os = "linux")]
 	#[test]
-	fn scope_argv_puts_manager_env_before_systemd_run_and_masks_payload() {
-		let argv = super::build_scope_argv("test.slice", "test.scope", false, true, &[
-			super::true_bin().clone(),
-		]);
+	fn scoped_payload_preserves_effective_session_environment() {
+		use std::os::unix::fs::{PermissionsExt, symlink};
+
+		const CASE_ENV: &str = "OMP_SCOPE_ENV_TEST_CASE";
+		const KEYS: [&str; 2] = ["DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"];
+		const CASES: [(&str, [Option<&str>; 2]); 4] = [
+			("unset", [None, None]),
+			("present-empty", [Some(""), Some("")]),
+			("custom", [Some("unix:path=/tmp/custom bus,$token"), Some("/tmp/custom runtime=$value")]),
+			("masked-private", [None, Some("/tmp/omp-worker-runtime-test")]),
+		];
+		if let Ok(case) = std::env::var(CASE_ENV) {
+			let (_, values) = CASES
+				.iter()
+				.find(|(name, _)| *name == case)
+				.expect("known case");
+			let payload = [super::env_bin().clone(), "-0".into()];
+			let payload_env = super::ScopeEnvironment {
+				bus_address: values[0].map(Into::into),
+				runtime_dir: values[1].map(Into::into),
+			};
+			let argv = super::build_scope_argv(
+				"test.slice",
+				"test.scope",
+				false,
+				true,
+				&payload,
+				&payload_env,
+			);
+			let mut command = Command::new(&argv[0]);
+			command
+				.args(&argv[1..])
+				.env_clear()
+				.env("PATH", std::env::var_os("PATH").unwrap());
+			for (key, value) in KEYS.iter().zip(values) {
+				if let Some(value) = value {
+					command.env(key, value);
+				}
+			}
+			let output = command.output().expect("run synthetic scope launcher");
+			assert!(
+				output.status.success(),
+				"{case}: {:?}: {}",
+				output.status,
+				String::from_utf8_lossy(&output.stderr)
+			);
+			for (key, value) in KEYS.iter().zip(values) {
+				let prefix = format!("{key}=");
+				let actual = output
+					.stdout
+					.split(|byte| *byte == 0)
+					.find_map(|entry| entry.strip_prefix(prefix.as_bytes()));
+				assert_eq!(actual, value.map(str::as_bytes), "{case}: payload changed {key}");
+			}
+			std::fs::write(std::env::var_os("OMP_SCOPE_TEST_RESULT").unwrap(), case).unwrap();
+			return;
+		}
+
+		let fixtures = tempfile::tempdir().expect("private launcher fixtures");
+		let shell = super::resolved_binary("sh");
+		assert!(std::path::Path::new(&shell).is_absolute(), "sh must be available");
+		symlink(super::resolved_binary("env"), fixtures.path().join("env")).unwrap();
+		// SAFETY: geteuid has no preconditions and does not access pointers.
+		let uid = unsafe { libc::geteuid() };
+		let manager_bus = format!("unix:path=/run/user/{uid}/manager-test-bus");
+		let manager = format!(
+			r#"[ "$XDG_RUNTIME_DIR" = '/run/user/{uid}' ] || exit 91
+[ "$DBUS_SESSION_BUS_ADDRESS" = '{manager_bus}' ] || exit 92
+while [ "$#" -gt 0 ] && [ "$1" != '--' ]; do shift; done
+[ "$#" -gt 0 ] || exit 93
+shift
+exec "$@"
+"#
+		);
+		for (name, body) in [
+			(
+				"systemctl",
+				"[ \"$#\" -eq 1 ] && [ \"$1\" = '--version' ] || exit 94\nprintf 'systemd %s\\n' \
+				 \"$OMP_SCOPE_SYSTEMD_VERSION\"\n",
+			),
+			("systemd-run", manager.as_str()),
+			("nice", "[ \"$1\" = '-n19' ] || exit 95\nshift\nexec \"$@\"\n"),
+			("ionice", "[ \"$1\" = '-c2' ] && [ \"$2\" = '-n7' ] || exit 96\nshift 2\nexec \"$@\"\n"),
+		] {
+			let path = fixtures.path().join(name);
+			std::fs::write(&path, format!("#!{}\n{body}", shell.to_string_lossy())).unwrap();
+			std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+		}
+		let mut failed = Vec::new();
+		for version in ["253", "254"] {
+			for (case, _) in CASES {
+				let result_path = fixtures.path().join(format!("result-{version}-{case}"));
+				let output = Command::new(std::env::current_exe().unwrap())
+					.args([
+						"--exact",
+						"process_limit::tests::scoped_payload_preserves_effective_session_environment",
+						"--nocapture",
+					])
+					.env_clear()
+					.env("PATH", fixtures.path())
+					.env(CASE_ENV, case)
+					.env("OMP_SCOPE_TEST_RESULT", &result_path)
+					.env("OMP_SCOPE_SYSTEMD_VERSION", version)
+					.env("DBUS_SESSION_BUS_ADDRESS", &manager_bus)
+					.env("XDG_RUNTIME_DIR", "/host-runtime-must-not-reach-payload")
+					.output()
+					.expect("run isolated environment case");
+				if !output.status.success()
+					|| std::fs::read_to_string(&result_path).ok().as_deref() != Some(case)
+				{
+					failed.push(format!(
+						"systemd {version}, {case}: {:?}\n{}\n{}",
+						output.status,
+						String::from_utf8_lossy(&output.stdout),
+						String::from_utf8_lossy(&output.stderr)
+					));
+				}
+			}
+		}
+		assert!(failed.is_empty(), "{}", failed.join("\n"));
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn scope_argv_keeps_intentionally_unset_session_bindings_absent() {
+		let argv = super::build_scope_argv(
+			"test.slice",
+			"test.scope",
+			false,
+			true,
+			&[super::true_bin().clone()],
+			&super::ScopeEnvironment::default(),
+		);
 		assert_eq!(&argv[0], super::env_bin());
 		// SAFETY: geteuid has no preconditions and does not access pointers.
 		let uid = unsafe { libc::geteuid() };
@@ -588,6 +770,10 @@ mod tests {
 				false,
 				true,
 				std::slice::from_ref(program),
+				&super::ScopeEnvironment {
+					bus_address: Some("".into()),
+					runtime_dir: Some("/tmp/x".into()),
+				},
 			);
 			let output = Command::new(&argv[0])
 				.args(&argv[1..])
@@ -603,8 +789,18 @@ mod tests {
 			);
 			if program == super::env_bin() {
 				let payload_env = String::from_utf8_lossy(&output.stdout);
-				assert!(!payload_env.contains("DBUS_SESSION_BUS_ADDRESS="), "{payload_env}");
-				assert!(!payload_env.contains("XDG_RUNTIME_DIR="), "{payload_env}");
+				assert!(
+					payload_env
+						.lines()
+						.any(|line| line == "DBUS_SESSION_BUS_ADDRESS="),
+					"{payload_env}"
+				);
+				assert!(
+					payload_env
+						.lines()
+						.any(|line| line == "XDG_RUNTIME_DIR=/tmp/x"),
+					"{payload_env}"
+				);
 				assert!(!payload_env.contains("/run/user/"), "{payload_env}");
 			}
 		}
@@ -616,6 +812,7 @@ mod tests {
 				program.as_ref(),
 				program.as_ref(),
 				&args.iter().map(Into::into).collect::<Vec<_>>(),
+				&std::env::vars_os().collect::<Vec<_>>(),
 			)
 			.expect("per-tool systemd process boundary")
 			.expect("Linux command wrapper");

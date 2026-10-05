@@ -1,8 +1,8 @@
-use std::{ffi::OsString, sync::Arc};
+use std::{collections::HashMap, ffi::OsString, sync::Arc};
 
 use napi::{Error, Result};
 use napi_derive::napi;
-use pi_vcs::process_limit::ToolProcessLimit;
+use pi_vcs::process_limit::{ScopeEnvironment, ToolProcessLimit};
 
 use crate::task::{self, blocking};
 
@@ -24,14 +24,19 @@ impl ToolResourceScope {
 		Self { owner: Some(Arc::new(ToolProcessLimit::default())) }
 	}
 
-	fn scoped(&self, command: Vec<String>) -> Result<Vec<String>> {
+	fn scoped(
+		&self,
+		command: Vec<String>,
+		env: Option<HashMap<String, String>>,
+	) -> Result<Vec<String>> {
 		let owner = self
 			.owner
 			.as_ref()
 			.ok_or_else(|| Error::from_reason("tool resource scope is closed"))?;
 		let command = command.into_iter().map(OsString::from).collect::<Vec<_>>();
+		let payload_env = scope_environment(env);
 		owner
-			.wrap_scope_command(&command)
+			.wrap_scope_command(&command, &payload_env)
 			.map_err(|error| {
 				Error::from_reason(format!("tool resource boundary unavailable: {error}"))
 			})?
@@ -44,24 +49,36 @@ impl ToolResourceScope {
 			.collect()
 	}
 
+	/// `env`, when supplied, is the complete spawn environment, not an overlay.
+	/// Omission uses inherited bindings; missing keys in a supplied map stay
+	/// unset.
 	#[napi]
-	pub fn wrap_command(&self, command: Vec<String>) -> Result<Vec<String>> {
-		self.scoped(command)
+	pub fn wrap_command(
+		&self,
+		command: Vec<String>,
+		env: Option<HashMap<String, String>>,
+	) -> Result<Vec<String>> {
+		self.scoped(command, env)
 	}
 
 	/// Off-thread variant of [`ToolResourceScope::wrap_command`]: the systemd
 	/// subprocesses behind first-use enforcement run on libuv's thread pool,
 	/// so the JS event loop is never blocked. Resolves to the same argv.
 	#[napi]
-	pub fn wrap_command_async(&self, command: Vec<String>) -> task::Promise<Vec<String>> {
+	pub fn wrap_command_async(
+		&self,
+		command: Vec<String>,
+		env: Option<HashMap<String, String>>,
+	) -> task::Promise<Vec<String>> {
 		let owner = self.owner.clone();
+		let payload_env = scope_environment(env);
 		blocking("tool-resource-scope.wrap_command", (), move |_| {
 			let owner = owner
 				.as_ref()
 				.ok_or_else(|| Error::from_reason("tool resource scope is closed"))?;
 			let command = command.into_iter().map(OsString::from).collect::<Vec<_>>();
 			owner
-				.wrap_scope_command(&command)
+				.wrap_scope_command(&command, &payload_env)
 				.map_err(|error| {
 					Error::from_reason(format!("tool resource boundary unavailable: {error}"))
 				})?
@@ -81,5 +98,13 @@ impl ToolResourceScope {
 	#[napi]
 	pub fn close(&mut self) {
 		drop(self.owner.take());
+	}
+}
+
+/// An explicit spawn environment is complete: missing keys stay absent.
+fn scope_environment(env: Option<HashMap<String, String>>) -> ScopeEnvironment {
+	match env {
+		Some(env) => ScopeEnvironment::from_lookup(|name| env.get(name).map(OsString::from)),
+		None => ScopeEnvironment::inherited(),
 	}
 }

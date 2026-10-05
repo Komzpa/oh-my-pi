@@ -4678,6 +4678,7 @@ mod tests {
 		std::fs::create_dir_all(&tmp).expect("temp dir");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -4826,6 +4827,7 @@ mod tests {
 		std::fs::create_dir_all(&tmp).expect("temp dir");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -4905,6 +4907,7 @@ mod tests {
 		let mut env = HashMap::new();
 		env.insert("HOME".to_string(), home.to_string_lossy().to_string());
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   Some(env),
 			snapshot_path: None,
 			minimizer:     None,
@@ -4953,6 +4956,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8 temp path");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5005,6 +5009,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8 temp path");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5065,6 +5070,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8 temp path");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5116,6 +5122,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5222,6 +5229,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5300,6 +5308,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5413,6 +5422,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5472,6 +5482,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5536,6 +5547,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5585,6 +5597,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5625,6 +5638,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5717,6 +5731,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5891,6 +5906,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5946,6 +5962,7 @@ mod tests {
 		let tmp_str = tmp.to_str().expect("utf8");
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -5993,6 +6010,7 @@ mod tests {
 	#[tokio::test(flavor = "multi_thread")]
 	async fn uutils_head_stdin_read_is_cancellable() {
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -6047,6 +6065,7 @@ mod tests {
 				.map(|(k, v)| ((*k).to_string(), (*v).to_string()))
 				.collect();
 			ShellConfig {
+				unset_env:     None,
 				session_env:   Some(map),
 				snapshot_path: None,
 				minimizer:     None,
@@ -6055,6 +6074,7 @@ mod tests {
 		};
 
 		let mut default = create_session(&ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -6953,6 +6973,7 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 
 		// Build the same kind of session pi-natives uses in production.
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -7384,6 +7405,7 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		assert!(host_sid >= 0, "getsid(0) failed: {}", std::io::Error::last_os_error());
 
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
@@ -7612,6 +7634,7 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 	#[tokio::test(flavor = "multi_thread")]
 	async fn cap_hit_returns_actionable_tool_error() {
 		let config = ShellConfig {
+			unset_env:     None,
 			session_env:   None,
 			snapshot_path: None,
 			minimizer:     None,
