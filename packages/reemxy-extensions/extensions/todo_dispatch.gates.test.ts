@@ -189,6 +189,76 @@ async function outcome(state: State, cwd: string, call: Call | null, strictDeman
   }
 }
 
+test("chief bash allows read-only loops and recursively checks substitutions", async () => {
+  const cwd = repo("clean");
+  const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
+  try {
+    const allowed = [
+      'XDG_RUNTIME_DIR="/run/user/1000" for d in a b c; do echo "$d $(git -C /x/$d log --oneline -1) dirty=$(git -C /x/$d status --short | wc -l)"; done; git -C /x branch -a --contains 77164e82 | head -5',
+      'VAR=1 git status',
+      'for d in a b; do if test -d "$d"; then git -C "$d" status; elif test -f "$d"; then cat "$d"; else echo missing; fi; done',
+      'while test -d x; do git status; done',
+      'until test -d x; do echo waiting; done',
+      'echo `git status`',
+      'echo "$(echo "$(git status)")"',
+      'git branch --list "topic/*"',
+      'for d in a b\ndo\n git -C "$d" status\ndone',
+      'git -C "/x/with spaces" status',
+      'echo \'$(rm x)\'',
+      'for d in $(git ls-files); do echo "$d"; done',
+    ];
+    for (const command of allowed) {
+      expect((await outcome(state, cwd, { name: "bash", arguments: { command } })).executed, command).toBe(true);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("chief bash blocks mutations inside structure and malformed shell", async () => {
+  const cwd = repo("clean");
+  const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
+  try {
+    const blocked = [
+      'for d in a b; do git commit -m x; done',
+      'for d in a b; do rm "$d"; done',
+      'echo "$(rm -rf x)"',
+      'echo `rm -rf x`',
+      'VAR=1 bun test',
+      'git branch -D x',
+      'git branch new-name',
+      'git branch -l new-name',
+      'git branch --list --no-list new-name',
+      'git branch --list -D x',
+      'git branch -m old new',
+      'git branch -c old new',
+      'for d in $(rm x); do echo "$d"; done',
+      'echo `echo \\`rm x\\``',
+      'echo ${value:-$(rm x)}',
+      'echo <(rm x)',
+      'echo "$(git status"; rm x',
+      'git $operation',
+      '"echo rm" x',
+      'echo ok &&',
+      'if test -d x; then rm x; fi',
+      'echo "$(echo "$(rm x)")"',
+      'for d in a; do echo "$d"',
+      'echo "$(git status"',
+      'echo ok > x',
+      'echo ok\nrm x',
+      'echo do\nrm x',
+      'echo then\nrm x',
+      'echo else\nrm x',
+      'V"AR=1" git status',
+    ];
+    for (const command of blocked) {
+      expect((await outcome(state, cwd, { name: "bash", arguments: { command } })).executed, command).toBe(false);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 const STATES: State[] = [];
 for (const p of ["none", "ready", "chained"] as const)
   for (const g of ["clean", "conflicted", "resolvedStale"] as const)

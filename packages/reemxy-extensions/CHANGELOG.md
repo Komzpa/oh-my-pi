@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- `todo_dispatch`: allow read-only shell loops, conditionals, and leading environment assignments in the chief-of-staff bash gate; recursively inspect command substitutions and refuse malformed or unsupported syntax. Restrict `git branch` to known listing forms so branch mutations remain worker work.
 - Use the canonical thinking-level enum for the `/brrrr` Claude effort cap; cover hot allow-list edits, child-session inheritance without disturbing the active parent's transcript, and unchanged mode-off routing.
 - Blocked worker rework messages when an active gate refuses the corresponding task dispatch.
 - Exclude the host-damaging Ling-3.0 free model from agent pools, fallbacks, and worker profiles.

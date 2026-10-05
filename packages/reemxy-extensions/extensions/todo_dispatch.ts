@@ -2052,12 +2052,161 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   // `git -C <repo>` looks at another checkout the same way, and `fetch` only moves remote-tracking refs,
   // which a look at upstream needs (live 2026-09-28: `git -C repo fetch && git -C repo log` was refused,
   // so the chief staffed a scout for a one-second look).
-  const READ_ONLY_BASH = /^\s*(git\s+(?:-[Cc]\s+\S+\s+)*(status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|merge-base|fetch)\b|grep\b|rg\b|ls\b|cat\b|head\b|tail\b|wc\b|pwd\b|echo\b|stat\b|test\b|\[\s|sha256sum\b|sha1sum\b|md5sum\b|readlink\b|realpath\b|file\b)/;
+  const READ_ONLY_BASH = /^(?:grep|rg|ls|cat|head|tail|wc|pwd|echo|stat|test|\[|sha256sum|sha1sum|md5sum|readlink|realpath|file)$/;
   // Git mutation (add, commit, push, merge) is the git-pr-owner worker's job, never the chief's
   // (user 2026-09-25: "чего чиф оф стафф гит дрочит, у него же писарь есть и гитарь?").
-  // A chain is read-only only when every part is: `cat x && bun test` is not.
-  const isChiefBash = (command: string) =>
-    command.split(/&&|\|\||;|\|/).every((part) => !part.trim() || READ_ONLY_BASH.test(part));
+  // Inspect shell structure without executing it. Unknown syntax fails closed; substitutions
+  // use the same command checks, including inside double quotes and loop headers.
+  const isChiefBash = (command: string) => {
+    type Token = { value: string; plain: boolean; dynamic: boolean; newline?: boolean; assignment?: boolean };
+    const separators: Record<string, true> = { ";": true, "&&": true, "||": true, "|": true };
+    const reserved: Record<string, true> = { for: true, while: true, until: true, if: true, do: true, done: true, then: true, else: true, elif: true, fi: true };
+    let cursor = 0;
+    const check = (tokens: Token[]): boolean => {
+      let at = 0;
+      const keyword = (words: string[]) => tokens[at]?.plain && words.includes(tokens[at].value);
+      const take = (word: string) => {
+        if (!keyword([word])) return false;
+        at += 1;
+        return true;
+      };
+      const simple = (words: Token[]) => {
+        if (!words.length || words[0].dynamic) return false;
+        if (words[0].value !== "git") return READ_ONLY_BASH.test(words[0].value);
+        let subcommand = 1;
+        while (["-C", "-c"].includes(words[subcommand]?.value)) {
+          if (words[subcommand].dynamic || !words[subcommand + 1]) return false;
+          subcommand += 2;
+        }
+        if (!words[subcommand] || words[subcommand].dynamic || !/^(?:status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|merge-base|fetch)$/.test(words[subcommand].value)) return false;
+        if (words[subcommand].value !== "branch") return true;
+        // Bare names create branches; -d/-D/-m/-M/-c/-C and unknown options mutate or
+        // cannot be classified. Only known listing forms belong to the chief.
+        let list = false;
+        for (let i = subcommand + 1; i < words.length; i += 1) {
+          const word = words[i];
+          if (word.dynamic) return false;
+          if (word.value === "--list") { list = true; continue; }
+          if (/^(?:-a|-r|-v|-vv|--all|--remotes|--show-current|--no-color|--color=never)$/.test(word.value)) continue;
+          if (/^--(?:contains|no-contains|merged|no-merged)$/.test(word.value)) {
+            if (words[i + 1] && !words[i + 1].value.startsWith("-")) {
+              if (words[++i].dynamic) return false;
+            }
+            continue;
+          }
+          if (/^--(?:contains|no-contains|merged|no-merged|sort|format)=/.test(word.value)) continue;
+          if (list && !word.value.startsWith("-")) continue;
+          return false;
+        }
+        return true;
+      };
+      const list = (stops: string[]): boolean => {
+        while (tokens[at]?.newline) at += 1;
+        if (at === tokens.length || keyword(stops)) return false;
+        while (at < tokens.length) {
+          if (!statement()) return false;
+          if (at === tokens.length || keyword(stops)) return true;
+          const separator = tokens[at++];
+          if (!separator.plain || !Object.hasOwn(separators, separator.value)) return false;
+          if (at === tokens.length || keyword(stops)) return separator.value === ";";
+        }
+        return true;
+      };
+      const statement = (): boolean => {
+        while (tokens[at]?.assignment) at += 1;
+        if (take("for")) {
+          const variable = tokens[at++];
+          if (!variable?.plain || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.value) || !take("in")) return false;
+          while (at < tokens.length && !keyword([";"])) {
+            if (tokens[at].plain && Object.hasOwn(separators, tokens[at].value)) return false;
+            at += 1;
+          }
+          return take(";") && take("do") && list(["done"]) && take("done");
+        }
+        if (take("while") || take("until")) return list(["do"]) && take("do") && list(["done"]) && take("done");
+        if (take("if")) {
+          if (!list(["then"]) || !take("then") || !list(["elif", "else", "fi"])) return false;
+          while (take("elif")) {
+            if (!list(["then"]) || !take("then") || !list(["elif", "else", "fi"])) return false;
+          }
+          if (take("else") && !list(["fi"])) return false;
+          return take("fi");
+        }
+        if (tokens[at]?.plain && Object.hasOwn(reserved, tokens[at].value)) return false;
+        const start = at;
+        while (at < tokens.length && !(tokens[at].plain && Object.hasOwn(separators, tokens[at].value))) at += 1;
+        return simple(tokens.slice(start, at));
+      };
+      return list([]) && at === tokens.length;
+    };
+    const tokenize = (stop = "", depth = 0): Token[] | null => {
+      if (depth > 32) return null;
+      const tokens: Token[] = [];
+      while (cursor < command.length) {
+        const char = command[cursor];
+        if (stop && char === stop) { cursor += 1; return tokens; }
+        if (char === " " || char === "\t" || char === "\r") { cursor += 1; continue; }
+        if (char === "\n" || char === ";" || char === "|" || char === "&") {
+          cursor += 1;
+          let value = char === "\n" ? ";" : char;
+          if ((char === "|" || char === "&") && command[cursor] === char) { value += char; cursor += 1; }
+          if (value === "&") return null;
+          // Newlines after operators are whitespace, but an argument named do/then/else
+          // must never swallow the boundary before the next executable command.
+          const previous = tokens.at(-1);
+          if (char !== "\n" || (previous && !(previous.plain && Object.hasOwn(separators, previous.value)))) tokens.push({ value, plain: true, dynamic: false, newline: char === "\n" });
+          continue;
+        }
+        const start = cursor;
+        let value = "";
+        let plain = true;
+        let dynamic = false;
+        let quote = "";
+        while (cursor < command.length) {
+          const next = command[cursor];
+          if (!quote && (/[\s;|&]/.test(next) || (stop && next === stop))) break;
+          cursor += 1;
+          if (next === "'" && quote !== '"') {
+            plain = false;
+            const end = command.indexOf("'", cursor);
+            if (end < 0) return null;
+            value += command.slice(cursor, end);
+            cursor = end + 1;
+          } else if (next === '"') {
+            plain = false;
+            quote = quote ? "" : '"';
+          } else if (next === "\\") {
+            plain = false;
+            // Legacy backticks re-interpret escaped syntax; refuse that unsupported form.
+            if (stop === "`" || cursor === command.length) return null;
+            const escaped = command[cursor++];
+            if (escaped !== "\n") value += escaped;
+          } else if (next === "`" || (next === "$" && command[cursor] === "(")) {
+            if (next === "$") cursor += 1;
+            const nested = tokenize(next === "`" ? "`" : ")", depth + 1);
+            if (!nested || !check(nested)) return null;
+            value += "$substitution";
+            dynamic = true;
+            plain = false;
+          } else {
+            // Redirects, subshells, brace/parameter expansions and comments are not
+            // part of this deliberately small grammar (including process substitution).
+            if (!quote && /[<>(){}#]/.test(next)) return null;
+            if (next === "$") {
+              if (command[cursor] === "{" || command[cursor] === "'") return null;
+              dynamic = true;
+            }
+            value += next;
+          }
+        }
+        if (quote) return null;
+        tokens.push({ value, plain, dynamic, assignment: /^[A-Za-z_][A-Za-z0-9_]*=/.test(command.slice(start, cursor)) });
+      }
+      return stop ? null : tokens;
+    };
+    const tokens = tokenize();
+    return tokens !== null && check(tokens);
+  };
   const WRITE_EXEMPT_PATH = /^(agent|xd|proc|history|artifact):\/\//;
   let chiefRefusals = 0;
   const MAX_CHIEF_REFUSALS = 3;
