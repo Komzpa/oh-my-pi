@@ -164,6 +164,8 @@ export interface EffectiveSubagentPolicy {
 	modelRoute?: string;
 	/** Exact-name `task.agentServiceTierOverrides` entry for this agent, applied after model resolution. */
 	serviceTierOverride?: ServiceTierInheritSettingValue;
+	requiredModelServiceTiers?: Record<string, "priority">;
+	claudeEffortCap?: boolean;
 	/** Exact-name entry normalized to both child compaction threshold fields. */
 	compactionThresholdOverride?: CompactionThresholdPair;
 	parentActiveModelPattern?: string;
@@ -433,12 +435,25 @@ async function applySpawnHook(
 	if (spawnResult?.block) {
 		throw new StructuredSubagentError("preflight", spawnResult.reason ?? "Subagent spawn blocked by extension.");
 	}
-	if (spawnResult?.model === undefined) return policy;
-	// Rework rungs specify both selectors and must not be redirected by extension routing.
-	if (request.model !== undefined) return policy;
+	if (spawnResult?.model === undefined) {
+		if (spawnResult?.enforce) throw new StructuredSubagentError("preflight", "Mandatory routing has no available model.");
+		return policy;
+	}
+	// Ordinary routing preserves explicit rework selectors; mandatory session policy does not.
+	if (request.model !== undefined && !spawnResult.enforce) return policy;
 	const replacement = resolveConfiguredModelPatterns(spawnResult.model, request.session.settings);
-	if (replacement.length === 0) return policy;
-	return { ...policy, modelOverride: replacement, parentActiveModelPattern: undefined, modelRoute: spawnResult.note };
+	if (replacement.length === 0) {
+		if (spawnResult.enforce) throw new StructuredSubagentError("preflight", "Mandatory routing has no available model.");
+		return policy;
+	}
+	return {
+		...policy,
+		modelOverride: replacement,
+		parentActiveModelPattern: undefined,
+		modelRoute: spawnResult.note,
+		requiredModelServiceTiers: spawnResult.requiredModelServiceTiers,
+		claudeEffortCap: spawnResult.claudeEffortCap,
+	};
 }
 
 /** Reserve a session-global agent id only after preflight has succeeded. */
@@ -520,6 +535,8 @@ function buildExecutorOptions(
 		modelRole: policy.modelRole,
 		modelRoute: policy.modelRoute,
 		serviceTierOverride: policy.serviceTierOverride,
+		requiredModelServiceTiers: policy.requiredModelServiceTiers,
+		claudeEffortCap: policy.claudeEffortCap,
 		compactionThresholdOverride: policy.compactionThresholdOverride,
 		parentActiveModelPattern: policy.parentActiveModelPattern,
 		thinkingLevel: policy.effectiveAgent.thinkingLevel,

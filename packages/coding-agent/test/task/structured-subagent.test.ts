@@ -118,6 +118,41 @@ afterEach(() => {
 });
 
 describe("structured subagent primitive", () => {
+	it("brrrr mandatory routing replaces explicit weak selectors", async () => {
+		mockDiscovery();
+		const parent = session();
+		parent.emitBeforeSubagentSpawn = async () => ({ enforce: true, model: ["anthropic/claude-opus-5-5:high"], requiredModelServiceTiers: { "codex-lb/gpt-6-luna": "priority" } });
+		const run = vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(result());
+		await runStructuredSubagent(request({ session: parent, model: "weak/model" }));
+		expect(run.mock.calls[0]![0].modelOverride).toEqual(["anthropic/claude-opus-5-5:high"]);
+		expect(run.mock.calls[0]![0].requiredModelServiceTiers).toEqual({ "codex-lb/gpt-6-luna": "priority" });
+	});
+
+	it("brrrr mandatory routing blocks an undefined strong order", async () => {
+		mockDiscovery();
+		const parent = session();
+		parent.emitBeforeSubagentSpawn = async () => ({ enforce: true });
+		const run = vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(result());
+		await expect(runStructuredSubagent(request({ session: parent }))).rejects.toThrow("no available model");
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it("brrrr Luna requests and fallback always carry fast priority only for Luna", () => {
+		let listener: (event: { type: string }) => void = () => {};
+		const child = {
+			agent: { serviceTierResolver: () => undefined },
+			model: { provider: "anthropic", id: "claude-opus-5-5" },
+			thinkingLevel: "max",
+			setThinkingLevel: vi.fn(),
+			subscribe: (callback: typeof listener) => { listener = callback; },
+		};
+		executorModule.enforceSubagentRequestPolicy(child as never, { requiredModelServiceTiers: { "codex-lb/gpt-6-luna": "priority" }, claudeEffortCap: true });
+		expect(child.setThinkingLevel).toHaveBeenCalledWith("high");
+		expect(child.agent.serviceTierResolver({ provider: "codex-lb", id: "gpt-6-luna" } as never)).toBe("priority");
+		expect(child.agent.serviceTierResolver({ provider: "codex-lb", id: "gpt-6.1-sol" } as never)).toBeUndefined();
+		listener({ type: "model_changed" });
+		expect(child.setThinkingLevel).toHaveBeenCalledTimes(2);
+	});
 	it("ordinary to strong dispatch resolves the selected family and never authenticates via parent Luna", async () => {
 		const models = ["gpt-6-luna", "gpt-6.1-sol"].map(id =>
 			buildModel({
@@ -521,6 +556,8 @@ describe("structured subagent primitive", () => {
 				modelRole: "definition",
 				patterns: ["anthropic/claude-opus-4-5"],
 				isolated: false,
+				assignment: "Inspect the target.",
+				spawnKey: undefined,
 			},
 		]);
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });

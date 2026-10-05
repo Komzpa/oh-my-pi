@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/brrrr` persisted routing with hot user-wide model classes and blacklist reads, fast-only Luna, Cerebras light-role preference, fail-closed mandatory routing, and Claude implementation effort capped at high.
+
 ### Fixed
 
 - Blocked worker rework messages when an active gate refuses the corresponding task dispatch.

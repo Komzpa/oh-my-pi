@@ -2190,7 +2190,7 @@ export class ExtensionRunner {
 	): Promise<BeforeSubagentSpawnEventResult | undefined> {
 		if (!this.hasHandlers("before_subagent_spawn")) return undefined;
 		const ctx = this.createContext();
-		let chosen: Pick<BeforeSubagentSpawnEventResult, "model" | "note"> | undefined;
+		let chosen: BeforeSubagentSpawnEventResult | undefined;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_subagent_spawn");
@@ -2209,7 +2209,7 @@ export class ExtensionRunner {
 				if (!handlerResult) continue;
 				const result = handlerResult as BeforeSubagentSpawnEventResult;
 				if (result.block) return result;
-				if (result.model !== undefined) chosen = { model: result.model, note: result.note };
+				if (result.model !== undefined || result.enforce) chosen = result;
 			}
 		}
 

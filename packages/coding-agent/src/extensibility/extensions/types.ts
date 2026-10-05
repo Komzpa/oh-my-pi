@@ -1320,6 +1320,12 @@ export interface BeforeSubagentSpawnEventResult {
 	reason?: string;
 	/** Human-readable routing explanation surfaced with the resolved model. */
 	note?: string;
+	/** Mandatory routing policy overrides explicit caller selectors and fails closed. */
+	enforce?: boolean;
+	/** Exact provider/model service tiers enforced on every child request, including fallback. */
+	requiredModelServiceTiers?: Record<string, "priority">;
+	/** Cap Claude implementation effort at high without changing other models. */
+	claudeEffortCap?: boolean;
 }
 
 export type {
