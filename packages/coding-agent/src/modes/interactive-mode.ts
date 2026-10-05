@@ -7302,6 +7302,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	#restartControlSnapshot(): RestartControlSnapshot {
 		const identity = this.#restartControlIdentity();
 		const controller = this.#restartQueueController;
+		const loadedExtensions = (this.session.extensionRunner?.getLoadedExtensions() ?? []).flatMap(extension =>
+			extension.sourceHash ? [{ path: extension.resolvedPath, sha256: extension.sourceHash }] : [],
+		);
 		if (
 			controller &&
 			this.#sameRestartControlIdentity(this.#restartBoundIdentity, identity) &&
@@ -7310,9 +7313,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			!this.session.isSessionTransitioning &&
 			!this.#isShuttingDown
 		) {
-			return { ...controller.snapshot(), identity, cwd: this.sessionManager.getCwd() };
+			return { ...controller.snapshot(), identity, cwd: this.sessionManager.getCwd(), loadedExtensions };
 		}
-		return { identity, pid: process.pid, cwd: this.sessionManager.getCwd(), request: null };
+		return { identity, pid: process.pid, cwd: this.sessionManager.getCwd(), request: null, loadedExtensions };
 	}
 
 	async #handleRestartControl(request: RestartControlRequest): Promise<RestartControlSnapshot> {
