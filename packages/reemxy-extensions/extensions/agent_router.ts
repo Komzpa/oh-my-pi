@@ -558,6 +558,12 @@ async function availablePoolMembers(
 	for (const spec of pool) {
 		const model = ctx.models.resolve(spec);
 		if (model === undefined || !authenticated.has(`${model.provider}/${model.id}`)) continue;
+		// Child recovery shares this registry with its parent; respect its existing
+		// selector cooldown even when credential health cannot report a balance.
+		if (ctx.modelRegistry?.isSelectorSuppressed?.(spec)) {
+			skipped.push({ model: spec, reason: "retry_cooldown" });
+			continue;
+		}
 		if (state) {
 			const authSkip = authSkipRecord(spec, state, nowMs);
 			if (authSkip) {

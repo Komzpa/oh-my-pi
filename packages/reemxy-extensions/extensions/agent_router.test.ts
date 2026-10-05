@@ -1,5 +1,9 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { TurnRecovery } from "@oh-my-pi/pi-coding-agent/session/turn-recovery";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -166,6 +170,43 @@ describe("agent router", () => {
 		} finally {
 			if (previous === undefined) delete process.env.OMP_AGENT_ROUTER_MODELS;
 			else process.env.OMP_AGENT_ROUTER_MODELS = previous;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("brrrr skips Cerebras after real retry cooldown and restores it after expiry", async () => {
+		const { dir, file } = tempStateFile();
+		const previousModeDir = process.env.OMP_AGENT_ROUTER_MODE_DIR;
+		const previousState = process.env.OMP_AGENT_ROUTER_STATE;
+		process.env.OMP_AGENT_ROUTER_MODE_DIR = dir;
+		process.env.OMP_AGENT_ROUTER_STATE = file;
+		writeFileSync(join(dir, "session-1.json"), JSON.stringify({ enabled: true }));
+		const auth = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")));
+		const registry = new ModelRegistry(auth, join(dir, "models.yml"));
+		const context = ctxWithHealth({});
+		context.modelRegistry.isSelectorSuppressed = registry.isSelectorSuppressed.bind(registry);
+		const recovery = new TurnRecovery({ modelRegistry: registry }, { deferFallbackChainValidation: true });
+		const handlers = new Map();
+		agentRouter({ on: (event, handler) => handlers.set(event, handler) });
+		const spawn = () => handlers.get("before_subagent_spawn")({ agent: "scout", isolated: true }, context);
+		const fast = "cerebras/qwen-3.8-27b";
+		try {
+			expect((await spawn()).model).toContain(fast); // Unknown is permitted before an observed failure.
+			for (const error of ["429 (no body)", "Rate limit reached for tokens per minute", "quota exceeded"]) {
+				recovery.noteRetryFallbackCooldown(fast, 60_000, error);
+				expect(registry.isSelectorSuppressed(fast)).toBe(true);
+				expect((await spawn()).model).not.toContain(fast);
+				registry.suppressSelector(fast, Date.now() - 1);
+				expect((await spawn()).model).toContain(fast);
+			}
+			writeFileSync(join(dir, "session-1.json"), JSON.stringify({ enabled: false }));
+			expect((await spawn()).enforce).toBeUndefined();
+		} finally {
+			if (previousModeDir === undefined) delete process.env.OMP_AGENT_ROUTER_MODE_DIR;
+			else process.env.OMP_AGENT_ROUTER_MODE_DIR = previousModeDir;
+			if (previousState === undefined) delete process.env.OMP_AGENT_ROUTER_STATE;
+			else process.env.OMP_AGENT_ROUTER_STATE = previousState;
+			auth.close();
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
