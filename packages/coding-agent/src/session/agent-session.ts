@@ -963,10 +963,7 @@ export class AgentSession implements SettingsScope {
 	#restartDrainQuiescence: Promise<void> | undefined;
 	#restartDrainStoppedRun = false;
 	#restartDrainNeedsResume = false;
-	#restartDrainReleaseWaiters = new Set<{
-		resolve: () => void;
-		reject: (reason: unknown) => void;
-	}>();
+	#restartDrainReleaseWaiters = new Set<(outcome: "released" | "disposed") => void>();
 	#usagePreflightReadyForNextModelCall = false;
 	#usagePreflightReadyModel: Model | undefined;
 	#detachUsageBeforeQueueDequeue: (() => void) | undefined;
@@ -5440,11 +5437,7 @@ export class AgentSession implements SettingsScope {
 		this.#restartDrainQuiescence = undefined;
 		this.#restartDrainStoppedRun = false;
 		this.#restartDrainNeedsResume = false;
-		if (this.#restartDrainReleaseWaiters.size > 0) {
-			const error = new Error("AgentSession disposed before restart drain was released");
-			for (const waiter of this.#restartDrainReleaseWaiters) waiter.reject(error);
-			this.#restartDrainReleaseWaiters.clear();
-		}
+		this.#resolveRestartDrainReleaseWaiters("disposed");
 		if (this.agent.prepareQueuedMessages === this.#prepareQueuedUserMessages) {
 			this.agent.prepareQueuedMessages = undefined;
 		}
@@ -6076,17 +6069,12 @@ export class AgentSession implements SettingsScope {
 		return this.#restartDrainLeaseCount > 0;
 	}
 
-	/** Resolve when all current drain leases release; disposal rejects pending waiters. */
-	waitForRestartDrainRelease(): Promise<void> {
-		if (this.#isDisposed) {
-			return Promise.reject(new Error("AgentSession disposed before restart drain was released"));
-		}
-		if (!this.isRestartDraining) return Promise.resolve();
-		const waiter = Promise.withResolvers<void>();
-		this.#restartDrainReleaseWaiters.add({
-			resolve: () => waiter.resolve(undefined),
-			reject: reason => waiter.reject(reason),
-		});
+	/** Settle when all drain leases release, or report terminal disposal without rejecting. */
+	waitForRestartDrainRelease(): Promise<"released" | "disposed"> {
+		if (this.#isDisposed) return Promise.resolve("disposed");
+		if (!this.isRestartDraining) return Promise.resolve("released");
+		const waiter = Promise.withResolvers<"released" | "disposed">();
+		this.#restartDrainReleaseWaiters.add(waiter.resolve);
 		return waiter.promise;
 	}
 
@@ -6132,17 +6120,17 @@ export class AgentSession implements SettingsScope {
 					if (!this.#abortInProgress && !this.agent.isAborting && !this.#advisors.autoResumeSuppressed) {
 						if (!agentPauseGate.paused) this.#scheduleAgentContinue({ source: "restart-drain-cancelled" });
 					}
-					this.#resolveRestartDrainReleaseWaiters();
+					this.#resolveRestartDrainReleaseWaiters("released");
 					return;
 				}
 				this.#scheduleIdleQueueDrain();
 				this.#resumeStrandedIrcAsides();
-				this.#resolveRestartDrainReleaseWaiters();
+				this.#resolveRestartDrainReleaseWaiters("released");
 			},
 		};
 	}
-	#resolveRestartDrainReleaseWaiters(): void {
-		for (const waiter of this.#restartDrainReleaseWaiters) waiter.resolve();
+	#resolveRestartDrainReleaseWaiters(outcome: "released" | "disposed"): void {
+		for (const resolve of this.#restartDrainReleaseWaiters) resolve(outcome);
 		this.#restartDrainReleaseWaiters.clear();
 	}
 
