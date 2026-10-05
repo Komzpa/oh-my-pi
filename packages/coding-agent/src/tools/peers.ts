@@ -70,7 +70,7 @@ export class PeersTool implements AgentTool<typeof peersSchema, PeersToolDetails
 					{
 						type: "text",
 						text: ok
-							? `${receipt.status} to ${receipt.target} ${receipt.agent}${receipt.outcome ? ` (${receipt.outcome})` : ""}`
+							? `${receipt.status} to ${receipt.target} ${receipt.agent}${receipt.outcome ? ` (${receipt.outcome})` : ""}${receipt.reason ? `: ${receipt.reason}` : ""}`
 							: `failed: ${receipt.reason ?? "delivery failed"}`,
 					},
 				],

@@ -7731,13 +7731,17 @@ export class AgentSession implements SettingsScope {
 		// Handle extension commands first (execute immediately, even during streaming)
 		if (expandPromptTemplates && text.startsWith("/")) {
 			if (options?.runCommands !== false) {
-				const handled = await this.#tryExecuteExtensionCommand(text, options?.onPromptAdmitted);
+				const handled = await this.#tryExecuteExtensionCommand(
+					text,
+					options?.onPromptAdmitted,
+					options?.throwOnCommandError,
+				);
 				if (handled) {
 					return false;
 				}
 
 				// Try custom commands (TypeScript slash commands)
-				const customResult = await this.#tryExecuteCustomCommand(text);
+				const customResult = await this.#tryExecuteCustomCommand(text, options?.throwOnCommandError);
 				if (customResult !== null) {
 					if (customResult === "") {
 						return false;
@@ -8585,7 +8589,7 @@ export class AgentSession implements SettingsScope {
 	 * Try to execute an extension command. Returns true if command was found and executed.
 	 * `onRouted` fires once the command is found, before its handler runs.
 	 */
-	async #tryExecuteExtensionCommand(text: string, onRouted?: () => void): Promise<boolean> {
+	async #tryExecuteExtensionCommand(text: string, onRouted?: () => void, throwOnError = false): Promise<boolean> {
 		if (!this.#extensionRunner) return false;
 
 		// Parse command name and args
@@ -8610,6 +8614,7 @@ export class AgentSession implements SettingsScope {
 				event: "command",
 				error: err instanceof Error ? err.message : String(err),
 			});
+			if (throwOnError) throw err;
 			return true;
 		}
 	}
@@ -8705,7 +8710,7 @@ export class AgentSession implements SettingsScope {
 	 * Try to execute a custom command. Returns the prompt string if found, null otherwise.
 	 * If the command returns void, returns empty string to indicate it was handled.
 	 */
-	async #tryExecuteCustomCommand(text: string): Promise<string | null> {
+	async #tryExecuteCustomCommand(text: string, throwOnError = false): Promise<string | null> {
 		if (this.#customCommands.length === 0 && this.#mcpPromptCommands.length === 0) return null;
 
 		// Parse command name and args
@@ -8744,6 +8749,7 @@ export class AgentSession implements SettingsScope {
 				const message = err instanceof Error ? err.message : String(err);
 				logger.error("Custom command failed", { commandName, error: message });
 			}
+			if (throwOnError) throw err;
 			return ""; // Command was handled (with error)
 		}
 	}
