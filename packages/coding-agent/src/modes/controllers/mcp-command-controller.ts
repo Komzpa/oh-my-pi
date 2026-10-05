@@ -8,7 +8,7 @@ import { type Component, replaceTabs, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { getMCPConfigPath, getProjectDir } from "@oh-my-pi/pi-utils";
 import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
-import { clearCache as clearFsCache } from "../../capability/fs";
+import { reloadMCPServers } from "../../mcp/reload";
 import type { SourceMeta } from "../../capability/types";
 import { expandEnvVarsDeep } from "../../discovery/helpers";
 import {
@@ -74,8 +74,6 @@ import { col, span, text } from "@oh-my-pi/pi-tui/native/describe";
 import type { NativeNode } from "@oh-my-pi/pi-tui/native/node";
 import type { InteractiveModeContext } from "../types";
 import { groupBySource, parseRemoveArgs, readScopeFlag, showCommandMessage } from "./command-controller-shared";
-
-import { cfgMcpEnableProjectConfig } from "../../mcp/settings";
 
 const MCP_MANUAL_INPUT_PROVIDER_ID = "mcp";
 const MCP_MANUAL_LOGIN_TIP = "Headless? Paste the redirect URL or code with /login <value>.";
@@ -2257,24 +2255,7 @@ export class MCPCommandController {
 			return;
 		}
 
-		// Disconnect all existing servers
-		await this.ctx.mcpManager.disconnectAll();
-		// Prompt enrichment is asynchronous. Clear commands before rediscovery so
-		// removed/disabled servers cannot leave stale `/server:prompt` entries;
-		// newly loaded prompts repopulate them through the manager callback.
-		this.ctx.session.setMCPPromptCommands([]);
-		// External edits to mcp.json (not via writeMCPConfigFile) otherwise
-		// keep stale env/command after reload.
-		clearFsCache();
-
-		// Rediscover and connect, mirroring startup's discovery filters.
-		const result = await this.ctx.mcpManager.discoverAndConnect({
-			enableProjectConfig: cfgMcpEnableProjectConfig.get(this.ctx.settings),
-			filterExa: true,
-			filterBrowser: this.ctx.session.getEvalPreludes().some(definition => definition.name === "browser"),
-			extensionRoots: this.ctx.session.effectiveExtensionRoots,
-		});
-		await this.ctx.session.refreshMCPTools(this.ctx.mcpManager.getTools());
+		const result = await reloadMCPServers(this.ctx.session, this.ctx.mcpManager, this.ctx.settings);
 
 		this.#showMCPConnectionErrors(result.errors);
 	}

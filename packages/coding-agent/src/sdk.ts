@@ -152,6 +152,7 @@ import {
 } from "./mcp";
 import { parseMCPToolName } from "@oh-my-pi/pi-tui/tools/mcp";
 import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } from "./mcp/startup-events";
+import { reloadMCPServers } from "./mcp/reload";
 import { resolveMCPToolAlias } from "./mcp/tool-bridge";
 import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import { MEMORY_BACKEND_TOOL_NAMES } from "./memory-backend/tool-names";
@@ -4541,6 +4542,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					}
 				: undefined,
 			disconnectOwnedMcpManager: ownedMcpManager ? () => ownedMcpManager.disconnectAll() : undefined,
+			reloadOwnedMcpManager: ownedMcpManager
+				? async () => {
+						if (agentRegistry.list().some(ref => ref.session !== session && ref.session?.isStreaming))
+							throw new Error("MCP reload requires shared-manager workers to be idle");
+						return reloadMCPServers(session, ownedMcpManager, settings);
+					}
+				: undefined,
 			ttsrManager,
 			obfuscator,
 			agentId: resolvedAgentId,
@@ -4866,12 +4874,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		if (agentKind === "main" && options.publishPeerSession === true && options.agentRegistry === undefined) {
 			try {
 				const publication = await publishPeerSession({
-					sessionId: sessionManager.getSessionId(),
+					sessionId: () => sessionManager.getSessionId(),
 					cwd: () => sessionManager.getCwd(),
 					title: () => sessionManager.getSessionName() ?? null,
 					mainAgentId: resolvedAgentId,
 					registry: agentRegistry,
-					irc: new IrcBus(agentRegistry),
+					irc: IrcBus.global(),
 					isBusy: () => session.isStreaming,
 				});
 				closePeerPublication = () => publication.close();

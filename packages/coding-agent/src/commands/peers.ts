@@ -19,7 +19,10 @@ export default class Peers extends Command {
 			required: false,
 			options: ["list", "send", "inbox"],
 		}),
-		target: Args.string({ description: "Target session selector (send) or shell reply address (inbox)", required: false }),
+		target: Args.string({
+			description: "Target session selector (send) or shell reply address (inbox)",
+			required: false,
+		}),
 		text: Args.string({ description: "Message text or @file (send only)", required: false }),
 	};
 
@@ -48,7 +51,9 @@ export default class Peers extends Command {
 		}
 		if (action === "inbox") {
 			if (argv.length !== 2 || !args.target || flags.agent) {
-				throw new CliUsageError("peers inbox requires a shell reply address (usage: peers inbox shell:<id> [--json])");
+				throw new CliUsageError(
+					"peers inbox requires a shell reply address (usage: peers inbox shell:<id> [--json])",
+				);
 			}
 			process.exitCode = await runPeerInboxCommand({ address: args.target, json: flags.json });
 			return;

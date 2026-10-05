@@ -193,7 +193,11 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		if (!content.trim()) throw new Error("agent:// messages require non-empty content.");
 		if (to.startsWith("shell:")) {
 			try {
-				await writeShellReply(to, { from: `peer:${session.getSessionId?.() ?? senderId}`, text: content, createdAt: Date.now() }, this.peerSessions);
+				await writeShellReply(
+					to,
+					{ from: `peer:${session.getSessionId?.() ?? senderId}`, text: content, createdAt: Date.now() },
+					this.peerSessions,
+				);
 				return { content: [{ type: "text", text: `delivered to ${to} (shell inbox)` }], isError: false };
 			} catch (error) {
 				if (!(error instanceof PeerSessionError)) throw error;

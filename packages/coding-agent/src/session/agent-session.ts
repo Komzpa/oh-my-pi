@@ -125,6 +125,7 @@ import {
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily, isServiceTierForFamily, serviceTierSettingToTier } from "../config/service-tier";
 import { combine, type SettingsScope } from "../config/registry";
+import type { MCPLoadResult } from "../mcp/manager";
 import type { Settings } from "../config/settings";
 import { RawSseDebugBuffer } from "@oh-my-pi/pi-tui/apps/debug/raw-sse-buffer";
 import { getEditStore } from "../edit/store";
@@ -915,6 +916,8 @@ export class AgentSession implements SettingsScope {
 	#sideStreamFn: StreamFn;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#disconnectOwnedMcpManager: (() => Promise<void>) | undefined;
+	#reloadOwnedMcpManager: (() => Promise<MCPLoadResult>) | undefined;
+	#mcpReloadInFlight: Promise<MCPLoadResult> | undefined;
 
 	readonly #ttsr: TtsrCoordinator;
 	readonly #stats: SessionStatsTracker;
@@ -1867,6 +1870,7 @@ export class AgentSession implements SettingsScope {
 			skillsReloadable: config.skillsReloadable,
 		});
 		this.#disconnectOwnedMcpManager = config.disconnectOwnedMcpManager;
+		this.#reloadOwnedMcpManager = config.reloadOwnedMcpManager;
 		const ttsrHost: TtsrCoordinatorHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -6075,6 +6079,23 @@ export class AgentSession implements SettingsScope {
 	/** Rebuilds the stable base prompt, optionally discarding a stale asynchronous rebuild. */
 	refreshBaseSystemPrompt(commitIf?: () => boolean): Promise<void> {
 		return this.#tools.refreshBaseSystemPrompt(commitIf);
+	}
+
+	/** Actual owned-runtime reload, never a command-metadata refresh or global lookup. */
+	reloadMCPRuntime(): Promise<MCPLoadResult> {
+		if (this.isDisposed) throw new Error("Cannot reload MCP on a disposed session");
+		if (this.isStreaming || this.isBashRunning || this.isEvalRunning)
+			throw new Error("MCP reload requires an idle session");
+		if (!this.#reloadOwnedMcpManager) throw new Error("This session does not own an MCP runtime");
+		if (this.#mcpReloadInFlight) return this.#mcpReloadInFlight;
+		const pending = this.#reloadOwnedMcpManager();
+		this.#mcpReloadInFlight = pending;
+		void pending
+			.finally(() => {
+				if (this.#mcpReloadInFlight === pending) this.#mcpReloadInFlight = undefined;
+			})
+			.catch(() => {});
+		return pending;
 	}
 
 	/** Replaces connected MCP tools and enables them immediately. */

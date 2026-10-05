@@ -35,8 +35,10 @@ import { executePeerSlashCommand } from "./peer-commands";
 /** Discovery metadata / IPC protocol version. Mixed omp versions fail safely. */
 export const COLLAB_REGISTRY_VERSION = 1;
 
-/** Reject request lines beyond this size; peer messages carry up to 16 KiB plus envelope metadata. */
-const MAX_REQUEST_BYTES = 24 * 1024;
+/** Maximum UTF-8 bytes in one peer message. */
+export const MAX_PEER_MESSAGE_BYTES = 16 * 1024;
+/** Allow six-byte JSON escapes for each message byte, plus bounded envelope metadata. */
+const MAX_REQUEST_BYTES = 6 * MAX_PEER_MESSAGE_BYTES + 24 * 1024;
 /** Reject responses beyond this size. */
 const MAX_RESPONSE_BYTES = 64 * 1024;
 /**
@@ -53,8 +55,6 @@ const DEFAULT_QUERY_TIMEOUT_MS = 1_500;
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
 /** Concurrency bound for querying discovery entries. */
 const LIST_CONCURRENCY = 8;
-/** Maximum UTF-8 bytes in one peer message. */
-export const MAX_PEER_MESSAGE_BYTES = 16 * 1024;
 /** Minimum milliseconds between accepted messages from one sender to one publication. */
 const PEER_RATE_LIMIT_MS = 1_000;
 
@@ -162,7 +162,8 @@ export interface PeerSessionPublication {
 }
 
 export interface PeerSessionPublishOptions extends CollabRegistryOptions {
-	sessionId: string;
+	/** Live conversation identity; changes fence requests from older generations. */
+	sessionId: string | (() => string);
 	cwd: string | (() => string);
 	title?: () => string | null;
 	mainAgentId?: string;
@@ -504,6 +505,8 @@ function handleConnection(
 		}
 		const newline = buffer.indexOf("\n");
 		if (newline < 0) return;
+		// Claim the first complete request before any asynchronous delivery can yield.
+		handled = true;
 		const line = buffer.slice(0, newline).trim();
 		let request: unknown;
 		try {
@@ -792,15 +795,23 @@ export async function publishPeerSession(options: PeerSessionPublishOptions): Pr
 	const instanceId = crypto.randomBytes(8).toString("hex");
 	const startedAt = Date.now();
 	const mainAgentId = options.mainAgentId ?? MAIN_AGENT_ID;
-	const lastAcceptedBySender = new Map<string, number>();
+	const senderReservations = new Map<string, { startedAt: number }>();
+	let sessionId = typeof options.sessionId === "string" ? options.sessionId : options.sessionId();
+	let generation = 1;
 	const source: PeerSessionRegistrySource = {
 		snapshot: () => {
+			const currentId = typeof options.sessionId === "string" ? options.sessionId : options.sessionId();
+			if (currentId !== sessionId) {
+				sessionId = currentId;
+				generation++;
+				senderReservations.clear();
+			}
 			const refs = options.registry.list();
 			return {
 				instanceId,
-				generation: 1,
+				generation,
 				pid: process.pid,
-				sessionId: options.sessionId,
+				sessionId,
 				sessionName: options.title?.() ?? null,
 				cwd: resolvePeerCwd(options.cwd),
 				mainAgentId,
@@ -819,45 +830,54 @@ export async function publishPeerSession(options: PeerSessionPublishOptions): Pr
 		deliver: async request => {
 			const now = Date.now();
 			const sender = peerSenderLabel(request.from);
-			const last = lastAcceptedBySender.get(sender);
-			if (last !== undefined && now - last < PEER_RATE_LIMIT_MS) {
+			const last = senderReservations.get(sender);
+			if (last !== undefined && now - last.startedAt < PEER_RATE_LIMIT_MS) {
 				throw new PeerSessionError("rate_limited", "peer message rate limit exceeded");
 			}
-			const to = request.agent ?? mainAgentId;
-			const session = options.registry.get(to)?.session;
-			if (session && request.text.startsWith("/")) {
-				try {
-					const command = await executePeerSlashCommand(session, request.text);
-					if (command) {
-						lastAcceptedBySender.set(sender, now);
+			// Reserve synchronously; concurrent sends must see pending work too.
+			const reservation = { startedAt: now };
+			senderReservations.set(sender, reservation);
+			let accepted = false;
+			try {
+				const to = request.agent ?? mainAgentId;
+				const session = options.registry.get(to)?.session;
+				if (session && request.text.startsWith("/")) {
+					try {
+						const command = await executePeerSlashCommand(session, request.text);
+						if (command) {
+							accepted = true;
+							return {
+								status: command.outcome === "queued" ? "queued" : "delivered",
+								target: instanceId,
+								agent: to,
+								...command,
+							};
+						}
+					} catch (error) {
 						return {
-							status: command.outcome === "queued" ? "queued" : "delivered",
+							status: "failed",
 							target: instanceId,
 							agent: to,
-							...command,
+							reason: error instanceof Error ? error.message : String(error),
 						};
 					}
-				} catch (error) {
+				}
+				const body = `${request.text}\n\n[${peerSenderNotice(request.from)}]`;
+				const receipt = await options.irc.send({ from: sender, to, body });
+				if (receipt.outcome === "failed") {
 					return {
 						status: "failed",
 						target: instanceId,
 						agent: to,
-						reason: error instanceof Error ? error.message : String(error),
+						reason: receipt.error ?? "delivery failed",
 					};
 				}
+				accepted = true;
+				return { status: "delivered", target: instanceId, agent: to, outcome: receipt.outcome };
+			} finally {
+				// A later send or conversation rotation may already own this sender's slot.
+				if (!accepted && senderReservations.get(sender) === reservation) senderReservations.delete(sender);
 			}
-			const body = `${request.text}\n\n[${peerSenderNotice(request.from)}]`;
-			const receipt = await options.irc.send({ from: sender, to, body });
-			if (receipt.outcome === "failed") {
-				return {
-					status: "failed",
-					target: instanceId,
-					agent: to,
-					reason: receipt.error ?? "delivery failed",
-				};
-			}
-			lastAcceptedBySender.set(sender, now);
-			return { status: "delivered", target: instanceId, agent: to, outcome: receipt.outcome };
 		},
 	};
 	const pub = await publishRegistrySource(
@@ -1137,7 +1157,10 @@ export interface ShellReply {
 export async function readShellReplies(address: string, options?: PeerSessionOptions): Promise<ShellReply[]> {
 	try {
 		const text = await fs.promises.readFile(shellInboxPath(address, options), "utf8");
-		return text.split("\n").filter(Boolean).map(line => JSON.parse(line) as ShellReply);
+		return text
+			.split("\n")
+			.filter(Boolean)
+			.map(line => JSON.parse(line) as ShellReply);
 	} catch (error) {
 		if (isEnoent(error)) throw new PeerSessionError("not_found", `unknown shell reply address: ${address}`);
 		throw error;
@@ -1145,10 +1168,14 @@ export async function readShellReplies(address: string, options?: PeerSessionOpt
 }
 
 export async function writeShellReply(address: string, reply: ShellReply, options?: PeerSessionOptions): Promise<void> {
-	if (!validPeerMessage(reply.text)) throw new PeerSessionError("invalid_message", "shell replies must be non-empty plain text of at most 16 KiB");
+	if (!validPeerMessage(reply.text))
+		throw new PeerSessionError("invalid_message", "shell replies must be non-empty plain text of at most 16 KiB");
 	try {
 		// Never create on reply: an unknown address must fail, not silently drop an answer.
-		const file = await fs.promises.open(shellInboxPath(address, options), fs.constants.O_WRONLY | fs.constants.O_APPEND);
+		const file = await fs.promises.open(
+			shellInboxPath(address, options),
+			fs.constants.O_WRONLY | fs.constants.O_APPEND,
+		);
 		try {
 			await file.writeFile(`${JSON.stringify(reply)}\n`);
 		} finally {

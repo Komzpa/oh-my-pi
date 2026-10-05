@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Peer `/mcp reload` now reconnects the target session’s owned MCP runtime and mounts tools using the TUI reload policy; busy sessions and children sharing a manager refuse the reload (fork PR [#23](https://github.com/Komzpa/oh-my-pi/pull/23)).
+
 - Peer messages naming a registered slash command now use the target's command dispatcher and report execution, prompt queueing, or refusal instead of being injected as IRC chatter. Replies to `agent://peer:<sessionId>` return through the local peer-session transport. Shell sends advertise a working `agent://shell:<id>` reply address and retain replies in an owner-private inbox readable with `omp peers inbox shell:<id> [--json]`, even after the sender exits (fork PR [#23](https://github.com/Komzpa/oh-my-pi/pull/23)).
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
