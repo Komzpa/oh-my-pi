@@ -1,0 +1,34 @@
+Lane: FixRowArtifactBinding
+Canonical owner: fork feat/requirements-ledger (PR #41)
+Raw requested invariant: Bind row artifact to resource worktree, not owner cwd.
+Baseline: 536e29f3400f4f6a1efe0dcf7fc310bb97d132f9
+Source session: 01a0fc32-51dc-726d-b1f4-7537c4bc1061
+Source receipt: /home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-02T10-39-11-324Z_01a0fc32-51dc-726d-b1f4-7537c4bc1061/AuditR7toR10Yield.md
+
+Recorded decision replayed before changing production code:
+jq 'select(.customType == "requirements_auditor_assignments" and (.data | tostring | contains("AuditR7toR10Yield"))) | {id,timestamp,jobs:[.data.jobs[] | select(.workerId == "AuditR7toR10Yield") | {workerId,ids,rows,boundHeads}], rejected:[.data.rejected[]? | select(.reason | contains("R7:"))]}' /home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-02T10-39-11-324Z_01a0fc32-51dc-726d-b1f4-7537c4bc1061.jsonl
+Exit 0. Entry 8e2a742c, 2026-10-05T08:30:18.610Z: AuditR7toR10Yield assigned R7-R10, both named row boundHeads were dfb7bbff9982282e2864faad1d964793d14676ea.
+Both live TODO resources and artifactCwd resolved to /home/kom/proj/sunbim/callouts-integrate-2026-10-05. Read-only Git inspection found that checkout clean at dfb7bbff9982282e2864faad1d964793d14676ea; the auditor's main checkout was dirty at 2f444a2c475ec36611163afaf3a9a5b31356fbeb.
+The suspected ambiguous-owner branch did not explain this live receipt: baseline todo.ts already suppresses ownerCwd for declared resources. R7 rawText instead contained newlines while its receipt echoed <br>; baseline requirements-ledger.ts:397 treated them as different raw words and runtime.ts:525 mislabeled that refusal as an artifact mismatch. Baseline runtime.ts:500-504 also saved whole explicitly named multi-row cells instead of each row's segment. Baseline todo.ts:279 preferred ownerCwd over an otherwise valid saved artifactCwd.
+
+Every Bash command used XDG_RUNTIME_DIR=/run/user/1000 and DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus. Checks additionally used CARGO_BUILD_JOBS=32 and TMPDIR=/home/kom/proj/ai_pr/omp-wt-ledger-gate/.tmp. No /tmp workspace, install, process restart, signal or kill was used.
+
+Fail-before:
+nice -n19 ionice -c2 -n7 bun test packages/coding-agent/test/session/requirements-ledger-runtime.test.ts --test-name-pattern 'accepts AuditR7toR10Yield from clean resource worktrees with a dirty auditor cwd'
+Exit 1 on baseline production code: 0 pass, 1 fail, 16 filtered; actual R7 two-row artifact cell was rejected despite clean resource resolution. The repro uses the exact real R7 words and the real two row labels, a separate Git worktree, a registered auditor in the dirty main checkout, and the <br> table representation.
+
+Initial focused pass-after:
+Same focused command, exit 0: 1 pass, 0 fail, 16 filtered, 12 assertions. Old resource HEAD was rejected after the worktree moved, and the refusal identified resource cwd, moved HEAD and dirty=false.
+The regression was then extended to cover saved artifactCwd without resource paths and differently headed clean worktrees with reversed named-cell order. These cases pass through the native todo done gate without borrowing another row's SHA.
+
+Full required suite:
+nice -n19 ionice -c2 -n7 bun test packages/coding-agent/test/session/requirements-ledger-runtime.test.ts packages/coding-agent/test/tools/requirements-ledger.test.ts packages/coding-agent/test/tools/todo.test.ts packages/coding-agent/test/modes/controllers/todo-requirement-gate.test.ts packages/coding-agent/test/modes/controllers/todo-command-controller.test.ts packages/coding-agent/test/pr41-todo-cwd.test.ts packages/coding-agent/test/pr41-todo-rmguard.test.ts packages/coding-agent/test/pr41-ledger.test.ts
+First run exit 1: 133 pass, 1 fail. Existing R16 refusal-parity test compared JSON-escaped diagnostics to an unescaped rejection. Updated it to inspect the rendered text block rather than serialized JSON.
+Final run exit 0: 134 pass, 0 fail, 420 assertions across 8 files (2.79 seconds).
+
+Project check:
+nice -n19 ionice -c2 -n7 bun check
+Exit 0: lint/format check, all 16 workspace type checks, and Rust check completed. Six pre-existing unused-import warnings were reported in unrelated existing files; no new warning or error from this change. Final repeat after the refusal-parity assertion change also exited 0 (32.51 seconds; all 5688 matched files formatted correctly).
+
+Changes: declared resource paths remain authoritative; persisted artifacts outrank auditor cwd; dead ambiguous-owner mapping check removed; one shared named-row identity projection; Markdown line-break decoding at receipt parse; runtime and shared stale-gate diagnostics report resolved checkout; regression, docs/tools/todo.md, and coding-agent changelog updated.
+Remaining: none in the assigned source/test lane. Installation and live-process changes are explicitly excluded.

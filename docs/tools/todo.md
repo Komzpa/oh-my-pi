@@ -111,6 +111,10 @@ Native `todo done`, `/todo done`, and assistant publication share `evaluateRequi
 
 Receipts may use requirement sub-ids such as `R16e`, `R16f`, and `R16g`. They count toward `R16` only when the complete table is valid and every sub-verdict passes; any fail or unverifiable verdict blocks. An explicit row label binds the receipt to that row. Clean checkouts require the audited commit identity; rows without a clean checkout use the receive time and the last saved todo-row change. Completion itself does not invalidate its approving receipt, but reopening or changing the row does. All three gate surfaces retain rejected-receipt reasons.
 
+An explicit resource checkout takes precedence over the auditor's session cwd. Without a resource path, a saved artifact checkout for the current row owner takes precedence over that owner's cwd. This keeps a clean worktree auditable even when the auditor runs from a different, dirty checkout. A multi-row artifact cell such as `Row @ sha; Other row @ sha` is scoped to each named row before its receipt is saved or compared. Markdown `<br>` line breaks in the raw-words cell are decoded as newlines; changing the user's words still invalidates the receipt.
+
+Artifact freshness refusals include the resolved checkout's cwd, HEAD and dirty state, or the reason its checkout identity is unavailable. Moving the resource worktree after receipt invalidates the old pass.
+
 
 ### Markdown round-trip helpers
 The same file also exposes non-tool helpers used by `/todo`:

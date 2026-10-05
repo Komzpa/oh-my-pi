@@ -8,6 +8,7 @@ import { isRecord } from "@oh-my-pi/pi-utils";
 import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
+	formatRequirementGateArtifact,
 	formatOverdueClassifyRefusal,
 	formatPublicationReplacement,
 	getLatestRequirements,
@@ -15,6 +16,7 @@ import {
 	getPersistedRequirementAuditorAssignments,
 	getPersistedRequirementAuditRejections,
 	getRequirementAuditSources,
+	getRequirementRowArtifactIdentity,
 	isFreshRequirementVerdict,
 	evaluateRequirementDoneGate,
 	type RequirementVerdict,
@@ -497,11 +499,9 @@ export class RequirementsLedgerRuntime {
 				);
 				const lastChange = getTodoRowChanges(this.#host.sessionManager.getBranch()).get(row);
 				const receivedAt = new Date().toISOString();
-				const heads = [...receipt.artifact.matchAll(/\b[a-f0-9]{40}\b|\b[a-f0-9]{64}\b/gi)].map(match => match[0]);
-				const identity =
-					rows.length > 1 && !namedRows.length && heads.length === rows.length
-						? heads[rows.indexOf(row)]!
-						: receipt.artifact;
+				const identity = getRequirementRowArtifactIdentity(receipt.artifact, row, rows);
+				if (identity === undefined)
+					return `${receipt.id}: artifact identity did not identify ${JSON.stringify(row)}; resolved checkout: ${formatRequirementGateArtifact(artifact)}`;
 				const verdict: RequirementVerdict = {
 					status: receipt.status,
 					evidence: receipt.evidence,
@@ -522,7 +522,7 @@ export class RequirementsLedgerRuntime {
 						{ row, ...artifact, lastChange },
 					])
 				) {
-					return `${receipt.id}: artifact identity ${receipt.artifact} is not the current row artifact or newer than its saved TODO change`;
+					return `${receipt.id}: artifact identity ${identity} is not the current row artifact or newer than its saved TODO change; row ${JSON.stringify(row)} resolved checkout: ${formatRequirementGateArtifact(artifact)}`;
 				}
 				Object.defineProperty(rowVerdicts, row, {
 					value: verdict,

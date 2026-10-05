@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
 import {
@@ -23,6 +24,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import {
 	getLatestTodoPhasesFromEntries,
+	getRequirementRowArtifact,
 	TodoTool,
 	USER_TODO_EDIT_CUSTOM_TYPE,
 } from "@oh-my-pi/pi-coding-agent/tools/todo";
@@ -588,6 +590,152 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 });
 
 describe("real row-scoped auditor receipts", () => {
+	it("accepts AuditR7toR10Yield from clean resource worktrees with a dirty auditor cwd", async () => {
+		const { cwd, manager, runtime } = fixture();
+		const registry = AgentRegistry.global();
+		const owner = `AuditR7toR10Yield-${cwd.slice(cwd.lastIndexOf("/") + 1)}`;
+		const rows = ["Prove stepPlaques headless on six traces", "Cut facility scene over to momentum physics"];
+		const resource = join(cwd, "callouts-integrate-2026-10-05");
+		const raw = [
+			"Answer to toolu_01MSMt8egW8z74G9WhPAb8gm [D1]: не может прыгать больше своего размера за кадр или чёт такое?",
+			"Answer to toolu_01MSMt8egW8z74G9WhPAb8gm [D2]: Ride with anchor",
+			"Answer to toolu_01MSMt8egW8z74G9WhPAb8gm [D3]: Arrival only",
+			"Answer to toolu_01MSMt8egW8z74G9WhPAb8gm [D4]: Physics births, no snap",
+		].join("\n");
+		try {
+			git(cwd, "worktree", "add", "--detach", resource, "HEAD");
+			writeFileSync(join(cwd, "artifact.txt"), "dirty auditor checkout\n");
+			registry.register({
+				id: owner,
+				displayName: owner,
+				kind: "sub",
+				status: "idle",
+				session: { sessionManager: { getCwd: () => cwd } } as never,
+			});
+			const head = git(resource, "rev-parse", "HEAD");
+			let phases: TodoPhase[] = [
+				{
+					name: "Work",
+					tasks: rows.map(content => ({
+						content,
+						status: "pending",
+						artifactCwd: resource,
+						artifactOwner: owner,
+						schedule: { owner, resources: [resource] },
+					})),
+				},
+			];
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [
+				{ ...createRequirementCandidates([], [raw], AT)[0]!, id: "R7", classification: "linked", rows },
+			]);
+			expect(git(cwd, "status", "--porcelain")).not.toBe("");
+			expect(git(resource, "status", "--porcelain")).toBe("");
+			expect(await getRequirementRowArtifact({ cwd, sessionManager: manager }, rows[0]!, phases)).toEqual({
+				cwd: resource,
+				head,
+				dirty: false,
+			});
+			const savedOnly: TodoPhase[] = [
+				{
+					name: "Work",
+					tasks: phases[0]!.tasks.map(task => ({ ...task, schedule: { owner, resources: [] } })),
+				},
+			];
+			expect(await getRequirementRowArtifact({ cwd, sessionManager: manager }, rows[0]!, savedOnly)).toEqual({
+				cwd: resource,
+				head,
+				dirty: false,
+			});
+			await runtime.prepareAuditorTaskCall("task", owner, { agent: "qa-auditor", task: "Audit R7 now" });
+			const output = [
+				"| id | raw words | verdict | evidence | artifact identity |",
+				"|---|---|---|---|---|",
+				`| R7 | ${raw.replaceAll("\n", "<br>")} | pass | inspected plaquePhysics.ts:675 and facilityScene.ts:8765-8769 | ${rows[0]} @ ${head}; ${rows[1]} @ ${head} |`,
+			].join("\n");
+			const outcome = await runtime.afterToolCall({
+				toolCall: { id: owner, name: "task" },
+				result: {
+					content: [],
+					details: { results: [{ index: 0, agent: "qa-auditor", id: owner, exitCode: 0, output }] },
+				},
+				isError: false,
+			} as never);
+			expect(outcome).toBeUndefined();
+			for (const row of rows) {
+				expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.[row]?.artifact).toBe(
+					`${row} @ ${head}`,
+				);
+			}
+			const tool = new TodoTool({
+				cwd,
+				hasUI: false,
+				settings: Settings.isolated(),
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				sessionManager: manager,
+				getTodoPhases: () => phases,
+				setTodoPhases: next => {
+					phases = next;
+				},
+			} as ToolSession);
+			expect((await tool.execute("done-resource", { op: "done", task: rows[0] })).isError).toBeUndefined();
+			// Negative control: a fresh receipt cannot close the second row after its resource HEAD moves.
+			writeFileSync(join(resource, "artifact.txt"), "resource moved after audit\n");
+			git(resource, "add", "artifact.txt");
+			git(resource, "commit", "-m", "move resource HEAD");
+			const movedHead = git(resource, "rev-parse", "HEAD");
+			expect(movedHead).not.toBe(head);
+			const stale = await tool.execute("done-stale-resource", { op: "done", task: rows[1] });
+			expect(stale.isError).toBe(true);
+			expect(JSON.stringify(stale.content)).toContain(resource);
+			expect(JSON.stringify(stale.content)).toContain(movedHead);
+			expect(JSON.stringify(stale.content)).toContain("dirty=false");
+			// The labels, not cell order or another row's SHA, select each row's fresh artifact.
+			const otherResource = join(cwd, "scene-worktree");
+			git(cwd, "worktree", "add", "--detach", otherResource, head);
+			phases = [
+				{
+					name: "Work",
+					tasks: rows.map((content, index) => ({
+						content,
+						status: "pending",
+						schedule: { owner, resources: [index === 0 ? resource : otherResource] },
+					})),
+				},
+			];
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			await runtime.prepareAuditorTaskCall("task", "distinct-rows", { agent: "qa-auditor", task: "Audit R7 now" });
+			const distinct = await runtime.afterToolCall({
+				toolCall: { id: "distinct-rows", name: "task" },
+				result: {
+					content: [],
+					details: {
+						results: [
+							{
+								index: 0,
+								agent: "qa-auditor",
+								id: owner,
+								exitCode: 0,
+								output: output.replace(
+									`${rows[0]} @ ${head}; ${rows[1]} @ ${head}`,
+									`${rows[1]} @ ${head}; ${rows[0]} @ ${movedHead}`,
+								),
+							},
+						],
+					},
+				},
+				isError: false,
+			} as never);
+			expect(distinct).toBeUndefined();
+			expect((await tool.execute("done-distinct-0", { op: "done", task: rows[0] })).isError).toBeUndefined();
+			expect((await tool.execute("done-distinct-1", { op: "done", task: rows[1] })).isError).toBeUndefined();
+		} finally {
+			registry.unregister(owner);
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("replays R16 sub-id and R17 JSON wait receipts through the native done gate", async () => {
 		const { cwd, manager, runtime, gate } = fixture();
 		const row = "Match leader colour to frame and thin frames";
@@ -708,7 +856,7 @@ describe("real row-scoped auditor receipts", () => {
 				"R16",
 			);
 			const refused = await tool.execute("refusal-parity", { op: "done", task: row });
-			expect(JSON.stringify(refused.content)).toContain(`rejected receipt: ${rejection}`);
+			expect(refused.content.find(block => block.type === "text")?.text).toContain(`rejected receipt: ${rejection}`);
 			// Session 01a0f9b1, QaBashEnvOnWave5-2: JSON {answer,table}, no clean row checkout.
 			const scratch = "Fix bash service async and env passthrough";
 			phases = [

@@ -360,6 +360,21 @@ export function isRequirementLinkedToRow(requirements: readonly RequirementLedge
 	return requirements.some(requirement => requirement.classification === "linked" && requirement.rows.includes(row));
 }
 
+/** Scope explicitly named artifact segments before comparing a row's commit identity. */
+export function getRequirementRowArtifactIdentity(
+	artifact: string,
+	row: string,
+	rows: readonly string[],
+): string | undefined {
+	const segments = artifact.split(";").map(segment => segment.trim());
+	const named = segments.filter(segment => segment.startsWith(`${row} @ `));
+	if (named.length) return named.join("; ");
+	if (rows.some(candidate => segments.some(segment => segment.startsWith(`${candidate} @ `)))) return undefined;
+	if (rows.length === 1) return artifact;
+	const heads = [...artifact.matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!);
+	return heads.length === rows.length ? heads[rows.indexOf(row)] : undefined;
+}
+
 /** Read a row receipt, or project an old all-row receipt onto its corresponding artifact. */
 export function getRequirementRowVerdict(
 	requirement: RequirementLedgerItem,
@@ -368,16 +383,20 @@ export function getRequirementRowVerdict(
 	if (requirement.rowVerdicts && Object.hasOwn(requirement.rowVerdicts, row)) return requirement.rowVerdicts[row];
 	const verdict = requirement.verdict;
 	if (!verdict || !requirement.rows.includes(row)) return undefined;
-	if (requirement.rows.length === 1) return verdict;
-	const heads = [...verdict.artifact.matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!);
-	if (heads.length !== requirement.rows.length) return undefined;
-	return { ...verdict, artifact: heads[requirement.rows.indexOf(row)]! };
+	const artifact = getRequirementRowArtifactIdentity(verdict.artifact, row, requirement.rows);
+	return artifact === undefined ? undefined : { ...verdict, artifact };
 }
 
 export interface RequirementGateArtifact {
 	head: string | null;
 	dirty: boolean;
 	lastChange?: { at: string; id: string };
+	cwd?: string;
+	reason?: string;
+}
+
+export function formatRequirementGateArtifact(artifact: RequirementGateArtifact): string {
+	return `cwd=${artifact.cwd ?? "unknown"}, head=${artifact.head ?? "unknown"}, dirty=${artifact.dirty}${artifact.reason ? `, reason=${artifact.reason}` : ""}`;
 }
 
 /** The one freshness rule, evaluated only for the rows being closed or published. */
@@ -445,8 +464,9 @@ export async function evaluateRequirementDoneGate(
 					artifact = getArtifact(row);
 					artifacts.set(row, artifact);
 				}
-				if (!isFreshRequirementVerdict(requirement, [{ row, ...(await artifact) }]))
-					reason = `${requirement.id} pass is stale: artifact ${verdict.artifact} does not match the current row artifact or saved todo change`;
+				const current = await artifact;
+				if (!isFreshRequirementVerdict(requirement, [{ row, ...current }]))
+					reason = `${requirement.id} pass is stale: artifact ${verdict.artifact} does not match the current row artifact or saved todo change; resolved checkout: ${formatRequirementGateArtifact(current)}`;
 			}
 			if (reason) {
 				const rejection = rejections.get(requirement.id);
@@ -618,7 +638,7 @@ export function parseRequirementReceipt(
 		if (!cells) break;
 		if (cells.length !== header.width) return null;
 		const id = cells[header.id]!;
-		const rawWords = cells[header.rawWords]!;
+		const rawWords = cells[header.rawWords]!.replace(/<br\s*\/?>/gi, "\n");
 		const status = cells[header.status]!.toLowerCase();
 		const evidence = cells[header.evidence]!;
 		const artifact = cells[header.artifact]!;

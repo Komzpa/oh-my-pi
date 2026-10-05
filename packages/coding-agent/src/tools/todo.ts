@@ -131,6 +131,7 @@ export interface RequirementRowArtifact {
 	cwd: string;
 	head: string | null;
 	dirty: boolean;
+	reason?: string;
 }
 
 export interface RequirementRowArtifactContext {
@@ -142,8 +143,8 @@ export interface RequirementRowArtifactContext {
 
 const ABSOLUTE_ARTIFACT_PATH = /\/(?:home|srv|tmp|var|mnt|workspaces|Users)\/[^\s"'`),;]+/g;
 
-function unknownRequirementArtifact(cwd: string): RequirementRowArtifact {
-	return { cwd, head: null, dirty: true };
+function unknownRequirementArtifact(cwd: string, reason = "checkout mapping unavailable"): RequirementRowArtifact {
+	return { cwd, head: null, dirty: true, reason };
 }
 
 /** Resolve a row's persisted checkout, then read its current HEAD and dirty state without blocking the CLI. */
@@ -203,13 +204,18 @@ export async function getRequirementRowArtifact(
 	}
 	if (new Set(branchNames).size > 1) return unknownRequirementArtifact(`ambiguous branches ${branchNames.join(", ")}`);
 	if (new Set(paths).size > 1) return unknownRequirementArtifact(paths.join(", "));
+	const effectiveOwner = owner ?? "main";
+	const persistedCwd =
+		typeof task.artifactCwd === "string" && isAbsolute(task.artifactCwd) && task.artifactOwner === effectiveOwner
+			? task.artifactCwd
+			: undefined;
 
 	const running = archived ? [] : (ctx.getAsyncJobSnapshot?.()?.running ?? []);
 	const activeJob = owner === undefined ? undefined : running.find(job => job.id === owner || job.agentId === owner);
 	const registry = AgentRegistry.global();
 	let agent = archived || owner === undefined ? undefined : registry.get(owner);
 	if (!agent && activeJob?.agentId) agent = registry.get(activeJob.agentId);
-	if (!agent && !archived) {
+	if (!agent && !archived && paths.length === 0 && !persistedCwd) {
 		for (const reference of registry.list()) {
 			if (!("todoRow" in reference) || reference.todoRow !== row) continue;
 			if (agent) return unknownRequirementArtifact(`ambiguous registered owners for ${JSON.stringify(row)}`);
@@ -227,11 +233,6 @@ export async function getRequirementRowArtifact(
 			);
 		}
 	}
-	const effectiveOwner = owner ?? "main";
-	const persistedCwd =
-		typeof task.artifactCwd === "string" && isAbsolute(task.artifactCwd) && task.artifactOwner === effectiveOwner
-			? task.artifactCwd
-			: undefined;
 	// Only a row that declares no resource set at all is a pre-scheduling legacy
 	// row: it falls back to the main checkout (c7a645a9c1). A row that declares
 	// `resources` explicitly is bound to that set alone and must stay unknown
@@ -242,7 +243,7 @@ export async function getRequirementRowArtifact(
 			? archived || paths.length || persistedCwd || declaredResources
 				? undefined
 				: ctx.cwd
-			: resources.length > 0
+			: resources.length > 0 || persistedCwd
 				? undefined
 				: agent?.session?.sessionManager.getCwd();
 	// A reassigned worker whose checkout is not known must not inherit the row's initial main checkout.
@@ -276,7 +277,7 @@ export async function getRequirementRowArtifact(
 	}
 	const uniquePaths = [...new Set(paths)];
 	if (uniquePaths.length > 1) return unknownRequirementArtifact(uniquePaths.join(", "));
-	const path = uniquePaths[0] ?? ownerCwd ?? persistedCwd;
+	const path = uniquePaths[0] ?? persistedCwd ?? ownerCwd;
 	if (!path)
 		return unknownRequirementArtifact(
 			`unknown artifact mapping for ${JSON.stringify(row)} (owner ${JSON.stringify(owner ?? null)})`,
@@ -286,19 +287,16 @@ export async function getRequirementRowArtifact(
 	try {
 		if (!(await stat(path)).isDirectory()) cwd = dirname(path);
 	} catch {
-		return unknownRequirementArtifact(path);
+		return unknownRequirementArtifact(path, "resource path is missing or inaccessible");
 	}
 	const repo = vcs.git(cwd);
-	if (!repo) return unknownRequirementArtifact(cwd);
+	if (!repo) return unknownRequirementArtifact(cwd, "not a Git checkout");
 	const repoRoot = repo.info().repoRoot;
-	if (ownerCwd && cwd !== ownerCwd && vcs.git(ownerCwd)?.info().repoRoot !== repoRoot) {
-		return unknownRequirementArtifact(`${cwd}, ${ownerCwd} (ambiguous owner mapping)`);
-	}
 	let current = checkoutCache?.get(repoRoot);
 	if (!current) {
 		current = Promise.all([repo.headSha(ctx.signal), repo.statusPorcelain({ untracked: "all" }, ctx.signal)])
 			.then(([head, status]) => ({ cwd: repoRoot, head: head ?? null, dirty: status.length > 0 }))
-			.catch(() => unknownRequirementArtifact(repoRoot));
+			.catch(() => unknownRequirementArtifact(repoRoot, "Git HEAD or status unavailable"));
 		checkoutCache?.set(repoRoot, current);
 	}
 	return current;
