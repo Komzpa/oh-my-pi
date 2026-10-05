@@ -148,6 +148,28 @@ describe("agent router", () => {
 		} finally { rmSync(dir, { recursive: true, force: true }); }
 	});
 
+	test("brrrr puts the fast Cerebras model first for scout and last for coder", async () => {
+		const { dir, file } = tempStateFile();
+		const modeFile = join(dir, "mode.json");
+		writeFileSync(modeFile, JSON.stringify({ enabled: true }));
+		const previous = process.env.OMP_AGENT_ROUTER_MODELS;
+		process.env.OMP_AGENT_ROUTER_MODELS = new URL("./brrrr_models.json", import.meta.url).pathname;
+		const fast = "cerebras/qwen-3.8-27b";
+		try {
+			const scout = await routeSubagentSpawn({ agent: "scout" }, ctx(), createRouterState(), { stateFile: file, modeFile });
+			const coder = await routeSubagentSpawn({ agent: "coder" }, ctx(), createRouterState(), { stateFile: file, modeFile });
+			expect(modelSelectorBase(scout.model[0])).toBe(fast);
+			expect(scout.model.length).toBeGreaterThan(1);
+			expect(modelSelectorBase(coder.model.at(-1))).toBe(fast);
+			expect(modelSelectorBase(coder.model[0])).not.toBe(fast);
+			for (const spec of [...scout.model, ...coder.model]) expect(spec).not.toMatch(/gpt-oss/);
+		} finally {
+			if (previous === undefined) delete process.env.OMP_AGENT_ROUTER_MODELS;
+			else process.env.OMP_AGENT_ROUTER_MODELS = previous;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("brrrr returns undefined when every allowed model is depleted", async () => {
 		const { dir, file } = tempStateFile();
 		const modeFile = join(dir, "mode.json");
