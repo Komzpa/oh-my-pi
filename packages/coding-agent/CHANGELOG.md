@@ -6,6 +6,7 @@
 
 - `/dump all` writes a zip to the temp directory with the main transcript, the LLM request JSON, and one file per subagent transcript (nested subagents included, killed ones marked aborted); the TUI copies the archive path to the clipboard. Plain `/dump` is unchanged ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 - Added a requirements ledger: todo rows link the user's raw requirements, a `qa-auditor` agent checks each deliverable against them before the row closes, assistant output that fails delivery approval is withheld, and the HUD shows open requirements and audit status.
+- Added `todo block`'s optional `awaitingUser` action and ids: pending user checks are announced once per user message instead of on every agent turn, without granting verification or bypassing completion gates.
 
 ### Fixed
 

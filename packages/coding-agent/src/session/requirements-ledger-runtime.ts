@@ -379,7 +379,7 @@ export class RequirementsLedgerRuntime {
 			if (this.#getPublicationGeneration() !== generation) return;
 		}
 		const decisionGeneration = this.#getPublicationGeneration();
-		const { requirements, staleById } = freshness;
+		const { requirements, staleById, awaitingUserIssues } = freshness;
 		const open = this.#openRequirements(requirements, staleById);
 		this.syncPublicationGate();
 		// Never erase the assistant's own text on a generation race: publish unchanged.
@@ -387,9 +387,30 @@ export class RequirementsLedgerRuntime {
 		if (open.length === 0) return;
 		// With tool calls the text stays as it is: the gate only appends to final text.
 		if (message.content.some(block => block.type === "toolCall")) return;
-		const rows = openTodoRowContents(this.#host.sessionManager.getBranch());
+		const branch = this.#host.sessionManager.getBranch();
+		const userMessage = branch.findLast(entry => entry.type === "message" && entry.message.role === "user");
+		const announced = new Set<string>();
+		for (const entry of branch) {
+			if (entry.type !== "custom" || entry.customType !== "requirements_awaiting_user_notice" || !isRecord(entry.data)) continue;
+			if (Array.isArray(entry.data.keys)) for (const key of entry.data.keys) if (typeof key === "string") announced.add(key);
+		}
+		const newKeys: string[] = [];
+		const visible = open.flatMap(item => {
+			const issues = item.issues.filter(issue => {
+				// Only explicit user-owned checks are quieted. Agent-side failures keep blocking every turn.
+				if (!awaitingUserIssues.has(issue)) return true;
+				const key = JSON.stringify([userMessage?.id ?? null, item.requirement.id, item.requirement.rawText, issue]);
+				if (announced.has(key)) return false;
+				newKeys.push(key);
+				return true;
+			});
+			return issues.length ? [{ ...item, issues, awaitingUser: issues.every(issue => awaitingUserIssues.has(issue)) }] : [];
+		});
+		if (visible.length === 0) return;
+		if (newKeys.length) this.#host.sessionManager.appendCustomEntry("requirements_awaiting_user_notice", { keys: newKeys });
+		const rows = openTodoRowContents(branch);
 		this.#host.onSettledAssistantMessage(message);
-		const notice = formatPublicationReplacement(open, rows);
+		const notice = formatPublicationReplacement(visible, rows);
 		const original = message.content
 			.filter(block => block.type === "text")
 			.map(block => block.text)
@@ -403,7 +424,7 @@ export class RequirementsLedgerRuntime {
 
 	async #refreshRequirementFreshness(
 		signal?: AbortSignal,
-	): Promise<{ requirements: RequirementLedgerItem[]; staleById: Map<string, string[]> }> {
+	): Promise<{ requirements: RequirementLedgerItem[]; staleById: Map<string, string[]>; awaitingUserIssues: Set<string> }> {
 		const branch = this.#host.sessionManager.getBranch();
 		const requirements = getLatestRequirements(branch);
 		const phases = getLatestTodoPhasesFromEntries(branch);
@@ -423,7 +444,11 @@ export class RequirementsLedgerRuntime {
 			}),
 			getPersistedRequirementAuditRejections(branch, this.#sessionId()),
 		);
-		return { requirements, staleById: new Map(open.map(item => [item.requirement.id, item.issues])) };
+		return {
+			requirements,
+			staleById: new Map(open.map(item => [item.requirement.id, item.issues])),
+			awaitingUserIssues: new Set(open.flatMap(item => item.awaitingUserIssues)),
+		};
 	}
 
 	#openRequirements(

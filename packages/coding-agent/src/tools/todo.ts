@@ -84,10 +84,18 @@ const todoSchema = type({
 	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
 	"items?": type("string").array().describe("tasks for flat init or append"),
 	"reason?": type("string").describe("blocker note for block"),
+	"awaitingUser?": type({ action: "string", "ids?": type("string").array() }).describe("user-owned pending check for block: exact action and optional card or other ids"),
 });
 
 type TodoParams = TodoSchema;
 type TodoSchema = typeof todoSchema.infer;
+
+declare module "@oh-my-pi/pi-tui/tools/todo" {
+	interface TodoItem {
+		/** User-owned check; does not constitute verification or close the row. */
+		awaitingUser?: { action: string; ids?: string[] };
+	}
+}
 /** A single todo op entry (the params object itself). */
 type TodoOpEntryValue = TodoParams;
 
@@ -135,6 +143,7 @@ export interface RequirementRowArtifact {
 	dirty: boolean;
 	sha256?: string;
 	reason?: string;
+	awaitingUser?: TodoItem["awaitingUser"];
 }
 
 export interface RequirementRowArtifactContext {
@@ -150,9 +159,21 @@ function unknownRequirementArtifact(cwd: string, reason = "checkout mapping unav
 	return { cwd, head: null, dirty: true, reason };
 }
 
+/** Attach row-owned pending checks to the artifact used by every completion surface. */
+export async function getRequirementRowArtifact(
+	ctx: RequirementRowArtifactContext,
+	row: string,
+	phases: readonly TodoPhase[],
+	checkoutCache?: Map<string, Promise<RequirementRowArtifact>>,
+): Promise<RequirementRowArtifact> {
+	const artifact = await resolveRequirementRowArtifact(ctx, row, phases, checkoutCache);
+	const tasks = phases.flatMap(phase => phase.tasks).filter(task => task.content === row);
+	const pending = tasks.length === 1 && tasks[0]!.status === "blocked" ? tasks[0]!.awaitingUser : undefined;
+	return pending?.action.trim() ? { ...artifact, awaitingUser: pending } : artifact;
+}
 
 /** Resolve a row's persisted checkout, then read its current HEAD and dirty state without blocking the CLI. */
-export async function getRequirementRowArtifact(
+async function resolveRequirementRowArtifact(
 	ctx: RequirementRowArtifactContext,
 	row: string,
 	phases: readonly TodoPhase[],
@@ -783,6 +804,11 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			// external error or user question would corrupt the round-trip parse and
 			// the rendered line. Normalizing here keeps every consumer one-line-safe.
 			const reason = entry.reason?.replace(/\s+/g, " ").trim() || undefined;
+			const action = entry.awaitingUser?.action.trim();
+			if (entry.awaitingUser && !action) {
+				errors.push("awaitingUser requires the exact action the user must take");
+				return phases;
+			}
 			for (const task of getTaskTargets(phases, entry, errors)) {
 				// Only actionable open work can be blocked: blocking a phase must not
 				// reopen completed/abandoned tasks or erase finished progress. An
@@ -790,7 +816,8 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 				// blocker note (e.g. first blocked without a reason, then with one).
 				if (task.status !== "pending" && task.status !== "in_progress" && task.status !== "blocked") continue;
 				task.status = "blocked";
-				task.blocker = reason;
+				task.awaitingUser = action ? { ...entry.awaitingUser!, action } : undefined;
+				task.blocker = reason ?? action;
 			}
 			return phases;
 		}
@@ -803,6 +830,7 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 				if (task.status === "blocked") {
 					task.status = "pending";
 					task.blocker = undefined;
+					delete task.awaitingUser;
 				}
 			}
 			return phases;

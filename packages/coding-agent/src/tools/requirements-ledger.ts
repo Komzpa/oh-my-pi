@@ -395,6 +395,7 @@ export interface RequirementGateArtifact {
 	lastChange?: { at: string; id: string };
 	cwd?: string;
 	reason?: string;
+	awaitingUser?: { action: string; ids?: string[] };
 }
 
 export function formatRequirementGateArtifact(artifact: RequirementGateArtifact): string {
@@ -448,40 +449,47 @@ export async function evaluateRequirementDoneGate(
 	rows: readonly string[],
 	getArtifact: (row: string) => Promise<RequirementGateArtifact>,
 	rejections: ReadonlyMap<string, string> = new Map(),
-): Promise<Array<{ requirement: RequirementLedgerItem; issues: string[] }>> {
+): Promise<Array<{ requirement: RequirementLedgerItem; issues: string[]; awaitingUserIssues: string[] }>> {
 	const targets = new Set(rows);
 	const artifacts = new Map<string, Promise<RequirementGateArtifact>>();
-	const open: Array<{ requirement: RequirementLedgerItem; issues: string[] }> = [];
+	const open: Array<{ requirement: RequirementLedgerItem; issues: string[]; awaitingUserIssues: string[] }> = [];
 	for (const requirement of requirements) {
 		if (requirement.classification !== "linked") continue;
 		const issues: string[] = [];
+		const awaitingUserIssues: string[] = [];
 		for (const row of requirement.rows) {
 			if (!targets.has(row)) continue;
 			const verdict = getRequirementRowVerdict(requirement, row);
+			let artifact = artifacts.get(row);
+			if (!artifact) {
+				artifact = getArtifact(row);
+				artifacts.set(row, artifact);
+			}
+			const current = await artifact;
+			const pending = current.awaitingUser;
+			const auditedAfterCheck = verdict?.status === "pass" && !!verdict.receivedAt && !!current.lastChange &&
+				Date.parse(verdict.receivedAt) >= Date.parse(current.lastChange.at);
 			let reason: string | undefined;
-			if (!verdict) reason = `${requirement.id} needs a fresh qa-auditor pass`;
+			if (pending && !auditedAfterCheck)
+				reason = `awaiting user: ${pending.action}${pending.ids?.length ? ` (ids: ${pending.ids.join(", ")})` : ""}`;
+			else if (!verdict) reason = `${requirement.id} needs a fresh qa-auditor pass`;
 			else if (verdict.status !== "pass")
 				reason = `${requirement.id} ${verdict.status === "fail" ? "failed" : "unverifiable"}: ${verdict.evidence}`;
 			else if (!verdict.workerId.trim() || verdict.auditor !== "qa-auditor")
 				reason = `${requirement.id} has no authenticated qa-auditor identity on its receipt`;
 			else {
-				let artifact = artifacts.get(row);
-				if (!artifact) {
-					artifact = getArtifact(row);
-					artifacts.set(row, artifact);
-				}
-				const current = await artifact;
+				// A new QA pass can satisfy a user-owned check, but still must match this artifact.
 				if (!isFreshRequirementVerdict(requirement, [{ row, ...current }]))
 					reason = `${requirement.id} pass is stale: artifact ${verdict.artifact} does not match the current row artifact or saved todo change; resolved checkout: ${formatRequirementGateArtifact(current)}`;
 			}
 			if (reason) {
 				const rejection = rejections.get(requirement.id);
-				issues.push(
-					`${requirement.id} (${JSON.stringify(row)}): ${reason}${rejection ? `; rejected receipt: ${rejection}` : ""}`,
-				);
+				const issue = `${requirement.id} (${JSON.stringify(row)}): ${reason}${rejection ? `; rejected receipt: ${rejection}` : ""}`;
+				issues.push(issue);
+				if (pending && !auditedAfterCheck) awaitingUserIssues.push(issue);
 			}
 		}
-		if (issues.length) open.push({ requirement, issues });
+		if (issues.length) open.push({ requirement, issues, awaitingUserIssues });
 	}
 	return open;
 }
@@ -809,12 +817,15 @@ export function formatOverdueClassifyRefusal(
 
 /** Publication-gate replacement text: what is blocked, why, and the exact call per open requirement. */
 export function formatPublicationReplacement(
-	open: readonly { requirement: RequirementLedgerItem; issues: string[] }[],
+	open: readonly { requirement: RequirementLedgerItem; issues: string[]; awaitingUser?: boolean }[],
 	rows: readonly string[],
 ): string {
-	const parts = open.map(({ requirement, issues }) => {
+	const parts = open.map(({ requirement, issues, awaitingUser }) => {
 		if (requirement.classification === "candidate") {
 			return `${requirement.id} (${JSON.stringify(requirement.rawText)}) is unclassified (${issues.join("; ")}). Call ${formatClassifyCall(requirement, rows)}`;
+		}
+		if (awaitingUser) {
+			return `${requirement.id} (${JSON.stringify(requirement.rawText)}) is not verified complete (${issues.join("; ")}). Await the user's confirmation or a fresh qa-auditor pass; do not mark the row done`;
 		}
 		return `${requirement.id} (${JSON.stringify(requirement.rawText)}) is linked but not verified complete (${issues.join("; ")}). Request a fresh qa-auditor pass with task agent="qa-auditor", task="Audit ${requirement.id} at the current clean row HEAD", then retry`;
 	});
