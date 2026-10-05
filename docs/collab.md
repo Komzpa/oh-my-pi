@@ -203,3 +203,27 @@ Hub topology — the host is authoritative, guests never peer:
 Guest→host: `hello`, `prompt`, `abort`, `agent-cmd` (hub chat/kill/revive), `fetch-transcript` (incremental subagent-transcript reads answered by targeted `transcript` frames), and `ui-response`. The replica loads through the regular `/resume` machinery, so theming, ctrl+o, and transcript behavior are native by construction; the guest process never chdirs to host paths.
 
 Transcript fetches are capped at 4 MiB per reply and end on complete JSONL lines. Guests continue from `newSize`; a single entry exceeding the cap produces a terminal transcript error instead of an endless empty-read retry.
+
+## Local peer messages and shell replies
+
+`omp peers list [--json]` discovers local sessions. Send a message with
+`omp peers send <id|prefix|cwd|title> <text|@file> [--agent <id>] [--json]`.
+Registered slash commands execute through the target's command dispatcher;
+other text arrives through IRC.
+
+Every shell send creates an owner-private reply inbox before delivery. Its
+receipt includes `replyTo: "agent://shell:<id>"` in JSON mode, or prints
+`Replies: omp peers inbox shell:<id>` in text mode. The receiving message's
+footer advertises that same writable address. A session replies using
+`write` with that address in `path` and the answer in `content`.
+
+The shell sender reads answers with `omp peers inbox shell:<id> [--json]`.
+An empty inbox reports no replies yet; an unknown address fails. Reads do not
+consume replies. JSON replies include `from`, `text`, and `createdAt`.
+Replies persist after the sending command exits, under
+`~/.omp/run/peer-sessions/shell-inboxes/<id>.jsonl` (or the
+`OMP_PEER_SESSIONS_DIR` override), with directory mode `0700` and file mode
+`0600` on POSIX. Once no further replies are needed, the sender may delete
+that inbox file; subsequent replies then fail clearly. No background waiter,
+live shell process, or session restart is required.
+

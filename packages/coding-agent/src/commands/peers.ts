@@ -1,6 +1,6 @@
 import { Args, CliUsageError, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { peersHelp as commandHelp } from "../cli/command-help";
-import { runPeerListCommand, runPeerSendCommand } from "../cli/peers-cli";
+import { runPeerInboxCommand, runPeerListCommand, runPeerSendCommand } from "../cli/peers-cli";
 
 async function readMessage(raw: string | undefined): Promise<string> {
 	if (!raw) throw new CliUsageError("peers send requires text or @file");
@@ -15,11 +15,11 @@ export default class Peers extends Command {
 
 	static args = {
 		action: Args.string({
-			description: "list (default) or send",
+			description: "list (default), send, or inbox",
 			required: false,
-			options: ["list", "send"],
+			options: ["list", "send", "inbox"],
 		}),
-		target: Args.string({ description: "Target session id, prefix, cwd, or title (send only)", required: false }),
+		target: Args.string({ description: "Target session selector (send) or shell reply address (inbox)", required: false }),
 		text: Args.string({ description: "Message text or @file (send only)", required: false }),
 	};
 
@@ -33,6 +33,7 @@ export default class Peers extends Command {
 		"omp peers list --json",
 		"omp peers send sunbim 'status?'",
 		"omp peers send /home/kom/proj/sunbim/datacenter-decision-graph @message.txt --agent Main",
+		"omp peers inbox shell:<id> --json",
 	];
 
 	async run(): Promise<void> {
@@ -43,6 +44,13 @@ export default class Peers extends Command {
 				throw new CliUsageError("peers list accepts no selector or --agent (usage: peers list [--json])");
 			}
 			await runPeerListCommand({ json: flags.json });
+			return;
+		}
+		if (action === "inbox") {
+			if (argv.length !== 2 || !args.target || flags.agent) {
+				throw new CliUsageError("peers inbox requires a shell reply address (usage: peers inbox shell:<id> [--json])");
+			}
+			process.exitCode = await runPeerInboxCommand({ address: args.target, json: flags.json });
 			return;
 		}
 		if (argv.length < 3 || !args.target) {
