@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Let desktop-masked Linux workers launch scoped tools through the systemd user manager without exposing its runtime directory or bus address to tool payloads.
 - Run Linux scoped tool children (external shell commands, PTYs, git hooks, and Python/JavaScript eval kernels) at CPU niceness 19 and best-effort IO priority 7 without lowering omp's own priority.
 - Detached repositories borrow a single transitive object store for healthy `--reference` chains; genuinely cyclic chains are materialized locally without inheriting an alternates pointer.
 
