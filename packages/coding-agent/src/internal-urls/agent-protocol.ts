@@ -23,7 +23,7 @@ import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { fuzzyFilter } from "@oh-my-pi/pi-tui/fuzzy";
 import { formatDuration, isEnoent, prompt } from "@oh-my-pi/pi-utils";
-import { type PeerSessionOptions, PeerSessionError, sendPeerMessage } from "../collab/registry";
+import { type PeerSessionOptions, PeerSessionError, sendPeerMessage, writeShellReply } from "../collab/registry";
 import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
 import { ensurePersistedRoster } from "../registry/persisted-agents";
 import { executeSend, isIrcEnabled } from "../irc/messaging";
@@ -191,6 +191,15 @@ export class AgentProtocolHandler implements ProtocolHandler {
 			throw new Error("agent:// message target cannot have a JSON-path suffix.");
 		}
 		if (!content.trim()) throw new Error("agent:// messages require non-empty content.");
+		if (to.startsWith("shell:")) {
+			try {
+				await writeShellReply(to, { from: `peer:${session.getSessionId?.() ?? senderId}`, text: content, createdAt: Date.now() }, this.peerSessions);
+				return { content: [{ type: "text", text: `delivered to ${to} (shell inbox)` }], isError: false };
+			} catch (error) {
+				if (!(error instanceof PeerSessionError)) throw error;
+				return { content: [{ type: "text", text: error.message }], isError: true };
+			}
+		}
 		if (to.startsWith("peer:")) {
 			const sessionId = session.getSessionId?.();
 			if (!sessionId) throw new Error("Peer replies require a sender session ID.");

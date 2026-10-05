@@ -27,6 +27,9 @@ import {
 import { runPeerSendCommand } from "@oh-my-pi/pi-coding-agent/cli/peers-cli";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
+import { prompt } from "@oh-my-pi/pi-utils";
+import ircIncomingTemplate from "../src/prompts/system/irc-incoming.md" with { type: "text" };
+import * as peersCli from "../src/cli/peers-cli";
 
 const cleanupDirs: string[] = [];
 const publications: PeerSessionPublication[] = [];
@@ -125,6 +128,102 @@ async function publishFixture(
 }
 
 describe("peer sessions", () => {
+	it("delivers a shell reply to the address advertised by the incoming footer and reads it from the CLI inbox", async () => {
+		const dir = await tempDir();
+		const target = await publishFixture(dir, { sessionId: "sess-shell-reply", cwd: dir });
+		const sent: string[] = [];
+		expect(await runPeerSendCommand(
+			{ target: target.snapshot.instanceId, text: "status?", json: true, registry: { dir } },
+			line => sent.push(line),
+		)).toBe(0);
+		const message = target.delivered[0]!;
+		const footer = prompt.render(ircIncomingTemplate, { from: message.from, message: message.body, relayOnStop: false });
+		const address = footer.match(/path: "(agent:\/\/[^"\s]+)"/)?.[1];
+		expect(address).toBeTruthy();
+		const result = await new AgentProtocolHandler({ dir }).write(parseInternalUrl(address!), "shell answer", {
+			session: {
+				cwd: dir, hasUI: false, agentRegistry: target.registry,
+				getAgentId: () => MAIN_AGENT_ID, getSessionId: () => "sess-shell-reply", settings: Settings.isolated(),
+			} as ToolSession,
+		});
+		expect(result.isError).toBe(false);
+		const receipt = JSON.parse(sent.join("\n"));
+		expect(receipt.replyTo).toBe(address);
+		const inbox: string[] = [];
+		expect(await peersCli.runPeerInboxCommand(
+			{ address: receipt.replyTo.replace("agent://", ""), json: true, registry: { dir } },
+			line => inbox.push(line),
+		)).toBe(0);
+		expect(JSON.parse(inbox.join("\n")).replies).toEqual([
+			expect.objectContaining({ text: "shell answer", from: "peer:sess-shell-reply" }),
+		]);
+		if (process.platform !== "win32") {
+			const id = message.from.replace("shell:", "");
+			expect((await fs.stat(path.join(dir, "shell-inboxes"))).mode & 0o077).toBe(0);
+			expect((await fs.stat(path.join(dir, "shell-inboxes", `${id}.jsonl`))).mode & 0o077).toBe(0);
+		}
+	});
+
+	it("still rejects an unknown agent id with a clear error", async () => {
+		const dir = await tempDir();
+		const target = await publishFixture(dir, { sessionId: "sess-negative", cwd: dir });
+		const result = await new AgentProtocolHandler({ dir }).write(parseInternalUrl("agent://missing-agent"), "answer", {
+			session: {
+				cwd: dir, hasUI: false, agentRegistry: target.registry,
+				getAgentId: () => MAIN_AGENT_ID, getSessionId: () => "sess-negative", settings: Settings.isolated(),
+			} as ToolSession,
+		});
+		expect(result.isError).toBe(true);
+		expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining('Unknown agent "missing-agent"') })]);
+	});
+
+	it("keeps replies readable from another CLI process after the shell sender exits", async () => {
+		const dir = await tempDir();
+		const target = await publishFixture(dir, { sessionId: "sess-exited-shell", cwd: dir });
+		const cli = path.resolve(import.meta.dir, "../src/cli.ts");
+		const run = async (...args: string[]) => {
+			const child = Bun.spawn([process.execPath, cli, "peers", ...args], {
+				cwd: dir, env: { ...process.env, OMP_PEER_SESSIONS_DIR: dir }, stdout: "pipe", stderr: "pipe",
+			});
+			const [stdout, stderr, exit] = await Promise.all([
+				new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+			]);
+			expect(stderr).toBe("");
+			expect(exit).toBe(0);
+			return JSON.parse(stdout);
+		};
+		const sent = await run("send", target.snapshot.instanceId, "answer after I exit", "--json");
+		const result = await new AgentProtocolHandler({ dir }).write(parseInternalUrl(sent.replyTo), "durable answer", {
+			session: {
+				cwd: dir, hasUI: false, agentRegistry: target.registry,
+				getAgentId: () => MAIN_AGENT_ID, getSessionId: () => "sess-exited-shell", settings: Settings.isolated(),
+			} as ToolSession,
+		});
+		expect(result.isError).toBe(false);
+		const address = sent.replyTo.replace("agent://", "");
+		const firstRead = await run("inbox", address, "--json");
+		expect(firstRead.replies).toHaveLength(1);
+		expect(firstRead.replies[0].text).toBe("durable answer");
+		expect(await run("inbox", address, "--json")).toEqual(firstRead);
+	});
+
+	it("rejects an unknown shell inbox rather than creating one", async () => {
+		const dir = await tempDir();
+		const target = await publishFixture(dir, { sessionId: "sess-missing-shell", cwd: dir });
+		const address = `shell:${"a".repeat(32)}`;
+		const result = await new AgentProtocolHandler({ dir }).write(parseInternalUrl(`agent://${address}`), "answer", {
+			session: {
+				cwd: dir, hasUI: false, agentRegistry: target.registry,
+				getAgentId: () => MAIN_AGENT_ID, settings: Settings.isolated(),
+			} as ToolSession,
+		});
+		expect(result.isError).toBe(true);
+		expect(result.content[0]).toMatchObject({ text: `unknown shell reply address: ${address}` });
+		const lines: string[] = [];
+		expect(await peersCli.runPeerInboxCommand({ address, json: true, registry: { dir } }, line => lines.push(line))).toBe(1);
+		expect(JSON.parse(lines[0]!)).toMatchObject({ error: "not_found" });
+	});
+
 	it("delivers a shell message to an idle peer through the target IRC bus", async () => {
 		const dir = await tempDir();
 		const { delivered, snapshot } = await publishFixture(dir, {
@@ -141,15 +240,16 @@ describe("peer sessions", () => {
 			text: "status?",
 		});
 
-		expect(receipt).toEqual({
+		expect(receipt).toMatchObject({
 			status: "delivered",
 			outcome: "woken",
 			target: snapshot.instanceId,
 			agent: MAIN_AGENT_ID,
 		});
 		expect(delivered).toHaveLength(1);
+		expect(receipt.replyTo).toBe(`agent://${delivered[0]!.from}`);
 		expect(delivered[0]).toMatchObject({
-			from: "shell",
+			from: expect.stringMatching(/^shell:[a-f0-9]{32}$/),
 			to: MAIN_AGENT_ID,
 			body: "status?\n\n[from shell]",
 		});

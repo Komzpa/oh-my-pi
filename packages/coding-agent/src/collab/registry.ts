@@ -143,7 +143,7 @@ export interface PeerSessionSnapshot {
 	agents: PeerAgentSnapshot[];
 }
 
-export type PeerMessageSender = { kind: "shell" } | { kind: "session"; sessionId: string; cwd: string };
+export type PeerMessageSender = { kind: "shell"; id?: string } | { kind: "session"; sessionId: string; cwd: string };
 
 export interface PeerDeliveryReceipt {
 	status: "delivered" | "queued" | "failed";
@@ -151,6 +151,8 @@ export interface PeerDeliveryReceipt {
 	agent: string;
 	outcome?: IrcDeliveryReceipt["outcome"] | "executed" | "queued";
 	reason?: string;
+	/** Writable reply address for a shell sender, also readable with `omp peers inbox`. */
+	replyTo?: string;
 }
 
 export interface PeerSessionPublication {
@@ -370,7 +372,10 @@ function parseSnapshot(raw: unknown): CollabHostSnapshot | null {
 function parsePeerMessageSender(raw: unknown): PeerMessageSender | null {
 	if (typeof raw !== "object" || raw === null) return null;
 	const sender = raw as Record<string, unknown>;
-	if (sender.kind === "shell") return { kind: "shell" };
+	if (sender.kind === "shell") {
+		if (typeof sender.id !== "string" || !SHELL_ID_PATTERN.test(sender.id)) return null;
+		return { kind: "shell", id: sender.id };
+	}
 	if (sender.kind !== "session") return null;
 	if (typeof sender.sessionId !== "string" || sender.sessionId.trim().length === 0) return null;
 	if (typeof sender.cwd !== "string" || sender.cwd.trim().length === 0) return null;
@@ -378,7 +383,7 @@ function parsePeerMessageSender(raw: unknown): PeerMessageSender | null {
 }
 
 function peerSenderLabel(sender: PeerMessageSender): string {
-	return sender.kind === "shell" ? "shell" : `peer:${sender.sessionId}`;
+	return sender.kind === "shell" ? `shell:${sender.id}` : `peer:${sender.sessionId}`;
 }
 
 function peerSenderNotice(sender: PeerMessageSender): string {
@@ -1112,6 +1117,62 @@ function parsePeerReceipt(raw: unknown): PeerDeliveryReceipt | null {
 	};
 }
 
+const SHELL_ID_PATTERN = /^[a-f0-9]{32}$/;
+
+function shellInboxPath(address: string, options?: PeerSessionOptions): string {
+	const id = address.replace(/^shell:/, "");
+	if (!address.startsWith("shell:") || !SHELL_ID_PATTERN.test(id)) {
+		throw new PeerSessionError("not_found", `unknown shell reply address: ${address}`);
+	}
+	return path.join(options?.dir ?? peerSessionsRuntimeDir(), "shell-inboxes", `${id}.jsonl`);
+}
+
+export interface ShellReply {
+	from: string;
+	text: string;
+	createdAt: number;
+}
+
+/** Read without consuming: replies remain available after the sending process exits. */
+export async function readShellReplies(address: string, options?: PeerSessionOptions): Promise<ShellReply[]> {
+	try {
+		const text = await fs.promises.readFile(shellInboxPath(address, options), "utf8");
+		return text.split("\n").filter(Boolean).map(line => JSON.parse(line) as ShellReply);
+	} catch (error) {
+		if (isEnoent(error)) throw new PeerSessionError("not_found", `unknown shell reply address: ${address}`);
+		throw error;
+	}
+}
+
+export async function writeShellReply(address: string, reply: ShellReply, options?: PeerSessionOptions): Promise<void> {
+	if (!validPeerMessage(reply.text)) throw new PeerSessionError("invalid_message", "shell replies must be non-empty plain text of at most 16 KiB");
+	try {
+		// Never create on reply: an unknown address must fail, not silently drop an answer.
+		const file = await fs.promises.open(shellInboxPath(address, options), fs.constants.O_WRONLY | fs.constants.O_APPEND);
+		try {
+			await file.writeFile(`${JSON.stringify(reply)}\n`);
+		} finally {
+			await file.close();
+		}
+	} catch (error) {
+		if (isEnoent(error)) throw new PeerSessionError("not_found", `unknown shell reply address: ${address}`);
+		throw error;
+	}
+}
+
+async function shellSender(from: PeerMessageSender, options?: PeerSessionOptions): Promise<PeerMessageSender> {
+	if (from.kind !== "shell") return from;
+	if (from.id) {
+		await readShellReplies(`shell:${from.id}`, options);
+		return from;
+	}
+	const id = crypto.randomBytes(16).toString("hex");
+	const inbox = shellInboxPath(`shell:${id}`, options);
+	await ensurePrivateDir(path.dirname(inbox));
+	await fs.promises.writeFile(inbox, "", { mode: 0o600, flag: "wx" });
+	return { kind: "shell", id };
+}
+
 export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDeliveryReceipt> {
 	const text = options.text;
 	if (!validPeerMessage(text)) {
@@ -1121,13 +1182,14 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 	const snapshot = await resolvePeerSession(options.target, options.registry);
 	const entry = live.find(item => item.snapshot.instanceId === snapshot.instanceId);
 	if (!entry) throw new PeerSessionError("not_found", `target peer session is no longer active`);
+	const from = await shellSender(options.from, options.registry);
 	const result = await query(
 		entry.meta,
 		{
 			op: "send",
 			instanceId: snapshot.instanceId,
 			generation: snapshot.generation,
-			from: options.from,
+			from,
 			text,
 			...(options.agent ? { agent: options.agent } : {}),
 		},
@@ -1135,7 +1197,7 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 	);
 	if (result.status === "ok") {
 		const receipt = parsePeerReceipt((result.value as Record<string, unknown>).receipt);
-		if (receipt) return receipt;
+		if (receipt) return from.kind === "shell" ? { ...receipt, replyTo: `agent://shell:${from.id}` } : receipt;
 		throw new PeerSessionError("unavailable", `target peer session returned an invalid receipt`);
 	}
 	if (result.status === "skip") {

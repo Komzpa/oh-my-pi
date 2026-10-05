@@ -10,6 +10,7 @@ import {
 	type PeerSessionSnapshot,
 	PeerSessionError,
 	listPeerSessions,
+	readShellReplies,
 	sendPeerMessage,
 } from "../collab/registry";
 
@@ -112,6 +113,26 @@ export async function runPeerSendCommand(
 		print(
 			`${receipt.status}: ${receipt.target} ${receipt.agent}${receipt.outcome ? ` (${receipt.outcome})` : ""}${receipt.reason ? `: ${receipt.reason}` : ""}`,
 		);
+		if (receipt.replyTo) print(`Replies: omp peers inbox ${receipt.replyTo.replace("agent://", "")}`);
 	}
 	return 0;
+}
+
+export async function runPeerInboxCommand(
+	args: { address: string; json: boolean; registry?: PeerSessionOptions },
+	print: (line: string) => void = line => console.log(line),
+	printErr: (line: string) => void = line => console.error(line),
+): Promise<number> {
+	try {
+		const replies = await readShellReplies(args.address, args.registry);
+		if (args.json) print(JSON.stringify({ version: COLLAB_REGISTRY_VERSION, address: args.address, replies }, null, 2));
+		else if (replies.length === 0) print("No replies yet.");
+		else for (const reply of replies) print(`${reply.from}: ${reply.text}`);
+		return 0;
+	} catch (error) {
+		if (!(error instanceof PeerSessionError)) throw error;
+		if (args.json) print(JSON.stringify({ version: COLLAB_REGISTRY_VERSION, address: args.address, error: error.code }));
+		else printErr(`error: ${error.message}`);
+		return 1;
+	}
 }
