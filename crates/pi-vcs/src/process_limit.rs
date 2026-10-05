@@ -74,7 +74,7 @@ fn true_bin() -> &'static OsString {
 	&BIN
 }
 
-/// The desktop mask may replace XDG_RUNTIME_DIR with a private worker
+/// The desktop mask may replace `XDG_RUNTIME_DIR` with a private worker
 /// directory. Only the launcher uses the real manager environment, derived from
 /// the uid.
 #[cfg(target_os = "linux")]
@@ -95,10 +95,10 @@ fn systemd_user_manager_env(bus_address: Option<OsString>, uid: u32) -> (OsStrin
 
 #[cfg(target_os = "linux")]
 fn systemd_user_manager_command(program: &OsStr) -> Command {
+	// SAFETY: geteuid has no preconditions and does not access pointers.
+	let uid = unsafe { libc::geteuid() };
 	let (runtime_dir, bus_address) =
-		systemd_user_manager_env(std::env::var_os("DBUS_SESSION_BUS_ADDRESS"), unsafe {
-			libc::geteuid()
-		});
+		systemd_user_manager_env(std::env::var_os("DBUS_SESSION_BUS_ADDRESS"), uid);
 	let mut command = Command::new(program);
 	command
 		.env("XDG_RUNTIME_DIR", runtime_dir)
@@ -192,10 +192,10 @@ fn build_scope_argv(
 	stop_timeout: bool,
 	command: &[OsString],
 ) -> Vec<OsString> {
+	// SAFETY: geteuid has no preconditions and does not access pointers.
+	let uid = unsafe { libc::geteuid() };
 	let (runtime_dir, bus_address) =
-		systemd_user_manager_env(std::env::var_os("DBUS_SESSION_BUS_ADDRESS"), unsafe {
-			libc::geteuid()
-		});
+		systemd_user_manager_env(std::env::var_os("DBUS_SESSION_BUS_ADDRESS"), uid);
 	let mut runtime = OsString::from("XDG_RUNTIME_DIR=");
 	runtime.push(runtime_dir);
 	let mut bus = OsString::from("DBUS_SESSION_BUS_ADDRESS=");
@@ -538,6 +538,7 @@ mod tests {
 			super::true_bin().clone(),
 		]);
 		assert_eq!(&argv[0], super::env_bin());
+		// SAFETY: geteuid has no preconditions and does not access pointers.
 		let uid = unsafe { libc::geteuid() };
 		assert_eq!(argv[1], std::ffi::OsString::from(format!("XDG_RUNTIME_DIR=/run/user/{uid}")));
 		assert!(
@@ -586,7 +587,7 @@ mod tests {
 				),
 				false,
 				true,
-				&[program.clone()],
+				std::slice::from_ref(program),
 			);
 			let output = Command::new(&argv[0])
 				.args(&argv[1..])
@@ -658,7 +659,9 @@ mod tests {
 		);
 
 		// Explicit manager operations must opt back in; ordinary payloads stay masked.
-		let (runtime, bus) = super::systemd_user_manager_env(None, unsafe { libc::geteuid() });
+		// SAFETY: geteuid has no preconditions and does not access pointers.
+		let uid = unsafe { libc::geteuid() };
+		let (runtime, bus) = super::systemd_user_manager_env(None, uid);
 		let runtime = format!("XDG_RUNTIME_DIR={}", runtime.to_string_lossy());
 		let bus = format!("DBUS_SESSION_BUS_ADDRESS={}", bus.to_string_lossy());
 		let mut escape = wrapped_command(&process_limit, "/usr/bin/env", &[
