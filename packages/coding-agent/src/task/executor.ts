@@ -2480,7 +2480,8 @@ async function driveSessionToResult(
 	};
 	const waitForRestartDrain = async (): Promise<boolean> => {
 		if (!session.isRestartDraining) return false;
-		await awaitAbortable(session.waitForRestartDrainRelease());
+		const outcome = await awaitAbortable(session.waitForRestartDrainRelease());
+		if (outcome === "disposed") throw new Error("Subagent session was disposed during restart drain");
 		// Release schedules the session's one existing continuation before its
 		// waiters resolve. Do not classify the synthetic gate-stop until it settles.
 		await awaitAbortable(session.waitForIdle());
@@ -3388,7 +3389,8 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		return async turnError => {
 			while (!turnMonitor.abortSignal.aborted) {
 				try {
-					await untilAborted(turnMonitor.abortSignal, () => session.waitForRestartDrainRelease());
+					const outcome = await untilAborted(turnMonitor.abortSignal, () => session.waitForRestartDrainRelease());
+					if (outcome === "disposed") break;
 					await untilAborted(turnMonitor.abortSignal, () => session.waitForIdle());
 				} catch (error) {
 					if (!turnMonitor.abortSignal.aborted) {
