@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed restarted todo plans losing committed additions, content renames, and archive removals when older successful edits overlap rows already replayed from the session history.
 - Fixed the TODO HUD listing a live worker under "unassigned workers" when `todo schedule` recorded it as the owner of more than one open row: an explicitly owned worker is now shown on every row it owns, while an ambiguous description match stays unassigned.
 - Fixed todo restoration and copying dropping persisted task and phase metadata, including scheduling fields, after a restart.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
