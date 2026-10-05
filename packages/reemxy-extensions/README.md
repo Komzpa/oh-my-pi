@@ -19,7 +19,7 @@ Hours are normalized to `0..23`; absent or invalid fields retain defaults.
 
 ## Subagent model rotation
 
-Paid OpenRouter models are not used. Only zero-price `:free` slugs go first in light roles (scout, scribe, workhorse, gate-runner, researcher, task, coder, git-pr-owner), chosen by fewest requests per finished task because the free quota is 1,000 requests/day shared across all free models per account (20 requests/minute); their results need a strong reviewer before a row closes. `ui-coder` takes only `openrouter/dots-studio/dots-3-note-preview:free` because it is the free model with image input (`openrouter/inclusionai/ling-3.0-flash-sante:free` is text-only and would break screenshot verification). Keep the existing candidates in order after them. Keep the Hindsight provider/auth configuration intact.
+Paid OpenRouter models are not used. Only zero-price `:free` slugs go first in light roles (scout, scribe, workhorse, gate-runner, researcher, task, coder, git-pr-owner), chosen by fewest requests per finished task because the free quota is 1,000 requests/day shared across all free models per account (20 requests/minute); their results need a strong reviewer before a row closes. `ui-coder` takes only `openrouter/dots-studio/dots-3-note-preview:free` because it is the free model with image input. Keep the existing candidates in order after them. Keep the Hindsight provider/auth configuration intact.
 
 ## Bounded worker supervision
 

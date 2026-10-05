@@ -17,6 +17,13 @@ export interface PoolConfig {
 	fallbacks: string[];
 }
 
+// These models damaged the host (deleted /run/user/1000/bus on 2026-10-05); evidence in tasks-loop memory/model-misconduct-ledger.md.
+export const MODEL_BLACKLIST = ["openrouter/inclusionai/ling-3.0-flash-sante:free"] as const;
+
+function isBlacklistedModel(spec: string): boolean {
+	const modelId = spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
+	return MODEL_BLACKLIST.includes(modelId as (typeof MODEL_BLACKLIST)[number]);
+}
 // Pool lengths are routing policy; model selectors and fallback order live in agent frontmatter.
 const POOL_SIZES: Record<string, number> = {
 	coder: 8,
@@ -203,7 +210,6 @@ function profilePool(agent: string, poolSize: number, profileDir?: string): Pool
 
 const TASK_POOL: PoolConfig = {
 	pool: [
-		"openrouter/inclusionai/ling-3.0-flash-sante:free",
 		"openrouter/dots-studio/dots-3-note-preview:free",
 		"codex-lb/gpt-6-luna:medium",
 		"kimi-code/kimi-for-coding:high",
@@ -661,9 +667,11 @@ export async function routeSubagentSpawn(
 		}
 	}
 	const shuffle = options.shuffle ?? cryptoShuffle;
-	const { available, skipped: poolSkipped } = await availablePoolMembers(config.pool, ctx, state, options.now);
+	const pool = config.pool.filter(spec => !isBlacklistedModel(spec));
+	const profileModels = [...config.pool, ...config.fallbacks].filter(spec => !isBlacklistedModel(spec));
+	const { available, skipped: poolSkipped } = await availablePoolMembers(pool, ctx, state, options.now);
 	const { available: fallbacks, skipped: fallbackSkipped } = await availablePoolMembers(
-		config.fallbacks,
+		config.fallbacks.filter(spec => !isBlacklistedModel(spec)),
 		ctx,
 		state,
 		options.now,
@@ -673,7 +681,13 @@ export async function routeSubagentSpawn(
 		...available.filter(spec => spec.endsWith(":free")),
 		...shuffle(available.filter(spec => !spec.endsWith(":free"))),
 	];
-	const order = [...poolOrder, ...fallbacks];
+	let order = [...poolOrder, ...fallbacks];
+	if (order.length === 0 && profileModels.length > 0) {
+		order = [
+			...profileModels.filter(spec => spec.endsWith(":free")),
+			...shuffle(profileModels.filter(spec => !spec.endsWith(":free"))),
+		];
+	}
 	// A critical-path row starts on the fast lane: the earliest chain entry whose
 	// model realizes priority service tier moves to the front. All other rows keep
 	// the existing order; chains without a priority-capable entry are untouched.

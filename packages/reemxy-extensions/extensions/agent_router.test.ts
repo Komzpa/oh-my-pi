@@ -8,6 +8,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import agentRouter, {
 	getAgentPools,
+	MODEL_BLACKLIST,
 	agentHasLiveModel,
 	countLiveWorkerModels,
 	createRouterState,
@@ -180,7 +181,7 @@ describe("agent router", () => {
 					profileDir,
 				},
 			);
-			expect(before?.model[0]).toBe("openrouter/inclusionai/ling-3.0-flash-sante:free");
+			expect(before?.model[0]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
 			writeFileSync(
 				profilePath,
 				profile.replace(/^model:.*$/m, "model: xiaomi/mimo-v2.6-pro, kimi-code/kimi-for-coding:high"),
@@ -200,13 +201,55 @@ describe("agent router", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+	test("never chooses blacklisted models from the pool or fallback chain", async () => {
+		const { dir, file } = tempStateFile();
+		const profileDir = join(dir, "profiles");
+		mkdirSync(profileDir);
+		const scoutProfile = readFileSync(new URL("./agents/scout.md", import.meta.url), "utf8");
+		writeFileSync(
+			join(profileDir, "scout.md"),
+			scoutProfile.replace(
+				/^model:.*$/m,
+				"model: openrouter/inclusionai/ling-3.0-flash-sante:free, missing/pool-one, missing/pool-two, missing/pool-three, missing/pool-four, openrouter/inclusionai/ling-3.0-flash-sante:free:low, openrouter/dots-studio/dots-3-note-preview:free",
+			),
+		);
+		const baseContext = ctx();
+		const blacklistedModel = { provider: "openrouter", id: "inclusionai/ling-3.0-flash-sante" };
+		const availableModels = [...baseContext.models.list(), blacklistedModel];
+		const context = ctx({
+			models: {
+				list: () => availableModels,
+				resolve: (spec: string) =>
+					MODEL_BLACKLIST.includes(spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") as never)
+						? blacklistedModel
+						: baseContext.models.resolve(spec),
+			} as ExtensionContext["models"],
+		});
+		try {
+			const result = await routeSubagentSpawn(
+				{ agent: "scout", spawnKey: "blacklist-pool-fallback" },
+				context,
+				createRouterState(),
+				{ stateFile: file, profileDir, shuffle: items => [...items] },
+			);
+			expect(result?.model[0]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
+			expect(
+				result?.model.some(spec =>
+					MODEL_BLACKLIST.some(
+						blacklisted => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === blacklisted,
+					),
+				),
+			).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 
-	test("keeps the first healthy free model first across repeated picks", async () => {
+	test("skips the only free model when usage-depleted", async () => {
 		const { dir, file } = tempStateFile();
 		try {
 			const firstFree = AGENT_POOLS.coder.pool.find(spec => spec.endsWith(":free"))!;
 			const modelKey = firstFree.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
-			const secondFree = AGENT_POOLS.coder.pool.find(spec => spec.endsWith(":free") && spec !== firstFree)!;
 			const unavailableFirstFree = ctxWithHealth({ [modelKey]: { state: "depleted", accounts: [] } });
 			for (let i = 0; i < 50; i++) {
 				const result = await routeSubagentSpawn(
@@ -215,7 +258,7 @@ describe("agent router", () => {
 					createRouterState(),
 					{ stateFile: file },
 				);
-				expect(result?.model[0]).toBe(secondFree);
+				expect(result?.model).not.toContain(firstFree);
 			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -935,13 +978,13 @@ describe("agent router", () => {
 					shuffle: items => [...items],
 				},
 			);
-			expect(result?.model[0]).toBe("openrouter/inclusionai/ling-3.0-flash-sante:free");
+			expect(result?.model[0]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
 			expect(result?.note).toBe(
-				"pool pick openrouter/inclusionai/ling-3.0-flash-sante:free; skipped 1 by usage preflight (eval)",
+				"pool pick openrouter/dots-studio/dots-3-note-preview:free; skipped 1 by usage preflight (eval)",
 			);
 			expect(readJsonl(file)[0]).toMatchObject({
 				kind: "spawn",
-				chosen: "openrouter/inclusionai/ling-3.0-flash-sante:free",
+				chosen: "openrouter/dots-studio/dots-3-note-preview:free",
 				skipped: [
 					{
 						model: "kimi-code/kimi-for-coding-highspeed:low",
@@ -1098,10 +1141,8 @@ describe("agent router", () => {
 				createRouterState(),
 				{ stateFile: file, shuffle: items => [...items] },
 			);
-			expect(result?.model[0]).toBe("openrouter/inclusionai/ling-3.0-flash-sante:free");
-			expect(result?.model[1]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
+			expect(result?.model[0]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
 			expect(result?.model.filter(model => model.endsWith(":free"))).toEqual([
-				"openrouter/inclusionai/ling-3.0-flash-sante:free",
 				"openrouter/dots-studio/dots-3-note-preview:free",
 			]);
 		} finally {
@@ -1397,7 +1438,7 @@ describe("agent router", () => {
 				now: () => t0,
 				shuffle: xiaomiFirst,
 			});
-			expect(first?.model[0]).toBe("openrouter/inclusionai/ling-3.0-flash-sante:free");
+			expect(first?.model[0]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
 			const base = ctx();
 			const xiaomiModel = {
 				provider: "xiaomi",
@@ -1451,7 +1492,7 @@ describe("agent router", () => {
 				now: () => new Date(t0.getTime() + 7 * 60 * 60 * 1000),
 				shuffle: xiaomiFirst,
 			});
-			expect(afterTtl?.model[0]).toBe("openrouter/inclusionai/ling-3.0-flash-sante:free");
+			expect(afterTtl?.model[0]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -1774,7 +1815,6 @@ describe("agent router", () => {
 			});
 		// Free pool members stay first; only non-free pool members are shuffled.
 		const TASK_ORDER = [
-			"openrouter/inclusionai/ling-3.0-flash-sante:free",
 			"openrouter/dots-studio/dots-3-note-preview:free",
 			"muse-code/muse-spark-1.3-contributor",
 			"xiaomi/mimo-v2.6-pro",
