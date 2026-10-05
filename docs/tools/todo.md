@@ -113,7 +113,7 @@ Receipts may use requirement sub-ids such as `R16e`, `R16f`, and `R16g`. They co
 
 An explicit resource checkout takes precedence over the auditor's session cwd. Without a resource path, a saved artifact checkout for the current row owner takes precedence over that owner's cwd. This keeps a clean worktree auditable even when the auditor runs from a different, dirty checkout. A multi-row artifact cell such as `Row @ sha; Other row @ sha` is scoped to each named row before its receipt is saved or compared. Markdown `<br>` line breaks in the raw-words cell are decoded as newlines; changing the user's words still invalidates the receipt.
 
-Artifact freshness refusals include the resolved checkout's cwd, HEAD and dirty state, or the reason its checkout identity is unavailable. Moving the resource worktree after receipt invalidates the old pass.
+Artifact freshness refusals include the resolved checkout's cwd, HEAD and dirty state, or the reason its checkout identity is unavailable. A file resource such as an installed executable is identified by its current streamed SHA-256 instead. Moving the resource worktree or changing the binary after receipt invalidates the old pass.
 
 
 ### Markdown round-trip helpers

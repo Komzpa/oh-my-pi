@@ -483,7 +483,9 @@ export class RequirementsLedgerRuntime {
 		for (const receipt of receipts) {
 			const requirement = expected.find(entry => entry?.id === receipt.id)!;
 			const scopedRows = requirement.rows.filter(row => !assignment.rows || assignment.rows.includes(row));
-			const namedRows = requirement.rows.filter(row => receipt.artifact.includes(row));
+			const namedRows = requirement.rows.filter(
+				row => getRequirementRowArtifactIdentity(receipt.artifact, row, scopedRows) !== undefined,
+			);
 			if (namedRows.some(row => !scopedRows.includes(row)))
 				return `${receipt.id}: artifact names a row outside this audit assignment`;
 			const rows = namedRows.length ? namedRows : scopedRows;

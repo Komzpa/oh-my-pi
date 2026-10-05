@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import {
 	type TodoStatus,
 	type TodoOperation,
@@ -131,6 +133,7 @@ export interface RequirementRowArtifact {
 	cwd: string;
 	head: string | null;
 	dirty: boolean;
+	sha256?: string;
 	reason?: string;
 }
 
@@ -146,6 +149,7 @@ const ABSOLUTE_ARTIFACT_PATH = /\/(?:home|srv|tmp|var|mnt|workspaces|Users)\/[^\
 function unknownRequirementArtifact(cwd: string, reason = "checkout mapping unavailable"): RequirementRowArtifact {
 	return { cwd, head: null, dirty: true, reason };
 }
+
 
 /** Resolve a row's persisted checkout, then read its current HEAD and dirty state without blocking the CLI. */
 export async function getRequirementRowArtifact(
@@ -283,12 +287,18 @@ export async function getRequirementRowArtifact(
 			`unknown artifact mapping for ${JSON.stringify(row)} (owner ${JSON.stringify(owner ?? null)})`,
 		);
 
-	let cwd = path;
 	try {
-		if (!(await stat(path)).isDirectory()) cwd = dirname(path);
+		const info = await stat(path);
+		if (info.isFile()) {
+			const hash = createHash("sha256");
+			for await (const chunk of createReadStream(path)) hash.update(chunk);
+			return { cwd: path, head: null, dirty: false, sha256: hash.digest("hex") };
+		}
+		if (!info.isDirectory()) return unknownRequirementArtifact(path, "resource is neither a file nor a directory");
 	} catch {
 		return unknownRequirementArtifact(path, "resource path is missing or inaccessible");
 	}
+	const cwd = path;
 	const repo = vcs.git(cwd);
 	if (!repo) return unknownRequirementArtifact(cwd, "not a Git checkout");
 	const repoRoot = repo.info().repoRoot;

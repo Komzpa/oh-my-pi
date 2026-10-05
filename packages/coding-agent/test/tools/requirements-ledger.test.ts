@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,6 +24,7 @@ import {
 	createRequirementCandidates,
 	getLatestRequirements,
 	getRequirementAuditSources,
+	getRequirementRowArtifactIdentity,
 	isFreshRequirementVerdict,
 	parseRequirementReceipt,
 	parseRequirementsLedger,
@@ -370,6 +372,85 @@ describe("canonical todo row metadata", () => {
 			expect(changed.head).not.toBe(auditedHead);
 		} finally {
 			registry.unregister(owner);
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+	it("binds each audited row to its own commit or installed binary hash", async () => {
+		const root = mkdtempSync(join(tmpdir(), "omp-ledger-mixed-artifacts-"));
+		const repo = join(root, "repo");
+		mkdirSync(repo);
+		const binary = join(root, "omp");
+		const binaryBytes = Buffer.from("installed omp test binary");
+		writeFileSync(binary, binaryBytes);
+		try {
+			execFileSync("git", ["init", "--initial-branch=main"], { cwd: repo });
+			writeFileSync(join(repo, "artifact.txt"), "commit artifact\n");
+			execFileSync("git", ["add", "artifact.txt"], { cwd: repo });
+			execFileSync(
+				"git",
+				["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "artifact"],
+				{ cwd: repo },
+			);
+			const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+			const binaryHash = createHash("sha256").update(binaryBytes).digest("hex");
+			const rows = ["Commit artifact", "Installed omp"];
+			const phases = [
+				{
+					name: "Work",
+					tasks: [
+						{ content: rows[0], status: "pending", schedule: { owner: "main", resources: [repo] } },
+						{ content: rows[1], status: "pending", schedule: { owner: "main", resources: [binary] } },
+					],
+				},
+			] as unknown as TodoPhase[];
+			const [commitArtifact, binaryArtifact] = await Promise.all(
+				rows.map(row => getRequirementRowArtifact({ cwd: repo }, row, phases)),
+			);
+			const cell = `${rows[0]} @ ${commit}; ${rows[1]} @ installed omp sha256 ${binaryHash}`;
+			expect(getRequirementRowArtifactIdentity(cell, rows[0]!, rows)).toBe(`${rows[0]} @ ${commit}`);
+			expect(getRequirementRowArtifactIdentity(cell, rows[1]!, rows)).toBe(
+				`${rows[1]} @ installed omp sha256 ${binaryHash}`,
+			);
+			const verdict = (artifact: string) => ({
+				status: "pass" as const,
+				evidence: "exercised the artifact",
+				artifact,
+				workerId: "qa-1",
+				auditor: "qa-auditor" as const,
+				receivedAt: AT,
+			});
+			const requirement: RequirementLedgerItem = {
+				...createRequirementCandidates([], ["check both artifacts"], AT)[0]!,
+				classification: "linked",
+				rows,
+				rowVerdicts: {
+					[rows[0]!]: verdict(cell),
+					[rows[1]!]: verdict(cell),
+				},
+			};
+			expect(
+				isFreshRequirementVerdict(requirement, [
+					{ row: rows[0]!, ...commitArtifact! },
+					{ row: rows[1]!, ...binaryArtifact! },
+				]),
+			).toBe(true);
+			const staleCell = `${rows[0]} @ ${"f".repeat(40)}; ${rows[1]} @ installed omp sha256 ${binaryHash}`;
+			const stale = {
+				...requirement,
+				rowVerdicts: {
+					[rows[0]!]: verdict(staleCell),
+					[rows[1]!]: verdict(staleCell),
+				},
+			};
+			expect(
+				isFreshRequirementVerdict(stale, [
+					{ row: rows[0]!, ...commitArtifact! },
+					{ row: rows[1]!, ...binaryArtifact! },
+				]),
+			).toBe(false);
+			expect(isFreshRequirementVerdict(stale, [{ row: rows[0]!, ...commitArtifact! }])).toBe(false);
+			expect(isFreshRequirementVerdict(stale, [{ row: rows[1]!, ...binaryArtifact! }])).toBe(true);
+		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});

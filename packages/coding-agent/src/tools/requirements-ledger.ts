@@ -380,9 +380,10 @@ export function getRequirementRowVerdict(
 	requirement: RequirementLedgerItem,
 	row: string,
 ): RequirementVerdict | undefined {
-	if (requirement.rowVerdicts && Object.hasOwn(requirement.rowVerdicts, row)) return requirement.rowVerdicts[row];
-	const verdict = requirement.verdict;
-	if (!verdict || !requirement.rows.includes(row)) return undefined;
+	if (!requirement.rows.includes(row)) return undefined;
+	const verdict = requirement.rowVerdicts && Object.hasOwn(requirement.rowVerdicts, row)
+		? requirement.rowVerdicts[row] : requirement.verdict;
+	if (!verdict) return undefined;
 	const artifact = getRequirementRowArtifactIdentity(verdict.artifact, row, requirement.rows);
 	return artifact === undefined ? undefined : { ...verdict, artifact };
 }
@@ -390,13 +391,14 @@ export function getRequirementRowVerdict(
 export interface RequirementGateArtifact {
 	head: string | null;
 	dirty: boolean;
+	sha256?: string;
 	lastChange?: { at: string; id: string };
 	cwd?: string;
 	reason?: string;
 }
 
 export function formatRequirementGateArtifact(artifact: RequirementGateArtifact): string {
-	return `cwd=${artifact.cwd ?? "unknown"}, head=${artifact.head ?? "unknown"}, dirty=${artifact.dirty}${artifact.reason ? `, reason=${artifact.reason}` : ""}`;
+	return `cwd=${artifact.cwd ?? "unknown"}, head=${artifact.head ?? "unknown"}, dirty=${artifact.dirty}${artifact.sha256 ? `, sha256=${artifact.sha256}` : ""}${artifact.reason ? `, reason=${artifact.reason}` : ""}`;
 }
 
 /** The one freshness rule, evaluated only for the rows being closed or published. */
@@ -416,6 +418,10 @@ export function isFreshRequirementVerdict(
 			verdict.rawWords.replace(/\s+/g, " ").trim() !== requirement.rawText.replace(/\s+/g, " ").trim()
 		)
 			return false;
+		const hashes = [...verdict.artifact.matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!.toLowerCase());
+		if (current.sha256) {
+			return !current.dirty && hashes.length === 1 && hashes[0] === current.sha256.toLowerCase();
+		}
 		if (!current.head || current.dirty) {
 			return (
 				!!verdict.receivedAt &&
