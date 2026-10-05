@@ -909,7 +909,8 @@ fn run_commit_hook(repository: &GitRepo, name: &str, args: &[&OsStr]) -> Result<
 	let resource_scope = crate::process_limit::shared();
 	let mut arguments = vec![command.get_program().to_owned()];
 	arguments.extend(command.get_args().map(OsStr::to_owned));
-	let wrapped = resource_scope.wrap_scope_command(&arguments)?;
+	let wrapped = resource_scope
+		.wrap_scope_command(&arguments, &crate::process_limit::ScopeEnvironment::inherited())?;
 	command = Command::new(&wrapped[0]);
 	command.args(&wrapped[1..]);
 	let output = command

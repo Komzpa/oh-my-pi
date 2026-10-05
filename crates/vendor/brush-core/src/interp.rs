@@ -88,11 +88,13 @@ pub trait SpawnObserver: Send + Sync {
 pub trait ExternalCommandWrapper: Send + Sync {
 	/// Returns a replacement executable and argv, or the original command when
 	/// no wrapper is needed. Errors prevent an unrestricted launch.
+	/// `env` is the complete effective child environment, including unset state.
 	fn wrap_external_command(
 		&self,
 		executable: &OsStr,
 		argv0: &OsStr,
 		args: &[OsString],
+		env: &[(OsString, OsString)],
 	) -> std::io::Result<Option<(OsString, Vec<OsString>)>>;
 }
 

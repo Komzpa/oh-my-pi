@@ -2,7 +2,7 @@
 
 use std::{
 	borrow::Cow,
-	ffi::OsStr,
+	ffi::{OsStr, OsString},
 	fmt::Display,
 	io::{self, Write},
 	path::{Path, PathBuf},
@@ -213,6 +213,32 @@ pub fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtensions>(
 	}
 
 	let command_args = args.iter().map(|arg| arg.as_ref().to_os_string()).collect::<Vec<_>>();
+	let mut command_env: Vec<(OsString, OsString)> = Vec::new();
+	// Add in exported variables.
+	if !empty_env {
+		for (k, v) in context.shell.env().iter_exported() {
+			// NOTE: To match bash behavior, we only include exported variables
+			// that are set (i.e., have a value). This means a variable that
+			// shows up in `declare -p` but has no *set* value will be omitted.
+			if v.value().is_set() {
+				command_env.push((k.as_str().into(), v.value().to_cow_str(context.shell).as_ref().into()));
+			}
+		}
+		// Set _ to the resolved command path for external commands.
+		command_env.push(("_".into(), command_name.into()));
+	}
+
+	// Add in exported functions.
+	if !empty_env {
+		for (func_name, registration) in context.shell.funcs().iter() {
+			if registration.is_exported() {
+				let var_name = std::format!("BASH_FUNC_{func_name}%%");
+				let value = std::format!("() {}", registration.definition().body);
+				command_env.push((var_name.into(), value.into()));
+			}
+		}
+	}
+
 	// Reparented launches (`detach_reparent`, e.g. `nohup cmd &`) double-fork
 	// out of the descendant tree and must survive the host's teardown. A
 	// per-call scope (e.g. the tool process-limit slice, stopped on drop)
@@ -229,6 +255,7 @@ pub fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtensions>(
 					OsStr::new(command_name),
 					OsStr::new(argv0),
 					&command_args,
+					&command_env,
 				)
 			})
 			.transpose()
@@ -266,30 +293,7 @@ pub fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtensions>(
 	// Start with a clear environment.
 	cmd.env_clear();
 
-	// Add in exported variables.
-	if !empty_env {
-		for (k, v) in context.shell.env().iter_exported() {
-			// NOTE: To match bash behavior, we only include exported variables
-			// that are set (i.e., have a value). This means a variable that
-			// shows up in `declare -p` but has no *set* value will be omitted.
-			if v.value().is_set() {
-				cmd.env(k.as_str(), v.value().to_cow_str(context.shell).as_ref());
-			}
-		}
-		// Set _ to the resolved command path for external commands.
-		cmd.env("_", command_name);
-	}
-
-	// Add in exported functions.
-	if !empty_env {
-		for (func_name, registration) in context.shell.funcs().iter() {
-			if registration.is_exported() {
-				let var_name = std::format!("BASH_FUNC_{func_name}%%");
-				let value = std::format!("() {}", registration.definition().body);
-				cmd.env(var_name, value);
-			}
-		}
-	}
+	cmd.envs(command_env);
 
 	// Redirect stdin, if applicable.
 	match context.try_fd(OpenFiles::STDIN_FD) {

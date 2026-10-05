@@ -328,7 +328,7 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 
 		try {
 			kernel.#resourceScope = new ToolResourceScope();
-			const proc = Bun.spawn(kernel.#resourceScope.wrapCommand([runtime.pythonPath, "-u", scriptPath]), {
+			const proc = Bun.spawn(kernel.#resourceScope.wrapCommand([runtime.pythonPath, "-u", scriptPath], spawnEnv), {
 				cwd: options.cwd,
 				detached: shouldDetachKernel(process.platform),
 				env: spawnEnv,

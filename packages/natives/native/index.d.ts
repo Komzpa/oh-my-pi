@@ -424,13 +424,18 @@ export declare class TextPredictor {
 
 export declare class ToolResourceScope {
   constructor()
-  wrapCommand(command: Array<string>): Array<string>
+  /**
+   * `env`, when supplied, is the complete spawn environment, not an overlay.
+   * Omission uses inherited bindings; missing keys in a supplied map stay
+   * unset.
+   */
+  wrapCommand(command: Array<string>, env?: Record<string, string> | undefined | null): Array<string>
   /**
    * Off-thread variant of [`ToolResourceScope::wrap_command`]: the systemd
    * subprocesses behind first-use enforcement run on libuv's thread pool,
    * so the JS event loop is never blocked. Resolves to the same argv.
    */
-  wrapCommandAsync(command: Array<string>): Promise<Array<string>>
+  wrapCommandAsync(command: Array<string>, env?: Record<string, string> | undefined | null): Promise<Array<string>>
   /**
    * Dropping the owner only hands teardown to a detached thread
    * ([`ToolProcessLimit`] never blocks the dropping thread), so this

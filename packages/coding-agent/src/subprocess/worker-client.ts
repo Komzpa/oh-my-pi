@@ -247,7 +247,7 @@ export function createWorkerSubprocess<Outbound>(options: {
 	spawnCommand: WorkerSpawnCommand;
 	env: Record<string, string>;
 	exitLabel: string;
-	resourceScope?: { wrapCommand(command: string[]): string[]; close(): void };
+	resourceScope?: { wrapCommand(command: string[], env?: Record<string, string>): string[]; close(): void };
 	/** Start the child as a new process-group/session leader where Bun supports it. */
 	detached?: boolean;
 	/** Treat exit code 0 as unexpected; eval cells can call process.exit(0). */
@@ -274,7 +274,7 @@ export function createWorkerSubprocess<Outbound>(options: {
 	try {
 		proc = Bun.spawn({
 			cmd: options.resourceScope
-				? options.resourceScope.wrapCommand(options.spawnCommand.cmd)
+				? options.resourceScope.wrapCommand(options.spawnCommand.cmd, options.env)
 				: options.spawnCommand.cmd,
 			cwd: options.spawnCommand.cwd,
 			detached: options.detached,

@@ -1908,10 +1908,11 @@ impl ExternalCommandWrapper for SpawnRegistry {
 		executable: &std::ffi::OsStr,
 		argv0: &std::ffi::OsStr,
 		args: &[std::ffi::OsString],
+		env: &[(std::ffi::OsString, std::ffi::OsString)],
 	) -> std::io::Result<Option<(std::ffi::OsString, Vec<std::ffi::OsString>)>> {
 		self
 			.process_limit
-			.wrap_external_command(executable, argv0, args)
+			.wrap_external_command(executable, argv0, args, env)
 	}
 }
 

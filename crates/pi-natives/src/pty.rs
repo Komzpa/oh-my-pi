@@ -22,7 +22,7 @@ use napi::{
 use napi_derive::napi;
 use parking_lot::Mutex;
 use pi_shell::output_decode::OutputDecoder;
-use pi_vcs::process_limit::ToolProcessLimit;
+use pi_vcs::process_limit::{ScopeEnvironment, ToolProcessLimit};
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
 
 use crate::{js::into_string, ps, task};
@@ -372,9 +372,11 @@ fn run_pty_sync(
 			cmd.env(key, value);
 		}
 	}
+	let payload_env =
+		ScopeEnvironment::from_lookup(|name| cmd.get_env(name).map(|value| value.to_os_string()));
 	let process_scope = ToolProcessLimit::default();
 	let scoped_argv = process_scope
-		.wrap_scope_command(cmd.get_argv())
+		.wrap_scope_command(cmd.get_argv(), &payload_env)
 		.map_err(|err| {
 			Error::from_reason(format!("Failed to enforce PTY process boundary: {err}"))
 		})?;

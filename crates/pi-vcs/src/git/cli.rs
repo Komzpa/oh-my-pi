@@ -201,9 +201,11 @@ pub(crate) async fn run(cwd: &Path, args: &[String], options: &RunOptions) -> Re
 	// async worker. Reuse of the verified boundary makes this a no-op after
 	// the first call, and the shared owner is never dropped per call, so no
 	// per-invocation slice create/verify/stop cycle remains.
-	let command = tokio::task::spawn_blocking(move || scope.wrap_scope_command(&probe))
-		.await
-		.map_err(|err| Error::backend("git scope", err))??;
+	let payload_env = crate::process_limit::ScopeEnvironment::inherited();
+	let command =
+		tokio::task::spawn_blocking(move || scope.wrap_scope_command(&probe, &payload_env))
+			.await
+			.map_err(|err| Error::backend("git scope", err))??;
 	let mut cmd = tokio::process::Command::new(&command[0]);
 	cmd.args(&command[1..])
 		.args(&argv)
@@ -333,8 +335,10 @@ pub(crate) fn run_sync_capped(
 	limit: usize,
 ) -> Result<CliOutput> {
 	let argv = hardened_args(args, true);
-	let command =
-		crate::process_limit::shared().wrap_scope_command(&[std::ffi::OsString::from("git")])?;
+	let command = crate::process_limit::shared().wrap_scope_command(
+		&[std::ffi::OsString::from("git")],
+		&crate::process_limit::ScopeEnvironment::inherited(),
+	)?;
 	let mut cmd = std::process::Command::new(&command[0]);
 	cmd.args(&command[1..])
 		.args(&argv)
