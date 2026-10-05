@@ -70,6 +70,7 @@ export interface RequirementAuditImagePayload {
 	rn: string;
 	index: number;
 	sourcePath?: string;
+	artifactPath?: string;
 }
 import { ASYNC_RESULT_MESSAGE_TYPE } from "./async-job-delivery";
 import type { SessionManager } from "./session-manager";
@@ -200,6 +201,7 @@ export class RequirementsLedgerRuntime {
 		const revised = [...items];
 		const assignments: RequirementAuditAssignment[] = [];
 		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
+		let imagesChanged = false;
 
 		const hasAuditorTask = items.some(item => isRecord(item) && item.agent === "qa-auditor");
 		const resolvedAuditor = hasAuditorTask
@@ -250,8 +252,20 @@ export class RequirementsLedgerRuntime {
 			const imageLines: string[] = [];
 			for (const source of sources) {
 				for (const image of source.images ?? []) {
+					const sourceExists = image.sourcePath ? await Bun.file(image.sourcePath).exists() : false;
+					const artifactsDir = this.#host.sessionManager.getArtifactsDir();
+					if (!sourceExists && image.data && image.sha256 && artifactsDir) {
+						const artifactPath = image.artifactPath ?? join(artifactsDir, `requirement-image-${image.sha256}`);
+						if (!(await Bun.file(artifactPath).exists()))
+							await Bun.write(artifactPath, Buffer.from(image.data, "base64"));
+						if (image.artifactPath !== artifactPath) {
+							image.artifactPath = artifactPath;
+							imagesChanged = true;
+						}
+					}
+					const imagePath = sourceExists ? image.sourcePath : image.artifactPath;
 					imageLines.push(
-						`${source.id} Image #${image.index}: sha256=${image.sha256 ?? "unavailable"}${image.sourcePath ? `, source=${image.sourcePath}` : ""}${!image.sha256 && !image.sourcePath ? " (bytes and source path both gone)" : ""}`,
+						`${source.id} Image #${image.index}: sha256=${image.sha256 ?? "unavailable"}${imagePath ? `, source=${imagePath}` : ""}${!image.sha256 && !imagePath ? " (bytes and source path both gone)" : ""}`,
 					);
 					const data = image.data;
 					if (!data || !image.sha256) continue;
@@ -263,6 +277,7 @@ export class RequirementsLedgerRuntime {
 						rn: source.id,
 						index: image.index,
 						...(image.sourcePath ? { sourcePath: image.sourcePath } : {}),
+						...(image.artifactPath ? { artifactPath: image.artifactPath } : {}),
 					});
 				}
 			}
@@ -309,6 +324,7 @@ export class RequirementsLedgerRuntime {
 		}
 
 		if (assignments.length === 0) return undefined;
+		if (imagesChanged) appendRequirementsSnapshot(this.#appender(), requirements);
 		this.#auditCalls.set(toolCallId, assignments);
 		return multiple ? { ...input, tasks: revised } : { ...input, ...(revised[0] as Record<string, unknown>) };
 	}

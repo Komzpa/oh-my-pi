@@ -59,6 +59,42 @@ describe("task schema (single-spawn)", () => {
 			expect("schema" in parsed).toBe(false);
 		}
 	});
+
+	it("retains image attachments in every flat and per-item schema variant", () => {
+		const images = [
+			{
+				type: "image",
+				data: "AA==",
+				mimeType: "image/png",
+				sha256: "a".repeat(64),
+				rn: "R1",
+				index: 1,
+				artifactPath: "/session/image.png",
+			},
+		];
+		const item = { agent: "scout", task: "Audit R1", solutionSpace: "closed", images };
+		for (const isolationEnabled of [false, true]) {
+			for (const batchEnabled of [false, true]) {
+				for (const dynamic of [false, true]) {
+					const schema = getTaskSchema({
+						isolationEnabled,
+						batchEnabled,
+						defaultAgent: dynamic ? "scout" : "task",
+						effortEnabled: dynamic,
+						evalToolsEnabled: !dynamic,
+					});
+					const args = batchEnabled ? { context: "Audit images", tasks: [item] } : item;
+					const parsed = schema(args);
+					expect(parsed instanceof type.errors).toBe(false);
+					expect(parsed).toMatchObject(batchEnabled ? { tasks: [{ images }] } : { images });
+					const invalid = { ...item, images: [{ type: "image", data: 42, mimeType: "image/png" }] };
+					expect(
+						schema(batchEnabled ? { context: "Audit images", tasks: [invalid] } : invalid) instanceof type.errors,
+					).toBe(true);
+				}
+			}
+		}
+	});
 });
 
 describe("task spawn validation", () => {

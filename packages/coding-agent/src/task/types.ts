@@ -44,6 +44,22 @@ export interface SubagentEventPayload {
 const outputSchemaInputSchema = type("object | boolean | string | null");
 // Coarse per-spawn thinking effort; must stay in sync with TASK_EFFORTS in ../thinking.
 const effortRule = '"lo" | "med" | "hi"' as const;
+// Image attachment delivered to the child's first prompt as a real image
+// content part. `data` is base64; sha256/rn/index metadata mirrors
+// `RequirementImage` so auditors can tie parts back to requirement rows.
+// Declared explicitly so schema validation neither strips nor rejects it.
+const taskImageSchema = type({
+	type: "'image'",
+	data: "string",
+	mimeType: "string",
+	"sha256?": "string",
+	"rn?": "string",
+	"index?": "number",
+	"sourcePath?": "string",
+	"artifactPath?": "string",
+	"+": "delete",
+});
+const taskImagesRule = taskImageSchema.array();
 
 export const taskItemSchema = type({
 	"name?": "string",
@@ -53,6 +69,7 @@ export const taskItemSchema = type({
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
+	"images?": taskImagesRule,
 	"+": "delete",
 });
 const taskItemSchemaIsolated = type({
@@ -64,6 +81,7 @@ const taskItemSchemaIsolated = type({
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
 	"isolated?": "boolean",
+	"images?": taskImagesRule,
 	"+": "delete",
 });
 
@@ -76,6 +94,7 @@ export const taskSchema = type({
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
 	"isolated?": "boolean",
+	"images?": taskImagesRule,
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
@@ -86,6 +105,7 @@ const taskSchemaNoIsolation = type({
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
+	"images?": taskImagesRule,
 	"+": "delete",
 });
 const taskSchemaBatch = type({
@@ -138,6 +158,7 @@ function createTaskSchema(options: {
 				"schemaMode?": '"permissive" | "strict"',
 				...toolsField,
 				"isolated?": "boolean",
+				"images?": taskImagesRule,
 				"+": "delete",
 			});
 			return type.raw({
@@ -155,6 +176,7 @@ function createTaskSchema(options: {
 			"outputSchema?": outputSchemaInputSchema,
 			"schemaMode?": '"permissive" | "strict"',
 			...toolsField,
+			"images?": taskImagesRule,
 			"+": "delete",
 		});
 		return type.raw({
@@ -174,6 +196,7 @@ function createTaskSchema(options: {
 			"schemaMode?": '"permissive" | "strict"',
 			...toolsField,
 			"isolated?": "boolean",
+			"images?": taskImagesRule,
 			"+": "delete",
 		});
 	}
@@ -186,6 +209,7 @@ function createTaskSchema(options: {
 		"outputSchema?": outputSchemaInputSchema,
 		"schemaMode?": '"permissive" | "strict"',
 		...toolsField,
+		"images?": taskImagesRule,
 		"+": "delete",
 	});
 }
