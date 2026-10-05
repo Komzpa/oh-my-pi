@@ -38,6 +38,8 @@ type SprintState = {
   workerFinishes: SprintWorkerFinish[];
   seenJobIds: string[];
   retroFacilitatorJobs: string[];
+  retroCoveredIds: string[];
+  retroReceiptIds: string[];
   correctionPending: boolean;
   retroDueReason: string | null;
   retroDueDeadlineAt?: number;
@@ -288,6 +290,8 @@ function blankSprintState(): SprintState {
     workerFinishes: [],
     seenJobIds: [],
     retroFacilitatorJobs: [],
+    retroCoveredIds: [],
+    retroReceiptIds: [],
     correctionPending: false,
     retroDueReason: null,
     lastNotices: {},
@@ -516,6 +520,8 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
         : [],
       seenJobIds: Array.isArray(data.seenJobIds) ? data.seenJobIds.filter((item): item is string => typeof item === "string") : [],
       retroFacilitatorJobs: Array.isArray(data.retroFacilitatorJobs) ? data.retroFacilitatorJobs.filter((item): item is string => typeof item === "string") : [],
+      retroCoveredIds: Array.isArray(data.retroCoveredIds) ? data.retroCoveredIds.filter((item): item is string => typeof item === "string") : [],
+      retroReceiptIds: Array.isArray(data.retroReceiptIds) ? data.retroReceiptIds.filter((item): item is string => typeof item === "string") : [],
       correctionPending: data.correctionPending === true,
       retroDueReason: typeof data.retroDueReason === "string" ? data.retroDueReason : null,
       ...(typeof data.retroDueDeadlineAt === "number" ? { retroDueDeadlineAt: data.retroDueDeadlineAt } : {}),
@@ -742,6 +748,39 @@ function isRetroFacilitatorTaskResult(event: unknown): boolean {
     typeof result === "object" && result !== null &&
     (result as { agent?: unknown }).agent === "retro-facilitator"
   );
+}
+function retroFacilitatorResultId(event: unknown): string | undefined {
+  if (typeof event !== "object" || event === null || !("details" in event)) return undefined;
+  const details = event.details;
+  if (typeof details !== "object" || details === null || !("results" in details)) return undefined;
+  const results = details.results;
+  if (!Array.isArray(results)) return undefined;
+  const match = results.find((result) => typeof result === "object" && result !== null && "agent" in result && result.agent === "retro-facilitator");
+  if (typeof match !== "object" || match === null || !("id" in match)) return undefined;
+  return typeof match.id === "string" ? match.id : undefined;
+}
+function branchRetroReceiptIds(branch: unknown): string[] {
+  const found: string[] = [];
+  const scan = (text: string) => {
+    for (const tag of text.match(/<task-result\b[^>]*>/g) ?? []) {
+      if (!tag.includes('agent="retro-facilitator"') || !tag.includes('status="completed"')) continue;
+      const id = tag.match(/\bid="([^"]+)"/)?.[1];
+      if (id !== undefined && !found.includes(id)) found.push(id);
+    }
+  };
+  const entries = Array.isArray(branch) ? branch : [];
+  for (const entry of entries) {
+    if (typeof entry !== "object" || entry === null || !("type" in entry)) continue;
+    const content = entry.type === "message"
+      ? (typeof entry.message === "object" && entry.message !== null && "content" in entry.message ? entry.message.content : undefined)
+      : ("content" in entry ? entry.content : undefined);
+    const parts = typeof content === "string" ? [content] : Array.isArray(content) ? content : [];
+    for (const part of parts) {
+      if (typeof part === "string") scan(part);
+      else if (typeof part === "object" && part !== null && "text" in part && typeof part.text === "string") scan(part.text);
+    }
+  }
+  return found;
 }
 function taskDetails(task: TaskRow, timeZone?: string): string {
   const schedule = task.schedule && typeof task.schedule === "object" ? task.schedule : undefined;
@@ -1517,6 +1556,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       };
     }
     if (facilitatorSettled) finishRetro();
+    for (const receipt of branchRetroReceiptIds(ctx.sessionManager.getBranch())) {
+      if (!sprintState.retroReceiptIds.includes(receipt)) finishRetro(receipt);
+    }
     if (open.length > 0 && sprintState.goalWorkStartedAt === null) {
       // Only finishes since the last retro start the next goal-work window; older ones were covered.
       const sinceRetro = sprintState.workerFinishes.filter((finish) => sprintState.lastRetroAt === null || finish.at >= sprintState.lastRetroAt);
@@ -1545,9 +1587,11 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     sprintState = { ...sprintState, rowStatuses: nextStatuses };
     persistSprintState();
   };
-  const finishRetro = () => {
+  const finishRetro = (receipt?: string) => {
     const handledDeadlineAt = sprintState.retroDueReason === "deadline passed" ? sprintState.retroDueDeadlineAt : sprintState.handledDeadlineAt;
     const handledDeliveryKey = sprintState.retroDueReason === "goal delivered" ? sprintState.retroDueDeliveryKey : sprintState.handledDeliveryKey;
+    const covered = new Set(sprintState.retroCoveredIds);
+    for (const id of retroWorkerIds()) covered.add(id);
     sprintState = {
       ...sprintState,
       lastRetroAt: Date.now(),
@@ -1559,6 +1603,8 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       retroDueNotifiedKey: undefined,
       reopenedRows: [],
       retroFacilitatorJobs: [],
+      retroCoveredIds: [...covered],
+      retroReceiptIds: receipt !== undefined && !sprintState.retroReceiptIds.includes(receipt) ? [...sprintState.retroReceiptIds, receipt] : sprintState.retroReceiptIds,
       ...(handledDeadlineAt === undefined ? {} : { handledDeadlineAt }),
       ...(handledDeliveryKey === undefined ? {} : { handledDeliveryKey }),
     };
@@ -3190,7 +3236,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     return `the finish recedes with the clock: ${minutes(now - first.at)} ago it was ${safeTimestamp(first.finish, timeZone)}, now ${safeTimestamp(finish, timeZone)}. Work is being found as fast as it is done, one defect per attempt. Find all remaining defects in one pass (run the whole check once with failures collected instead of stopping at the first), fix them as parallel rows, and take every check that does not consume the stuck output off the chain`;
   };
   const retroWorkerIds = (): string[] => {
-    const finishes = sprintState.workerFinishes.filter((finish) => sprintState.lastRetroAt === null || finish.at >= sprintState.lastRetroAt);
+    const finishes = sprintState.workerFinishes.filter((finish) => (sprintState.lastRetroAt === null || finish.at >= sprintState.lastRetroAt) && !sprintState.retroCoveredIds.includes(finish.id));
     const counts = new Map<string, { count: number; firstAt: number }>();
     for (const finish of finishes) {
       const previous = counts.get(finish.id);
@@ -3506,7 +3552,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     }
     if (event.toolName !== "task") return;
     lastTaskDispatchRefused = Boolean(event.isError);
-    if (!event.isError && isRetroFacilitatorTaskResult(event)) finishRetro();
+    if (!event.isError && isRetroFacilitatorTaskResult(event)) finishRetro(retroFacilitatorResultId(event));
     const baseline = taskCallBaselines.get(event.toolCallId);
     taskCallBaselines.delete(event.toolCallId);
     if (!baseline || event.isError) return;
