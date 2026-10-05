@@ -2,7 +2,7 @@
 
 | Lane | Defect | Owner | Evidence |
 | --- | --- | --- | --- |
-| FixRestartChain, 2026-10-05 | “Stop omp restart leaving old process alive”: each graceful restart retained a full-heap parent awaiting its child's exit. | PR #93, topic/rt-restart-queue, baseline 12b20ffcb6e655d9922fc900f36b8954edf58c6f | `memory/omp-patch-evidence/restart-chain/`: pre-fix regression exits 1 with old PID 2124829 parenting successor 2125090; focused tests exit 0 (36 pass), negative-control startup crash exits 1 and restart waiter reports failure; requested typecheck exits 0; canonical candidate build exits 0; compiled PTY smoke exits 0, both restarts retain PID 2129949 and PPID 2129948. |
+| FixRestartChain, 2026-10-05 | “Stop omp restart leaving old process alive”: each graceful restart retained a full-heap parent awaiting its child's exit. | PR #93, topic/rt-restart-queue, baseline 12b20ffcb6e655d9922fc900f36b8954edf58c6f | External receipts under `/home/kom/proj/ai_pr/omp-restart-chain-evidence/`: `pre-fix.log` exits 1 with old PID 2124829 parenting successor 2125090; `focused.log` exits 0 (36 pass), including startup crash exit 1 and restart waiter failure; `types.log` and `build-final.log` exit 0; `smoke.log` exits 0, both restarts retain PID 2129949 and PPID 2129948. Logs are not shipped in the PR. |
 
 Design: use Bun 1.4.2's `process.execve`, not a supervisor. Replacement preserves
 PID, TTY and the parent shell's exit-status contract while dropping the heap.
