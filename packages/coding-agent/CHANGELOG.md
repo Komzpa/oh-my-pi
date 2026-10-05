@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed: Bash services
+
+- Fixed `bash` service mode rejecting calls that carry materialized `async: false` / `timeout: 0` placeholders the caller never passed, and fixed `env` being ignored on finite non-service commands: `env` is now accepted on every bash schema and threaded through the executor, PTY, ACP terminal, and service-daemon backends (caller values win over direnv/shell defaults). Explicit `async: true` or a nonzero `timeout` with a service `name` still rejects per the documented contract.
+- Bash now refuses commands that signal desktop session processes, stop/restart/kill user D-Bus services, or remove user runtime files. The default deny also inspects `kill $(pgrep ...)` and applies before all execution backends; read-only inspection remains allowed.
+
 ### Added
 
 - `/dump all` writes a zip to the temp directory with the main transcript, the LLM request JSON, and one file per subagent transcript (nested subagents included, killed ones marked aborted); the TUI copies the archive path to the clipboard. Plain `/dump` is unchanged ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
