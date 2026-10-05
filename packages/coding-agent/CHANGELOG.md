@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Restart now retains the original process and session when relaunch or same-session recovery fails, confirms a real successor before teardown, and returns queued restart failures to the CLI caller ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
+- Graceful restart now replaces the process in place using `process.execve`, preserving its PID and terminal without retaining old session heaps. A replacement startup failure returns to the shell; the checkpoint remains resumable ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
 - Disposing a subagent or parent session settles restart-drain waiters with a terminal outcome instead of an unhandled rejection that could crash the lead process ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
 - Restart discovery reports extension entry hashes captured at load, so rolling installs can restart stale extension code even when the session already runs the current binary ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
 

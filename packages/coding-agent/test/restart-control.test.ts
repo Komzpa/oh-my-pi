@@ -198,7 +198,7 @@ describe("restart-control local IPC", () => {
 	});
 });
 
-describe("restart fail-closed CLI", () => {
+describe("restart process replacement CLI", () => {
 	async function runLiveRestart(removeEntry: boolean): Promise<void> {
 		const root = await fs.mkdtemp(path.join(process.env.OMP_RESTART_QA_DIR ?? os.tmpdir(), "restart-live-"));
 		tempDirs.push(root);
@@ -209,7 +209,7 @@ describe("restart fail-closed CLI", () => {
 			path.join(agentDir, "config.yml"),
 			"startup:\n  setupWizard: false\n  checkUpdate: false\n  quiet: true\ncollab:\n  autoStart: false\n",
 		);
-		const cli = path.resolve(import.meta.dir, "../src/cli.ts");
+		const cli = path.resolve(process.env.OMP_RESTART_TEST_SOURCE ?? path.resolve(import.meta.dir, "../src"), "cli.ts");
 		const launcher = path.join(root, "launcher.ts");
 		await Bun.write(
 			launcher,
@@ -229,6 +229,7 @@ describe("restart fail-closed CLI", () => {
 			TMPDIR: process.env.XDG_RUNTIME_DIR ?? os.tmpdir(),
 			ANTHROPIC_API_KEY: "restart-test-key",
 			PI_NO_TITLE: "1",
+			OMP_RESTART_SESSION_ID: "",
 		};
 		const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 		const command = [
@@ -237,8 +238,7 @@ describe("restart fail-closed CLI", () => {
 			"ionice",
 			"-c2",
 			"-n7",
-			process.execPath,
-			launcher,
+			...(process.env.OMP_RESTART_TEST_BINARY ? [process.env.OMP_RESTART_TEST_BINARY] : [process.execPath, launcher]),
 			"--no-extensions",
 			"--no-skills",
 			"--no-rules",
@@ -275,66 +275,30 @@ describe("restart fail-closed CLI", () => {
 			if (removeEntry) await fs.rm(launcher);
 			const queued = await sendRestartControl({ identity: target.identity, op: "request" }, { runtimeDir });
 			expect(queued.request?.state).toBe("queued");
-			if (!removeEntry) {
+			if (removeEntry) {
+				// A real PTY child must exit in OS time; fake timers cannot drive its event loop.
+				const exitCode = await Promise.race([proc.exited, Bun.sleep(15_000).then(() => "hung")]);
+				expect(exitCode).toBe(1);
+				await expect(waitForRestartResult(queued, { runtimeDir })).rejects.toMatchObject({ code: "handler_failed" });
+				console.log(`throwaway startup crash: pid=${target.pid} exit=${exitCode}; PTY returned to caller`);
+				return;
+			}
+			for (let restart = 1; restart <= 2; restart++) {
 				const resumed = await waitForRestartResult(queued, { runtimeDir });
 				expect(resumed.request?.state, resumed.request?.error).toBe("completed");
 				expect(resumed.identity.sessionId).toBe(target.identity.sessionId);
 				expect(resumed.identity.instanceId).not.toBe(target.identity.instanceId);
-				expect(resumed.pid).not.toBe(target.pid);
-				await expect(
-					sendRestartControl({ identity: target.identity, op: "request" }, { runtimeDir }),
-				).rejects.toMatchObject({ code: "target_not_found" });
-				const alive = await sendRestartControl({ identity: resumed.identity, op: "status" }, { runtimeDir });
-				expect(alive.request?.state).toBe("completed");
-				console.log(
-					`throwaway successor: old_pid=${target.pid} new_pid=${resumed.pid} same_session=${resumed.identity.sessionId}`,
-				);
-				return;
+				const ps = Bun.spawnSync(["ps", "-o", "pid,ppid,rss,args", "-p", String(resumed.pid)]);
+				const tree = Bun.spawnSync(["pstree", "-sp", "-l", String(resumed.pid)]);
+				console.log(`restart ${restart}: initial_pid=${target.pid} current_pid=${resumed.pid}\n${ps.stdout}\n${tree.stdout}`);
+				if (process.env.OMP_RESTART_QA_DIR) {
+					await Bun.write(path.join(process.env.OMP_RESTART_QA_DIR, `restart-${restart}-ps.log`), ps.stdout);
+					await Bun.write(path.join(process.env.OMP_RESTART_QA_DIR, `restart-${restart}-pstree.log`), tree.stdout);
+				}
+				expect(resumed.pid).toBe(target.pid);
+				await expect(sendRestartControl({ identity: target.identity, op: "request" }, { runtimeDir })).rejects.toMatchObject({ code: "target_not_found" });
+				if (restart === 1) Object.assign(queued, await sendRestartControl({ identity: resumed.identity, op: "request" }, { runtimeDir }));
 			}
-			let status = queued;
-			const failureDeadline = Date.now() + 15_000;
-			while (status.request?.state !== "failed" && Date.now() < failureDeadline) {
-				await Bun.sleep(50);
-				status = await sendRestartControl({ identity: target.identity, op: "status" }, { runtimeDir });
-			}
-			expect(status.request?.state).toBe("failed");
-			expect(status.request?.error).toContain("successor");
-			expect(status.identity).toEqual(target.identity);
-			expect(status.pid).toBe(target.pid);
-			expect(proc.exitCode).toBeNull();
-			// A second real request must be admitted: a failed callback cannot leave the drain lease held.
-			const retry = await sendRestartControl({ identity: target.identity, op: "request" }, { runtimeDir });
-			expect(retry.request?.requestId).not.toBe(queued.request?.requestId);
-			expect((await waitForRestartResult(retry, { runtimeDir })).request?.state).toBe("failed");
-			const requestCli = Bun.spawn(
-				[
-					"nice",
-					"-n19",
-					"ionice",
-					"-c2",
-					"-n7",
-					process.execPath,
-					cli,
-					"restart",
-					"request",
-					"--instance",
-					target.identity.instanceId,
-				],
-				{ cwd: root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
-			);
-			const [requestExit, requestError] = await Promise.all([
-				requestCli.exited,
-				new Response(requestCli.stderr).text(),
-				new Response(requestCli.stdout).text(),
-			]);
-			expect(requestExit).toBe(1);
-			expect(requestError).toContain("Restart successor exited before confirming");
-			expect((await sendRestartControl({ identity: target.identity, op: "status" }, { runtimeDir })).pid).toBe(
-				target.pid,
-			);
-			console.log(
-				`throwaway fail-closed: pid=${target.pid} session=${target.identity.sessionId} state=${status.request?.state} error=${status.request?.error}`,
-			);
 		} finally {
 			if (proc.exitCode === null) {
 				proc.stdin.write("/exit\r");
@@ -350,6 +314,6 @@ describe("restart fail-closed CLI", () => {
 		}
 	}
 
-	it("keeps the original session usable when the successor entry disappears", () => runLiveRestart(true), 60_000);
-	it("hands a healthy restart to a real successor with the same session id", () => runLiveRestart(false), 60_000);
+	it("returns the terminal when the replacement crashes at startup", () => runLiveRestart(true), 60_000);
+	it("replaces the process twice without retaining an older ancestor", () => runLiveRestart(false), 60_000);
 });

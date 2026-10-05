@@ -158,8 +158,8 @@ import {
 } from "../task/restart-queue";
 import {
 	publishRestartControl,
-	spawnRestartSuccessor,
-	waitForRestartCommit,
+	execRestartSuccessor,
+	confirmRestartSession,
 	type RestartControlPublication,
 } from "../restart-control";
 import { agentTypeBadge, formatTaskId } from "@oh-my-pi/pi-tui/tools/task";
@@ -2558,12 +2558,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.disableSubmit = false;
 		if (process.env.OMP_RESTART_SESSION_ID) {
 			if (!this.#restartControlPublication) throw new Error("Restart successor has no live control endpoint");
-			this.#restartControlInitializing = true;
-			this.ui.stop();
-			await waitForRestartCommit(this.sessionManager.getSessionId());
-			this.ui.start();
-			this.ui.requestRender(true);
-			this.#restartControlInitializing = false;
+			await confirmRestartSession(this.sessionManager.getSessionId());
 		}
 	}
 
@@ -7061,7 +7056,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#restartControlReady = false;
 		controller?.dispose();
 	}
-	/** Keep the current session intact until a real successor has resumed it and initialized its controls. */
+	/** Checkpoint and replace this process; startup failure returns the terminal to its shell. */
 	async #executeRestart(): Promise<void> {
 		if (this.#isShuttingDown) throw new Error("Cannot restart while the session is already shutting down");
 		const sessionId = this.#resumableSessionId();
@@ -7070,15 +7065,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			throw new Error("Restart requires a durable session; the current process was kept alive");
 		// Resume the exact checkpoint, not a possibly stale session-index lookup or a fresh session.
 		const cmd = [...resolveCliEntryCmd(), ...restartArgv(process.argv.slice(2), sessionFile)];
-		// close() releases the writer claim without disposing the session; a failed launch can write and reclaim it.
+		// Release the writer claim before replacing the runtime with the exact checkpoint.
 		await this.sessionManager.close();
 		this.ui.stop();
-		const child = await spawnRestartSuccessor(cmd, sessionId).catch(error => {
-			this.ui.start();
-			this.ui.requestRender(true);
-			throw error;
-		});
-		// The confirmed successor owns the journal now; old-runtime disposal must not append or fork it.
+		// The checkpoint is final: teardown must not append to or fork the journal.
 		this.sessionManager.seal();
 		this.#isShuttingDown = true;
 		try {
@@ -7086,12 +7076,15 @@ export class InteractiveMode implements InteractiveModeContext {
 			await postmortem.cleanup();
 			await postmortem.drainStdout();
 		} catch (error) {
-			// Once confirmed, the successor must still take over even if old-runtime cleanup fails.
+			// A cleanup failure must not leave a drained runtime holding the terminal.
 			process.stderr.write(`Restart cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`);
-		} finally {
-			child.send({ type: "restart-commit", sessionId });
 		}
-		await postmortem.quit(await child.exited);
+		try {
+			execRestartSuccessor(cmd, sessionId);
+		} catch (error) {
+			process.stderr.write(`Restart failed; resume with omp --resume ${JSON.stringify(sessionFile)}: ${String(error)}\n`);
+			await postmortem.quit(1);
+		}
 	}
 
 	/**
