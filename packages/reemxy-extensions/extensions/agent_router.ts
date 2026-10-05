@@ -29,9 +29,9 @@ const POOL_SIZES: Record<string, number> = {
 	coder: 8,
 	"ui-coder": 5,
 	scout: 5,
-	"gate-runner": 5,
-	"git-pr-owner": 5,
-	scribe: 5,
+	"gate-runner": 4,
+	"git-pr-owner": 4,
+	scribe: 4,
 	reviewer: 3,
 	workhorse: 6,
 	"retro-facilitator": 3,
@@ -668,7 +668,6 @@ export async function routeSubagentSpawn(
 	}
 	const shuffle = options.shuffle ?? cryptoShuffle;
 	const pool = config.pool.filter(spec => !isBlacklistedModel(spec));
-	const profileModels = [...config.pool, ...config.fallbacks].filter(spec => !isBlacklistedModel(spec));
 	const { available, skipped: poolSkipped } = await availablePoolMembers(pool, ctx, state, options.now);
 	const { available: fallbacks, skipped: fallbackSkipped } = await availablePoolMembers(
 		config.fallbacks.filter(spec => !isBlacklistedModel(spec)),
@@ -681,14 +680,7 @@ export async function routeSubagentSpawn(
 		...available.filter(spec => spec.endsWith(":free")),
 		...shuffle(available.filter(spec => !spec.endsWith(":free"))),
 	];
-	let order = [...poolOrder, ...fallbacks];
-	const allPoolBlacklisted = config.pool.length > 0 && pool.length === 0;
-	if (order.length === 0 && allPoolBlacklisted && profileModels.length > 0) {
-		order = [
-			...profileModels.filter(spec => spec.endsWith(":free")),
-			...shuffle(profileModels.filter(spec => !spec.endsWith(":free"))),
-		];
-	}
+	const order = [...poolOrder, ...fallbacks];
 	// A critical-path row starts on the fast lane: the earliest chain entry whose
 	// model realizes priority service tier moves to the front. All other rows keep
 	// the existing order; chains without a priority-capable entry are untouched.
