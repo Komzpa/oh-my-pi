@@ -1,4 +1,4 @@
-import { listRestartControls, RestartControlError, sendRestartControl } from "../restart-control";
+import { listRestartControls, RestartControlError, sendRestartControl, waitForRestartResult } from "../restart-control";
 import {
 	formatRestartRequestStatus,
 	type RestartControlRequest,
@@ -83,7 +83,16 @@ export async function runRestartCommand(command: RestartCommandArgs): Promise<vo
 			...(command.requestId === undefined ? {} : { requestId: command.requestId }),
 			...(command.reason === undefined ? {} : { reason: command.reason }),
 		};
-		const updated = await sendRestartControl(request);
+		let updated = await sendRestartControl(request);
+		if (command.action === "request") {
+			updated = await waitForRestartResult(updated);
+			if (updated.request?.state === "failed") {
+				throw new RestartControlError(
+					"handler_failed",
+					updated.request.error ?? "Restart failed; the original process was kept alive",
+				);
+			}
+		}
 		if (command.json) process.stdout.write(`${JSON.stringify(updated, null, 2)}\n`);
 		else printSnapshot(command.action, updated);
 	} catch (error) {

@@ -16,7 +16,6 @@ import {
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, Model, Usage, UsageReport } from "@oh-my-pi/pi-ai";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { execReplace } from "@oh-my-pi/pi-natives";
 import type {
 	AutocompleteProvider,
 	Component,
@@ -157,7 +156,12 @@ import {
 	type RestartControlSnapshot,
 	type RestartQueueController,
 } from "../task/restart-queue";
-import { publishRestartControl, type RestartControlPublication } from "../restart-control";
+import {
+	publishRestartControl,
+	spawnRestartSuccessor,
+	waitForRestartCommit,
+	type RestartControlPublication,
+} from "../restart-control";
 import { agentTypeBadge, formatTaskId } from "@oh-my-pi/pi-tui/tools/task";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { isMCPToolName } from "../tools/builtin-names";
@@ -2547,10 +2551,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		try {
 			await this.#initializeRestartControl();
 		} catch (error) {
+			if (process.env.OMP_RESTART_SESSION_ID) throw error;
 			this.showWarning(`Restart controls unavailable: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		this.#restartControlInitializing = false;
 		this.editor.disableSubmit = false;
+		if (process.env.OMP_RESTART_SESSION_ID) {
+			if (!this.#restartControlPublication) throw new Error("Restart successor has no live control endpoint");
+			this.#restartControlInitializing = true;
+			this.ui.stop();
+			await waitForRestartCommit(this.sessionManager.getSessionId());
+			this.ui.start();
+			this.ui.requestRender(true);
+			this.#restartControlInitializing = false;
+		}
 	}
 
 	/** Reload the title-generation system prompt override for the provided working
@@ -6902,6 +6916,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			controller &&
 			this.#sameRestartControlIdentity(this.#restartBoundIdentity, identity) &&
 			!this.#restartControlRestoring &&
+			!this.#restartControlInitializing &&
 			!this.session.isSessionTransitioning &&
 			!this.#isShuttingDown
 		) {
@@ -7019,6 +7034,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				handle: request => this.#handleRestartControl(request),
 			});
 		} catch (error) {
+			if (process.env.OMP_RESTART_SESSION_ID) throw error;
 			logger.warn("External restart control endpoint unavailable", { error: String(error) });
 			this.showWarning(
 				`External restart control unavailable: ${error instanceof Error ? error.message : String(error)}`,
@@ -7042,48 +7058,37 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#restartControlReady = false;
 		controller?.dispose();
 	}
-	/**
-	 * Tear down like {@link shutdown}, then relaunch the CLI with the original
-	 * launch argv (session-source flags and positional prompts stripped, see
-	 * {@link restartArgv}), resuming this session when it exists on disk.
-	 *
-	 * On POSIX the relaunch is a true `execvp(3)` image replacement: same PID,
-	 * same terminal, no lingering parent. Postmortem cleanups and stdout are
-	 * flushed first because nothing in this process runs after a successful
-	 * exec. On Windows (no exec semantics) or on exec failure, falls back to
-	 * spawning the replacement and lingering only to forward its exit code.
-	 */
+	/** Keep the current session intact until a real successor has resumed it and initialized its controls. */
 	async #executeRestart(): Promise<void> {
 		if (this.#isShuttingDown) throw new Error("Cannot restart while the session is already shutting down");
+		const sessionId = this.#resumableSessionId();
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionId || !sessionFile)
+			throw new Error("Restart requires a durable session; the current process was kept alive");
+		// Resume the exact checkpoint, not a possibly stale session-index lookup or a fresh session.
+		const cmd = [...resolveCliEntryCmd(), ...restartArgv(process.argv.slice(2), sessionFile)];
+		// close() releases the writer claim without disposing the session; a failed launch can write and reclaim it.
+		await this.sessionManager.close();
+		this.ui.stop();
+		const child = await spawnRestartSuccessor(cmd, sessionId).catch(error => {
+			this.ui.start();
+			this.ui.requestRender(true);
+			throw error;
+		});
+		// The confirmed successor owns the journal now; old-runtime disposal must not append or fork it.
+		this.sessionManager.seal();
 		this.#isShuttingDown = true;
 		try {
 			await this.#teardown();
+			await postmortem.cleanup();
+			await postmortem.drainStdout();
 		} catch (error) {
-			this.#handleTeardownError("restart", error);
-			throw error;
+			// Once confirmed, the successor must still take over even if old-runtime cleanup fails.
+			process.stderr.write(`Restart cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`);
+		} finally {
+			child.send({ type: "restart-commit", sessionId });
 		}
-
-		const cmd = [...resolveCliEntryCmd(), ...restartArgv(process.argv.slice(2), this.#resumableSessionId())];
-		await postmortem.cleanup();
-		await postmortem.drainStdout();
-		if (process.platform !== "win32") {
-			try {
-				execReplace(cmd); // never returns on success
-			} catch (err) {
-				process.stderr.write(`${chalk.red(`Restart exec failed: ${err instanceof Error ? err.message : err}`)}\n`);
-			}
-		}
-		try {
-			const child = Bun.spawn(cmd, {
-				stdin: "inherit",
-				stdout: "inherit",
-				stderr: "inherit",
-			});
-			await postmortem.quit(await child.exited);
-		} catch (err) {
-			process.stderr.write(`${chalk.red(`Restart spawn failed: ${err instanceof Error ? err.message : err}`)}\n`);
-			await postmortem.quit(1);
-		}
+		await postmortem.quit(await child.exited);
 	}
 
 	/**

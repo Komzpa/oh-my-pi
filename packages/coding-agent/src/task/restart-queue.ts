@@ -722,7 +722,8 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		} catch (error) {
 			if (!run.cancelled && !this.#disposed) await this.#recordDrainFailure(run, error);
 		} finally {
-			if (run.cancelled ? run.cancelNoticeDelivered : !run.callbackStarted) this.#releaseLeases(run);
+			if (run.cancelled ? run.cancelNoticeDelivered : !run.callbackStarted || run.record.state === "failed")
+				this.#releaseLeases(run);
 			if (this.#run === run && (!run.cancelled || run.cancelNoticeDelivered)) this.#run = undefined;
 		}
 	}

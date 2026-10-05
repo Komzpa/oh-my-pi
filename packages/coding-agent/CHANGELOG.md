@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Restart now retains the original process and session when relaunch or same-session recovery fails, confirms a real successor before teardown, and returns queued restart failures to the CLI caller ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
+
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02
