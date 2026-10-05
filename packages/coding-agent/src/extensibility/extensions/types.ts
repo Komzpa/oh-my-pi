@@ -1920,6 +1920,8 @@ export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionAction
 export interface Extension {
 	path: string;
 	resolvedPath: string;
+	/** SHA-256 of the entry file at module load, preserved when rebinding. */
+	sourceHash?: string;
 	label?: string;
 	handlers: Map<string, HandlerFn[]>;
 	tools: Map<string, RegisteredTool<any, any>>;
@@ -1942,6 +1944,7 @@ export interface Extension {
 export interface PreparedExtension {
 	path: string;
 	resolvedPath: string;
+	sourceHash?: string;
 	factory: ExtensionFactory | null;
 	error: string | null;
 }

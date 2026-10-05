@@ -64,6 +64,8 @@ export interface RestartControlSnapshot {
 	pid: number;
 	cwd: string;
 	request: RestartRequestRecord | null;
+	/** Entry files and content hashes captured when this session loaded its extensions. */
+	loadedExtensions?: Array<{ path: string; sha256: string }>;
 }
 
 export interface RestartControlRequest {
