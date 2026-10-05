@@ -109,7 +109,9 @@ export async function runPeerSendCommand(
 		printErr(`failed: ${receipt.reason ?? "delivery failed"}`);
 		return 1;
 	} else {
-		print(`${receipt.status}: ${receipt.target} ${receipt.agent}${receipt.outcome ? ` (${receipt.outcome})` : ""}`);
+		print(
+			`${receipt.status}: ${receipt.target} ${receipt.agent}${receipt.outcome ? ` (${receipt.outcome})` : ""}${receipt.reason ? `: ${receipt.reason}` : ""}`,
+		);
 	}
 	return 0;
 }

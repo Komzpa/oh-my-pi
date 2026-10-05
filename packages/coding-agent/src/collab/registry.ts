@@ -30,6 +30,7 @@ import { getBaseConfigRoot, isEnoent } from "@oh-my-pi/pi-utils";
 import type { IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools/irc";
 import type { IrcBus } from "../irc/bus";
 import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { executePeerSlashCommand } from "./peer-commands";
 
 /** Discovery metadata / IPC protocol version. Mixed omp versions fail safely. */
 export const COLLAB_REGISTRY_VERSION = 1;
@@ -48,6 +49,8 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_SNAPSHOT_FIELD_CHARS = 1024;
 /** Per-entry connect+response deadline during listing. */
 const DEFAULT_QUERY_TIMEOUT_MS = 1_500;
+/** Local slash handlers may await work; discovery retains its short deadline. */
+const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
 /** Concurrency bound for querying discovery entries. */
 const LIST_CONCURRENCY = 8;
 /** Maximum UTF-8 bytes in one peer message. */
@@ -146,7 +149,7 @@ export interface PeerDeliveryReceipt {
 	status: "delivered" | "queued" | "failed";
 	target: string;
 	agent: string;
-	outcome?: IrcDeliveryReceipt["outcome"];
+	outcome?: IrcDeliveryReceipt["outcome"] | "executed" | "queued";
 	reason?: string;
 }
 
@@ -816,6 +819,28 @@ export async function publishPeerSession(options: PeerSessionPublishOptions): Pr
 				throw new PeerSessionError("rate_limited", "peer message rate limit exceeded");
 			}
 			const to = request.agent ?? mainAgentId;
+			const session = options.registry.get(to)?.session;
+			if (session && request.text.startsWith("/")) {
+				try {
+					const command = await executePeerSlashCommand(session, request.text);
+					if (command) {
+						lastAcceptedBySender.set(sender, now);
+						return {
+							status: command.outcome === "queued" ? "queued" : "delivered",
+							target: instanceId,
+							agent: to,
+							...command,
+						};
+					}
+				} catch (error) {
+					return {
+						status: "failed",
+						target: instanceId,
+						agent: to,
+						reason: error instanceof Error ? error.message : String(error),
+					};
+				}
+			}
 			const body = `${request.text}\n\n[${peerSenderNotice(request.from)}]`;
 			const receipt = await options.irc.send({ from: sender, to, body });
 			if (receipt.outcome === "failed") {
@@ -1032,13 +1057,15 @@ function peerCandidatesText(candidates: PeerSessionSnapshot[]): string {
 }
 
 export async function resolvePeerSession(selector: string, options?: PeerSessionOptions): Promise<PeerSessionSnapshot> {
-	const wanted = selector.trim();
+	const qualified = selector.trim().startsWith("peer:");
+	const wanted = selector.trim().replace(/^peer:/, "");
 	if (!wanted) throw new PeerSessionError("not_found", "peer target is required");
 	const peers = await listPeerSessions(options);
 	const lower = wanted.toLowerCase();
-	const exact = peers.filter(
-		peer =>
-			peer.instanceId === wanted || peer.sessionId === wanted || path.resolve(peer.cwd) === path.resolve(wanted),
+	const exact = peers.filter(peer =>
+		qualified
+			? peer.sessionId === wanted
+			: peer.instanceId === wanted || peer.sessionId === wanted || path.resolve(peer.cwd) === path.resolve(wanted),
 	);
 	if (exact.length === 1) return exact[0]!;
 	if (exact.length > 1) {
@@ -1048,6 +1075,7 @@ export async function resolvePeerSession(selector: string, options?: PeerSession
 			exact,
 		);
 	}
+	if (qualified) throw new PeerSessionError("not_found", `no active peer session matches ${wanted}`);
 	const matches = peers.filter(peer => {
 		const title = peer.sessionName?.toLowerCase() ?? "";
 		return (
@@ -1079,7 +1107,7 @@ function parsePeerReceipt(raw: unknown): PeerDeliveryReceipt | null {
 		status: receipt.status,
 		target: receipt.target,
 		agent: receipt.agent,
-		...(typeof receipt.outcome === "string" ? { outcome: receipt.outcome as IrcDeliveryReceipt["outcome"] } : {}),
+		...(typeof receipt.outcome === "string" ? { outcome: receipt.outcome as PeerDeliveryReceipt["outcome"] } : {}),
 		...(typeof receipt.reason === "string" ? { reason: receipt.reason } : {}),
 	};
 }
@@ -1103,7 +1131,7 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 			text,
 			...(options.agent ? { agent: options.agent } : {}),
 		},
-		options.registry?.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS,
+		options.registry?.timeoutMs ?? (text.startsWith("/") ? DEFAULT_COMMAND_TIMEOUT_MS : DEFAULT_QUERY_TIMEOUT_MS),
 	);
 	if (result.status === "ok") {
 		const receipt = parsePeerReceipt((result.value as Record<string, unknown>).receipt);

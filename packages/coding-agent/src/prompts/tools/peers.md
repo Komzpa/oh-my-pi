@@ -1,3 +1,3 @@
 List and send messages to other live local OMP sessions owned by this user.
 
-Use `action: "list"` to discover sessions without transcript access. Use `action: "send"` with a target session id, unique id prefix, cwd/title fragment, and optional `agent` id to deliver a bounded text message into that session's IRC path.
+Use `action: "list"` to discover sessions without transcript access. Use `action: "send"` with a target session id, unique id prefix, cwd/title fragment, and optional `agent` id. A message consisting of a registered slash command and its arguments runs through the target's command dispatcher; the receipt reports `executed`, `queued` for a command prompt, or a failure reason (including commands requiring interactive input). Plain text and unknown slash names stay IRC messages. Reply to a session sender using `write` with `path: "agent://peer:<senderSessionId>"`; that address uses the same peer transport.

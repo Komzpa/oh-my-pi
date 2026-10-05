@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Peer messages naming a registered slash command now use the target's command dispatcher and report execution, prompt queueing, or refusal instead of being injected as IRC chatter. Replies to `agent://peer:<sessionId>` return through the local peer-session transport (fork PR [#23](https://github.com/Komzpa/oh-my-pi/pull/23)).
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02

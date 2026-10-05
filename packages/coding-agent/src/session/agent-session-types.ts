@@ -380,6 +380,8 @@ export interface PromptOptions {
 	 * drivers disable it so an assignment is always delivered to the model.
 	 */
 	runCommands?: boolean;
+	/** Propagate local command errors to callers that need an execution receipt. */
+	throwOnCommandError?: boolean;
 	/**
 	 * Reject with `PromptDroppedError` when the prompt is dropped before
 	 * reaching the agent, instead of resolving `true` (default: false).

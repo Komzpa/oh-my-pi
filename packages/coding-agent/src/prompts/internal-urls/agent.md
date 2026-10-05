@@ -1,1 +1,1 @@
-`agent://<id>`: output (status + progress while unpublished); nested IDs dotted, `/key/index` JSON path; write = message, `agent://all` broadcast only.
+`agent://<id>`: output (status + progress while unpublished); nested IDs dotted, `/key/index` JSON path; write = message, `agent://all` broadcast only. Write to `agent://peer:<sessionId>` to reply to a live sender through the local peer-session transport.
