@@ -15,9 +15,16 @@ export async function executePeerSlashCommand(session: AgentSession, text: strin
 	if (!parsed) return null;
 	const output: string[] = [];
 	const skill = resolveRpcSkillInvocation(session, text);
-	const builtin = lookupBuiltinSlashCommand(parsed.name);
+	// Namespaced commands are one token in the real target registries.
+	const name = text.slice(1).split(" ", 1)[0]!;
+	const extensionCommand = session.extensionRunner?.getCommand(name) !== undefined;
+	const registered =
+		extensionCommand ||
+		session.customCommands.some(loaded => loaded.command.name === name) ||
+		session.slashCommands.some(command => command.name === name) ||
+		session.promptTemplates.some(template => template.name === name);
+	const builtin = name !== parsed.name && registered ? undefined : lookupBuiltinSlashCommand(parsed.name);
 	let prompt = text;
-	let extensionCommand = false;
 	if (skill) {
 		const admitted = Promise.withResolvers<PeerCommandReceipt>();
 		const completed = runRpcSkillCommand(session, skill, "followUp", undefined, () =>
@@ -46,17 +53,8 @@ export async function executePeerSlashCommand(session: AgentSession, text: strin
 		if (!("prompt" in result))
 			return { outcome: "executed", ...(output.length ? { reason: output.join("\n") } : {}) };
 		prompt = result.prompt;
-	} else {
-		// Extension/custom/file parsers treat namespaced names as one token.
-		const name = text.slice(1).split(" ", 1)[0]!;
-		extensionCommand = session.extensionRunner?.getCommand(name) !== undefined;
-		if (
-			!extensionCommand &&
-			!session.customCommands.some(loaded => loaded.command.name === name) &&
-			!session.slashCommands.some(command => command.name === name) &&
-			!session.promptTemplates.some(template => template.name === name)
-		)
-			return null;
+	} else if (!registered) {
+		return null;
 	}
 	const admitted = Promise.withResolvers<PeerCommandReceipt>();
 	const completed = session
