@@ -3791,7 +3791,16 @@ export class AgentSession implements SettingsScope {
 			if (this.#promptGeneration !== eventPromptGeneration) return;
 			if (event.message.role === "user" && event.message.attribution === "user") {
 				const rawText = this.#queuedMessageRawText.get(event.message);
-				if (rawText !== undefined) this.#captureRawRequirementCandidate(rawText, "content" in event.message ? (event.message.content as unknown[]).filter((c): c is ImageContent => !!c && typeof c === "object" && (c as {type?:string}).type === "image") : []);
+				if (rawText !== undefined)
+					this.#captureRawRequirementCandidate(
+						rawText,
+						"content" in event.message
+							? (event.message.content as unknown[]).filter(
+									(c): c is ImageContent =>
+										!!c && typeof c === "object" && (c as { type?: string }).type === "image",
+								)
+							: [],
+					);
 			}
 			if (interruptedThinkingMessage) {
 				this.sessionManager.appendCustomMessageEntry(
@@ -12976,7 +12985,6 @@ export class AgentSession implements SettingsScope {
 		return this.#recovery.consumeActiveFallbackCreditRedemption(targetModel);
 	}
 	#captureRawRequirementCandidate(rawText: string, images?: readonly ImageContent[]): void {
-		if (this.getActiveToolNames().includes("todo"))
-			this.#requirementsLedger.captureCandidate(rawText, images);
+		if (this.getActiveToolNames().includes("todo")) this.#requirementsLedger.captureCandidate(rawText, images);
 	}
 }
