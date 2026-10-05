@@ -208,17 +208,18 @@ function parseRequirement(value: unknown): RequirementLedgerItem | undefined {
 		value.images === undefined
 			? undefined
 			: Array.isArray(value.images) &&
-				value.images.every(
-					image =>
-						isRecord(image) &&
-						Number.isInteger(image.index) &&
-						Number(image.index) > 0 &&
-						(image.sha256 === undefined || (typeof image.sha256 === "string" && /^[a-f0-9]{64}$/.test(image.sha256))) &&
-						(image.mimeType === undefined || typeof image.mimeType === "string") &&
-						(image.sourcePath === undefined || typeof image.sourcePath === "string") &&
-						(image.artifactPath === undefined || typeof image.artifactPath === "string") &&
-						(image.data === undefined || typeof image.data === "string"),
-				)
+				  value.images.every(
+						image =>
+							isRecord(image) &&
+							Number.isInteger(image.index) &&
+							Number(image.index) > 0 &&
+							(image.sha256 === undefined ||
+								(typeof image.sha256 === "string" && /^[a-f0-9]{64}$/.test(image.sha256))) &&
+							(image.mimeType === undefined || typeof image.mimeType === "string") &&
+							(image.sourcePath === undefined || typeof image.sourcePath === "string") &&
+							(image.artifactPath === undefined || typeof image.artifactPath === "string") &&
+							(image.data === undefined || typeof image.data === "string"),
+				  )
 				? (value.images as RequirementImage[])
 				: undefined;
 	if (value.images !== undefined && images === undefined) return undefined;
@@ -318,7 +319,7 @@ export function createRequirementCandidates(
 			rawText,
 			classification: "candidate" as const,
 			rows: [],
-			...(images?.length ? { images: structuredClone(images) } : {}),
+			...(images?.length ? { images: [...structuredClone(images)] } : {}),
 			...(unresolvable ? { imageState: "needs-user-restatement" as const } : {}),
 		};
 	});

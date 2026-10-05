@@ -26,7 +26,7 @@ import {
 	requirementAuditSnapshot,
 	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
 	type RequirementAuditAssignment,
-type RequirementImage,
+	type RequirementImage,
 	type RequirementLedgerItem,
 } from "../tools/requirements-ledger";
 
@@ -37,10 +37,7 @@ type RequirementImage,
  * source file nor bytes keeps no `sha256`, which marks the row
  * `needs-user-restatement` at capture time.
  */
-function extractRequirementImages(
-	rawText: string,
-	images: readonly ImageContent[] | undefined,
-): RequirementImage[] {
+function extractRequirementImages(rawText: string, images: readonly ImageContent[] | undefined): RequirementImage[] {
 	if (!images?.length) return [];
 	const seen = new Set<number>();
 	const out: RequirementImage[] = [];
@@ -296,10 +293,10 @@ export class RequirementsLedgerRuntime {
 				"Return one complete Markdown table with columns id | raw words | verdict | evidence | artifact identity. Cover every linked Rn above, optionally with letter sub-ids for its clauses; verdict pass, fail or unverifiable. Name the exact audited TODO row in artifact identity and its full commit SHA when a clean checkout exists. For rows without a clean checkout, name the observed artifact; freshness uses saved TODO row history. Evidence must name what was actually exercised or observed; no partial table or truncated preview is accepted.",
 			].join("\n");
 			revised[index] = {
-			...item,
-			task: `${item.task}\n\n${protocol}`,
-			...(imagePayloads.length ? { images: imagePayloads } : {}),
-		};
+				...item,
+				task: `${item.task}\n\n${protocol}`,
+				...(imagePayloads.length ? { images: imagePayloads } : {}),
+			};
 			assignments.push({
 				ids,
 				snapshot: requirementAuditSnapshot(requirements, ids),
@@ -313,7 +310,7 @@ export class RequirementsLedgerRuntime {
 
 		if (assignments.length === 0) return undefined;
 		this.#auditCalls.set(toolCallId, assignments);
-		return multiple ? { ...input, tasks: revised } : { ...input, task: (revised[0] as Record<string, unknown>).task };
+		return multiple ? { ...input, tasks: revised } : { ...input, ...(revised[0] as Record<string, unknown>) };
 	}
 
 	async afterToolCall(context: AfterToolCallContext): Promise<AfterToolCallResult | undefined> {

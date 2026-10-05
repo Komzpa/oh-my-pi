@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +21,7 @@ import {
 	createRequirementCandidates,
 	getLatestRequirements,
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+	evaluateRequirementDoneGate,
 	getPersistedRequirementAuditRejections,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import {
@@ -1045,4 +1047,68 @@ describe("real row-scoped auditor receipts", () => {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
+});
+
+describe("requirement image audit inputs", () => {
+	it("forwards referenced image pixels and sha256 to qa-auditor", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			const data = Buffer.from("stub image pixels").toString("base64");
+			const sha256 = createHash("sha256").update(Buffer.from(data, "base64")).digest("hex");
+			const requirements = getLatestRequirements(manager.getBranch());
+			appendRequirementsSnapshot(
+				{ appendEntry: (type, value) => manager.appendCustomEntry(type, value) },
+				requirements.map(requirement => ({
+					...requirement,
+					rawText: "[Image #1, 4x4]",
+					images: [{ index: 1, data, mimeType: "image/png", sha256 }],
+				})),
+			);
+			const revised = await runtime.prepareAuditorTaskCall("task", "image-call", {
+				agent: "qa-auditor",
+				task: "Audit R1 for Build artifact",
+			});
+			expect(revised).toBeDefined();
+			const result = revised as {
+				task: string;
+				images: Array<{ type: "image"; data: string; mimeType: string; sha256: string; rn: string; index: number }>;
+			};
+			expect(result.images).toEqual([{ type: "image", data, mimeType: "image/png", sha256, rn: "R1", index: 1 }]);
+			expect(result.task).toContain("QA AUDIT INPUT");
+			expect(result.task).toContain(`R1 Image #1: sha256=${sha256}`);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+it("asks once in place of an impossible image audit", async () => {
+	const candidate = createRequirementCandidates([], ["[Image #1, 4x4]"], AT, [[{ index: 1 }]])[0]!;
+	const row = { ...candidate, classification: "linked" as const, rows: ["Image row"] };
+	const artifact = async () => ({ cwd: "/repo", head: "a".repeat(40), dirty: false });
+	const first = await evaluateRequirementDoneGate([row], ["Image row"], artifact);
+	const second = await evaluateRequirementDoneGate([row], ["Image row"], artifact);
+	const question = "R1: the attached image is gone from this session — please restate it in words or re-attach it";
+	expect(row.imageState).toBe("needs-user-restatement");
+	expect(first).toHaveLength(1);
+	expect(first[0]!.awaitingUserIssues).toEqual([question]);
+	expect(first[0]!.issues).toEqual([question]);
+	expect(second[0]!.awaitingUserIssues).toEqual([question]);
+	expect(second[0]!.issues.join(" ")).not.toContain("qa-auditor");
+});
+
+it("keeps text-only QA inputs free of image fields", async () => {
+	const { cwd, runtime } = fixture();
+	try {
+		const revised = await runtime.prepareAuditorTaskCall("task", "text-call", {
+			agent: "qa-auditor",
+			task: "Audit R1 for Build artifact",
+		});
+		expect(revised).toBeDefined();
+		expect(revised).not.toHaveProperty("images");
+		expect(revised!.task).toContain("QA AUDIT INPUT");
+		expect(revised!.task).not.toContain("Referenced images");
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
 });
