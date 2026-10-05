@@ -295,6 +295,7 @@ describe("requirements ledger auditor binding", () => {
 			const todo = new TodoTool({
 				cwd,
 				hasUI: false,
+				settings: Settings.isolated(),
 				getSessionFile: () => null,
 				sessionManager: manager,
 				getTodoPhases: () => getLatestTodoPhasesFromEntries(manager.getBranch()),
