@@ -30,3 +30,4 @@
 ### Fixed
 
 - `todo_dispatch`: persist the dispatched retro-facilitator job names in the sprint state and restore them on `load()`, so a restart/reload no longer forgets a completed retrospective. `retrospective due` stops relisting the workers the retro already covered, while a genuinely new worker still opens its own window.
+- `todo_dispatch`: record the covered worker cohort and the retro receipt id in `finishRetro`, and pick up background retro completions (async-result branch entries) that never arrive as a task `tool_result` or job-snapshot entry. A completed retro clears the demand once, the covered workers stay excluded from later cohorts across restarts, and a new demand names only workers no earlier retro covered.
