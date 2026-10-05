@@ -7082,7 +7082,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		try {
 			execRestartSuccessor(cmd, sessionId);
 		} catch (error) {
-			process.stderr.write(`Restart failed; resume with omp --resume ${JSON.stringify(sessionFile)}: ${String(error)}\n`);
+			process.stderr.write(
+				`Restart failed; resume with omp --resume ${JSON.stringify(sessionFile)}: ${String(error)}\n`,
+			);
 			await postmortem.quit(1);
 		}
 	}
