@@ -1084,17 +1084,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		// top of execute() (untouched by #92); row-creating ops reach
 		// applyParams synchronously, and todo concurrency is exclusive.
 		activeArtifactCwd = this.session.cwd;
-		let boundPhases: TodoPhase[] | undefined;
-		const branch = this.session.sessionManager?.getBranch();
-		if (branch) {
-			for (let i = branch.length - 1; i >= 0; i--) {
-				const phases = canonicalTodoPhases(branch[i]);
-				if (!phases) continue;
-				if (branch[i]?.type === "custom") boundPhases = phases;
-				break;
-			}
-		}
-		const previousPhases = clonePhases(boundPhases ?? this.session.getTodoPhases?.() ?? []);
+		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
 		const rawOp: unknown = params.op;
 		if (rawOp === "classify") return this.#classify(params, previousPhases, storage);
