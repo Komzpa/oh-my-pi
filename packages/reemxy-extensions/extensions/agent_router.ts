@@ -693,7 +693,10 @@ export async function routeSubagentSpawn(
 	// the existing order; chains without a priority-capable entry are untouched.
 	const nowMs = (options.now ?? (() => new Date()))().getTime();
 	let criticalFirst = false;
-	if (spawnIsCriticalRow(event, ctx, latestTodo, nowMs)) {
+	if (
+		spawnIsCriticalRow(event, ctx, latestTodo, nowMs) &&
+		!order[0]?.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "").endsWith(":free")
+	) {
 		const priorityIndex = firstPriorityCapableIndex(order, ctx);
 		if (priorityIndex > 0) {
 			const [prioritySpec] = order.splice(priorityIndex, 1);

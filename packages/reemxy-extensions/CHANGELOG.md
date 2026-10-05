@@ -6,6 +6,7 @@
 
 - Blocked worker rework messages when an active gate refuses the corresponding task dispatch.
 - Exclude the host-damaging Ling-3.0 free model from agent pools, fallbacks, and worker profiles.
+- Keep critical-row fast-lane routing from displacing a free model at the front of the chain.
 
 - Cover resumed non-task workers as wait-eligible staffing, plus fresh-owner slip reestimates and the stale-owner refusal control.
 - `todo_dispatch`: a `todo schedule` reestimate on a past-ETA running row that carries `evidence` (the failure reason) plus a new `estimate` is accepted under the same owner; a bare reestimate stays refused but the message names the evidence repair instead of demanding a kill (658).

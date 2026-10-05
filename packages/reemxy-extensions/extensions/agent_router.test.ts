@@ -1827,16 +1827,30 @@ describe("agent router", () => {
 			"cerebras/qwen-3.8-27b",
 		];
 
-		test("critical row moves the earliest priority-capable chain entry first", async () => {
+		test("critical row moves the earliest priority-capable chain entry first when no free model is present", async () => {
 			const { dir, file } = tempStateFile();
 			try {
-				const result = await spawnTask("long-1", priorityCtx(), file);
+				const withoutFree = TASK_ORDER.filter(spec => !spec.endsWith(":free"));
+				const models = withoutFree.map(spec => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, ""));
+				const result = await spawnTask("long-1", priorityCtx(models), file);
 				expect(result?.model?.[0]).toBe("codex-lb/gpt-6-luna:medium");
 				expect(result?.model).toEqual([
 					"codex-lb/gpt-6-luna:medium",
-					...TASK_ORDER.filter(spec => spec !== "codex-lb/gpt-6-luna:medium"),
+					...withoutFree.filter(spec => spec !== "codex-lb/gpt-6-luna:medium"),
 				]);
 				expect(result?.note).toContain("critical row");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		test("critical row keeps a free model first", async () => {
+			const { dir, file } = tempStateFile();
+			try {
+				const result = await spawnTask("long-1", priorityCtx(), file);
+				expect(result?.model).toEqual(TASK_ORDER);
+				expect(result?.model?.[0]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
+				expect(result?.note).not.toContain("critical row");
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
 			}
