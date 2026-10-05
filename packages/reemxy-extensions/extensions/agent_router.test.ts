@@ -9,6 +9,9 @@ import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/
 import agentRouter, {
 	getAgentPools,
 	MODEL_BLACKLIST,
+	STRONG_MODELS,
+	BRRRR_ENTRY,
+	brrrrModeFile,
 	agentHasLiveModel,
 	countLiveWorkerModels,
 	createRouterState,
@@ -125,6 +128,97 @@ function canRunAtOrBelow(spec: string, intended: ThinkingLevel): boolean {
 }
 
 describe("agent router", () => {
+	test("brrrr orders contain only strong entries for coder scout and reviewer", async () => {
+		const { dir, file } = tempStateFile();
+		const modeFile = join(dir, "mode.json");
+		writeFileSync(modeFile, JSON.stringify({ enabled: true }));
+		try {
+			for (const agent of ["coder", "scout", "reviewer", "task", "custom-worker"]) {
+				const routed = await routeSubagentSpawn({ agent }, ctx(), createRouterState(), { stateFile: file, modeFile });
+				expect(routed?.model.length).toBeGreaterThan(0);
+				for (const spec of routed!.model) {
+					expect([...STRONG_MODELS, "cerebras/qwen-3.8-27b"]).toContain(spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, ""));
+					expect(spec).not.toMatch(/:free|ling/);
+				}
+				expect(routed.requiredModelServiceTiers["codex-lb/gpt-6-luna"]).toBe("priority");
+				const profile = AGENT_POOLS[agent];
+				const expected = profile ? [...profile.pool, ...profile.fallbacks]
+					.filter(spec => STRONG_MODELS.includes(modelSelectorBase(spec)) && !spec.includes("luna"))
+					.map(modelSelectorBase) : [];
+				expect(routed.model.filter(spec => !spec.startsWith("cerebras/")).slice(0, expected.length).map(modelSelectorBase)).toEqual(expected);
+			}
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
+
+	test("brrrr returns undefined when every allowed model is depleted", async () => {
+		const { dir, file } = tempStateFile();
+		const modeFile = join(dir, "mode.json");
+		writeFileSync(modeFile, JSON.stringify({ enabled: true }));
+		try {
+			const health = Object.fromEntries([...STRONG_MODELS, "cerebras/qwen-3.8-27b"].map(id => [id, { state: "depleted", accounts: [] }]));
+			expect(await routeSubagentSpawn({ agent: "coder" }, ctxWithHealth(health), createRouterState(), { stateFile: file, modeFile })).toBeUndefined();
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
+
+	test("brrrr rereads mode and blacklist before each spawn", async () => {
+		const { dir, file } = tempStateFile();
+		const modeFile = join(dir, "mode.json");
+		const blacklistFile = join(dir, "blacklist.json");
+		try {
+			const options = { stateFile: file, modeFile, blacklistFile };
+			const context = ctx();
+			expect((await routeSubagentSpawn({ agent: "coder" }, context, createRouterState(), options)).model[0]).toContain(":free");
+			writeFileSync(modeFile, JSON.stringify({ enabled: true }));
+			const first = await routeSubagentSpawn({ agent: "coder" }, context, createRouterState(), options);
+			expect(first.model[0]).not.toContain(":free");
+			writeFileSync(blacklistFile, JSON.stringify([modelSelectorBase(first.model[0])]));
+			const next = await routeSubagentSpawn({ agent: "coder" }, context, createRouterState(), options);
+			expect(next.model.map(modelSelectorBase)).not.toContain(modelSelectorBase(first.model[0]));
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
+
+	test("brrrr command persists and restores status in a headless session", async () => {
+		const { dir } = tempStateFile();
+		const previous = process.env.OMP_AGENT_ROUTER_MODE_DIR;
+		process.env.OMP_AGENT_ROUTER_MODE_DIR = dir;
+		const entries = [];
+		const handlers = new Map();
+		const commands = new Map();
+		const statuses = [];
+		const notices = [];
+		const api = { on: (event, handler) => handlers.set(event, handler), registerCommand: (name, command) => commands.set(name, command), appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }) };
+		const context = ctx({ sessionManager: { getHeader: () => ({ id: "headless-brrrr" }), getBranch: () => entries }, ui: { setStatus: (_key, value) => statuses.push(value), notify: text => notices.push(text) } });
+		try {
+			agentRouter(api);
+			await handlers.get("session_start")({}, context);
+			await commands.get("brrrr").handler("", context);
+			expect(JSON.parse(readFileSync(brrrrModeFile(context), "utf8")).enabled).toBe(true);
+			expect(entries.at(-1)).toEqual({ type: "custom", customType: BRRRR_ENTRY, data: { enabled: true } });
+			expect(statuses.at(-1)).toContain("BRRRR");
+			agentRouter(api);
+			await handlers.get("session_start")({}, context);
+			expect(statuses.at(-1)).toContain("BRRRR");
+			await commands.get("brrrr").handler("off", context);
+			expect(statuses.at(-1)).toBeUndefined();
+			expect(notices).toHaveLength(2);
+		} finally {
+			if (previous === undefined) delete process.env.OMP_AGENT_ROUTER_MODE_DIR; else process.env.OMP_AGENT_ROUTER_MODE_DIR = previous;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("brrrr Claude coder effort is capped at high", async () => {
+		const { dir, file } = tempStateFile();
+		const modeFile = join(dir, "mode.json");
+		const profileDir = join(dir, "profiles");
+		mkdirSync(profileDir);
+		writeFileSync(modeFile, JSON.stringify({ enabled: true }));
+		writeFileSync(join(profileDir, "coder.md"), "---\nname: coder\ndescription: test\nmodel: anthropic/claude-opus-5-5:max\n---\nImplement.\n");
+		try {
+			const routed = await routeSubagentSpawn({ agent: "coder" }, ctx(), createRouterState(), { stateFile: file, modeFile, profileDir });
+			expect(routed.model[0]).toBe("anthropic/claude-opus-5-5:high");
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
 	test("uniform crypto shuffle can cover every coder pool member as the chosen model", async () => {
 		const seen = new Set<string>();
 		const { dir, file } = tempStateFile();

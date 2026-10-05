@@ -1,9 +1,9 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { randomInt } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import type { ModelUsageHealth, ModelUsageHealthState } from "@oh-my-pi/pi-ai";
@@ -17,12 +17,63 @@ export interface PoolConfig {
 	fallbacks: string[];
 }
 
-// These models damaged the host (deleted /run/user/1000/bus on 2026-10-05); evidence in tasks-loop memory/model-misconduct-ledger.md.
-export const MODEL_BLACKLIST = ["openrouter/inclusionai/ling-3.0-flash-sante:free"] as const;
+export interface BrrrrModel { id: string; class: "strong" | "fast"; serviceTier?: "priority" }
+export const BRRRR_MODELS_FILE = join(homedir(), ".omp/agent/brrrr-models.json");
+const BRRRR_MODELS_SEED = new URL("./brrrr_models.json", import.meta.url).pathname;
+export function readBrrrrModels(): BrrrrModel[] {
+	const file = process.env.OMP_AGENT_ROUTER_MODELS ?? BRRRR_MODELS_FILE;
+	return JSON.parse(readFileSync(existsSync(file) ? file : BRRRR_MODELS_SEED, "utf8"));
+}
+export const STRONG_MODELS = readBrrrrModels().filter(model => model.class === "strong").map(model => model.id);
 
-function isBlacklistedModel(spec: string): boolean {
-	const modelId = spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
-	return MODEL_BLACKLIST.includes(modelId as (typeof MODEL_BLACKLIST)[number]);
+export const BRRRR_ENTRY = "reemxy-brrrr";
+const MODEL_BLACKLIST_SEED = new URL("./model_blacklist.json", import.meta.url).pathname;
+export const MODEL_BLACKLIST_FILE = join(homedir(), ".omp/agent/model-blacklist.json");
+
+export function readModelBlacklist(file = process.env.OMP_AGENT_ROUTER_BLACKLIST ?? MODEL_BLACKLIST_FILE): string[] {
+	const seed: string[] = JSON.parse(readFileSync(MODEL_BLACKLIST_SEED, "utf8"));
+	return existsSync(file) ? [...new Set([...seed, ...JSON.parse(readFileSync(file, "utf8"))])] : seed;
+}
+
+export const MODEL_BLACKLIST = readModelBlacklist();
+
+function isBlacklistedModel(spec: string, blacklist = readModelBlacklist()): boolean {
+	return blacklist.includes(spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, ""));
+}
+
+export function brrrrModeFile(ctx: ExtensionContext): string {
+	return join(
+		process.env.OMP_AGENT_ROUTER_MODE_DIR ?? join(homedir(), ".local/state/omp-agent-router/modes"),
+		`${encodeURIComponent(sessionId(ctx) ?? "unsaved")}.json`,
+	);
+}
+
+export function readBrrrrMode(ctx: ExtensionContext, file = brrrrModeFile(ctx)): boolean {
+	return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")).enabled === true : false;
+}
+
+function persistBrrrrMode(ctx: ExtensionContext, enabled: boolean): void {
+	const file = brrrrModeFile(ctx);
+	mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+	writeFileSync(file, `${JSON.stringify({ enabled })}\n`, { mode: 0o600 });
+}
+
+function strongOrder(agent: string, config: PoolConfig, models: BrrrrModel[]): string[] {
+	const profile = [...config.pool, ...config.fallbacks];
+	const strong = models.filter(model => model.class === "strong");
+	const fast = models.filter(model => model.class === "fast").map(model => model.id);
+	const order: string[] = [];
+	for (const spec of [...profile, ...strong.map(model => model.id)]) {
+		const base = spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
+		if (!strong.some(model => model.id === base) || base === "codex-lb/gpt-6-luna") continue;
+		if (order.some(candidate => candidate.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === base)) continue;
+		const implementation = ["coder", "ui-coder", "task", "workhorse"].includes(agent) || agent.endsWith("-strong");
+		order.push(implementation && base.startsWith("anthropic/claude-") && !/:(?:minimal|low|medium|high)$/.test(spec) ? `${base}:high` : spec);
+	}
+	if (strong.some(model => model.id === "codex-lb/gpt-6-luna" && model.serviceTier === "priority")) {
+		order.push(profile.find(spec => spec.startsWith("codex-lb/gpt-6-luna")) ?? "codex-lb/gpt-6-luna");
+	}
+	return ["scout", "workhorse", "gate-runner", "scribe", "git-pr-owner", "sonic"].includes(agent) ? [...fast, ...order] : [...order, ...fast];
 }
 // Pool lengths are routing policy; model selectors and fallback order live in agent frontmatter.
 const POOL_SIZES: Record<string, number> = {
@@ -622,11 +673,15 @@ export async function routeSubagentSpawn(
 		shuffle?: <T>(items: readonly T[]) => T[];
 		latestTodo?: LatestTodoGetter;
 		profileDir?: string;
+		modeFile?: string;
+		blacklistFile?: string;
 	} = {},
 ): { model: string[]; note: string } | { block: true; reason: string } | undefined {
 	const agent = stringValue(event.agent);
 	if (!agent) return undefined;
-	const config = getAgentPool(agent, options.profileDir);
+	const brrrr = readBrrrrMode(ctx, options.modeFile);
+	const brrrrModels = brrrr ? readBrrrrModels() : [];
+	const config = getAgentPool(agent, options.profileDir) ?? (brrrr ? { pool: (event.patterns as string[]) ?? [], fallbacks: [] } : undefined);
 	if (!config) return undefined;
 	const latestTodo = memoLatestTodo(options.latestTodo);
 	const checkoutScopes =
@@ -667,16 +722,18 @@ export async function routeSubagentSpawn(
 		}
 	}
 	const shuffle = options.shuffle ?? cryptoShuffle;
-	const pool = config.pool.filter(spec => !isBlacklistedModel(spec));
+	const blacklist = readModelBlacklist(options.blacklistFile);
+	const filteredConfig = brrrr ? { pool: strongOrder(agent, config, brrrrModels), fallbacks: [] } : config;
+	const pool = filteredConfig.pool.filter(spec => !isBlacklistedModel(spec, blacklist));
 	const { available, skipped: poolSkipped } = await availablePoolMembers(pool, ctx, state, options.now);
 	const { available: fallbacks, skipped: fallbackSkipped } = await availablePoolMembers(
-		config.fallbacks.filter(spec => !isBlacklistedModel(spec)),
+		filteredConfig.fallbacks.filter(spec => !isBlacklistedModel(spec, blacklist)),
 		ctx,
 		state,
 		options.now,
 	);
 	const skipped = [...poolSkipped, ...fallbackSkipped];
-	const poolOrder = [
+	const poolOrder = brrrr ? available : [
 		...available.filter(spec => spec.endsWith(":free")),
 		...shuffle(available.filter(spec => !spec.endsWith(":free"))),
 	];
@@ -687,6 +744,7 @@ export async function routeSubagentSpawn(
 	const nowMs = (options.now ?? (() => new Date()))().getTime();
 	let criticalFirst = false;
 	if (
+		!brrrr &&
 		spawnIsCriticalRow(event, ctx, latestTodo, nowMs) &&
 		!order[0]?.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "").endsWith(":free")
 	) {
@@ -718,7 +776,15 @@ export async function routeSubagentSpawn(
 
 	const skippedNote = skipped.length > 0 ? `; skipped ${skipped.length} by usage preflight` : "";
 	const criticalNote = criticalFirst ? "; critical row: priority-capable model first" : "";
-	return { model: order, note: `pool pick ${chosen}${skippedNote}${criticalNote} (eval)` };
+	return {
+		model: order,
+		note: `pool pick ${chosen}${skippedNote}${criticalNote} (eval)`,
+		...(brrrr ? {
+			enforce: true,
+			requiredModelServiceTiers: Object.fromEntries(brrrrModels.filter(model => model.serviceTier).map(model => [model.id, model.serviceTier])),
+			claudeEffortCap: ["coder", "ui-coder", "task", "workhorse"].includes(agent) || agent.endsWith("-strong"),
+		} : {}),
+	};
 }
 
 function statusFromResult(result: Record<string, unknown>, eventIsError: boolean): OutcomeRecord["status"] {
@@ -1003,12 +1069,52 @@ export async function recordTaskOutcome(
 export default function agentRouter(pi: ExtensionAPI) {
 	const state = createRouterState();
 	pi.setLabel?.("Agent Router");
+	const updateStatus = (ctx: ExtensionContext) => {
+		ctx.ui?.setStatus?.("brrrr", readBrrrrMode(ctx) ? "BRRRR · strong models" : undefined);
+	};
+	const load = async (ctx: ExtensionContext) => {
+		if (!existsSync(brrrrModeFile(ctx))) {
+			const entries = ctx.sessionManager.getBranch();
+			const entry = entries.findLast(item => item.type === "custom" && item.customType === BRRRR_ENTRY);
+			const parentFile = ctx.sessionManager.getHeader()?.parentSession;
+			if (!entry && parentFile && existsSync(parentFile)) {
+				const parent = await SessionManager.open(parentFile, undefined, undefined, { suppressBreadcrumb: true, throwIfMissing: true });
+				const parentCtx = { ...ctx, sessionManager: parent };
+				persistBrrrrMode(ctx, readBrrrrMode(parentCtx));
+				await parent.close();
+			} else {
+				persistBrrrrMode(ctx, entry?.data?.enabled === true);
+			}
+		}
+		updateStatus(ctx);
+	};
+	pi.registerCommand?.("brrrr", {
+		description: "Use strong models only; /brrrr off restores normal routing",
+		handler: async (args, ctx) => {
+			const argument = args.trim();
+			if (argument !== "" && argument !== "off") {
+				ctx.ui.notify("Usage: /brrrr [off]", "warning");
+				return;
+			}
+			const enabled = argument !== "off";
+			const changed = readBrrrrMode(ctx) !== enabled;
+			persistBrrrrMode(ctx, enabled);
+			pi.appendEntry(BRRRR_ENTRY, { enabled });
+			updateStatus(ctx);
+			if (changed) ctx.ui.notify(`brrrr ${enabled ? "on: strong models only (Luna fast only)" : "off: normal routing"}`, "info");
+		},
+	});
+	for (const event of ["session_start", "session_switch", "session_branch", "session_tree"] as const) {
+		pi.on(event, (_event, ctx) => load(ctx));
+	}
 	pi.on("tool_call", (event, ctx) => fileToolRefusal(event, ctx));
-	pi.on("before_subagent_spawn", (event, ctx) =>
-		routeSubagentSpawn(event as BeforeSubagentSpawnEvent, ctx, state, {
+	pi.on("before_subagent_spawn", async (event, ctx) => {
+		updateStatus(ctx);
+		const routed = await routeSubagentSpawn(event as BeforeSubagentSpawnEvent, ctx, state, {
 			latestTodo: pi.pi?.getLatestTodoPhasesFromEntries,
-		}),
-	);
+		});
+		return routed ?? (readBrrrrMode(ctx) ? { block: true, reason: "brrrr: no strong model available" } : undefined);
+	});
 	pi.on("retry_fallback_applied", (event, ctx) => {
 		recordAndNotifyRetryFallbackApplied(event as RetryFallbackAppliedEvent, ctx, state);
 	});
