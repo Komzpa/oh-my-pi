@@ -209,7 +209,10 @@ describe("restart process replacement CLI", () => {
 			path.join(agentDir, "config.yml"),
 			"startup:\n  setupWizard: false\n  checkUpdate: false\n  quiet: true\ncollab:\n  autoStart: false\n",
 		);
-		const cli = path.resolve(process.env.OMP_RESTART_TEST_SOURCE ?? path.resolve(import.meta.dir, "../src"), "cli.ts");
+		const cli = path.resolve(
+			process.env.OMP_RESTART_TEST_SOURCE ?? path.resolve(import.meta.dir, "../src"),
+			"cli.ts",
+		);
 		const launcher = path.join(root, "launcher.ts");
 		await Bun.write(
 			launcher,
@@ -238,7 +241,9 @@ describe("restart process replacement CLI", () => {
 			"ionice",
 			"-c2",
 			"-n7",
-			...(process.env.OMP_RESTART_TEST_BINARY ? [process.env.OMP_RESTART_TEST_BINARY] : [process.execPath, launcher]),
+			...(process.env.OMP_RESTART_TEST_BINARY
+				? [process.env.OMP_RESTART_TEST_BINARY]
+				: [process.execPath, launcher]),
 			"--no-extensions",
 			"--no-skills",
 			"--no-rules",
@@ -279,7 +284,9 @@ describe("restart process replacement CLI", () => {
 				// A real PTY child must exit in OS time; fake timers cannot drive its event loop.
 				const exitCode = await Promise.race([proc.exited, Bun.sleep(15_000).then(() => "hung")]);
 				expect(exitCode).toBe(1);
-				await expect(waitForRestartResult(queued, { runtimeDir })).rejects.toMatchObject({ code: "handler_failed" });
+				await expect(waitForRestartResult(queued, { runtimeDir })).rejects.toMatchObject({
+					code: "handler_failed",
+				});
 				console.log(`throwaway startup crash: pid=${target.pid} exit=${exitCode}; PTY returned to caller`);
 				return;
 			}
@@ -290,14 +297,22 @@ describe("restart process replacement CLI", () => {
 				expect(resumed.identity.instanceId).not.toBe(target.identity.instanceId);
 				const ps = Bun.spawnSync(["ps", "-o", "pid,ppid,rss,args", "-p", String(resumed.pid)]);
 				const tree = Bun.spawnSync(["pstree", "-sp", "-l", String(resumed.pid)]);
-				console.log(`restart ${restart}: initial_pid=${target.pid} current_pid=${resumed.pid}\n${ps.stdout}\n${tree.stdout}`);
+				console.log(
+					`restart ${restart}: initial_pid=${target.pid} current_pid=${resumed.pid}\n${ps.stdout}\n${tree.stdout}`,
+				);
 				if (process.env.OMP_RESTART_QA_DIR) {
 					await Bun.write(path.join(process.env.OMP_RESTART_QA_DIR, `restart-${restart}-ps.log`), ps.stdout);
 					await Bun.write(path.join(process.env.OMP_RESTART_QA_DIR, `restart-${restart}-pstree.log`), tree.stdout);
 				}
 				expect(resumed.pid).toBe(target.pid);
-				await expect(sendRestartControl({ identity: target.identity, op: "request" }, { runtimeDir })).rejects.toMatchObject({ code: "target_not_found" });
-				if (restart === 1) Object.assign(queued, await sendRestartControl({ identity: resumed.identity, op: "request" }, { runtimeDir }));
+				await expect(
+					sendRestartControl({ identity: target.identity, op: "request" }, { runtimeDir }),
+				).rejects.toMatchObject({ code: "target_not_found" });
+				if (restart === 1)
+					Object.assign(
+						queued,
+						await sendRestartControl({ identity: resumed.identity, op: "request" }, { runtimeDir }),
+					);
 			}
 		} finally {
 			if (proc.exitCode === null) {
