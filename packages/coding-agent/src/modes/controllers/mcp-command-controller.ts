@@ -7,7 +7,7 @@ import { type Component, replaceTabs, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { getMCPConfigPath, getProjectDir } from "@oh-my-pi/pi-utils";
 import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
-import { reloadMCPServers } from "../../mcp/reload";
+import { assertMCPReloadAllowed, MCPReloadBusyError, reloadMCPServers } from "../../mcp/reload";
 import type { SourceMeta } from "../../capability/types";
 import {
 	analyzeAuthError,
@@ -334,6 +334,15 @@ export class MCPCommandController {
 		if (!subcommand || subcommand === "help") {
 			this.#showHelp();
 			return;
+		}
+
+		if (["add", "remove", "rm", "reauth", "unauth", "enable", "disable", "reconnect"].includes(subcommand)) {
+			try {
+				assertMCPReloadAllowed(this.ctx.session, this.ctx.mcpManager ?? undefined);
+			} catch (error) {
+				this.ctx.showError(error instanceof Error ? error.message : String(error));
+				return;
+			}
 		}
 
 		switch (subcommand) {
@@ -1018,11 +1027,13 @@ export class MCPCommandController {
 			const cwd = getProjectDir();
 			const filePath = getMCPConfigPath(scope, cwd);
 
+			// A wizard can stay open while the session starts another operation.
+			assertMCPReloadAllowed(this.ctx.session, this.ctx.mcpManager ?? undefined);
 			// Add server to config
 			await addMCPServer(filePath, name, config);
 
-			// Reload MCP manager
-			await this.reloadServers();
+			// Reload MCP manager only if this session still admits a reconnect.
+			if (!(await this.#reloadAfterMutation())) return;
 			const state =
 				config.enabled === false
 					? "disconnected"
@@ -1273,6 +1284,7 @@ export class MCPCommandController {
 				return;
 			}
 
+			assertMCPReloadAllowed(this.ctx.session, this.ctx.mcpManager ?? undefined);
 			// Disconnect if connected
 			if (this.ctx.mcpManager?.getConnection(name)) {
 				await this.ctx.mcpManager.disconnectServer(name);
@@ -1281,8 +1293,8 @@ export class MCPCommandController {
 			// Remove from config
 			await removeMCPServer(filePath, name);
 
-			// Reload MCP manager
-			await this.reloadServers();
+			// The persistence succeeded even if the session became busy during its await.
+			if (!(await this.#reloadAfterMutation())) return;
 
 			this.#showMessage(["", theme.fg("success", `- Removed server "${name}" from ${scope} config`), ""].join("\n"));
 		} catch (error) {
@@ -1595,6 +1607,7 @@ export class MCPCommandController {
 				return;
 			}
 
+			assertMCPReloadAllowed(this.ctx.session, this.ctx.mcpManager ?? undefined);
 			const currentAuth = found.config.auth;
 			const authStorage = this.ctx.session.modelRegistry.authStorage;
 			if (currentAuth?.type === "oauth") {
@@ -1619,7 +1632,7 @@ export class MCPCommandController {
 					);
 					return;
 				}
-				await this.reloadServers();
+				if (!(await this.#reloadAfterMutation())) return;
 				this.#showMessage(
 					["", theme.fg("success", `- Cleared auth for "${name}" (${found.scope} config)`), ""].join("\n"),
 				);
@@ -1628,7 +1641,7 @@ export class MCPCommandController {
 
 			const updated = stripMcpOAuthAuth(found.config);
 			await updateMCPServer(found.filePath, name, updated);
-			await this.reloadServers();
+			if (!(await this.#reloadAfterMutation())) return;
 
 			this.#showMessage(
 				["", theme.fg("success", `- Cleared auth for "${name}" (${found.scope} config)`), ""].join("\n"),
@@ -1660,6 +1673,9 @@ export class MCPCommandController {
 				if (!options.silent) this.ctx.showError(`Server "${name}" not found.`);
 				return;
 			}
+
+			assertMCPReloadAllowed(this.ctx.session, this.ctx.mcpManager ?? undefined);
+			if (options.reload !== false) assertMCPReloadAllowed(this.ctx.session, this.ctx.mcpManager ?? undefined);
 			if (found.config.enabled === false) {
 				if (!options.silent) this.ctx.showError(`Server "${name}" is disabled. Run /mcp enable ${name} first.`);
 				return;
@@ -1826,6 +1842,25 @@ export class MCPCommandController {
 		this.#showMessage(errorLines.join("\n"));
 	}
 
+	/** Persisted changes remain pending until the operator reloads while idle. */
+	async #reloadAfterMutation(): Promise<boolean> {
+		try {
+			await this.reloadServers();
+			return true;
+		} catch (error) {
+			if (error instanceof MCPReloadBusyError) {
+				this.ctx.showStatus(
+					"MCP changes saved; runtime reconnect deferred. Run /mcp reload when the session is idle.",
+				);
+			} else {
+				this.ctx.showError(
+					`MCP changes saved; runtime reconnect failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			return false;
+		}
+	}
+
 	/**
 	 * Reconnect every configured MCP server and rebind the session's MCP tools.
 	 *
@@ -1838,6 +1873,7 @@ export class MCPCommandController {
 	 * opt-outs as startup — notably `mcp.enableProjectConfig: false`, which must
 	 * keep project `.mcp.json` servers from being started on reload.
 	 */
+
 	async reloadServers(): Promise<void> {
 		if (!this.ctx.mcpManager) {
 			return;

@@ -1,5 +1,5 @@
 import { type } from "@oh-my-pi/omptype";
-import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import type { AgentTool, AgentToolResult, ToolApprovalDecision } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
 import peersDescription from "../prompts/tools/peers.md" with { type: "text" };
 import { type PeerDeliveryReceipt, PeerSessionError, listPeerSessions, sendPeerMessage } from "../collab/registry";
@@ -26,7 +26,8 @@ export class PeersTool implements AgentTool<typeof peersSchema, PeersToolDetails
 	readonly description = prompt.render(peersDescription);
 	readonly parameters = peersSchema;
 	readonly strict = true;
-	readonly approval = "read";
+	readonly approval = (args: unknown): ToolApprovalDecision =>
+		args !== null && typeof args === "object" && "action" in args && args.action === "list" ? "read" : "write";
 	readonly loadMode = "essential";
 	readonly intent = "optional";
 
@@ -64,14 +65,14 @@ export class PeersTool implements AgentTool<typeof peersSchema, PeersToolDetails
 				text: message,
 				...(params.agent ? { agent: params.agent } : {}),
 			});
-			const ok = receipt.status !== "failed";
+			const ok = receipt.status === "delivered" || receipt.status === "queued";
 			return {
 				content: [
 					{
 						type: "text",
 						text: ok
 							? `${receipt.status} to ${receipt.target} ${receipt.agent}${receipt.outcome ? ` (${receipt.outcome})` : ""}${receipt.reason ? `: ${receipt.reason}` : ""}`
-							: `failed: ${receipt.reason ?? "delivery failed"}`,
+							: `${receipt.status}: ${receipt.reason ?? "delivery failed"}`,
 					},
 				],
 				details: { action: "send", receipt },
@@ -83,7 +84,12 @@ export class PeersTool implements AgentTool<typeof peersSchema, PeersToolDetails
 				content: [{ type: "text", text: error.message }],
 				details: {
 					action: "send",
-					receipt: { status: "failed", target, agent: params.agent ?? "", reason: error.code },
+					receipt: {
+						status: error.code === "delivery_uncertain" ? "uncertain" : "failed",
+						target,
+						agent: params.agent ?? "",
+						reason: error.code,
+					},
 				},
 				isError: true,
 			};
