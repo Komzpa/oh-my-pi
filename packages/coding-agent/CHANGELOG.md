@@ -1258,6 +1258,7 @@
 - Fixed reading a SQLite database (local or by URL) and closing prompt history leaving the database file locked on Windows
 - Fixed RPC mode on Windows freezing when the client stopped reading stdout: the worker blocked on the full stdout pipe and stopped reading stdin, so a client writing a batch of commands before reading replies deadlocked. Output now goes through a non-blocking stdout stream that spools to disk under backpressure, as on Linux and macOS
 - Restart now retains the original process and session when relaunch or same-session recovery fails, confirms a real successor before teardown, and returns queued restart failures to the CLI caller ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
+- Graceful restart now replaces the process in place using `process.execve`, preserving its PID and terminal without retaining old session heaps. A replacement startup failure returns to the shell; the checkpoint remains resumable ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
 - Disposing a subagent or parent session settles restart-drain waiters with a terminal outcome instead of an unhandled rejection that could crash the lead process ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
 - Restart discovery reports extension entry hashes captured at load, so rolling installs can restart stale extension code even when the session already runs the current binary ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
 
