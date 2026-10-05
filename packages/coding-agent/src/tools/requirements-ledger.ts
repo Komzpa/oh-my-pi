@@ -30,7 +30,9 @@ export function prepareAwaitingUserCheck(
 			} else if (task.status === "pending" || task.status === "in_progress" || task.status === "blocked") {
 				task.awaitingUser = action ? { ...entry.awaitingUser!, action } : undefined;
 			}
+			if (entry.task) return true;
 		}
+		if (!entry.task && phase.name === entry.phase) return true;
 	}
 	return true;
 }

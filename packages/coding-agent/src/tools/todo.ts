@@ -760,8 +760,6 @@ function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 }
 
 function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
-	// Pending user checks are row metadata, independent of operation-specific status handling.
-	if (!prepareAwaitingUserCheck(phases, entry, errors)) return phases;
 	switch (entry.op) {
 		case "init":
 			return initPhases(entry, errors);
@@ -791,6 +789,7 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			return phases;
 		}
 		case "block": {
+			if (!prepareAwaitingUserCheck(phases, entry, errors)) return phases;
 			if (!entry.task && !entry.phase) {
 				errors.push("block requires a task or phase target");
 				return phases;
@@ -813,6 +812,7 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			return phases;
 		}
 		case "unblock": {
+			if (!prepareAwaitingUserCheck(phases, entry, errors)) return phases;
 			if (!entry.task && !entry.phase) {
 				errors.push("unblock requires a task or phase target");
 				return phases;
