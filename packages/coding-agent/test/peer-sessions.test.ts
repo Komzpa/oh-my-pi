@@ -1,7 +1,19 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
+import { Agent } from "@oh-my-pi/pi-agent-core";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
+import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { AgentProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/agent-protocol";
+import { parseInternalUrl } from "@oh-my-pi/pi-coding-agent/internal-urls/parse";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import {
@@ -13,25 +25,34 @@ import {
 	sendPeerMessage,
 } from "@oh-my-pi/pi-coding-agent/collab/registry";
 import { runPeerSendCommand } from "@oh-my-pi/pi-coding-agent/cli/peers-cli";
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 
 const cleanupDirs: string[] = [];
 const publications: PeerSessionPublication[] = [];
+const sessions: AgentSession[] = [];
+const authStorages: AuthStorage[] = [];
 
 afterEach(async () => {
 	for (const pub of publications.splice(0)) await pub.close();
+	for (const session of sessions.splice(0)) await session.dispose();
+	for (const authStorage of authStorages.splice(0)) authStorage.close();
 	for (const dir of cleanupDirs.splice(0)) await fs.rm(dir, { recursive: true, force: true });
 });
 
 async function tempDir(): Promise<string> {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-peer-sessions-"));
+	const base = path.resolve(import.meta.dir, "../../../tmp");
+	await fs.mkdir(base, { recursive: true });
+	const dir = await fs.mkdtemp(path.join(base, "omp-peer-"));
 	cleanupDirs.push(dir);
 	return dir;
 }
 
 function fakeSession(outcome: "injected" | "woken", seen: IrcMessage[]): AgentSession {
 	return {
+		customCommands: [],
+		slashCommands: [],
+		promptTemplates: [],
 		deliverIrcMessage: async (message: IrcMessage) => {
 			seen.push(message);
 			return outcome;
@@ -48,16 +69,45 @@ async function publishFixture(
 		title?: string;
 		outcome?: "injected" | "woken";
 		agentId?: string;
+		command?: (args: string) => void;
 	},
-): Promise<{ delivered: IrcMessage[]; snapshot: PeerSessionSnapshot }> {
+): Promise<{ delivered: IrcMessage[]; snapshot: PeerSessionSnapshot; registry: AgentRegistry }> {
 	const registry = new AgentRegistry();
 	const delivered: IrcMessage[] = [];
 	const agentId = options.agentId ?? MAIN_AGENT_ID;
+	let session = fakeSession(options.outcome ?? "woken", delivered);
+	if (options.command) {
+		const runtime = new ExtensionRuntime();
+		const extension = await loadExtensionFromFactory(
+			pi => pi.registerCommand("known-command", { handler: async args => options.command?.(args) }),
+			options.cwd,
+			new EventBus(),
+			runtime,
+			"peer-command-fixture",
+		);
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorages.push(authStorage);
+		const modelRegistry = new ModelRegistry(authStorage);
+		const sessionManager = SessionManager.inMemory(options.cwd);
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		session = new AgentSession({
+			agent: new Agent({
+				initialState: { model, systemPrompt: ["Test"], tools: [] },
+				streamFn: createMockModel({ responses: [] }).stream,
+			}),
+			sessionManager,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+			extensionRunner: new ExtensionRunner([extension], runtime, options.cwd, sessionManager, modelRegistry),
+		});
+		session.deliverIrcMessage = fakeSession(options.outcome ?? "woken", delivered).deliverIrcMessage;
+		sessions.push(session);
+	}
 	registry.register({
 		id: agentId,
 		displayName: agentId,
 		kind: agentId === MAIN_AGENT_ID ? "main" : "sub",
-		session: fakeSession(options.outcome ?? "woken", delivered),
+		session,
 	});
 	const pub = await publishPeerSession({
 		dir,
@@ -69,9 +119,9 @@ async function publishFixture(
 		irc: new IrcBus(registry),
 	});
 	publications.push(pub);
-	const [snapshot] = await listPeerSessions({ dir });
+	const snapshot = (await listPeerSessions({ dir })).find(peer => peer.sessionId === options.sessionId);
 	if (!snapshot) throw new Error("published peer session was not listed");
-	return { delivered, snapshot };
+	return { delivered, snapshot, registry };
 }
 
 describe("peer sessions", () => {
@@ -125,6 +175,88 @@ describe("peer sessions", () => {
 		expect(receipt.outcome).toBe("injected");
 		expect(delivered[0]?.from).toBe("peer:sess-sender");
 		expect(delivered[0]?.body).toBe("background note\n\n[from session sess-sender cwd /tmp/sender]");
+	});
+
+	it("executes a registered peer slash command with arguments instead of injecting IRC", async () => {
+		const dir = await tempDir();
+		const calls: string[] = [];
+		const { snapshot, delivered } = await publishFixture(dir, {
+			sessionId: "sess-command",
+			cwd: dir,
+			command: args => calls.push(args),
+		});
+		const receipt = await sendPeerMessage({
+			registry: { dir },
+			from: { kind: "shell" },
+			target: snapshot.instanceId,
+			text: "/known-command exact arguments",
+		});
+		expect(calls).toEqual(["exact arguments"]);
+		expect(receipt).toMatchObject({ status: "delivered", outcome: "executed" });
+		expect(delivered).toHaveLength(0);
+	});
+
+	it("reports command refusal instead of claiming injected delivery", async () => {
+		const dir = await tempDir();
+		const { snapshot } = await publishFixture(dir, {
+			sessionId: "sess-refused",
+			cwd: dir,
+			command: () => {
+				throw new Error("command refused by fixture");
+			},
+		});
+		const receipt = await sendPeerMessage({
+			registry: { dir },
+			from: { kind: "shell" },
+			target: snapshot.instanceId,
+			text: "/known-command",
+		});
+		expect(receipt).toMatchObject({ status: "failed", reason: "command refused by fixture" });
+	});
+
+	it("routes the advertised agent://peer:<senderId> reply back over peer transport", async () => {
+		const dir = await tempDir();
+		const sender = await publishFixture(dir, { sessionId: "sess-sender", cwd: path.join(dir, "sender") });
+		const target = await publishFixture(dir, { sessionId: "sess-target", cwd: path.join(dir, "target") });
+		await sendPeerMessage({
+			registry: { dir },
+			from: { kind: "session", sessionId: "sess-sender", cwd: dir },
+			target: target.snapshot.instanceId,
+			text: "status?",
+		});
+		const replyTo = target.delivered[0]!.from;
+		const result = await new AgentProtocolHandler({ dir }).write(
+			parseInternalUrl(`agent://${replyTo}`),
+			"reply from target",
+			{
+				session: {
+					cwd: dir,
+					hasUI: false,
+					agentRegistry: target.registry,
+					getAgentId: () => MAIN_AGENT_ID,
+					getSessionId: () => "sess-target",
+					settings: Settings.isolated(),
+				} as ToolSession,
+			},
+		);
+		expect(result.isError).toBe(false);
+		expect(sender.delivered[0]).toMatchObject({
+			from: "peer:sess-target",
+			body: `reply from target\n\n[from session sess-target cwd ${dir}]`,
+		});
+	});
+
+	it("keeps an unregistered slash name in IRC rather than executing a partial match", async () => {
+		const dir = await tempDir();
+		const { snapshot, delivered } = await publishFixture(dir, { sessionId: "sess-unknown", cwd: dir });
+		const receipt = await sendPeerMessage({
+			registry: { dir },
+			from: { kind: "shell" },
+			target: snapshot.instanceId,
+			text: "/known-command-extra args",
+		});
+		expect(receipt).toMatchObject({ status: "delivered", outcome: "woken" });
+		expect(delivered[0]?.body).toBe("/known-command-extra args\n\n[from shell]");
 	});
 
 	it("resolves exact ids, unique prefixes, cwd fragments, titles, and reports ambiguity with candidates", async () => {

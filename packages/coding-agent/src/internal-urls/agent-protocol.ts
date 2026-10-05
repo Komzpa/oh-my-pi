@@ -23,6 +23,7 @@ import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { fuzzyFilter } from "@oh-my-pi/pi-tui/fuzzy";
 import { formatDuration, isEnoent, prompt } from "@oh-my-pi/pi-utils";
+import { type PeerSessionOptions, PeerSessionError, sendPeerMessage } from "../collab/registry";
 import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
 import { ensurePersistedRoster } from "../registry/persisted-agents";
 import { executeSend, isIrcEnabled } from "../irc/messaging";
@@ -149,6 +150,8 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		write: { via: "handler", payload: "verbatim", scope: "coordination", tier: () => "read" },
 	};
 
+	constructor(private readonly peerSessions?: PeerSessionOptions) {}
+
 	promptDoc(): string {
 		return agentPromptDoc.trim();
 	}
@@ -188,6 +191,33 @@ export class AgentProtocolHandler implements ProtocolHandler {
 			throw new Error("agent:// message target cannot have a JSON-path suffix.");
 		}
 		if (!content.trim()) throw new Error("agent:// messages require non-empty content.");
+		if (to.startsWith("peer:")) {
+			const sessionId = session.getSessionId?.();
+			if (!sessionId) throw new Error("Peer replies require a sender session ID.");
+			try {
+				const receipt = await sendPeerMessage({
+					registry: this.peerSessions,
+					from: { kind: "session", sessionId, cwd: session.cwd },
+					target: to,
+					text: content,
+				});
+				return {
+					content: [
+						{
+							type: "text",
+							text:
+								receipt.status === "failed"
+									? `failed: ${receipt.reason}`
+									: `${receipt.status} to ${receipt.target} ${receipt.agent} (${receipt.outcome})`,
+						},
+					],
+					isError: receipt.status === "failed",
+				};
+			} catch (error) {
+				if (!(error instanceof PeerSessionError)) throw error;
+				return { content: [{ type: "text", text: error.message }], isError: true };
+			}
+		}
 		const result = await executeSend(
 			{ registry, senderId, sessionFileHint: session.getSessionFile?.() },
 			{ to, message: content },
