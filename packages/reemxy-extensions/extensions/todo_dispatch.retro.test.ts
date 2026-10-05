@@ -158,6 +158,45 @@ test("an async retro-facilitator that settles through wait clears the due notice
     expect(after).not.toContain("SprintRetro");
   } finally { setSystemTime(); }
 });
+test("an async background retro receipt clears the demand and never relists covered workers", async () => {
+  // Live pts4 2026-10-04..05: SynthesizeRetro0057 completed as a background job (an async-result
+  // branch entry, no task tool_result, never in the job snapshot), so finishRetro never ran and
+  // `retrospective due` kept relisting the same 12 workers (commit 5e8b4752).
+  setSystemTime(new Date(liveNow));
+  try {
+    const workers = Array.from({ length: 12 }, (_, i) => ({ id: `orig-done-${i}`, type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000 + i, agentId: `orig-${i}` }));
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], workers);
+    const due = await f.check();
+    expect(due).toContain("retrospective due");
+    expect(due).toContain("orig-0");
+    f.branch.push({ type: "custom_message", customType: "async-result", content: '<system-notice>\nBackground job SprintRetro0057 has completed.\n<task-result id="SprintRetro0057" agent="retro-facilitator" status="completed" duration="2m48s">' });
+    const after = await f.check();
+    expect(after).not.toContain("retrospective due");
+    expect(after).not.toContain("orig-0");
+    // Restoring the persisted state (restart) must not resurrect the demand.
+    const g = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], workers, liveNow - 1, f.branch);
+    await g.handlers.get("session_branch")!({}, g.ctx);
+    expect(await g.check()).not.toContain("retrospective due");
+    // Twelve genuinely new workers re-open the notice for their own cohort only.
+    setSystemTime(new Date(liveNow + 3 * 60 * 60_000 + 60_000));
+    g.setJobs(Array.from({ length: 12 }, (_, i) => ({ id: `fresh-done-${i}`, type: "task", status: "completed", label: "Ship feature", startTime: liveNow + 3 * 60 * 60_000 + i, agentId: `fresh-${i}` })));
+    const again = await g.check();
+    expect(again).toContain("retrospective due");
+    expect(again).toContain("fresh-0");
+    expect(again).not.toContain("orig-0");
+  } finally { setSystemTime(); }
+});
+
+test("twelve new workers with no retro still demand one", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const workers = Array.from({ length: 12 }, (_, i) => ({ id: `solo-done-${i}`, type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000 + i, agentId: `solo-${i}` }));
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], workers);
+    const due = await f.check();
+    expect(due).toContain("retrospective due");
+    expect(due).toContain("solo-0");
+  } finally { setSystemTime(); }
+});
 
 test("an async retro-facilitator that failed does not clear the due notice", async () => {
   setSystemTime(new Date(liveNow));
