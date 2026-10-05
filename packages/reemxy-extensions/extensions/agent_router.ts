@@ -682,7 +682,8 @@ export async function routeSubagentSpawn(
 		...shuffle(available.filter(spec => !spec.endsWith(":free"))),
 	];
 	let order = [...poolOrder, ...fallbacks];
-	if (order.length === 0 && profileModels.length > 0) {
+	const allPoolBlacklisted = config.pool.length > 0 && pool.length === 0;
+	if (order.length === 0 && allPoolBlacklisted && profileModels.length > 0) {
 		order = [
 			...profileModels.filter(spec => spec.endsWith(":free")),
 			...shuffle(profileModels.filter(spec => !spec.endsWith(":free"))),
