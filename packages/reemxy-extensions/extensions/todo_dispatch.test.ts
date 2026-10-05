@@ -1325,7 +1325,7 @@ test("PLAN CHECK advises retrospectives for sprint triggers and clears after ret
     (await finishRetro());
     expect((await check())).not.toContain("retrospective due");
 
-    handlers.get("input")!({ source: "user", content: "опять не то, я же просил иначе" }, ctx);
+    handlers.get("input")!({ source: "interactive", text: "опять не то, я же просил иначе" }, ctx);
     expect((await check())).toContain("retrospective due (user correction)");
     (await finishRetro());
 
