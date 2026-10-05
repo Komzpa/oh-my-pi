@@ -1,6 +1,39 @@
 import { isRecord } from "@oh-my-pi/pi-utils";
+import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 import type { SessionEntry } from "../session/session-entries";
+declare module "@oh-my-pi/pi-tui/tools/todo" {
+	interface TodoItem {
+		/** User-owned check; does not constitute verification or close the row. */
+		awaitingUser?: { action: string; ids?: string[] };
+	}
+}
+
+/** Prepare row-owned pending checks before the normal operation validates and changes status. */
+export function prepareAwaitingUserCheck(
+	phases: TodoPhase[],
+	entry: { op: string; task?: string; phase?: string; reason?: string; awaitingUser?: TodoItem["awaitingUser"] },
+	errors: string[],
+): boolean {
+	if (entry.op !== "block" && entry.op !== "unblock") return true;
+	const action = entry.awaitingUser?.action.trim();
+	if (entry.op === "block" && entry.awaitingUser && !action) {
+		errors.push("awaitingUser requires the exact action the user must take");
+		return false;
+	}
+	if (entry.op === "block" && action && !entry.reason?.replace(/\s+/g, " ").trim()) entry.reason = action;
+	for (const phase of phases) {
+		for (const task of phase.tasks) {
+			if (entry.task ? task.content !== entry.task : !entry.phase || phase.name !== entry.phase) continue;
+			if (entry.op === "unblock") {
+				if (task.status === "blocked") delete task.awaitingUser;
+			} else if (task.status === "pending" || task.status === "in_progress" || task.status === "blocked") {
+				task.awaitingUser = action ? { ...entry.awaitingUser!, action } : undefined;
+			}
+		}
+	}
+	return true;
+}
 
 export const REQUIREMENTS_LEDGER_CUSTOM_TYPE = "requirements_ledger";
 

@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
 import {
 	type TodoStatus,
 	type TodoOperation,
@@ -19,6 +17,8 @@ import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
 
 import { AgentRegistry } from "../registry/agent-registry";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import {
@@ -28,6 +28,7 @@ import {
 	getLatestRequirements,
 	evaluateRequirementDoneGate,
 	getPersistedRequirementAuditRejections,
+	prepareAwaitingUserCheck,
 	type RequirementsLedgerAppender,
 } from "./requirements-ledger";
 
@@ -76,6 +77,7 @@ const InitListEntry = type({
 
 const todoSchema = type({
 	op: TodoOp,
+	"awaitingUser?": type({ action: "string", "ids?": type("string").array() }).describe("user-owned pending check for block: exact action and optional card or other ids"),
 	"list?": InitListEntry.array().describe("phases for init"),
 	"task?": type("string").describe("verbatim task content"),
 	"phase?": type("string"),
@@ -84,18 +86,11 @@ const todoSchema = type({
 	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
 	"items?": type("string").array().describe("tasks for flat init or append"),
 	"reason?": type("string").describe("blocker note for block"),
-	"awaitingUser?": type({ action: "string", "ids?": type("string").array() }).describe("user-owned pending check for block: exact action and optional card or other ids"),
 });
 
 type TodoParams = TodoSchema;
 type TodoSchema = typeof todoSchema.infer;
 
-declare module "@oh-my-pi/pi-tui/tools/todo" {
-	interface TodoItem {
-		/** User-owned check; does not constitute verification or close the row. */
-		awaitingUser?: { action: string; ids?: string[] };
-	}
-}
 /** A single todo op entry (the params object itself). */
 type TodoOpEntryValue = TodoParams;
 
@@ -765,6 +760,8 @@ function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 }
 
 function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
+	// Pending user checks are row metadata, independent of operation-specific status handling.
+	if (!prepareAwaitingUserCheck(phases, entry, errors)) return phases;
 	switch (entry.op) {
 		case "init":
 			return initPhases(entry, errors);
@@ -804,11 +801,6 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			// external error or user question would corrupt the round-trip parse and
 			// the rendered line. Normalizing here keeps every consumer one-line-safe.
 			const reason = entry.reason?.replace(/\s+/g, " ").trim() || undefined;
-			const action = entry.awaitingUser?.action.trim();
-			if (entry.awaitingUser && !action) {
-				errors.push("awaitingUser requires the exact action the user must take");
-				return phases;
-			}
 			for (const task of getTaskTargets(phases, entry, errors)) {
 				// Only actionable open work can be blocked: blocking a phase must not
 				// reopen completed/abandoned tasks or erase finished progress. An
@@ -816,8 +808,7 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 				// blocker note (e.g. first blocked without a reason, then with one).
 				if (task.status !== "pending" && task.status !== "in_progress" && task.status !== "blocked") continue;
 				task.status = "blocked";
-				task.awaitingUser = action ? { ...entry.awaitingUser!, action } : undefined;
-				task.blocker = reason ?? action;
+				task.blocker = reason;
 			}
 			return phases;
 		}
@@ -830,7 +821,6 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 				if (task.status === "blocked") {
 					task.status = "pending";
 					task.blocker = undefined;
-					delete task.awaitingUser;
 				}
 			}
 			return phases;
