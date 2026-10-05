@@ -8,6 +8,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import { AgentBusyError, EventLoopKeepalive, recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
 import type { Api, Effort, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
 import { isRecord, logger, popLoopPhase, prompt, pushLoopPhase, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobError, AsyncJobManager, type AsyncJobRunResult } from "../async";
@@ -3666,13 +3667,6 @@ function trackSubagentSettings(session: AgentSession, capture: WarmReviveCapture
 	});
 }
 
-/**
- * Lifecycle reviver for a parked subagent: park closed the JSONL writer, so reopening takes the
- * single-writer lock cleanly and restores the full message history (createAgentSession →
- * agent.replaceMessages). Isolated runs keep their worktree for the same lifecycle, so they use
- * this path too. Built at module scope and handed nothing but `capture`: JSC keeps an enclosing
- * function's `arguments` reachable from its arrow closures, so any extra parameter would be pinned.
- */
 /** Re-applied on revival; the resolver sees the final model on every request. */
 export function enforceSubagentRequestPolicy(
 	session: AgentSession,
@@ -3685,9 +3679,12 @@ export function enforceSubagentRequestPolicy(
 	}
 	if (policy.claudeEffortCap) {
 		const cap = () => {
-			if (session.model?.provider === "anthropic" && session.model.id.startsWith("claude-") &&
-				(session.thinkingLevel === "max" || session.thinkingLevel === "xhigh")) {
-				session.setThinkingLevel("high");
+			if (
+				session.model?.provider === "anthropic" &&
+				session.model.id.startsWith("claude-") &&
+				(session.thinkingLevel === ThinkingLevel.Max || session.thinkingLevel === ThinkingLevel.XHigh)
+			) {
+				session.setThinkingLevel(ThinkingLevel.High);
 			}
 		};
 		cap();
@@ -3697,6 +3694,13 @@ export function enforceSubagentRequestPolicy(
 	}
 }
 
+/**
+ * Lifecycle reviver for a parked subagent: park closed the JSONL writer, so reopening takes the
+ * single-writer lock cleanly and restores the full message history (createAgentSession →
+ * agent.replaceMessages). Isolated runs keep their worktree for the same lifecycle, so they use
+ * this path too. Built at module scope and handed nothing but `capture`: JSC keeps an enclosing
+ * function's `arguments` reachable from its arrow closures, so any extra parameter would be pinned.
+ */
 function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 	return async expectedAgentRef => {
 		const { id } = capture.spec.prompt;

@@ -436,14 +436,16 @@ async function applySpawnHook(
 		throw new StructuredSubagentError("preflight", spawnResult.reason ?? "Subagent spawn blocked by extension.");
 	}
 	if (spawnResult?.model === undefined) {
-		if (spawnResult?.enforce) throw new StructuredSubagentError("preflight", "Mandatory routing has no available model.");
+		if (spawnResult?.enforce)
+			throw new StructuredSubagentError("preflight", "Mandatory routing has no available model.");
 		return policy;
 	}
 	// Ordinary routing preserves explicit rework selectors; mandatory session policy does not.
 	if (request.model !== undefined && !spawnResult.enforce) return policy;
 	const replacement = resolveConfiguredModelPatterns(spawnResult.model, request.session.settings);
 	if (replacement.length === 0) {
-		if (spawnResult.enforce) throw new StructuredSubagentError("preflight", "Mandatory routing has no available model.");
+		if (spawnResult.enforce)
+			throw new StructuredSubagentError("preflight", "Mandatory routing has no available model.");
 		return policy;
 	}
 	return {

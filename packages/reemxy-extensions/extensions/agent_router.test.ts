@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import agentRouter, {
 	getAgentPools,
@@ -18,8 +18,6 @@ import agentRouter, {
 	recordRetryFallbackApplied,
 	recordTaskOutcome,
 	routeSubagentSpawn,
-	type BeforeSubagentSpawnEvent,
-	type ToolResultEvent,
 } from "./agent_router";
 
 const AGENT_POOLS = getAgentPools();
@@ -175,6 +173,108 @@ describe("agent router", () => {
 			const next = await routeSubagentSpawn({ agent: "coder" }, context, createRouterState(), options);
 			expect(next.model.map(modelSelectorBase)).not.toContain(modelSelectorBase(first.model[0]));
 		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
+
+	test("brrrr rereads the user-wide model allow-list between spawns in the same context", async () => {
+		const { dir, file } = tempStateFile();
+		const agentDir = join(dir, ".omp", "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const modelsFile = join(agentDir, "brrrr-models.json");
+		const modeFile = join(dir, "mode.json");
+		const previous = process.env.OMP_AGENT_ROUTER_MODELS;
+		process.env.OMP_AGENT_ROUTER_MODELS = modelsFile;
+		const ling = "openrouter/inclusionai/ling-3.0-flash-sante:free";
+		const base = ctx();
+		const context = ctx({
+			models: {
+				list: () => [...base.models.list(), { provider: "openrouter", id: ling.slice("openrouter/".length) }],
+				resolve: spec => spec === ling
+					? { provider: "openrouter", id: ling.slice("openrouter/".length) }
+					: base.models.resolve(spec),
+			},
+		});
+		const state = createRouterState();
+		const options = { stateFile: file, modeFile, shuffle: items => [...items] };
+		try {
+			writeFileSync(modeFile, JSON.stringify({ enabled: true }));
+			writeFileSync(modelsFile, JSON.stringify([{ id: "anthropic/claude-opus-5-5", class: "strong" }]));
+			const before = await routeSubagentSpawn({ agent: "coder" }, context, state, options);
+			expect(before.model.map(modelSelectorBase)).toEqual(["anthropic/claude-opus-5-5"]);
+			expect(before.model.some(spec => spec.includes(":free"))).toBe(false);
+			writeFileSync(modelsFile, JSON.stringify([
+				{ id: "codex-lb/gpt-6.1-sol", class: "strong" },
+				{ id: ling, class: "strong" },
+			]));
+			const after = await routeSubagentSpawn({ agent: "coder" }, context, state, options);
+			expect(after.model.map(modelSelectorBase)).toEqual(["codex-lb/gpt-6.1-sol"]);
+			expect(after.model).not.toContain(ling);
+			writeFileSync(modeFile, JSON.stringify({ enabled: false }));
+			const off = await routeSubagentSpawn({ agent: "coder" }, context, state, options);
+			expect(off.model).toEqual([
+				...AGENT_POOLS.coder.pool.filter(spec => spec.endsWith(":free")),
+				...AGENT_POOLS.coder.pool.filter(spec => !spec.endsWith(":free")),
+				...AGENT_POOLS.coder.fallbacks,
+			]);
+			expect(off.enforce).toBeUndefined();
+		} finally {
+			if (previous === undefined) delete process.env.OMP_AGENT_ROUTER_MODELS;
+			else process.env.OMP_AGENT_ROUTER_MODELS = previous;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a child session inherits brrrr from its active parent", async () => {
+		const { dir, file } = tempStateFile();
+		const previous = process.env.OMP_AGENT_ROUTER_MODE_DIR;
+		process.env.OMP_AGENT_ROUTER_MODE_DIR = join(dir, "modes");
+		const parent = SessionManager.create(dir, dir);
+		let child: SessionManager | undefined;
+		let active = parent;
+		const handlers = new Map();
+		const commands = new Map();
+		const api = {
+			on: (event, handler) => handlers.set(event, handler),
+			registerCommand: (name, command) => commands.set(name, command),
+			appendEntry: (customType, data) => active.appendCustomEntry(customType, data),
+		};
+		const ui = { setStatus: () => {}, notify: () => {} };
+		const parentContext = ctx({ sessionManager: parent, ui });
+		try {
+			agentRouter(api);
+			await handlers.get("session_start")({}, parentContext);
+			await commands.get("brrrr").handler("", parentContext);
+			await parent.ensureOnDisk();
+			await parent.flush();
+			const parentFile = parent.getSessionFile();
+			const parentBefore = readFileSync(parentFile, "utf8");
+			child = await SessionManager.open(join(dir, "child.jsonl"), dir, undefined, {
+				initialCwd: dir,
+				parentSession: parentFile,
+				suppressBreadcrumb: true,
+			});
+			active = child;
+			const childContext = ctx({ sessionManager: child, ui });
+			expect(child.getBranch().some(entry => entry.type === "custom" && entry.customType === BRRRR_ENTRY)).toBe(false);
+			await handlers.get("session_start")({}, childContext);
+			expect(JSON.parse(readFileSync(brrrrModeFile(childContext), "utf8")).enabled).toBe(true);
+			const routed = await routeSubagentSpawn({ agent: "coder" }, childContext, createRouterState(), { stateFile: file });
+			expect(routed.enforce).toBe(true);
+			expect(routed.model.some(spec => /:free|ling/.test(spec))).toBe(false);
+			expect(readFileSync(parentFile, "utf8")).toBe(parentBefore);
+			parent.appendCustomEntry("inheritance-control", { stillWritable: true });
+			await parent.flush();
+			expect(parent.getSessionFile()).toBe(parentFile);
+			expect(readFileSync(parentFile, "utf8")).toContain("inheritance-control");
+			await commands.get("brrrr").handler("off", childContext);
+			expect(JSON.parse(readFileSync(brrrrModeFile(parentContext), "utf8")).enabled).toBe(true);
+			expect(JSON.parse(readFileSync(brrrrModeFile(childContext), "utf8")).enabled).toBe(false);
+		} finally {
+			await child?.close();
+			await parent.close();
+			if (previous === undefined) delete process.env.OMP_AGENT_ROUTER_MODE_DIR;
+			else process.env.OMP_AGENT_ROUTER_MODE_DIR = previous;
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	test("brrrr command persists and restores status in a headless session", async () => {

@@ -121,7 +121,11 @@ describe("structured subagent primitive", () => {
 	it("brrrr mandatory routing replaces explicit weak selectors", async () => {
 		mockDiscovery();
 		const parent = session();
-		parent.emitBeforeSubagentSpawn = async () => ({ enforce: true, model: ["anthropic/claude-opus-5-5:high"], requiredModelServiceTiers: { "codex-lb/gpt-6-luna": "priority" } });
+		parent.emitBeforeSubagentSpawn = async () => ({
+			enforce: true,
+			model: ["anthropic/claude-opus-5-5:high"],
+			requiredModelServiceTiers: { "codex-lb/gpt-6-luna": "priority" },
+		});
 		const run = vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(result());
 		await runStructuredSubagent(request({ session: parent, model: "weak/model" }));
 		expect(run.mock.calls[0]![0].modelOverride).toEqual(["anthropic/claude-opus-5-5:high"]);
@@ -140,16 +144,23 @@ describe("structured subagent primitive", () => {
 	it("brrrr Luna requests and fallback always carry fast priority only for Luna", () => {
 		let listener: (event: { type: string }) => void = () => {};
 		const child = {
-			agent: { serviceTierResolver: () => undefined },
+			agent: {
+				serviceTierResolver: (_model: { provider: string; id: string }): "priority" | undefined => undefined,
+			},
 			model: { provider: "anthropic", id: "claude-opus-5-5" },
 			thinkingLevel: "max",
 			setThinkingLevel: vi.fn(),
-			subscribe: (callback: typeof listener) => { listener = callback; },
+			subscribe: (callback: typeof listener) => {
+				listener = callback;
+			},
 		};
-		executorModule.enforceSubagentRequestPolicy(child as never, { requiredModelServiceTiers: { "codex-lb/gpt-6-luna": "priority" }, claudeEffortCap: true });
+		executorModule.enforceSubagentRequestPolicy(child as never, {
+			requiredModelServiceTiers: { "codex-lb/gpt-6-luna": "priority" },
+			claudeEffortCap: true,
+		});
 		expect(child.setThinkingLevel).toHaveBeenCalledWith("high");
-		expect(child.agent.serviceTierResolver({ provider: "codex-lb", id: "gpt-6-luna" } as never)).toBe("priority");
-		expect(child.agent.serviceTierResolver({ provider: "codex-lb", id: "gpt-6.1-sol" } as never)).toBeUndefined();
+		expect(child.agent.serviceTierResolver({ provider: "codex-lb", id: "gpt-6-luna" })).toBe("priority");
+		expect(child.agent.serviceTierResolver({ provider: "codex-lb", id: "gpt-6.1-sol" })).toBeUndefined();
 		listener({ type: "model_changed" });
 		expect(child.setThinkingLevel).toHaveBeenCalledTimes(2);
 	});
