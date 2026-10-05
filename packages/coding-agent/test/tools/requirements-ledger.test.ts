@@ -1,3 +1,5 @@
+import * as ledgerReviewExports from "../../src/tools/requirements-ledger";
+import * as reviewOs from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -842,5 +844,92 @@ describe("todo requirement classification", () => {
 		const linkedItem = await tool.execute("done-linked-item", { op: "done", items: ["Row A"] });
 		expect(linkedItem.isError).toBe(true);
 		expect(getPhases()[0]?.tasks[0]?.status).toBe("in_progress");
+	});
+});
+
+describe("PR41 artifact and restatement boundaries", () => {
+	it("rejects an unresolved artifact even when saved row timestamps match", async () => {
+		const { isFreshRequirementVerdict } = ledgerReviewExports;
+		const req = {
+			...createRequirementCandidates([], ["audit"], "2026-10-01T00:00:00.000Z")[0]!,
+			classification: "linked" as const,
+			rows: ["row"],
+			rowVerdicts: {
+				row: {
+					status: "pass" as const,
+					auditor: "qa-auditor" as const,
+					workerId: "worker",
+					evidence: "ran tests",
+					artifact: "anything",
+					receivedAt: "2026-10-01T01:00:00.000Z",
+					rowChangeId: "change",
+				},
+			},
+		};
+		expect(
+			isFreshRequirementVerdict(req, [
+				{
+					row: "row",
+					head: null,
+					dirty: true,
+					reason: "owner unresolved",
+					lastChange: { at: "2026-10-01T00:00:00.000Z", id: "change" },
+				},
+			]),
+		).toBe(false);
+		expect(
+			isFreshRequirementVerdict(req, [
+				{ row: "row", head: null, dirty: true, lastChange: { at: "2026-10-01T00:00:00.000Z", id: "change" } },
+			]),
+		).toBe(true);
+	});
+	it("shortens the home path in artifact refusal output", () => {
+		expect(
+			ledgerReviewExports.formatRequirementGateArtifact({
+				head: null,
+				dirty: true,
+				cwd: `${reviewOs.homedir()}/checkout`,
+			}),
+		).toContain("cwd=~/checkout");
+	});
+	it("allows an explicit image restatement to replace the blocked target while retaining both asks", () => {
+		const old = {
+			...createRequirementCandidates([], ["Image #1"], "2026-10-01T00:00:00.000Z")[0]!,
+			classification: "linked" as const,
+			rows: ["row"],
+			imageState: "needs-user-restatement" as const,
+		};
+		const requirements = createRequirementCandidates(
+			[old],
+			["R1 restatement: make the frame blue"],
+			"2026-10-01T01:00:00.000Z",
+		);
+		expect(
+			"error" in
+				classifyRequirement(
+					createRequirementCandidates([old], ["unrelated work"], "2026-10-01T01:00:00.000Z"),
+					"R1",
+					"merged",
+					{ mergeInto: "R2" },
+				),
+		).toBe(true);
+		expect(
+			"error" in
+				classifyRequirement(
+					createRequirementCandidates([old], ["R1 restatement"], "2026-09-30T00:00:00.000Z"),
+					"R1",
+					"merged",
+					{ mergeInto: "R2" },
+				),
+		).toBe(true);
+		const result = classifyRequirement(requirements, "R1", "merged", { mergeInto: "R2" });
+		expect("error" in result).toBe(false);
+		if ("error" in result) return;
+		expect(result.requirements[0]?.rawText).toBe("Image #1");
+		expect(result.requirements[0]?.classification).toBe("merged");
+		expect(result.requirements[1]?.classification).toBe("linked");
+		expect(result.requirements[1]?.rows).toEqual(["row"]);
+		expect(result.requirements[1]?.imageState).toBeUndefined();
+		expect(result.requirements[1]?.verdict).toBeUndefined();
 	});
 });

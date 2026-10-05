@@ -457,26 +457,28 @@ export class RequirementsLedgerRuntime {
 		message: AssistantMessage,
 		signal: AbortSignal,
 	): Promise<{ replacementText: string; settled?: true } | void> {
-		if (this.#host.agentKind() !== "main" || message.stopReason === "error" || message.stopReason === "aborted") {
+		if (this.#host.agentKind() !== "main") {
 			return;
 		}
+		const failed = message.stopReason === "error" || message.stopReason === "aborted";
+		const freshnessSignal = failed ? undefined : signal;
 		let generation = this.#getPublicationGeneration();
-		let freshness = await this.#refreshRequirementFreshness(signal);
+		let freshness = await this.#refreshRequirementFreshness(freshnessSignal);
 		if (this.#getPublicationGeneration() !== generation) {
 			generation = this.#getPublicationGeneration();
-			freshness = await this.#refreshRequirementFreshness(signal);
+			freshness = await this.#refreshRequirementFreshness(freshnessSignal);
 			// Never erase the assistant's own text on a generation race: publish unchanged.
-			if (this.#getPublicationGeneration() !== generation) return;
+			if (this.#getPublicationGeneration() !== generation) return failed ? { replacementText: "" } : undefined;
 		}
 		const decisionGeneration = this.#getPublicationGeneration();
 		const { requirements, staleById, awaitingUserIssues } = freshness;
 		const open = this.#openRequirements(requirements, staleById);
 		this.syncPublicationGate();
 		// Never erase the assistant's own text on a generation race: publish unchanged.
-		if (this.#getPublicationGeneration() !== decisionGeneration) return;
+		if (this.#getPublicationGeneration() !== decisionGeneration) return failed ? { replacementText: "" } : undefined;
 		if (open.length === 0) return;
 		// With tool calls the text stays as it is: the gate only appends to final text.
-		if (message.content.some(block => block.type === "toolCall")) return;
+		if (message.content.some(block => block.type === "toolCall")) return failed ? { replacementText: "" } : undefined;
 		const branch = this.#host.sessionManager.getBranch();
 		const userMessage = branch.findLast(entry => entry.type === "message" && entry.message.role === "user");
 		const announced = new Set<string>();
@@ -504,7 +506,7 @@ export class RequirementsLedgerRuntime {
 				? [{ ...item, issues, awaitingUser: issues.every(issue => awaitingUserIssues.has(issue)) }]
 				: [];
 		});
-		if (visible.length === 0) return;
+		if (visible.length === 0) return failed ? { replacementText: "" } : undefined;
 		if (newKeys.length)
 			this.#host.sessionManager.appendCustomEntry("requirements_awaiting_user_notice", { keys: newKeys });
 		const rows = openTodoRowContents(branch);
@@ -516,7 +518,7 @@ export class RequirementsLedgerRuntime {
 			.join("")
 			.trim();
 		return {
-			replacementText: original ? `${original}\n\n${notice}` : notice,
+			replacementText: !failed && original ? `${original}\n\n${notice}` : notice,
 			settled: true,
 		};
 	}
@@ -634,7 +636,7 @@ export class RequirementsLedgerRuntime {
 					status: receipt.status,
 					evidence: receipt.evidence,
 					artifact: identity,
-					rawWords: receipt.subIds ? requirement.rawText : receipt.rawWords,
+					rawWords: receipt.rawWords,
 					workerId,
 					auditor: "qa-auditor",
 					receivedAt,
@@ -794,6 +796,7 @@ export class RequirementsLedgerRuntime {
 					ids: assignment.ids,
 					snapshot: assignment.snapshot,
 					boundHeads: assignment.boundHeads,
+					rows: assignment.rows,
 				})),
 			rejected: [...rejections].map(([id, reason]) => ({ workerId: "", ids: [id], reason })),
 		});

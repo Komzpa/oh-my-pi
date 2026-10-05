@@ -18,9 +18,9 @@ import type { SessionEntry } from "../session/session-entries";
 
 import { AgentRegistry } from "../registry/agent-registry";
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
+import * as fs from "node:fs";
+
+import * as nodePath from "node:path";
 import {
 	appendRequirementsSnapshot,
 	classifyRequirement,
@@ -219,7 +219,7 @@ async function resolveRequirementRowArtifact(
 	for (const resource of resources) {
 		if (typeof resource !== "string") continue;
 		const value = resource.trim();
-		if (isAbsolute(value)) paths.push(value);
+		if (nodePath.isAbsolute(value)) paths.push(value);
 		else paths.push(...(value.match(ABSOLUTE_ARTIFACT_PATH) ?? []));
 		const branch = /^(?:branch:|branch=|refs\/heads\/)(.+)$/.exec(value)?.[1];
 		if (branch) branchNames.push(branch);
@@ -228,7 +228,9 @@ async function resolveRequirementRowArtifact(
 	if (new Set(paths).size > 1) return unknownRequirementArtifact(paths.join(", "));
 	const effectiveOwner = owner ?? "main";
 	const persistedCwd =
-		typeof task.artifactCwd === "string" && isAbsolute(task.artifactCwd) && task.artifactOwner === effectiveOwner
+		typeof task.artifactCwd === "string" &&
+		nodePath.isAbsolute(task.artifactCwd) &&
+		task.artifactOwner === effectiveOwner
 			? task.artifactCwd
 			: undefined;
 
@@ -284,7 +286,7 @@ async function resolveRequirementRowArtifact(
 		const anchor =
 			ownerCwd ??
 			paths[0] ??
-			(typeof task.artifactCwd === "string" && isAbsolute(task.artifactCwd) ? task.artifactCwd : undefined);
+			(typeof task.artifactCwd === "string" && nodePath.isAbsolute(task.artifactCwd) ? task.artifactCwd : undefined);
 		if (!anchor) return unknownRequirementArtifact(`unknown worktree for ${branchNames.join(", ")}`);
 		try {
 			const worktrees = await vcs.requireGit(anchor).worktrees(ctx.signal);
@@ -306,10 +308,10 @@ async function resolveRequirementRowArtifact(
 		);
 
 	try {
-		const info = await stat(path);
+		const info = await fs.promises.stat(path);
 		if (info.isFile()) {
 			const hash = createHash("sha256");
-			for await (const chunk of createReadStream(path)) hash.update(chunk);
+			for await (const chunk of fs.createReadStream(path)) hash.update(chunk);
 			return { cwd: path, head: null, dirty: false, sha256: hash.digest("hex") };
 		}
 		if (!info.isDirectory()) return unknownRequirementArtifact(path, "resource is neither a file nor a directory");

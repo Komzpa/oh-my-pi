@@ -921,9 +921,9 @@ describe("real row-scoped auditor receipts", () => {
 			const table = [
 				"| id | raw words | verdict | evidence | artifact identity |",
 				"|---|---|---|---|---|",
-				`| R16e | линии выноски сделай так чтобы в рамку по цвету подходили | pass | e2e/facility-callout-frame-colour.spec.ts:71 asserts leaderColour equals frameColour | ${row} @ ${head} |`,
-				`| R16f | а сами рамки не такие толстые | pass | e2e/facility-callout-frame-colour.spec.ts:67-68 asserts width 1 texture px | ${row} @ ${head} |`,
-				`| R16g | check that the requirement clause is written in doc/product-requirements.md. | pass | doc/product-requirements.md contains the clause | ${row} @ ${head} |`,
+				`| R16e | ${raw} | pass | e2e/facility-callout-frame-colour.spec.ts:71 asserts leaderColour equals frameColour | ${row} @ ${head} |`,
+				`| R16f | ${raw} | pass | e2e/facility-callout-frame-colour.spec.ts:67-68 asserts width 1 texture px | ${row} @ ${head} |`,
+				`| R16g | ${raw} | pass | doc/product-requirements.md contains the clause | ${row} @ ${head} |`,
 			].join("\n");
 			async function deliver(output: string, worker: string, auditedRow = row): Promise<void> {
 				await runtime.prepareAuditorTaskCall("task", worker, {
@@ -974,10 +974,7 @@ describe("real row-scoped auditor receipts", () => {
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 			await deliver(
 				JSON.stringify({
-					result: table.replace(
-						"| R16f | а сами рамки не такие толстые | pass",
-						"| R16f | а сами рамки не такие толстые | fail",
-					),
+					result: table.replace(`| R16f | ${raw} | pass`, `| R16f | ${raw} | fail`),
 				}),
 				"AuditR16Failed",
 			);
@@ -985,10 +982,7 @@ describe("real row-scoped auditor receipts", () => {
 			expect(getLatestRequirements(manager.getBranch())[0]!.rowVerdicts![other]?.status).toBe("pass");
 			await deliver(
 				JSON.stringify({
-					result: table.replace(
-						"| R16f | а сами рамки не такие толстые | pass",
-						"| R16f | а сами рамки не такие толстые | unverifiable",
-					),
+					result: table.replace(`| R16f | ${raw} | pass`, `| R16f | ${raw} | unverifiable`),
 				}),
 				"AuditR16Unverifiable",
 			);
@@ -1039,7 +1033,8 @@ describe("real row-scoped auditor receipts", () => {
 				},
 				isError: false,
 			} as never);
-			expect((await tool.execute("done-bash", { op: "done", task: scratch })).isError).toBeUndefined();
+			// Missing checkout must fail closed, even with a recent saved TODO edit.
+			expect((await tool.execute("done-bash", { op: "done", task: scratch })).isError).toBe(true);
 			phases[0]!.tasks[0]!.status = "in_progress";
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 			expect((await tool.execute("stale-bash", { op: "done", task: scratch })).isError).toBe(true);
@@ -1091,9 +1086,9 @@ it("asks once in place of an impossible image audit", async () => {
 	const question = "R1: the attached image is gone from this session — please restate it in words or re-attach it";
 	expect(row.imageState).toBe("needs-user-restatement");
 	expect(first).toHaveLength(1);
-	expect(first[0]!.awaitingUserIssues).toEqual([question]);
-	expect(first[0]!.issues).toEqual([question]);
-	expect(second[0]!.awaitingUserIssues).toEqual([question]);
+	expect(first[0]!.awaitingUserIssues[0]).toContain(question);
+	expect(first[0]!.issues[0]).toContain(question);
+	expect(second[0]!.awaitingUserIssues[0]).toContain(question);
 	expect(second[0]!.issues.join(" ")).not.toContain("qa-auditor");
 });
 
@@ -1110,5 +1105,106 @@ it("keeps text-only QA inputs free of image fields", async () => {
 		expect(revised!.task).not.toContain("Referenced images");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+describe("PR41 review boundaries", () => {
+	it("rejects split receipts that replace the immutable ask", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			await runtime.prepareAuditorTaskCall("task", "split-review", { agent: "qa-auditor", task: "Audit R1" });
+			await runtime.afterToolCall({
+				toolCall: { id: "split-review", name: "task" },
+				result: {
+					content: [],
+					details: {
+						results: [
+							{
+								index: 0,
+								agent: "qa-auditor",
+								id: "split-worker",
+								exitCode: 0,
+								output: receiptTable(git(cwd, "rev-parse", "HEAD")).replace(
+									"| R1 | audit the artifact |",
+									"| R1a | unrelated words |",
+								),
+							},
+						],
+					},
+				},
+				isError: false,
+			} as never);
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]).toBeUndefined();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+	it("retains the assigned rows across reload before accepting a background receipt", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			const req = getLatestRequirements(manager.getBranch())[0]!;
+			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [
+				{ ...req, rows: ["Build artifact", "Other row"] },
+			]);
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+				phases: [
+					{
+						name: "Work",
+						tasks: ["Build artifact", "Other row"].map(content => ({
+							content,
+							status: "pending",
+							schedule: { owner: "main", resources: [cwd] },
+						})),
+					},
+				],
+			});
+			await runtime.prepareAuditorTaskCall("task", "scope-review", {
+				agent: "qa-auditor",
+				task: "Audit R1 for row 'Build artifact'",
+			});
+			await runtime.afterToolCall({
+				toolCall: { id: "scope-review", name: "task" },
+				result: { content: [], details: { progress: [{ index: 0, agent: "qa-auditor", id: "scope-worker" }] } },
+				isError: false,
+			} as never);
+			const reloaded = new RequirementsLedgerRuntime({
+				agent: {} as never,
+				agentKind: () => "main",
+				cwd: () => cwd,
+				sessionManager: manager,
+				onSettledAssistantMessage: () => {},
+				setPublicationGate: () => {},
+			});
+			await reloaded.consumeAsyncResult({
+				role: "custom",
+				customType: ASYNC_RESULT_MESSAGE_TYPE,
+				attribution: "agent",
+				content: `<task-result id="scope-worker" agent="qa-auditor" status="completed"><output>${receiptTable(`Other row @ ${git(cwd, "rev-parse", "HEAD")}`)}</output></task-result>`,
+				details: { jobs: [{ type: "task", jobId: "scope-worker", agentId: "scope-worker" }] },
+			});
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Other row"]).toBeUndefined();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+	for (const stopReason of ["error", "aborted"] as const) {
+		it(`suppresses unverified final narrative after ${stopReason}`, async () => {
+			const { cwd, runtime, gate } = fixture();
+			try {
+				runtime.syncPublicationGate();
+				const message = {
+					content: [{ type: "text", text: "Everything is verified complete" }],
+					stopReason,
+					errorMessage: "provider failed",
+				};
+				const result = await gate()?.(message as never, new AbortController().signal);
+				expect(result?.replacementText).toBeDefined();
+				expect(result?.replacementText).not.toContain("Everything is verified complete");
+				expect(message.stopReason).toBe(stopReason);
+				expect(message.errorMessage).toBe("provider failed");
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
 	}
 });

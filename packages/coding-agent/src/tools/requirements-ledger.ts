@@ -1,3 +1,4 @@
+import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
@@ -350,7 +351,15 @@ export function classifyRequirement(
 			error: `Blocked: requirement ${id} is unknown. No classify call can target it; call todo op="view" to list current requirements and rows, then ${classifyForm}`,
 		};
 	const source = requirements[sourceIndex]!;
-	if (source.classification !== "candidate") {
+	const restatementTarget = requirements.find(requirement => requirement.id === options.mergeInto);
+	const resolvesImage =
+		source.imageState === "needs-user-restatement" &&
+		classification === "merged" &&
+		restatementTarget?.classification === "candidate" &&
+		restatementTarget.at > source.at &&
+		!restatementTarget.imageState &&
+		new RegExp(`\\b${id}\\b`).test(restatementTarget.rawText);
+	if (source.classification !== "candidate" && !resolvesImage) {
 		return {
 			error: `Blocked: ${id} has already been classified as ${source.classification}; no further classify call can target it`,
 		};
@@ -490,7 +499,7 @@ export interface RequirementGateArtifact {
 }
 
 export function formatRequirementGateArtifact(artifact: RequirementGateArtifact): string {
-	return `cwd=${artifact.cwd ?? "unknown"}, head=${artifact.head ?? "unknown"}, dirty=${artifact.dirty}${artifact.sha256 ? `, sha256=${artifact.sha256}` : ""}${artifact.reason ? `, reason=${artifact.reason}` : ""}`;
+	return `cwd=${artifact.cwd ? shortenPath(artifact.cwd) : "unknown"}, head=${artifact.head ?? "unknown"}, dirty=${artifact.dirty}${artifact.sha256 ? `, sha256=${artifact.sha256}` : ""}${artifact.reason ? `, reason=${artifact.reason}` : ""}`;
 }
 
 /** The one freshness rule, evaluated only for the rows being closed or published. */
@@ -501,7 +510,7 @@ export function isFreshRequirementVerdict(
 	if (requirement.classification !== "linked" || artifacts.length === 0) return false;
 	const seen = new Set<string>();
 	return artifacts.every(current => {
-		if (!requirement.rows.includes(current.row) || seen.has(current.row)) return false;
+		if (current.reason || !requirement.rows.includes(current.row) || seen.has(current.row)) return false;
 		seen.add(current.row);
 		const verdict = getRequirementRowVerdict(requirement, current.row);
 		if (verdict?.status !== "pass" || verdict.auditor !== "qa-auditor" || !verdict.workerId.trim()) return false;
@@ -552,7 +561,7 @@ export async function evaluateRequirementDoneGate(
 		// audited at all. Ask the user once and stop demanding qa-auditor passes
 		// for it — an unanswerable audit demand is a gate loop.
 		if (requirement.imageState === "needs-user-restatement") {
-			const issue = `${requirement.id}: the attached image is gone from this session — please restate it in words or re-attach it`;
+			const issue = `${requirement.id}: the attached image is gone from this session — please restate it in words or re-attach it in a new message naming ${requirement.id}; then associate that new candidate with todo op="classify", id="${requirement.id}", classification="merged", mergeInto="<new Rn>" and request a fresh audit`;
 			open.push({ requirement, issues: [issue], awaitingUserIssues: [issue] });
 			continue;
 		}
@@ -789,7 +798,11 @@ export function parseRequirementReceipt(
 				: "pass";
 		return {
 			id,
-			rawWords: parts.map(row => row.rawWords).join("; "),
+			// Split rows must each echo the complete immutable ask. Different echoes
+			// remain different so freshness comparison rejects partial/reworded asks.
+			rawWords: parts.every(row => row.rawWords === parts[0]!.rawWords)
+				? parts[0]!.rawWords
+				: parts.map(row => row.rawWords).join("; "),
 			status: status as RequirementVerdictStatus,
 			evidence: parts.map(row => `${row.id}: ${row.evidence}`).join("; "),
 			artifact: parts.map(row => row.artifact).join("; "),
