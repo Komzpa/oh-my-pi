@@ -74,6 +74,38 @@ fn true_bin() -> &'static OsString {
 	&BIN
 }
 
+/// The desktop mask may replace XDG_RUNTIME_DIR with a private worker
+/// directory. Only the launcher uses the real manager environment, derived from
+/// the uid.
+#[cfg(target_os = "linux")]
+fn systemd_user_manager_env(bus_address: Option<OsString>, uid: u32) -> (OsString, OsString) {
+	let runtime_dir = OsString::from(format!("/run/user/{uid}"));
+	let trusted_prefix = format!("unix:path=/run/user/{uid}/");
+	let bus_address = bus_address
+		.filter(|address| {
+			address.to_str().is_some_and(|address| {
+				address
+					.split(';')
+					.all(|address| address.starts_with(&trusted_prefix))
+			})
+		})
+		.unwrap_or_else(|| OsString::from(format!("unix:path=/run/user/{uid}/bus")));
+	(runtime_dir, bus_address)
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_user_manager_command(program: &OsStr) -> Command {
+	let (runtime_dir, bus_address) =
+		systemd_user_manager_env(std::env::var_os("DBUS_SESSION_BUS_ADDRESS"), unsafe {
+			libc::geteuid()
+		});
+	let mut command = Command::new(program);
+	command
+		.env("XDG_RUNTIME_DIR", runtime_dir)
+		.env("DBUS_SESSION_BUS_ADDRESS", bus_address);
+	command
+}
+
 /// Lower only the scoped child, before it can run user code. Scope units do
 /// not apply service execution properties such as `Nice=`; cgroup weights
 /// also do not set per-process CPU/IO priorities. Resolve helpers against
@@ -98,7 +130,7 @@ fn background_priority_prefix() -> &'static [OsString; 5] {
 #[cfg(target_os = "linux")]
 fn systemd_version() -> Option<u32> {
 	static VERSION: std::sync::LazyLock<Option<u32>> = std::sync::LazyLock::new(|| {
-		let output = Command::new(systemctl_bin())
+		let output = systemd_user_manager_command(systemctl_bin())
 			.arg("--version")
 			.output()
 			.ok()?;
@@ -150,12 +182,26 @@ fn escape_manager_expansion(arg: &OsString) -> OsString {
 	OsString::from_vec(out)
 }
 
-/// Shared `systemd-run` prefix for real wraps and the enforcement probe, so
-/// a passing probe proves the real launch path works: same binary, same
-/// scope flags, same environment-expansion handling.
+/// One launcher for real scopes and the enforcement probe. Manager credentials
+/// precede systemd-run; the inner env removes them before the payload executes.
 #[cfg(target_os = "linux")]
-fn scope_prefix(slice: &str, unit: &str, wait_service: bool, stop_timeout: bool) -> Vec<OsString> {
-	let mut args = vec![systemd_run_bin().clone(), OsString::from("--user")];
+fn build_scope_argv(
+	slice: &str,
+	unit: &str,
+	wait_service: bool,
+	stop_timeout: bool,
+	command: &[OsString],
+) -> Vec<OsString> {
+	let (runtime_dir, bus_address) =
+		systemd_user_manager_env(std::env::var_os("DBUS_SESSION_BUS_ADDRESS"), unsafe {
+			libc::geteuid()
+		});
+	let mut runtime = OsString::from("XDG_RUNTIME_DIR=");
+	runtime.push(runtime_dir);
+	let mut bus = OsString::from("DBUS_SESSION_BUS_ADDRESS=");
+	bus.push(bus_address);
+	let mut args =
+		vec![env_bin().clone(), runtime, bus, systemd_run_bin().clone(), OsString::from("--user")];
 	if wait_service {
 		// The probe is a transient *service*: `--wait` reports synchronously
 		// whether a process could start inside the slice. Real commands run
@@ -178,6 +224,25 @@ fn scope_prefix(slice: &str, unit: &str, wait_service: bool, stop_timeout: bool)
 		args.push(OsString::from("--property=TimeoutStopSec=2s"));
 	}
 	args.push(OsString::from("--"));
+	args.extend([
+		env_bin().clone(),
+		OsString::from("-u"),
+		OsString::from("DBUS_SESSION_BUS_ADDRESS"),
+		OsString::from("-u"),
+		OsString::from("XDG_RUNTIME_DIR"),
+	]);
+	let priority = if wait_service {
+		&[][..]
+	} else {
+		&background_priority_prefix()[..]
+	};
+	args.extend(priority.iter().chain(command).map(|arg| {
+		if expand_environment_flag().is_none() {
+			escape_manager_expansion(arg)
+		} else {
+			arg.clone()
+		}
+	}));
 	args
 }
 
@@ -245,25 +310,13 @@ impl ToolProcessLimit {
 			self.ensure_enforced(&mut state)?;
 			let command_id = state.next_command_id;
 			state.next_command_id += 1;
-			let mut wrapped = scope_prefix(
+			Ok(build_scope_argv(
 				&self.slice,
 				&format!("omp-tool-call-{}-{command_id}.scope", self.slice.trim_end_matches(".slice")),
 				false,
 				true,
-			);
-			wrapped.extend(
-				background_priority_prefix()
-					.iter()
-					.chain(command)
-					.map(|arg| {
-						if expand_environment_flag().is_none() {
-							escape_manager_expansion(arg)
-						} else {
-							arg.clone()
-						}
-					}),
-			);
-			Ok(wrapped)
+				command,
+			))
 		}
 	}
 
@@ -294,7 +347,7 @@ impl ToolProcessLimit {
 		#[cfg(target_os = "linux")]
 		{
 			state.created = true;
-			let result = Command::new(systemctl_bin())
+			let result = systemd_user_manager_command(systemctl_bin())
 				.args(["--user", "set-property", "--runtime", &self.slice])
 				.arg(format!("TasksMax={}", self.limit))
 				.output()?;
@@ -306,15 +359,13 @@ impl ToolProcessLimit {
 			}
 			let probe_unit =
 				format!("omp-tool-call-probe-{}.scope", self.slice.trim_end_matches(".slice"));
-			let mut probe =
-				scope_prefix(&self.slice, &probe_unit.replace(".scope", ".service"), true, false);
-			let prefix_len = probe.len();
-			probe.extend(env_exec(true_bin(), OsStr::new("omp-process-limit-probe"), &[]));
-			if expand_environment_flag().is_none() {
-				for arg in probe.iter_mut().skip(prefix_len) {
-					*arg = escape_manager_expansion(arg);
-				}
-			}
+			let probe = build_scope_argv(
+				&self.slice,
+				&probe_unit.replace(".scope", ".service"),
+				true,
+				false,
+				&env_exec(true_bin(), OsStr::new("omp-process-limit-probe"), &[]),
+			);
 			let result = Command::new(&probe[0]).args(&probe[1..]).output()?;
 			if !result.status.success() {
 				return Err(io::Error::other(format!(
@@ -411,7 +462,7 @@ impl Drop for ToolProcessLimit {
 			// (`ToolResourceScope::close`), async workers, and scope guards.
 			// Teardown is best-effort; `TimeoutStopSec` bounds it server-side.
 			let _ = std::thread::spawn(move || {
-				let _ = Command::new(systemctl)
+				let _ = systemd_user_manager_command(&systemctl)
 					.args(["--user", "stop", &slice])
 					.status();
 			});
@@ -424,7 +475,11 @@ fn systemd_property(unit: &str, property: &str) -> io::Result<String> {
 	let manager = systemctl_bin().clone();
 	#[cfg(not(target_os = "linux"))]
 	let manager = OsString::from("systemctl");
-	let result = Command::new(manager)
+	#[cfg(target_os = "linux")]
+	let mut command = systemd_user_manager_command(&manager);
+	#[cfg(not(target_os = "linux"))]
+	let mut command = Command::new(manager);
+	let result = command
 		.args(["--user", "show", unit, "--property", property, "--value"])
 		.output()?;
 	if !result.status.success() {
@@ -451,6 +506,108 @@ mod tests {
 	use brush_core::ExternalCommandWrapper;
 
 	use super::ToolProcessLimit;
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn systemd_user_manager_env_derives_run_user_without_bus() {
+		let (runtime, bus) = super::systemd_user_manager_env(None, 1000);
+		assert_eq!(runtime, "/run/user/1000");
+		assert_eq!(bus, "unix:path=/run/user/1000/bus");
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn systemd_user_manager_env_keeps_only_bus_under_run_user() {
+		let trusted = "unix:path=/run/user/1000/custom-bus,guid=1234";
+		let (runtime, bus) = super::systemd_user_manager_env(Some(trusted.into()), 1000);
+		assert_eq!(runtime, "/run/user/1000");
+		assert_eq!(bus, trusted);
+		for masked in
+			["", "unix:path=/tmp/omp-worker-runtime-x-1000/bus", "unix:path=/run/user/10000/bus"]
+		{
+			let (runtime, bus) = super::systemd_user_manager_env(Some(masked.into()), 1000);
+			assert_eq!(runtime, "/run/user/1000");
+			assert_eq!(bus, "unix:path=/run/user/1000/bus");
+		}
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn scope_argv_puts_manager_env_before_systemd_run_and_masks_payload() {
+		let argv = super::build_scope_argv("test.slice", "test.scope", false, true, &[
+			super::true_bin().clone(),
+		]);
+		assert_eq!(&argv[0], super::env_bin());
+		let uid = unsafe { libc::geteuid() };
+		assert_eq!(argv[1], std::ffi::OsString::from(format!("XDG_RUNTIME_DIR=/run/user/{uid}")));
+		assert!(
+			argv[2]
+				.to_string_lossy()
+				.starts_with("DBUS_SESSION_BUS_ADDRESS=unix:path=")
+		);
+		assert_eq!(&argv[3], super::systemd_run_bin());
+		assert_eq!(argv[4], "--user");
+		let separator = argv
+			.iter()
+			.position(|arg| arg == "--")
+			.expect("scope separator");
+		let payload = &argv[separator + 1..];
+		assert_eq!(&payload[0], super::env_bin());
+		assert_eq!(&payload[1..5], ["-u", "DBUS_SESSION_BUS_ADDRESS", "-u", "XDG_RUNTIME_DIR"]);
+		assert_eq!(&payload[5..10], super::background_priority_prefix());
+		assert_eq!(payload.last(), Some(super::true_bin()));
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	#[ignore = "requires a reachable systemd user manager; run explicitly on a live host"]
+	fn masked_worker_reaches_manager_without_leaking_desktop_env() {
+		// Probe availability only through systemd-run, never a separate bus client.
+		let available = super::systemd_user_manager_command(super::systemd_run_bin())
+			.args(["--user", "--scope", "--quiet", "--"])
+			.arg(super::true_bin())
+			.output();
+		if !available.is_ok_and(|output| output.status.success()) {
+			eprintln!("skipping live check: systemd user manager is unavailable");
+			return;
+		}
+		let limit = ToolProcessLimit::new(32);
+		for program in [super::true_bin(), super::env_bin()] {
+			let argv = super::build_scope_argv(
+				&limit.slice,
+				&format!(
+					"{}-{}.scope",
+					limit.slice,
+					if program == super::true_bin() {
+						"true"
+					} else {
+						"env"
+					}
+				),
+				false,
+				true,
+				&[program.clone()],
+			);
+			let output = Command::new(&argv[0])
+				.args(&argv[1..])
+				.env_clear()
+				.env("DBUS_SESSION_BUS_ADDRESS", "")
+				.env("XDG_RUNTIME_DIR", "/tmp/x")
+				.output()
+				.expect("launch with a masked worker environment");
+			assert!(
+				output.status.success(),
+				"masked launch failed: {}",
+				String::from_utf8_lossy(&output.stderr)
+			);
+			if program == super::env_bin() {
+				let payload_env = String::from_utf8_lossy(&output.stdout);
+				assert!(!payload_env.contains("DBUS_SESSION_BUS_ADDRESS="), "{payload_env}");
+				assert!(!payload_env.contains("XDG_RUNTIME_DIR="), "{payload_env}");
+				assert!(!payload_env.contains("/run/user/"), "{payload_env}");
+			}
+		}
+	}
 
 	fn wrapped_command(limit: &ToolProcessLimit, program: &str, args: &[&str]) -> Command {
 		let (runner, wrapped_args) = limit
@@ -500,7 +657,14 @@ mod tests {
 				.expect("read kernel pids.events")
 		);
 
-		let mut escape = wrapped_command(&process_limit, "/usr/bin/systemd-run", &[
+		// Explicit manager operations must opt back in; ordinary payloads stay masked.
+		let (runtime, bus) = super::systemd_user_manager_env(None, unsafe { libc::geteuid() });
+		let runtime = format!("XDG_RUNTIME_DIR={}", runtime.to_string_lossy());
+		let bus = format!("DBUS_SESSION_BUS_ADDRESS={}", bus.to_string_lossy());
+		let mut escape = wrapped_command(&process_limit, "/usr/bin/env", &[
+			&runtime,
+			&bus,
+			"/usr/bin/systemd-run",
 			"--user",
 			"--wait",
 			"--collect",
@@ -509,9 +673,16 @@ mod tests {
 			"/usr/bin/true",
 		]);
 		let escape_output = escape.output().expect("probe manager escape");
-		assert!(escape_output.status.success(), "explicit managed-service operation failed");
+		assert!(
+			escape_output.status.success(),
+			"explicit managed-service operation failed: {}",
+			String::from_utf8_lossy(&escape_output.stderr)
+		);
 
-		let mut systemctl = wrapped_command(&process_limit, "/usr/bin/systemctl", &[
+		let mut systemctl = wrapped_command(&process_limit, "/usr/bin/env", &[
+			&runtime,
+			&bus,
+			"/usr/bin/systemctl",
 			"--user",
 			"list-units",
 			"--no-pager",
@@ -557,7 +728,15 @@ mod tests {
 			.expect("numeric worker pid");
 		drop(process_limit);
 		wait_for_exit(&mut child);
-		let state = std::fs::read_to_string(format!("/proc/{descendant_pid}/stat")).ok();
-		assert!(state.is_none_or(|stat| stat.split_whitespace().nth(2) == Some("Z")));
+		// systemd-run can exit before the manager finishes killing every descendant.
+		let deadline = Instant::now() + Duration::from_secs(3);
+		loop {
+			let state = std::fs::read_to_string(format!("/proc/{descendant_pid}/stat")).ok();
+			if state.is_none_or(|stat| stat.split_whitespace().nth(2) == Some("Z")) {
+				break;
+			}
+			assert!(Instant::now() < deadline, "escaped descendant did not stop with its cgroup");
+			std::thread::sleep(Duration::from_millis(25));
+		}
 	}
 }
