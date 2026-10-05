@@ -15,7 +15,7 @@ import { forecastTodoPlan, getTodoPlanningIssues } from "@oh-my-pi/pi-tui/tools/
 function createHarness(initialPhases: TodoPhase[]) {
 	let phases = structuredClone(initialPhases);
 	const session: ToolSession = {
-		cwd: "/tmp/todo-schedule-test",
+		cwd: `${import.meta.dir}/../../../../tmp/todo-schedule-test`,
 		hasUI: false,
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
@@ -66,6 +66,69 @@ const initialPlan: TodoPhase[] = [
 ];
 
 describe("native todo schedule operation", () => {
+	it("resets reestimates on owner changes without discarding row history", async () => {
+		for (const withEstimate of [false, true]) {
+			const phases = structuredClone(initialPlan);
+			const schedule = phases[0].tasks[1].schedule!;
+			schedule.reestimateCount = 5;
+			schedule.estimateRevision = 6;
+			schedule.attemptHistory = [
+				{
+					attemptId: "old-owner:1",
+					workerName: "old-owner",
+					resolvedModel: "local/test",
+					effort: "high",
+					startedAt: 100,
+					finishedAt: 200,
+					durationMs: 100,
+					terminalStatus: "failed",
+					deliverablePaths: [],
+				},
+			];
+			const harness = createHarness(phases);
+			const result = await harness.tool.execute("restaff", {
+				op: "schedule",
+				updates: [
+					{
+						task: "Build parser",
+						owner: " new-owner ",
+						...(withEstimate ? { estimate: { ...schedule.estimate!, likelySeconds: 75 } } : {}),
+					},
+				],
+			});
+			expect(result.isError).not.toBe(true);
+			expect(harness.phases()[0].tasks[1].schedule).toMatchObject({
+				owner: "new-owner",
+				reestimateCount: 0,
+				estimateRevision: withEstimate ? 7 : 6,
+				attemptHistory: schedule.attemptHistory,
+			});
+			const restored = markdownToPhases(phasesToMarkdown(harness.phases()));
+			expect(restored.errors).toEqual([]);
+			expect(restored.phases[0].tasks[1].schedule).toEqual(harness.phases()[0].tasks[1].schedule);
+			await harness.tool.execute("same-owner", {
+				op: "schedule",
+				updates: [{ task: "Build parser", owner: " new-owner " }],
+			});
+			expect(harness.phases()[0].tasks[1].schedule?.reestimateCount).toBe(0);
+			await harness.tool.execute("reestimate", {
+				op: "schedule",
+				updates: [{ task: "Build parser", estimate: { ...schedule.estimate!, likelySeconds: 80 } }],
+			});
+			expect(harness.phases()[0].tasks[1].schedule?.reestimateCount).toBe(1);
+			await harness.tool.execute("same-owner-again", {
+				op: "schedule",
+				updates: [{ task: "Build parser", owner: " new-owner " }],
+			});
+			expect(harness.phases()[0].tasks[1].schedule?.reestimateCount).toBe(1);
+			await harness.tool.execute("clear-owner", {
+				op: "schedule",
+				updates: [{ task: "Build parser", owner: "" }],
+			});
+			expect(harness.phases()[0].tasks[1].schedule?.owner).toBeUndefined();
+			expect(harness.phases()[0].tasks[1].schedule?.reestimateCount).toBe(0);
+		}
+	});
 	it("does not re-anchor unchanged estimate resends", async () => {
 		const clock = spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
 		try {

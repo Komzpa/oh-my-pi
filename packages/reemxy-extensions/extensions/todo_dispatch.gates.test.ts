@@ -12,8 +12,9 @@ import { homedir } from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { readGoalDeadline } from "./deadlines";
-import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { getLatestTodoPhasesFromEntries, TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
 import {
@@ -2091,6 +2092,48 @@ test("R2 (case B): the sixth reestimate under the same owner is refused, overdue
   expect(refused?.reason).toContain("Exactly: write proc://FixR8LastFails/kill");
   // Negative control: under three reestimates the same reestimate passes.
   expect(await slipCall([slipRow("Report r8 REQ-7 and REQ-11 fails fixed", "FixR8LastFails", 2, fresh)], jobs, reestimateCall("Report r8 REQ-7 and REQ-11 fails fixed"))).toBeUndefined();
+});
+
+test("owner recovery: five reestimates under A do not exhaust the next schedule under B", async () => {
+  const now = Date.now();
+  const content = "Settle facility plaques together with camera stop";
+  let phases = [{ name: "Work", tasks: [slipRow(content, "SettleAdmissionFirstDivergence", 5, now - 60_000)] }];
+  const tool = new TodoTool({
+    cwd: join(import.meta.dir, "../../../tmp"),
+    hasUI: false,
+    settings: Settings.isolated(),
+    getSessionFile: () => null,
+    getSessionSpawns: () => "*",
+    getTodoPhases: () => phases,
+    setTodoPhases: (next) => { phases = next; },
+  });
+  const restaff = await tool.execute("restaff", {
+    op: "schedule",
+    updates: [{ task: content, owner: "SettleAdmissionFirstDivergence-2" }],
+  });
+  expect(restaff.isError).not.toBe(true);
+  const jobs = slipJobs("SettleAdmissionFirstDivergence-2", "coder", now);
+  const call = reestimateCall(content, {
+    estimate: { optimisticSeconds: 60, likelySeconds: 90, pessimisticSeconds: 120, confidence: "medium", basis: "New owner recovery" },
+  });
+  expect(await slipCall(phases[0].tasks, jobs, call)).toBeUndefined();
+  const accepted = await tool.execute("new-owner-estimate", call.arguments);
+  expect(accepted.isError).not.toBe(true);
+  expect(phases[0].tasks[0].schedule).toMatchObject({
+    owner: "SettleAdmissionFirstDivergence-2", reestimateCount: 1, estimateRevision: 7,
+  });
+});
+
+test("owner recovery negative control: the same owner at three reestimates stays refused", async () => {
+  const now = Date.now();
+  const content = "Settle facility plaques together with camera stop";
+  const refused = await slipCall(
+    [slipRow(content, "SettleAdmissionFirstDivergence", 3, now - 60_000)],
+    slipJobs("SettleAdmissionFirstDivergence", "coder", now),
+    reestimateCall(content, { owner: "SettleAdmissionFirstDivergence", evidence: "A failure reason does not bypass exhaustion." }),
+  );
+  expect(refused?.block).toBe(true);
+  expect(refused?.reason).toContain("has 3 reestimates under owner SettleAdmissionFirstDivergence");
 });
 
 test("R4: the slip refusal is one exact action whose calls compose with the escalation gate", async () => {
