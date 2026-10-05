@@ -57,6 +57,23 @@ export interface RequirementVerdict {
 	rowChangeId?: string;
 }
 
+/** One image referenced by a requirement's `[Image #N]` marker (N is `index`). */
+export interface RequirementImage {
+	/** One-based positional marker number in `rawText`. */
+	index: number;
+	sha256?: string;
+	mimeType?: string;
+	/** Attachment source path when the image is file-backed. */
+	sourcePath?: string;
+	/** Session artifact holding the bytes when no source file exists. */
+	artifactPath?: string;
+	/** Inline base64 fallback when neither a source file nor an artifact exists. */
+	data?: string;
+}
+
+/** `needs-user-restatement` is set once when every backing for an image is gone. */
+export type RequirementImageState = "needs-user-restatement";
+
 export interface RequirementLedgerItem {
 	id: string;
 	at: string;
@@ -68,6 +85,10 @@ export interface RequirementLedgerItem {
 	verdict?: RequirementVerdict;
 	/** Canonical receipts are scoped to a row; `verdict` is only the legacy snapshot input. */
 	rowVerdicts?: Record<string, RequirementVerdict>;
+	images?: RequirementImage[];
+	imageState?: RequirementImageState;
+	/** Set once the `needs-user-restatement` question has been surfaced for this user message. */
+	imageQuestionAsked?: true;
 }
 
 export interface RequirementsLedgerData {
@@ -86,7 +107,7 @@ export interface RequirementCounts {
 	failed: number;
 }
 
-export type RequirementAuditSource = Pick<RequirementLedgerItem, "id" | "at" | "rawText">;
+export type RequirementAuditSource = Pick<RequirementLedgerItem, "id" | "at" | "rawText" | "images">;
 
 const REQUIREMENT_ID = /^R([1-9]\d*)$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -183,6 +204,27 @@ function parseRequirement(value: unknown): RequirementLedgerItem | undefined {
 			});
 		}
 	}
+	const images: RequirementImage[] | undefined =
+		value.images === undefined
+			? undefined
+			: Array.isArray(value.images) &&
+				value.images.every(
+					image =>
+						isRecord(image) &&
+						Number.isInteger(image.index) &&
+						Number(image.index) > 0 &&
+						(image.sha256 === undefined || (typeof image.sha256 === "string" && /^[a-f0-9]{64}$/.test(image.sha256))) &&
+						(image.mimeType === undefined || typeof image.mimeType === "string") &&
+						(image.sourcePath === undefined || typeof image.sourcePath === "string") &&
+						(image.artifactPath === undefined || typeof image.artifactPath === "string") &&
+						(image.data === undefined || typeof image.data === "string"),
+				)
+				? (value.images as RequirementImage[])
+				: undefined;
+	if (value.images !== undefined && images === undefined) return undefined;
+	if (value.imageState !== undefined && value.imageState !== "needs-user-restatement") return undefined;
+	if (value.imageQuestionAsked !== undefined && value.imageQuestionAsked !== true) return undefined;
+
 	return {
 		id: value.id,
 		at: value.at,
@@ -193,6 +235,9 @@ function parseRequirement(value: unknown): RequirementLedgerItem | undefined {
 		...(value.mergeInto === undefined ? {} : { mergeInto: value.mergeInto }),
 		...(verdict === undefined ? {} : { verdict }),
 		...(rowVerdicts === undefined ? {} : { rowVerdicts }),
+		...(images === undefined ? {} : { images: structuredClone(images) }),
+		...(value.imageState === undefined ? {} : { imageState: value.imageState }),
+		...(value.imageQuestionAsked === true ? { imageQuestionAsked: true } : {}),
 	};
 }
 
@@ -248,6 +293,7 @@ export function createRequirementCandidates(
 	requirements: readonly RequirementLedgerItem[],
 	rawTexts: readonly string[],
 	at = new Date().toISOString(),
+	imagesByCandidate: readonly (readonly RequirementImage[] | undefined)[] = [],
 ): RequirementLedgerItem[] {
 	if (!ISO_TIMESTAMP.test(at) || !Number.isFinite(Date.parse(at))) {
 		throw new TypeError("Requirement timestamp must be an ISO timestamp");
@@ -257,16 +303,23 @@ export function createRequirementCandidates(
 		const match = REQUIREMENT_ID.exec(requirement.id);
 		if (match) highestId = Math.max(highestId, Number(match[1]));
 	}
-	const additions = rawTexts.map(rawText => {
+	const additions = rawTexts.map((rawText, position) => {
 		if (typeof rawText !== "string" || rawText.trim().length === 0) {
 			throw new TypeError("Requirement rawText must be a non-empty string");
 		}
+		const images = imagesByCandidate[position];
+		// An image with no backing bytes and no source path cannot be shown to
+		// qa-auditor later; mark it once so the done-gate asks the user instead
+		// of demanding an impossible audit every round.
+		const unresolvable = images?.some(image => !image.sha256) ?? false;
 		return {
 			id: `R${++highestId}`,
 			at,
 			rawText,
 			classification: "candidate" as const,
 			rows: [],
+			...(images?.length ? { images: structuredClone(images) } : {}),
+			...(unresolvable ? { imageState: "needs-user-restatement" as const } : {}),
 		};
 	});
 	return [...requirements, ...additions];
@@ -494,6 +547,14 @@ export async function evaluateRequirementDoneGate(
 		if (requirement.classification !== "linked") continue;
 		const issues: string[] = [];
 		const awaitingUserIssues: string[] = [];
+		// An image-only ask whose bytes and source path are both gone cannot be
+		// audited at all. Ask the user once and stop demanding qa-auditor passes
+		// for it — an unanswerable audit demand is a gate loop.
+		if (requirement.imageState === "needs-user-restatement") {
+			const issue = `${requirement.id}: the attached image is gone from this session — please restate it in words or re-attach it`;
+			open.push({ requirement, issues: [issue], awaitingUserIssues: [issue] });
+			continue;
+		}
 		for (const row of requirement.rows) {
 			if (!targets.has(row)) continue;
 			const verdict = getRequirementRowVerdict(requirement, row);
@@ -540,10 +601,17 @@ export function getRequirementAuditSources(
 ): RequirementAuditSource[] {
 	const target = requirements.find(requirement => requirement.id === id && requirement.classification === "linked");
 	if (!target) return [];
-	const sources: RequirementAuditSource[] = [{ id: target.id, at: target.at, rawText: target.rawText }];
+	const sources: RequirementAuditSource[] = [
+		{ id: target.id, at: target.at, rawText: target.rawText, ...(target.images ? { images: target.images } : {}) },
+	];
 	for (const requirement of requirements) {
 		if (requirement.classification === "merged" && requirement.mergeInto === id) {
-			sources.push({ id: requirement.id, at: requirement.at, rawText: requirement.rawText });
+			sources.push({
+				id: requirement.id,
+				at: requirement.at,
+				rawText: requirement.rawText,
+				...(requirement.images ? { images: requirement.images } : {}),
+			});
 		}
 	}
 	return sources;

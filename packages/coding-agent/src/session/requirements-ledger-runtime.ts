@@ -3,7 +3,9 @@ import { join } from "node:path";
 
 import type { Agent, AfterToolCallContext, AfterToolCallResult, BeforeToolCallResult } from "@oh-my-pi/pi-agent-core";
 import { setAssistantPublicationGate } from "@oh-my-pi/pi-agent-core/assistant-publication";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
+import { createHash } from "node:crypto";
+import { imageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import {
 	appendRequirementsSnapshot,
@@ -24,8 +26,54 @@ import {
 	requirementAuditSnapshot,
 	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
 	type RequirementAuditAssignment,
+type RequirementImage,
 	type RequirementLedgerItem,
 } from "../tools/requirements-ledger";
+
+/**
+ * Map each `[Image #N]` marker in a requirement's raw words to the user
+ * message's image content part N-1. Positional, matching
+ * `AgentSession#extractUserMessageImages`. An image that resolves to neither a
+ * source file nor bytes keeps no `sha256`, which marks the row
+ * `needs-user-restatement` at capture time.
+ */
+function extractRequirementImages(
+	rawText: string,
+	images: readonly ImageContent[] | undefined,
+): RequirementImage[] {
+	if (!images?.length) return [];
+	const seen = new Set<number>();
+	const out: RequirementImage[] = [];
+	for (const match of rawText.matchAll(/\[Image #(\d+)(?:[,\]][^\]]*)?\]/g)) {
+		const index = Number(match[1]);
+		if (!Number.isInteger(index) || index < 1 || seen.has(index)) continue;
+		seen.add(index);
+		const image = images[index - 1];
+		if (!image) continue;
+		const source = imageAttachmentSource(image);
+		const bytes = Buffer.from(image.data ?? "", "base64");
+		const sha256 = bytes.length > 0 ? createHash("sha256").update(bytes).digest("hex") : undefined;
+		out.push({
+			index,
+			...(sha256 ? { sha256 } : {}),
+			...(image.mimeType ? { mimeType: image.mimeType } : {}),
+			...(source?.path ? { sourcePath: source.path } : {}),
+			...(image.data ? { data: image.data } : {}),
+		});
+	}
+	return out;
+}
+
+/** Payload shape the task tool forwards to the subagent's first message. */
+export interface RequirementAuditImagePayload {
+	type: "image";
+	data: string;
+	mimeType: string;
+	sha256: string;
+	rn: string;
+	index: number;
+	sourcePath?: string;
+}
 import { ASYNC_RESULT_MESSAGE_TYPE } from "./async-job-delivery";
 import type { SessionManager } from "./session-manager";
 import { isFailedTaskSingleResult } from "../task/result-summary";
@@ -108,10 +156,14 @@ export class RequirementsLedgerRuntime {
 		this.syncPublicationGate();
 	}
 
-	captureCandidate(rawText: string): void {
+	captureCandidate(rawText: string, images?: readonly ImageContent[]): void {
 		if (this.#host.agentKind() !== "main" || !rawText.trim() || rawText.trimStart().startsWith("/")) return;
 		const requirements = getLatestRequirements(this.#host.sessionManager.getBranch());
-		appendRequirementsSnapshot(this.#appender(), createRequirementCandidates(requirements, [rawText]));
+		const referenced = extractRequirementImages(rawText, images);
+		appendRequirementsSnapshot(
+			this.#appender(),
+			createRequirementCandidates(requirements, [rawText], new Date().toISOString(), [referenced]),
+		);
 		this.syncPublicationGate();
 	}
 
@@ -197,6 +249,26 @@ export class RequirementsLedgerRuntime {
 			const auditTask = item.task;
 			const citedRows = linkedRows.filter(row => auditTask.includes(row));
 			const assignedRows = citedRows.length ? citedRows : linkedRows;
+			const imagePayloads: RequirementAuditImagePayload[] = [];
+			const imageLines: string[] = [];
+			for (const source of sources) {
+				for (const image of source.images ?? []) {
+					imageLines.push(
+						`${source.id} Image #${image.index}: sha256=${image.sha256 ?? "unavailable"}${image.sourcePath ? `, source=${image.sourcePath}` : ""}${!image.sha256 && !image.sourcePath ? " (bytes and source path both gone)" : ""}`,
+					);
+					const data = image.data;
+					if (!data || !image.sha256) continue;
+					imagePayloads.push({
+						type: "image",
+						data,
+						mimeType: image.mimeType ?? "image/png",
+						sha256: image.sha256,
+						rn: source.id,
+						index: image.index,
+						...(image.sourcePath ? { sourcePath: image.sourcePath } : {}),
+					});
+				}
+			}
 			for (const id of ids) {
 				const requirement = requirements.find(candidate => candidate.id === id)!;
 				for (const row of requirement.rows) {
@@ -218,11 +290,16 @@ export class RequirementsLedgerRuntime {
 			const protocol = [
 				"QA AUDIT INPUT (original user words; merged sources retain their own Rn):",
 				...sources.map(source => `${source.id} (said at ${source.at}): ${source.rawText}`),
+				...(imageLines.length ? ["Referenced images (Rn, sha256, source):", ...imageLines] : []),
 				"Current linked-row HEAD identities:",
 				...rowHeads,
 				"Return one complete Markdown table with columns id | raw words | verdict | evidence | artifact identity. Cover every linked Rn above, optionally with letter sub-ids for its clauses; verdict pass, fail or unverifiable. Name the exact audited TODO row in artifact identity and its full commit SHA when a clean checkout exists. For rows without a clean checkout, name the observed artifact; freshness uses saved TODO row history. Evidence must name what was actually exercised or observed; no partial table or truncated preview is accepted.",
 			].join("\n");
-			revised[index] = { ...item, task: `${item.task}\n\n${protocol}` };
+			revised[index] = {
+			...item,
+			task: `${item.task}\n\n${protocol}`,
+			...(imagePayloads.length ? { images: imagePayloads } : {}),
+		};
 			assignments.push({
 				ids,
 				snapshot: requirementAuditSnapshot(requirements, ids),

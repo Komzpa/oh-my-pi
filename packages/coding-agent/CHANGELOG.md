@@ -15,7 +15,8 @@
 - Fixed fresh row-scoped `qa-auditor` passes being rejected or erased by unrelated requirement-linked rows. Native todo completion, slash completion, and publication now share the same receipt gate, accept all-pass requirement sub-ids, and use saved row-history freshness when no clean checkout is available.
 - Fixed valid multi-row audits from clean resource worktrees being refused when the auditor runs in a different dirty checkout. Receipts now bind each named row's own artifact, accept Markdown line breaks without rewording requirements, and report the resolved checkout on freshness refusals.
 
-- Fixed requirement receipts for mixed row artifacts: each explicitly named row is bound to its own identity, including an installed binary's current SHA-256, instead of comparing the entire multi-row cell with every row.
+- Fixed requirement receipts for mixed row artifacts:
+- Fixed image-only requirement rows entering an unauditable gate loop: `qa-auditor` now receives each `[Image #N]` reference as real image content with its SHA-256 and source path, and a row whose image bytes and path are both gone becomes `needs-user-restatement` with one user question instead of repeated impossible audit demands. each explicitly named row is bound to its own identity, including an installed binary's current SHA-256, instead of comparing the entire multi-row cell with every row.
 
 ## [18.4.12] - 2026-10-02
 
