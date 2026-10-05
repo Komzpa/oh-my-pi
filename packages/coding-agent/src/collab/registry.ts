@@ -146,7 +146,7 @@ export interface PeerSessionSnapshot {
 export type PeerMessageSender = { kind: "shell"; id?: string } | { kind: "session"; sessionId: string; cwd: string };
 
 export interface PeerDeliveryReceipt {
-	status: "delivered" | "queued" | "failed";
+	status: "delivered" | "queued" | "failed" | "uncertain";
 	target: string;
 	agent: string;
 	outcome?: IrcDeliveryReceipt["outcome"] | "executed" | "queued";
@@ -189,6 +189,7 @@ export type PeerSessionErrorCode =
 	| "ambiguous"
 	| "stale_generation"
 	| "unavailable"
+	| "delivery_uncertain"
 	| "invalid_message"
 	| "invalid_sender"
 	| "rate_limited";
@@ -892,18 +893,25 @@ export async function publishPeerSession(options: PeerSessionPublishOptions): Pr
 	};
 }
 
-type QueryResult<T> = { status: "ok"; value: T } | { status: "dead" } | { status: "skip"; error?: string };
+type QueryResult<T> =
+	| { status: "ok"; value: T }
+	| { status: "dead" }
+	| { status: "skip"; error?: string; requestSent?: boolean };
 
 /** Query one endpoint: connect, authenticate, send one request, read one bounded response line. */
 function query(meta: DiscoveryMetadata, request: object, timeoutMs: number): Promise<QueryResult<unknown>> {
 	const { promise, resolve } = Promise.withResolvers<QueryResult<unknown>>();
 	let buffer = "";
+	let requestSent = false;
+	let settled = false;
 	const socket = net.createConnection({ path: meta.endpoint });
 	const timer = setTimeout(() => finish({ status: "skip" }), timeoutMs);
 	const finish = (result: QueryResult<unknown>): void => {
+		if (settled) return;
+		settled = true;
 		clearTimeout(timer);
 		socket.destroy();
-		resolve(result);
+		resolve(result.status === "skip" ? { ...result, requestSent } : result);
 	};
 	socket.setEncoding("utf8");
 	socket.once("error", err => {
@@ -911,9 +919,12 @@ function query(meta: DiscoveryMetadata, request: object, timeoutMs: number): Pro
 		// means the host is gone. Any other error (EMFILE, EACCES, EAGAIN, …)
 		// says nothing about liveness and must not prune a live host.
 		const code = (err as NodeJS.ErrnoException).code;
-		finish({ status: code === "ENOENT" || code === "ECONNREFUSED" ? "dead" : "skip" });
+		finish({ status: !requestSent && (code === "ENOENT" || code === "ECONNREFUSED") ? "dead" : "skip" });
 	});
 	socket.once("connect", () => {
+		if (settled) return;
+		// Once bytes are handed to the socket, a lost acknowledgement cannot prove non-delivery.
+		requestSent = true;
 		socket.write(`${JSON.stringify({ v: COLLAB_REGISTRY_VERSION, token: meta.token, ...request })}\n`);
 	});
 	socket.on("data", chunk => {
@@ -1157,10 +1168,23 @@ export interface ShellReply {
 export async function readShellReplies(address: string, options?: PeerSessionOptions): Promise<ShellReply[]> {
 	try {
 		const text = await fs.promises.readFile(shellInboxPath(address, options), "utf8");
-		return text
-			.split("\n")
-			.filter(Boolean)
-			.map(line => JSON.parse(line) as ShellReply);
+		const replies: ShellReply[] = [];
+		for (const line of text.split("\n")) {
+			if (!line.trim()) continue;
+			let raw: unknown;
+			try {
+				raw = JSON.parse(line);
+			} catch {
+				// A corrupt record or an unfinished append must not hide later valid replies.
+				continue;
+			}
+			if (typeof raw !== "object" || raw === null) continue;
+			const { from, text, createdAt } = raw as Record<string, unknown>;
+			if (typeof from !== "string" || !from.trim() || typeof text !== "string" || !validPeerMessage(text)) continue;
+			if (typeof createdAt !== "number" || !Number.isFinite(createdAt) || createdAt < 0) continue;
+			replies.push({ from, text, createdAt });
+		}
+		return replies;
 	} catch (error) {
 		if (isEnoent(error)) throw new PeerSessionError("not_found", `unknown shell reply address: ${address}`);
 		throw error;
@@ -1225,7 +1249,10 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 	if (result.status === "ok") {
 		const receipt = parsePeerReceipt((result.value as Record<string, unknown>).receipt);
 		if (receipt) return from.kind === "shell" ? { ...receipt, replyTo: `agent://shell:${from.id}` } : receipt;
-		throw new PeerSessionError("unavailable", `target peer session returned an invalid receipt`);
+		throw new PeerSessionError(
+			"delivery_uncertain",
+			"Peer returned an invalid receipt; delivery may have occurred. Do not retry without checking the target.",
+		);
 	}
 	if (result.status === "skip") {
 		const code = result.error;
@@ -1237,8 +1264,26 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 		) {
 			throw new PeerSessionError(code, `peer delivery rejected: ${code}`);
 		}
+		// These protocol rejections occur before dispatch. Other handler failures
+		// and transport errors after write cannot establish that no effect occurred.
+		const rejectedBeforeDispatch =
+			code !== undefined &&
+			[
+				"malformed_request",
+				"unsupported_protocol",
+				"authentication_failed",
+				"snapshot_unavailable",
+				"invalid_operation",
+				"invalid_agent",
+			].includes(code);
+		if (result.requestSent && !rejectedBeforeDispatch) {
+			throw new PeerSessionError(
+				"delivery_uncertain",
+				"Peer send outcome is uncertain; the accepted handler may still complete. Do not retry without checking the target.",
+			);
+		}
 	}
-	throw new PeerSessionError("unavailable", `target peer session did not answer the send request`);
+	throw new PeerSessionError("unavailable", `target peer session did not accept the send request`);
 }
 
 /**

@@ -147,7 +147,12 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		selectors: "lines",
 		immutable: true,
 		linkable: true,
-		write: { via: "handler", payload: "verbatim", scope: "coordination", tier: () => "read" },
+		write: {
+			via: "handler",
+			payload: "verbatim",
+			scope: "coordination",
+			tier: url => ((url.rawHost || url.hostname).startsWith("peer:") ? "write" : "read"),
+		},
 	};
 
 	constructor(private readonly peerSessions?: PeerSessionOptions) {}
@@ -219,12 +224,12 @@ export class AgentProtocolHandler implements ProtocolHandler {
 						{
 							type: "text",
 							text:
-								receipt.status === "failed"
+								receipt.status === "failed" || receipt.status === "uncertain"
 									? `failed: ${receipt.reason}`
 									: `${receipt.status} to ${receipt.target} ${receipt.agent} (${receipt.outcome})`,
 						},
 					],
-					isError: receipt.status === "failed",
+					isError: receipt.status === "failed" || receipt.status === "uncertain",
 				};
 			} catch (error) {
 				if (!(error instanceof PeerSessionError)) throw error;

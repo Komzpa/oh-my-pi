@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as net from "node:net";
-import { Agent } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -14,6 +14,10 @@ import { parseInternalUrl } from "@oh-my-pi/pi-coding-agent/internal-urls/parse"
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { PeersTool, type PeersToolDetails } from "@oh-my-pi/pi-coding-agent/tools/peers";
+import { resolveApproval } from "@oh-my-pi/pi-coding-agent/tools/approval";
+import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
+import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { WaitTool } from "@oh-my-pi/pi-coding-agent/tools/wait";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -22,6 +26,7 @@ import {
 	type PeerSessionPublication,
 	type PeerSessionSnapshot,
 	listPeerSessions,
+	readShellReplies,
 	publishPeerSession,
 	resolvePeerSession,
 	sendPeerMessage,
@@ -35,7 +40,7 @@ import { callTool } from "@oh-my-pi/pi-coding-agent/mcp/client";
 import { TOOL_NAME, TOOL_RESULT } from "./fixtures/delayed-tool-mcp";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { getMCPConfigPath, prompt } from "@oh-my-pi/pi-utils";
 import ircIncomingTemplate from "../src/prompts/system/irc-incoming.md" with { type: "text" };
 import * as peersCli from "../src/cli/peers-cli";
 
@@ -405,7 +410,7 @@ describe("peer sessions", () => {
 				text: "retry after rejection",
 				from: { kind: "session" as const, sessionId: "sess-rejected-sender", cwd: dir },
 			};
-			await expect(sendPeerMessage(request)).rejects.toMatchObject({ code: "unavailable" });
+			await expect(sendPeerMessage(request)).rejects.toMatchObject({ code: "delivery_uncertain" });
 			expect(await sendPeerMessage(request)).toMatchObject({ status: "delivered" });
 		} finally {
 			rejected.mockRestore();
@@ -1072,4 +1077,291 @@ describe("peer sessions", () => {
 			reason: "not_found",
 		});
 	});
+});
+
+describe("PR23 transport and approval regressions", () => {
+	it("recovers ordered valid inbox records without consuming mixed corrupt and partial lines", async () => {
+		const dir = await tempDir();
+		const id = "a".repeat(32);
+		const inbox = path.join(dir, "shell-inboxes", `${id}.jsonl`);
+		const first = { from: "peer:first", text: "first reply", createdAt: 1 };
+		const second = { from: "peer:second", text: "second reply", createdAt: 2 };
+		const last = { from: "peer:last", text: "last reply", createdAt: 3 };
+		const partial = JSON.stringify(last);
+		const bytes = [
+			JSON.stringify(first),
+			'{"broken":',
+			"null",
+			"{}",
+			"[]",
+			JSON.stringify({ ...first, createdAt: "wrong" }),
+			JSON.stringify({ ...first, text: "" }),
+			JSON.stringify(second),
+			partial.slice(0, -2),
+		].join("\n");
+		await fs.mkdir(path.dirname(inbox), { recursive: true });
+		await fs.writeFile(inbox, bytes);
+		for (const json of [false, true]) {
+			const output: string[] = [];
+			expect(
+				await peersCli.runPeerInboxCommand({ address: `shell:${id}`, json, registry: { dir } }, line =>
+					output.push(line),
+				),
+			).toBe(0);
+			if (json) expect(JSON.parse(output.join("\n")).replies).toEqual([first, second]);
+			else expect(output).toEqual(["peer:first: first reply", "peer:second: second reply"]);
+		}
+		expect(await readShellReplies(`shell:${id}`, { dir })).toEqual([first, second]);
+		expect(await fs.readFile(inbox, "utf8")).toBe(bytes);
+		await fs.appendFile(inbox, `${partial.slice(-2)}\n`);
+		expect(await readShellReplies(`shell:${id}`, { dir })).toEqual([first, second, last]);
+		await expect(readShellReplies(`shell:${"b".repeat(32)}`, { dir })).rejects.toMatchObject({ code: "not_found" });
+		const target = await publishFixture(dir, { sessionId: "inbox-sender-control", cwd: dir });
+		expect(
+			(
+				await sendPeerMessage({
+					registry: { dir },
+					from: { kind: "shell", id },
+					target: target.snapshot.instanceId,
+					text: "still usable",
+				})
+			).status,
+		).toBe("delivered");
+	});
+
+	it("reports an uncertain command timeout and late effects without automatically retrying", async () => {
+		const dir = await tempDir();
+		const release = Promise.withResolvers<void>();
+		const completed = Promise.withResolvers<void>();
+		let started = 0;
+		let effects = 0;
+		const target = await publishFixture(dir, {
+			sessionId: "delayed-review-command",
+			cwd: dir,
+			command: async () => {
+				started++;
+				await release.promise;
+				if (++effects === 2) completed.resolve();
+			},
+		});
+		const args = {
+			registry: { dir, timeoutMs: 100 },
+			from: { kind: "session" as const, sessionId: "same-caller", cwd: dir },
+			target: target.snapshot.instanceId,
+			text: "/known-command",
+		};
+		try {
+			const output: string[] = [];
+			expect(await runPeerSendCommand({ ...args, json: true }, line => output.push(line))).toBe(1);
+			expect(JSON.parse(output.join("\n"))).toMatchObject({ status: "uncertain", reason: "delivery_uncertain" });
+			expect(started).toBe(1);
+			await expect(sendPeerMessage(args)).rejects.toMatchObject({ code: "rate_limited" });
+			await Bun.sleep(1005);
+			expect(started).toBe(1); // There is no automatic transport retry.
+			await expect(sendPeerMessage(args)).rejects.toMatchObject({
+				code: "delivery_uncertain",
+				message: expect.stringContaining("Do not retry"),
+			});
+			expect(started).toBe(2); // Rate limits do not provide idempotency.
+			release.resolve();
+			await completed.promise;
+			expect(effects).toBe(2); // Both accepted handlers can finish after client timeout.
+		} finally {
+			release.resolve();
+		}
+	});
+
+	it("gates actual PeersTool actions through the extension wrapper and resolver", async () => {
+		const dir = await tempDir();
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorages.push(authStorage);
+		const runtime = new ExtensionRuntime();
+		const runner = new ExtensionRunner(
+			[],
+			runtime,
+			dir,
+			SessionManager.inMemory(dir),
+			new ModelRegistry(authStorage),
+		);
+		const tool = new PeersTool({ cwd: dir } as ToolSession);
+		const execute = spyOn(tool, "execute").mockImplementation(async (_id, params) => ({
+			content: [{ type: "text", text: "synthetic effect" }],
+			details: { action: params.action },
+		}));
+		const wrapped = new ExtensionToolWrapper<typeof tool.parameters, PeersToolDetails>(tool, runner);
+		const context = (mode: "always-ask" | "yolo", policy?: "allow" | "deny" | "prompt"): AgentToolContext => ({
+			sessionManager: SessionManager.inMemory(dir),
+			modelRegistry: new ModelRegistry(authStorage),
+			model: undefined,
+			isIdle: () => true,
+			hasQueuedMessages: () => false,
+			abort: () => {},
+			settings: Settings.isolated({
+				"tools.approvalMode": mode,
+				...(policy ? { "tools.approval": { peers: policy } } : {}),
+			}),
+		});
+		const send = { action: "send" as const, target: "fixture", message: "/known-command" };
+		expect(resolveApproval(tool, { action: "list" }, "always-ask")).toMatchObject({ tier: "read", policy: "allow" });
+		expect(resolveApproval(tool, send, "always-ask")).toMatchObject({ tier: "write", policy: "prompt" });
+		await wrapped.execute("list", { action: "list" }, undefined, undefined, context("always-ask"));
+		expect(execute).toHaveBeenCalledTimes(1);
+		await expect(wrapped.execute("send", send, undefined, undefined, context("always-ask"))).rejects.toThrow(
+			"requires approval",
+		);
+		for (const action of [{ action: "list" as const }, send]) {
+			await expect(wrapped.execute("deny", action, undefined, undefined, context("yolo", "deny"))).rejects.toThrow(
+				"blocked by user policy",
+			);
+			await expect(
+				wrapped.execute("prompt", action, undefined, undefined, context("yolo", "prompt")),
+			).rejects.toThrow("requires approval");
+		}
+		expect(execute).toHaveBeenCalledTimes(1);
+		await wrapped.execute("allow", send, undefined, undefined, context("always-ask", "allow"));
+		expect(execute).toHaveBeenCalledTimes(2);
+		const revised = await loadExtensionFromFactory(
+			pi =>
+				pi.on("tool_call", event => {
+					if (event.toolName === "peers") return { input: send };
+				}),
+			dir,
+			new EventBus(),
+			runtime,
+			"peer-approval-rewrite",
+		);
+		const revisedRunner = new ExtensionRunner(
+			[revised],
+			runtime,
+			dir,
+			SessionManager.inMemory(dir),
+			new ModelRegistry(authStorage),
+		);
+		await expect(
+			new ExtensionToolWrapper<typeof tool.parameters, PeersToolDetails>(tool, revisedRunner).execute(
+				"rewrite",
+				{ action: "list" },
+				undefined,
+				undefined,
+				context("always-ask"),
+			),
+		).rejects.toThrow("requires approval");
+		expect(execute).toHaveBeenCalledTimes(2);
+		execute.mockRestore();
+	});
+
+	it("executes one authorized registered command through the actual PeersTool wrapper", async () => {
+		const dir = await tempDir();
+		const previous = Bun.env.OMP_PEER_SESSIONS_DIR;
+		Bun.env.OMP_PEER_SESSIONS_DIR = dir;
+		let effects = 0;
+		try {
+			const target = await publishFixture(dir, {
+				sessionId: "approval-target",
+				cwd: dir,
+				command: () => {
+					effects++;
+				},
+			});
+			const authStorage = await AuthStorage.create(":memory:");
+			authStorages.push(authStorage);
+			const runner = new ExtensionRunner(
+				[],
+				new ExtensionRuntime(),
+				dir,
+				SessionManager.inMemory(dir),
+				new ModelRegistry(authStorage),
+			);
+			const tool = new PeersTool({ cwd: dir, getSessionId: () => "approval-caller" } as ToolSession);
+			const wrapped = new ExtensionToolWrapper<typeof tool.parameters, PeersToolDetails>(tool, runner);
+			const params = { action: "send" as const, target: target.snapshot.instanceId, message: "/known-command" };
+			const context = (settings: Settings): AgentToolContext => ({
+				settings,
+				sessionManager: SessionManager.inMemory(dir),
+				modelRegistry: new ModelRegistry(authStorage),
+				model: undefined,
+				isIdle: () => true,
+				hasQueuedMessages: () => false,
+				abort: () => {},
+			});
+			for (const policy of [undefined, "deny", "prompt"] as const) {
+				const settings = Settings.isolated({
+					"tools.approvalMode": "always-ask",
+					...(policy ? { "tools.approval": { peers: policy } } : {}),
+				});
+				await expect(
+					wrapped.execute(`blocked-${policy}`, params, undefined, undefined, context(settings)),
+				).rejects.toThrow();
+				expect(effects).toBe(0);
+			}
+			const settings = Settings.isolated({
+				"tools.approvalMode": "always-ask",
+				"tools.approval": { peers: "allow" },
+			});
+			const result = await wrapped.execute("approved", params, undefined, undefined, context(settings));
+			expect(result.details?.receipt).toMatchObject({ status: "delivered", outcome: "executed" });
+			expect(effects).toBe(1);
+		} finally {
+			if (previous === undefined) delete Bun.env.OMP_PEER_SESSIONS_DIR;
+			else Bun.env.OMP_PEER_SESSIONS_DIR = previous;
+		}
+	});
+});
+
+describe("PR23 alternate peer entry points", () => {
+	it("requires write approval for peer URLs while preserving intra-session coordination", () => {
+		const tool = new WriteTool({
+			cwd: "/tmp",
+			settings: Settings.isolated(),
+			hasUI: false,
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
+		});
+		expect(
+			resolveApproval(tool, { path: "agent://peer:fixture", content: "/known-command" }, "always-ask"),
+		).toMatchObject({ tier: "write", policy: "prompt" });
+		for (const path of ["agent://Main", `agent://shell:${"a".repeat(32)}`]) {
+			expect(resolveApproval(tool, { path, content: "coordination" }, "always-ask")).toMatchObject({
+				tier: "read",
+				policy: "allow",
+			});
+		}
+	});
+
+	for (const busy of [false, true]) {
+		it(`rejects peer MCP config mutations without a host context before writing (busy=${busy})`, async () => {
+			const dir = await tempDir();
+			const file = getMCPConfigPath("project", dir);
+			await Bun.write(
+				file,
+				JSON.stringify({ mcpServers: { fixture: { type: "http", url: "https://fixture.invalid/mcp" } } }),
+			);
+			const prior = await Bun.file(file).text();
+			const target = await publishFixture(dir, { sessionId: `peer-config-${busy}`, cwd: dir, command: () => {} });
+			const session = sessions.at(-1)!;
+			session.agent.state.isStreaming = busy;
+			try {
+				for (const text of [
+					"/mcp add added --url https://fixture.invalid/mcp",
+					"/mcp remove fixture",
+					"/mcp enable fixture",
+					"/mcp disable fixture",
+				]) {
+					const receipt = await sendPeerMessage({
+						registry: { dir },
+						target: target.snapshot.instanceId,
+						text,
+						from: { kind: "shell" },
+					});
+					expect(receipt).toMatchObject({
+						status: "failed",
+						reason: expect.stringContaining("host command context"),
+					});
+					expect(await Bun.file(file).text()).toBe(prior);
+				}
+			} finally {
+				session.agent.state.isStreaming = false;
+			}
+		});
+	}
 });
