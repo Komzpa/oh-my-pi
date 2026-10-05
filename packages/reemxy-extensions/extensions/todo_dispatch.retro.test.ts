@@ -188,3 +188,43 @@ test("workers that failed on provider errors are not retro participants", async 
     expect(notice).not.toContain("quota-worker");
   } finally { setSystemTime(); }
 });
+
+test.each([
+  ["так. давай объясняй на чём всё блядь застряло", false],
+  ["не только X", false],
+  ["э блядь мы блеклистили ж этого линга", false],
+  ["я же просил не трогать", true],
+  ["не то, переделай", true],
+  ["это худший вариант", false],
+  ["не тактичный ответ и поопять", false],
+  ["НЕ ТАК, исправь", true],
+  ["опять сломалось", true],
+])("user correction retro classification: %s", async (text, due) => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], [
+      { id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 1000, agentId: "worker-a" },
+    ], liveNow + 60_000);
+    await f.handlers.get("input")!({ type: "input", source: "interactive", text }, f.ctx);
+    const notice = await f.check();
+    if (due) expect(notice).toContain("retrospective due (user correction)");
+    else expect(notice).not.toContain("retrospective due");
+  } finally { setSystemTime(); }
+});
+
+test.each([
+  [{ type: "input", source: "interactive", text: "продолжай", images: [{ type: "image", data: "я же просил", mimeType: "image/png" }] }, false],
+  [{ type: "input", source: "extension", text: "я же просил не трогать" }, false],
+  [{ type: "input", source: "rpc", text: "я же просил не трогать" }, true],
+])("user correction retro uses only user text: %j", async (event, due) => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], [
+      { id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 1000, agentId: "worker-a" },
+    ], liveNow + 60_000);
+    await f.handlers.get("input")!(event, f.ctx);
+    const notice = await f.check();
+    if (due) expect(notice).toContain("retrospective due (user correction)");
+    else expect(notice).not.toContain("retrospective due");
+  } finally { setSystemTime(); }
+});

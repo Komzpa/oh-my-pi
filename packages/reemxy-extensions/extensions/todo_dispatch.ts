@@ -728,11 +728,10 @@ function sprintSetKey(rows: string[]): string {
 function rowDeliveryKey(tasks: TaskRow[]): string {
   return sprintSetKey(tasks.map((task) => task.content));
 }
-function isCorrectionInput(event: unknown): boolean {
-  const source = (event as { source?: unknown } | undefined)?.source;
+function isCorrectionInput(text: string, source: string): boolean {
   if (source === "extension") return false;
-  const text = JSON.stringify(event ?? "").toLowerCase();
-  return /ху|бляд|сука|не то|не так|опять|я же просил/i.test(text);
+  // Only whole correction phrases in user text count; profanity and event metadata do not.
+  return /(?<![\p{L}])(?:не то|не так|опять|я же просил)(?![\p{L}])/iu.test(text);
 }
 function isRetroFacilitatorTaskResult(event: unknown): boolean {
   const details = (event as { details?: unknown } | undefined)?.details;
@@ -2381,7 +2380,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       }
     }
     if (singleWriterLane) return;
-    if (isCorrectionInput(event)) sprintState = { ...sprintState, correctionPending: true };
+    if (isCorrectionInput(event.text, event.source)) sprintState = { ...sprintState, correctionPending: true };
   });
   let gitStateCache: { cwd: string; at: number; state: GitIntegrationState | null } | null = null;
   const lastChiefHead = new Map<string, string>();
