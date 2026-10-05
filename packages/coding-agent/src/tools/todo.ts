@@ -24,7 +24,8 @@ import {
 	classifyRequirement,
 	formatDoneGateRefusal,
 	getLatestRequirements,
-	isFreshRequirementVerdict,
+	evaluateRequirementDoneGate,
+	getPersistedRequirementAuditRejections,
 	type RequirementsLedgerAppender,
 } from "./requirements-ledger";
 
@@ -545,6 +546,29 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 		if (phases) return clonePhases(phases);
 	}
 	return [];
+}
+
+/** Last meaningful change to each row in saved todo history. Closing alone does not invalidate QA. */
+export function getTodoRowChanges(entries: readonly SessionEntry[]): Map<string, { at: string; id: string }> {
+	const changes = new Map<string, { at: string; id: string }>();
+	const previous = new Map<string, TodoItem>();
+	for (const entry of entries) {
+		const phases = canonicalTodoPhases(entry);
+		if (!phases) continue;
+		const current = new Map(phases.flatMap(phase => phase.tasks.map(task => [task.content, task] as const)));
+		for (const [row, task] of current) {
+			const old = previous.get(row);
+			const comparable = task.status === "completed" && old ? { ...task, status: old.status } : task;
+			if (!old || JSON.stringify(comparable) !== JSON.stringify(old))
+				changes.set(row, { at: entry.timestamp, id: entry.id });
+		}
+		for (const [row, old] of previous) {
+			if (!current.has(row) && old.status !== "completed") changes.set(row, { at: entry.timestamp, id: entry.id });
+		}
+		previous.clear();
+		for (const [row, task] of current) previous.set(row, task);
+	}
+	return changes;
 }
 
 /** Walk every canonical snapshot on the branch in order, then return the active phases. */
@@ -1146,8 +1170,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		};
 	}
 
-	/** #41's done gate: the extension and direct native path share the same
-	 *  target and fresh-artifact checks before a `done` batch can commit. */
+	/** Native completion delegates row evidence and refusal reasons to the shared ledger owner. */
 	async #doneGate(
 		params: Record<string, unknown>,
 		previousPhases: TodoPhase[],
@@ -1164,49 +1187,24 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		const selectorErrors: string[] = [];
 		const targets = getCompletionTargets(previousPhases, { task, phase, items }, selectorErrors);
 		if (selectorErrors.length === 0) {
-			const targetRows = new Set<string>();
-			for (const target of targets) targetRows.add(target.content);
-			const requirements = getLatestRequirements(sessionManager.getBranch());
-			const applicable = requirements.filter(
-				requirement => requirement.classification === "linked" && requirement.rows.some(row => targetRows.has(row)),
-			);
-			const artifacts = new Map<string, Promise<RequirementRowArtifact>>();
+			const branch = sessionManager.getBranch();
+			const changes = getTodoRowChanges(branch);
 			const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
-			for (const requirement of applicable) {
-				const verdict = requirement.verdict;
-				if (!verdict || verdict.status !== "pass" || verdict.auditor !== "qa-auditor") continue;
-				for (const row of requirement.rows) {
-					if (!artifacts.has(row)) {
-						artifacts.set(
-							row,
-							getRequirementRowArtifact(
-								{ cwd: this.session.cwd, sessionManager, signal },
-								row,
-								previousPhases,
-								checkoutCache,
-							),
-						);
-					}
-				}
-			}
-			const unmet: string[] = [];
-			for (const requirement of applicable) {
-				const rowArtifacts = await Promise.all(
-					requirement.rows.map(async row => {
-						const artifact = await artifacts.get(row);
-						return artifact ? { row, head: artifact.head, dirty: artifact.dirty } : null;
-					}),
-				);
-				if (
-					!isFreshRequirementVerdict(
-						requirement,
-						rowArtifacts.filter(item => item !== null),
-					)
-				) {
-					const rows = requirement.rows.filter(row => targetRows.has(row));
-					unmet.push(`${requirement.id} (${rows.map(row => JSON.stringify(row)).join(", ")})`);
-				}
-			}
+			const open = await evaluateRequirementDoneGate(
+				getLatestRequirements(branch),
+				targets.map(target => target.content),
+				async row => ({
+					...(await getRequirementRowArtifact(
+						{ cwd: this.session.cwd, sessionManager, signal },
+						row,
+						previousPhases,
+						checkoutCache,
+					)),
+					lastChange: changes.get(row),
+				}),
+				getPersistedRequirementAuditRejections(branch, sessionManager.getSessionId?.() ?? null),
+			);
+			const unmet = open.flatMap(item => item.issues);
 			if (unmet.length > 0) {
 				return {
 					content: [

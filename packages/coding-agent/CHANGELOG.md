@@ -10,6 +10,7 @@
 ### Fixed
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
+- Fixed fresh row-scoped `qa-auditor` passes being rejected or erased by unrelated requirement-linked rows. Native todo completion, slash completion, and publication now share the same receipt gate, accept all-pass requirement sub-ids, and use saved row-history freshness when no clean checkout is available.
 
 ## [18.4.12] - 2026-10-02
 

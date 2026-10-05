@@ -17,6 +17,9 @@ export interface RequirementVerdict {
 	rawWords?: string;
 	/** Clean row HEADs captured when QA was dispatched, keyed by linked row. */
 	boundHeads?: Record<string, string>;
+	/** Row receipt time and the saved todo change it reviewed (ties within one millisecond stay ordered). */
+	receivedAt?: string;
+	rowChangeId?: string;
 }
 
 export interface RequirementLedgerItem {
@@ -28,6 +31,8 @@ export interface RequirementLedgerItem {
 	reason?: string;
 	mergeInto?: string;
 	verdict?: RequirementVerdict;
+	/** Canonical receipts are scoped to a row; `verdict` is only the legacy snapshot input. */
+	rowVerdicts?: Record<string, RequirementVerdict>;
 }
 
 export interface RequirementsLedgerData {
@@ -59,6 +64,38 @@ const CLASSIFICATIONS: Record<RequirementClassification, true> = {
 	merged: true,
 };
 const VERDICT_STATUSES: Record<RequirementVerdictStatus, true> = { pass: true, fail: true, unverifiable: true };
+
+function parseVerdict(value: unknown): RequirementVerdict | undefined {
+	if (
+		!isRecord(value) ||
+		typeof value.status !== "string" ||
+		!Object.hasOwn(VERDICT_STATUSES, value.status) ||
+		typeof value.evidence !== "string" ||
+		typeof value.artifact !== "string" ||
+		typeof value.workerId !== "string" ||
+		(value.status === "pass" && (!value.evidence.trim() || !value.artifact.trim() || !value.workerId.trim())) ||
+		(value.receivedAt !== undefined &&
+			(typeof value.receivedAt !== "string" ||
+				!ISO_TIMESTAMP.test(value.receivedAt) ||
+				!Number.isFinite(Date.parse(value.receivedAt)))) ||
+		(value.rowChangeId !== undefined && typeof value.rowChangeId !== "string")
+	)
+		return undefined;
+	return {
+		status: value.status as RequirementVerdictStatus,
+		evidence: value.evidence,
+		artifact: value.artifact,
+		workerId: value.workerId,
+		...(value.auditor === "qa-auditor" ? { auditor: "qa-auditor" as const } : {}),
+		...(typeof value.rawWords === "string" && value.rawWords.trim() ? { rawWords: value.rawWords } : {}),
+		...(isRecord(value.boundHeads) &&
+		Object.values(value.boundHeads).every(head => typeof head === "string" && FULL_COMMIT_SHA.test(head))
+			? { boundHeads: value.boundHeads as Record<string, string> }
+			: {}),
+		...(typeof value.receivedAt === "string" ? { receivedAt: value.receivedAt } : {}),
+		...(typeof value.rowChangeId === "string" ? { rowChangeId: value.rowChangeId } : {}),
+	};
+}
 
 function parseRequirement(value: unknown): RequirementLedgerItem | undefined {
 	if (
@@ -94,36 +131,22 @@ function parseRequirement(value: unknown): RequirementLedgerItem | undefined {
 	}
 	if ((value.classification === "merged") !== (value.mergeInto !== undefined)) return undefined;
 
-	let verdict: RequirementVerdict | undefined;
-	if (value.verdict !== undefined) {
-		if (
-			!isRecord(value.verdict) ||
-			typeof value.verdict.status !== "string" ||
-			!Object.hasOwn(VERDICT_STATUSES, value.verdict.status) ||
-			typeof value.verdict.evidence !== "string" ||
-			typeof value.verdict.artifact !== "string" ||
-			typeof value.verdict.workerId !== "string" ||
-			(value.verdict.status === "pass" &&
-				(value.verdict.evidence.trim().length === 0 ||
-					value.verdict.artifact.trim().length === 0 ||
-					value.verdict.workerId.trim().length === 0))
-		) {
-			return undefined;
+	const verdict = value.verdict === undefined ? undefined : parseVerdict(value.verdict);
+	if (value.verdict !== undefined && !verdict) return undefined;
+	let rowVerdicts: Record<string, RequirementVerdict> | undefined;
+	if (value.rowVerdicts !== undefined) {
+		if (!isRecord(value.rowVerdicts)) return undefined;
+		rowVerdicts = {};
+		for (const [row, receipt] of Object.entries(value.rowVerdicts)) {
+			const parsed = parseVerdict(receipt);
+			if (!value.rows.includes(row) || !parsed || !parsed.receivedAt) return undefined;
+			Object.defineProperty(rowVerdicts, row, {
+				value: parsed,
+				enumerable: true,
+				configurable: true,
+				writable: true,
+			});
 		}
-		verdict = {
-			status: value.verdict.status as RequirementVerdictStatus,
-			evidence: value.verdict.evidence,
-			artifact: value.verdict.artifact,
-			workerId: value.verdict.workerId,
-			...(value.verdict.auditor === "qa-auditor" ? { auditor: "qa-auditor" as const } : {}),
-			...(typeof value.verdict.rawWords === "string" && value.verdict.rawWords.trim().length > 0
-				? { rawWords: value.verdict.rawWords }
-				: {}),
-			...(isRecord(value.verdict.boundHeads) &&
-			Object.values(value.verdict.boundHeads).every(head => typeof head === "string" && FULL_COMMIT_SHA.test(head))
-				? { boundHeads: value.verdict.boundHeads as Record<string, string> }
-				: {}),
-		};
 	}
 	return {
 		id: value.id,
@@ -134,6 +157,7 @@ function parseRequirement(value: unknown): RequirementLedgerItem | undefined {
 		...(value.reason === undefined ? {} : { reason: value.reason }),
 		...(value.mergeInto === undefined ? {} : { mergeInto: value.mergeInto }),
 		...(verdict === undefined ? {} : { verdict }),
+		...(rowVerdicts === undefined ? {} : { rowVerdicts }),
 	};
 }
 
@@ -266,6 +290,7 @@ export function classifyRequirement(
 	};
 	delete updatedSource.mergeInto;
 	delete updatedSource.verdict;
+	delete updatedSource.rowVerdicts;
 
 	if (classification === "linked") {
 		if (
@@ -306,6 +331,7 @@ export function classifyRequirement(
 			verdict: undefined,
 		};
 		delete next[targetIndex]!.verdict;
+		delete next[targetIndex]!.rowVerdicts;
 		updatedSource.mergeInto = mergeInto;
 	}
 
@@ -322,8 +348,9 @@ export function countRequirements(requirements: readonly RequirementLedgerItem[]
 		if (requirement.classification !== "candidate" && requirement.classification !== "linked") continue;
 		total++;
 		if (requirement.classification !== "linked") continue;
-		if (requirement.verdict?.status === "pass" && requirement.verdict.auditor === "qa-auditor") passed++;
-		else if (requirement.verdict?.status === "fail") failed++;
+		const verdicts = requirement.rows.map(row => getRequirementRowVerdict(requirement, row));
+		if (verdicts.every(verdict => verdict?.status === "pass" && verdict.auditor === "qa-auditor")) passed++;
+		else if (verdicts.some(verdict => verdict?.status === "fail")) failed++;
 	}
 	return { total, passed, failed, open: total - passed - failed };
 }
@@ -333,65 +360,104 @@ export function isRequirementLinkedToRow(requirements: readonly RequirementLedge
 	return requirements.some(requirement => requirement.classification === "linked" && requirement.rows.includes(row));
 }
 
-/**
- * A persisted pass is current only when its raw-words echo still matches the
- * immutable ask and it names every linked row's exact, clean artifact — one
- * audited commit per linked row, in linked-row order. Auditor-profile
- * authentication happens before the extension persists the pass; this shared
- * check validates its durable row evidence.
- */
+/** Read a row receipt, or project an old all-row receipt onto its corresponding artifact. */
+export function getRequirementRowVerdict(
+	requirement: RequirementLedgerItem,
+	row: string,
+): RequirementVerdict | undefined {
+	if (requirement.rowVerdicts && Object.hasOwn(requirement.rowVerdicts, row)) return requirement.rowVerdicts[row];
+	const verdict = requirement.verdict;
+	if (!verdict || !requirement.rows.includes(row)) return undefined;
+	if (requirement.rows.length === 1) return verdict;
+	const heads = [...verdict.artifact.matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!);
+	if (heads.length !== requirement.rows.length) return undefined;
+	return { ...verdict, artifact: heads[requirement.rows.indexOf(row)]! };
+}
+
+export interface RequirementGateArtifact {
+	head: string | null;
+	dirty: boolean;
+	lastChange?: { at: string; id: string };
+}
+
+/** The one freshness rule, evaluated only for the rows being closed or published. */
 export function isFreshRequirementVerdict(
 	requirement: RequirementLedgerItem,
-	artifacts: readonly { row: string; head: string | null; dirty: boolean }[],
+	artifacts: readonly ({ row: string } & RequirementGateArtifact)[],
 ): boolean {
-	const verdict = requirement.verdict;
-	if (
-		requirement.classification !== "linked" ||
-		verdict?.status !== "pass" ||
-		verdict.auditor !== "qa-auditor" ||
-		!verdict.workerId.trim() ||
-		requirement.rows.length === 0 ||
-		artifacts.length !== requirement.rows.length
-	) {
-		return false;
-	}
-	if (
-		verdict.rawWords !== undefined &&
-		verdict.rawWords.replace(/\s+/g, " ").trim() !== requirement.rawText.replace(/\s+/g, " ").trim()
-	) {
-		return false;
-	}
-
-	const rowSet = new Set(requirement.rows);
-	const artifactRows = new Set<string>();
-	const currentHeadByRow = new Map<string, string>();
-	for (const artifact of artifacts) {
+	if (requirement.classification !== "linked" || artifacts.length === 0) return false;
+	const seen = new Set<string>();
+	return artifacts.every(current => {
+		if (!requirement.rows.includes(current.row) || seen.has(current.row)) return false;
+		seen.add(current.row);
+		const verdict = getRequirementRowVerdict(requirement, current.row);
+		if (verdict?.status !== "pass" || verdict.auditor !== "qa-auditor" || !verdict.workerId.trim()) return false;
 		if (
-			!rowSet.has(artifact.row) ||
-			artifactRows.has(artifact.row) ||
-			artifact.dirty !== false ||
-			typeof artifact.head !== "string" ||
-			!FULL_COMMIT_SHA.test(artifact.head)
-		) {
+			verdict.rawWords !== undefined &&
+			verdict.rawWords.replace(/\s+/g, " ").trim() !== requirement.rawText.replace(/\s+/g, " ").trim()
+		)
 			return false;
+		if (!current.head || current.dirty) {
+			return (
+				!!verdict.receivedAt &&
+				!!current.lastChange &&
+				verdict.rowChangeId === current.lastChange.id &&
+				Date.parse(verdict.receivedAt) >= Date.parse(current.lastChange.at)
+			);
 		}
-		artifactRows.add(artifact.row);
-		currentHeadByRow.set(artifact.row, artifact.head.toLowerCase());
-	}
-	if (artifactRows.size !== rowSet.size) return false;
+		if (!FULL_COMMIT_SHA.test(current.head)) return false;
+		const heads = new Set(
+			[...verdict.artifact.matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!.toLowerCase()),
+		);
+		return (
+			heads.size === 1 &&
+			(heads.has(current.head.toLowerCase()) ||
+				(!!verdict.boundHeads?.[current.row] && heads.has(verdict.boundHeads[current.row]!.toLowerCase())))
+		);
+	});
+}
 
-	const auditedHeads = [...verdict.artifact.matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!.toLowerCase());
-	if (auditedHeads.length === 0) return false;
-	const allowedHead = (row: string, audited: string) =>
-		audited === currentHeadByRow.get(row) || audited === verdict.boundHeads?.[row]?.toLowerCase();
-	if (requirement.rows.length === 1) {
-		const audited = new Set(auditedHeads);
-		return audited.size === 1 && allowedHead(requirement.rows[0]!, [...audited][0]!);
+/** All completion surfaces use this owner for row selection, freshness, and refusal reasons. */
+export async function evaluateRequirementDoneGate(
+	requirements: readonly RequirementLedgerItem[],
+	rows: readonly string[],
+	getArtifact: (row: string) => Promise<RequirementGateArtifact>,
+	rejections: ReadonlyMap<string, string> = new Map(),
+): Promise<Array<{ requirement: RequirementLedgerItem; issues: string[] }>> {
+	const targets = new Set(rows);
+	const artifacts = new Map<string, Promise<RequirementGateArtifact>>();
+	const open: Array<{ requirement: RequirementLedgerItem; issues: string[] }> = [];
+	for (const requirement of requirements) {
+		if (requirement.classification !== "linked") continue;
+		const issues: string[] = [];
+		for (const row of requirement.rows) {
+			if (!targets.has(row)) continue;
+			const verdict = getRequirementRowVerdict(requirement, row);
+			let reason: string | undefined;
+			if (!verdict) reason = `${requirement.id} needs a fresh qa-auditor pass`;
+			else if (verdict.status !== "pass")
+				reason = `${requirement.id} ${verdict.status === "fail" ? "failed" : "unverifiable"}: ${verdict.evidence}`;
+			else if (!verdict.workerId.trim() || verdict.auditor !== "qa-auditor")
+				reason = `${requirement.id} has no authenticated qa-auditor identity on its receipt`;
+			else {
+				let artifact = artifacts.get(row);
+				if (!artifact) {
+					artifact = getArtifact(row);
+					artifacts.set(row, artifact);
+				}
+				if (!isFreshRequirementVerdict(requirement, [{ row, ...(await artifact) }]))
+					reason = `${requirement.id} pass is stale: artifact ${verdict.artifact} does not match the current row artifact or saved todo change`;
+			}
+			if (reason) {
+				const rejection = rejections.get(requirement.id);
+				issues.push(
+					`${requirement.id} (${JSON.stringify(row)}): ${reason}${rejection ? `; rejected receipt: ${rejection}` : ""}`,
+				);
+			}
+		}
+		if (issues.length) open.push({ requirement, issues });
 	}
-	return (
-		auditedHeads.length === requirement.rows.length &&
-		requirement.rows.every((row, index) => allowedHead(row, auditedHeads[index]!))
-	);
+	return open;
 }
 
 export function getRequirementAuditSources(
@@ -419,6 +485,8 @@ export interface RequirementAuditAssignment {
 	workerId?: string;
 	index?: number;
 	boundHeads?: Record<string, string>;
+	/** Explicit row scope from the audit task; absent on old all-row assignments. */
+	rows?: string[];
 }
 /** Candidates become overdue after an assistant turn ends later in the same branch. */
 export function getOverdueRequirementCandidates(entries: readonly SessionEntry[]): RequirementLedgerItem[] {
@@ -482,6 +550,7 @@ export function parseRequirementReceipt(
 	status: RequirementVerdictStatus;
 	evidence: string;
 	artifact: string;
+	subIds?: string[];
 }> | null {
 	const expected = new Set(expectedIds);
 	if (expected.size === 0 || expected.size !== expectedIds.length) return null;
@@ -554,8 +623,8 @@ export function parseRequirementReceipt(
 		const evidence = cells[header.evidence]!;
 		const artifact = cells[header.artifact]!;
 		if (
-			!/^R[1-9]\d*$/.test(id) ||
-			!expected.has(id) ||
+			!/^R[1-9]\d*[a-z]?$/.test(id) ||
+			!expected.has(id.replace(/[a-z]$/, "")) ||
 			!rawWords ||
 			!Object.hasOwn(VERDICT_STATUSES, status) ||
 			!evidence ||
@@ -565,8 +634,26 @@ export function parseRequirementReceipt(
 		}
 		rows.push({ id, rawWords, status: status as RequirementVerdictStatus, evidence, artifact });
 	}
-	if (rows.length !== expected.size || new Set(rows.map(row => row.id)).size !== expected.size) return null;
-	return rows;
+	if (new Set(rows.map(row => row.id)).size !== rows.length) return null;
+	const grouped = expectedIds.map(id => {
+		const parts = rows.filter(row => row.id.replace(/[a-z]$/, "") === id);
+		if (!parts.length || (parts.length > 1 && parts.some(row => row.id === id))) return null;
+		if (parts.length === 1 && parts[0]!.id === id) return parts[0]!;
+		const status = parts.some(row => row.status === "fail")
+			? "fail"
+			: parts.some(row => row.status === "unverifiable")
+				? "unverifiable"
+				: "pass";
+		return {
+			id,
+			rawWords: parts.map(row => row.rawWords).join("; "),
+			status: status as RequirementVerdictStatus,
+			evidence: parts.map(row => `${row.id}: ${row.evidence}`).join("; "),
+			artifact: parts.map(row => row.artifact).join("; "),
+			subIds: parts.map(row => row.id),
+		};
+	});
+	return grouped.some(row => row === null) ? null : grouped.filter(row => row !== null);
 }
 
 /** Restore rejected QA receipt reasons from the newest assignment snapshot. */
@@ -653,6 +740,16 @@ export function getPersistedRequirementAuditorAssignments(
 				snapshot,
 				sessionId,
 				...(isRecord(value.boundHeads) ? { boundHeads: value.boundHeads as Record<string, string> } : {}),
+				...(Array.isArray(value.rows) &&
+				value.rows.every(
+					row =>
+						typeof row === "string" &&
+						requirementIds.some(id =>
+							requirements.find(requirement => requirement.id === id)?.rows.includes(row),
+						),
+				)
+					? { rows: value.rows as string[] }
+					: {}),
 			});
 		}
 		return restored;
@@ -700,5 +797,5 @@ export function formatPublicationReplacement(
 
 /** Done-gate refusal for linked rows without a fresh qa-auditor pass. */
 export function formatDoneGateRefusal(unmet: readonly string[]): string {
-	return `Blocked: todo done is blocked until every linked requirement has a fresh qa-auditor pass for the current clean row artifact: ${unmet.join("; ")}. Request a fresh qa-auditor pass with task agent="qa-auditor", task="Audit <Rn> at the current clean row HEAD", then retry todo with op="done", task="<exact row>" (or op="done", items=["<row1>", ...])`;
+	return `Blocked: todo done is blocked until every linked requirement has a fresh qa-auditor pass for this row artifact: ${unmet.join("; ")}. Request a fresh qa-auditor pass with task agent="qa-auditor", task="Audit <Rn> for <exact row> at its current artifact", then retry todo with op="done", task="<exact row>" (or op="done", items=["<row1>", ...])`;
 }

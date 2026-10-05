@@ -5,6 +5,8 @@ import { join } from "node:path";
 
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { describe, expect, it } from "bun:test";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
 import {
 	RequirementsLedgerRuntime,
@@ -17,6 +19,7 @@ import {
 	createRequirementCandidates,
 	getLatestRequirements,
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+	getPersistedRequirementAuditRejections,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import {
 	getLatestTodoPhasesFromEntries,
@@ -109,7 +112,7 @@ describe("requirements ledger auditor binding", () => {
 				isError: false,
 			} as never);
 			expect(outcome).toBeUndefined();
-			const verdict = getLatestRequirements(manager.getBranch())[0]?.verdict;
+			const verdict = getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"];
 			expect(verdict?.status).toBe("pass");
 			expect(verdict?.workerId).toBe("worker-1");
 			expect(verdict?.auditor).toBe("qa-auditor");
@@ -147,7 +150,7 @@ describe("requirements ledger auditor binding", () => {
 				isError: false,
 			} as never);
 			expect(outcome?.content?.[0]).toMatchObject({ type: "text" });
-			expect(getLatestRequirements(manager.getBranch())[0]?.verdict).toBeUndefined();
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts).toBeUndefined();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -176,7 +179,7 @@ describe("requirements ledger auditor binding", () => {
 				content: envelope,
 				details: { jobs: [{ type: "task", jobId: "job-async", agentId: "worker-async" }] },
 			});
-			const verdict = getLatestRequirements(manager.getBranch())[0]?.verdict;
+			const verdict = getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"];
 			expect(verdict?.status).toBe("pass");
 			expect(verdict?.workerId).toBe("worker-async");
 		} finally {
@@ -213,7 +216,7 @@ describe("requirements ledger auditor binding", () => {
 			expect(JSON.stringify(notice)).toContain(
 				"R1 needs a fresh qa-auditor pass; rejected receipt: R1: malformed or partial verdict table",
 			);
-			expect(getLatestRequirements(manager.getBranch())[0]?.verdict).toBeUndefined();
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts).toBeUndefined();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -238,7 +241,7 @@ describe("requirements ledger auditor binding", () => {
 				},
 				isError: false,
 			} as never);
-			expect(getLatestRequirements(manager.getBranch())[0]?.verdict?.status).toBe("pass");
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]?.status).toBe("pass");
 			writeFileSync(join(cwd, "artifact.txt"), "changed after audit\n");
 			git(cwd, "add", "artifact.txt");
 			git(cwd, "commit", "-m", "changed artifact");
@@ -250,7 +253,8 @@ describe("requirements ledger auditor binding", () => {
 			);
 			expect(verdict).toMatchObject({ settled: true });
 			expect(JSON.stringify(verdict)).toContain("R1");
-			expect(getLatestRequirements(manager.getBranch())[0]?.verdict).toBeUndefined();
+			// Publication refuses the stale row without erasing its durable evidence.
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]?.status).toBe("pass");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -329,7 +333,7 @@ describe("requirements ledger auditor binding", () => {
 				isError: false,
 			} as never);
 			expect(outcome?.content?.[0]).toMatchObject({ type: "text" });
-			expect(getLatestRequirements(manager.getBranch())[0]?.verdict).toBeUndefined();
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts).toBeUndefined();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -392,7 +396,7 @@ describe("receipt recording across delivery channels and worker renames", () => 
 				},
 				isError: false,
 			} as never);
-			const verdict = getLatestRequirements(manager.getBranch())[0]?.verdict;
+			const verdict = getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"];
 			expect(verdict?.status).toBe("pass");
 			expect(verdict?.workerId).toBe("worker-wait");
 			expect(verdict?.auditor).toBe("qa-auditor");
@@ -422,7 +426,7 @@ describe("receipt recording across delivery channels and worker renames", () => 
 					},
 				],
 			});
-			const verdict = getLatestRequirements(manager.getBranch())[0]?.verdict;
+			const verdict = getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"];
 			expect(verdict?.status).toBe("pass");
 			expect(verdict?.workerId).toBe("FreeRoutesInstallVerdict-2");
 		} finally {
@@ -464,7 +468,7 @@ describe("receipt recording across delivery channels and worker renames", () => 
 				},
 				isError: false,
 			} as never);
-			expect(getLatestRequirements(manager.getBranch())[0]?.verdict).toBeUndefined();
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts).toBeUndefined();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -577,6 +581,177 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 				new AbortController().signal,
 			);
 			expect(published).toBeUndefined();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("real row-scoped auditor receipts", () => {
+	it("replays R16 sub-id and R17 JSON wait receipts through the native done gate", async () => {
+		const { cwd, manager, runtime, gate } = fixture();
+		const row = "Match leader colour to frame and thin frames";
+		const other = "Land four review lanes and serve result";
+		const raw = "линии выноски сделай так чтобы в рамку по цвету подходили. а сами рамки не такие толстые.";
+		try {
+			const head = git(cwd, "rev-parse", "HEAD");
+			let phases: TodoPhase[] = [
+				{
+					name: "Work",
+					tasks: [
+						{ content: row, status: "pending", artifactCwd: cwd, artifactOwner: "main" },
+						{ content: other, status: "pending" },
+					],
+				},
+			];
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			const requirement = {
+				...createRequirementCandidates([], [raw], AT)[0]!,
+				id: "R16",
+				classification: "linked" as const,
+				rows: [row, other],
+			};
+			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [
+				requirement,
+			]);
+			const tool = new TodoTool({
+				cwd,
+				hasUI: false,
+				settings: Settings.isolated(),
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				sessionManager: manager,
+				getTodoPhases: () => phases,
+				setTodoPhases: next => {
+					phases = next;
+				},
+			} as ToolSession);
+			// Session 01a0fc32, AuditR16LeaderStyle: yield.data.result used R16e/f/g.
+			const table = [
+				"| id | raw words | verdict | evidence | artifact identity |",
+				"|---|---|---|---|---|",
+				`| R16e | линии выноски сделай так чтобы в рамку по цвету подходили | pass | e2e/facility-callout-frame-colour.spec.ts:71 asserts leaderColour equals frameColour | ${row} @ ${head} |`,
+				`| R16f | а сами рамки не такие толстые | pass | e2e/facility-callout-frame-colour.spec.ts:67-68 asserts width 1 texture px | ${row} @ ${head} |`,
+				`| R16g | check that the requirement clause is written in doc/product-requirements.md. | pass | doc/product-requirements.md contains the clause | ${row} @ ${head} |`,
+			].join("\n");
+			async function deliver(output: string, worker: string, auditedRow = row): Promise<void> {
+				await runtime.prepareAuditorTaskCall("task", worker, {
+					agent: "qa-auditor",
+					task: `Audit R16 at the current clean row HEAD for the row '${auditedRow}'.`,
+				});
+				await runtime.afterToolCall({
+					toolCall: { id: worker, name: "task" },
+					result: { content: [], details: { progress: [{ index: 0, agent: "qa-auditor", id: worker }] } },
+					isError: false,
+				} as never);
+				await runtime.afterToolCall({
+					toolCall: { id: `wait-${worker}`, name: "wait" },
+					result: {
+						content: [
+							{
+								type: "text",
+								text: `<task-result id="${worker}" agent="qa-auditor" status="completed"><output>${output}</output></task-result>`,
+							},
+						],
+					},
+					isError: false,
+				} as never);
+			}
+			await deliver(JSON.stringify({ result: table }), "AuditR16LeaderStyle");
+			const firstReceipt = getLatestRequirements(manager.getBranch())[0]!.rowVerdicts![row];
+			expect(firstReceipt?.receivedAt).toBeDefined();
+			expect((await tool.execute("other-row-no-pass", { op: "done", task: other })).isError).toBe(true);
+			const notice = await gate()?.(
+				{ content: [{ type: "text", text: "result" }], stopReason: "stop" } as never,
+				new AbortController().signal,
+			);
+			expect(JSON.stringify(notice)).toContain(other);
+			expect(getLatestRequirements(manager.getBranch())[0]!.rowVerdicts![row]).toEqual(firstReceipt);
+			const done = await tool.execute("done", { op: "done", task: row });
+			expect(done.isError).toBeUndefined();
+			expect(phases[0]!.tasks.map(task => task.status)).toEqual(["completed", "in_progress"]);
+			await deliver(
+				JSON.stringify({
+					result: `| id | raw words | verdict | evidence | artifact identity |\n|---|---|---|---|---|\n| R16 | ${raw} | pass | exercised the other lane | ${other} @ ${head} |`,
+				}),
+				"AuditOtherRow",
+				other,
+			);
+			expect(getLatestRequirements(manager.getBranch())[0]!.rowVerdicts![row]).toEqual(firstReceipt);
+			expect(getLatestRequirements(manager.getBranch())[0]!.rowVerdicts![other]?.status).toBe("pass");
+			phases[0]!.tasks[0]!.status = "pending";
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			await deliver(
+				JSON.stringify({
+					result: table.replace(
+						"| R16f | а сами рамки не такие толстые | pass",
+						"| R16f | а сами рамки не такие толстые | fail",
+					),
+				}),
+				"AuditR16Failed",
+			);
+			expect((await tool.execute("failed", { op: "done", task: row })).isError).toBe(true);
+			expect(getLatestRequirements(manager.getBranch())[0]!.rowVerdicts![other]?.status).toBe("pass");
+			await deliver(
+				JSON.stringify({
+					result: table.replace(
+						"| R16f | а сами рамки не такие толстые | pass",
+						"| R16f | а сами рамки не такие толстые | unverifiable",
+					),
+				}),
+				"AuditR16Unverifiable",
+			);
+			expect((await tool.execute("unverifiable", { op: "done", task: row })).isError).toBe(true);
+			await deliver(JSON.stringify({ result: table.replaceAll(head, "f".repeat(40)) }), "AuditOtherArtifact");
+			expect((await tool.execute("wrong-artifact", { op: "done", task: row })).isError).toBe(true);
+			const rejection = getPersistedRequirementAuditRejections(manager.getBranch(), manager.getHeader()!.id).get(
+				"R16",
+			);
+			const refused = await tool.execute("refusal-parity", { op: "done", task: row });
+			expect(JSON.stringify(refused.content)).toContain(`rejected receipt: ${rejection}`);
+			// Session 01a0f9b1, QaBashEnvOnWave5-2: JSON {answer,table}, no clean row checkout.
+			const scratch = "Fix bash service async and env passthrough";
+			phases = [
+				{
+					name: "Work",
+					tasks: [
+						{ content: scratch, status: "pending", artifactCwd: join(cwd, "missing"), artifactOwner: "main" },
+					],
+				},
+			];
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			const bashRaw = "ну иди пересмотри весь report_issue и почини беды с omp";
+			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [
+				{ ...requirement, id: "R17", rawText: bashRaw, rows: [scratch, other] },
+			]);
+			await runtime.prepareAuditorTaskCall("task", "bash", {
+				agent: "qa-auditor",
+				task: `Audit R17 at the current clean row HEAD for the row "${scratch}".`,
+			});
+			await runtime.afterToolCall({
+				toolCall: { id: "bash", name: "task" },
+				result: {
+					content: [],
+					details: { progress: [{ index: 0, agent: "qa-auditor", id: "QaBashEnvOnWave5-2" }] },
+				},
+				isError: false,
+			} as never);
+			await runtime.afterToolCall({
+				toolCall: { id: "wait-bash", name: "wait" },
+				result: {
+					content: [
+						{
+							type: "text",
+							text: `<task-result id="QaBashEnvOnWave5-2" agent="qa-auditor" status="completed"><output>${JSON.stringify({ answer: "Is there a much simpler different way?", table: `| id | raw words | verdict | evidence | artifact identity |\n|---|---|---|---|---|\n| R17 | ${bashRaw} | pass | run1/run3: async deferred, ASYNC=a222, SVC=s333 ready=true | ${scratch} @ b7f9906086b62d47062b5db087ca85a4288ba2fa |` })}</output></task-result>`,
+						},
+					],
+				},
+				isError: false,
+			} as never);
+			expect((await tool.execute("done-bash", { op: "done", task: scratch })).isError).toBeUndefined();
+			phases[0]!.tasks[0]!.status = "in_progress";
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			expect((await tool.execute("stale-bash", { op: "done", task: scratch })).isError).toBe(true);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

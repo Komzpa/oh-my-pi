@@ -105,6 +105,13 @@ Normalization then re-applies the single-active-task rule after the op runs.
 - `append` is the only op that creates a missing phase.
 - `init` discards previous phases entirely.
 
+### Requirement completion gate
+
+Native `todo done`, `/todo done`, and assistant publication share `evaluateRequirementDoneGate` in `requirements-ledger.ts`. A row needs a fresh authenticated `qa-auditor` pass for every requirement linked to that row, not passes for unrelated linked rows. Receipts are saved per row with their receive time; a later receipt for another row cannot replace them. Legacy all-row receipts remain readable and are projected onto their corresponding artifacts.
+
+Receipts may use requirement sub-ids such as `R16e`, `R16f`, and `R16g`. They count toward `R16` only when the complete table is valid and every sub-verdict passes; any fail or unverifiable verdict blocks. An explicit row label binds the receipt to that row. Clean checkouts require the audited commit identity; rows without a clean checkout use the receive time and the last saved todo-row change. Completion itself does not invalidate its approving receipt, but reopening or changing the row does. All three gate surfaces retain rejected-receipt reasons.
+
+
 ### Markdown round-trip helpers
 The same file also exposes non-tool helpers used by `/todo`:
 - `phasesToMarkdown(...)` serializes phases as headings plus checklist items (`[ ]`, `[/]`, `[x]`, `[-]`, `[!]`). A blocked reason is preserved in a trailing `<!-- blocker: ... -->` comment.

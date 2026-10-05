@@ -16,6 +16,8 @@ import {
 	getPersistedRequirementAuditRejections,
 	getRequirementAuditSources,
 	isFreshRequirementVerdict,
+	evaluateRequirementDoneGate,
+	type RequirementVerdict,
 	parseRequirementReceipt,
 	requirementAuditSnapshot,
 	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
@@ -30,6 +32,7 @@ import {
 	bindRequirementRowArtifact,
 	getLatestTodoPhasesFromEntries,
 	getRequirementRowArtifact,
+	getTodoRowChanges,
 	type RequirementRowArtifact,
 } from "../tools/todo";
 import { READ_ONLY_TOOL_NAMES } from "../task/read-only-policy";
@@ -186,9 +189,16 @@ export class RequirementsLedgerRuntime {
 			];
 			const rowHeads: string[] = [];
 			const boundHeads: Record<string, string> = {};
+			const linkedRows = [
+				...new Set(ids.flatMap(id => requirements.find(requirement => requirement.id === id)!.rows)),
+			];
+			const auditTask = item.task;
+			const citedRows = linkedRows.filter(row => auditTask.includes(row));
+			const assignedRows = citedRows.length ? citedRows : linkedRows;
 			for (const id of ids) {
 				const requirement = requirements.find(candidate => candidate.id === id)!;
 				for (const row of requirement.rows) {
+					if (!assignedRows.includes(row)) continue;
 					const artifact = await bindRequirementRowArtifact(
 						{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager, signal },
 						row,
@@ -208,7 +218,7 @@ export class RequirementsLedgerRuntime {
 				...sources.map(source => `${source.id} (said at ${source.at}): ${source.rawText}`),
 				"Current linked-row HEAD identities:",
 				...rowHeads,
-				"Return one complete Markdown table with columns id | raw words | verdict | evidence | artifact identity. One row per linked Rn above; verdict pass, fail or unverifiable. Each artifact identity must include the full current commit SHA from every corresponding linked row. Evidence must name what was actually exercised or observed; no partial table or truncated preview is accepted.",
+				"Return one complete Markdown table with columns id | raw words | verdict | evidence | artifact identity. Cover every linked Rn above, optionally with letter sub-ids for its clauses; verdict pass, fail or unverifiable. Name the exact audited TODO row in artifact identity and its full commit SHA when a clean checkout exists. For rows without a clean checkout, name the observed artifact; freshness uses saved TODO row history. Evidence must name what was actually exercised or observed; no partial table or truncated preview is accepted.",
 			].join("\n");
 			revised[index] = { ...item, task: `${item.task}\n\n${protocol}` };
 			assignments.push({
@@ -218,6 +228,7 @@ export class RequirementsLedgerRuntime {
 				agent: "qa-auditor",
 				index,
 				boundHeads,
+				rows: assignedRows,
 			});
 		}
 
@@ -393,55 +404,24 @@ export class RequirementsLedgerRuntime {
 	): Promise<{ requirements: RequirementLedgerItem[]; staleById: Map<string, string[]> }> {
 		const branch = this.#host.sessionManager.getBranch();
 		const requirements = getLatestRequirements(branch);
-		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
-		const staleById = new Map<string, string[]>();
-		let updated: RequirementLedgerItem[] | undefined;
 		const phases = getLatestTodoPhasesFromEntries(branch);
-		for (let index = 0; index < requirements.length; index++) {
-			if (signal?.aborted) return { requirements, staleById };
-			const requirement = requirements[index]!;
-			if (requirement.classification !== "linked" || requirement.verdict?.status !== "pass") continue;
-			const verdict = requirement.verdict;
-			const artifacts = await Promise.all(
-				requirement.rows.map(async row => ({
+		const changes = getTodoRowChanges(branch);
+		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
+		const open = await evaluateRequirementDoneGate(
+			requirements,
+			[...new Set(requirements.filter(item => item.classification === "linked").flatMap(item => item.rows))],
+			async row => ({
+				...(await getRequirementRowArtifact(
+					{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager, signal },
 					row,
-					...(await getRequirementRowArtifact(
-						{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager, signal },
-						row,
-						phases,
-						checkoutCache,
-					)),
-				})),
-			);
-			const issues = artifacts.flatMap(current => {
-				if (!current.head)
-					return [
-						`${requirement.id} current HEAD is unavailable for ${JSON.stringify(current.row)} at ${current.cwd}`,
-					];
-				if (current.dirty)
-					return [
-						`${requirement.id} pass is stale for ${JSON.stringify(current.row)}: worktree at ${current.cwd} is dirty; commit before QA`,
-					];
-				return [];
-			});
-			if (issues.length === 0 && !isFreshRequirementVerdict(requirement, artifacts)) {
-				issues.push(
-					`${requirement.id} pass is stale: artifact ${verdict.artifact}, current HEADs ${artifacts.map(({ row, head }) => `${JSON.stringify(row)}: ${head}`).join(", ")}`,
-				);
-			}
-			if (issues.length === 0) continue;
-			staleById.set(requirement.id, issues);
-			updated ??= requirements.map(item => ({ ...item, rows: [...item.rows] }));
-			delete updated[index]!.verdict;
-		}
-		if (!updated || signal?.aborted) return { requirements, staleById };
-		if (
-			JSON.stringify(getLatestRequirements(this.#host.sessionManager.getBranch())) !== JSON.stringify(requirements)
-		) {
-			return { requirements: getLatestRequirements(this.#host.sessionManager.getBranch()), staleById: new Map() };
-		}
-		appendRequirementsSnapshot(this.#appender(), updated);
-		return { requirements: updated, staleById };
+					phases,
+					checkoutCache,
+				)),
+				lastChange: changes.get(row),
+			}),
+			getPersistedRequirementAuditRejections(branch, this.#sessionId()),
+		);
+		return { requirements, staleById: new Map(open.map(item => [item.requirement.id, item.issues])) };
 	}
 
 	#openRequirements(
@@ -460,28 +440,7 @@ export class RequirementsLedgerRuntime {
 				open.push({ requirement, issues: stale });
 				continue;
 			}
-			const verdict = requirement.verdict;
-			if (!verdict) {
-				const rejection = getPersistedRequirementAuditRejections(
-					this.#host.sessionManager.getBranch(),
-					this.#sessionId(),
-				).get(requirement.id);
-				open.push({
-					requirement,
-					issues: [
-						`${requirement.id} needs a fresh qa-auditor pass${rejection ? `; rejected receipt: ${rejection}` : ""}`,
-					],
-				});
-			} else if (verdict.status === "fail")
-				open.push({ requirement, issues: [`${requirement.id} failed: ${verdict.evidence}`] });
-			else if (verdict.status === "unverifiable")
-				open.push({ requirement, issues: [`${requirement.id} unverifiable: ${verdict.evidence}`] });
-			else if (!verdict.workerId.trim() || verdict.auditor !== "qa-auditor") {
-				open.push({
-					requirement,
-					issues: [`${requirement.id} has no authenticated qa-auditor identity on its receipt`],
-				});
-			}
+			// Linked-row decisions and reasons were already computed by the shared gate.
 		}
 		return open;
 	}
@@ -518,45 +477,61 @@ export class RequirementsLedgerRuntime {
 		}
 		const phases = getLatestTodoPhasesFromEntries(branch);
 		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
-		const acceptedBoundHeads: Record<string, string> = {};
+		const updates = new Map<string, Record<string, RequirementVerdict>>();
 		for (const receipt of receipts) {
 			const requirement = expected.find(entry => entry?.id === receipt.id)!;
-			const artifacts: Array<{ row: string } & RequirementRowArtifact> = [];
-			for (const row of requirement.rows) {
-				artifacts.push({
+			const scopedRows = requirement.rows.filter(row => !assignment.rows || assignment.rows.includes(row));
+			const namedRows = requirement.rows.filter(row => receipt.artifact.includes(row));
+			if (namedRows.some(row => !scopedRows.includes(row)))
+				return `${receipt.id}: artifact names a row outside this audit assignment`;
+			const rows = namedRows.length ? namedRows : scopedRows;
+			if (!rows.length) return `${receipt.id}: receipt did not identify an assigned TODO row`;
+			const rowVerdicts: Record<string, RequirementVerdict> = {};
+			for (const row of rows) {
+				const artifact = await bindRequirementRowArtifact(
+					{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager },
 					row,
-					...(await bindRequirementRowArtifact(
-						{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager },
-						row,
-						phases,
-						this.#appender(),
-						checkoutCache,
-					)),
+					phases,
+					this.#appender(),
+					checkoutCache,
+				);
+				const lastChange = getTodoRowChanges(this.#host.sessionManager.getBranch()).get(row);
+				const receivedAt = new Date().toISOString();
+				const heads = [...receipt.artifact.matchAll(/\b[a-f0-9]{40}\b|\b[a-f0-9]{64}\b/gi)].map(match => match[0]);
+				const identity =
+					rows.length > 1 && !namedRows.length && heads.length === rows.length
+						? heads[rows.indexOf(row)]!
+						: receipt.artifact;
+				const verdict: RequirementVerdict = {
+					status: receipt.status,
+					evidence: receipt.evidence,
+					artifact: identity,
+					rawWords: receipt.subIds ? requirement.rawText : receipt.rawWords,
+					workerId,
+					auditor: "qa-auditor",
+					receivedAt,
+					...((!artifact.head || artifact.dirty) && lastChange ? { rowChangeId: lastChange.id } : {}),
+					...(artifact.head &&
+					assignment.boundHeads?.[row] &&
+					artifact.head.toLowerCase() !== assignment.boundHeads[row]!.toLowerCase()
+						? { boundHeads: { [row]: assignment.boundHeads[row]! } }
+						: {}),
+				};
+				if (
+					!isFreshRequirementVerdict({ ...requirement, rowVerdicts: { [row]: { ...verdict, status: "pass" } } }, [
+						{ row, ...artifact, lastChange },
+					])
+				) {
+					return `${receipt.id}: artifact identity ${receipt.artifact} is not the current row artifact or newer than its saved TODO change`;
+				}
+				Object.defineProperty(rowVerdicts, row, {
+					value: verdict,
+					enumerable: true,
+					configurable: true,
+					writable: true,
 				});
 			}
-			for (const artifact of artifacts) {
-				const boundHead = assignment.boundHeads?.[artifact.row];
-				if (artifact.head && boundHead && artifact.head.toLowerCase() !== boundHead.toLowerCase()) {
-					acceptedBoundHeads[artifact.row] = boundHead;
-				}
-			}
-			if (
-				!isFreshRequirementVerdict(
-					{
-						...requirement,
-						verdict: {
-							...receipt,
-							status: "pass",
-							workerId,
-							auditor: "qa-auditor",
-							boundHeads: assignment.boundHeads,
-						},
-					},
-					artifacts,
-				)
-			) {
-				return `${receipt.id}: artifact identity ${receipt.artifact} is not the current clean HEAD of every linked row; commit dirty work before QA`;
-			}
+			updates.set(receipt.id, rowVerdicts);
 		}
 		const currentRequirements = getLatestRequirements(this.#host.sessionManager.getBranch());
 		if (
@@ -570,18 +545,10 @@ export class RequirementsLedgerRuntime {
 		appendRequirementsSnapshot(
 			this.#appender(),
 			currentRequirements.map(requirement => {
-				const receipt = receipts.find(item => item.id === requirement.id);
-				return receipt
-					? {
-							...requirement,
-							verdict: {
-								...receipt,
-								workerId,
-								auditor: "qa-auditor" as const,
-								...(Object.keys(acceptedBoundHeads).length > 0 ? { boundHeads: acceptedBoundHeads } : {}),
-							},
-						}
-					: requirement;
+				const update = updates.get(requirement.id);
+				if (!update) return requirement;
+				const rowVerdicts = { ...requirement.rowVerdicts, ...update };
+				return { ...requirement, rowVerdicts };
 			}),
 		);
 		this.syncPublicationGate();
