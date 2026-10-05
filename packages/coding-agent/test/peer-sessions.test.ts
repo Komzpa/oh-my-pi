@@ -81,6 +81,7 @@ async function publishFixture(
 		outcome?: "injected" | "woken";
 		agentId?: string;
 		command?: (args: string) => void;
+		commandName?: string;
 		deliver?: (message: IrcMessage) => Promise<"injected" | "woken">;
 		reloadMCP?: () => Promise<MCPLoadResult>;
 	},
@@ -92,7 +93,10 @@ async function publishFixture(
 	if (options.command || options.reloadMCP) {
 		const runtime = new ExtensionRuntime();
 		const extension = await loadExtensionFromFactory(
-			pi => pi.registerCommand("known-command", { handler: async args => options.command?.(args) }),
+			pi =>
+				pi.registerCommand(options.commandName ?? "known-command", {
+					handler: async args => options.command?.(args),
+				}),
 			options.cwd,
 			new EventBus(),
 			runtime,
@@ -912,6 +916,26 @@ describe("peer sessions", () => {
 			from: { kind: "shell" },
 			target: snapshot.instanceId,
 			text: "/known-command exact arguments",
+		});
+		expect(calls).toEqual(["exact arguments"]);
+		expect(receipt).toMatchObject({ status: "delivered", outcome: "executed" });
+		expect(delivered).toHaveLength(0);
+	});
+
+	it("dispatches an exact registered namespaced command before builtin colon shorthand", async () => {
+		const dir = await tempDir();
+		const calls: string[] = [];
+		const { snapshot, delivered } = await publishFixture(dir, {
+			sessionId: "sess-namespaced-command",
+			cwd: dir,
+			commandName: "mcp:foo",
+			command: args => calls.push(args),
+		});
+		const receipt = await sendPeerMessage({
+			registry: { dir },
+			from: { kind: "shell" },
+			target: snapshot.instanceId,
+			text: "/mcp:foo exact arguments",
 		});
 		expect(calls).toEqual(["exact arguments"]);
 		expect(receipt).toMatchObject({ status: "delivered", outcome: "executed" });
