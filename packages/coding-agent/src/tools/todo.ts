@@ -1003,10 +1003,12 @@ function applyScheduleUpdates(
 			task.schedule && typeof task.schedule === "object" ? task.schedule : {},
 		);
 		if (update.dependencies !== undefined) schedule.dependencies = [...update.dependencies];
+		const ownerChanged = update.owner !== undefined && (update.owner.trim() || undefined) !== schedule.owner;
 		if (update.owner !== undefined) {
 			if (update.owner === "") delete schedule.owner;
 			else schedule.owner = update.owner.trim();
 		}
+		if (ownerChanged) schedule.reestimateCount = 0;
 		if (update.resources !== undefined) schedule.resources = update.resources.map(resource => resource.trim());
 		if (update.estimate) {
 			const estimate = { ...update.estimate, basis: update.estimate.basis.trim() };
@@ -1014,7 +1016,7 @@ function applyScheduleUpdates(
 			if (isSameAcceptedEstimate(previousEstimate, estimate)) {
 				schedule.estimate = { ...estimate, updatedAt: previousEstimate.updatedAt };
 			} else {
-				schedule.reestimateCount = (schedule.reestimateCount ?? 0) + (previousEstimate ? 1 : 0);
+				schedule.reestimateCount = (schedule.reestimateCount ?? 0) + (previousEstimate && !ownerChanged ? 1 : 0);
 				schedule.estimateRevision = (schedule.estimateRevision ?? (previousEstimate ? 1 : 0)) + 1;
 				schedule.estimate = { ...estimate, updatedAt: now };
 			}
