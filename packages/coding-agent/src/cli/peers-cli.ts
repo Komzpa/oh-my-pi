@@ -90,7 +90,7 @@ export async function runPeerSendCommand(
 	} catch (error) {
 		if (!(error instanceof PeerSessionError)) throw error;
 		const failed: PeerDeliveryReceipt = {
-			status: "failed",
+			status: error.code === "delivery_uncertain" ? "uncertain" : "failed",
 			target: args.target,
 			agent: args.agent ?? "",
 			reason: error.code,
@@ -106,15 +106,15 @@ export async function runPeerSendCommand(
 	if (args.json) {
 		const output: PeerSendJsonOutput = { version: COLLAB_REGISTRY_VERSION, ...receipt };
 		print(JSON.stringify(output, null, 2));
-	} else if (receipt.status === "failed") {
-		printErr(`failed: ${receipt.reason ?? "delivery failed"}`);
+	} else if (receipt.status === "failed" || receipt.status === "uncertain") {
+		printErr(`${receipt.status}: ${receipt.reason ?? "delivery failed"}`);
 	} else {
 		print(
 			`${receipt.status}: ${receipt.target} ${receipt.agent}${receipt.outcome ? ` (${receipt.outcome})` : ""}${receipt.reason ? `: ${receipt.reason}` : ""}`,
 		);
 		if (receipt.replyTo) print(`Replies: omp peers inbox ${receipt.replyTo.replace("agent://", "")}`);
 	}
-	return receipt.status === "failed" ? 1 : 0;
+	return receipt.status === "failed" || receipt.status === "uncertain" ? 1 : 0;
 }
 
 export async function runPeerInboxCommand(

@@ -7,19 +7,30 @@ import { cfgMcpEnableProjectConfig } from "./settings";
 
 const pendingReloads = new WeakMap<MCPManager, { session: AgentSession; promise: Promise<MCPLoadResult> }>();
 
+/** Busy is distinct from disposal/ownership failures so a saved config can be honestly deferred. */
+export class MCPReloadBusyError extends Error {
+	constructor() {
+		super("MCP reload requires an idle session");
+		this.name = "MCPReloadBusyError";
+	}
+}
+
+/** Shared preflight for reload and TUI mutations; performs no connection or config changes. */
+export function assertMCPReloadAllowed(session: AgentSession, manager?: MCPManager): void {
+	if (session.isDisposed) throw new Error("Cannot reload MCP on a disposed session");
+	if (session.isStreaming || session.isBashRunning || session.isEvalRunning) throw new MCPReloadBusyError();
+	const pending = manager ? pendingReloads.get(manager) : undefined;
+	if (pending && pending.session !== session) throw new Error("MCP reload is owned by another session");
+}
+
 export function reloadMCPServers(
 	session: AgentSession,
 	manager: MCPManager,
 	settings: Settings,
 ): Promise<MCPLoadResult> {
-	if (session.isDisposed) throw new Error("Cannot reload MCP on a disposed session");
-	if (session.isStreaming || session.isBashRunning || session.isEvalRunning)
-		throw new Error("MCP reload requires an idle session");
+	assertMCPReloadAllowed(session, manager);
 	const pending = pendingReloads.get(manager);
-	if (pending) {
-		if (pending.session !== session) throw new Error("MCP reload is owned by another session");
-		return pending.promise;
-	}
+	if (pending) return pending.promise;
 	const promise = reconnectMCPServers(session, manager, settings);
 	pendingReloads.set(manager, { session, promise });
 	void promise

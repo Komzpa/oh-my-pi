@@ -1,7 +1,7 @@
 import type { AgentSession } from "../session/agent-session";
 import { executeAcpBuiltinSlashCommand } from "../slash-commands/acp-builtins";
 import { lookupBuiltinSlashCommand } from "../slash-commands/builtin-registry";
-import { parseSlashCommand } from "../slash-commands/helpers/parse";
+import { parseSlashCommand, parseSubcommand } from "../slash-commands/helpers/parse";
 import { resolveRpcSkillInvocation, runRpcSkillCommand } from "../modes/rpc/rpc-mode";
 
 export interface PeerCommandReceipt {
@@ -33,6 +33,16 @@ export async function executePeerSlashCommand(session: AgentSession, text: strin
 		return Promise.race([admitted.promise, completed]);
 	}
 	if (builtin) {
+		// ACP config writers do not own the target's runtime or provide the TUI
+		// mutation/reconnect lifecycle. Refuse before persistence on this route.
+		if (
+			builtin.name === "mcp" &&
+			["add", "remove", "rm", "enable", "disable"].includes(parseSubcommand(parsed.args).verb)
+		) {
+			throw new Error(
+				"MCP configuration mutations require the target's host command context; use its /mcp command directly.",
+			);
+		}
 		if (!builtin.handle) throw new Error(`/${builtin.name} requires interactive user input`);
 		if (parsed.args && !builtin.allowArgs) throw new Error(`/${builtin.name} does not accept arguments`);
 		const result = await executeAcpBuiltinSlashCommand(text, {
