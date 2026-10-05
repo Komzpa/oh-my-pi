@@ -511,7 +511,10 @@ export async function waitForRestartResult(
 					process.kill(accepted.pid, 0);
 				} catch (error) {
 					if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-					throw new RestartControlError("handler_failed", "Restart process exited before restoring the session; resume its checkpoint from the shell");
+					throw new RestartControlError(
+						"handler_failed",
+						"Restart process exited before restoring the session; resume its checkpoint from the shell",
+					);
 				}
 			}
 		}
@@ -521,7 +524,8 @@ export async function waitForRestartResult(
 const RESTART_SESSION_ENV = "OMP_RESTART_SESSION_ID";
 /** Replace the runtime in place: preserve the shell's PID/TTY contract without retaining its heap. */
 export function execRestartSuccessor(cmd: string[], sessionId: string): never {
-	if (typeof process.execve !== "function") throw new Error("Graceful restart requires process.execve on this platform");
+	if (typeof process.execve !== "function")
+		throw new Error("Graceful restart requires process.execve on this platform");
 	const executable = Bun.which(cmd[0]!);
 	if (!executable) throw new Error(`Restart executable not found: ${cmd[0]}`);
 	process.execve(executable, cmd, { ...process.env, [RESTART_SESSION_ENV]: sessionId });
