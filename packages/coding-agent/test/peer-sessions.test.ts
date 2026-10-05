@@ -1365,3 +1365,66 @@ describe("PR23 alternate peer entry points", () => {
 		});
 	}
 });
+
+describe("PR23 uncertain shell replies", () => {
+	it("retains the advertised inbox through lost acknowledgements in JSON and human CLI output", async () => {
+		const dir = await tempDir();
+		for (const json of [true, false]) {
+			const release = Promise.withResolvers<void>();
+			const completed = Promise.withResolvers<void>();
+			const target = await publishFixture(dir, {
+				sessionId: `uncertain-shell-${json}`,
+				cwd: dir,
+				deliver: async () => {
+					await release.promise;
+					completed.resolve();
+					return "woken";
+				},
+			});
+			try {
+				const output: string[] = [];
+				const errors: string[] = [];
+				expect(
+					await runPeerSendCommand(
+						{ target: target.snapshot.instanceId, text: "status?", json, registry: { dir, timeoutMs: 100 } },
+						line => output.push(line),
+						line => errors.push(line),
+					),
+				).toBe(1);
+				const replyTo: string | undefined = json
+					? JSON.parse(output.join("\n")).replyTo
+					: output.find(line => line.startsWith("Replies:"))?.match(/shell:[a-f0-9]{32}/)?.[0];
+				expect(replyTo).toBeDefined();
+				const address = json ? replyTo! : `agent://${replyTo}`;
+				expect(address).toBe(`agent://${target.delivered[0]!.from}`);
+				if (json)
+					expect(JSON.parse(output.join("\n"))).toMatchObject({
+						status: "uncertain",
+						reason: "delivery_uncertain",
+					});
+				else expect(errors.join("\n")).toContain("Do not retry");
+				const result = await new AgentProtocolHandler({ dir }).write(
+					parseInternalUrl(address),
+					"late acknowledgement",
+					{
+						session: {
+							cwd: dir,
+							hasUI: false,
+							agentRegistry: target.registry,
+							getAgentId: () => MAIN_AGENT_ID,
+							getSessionId: () => "uncertain-replier",
+							settings: Settings.isolated(),
+						} as ToolSession,
+					},
+				);
+				expect(result.isError).toBe(false);
+				expect(await readShellReplies(address.replace("agent://", ""), { dir })).toEqual([
+					expect.objectContaining({ text: "late acknowledgement" }),
+				]);
+			} finally {
+				release.resolve();
+				await completed.promise;
+			}
+		}
+	});
+});

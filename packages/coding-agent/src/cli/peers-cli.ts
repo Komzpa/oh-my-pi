@@ -94,12 +94,14 @@ export async function runPeerSendCommand(
 			target: args.target,
 			agent: args.agent ?? "",
 			reason: error.code,
+			...(error.replyTo ? { replyTo: error.replyTo } : {}),
 		};
 		if (args.json) {
 			const output: PeerSendJsonOutput = { version: COLLAB_REGISTRY_VERSION, ...failed };
 			print(JSON.stringify(output, null, 2));
 		} else {
 			printErr(`error: ${error.message}`);
+			if (error.replyTo) print(`Replies: omp peers inbox ${error.replyTo.replace("agent://", "")}`);
 		}
 		return 1;
 	}

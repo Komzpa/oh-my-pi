@@ -197,11 +197,14 @@ export type PeerSessionErrorCode =
 export class PeerSessionError extends Error {
 	readonly code: PeerSessionErrorCode;
 	readonly candidates: PeerSessionSnapshot[];
-	constructor(code: PeerSessionErrorCode, message: string, candidates: PeerSessionSnapshot[] = []) {
+	/** Inbox allocated before an uncertain shell send; retained so replies can be checked. */
+	readonly replyTo?: string;
+	constructor(code: PeerSessionErrorCode, message: string, candidates: PeerSessionSnapshot[] = [], replyTo?: string) {
 		super(message);
 		this.name = "PeerSessionError";
 		this.code = code;
 		this.candidates = candidates;
+		this.replyTo = replyTo;
 	}
 }
 
@@ -1234,6 +1237,7 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 	const entry = live.find(item => item.snapshot.instanceId === snapshot.instanceId);
 	if (!entry) throw new PeerSessionError("not_found", `target peer session is no longer active`);
 	const from = await shellSender(options.from, options.registry);
+	const replyTo = from.kind === "shell" ? `agent://shell:${from.id}` : undefined;
 	const result = await query(
 		entry.meta,
 		{
@@ -1248,10 +1252,12 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 	);
 	if (result.status === "ok") {
 		const receipt = parsePeerReceipt((result.value as Record<string, unknown>).receipt);
-		if (receipt) return from.kind === "shell" ? { ...receipt, replyTo: `agent://shell:${from.id}` } : receipt;
+		if (receipt) return replyTo ? { ...receipt, replyTo } : receipt;
 		throw new PeerSessionError(
 			"delivery_uncertain",
 			"Peer returned an invalid receipt; delivery may have occurred. Do not retry without checking the target.",
+			[],
+			replyTo,
 		);
 	}
 	if (result.status === "skip") {
@@ -1280,6 +1286,8 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 			throw new PeerSessionError(
 				"delivery_uncertain",
 				"Peer send outcome is uncertain; the accepted handler may still complete. Do not retry without checking the target.",
+				[],
+				replyTo,
 			);
 		}
 	}

@@ -89,6 +89,7 @@ export class PeersTool implements AgentTool<typeof peersSchema, PeersToolDetails
 						target,
 						agent: params.agent ?? "",
 						reason: error.code,
+						...(error.replyTo ? { replyTo: error.replyTo } : {}),
 					},
 				},
 				isError: true,
