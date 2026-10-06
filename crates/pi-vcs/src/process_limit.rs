@@ -31,16 +31,13 @@ static NEXT_SCOPE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Stable parent for a session's tool processes, including across exec.
 pub fn session_slice_name(session_id: &str) -> io::Result<String> {
-	let prefix = session_id
-		.get(..8)
-		.filter(|prefix| prefix.bytes().all(|byte| byte.is_ascii_alphanumeric()));
-	let prefix = prefix.ok_or_else(|| {
-		io::Error::new(
-			io::ErrorKind::InvalidInput,
-			"session id must start with eight ASCII alphanumerics",
-		)
-	})?;
-	Ok(format!("omp-tool-{prefix}.slice"))
+	if session_id.is_empty() {
+		return Err(io::Error::new(io::ErrorKind::InvalidInput, "session id must not be empty"));
+	}
+	let mut hasher = gix::hash::hasher(gix::hash::Kind::Sha256);
+	hasher.update(session_id.as_bytes());
+	let digest = hasher.try_finalize().map_err(io::Error::other)?;
+	Ok(format!("omp-tool-{}.slice", digest.to_hex_with_len(12)))
 }
 
 fn call_slice_name(base: &str, session_id: Option<&OsStr>) -> io::Result<String> {
@@ -594,19 +591,20 @@ mod tests {
 
 	#[test]
 	fn session_slice_naming_and_call_parenting() {
-		assert_eq!(super::session_slice_name("0123abcd-rest").unwrap(), "omp-tool-0123abcd.slice");
+		assert_eq!(
+			super::session_slice_name("0123abcd-rest").unwrap(),
+			"omp-tool-edce6fe48f3f.slice"
+		);
 		assert_eq!(
 			super::call_slice_name("omp-tool-call-42-1.slice", Some("0123abcd-rest".as_ref()))
 				.unwrap(),
-			"omp-tool-0123abcd-call-42-1.slice"
+			"omp-tool-edce6fe48f3f-call-42-1.slice"
 		);
 		assert_eq!(
 			super::call_slice_name("omp-tool-call-42-1.slice", None).unwrap(),
 			"omp-tool-call-42-1.slice"
 		);
-		for invalid in ["", "short", "bad/name", "åååååååå"] {
-			assert!(super::session_slice_name(invalid).is_err(), "{invalid}");
-		}
+		assert!(super::session_slice_name("").is_err());
 	}
 
 	#[cfg(target_os = "linux")]
