@@ -11,6 +11,7 @@ import {
 	isEnoent,
 	logger,
 } from "@oh-my-pi/pi-utils";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { JSONC } from "bun";
 import { resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import { loadExtensions } from "../extensions/loader";
@@ -554,7 +555,7 @@ export class PluginManager {
 				...(options.force ? ["--force"] : []),
 				packageInstallSpec,
 			];
-			const installProc = Bun.spawn(installArgs, {
+			const installProc = spawnBackground(installArgs, {
 				cwd: getPluginsDir(),
 				stdin: "ignore",
 				stdout: "pipe",
@@ -610,7 +611,7 @@ export class PluginManager {
 			// cache from the remote. Rollback is handled by the outer catch.
 			if (gitSource && existingActualName) {
 				await refreshBunGitCache(gitSource, getPluginsDir());
-				const updateProc = Bun.spawn(["bun", "update", actualName], {
+				const updateProc = spawnBackground(["bun", "update", actualName], {
 					cwd: getPluginsDir(),
 					stdin: "ignore",
 					stdout: "pipe",
@@ -769,7 +770,7 @@ export class PluginManager {
 		validatePackageName(name);
 		await this.#ensurePackageJson();
 
-		const proc = Bun.spawn(["bun", "uninstall", name], {
+		const proc = spawnBackground(["bun", "uninstall", name], {
 			cwd: getPluginsDir(),
 			stdin: "ignore",
 			stdout: "pipe",
@@ -1229,7 +1230,7 @@ export class PluginManager {
 
 	async #installPluginDependencies(): Promise<boolean> {
 		try {
-			const proc = Bun.spawn(["bun", "install"], {
+			const proc = spawnBackground(["bun", "install"], {
 				cwd: getPluginsDir(),
 				stdin: "ignore",
 				stdout: "pipe",

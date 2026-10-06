@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { $which } from "@oh-my-pi/pi-utils";
+import { backgroundShellPrefix } from "@oh-my-pi/pi-utils/background-priority";
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import type { GallerySection } from "./gallery-cli";
 
@@ -134,7 +135,7 @@ async function renderChunk(args: RenderChunkArgs): Promise<void> {
 	);
 
 	try {
-		const result = await Bun.$`${args.vhs} ${tapePath}`.quiet().nothrow();
+		const result = await Bun.$`${backgroundShellPrefix} ${args.vhs} ${tapePath}`.quiet().nothrow();
 		if (result.exitCode !== 0 || !(await Bun.file(args.outPng).exists())) {
 			const detail = result.stderr.toString().trim() || result.stdout.toString().trim();
 			throw new Error(`VHS failed to render the gallery screenshot${detail ? `: ${detail.slice(-600)}` : ""}`);

@@ -8,6 +8,7 @@ import { untilAborted } from "@oh-my-pi/pi-utils/abortable";
 import type { Browser } from "puppeteer-core";
 import { gracefulKillTreeOnce } from "../tools/browser/attach";
 import { ensureChromiumExecutable, loadPuppeteer, removeUserDataDir } from "../tools/browser/launch";
+import { launchBackgroundBrowser } from "../tools/browser/priority";
 
 const LOGIN_TIMEOUT_MS = 5 * 60_000;
 
@@ -33,7 +34,7 @@ export async function captureBrowserSession(
 		lifetime.throwIfAborted();
 		// Do not race launch: retain ownership even if cancellation happens before it resolves.
 		// Unlike general browser tooling, authentication keeps sandbox and TLS checks enabled.
-		browser = await puppeteer.launch({
+		browser = await launchBackgroundBrowser(puppeteer, {
 			executablePath,
 			headless: false,
 			defaultViewport: null,

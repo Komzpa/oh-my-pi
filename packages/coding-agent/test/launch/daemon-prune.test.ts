@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { pruneDeadDaemonRuntimeDirs } from "../../src/launch/presence";
+import { processStartTime } from "../../src/launch/paths";
 
 const STALE = new Date(Date.now() - 30 * 60_000);
 let deadPid = 0;
@@ -16,12 +17,20 @@ async function scope(
 	await fs.mkdir(path.join(dir, "clients"), { recursive: true });
 	if (init.pid !== undefined) {
 		const pid = init.pid === "dead" ? deadPid : init.pid;
-		await Bun.write(path.join(dir, "broker.pid"), JSON.stringify({ pid, instanceId: name }));
+		await Bun.write(
+			path.join(dir, "broker.pid"),
+			JSON.stringify({ pid, processStartTime: processStartTime(pid), instanceId: name }),
+		);
 	}
 	for (const clientPid of init.clients ?? []) {
 		await Bun.write(
 			path.join(dir, "clients", `${clientPid}-x.json`),
-			JSON.stringify({ pid: clientPid, id: `${clientPid}-x`, projectDir: dir }),
+			JSON.stringify({
+				pid: clientPid,
+				processStartTime: processStartTime(clientPid),
+				id: `${clientPid}-x`,
+				projectDir: dir,
+			}),
 		);
 	}
 	if (init.stale) await fs.utimes(dir, STALE, STALE);

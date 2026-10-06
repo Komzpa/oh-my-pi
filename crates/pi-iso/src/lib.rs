@@ -35,6 +35,7 @@ pub mod cow;
 mod diff;
 mod linux_reflink;
 mod overlayfs;
+pub mod process;
 mod projfs;
 mod rcopy;
 mod windows_block_clone;

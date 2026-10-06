@@ -117,6 +117,7 @@ export class BashRunner {
 					onChunk,
 					signal: abortController.signal,
 					sessionKey: target.sessionId,
+					sessionId: target.sessionId,
 					cwd,
 					timeout: clampTimeout("bash", undefined, cfgToolsMaxTimeout.get(this.#host.settings)) * 1000,
 					onMinimizedSave: originalText => this.#saveOriginalArtifact(target, originalText),

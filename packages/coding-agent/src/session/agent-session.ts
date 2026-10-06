@@ -135,6 +135,7 @@ import type { PythonResult } from "../eval/py/executor";
 import { formatEvalStateContext } from "../eval/state";
 import { WorkPoolRegistry } from "../task/workpool";
 import { type BashPtyOptions, type BashResult, releaseShellSessions } from "../exec/bash-executor";
+import { SessionSliceLifecycle } from "../exec/session-slice-lifecycle";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { CustomTool } from "../extensibility/custom-tools/types";
@@ -1427,6 +1428,7 @@ export class AgentSession implements SettingsScope {
 
 	/** Live generation tok/s for the working row; fed by this session's own streamed deltas. */
 	readonly tokenRate: TokenRateMeter;
+	#sessionSlices = new Map<string, SessionSliceLifecycle>();
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -5025,6 +5027,26 @@ export class AgentSession implements SettingsScope {
 	 */
 	#syncAgentSessionId(sessionId?: string, notifyChange = true): void {
 		const currentSessionId = this.sessionManager.getSessionId();
+		if (!this.#isDisposed && !this.#sessionSlices.has(currentSessionId)) {
+			this.#sessionSlices.set(
+				currentSessionId,
+				new SessionSliceLifecycle({
+					sessionId: currentSessionId,
+					isIdleOrWaiting: () => !this.isStreaming || this.agent.state.pendingToolCalls.size > 0,
+					sendNotice: async content => {
+						if (this.#isDisposed || this.sessionManager.getSessionId() !== currentSessionId) return;
+						await this.sendCustomMessage(
+							{ customType: "session-owned-cpu", content, display: false, attribution: "agent" },
+							{ deliverAs: "nextTurn" },
+						);
+					},
+					sendUserLine: line => {
+						if (this.#isDisposed || this.sessionManager.getSessionId() !== currentSessionId) return;
+						this.emitNotice("warning", line, "session-slice");
+					},
+				}),
+			);
+		}
 		if (this.#observedSessionId === undefined) {
 			this.#observedSessionId = currentSessionId;
 		} else if (this.#observedSessionId !== currentSessionId) {
@@ -5340,6 +5362,7 @@ export class AgentSession implements SettingsScope {
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		releaseShellSessions(this.sessionManager.getSessionId());
 		const results = await Promise.allSettled([
+			...Array.from(this.#sessionSlices.values(), lifecycle => lifecycle.stop()),
 			this.#disposeOwnedAsyncJobs(),
 			this.#eval.disposeKernels(),
 			this.#releaseOwnedBrowserTabs(this.sessionManager.getSessionId()),

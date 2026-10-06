@@ -7,8 +7,24 @@
 - `/dump all` writes a zip to the temp directory with the main transcript, the LLM request JSON, and one file per subagent transcript (nested subagents included, killed ones marked aborted); the TUI copies the archive path to the clipboard. Plain `/dump` is unchanged ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ### Fixed
+- Shared automation Chromium stays in its transcript's Linux session slice: Chrome's own `org.freedesktop.systemd1.Manager.StartTransientUnit` call moves the main process into `app.slice/app-<name>-<pid>.scope` when the session bus is reachable, so the browser child alone loses `DBUS_SESSION_BUS_ADDRESS`/`DBUS_STARTER_ADDRESS` (an empty value is not enough — the client falls back to `$XDG_RUNTIME_DIR/bus`). Other daemon children keep their bus.
+- Process-local Puppeteer fallback Chromium also drops the two user-bus addresses from its own launch environment, preserving its inherited session slice without changing unrelated children.
 
+- Lowered Linux tool subprocesses, including language servers, daemon jobs, runtime probes and installers, to nice 19 and best-effort I/O priority 7 when the priority utilities are available; omp's own interactive UI remains unchanged.
+- Local bash and PTY commands carry their transcript session id into native process boundaries. Tool PATH defaults `systemd-run` to the session slice while preserving explicit slices, including the sole deliberate keep marker `omp-keep.slice`.
+- Session disposal and process exit stop the owned Linux session slice, leaving deliberate `omp-keep.slice` processes running and listed. Startup reaps only slices with proven dead PID/start-time owners; sustained idle/waiting CPU use produces a deduplicated hidden next-turn notice.
+- Browser automation and named bash services use per-session broker runtimes, and Python/Bun eval kernels carry transcript ownership into the existing native resource scopes. Daemon records include Linux process birth ticks and prune dead or reused PIDs.
+- Session disposal and process exit stop the owned Linux session slice, leaving deliberate `omp-keep.slice` processes running and listed. Startup reaps only slices with proven dead PID/start-time owners; sustained idle/waiting CPU use produces a deduplicated hidden next-turn notice plus one visible status line.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
+- Task workers no longer inherit the user's desktop session: subagent bash and JavaScript/Python eval children drop desktop bindings and get a private `XDG_RUNTIME_DIR` instead of `/run/user/<uid>`. Native shell imports and snapshots cannot restore inherited bindings. Main-session commands and explicitly supplied fixture environments are unchanged.
+
+### Fixed: tool subprocess priority
+
+- Lowered Linux Bun Shell tool children (update probes, share gist, IDA probe, gallery render, sshfs mounts, runtime installs) to nice 19 and best-effort I/O priority 7 via a shared shell prefix; interactive UI and terminal spawns are unchanged.
+
+### Fixed: native/tool child priority
+
+- Lowered Linux native utility, isolation, OAuth-helper, and omp-launched browser children to nice 19 and best-effort I/O priority 7 without changing omp's own priority.
 
 ## [18.4.12] - 2026-10-02
 

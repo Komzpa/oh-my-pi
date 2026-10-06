@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { FileLock, Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
 import { isEnoent, isRecord, logger, postmortem, procmgr, sanitizeText, setProcessName } from "@oh-my-pi/pi-utils";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { TerminalQueryResponder } from "@oh-my-pi/pi-utils/vterm";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
 import {
@@ -18,6 +19,7 @@ import {
 	DAEMON_SPEC_FILE,
 	daemonBrokerEndpoint,
 	readStoredDaemonRecord,
+	processStartTime,
 	writeDaemonScopeMeta,
 } from "./paths";
 import type { DaemonReadySpec, DaemonSnapshot, DaemonSpec } from "@oh-my-pi/pi-tui/tools/daemon";
@@ -90,6 +92,7 @@ interface ManagedDaemon {
 	dir: string;
 	log?: DaemonLog;
 	process?: ManagedProcess;
+	processStartTime?: string;
 	input?: Bun.FileSink;
 	pty?: PtySession;
 	generation: number;
@@ -391,7 +394,11 @@ async function acquireBrokerLease(runtimeDir: string, endpoint: string): Promise
 			lock.release();
 			return null;
 		}
-		await fs.writeFile(pidPath, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
+		await fs.writeFile(
+			pidPath,
+			JSON.stringify({ pid: process.pid, processStartTime: processStartTime(process.pid) }),
+			{ mode: 0o600 },
+		);
 		return { path: pidPath, lock };
 	} catch (error) {
 		lock.release();
@@ -876,12 +883,13 @@ class DaemonBroker {
 		const pid = await started.promise;
 		if (pid !== undefined && generation === record.generation) {
 			record.snapshot.pid = pid;
+			record.processStartTime = processStartTime(pid);
 			this.#persist(record);
 		}
 	}
 
 	#launchPipe(record: ManagedDaemon, generation: number): void {
-		const process = Bun.spawn([record.spec.application, ...record.spec.args], {
+		const process = spawnBackground([record.spec.application, ...record.spec.args], {
 			cwd: record.spec.cwd,
 			env: workerEnvFromParent(record.spec.env),
 			stdin: "pipe",
@@ -892,6 +900,7 @@ class DaemonBroker {
 		record.process = process;
 		record.input = process.stdin;
 		record.snapshot.pid = process.pid;
+		record.processStartTime = processStartTime(process.pid);
 		this.#persist(record);
 		const stdout = this.#drain(record, generation, process.stdout);
 		const stderr = this.#drain(record, generation, process.stderr);
@@ -906,7 +915,7 @@ class DaemonBroker {
 		const logPath = path.join(record.dir, LOG_FILE);
 		const output = await fs.open(logPath, "a", 0o600);
 		try {
-			const process = Bun.spawn([record.spec.application, ...record.spec.args], {
+			const process = spawnBackground([record.spec.application, ...record.spec.args], {
 				cwd: record.spec.cwd,
 				env: workerEnvFromParent(record.spec.env),
 				stdio: ["ignore", output.fd, output.fd],
@@ -914,6 +923,7 @@ class DaemonBroker {
 			});
 			record.process = process;
 			record.snapshot.pid = process.pid;
+			record.processStartTime = processStartTime(process.pid);
 			this.#persist(record);
 			process.unref();
 			void process.exited
@@ -991,7 +1001,12 @@ class DaemonBroker {
 		await this.#readDetachedOutput(record, generation);
 		if (generation !== record.generation || record.process) return;
 		const processRef = record.snapshot.pid === undefined ? null : Process.fromPid(record.snapshot.pid);
-		if (processRef?.status() === "running") return;
+		if (
+			processRef?.status() === "running" &&
+			(process.platform !== "linux" ||
+				(record.snapshot.pid !== undefined && record.processStartTime === processStartTime(record.snapshot.pid)))
+		)
+			return;
 		await this.#settle(record, generation);
 	}
 
@@ -1331,6 +1346,7 @@ class DaemonBroker {
 	#serializeMetadata(record: ManagedDaemon): string {
 		return JSON.stringify({
 			daemon: { ...record.snapshot },
+			processStartTime: record.processStartTime,
 			completionEvents: record.completionCapable,
 			completionSubscriptionId: record.completionSubscriptionId,
 			completionPending: record.pendingCompletions.length > 0,
@@ -1427,6 +1443,10 @@ class DaemonBroker {
 				const record: ManagedDaemon = {
 					spec,
 					snapshot,
+					processStartTime:
+						"processStartTime" in decoded && typeof decoded.processStartTime === "string"
+							? decoded.processStartTime
+							: undefined,
 					dir,
 					generation: 0,
 					stopRequested: !detached || snapshot.state === "stopping",

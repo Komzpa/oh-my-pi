@@ -20,6 +20,7 @@ import { isPosixShell } from "@oh-my-pi/pi-utils/procmgr";
 import { raceJobSettlement, resolveAutoBackgroundWaitMs } from "../async";
 import type { Settings } from "../config/settings";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
+import { sessionPtyOptions } from "../exec/session-slice";
 import { InternalUrlRouter } from "../internal-urls";
 import { sessionResolveContext } from "../internal-urls/context";
 import { InternalUrlFilesystem, UrlFsError } from "../internal-urls/url-filesystem";
@@ -851,6 +852,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
 						sessionKey: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
+						sessionId: this.session.getSessionId?.() ?? undefined,
+						maskDesktopSession: this.session.agentKind === "sub",
 						timeout: options.timeoutMs ?? 0,
 						signal: runSignal,
 						// Bound to the job's own signal: the job outlives the call that started it.
@@ -1486,6 +1489,11 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			}
 		}
 
+		const runOwnedInteractiveBashPty = async (
+			ui: Parameters<typeof runInteractiveBashPty>[0],
+			options: Parameters<typeof runInteractiveBashPty>[1],
+		) => runInteractiveBashPty(ui, await sessionPtyOptions(this.session.getSessionId?.() ?? undefined, options));
+
 		// Track output for streaming updates (tail only)
 		const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 
@@ -1498,7 +1506,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		}
 		const wallTimeStart = performance.now();
 		const result: BashResult | BashInteractiveResult = interactiveUi
-			? await runInteractiveBashPty(interactiveUi, {
+			? await runOwnedInteractiveBashPty(interactiveUi, {
 					// PTY bypasses executeBash, so feed it the direnv-transformed
 					// command + direnv env (backendPreflight is defined whenever this
 					// branch runs, since both gate on canUseInteractiveBashPty).
@@ -1515,6 +1523,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				await executeBash(command, {
 					cwd: commandCwd,
 					sessionKey: this.session.getSessionId?.() ?? undefined,
+					sessionId: this.session.getSessionId?.() ?? undefined,
+					maskDesktopSession: this.session.agentKind === "sub",
 					timeout: timeoutMs ?? 0,
 					signal,
 					filesystem: this.#urlFilesystem(signal, approvalTier).shellFilesystem(),

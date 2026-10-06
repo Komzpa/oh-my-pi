@@ -6,13 +6,7 @@ use std::{
 	sync::atomic::{AtomicU64, Ordering},
 };
 #[cfg(any(unix, test))]
-use std::{
-	fs::File,
-	io::Read,
-	process::{Command, Stdio},
-	thread,
-	time::Duration,
-};
+use std::{fs::File, io::Read, process::Stdio, thread, time::Duration};
 
 #[cfg(any(unix, test))]
 use anyhow::bail;
@@ -108,7 +102,7 @@ impl Context {
 		let stderr_path = self.directory.join(format!(".command-{sequence}.stderr"));
 		let stdout = private_output_file(&stdout_path)?;
 		let stderr = private_output_file(&stderr_path)?;
-		let mut command = Command::new(program);
+		let mut command = pi_iso::process::background_command(program);
 		command
 			.args(args)
 			.current_dir(&self.directory)

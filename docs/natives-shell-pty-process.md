@@ -27,6 +27,48 @@ This document covers execution/process/terminal primitives in `@oh-my-pi/pi-nati
 
 ## Shell subsystem (`shell`)
 
+### Per-tool-call process limits
+
+On Linux with cgroup v2 and a working systemd user manager, each shell tool
+call places external commands and their descendants in its own transient slice
+with kernel-enforced `TasksMax=500`. The task limit is read back
+from the cgroup before user code runs. A successful persistent-shell call
+retains its scope while external background work remains live; later runs prune
+empty scopes, and cancellation, timeout, cap-hit, or session teardown stops the
+owned scope. Missing or unverifiable Linux enforcement rejects external
+commands. Git subprocesses and commit hooks, PTY commands, and retained Python/JavaScript eval kernels use the same
+native boundary owner. Scope execution preserves terminal handles, IPC,
+environment, working directory, and inherited resource limits. Linux refuses
+an unbounded JavaScript Worker fallback when subprocess startup fails.
+
+Local bash commands carry `OMP_SESSION_ID`. The native boundary binds its first
+launch to `omp-tool-<h12>.slice`, using a child named
+`omp-tool-<h12>-call-<pid>-<id>.slice`, where `h12` is the first 12 hex characters
+of SHA-256 of the full session id; systemd's slice hierarchy gives the
+session a single parent without changing the per-call `TasksMax=500` limit.
+`sessionSliceName(sessionId)` in the natives package is the canonical naming
+helper. Unowned host operations retain their existing per-call boundary.
+
+Local tool PATH puts a `systemd-run` shim first. It adds the session slice only
+when the manager options omit `--slice` (both `--slice=value` and `--slice value`
+are preserved). An operand's `--slice` is not a manager option. Deliberate
+long-lived work uses `--slice=omp-keep.slice`; no PID-based keep mechanism is
+provided. Slice shutdown, startup orphan reaping, launcher migration, and kept
+process visibility are owned by the session lifecycle, not this native wrapper.
+
+The shared Linux scope argv starts user work through `nice -n19 ionice -c2 -n7`:
+children and their ordinary descendants run at niceness 19 and best-effort IO
+priority 7, while omp's own CPU and IO priority are unchanged. Helpers are
+resolved against the host PATH before the command's environment is applied.
+These per-process priorities are distinct from cgroup CPU/IO weights, which do
+not set niceness or IO scheduling class. Non-scoped launch paths are separate
+owners and do not acquire priority changes from this boundary.
+
+This is resource containment, not an adversarial sandbox. Explicit operations
+against service managers, remote hosts, or existing daemons remain outside the
+child-process boundary; ordinary `systemctl --user` administration still works.
+Other platforms retain normal shell behavior without these resource guarantees.
+
 ### API model
 
 Shell execution modes:

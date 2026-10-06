@@ -1,0 +1,1 @@
+Owned processes in {{slice}} are using sustained CPU while the lead is idle or waiting. Top: {{top}}{{#if pid}} pid={{pid}}{{/if}}, {{seconds}} CPU seconds. Kept by this session (not stopped on exit): {{kept}}.

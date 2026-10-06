@@ -1101,6 +1101,8 @@ impl ChildEnv {
 			.env_clear()
 			.envs(self.env.iter().map(|(k, v)| (k, v)))
 			.stderr(std::process::Stdio::piped());
+		#[cfg(any(unix, windows))]
+		pi_iso::process::background_child(&mut command);
 		Ok(command)
 	}
 

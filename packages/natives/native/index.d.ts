@@ -422,6 +422,28 @@ export declare class TextPredictor {
   persist(): Promise<void>
 }
 
+export declare class ToolResourceScope {
+  constructor()
+  /**
+   * `env`, when supplied, is the complete spawn environment, not an overlay.
+   * Omission uses inherited bindings; missing keys in a supplied map stay
+   * unset.
+   */
+  wrapCommand(command: Array<string>, env?: Record<string, string> | undefined | null): Array<string>
+  /**
+   * Off-thread variant of [`ToolResourceScope::wrap_command`]: the systemd
+   * subprocesses behind first-use enforcement run on libuv's thread pool,
+   * so the JS event loop is never blocked. Resolves to the same argv.
+   */
+  wrapCommandAsync(command: Array<string>, env?: Record<string, string> | undefined | null): Promise<Array<string>>
+  /**
+   * Dropping the owner only hands teardown to a detached thread
+   * ([`ToolProcessLimit`] never blocks the dropping thread), so this
+   * returns immediately; no async variant is needed.
+   */
+  close(): void
+}
+
 /**
  * Dedicated writer thread for one terminal fd.
  *
@@ -2694,6 +2716,9 @@ export interface SearchResult {
   error?: string
 }
 
+/** Stable systemd parent slice for a session's tool processes. */
+export declare function sessionSliceName(sessionId: string): string
+
 export declare function setHangulCompatJamoWidthOverride(value: number): void
 
 /** Options for executing a shell command via brush-core. */
@@ -2706,6 +2731,8 @@ export interface ShellExecuteOptions {
   env?: Record<string, string>
   /** Environment variables to apply once per session. */
   sessionEnv?: Record<string, string>
+  /** Environment names removed after session import and snapshot sourcing. */
+  unsetEnv?: Array<string>
   /** Timeout in milliseconds before cancelling the command. */
   timeoutMs?: number
   /** Optional snapshot file to source on session creation. */
@@ -3039,6 +3066,8 @@ export interface ShellFsStatFs {
 export interface ShellOptions {
   /** Environment variables to apply once per session. */
   sessionEnv?: Record<string, string>
+  /** Environment names removed after session import and snapshot sourcing. */
+  unsetEnv?: Array<string>
   /** Optional snapshot file to source on session creation. */
   snapshotPath?: string
   /** Optional per-command output minimizer configuration. */
