@@ -156,6 +156,60 @@ async function publishFixture(
 }
 
 describe("peer sessions", () => {
+	it("CF67 resolves bare shell writes from the received sender and rejects ambiguous or unknown targets", async () => {
+		const dir = await tempDir();
+		const target = await publishFixture(dir, { sessionId: "sess-bare-shell", cwd: dir });
+		const bus = spyOn(IrcBus, "global").mockReturnValue(target.irc);
+		const session = {
+			cwd: dir,
+			hasUI: false,
+			agentRegistry: target.registry,
+			getAgentId: () => MAIN_AGENT_ID,
+			getSessionId: () => "sess-bare-shell",
+			settings: Settings.isolated(),
+		} as ToolSession;
+		const handler = new AgentProtocolHandler({ dir });
+		const write = (to: string) => handler.write(parseInternalUrl(`agent://${to}`), "pong", { session });
+		try {
+			const sent = await sendPeerMessage({
+				registry: { dir },
+				from: { kind: "shell" },
+				target: target.snapshot.instanceId,
+				text: "ping",
+			});
+			const address = sent.replyTo!.replace("agent://", "");
+			const message = target.delivered[0]!;
+			const visible = prompt.render(ircIncomingTemplate, { from: message.from, message: message.body });
+			expect((await write("shell")).isError).toBe(false);
+			expect(visible).toContain(`reply: write agent://${address}`);
+			expect(await readShellReplies(address, { dir })).toEqual([
+				expect.objectContaining({ text: "pong", from: "peer:sess-bare-shell" }),
+			]);
+			const unknown = await write("missing-non-shell-agent");
+			expect(unknown.isError).toBe(true);
+			const unknownText = unknown.content[0];
+			expect(unknownText?.type === "text" ? unknownText.text : "").toContain(
+				'Unknown agent "missing-non-shell-agent"',
+			);
+			const second = await sendPeerMessage({
+				registry: { dir },
+				from: { kind: "shell" },
+				target: target.snapshot.instanceId,
+				text: "second ping",
+			});
+			const ambiguous = await write("shell");
+			expect(ambiguous.isError).toBe(true);
+			const ambiguousContent = ambiguous.content[0];
+			const ambiguousText = ambiguousContent?.type === "text" ? ambiguousContent.text : "";
+			expect(ambiguousText).toContain(address);
+			expect(ambiguousText).toContain(second.replyTo!.replace("agent://", ""));
+			expect(ambiguousText).not.toContain("roster");
+			expect(await readShellReplies(second.replyTo!.replace("agent://", ""), { dir })).toEqual([]);
+		} finally {
+			bus.mockRestore();
+		}
+	});
+
 	it("keeps SDK peer identity and replies live across new and resumed conversations, fencing old generations", async () => {
 		const dir = await tempDir();
 		const previousDir = process.env.OMP_PEER_SESSIONS_DIR;

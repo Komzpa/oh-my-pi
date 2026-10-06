@@ -26,6 +26,7 @@ import { formatDuration, isEnoent, prompt } from "@oh-my-pi/pi-utils";
 import { type PeerSessionOptions, PeerSessionError, sendPeerMessage, writeShellReply } from "../collab/registry";
 import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
 import { ensurePersistedRoster } from "../registry/persisted-agents";
+import { IrcBus } from "../irc/bus";
 import { executeSend, isIrcEnabled } from "../irc/messaging";
 import agentPromptDoc from "../prompts/internal-urls/agent.md" with { type: "text" };
 import agentProgressTemplate from "../prompts/tools/agent-url-progress.md" with { type: "text" };
@@ -190,12 +191,20 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		) {
 			throw new Error("Peer messaging is unavailable in this session.");
 		}
-		const to = url.rawHost || url.hostname;
+		let to = url.rawHost || url.hostname;
 		if (!to) throw new Error("agent:// URL requires a recipient: agent://<id>");
 		if (hasPathExtraction(url)) {
 			throw new Error("agent:// message target cannot have a JSON-path suffix.");
 		}
 		if (!content.trim()) throw new Error("agent:// messages require non-empty content.");
+		if (to === "shell") {
+			try {
+				to = IrcBus.global().resolveShellReplyTarget(senderId);
+			} catch (error) {
+				if (!(error instanceof PeerSessionError)) throw error;
+				return { content: [{ type: "text", text: error.message }], isError: true };
+			}
+		}
 		if (to.startsWith("shell:")) {
 			try {
 				await writeShellReply(
