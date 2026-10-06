@@ -515,10 +515,14 @@ export async function handleMcpAcp(
 			return await handleAddCommand(rest, runtime);
 		case "smithery-search":
 			return await handleSmitherySearchCommand(rest, runtime);
-		case "reload":
+		case "reload": {
+			const result = await runtime.session.reloadMCPRuntime();
 			await runtime.refreshCommands();
-			await runtime.output("MCP runtime reload requested.");
+			const errors = [...result.errors].map(([name, error]) => `${name}: ${error}`);
+			await runtime.output(`MCP runtime reloaded. Connected servers: ${result.connectedServers.length}.`);
+			if (errors.length) await runtime.output(`MCP connection errors: ${errors.join("; ")}`);
 			return commandConsumed();
+		}
 		case "list":
 			return await handleListCommand(runtime);
 		case "enable":

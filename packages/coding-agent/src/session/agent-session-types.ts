@@ -26,6 +26,7 @@ import type { EffectiveExtensionRoots } from "../capability/types";
 import type { AgentDefinition } from "../task/types";
 import type { ModelRegistry } from "../config/model-registry";
 import type { PromptTemplate } from "../config/prompt-templates";
+import type { MCPLoadResult } from "../mcp/manager";
 import type { Settings } from "../config/settings";
 import type { SkillsSettings } from "../extensibility/settings";
 import type { CursorMcpResourceAdapter } from "../cursor";
@@ -366,6 +367,8 @@ export interface AgentSessionConfig {
 	advisorConfigWarnings?: string[];
 	/** Disconnect the MCP manager owned by this session during disposal. */
 	disconnectOwnedMcpManager?: () => Promise<void>;
+	/** Reload only the MCP runtime owned by this session; absent on shared-manager children. */
+	reloadOwnedMcpManager?: () => Promise<MCPLoadResult>;
 	/** System prompt used by automatic session-title generation. */
 	titleSystemPrompt?: string;
 }
@@ -380,6 +383,8 @@ export interface PromptOptions {
 	 * drivers disable it so an assignment is always delivered to the model.
 	 */
 	runCommands?: boolean;
+	/** Propagate local command errors to callers that need an execution receipt. */
+	throwOnCommandError?: boolean;
 	/**
 	 * Reject with `PromptDroppedError` when the prompt is dropped before
 	 * reaching the agent, instead of resolving `true` (default: false).

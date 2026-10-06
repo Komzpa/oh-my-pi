@@ -8,6 +8,13 @@
 
 ### Fixed
 
+- Incoming IRC messages explicitly advertise their exact `agent://` reply address. Bare `agent://shell` replies resolve the unique shell sender that reached the recipient; multiple senders report their exact addresses instead of a misleading subagent-roster hint (fork PR [#23](https://github.com/Komzpa/oh-my-pi/pull/23)).
+- Peer inbox reads recover valid replies around malformed records; lost send acknowledgements report an uncertain outcome without a safe-retry claim. Peer sends and `agent://peer:` writes use write approval; peer MCP config mutations require the host command context. MCP config commands reject busy sessions before mutation or explicitly defer reconnect after a saved change (fork PR [#23](https://github.com/Komzpa/oh-my-pi/pull/23)).
+
+- Peer `/mcp reload` now reconnects the target session’s owned MCP runtime and mounts tools using the TUI reload policy; busy sessions and children sharing a manager refuse the reload (fork PR [#23](https://github.com/Komzpa/oh-my-pi/pull/23)).
+
+- Peer messages naming a registered slash command now use the target's command dispatcher and report execution, prompt queueing, or refusal instead of being injected as IRC chatter. Replies to `agent://peer:<sessionId>` return through the local peer-session transport. Shell sends advertise a working `agent://shell:<id>` reply address and retain replies in an owner-private inbox readable with `omp peers inbox shell:<id> [--json]`, even after the sender exits (fork PR [#23](https://github.com/Komzpa/oh-my-pi/pull/23)).
+- IRC replies to `shell:<id>` and `peer:<sessionId>` now use the existing shell inbox and peer-session transports instead of failing with “Unknown agent”; peer delivery outcomes are mapped to IRC receipts (fork PR [#23](https://github.com/Komzpa/oh-my-pi/pull/23)).
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02
@@ -1550,7 +1557,8 @@
 
 ### Fixed
 
-	- Fixed GPT-6 Astra extended-context support and preserved maximum context windows reported by OpenAI Codex discovery ([#10980](https://github.com/can1357/oh-my-pi/pull/10980) by [@H4vC](https://github.com/H4vC)).
+    - Fixed GPT-6 Astra extended-context support and preserved maximum context windows reported by OpenAI Codex discovery ([#10980](https://github.com/can1357/oh-my-pi/pull/10980) by [@H4vC](https://github.com/H4vC)).
+
 - Subagent `yield` no longer rejects a valid `data` payload because a non-strict OpenAI-compatible backend filled the optional `error` field with `""`; previously the worker retried the identical call until the invalid-yield cap and the parent received nothing.
 - Fixed fullscreen `/copy` outlining only a lazily created grouped Read card, so Enter copies the assistant yield instead of tool output.
 - `memory://` now resolves against the session that issued it: a caller's own memory backend answers `memory://<id>`, so co-located sessions no longer read each other's memory rows, and a caller whose session is no longer live fails closed instead of being answered by a peer. Prompt completion binds to the same caller, so `memory://<memory-id>` stays on offer while a subagent shares the working directory. Advisors retain their owning session's memory access even without a session file.

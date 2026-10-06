@@ -59,6 +59,7 @@ import {
 } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
 import type { EffectiveExtensionRoots } from "./capability/types";
+import { publishPeerSession } from "./collab/registry";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
 import { isAuthenticated, kNoAuth, ModelRegistry } from "./config/model-registry";
@@ -134,6 +135,7 @@ import {
 } from "./extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import type { HindsightSessionState } from "./hindsight/state";
+import { IrcBus } from "./irc/bus";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
 import { setSharedLspEnabled } from "./lsp/client";
@@ -150,6 +152,7 @@ import {
 } from "./mcp";
 import { parseMCPToolName } from "@oh-my-pi/pi-tui/tools/mcp";
 import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } from "./mcp/startup-events";
+import { reloadMCPServers } from "./mcp/reload";
 import { resolveMCPToolAlias } from "./mcp/tool-bridge";
 import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import { MEMORY_BACKEND_TOOL_NAMES } from "./memory-backend/tool-names";
@@ -797,6 +800,8 @@ export interface CreateAgentSessionOptions {
 
 	/** Whether UI is available (enables interactive tools like ask). Default: false */
 	hasUI?: boolean;
+	/** Publish this top-level session in the owner-private local peer-session registry. Default: false. */
+	publishPeerSession?: boolean;
 	/**
 	 * A human can answer synchronous prompts even without a terminal UI (e.g. an
 	 * ACP client rendering elicitation forms). Enables `ask` without enabling
@@ -4537,6 +4542,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					}
 				: undefined,
 			disconnectOwnedMcpManager: ownedMcpManager ? () => ownedMcpManager.disconnectAll() : undefined,
+			reloadOwnedMcpManager: ownedMcpManager
+				? async () => {
+						if (agentRegistry.list().some(ref => ref.session !== session && ref.session?.isStreaming))
+							throw new Error("MCP reload requires shared-manager workers to be idle");
+						return reloadMCPServers(session, ownedMcpManager, settings);
+					}
+				: undefined,
 			ttsrManager,
 			obfuscator,
 			agentId: resolvedAgentId,
@@ -4857,6 +4869,24 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// process-global postmortem list.
 		let unsubscribeMcpNotifications: (() => void) | undefined;
 		let unregisterMcpPostmortem: (() => void) | undefined;
+		let closePeerPublication: (() => Promise<void>) | undefined;
+
+		if (agentKind === "main" && options.publishPeerSession === true && options.agentRegistry === undefined) {
+			try {
+				const publication = await publishPeerSession({
+					sessionId: () => sessionManager.getSessionId(),
+					cwd: () => sessionManager.getCwd(),
+					title: () => sessionManager.getSessionName() ?? null,
+					mainAgentId: resolvedAgentId,
+					registry: agentRegistry,
+					irc: IrcBus.global(),
+					isBusy: () => session.isStreaming,
+				});
+				closePeerPublication = () => publication.close();
+			} catch (error) {
+				logger.warn("Failed to publish peer session", { error: String(error) });
+			}
+		}
 
 		{
 			const originalDispose = session.dispose.bind(session);
@@ -4892,6 +4922,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					restoreProviderToggles?.();
 					unsubscribeMcpNotifications?.();
 					unregisterMcpPostmortem?.();
+					await closePeerPublication?.();
+					closePeerPublication = undefined;
 					for (const callback of disposeCallbacks) callback();
 					disposeCallbacks.clear();
 					// Drop refs so the process-global postmortem list doesn't retain

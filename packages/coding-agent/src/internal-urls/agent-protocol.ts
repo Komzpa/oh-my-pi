@@ -23,6 +23,9 @@ import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { fuzzyFilter } from "@oh-my-pi/pi-tui/fuzzy";
 import { formatDuration, isEnoent, prompt } from "@oh-my-pi/pi-utils";
+import { type PeerSessionOptions, PeerSessionError, sendPeerMessage, writeShellReply } from "../collab/registry";
+import { IrcBus } from "../irc/bus";
+import * as peerMessaging from "../irc/messaging";
 import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
 import { ensurePersistedRoster } from "../registry/persisted-agents";
 import { executeSend, isIrcEnabled } from "../irc/messaging";
@@ -146,8 +149,73 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		selectors: "lines",
 		immutable: true,
 		linkable: true,
-		write: { via: "handler", payload: "verbatim", scope: "coordination", tier: () => "read" },
+		write: {
+			via: "handler",
+			payload: "verbatim",
+			scope: "coordination",
+			tier: url => ((url.rawHost || url.hostname).startsWith("peer:") ? "write" : "read"),
+		},
 	};
+
+	constructor(private readonly peerSessions?: PeerSessionOptions) {
+		// Keep external inbox routing separate from the intra-session write path.
+		const write = this.write.bind(this);
+		this.write = async (url, content, context) => {
+			let to = url.rawHost || url.hostname;
+			if (to !== "shell" && !to.startsWith("shell:") && !to.startsWith("peer:")) {
+				return write(url, content, context);
+			}
+			const session = context?.session;
+			if (!session) throw new Error("agent:// messaging requires a tool session");
+			const senderId = session.getAgentId?.();
+			if (
+				!session.agentRegistry ||
+				!senderId ||
+				session.enableIrc === false ||
+				!peerMessaging.isIrcEnabled(session.settings, session.taskDepth ?? 0)
+			) {
+				throw new Error("Peer messaging is unavailable in this session.");
+			}
+			if (hasPathExtraction(url)) {
+				throw new Error("agent:// message target cannot have a JSON-path suffix.");
+			}
+			if (!content.trim()) throw new Error("agent:// messages require non-empty content.");
+			try {
+				if (to === "shell") to = IrcBus.global().resolveShellReplyTarget(senderId);
+				if (to.startsWith("shell:")) {
+					await writeShellReply(
+						to,
+						{ from: `peer:${session.getSessionId?.() ?? senderId}`, text: content, createdAt: Date.now() },
+						this.peerSessions,
+					);
+					return { content: [{ type: "text", text: `delivered to ${to} (shell inbox)` }], isError: false };
+				}
+				const sessionId = session.getSessionId?.();
+				if (!sessionId) throw new Error("Peer replies require a sender session ID.");
+				const receipt = await sendPeerMessage({
+					registry: this.peerSessions,
+					from: { kind: "session", sessionId, cwd: session.cwd },
+					target: to,
+					text: content,
+				});
+				return {
+					content: [
+						{
+							type: "text",
+							text:
+								receipt.status === "failed" || receipt.status === "uncertain"
+									? `failed: ${receipt.reason}`
+									: `${receipt.status} to ${receipt.target} ${receipt.agent} (${receipt.outcome})`,
+						},
+					],
+					isError: receipt.status === "failed" || receipt.status === "uncertain",
+				};
+			} catch (error) {
+				if (!(error instanceof PeerSessionError)) throw error;
+				return { content: [{ type: "text", text: error.message }], isError: true };
+			}
+		};
+	}
 
 	promptDoc(): string {
 		return agentPromptDoc.trim();

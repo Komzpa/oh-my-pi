@@ -11,6 +11,7 @@
 
 import { type IrcDeliveryReceipt, type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { logger, Snowflake } from "@oh-my-pi/pi-utils";
+import { PeerSessionError, sendPeerMessage, writeShellReply } from "../collab/registry";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { CustomMessage } from "../session/messages";
@@ -94,9 +95,70 @@ export class IrcBus {
 		return ts !== undefined && ts >= sinceTs;
 	}
 
+	/** Resolve a bare shell reply only from senders that reached this recipient. */
+	resolveShellReplyTarget(recipient: string): string {
+		const candidates: string[] = [];
+		for (const [from, sent] of this.#lastSent) {
+			if (from.startsWith("shell:") && sent.has(recipient)) candidates.push(from);
+		}
+		if (candidates.length === 1) return candidates[0]!;
+		throw new PeerSessionError(
+			"not_found",
+			candidates.length === 0
+				? "No shell sender has messaged this session; use an exact shell:<id> reply address."
+				: `Ambiguous shell reply target; use an exact address: ${candidates.sort().join(", ")}`,
+		);
+	}
+
+	/**
+	 * Route external replies through the same resolver and transport as agent:// writes.
+	 * Shell transport preserves `shell:<id>` as `from`; successful delivery records
+	 * that sender against the receiving agent in #lastSent, making bare replies scoped
+	 * to the replying agent rather than any other agent in this session.
+	 */
+	async #deliverExternal(message: IrcMessage): Promise<IrcDeliveryReceipt> {
+		try {
+			const to = message.to === "shell" ? this.resolveShellReplyTarget(message.from) : message.to;
+			if (to.startsWith("shell:")) {
+				await writeShellReply(to, { from: message.from, text: message.body, createdAt: message.ts });
+				return { to: message.to, outcome: "injected" };
+			}
+			if (message.to.startsWith("peer:")) {
+				// Derive the replying session's identity from the registry sender so
+				// the peer transport labels the reply the same way agent:// does.
+				const senderSession = this.#registry.get(message.from)?.session;
+				const sessionId = senderSession?.sessionManager?.getSessionId() ?? message.from;
+				const cwd = senderSession?.sessionManager?.getCwd() ?? "";
+				const receipt = await sendPeerMessage({
+					from: { kind: "session", sessionId, cwd },
+					target: message.to,
+					text: message.body,
+				});
+				if (receipt.status === "failed" || receipt.status === "uncertain") {
+					return { to: message.to, outcome: "failed", error: receipt.reason ?? "Peer delivery failed." };
+				}
+				return {
+					to: message.to,
+					outcome: receipt.outcome === "woken" || receipt.outcome === "revived" ? receipt.outcome : "injected",
+				};
+			}
+		} catch (error) {
+			if (error instanceof PeerSessionError) {
+				return { to: message.to, outcome: "failed", error: error.message };
+			}
+			throw error;
+		}
+		return { to: message.to, outcome: "failed", error: `Unknown agent "${message.to}".` };
+	}
+
 	async #deliver(message: IrcMessage, opts?: { suppressRelay?: boolean }): Promise<IrcDeliveryReceipt> {
 		const ref = this.#registry.get(message.to);
 		if (!ref) {
+			// Shell senders and peer sessions are not in-process agents; route
+			// their replies through the same helpers agent:// already uses.
+			if (message.to === "shell" || message.to.startsWith("shell:") || message.to.startsWith("peer:")) {
+				return this.#deliverExternal(message);
+			}
 			return {
 				to: message.to,
 				outcome: "failed",

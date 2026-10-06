@@ -4,6 +4,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
+import * as mcpConfig from "@oh-my-pi/pi-coding-agent/mcp/config-writer";
+import { BUILTIN_SESSION_SLASH_COMMANDS } from "../src/slash-commands/builtin-session";
 import * as mcpClient from "@oh-my-pi/pi-coding-agent/mcp/client";
 import * as oauthFlow from "@oh-my-pi/pi-coding-agent/mcp/oauth-flow";
 import type { SourceMeta } from "@oh-my-pi/pi-coding-agent/capability/types";
@@ -325,7 +327,8 @@ describe("/mcp auth commands", () => {
 			},
 		);
 
-		const { controller, showError } = createController(authStorage);
+		const { controller, ctx, showError } = createController(authStorage);
+		Object.defineProperty(ctx.session, "isStreaming", { get: () => true });
 		const updated = await controller.handleMCPAuthChallenge("envserver", {
 			wwwAuthenticate: [`Bearer resource_metadata="${resourceMetadataUrl}" scope="orders.read"`],
 		});
@@ -1110,5 +1113,139 @@ describe("/mcp auth commands", () => {
 			restoreEnvValue("MCP_OAUTH_CLIENT_ID", originalClientId);
 			restoreEnvValue("MCP_OAUTH_CLIENT_SECRET", originalClientSecret);
 		}
+	});
+
+	async function prepareCanonicalConfig(): Promise<void> {
+		const text = await Bun.file(configPath).text();
+		const legacyPath = configPath;
+		configPath = getMCPConfigPath("project", projectDir);
+		await Bun.write(configPath, text);
+		if (legacyPath !== configPath) await fs.rm(legacyPath);
+	}
+
+	for (const subcommand of [
+		"add new --url https://fixture.invalid/mcp",
+		"remove envserver",
+		"unauth envserver",
+		"reauth envserver",
+	]) {
+		test(`builtin /mcp ${subcommand} rejects a busy session before mutation`, async () => {
+			await prepareCanonicalConfig();
+			const { controller, ctx, showError, mcpManager } = createController(freshAuthStorage());
+			Object.defineProperty(ctx.session, "isStreaming", { get: () => true });
+			ctx.handleMCPCommand = text => controller.handle(text);
+			const prior = await Bun.file(configPath).text();
+			const save = vi.spyOn(mcpConfig, "addMCPServer");
+			const remove = vi.spyOn(mcpConfig, "removeMCPServer");
+			const update = vi.spyOn(mcpConfig, "updateMCPServer");
+			vi.spyOn(mcpClient, "connectToServer").mockRejectedValue(AUTH_ERROR);
+			const login = vi.spyOn(oauthFlow.MCPOAuthFlow.prototype, "login").mockResolvedValue({
+				access: "synthetic-access",
+				refresh: "synthetic-refresh",
+				expires: Date.now() + 3600000,
+			});
+			const command = BUILTIN_SESSION_SLASH_COMMANDS.find(item => item.name === "mcp");
+			if (!command?.handleTui) throw new Error("missing real MCP builtin");
+			await command.handleTui({ name: "mcp", args: subcommand, text: `/mcp ${subcommand}` }, { ctx });
+			expect(showError).toHaveBeenCalledWith(expect.stringContaining("idle session"));
+			expect(save).not.toHaveBeenCalled();
+			expect(remove).not.toHaveBeenCalled();
+			expect(update).not.toHaveBeenCalled();
+			expect(login).not.toHaveBeenCalled();
+			expect(mcpManager.disconnectAll).not.toHaveBeenCalled();
+			expect(mcpManager.disconnectServer).not.toHaveBeenCalled();
+			expect(await Bun.file(configPath).text()).toBe(prior);
+		});
+	}
+
+	for (const operation of ["add", "remove", "unauth"] as const) {
+		test(`builtin /mcp ${operation} reports saved changes and deferred reconnect when save becomes busy`, async () => {
+			await prepareCanonicalConfig();
+			const { controller, ctx, showError, showStatus, mcpManager } = createController(freshAuthStorage());
+			let busy = false;
+			Object.defineProperty(ctx.session, "isStreaming", { get: () => busy });
+			ctx.handleMCPCommand = text => controller.handle(text);
+			const entered = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			if (operation === "add") {
+				const save = mcpConfig.addMCPServer;
+				vi.spyOn(mcpConfig, "addMCPServer").mockImplementation(async (...args) => {
+					entered.resolve();
+					await release.promise;
+					await save(...args);
+				});
+			} else if (operation === "remove") {
+				const save = mcpConfig.removeMCPServer;
+				vi.spyOn(mcpConfig, "removeMCPServer").mockImplementation(async (...args) => {
+					entered.resolve();
+					await release.promise;
+					await save(...args);
+				});
+			} else {
+				const save = mcpConfig.updateMCPServer;
+				vi.spyOn(mcpConfig, "updateMCPServer").mockImplementation(async (...args) => {
+					entered.resolve();
+					await release.promise;
+					await save(...args);
+				});
+			}
+			const args = operation === "add" ? "add saved --url https://fixture.invalid/mcp" : `${operation} envserver`;
+			const command = BUILTIN_SESSION_SLASH_COMMANDS.find(item => item.name === "mcp");
+			if (!command?.handleTui) throw new Error("missing real MCP builtin");
+			const pending = command.handleTui({ name: "mcp", args, text: `/mcp ${args}` }, { ctx });
+			try {
+				await entered.promise;
+				busy = true;
+			} finally {
+				release.resolve();
+			}
+			await pending;
+			expect(showError).not.toHaveBeenCalled();
+			expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("changes saved; runtime reconnect deferred"));
+			expect(mcpManager.disconnectAll).not.toHaveBeenCalled();
+			const saved = (await Bun.file(configPath).json()) as TestConfigFile;
+			if (operation === "add") expect(saved.mcpServers?.saved).toBeDefined();
+			if (operation === "remove") expect(saved.mcpServers?.envserver).toBeUndefined();
+			busy = false;
+			await controller.reloadServers();
+			expect(mcpManager.disconnectAll).toHaveBeenCalledTimes(1);
+			expect(ctx.session.refreshMCPTools).toHaveBeenCalledTimes(1);
+		});
+	}
+
+	test("builtin /mcp reauth defers runtime reconnect after auth awaits an idle-to-busy transition", async () => {
+		const authStorage = freshAuthStorage();
+		await authStorage.credentials.reload();
+		const { controller, ctx, showError, showStatus, mcpManager } = createController(authStorage);
+		let busy = false;
+		Object.defineProperty(ctx.session, "isStreaming", { get: () => busy });
+		ctx.handleMCPCommand = text => controller.handle(text);
+		vi.spyOn(mcpClient, "connectToServer").mockRejectedValue(AUTH_ERROR);
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		vi.spyOn(oauthFlow.MCPOAuthFlow.prototype, "login").mockImplementation(async () => {
+			entered.resolve();
+			await release.promise;
+			return { access: "synthetic-access", refresh: "synthetic-refresh", expires: Date.now() + 3600000 };
+		});
+		const command = BUILTIN_SESSION_SLASH_COMMANDS.find(item => item.name === "mcp");
+		if (!command?.handleTui) throw new Error("missing real MCP builtin");
+		const pending = command.handleTui(
+			{ name: "mcp", args: "reauth envserver", text: "/mcp reauth envserver" },
+			{ ctx },
+		);
+		try {
+			await entered.promise;
+			busy = true;
+		} finally {
+			release.resolve();
+		}
+		await pending;
+		expect(showError).not.toHaveBeenCalled();
+		expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("changes saved; runtime reconnect deferred"));
+		expect(mcpManager.disconnectAll).not.toHaveBeenCalled();
+		busy = false;
+		await controller.reloadServers();
+		expect(mcpManager.disconnectAll).toHaveBeenCalledTimes(1);
 	});
 });
