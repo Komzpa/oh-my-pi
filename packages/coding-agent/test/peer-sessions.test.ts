@@ -1428,3 +1428,100 @@ describe("PR23 uncertain shell replies", () => {
 		}
 	});
 });
+
+describe("PR23 IRC reply routing to shell and peer inboxes", () => {
+	it("routes an IRC send to an existing shell inbox", async () => {
+		const dir = await tempDir();
+		const previous = Bun.env.OMP_PEER_SESSIONS_DIR;
+		Bun.env.OMP_PEER_SESSIONS_DIR = dir;
+		try {
+			const id = "a".repeat(32);
+			const inbox = path.join(dir, "shell-inboxes", `${id}.jsonl`);
+			await fs.mkdir(path.dirname(inbox), { recursive: true });
+			await fs.writeFile(inbox, "", { mode: 0o600, flag: "wx" });
+			const target = await publishFixture(dir, { sessionId: "irc-shell-route", cwd: dir });
+			const receipt = await target.irc.send({
+				from: MAIN_AGENT_ID,
+				to: `shell:${id}`,
+				body: "hello shell",
+			});
+			expect(receipt).toEqual({ to: `shell:${id}`, outcome: "injected" });
+			expect(await readShellReplies(`shell:${id}`, { dir })).toEqual([
+				expect.objectContaining({ text: "hello shell", from: MAIN_AGENT_ID }),
+			]);
+		} finally {
+			if (previous === undefined) delete Bun.env.OMP_PEER_SESSIONS_DIR;
+			else Bun.env.OMP_PEER_SESSIONS_DIR = previous;
+		}
+	});
+
+	it("fails an IRC send to an unknown plain id with the Unknown agent message", async () => {
+		const dir = await tempDir();
+		const target = await publishFixture(dir, { sessionId: "irc-unknown-route", cwd: dir });
+		const receipt = await target.irc.send({
+			from: MAIN_AGENT_ID,
+			to: "missing-agent",
+			body: "hello",
+		});
+		expect(receipt).toEqual({
+			to: "missing-agent",
+			outcome: "failed",
+			error: 'Unknown agent "missing-agent" — check the subagent roster or read history:// for known peers.',
+		});
+	});
+
+	it.each(["injected", "woken"] as const)("routes an IRC send to a peer session inbox (%s)", async outcome => {
+		const dir = await tempDir();
+		const previous = Bun.env.OMP_PEER_SESSIONS_DIR;
+		Bun.env.OMP_PEER_SESSIONS_DIR = dir;
+		try {
+			const source = await publishFixture(dir, { sessionId: "peer-route-src", cwd: dir, outcome });
+			const dest = await publishFixture(dir, { sessionId: "peer-route-dst", cwd: dir });
+			const senderManager = SessionManager.inMemory(dir);
+			Object.assign(dest.registry.get(MAIN_AGENT_ID)!.session!, { sessionManager: senderManager });
+			const senderId = senderManager.getSessionId();
+			const receipt = await dest.irc.send({
+				from: MAIN_AGENT_ID,
+				to: `peer:${source.snapshot.sessionId}`,
+				body: "hello peer",
+			});
+			expect(receipt).toEqual({ to: `peer:${source.snapshot.sessionId}`, outcome });
+			expect(source.delivered).toHaveLength(1);
+			expect(source.delivered[0]).toMatchObject({
+				from: `peer:${senderId}`,
+				body: expect.stringContaining("hello peer"),
+				to: MAIN_AGENT_ID,
+			});
+		} finally {
+			if (previous === undefined) delete Bun.env.OMP_PEER_SESSIONS_DIR;
+			else Bun.env.OMP_PEER_SESSIONS_DIR = previous;
+		}
+	});
+
+	it("maps a rejected peer delivery to a failed IRC receipt", async () => {
+		const dir = await tempDir();
+		const previous = Bun.env.OMP_PEER_SESSIONS_DIR;
+		Bun.env.OMP_PEER_SESSIONS_DIR = dir;
+		try {
+			const target = await publishFixture(dir, {
+				sessionId: "peer-route-rejected",
+				cwd: dir,
+				deliver: async () => {
+					throw new Error("peer handoff rejected");
+				},
+			});
+			const sender = await publishFixture(dir, { sessionId: "peer-route-sender", cwd: dir });
+			Object.assign(sender.registry.get(MAIN_AGENT_ID)!.session!, { sessionManager: SessionManager.inMemory(dir) });
+			const to = `peer:${target.snapshot.sessionId}`;
+			expect(await sender.irc.send({ from: MAIN_AGENT_ID, to, body: "hello peer" })).toEqual({
+				to,
+				outcome: "failed",
+				error: "peer handoff rejected",
+			});
+			expect(sender.irc.sentSince(MAIN_AGENT_ID, to, 0)).toBe(false);
+		} finally {
+			if (previous === undefined) delete Bun.env.OMP_PEER_SESSIONS_DIR;
+			else Bun.env.OMP_PEER_SESSIONS_DIR = previous;
+		}
+	});
+});
