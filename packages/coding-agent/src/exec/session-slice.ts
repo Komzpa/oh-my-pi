@@ -56,3 +56,11 @@ export async function toolSessionEnvironment(
 		PATH: `${shimDir}${path.delimiter}${rest}`,
 	};
 }
+
+/** Apply ownership after the PTY caller has composed its environment overlays. */
+export async function sessionPtyOptions<T extends { env?: Record<string, string> }>(
+	sessionId: string | undefined,
+	options: T,
+): Promise<T> {
+	return { ...options, env: await toolSessionEnvironment(sessionId, options.env ?? {}) };
+}
