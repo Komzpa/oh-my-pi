@@ -15,6 +15,10 @@ import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 import { cfgTasksTodoClearDelay } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import {
+	createRequirementCandidates,
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+} from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 
 function renderTodos(mode: InteractiveMode): string {
 	return Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
@@ -484,6 +488,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		session.setTodoPhases(phases);
 		mode.setTodos(phases);
 		expect(newSourceEntryId).not.toBe(oldSourceEntryId);
+
 		expect(renderTodos(mode)).toContain("same task");
 
 		vi.advanceTimersByTime(1000);
@@ -667,6 +672,84 @@ describe("InteractiveMode todo HUD anchor", () => {
 	it("renders nothing when there are no todos", () => {
 		mode.setTodos([]);
 		expect(mode.todoContainer.render(80)).toHaveLength(0);
+	});
+
+	it("refreshes requirement counts on ledger append without replacing the collab append hook", () => {
+		mode.setTodos([{ name: "Work", tasks: [{ content: "Build artifact", status: "pending" }] }]);
+		const manager = session.sessionManager;
+		const previousAppendHook = manager.onEntryAppended;
+		const collabAppendHook = vi.fn();
+		manager.onEntryAppended = collabAppendHook;
+		try {
+			expect(renderTodos(mode)).not.toContain("req 1");
+			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
+				version: 1,
+				requirements: createRequirementCandidates([], ["keep this ask"], "2026-09-28T12:00:00.000Z"),
+			});
+			expect(collabAppendHook).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "custom", customType: REQUIREMENTS_LEDGER_CUSTOM_TYPE }),
+			);
+			expect(renderTodos(mode)).toContain("req 1 · 0 ✓ · 1 open · 0 ✗");
+		} finally {
+			manager.onEntryAppended = previousAppendHook;
+			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: 1, requirements: [] });
+		}
+	});
+	it("renders requirement counts in the TODO HUD and compact header", async () => {
+		cfgTasksTodoClearDelay.override(session.settings, -1);
+		const at = "2026-09-28T12:00:00.000Z";
+		const requirements = [
+			{ id: "R1", at, rawText: "candidate ask", classification: "candidate", rows: [] },
+			{
+				id: "R2",
+				at,
+				rawText: "passed ask",
+				classification: "linked",
+				rows: ["Build artifact"],
+				verdict: { status: "pass", evidence: "observed", artifact: "r2", workerId: "QA", auditor: "qa-auditor" },
+			},
+			{
+				id: "R3",
+				at,
+				rawText: "failed ask",
+				classification: "linked",
+				rows: ["Build artifact"],
+				verdict: { status: "fail", evidence: "broken", artifact: "r2", workerId: "QA" },
+			},
+			{
+				id: "R4",
+				at,
+				rawText: "uncertain ask",
+				classification: "linked",
+				rows: ["Build artifact"],
+				verdict: { status: "unverifiable", evidence: "missing access", artifact: "r2", workerId: "QA" },
+			},
+		];
+		session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements });
+		try {
+			mode.setTodos([{ name: "Work", tasks: [{ content: "Build artifact", status: "in_progress" }] }]);
+			expect(renderTodos(mode)).toContain("TODO · req 4 · 1 ✓ · 2 open · 1 ✗");
+			const terminal = mode.ui.terminal;
+			const originalRows = Object.getOwnPropertyDescriptor(terminal, "rows");
+			Object.defineProperty(terminal, "rows", { get: () => 10, configurable: true });
+			try {
+				renderTodos(mode);
+				const compact = Bun.stripANSI(mode.statusContainer.render(180).join("\n"));
+				expect(compact).toContain("req 4 · 1 ✓ · 2 open · 1 ✗");
+			} finally {
+				if (originalRows) Object.defineProperty(terminal, "rows", originalRows);
+				else Reflect.deleteProperty(terminal, "rows");
+			}
+			// Lifecycle invalidation persists absence of the stale verdict, not a UI-only discount.
+			session.sessionManager.appendCustomEntry("requirements_ledger", {
+				version: 1,
+				requirements: requirements.map(item => (item.id === "R2" ? { ...item, verdict: undefined } : item)),
+			});
+			mode.setTodos(session.getTodoPhases());
+			expect(renderTodos(mode)).toContain("req 4 · 0 ✓ · 3 open · 1 ✗");
+		} finally {
+			session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements: [] });
+		}
 	});
 
 	it("keeps the summed progress bar but omits the roman numeral for a single-phase list", () => {

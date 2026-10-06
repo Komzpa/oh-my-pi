@@ -9,11 +9,28 @@ import {
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
+
+import { AgentRegistry } from "../registry/agent-registry";
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+
+import * as nodePath from "node:path";
+import {
+	appendRequirementsSnapshot,
+	classifyRequirement,
+	formatDoneGateRefusal,
+	getLatestRequirements,
+	evaluateRequirementDoneGate,
+	getPersistedRequirementAuditRejections,
+	prepareAwaitingUserCheck,
+	type RequirementsLedgerAppender,
+} from "./requirements-ledger";
 
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
 
@@ -34,15 +51,16 @@ export function isTodoPhase(value: unknown): value is TodoPhase {
 
 /**
  * Phases a successful, state-changing `todo` result committed, or undefined
- * for errors and pure `view` reads. A direct call lands these on the branch
- * through its own toolResult entry; a caller that produces no `todo`
- * toolResult (the eval bridge) must persist them itself or the next branch
- * rehydration (resume, rewind, fork, /btw) silently reverts the change.
+ * for errors, pure `view` reads, and requirement classification. A direct call
+ * lands these on the branch through its own `toolResult` entry; a caller that
+ * produces no `todo` toolResult (the eval bridge) must persist them itself or
+ * the next branch rehydration (resume, rewind, fork, /btw) silently reverts the
+ * change.
  */
 export function committedTodoPhases(result: AgentToolResult): TodoPhase[] | undefined {
 	if (result.isError || !isRecord(result.details)) return undefined;
 	const { op, phases } = result.details;
-	if (op === "view" || !Array.isArray(phases) || !phases.every(isTodoPhase)) return undefined;
+	if (op === "view" || op === "classify" || !Array.isArray(phases) || !phases.every(isTodoPhase)) return undefined;
 	return phases;
 }
 
@@ -59,6 +77,9 @@ const InitListEntry = type({
 
 const todoSchema = type({
 	op: TodoOp,
+	"awaitingUser?": type({ action: "string", "ids?": type("string").array() }).describe(
+		"user-owned pending check for block: exact action and optional card or other ids",
+	),
 	"list?": InitListEntry.array().describe("phases for init"),
 	"task?": type("string").describe("verbatim task content"),
 	"phase?": type("string"),
@@ -71,6 +92,7 @@ const todoSchema = type({
 
 type TodoParams = TodoSchema;
 type TodoSchema = typeof todoSchema.infer;
+
 /** A single todo op entry (the params object itself). */
 type TodoOpEntryValue = TodoParams;
 
@@ -91,13 +113,310 @@ function findPhaseByName(phases: TodoPhase[], name: string): TodoPhase | undefin
 }
 
 function cloneTask(task: TodoItem): TodoItem {
-	return task.blocker !== undefined
-		? { content: task.content, status: task.status, blocker: task.blocker }
-		: { content: task.content, status: task.status };
+	return structuredClone(task);
 }
 
 function clonePhases(phases: TodoPhase[]): TodoPhase[] {
 	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
+}
+
+// Session checkout for rows created by the current `TodoTool.execute()` call.
+// Set at the top of execute() (a region #92 leaves alone) and read by
+// initPhases/appendItems, so #41 never touches #92's applyEntry/applyParams
+// threading or execute-tail hunks. Stays undefined for standalone
+// applyOpsToPhases use (which clears it on entry).
+let activeArtifactCwd: string | undefined;
+
+function bindArtifactCwd(task: TodoItem, artifactCwd?: string): void {
+	if (artifactCwd) {
+		task.artifactCwd = artifactCwd;
+		task.artifactOwner = "main";
+	}
+}
+
+export interface RequirementRowArtifact {
+	cwd: string;
+	head: string | null;
+	dirty: boolean;
+	sha256?: string;
+	reason?: string;
+	awaitingUser?: TodoItem["awaitingUser"];
+}
+
+export interface RequirementRowArtifactContext {
+	cwd: string;
+	sessionManager?: { getBranch(): SessionEntry[] };
+	getAsyncJobSnapshot?: () => { running?: readonly { id: string; agentId?: string }[] } | undefined;
+	signal?: AbortSignal;
+}
+
+const ABSOLUTE_ARTIFACT_PATH = /\/(?:home|srv|tmp|var|mnt|workspaces|Users)\/[^\s"'`),;]+/g;
+
+function unknownRequirementArtifact(cwd: string, reason = "checkout mapping unavailable"): RequirementRowArtifact {
+	return { cwd, head: null, dirty: true, reason };
+}
+
+/** Attach row-owned pending checks to the artifact used by every completion surface. */
+export async function getRequirementRowArtifact(
+	ctx: RequirementRowArtifactContext,
+	row: string,
+	phases: readonly TodoPhase[],
+	checkoutCache?: Map<string, Promise<RequirementRowArtifact>>,
+): Promise<RequirementRowArtifact> {
+	const artifact = await resolveRequirementRowArtifact(ctx, row, phases, checkoutCache);
+	const tasks = phases.flatMap(phase => phase.tasks).filter(task => task.content === row);
+	const pending = tasks.length === 1 && tasks[0]!.status === "blocked" ? tasks[0]!.awaitingUser : undefined;
+	return pending?.action.trim() ? { ...artifact, awaitingUser: pending } : artifact;
+}
+
+/** Resolve a row's persisted checkout, then read its current HEAD and dirty state without blocking the CLI. */
+async function resolveRequirementRowArtifact(
+	ctx: RequirementRowArtifactContext,
+	row: string,
+	phases: readonly TodoPhase[],
+	checkoutCache?: Map<string, Promise<RequirementRowArtifact>>,
+): Promise<RequirementRowArtifact> {
+	let task: TodoItem | undefined;
+	for (const phase of phases) {
+		for (const candidate of phase.tasks) {
+			if (candidate.content !== row) continue;
+			if (task) return unknownRequirementArtifact(`duplicate TODO row ${JSON.stringify(row)}`);
+			task = candidate;
+		}
+	}
+	const archived = !task;
+	if (!task && ctx.sessionManager) {
+		let historical: TodoItem | undefined;
+		let ambiguous = false;
+		observeLatestTodoPhases(ctx.sessionManager.getBranch(), snapshot => {
+			let match: TodoItem | undefined;
+			for (const phase of snapshot) {
+				for (const candidate of phase.tasks) {
+					if (candidate.content !== row) continue;
+					if (match) {
+						ambiguous = true;
+						return;
+					}
+					match = candidate;
+				}
+			}
+			if (match) {
+				historical = cloneTask(match);
+				ambiguous = false;
+			}
+		});
+		if (ambiguous) return unknownRequirementArtifact(`duplicate historical TODO row ${JSON.stringify(row)}`);
+		if (historical?.status === "completed") task = historical;
+	}
+	if (!task) return unknownRequirementArtifact("unknown row");
+
+	const schedule = (task as TodoItem & { schedule?: unknown }).schedule;
+	const metadata = isRecord(schedule) ? schedule : undefined;
+	const owner = typeof metadata?.owner === "string" ? metadata.owner : undefined;
+	const resources = Array.isArray(metadata?.resources) ? metadata.resources : [];
+	const paths: string[] = [];
+	const branchNames: string[] = [];
+	for (const resource of resources) {
+		if (typeof resource !== "string") continue;
+		const value = resource.trim();
+		if (nodePath.isAbsolute(value)) paths.push(value);
+		else paths.push(...(value.match(ABSOLUTE_ARTIFACT_PATH) ?? []));
+		const branch = /^(?:branch:|branch=|refs\/heads\/)(.+)$/.exec(value)?.[1];
+		if (branch) branchNames.push(branch);
+	}
+	if (new Set(branchNames).size > 1) return unknownRequirementArtifact(`ambiguous branches ${branchNames.join(", ")}`);
+	if (new Set(paths).size > 1) return unknownRequirementArtifact(paths.join(", "));
+	const effectiveOwner = owner ?? "main";
+	const persistedCwd =
+		typeof task.artifactCwd === "string" &&
+		nodePath.isAbsolute(task.artifactCwd) &&
+		task.artifactOwner === effectiveOwner
+			? task.artifactCwd
+			: undefined;
+
+	const running = archived ? [] : (ctx.getAsyncJobSnapshot?.()?.running ?? []);
+	const activeJob = owner === undefined ? undefined : running.find(job => job.id === owner || job.agentId === owner);
+	const registry = AgentRegistry.global();
+	let agent = archived || owner === undefined ? undefined : registry.get(owner);
+	if (!agent && activeJob?.agentId) agent = registry.get(activeJob.agentId);
+	if (!agent && !archived && paths.length === 0 && !persistedCwd) {
+		for (const reference of registry.list()) {
+			if (!("todoRow" in reference) || reference.todoRow !== row) continue;
+			if (agent) return unknownRequirementArtifact(`ambiguous registered owners for ${JSON.stringify(row)}`);
+			agent = reference;
+		}
+		if (
+			agent &&
+			owner !== undefined &&
+			owner !== agent.id &&
+			owner !== activeJob?.id &&
+			owner !== activeJob?.agentId
+		) {
+			return unknownRequirementArtifact(
+				`owner ${JSON.stringify(owner)} conflicts with registered row owner ${JSON.stringify(agent.id)}`,
+			);
+		}
+	}
+	// Only a row that declares no resource set at all is a pre-scheduling legacy
+	// row: it falls back to the main checkout (c7a645a9c1). A row that declares
+	// `resources` explicitly is bound to that set alone and must stay unknown
+	// when it is empty, so a bare schedule edit can never silently rebind it.
+	const declaredResources = Array.isArray(metadata?.resources);
+	const ownerCwd =
+		effectiveOwner === "main"
+			? archived || paths.length || persistedCwd || declaredResources
+				? undefined
+				: ctx.cwd
+			: resources.length > 0 || persistedCwd
+				? undefined
+				: agent?.session?.sessionManager.getCwd();
+	// A reassigned worker whose checkout is not known must not inherit the row's initial main checkout.
+	if (
+		!archived &&
+		owner &&
+		owner !== "main" &&
+		!ownerCwd &&
+		!persistedCwd &&
+		paths.length === 0 &&
+		branchNames.length === 0
+	) {
+		return unknownRequirementArtifact(`unknown checkout for owner ${JSON.stringify(owner)}`);
+	}
+	if (branchNames.length > 0) {
+		const anchor =
+			ownerCwd ??
+			paths[0] ??
+			(typeof task.artifactCwd === "string" && nodePath.isAbsolute(task.artifactCwd) ? task.artifactCwd : undefined);
+		if (!anchor) return unknownRequirementArtifact(`unknown worktree for ${branchNames.join(", ")}`);
+		try {
+			const worktrees = await vcs.requireGit(anchor).worktrees(ctx.signal);
+			const matches = worktrees.filter(worktree =>
+				branchNames.includes(worktree.branch?.replace(/^refs\/heads\//, "") ?? ""),
+			);
+			if (matches.length !== 1) return unknownRequirementArtifact(`unknown worktree for ${branchNames.join(", ")}`);
+			paths.push(matches[0]!.path);
+		} catch {
+			return unknownRequirementArtifact(`unknown worktree for ${branchNames.join(", ")}`);
+		}
+	}
+	const uniquePaths = [...new Set(paths)];
+	if (uniquePaths.length > 1) return unknownRequirementArtifact(uniquePaths.join(", "));
+	const path = uniquePaths[0] ?? persistedCwd ?? ownerCwd;
+	if (!path)
+		return unknownRequirementArtifact(
+			`unknown artifact mapping for ${JSON.stringify(row)} (owner ${JSON.stringify(owner ?? null)})`,
+		);
+
+	try {
+		const info = await fs.promises.stat(path);
+		if (info.isFile()) {
+			const hash = createHash("sha256");
+			for await (const chunk of fs.createReadStream(path)) hash.update(chunk);
+			return { cwd: path, head: null, dirty: false, sha256: hash.digest("hex") };
+		}
+		if (!info.isDirectory()) return unknownRequirementArtifact(path, "resource is neither a file nor a directory");
+	} catch {
+		return unknownRequirementArtifact(path, "resource path is missing or inaccessible");
+	}
+	const cwd = path;
+	const repo = vcs.git(cwd);
+	if (!repo) return unknownRequirementArtifact(cwd, "not a Git checkout");
+	const repoRoot = repo.info().repoRoot;
+	let current = checkoutCache?.get(repoRoot);
+	if (!current) {
+		current = Promise.all([repo.headSha(ctx.signal), repo.statusPorcelain({ untracked: "all" }, ctx.signal)])
+			.then(([head, status]) => ({ cwd: repoRoot, head: head ?? null, dirty: status.length > 0 }))
+			.catch(() => unknownRequirementArtifact(repoRoot, "Git HEAD or status unavailable"));
+		checkoutCache?.set(repoRoot, current);
+	}
+	return current;
+}
+
+/** Persist an unambiguous live audit checkout on the canonical TODO row before the worker can disappear. */
+export async function bindRequirementRowArtifact(
+	ctx: RequirementRowArtifactContext,
+	row: string,
+	phases: readonly TodoPhase[],
+	pi: RequirementsLedgerAppender,
+	checkoutCache?: Map<string, Promise<RequirementRowArtifact>>,
+): Promise<RequirementRowArtifact> {
+	const artifact = await getRequirementRowArtifact(ctx, row, phases, checkoutCache);
+	if (!artifact.head || artifact.dirty || !ctx.sessionManager) return artifact;
+	let original: TodoItem | undefined;
+	for (const phase of phases) {
+		for (const task of phase.tasks) {
+			if (task.content !== row) continue;
+			if (original) return unknownRequirementArtifact(`duplicate TODO row ${JSON.stringify(row)}`);
+			original = task;
+		}
+	}
+	// An archived row already has persisted checkout ownership; never resurrect it in the active plan.
+	if (!original) return artifact;
+
+	const currentPhases = getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch());
+	let current: TodoItem | undefined;
+	for (const phase of currentPhases) {
+		for (const task of phase.tasks) {
+			if (task.content !== row) continue;
+			if (current) return unknownRequirementArtifact(`duplicate TODO row ${JSON.stringify(row)}`);
+			current = task;
+		}
+	}
+	if (
+		!current ||
+		JSON.stringify((current as TodoItem & { schedule?: { resources?: unknown } }).schedule?.resources) !==
+			JSON.stringify((original as TodoItem & { schedule?: { resources?: unknown } }).schedule?.resources)
+	) {
+		return unknownRequirementArtifact(`TODO row ${JSON.stringify(row)} changed during artifact binding`);
+	}
+	const owner = (current as TodoItem & { schedule?: { owner?: unknown } }).schedule?.owner;
+	const artifactOwner = typeof owner === "string" ? owner : "main";
+	if (original.artifactCwd === artifact.cwd && original.artifactOwner === artifactOwner) return artifact;
+	current.artifactCwd = artifact.cwd;
+	current.artifactOwner = artifactOwner;
+	pi.appendEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: currentPhases });
+	return artifact;
+}
+
+export interface TodoCompletionSelector {
+	task?: string;
+	phase?: string;
+	items?: string[];
+}
+
+/** Select the exact rows a `done`/`drop` batch names; an empty batch is an
+ *  error, not a request to close every row. */
+function selectCompletionBatchTargets(
+	phases: TodoPhase[],
+	entry: { op?: string; task?: string; items?: string[] },
+	errors: string[],
+): TodoItem[] {
+	if (!entry.task && (entry.items?.length ?? 0) === 0) {
+		errors.push(
+			`${entry.op === "drop" ? "drop" : "done"} requires a task or items target; call todo with op="done", task="<exact row>" (or op="done", items=["<row1>", ...])`,
+		);
+		return [];
+	}
+	const targets: TodoItem[] = [];
+	const seen = new Set<TodoItem>();
+	const addTarget = (content: string) => {
+		const hit = resolveTaskOrError(phases, content, errors);
+		if (hit && !seen.has(hit.task)) {
+			seen.add(hit.task);
+			targets.push(hit.task);
+		}
+	};
+	if (entry.task) addTarget(entry.task);
+	for (const content of entry.items ?? []) addTarget(content);
+	return targets;
+}
+
+/** Resolve done targets once for native mutation and the extension safety gate. */
+export function getCompletionTargets(phases: TodoPhase[], entry: TodoCompletionSelector, errors: string[]): TodoItem[] {
+	if (entry.items !== undefined) {
+		return selectCompletionBatchTargets(phases, { op: "done", task: entry.task, items: entry.items }, errors);
+	}
+	return getTaskTargets(phases, { op: "done", task: entry.task, phase: entry.phase }, errors);
 }
 
 function todoTransitionKey(phase: string, content: string): string {
@@ -257,6 +576,44 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 	return [];
 }
 
+/** Last meaningful change to each row in saved todo history. Closing alone does not invalidate QA. */
+export function getTodoRowChanges(entries: readonly SessionEntry[]): Map<string, { at: string; id: string }> {
+	const changes = new Map<string, { at: string; id: string }>();
+	const previous = new Map<string, TodoItem>();
+	for (const entry of entries) {
+		const phases = canonicalTodoPhases(entry);
+		if (!phases) continue;
+		const current = new Map(phases.flatMap(phase => phase.tasks.map(task => [task.content, task] as const)));
+		for (const [row, task] of current) {
+			const old = previous.get(row);
+			const comparable = task.status === "completed" && old ? { ...task, status: old.status } : task;
+			if (!old || JSON.stringify(comparable) !== JSON.stringify(old))
+				changes.set(row, { at: entry.timestamp, id: entry.id });
+		}
+		for (const [row, old] of previous) {
+			if (!current.has(row) && old.status !== "completed") changes.set(row, { at: entry.timestamp, id: entry.id });
+		}
+		previous.clear();
+		for (const [row, task] of current) previous.set(row, task);
+	}
+	return changes;
+}
+
+/** Walk every canonical snapshot on the branch in order, then return the active phases. */
+export function observeLatestTodoPhases(
+	entries: SessionEntry[],
+	onSnapshot: (phases: readonly TodoPhase[]) => void,
+): TodoPhase[] {
+	let latest: TodoPhase[] | undefined;
+	for (const entry of entries) {
+		const phases = canonicalTodoPhases(entry);
+		if (!phases) continue;
+		onSnapshot(phases);
+		latest = phases;
+	}
+	return latest ? clonePhases(latest) : [];
+}
+
 function resolveTaskOrError(
 	phases: TodoPhase[],
 	content: string | undefined,
@@ -292,6 +649,11 @@ function resolvePhaseOrError(phases: TodoPhase[], name: string | undefined, erro
 }
 
 function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoItem[] {
+	// #41: `done`/`drop` select exact batch rows from `items`; all other
+	// targeting keeps base selection.
+	if ((entry.op === "done" || entry.op === "drop") && entry.items !== undefined) {
+		return selectCompletionBatchTargets(phases, entry, errors);
+	}
 	if (entry.task) {
 		const hit = resolveTaskOrError(phases, entry.task, errors);
 		return hit ? [hit.task] : [];
@@ -307,7 +669,6 @@ function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: st
 const DEFAULT_INIT_PHASE = "Tasks";
 
 function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
-	// Models routinely flatten the single-phase init into `{op:"init", items:[...]}`
 	// (optionally with a bare `phase`) instead of the canonical
 	// `list: [{phase, items}]`. Accept that shape by synthesizing a one-phase list
 	// so a common, recoverable mistake isn't a hard error.
@@ -338,7 +699,11 @@ function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	}
 	return list.map(listEntry => ({
 		name: listEntry.phase,
-		tasks: listEntry.items.map<TodoItem>(content => ({ content, status: "pending" })),
+		tasks: listEntry.items.map<TodoItem>(content => {
+			const task: TodoItem = { content, status: "pending" };
+			bindArtifactCwd(task, activeArtifactCwd);
+			return task;
+		}),
 	}));
 }
 
@@ -372,7 +737,9 @@ function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 	}
 
 	for (const content of entry.items) {
-		phase.tasks.push({ content, status: "pending" });
+		const task: TodoItem = { content, status: "pending" };
+		bindArtifactCwd(task, activeArtifactCwd);
+		phase.tasks.push(task);
 	}
 	return phases;
 }
@@ -426,6 +793,7 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			return phases;
 		}
 		case "block": {
+			if (!prepareAwaitingUserCheck(phases, entry, errors)) return phases;
 			if (!entry.task && !entry.phase) {
 				errors.push("block requires a task or phase target");
 				return phases;
@@ -448,6 +816,7 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			return phases;
 		}
 		case "unblock": {
+			if (!prepareAwaitingUserCheck(phases, entry, errors)) return phases;
 			if (!entry.task && !entry.phase) {
 				errors.push("unblock requires a task or phase target");
 				return phases;
@@ -521,6 +890,8 @@ export function applyOpsToPhases(
 	ops: TodoOpEntryValue[],
 ): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
+	// Standalone use has no session checkout: never inherit a stale slot value.
+	activeArtifactCwd = undefined;
 	let next = clonePhases(currentPhases);
 	for (const op of ops) {
 		next = applyEntry(next, op, errors);
@@ -576,6 +947,12 @@ const MARKER_TO_STATUS: Record<string, TodoStatus> = {
 	"~": "abandoned",
 	"!": "blocked",
 };
+
+import {
+	createTodoToolSchema,
+	type TodoToolParams as TodoToolParamsType,
+	type TodoToolSchema,
+} from "./todo-classify-schema";
 
 /** Parse a Markdown checklist back into todo phases. */
 export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: string[] } {
@@ -709,13 +1086,14 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 // Tool Class
 // =============================================================================
 
-export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
+export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolDetails> {
+	private static readonly schema: TodoToolSchema<TodoSchema> = createTodoToolSchema(todoSchema);
 	readonly name = "todo";
 	readonly approval = "read" as const;
 	readonly label = "Todo";
-	readonly summary = "Write a structured todo list to track progress within a session";
+	readonly summary = "Track structured todos and classify requirements";
 	readonly description: string;
-	readonly parameters = todoSchema;
+	readonly parameters = TodoTool.schema;
 	readonly concurrency = "exclusive";
 	readonly strict = true;
 	// Raw args reach execute() on schema failure; resolveTodoParams re-validates
@@ -724,18 +1102,28 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 
 	readonly loadMode = "discoverable";
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(todoDescription);
+		this.description = `${prompt.render(todoDescription)}\n\nClassify requirement candidates with op="classify": id is the Rn, classification is linked (needs rows with exact todo row contents), not-a-requirement (needs reason), or merged (needs mergeInto with another Rn). Example: op="classify", id="R1", classification="linked", rows=["<exact todo row>"].`;
 	}
 
 	async execute(
 		_toolCallId: string,
-		params: TodoParams,
+		params: TodoToolParamsType<TodoSchema>,
 		_signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
+		// Publish the session checkout for rows created below. Set here at the
+		// top of execute() (untouched by #92); row-creating ops reach
+		// applyParams synchronously, and todo concurrency is exclusive.
+		activeArtifactCwd = this.session.cwd;
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
+		const rawOp: unknown = params.op;
+		if (rawOp === "classify") return this.#classify(params, previousPhases, storage);
+		if (rawOp === "done") {
+			const gate = await this.#doneGate(params, previousPhases, storage, _signal);
+			if (gate) return gate;
+		}
 		const resolved = resolveTodoParams(params, previousPhases.length > 0);
 		if (typeof resolved === "string") {
 			return {
@@ -745,6 +1133,40 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			};
 		}
 		const entry = resolved;
+		const sessionManager = this.session.sessionManager;
+		if ((entry.op === "rm" || entry.op === "init") && sessionManager) {
+			const linkedRequirements = getLatestRequirements(sessionManager.getBranch()).filter(
+				requirement => requirement.classification === "linked",
+			);
+			const targetErrors: string[] = [];
+			const removedRows = new Set<string>();
+			if (entry.op === "rm") {
+				for (const task of getTaskTargets(previousPhases, entry, targetErrors)) removedRows.add(task.content);
+			} else {
+				const replacementRows = new Set(entry.list?.flatMap(item => item.items) ?? entry.items ?? []);
+				for (const requirement of linkedRequirements) {
+					for (const row of requirement.rows) {
+						if (!replacementRows.has(row) && findTaskByContent(previousPhases, row)) removedRows.add(row);
+					}
+				}
+			}
+			const blocked = linkedRequirements.flatMap(requirement =>
+				requirement.rows.filter(row => removedRows.has(row)).map(row => ({ requirement, row })),
+			);
+			if (targetErrors.length === 0 && blocked.length > 0) {
+				const { requirement, row } = blocked[0]!;
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Blocked: cannot remove requirement-linked TODO row ${JSON.stringify(row)} (${requirement.id}). Call todo with op="classify", id="${requirement.id}", classification="not-a-requirement", reason="<why this is no longer a requirement>". Then retry`,
+						},
+					],
+					details: { op: entry.op, phases: previousPhases, storage },
+					isError: true,
+				};
+			}
+		}
 		const op = entry.op;
 		// Pure-view calls are reads: no normalization, no state write.
 		const readOnly = op === "view";
@@ -765,6 +1187,136 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			content: [{ type: "text", text: formatSummary(effective, errors, readOnly) }],
 			details,
 			isError: errors.length > 0 ? true : undefined,
+		};
+	}
+
+	/** Native completion delegates row evidence and refusal reasons to the shared ledger owner. */
+	async #doneGate(
+		params: Record<string, unknown>,
+		previousPhases: TodoPhase[],
+		storage: "memory" | "session",
+		signal?: AbortSignal,
+	): Promise<AgentToolResult<TodoToolDetails> | undefined> {
+		const sessionManager = this.session.sessionManager;
+		if (!sessionManager) return undefined;
+		const task = typeof params.task === "string" ? params.task : undefined;
+		const phase = typeof params.phase === "string" ? params.phase : undefined;
+		const items = Array.isArray(params.items)
+			? params.items.filter((item): item is string => typeof item === "string")
+			: undefined;
+		const selectorErrors: string[] = [];
+		const targets = getCompletionTargets(previousPhases, { task, phase, items }, selectorErrors);
+		if (selectorErrors.length === 0) {
+			const branch = sessionManager.getBranch();
+			const changes = getTodoRowChanges(branch);
+			const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
+			const open = await evaluateRequirementDoneGate(
+				getLatestRequirements(branch),
+				targets.map(target => target.content),
+				async row => ({
+					...(await getRequirementRowArtifact(
+						{ cwd: this.session.cwd, sessionManager, signal },
+						row,
+						previousPhases,
+						checkoutCache,
+					)),
+					lastChange: changes.get(row),
+				}),
+				getPersistedRequirementAuditRejections(branch, sessionManager.getSessionId?.() ?? null),
+			);
+			const unmet = open.flatMap(item => item.issues);
+			if (unmet.length > 0) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: formatDoneGateRefusal(unmet),
+						},
+					],
+					details: { op: "done", phases: previousPhases, storage },
+					isError: true,
+				};
+			}
+		}
+		return undefined;
+	}
+
+	/** #41's classify path, dispatched on raw args before the shared schema. The shared
+	 *  TodoOp union and TodoOperation in `@oh-my-pi/pi-tui/tools/todo` stay at base text;
+	 *  only this tool's local TodoOp/todoSchema expose classify so the model can see the op. */
+	async #classify(
+		params: Record<string, unknown>,
+		previousPhases: TodoPhase[],
+		storage: string,
+	): Promise<AgentToolResult<TodoToolDetails>> {
+		const details = { op: "classify", phases: previousPhases, storage } as unknown as TodoToolDetails;
+		const id = typeof params.id === "string" ? params.id : undefined;
+		const rawClassification = params.classification;
+		const classification =
+			rawClassification === "linked" || rawClassification === "not-a-requirement" || rawClassification === "merged"
+				? rawClassification
+				: undefined;
+		const rows = Array.isArray(params.rows)
+			? params.rows.filter((row): row is string => typeof row === "string")
+			: undefined;
+		const reason = typeof params.reason === "string" ? params.reason : undefined;
+		const mergeInto = typeof params.mergeInto === "string" ? params.mergeInto : undefined;
+		if (!id || !classification) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Blocked: classify requires an Rn id and classification. Call todo with op="classify", id="<Rn>", classification="linked", rows=["<exact todo row>"] (or classification="not-a-requirement" with reason="<why this is not a requirement>", or classification="merged" with mergeInto="<other Rn>"). Then retry`,
+					},
+				],
+				details,
+				isError: true,
+			};
+		}
+		const sessionManager = this.session.sessionManager;
+		if (!sessionManager) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Blocked: classify requires persistent session storage. Retry the same call todo with op="classify", id="${id ?? "<Rn>"}", classification="<linked|not-a-requirement|merged>" in a persisted session`,
+					},
+				],
+				details,
+				isError: true,
+			};
+		}
+		if (classification === "linked") {
+			const unknownRows = (rows ?? []).filter(row => !findTaskByContent(previousPhases, row));
+			if (unknownRows.length > 0) {
+				const available = previousPhases.flatMap(phase => phase.tasks.map(task => JSON.stringify(task.content)));
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Blocked: unknown TODO rows for ${id}: ${unknownRows.map(row => JSON.stringify(row)).join(", ")}. Available rows: ${available.length > 0 ? available.join(", ") : '(none: first create one with todo op="append", items=["<exact todo row>"] (or op="init"))'}. Call todo with op="classify", id="${id}", classification="linked", rows=[<exact existing row>]. Then retry`,
+						},
+					],
+					details,
+					isError: true,
+				};
+			}
+		}
+		const requirements = getLatestRequirements(sessionManager.getBranch());
+		const result = classifyRequirement(requirements, id, classification, {
+			rows,
+			reason,
+			mergeInto,
+		});
+		if ("error" in result) return { content: [{ type: "text", text: result.error }], details, isError: true };
+		appendRequirementsSnapshot(
+			{ appendEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data) },
+			result.requirements,
+		);
+		await sessionManager.flush();
+		return {
+			content: [{ type: "text", text: `Classified ${id} as ${classification}.` }],
+			details,
 		};
 	}
 }

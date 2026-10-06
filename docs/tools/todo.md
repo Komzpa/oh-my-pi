@@ -105,6 +105,25 @@ Normalization then re-applies the single-active-task rule after the op runs.
 - `append` is the only op that creates a missing phase.
 - `init` discards previous phases entirely.
 
+### Requirement completion gate
+
+Native `todo done`, `/todo done`, and assistant publication share `evaluateRequirementDoneGate` in `requirements-ledger.ts`. A row needs a fresh authenticated `qa-auditor` pass for every requirement linked to that row, not passes for unrelated linked rows. Receipts are saved per row with their receive time; a later receipt for another row cannot replace them. Legacy all-row receipts remain readable and are projected onto their corresponding artifacts.
+
+Receipts may use requirement sub-ids such as `R16e`, `R16f`, and `R16g`. They count toward `R16` only when the complete table is valid and every sub-verdict passes; any fail or unverifiable verdict blocks. An explicit row label binds the receipt to that row. Clean checkouts require the audited commit identity; rows without a clean checkout use the receive time and the last saved todo-row change. Completion itself does not invalidate its approving receipt, but reopening or changing the row does. All three gate surfaces retain rejected-receipt reasons.
+
+An explicit resource checkout takes precedence over the auditor's session cwd. Without a resource path, a saved artifact checkout for the current row owner takes precedence over that owner's cwd. This keeps a clean worktree auditable even when the auditor runs from a different, dirty checkout. A multi-row artifact cell such as `Row @ sha; Other row @ sha` is scoped to each named row before its receipt is saved or compared. Markdown `<br>` line breaks in the raw-words cell are decoded as newlines; changing the user's words still invalidates the receipt.
+
+Artifact freshness refusals include the resolved checkout's cwd, HEAD and dirty state, or the reason its checkout identity is unavailable. A file resource such as an installed executable is identified by its current streamed SHA-256 instead. Moving the resource worktree or changing the binary after receipt invalidates the old pass.
+
+### User-owned pending checks
+
+`block` additionally accepts `awaitingUser: { action: string; ids?: string[] }`. The action must not be blank; omit this field for agent-owned blockers. It is saved as row metadata without verifying completion. `unblock` clears both the blocker note and pending user check.
+
+For a check only the user can perform, record `todo` with `op="block", task="<exact row>", awaitingUser={"action":"Press Archive on both cards","ids":["card-a","card-b"]}`. The publication gate shows that action once, then stays quiet on agent turns until the next user message. The notice is saved on the session branch, so resuming does not repeat it. New user messages re-evaluate the current check; changed checks are announced again. Ordinary agent-owned unverified rows still block on every attempt, including when another row awaits the user.
+
+An awaiting-user check is never evidence of completion: native and slash `todo done` stay blocked. After the user explicitly confirms the action, use `unblock` to clear the check; the row still needs a fresh authenticated audit. Alternatively, a fresh `qa-auditor` pass received after the check was recorded can satisfy it if its artifact is current. Do not infer confirmation merely from a new message or from recording `awaitingUser`.
+
+
 ### Markdown round-trip helpers
 The same file also exposes non-tool helpers used by `/todo`:
 - `phasesToMarkdown(...)` serializes phases as headings plus checklist items (`[ ]`, `[/]`, `[x]`, `[-]`, `[!]`). A blocked reason is preserved in a trailing `<!-- blocker: ... -->` comment.

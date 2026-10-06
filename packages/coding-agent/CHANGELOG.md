@@ -5,10 +5,21 @@
 ### Added
 
 - `/dump all` writes a zip to the temp directory with the main transcript, the LLM request JSON, and one file per subagent transcript (nested subagents included, killed ones marked aborted); the TUI copies the archive path to the clipboard. Plain `/dump` is unchanged ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
+- Added a requirements ledger: todo rows link the user's raw requirements, a `qa-auditor` agent checks each deliverable against them before the row closes, assistant output that fails delivery approval is withheld, and the HUD shows open requirements and audit status.
+- Added `todo block`'s optional `awaitingUser` action and ids: pending user checks are announced once per user message instead of on every agent turn, without granting verification or bypassing completion gates.
 
 ### Fixed
 
+- Fixed restored sessions showing an outdated todo checkpoint instead of the current plan, including newer edits and archived rows.
+- Fixed task dispatch dropping requirement image attachments before the auditor's first prompt. Images without an existing source file are saved once in the session artifacts, and QA audit inputs name that durable path.
+- Fixed complete structured JSON `qa-auditor` verdict rows being rejected as malformed tables. Bare row arrays, a single array under an object key, and single row objects now use the same required-field, verdict, ID and coverage validation as Markdown receipts; missing evidence or artifact identity remains rejected.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
+- Fixed fresh row-scoped `qa-auditor` passes being rejected or erased by unrelated requirement-linked rows. Native todo completion, slash completion, and publication now share the same receipt gate, accept all-pass requirement sub-ids, and use saved row-history freshness when no clean checkout is available.
+- Fixed valid multi-row audits from clean resource worktrees being refused when the auditor runs in a different dirty checkout. Receipts now bind each named row's own artifact, accept Markdown line breaks without rewording requirements, and report the resolved checkout on freshness refusals.
+- Fixed requirements publication flooding final answers: the assistant's text is preserved with one compact audit-status line, while deduplicated model-only gate context is capped at 1,500 bytes and queued only when the open requirements or reasons change. Old artifact-bound receipt rejections no longer follow rows into a different checkout.
+
+- Fixed requirement receipts for mixed row artifacts:
+- Fixed image-only requirement rows entering an unauditable gate loop: `qa-auditor` now receives each `[Image #N]` reference as real image content with its SHA-256 and source path, and a row whose image bytes and path are both gone becomes `needs-user-restatement` with one user question instead of repeated impossible audit demands. each explicitly named row is bound to its own identity, including an installed binary's current SHA-256, instead of comparing the entire multi-row cell with every row.
 
 ## [18.4.12] - 2026-10-02
 
@@ -1550,7 +1561,8 @@
 
 ### Fixed
 
-	- Fixed GPT-6 Astra extended-context support and preserved maximum context windows reported by OpenAI Codex discovery ([#10980](https://github.com/can1357/oh-my-pi/pull/10980) by [@H4vC](https://github.com/H4vC)).
+    - Fixed GPT-6 Astra extended-context support and preserved maximum context windows reported by OpenAI Codex discovery ([#10980](https://github.com/can1357/oh-my-pi/pull/10980) by [@H4vC](https://github.com/H4vC)).
+
 - Subagent `yield` no longer rejects a valid `data` payload because a non-strict OpenAI-compatible backend filled the optional `error` field with `""`; previously the worker retried the identical call until the invalid-yield cap and the parent received nothing.
 - Fixed fullscreen `/copy` outlining only a lazily created grouped Read card, so Enter copies the assistant yield instead of tool output.
 - `memory://` now resolves against the session that issued it: a caller's own memory backend answers `memory://<id>`, so co-located sessions no longer read each other's memory rows, and a caller whose session is no longer live fails closed instead of being answered by a peer. Prompt completion binds to the same caller, so `memory://<memory-id>` stays on offer while a subagent shares the working directory. Advisors retain their owning session's memory access even without a session file.

@@ -45,6 +45,10 @@ import {
 	type ToolChoiceDirective,
 } from "@oh-my-pi/pi-agent-core";
 import {
+	getAssistantPublicationGate,
+	setAssistantPublicationGate,
+} from "@oh-my-pi/pi-agent-core/assistant-publication";
+import {
 	type CompactionPreparation,
 	type CompactionResult,
 	calculatePromptTokens,
@@ -154,7 +158,11 @@ import { emitSessionShutdownEvent, TOP_LEVEL_AGENT } from "../extensibility/exte
 import { extensionEventFromSessionEvent } from "../extensibility/extensions/lifecycle-mirror";
 import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
-import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
+import type {
+	BeforeAssistantMessageEventResult,
+	CompactOptions,
+	ContextUsage,
+} from "../extensibility/extensions/types";
 import type { CustomCommandContext } from "../extensibility/custom-commands/types";
 import { SkillDescriptionCatalog } from "../extensibility/skill-descriptions";
 import type { Skill, SkillWarning } from "../extensibility/skills";
@@ -236,6 +244,11 @@ import {
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";
 import { supportsExternalThinking } from "../tools/think";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import {
+	appendRequirementsSnapshot,
+	createRequirementCandidates,
+	getLatestRequirements,
+} from "../tools/requirements-ledger";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { AgentDefinition } from "../task/types";
@@ -414,6 +427,7 @@ import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
 import { YieldQueue } from "./yield-queue";
+import { RequirementsLedgerRuntime, type RequirementPublicationGate } from "./requirements-ledger-runtime";
 
 export * from "./agent-session-events";
 export * from "./agent-session-types";
@@ -714,16 +728,10 @@ export class AgentSession implements SettingsScope {
 	/** Tail of the serialized {@link refreshSkillsAndCommands} chain. */
 	#skillsAndCommandsRefresh: Promise<void> = Promise.resolve();
 	/**
-	 * Raw text the caller originally submitted for a queued plain `role: "user"`
-	 * message — before slash/custom-command rewriting, prompt-template expansion,
-	 * or `^model` mention substitution. Recorded by `#queueUserMessage`, the same
-	 * point `#queueCustomMessage` stamps `__queueChipText` for skill invocations;
-	 * a side map (not a message field) because `UserMessage` has no free-form
-	 * details slot to carry it, and it must never reach the model or persisted
-	 * session content. `removeQueuedMessage` matches against it so an RPC client
-	 * removing by the exact text it submitted can find its own transformed queued
-	 * entry without unsafely replaying a (possibly side-effecting) slash/custom
-	 * command.
+	 * Raw text the caller originally submitted for a user message, before slash/custom-command
+	 * rewriting, prompt-template expansion, or `^model` mention substitution. The side map
+	 * keeps it out of provider and persisted message content; queued prompts also use it for
+	 * exact `removeQueuedMessage` matching.
 	 */
 	readonly #queuedMessageRawText = new WeakMap<AgentMessage, string>();
 
@@ -786,6 +794,8 @@ export class AgentSession implements SettingsScope {
 	#planModeReminderCount = 0;
 	#planModeReminderAwaitingProgress = false;
 	readonly #todo: TodoTracker;
+	readonly #requirementsLedger: RequirementsLedgerRuntime;
+	#requirementsPublicationGate: RequirementPublicationGate | undefined;
 	readonly #modelMentions: ModelMentionRegistry;
 	#workPoolYieldItems: readonly WorkPoolYieldItem[] = [];
 	/** Item set matching the last successfully rebuilt provider prompt. The base
@@ -863,6 +873,8 @@ export class AgentSession implements SettingsScope {
 	#adoptedResetMarkers = new Map<string, number>();
 	// Extension system
 	#extensionRunner: ExtensionRunner | undefined = undefined;
+	/** Out-of-band receipts tied to the exact finalized messages admitted by the native gate. */
+	#settledAssistantStatuses = new WeakSet<AssistantMessage>();
 	#getEvalPreludes: (() => readonly EvalPreludeDefinition[]) | undefined;
 	#reconcileBrowserMcpFilter: AgentSessionConfig["reconcileBrowserMcpFilter"];
 	#skillDescriptions: SkillDescriptionCatalog;
@@ -1918,6 +1930,24 @@ export class AgentSession implements SettingsScope {
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
 		this.#agentKind = config.agentKind ?? "main";
+		this.#requirementsLedger = new RequirementsLedgerRuntime({
+			agent: this.agent,
+			agentKind: () => this.#agentKind,
+			cwd: () => this.sessionManager.getCwd(),
+			sessionManager: this.sessionManager,
+			onSettledAssistantMessage: message => this.#settledAssistantStatuses.add(message),
+			queueModelNotice: async content => {
+				await this.sendCustomMessage(
+					{ customType: "requirements-gate-notice", content, display: false, attribution: "agent" },
+					{ deliverAs: "nextTurn" },
+				);
+			},
+			setPublicationGate: gate => {
+				this.#requirementsPublicationGate = gate;
+				this.#syncAssistantPublicationGate();
+			},
+		});
+		this.#syncAssistantPublicationGate();
 		// A subagent's streamed text reaches no output sink until the run settles
 		// (the parent sees only the yield), so a failed turn's partial prose is
 		// replay-safe and transient provider errors after it stay retryable —
@@ -1944,6 +1974,22 @@ export class AgentSession implements SettingsScope {
 		}
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
 			this.#loopGuards.onAssistantEvent(message, assistantMessageEvent);
+			if (getAssistantPublicationGate(this.agent)) {
+				// Withheld streams still drive internal safety and token accounting, never public delivery.
+				if (assistantMessageEvent.type === "start") {
+					this.#ttsr.onAssistantMessageStart();
+					this.tokenRate.begin(message.timestamp);
+				} else if (
+					assistantMessageEvent.type === "text_delta" ||
+					assistantMessageEvent.type === "thinking_delta" ||
+					assistantMessageEvent.type === "toolcall_delta"
+				) {
+					this.tokenRate.push(assistantMessageEvent.delta);
+				}
+				void this.#ttsr
+					.checkMessageUpdate({ type: "message_update", message, assistantMessageEvent })
+					.catch(error => logger.warn("TTSR raw stream check failed", { error }));
+			}
 		});
 		// Tool-result hook owns synchronous post-tool actions that must affect the current loop.
 		this.agent.afterToolCall = ctx => this.#afterToolCall(ctx);
@@ -3321,6 +3367,20 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
+	/** Keep async QA receipts serialized after a successful transcript commit. */
+	#queueRequirementMessageEndPersistence(message: AgentMessage, promptGeneration: number): Promise<void> {
+		const persistence = this.#queueMessageEndPersistence(message, promptGeneration);
+		if (message.role !== "custom" || message.customType !== ASYNC_RESULT_MESSAGE_TYPE) return persistence;
+		const pending = persistence.then(async () => {
+			if (this.#promptGeneration !== promptGeneration) return;
+			await this.#requirementsLedger
+				.consumeAsyncResult(message)
+				.catch(error => logger.warn("Requirements ledger async consume failed", { error }));
+		});
+		this.#messageEndPersistenceTail = pending.catch(() => {});
+		return pending;
+	}
+
 	/**
 	 * Builds the transient checkpoint-active reminder for a successful
 	 * checkpoint tool result, or undefined otherwise. The reminder is queued as
@@ -3603,7 +3663,7 @@ export class AgentSession implements SettingsScope {
 		// extension notifications must not own or delay the persistence work.
 		const messageEndPersistence =
 			event.type === "message_end"
-				? this.#queueMessageEndPersistence(event.message, eventPromptGeneration)
+				? this.#queueRequirementMessageEndPersistence(event.message, eventPromptGeneration)
 				: undefined;
 
 		// Deobfuscate assistant message content for display emission — the LLM echoes back
@@ -3640,14 +3700,28 @@ export class AgentSession implements SettingsScope {
 		// concurrently and message_update skips the await, so a reset placed after
 		// it could land behind the new message's first deltas and clear them.
 		if (event.type === "turn_start") this.#ttsr.onTurnStart();
-		if (event.type === "message_start" && event.message.role === "assistant") this.#ttsr.onAssistantMessageStart();
+		if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_start" &&
+			event.message.role === "assistant"
+		) {
+			this.#ttsr.onAssistantMessageStart();
+		}
 
 		// Meter generation per session: each session tracks its own stream, so a
 		// background subagent holds a live reading by the time it is focused and
 		// the main session's reading survives focus round-trips.
-		if (event.type === "message_start" && event.message.role === "assistant") {
+		if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_start" &&
+			event.message.role === "assistant"
+		) {
 			this.tokenRate.begin(event.message.timestamp);
-		} else if (event.type === "message_update" && event.message.role === "assistant") {
+		} else if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_update" &&
+			event.message.role === "assistant"
+		) {
 			const delta = event.assistantMessageEvent;
 			if (delta.type === "text_delta" || delta.type === "thinking_delta" || delta.type === "toolcall_delta") {
 				this.tokenRate.push(delta.delta);
@@ -3715,12 +3789,25 @@ export class AgentSession implements SettingsScope {
 
 		if (event.type === "tool_stream_update") this.#streamingEditGuard.maybeAbort(event);
 
-		if (await this.#ttsr.checkMessageUpdate(event)) return;
+		if (!getAssistantPublicationGate(this.agent) && (await this.#ttsr.checkMessageUpdate(event))) return;
 
 		// Handle session persistence
 		if (event.type === "message_end") {
 			await messageEndPersistence;
 			if (this.#promptGeneration !== eventPromptGeneration) return;
+			if (event.message.role === "user" && event.message.attribution === "user") {
+				const rawText = this.#queuedMessageRawText.get(event.message);
+				if (rawText !== undefined)
+					this.#captureRawRequirementCandidate(
+						rawText,
+						"content" in event.message
+							? (event.message.content as unknown[]).filter(
+									(c): c is ImageContent =>
+										!!c && typeof c === "object" && (c as { type?: string }).type === "image",
+								)
+							: [],
+					);
+			}
 			if (interruptedThinkingMessage) {
 				this.sessionManager.appendCustomMessageEntry(
 					interruptedThinkingMessage.customType,
@@ -4201,7 +4288,8 @@ export class AgentSession implements SettingsScope {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
 				}
-				const todoContinuationScheduled = await this.#todo.checkCompletion(msg);
+				const todoContinuationScheduled =
+					!this.#settledAssistantStatuses.has(msg) && (await this.#todo.checkCompletion(msg));
 				if (todoContinuationScheduled) {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
@@ -4548,7 +4636,7 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
-	#afterToolCall(ctx: AfterToolCallContext): AfterToolCallResult | undefined {
+	async #afterToolCall(ctx: AfterToolCallContext): Promise<AfterToolCallResult | undefined> {
 		if (
 			this.#isTerminalYieldToolResult({
 				toolName: ctx.toolCall.name,
@@ -4561,7 +4649,15 @@ export class AgentSession implements SettingsScope {
 			this.#synchronouslyTerminatedYieldToolCallIds.add(ctx.toolCall.id);
 			this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
 		}
-		return this.#ttsr.afterToolCall(ctx);
+		const receipt = await this.#requirementsLedger.afterToolCall(ctx);
+		const ttsrResult = this.#ttsr.afterToolCall(ctx);
+		if (!receipt) return ttsrResult;
+		if (!ttsrResult) return receipt;
+		return {
+			...ttsrResult,
+			...receipt,
+			...(receipt.content && ttsrResult.content ? { content: [...ttsrResult.content, ...receipt.content] } : {}),
+		};
 	}
 	/**
 	 * Emits the extension `tool_call` event for a loop-dispatched call at
@@ -4576,12 +4672,33 @@ export class AgentSession implements SettingsScope {
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
 		const runner = this.#extensionRunner;
 		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
-		const ttsrResult = await this.#ttsr.beforeToolCall(ctx);
+		if (this.#agentKind === "main" && this.getActiveToolNames().includes("todo") && ctx.tool.name !== "todo") {
+			const refusal = this.#requirementsLedger.refuseOverdueCandidate(ctx.tool.name);
+			if (refusal) {
+				runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
+				return refusal;
+			}
+		}
+		let preparedArgs = ctx.args;
+		if (this.#agentKind === "main" && ctx.tool.name === "task") {
+			const revised = await this.#requirementsLedger.prepareAuditorTaskCall(
+				ctx.tool.name,
+				ctx.toolCall.id,
+				preparedArgs,
+				signal,
+			);
+			if (revised !== undefined) preparedArgs = revised;
+		}
+		const preparedContext = { ...ctx, args: preparedArgs };
+		const ttsrResult = await this.#ttsr.beforeToolCall(preparedContext);
 		if (ttsrResult) {
 			runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
+			if (!ttsrResult.block && ttsrResult.args === undefined && preparedArgs !== ctx.args) {
+				return { ...ttsrResult, args: preparedArgs };
+			}
 			return ttsrResult;
 		}
-		if (!runner?.hasHandlers("tool_call")) return undefined;
+		if (!runner?.hasHandlers("tool_call")) return preparedArgs !== ctx.args ? { args: preparedArgs } : undefined;
 		const metadata = ctx.toolCall.providerMetadata;
 		const computer = metadata?.type === "computer" ? metadata : undefined;
 		// Parity with the wrapper's pre-emit short-circuit: an already-denied
@@ -4589,13 +4706,13 @@ export class AgentSession implements SettingsScope {
 		// or user policy), so resolving under the most permissive mode is exact;
 		// the wrapper still enforces the mode-accurate gate before execution.
 		const userPolicies: Record<string, unknown> = cfgToolsApproval.get(this.settings);
-		const approvalArgs = computer ? { actions: computer.actions } : ctx.args;
+		const approvalArgs = computer ? { actions: computer.actions } : preparedArgs;
 		if (resolveApproval(ctx.tool, approvalArgs, "yolo", userPolicies).policy === "deny") {
 			return undefined;
 		}
 		const eventArgs = computer
 			? { actions: computer.actions, pendingSafetyChecks: computer.pendingSafetyChecks }
-			: ctx.args;
+			: preparedArgs;
 		runner.markToolCallEmitted(ctx.toolCall.id, ctx.tool.name);
 		let callResult: Awaited<ReturnType<ExtensionRunner["emitToolCall"]>>;
 		try {
@@ -4618,10 +4735,11 @@ export class AgentSession implements SettingsScope {
 		}
 		// A computer call's event input is a synthetic {actions, pendingSafetyChecks}
 		// view, not the execution params — a revision cannot map back onto them.
-		const args = callResult?.input !== undefined && !computer ? callResult.input : undefined;
+		const revisedArgs = callResult?.input !== undefined && !computer ? callResult.input : undefined;
 		const additionalContext = callResult?.additionalContext;
-		if (args === undefined && additionalContext === undefined) return undefined;
-		return { args, additionalContext };
+		const finalArgs = revisedArgs ?? (preparedArgs !== ctx.args ? preparedArgs : undefined);
+		if (finalArgs === undefined && additionalContext === undefined) return undefined;
+		return { args: finalArgs, additionalContext };
 	}
 
 	/** Find the last assistant message in agent state (including aborted ones) */
@@ -4735,6 +4853,14 @@ export class AgentSession implements SettingsScope {
 			signal: this.#postPromptTasksAbortController.signal,
 		});
 		if (this.#promptGeneration !== generation || this.#abortInProgress || this.#isDisposed) {
+			this.#resetSessionStopContinuationState();
+			return false;
+		}
+		if (
+			lastAssistantMessage &&
+			this.#settledAssistantStatuses.has(lastAssistantMessage) &&
+			result?.decision !== "block"
+		) {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}
@@ -5023,6 +5149,40 @@ export class AgentSession implements SettingsScope {
 	 * (login/logout, token refresh that surfaces a new account UUID) without
 	 * needing to re-call `#syncAgentSessionId()` on every such event.
 	 */
+	/** Compose the extension pre-publication gate with the requirements-ledger gate. */
+	#syncAssistantPublicationGate(): void {
+		const runner = this.#extensionRunner;
+		const requirementsGate = this.#agentKind === "main" ? this.#requirementsPublicationGate : undefined;
+		const hasExtensionGate = this.#agentKind === "main" && runner?.hasHandlers("before_assistant_message") === true;
+		if (!hasExtensionGate && !requirementsGate) {
+			setAssistantPublicationGate(this.agent, undefined);
+			return;
+		}
+		setAssistantPublicationGate(this.agent, async (message, signal) => {
+			let extensionResult: BeforeAssistantMessageEventResult | undefined;
+			if (hasExtensionGate && runner) {
+				extensionResult = await runner.emitBeforeAssistantMessage({
+					type: "before_assistant_message",
+					message,
+					signal,
+				});
+				if (
+					extensionResult?.settled === true &&
+					!signal.aborted &&
+					message.stopReason !== "aborted" &&
+					!message.content.some(block => block.type === "toolCall")
+				) {
+					this.#settledAssistantStatuses.add(message);
+				}
+			}
+			if (requirementsGate) {
+				const requirementsResult = await requirementsGate(message, signal);
+				if (requirementsResult !== undefined) return requirementsResult;
+			}
+			return extensionResult;
+		});
+	}
+
 	#syncAgentSessionId(sessionId?: string, notifyChange = true): void {
 		const currentSessionId = this.sessionManager.getSessionId();
 		if (this.#observedSessionId === undefined) {
@@ -5123,6 +5283,7 @@ export class AgentSession implements SettingsScope {
 	 */
 	beginDispose(): void {
 		this.#isDisposed = true;
+		setAssistantPublicationGate(this.agent, undefined);
 		for (const dispose of this.#disposers.splice(0)) dispose();
 		this.#modelDiscoveryAbortController.abort();
 		this.#queuedMessageDrainBlocked = false;
@@ -7051,6 +7212,9 @@ export class AgentSession implements SettingsScope {
 					userInitiated: options?.userInitiated === true ? true : undefined,
 				}
 			: { role: "user" as const, content: userContent, attribution: promptAttribution, timestamp: submittedAt };
+		if (message.role === "user" && message.attribution === "user" && this.getActiveToolNames().includes("todo")) {
+			this.#captureRawRequirementCandidate(typedText, options?.images);
+		}
 
 		const preludeMessages: AgentMessage[] = [];
 		if (eagerTodoPrelude) {
@@ -9220,6 +9384,7 @@ export class AgentSession implements SettingsScope {
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			// Re-apply the configured selector so the new session does not inherit
 			// the previous session's auto-classified effort: auto stays auto but
 			// restarts at the provisional level; a pinned level re-resolves to itself.
@@ -9376,6 +9541,7 @@ export class AgentSession implements SettingsScope {
 			this.#freshProviderSessionId = undefined;
 			this.#adoptInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			this.#advisors.reattachRecorderFeeds();
 			advisorRecordersDetached = false;
@@ -9890,6 +10056,7 @@ export class AgentSession implements SettingsScope {
 				this.sessionManager.branchWithSummary(null, report, { startedAt: checkpointState.startedAt });
 			}
 		});
+		this.#requirementsLedger.syncPublicationGate();
 
 		const rewoundAt = new Date().toISOString();
 		const details = { report, startedAt: checkpointState.startedAt, rewoundAt };
@@ -10866,6 +11033,7 @@ export class AgentSession implements SettingsScope {
 					error: String(error),
 				});
 			}
+			this.#requirementsLedger.syncPublicationGate();
 			// Refresh the workspace-roots block to match the resumed session's directory set.
 			// Wrapped so a rebuild failure (e.g. a gate that intentionally fails in tests)
 			// doesn't roll back an otherwise-successful session switch.
@@ -11094,6 +11262,7 @@ export class AgentSession implements SettingsScope {
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			await this.#memory.resetContextForNewTranscript();
 
@@ -11216,6 +11385,7 @@ export class AgentSession implements SettingsScope {
 			this.#modelMentions.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			await this.#memory.resetContextForNewTranscript();
 
@@ -11558,6 +11728,7 @@ export class AgentSession implements SettingsScope {
 		this.#advisors.resetSessionState({ preserveCost: true });
 		this.#todo.syncFromBranch();
 		this.#modelMentions.syncFromBranch();
+		this.#requirementsLedger.syncPublicationGate();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 
 		this.#branchSummaryAbortController = undefined;
@@ -12818,5 +12989,8 @@ export class AgentSession implements SettingsScope {
 	 */
 	consumeActiveFallbackCreditRedemption(targetModel?: Model): AnthropicFallbackCreditHandle | undefined {
 		return this.#recovery.consumeActiveFallbackCreditRedemption(targetModel);
+	}
+	#captureRawRequirementCandidate(rawText: string, images?: readonly ImageContent[]): void {
+		if (this.getActiveToolNames().includes("todo")) this.#requirementsLedger.captureCandidate(rawText, images);
 	}
 }

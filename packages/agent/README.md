@@ -56,6 +56,10 @@ AgentMessage[] → transformContext() → AgentMessage[] → convertToLlm() → 
 
 The agent emits events for UI updates. Understanding the event sequence helps build responsive interfaces.
 
+### Awaited assistant publication
+
+`AgentOptions.beforeAssistantMessage` installs a pre-publication boundary for guarded sessions. While it runs, provider assistant text, thinking, images, and partial-message events are withheld from subscribers and `Agent.state`; tool-argument streams, safety interceptors, and usage accounting continue normally. The hook receives the finalized message after `transformAssistantMessage` and its run signal. Return `undefined` to approve the message unchanged, or `{ replacementText, settled?: true }` to replace narrative while retaining tool calls and their arguments. A rejected hook or an aborted signal publishes a deterministic refusal instead of falling back to provider text. With this hook installed, the agent emits the ordinary message-start/end lifecycle only after admission.
+
 ### prompt() Event Sequence
 
 When you call `prompt("Hello")`:

@@ -110,6 +110,7 @@ import {
 import {
 	type AgentProgress,
 	type SingleResult,
+	type TaskImage,
 	type StructuredSubagentOutput,
 	type StructuredSubagentSchemaMode,
 	type StructuredSubagentSchemaSource,
@@ -387,6 +388,12 @@ export interface ExecutorOptions {
 	agent: AgentDefinition;
 	task: string;
 	assignment?: string;
+	/**
+	 * Image attachments delivered as real image content parts in the child's
+	 * first prompt (e.g. qa-auditor requirement images). Absent for image-less
+	 * calls, whose prompts stay byte-identical.
+	 */
+	images?: TaskImage[];
 	/** Shared background from the task call (`task.batch`), rendered into the subagent's system prompt. */
 	context?: string;
 	/**
@@ -2221,6 +2228,8 @@ async function driveSessionToYield(
 	options: {
 		/** Open-endedness description forwarded to the session's `auto` thinking classifier. */
 		solutionSpace?: string;
+		/** Image attachments delivered as real image content parts in the initial prompt. */
+		images?: TaskImage[];
 		/**
 		 * Invoked when the initial prompt loses a prompt race (AgentBusyError) before
 		 * retrying. Lets the caller restore a safe contract and detach its monitor
@@ -2229,7 +2238,7 @@ async function driveSessionToYield(
 		onPromptBusy?: () => Promise<void>;
 	} = {},
 ): Promise<DriveOutcome> {
-	const { solutionSpace, onPromptBusy } = options;
+	const { solutionSpace, images, onPromptBusy } = options;
 	using _keepalive = new EventLoopKeepalive();
 	const abortSignal = monitor.abortSignal;
 	let exitCode = 0;
@@ -2311,7 +2320,11 @@ async function driveSessionToYield(
 			let promptAttempts = 0;
 			for (;;) {
 				try {
-					await dispatchPrompt(task, { attribution: "agent", solutionSpace }, "initial prompt");
+					await dispatchPrompt(
+						task,
+						{ attribution: "agent", solutionSpace, ...(images?.length ? { images } : {}) },
+						"initial prompt",
+					);
 					break;
 				} catch (error) {
 					promptAttempts++;
@@ -4395,7 +4408,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			}
 
 			readyAt = performance.now();
-			const outcome = await driveSessionToYield(session, monitor, task, { solutionSpace: options.solutionSpace });
+			const outcome = await driveSessionToYield(session, monitor, task, {
+				solutionSpace: options.solutionSpace,
+				...(options.images?.length ? { images: options.images } : {}),
+			});
 			// Acceptance boundary (#11079): the run's final result is settled, so
 			// stamp the lifecycle and terminalize a ref the run-state mirror left
 			// `running` before the (possibly slow) cleanup below.

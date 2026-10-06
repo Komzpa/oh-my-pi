@@ -872,6 +872,15 @@ export type {
 	TurnStartEvent,
 } from "../shared-events";
 
+/** Awaited before a main-session assistant draft enters public state or output. */
+export interface BeforeAssistantMessageEvent {
+	type: "before_assistant_message";
+	/** Detached inspection draft. Mutating it does not change the delivered message. */
+	message: AssistantMessage;
+	/** Aborted on cancellation or when this handler exceeds its time budget. */
+	signal: AbortSignal;
+}
+
 /** Fired when a message starts (user, assistant, or toolResult) */
 export interface MessageStartEvent {
 	type: "message_start";
@@ -1035,6 +1044,8 @@ export interface UserPythonEvent {
 export interface InputEvent {
 	type: "input";
 	text: string;
+	/** Original submitted text, unchanged by earlier input-handler transforms. */
+	readonly rawText: string;
 	images?: ImageContent[];
 	source: "interactive" | "rpc" | "extension";
 }
@@ -1213,6 +1224,7 @@ export type ExtensionEvent =
 	| SessionStopEvent
 	| TurnStartEvent
 	| TurnEndEvent
+	| BeforeAssistantMessageEvent
 	| MessageStartEvent
 	| MessageUpdateEvent
 	| MessageEndEvent
@@ -1260,6 +1272,10 @@ export interface ContextEventResult {
  */
 export interface AssistantMessageRewriteResult {
 	content?: AssistantMessage["content"];
+}
+export interface BeforeAssistantMessageEventResult {
+	replacementText: string;
+	settled?: true;
 }
 
 export type BeforeProviderRequestEventResult = unknown;
@@ -1417,6 +1433,10 @@ export interface ExtensionAPI {
 	on(event: "session_stop", handler: ExtensionHandler<SessionStopEvent, SessionStopEventResult>): void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
+	on(
+		event: "before_assistant_message",
+		handler: ExtensionHandler<BeforeAssistantMessageEvent, BeforeAssistantMessageEventResult>,
+	): void;
 	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): void;
 	on(event: "message_update", handler: ExtensionHandler<MessageUpdateEvent>): void;
 	on(event: "message_end", handler: ExtensionHandler<MessageEndEvent>): void;

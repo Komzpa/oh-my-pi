@@ -11,6 +11,7 @@ import {
 	isNonBlankContext,
 	joinAdditionalContext,
 } from "@oh-my-pi/pi-agent-core";
+import { ASSISTANT_GATE_REFUSAL } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import type {
 	AssistantMessage,
 	CredentialDisabledEvent,
@@ -49,6 +50,8 @@ import type {
 	AssistantThinkingRenderer,
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
+	BeforeAssistantMessageEvent,
+	BeforeAssistantMessageEventResult,
 	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
 	BeforeSubagentSpawnEvent,
@@ -383,6 +386,7 @@ type RunnerEmitEvent = Exclude<
 	| BeforeProviderRequestEvent
 	| AfterProviderResponseEvent
 	| BeforeAgentStartEvent
+	| BeforeAssistantMessageEvent
 	| ResourcesDiscoverEvent
 	| InputEvent
 >;
@@ -1509,7 +1513,10 @@ export class ExtensionRunner {
 								event.type === "tool_call" ? budget : undefined,
 							);
 							result = await this.#toolRegistrationScope.run(registrationScope, () =>
-								handler(event, handlerContext),
+								handler(
+									event.type === "before_assistant_message" ? { ...event, signal: handlerSignal } : event,
+									handlerContext,
+								),
 							);
 						} catch (error) {
 							handlerFailure = { error };
@@ -1766,6 +1773,52 @@ export class ExtensionRunner {
 		};
 	}
 
+	/** Await delivery approval without exposing mutable drafts or treating failure as consent. */
+	async emitBeforeAssistantMessage(
+		event: BeforeAssistantMessageEvent,
+	): Promise<BeforeAssistantMessageEventResult | undefined> {
+		const refusal: BeforeAssistantMessageEventResult = { replacementText: ASSISTANT_GATE_REFUSAL, settled: true };
+		if (event.signal.aborted) return refusal;
+		let ctx: ExtensionContext | undefined;
+		let result: BeforeAssistantMessageEventResult | undefined;
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("before_assistant_message");
+			if (!handlers?.length) continue;
+			ctx ??= this.createContext();
+			for (const handler of handlers) {
+				let failed = false;
+				const handlerResult = await this.#runHandlerWithTimeout(
+					async (draft, context): Promise<BeforeAssistantMessageEventResult | undefined> => {
+						const output = await handler({ ...draft, message: structuredClone(draft.message) }, context);
+						if (output === undefined) return undefined;
+						if (!output || typeof output !== "object" || !("replacementText" in output)) {
+							throw new Error("Invalid before_assistant_message result");
+						}
+						const replacementText = output.replacementText;
+						const settled = "settled" in output ? output.settled : undefined;
+						if (typeof replacementText !== "string" || (settled !== undefined && settled !== true)) {
+							throw new Error("Invalid before_assistant_message result");
+						}
+						return { replacementText, settled };
+					},
+					event,
+					ctx,
+					ext,
+					normalizeHandlerTimeout(extensionHandlerTimeoutMs),
+					() => {
+						failed = true;
+						return refusal;
+					},
+					event.signal,
+				);
+				if (failed || event.signal.aborted) return refusal;
+				// Later handlers cannot undo either the first replacement or its settlement receipt.
+				result ??= handlerResult;
+			}
+		}
+		return event.signal.aborted ? refusal : result;
+	}
+
 	/**
 	 * Emit a `tool_call` event to every subscribed extension before the tool executes.
 	 *
@@ -1917,7 +1970,13 @@ export class ExtensionRunner {
 
 		for (const ext of this.extensions) {
 			for (const handler of ext.handlers.get("input") ?? []) {
-				const event: InputEvent = { type: "input", text: currentText, images: currentImages, source };
+				const event: InputEvent = {
+					type: "input",
+					text: currentText,
+					rawText: text,
+					images: currentImages,
+					source,
+				};
 				const result = (await this.#runHandlerWithTimeout(handler, event, ctx, ext, extensionHandlerTimeoutMs)) as
 					| InputEventResult
 					| undefined;

@@ -37,6 +37,11 @@ import {
 	steeringQueueState,
 	unpairedToolCallTail,
 } from "./agent-loop";
+import {
+	admitAssistantMessage,
+	getAssistantPublicationGate,
+	setAssistantPublicationGate,
+} from "./assistant-publication";
 import type { AppendOnlyContextManager } from "./append-only-context";
 import { isProviderRefusalMessage } from "./replay-policy";
 import { SentToolDefinitions } from "./sent-tool-definitions";
@@ -1869,6 +1874,7 @@ export class Agent {
 			onBeforeYield: () => this.#onBeforeYield?.(),
 			telemetry: this.#telemetry,
 		};
+		setAssistantPublicationGate(config, getAssistantPublicationGate(this));
 
 		let partial: AgentMessage | null = null;
 		const completedToolCallIds = new Set<string>();
@@ -2004,6 +2010,7 @@ export class Agent {
 							errorMessage,
 							timestamp: Date.now(),
 						};
+			await admitAssistantMessage(errorMsg, getAssistantPublicationGate(config), loopSignal, abortReasonText);
 
 			if (shouldEmitVisibleError) {
 				if (!turnOpen) {

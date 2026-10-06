@@ -700,9 +700,9 @@ describe("callSessionTool", () => {
 		);
 
 		expect(result).not.toEqual(expect.objectContaining({ hasError: true }));
-		expect(phases).toEqual([
-			{ name: "Recovered", tasks: [{ content: "From malformed JSON", status: "in_progress" }] },
-		]);
+		expect(phases).toHaveLength(1);
+		expect(phases[0]?.name).toBe("Recovered");
+		expect(phases[0]?.tasks[0]).toMatchObject({ content: "From malformed JSON", status: "in_progress" });
 	});
 
 	it("persists bridged todo mutations to the branch, which a direct toolResult would carry", async () => {

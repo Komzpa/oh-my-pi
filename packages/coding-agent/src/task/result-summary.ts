@@ -26,6 +26,24 @@ export function formatResultOutputFallback(result: Pick<SingleResult, "output" |
 }
 
 /**
+ * Authored task failure check shared by the task writer and the requirements
+ * ledger: a missing result, a tool-level error, an abort, a non-zero exit, or
+ * a runner error all mean the work needs recovery, never "completed".
+ */
+export function isFailedTaskSingleResult(
+	result: { isError?: boolean },
+	singleResult?: { aborted?: boolean; exitCode?: number; error?: unknown },
+): boolean {
+	return (
+		result.isError === true ||
+		!singleResult ||
+		(singleResult.aborted ?? false) ||
+		singleResult.exitCode !== 0 ||
+		singleResult.error !== undefined
+	);
+}
+
+/**
  * Head of `output` that fits the inline budget. Prefers a line boundary so a
  * markdown preview does not end mid-row, but falls back to a hard cut when the
  * only boundary is near the start (pretty-printed JSON whose second line is

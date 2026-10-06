@@ -6,11 +6,21 @@ import {
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
 	USER_TODO_EDIT_CUSTOM_TYPE,
+	getCompletionTargets,
+	getRequirementRowArtifact,
+	getTodoRowChanges,
+	type RequirementRowArtifact,
 } from "../../tools/todo";
 import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { copyToClipboard } from "../../utils/clipboard";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import type { InteractiveModeContext } from "../types";
+import {
+	formatDoneGateRefusal,
+	getLatestRequirements,
+	evaluateRequirementDoneGate,
+	getPersistedRequirementAuditRejections,
+} from "../../tools/requirements-ledger";
 
 const USAGE = [
 	"Usage: /todo <verb> [args]",
@@ -185,10 +195,10 @@ export class TodoCommandController {
 				this.#start(rest);
 				return;
 			case "done":
-				this.#mutateStatus(rest, "completed");
+				await this.#mutateStatusGated(rest, "completed");
 				return;
 			case "drop":
-				this.#mutateStatus(rest, "abandoned");
+				await this.#mutateStatusGated(rest, "abandoned");
 				return;
 			case "rm":
 				this.#remove(rest);
@@ -369,6 +379,64 @@ export class TodoCommandController {
 		}
 
 		this.ctx.showError(`No task or phase matched "${trimmed}".`);
+	}
+
+	/** Gate interactive completion through the same core selector as the native tool. */
+	async #mutateStatusGated(rest: string, target: "completed" | "abandoned"): Promise<void> {
+		if (target === "completed") {
+			const current = this.#currentPhases();
+			const trimmed = rest.trim();
+			if (!trimmed) {
+				const items = current
+					.flatMap(phase => phase.tasks)
+					.filter(task => task.status !== "completed" && task.status !== "abandoned")
+					.map(task => task.content);
+				if (items.length > 0 && !(await this.#assertDoneAllowed(current, { items }))) return;
+			} else {
+				const taskHit = findTaskFuzzy(current, trimmed);
+				if (taskHit) {
+					if (!(await this.#assertDoneAllowed(current, { task: taskHit.task.content }))) return;
+				} else {
+					const phaseHit = findPhaseFuzzy(current, trimmed);
+					if (phaseHit && !(await this.#assertDoneAllowed(current, { phase: phaseHit.name }))) return;
+				}
+			}
+		}
+		this.#mutateStatus(rest, target);
+	}
+
+	/** Slash completion uses the native gate's row-scoped receipt decision and refusal. */
+	async #assertDoneAllowed(
+		current: TodoPhase[],
+		todoOp: { task?: string; phase?: string; items?: string[] },
+	): Promise<boolean> {
+		const selectorErrors: string[] = [];
+		const targets = getCompletionTargets(current, todoOp, selectorErrors);
+		// applyOpsToPhases below surfaces selector errors to the user.
+		if (selectorErrors.length > 0) return true;
+		const branch = this.ctx.sessionManager.getBranch();
+		const requirements = getLatestRequirements(branch);
+		if (requirements.length === 0) return true;
+		const changes = getTodoRowChanges(branch);
+		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
+		const open = await evaluateRequirementDoneGate(
+			requirements,
+			targets.map(target => target.content),
+			async row => ({
+				...(await getRequirementRowArtifact(
+					{ cwd: this.ctx.sessionManager.getCwd(), sessionManager: this.ctx.sessionManager },
+					row,
+					current,
+					checkoutCache,
+				)),
+				lastChange: changes.get(row),
+			}),
+			getPersistedRequirementAuditRejections(branch, this.ctx.sessionManager.getHeader()?.id ?? null),
+		);
+		const unmet = open.flatMap(item => item.issues);
+		if (unmet.length === 0) return true;
+		this.ctx.showError(formatDoneGateRefusal(unmet));
+		return false;
 	}
 
 	#remove(rest: string): void {
