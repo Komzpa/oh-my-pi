@@ -89,6 +89,8 @@ it.skipIf(!live)(
 			await session.dispose();
 			expect(await Bun.file(`/proc/${ownedPid}/stat`).exists()).toBe(false);
 			expect(run(["systemctl", "--user", "show", slice, "-p", "ActiveState", "--value"])).toBe("inactive");
+			const controlGroup = run(["systemctl", "--user", "show", slice, "-p", "ControlGroup", "--value"]);
+			expect(controlGroup).toBe("");
 			expect(run(["systemctl", "--user", "show", keep, "-p", "MainPID", "--value"])).toBe(String(keepPid));
 			expect(run(["systemctl", "--user", "show", outside, "-p", "MainPID", "--value"])).toBe(String(outsidePid));
 			console.log(
@@ -100,7 +102,7 @@ it.skipIf(!live)(
 					ownedPid,
 					keepPid,
 					outsidePid,
-					readbacks: { slice: "inactive", owned: "gone", keep: "survives", outside: "survives" },
+					readbacks: { slice: "inactive", controlGroup, owned: "gone", keep: "survives", outside: "survives" },
 				}),
 			);
 		} finally {
@@ -119,8 +121,10 @@ it.skipIf(!live)(
 
 it.skipIf(!live)("startup reaps a proven dead owner but leaves live and unproven fixture slices alone", async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-	const deadSlice = sessionSliceName(crypto.randomUUID());
-	const liveSlice = sessionSliceName(crypto.randomUUID());
+	const deadSid = crypto.randomUUID();
+	const liveSid = crypto.randomUUID();
+	const deadSlice = sessionSliceName(deadSid);
+	const liveSlice = sessionSliceName(liveSid);
 	const unknownSlice = sessionSliceName(crypto.randomUUID());
 	const units = ["dead", "live", "unknown"].map(name => `${prefix}${name}.service`);
 	try {
@@ -131,10 +135,10 @@ it.skipIf(!live)("startup reaps a proven dead owner but leaves live and unproven
 		const boot = await Bun.file("/proc/sys/kernel/random/boot_id").text();
 		await Bun.write(
 			path.join(root, deadSlice, ISOLATION_OWNER_FILE),
-			JSON.stringify({ pid: 99_999_999, id: deadSlice, startToken: "1" }),
+			JSON.stringify({ pid: 99_999_999, id: deadSid, startToken: "1" }),
 		);
 		await Bun.write(path.join(root, deadSlice, "boot-id"), boot);
-		await writeIsolationOwner(path.join(root, liveSlice), liveSlice);
+		await writeIsolationOwner(path.join(root, liveSlice), liveSid);
 		await Bun.write(path.join(root, liveSlice, "boot-id"), boot);
 		expect(await reapOrphanSessionSlices(root)).toEqual([deadSlice]);
 		const readbacks = [deadSlice, liveSlice, unknownSlice].map(slice =>
