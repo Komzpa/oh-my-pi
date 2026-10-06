@@ -23,13 +23,15 @@ import {
   forecastTodoPlan,
   type TodoScheduleInput,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import todoDispatch, { decideGateCall, parseTodoOverride, SPRINT_STATE_ENTRY_TYPE } from "./todo_dispatch";
+import todoDispatch, { decideGateCall, decideTodoDispatch, parseTodoOverride, SPRINT_STATE_ENTRY_TYPE } from "./todo_dispatch";
+import * as dispatchModule from "./todo_dispatch";
 
 type Jobs = Pick<AsyncJobSnapshot, "running" | "recent" | "nonJobAgents">;
 type Call = { name: string; arguments: Record<string, unknown> };
 type Demand = { toolName?: string; satisfies?: (call: Call) => boolean } | undefined;
 
 const sdk = { forecastTodoPlan, formatPlanForecast, formatTaskForecast, readGoalDeadline, getLatestTodoPhasesFromEntries, agentPauseGate };
+const { isExternalWaitRunning, parseExternalWait } = dispatchModule;
 // omp session-tools.ts PLANNING_CONTROL_TOOLS plus the read tier.
 const ADMISSION_ALWAYS = new Set(["todo", "ask", "hub", "think", "yield", "read", "grep", "glob", "find"]);
 
@@ -2209,4 +2211,103 @@ test("a fresh running owner may reestimate a slipping row; stale owners remain r
   );
   expect(staleResult?.block).toBe(true);
   expect(staleResult?.reason).toContain("Exactly: todo schedule the row with evidence");
+});
+
+async function externalWaitFixture(owner: string | undefined, probe: (wait: { kind: string; name: string }) => boolean) {
+  const cwd = repo("clean");
+  const now = Date.now();
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const sent: Array<{ customType: string; details?: { alarms?: string[] } }> = [];
+  let timer: (() => unknown) | undefined;
+  const branch = plan("ready", now) as Array<{ message: { details: { phases: TodoScheduleInput } } }>;
+  const phases = branch[0]!.message.details.phases;
+  phases[0]!.tasks.splice(2);
+  phases[0]!.tasks[0]!.status = owner ? "in_progress" : "pending";
+  phases[0]!.tasks[0]!.schedule!.owner = owner;
+  phases[0]!.tasks[1]!.schedule!.dependencies = ["Row A"];
+  const jobs: Jobs = { running: [], recent: [], nonJobAgents: [] };
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: (message: { customType: string; details?: { alarms?: string[] } }) => sent.push(message),
+  } as unknown as ExtensionAPI;
+  await todoDispatch(api, { externalOwnerProbe: probe });
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: `gates-external-${process.pid}-${owner ?? "unowned"}` }), getBranch: () => branch, getSessionFile: () => undefined },
+    getAsyncJobSnapshot: () => jobs,
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    setTimeout: (callback: () => unknown) => { timer = callback; return {}; },
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  const decision = () => decideTodoDispatch({ phases, jobs, isMainSession: true, taskEnabled: true, now, capacity: 20, deadline: { goalId: "goal-1", deadlineAt: now + 3_600_000 }, externalOwnerProbe: probe }, sdk);
+  const nag = () => handlers.get("tool_call")!({ toolName: "bash", toolCallId: "external-work", input: { command: "bun test" } }, ctx) as Promise<{ block?: boolean; reason?: string } | undefined>;
+  const checkIdle = async () => { await handlers.get("agent_end")!({}, ctx); expect(timer).toBeDefined(); await timer!(); };
+  const close = () => { handlers.get("session_shutdown")?.({}, ctx); rmSync(cwd, { recursive: true, force: true }); };
+  return { decision, nag, checkIdle, sent, close };
+}
+
+test("external wait: an active unit is staffed, then exit wakes exactly once and restores the nag", async () => {
+  let active = true;
+  let probes = 0;
+  const fixture = await externalWaitFixture("unit:xmova-gate-deaa3957-1", (wait) => { probes += 1; expect(wait).toEqual({ kind: "unit", name: "xmova-gate-deaa3957-1" }); return active; });
+  try {
+    const staffed = fixture.decision();
+    expect(probes).toBe(1);
+    expect(staffed.readyCandidates[0]!.ownership).toBe("live-owned");
+    expect(staffed.alarms.filter((alarm) => alarm.startsWith("ownerless-ready:"))).toEqual([]);
+    expect(await fixture.nag()).toBeUndefined();
+    await fixture.checkIdle();
+    expect(fixture.sent.filter((message) => message.customType === "agent-focus-gym-eval-sandbox-wake")).toHaveLength(0);
+    // The same TODO and job snapshot are unchanged, including the minute cache key.
+    active = false;
+    const unstaffed = fixture.decision();
+    expect(unstaffed.alarms.filter((alarm) => alarm.startsWith("ownerless-ready:"))).toEqual(['ownerless-ready:"Row A"']);
+    const nag = await fixture.nag();
+    expect(nag?.block).toBe(true);
+    expect(nag?.reason).toContain("a row that only waits on a unit or job: set owner unit:<name> or job:<pid>");
+    await fixture.checkIdle();
+    await fixture.checkIdle();
+    const wakes = fixture.sent.filter((message) => message.customType === "agent-focus-gym-eval-sandbox-wake");
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]!.details?.alarms?.filter((alarm) => alarm.startsWith("ownerless-ready:"))).toEqual(['ownerless-ready:"Row A"']);
+  } finally { fixture.close(); }
+});
+
+test("external wait negative control: an unowned ready row is still nagged", async () => {
+  const fixture = await externalWaitFixture(undefined, () => { throw new Error("unowned rows must not probe"); });
+  try {
+    expect((await fixture.nag())?.reason).toContain("open row(s) sit idle");
+    expect(fixture.decision().alarms).toContain('ownerless-ready:"Row A"');
+  } finally { fixture.close(); }
+});
+
+test("external wait: a nonexistent unit is unstaffed and nagged", async () => {
+  const fixture = await externalWaitFixture(`unit:omp-nonexistent-${process.pid}.service`, isExternalWaitRunning);
+  try {
+    expect((await fixture.nag())?.reason).toContain("open row(s) sit idle");
+    expect(fixture.decision().alarms).toContain('ownerless-ready:"Row A"');
+  } finally { fixture.close(); }
+});
+
+test("external wait: jobs use exact running job IDs or live proc PIDs, not unknown owners", async () => {
+  expect(parseExternalWait("unknown:owner")).toBeNull();
+  expect(parseExternalWait("unit:   ")).toBeNull();
+  expect(isExternalWaitRunning({ kind: "job", name: String(process.pid) })).toBe(true);
+  expect(isExternalWaitRunning({ kind: "job", name: "999999999" })).toBe(false);
+  expect(isExternalWaitRunning({ kind: "job", name: "missing-job" })).toBe(false);
+  const jobs = { running: [{ id: "build-42", type: "bash", status: "running" }], recent: [], nonJobAgents: [] } as Jobs;
+  expect(isExternalWaitRunning({ kind: "job", name: "build-42" }, jobs)).toBe(true);
+  jobs.running[0]!.status = "completed";
+  expect(isExternalWaitRunning({ kind: "job", name: "build-42" }, jobs)).toBe(false);
+  const fixture = await externalWaitFixture(`job:${process.pid}`, isExternalWaitRunning);
+  try {
+    expect(fixture.decision().alarms.filter((alarm) => alarm.startsWith("ownerless-ready:"))).toEqual([]);
+    expect(await fixture.nag()).toBeUndefined();
+  } finally { fixture.close(); }
 });
