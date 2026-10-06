@@ -30,9 +30,20 @@ export const BRRRR_ENTRY = "reemxy-brrrr";
 const MODEL_BLACKLIST_SEED = new URL("./model_blacklist.json", import.meta.url).pathname;
 export const MODEL_BLACKLIST_FILE = join(homedir(), ".omp/agent/model-blacklist.json");
 
+interface ModelDemotion {
+	model: string;
+	roles: string[];
+	reason: string;
+	evidence: string;
+}
+
+function readModelSanctions(file = process.env.OMP_AGENT_ROUTER_BLACKLIST ?? MODEL_BLACKLIST_FILE): Array<string | ModelDemotion> {
+	const seed: Array<string | ModelDemotion> = JSON.parse(readFileSync(MODEL_BLACKLIST_SEED, "utf8"));
+	return existsSync(file) ? [...seed, ...JSON.parse(readFileSync(file, "utf8"))] : seed;
+}
+
 export function readModelBlacklist(file = process.env.OMP_AGENT_ROUTER_BLACKLIST ?? MODEL_BLACKLIST_FILE): string[] {
-	const seed: string[] = JSON.parse(readFileSync(MODEL_BLACKLIST_SEED, "utf8"));
-	return existsSync(file) ? [...new Set([...seed, ...JSON.parse(readFileSync(file, "utf8"))])] : seed;
+	return [...new Set(readModelSanctions(file).filter((entry): entry is string => typeof entry === "string"))];
 }
 
 export const MODEL_BLACKLIST = readModelBlacklist();
@@ -687,7 +698,9 @@ export async function routeSubagentSpawn(
 	if (!agent) return undefined;
 	const brrrr = readBrrrrMode(ctx, options.modeFile);
 	const brrrrModels = brrrr ? readBrrrrModels() : [];
-	const config = getAgentPool(agent, options.profileDir) ?? (brrrr ? { pool: (event.patterns as string[]) ?? [], fallbacks: [] } : undefined);
+	const sanctions = readModelSanctions(options.blacklistFile);
+	const demotions = new Set(sanctions.filter((entry): entry is ModelDemotion => typeof entry !== "string" && entry.roles.includes(agent)).map(entry => modelSelectorBase(entry.model)));
+	const config = getAgentPool(agent, options.profileDir) ?? (brrrr || demotions.size > 0 ? { pool: (event.patterns as string[]) ?? [], fallbacks: [] } : undefined);
 	if (!config) return undefined;
 	const latestTodo = memoLatestTodo(options.latestTodo);
 	const checkoutScopes =
@@ -728,7 +741,7 @@ export async function routeSubagentSpawn(
 		}
 	}
 	const shuffle = options.shuffle ?? cryptoShuffle;
-	const blacklist = readModelBlacklist(options.blacklistFile);
+	const blacklist = sanctions.filter((entry): entry is string => typeof entry === "string");
 	const filteredConfig = brrrr ? { pool: strongOrder(agent, config, brrrrModels), fallbacks: [] } : config;
 	const pool = filteredConfig.pool.filter(spec => !isBlacklistedModel(spec, blacklist));
 	const { available, skipped: poolSkipped } = await availablePoolMembers(pool, ctx, state, options.now);
@@ -760,6 +773,13 @@ export async function routeSubagentSpawn(
 			order.unshift(prioritySpec!);
 			criticalFirst = true;
 		}
+	}
+	// Evidence-backed role sanctions outrank free-first and critical-row promotion.
+	// Keep sanctioned models eligible only after every unaffected candidate.
+	if (demotions.size > 0) {
+		const demoted = order.filter(spec => demotions.has(modelSelectorBase(spec)));
+		const preferred = order.filter(spec => !demotions.has(modelSelectorBase(spec)));
+		order.splice(0, order.length, ...preferred, ...demoted);
 	}
 	const chosen = order[0];
 	if (!chosen) return undefined;
