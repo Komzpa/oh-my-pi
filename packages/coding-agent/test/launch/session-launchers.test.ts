@@ -15,6 +15,23 @@ import type { ToolSession } from "../../src/tools";
 
 const live = process.platform === "linux" && process.env.OMP_SESSION_SLICE_LIVE_TEST === "1";
 
+async function cgroupPids(directory: string): Promise<number[]> {
+	try {
+		const entries = await fs.readdir(directory, { withFileTypes: true });
+		const direct = (await Bun.file(path.join(directory, "cgroup.procs")).text())
+			.split("\n")
+			.filter(Boolean)
+			.map(Number);
+		const nested = await Promise.all(
+			entries.filter(entry => entry.isDirectory()).map(entry => cgroupPids(path.join(directory, entry.name))),
+		);
+		return direct.concat(...nested);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+}
+
 describe("daemon birth identity", () => {
 	it("prunes a reused pid and retains the matching birth identity", async () => {
 		if (process.platform !== "linux") return;
@@ -84,6 +101,7 @@ describe.skipIf(!live)("session launcher consumer cgroups", () => {
 		const client = await daemonClientForProject(cwd, id);
 		let kernel: PythonKernel | undefined;
 		const unrelated = Bun.spawn(["sleep", "90"]);
+		let cleanupError: Error | undefined;
 		try {
 			const browser = await ensureSharedBrowser({ projectDir: cwd, sessionId: id, headless: true });
 			expect(browser).not.toBeNull();
@@ -146,10 +164,56 @@ describe.skipIf(!live)("session launcher consumer cgroups", () => {
 			await disposeAllVmContexts();
 			await client.request({ op: "shutdown" }).catch(() => undefined);
 			await closeDaemonClients();
-			const stopped = Bun.spawn(["systemctl", "--user", "stop", slice], { stdout: "ignore", stderr: "pipe" });
-			expect(await stopped.exited).toBe(0);
+			const runtimeDir = `/run/user/${process.getuid!()}`;
+			const systemdEnv = {
+				...process.env,
+				XDG_RUNTIME_DIR: runtimeDir,
+				DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(runtimeDir, "bus")}`,
+			};
+			const stopped = Bun.spawn(["systemctl", "--user", "stop", slice], {
+				stdout: "pipe",
+				stderr: "pipe",
+				env: systemdEnv,
+			});
+			const [stopStderr, stopCode] = await Promise.all([new Response(stopped.stderr).text(), stopped.exited]);
+			const state = Bun.spawn(
+				["systemctl", "--user", "show", slice, "-p", "ActiveState,LoadState,SubState,ControlGroup"],
+				{
+					stdout: "pipe",
+					stderr: "pipe",
+					env: systemdEnv,
+				},
+			);
+			const [stateOut, stateErr] = await Promise.all([
+				new Response(state.stdout).text(),
+				new Response(state.stderr).text(),
+			]);
+			const stateCode = await state.exited;
+			const values = Object.fromEntries(
+				stateOut
+					.trim()
+					.split("\n")
+					.map(line => line.split("=")),
+			);
+			const noLongerActive = values.LoadState === "not-found" || values.ActiveState === "inactive";
+			const pids = values.ControlGroup ? await cgroupPids(path.join("/sys/fs/cgroup", values.ControlGroup)) : [];
+			if (stateCode !== 0 || !noLongerActive || pids.length > 0) {
+				const status = Bun.spawn(["systemctl", "--user", "status", slice], {
+					stdout: "pipe",
+					stderr: "pipe",
+					env: systemdEnv,
+				});
+				const [statusOut, statusErr] = await Promise.all([
+					new Response(status.stdout).text(),
+					new Response(status.stderr).text(),
+				]);
+				cleanupError = new Error(
+					`systemctl stop ${slice} exited ${stopCode}: ${stopStderr.trim()}\nstate: ${stateOut.trim()} ${stateErr.trim()}\nprocesses: ${pids.join(", ")}\nstatus: ${statusOut.trim()} ${statusErr.trim()}`,
+				);
+			}
 			unrelated.kill();
 			await unrelated.exited;
 		}
+		if (cleanupError) throw cleanupError;
 	}, 120_000);
 });
