@@ -3,10 +3,11 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import type { CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
+import { runSubagentFollowUpTurn, runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { createSessionDefaults } from "../helpers/session-defaults";
@@ -167,6 +168,54 @@ describe("runSubprocess async work and terminal acceptance", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		AsyncJobManager.resetForTests();
+	});
+
+	it("cancels and reaps pending owner jobs when a follow-up accepts terminal yield", async () => {
+		const id = "follow-up-owner-cleanup";
+		const manager = new AsyncJobManager({});
+		AsyncJobManager.setInstance(manager);
+		const ownerStopped = Promise.withResolvers<void>();
+		const otherStopped = Promise.withResolvers<void>();
+		const ownerJobId = manager.register(
+			"eval",
+			"pending follow-up work",
+			async ({ signal }) => {
+				signal.addEventListener("abort", () => ownerStopped.resolve(), { once: true });
+				await ownerStopped.promise;
+				return "owner stopped";
+			},
+			{ ownerId: id },
+		);
+		const otherJobId = manager.register(
+			"eval",
+			"another owner's work",
+			async ({ signal }) => {
+				signal.addEventListener("abort", () => otherStopped.resolve(), { once: true });
+				await otherStopped.promise;
+				return "other owner stopped";
+			},
+			{ ownerId: "another-owner" },
+		);
+		const harness = createAsyncSession(({ harness: h }) => {
+			expect(manager.getJob(ownerJobId)?.status).toBe("running");
+			h.emitTerminalYield({ report: "FIRST" });
+		});
+		harness.session.setWorkPoolYieldItems = async () => {};
+		vi.spyOn(AgentLifecycleManager.global(), "ensureLive").mockResolvedValue(harness.session);
+
+		try {
+			const result = await runSubagentFollowUpTurn({ id, agent: baseAgent, message: "continue" });
+
+			expect(result.exitCode).toBe(0);
+			expect(JSON.parse(result.output)).toEqual({ report: "FIRST" });
+			expect(manager.getJob(ownerJobId)?.abortController.signal.aborted).toBe(true);
+			expect(manager.getJob(ownerJobId)?.status).toBe("cancelled");
+			expect(manager.getJob(ownerJobId)?.endTime).toBeNumber();
+			expect(manager.getJob(otherJobId)?.status).toBe("running");
+			expect(manager.getJob(otherJobId)?.abortController.signal.aborted).toBe(false);
+		} finally {
+			await manager.dispose({ timeoutMs: 1000 });
+		}
 	});
 
 	it("keeps terminal acceptance final when a late async result is delivered", async () => {
