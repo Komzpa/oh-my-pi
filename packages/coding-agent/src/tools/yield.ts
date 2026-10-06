@@ -302,6 +302,9 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	#schemaValidationFailures = 0;
 	#emptyResultFailures = 0;
 	#hasIncrementalSections = false;
+	// A terminal acceptance closes submission for the session's lifetime.
+	// Later yields, including incremental sections, must not mutate its result.
+	#terminalResultSubmitted = false;
 	readonly #session: ToolSession;
 	readonly #parameters: TSchema;
 	#workPoolBatchKey = "";
@@ -417,6 +420,22 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		this.#emptyResultFailures = 0;
 	}
 
+	/**
+	 * One-shot latch for terminal results: the first accepted terminal result is
+	 * the run's answer and can never be replaced. Throws the stop instruction when
+	 * a later terminal yield reaches the accept point (642/665). Deliberately
+	 * never cleared in resetTurnState() so a woken parked worker cannot overwrite
+	 * the stored result on a follow-up turn.
+	 */
+	#claimTerminalResult(): void {
+		if (this.#terminalResultSubmitted) {
+			throw new Error(
+				"The result was already submitted and accepted; it cannot be replaced. Stop now — do not call yield again.",
+			);
+		}
+		this.#terminalResultSubmitted = true;
+	}
+
 	#workPoolItems(): readonly WorkPoolYieldItem[] {
 		const items = this.#session.getWorkPoolYieldItems?.() ?? [];
 		const key = items.map(item => `${item.index}:${item.id}`).join("\0");
@@ -434,6 +453,11 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		_onUpdate?: AgentToolUpdateCallback<YieldDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<YieldDetails>> {
+		if (this.#terminalResultSubmitted) {
+			throw new Error(
+				"The result was already submitted and accepted; it cannot be replaced or appended to. Stop now — do not call yield again.",
+			);
+		}
 		if (!isPlainRecord(params)) throw new Error("yield arguments must be an object");
 		const raw = params;
 		const workPoolItems = this.#workPoolItems();
@@ -470,6 +494,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				const attemptCount = this.#emptyResultFailures;
 				this.#emptyResultFailures = 0;
 				const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
+				if (workPoolItems.length === 0 && !isIncremental) this.#claimTerminalResult();
 				return {
 					content: [{ type: "text", text: `Task aborted: ${error}` }],
 					details: {
@@ -537,6 +562,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					const attemptCount = this.#emptyResultFailures;
 					this.#emptyResultFailures = 0;
 					const error = `yield resolved to an empty last-turn result after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
+					if (workPoolItems.length === 0 && !isIncremental) this.#claimTerminalResult();
 					return {
 						content: [{ type: "text", text: `Task aborted: ${error}` }],
 						details: {
@@ -613,6 +639,9 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 
 		this.#emptyResultFailures = 0;
 		if (status === "success" && isIncremental) this.#hasIncrementalSections = true;
+		// Accept point: latch the one-shot terminal guard. Deliberately not cleared
+		// in resetTurnState() — see #claimTerminalResult.
+		if (workPoolItems.length === 0 && !isIncremental) this.#claimTerminalResult();
 		let workPoolComplete = false;
 		let completedWorkPoolItem: WorkPoolYieldItem | undefined;
 		let remainingWorkPoolItems: readonly WorkPoolYieldItem[] = [];
