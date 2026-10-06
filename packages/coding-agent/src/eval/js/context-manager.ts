@@ -21,6 +21,7 @@ import { updateEvalState } from "../state";
 import type { EvalShadowCellSession } from "../speculation/cell-session";
 import { getActiveEvalShadowCell } from "../speculation/runtime-context";
 import type { ShadowPlan } from "../speculation/types";
+import { toolSessionEnvironment } from "../../exec/session-slice";
 import type { EvalToolDescriptor, EvalToolInvokeResult } from "../types";
 import { type ShadowSnapshot, shadowSnapshotDigest } from "./shared/runtime";
 import { projectJavaScriptShadowPlan } from "./speculation";
@@ -58,7 +59,7 @@ export interface JsEvalWorkerHandle {
 
 /** Startup dependencies overridden by tests to exercise process-to-Worker recovery. */
 export interface JsEvalWorkerFactories {
-	spawnProcess(): JsEvalWorkerHandle;
+	spawnProcess(env?: Record<string, string>): JsEvalWorkerHandle;
 	spawnWorker(maskDesktopSession: boolean): JsEvalWorkerHandle;
 }
 
@@ -628,7 +629,8 @@ async function acquireSession(
 		// Attach the message listener before sending init. Both Bun Worker messages
 		// and subprocess IPC can arrive immediately after the evaluator loads.
 		const maskDesktopSession = toolSession.agentKind === "sub";
-		const worker = spawnJsWorker(maskDesktopSession);
+		const env = await toolSessionEnvironment(toolSession.getSessionId?.() ?? undefined, workerEnvFromParent());
+		const worker = spawnJsWorker(maskDesktopSession, env);
 		const session: JsSession = {
 			sessionKey,
 			sessionId: snapshot.sessionId,
@@ -975,13 +977,15 @@ async function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number, reason
 	}
 }
 
-function spawnJsWorker(maskDesktopSession: boolean): JsEvalWorkerHandle {
+function spawnJsWorker(maskDesktopSession: boolean, env?: Record<string, string>): JsEvalWorkerHandle {
 	try {
 		const restoreDesktopEnv = maskDesktopSession
 			? enterMaskedDesktopSessionEnv(ensureSubagentRuntimeDir("js-eval"))
 			: undefined;
 		try {
-			return workerFactories.spawnProcess();
+			return workerFactories.spawnProcess(
+				maskDesktopSession && env ? stripDesktopSessionEnv(env, ensureSubagentRuntimeDir("js-eval")) : env,
+			);
 		} finally {
 			restoreDesktopEnv?.();
 		}
@@ -1018,13 +1022,13 @@ function spawnBunWorker(maskDesktopSession: boolean): JsEvalWorkerHandle {
 	}
 }
 
-function spawnJsProcess(): JsEvalWorkerHandle {
+function spawnJsProcess(env?: Record<string, string>): JsEvalWorkerHandle {
 	const resourceScope = new ToolResourceScope();
 	let spawned: SpawnedSubprocess<WorkerOutbound>;
 	try {
 		spawned = createWorkerSubprocess<WorkerOutbound>({
 			spawnCommand: resolveWorkerSpawnCmd(JS_EVAL_PROCESS_ARG),
-			env: workerEnvFromParent(),
+			env: env ?? workerEnvFromParent(),
 			exitLabel: "JS eval worker",
 			detached: shouldDetachKernel(process.platform),
 			reportCleanExit: true,

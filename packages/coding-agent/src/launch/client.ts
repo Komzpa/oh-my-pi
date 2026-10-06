@@ -2,6 +2,8 @@ import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ToolResourceScope } from "@oh-my-pi/pi-natives";
+import { toolSessionEnvironment } from "../exec/session-slice";
 import { getGlobalDaemonRuntimeDir, isEexist, isEnoent, logger, postmortem } from "@oh-my-pi/pi-utils";
 import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
@@ -39,6 +41,7 @@ interface PendingRequest {
 
 /** Broker location and lifecycle overrides used by smoke tests and isolated consumers. */
 export interface DaemonBrokerClientOptions {
+	sessionId?: string;
 	/** Runtime directory override; defaults to the project-scoped config path. */
 	runtimeDir?: string;
 	/** Last-client shutdown grace override in milliseconds. */
@@ -58,6 +61,7 @@ export interface DaemonBrokerClient {
 	): (options?: DaemonCompletionUnregisterOptions) => void;
 	/** Canonical project directory or synthetic directory identifying a global scope. */
 	readonly projectDir: string;
+	readonly runtimeDir: string;
 	request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult>;
 	close(): void;
 }
@@ -143,6 +147,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	readonly #token: string;
 	readonly #seenCompletionIds = new Set<string>();
 	readonly #idleGraceMs: number | undefined;
+	readonly #sessionId: string | undefined;
 	readonly #pending = new Map<string, PendingRequest>();
 	readonly #completionSinks = new Map<string, (notification: DaemonCompletionNotification) => Promise<void> | void>();
 	readonly #completionUnsubscribes = new Set<string>();
@@ -157,11 +162,16 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	#completionReconnectTimer: NodeJS.Timeout | undefined;
 
 	constructor(projectDir: string, runtimeDir: string, token: string, options: DaemonBrokerClientOptions) {
+		this.#sessionId = options.sessionId;
 		this.projectDir = projectDir;
 		this.#runtimeDir = runtimeDir;
 		this.#endpoint = daemonBrokerEndpoint(projectDir, runtimeDir);
 		this.#token = token;
 		this.#idleGraceMs = options.idleGraceMs;
+	}
+
+	get runtimeDir(): string {
+		return this.#runtimeDir;
 	}
 
 	async request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult> {
@@ -295,7 +305,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			// process-owned lease selects one winner before any candidate touches
 			// the socket.
 		}
-		this.#spawnBroker();
+		await this.#spawnBroker();
 		const deadline = Date.now() + CONNECT_TIMEOUT_MS;
 		let lastError: Error | undefined;
 		while (Date.now() < deadline) {
@@ -314,22 +324,26 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		);
 	}
 
-	#spawnBroker(): void {
+	async #spawnBroker(): Promise<void> {
 		const spawn = resolveWorkerSpawnCmd(DAEMON_BROKER_WORKER_ARG);
 		const overlay: Record<string, string> = {
 			[DAEMON_PROJECT_DIR_ENV]: this.projectDir,
 			[DAEMON_RUNTIME_DIR_ENV]: this.#runtimeDir,
 		};
 		if (this.#idleGraceMs !== undefined) overlay[DAEMON_IDLE_GRACE_ENV] = String(this.#idleGraceMs);
-		const child = spawnBackground(spawn.cmd, {
+		const env = await toolSessionEnvironment(this.#sessionId, workerEnvFromParent(overlay));
+		const scope = this.#sessionId ? new ToolResourceScope() : undefined;
+		const command = scope ? await scope.wrapCommandAsync(spawn.cmd, env) : spawn.cmd;
+		const child = spawnBackground(command, {
 			cwd: spawn.cwd,
-			env: workerEnvFromParent(overlay),
+			env,
 			stdin: "ignore",
 			stdout: "ignore",
 			stderr: "ignore",
 			...BROKER_SPAWN_OPTIONS,
 		});
 		child.unref();
+		if (scope) void child.exited.finally(() => scope.close());
 	}
 
 	#bindSocket(socket: net.Socket): void {
@@ -479,15 +493,21 @@ export async function createDaemonBrokerClient(
 	options: DaemonBrokerClientOptions = {},
 ): Promise<DaemonBrokerClient> {
 	const canonical = await canonicalProjectDir(projectDir);
-	const runtimeDir = options.runtimeDir ?? daemonRuntimeDir(canonical);
+	const runtimeDir =
+		options.runtimeDir ??
+		(options.sessionId
+			? `${daemonRuntimeDir(canonical)}-${Bun.hash(options.sessionId).toString(16)}`
+			: daemonRuntimeDir(canonical));
 	const token = await readOrCreateToken(runtimeDir);
 	return new SocketDaemonClient(canonical, runtimeDir, token, options);
 }
 
 /** Get the process-shared daemon broker client for one canonical project directory. */
-export async function daemonClientForProject(projectDir: string): Promise<DaemonBrokerClient> {
+export async function daemonClientForProject(projectDir: string, sessionId?: string): Promise<DaemonBrokerClient> {
 	const canonical = await canonicalProjectDir(projectDir);
-	return sharedDaemonClient(`project:${canonical}`, () => createDaemonBrokerClient(canonical));
+	return sharedDaemonClient(`project:${canonical}:${sessionId ?? ""}`, () =>
+		createDaemonBrokerClient(canonical, { sessionId }),
+	);
 }
 
 /** Get the process-shared client that leases one profile-independent, machine-global daemon broker. */

@@ -4,15 +4,15 @@ import { TERMINAL_STATES } from "@oh-my-pi/pi-tui/apps/ps-data";
 import type { DaemonSnapshot, DaemonSpec } from "@oh-my-pi/pi-tui/tools/daemon";
 import { formatDuration, replaceTabs } from "@oh-my-pi/pi-tui/render/render-utils";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import { getDaemonRuntimeDir, logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { type DaemonBrokerClient, daemonClientForProject } from "./client";
-import { canonicalProjectDir } from "./paths";
 import type { DaemonOperation, DaemonRpcResult } from "./protocol";
 import { renderTerminalOutputIsolated } from "./terminal-output-worker-client";
 import type { ToolSession } from "../tools";
 import { resolveToCwd } from "../tools/path-utils";
 
 import { cfgLaunchEnabled } from "../tools/settings";
+import { toolSessionEnvironment } from "../exec/session-slice";
 
 export interface ServiceReady {
 	log?: string;
@@ -109,7 +109,7 @@ async function request(
 	operation: DaemonOperation,
 	signal?: AbortSignal,
 ): Promise<DaemonRpcResult> {
-	const client = await daemonClientForProject(session.cwd);
+	const client = await daemonClientForProject(session.cwd, session.getSessionId?.() ?? undefined);
 	subscribe(session, client);
 	const result = await client.request(operation, signal);
 	if (result.op === "list") {
@@ -155,8 +155,8 @@ export async function findService(
 }
 
 export async function serviceLogPath(session: ToolSession, name: string): Promise<string> {
-	const canonical = await canonicalProjectDir(session.cwd);
-	return path.join(getDaemonRuntimeDir(canonical), "daemons", name, "output.log");
+	const client = await daemonClientForProject(session.cwd, session.getSessionId?.() ?? undefined);
+	return path.join(client.runtimeDir, "daemons", name, "output.log");
 }
 
 /** Render legacy broker PTY bytes outside the client process. */
@@ -227,7 +227,7 @@ export async function startService(
 		name: params.name,
 		application: shell.shell,
 		args: [...shell.args, `${shell.prefix ? `${shell.prefix} ` : ""}${params.command}`],
-		env: shell.env,
+		env: await toolSessionEnvironment(session.getSessionId?.() ?? undefined, shell.env),
 		cwd: resolveToCwd(params.cwd ?? session.cwd, session.cwd),
 		pty: params.pty ?? true,
 		ready: ready

@@ -1,7 +1,8 @@
 # Process lifecycle
 
 Parts A and C implement session parenting, shutdown, startup orphan reaping,
-and hidden owned-CPU notices. Launcher migration (part B) is separate.
+and hidden owned-CPU notices. This table records the session-slice launch
+boundary through part B. Launcher migration (part B) is separate from those.
 
 `sessionSliceName(sessionId)` from `@oh-my-pi/pi-natives` is the canonical name:
 `omp-tool-<h12>.slice`, where `h12` is the first 12 lowercase hex characters
@@ -13,15 +14,15 @@ its shell/job session key. Native per-call slices are
 hyphen-delimited hierarchy places them beneath the session parent. The
 per-call `TasksMax=500` readback and cleanup remain intact.
 
-| Process class | What starts it | Slice after part A | Owner | End of life | Reaping site |
+| Process class | What starts it | Slice through part B | Owner | End of life | Reaping site |
 | --- | --- | --- | --- | --- | --- |
 | Local bash external commands and descendants | Bash tool / session bash runner, native shell wrapper | Per-call child below the transcript session slice | Native per-call owner; transcript id identifies the parent | Per-call cancellation, timeout or owner drop; successful background work retains the call owner | `ToolProcessLimit::drop`, existing shell process-scope pruning |
 | Local PTY command | Bash PTY path, native PTY wrapper | Per-call child below the transcript session slice | Native PTY owner | PTY cancellation/teardown and native owner drop | Native PTY teardown and `ToolProcessLimit::drop` |
 | Tool `systemd-run` service/scope | PATH shim calling the real manager binary | Transcript session slice unless manager options include explicit `--slice` | Transcript id supplied by the local tool environment | Service exit, explicit stop, or session dispose/process exit | `SessionSliceLifecycle.stop`; startup marker reaper |
 | Deliberate kept unit | Explicit `systemd-run --slice=omp-keep.slice` | `omp-keep.slice` | `OMP_SESSION_ID` in the member environment | Explicit unit stop or natural exit, never a session-parent stop | Listed in the hidden CPU notice and exit log; keep slice never stopped |
-| Browser broker and automation Chrome | Existing project daemon broker | Existing project launch boundary, not migrated in part A | Existing project broker | Existing broker/daemon teardown | Existing broker cleanup; per-session launch ownership belongs to part B |
-| Daemon tool process | Existing daemon broker launch | Existing launch boundary, not migrated in part A | Existing broker/daemon owner | Existing stop and broker teardown | Existing broker cleanup; PID/start-time pruning belongs to part B |
-| JavaScript/Python eval kernel | Existing eval context/kernel launcher | Native per-call boundary; session-id propagation not migrated in part A | Existing eval resource-scope owner | Kernel/context shutdown and native owner drop | Existing kernel/context disposal and `ToolProcessLimit::drop` |
+| Browser broker and automation Chrome | Per-session/project daemon broker through `ToolResourceScope` | Session parent, with a native per-call child | Transcript session id; no cross-session Chromium/profile sharing | Broker shutdown or session-parent stop | Existing broker cleanup and native scope owner drop |
+| Named bash service | Per-session/project broker; pipe children inherit its scope, PTY uses the existing native launcher | Session parent | Transcript session id | Existing stop/broker shutdown or session-parent stop | Broker cleanup; persisted PID and `/proc/<pid>/stat` field 22 must match on read |
+| JavaScript/Python eval kernel | Existing native `ToolResourceScope`, with `toolSessionEnvironment` | Session parent, with a native per-call child | Transcript id (not eval's namespaced reuse key) | Kernel/context shutdown or session-parent stop | Existing kernel/context disposal and native scope owner drop |
 | Unowned host/native operations | Existing host helpers | Existing `omp-tool-call-<pid>-<id>.slice` | Native per-call owner | Native owner drop | `ToolProcessLimit::drop` |
 
 The PATH shim distinguishes manager options from the command's operands,
@@ -55,4 +56,45 @@ Services launched through the shim receive `OMP_SESSION_ID` explicitly because
 the user manager does not inherit the tool environment. Scopes inherit it
 normally. Keep membership is attributed only by that exact full session id in
 `/proc/<pid>/environ`; other sessions' kept processes are not listed.
+
+## Launcher inventory
+
+Baseline cgroups below are code-derived inheritance unless marked live-proof;
+we do not launch or migrate existing desktop/shared infrastructure to inspect it.
+
+| Launcher owner | Baseline placement | Part B placement / decision |
+| --- | --- | --- |
+| `packages/coding-agent/src/launch/client.ts:327` broker | Caller cgroup (live-proof) | Existing native scope below `sessionSliceName(sessionId)`; separate runtime per full transcript id |
+| `packages/coding-agent/src/tools/browser/shared-daemon.ts:102` automation Chromium | Project broker cgroup (live-proof) | Inherits per-session broker scope; profile and target registry are session-specific |
+| `packages/coding-agent/src/tools/browser/registry.ts:303` spawned application browser | Caller cgroup | Existing native scope with transcript environment; borrowed CDP/desktop processes remain untouched |
+| `packages/coding-agent/src/launch/broker.ts:891` pipe daemon / named service | Broker cgroup (live-proof) | Inherits per-session broker scope |
+| `packages/coding-agent/src/launch/broker.ts:819` PTY daemon | Native unowned per-call slice | Existing PTY scope with transcript environment inherited from broker |
+| `packages/coding-agent/src/launch/broker.ts:914` detached daemon | Broker cgroup | Per-session broker scope; existing daemon mode semantics unchanged |
+| `packages/coding-agent/src/eval/py/kernel.ts:333` Python kernel | Native unowned per-call slice (live-proof) | Existing native scope with transcript environment |
+| `packages/coding-agent/src/eval/js/context-manager.ts:1029` Bun eval subprocess | Native unowned per-call slice (live-proof) | Existing native scope with transcript environment; Linux still refuses thread fallback |
+
+## Known gaps (lead-approved exclusions)
+
+- LSP servers are not yet session-owned; their API has no session parameter.
+  Canonical launchers: `packages/coding-agent/src/lsp/client.ts:1082`,
+  `packages/coding-agent/src/lsp/mux/daemon.ts:233`, and
+  `packages/coding-agent/src/lsp/mux/server.ts:103`; private children inherit
+  their caller's cgroup, shared children inherit the project mux cgroup.
+- Machine-global browser relay: `packages/coding-agent/src/tools/browser/relay/daemon.ts:63,82`.
+  It shares a fixed TCP port and desktop extension across sessions. Its global
+  broker/relay inherit the caller's cgroup; migration requires native keep
+  support in `ToolResourceScope`, not a second launcher or per-session port race.
+- Project blob-broker: `packages/coding-agent/src/blob-broker/daemon.ts:144,170,301`.
+  Shared across sessions; broker/worker children inherit their launcher cgroup.
+  Explicit keep placement needs native keep support in `ToolResourceScope`.
+- Prediction/inference infrastructure: `packages/coding-agent/src/predict/client.ts:145,333`
+  and `packages/coding-agent/src/subprocess/worker-client.ts:246,275` are the
+  canonical owners. Global prediction uses the global broker; inference workers
+  use the shared worker launcher. Their launcher cgroups are not session-owned;
+  shared workers require explicit native keep support before migrating.
+
+No shared infrastructure is silently labelled kept. Part B introduces no
+parallel systemd launcher and does not move or stop any existing unit. A
+persisted daemon with a missing/reused PID or mismatched birth tick is pruned
+by `readStoredDaemonRecord`; exited history without a PID is retained.
 

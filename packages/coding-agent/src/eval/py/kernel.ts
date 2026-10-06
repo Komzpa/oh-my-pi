@@ -35,6 +35,7 @@ import {
 import { hostHasInheritableConsole, shouldDetachKernel, shouldHideKernelWindow } from "./spawn-options";
 import { ensureSubagentRuntimeDir, stripDesktopSessionEnv } from "@oh-my-pi/pi-utils";
 import type { PythonToolRequest } from "./executor";
+import { toolSessionEnvironment } from "../../exec/session-slice";
 
 export type {
 	KernelExecuteOptions,
@@ -322,6 +323,7 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 		}
 		spawnEnv.PYTHONUNBUFFERED = "1";
 		spawnEnv.PYTHONIOENCODING = "utf-8";
+		spawnEnv = await toolSessionEnvironment(options.sessionId, spawnEnv);
 
 		const scriptPath = await stageRunnerScript("omp-python-runner", "py", RUNNER_SCRIPT);
 		const kernel = new PythonKernel(Snowflake.next());
