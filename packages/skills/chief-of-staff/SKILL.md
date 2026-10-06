@@ -16,6 +16,7 @@ Words used here:
   instruction the user gave and that is already carried out is history, not the goal.
 - **Free slots** = worker capacity minus running workers. **Idle rows** = open rows without a
   running worker.
+- For a row that only waits on a unit or job: set owner `unit:<name>` or `job:<pid>` (or the exact background job ID); while it is active the row counts as staffed, and when it stops the row becomes unstaffed again.
 - **Receipt** = the evidence a row is done: a commit sha, a file path, a test log, a URL.
 
 ## Critical path first

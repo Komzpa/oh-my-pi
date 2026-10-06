@@ -616,6 +616,7 @@ function markdownCell(value: string): string {
 export interface DispatchInput {
   phases: TodoScheduleInput;
   jobs: Jobs | null;
+  externalOwnerProbe?: ExternalOwnerProbe;
   restoredChildren?: PersistedChild[];
   persistedChildren?: PersistedChild[];
   isMainSession: boolean;
@@ -653,6 +654,7 @@ export interface DispatchDecision {
   dispatchableReady?: Array<DispatchDecision["readyCandidates"][number]>;
   todoOwnerIds?: string[];
   ownerRunStates?: Array<{ content: string; owner: string | null; running: boolean }>;
+  externallyStaffedCount?: number;
   deadline?: DispatchInput["deadline"];
   capacity?: number;
   activeTaskCount?: number;
@@ -891,6 +893,36 @@ function nextCheckDelay(plan: TodoPlanForecast, now: number, deadlineAt: number)
     Math.min(MAX_IDLE_RECHECK_MS, ...upcoming.map((at) => at - now), MAX_IDLE_RECHECK_MS),
   );
 }
+export type ExternalWait = { kind: "unit" | "job"; name: string };
+export type ExternalOwnerProbe = (wait: ExternalWait, jobs: Jobs | null) => boolean;
+
+/** External wait owners reuse the existing TODO ownership slot. */
+export function parseExternalWait(owner: string | null | undefined): ExternalWait | null {
+  const match = typeof owner === "string" ? /^(unit|job):(.+)$/i.exec(owner) : null;
+  const name = match?.[2]?.trim();
+  return name ? { kind: match![1]!.toLowerCase() as ExternalWait["kind"], name } : null;
+}
+
+export function isExternalWaitRunning(wait: ExternalWait, jobs: Jobs | null = null): boolean {
+  if (wait.kind === "unit") {
+    try {
+      const out = spawnSync("systemctl", ["--user", "is-active", "--", wait.name], { encoding: "utf8", timeout: 5_000 });
+      return out.status === 0 && out.stdout.trim() === "active";
+    } catch {
+      return false;
+    }
+  }
+  if (wait.kind === "job" && jobs?.running.some((job) => job.id === wait.name && job.status === "running")) return true;
+  if (wait.kind === "job" && /^\d+$/.test(wait.name)) {
+    try {
+      statSync(join("/proc", wait.name));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
 
 export function decideTodoDispatch(
   input: DispatchInput,
@@ -1017,14 +1049,27 @@ export function decideTodoDispatch(
   );
   const liveJobMatchesOwner = (job: { id: string; agentId?: string }, owner: string) =>
     job.id === owner || job.agentId === owner || job.id.replace(/-\d+$/, "") === owner;
+  const externalOwners = new Map<string, boolean>();
+  for (const { task } of open) {
+    const owner = task.schedule?.owner;
+    const wait = parseExternalWait(owner);
+    if (!wait || externalOwners.has(owner!)) continue;
+    try {
+      externalOwners.set(owner!, (input.externalOwnerProbe ?? isExternalWaitRunning)(wait, jobs) === true);
+    } catch {
+      externalOwners.set(owner!, false);
+    }
+  }
+  const externallyStaffedCount = open.filter(({ task }) => externalOwners.get(task.schedule?.owner ?? "") === true).length;
   const ownerHasActiveTask = (owner: string | null) =>
     owner !== null && (
       activeTaskJobs.some((job) => liveJobMatchesOwner(job, owner)) ||
-      livePersistedChildForOwner(owner) !== undefined
+      livePersistedChildForOwner(owner) !== undefined ||
+      externalOwners.get(owner) === true
     );
   const ownerRunStates = open.map(({ task }) => {
     const owner = typeof task.schedule?.owner === "string" ? task.schedule.owner : null;
-    return { content: task.content, owner, running: owner !== null && activeTaskJobs.some((job) => liveJobMatchesOwner(job, owner)) };
+    return { content: task.content, owner, running: owner !== null && (activeTaskJobs.some((job) => liveJobMatchesOwner(job, owner)) || externalOwners.get(owner) === true) };
   });
   const runningOwnedContents = new Set(
     open
@@ -1075,17 +1120,19 @@ export function decideTodoDispatch(
         activeRestoredChild?.id;
       const sharedLiveOwner = liveWorkerId !== undefined && claimedLiveWorkerIds.has(liveWorkerId);
       if (liveWorkerId !== undefined && !sharedLiveOwner) claimedLiveWorkerIds.add(liveWorkerId);
-      const ownership = sharedLiveOwner
-        ? "shared-live-owner" as const
-        : liveWorkerId !== undefined
-          ? "live-owned" as const
-          : registryAgent !== undefined
-            ? "idle-live-owner" as const
-            : restoredOwner !== undefined
-              ? "restored-owner" as const
-              : owner === null
-                ? "unassigned" as const
-                : "unverified" as const;
+      const ownership = externalOwners.get(owner ?? "") === true
+        ? "live-owned" as const
+        : sharedLiveOwner
+          ? "shared-live-owner" as const
+          : liveWorkerId !== undefined
+            ? "live-owned" as const
+            : registryAgent !== undefined
+              ? "idle-live-owner" as const
+              : restoredOwner !== undefined
+                ? "restored-owner" as const
+                : owner === null
+                  ? "unassigned" as const
+                  : "unverified" as const;
       return { content: row.content, owner, ownership };
     });
   const ownerlessReady = readyCandidates.filter((row) => row.ownership !== "live-owned");
@@ -1164,7 +1211,7 @@ export function decideTodoDispatch(
           : readyCandidates.length === 0
             ? "No open row is dependency-ready; resolve the real blocker/dependency wait before dispatch."
             : ownerlessReady.length === 0
-              ? "Every dependency-ready row has an exact running task-job match; do not duplicate them."
+              ? "Every dependency-ready row has an exact running owner; do not duplicate them."
               : capacity === undefined
                 ? "FAIL CLOSED: Task capacity is unknown; inspect live hub limits before dispatching."
                 : !staffingSnapshotComplete
@@ -1342,6 +1389,7 @@ export function decideTodoDispatch(
       phase.tasks.flatMap((task) => typeof task.schedule?.owner === "string" ? [task.schedule.owner] : []),
     ),
     ownerRunStates,
+    externallyStaffedCount,
     openStructure: phases.flatMap((phase) =>
       phase.tasks
         .filter((task) => task.status === "pending" || task.status === "in_progress")
@@ -1413,7 +1461,7 @@ export function syncCriticalFast(
   for (const id of [...fastByWorker.keys()]) if (!want.has(id)) fastByWorker.delete(id);
 }
 
-export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
+export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe } = {}): Promise<void> {
   const singleWriterLane = process.env.OMP_LANE_UNIT !== undefined;
   const host = pi.pi;
   const hostSdk = host as DispatchForecastApi | undefined;
@@ -1764,7 +1812,9 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     }
     const restored = restoredChildren(persistedChildren, jobs);
     const key = `${staticKey(phases, jobs, deadline, capacity, startableCapacity, goalPaused, restored, persistedChildren)}:${Math.floor(now / 60_000)}:${presence ?? ""}`;
-    if (!forceRefresh && pending.length === 0 && cachedDecision?.key === key) {
+    // External processes can settle without changing TODOs or the async-job snapshot.
+    const hasExternalOwner = phases.some((phase) => phase.tasks.some((task) => parseExternalWait(task.schedule?.owner) !== null));
+    if (!hasExternalOwner && !forceRefresh && pending.length === 0 && cachedDecision?.key === key) {
       if (refreshSnapshot) writeCurrentPlanSnapshot(ctx, cachedDecision.decision, now);
       return cachedDecision.decision;
     }
@@ -1772,6 +1822,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       {
         phases,
         jobs,
+        externalOwnerProbe: options.externalOwnerProbe,
         persistedChildren,
         restoredChildren: restored,
         isMainSession: header !== null && !header.parentSession,
@@ -2350,7 +2401,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const jobs = ctx.getAsyncJobSnapshot();
     const runningTasks = (jobs?.running ?? []).filter((job) => job.type === "task" && job.status === "running").length;
     const open = (decision.forecast.rows ?? []).filter((row) => row.status === "pending" || row.status === "in_progress");
-    const parked = open.length - runningTasks;
+    const parked = open.length - runningTasks - (decision.externallyStaffedCount ?? 0);
     if (!understaffed(ctx, runningTasks, parked) || lastTaskDispatchRefused) return;
     if (chiefRefusals >= MAX_CHIEF_REFUSALS) return; // it insists three times in a row: let it through
     chiefRefusals += 1;
@@ -2359,7 +2410,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     return {
       block: true,
       reason: [
-        `You are chief of staff: ${runningTasks} of ${workerCapacity(ctx)} possible workers run while ${parked} open row(s) sit idle, so do not run ${event.toolName} work yourself.`,
+        `You are chief of staff: ${runningTasks} of ${workerCapacity(ctx)} possible workers run while ${parked} open row(s) sit idle, so do not run ${event.toolName} work yourself. For a row that only waits on a unit or job: set owner unit:<name> or job:<pid>. While it is active, the row counts as staffed.`,
         ready.length ? `Ready rows without a worker: ${ready.slice(0, MAX_TASK_DISPATCH).join(", ")}.` : undefined,
         ORDER,
         "Read-only looks (read, grep, find, git status/log/show/diff) stay allowed.",
@@ -2488,7 +2539,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
       return gateTrace(ctx, "waiting-on-staffed-work");
     }
     const open = (decision.forecast.rows ?? []).filter((row) => row.status === "pending" || row.status === "in_progress");
-    const parked = open.length - runningTasks;
+    const parked = open.length - runningTasks - (decision.externallyStaffedCount ?? 0);
     // Starting every ready row must still fill the free slots; one ready row beside 19 chained ones
     // (seen live: 0 of 20 running) is a chain to split, not a staffed plan.
     const dispatchable = (decision.dispatchableReady ?? []).length;
@@ -3306,18 +3357,20 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     const missing = (decision.forecast.planningIssues ?? []).length;
     const overdue = open.filter((row) => row.overdue);
     const ready = (decision.dispatchableReady ?? []).filter((row) => openContents.has(row.content));
-    const idle = open.length - running.length;
+    const idle = open.length - running.length - (decision.externallyStaffedCount ?? 0);
     // A row naming an owner that runs nowhere looks staffed in the HUD and is not (user 2026-09-25:
     // "Owner not running - run it!!!!"): name each one so it is resumed by its exact name.
     // The HUD's "N unresolved": open rows omp cannot forecast. Nobody but the chief can fix them.
     const unresolved = open.filter((row) => (row as { fixedPathP95Finish?: number }).fixedPathP95Finish === undefined);
     const why = (row: unknown) => ((row as { issues?: string[] }).issues ?? [])[0];
-    const deadOwners = (decision.readyCandidates ?? []).filter((row) => openContents.has(row.content) && row.owner && row.ownership !== "live-owned" && row.ownership !== "shared-live-owner");
+    const deadOwners = (decision.readyCandidates ?? []).filter((row) =>
+      openContents.has(row.content) && row.owner && row.ownership !== "live-owned" && row.ownership !== "shared-live-owner"
+    );
     // Few workers and no ready row: the rows wait on running work, which only the chief can unchain
     // (live 2026-09-25 03:35: 1 of 20 workers ran for half an hour and nothing said so).
     const capacity = workerCapacity(ctx);
     const waitingCritical = criticalWaitList(ctx, open);
-    const understaffed = running.length < capacity && ready.length === 0 && open.length > running.length;
+    const understaffed = running.length < capacity && ready.length === 0 && idle > 0;
     const activity = workerActivity(ctx, running, now);
     const activeJobIds = new Set(running.map((job) => job.id));
     for (const id of workerSizingNoticed) if (!activeJobIds.has(id)) workerSizingNoticed.delete(id);
