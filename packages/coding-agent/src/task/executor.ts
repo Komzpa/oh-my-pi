@@ -3305,10 +3305,24 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 			AgentRegistry.global().markResultAccepted(id, session, monitor.yieldAcceptedAt());
 		}
 	} finally {
+		const cleanupDeadlineAt = Date.now() + 5000;
 		try {
-			await untilAborted(AbortSignal.timeout(5000), () => monitor.waitForActiveSessionAbort());
+			await untilAborted(AbortSignal.timeout(Math.max(0, cleanupDeadlineAt - Date.now())), () =>
+				monitor.waitForActiveSessionAbort(),
+			);
 		} catch {
 			// Ignore abort cleanup timeouts; the session stays adopted either way.
+		}
+		const jobManager = AsyncJobManager.instance();
+		if (monitor.yieldCalled() && jobManager) {
+			const reap = await jobManager.cancelAndReapOwnerJobs(id, cleanupDeadlineAt);
+			if (!reap.settled) {
+				trackLateCleanup(reap.completion, { id, resource: "subagent follow-up" });
+				logger.warn("Subagent follow-up async job cleanup exceeded its deadline", {
+					id,
+					pendingJobIds: reap.pendingJobIds,
+				});
+			}
 		}
 		attemptUnsubscribe();
 		const active = monitor.takeActiveSession();
