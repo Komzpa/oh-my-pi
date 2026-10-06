@@ -199,7 +199,7 @@ describe("restart-control local IPC", () => {
 });
 
 describe("restart process replacement CLI", () => {
-	async function runLiveRestart(removeEntry: boolean): Promise<void> {
+	async function runLiveRestart(removeEntry: boolean, restart = true): Promise<void> {
 		const root = await fs.mkdtemp(path.join(process.env.OMP_RESTART_QA_DIR ?? os.tmpdir(), "restart-live-"));
 		tempDirs.push(root);
 		const home = path.join(root, "home");
@@ -239,8 +239,7 @@ describe("restart process replacement CLI", () => {
 			"nice",
 			"-n19",
 			"ionice",
-			"-c2",
-			"-n7",
+			"-c3",
 			...(process.env.OMP_RESTART_TEST_BINARY
 				? [process.env.OMP_RESTART_TEST_BINARY]
 				: [process.execPath, launcher]),
@@ -254,7 +253,8 @@ describe("restart process replacement CLI", () => {
 		]
 			.map(quote)
 			.join(" ");
-		const proc = Bun.spawn(["script", "-qefc", command, "/dev/null"], {
+		const shellCommand = `${command}; result=$?; printf '\\nOMP_TEST_RETURNED_TO_SHELL\\n'; exit "$result"`;
+		const proc = Bun.spawn(["script", "-qefc", shellCommand, "/dev/null"], {
 			cwd: root,
 			env,
 			stdin: "pipe",
@@ -264,6 +264,7 @@ describe("restart process replacement CLI", () => {
 		const output = new Response(proc.stdout).text();
 		const errors = new Response(proc.stderr).text();
 		const runtimeDir = path.join(home, ".omp", "run", "restart-controls");
+		let scenarioCompleted = false;
 		try {
 			let target: RestartControlSnapshot | undefined;
 			// This real PTY/IPC integration needs OS event-loop turns; fake timers cannot advance another process.
@@ -276,6 +277,10 @@ describe("restart process replacement CLI", () => {
 				throw new Error(
 					`Throwaway did not publish restart controls: ${proc.exitCode === null ? "still running" : (await output) + (await errors)}`,
 				);
+			}
+			if (!restart) {
+				scenarioCompleted = true;
+				return;
 			}
 			if (removeEntry) await fs.rm(launcher);
 			const queued = await sendRestartControl({ identity: target.identity, op: "request" }, { runtimeDir });
@@ -314,6 +319,7 @@ describe("restart process replacement CLI", () => {
 						await sendRestartControl({ identity: resumed.identity, op: "request" }, { runtimeDir }),
 					);
 			}
+			scenarioCompleted = true;
 		} finally {
 			if (proc.exitCode === null) {
 				proc.stdin.write("/exit\r");
@@ -321,14 +327,19 @@ describe("restart process replacement CLI", () => {
 				await Promise.race([proc.exited, Bun.sleep(5_000)]);
 				if (proc.exitCode === null) proc.kill();
 			}
-			await proc.exited;
+			const exitCode = await proc.exited;
 			const transcript = await output;
 			const stderr = await errors;
-			if (!removeEntry && !transcript.includes("Restarted"))
-				console.log(`throwaway startup failure: ${transcript.slice(-4_096)}${stderr}`);
+			if (!removeEntry && scenarioCompleted) {
+				expect(exitCode).toBe(0);
+				expect(transcript).toContain("OMP_TEST_RETURNED_TO_SHELL");
+				if (restart && !transcript.includes("Restarted"))
+					console.log(`throwaway startup failure: ${transcript.slice(-4_096)}${stderr}`);
+			}
 		}
 	}
 
 	it("returns the terminal when the replacement crashes at startup", () => runLiveRestart(true), 60_000);
 	it("replaces the process twice without retaining an older ancestor", () => runLiveRestart(false), 60_000);
+	it("returns a fresh session directly to the shell without restarting", () => runLiveRestart(false, false), 60_000);
 });
