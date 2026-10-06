@@ -16,11 +16,7 @@ import type { CustomMessage } from "./messages";
 import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { truncateMiddle } from "@oh-my-pi/pi-tui/tools/streaming-output";
 
-/**
- * `customType` of the injected async-result follow-up message. The task
- * executor's run monitor matches on it to invalidate a previously recorded
- * yield: a result injected after the yield supersedes that yield's payload.
- */
+/** `customType` of the injected owner-scoped async-result follow-up message. */
 export const ASYNC_RESULT_MESSAGE_TYPE = "async-result";
 
 /** Result payloads longer than this spill to an artifact with an inline preview. */

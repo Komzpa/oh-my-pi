@@ -302,13 +302,8 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	#schemaValidationFailures = 0;
 	#emptyResultFailures = 0;
 	#hasIncrementalSections = false;
-	// Once a terminal result is accepted it is the run's final answer (grievances
-	// 642/665). Never reset: a parked worker woken later must not replace the
-	// stored result with a second terminal yield, so the flag lives for the
-	// session's lifetime. The guard sits at the accept point: an invalid later
-	// yield still gets its corrective validation error, but one that would submit
-	// is rejected with an explicit stop instruction instead of replacing the
-	// stored result or looping on "Result submitted.".
+	// A terminal acceptance closes submission for the session's lifetime.
+	// Later yields, including incremental sections, must not mutate its result.
 	#terminalResultSubmitted = false;
 	readonly #session: ToolSession;
 	readonly #parameters: TSchema;
@@ -458,6 +453,11 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		_onUpdate?: AgentToolUpdateCallback<YieldDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<YieldDetails>> {
+		if (this.#terminalResultSubmitted) {
+			throw new Error(
+				"The result was already submitted and accepted; it cannot be replaced or appended to. Stop now — do not call yield again.",
+			);
+		}
 		if (!isPlainRecord(params)) throw new Error("yield arguments must be an object");
 		const raw = params;
 		const workPoolItems = this.#workPoolItems();
@@ -484,16 +484,6 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		// field) that cannot satisfy the full output schema; the assembled result
 		// is validated as a whole at finalization (executor finalizeSubprocessOutput).
 		const isIncremental = Array.isArray(yieldType) && yieldType.length > 0;
-		// Terminal results are single-shot: the first accepted one is preserved as
-		// the run's result. Any later terminal yield — valid or not — is rejected
-		// with an explicit stop instruction instead of replacing the stored result
-		// (642) or looping on "Result submitted." (665). The latch is set at the
-		// accept point; incremental and workpool yields are exempt.
-		if (workPoolItems.length === 0 && !isIncremental && this.#terminalResultSubmitted) {
-			throw new Error(
-				"The result was already submitted and accepted; it cannot be replaced. Stop now — do not call yield again.",
-			);
-		}
 
 		if (errorMessage !== undefined && data !== undefined) {
 			throw new Error("yield cannot contain both data and error");

@@ -2719,8 +2719,8 @@ export class AgentSession implements SettingsScope {
 	 * Public view of the pending-async-wake state for run drivers: true while
 	 * owner-scoped async work can still re-wake this session's run (a running
 	 * background job with an unsuppressed delivery, or a queued / in-flight
-	 * delivery). The task executor's quiescence barrier polls this to
-	 * distinguish a scheduling pause from terminal completion.
+	 * delivery). The task executor waits on this before yield reminders, but
+	 * an accepted terminal yield ends the run regardless of pending work.
 	 */
 	hasPendingAsyncWork(): boolean {
 		return this.#hasPendingAsyncWake();
