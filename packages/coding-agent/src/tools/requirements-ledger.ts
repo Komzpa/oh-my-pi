@@ -692,7 +692,7 @@ function requirementTableCells(line: string): string[] | null {
 	});
 }
 
-/** Accept exactly one complete verdict table for the requirements assigned to this worker. */
+/** Accept one complete Markdown table or structured JSON receipt for this worker's requirements. */
 export function parseRequirementReceipt(
 	output: string,
 	expectedIds: readonly string[],
@@ -720,43 +720,87 @@ export function parseRequirementReceipt(
 	};
 	collectStrings(parsedOutput);
 	const tableStrings = [...new Set(strings.filter(value => /\|\s*id\s*\|/i.test(value)))];
-	if (parsedOutput !== undefined && tableStrings.length !== 1) return null;
-	const lines = (parsedOutput === undefined ? output : tableStrings[0]!).split(/\r?\n/);
-	const headers: Array<{
-		line: number;
-		id: number;
-		rawWords: number;
-		status: number;
-		evidence: number;
-		artifact: number;
-		width: number;
-	}> = [];
-	for (let line = 0; line < lines.length - 1; line++) {
-		const cells = requirementTableCells(lines[line]!);
-		const separator = requirementTableCells(lines[line + 1]!);
-		if (
-			!cells ||
-			!separator ||
-			separator.length !== cells.length ||
-			!separator.every(cell => /^:?-{3,}:?$/.test(cell))
-		)
-			continue;
-		const normalized = cells.map(cell => cell.toLowerCase().replace(/[^a-z]/g, ""));
-		const find = (names: string[]) => {
-			const matches = normalized.flatMap((name, index) => (names.includes(name) ? [index] : []));
-			return matches.length === 1 ? matches[0]! : -1;
-		};
-		const id = find(["id"]);
-		const rawWords = find(["rawwords", "rawtext"]);
-		const status = find(["status", "verdict"]);
-		const evidence = find(["evidence"]);
-		const artifact = find(["artifact", "artifactidentity"]);
-		if (id >= 0 && rawWords >= 0 && status >= 0 && evidence >= 0 && artifact >= 0) {
-			headers.push({ line, id, rawWords, status, evidence, artifact, width: cells.length });
+	const rowCells: string[][] = [];
+	if (parsedOutput !== undefined && tableStrings.length === 0) {
+		const candidates = Array.isArray(parsedOutput)
+			? [parsedOutput]
+			: isRecord(parsedOutput)
+				? Object.hasOwn(parsedOutput, "id")
+					? [[parsedOutput]]
+					: Object.values(parsedOutput).filter(
+							value => Array.isArray(value) && value.some(row => isRecord(row) && Object.hasOwn(row, "id")),
+						)
+				: [];
+		if (candidates.length !== 1 || !Array.isArray(candidates[0])) return null;
+		const fields = [
+			["id"],
+			["raw_words", "rawWords", "raw_text"],
+			["verdict", "status"],
+			["evidence"],
+			["artifact", "artifact_identity"],
+		];
+		for (const row of candidates[0]) {
+			if (!isRecord(row)) return null;
+			const cells: string[] = [];
+			for (const aliases of fields) {
+				const keys = aliases.filter(key => Object.hasOwn(row, key));
+				if (keys.length !== 1 || typeof row[keys[0]!] !== "string") return null;
+				cells.push((row[keys[0]!] as string).trim());
+			}
+			rowCells.push(cells);
+		}
+	} else {
+		if (parsedOutput !== undefined && tableStrings.length !== 1) return null;
+		const lines = (parsedOutput === undefined ? output : tableStrings[0]!).split(/\r?\n/);
+		const headers: Array<{
+			line: number;
+			id: number;
+			rawWords: number;
+			status: number;
+			evidence: number;
+			artifact: number;
+			width: number;
+		}> = [];
+		for (let line = 0; line < lines.length - 1; line++) {
+			const cells = requirementTableCells(lines[line]!);
+			const separator = requirementTableCells(lines[line + 1]!);
+			if (
+				!cells ||
+				!separator ||
+				separator.length !== cells.length ||
+				!separator.every(cell => /^:?-{3,}:?$/.test(cell))
+			)
+				continue;
+			const normalized = cells.map(cell => cell.toLowerCase().replace(/[^a-z]/g, ""));
+			const find = (names: string[]) => {
+				const matches = normalized.flatMap((name, index) => (names.includes(name) ? [index] : []));
+				return matches.length === 1 ? matches[0]! : -1;
+			};
+			const id = find(["id"]);
+			const rawWords = find(["rawwords", "rawtext"]);
+			const status = find(["status", "verdict"]);
+			const evidence = find(["evidence"]);
+			const artifact = find(["artifact", "artifactidentity"]);
+			if (id >= 0 && rawWords >= 0 && status >= 0 && evidence >= 0 && artifact >= 0) {
+				headers.push({ line, id, rawWords, status, evidence, artifact, width: cells.length });
+			}
+		}
+		if (headers.length !== 1) return null;
+		const header = headers[0]!;
+		for (let line = header.line + 2; line < lines.length; line++) {
+			if (!lines[line]!.trim()) break;
+			const cells = requirementTableCells(lines[line]!);
+			if (!cells) break;
+			if (cells.length !== header.width) return null;
+			rowCells.push([
+				cells[header.id]!,
+				cells[header.rawWords]!.replace(/<br\s*\/?>/gi, "\n"),
+				cells[header.status]!,
+				cells[header.evidence]!,
+				cells[header.artifact]!,
+			]);
 		}
 	}
-	if (headers.length !== 1) return null;
-	const header = headers[0]!;
 	const rows: Array<{
 		id: string;
 		rawWords: string;
@@ -764,16 +808,9 @@ export function parseRequirementReceipt(
 		evidence: string;
 		artifact: string;
 	}> = [];
-	for (let line = header.line + 2; line < lines.length; line++) {
-		if (!lines[line]!.trim()) break;
-		const cells = requirementTableCells(lines[line]!);
-		if (!cells) break;
-		if (cells.length !== header.width) return null;
-		const id = cells[header.id]!;
-		const rawWords = cells[header.rawWords]!.replace(/<br\s*\/?>/gi, "\n");
-		const status = cells[header.status]!.toLowerCase();
-		const evidence = cells[header.evidence]!;
-		const artifact = cells[header.artifact]!;
+	for (const cells of rowCells) {
+		const [id, rawWords, verdict, evidence, artifact] = cells as [string, string, string, string, string];
+		const status = verdict.toLowerCase();
 		if (
 			!/^R[1-9]\d*[a-z]?$/.test(id) ||
 			!expected.has(id.replace(/[a-z]$/, "")) ||

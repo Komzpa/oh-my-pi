@@ -12,6 +12,7 @@
 
 - Fixed restored sessions showing an outdated todo checkpoint instead of the current plan, including newer edits and archived rows.
 - Fixed task dispatch dropping requirement image attachments before the auditor's first prompt. Images without an existing source file are saved once in the session artifacts, and QA audit inputs name that durable path.
+- Fixed complete structured JSON `qa-auditor` verdict rows being rejected as malformed tables. Bare row arrays, a single array under an object key, and single row objects now use the same required-field, verdict, ID and coverage validation as Markdown receipts; missing evidence or artifact identity remains rejected.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 - Fixed fresh row-scoped `qa-auditor` passes being rejected or erased by unrelated requirement-linked rows. Native todo completion, slash completion, and publication now share the same receipt gate, accept all-pass requirement sub-ids, and use saved row-history freshness when no clean checkout is available.
 - Fixed valid multi-row audits from clean resource worktrees being refused when the auditor runs in a different dirty checkout. Receipts now bind each named row's own artifact, accept Markdown line breaks without rewording requirements, and report the resolved checkout on freshness refusals.
