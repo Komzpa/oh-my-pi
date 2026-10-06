@@ -9,7 +9,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { buildOutputValidator } from "@oh-my-pi/pi-coding-agent/tools/output-schema-validator";
-import { YieldTool } from "@oh-my-pi/pi-coding-agent/tools/yield";
+import { YieldTool, YieldTool as WorkerYieldTool } from "@oh-my-pi/pi-coding-agent/tools/yield";
 import { buildWorkPoolOutputSchema } from "../../src/task/workpool-yield";
 import { yieldSectionShapes } from "../../src/task/yield-assembly";
 import { assembleYieldResult } from "@oh-my-pi/pi-tui/tools/task-yield-assembly";
@@ -726,6 +726,18 @@ describe("YieldTool", () => {
 
 		expect(shapes.get("blockers")).toBe("array");
 	});
+});
+
+describe("YieldTool independent provider arguments", () => {
+	// Each argument case is a separate worker submission. Lifecycle tests use
+	// WorkerYieldTool directly and prove that one worker cannot submit twice.
+	class YieldTool {
+		constructor(private readonly session: ToolSession) {}
+
+		execute(...args: Parameters<WorkerYieldTool["execute"]>) {
+			return new WorkerYieldTool(this.session).execute(...args);
+		}
+	}
 
 	it("rejects missing success data unless a yield type requests last-turn mode", async () => {
 		const tool = new YieldTool(createSession());
@@ -745,15 +757,18 @@ describe("YieldTool", () => {
 
 	it("accepts data alongside an empty-string error (non-strict OpenAI-compatible backends)", async () => {
 		const tool = new YieldTool(createSession());
-		const failure = await tool.execute("call-only-empty-error", { error: "" } as never).catch(err => err);
-		expect(failure).toBeInstanceOf(Error);
-		expect(String(failure.message)).toContain("yield must contain either `data` or `error`");
 		const result = await tool.execute("call-empty-error", { type: "result", data: { ok: true }, error: "" } as never);
 		expect(result.details?.status).toBe("success");
 		expect(result.details?.data).toEqual({ ok: true });
 		expect(result.details?.error).toBeUndefined();
-	});
 
+		const failure = await tool.execute("call-only-empty-error", { error: "" } as never).catch(err => err);
+		expect(failure).toBeInstanceOf(Error);
+		expect(String(failure.message)).toContain("yield must contain either `data` or `error`");
+	});
+});
+
+describe("YieldTool", () => {
 	it("aborts instead of throwing forever after repeated untyped empty results", async () => {
 		const tool = new YieldTool(createSession());
 		const expectedGuidance =

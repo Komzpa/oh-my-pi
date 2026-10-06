@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Fixed a subagent's later terminal `yield` calls replacing the already-accepted result or looping on "Result submitted." forever; the first accepted terminal result is kept and any later terminal yield returns an explicit error telling the agent to stop ([#108](https://github.com/Komzpa/oh-my-pi/pull/108)).
+- Fixed a subagent's later terminal `yield` calls replacing the already-accepted result or looping on "Result submitted." forever; argument validation still runs before the first acceptance, and any later terminal yield returns an explicit error telling the agent to stop ([#108](https://github.com/Komzpa/oh-my-pi/pull/108)).
 - Accepted terminal `yield` now completes the worker immediately, including with pending background work; initial and follow-up runs cancel and reap their owner jobs, and subsequent terminal or incremental submissions are refused without changing the first result or downgrading the completed outcome ([#108](https://github.com/Komzpa/oh-my-pi/pull/108)).
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
