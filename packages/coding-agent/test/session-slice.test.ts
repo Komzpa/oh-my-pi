@@ -32,13 +32,20 @@ async function argumentsOf(args: string[]): Promise<string[]> {
 
 describe("session process boundary", () => {
 	it("exports stable session naming independent of the process or job", () => {
-		expect(sessionSliceName(sid)).toBe("omp-tool-0123abcd.slice");
-		expect(sessionSliceName("0123abcd-other-job")).toBe(sessionSliceName(sid));
-		expect(() => sessionSliceName("bad/name")).toThrow();
+		expect(sessionSliceName(sid)).toBe("omp-tool-6cda2d922716.slice");
+		expect(sessionSliceName(sid)).toBe(sessionSliceName(sid));
+		expect(sessionSliceName("0123abcd-other-job")).not.toBe(sessionSliceName(sid));
+		expect(() => sessionSliceName("")).toThrow();
+	});
+	it("separates UUIDv7 sessions minted one millisecond apart", () => {
+		const first = Bun.randomUUIDv7("hex", 1791240000000);
+		const second = Bun.randomUUIDv7("hex", 1791240000001);
+		expect(first.slice(0, 8)).toBe(second.slice(0, 8));
+		expect(sessionSliceName(first)).not.toBe(sessionSliceName(second));
 	});
 	it("adds the session slice and keeps command argument bytes unchanged", async () => {
 		const args = ["--user", "--unit=qa-slice-a", "--", "/bin/echo", "a b", "$value"];
-		expect(await argumentsOf(args)).toEqual(["--slice=omp-tool-0123abcd.slice", ...args]);
+		expect(await argumentsOf(args)).toEqual(["--slice=omp-tool-6cda2d922716.slice", ...args]);
 		expect(env.OMP_SESSION_ID).toBe(sid);
 		expect(env.PATH?.split(":")[0]).toBe(path.join(root, "bin"));
 	});
@@ -58,7 +65,7 @@ describe("session process boundary", () => {
 			"/bin/echo",
 			"--slice=not-a-manager-option",
 		];
-		expect(await argumentsOf(args)).toEqual(["--slice=omp-tool-0123abcd.slice", ...args]);
+		expect(await argumentsOf(args)).toEqual(["--slice=omp-tool-6cda2d922716.slice", ...args]);
 	});
 	it("leaves explicit neighboring slices and unowned environments untouched", async () => {
 		const args = ["--user", "--slice=app.slice", "/bin/true"];

@@ -42,8 +42,9 @@ environment, working directory, and inherited resource limits. Linux refuses
 an unbounded JavaScript Worker fallback when subprocess startup fails.
 
 Local bash commands carry `OMP_SESSION_ID`. The native boundary binds its first
-launch to `omp-tool-<sessionId8>.slice`, using a child named
-`omp-tool-<sessionId8>-call-<pid>-<id>.slice`; systemd's slice hierarchy gives the
+launch to `omp-tool-<h12>.slice`, using a child named
+`omp-tool-<h12>-call-<pid>-<id>.slice`, where `h12` is the first 12 hex characters
+of SHA-256 of the full session id; systemd's slice hierarchy gives the
 session a single parent without changing the per-call `TasksMax=500` limit.
 `sessionSliceName(sessionId)` in the natives package is the canonical naming
 helper. Unowned host operations retain their existing per-call boundary.

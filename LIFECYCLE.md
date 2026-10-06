@@ -5,9 +5,12 @@ cutover. It does not claim the launcher migration (part B) or the session
 shutdown/startup reaper and process notices (part C) are implemented.
 
 `sessionSliceName(sessionId)` from `@oh-my-pi/pi-natives` is the canonical name:
-`omp-tool-<first-eight-ASCII-alphanumerics>.slice`. Local bash passes the full
-transcript id as `OMP_SESSION_ID`, separately from its shell/job session key.
-Native per-call slices are `omp-tool-<sid8>-call-<pid>-<id>.slice`; systemd's
+`omp-tool-<h12>.slice`, where `h12` is the first 12 lowercase hex characters
+of SHA-256 of the full session id. UUIDv7 timestamp prefixes are not session
+identities: sessions minted milliseconds apart must have distinct parents.
+Local bash passes the full transcript id as `OMP_SESSION_ID`, separately from
+its shell/job session key. Native per-call slices are
+`omp-tool-<h12>-call-<pid>-<id>.slice`; systemd's
 hyphen-delimited hierarchy places them beneath the session parent. The
 per-call `TasksMax=500` readback and cleanup remain intact.
 
