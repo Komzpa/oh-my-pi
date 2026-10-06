@@ -21,10 +21,16 @@ describe("daemon birth identity", () => {
 		using temp = TempDir.createSync("qa-slice-record-");
 		const stat = await Bun.file(`/proc/${process.pid}/stat`).text();
 		const birth = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-		for (const [name, startTime] of [["stale", "0"], ["valid", birth]] as const) {
+		for (const [name, startTime] of [
+			["stale", "0"],
+			["valid", birth],
+		] as const) {
 			const dir = path.join(temp.path(), name);
 			await fs.mkdir(dir);
-			await Bun.write(path.join(dir, "meta.json"), JSON.stringify({ daemon: { pid: process.pid }, processStartTime: startTime }));
+			await Bun.write(
+				path.join(dir, "meta.json"),
+				JSON.stringify({ daemon: { pid: process.pid }, processStartTime: startTime }),
+			);
 			await Bun.write(path.join(dir, "spec.json"), "{}");
 			const record = await readStoredDaemonRecord(dir);
 			expect(record !== undefined).toBe(name === "valid");
@@ -36,13 +42,28 @@ describe("daemon birth identity", () => {
 		using temp = TempDir.createSync("qa-slice-record-");
 		const child = Bun.spawn(["true"]);
 		await child.exited;
-		for (const [name, daemon] of [["gone", { pid: child.pid }], ["history", { state: "exited" }]] as const) {
+		for (const [name, daemon] of [
+			["gone", { pid: child.pid }],
+			["history", { state: "exited" }],
+		] as const) {
 			const dir = path.join(temp.path(), name);
 			await fs.mkdir(dir);
 			await Bun.write(path.join(dir, "meta.json"), JSON.stringify({ daemon, processStartTime: "0" }));
 			await Bun.write(path.join(dir, "spec.json"), "{}");
 			expect((await readStoredDaemonRecord(dir)) !== undefined).toBe(name === "history");
 		}
+	});
+	it("negative control: retains a matching live record and terminal history", async () => {
+		if (process.platform !== "linux") return;
+		using temp = TempDir.createSync("qa-slice-control-");
+		const stat = await Bun.file(`/proc/${process.pid}/stat`).text();
+		const birth = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+		await Bun.write(
+			path.join(temp.path(), "meta.json"),
+			JSON.stringify({ daemon: { pid: process.pid }, processStartTime: birth }),
+		);
+		await Bun.write(path.join(temp.path(), "spec.json"), "{}");
+		expect(await readStoredDaemonRecord(temp.path())).toBeDefined();
 	});
 });
 
@@ -53,7 +74,10 @@ describe.skipIf(!live)("session launcher consumer cgroups", () => {
 		const id = crypto.randomUUID();
 		const slice = sessionSliceName(id);
 		const session: ToolSession = {
-			cwd, hasUI: false, getSessionFile: () => null, getSessionSpawns: () => null,
+			cwd,
+			hasUI: false,
+			getSessionFile: () => null,
+			getSessionSpawns: () => null,
 			getSessionId: () => id,
 			settings: Settings.isolated({ "launch.enabled": true, shellPath: "/bin/sh" }),
 		};
@@ -72,23 +96,49 @@ describe.skipIf(!live)("session launcher consumer cgroups", () => {
 			connection.disconnect();
 			const snapshot = await client.request({ op: "describe", name: browser.daemonName });
 			if (snapshot.op !== "describe" || snapshot.daemon.pid === undefined) throw new Error("Browser pid missing");
-			const service = await startService(session, { name: `qa-slice-${process.pid}-service`, command: "exec sleep 90", pty: false });
+			const service = await startService(session, {
+				name: `qa-slice-${process.pid}-service`,
+				command: "exec sleep 90",
+				pty: false,
+			});
 			if (service.daemon.pid === undefined) throw new Error("Service pid missing");
 			kernel = await PythonKernel.start({ cwd, sessionId: id });
 			let python = "";
-			const pythonResult = await kernel.execute("import os\nprint(os.getpid())", { onChunk: chunk => { python += chunk; } });
+			const pythonResult = await kernel.execute("import os\nprint(os.getpid())", {
+				onChunk: chunk => {
+					python += chunk;
+				},
+			});
 			expect(pythonResult.status).toBe("ok");
 			let bun = "";
-			await executeInVmContext({ sessionKey: id, sessionId: id, cwd, session,
-				code: "console.log(process.pid)", filename: "[qa-slice].js", timeoutMs: 30_000,
-				runState: { onText: chunk => { bun += chunk; } } });
+			await executeInVmContext({
+				sessionKey: id,
+				sessionId: id,
+				cwd,
+				session,
+				code: "console.log(process.pid)",
+				filename: "[qa-slice].js",
+				timeoutMs: 30_000,
+				runState: {
+					onText: chunk => {
+						bun += chunk;
+					},
+				},
+			});
 			const rows = [];
-			for (const [kind, pid] of [["browser", snapshot.daemon.pid], ["service", service.daemon.pid], ["python", Number(python.trim())], ["bun", Number(bun.trim())]] as const) {
+			for (const [kind, pid] of [
+				["browser", snapshot.daemon.pid],
+				["service", service.daemon.pid],
+				["python", Number(python.trim())],
+				["bun", Number(bun.trim())],
+			] as const) {
 				const cgroup = (await Bun.file(`/proc/${pid}/cgroup`).text()).trim();
 				rows.push({ kind, pid, cgroup });
 			}
 			const negative = (await Bun.file(`/proc/${unrelated.pid}/cgroup`).text()).trim();
-			console.log(JSON.stringify({ fixtureId: id, slice, rows, negativeControl: { pid: unrelated.pid, cgroup: negative } }));
+			console.log(
+				JSON.stringify({ fixtureId: id, slice, rows, negativeControl: { pid: unrelated.pid, cgroup: negative } }),
+			);
 			for (const row of rows) expect(row.cgroup).toContain(`/${slice}/`);
 			expect(negative).not.toContain(`/${slice}/`);
 		} finally {
@@ -96,6 +146,8 @@ describe.skipIf(!live)("session launcher consumer cgroups", () => {
 			await disposeAllVmContexts();
 			await client.request({ op: "shutdown" }).catch(() => undefined);
 			await closeDaemonClients();
+			const stopped = Bun.spawn(["systemctl", "--user", "stop", slice], { stdout: "ignore", stderr: "pipe" });
+			expect(await stopped.exited).toBe(0);
 			unrelated.kill();
 			await unrelated.exited;
 		}
