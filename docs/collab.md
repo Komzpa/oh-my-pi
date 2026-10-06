@@ -217,6 +217,10 @@ receipt includes `replyTo: "agent://shell:<id>"` in JSON mode, or prints
 footer advertises that same writable address. A session replies using
 `write` with that address in `path` and the answer in `content`.
 
+Bare `agent://shell` resolves only to the unique shell sender that messaged
+this session. With multiple senders, the error lists their exact `shell:<id>`
+addresses; use one of those addresses to choose the reply inbox.
+
 The shell sender reads answers with `omp peers inbox shell:<id> [--json]`.
 An empty inbox reports no replies yet; an unknown address fails. Reads do not
 consume replies. JSON replies include `from`, `text`, and `createdAt`.
