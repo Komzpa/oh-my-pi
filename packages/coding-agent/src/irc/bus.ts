@@ -110,11 +110,17 @@ export class IrcBus {
 		);
 	}
 
-	/** Route external reply addresses through the same transport as agent:// writes. */
+	/**
+	 * Route external replies through the same resolver and transport as agent:// writes.
+	 * Shell transport preserves `shell:<id>` as `from`; successful delivery records
+	 * that sender against the receiving agent in #lastSent, making bare replies scoped
+	 * to the replying agent rather than any other agent in this session.
+	 */
 	async #deliverExternal(message: IrcMessage): Promise<IrcDeliveryReceipt> {
 		try {
-			if (message.to.startsWith("shell:")) {
-				await writeShellReply(message.to, { from: message.from, text: message.body, createdAt: message.ts });
+			const to = message.to === "shell" ? this.resolveShellReplyTarget(message.from) : message.to;
+			if (to.startsWith("shell:")) {
+				await writeShellReply(to, { from: message.from, text: message.body, createdAt: message.ts });
 				return { to: message.to, outcome: "injected" };
 			}
 			if (message.to.startsWith("peer:")) {
@@ -150,7 +156,7 @@ export class IrcBus {
 		if (!ref) {
 			// Shell senders and peer sessions are not in-process agents; route
 			// their replies through the same helpers agent:// already uses.
-			if (message.to.startsWith("shell:") || message.to.startsWith("peer:")) {
+			if (message.to === "shell" || message.to.startsWith("shell:") || message.to.startsWith("peer:")) {
 				return this.#deliverExternal(message);
 			}
 			return {

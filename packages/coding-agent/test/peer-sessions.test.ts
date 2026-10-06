@@ -22,6 +22,7 @@ import { WaitTool } from "@oh-my-pi/pi-coding-agent/tools/wait";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { executeSend } from "@oh-my-pi/pi-coding-agent/irc/messaging";
 import {
 	type PeerSessionPublication,
 	type PeerSessionSnapshot,
@@ -1484,6 +1485,96 @@ describe("PR23 uncertain shell replies", () => {
 });
 
 describe("PR23 IRC reply routing to shell and peer inboxes", () => {
+	it.each([MAIN_AGENT_ID, "worker"])("routes an IRC send to bare shell (%s)", async agentId => {
+		const dir = await tempDir();
+		const previous = Bun.env.OMP_PEER_SESSIONS_DIR;
+		Bun.env.OMP_PEER_SESSIONS_DIR = dir;
+		const target = await publishFixture(dir, { sessionId: `irc-bare-shell-${agentId}`, cwd: dir, agentId });
+		const bus = spyOn(IrcBus, "global").mockReturnValue(target.irc);
+		try {
+			const sent = await sendPeerMessage({
+				registry: { dir },
+				from: { kind: "shell" },
+				target: target.snapshot.instanceId,
+				agent: agentId,
+				text: "status?",
+			});
+			const address = sent.replyTo!.replace("agent://", "");
+			expect(target.delivered[0]).toMatchObject({ from: address, to: agentId });
+			expect(target.irc.sentSince(address, agentId, 0)).toBe(true);
+			const result = await executeSend(
+				{ registry: target.registry, senderId: agentId },
+				{ to: "shell", message: "hello bare shell" },
+			);
+			expect(result.isError).toBe(false);
+			expect(result.details?.receipts).toEqual([{ to: "shell", outcome: "injected" }]);
+			expect(await readShellReplies(address, { dir })).toEqual([
+				expect.objectContaining({ text: "hello bare shell", from: agentId }),
+			]);
+		} finally {
+			bus.mockRestore();
+			if (previous === undefined) delete Bun.env.OMP_PEER_SESSIONS_DIR;
+			else Bun.env.OMP_PEER_SESSIONS_DIR = previous;
+		}
+	});
+
+	it("rejects a bare shell IRC reply without a sender to that agent", async () => {
+		const dir = await tempDir();
+		const target = await publishFixture(dir, { sessionId: "irc-no-shell", cwd: dir });
+		expect(await target.irc.send({ from: MAIN_AGENT_ID, to: "shell", body: "hello" })).toEqual({
+			to: "shell",
+			outcome: "failed",
+			error: "No shell sender has messaged this session; use an exact shell:<id> reply address.",
+		});
+		const sent = await sendPeerMessage({
+			registry: { dir },
+			from: { kind: "shell" },
+			target: target.snapshot.instanceId,
+			text: "only Main receives this",
+		});
+		expect(await target.irc.send({ from: "unmessaged-worker", to: "shell", body: "hello" })).toMatchObject({
+			outcome: "failed",
+			error: "No shell sender has messaged this session; use an exact shell:<id> reply address.",
+		});
+		expect(await readShellReplies(sent.replyTo!.replace("agent://", ""), { dir })).toEqual([]);
+		expect(target.irc.sentSince(MAIN_AGENT_ID, "shell", 0)).toBe(false);
+	});
+
+	it("rejects an ambiguous bare shell IRC reply without writing either inbox", async () => {
+		const dir = await tempDir();
+		const target = await publishFixture(dir, { sessionId: "irc-ambiguous-shell", cwd: dir });
+		const addresses: string[] = [];
+		for (const text of ["first sender", "second sender"]) {
+			const sent = await sendPeerMessage({
+				registry: { dir },
+				from: { kind: "shell" },
+				target: target.snapshot.instanceId,
+				text,
+			});
+			addresses.push(sent.replyTo!.replace("agent://", ""));
+		}
+		expect(await target.irc.send({ from: MAIN_AGENT_ID, to: "shell", body: "hello" })).toEqual({
+			to: "shell",
+			outcome: "failed",
+			error: `Ambiguous shell reply target; use an exact address: ${addresses.sort().join(", ")}`,
+		});
+		for (const address of addresses) expect(await readShellReplies(address, { dir })).toEqual([]);
+		expect(target.irc.sentSince(MAIN_AGENT_ID, "shell", 0)).toBe(false);
+	});
+
+	it("keeps in-process IRC delivery unchanged", async () => {
+		const dir = await tempDir();
+		const target = await publishFixture(dir, { sessionId: "irc-in-process", cwd: dir });
+		expect(await target.irc.send({ from: "worker", to: MAIN_AGENT_ID, body: "hello Main" })).toEqual({
+			to: MAIN_AGENT_ID,
+			outcome: "woken",
+		});
+		expect(target.delivered).toEqual([
+			expect.objectContaining({ from: "worker", to: MAIN_AGENT_ID, body: "hello Main" }),
+		]);
+		expect(target.irc.sentSince("worker", MAIN_AGENT_ID, 0)).toBe(true);
+	});
+
 	it("routes an IRC send to an existing shell inbox", async () => {
 		const dir = await tempDir();
 		const previous = Bun.env.OMP_PEER_SESSIONS_DIR;
