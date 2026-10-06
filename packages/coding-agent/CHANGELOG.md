@@ -204,6 +204,7 @@
 
 ### Fixed
 - Shared automation Chromium stays in its transcript's Linux session slice: Chrome's own `org.freedesktop.systemd1.Manager.StartTransientUnit` call moves the main process into `app.slice/app-<name>-<pid>.scope` when the session bus is reachable, so the browser child alone loses `DBUS_SESSION_BUS_ADDRESS`/`DBUS_STARTER_ADDRESS` (an empty value is not enough — the client falls back to `$XDG_RUNTIME_DIR/bus`). Other daemon children keep their bus.
+- Process-local Puppeteer fallback Chromium also drops the two user-bus addresses from its own launch environment, preserving its inherited session slice without changing unrelated children.
 
 - Fixed late completion probes rewinding resumed conversations and stale history scans lowering parked subagent costs ([#15594](https://github.com/can1357/oh-my-pi/pull/15594) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
 - Fixed `read.renderMarkdown` having no effect on plain-file reads: inline read previews now render Markdown files as formatted Markdown instead of numbered source ([#15007](https://github.com/can1357/oh-my-pi/issues/15007)).

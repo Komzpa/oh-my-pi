@@ -564,10 +564,16 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 	try {
 		if (userDataDir) await seedOwnedProfilePreferences(userDataDir);
 		const executablePath = await ensureChromiumExecutable();
+		// Chrome can move itself to app.slice over the user bus. Remove both
+		// addresses (empty values still discover the bus) from this child alone.
+		const env = { ...process.env };
+		delete env.DBUS_SESSION_BUS_ADDRESS;
+		delete env.DBUS_STARTER_ADDRESS;
 		const browser = await launchBackgroundBrowser(puppeteer, {
 			headless: opts.headless,
 			defaultViewport: opts.headless ? initialViewport : null,
 			executablePath,
+			env,
 			args: launchArgs,
 			ignoreDefaultArgs: [
 				...new Set([...stealthIgnoreDefaultArgs(executablePath), ...(opts.ignoreDefaultArgs ?? [])]),
