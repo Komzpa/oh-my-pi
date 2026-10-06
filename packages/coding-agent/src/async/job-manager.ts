@@ -8,18 +8,6 @@ const DELIVERY_RETRY_MAX_MS = 30_000;
 const DELIVERY_RETRY_JITTER_MS = 200;
 const DEFAULT_RETENTION_MS = 5 * 60 * 1000;
 /**
- * A settled job row whose result was already consumed — auto-delivered to its
- * sink, or recovered by a foreground `wait` snapshot — has
- * served its inspectability purpose: the model holds the result, and later
- * job snapshots listing it for the full retention window is exactly the
- * "background jobs hang around after they complete" complaint. Evict shortly
- * after consumption instead; the short grace still covers a follow-up
- * `agent://<id>` read of the just-delivered pointer. Unconsumed rows
- * (dead-lettered deliveries, still-retrying sinks, watch-suppressed jobs
- * nobody polled) keep the full {@link DEFAULT_RETENTION_MS} window.
- */
-const CONSUMED_RESULT_EVICTION_MS = 30_000;
-/**
  * Extra delay after an `async-result` delivery settles (its `ASIDE_MESSAGE_COMMIT`
  * hook fires, resolving `enqueueWithReceipt()`) before retained artifacts are
  * removed. The commit hook fires when the follow-up is inserted into the
@@ -179,13 +167,6 @@ export interface AsyncJobManagerOptions {
 	 * a real-time wait.
 	 */
 	retainedArtifactsCleanupMaxWaitMs?: number;
-	/**
-	 * Delay before a settled job row is evicted once its result has been
-	 * consumed (delivered to a sink or recovered by a foreground snapshot).
-	 * Defaults to {@link CONSUMED_RESULT_EVICTION_MS}; tests override to a
-	 * small value to assert eviction without real-time waits.
-	 */
-	consumedResultEvictionMs?: number;
 }
 
 interface AsyncJobDelivery {
@@ -248,6 +229,16 @@ export interface AsyncJobFilter {
 	ownerId: string | undefined;
 }
 
+export interface AsyncJobQueryOptions {
+	/**
+	 * Foreground-backed jobs are hidden from user job listings until promoted to
+	 * background jobs, but owner quiescence checks still need to see them: a
+	 * hidden long-running foreground command can still auto-background and wake
+	 * the owner later.
+	 */
+	includeForeground?: boolean;
+}
+
 export class AsyncJobManager {
 	static #instance: AsyncJobManager | undefined;
 
@@ -281,7 +272,6 @@ export class AsyncJobManager {
 	readonly #retentionMs: number;
 	readonly #retainedArtifactsCleanupGraceMs: number;
 	readonly #retainedArtifactsCleanupMaxWaitMs: number;
-	readonly #consumedResultEvictionMs: number;
 	#deliveryLoop: Promise<void> | undefined;
 	#deliveryQueueChanged = Promise.withResolvers<void>();
 	#disposed = false;
@@ -295,8 +285,10 @@ export class AsyncJobManager {
 		return out;
 	}
 
-	#visibleJobs(filter?: AsyncJobFilter): AsyncJob[] {
-		return this.#filterJobs(this.#jobs.values(), filter).filter(job => !job.foreground);
+	#visibleJobs(filter?: AsyncJobFilter, options: AsyncJobQueryOptions = {}): AsyncJob[] {
+		const jobs = this.#filterJobs(this.#jobs.values(), filter);
+		const listed = options.includeForeground === true ? jobs : jobs.filter(job => !job.foreground);
+		return listed.filter(job => !this.#consumedJobResults.has(job.id));
 	}
 
 	constructor(options: AsyncJobManagerOptions) {
@@ -310,10 +302,6 @@ export class AsyncJobManager {
 		this.#retainedArtifactsCleanupMaxWaitMs = Math.max(
 			0,
 			Math.floor(options.retainedArtifactsCleanupMaxWaitMs ?? RETAINED_ARTIFACTS_CLEANUP_MAX_WAIT_MS),
-		);
-		this.#consumedResultEvictionMs = Math.max(
-			0,
-			Math.floor(options.consumedResultEvictionMs ?? CONSUMED_RESULT_EVICTION_MS),
 		);
 	}
 
@@ -458,8 +446,8 @@ export class AsyncJobManager {
 	}
 
 	/** Running background jobs; foreground-backed jobs stay hidden until promoted. */
-	getRunningJobs(filter?: AsyncJobFilter): AsyncJob[] {
-		return this.#visibleJobs(filter).filter(job => job.status === "running");
+	getRunningJobs(filter?: AsyncJobFilter, options?: AsyncJobQueryOptions): AsyncJob[] {
+		return this.#visibleJobs(filter, options).filter(job => job.status === "running");
 	}
 
 	/** Settled background jobs, newest first; foreground-backed jobs stay hidden. */
@@ -807,23 +795,6 @@ export class AsyncJobManager {
 		if (!job || job.status === "running" || this.#consumedJobResults.has(jobId)) return false;
 		if (job.resultText === undefined && job.errorText === undefined) return false;
 		this.#consumedJobResults.add(jobId);
-		// The result reached its consumer (sink delivery or foreground snapshot):
-		// the row no longer needs to outlive the full retention window. Re-arm the
-		// eviction timer with the short consumed grace — but only when no delivery
-		// for this job is still queued or in flight. An in-flight delivery is an
-		// async-result entry parked on the owner's yield queue, and the foreground
-		// snapshot that consumed this result suppressed exactly that entry via
-		// #suppressedDeliveries; evicting now would clear that marker (#evictJob)
-		// before the queue's isStale check drains it, letting the already-consumed
-		// result inject a duplicate async-result follow-up. A parked entry keeps
-		// the full retention window instead. Clamping inside #scheduleEviction
-		// keeps a shorter configured retention the effective cap.
-		const deliveryPending =
-			this.#deliveries.some(delivery => delivery.jobId === jobId) ||
-			this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId);
-		if (!deliveryPending) {
-			this.#scheduleEviction(jobId, this.#consumedResultEvictionMs);
-		}
 		return true;
 	}
 
@@ -966,23 +937,17 @@ export class AsyncJobManager {
 		return this.#jobs.delete(jobId);
 	}
 
-	/**
-	 * Arm (or re-arm) this job's eviction timer. The default delay is the full
-	 * retention window; a consumed result passes the shorter
-	 * {@link #consumedResultEvictionMs}. The delay is clamped to the configured
-	 * retention so an explicit short retention always stays the effective cap.
-	 */
-	#scheduleEviction(jobId: string, delayMs: number = this.#retentionMs): void {
+	/** Arm this job's normal retention timer, independent of result delivery. */
+	#scheduleEviction(jobId: string): void {
 		if (this.#disposed) return;
 		if (this.#retentionMs <= 0) {
 			this.#evictJob(jobId);
 			return;
 		}
-		const delay = Math.max(0, Math.min(this.#retentionMs, delayMs));
 		clearTimeout(this.#evictionTimers.get(jobId));
 		const timer = setTimeout(() => {
 			this.#evictJob(jobId);
-		}, delay);
+		}, this.#retentionMs);
 		timer.unref();
 		this.#evictionTimers.set(jobId, timer);
 	}
@@ -1151,12 +1116,6 @@ export class AsyncJobManager {
 					this.#jobs.get(delivery.jobId) ?? this.#reconstructEvictedJob(delivery),
 				);
 				delivered = true;
-				// A foreground snapshot may have consumed this result while the
-				// sink receipt was parked. The receipt has now settled, so the
-				// suppression tombstone no longer needs the full retention window.
-				if (this.#consumedJobResults.has(delivery.jobId) && this.#jobs.has(delivery.jobId)) {
-					this.#scheduleEviction(delivery.jobId, this.#consumedResultEvictionMs);
-				}
 			} catch (error) {
 				delivery.attempt += 1;
 				delivery.lastError = error instanceof Error ? error.message : String(error);

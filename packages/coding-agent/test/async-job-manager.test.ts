@@ -566,38 +566,32 @@ describe("AsyncJobManager", () => {
 		await manager.dispose();
 	});
 
-	test("evicts a consumed settled row on the short grace instead of full retention", async () => {
-		// A settled job whose result reached its consumer (sink delivery or a
-		// foreground snapshot) must not linger in `hub jobs` reads for the full
-		// 5-minute retention window — that lingering is the "background jobs
-		// hang around after they complete" complaint. Delivery success marks
-		// the result consumed, which re-arms eviction on the short grace.
-		const manager = new AsyncJobManager({
-			consumedResultEvictionMs: 25,
-			onJobComplete: async () => {},
-		});
-
-		const jobId = manager.register("task", "delivered", async () => "done");
-		await manager.waitForAll();
-		await manager.drainDeliveries({ timeoutMs: 2_000 });
-
-		expect(manager.isJobResultConsumed(jobId)).toBe(true);
-		await waitForJobEviction(manager, jobId);
-		expect(manager.getJob(jobId)).toBeUndefined();
+	test("hides a consumed settled row but retains single-id lookup until normal retention", async () => {
+		vi.useFakeTimers();
+		const manager = new AsyncJobManager({ retentionMs: 60_000, onJobComplete: async () => {} });
+		try {
+			const jobId = manager.register("task", "delivered", async () => "done");
+			await manager.waitForAll();
+			await manager.drainDeliveries({ timeoutMs: 2_000 });
+			expect(manager.isJobResultConsumed(jobId)).toBe(true);
+			expect(manager.getAllJobs()).toEqual([]);
+			expect(manager.getRecentJobs()).toEqual([]);
+			vi.advanceTimersByTime(30_001);
+			expect(manager.getJob(jobId)?.resultText).toBe("done");
+			vi.advanceTimersByTime(29_999);
+			expect(manager.getJob(jobId)).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+			await manager.dispose();
+		}
 	});
 
-	test("keeps an unconsumed dead-lettered row inspectable until a snapshot consumes it", async () => {
-		// No default sink and no owner sink: the delivery dead-letters, so the
-		// result is never consumed. The row must outlive the consumed grace
-		// (its result text is the only inspectable copy) and only evict once a
-		// foreground snapshot consumes it. Fake timers drive the eviction
-		// clocks deterministically — the survival half asserts an absence, which
-		// polling cannot express.
+	test("keeps a dead-lettered row inspectable until normal retention even after consumption", async () => {
+		// Consumption hides the row from snapshots without shortening retention.
 		vi.useFakeTimers();
 		try {
 			const manager = new AsyncJobManager({
 				retentionMs: 60_000,
-				consumedResultEvictionMs: 25,
 			});
 
 			const jobId = manager.register("bash", "orphan", async () => "orphan result");
@@ -608,25 +602,23 @@ describe("AsyncJobManager", () => {
 			expect(manager.getJob(jobId)?.resultText).toBe("orphan result");
 
 			expect(manager.consumeJobResults([jobId])).toBe(1);
-			vi.advanceTimersByTime(25);
+			vi.advanceTimersByTime(30_001);
+			expect(manager.getJob(jobId)?.resultText).toBe("orphan result");
+			expect(manager.getAllJobs()).toEqual([]);
+			vi.advanceTimersByTime(28_999);
 			expect(manager.getJob(jobId)).toBeUndefined();
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
-	test("keeps the consumed row while its async-result delivery is still parked", async () => {
-		// Regression (autoreview): a foreground snapshot consuming a result
-		// whose delivery is parked on the owner's yield queue must NOT arm the
-		// short consumed grace. Evicting would clear the suppression marker
-		// (#evictJob) before the queue's isStale check drains the parked entry,
-		// letting the already-consumed result inject a duplicate async-result
-		// follow-up once the tool batch settles. Fake timers prove the absence
-		// of eviction past the consumed grace deterministically.
+	test("keeps the consumed row and suppression marker through a parked delivery until retention", async () => {
+		// A foreground snapshot suppresses a parked async-result; retaining the
+		// row preserves that suppression until the delivery receipt settles.
 		vi.useFakeTimers();
 		try {
 			const gate = Promise.withResolvers<void>();
-			const manager = new AsyncJobManager({ consumedResultEvictionMs: 25 });
+			const manager = new AsyncJobManager({ retentionMs: 60_000 });
 			manager.registerDeliverySink("Main", async () => {
 				await gate.promise; // parked async-result entry (receipt pending)
 			});
@@ -639,17 +631,17 @@ describe("AsyncJobManager", () => {
 			expect(manager.consumeJobResults([jobId])).toBe(1);
 			vi.advanceTimersByTime(1_000);
 
-			// Row and suppression marker both survive the consumed grace: the
-			// parked entry's isStale check still resolves through the marker.
+			// The parked entry's stale check still resolves through the marker.
 			expect(manager.getJob(jobId)?.status).toBe("completed");
 			expect(manager.isDeliverySuppressed(jobId)).toBe(true);
 
 			gate.resolve();
 			await scheduler.yield();
 			expect(await manager.drainDeliveries({ timeoutMs: 2_000 })).toBe(true);
-			// Once the parked delivery settles, its suppression marker has served
-			// its purpose and the already-consumed row starts the short grace.
-			vi.advanceTimersByTime(25);
+			// Settling the receipt must not shorten normal retention either.
+			vi.advanceTimersByTime(30_001);
+			expect(manager.getJob(jobId)?.status).toBe("completed");
+			vi.advanceTimersByTime(28_999);
 			expect(manager.getJob(jobId)).toBeUndefined();
 			await manager.dispose();
 		} finally {

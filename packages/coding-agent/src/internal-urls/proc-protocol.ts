@@ -50,6 +50,11 @@ function ownerJobs(session: ToolSession): AsyncJob[] {
 	return session.asyncJobManager?.getAllJobs({ ownerId: session.getAgentId?.() ?? undefined }) ?? [];
 }
 
+function ownerJob(session: ToolSession, id: string): AsyncJob | undefined {
+	const job = session.asyncJobManager?.getJob(id);
+	return job && !job.foreground && job.ownerId === (session.getAgentId?.() ?? undefined) ? job : undefined;
+}
+
 function textResource(
 	url: InternalUrl,
 	content: string,
@@ -97,7 +102,7 @@ export class ProcProtocolHandler implements ProtocolHandler {
 		if (!session) throw new Error("proc:// requires a tool session");
 		const { id, action } = target(url);
 		if (!id || action !== "stdin" || !cfgLaunchEnabled.get(session.settings)) return null;
-		if (ownerJobs(session).some(job => job.id === id)) return null;
+		if (ownerJob(session, id)) return null;
 		if (runningAgentsOutsideJobs(session).some(agent => agent.id === id)) return null;
 		const logPath = await serviceLogPath(session, id);
 		return options?.create || (await Bun.file(logPath).exists()) ? logPath : null;
@@ -136,7 +141,7 @@ export class ProcProtocolHandler implements ProtocolHandler {
 				daemons: services,
 			});
 		}
-		const job = jobs.find(item => item.id === id);
+		const job = ownerJob(session, id);
 		const service = services.find(item => item.name === id);
 		if (job && service) throw new Error(`proc://${id} is ambiguous: both job ${id} and service ${id} exist.`);
 		if (service) {
@@ -187,7 +192,7 @@ export class ProcProtocolHandler implements ProtocolHandler {
 		const { id, action } = target(url);
 		if (!id) throw new Error("Write requires proc://<id>, proc://<id>/kill, or proc://<id>/mode");
 		const ownerId = session.getAgentId?.() ?? undefined;
-		const job = ownerJobs(session).find(item => item.id === id);
+		const job = ownerJob(session, id);
 		const agent = runningAgentsOutsideJobs(session).find(item => item.id === id);
 		let service: DaemonSnapshot | undefined;
 		if (cfgLaunchEnabled.get(session.settings)) {
