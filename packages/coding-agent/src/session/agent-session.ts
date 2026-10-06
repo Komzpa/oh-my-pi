@@ -1936,6 +1936,12 @@ export class AgentSession implements SettingsScope {
 			cwd: () => this.sessionManager.getCwd(),
 			sessionManager: this.sessionManager,
 			onSettledAssistantMessage: message => this.#settledAssistantStatuses.add(message),
+			queueModelNotice: async content => {
+				await this.sendCustomMessage(
+					{ customType: "requirements-gate-notice", content, display: false, attribution: "agent" },
+					{ deliverAs: "nextTurn" },
+				);
+			},
 			setPublicationGate: gate => {
 				this.#requirementsPublicationGate = gate;
 				this.#syncAssistantPublicationGate();

@@ -594,7 +594,14 @@ export async function evaluateRequirementDoneGate(
 					reason = `${requirement.id} pass is stale: artifact ${verdict.artifact} does not match the current row artifact or saved todo change; resolved checkout: ${formatRequirementGateArtifact(current)}`;
 			}
 			if (reason) {
-				const rejection = rejections.get(requirement.id);
+				const savedRejection = rejections.get(requirement.id);
+				const bound = savedRejection && /resolved checkout: cwd=([^,\n]+), head=([^,\n]+)/.exec(savedRejection);
+				const rejection =
+					bound &&
+					(bound[1] !== (current.cwd ? shortenPath(current.cwd) : "unknown") ||
+						bound[2] !== (current.head ?? "unknown"))
+						? undefined
+						: savedRejection;
 				const issue = `${requirement.id} (${JSON.stringify(row)}): ${reason}${rejection ? `; rejected receipt: ${rejection}` : ""}`;
 				issues.push(issue);
 				if (pending && !auditedAfterCheck) awaitingUserIssues.push(issue);
@@ -974,21 +981,90 @@ export function formatOverdueClassifyRefusal(
 	return `Blocked: ${toolName} is blocked because ${parts.join("; ")}. Then retry ${toolName}`;
 }
 
-/** Publication-gate replacement text: what is blocked, why, and the exact call per open requirement. */
-export function formatPublicationReplacement(
+/** Compact model-only context: raw asks and worker evidence stay in the ledger. */
+export function formatRequirementGateNotice(
 	open: readonly { requirement: RequirementLedgerItem; issues: string[]; awaitingUser?: boolean }[],
-	rows: readonly string[],
 ): string {
-	const parts = open.map(({ requirement, issues, awaitingUser }) => {
-		if (requirement.classification === "candidate") {
-			return `${requirement.id} (${JSON.stringify(requirement.rawText)}) is unclassified (${issues.join("; ")}). Call ${formatClassifyCall(requirement, rows)}`;
+	const details = new Map<string, string>();
+	const lines: string[] = [];
+	const actions = new Set<string>();
+	for (const { requirement, issues, awaitingUser } of open) {
+		const candidate = requirement.classification === "candidate";
+		const status = candidate
+			? "needs classification"
+			: awaitingUser
+				? "awaiting user check"
+				: "needs qa-auditor pass at current row head";
+		actions.add(
+			candidate
+				? "classify candidate IDs with todo"
+				: awaitingUser
+					? "await user checks"
+					: "request one qa-auditor pass covering the audit IDs above",
+		);
+		const refs = new Set<string>();
+		for (const issue of issues) {
+			const rejection = issue.split("; rejected receipt: ")[1];
+			if (rejection) {
+				const reason = rejection.includes("artifact identity")
+					? "receipt artifact mismatch"
+					: rejection.includes("malformed or partial")
+						? "receipt incomplete or malformed"
+						: "receipt rejected";
+				if (!details.has(reason)) details.set(reason, `D${details.size + 1}`);
+				refs.add(details.get(reason)!);
+			}
+			const checkout = /resolved checkout: cwd=([^,\n]+), head=([a-f0-9]+|unknown), dirty=(true|false)/.exec(issue);
+			if (checkout) {
+				const detail = `checkout ${checkout[1]} @ ${checkout[2]!.slice(0, 8)}${checkout[3] === "true" ? " (dirty)" : ""}`;
+				if (!details.has(detail)) details.set(detail, `D${details.size + 1}`);
+				refs.add(details.get(detail)!);
+			}
 		}
-		if (awaitingUser) {
-			return `${requirement.id} (${JSON.stringify(requirement.rawText)}) is not verified complete (${issues.join("; ")}). Await the user's confirmation or a fresh qa-auditor pass; do not mark the row done`;
-		}
-		return `${requirement.id} (${JSON.stringify(requirement.rawText)}) is linked but not verified complete (${issues.join("; ")}). Request a fresh qa-auditor pass with task agent="qa-auditor", task="Audit ${requirement.id} at the current clean row HEAD", then retry`;
-	});
-	return `Blocked: requested work is not verified complete. ${parts.join("; ")}. Then retry`;
+		lines.push(`${requirement.id}: ${status}${refs.size ? ` [${[...refs].join(",")}]` : ""}`);
+	}
+	const prefix = [
+		"Blocked: requested work is not audit-verified.",
+		...[...details].map(([detail, id]) => `${id}: ${detail}`),
+	];
+	const action = `Next: ${[...actions].join("; ")}.`;
+	let count = lines.length;
+	while (
+		count > 0 &&
+		Buffer.byteLength(
+			[
+				...prefix,
+				...lines.slice(0, count),
+				action,
+				...(count < lines.length ? [`+${lines.length - count} more`] : []),
+			].join("\n"),
+		) > 1500
+	)
+		count--;
+	while (
+		prefix.length > 1 &&
+		Buffer.byteLength([...prefix, ...lines.slice(0, count), action, `+${lines.length - count} more`].join("\n")) >
+			1500
+	)
+		prefix.pop();
+	return [
+		...prefix,
+		...lines.slice(0, count),
+		action,
+		...(count < lines.length ? [`+${lines.length - count} more`] : []),
+	].join("\n");
+}
+
+/** The user sees one bounded status line, never the model gate context. */
+export function formatRequirementPublicationStatus(
+	open: readonly { requirement: RequirementLedgerItem }[],
+	total: number,
+): string {
+	const ids = open
+		.slice(0, 3)
+		.map(item => item.requirement.id)
+		.join(", ");
+	return `Not audit-verified: ${ids}${open.length > 3 ? ", …" : ""} (${open.length} of ${total})`;
 }
 
 /** Done-gate refusal for linked rows without a fresh qa-auditor pass. */

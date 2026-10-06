@@ -12,7 +12,8 @@ import {
 	createRequirementCandidates,
 	formatRequirementGateArtifact,
 	formatOverdueClassifyRefusal,
-	formatPublicationReplacement,
+	formatRequirementGateNotice,
+	formatRequirementPublicationStatus,
 	getLatestRequirements,
 	getOverdueRequirementCandidates,
 	getPersistedRequirementAuditorAssignments,
@@ -136,6 +137,7 @@ export interface RequirementsLedgerRuntimeHost {
 	cwd(): string;
 	sessionManager: SessionManager;
 	onSettledAssistantMessage(message: AssistantMessage): void;
+	queueModelNotice?(notice: string): void | Promise<void>;
 	setPublicationGate?(gate: RequirementPublicationGate | undefined): void;
 }
 
@@ -147,6 +149,7 @@ export class RequirementsLedgerRuntime {
 	readonly #auditorRefusals = new Map<string, { ids: string[]; source: string }>();
 	#publicationGeneration = 0;
 	#publicationState = "";
+	#noticeState = "";
 
 	constructor(host: RequirementsLedgerRuntimeHost) {
 		this.#host = host;
@@ -476,9 +479,24 @@ export class RequirementsLedgerRuntime {
 		this.syncPublicationGate();
 		// Never erase the assistant's own text on a generation race: publish unchanged.
 		if (this.#getPublicationGeneration() !== decisionGeneration) return failed ? { replacementText: "" } : undefined;
-		if (open.length === 0) return;
+		if (open.length === 0) {
+			this.#noticeState = "";
+			return;
+		}
 		// With tool calls the text stays as it is: the gate only appends to final text.
 		if (message.content.some(block => block.type === "toolCall")) return failed ? { replacementText: "" } : undefined;
+		const noticeState = JSON.stringify(open.map(item => [item.requirement.id, item.issues]));
+		if (noticeState !== this.#noticeState) {
+			await this.#host.queueModelNotice?.(
+				formatRequirementGateNotice(
+					open.map(item => ({
+						...item,
+						awaitingUser: item.issues.every(issue => awaitingUserIssues.has(issue)),
+					})),
+				),
+			);
+			this.#noticeState = noticeState;
+		}
 		const branch = this.#host.sessionManager.getBranch();
 		const userMessage = branch.findLast(entry => entry.type === "message" && entry.message.role === "user");
 		const announced = new Set<string>();
@@ -509,14 +527,15 @@ export class RequirementsLedgerRuntime {
 		if (visible.length === 0) return failed ? { replacementText: "" } : undefined;
 		if (newKeys.length)
 			this.#host.sessionManager.appendCustomEntry("requirements_awaiting_user_notice", { keys: newKeys });
-		const rows = openTodoRowContents(branch);
+		const total = requirements.filter(
+			item => item.classification === "candidate" || item.classification === "linked",
+		).length;
 		this.#host.onSettledAssistantMessage(message);
-		const notice = formatPublicationReplacement(visible, rows);
+		const notice = formatRequirementPublicationStatus(visible, total);
 		const original = message.content
 			.filter(block => block.type === "text")
 			.map(block => block.text)
-			.join("")
-			.trim();
+			.join("");
 		return {
 			replacementText: !failed && original ? `${original}\n\n${notice}` : notice,
 			settled: true,
