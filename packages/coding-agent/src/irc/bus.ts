@@ -95,6 +95,21 @@ export class IrcBus {
 		return ts !== undefined && ts >= sinceTs;
 	}
 
+	/** Resolve a bare shell reply only from senders that reached this recipient. */
+	resolveShellReplyTarget(recipient: string): string {
+		const candidates: string[] = [];
+		for (const [from, sent] of this.#lastSent) {
+			if (from.startsWith("shell:") && sent.has(recipient)) candidates.push(from);
+		}
+		if (candidates.length === 1) return candidates[0]!;
+		throw new PeerSessionError(
+			"not_found",
+			candidates.length === 0
+				? "No shell sender has messaged this session; use an exact shell:<id> reply address."
+				: `Ambiguous shell reply target; use an exact address: ${candidates.sort().join(", ")}`,
+		);
+	}
+
 	/** Route external reply addresses through the same transport as agent:// writes. */
 	async #deliverExternal(message: IrcMessage): Promise<IrcDeliveryReceipt> {
 		try {

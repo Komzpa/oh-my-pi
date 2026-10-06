@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Incoming IRC messages explicitly advertise their exact `agent://` reply address. Bare `agent://shell` replies resolve the unique shell sender that reached the recipient; multiple senders report their exact addresses instead of a misleading subagent-roster hint (fork PR [#23](https://github.com/Komzpa/oh-my-pi/pull/23)).
 - Peer inbox reads recover valid replies around malformed records; lost send acknowledgements report an uncertain outcome without a safe-retry claim. Peer sends and `agent://peer:` writes use write approval; peer MCP config mutations require the host command context. MCP config commands reject busy sessions before mutation or explicitly defer reconnect after a saved change (fork PR [#23](https://github.com/Komzpa/oh-my-pi/pull/23)).
 
 - Peer `/mcp reload` now reconnects the target session’s owned MCP runtime and mounts tools using the TUI reload policy; busy sessions and children sharing a manager refuse the reload (fork PR [#23](https://github.com/Komzpa/oh-my-pi/pull/23)).
