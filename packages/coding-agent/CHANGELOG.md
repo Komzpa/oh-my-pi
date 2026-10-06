@@ -13,6 +13,7 @@
 ### Fixed
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
+- Queue incoming messages behind a subagent's brief while its first prompt is being prepared, rather than starting a competing IRC wake that can fail the spawn with `AgentBusyError`.
 
 ## [18.4.12] - 2026-10-02
 
