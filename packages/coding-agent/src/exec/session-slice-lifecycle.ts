@@ -6,7 +6,7 @@ import { hasLiveIsolationOwner, ISOLATION_OWNER_FILE, writeIsolationOwner } from
 import cpuNoticeTemplate from "../prompts/session/owned-cpu.md" with { type: "text" };
 
 const registryRoot = path.join(path.dirname(getDaemonRuntimeRoot()), "session-slices");
-const sessionSlicePattern = /^omp-tool-[A-Za-z0-9]{8}\.slice$/;
+const sessionSlicePattern = /^omp-tool-[A-Za-z0-9]+\.slice$/;
 
 async function systemctl(args: string[]): Promise<string> {
 	const child = Bun.spawn(["systemctl", "--user", ...args], { stdout: "pipe", stderr: "pipe", timeout: 3_000 });
@@ -40,7 +40,7 @@ export async function reapOrphanSessionSlices(root = registryRoot): Promise<stri
 				typeof owner !== "object" ||
 				owner === null ||
 				!("id" in owner) ||
-				owner.id !== slice ||
+				typeof owner.id !== "string" ||
 				!("pid" in owner) ||
 				typeof owner.pid !== "number" ||
 				!Number.isInteger(owner.pid) ||
@@ -51,6 +51,7 @@ export async function reapOrphanSessionSlices(root = registryRoot): Promise<stri
 				!/^[0-9a-f-]{36}\n?$/.test(boot)
 			)
 				continue;
+			if (sessionSliceName(owner.id) !== slice) continue;
 			// Only ESRCH or a different start token/boot proves the recorded instance gone.
 			const currentBoot = await Bun.file("/proc/sys/kernel/random/boot_id").text();
 			if (boot === currentBoot && (await hasLiveIsolationOwner(directory))) continue;
@@ -140,9 +141,9 @@ export class SessionSliceLifecycle {
 		await reapOrphanSessionSlices(this.#root);
 		const directory = path.join(this.#root, this.slice);
 		await fs.mkdir(this.#root, { recursive: true, mode: 0o700 });
-		// Exclusive creation prevents two live processes from claiming the same sid8.
+		// Exclusive creation prevents another live process from stealing the canonical slice.
 		await fs.mkdir(directory, { mode: 0o700 });
-		await writeIsolationOwner(directory, this.slice);
+		await writeIsolationOwner(directory, this.#host.sessionId);
 		await Bun.write(path.join(directory, "boot-id"), await Bun.file("/proc/sys/kernel/random/boot_id").text());
 		this.#owned = true;
 		if (this.#stopped) return;
