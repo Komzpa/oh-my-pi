@@ -33,13 +33,13 @@ describe("YieldTool terminal result latch", () => {
 		);
 	});
 
-	it("allows incremental yields before rejecting a terminal result after acceptance", async () => {
+	it("allows incremental yields only before terminal acceptance", async () => {
 		const tool = new YieldTool(createSession());
 		await tool.execute("call-section", { type: ["notes"], data: { note: "first" } } as never);
 		await tool.execute("call-terminal", { data: { answer: 42 } } as never);
-		await expect(
-			tool.execute("call-later-section", { type: ["notes"], data: "later" } as never),
-		).resolves.toBeDefined();
+		await expect(tool.execute("call-later-section", { type: ["notes"], data: "later" } as never)).rejects.toThrow(
+			"Stop now",
+		);
 		await expect(tool.execute("call-later-terminal", { data: { answer: 0 } } as never)).rejects.toThrow("Stop now");
 	});
 });
