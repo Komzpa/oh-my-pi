@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The embedded shell no longer imports `NODE_CHANNEL_FD` / `NODE_CHANNEL_SERIALIZATION_MODE` from the host environment into tool-command sessions, fixing `EBADF: Bad file descriptor` failures from `bun run` inside bash tool calls.
+
 ## [18.4.10] - 2026-10-02
 
 ### Fixed
