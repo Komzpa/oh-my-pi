@@ -6,6 +6,13 @@ use pi_vcs::process_limit::{ScopeEnvironment, ToolProcessLimit};
 
 use crate::task::{self, blocking};
 
+/// Stable systemd parent slice for a session's tool processes.
+#[napi]
+pub fn session_slice_name(session_id: String) -> Result<String> {
+	pi_vcs::process_limit::session_slice_name(&session_id)
+		.map_err(|error| Error::from_reason(error.to_string()))
+}
+
 #[napi]
 pub struct ToolResourceScope {
 	owner: Option<Arc<ToolProcessLimit>>,

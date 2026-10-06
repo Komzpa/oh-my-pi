@@ -41,6 +41,20 @@ native boundary owner. Scope execution preserves terminal handles, IPC,
 environment, working directory, and inherited resource limits. Linux refuses
 an unbounded JavaScript Worker fallback when subprocess startup fails.
 
+Local bash commands carry `OMP_SESSION_ID`. The native boundary binds its first
+launch to `omp-tool-<sessionId8>.slice`, using a child named
+`omp-tool-<sessionId8>-call-<pid>-<id>.slice`; systemd's slice hierarchy gives the
+session a single parent without changing the per-call `TasksMax=500` limit.
+`sessionSliceName(sessionId)` in the natives package is the canonical naming
+helper. Unowned host operations retain their existing per-call boundary.
+
+Local tool PATH puts a `systemd-run` shim first. It adds the session slice only
+when the manager options omit `--slice` (both `--slice=value` and `--slice value`
+are preserved). An operand's `--slice` is not a manager option. Deliberate
+long-lived work uses `--slice=omp-keep.slice`; no PID-based keep mechanism is
+provided. Slice shutdown, startup orphan reaping, launcher migration, and kept
+process visibility are owned by the session lifecycle, not this native wrapper.
+
 The shared Linux scope argv starts user work through `nice -n19 ionice -c2 -n7`:
 children and their ordinary descendants run at niceness 19 and best-effort IO
 priority 7, while omp's own CPU and IO priority are unchanged. Helpers are

@@ -21,6 +21,7 @@ import { isPosixShell } from "@oh-my-pi/pi-utils/procmgr";
 import { raceJobSettlement, resolveAutoBackgroundWaitMs } from "../async";
 import type { Settings } from "../config/settings";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
+import { toolSessionEnvironment } from "../exec/session-slice";
 import { InternalUrlRouter } from "../internal-urls";
 import { sessionResolveContext } from "../internal-urls/context";
 import { InternalUrlFilesystem, UrlFsError } from "../internal-urls/url-filesystem";
@@ -869,6 +870,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
 						sessionKey: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
+						sessionId: this.session.getSessionId?.() ?? undefined,
 						maskDesktopSession: this.session.agentKind === "sub",
 						timeout: options.timeoutMs ?? 0,
 						signal: runSignal,
@@ -1539,7 +1541,10 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					cwd: commandCwd,
 					timeoutMs,
 					signal,
-					env: backendPreflight?.env,
+					env: await toolSessionEnvironment(
+						this.session.getSessionId?.() ?? undefined,
+						backendPreflight?.env ?? {},
+					),
 					artifactPath,
 					artifactId,
 				})
@@ -1548,6 +1553,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				await executeBash(command, {
 					cwd: commandCwd,
 					sessionKey: this.session.getSessionId?.() ?? undefined,
+					sessionId: this.session.getSessionId?.() ?? undefined,
 					maskDesktopSession: this.session.agentKind === "sub",
 					timeout: timeoutMs ?? 0,
 					signal,

@@ -27,6 +27,7 @@ import { TerminalGraphicsDecoder } from "../utils/terminal-graphics";
 import { loadDirenvEnv } from "./direnv";
 import { buildNonInteractiveEnv } from "./non-interactive-env";
 import { DESKTOP_SESSION_ENV_KEYS, ensureSubagentRuntimeDir, stripDesktopSessionEnv } from "@oh-my-pi/pi-utils";
+import { toolSessionEnvironment } from "./session-slice";
 
 import {
 	cfgBashDirenv,
@@ -51,6 +52,8 @@ export interface BashExecutorOptions {
 	signal?: AbortSignal;
 	/** Session key suffix to isolate shell sessions per agent */
 	sessionKey?: string;
+	/** Transcript session owning local processes, independent of the shell/job key. */
+	sessionId?: string;
 	/** Additional environment variables to inject */
 	env?: Record<string, string>;
 	/** Strip desktop-session bindings for task workers (grievance 608). */
@@ -572,7 +575,10 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			commandPrefix: prefix,
 		}),
 	]);
-	const commandEnv = buildNonInteractiveEnv(preflight.env);
+	const commandEnv = await toolSessionEnvironment(options?.sessionId, {
+		...buildNonInteractiveEnv(preflight.env),
+		PATH: preflight.env?.PATH ?? shellEnv.PATH ?? process.env.PATH ?? "",
+	});
 	if (options?.maskDesktopSession) {
 		commandEnv.XDG_RUNTIME_DIR ??= shellEnv.XDG_RUNTIME_DIR;
 	}

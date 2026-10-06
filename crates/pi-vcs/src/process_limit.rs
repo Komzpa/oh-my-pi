@@ -29,7 +29,33 @@ use brush_core::ExternalCommandWrapper;
 const DEFAULT_TASK_LIMIT: u32 = 500;
 static NEXT_SCOPE_ID: AtomicU64 = AtomicU64::new(1);
 
-/// The two session bindings from the payload's effective environment.
+/// Stable parent for a session's tool processes, including across exec.
+pub fn session_slice_name(session_id: &str) -> io::Result<String> {
+	let prefix = session_id
+		.get(..8)
+		.filter(|prefix| prefix.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+	let prefix = prefix.ok_or_else(|| {
+		io::Error::new(
+			io::ErrorKind::InvalidInput,
+			"session id must start with eight ASCII alphanumerics",
+		)
+	})?;
+	Ok(format!("omp-tool-{prefix}.slice"))
+}
+
+fn call_slice_name(base: &str, session_id: Option<&OsStr>) -> io::Result<String> {
+	let Some(session_id) = session_id else {
+		return Ok(base.to_owned());
+	};
+	let session_id = session_id
+		.to_str()
+		.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "non-UTF-8 session id"))?;
+	let parent = session_slice_name(session_id)?;
+	Ok(format!("{}-{}", parent.trim_end_matches(".slice"), base.trim_start_matches("omp-tool-")))
+}
+
+/// Manager bindings and process ownership from the payload's effective
+/// environment.
 ///
 /// `None` is absent; `Some("")` is present with an empty value. Manager access
 /// uses separate bindings and must never become the payload's environment.
@@ -37,6 +63,7 @@ static NEXT_SCOPE_ID: AtomicU64 = AtomicU64::new(1);
 pub struct ScopeEnvironment {
 	pub bus_address: Option<OsString>,
 	pub runtime_dir: Option<OsString>,
+	pub session_id:  Option<OsString>,
 }
 
 impl ScopeEnvironment {
@@ -44,6 +71,7 @@ impl ScopeEnvironment {
 		Self {
 			bus_address: lookup("DBUS_SESSION_BUS_ADDRESS"),
 			runtime_dir: lookup("XDG_RUNTIME_DIR"),
+			session_id:  lookup("OMP_SESSION_ID"),
 		}
 	}
 
@@ -314,6 +342,7 @@ struct LimitState {
 	initialized:     bool,
 	created:         bool,
 	next_command_id: u64,
+	slice:           String,
 }
 
 #[derive(Debug)]
@@ -349,12 +378,15 @@ impl ToolProcessLimit {
 				.state
 				.lock()
 				.map_err(|_| io::Error::other("process limit state poisoned"))?;
+			if !state.initialized {
+				state.slice = call_slice_name(&self.slice, payload_env.session_id.as_deref())?;
+			}
 			self.ensure_enforced(&mut state)?;
 			let command_id = state.next_command_id;
 			state.next_command_id += 1;
 			Ok(build_scope_argv(
-				&self.slice,
-				&format!("omp-tool-call-{}-{command_id}.scope", self.slice.trim_end_matches(".slice")),
+				&state.slice,
+				&format!("omp-tool-call-{}-{command_id}.scope", state.slice.trim_end_matches(".slice")),
 				false,
 				true,
 				command,
@@ -372,6 +404,7 @@ impl ToolProcessLimit {
 				initialized:     false,
 				created:         false,
 				next_command_id: 0,
+				slice:           format!("omp-tool-call-{}-{id}.slice", std::process::id()),
 			}),
 		}
 	}
@@ -391,7 +424,7 @@ impl ToolProcessLimit {
 		{
 			state.created = true;
 			let result = systemd_user_manager_command(systemctl_bin())
-				.args(["--user", "set-property", "--runtime", &self.slice])
+				.args(["--user", "set-property", "--runtime", &state.slice])
 				.arg(format!("TasksMax={}", self.limit))
 				.output()?;
 			if !result.status.success() {
@@ -401,9 +434,9 @@ impl ToolProcessLimit {
 				)));
 			}
 			let probe_unit =
-				format!("omp-tool-call-probe-{}.scope", self.slice.trim_end_matches(".slice"));
+				format!("omp-tool-call-probe-{}.scope", state.slice.trim_end_matches(".slice"));
 			let probe = build_scope_argv(
-				&self.slice,
+				&state.slice,
 				&probe_unit.replace(".scope", ".service"),
 				true,
 				false,
@@ -418,7 +451,7 @@ impl ToolProcessLimit {
 				)));
 			}
 
-			let cgroup = systemd_property(&self.slice, "ControlGroup")?;
+			let cgroup = systemd_property(&state.slice, "ControlGroup")?;
 			let pids_max = std::fs::read_to_string(format!("/sys/fs/cgroup{cgroup}/pids.max"))?;
 			if pids_max.trim() != self.limit.to_string() {
 				return Err(io::Error::other(format!(
@@ -442,7 +475,7 @@ impl ToolProcessLimit {
 		}
 		#[cfg(target_os = "linux")]
 		{
-			let cgroup = systemd_property(&self.slice, "ControlGroup")?;
+			let cgroup = systemd_property(&state.slice, "ControlGroup")?;
 			let events = std::fs::read_to_string(format!("/sys/fs/cgroup{cgroup}/pids.events"))?;
 			Ok(events
 				.lines()
@@ -462,7 +495,7 @@ impl ToolProcessLimit {
 		}
 		#[cfg(target_os = "linux")]
 		{
-			let cgroup = systemd_property(&self.slice, "ControlGroup")?;
+			let cgroup = systemd_property(&state.slice, "ControlGroup")?;
 			let count = std::fs::read_to_string(format!("/sys/fs/cgroup{cgroup}/pids.current"))?;
 			Ok(count.trim().parse::<u64>().unwrap_or(0) > 0)
 		}
@@ -501,13 +534,14 @@ impl ExternalCommandWrapper for ToolProcessLimit {
 
 impl Drop for ToolProcessLimit {
 	fn drop(&mut self) {
-		let created = self.state.get_mut().is_ok_and(|state| state.created);
+		let state = self.state.get_mut();
+		let created = state.as_ref().is_ok_and(|state| state.created);
 		if !created {
 			return;
 		}
 		#[cfg(target_os = "linux")]
 		{
-			let slice = self.slice.clone();
+			let slice = state.expect("created state").slice.clone();
 			let systemctl = systemctl_bin().clone();
 			// Never block the dropping thread: this runs on the JS event loop
 			// (`ToolResourceScope::close`), async workers, and scope guards.
@@ -558,6 +592,47 @@ mod tests {
 
 	use super::ToolProcessLimit;
 
+	#[test]
+	fn session_slice_naming_and_call_parenting() {
+		assert_eq!(super::session_slice_name("0123abcd-rest").unwrap(), "omp-tool-0123abcd.slice");
+		assert_eq!(
+			super::call_slice_name("omp-tool-call-42-1.slice", Some("0123abcd-rest".as_ref()))
+				.unwrap(),
+			"omp-tool-0123abcd-call-42-1.slice"
+		);
+		assert_eq!(
+			super::call_slice_name("omp-tool-call-42-1.slice", None).unwrap(),
+			"omp-tool-call-42-1.slice"
+		);
+		for invalid in ["", "short", "bad/name", "åååååååå"] {
+			assert!(super::session_slice_name(invalid).is_err(), "{invalid}");
+		}
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	#[ignore = "requires a reachable systemd user manager; run explicitly on a live host"]
+	fn session_call_uses_parent_slice() {
+		let session_id = format!("{:08x}-qa-slice", std::process::id());
+		let parent = super::session_slice_name(&session_id).unwrap();
+		let limit = ToolProcessLimit::new(32);
+		let env = super::ScopeEnvironment {
+			session_id: Some(session_id.into()),
+			..super::ScopeEnvironment::inherited()
+		};
+		let argv = limit
+			.wrap_scope_command(&[super::true_bin().clone()], &env)
+			.unwrap();
+		let slice_arg = argv.iter().position(|arg| arg == "--slice").unwrap();
+		let slice = argv[slice_arg + 1].to_str().unwrap();
+		assert!(
+			slice.starts_with(parent.trim_end_matches(".slice")),
+			"{slice} is not under {parent}"
+		);
+		let cgroup = super::systemd_property(slice, "ControlGroup").unwrap();
+		assert!(cgroup.contains(&format!("/{parent}/")), "{cgroup}");
+	}
+
 	#[cfg(target_os = "linux")]
 	#[test]
 	fn systemd_user_manager_env_derives_run_user_without_bus() {
@@ -606,6 +681,7 @@ mod tests {
 			let payload_env = super::ScopeEnvironment {
 				bus_address: values[0].map(Into::into),
 				runtime_dir: values[1].map(Into::into),
+				session_id:  None,
 			};
 			let argv = super::build_scope_argv(
 				"test.slice",
@@ -773,6 +849,7 @@ exec "$@"
 				&super::ScopeEnvironment {
 					bus_address: Some("".into()),
 					runtime_dir: Some("/tmp/x".into()),
+					session_id:  None,
 				},
 			);
 			let output = Command::new(&argv[0])
