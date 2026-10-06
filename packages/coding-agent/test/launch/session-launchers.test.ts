@@ -85,6 +85,49 @@ describe("daemon birth identity", () => {
 });
 
 describe.skipIf(!live)("session launcher consumer cgroups", () => {
+	it("keeps the process-local fallback browser main pid in its inherited session slice", async () => {
+		using temp = TempDir.createSync("qa-slice-fallback-");
+		const slice = sessionSliceName(crypto.randomUUID());
+		const fixture = path.join(temp.path(), "fallback.ts");
+		const registry = path.resolve(import.meta.dir, "../../src/tools/browser/registry.ts");
+		await Bun.write(
+			fixture,
+			`
+import { acquireBrowser, releaseBrowser } from ${JSON.stringify(registry)};
+import { workerHostEntry, isCompiledBinary } from "${path.resolve(import.meta.dir, "../../../utils/src/index.ts")}";
+if (isCompiledBinary() || workerHostEntry() !== null) throw new Error("fallback not exercised: CLI host present");
+const handle = await acquireBrowser({ kind: "headless", headless: true }, { cwd: ${JSON.stringify(temp.path())} });
+try {
+  if (!("browser" in handle) || handle.sharedDaemon) throw new Error("fallback not exercised: broker handle");
+  const pid = handle.browser.process()?.pid;
+  if (!pid) throw new Error("fallback main pid missing");
+  const page = await handle.browser.newPage();
+  await page.goto("data:text/html,<title>fallback-ready</title>");
+  await page.close();
+  const cgroup = (await Bun.file(\`/proc/\${pid}/cgroup\`).text()).trim();
+  console.log(JSON.stringify({ fixture: "fallback", pid, slice: ${JSON.stringify(slice)}, cgroup }));
+  if (!cgroup.includes("/" + ${JSON.stringify(slice)} + "/")) throw new Error("fallback browser escaped session slice");
+} finally { await releaseBrowser(handle, { kill: true }); }
+`,
+		);
+		try {
+			const child = Bun.spawn(
+				["systemd-run", "--user", "--scope", "--quiet", `--slice=${slice}`, process.execPath, fixture],
+				{ stdout: "pipe", stderr: "pipe" },
+			);
+			const [stdout, stderr, code] = await Promise.all([
+				new Response(child.stdout).text(),
+				new Response(child.stderr).text(),
+				child.exited,
+			]);
+			console.log(stdout);
+			if (code !== 0) throw new Error(`fallback fixture exited ${code}: ${stderr}`);
+			expect(stdout).toContain('"fixture":"fallback"');
+		} finally {
+			const stop = Bun.spawn(["systemctl", "--user", "stop", slice], { stdout: "ignore", stderr: "pipe" });
+			await stop.exited;
+		}
+	}, 90_000);
 	it("owns a browser tab, Python/Bun kernels and a named service without adopting an unrelated child", async () => {
 		using temp = TempDir.createSync("qa-slice-consumers-");
 		const cwd = path.resolve(temp.path());
