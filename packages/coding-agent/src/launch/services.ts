@@ -119,7 +119,7 @@ async function request(
 						...operation.spec,
 						env: await toolSessionEnvironment(session.getSessionId?.() ?? undefined, operation.spec.env),
 					},
-				  }
+				}
 			: operation;
 	const result = await client.request(scopedOperation, signal);
 	if (result.op === "list") {
