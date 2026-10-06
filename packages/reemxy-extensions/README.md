@@ -17,6 +17,17 @@ reemxyPresence:
 
 Hours are normalized to `0..23`; absent or invalid fields retain defaults.
 
+## Durable user deadlines
+
+`goal_deadline(action=set)` persists in the existing `reemxy-goal-deadlines` session entry even without a focused goal; no goal is invented. Its user authority and original final time live outside the experimental notes. Presence and deadline context retain the constraint after compaction, focus changes, and stage delivery. At the exact due time, context switches to **WRAP-UP MODE**: ship the best verified state, list unfinished work, and send one honest status message. A durable final-message receipt prevents repeated status demands.
+
+The existing `tool_call` gate refuses new `todo init`/`todo append` rows and `task` spawns after a missed deadline. Its one exact action asks the user for `Approve new work: <exact row or worker name>`; only a real user message with that exact line passes, not a correction, synthetic message, or prefix match. Existing-row edits and wrap-up operations remain allowed; staffing demands, escalation, and idle staffing wakes stand down. The no-deadline path is unchanged.
+
+A newer real user message explicitly giving a local `HH:MM` time can replace the deadline with `action=set` and `user_message` quoting that message. Assistant ETA/status promises cannot replace it. The user closes a live constraint with `/deadline close`, followed by `action=clear`. The consumer replay fixture projects the original session's deadline input, no-focus save, exact due boundary, and notes rewrite; oracle: `user-deadline-replay.test.ts`.
+
+Scope freezing on a **wrap-up request before the deadline**, and semantic recognition of arbitrary natural-language approvals, are not implemented here. Their owner is `todo_dispatch.ts`'s `input`/`isCorrectionInput` scope interpretation plus `goal_deadlines.ts`'s new-work `tool_call` gate; corrections must remain edits to existing rows rather than implicitly approve new rows.
+
+
 ## Subagent model rotation
 
 Paid OpenRouter models are not used. Only zero-price `:free` slugs go first in light roles (scout, scribe, workhorse, gate-runner, researcher, task, coder, git-pr-owner), chosen by fewest requests per finished task because the free quota is 1,000 requests/day shared across all free models per account (20 requests/minute); their results need a strong reviewer before a row closes. `ui-coder` takes only `openrouter/dots-studio/dots-3-note-preview:free` because it is the free model with image input. Keep the existing candidates in order after them. Keep the Hindsight provider/auth configuration intact.

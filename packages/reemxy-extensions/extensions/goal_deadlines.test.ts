@@ -753,7 +753,7 @@ test("clear lets an explicit set replace a corrupted immutable final deadline", 
 	expect(replaced.details.state?.baselineDeadlineAt).toBe(1_790_236_800);
 });
 
-test("requires explicit goal metadata when setting a deadline without focus", async () => {
+test("persists a hard deadline without inventing goal focus or requiring goal metadata", async () => {
 	const invoke = async (
 		focusedGoal: { id: string; createdAt: number; status: "active" } | null,
 		metadata: { goal_id?: string; goal_started_at?: number; timezone?: string } = {},
@@ -793,12 +793,11 @@ test("requires explicit goal metadata when setting a deadline without focus", as
 		);
 	};
 
-	await expect(invoke(null)).rejects.toThrow(
-		/no focused goal is available.*pass goal_id, goal_started_at, and timezone explicitly/,
-	);
-	await expect(invoke(null, { goal_id: "manual-goal", goal_started_at: 1_000 })).rejects.toThrow(
-		/no focused goal is available.*pass goal_id, goal_started_at, and timezone explicitly/,
-	);
+	const unfocused = await invoke(null);
+	expect(unfocused.details.state).toMatchObject({ goalId: "session-deadline", active: true, baselineDeadlineAt: 2_000 });
+	expect(unfocused.details.state?.userConstraint).toBeDefined();
+	const manual = await invoke(null, { goal_id: "manual-goal", goal_started_at: 1_000 });
+	expect(manual.details.state).toMatchObject({ goalId: "manual-goal", active: true, baselineDeadlineAt: 2_000 });
 	const focused = await invoke({ id: "focused-goal", createdAt: 1_000, status: "active" });
 	expect(focused.details.state).toMatchObject({ goalId: "focused-goal", goalStartedAt: 1_000, active: true });
 	expect(typeof focused.details.state?.timezone).toBe("string");
