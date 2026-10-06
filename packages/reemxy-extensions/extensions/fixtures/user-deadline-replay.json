@@ -1,0 +1,21 @@
+{
+  "sourceSession": "01a0fc32-51dc-726d-b1f4-7537c4bc1061",
+  "userEntry": {
+    "type": "message",
+    "id": "674b3b22",
+    "timestamp": "2026-10-04T15:19:23.924Z",
+    "message": {
+      "role": "user",
+      "attribution": "user",
+      "content": [{ "type": "text", "text": "дедлайн: до 23:00 все должно быть готово" }]
+    }
+  },
+  "recordedAt": "2026-10-04T15:20:35.480Z",
+  "dueAt": "2026-10-04T19:00:00Z",
+  "notesRewrittenAt": "2026-10-04T21:09:00Z",
+  "set": {
+    "action": "set",
+    "timezone": "Asia/Tbilisi",
+    "stages": [{ "id": "ship", "label": "Verified delivery", "expected_result": "Best verified state and unfinished work", "deadline_at": 1791140400 }]
+  }
+}

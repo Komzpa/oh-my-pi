@@ -26,6 +26,8 @@ export interface DeadlineState {
 	stages: DeadlineStage[];
 	initialQuota?: QuotaSnapshot;
 	baselineDeadlineAt?: number;
+	/** User authority is durable even without goal focus; due time stays in baselineDeadlineAt. */
+	userConstraint?: { messageId: string; quote: string; recordedAt: number; statusSentAt?: number };
 }
 
 export interface QuotaSnapshot {
@@ -207,6 +209,28 @@ export function rehydrateDeadlineState(entries: readonly unknown[]): DeadlineSta
 	return null;
 }
 
+export function isUserDeadlineMissed(state: DeadlineState | null, now = Date.now() / 1_000): boolean {
+	return Boolean(state?.active && state.userConstraint && state.baselineDeadlineAt !== undefined && now >= state.baselineDeadlineAt);
+}
+
+export function latestDeadlineUserMessage(entries: readonly unknown[]): { id: string; text: string; at: number } | undefined {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index] as {
+			id?: string;
+			type?: string;
+			timestamp?: string | number;
+			message?: { role?: string; content?: string | Array<{ type: string; text?: string }>; attribution?: string; synthetic?: boolean; timestamp?: number };
+		};
+		const message = entry.message;
+		if (entry.type !== "message" || message?.role !== "user" || message.synthetic || (message.attribution && message.attribution !== "user")) continue;
+		const timestamp = entry.timestamp ?? message.timestamp;
+		const at = typeof timestamp === "number" ? timestamp : Date.parse(timestamp ?? "");
+		const text = typeof message.content === "string" ? message.content : (message.content ?? []).filter(part => part.type === "text").map(part => part.text ?? "").join("\n");
+		if (Number.isFinite(at)) return { id: entry.id ?? String(at), text, at: Math.floor(at / 1_000) };
+	}
+	return undefined;
+}
+
 function readGoalPool(cwd?: string): readonly unknown[] {
 	try {
 		const value = JSON.parse(readFileSync(join(cwd ?? process.cwd(), ".pi/.goals-pool-snapshot.json"), "utf8")) as {
@@ -229,9 +253,11 @@ export function readGoalDeadline(
 	cwd?: string,
 	options: { includePaused?: boolean } = {},
 ): { goalId: string; deadlineAt: number; timezone: string; paused?: boolean } | undefined {
+	const state = rehydrateDeadlineState(entries);
+	if (state?.active && state.userConstraint && state.baselineDeadlineAt !== undefined && isUnixSeconds(state.baselineDeadlineAt))
+		return { goalId: state.goalId, deadlineAt: state.baselineDeadlineAt * 1_000, timezone: resolveTimeZone(state.timezone) };
 	const goal = resolveLifecycleGoal(entries, () => readGoalPool(cwd));
 	if (!goal || (goal.status !== "active" && !(options.includePaused && goal.status === "paused"))) return undefined;
-	const state = rehydrateDeadlineState(entries);
 	if (!state?.active || state.goalId !== goal.id || state.stages.length === 0) return undefined;
 	if (state.stages.every(stage => stage.deliveredAt !== undefined)) return undefined;
 	if (
