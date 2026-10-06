@@ -2435,8 +2435,8 @@ async function driveSessionToResult(
 					const isFinalRetry = retryCount >= MAX_YIELD_RETRIES;
 					// Last chance: the next accepted yield ends the run, incremental
 					// or not, so the pinned model cannot answer the pin forever.
-					// Armed for this prompt's turn only — the quiescence barrier's
-					// later notice turn may legitimately submit more sections.
+					// Armed for this prompt's turn only; drop recovery must not
+					// promote another turn's incremental sections to terminal.
 					retriesForced = isFinalRetry;
 					await dispatchPrompt(
 						reminder,
@@ -2474,15 +2474,18 @@ async function driveSessionToResult(
 		// Before acceptance, settle owner work before spending yield reminders.
 		// After terminal acceptance, the monitor ends the run and teardown reaps
 		// remaining jobs; late async deliveries cannot reopen submission.
-		while (!monitor.yieldCalled() && !abortSignal.aborted) {
-			await runYieldLadder();
-			if (
-				monitor.yieldCalled() ||
-				monitor.budgetStopRequested() ||
-				session.getLastAssistantMessage()?.stopReason === "error" ||
-				!session.hasPendingAsyncWork()
-			)
-				break;
+		while (!abortSignal.aborted) {
+			if (!monitor.yieldCalled()) {
+				await runYieldLadder();
+				if (
+					!monitor.yieldCalled() &&
+					(monitor.budgetStopRequested() ||
+						session.getLastAssistantMessage()?.stopReason === "error" ||
+						!session.hasPendingAsyncWork())
+				)
+					break;
+			}
+			if (monitor.yieldCalled()) break;
 			await awaitAbortable(session.settleAsyncWork());
 		}
 
