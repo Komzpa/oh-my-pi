@@ -45,14 +45,18 @@ describe("session process boundary", () => {
 	});
 	it("adds the session slice and keeps command argument bytes unchanged", async () => {
 		const args = ["--user", "--unit=qa-slice-a", "--", "/bin/echo", "a b", "$value"];
-		expect(await argumentsOf(args)).toEqual(["--slice=omp-tool-6cda2d922716.slice", ...args]);
+		expect(await argumentsOf(args)).toEqual([
+			"--slice=omp-tool-6cda2d922716.slice",
+			`--setenv=OMP_SESSION_ID=${sid}`,
+			...args,
+		]);
 		expect(env.OMP_SESSION_ID).toBe(sid);
 		expect(env.PATH?.split(":")[0]).toBe(path.join(root, "bin"));
 	});
 	it("preserves the explicit keep path in both slice syntaxes", async () => {
 		for (const slice of [["--slice=omp-keep.slice"], ["--slice", "omp-keep.slice"]]) {
 			const args = ["--user", "--unit", "qa-slice-keep", ...slice, "/bin/true"];
-			expect(await argumentsOf(args)).toEqual(args);
+			expect(await argumentsOf(args)).toEqual([`--setenv=OMP_SESSION_ID=${sid}`, ...args]);
 		}
 	});
 	it("does not confuse option values or payload slice flags with manager options", async () => {
@@ -65,13 +69,21 @@ describe("session process boundary", () => {
 			"/bin/echo",
 			"--slice=not-a-manager-option",
 		];
-		expect(await argumentsOf(args)).toEqual(["--slice=omp-tool-6cda2d922716.slice", ...args]);
+		expect(await argumentsOf(args)).toEqual([
+			"--slice=omp-tool-6cda2d922716.slice",
+			`--setenv=OMP_SESSION_ID=${sid}`,
+			...args,
+		]);
 	});
 	it("leaves explicit neighboring slices and unowned environments untouched", async () => {
 		const args = ["--user", "--slice=app.slice", "/bin/true"];
-		expect(await argumentsOf(args)).toEqual(args);
+		expect(await argumentsOf(args)).toEqual([`--setenv=OMP_SESSION_ID=${sid}`, ...args]);
 		const unowned = { PATH: "/usr/bin:/bin", VARIABLE: "unchanged" };
 		expect(await toolSessionEnvironment(undefined, unowned)).toBe(unowned);
+	});
+	it("scopes inherit ownership without unsupported service environment options", async () => {
+		const args = ["--user", "--scope", "--slice=omp-keep.slice", "/bin/true"];
+		expect(await argumentsOf(args)).toEqual(args);
 	});
 	it("can apply the environment twice without recursive shims or PATH duplication", async () => {
 		const again = await toolSessionEnvironment(sid, env, path.join(root, "bin"));

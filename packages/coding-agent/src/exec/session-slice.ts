@@ -6,17 +6,24 @@ import { getDaemonRuntimeRoot } from "@oh-my-pi/pi-utils";
 const shimSource = `#!/bin/sh
 # Only manager options count; a command's own --slice argument does not.
 needs_value=no
+explicit_slice=no
+scope=no
 for arg do
   if [ "$needs_value" = yes ]; then needs_value=no; continue; fi
   case "$arg" in
-    --slice|--slice=*) exec "$OMP_SYSTEMD_RUN_REAL" "$@" ;;
+    --slice) explicit_slice=yes; needs_value=yes ;;
+    --slice=*) explicit_slice=yes ;;
+    --scope) scope=yes ;;
     --) break ;;
     -H|-M|-C|-u|-p|-E|--host|--machine|--capsule|--unit|--property|--description|--service-type|--uid|--gid|--nice|--working-directory|--root-directory|--setenv|--expand-environment|--output|--json|--job-mode|--background|--path-property|--socket-property|--on-active|--on-boot|--on-startup|--on-unit-active|--on-unit-inactive|--on-calendar|--timer-property) needs_value=yes ;;
     -*) ;;
     *) break ;;
   esac
 done
-exec "$OMP_SYSTEMD_RUN_REAL" "--slice=$OMP_SESSION_SLICE" "$@"
+# Services do not inherit the caller environment; scopes already do.
+if [ "$scope" = no ]; then set -- "--setenv=OMP_SESSION_ID=$OMP_SESSION_ID" "$@"; fi
+if [ "$explicit_slice" = no ]; then set -- "--slice=$OMP_SESSION_SLICE" "$@"; fi
+exec "$OMP_SYSTEMD_RUN_REAL" "$@"
 `;
 
 const shims = new Map<string, Promise<void>>();

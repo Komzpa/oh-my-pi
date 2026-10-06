@@ -112,6 +112,7 @@ import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import { formatUsageResetWindow } from "@oh-my-pi/pi-tui/overlays/usage-display";
 import { loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
+import { SessionSliceLifecycle } from "../exec/session-slice-lifecycle";
 import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
@@ -1427,6 +1428,7 @@ export class AgentSession implements SettingsScope {
 
 	/** Live generation tok/s for the working row; fed by this session's own streamed deltas. */
 	readonly tokenRate: TokenRateMeter;
+	#sessionSlices = new Map<string, SessionSliceLifecycle>();
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -5025,6 +5027,22 @@ export class AgentSession implements SettingsScope {
 	 */
 	#syncAgentSessionId(sessionId?: string, notifyChange = true): void {
 		const currentSessionId = this.sessionManager.getSessionId();
+		if (!this.#isDisposed && !this.#sessionSlices.has(currentSessionId)) {
+			this.#sessionSlices.set(
+				currentSessionId,
+				new SessionSliceLifecycle({
+					sessionId: currentSessionId,
+					isIdleOrWaiting: () => !this.isStreaming || this.agent.state.pendingToolCalls.size > 0,
+					sendNotice: async content => {
+						if (this.#isDisposed || this.sessionManager.getSessionId() !== currentSessionId) return;
+						await this.sendCustomMessage(
+							{ customType: "session-owned-cpu", content, display: false, attribution: "agent" },
+							{ deliverAs: "nextTurn" },
+						);
+					},
+				}),
+			);
+		}
 		if (this.#observedSessionId === undefined) {
 			this.#observedSessionId = currentSessionId;
 		} else if (this.#observedSessionId !== currentSessionId) {
@@ -5340,6 +5358,7 @@ export class AgentSession implements SettingsScope {
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		releaseShellSessions(this.sessionManager.getSessionId());
 		const results = await Promise.allSettled([
+			...Array.from(this.#sessionSlices.values(), lifecycle => lifecycle.stop()),
 			this.#disposeOwnedAsyncJobs(),
 			this.#eval.disposeKernels(),
 			this.#releaseOwnedBrowserTabs(this.sessionManager.getSessionId()),
