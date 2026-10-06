@@ -130,6 +130,47 @@ function canRunAtOrBelow(spec: string, intended: ThinkingLevel): boolean {
 }
 
 describe("agent router", () => {
+	test("hard-fail seed demotes dots for coder but preserves the exact publish order", async () => {
+		const { dir, file } = tempStateFile();
+		const dots = "openrouter/dots-studio/dots-3-note-preview:free";
+		const options = { stateFile: file, modeFile: join(dir, "mode.json"), blacklistFile: join(dir, "blacklist.json"), shuffle: items => [...items] };
+		try {
+			const coder = await routeSubagentSpawn({ agent: "coder" }, ctx(), createRouterState(), options);
+			expect(coder.model[0]).not.toBe(dots);
+			expect(coder.model.at(-1)).toBe(dots);
+			const publish = await routeSubagentSpawn({ agent: "git-pr-owner" }, ctx(), createRouterState(), options);
+			expect(publish.model).toEqual([
+				...AGENT_POOLS["git-pr-owner"].pool.filter(spec => spec.endsWith(":free")),
+				...AGENT_POOLS["git-pr-owner"].pool.filter(spec => !spec.endsWith(":free")),
+				...AGENT_POOLS["git-pr-owner"].fallbacks,
+			]);
+			expect(publish.model[0]).toBe(dots);
+			for (const agent of ["qa-auditor", "gate-runner", "verification", "verifier", "verification-agent", "install", "installer", "install-agent", "task"]) {
+				const routed = await routeSubagentSpawn({ agent, patterns: [dots, "kimi-code/k3:high"] }, ctx(), createRouterState(), options);
+				expect(routed.model[0]).not.toBe(dots);
+				expect(routed.model.at(-1)).toBe(dots);
+			}
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
+
+	test("hard-fail user demotions reread per role without banning another free model", async () => {
+		const { dir, file } = tempStateFile();
+		const dots = "openrouter/dots-studio/dots-3-note-preview:free";
+		const other = "openrouter/test/healthy:free";
+		const base = ctx();
+		const healthy = { provider: "openrouter", id: "test/healthy:free" };
+		const context = ctx({ models: { list: () => [...base.models.list(), healthy], resolve: spec => spec === other ? healthy : base.models.resolve(spec) } });
+		const options = { stateFile: file, modeFile: join(dir, "mode.json"), blacklistFile: join(dir, "blacklist.json"), shuffle: items => [...items] };
+		try {
+			const event = { agent: "verification", patterns: [dots, other, "kimi-code/k3:high"] };
+			expect((await routeSubagentSpawn(event, context, createRouterState(), options)).model).toEqual([other, "kimi-code/k3:high", dots]);
+			writeFileSync(options.blacklistFile, JSON.stringify([{ model: other, roles: ["verification"], reason: "self-reported fabrication", evidence: "test incident" }]));
+			expect((await routeSubagentSpawn(event, context, createRouterState(), options)).model).toEqual(["kimi-code/k3:high", dots, other]);
+			expect((await routeSubagentSpawn({ ...event, agent: "install" }, context, createRouterState(), options)).model).toEqual([other, "kimi-code/k3:high", dots]);
+			writeFileSync(options.blacklistFile, JSON.stringify([other]));
+			expect((await routeSubagentSpawn(event, context, createRouterState(), options)).model).toEqual(["kimi-code/k3:high", dots]);
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
 	test("brrrr orders contain only strong entries for coder scout and reviewer", async () => {
 		const { dir, file } = tempStateFile();
 		const modeFile = join(dir, "mode.json");
@@ -228,7 +269,7 @@ describe("agent router", () => {
 		try {
 			const options = { stateFile: file, modeFile, blacklistFile };
 			const context = ctx();
-			expect((await routeSubagentSpawn({ agent: "coder" }, context, createRouterState(), options)).model[0]).toContain(":free");
+			expect((await routeSubagentSpawn({ agent: "coder" }, context, createRouterState(), options)).model[0]).not.toContain(":free");
 			writeFileSync(modeFile, JSON.stringify({ enabled: true }));
 			const first = await routeSubagentSpawn({ agent: "coder" }, context, createRouterState(), options);
 			expect(first.model[0]).not.toContain(":free");
@@ -274,9 +315,9 @@ describe("agent router", () => {
 			writeFileSync(modeFile, JSON.stringify({ enabled: false }));
 			const off = await routeSubagentSpawn({ agent: "coder" }, context, state, options);
 			expect(off.model).toEqual([
-				...AGENT_POOLS.coder.pool.filter(spec => spec.endsWith(":free")),
 				...AGENT_POOLS.coder.pool.filter(spec => !spec.endsWith(":free")),
 				...AGENT_POOLS.coder.fallbacks,
+				...AGENT_POOLS.coder.pool.filter(spec => spec.endsWith(":free")),
 			]);
 			expect(off.enforce).toBeUndefined();
 		} finally {
@@ -410,9 +451,9 @@ describe("agent router", () => {
 				shuffle: reversed,
 			});
 			expect(result?.model).toEqual([
-				...AGENT_POOLS["ui-coder"].pool.filter(spec => spec.endsWith(":free")),
 				...AGENT_POOLS["ui-coder"].pool.filter(spec => !spec.endsWith(":free")).reverse(),
 				...AGENT_POOLS["ui-coder"].fallbacks,
+				...AGENT_POOLS["ui-coder"].pool.filter(spec => spec.endsWith(":free")),
 			]);
 			expect(result?.model).toContain("codex-lb/gpt-6.1-sol:medium");
 			expect(result?.model).not.toContain("anthropic/claude-sonnet-5:medium");
@@ -438,7 +479,8 @@ describe("agent router", () => {
 					profileDir,
 				},
 			);
-			expect(before?.model[0]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
+			expect(before?.model[0]).not.toBe("openrouter/dots-studio/dots-3-note-preview:free");
+			expect(before?.model.at(-1)).toBe("openrouter/dots-studio/dots-3-note-preview:free");
 			writeFileSync(
 				profilePath,
 				profile.replace(/^model:.*$/m, "model: xiaomi/mimo-v2.6-pro, kimi-code/kimi-for-coding:high"),
@@ -1389,7 +1431,7 @@ describe("agent router", () => {
 		}
 	});
 
-	test("coder spawn with a fixed shuffle resolves to a free model", async () => {
+	test("coder spawn with a fixed shuffle demotes the hard-fail free model", async () => {
 		const { dir, file } = tempStateFile();
 		try {
 			const result = await routeSubagentSpawn(
@@ -1398,7 +1440,8 @@ describe("agent router", () => {
 				createRouterState(),
 				{ stateFile: file, shuffle: items => [...items] },
 			);
-			expect(result?.model[0]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
+			expect(result?.model[0]).toBe("kimi-code/kimi-for-coding:high");
+			expect(result?.model.at(-1)).toBe("openrouter/dots-studio/dots-3-note-preview:free");
 			expect(result?.model.filter(model => model.endsWith(":free"))).toEqual([
 				"openrouter/dots-studio/dots-3-note-preview:free",
 			]);
@@ -1494,8 +1537,8 @@ describe("agent router", () => {
 					at: "2026-09-24T18:00:02.000Z",
 					sessionId: "session-1",
 					agent: "coder",
-					chosen: AGENT_POOLS.coder.pool[0],
-					order: [...AGENT_POOLS.coder.pool, ...AGENT_POOLS.coder.fallbacks],
+					chosen: AGENT_POOLS.coder.pool[1],
+					order: [...AGENT_POOLS.coder.pool.slice(1), ...AGENT_POOLS.coder.fallbacks, AGENT_POOLS.coder.pool[0]],
 					status: "completed",
 					durationMs: 1234,
 					resolvedModel: "deepseek/deepseek-v4-pro:high",
@@ -1695,7 +1738,7 @@ describe("agent router", () => {
 				now: () => t0,
 				shuffle: xiaomiFirst,
 			});
-			expect(first?.model[0]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
+			expect(first?.model[0]).toBe("xiaomi/mimo-v2.6-pro");
 			const base = ctx();
 			const xiaomiModel = {
 				provider: "xiaomi",
@@ -1749,7 +1792,7 @@ describe("agent router", () => {
 				now: () => new Date(t0.getTime() + 7 * 60 * 60 * 1000),
 				shuffle: xiaomiFirst,
 			});
-			expect(afterTtl?.model[0]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
+			expect(afterTtl?.model[0]).toBe("xiaomi/mimo-v2.6-pro");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -2070,9 +2113,8 @@ describe("agent router", () => {
 				shuffle: reversed,
 				latestTodo: () => PHASES,
 			});
-		// Free pool members stay first; only non-free pool members are shuffled.
+		// Non-free pool members shuffle; the hard-fail free model stays last.
 		const TASK_ORDER = [
-			"openrouter/dots-studio/dots-3-note-preview:free",
 			"muse-code/muse-spark-1.3-contributor",
 			"xiaomi/mimo-v2.6-pro",
 			"kimi-code/k3:high",
@@ -2082,6 +2124,7 @@ describe("agent router", () => {
 			"codex-lb/gpt-6.1-sol:medium",
 			"codex-lb/Qwen3.8-27B",
 			"cerebras/qwen-3.8-27b",
+			"openrouter/dots-studio/dots-3-note-preview:free",
 		];
 
 		test("critical row moves the earliest priority-capable chain entry first when no free model is present", async () => {
@@ -2101,12 +2144,12 @@ describe("agent router", () => {
 			}
 		});
 
-		test("critical row keeps a free model first", async () => {
+		test("critical row does not restore a hard-fail free model to first", async () => {
 			const { dir, file } = tempStateFile();
 			try {
 				const result = await spawnTask("long-1", priorityCtx(), file);
 				expect(result?.model).toEqual(TASK_ORDER);
-				expect(result?.model?.[0]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
+				expect(result?.model?.[0]).toBe("muse-code/muse-spark-1.3-contributor");
 				expect(result?.note).not.toContain("critical row");
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
@@ -2137,7 +2180,7 @@ describe("agent router", () => {
 				);
 				const result = await spawnTask("long-1", context, file);
 				expect(result?.model).toEqual(withoutPriority);
-				expect(result?.model?.slice(-2)).toEqual(["codex-lb/Qwen3.8-27B", "cerebras/qwen-3.8-27b"]);
+				expect(result?.model?.slice(-3)).toEqual(["codex-lb/Qwen3.8-27B", "cerebras/qwen-3.8-27b", "openrouter/dots-studio/dots-3-note-preview:free"]);
 				expect(result?.note).not.toContain("critical row");
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
