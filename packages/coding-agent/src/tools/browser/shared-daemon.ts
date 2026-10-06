@@ -13,7 +13,7 @@ import { describeQuietly, stopQuietly, waitReady } from "../../launch/ensure";
 import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/daemon";
 import { throwIfAborted } from "../tool-errors";
 import { probeCdpStatus } from "./attach";
-import { resolveSharedBrowserLaunchSpec } from "./launch";
+import { resolveSharedBrowserLaunchSpec, type SharedBrowserLaunchSpec } from "./launch";
 
 /** Chrome prints this on stderr once the CDP listener is up; the broker's ready probe captures the line. */
 const READY_LOG_PATTERN = String.raw`DevTools listening on ws://\S+`;
@@ -53,6 +53,34 @@ async function probeEndpoint(wsEndpoint: string): Promise<boolean> {
 }
 
 /**
+ * Chrome registers its main process with the user systemd manager over the
+ * session bus and systemd then moves it into `app.slice/app-<name>-<pid>.scope`,
+ * away from the session slice that owns the automation browser. The session bus
+ * must therefore be absent from this child: an empty value is not enough (GDBus
+ * then falls back to `$XDG_RUNTIME_DIR/bus`), so the variables are removed.
+ * `env -u` execs in place, keeping Chrome's pid as the recorded daemon pid.
+ * Only this browser child loses the bus; other broker children keep it.
+ */
+function browserSpawnCommand(launch: SharedBrowserLaunchSpec): {
+	application: string;
+	args: string[];
+} {
+	if (process.platform !== "linux") return { application: launch.executablePath, args: launch.args };
+	return {
+		application: "/usr/bin/env",
+		args: [
+			"-u",
+			"DBUS_SESSION_BUS_ADDRESS",
+			"-u",
+			"DBUS_STARTER_ADDRESS",
+			"--",
+			launch.executablePath,
+			...launch.args,
+		],
+	};
+}
+
+/**
  * Ensure the project-shared automation Chromium is running and reachable,
  * launching it under the daemon broker when needed. Idempotent across
  * processes: losers of the start race adopt the winner's endpoint on the next
@@ -82,6 +110,7 @@ export async function ensureSharedBrowser(opts: {
 		viewport: opts.viewport,
 	});
 	if (!launch) return null;
+	const spawn = browserSpawnCommand(launch);
 	await fs.mkdir(userDataDir, { recursive: true });
 	for (let attempt = 0; attempt < ENSURE_ATTEMPTS; attempt++) {
 		throwIfAborted(opts.signal);
@@ -104,8 +133,8 @@ export async function ensureSharedBrowser(opts: {
 					op: "start",
 					spec: {
 						name,
-						application: launch.executablePath,
-						args: launch.args,
+						application: spawn.application,
+						args: spawn.args,
 						env: {},
 						cwd: client.projectDir,
 						pty: false,

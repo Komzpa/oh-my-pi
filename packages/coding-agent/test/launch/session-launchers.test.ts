@@ -145,7 +145,7 @@ describe.skipIf(!live)("session launcher consumer cgroups", () => {
 			});
 			const rows = [];
 			for (const [kind, pid] of [
-				["browser", snapshot.daemon.pid],
+				["browser-main", snapshot.daemon.pid],
 				["service", service.daemon.pid],
 				["python", Number(python.trim())],
 				["bun", Number(bun.trim())],
@@ -153,11 +153,14 @@ describe.skipIf(!live)("session launcher consumer cgroups", () => {
 				const cgroup = (await Bun.file(`/proc/${pid}/cgroup`).text()).trim();
 				rows.push({ kind, pid, cgroup });
 			}
+			const browserMain = rows[0];
+			expect(browserMain.kind).toBe("browser-main");
+			expect(browserMain.cgroup).toContain(`/${slice}/`);
 			const negative = (await Bun.file(`/proc/${unrelated.pid}/cgroup`).text()).trim();
 			console.log(
 				JSON.stringify({ fixtureId: id, slice, rows, negativeControl: { pid: unrelated.pid, cgroup: negative } }),
 			);
-			for (const row of rows) expect(row.cgroup).toContain(`/${slice}/`);
+			for (const row of rows.slice(1)) expect(row.cgroup).toContain(`/${slice}/`);
 			expect(negative).not.toContain(`/${slice}/`);
 		} finally {
 			await kernel?.shutdown();

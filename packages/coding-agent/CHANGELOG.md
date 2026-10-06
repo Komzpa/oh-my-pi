@@ -7,6 +7,7 @@
 - `/dump all` writes a zip to the temp directory with the main transcript, the LLM request JSON, and one file per subagent transcript (nested subagents included, killed ones marked aborted); the TUI copies the archive path to the clipboard. Plain `/dump` is unchanged ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ### Fixed
+- Shared automation Chromium stays in its transcript's Linux session slice: Chrome's own `org.freedesktop.systemd1.Manager.StartTransientUnit` call moves the main process into `app.slice/app-<name>-<pid>.scope` when the session bus is reachable, so the browser child alone loses `DBUS_SESSION_BUS_ADDRESS`/`DBUS_STARTER_ADDRESS` (an empty value is not enough — the client falls back to `$XDG_RUNTIME_DIR/bus`). Other daemon children keep their bus.
 
 - Lowered Linux tool subprocesses, including language servers, daemon jobs, runtime probes and installers, to nice 19 and best-effort I/O priority 7 when the priority utilities are available; omp's own interactive UI remains unchanged.
 - Local bash and PTY commands carry their transcript session id into native process boundaries. Tool PATH defaults `systemd-run` to the session slice while preserving explicit slices, including the sole deliberate keep marker `omp-keep.slice`.
