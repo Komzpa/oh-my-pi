@@ -8,12 +8,14 @@ import { sessionSliceName } from "@oh-my-pi/pi-natives";
 import { getDaemonRuntimeRoot } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
-import { SessionSliceLifecycle, reapOrphanSessionSlices } from "../src/exec/session-slice-lifecycle";
+import { SessionSliceLifecycle, formatHogUserLine, reapOrphanSessionSlices } from "../src/exec/session-slice-lifecycle";
 import { toolSessionEnvironment } from "../src/exec/session-slice";
 import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
 import { ISOLATION_OWNER_FILE, writeIsolationOwner } from "../src/task/isolation-ownership";
+import cpuNoticeTemplate from "../src/prompts/session/owned-cpu.md" with { type: "text" };
+import { prompt } from "@oh-my-pi/pi-utils";
 
 const live = process.platform === "linux" && process.env.OMP_SLICE_LIVE_TEST === "1";
 const prefix = `qa-slice-${process.pid}-`;
@@ -118,6 +120,64 @@ it.skipIf(!live)(
 	},
 	75_000,
 );
+it("hog poll emits one hidden notice plus one visible user line with shared debounce", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+	const sessionId = crypto.randomUUID();
+	const hidden: string[] = [];
+	const visible: string[] = [];
+	// One reading per poll call: the constructor's initial poll plus four driven windows.
+	const usage = [1_000_000, 16_000_000, 31_000_000, 46_000_000, 61_000_000];
+	let call = 0;
+	const lifecycle = new SessionSliceLifecycle(
+		{
+			sessionId,
+			isIdleOrWaiting: () => true,
+			sendNotice: async content => {
+				hidden.push(content);
+			},
+			sendUserLine: line => {
+				visible.push(line);
+			},
+		},
+		root,
+		{
+			groups: async (slice: string) => {
+				if (slice === "omp-keep.slice") return [];
+				const u = usage[Math.min(call++, usage.length - 1)] ?? 0;
+				return [{ name: lifecycle.slice, usage: u, pids: [4242] }];
+			},
+		},
+	);
+	try {
+		await lifecycle.ready;
+		const base = Date.now();
+		await lifecycle.poll(base + 15_000);
+		expect(hidden).toHaveLength(0);
+		expect(visible).toHaveLength(0);
+		await lifecycle.poll(base + 30_000);
+		expect(hidden).toHaveLength(1);
+		expect(visible).toHaveLength(1);
+		expect(visible[0]).toContain(lifecycle.slice);
+		expect(visible[0]).toMatch(/^sustained CPU in session slice: \S+ \d+% — agent notified$/);
+		expect(visible[0]).toBe(formatHogUserLine(lifecycle.slice, 1));
+		const expectedHidden = prompt.render(cpuNoticeTemplate, {
+			slice: lifecycle.slice,
+			top: lifecycle.slice,
+			pid: 4242,
+			seconds: (31_000_000 / 1_000_000).toFixed(1),
+			kept: "none",
+		});
+		expect(hidden[0]).toBe(expectedHidden);
+		// Same picture: no resend of either line.
+		await lifecycle.poll(base + 45_000);
+		await lifecycle.poll(base + 60_000);
+		expect(hidden).toHaveLength(1);
+		expect(visible).toHaveLength(1);
+	} finally {
+		await lifecycle.stop().catch(() => {});
+		await fs.rm(root, { recursive: true, force: true });
+	}
+});
 
 it.skipIf(!live)("startup reaps a proven dead owner but leaves live and unproven fixture slices alone", async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));

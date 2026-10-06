@@ -5040,6 +5040,10 @@ export class AgentSession implements SettingsScope {
 							{ deliverAs: "nextTurn" },
 						);
 					},
+					sendUserLine: line => {
+						if (this.#isDisposed || this.sessionManager.getSessionId() !== currentSessionId) return;
+						this.emitNotice("warning", line, "session-slice");
+					},
 				}),
 			);
 		}

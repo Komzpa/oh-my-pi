@@ -65,10 +65,15 @@ export async function reapOrphanSessionSlices(root = registryRoot): Promise<stri
 	return reaped;
 }
 
-interface CpuGroup {
+export interface CpuGroup {
 	name: string;
 	usage: number;
 	pids: number[];
+}
+
+/** One user-visible status line per hidden sustained-CPU notice. */
+export function formatHogUserLine(unit: string, cores: number): string {
+	return `sustained CPU in session slice: ${unit} ${Math.round(cores * 100)}% — agent notified`;
 }
 
 async function cpuGroups(directory: string, name: string): Promise<CpuGroup[]> {
@@ -95,6 +100,8 @@ export interface SessionSliceHost {
 	sessionId: string;
 	isIdleOrWaiting(): boolean;
 	sendNotice(content: string): Promise<void>;
+	/** User-visible status line; fires exactly as often as sendNotice. */
+	sendUserLine?(line: string): void | Promise<void>;
 }
 
 /** Owns the transcript boundary, not the model/provider cache identity. */
@@ -103,6 +110,7 @@ export class SessionSliceLifecycle {
 	readonly ready: Promise<void>;
 	#host: SessionSliceHost;
 	#root: string;
+	#groupsFn: (slice: string) => Promise<CpuGroup[]>;
 	#owned = false;
 	#stopped = false;
 	#stopCall?: Promise<void>;
@@ -115,9 +123,14 @@ export class SessionSliceLifecycle {
 	#cancelExit?: () => void;
 	#exitSync: () => void;
 
-	constructor(host: SessionSliceHost, root = registryRoot) {
+	constructor(
+		host: SessionSliceHost,
+		root = registryRoot,
+		deps: { groups?: (slice: string) => Promise<CpuGroup[]> } = {},
+	) {
 		this.#host = host;
 		this.#root = root;
+		this.#groupsFn = deps.groups ?? (slice => this.#groups(slice));
 		this.slice = sessionSliceName(host.sessionId);
 		this.#exitSync = () => {
 			if (!this.#owned) return;
@@ -190,7 +203,7 @@ export class SessionSliceLifecycle {
 		if (!this.#owned || this.#stopped || this.#polling) return;
 		this.#polling = true;
 		try {
-			const groups = await this.#groups(this.slice);
+			const groups = await this.#groupsFn(this.slice);
 			const total = groups[0];
 			if (!total) return;
 			const elapsed = (now - this.#previousAt) / 1_000;
@@ -223,6 +236,7 @@ export class SessionSliceLifecycle {
 					kept: kept.length ? kept.join(", ") : "none",
 				}),
 			);
+			await this.#host.sendUserLine?.(formatHogUserLine(top.name, cores));
 			this.#lastPicture = picture;
 		} finally {
 			this.#polling = false;
