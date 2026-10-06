@@ -6,3 +6,4 @@ Internal URIs work as paths for builtins/coreutils, redirects, globs.
 No `head`/`tail`/redirection; output trunc by default, full result at `artifact://<id>`.
 {{#if hasLaunch}}Long-lived services: unique name; ready requires name; no async/timeout; pty defaults true. ready needs log regex or port (both if given); host defaults 127.0.0.1, ready.timeout 30s.{{/if}}
 {{#if autoBackgroundEnabled}}Background results follow; NEVER poll; foreground wait unchanged.{{/if}}
+Local `systemd-run` defaults to the session slice; explicit `--slice` is preserved. Only `--slice=omp-keep.slice` designates deliberate long-lived work.

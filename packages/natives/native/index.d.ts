@@ -2716,6 +2716,9 @@ export interface SearchResult {
   error?: string
 }
 
+/** Stable systemd parent slice for a session's tool processes. */
+export declare function sessionSliceName(sessionId: string): string
+
 export declare function setHangulCompatJamoWidthOverride(value: number): void
 
 /** Options for executing a shell command via brush-core. */

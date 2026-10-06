@@ -9,6 +9,7 @@
 ### Fixed
 
 - Lowered Linux tool subprocesses, including language servers, daemon jobs, runtime probes and installers, to nice 19 and best-effort I/O priority 7 when the priority utilities are available; omp's own interactive UI remains unchanged.
+- Local bash and PTY commands carry their transcript session id into native process boundaries. Tool PATH defaults `systemd-run` to the session slice while preserving explicit slices, including the sole deliberate keep marker `omp-keep.slice`.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 - Task workers no longer inherit the user's desktop session: subagent bash and JavaScript/Python eval children drop desktop bindings and get a private `XDG_RUNTIME_DIR` instead of `/run/user/<uid>`. Native shell imports and snapshots cannot restore inherited bindings. Main-session commands and explicitly supplied fixture environments are unchanged.
 
