@@ -45,12 +45,14 @@ prevents another live process from stealing the same canonical slice.
 
 Every 15 seconds the lifecycle reads the session cgroup's `cpu.stat usage_usec`.
 Two consecutive windows at at least half a CPU core trigger one hidden
-`session-owned-cpu` next-turn message while idle or waiting on a tool. This
+`session-owned-cpu` next-turn message while idle or waiting on a tool, plus
+exactly one user-visible status line (`sustained CPU in session slice: <unit> <pct>% — agent notified`)
+through the session notice facility. This
 avoids short startup bursts while catching forgotten busy loops in about 30
 seconds. The top CPU cgroup/unit, PID and cumulative CPU seconds are included.
 The dedupe picture is top unit/PIDs, ordinary versus >=4-core load, and this
 session's kept members; growing CPU seconds alone do not resend the notice.
-No model turn or visible user notification is started by this sampler.
+No model turn is started by this sampler.
 
 Services launched through the shim receive `OMP_SESSION_ID` explicitly because
 the user manager does not inherit the tool environment. Scopes inherit it
