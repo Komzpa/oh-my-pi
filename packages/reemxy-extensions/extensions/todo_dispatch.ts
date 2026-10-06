@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { formatLocalClock, formatLocalTimestamp, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState } from "./deadlines";
+import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState } from "./deadlines";
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 import { derivePresence, type Presence } from "./goal_deadlines";
@@ -1852,6 +1852,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     });
   };
   const blockIdleWait = (ctx: ExtensionContext) => {
+    if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()))) return;
     if (pauseGate?.paused) return;
     // Grievance 547: a todo override naming idle-wait answers this refusal; let
     // the wait through for the same few-turn window instead of deadlocking.
@@ -2340,6 +2341,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
   };
   let lastTaskDispatchRefused = false;
   const blockWorkerWork = (event: { toolName: string; input?: unknown }, ctx: ExtensionContext) => {
+    if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()))) return;
     if (pauseGate?.paused || !isMain(ctx) || !pi.getActiveTools().includes("task")) return;
     const input = (event.input ?? {}) as { command?: unknown; path?: unknown };
     if (!isWorkerWork(event.toolName, event.input)) return;
@@ -2472,6 +2474,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     } catch {}
   };
   const replanRequirement = (ctx: ExtensionContext, decision: ReturnType<typeof currentDecision>, now: number) => {
+    if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()), now / 1_000)) return;
     if (!decision.key || !decision.forecast) return gateTrace(ctx, "no-plan");
     if (!decision.staffingSnapshotComplete) return gateTrace(ctx, "staffing-snapshot-incomplete");
     if (decision.goalPaused) return gateTrace(ctx, "goal-paused");
@@ -2929,6 +2932,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     // The skipped-call text omp shows the model says only "the pending action"; the reminder
     // reaches just the forced request. Keep the live demand in every request's context instead.
     const demandProvider = (ctx: ExtensionContext) => {
+      if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()))) return;
       if (gateSwitchedOff(ctx)) return gateTrace(ctx, "switched-off");
       dispatchGateBaseline = null;
       pendingIdleResumeOwner = null;
@@ -3182,7 +3186,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     // Grievance 590: a demand the todo override names stays suppressed for the same
     // few-turn window, so it must not escalate while the override is active.
     const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) => isDemandEscalated(id) && !isOverrideSuppressed(id));
-    if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused) {
+    if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused && !isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()))) {
       const remedyTask = (call: GateCall): boolean =>
         call.name === "task" && taskItems(call.arguments ?? {}).some((item) => item["agent"] === "retro-facilitator" || item["agent"] === "plan-doctor");
       const gates: ActiveGate[] = escalatedIds.map((id) => ({
@@ -3507,6 +3511,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     pendingSizingNoticeIds = [];
   };
   const planTick = async (ctx: ExtensionContext) => {
+    if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()))) return;
     if (singleWriterLane || pauseGate?.paused || !isMain(ctx) || !pi.getActiveTools().includes("task") || ctx.hasPendingMessages()) return;
     await refreshLiveWorkerModels(ctx);
     const check = planCheck(ctx);
@@ -3581,6 +3586,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     await refreshLiveWorkerModels(ctx);
     if (singleWriterLane) return;
     const now = Date.now();
+    if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()), now / 1_000)) return;
     const decision = currentDecision(ctx, now);
     const chief = isMain(ctx) && pi.getActiveTools().includes("task");
     if (!decision.prompt && !chief) return;
@@ -3614,6 +3620,7 @@ export default async function todoDispatch(pi: ExtensionAPI): Promise<void> {
     clearIdleTimer();
     if (
       singleWriterLane ||
+      isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch())) ||
       !pauseGate ||
       pauseGate.paused ||
       !decision.key ||

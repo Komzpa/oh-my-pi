@@ -27,6 +27,8 @@ export interface DeadlineState {
 	initialQuota?: QuotaSnapshot;
 	/** Immutable original final due time in Unix seconds; absent only on legacy entries. */
 	baselineDeadlineAt?: number;
+	/** User authority survives goal focus changes and compaction; due time is baselineDeadlineAt. */
+	userConstraint?: { messageId: string; quote: string; recordedAt: number; statusSentAt?: number };
 }
 
 export interface QuotaSnapshot {
@@ -201,9 +203,16 @@ export function readGoalDeadline(
 	cwd?: string,
 	options: { includePaused?: boolean } = {},
 ): { goalId: string; deadlineAt: number; paused?: boolean } | undefined {
+	const state = rehydrateDeadlineState(entries);
+	if (
+		state?.active &&
+		state.userConstraint &&
+		state.baselineDeadlineAt !== undefined &&
+		isUnixSeconds(state.baselineDeadlineAt)
+	)
+		return { goalId: state.goalId, deadlineAt: state.baselineDeadlineAt * 1000 };
 	const goal = resolveLifecycleGoal(entries, () => readGoalPool(cwd));
 	if (!goal || (goal.status !== "active" && !(options.includePaused && goal.status === "paused"))) return undefined;
-	const state = rehydrateDeadlineState(entries);
 	if (!state?.active || state.goalId !== goal.id || state.stages.length === 0) return undefined;
 	if (state.stages.every(stage => stage.deliveredAt !== undefined)) return undefined;
 	if (
