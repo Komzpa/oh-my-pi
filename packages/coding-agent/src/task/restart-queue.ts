@@ -16,6 +16,25 @@ const MAX_RESTART_REQUEST_ID_LENGTH = 128;
 const MAX_RESTART_REASON_LENGTH = 1_024;
 const MAX_RESTART_ERROR_LENGTH = 4_096;
 const DEFAULT_RESTART_WORKER_GRACE_MS = 5_000;
+const RESTART_QUEUED_NOTICE_TYPE = "restart-queued";
+
+/**
+ * Canonical model-visible text for every restart-queue notice. Active states carry the
+ * drain restriction; terminal states supersede it so the model resumes normal work.
+ * requestId and state live in the visible text because `details` never reach the model.
+ */
+function restartNoticeContent(record: Pick<RestartRequestRecord, "requestId" | "state"> & { error?: string }): string {
+	switch (record.state) {
+		case "completed":
+			return `Restart ${record.requestId} completed; the earlier restriction no longer applies; resume normal work.`;
+		case "cancelled":
+			return `Restart ${record.requestId} was cancelled; the earlier restriction no longer applies; resume normal work.`;
+		case "failed":
+			return `Restart ${record.requestId} failed; the earlier restriction no longer applies; resume normal work.${record.error ? ` Error: ${record.error}` : ""}`;
+		default:
+			return `Restart ${record.requestId} is ${record.state}. ${restartQueuedPrompt.trim()}`;
+	}
+}
 
 export interface RestartControlIdentity {
 	instanceId: string;
@@ -481,6 +500,22 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			if (restartCompleted && record?.rootWasRunning) {
 				await sendRootContinuationOnce(this.#session, record.requestId);
 			}
+			if (record && (record.state === "completed" || record.state === "cancelled")) {
+				const notices = this.#restartNoticesFor(record.requestId);
+				if (notices.length > 0 && !notices.some(notice => notice.terminal)) {
+					await this.#session.sendCustomMessage(
+						{
+							customType: RESTART_QUEUED_NOTICE_TYPE,
+							content: restartNoticeContent(record),
+							display: true,
+							attribution: "agent",
+							details: { requestId: record.requestId, state: record.state },
+						},
+						{ deliverAs: "nextTurn", triggerTurn: false },
+					);
+					await this.#session.sessionManager.flush();
+				}
+			}
 		});
 		return this.#restorePromise;
 	}
@@ -643,8 +678,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 
 	#notifySession(run: ActiveRestartDrain, session: AgentSession): void {
 		const bucket = run.notifiedSessions.get(session) ?? new Set<string>();
-		const noticeKey =
-			run.record.state === "cancelled" ? `${run.record.requestId}:cancelled` : `${run.record.requestId}:active`;
+		const noticeKey = `${run.record.requestId}:${run.record.state}`;
 		if (bucket.has(noticeKey)) return;
 		bucket.add(noticeKey);
 		run.notifiedSessions.set(session, bucket);
@@ -653,8 +687,8 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			notification = session
 				.sendCustomMessage(
 					{
-						customType: "restart-queued",
-						content: restartQueuedPrompt.trim(),
+						customType: RESTART_QUEUED_NOTICE_TYPE,
+						content: restartNoticeContent(run.record),
 						display: true,
 						attribution: "agent",
 						details: { requestId: run.record.requestId, state: run.record.state },
@@ -721,6 +755,20 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			run.callbackStarted = true;
 			await this.#restart();
 			if (!this.#disposed) run.record = await this.#transition(run, "completed");
+			if (!this.#disposed && run.record.state === "completed") {
+				this.#notifySession(run, this.#session);
+				for (const child of run.children.values()) this.#notifySession(run, child);
+				const terminalNotices = run.notifications.splice(0);
+				try {
+					await Promise.all(terminalNotices);
+				} catch (error) {
+					this.#notice(
+						"error",
+						`Restart request ${run.record.requestId} completed, but its completion notice could not be delivered. ${this.#errorText(error)}`,
+					);
+				}
+				await this.#flushSessions(run);
+			}
 		} catch (error) {
 			if (!run.cancelled && !this.#disposed) await this.#recordDrainFailure(run, error);
 		} finally {
@@ -902,6 +950,26 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			if (isActiveState(stored.record.state) && (!active || stored.entryIndex > active.entryIndex)) active = stored;
 		}
 		return { byId, latest, active };
+	}
+
+	#restartNoticesFor(requestId: string): Array<{ terminal: boolean }> {
+		const notices: Array<{ terminal: boolean }> = [];
+		for (const entry of this.#session.sessionManager.getBranch()) {
+			if (entry.type !== "custom_message" || entry.customType !== RESTART_QUEUED_NOTICE_TYPE) continue;
+			const details: unknown = entry.details;
+			const detailedId = isObject(details) && typeof details.requestId === "string" ? details.requestId : undefined;
+			const detailedState = isObject(details) && typeof details.state === "string" ? details.state : undefined;
+			const content = typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content ?? "");
+			if (detailedId !== requestId && !content.includes(requestId)) continue;
+			notices.push({
+				terminal:
+					detailedState === "completed" ||
+					detailedState === "cancelled" ||
+					detailedState === "failed" ||
+					/no longer applies|resume normal work/i.test(content),
+			});
+		}
+		return notices;
 	}
 
 	#serialize<T>(work: () => Promise<T>): Promise<T> {
