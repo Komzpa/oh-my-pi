@@ -602,4 +602,190 @@ describe("restart queue controller", () => {
 		expect(controller.snapshot().request?.state).toBe("completed");
 		controller.dispose();
 	});
+	function mirrorCustomToBranch(manager: SessionManager) {
+		return (message: { details?: { requestId?: string; state?: string } }) => {
+			const payload = message as unknown as {
+				customType?: string;
+				content?: string;
+				display?: boolean;
+				details?: unknown;
+			};
+			manager.appendCustomMessageEntry(payload.customType, payload.content, payload.display, payload.details);
+		};
+	}
+
+	function restartQueuedBranchTexts(manager: SessionManager): string[] {
+		return manager
+			.getBranch()
+			.filter(entry => entry.type === "custom_message" && entry.customType === "restart-queued")
+			.map(entry => String(entry.type === "custom_message" ? (entry.content ?? "") : ""));
+	}
+
+	function customMessageTexts(harness: Pick<SessionHarness, "customMessages">, requestId: string): string[] {
+		return harness.customMessages
+			.map(message => message as unknown as { details?: { requestId?: string }; content?: unknown })
+			.filter(message => message.details?.requestId === requestId)
+			.map(message =>
+				typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? ""),
+			);
+	}
+
+	it("completed restart supersedes queued notice in context", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const requestId = "supersede-me";
+		const { promise: terminalSeen, resolve: onTerminal } = Promise.withResolvers<void>();
+		const harness = makeSession(manager, {
+			onCustomMessage: message => {
+				mirrorCustomToBranch(manager)(message);
+				const payload = message as unknown as { details?: { requestId?: string; state?: string } };
+				if (payload.details?.requestId === requestId && payload.details?.state === "completed") onTerminal();
+			},
+		});
+		const identity = identityFor(manager, "notice-instance", 1);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+
+		await controller.handle({ identity, op: "request", requestId, reason: "test supersede" });
+		// Await the terminal notice event itself: no wall-clock wait, the drain resolves it.
+		await terminalSeen;
+		manager.appendMessage({ role: "user", content: "next work after restart", timestamp: Date.now() });
+		const texts = restartQueuedBranchTexts(manager);
+
+		expect(texts.length).toBeGreaterThanOrEqual(2);
+		expect(texts[0]).toContain(requestId);
+		expect(texts[0]).toMatch(/do not start another model turn/i);
+		const last = texts.at(-1) ?? "";
+		expect(last).toContain(requestId);
+		expect(last).toMatch(/complet/i);
+		expect(last).toMatch(/no longer applies|resume normal work/i);
+		expect(last).not.toMatch(/do not start another model turn/i);
+		controller.dispose();
+	});
+
+	it("a request still queued keeps the restriction", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const { promise: quiescence } = Promise.withResolvers<void>();
+		const harness = makeSession(manager, { quiescence });
+		const identity = identityFor(manager, "queued-instance", 1);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+
+		// The queued notice is pushed synchronously during handle(), before it resolves.
+		await controller.handle({ identity, op: "request", requestId: "still-queued", reason: "stall" });
+		const texts = customMessageTexts(harness, "still-queued");
+		expect(texts.length).toBeGreaterThanOrEqual(1);
+		expect(texts[0]).toContain("still-queued");
+		expect(texts[0]).toMatch(/do not start another model turn/i);
+		controller.dispose();
+	});
+
+	it("cancelled restart clears the restriction", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const { promise: quiescence } = Promise.withResolvers<void>();
+		const harness = makeSession(manager, { quiescence });
+		const identity = identityFor(manager, "cancel-instance", 1);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+
+		await controller.handle({ identity, op: "request", requestId: "cancel-clear", reason: "stall" });
+		// Cancel awaits notice delivery before resolving, so the notice is captured here.
+		await controller.handle({ identity, op: "cancel", requestId: "cancel-clear" });
+		const texts = customMessageTexts(harness, "cancel-clear");
+		const last = texts.at(-1) ?? "";
+		expect(last).toContain("cancel-clear");
+		expect(last).toMatch(/cancel/i);
+		expect(last).toMatch(/no longer applies|resume normal work/i);
+		expect(last).not.toMatch(/do not start another model turn/i);
+		controller.dispose();
+	});
+
+	it("a different requestId completion does not clear a queued request", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const { promise: terminalSeen, resolve: onTerminal } = Promise.withResolvers<void>();
+		const harness = makeSession(manager, {
+			onCustomMessage: message => {
+				const payload = message as unknown as { details?: { requestId?: string; state?: string } };
+				if (payload.details?.requestId === "first-done" && payload.details?.state === "completed") onTerminal();
+			},
+		});
+		const identity = identityFor(manager, "scoped-instance", 1);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+
+		await controller.handle({ identity, op: "request", requestId: "first-done", reason: "fast" });
+		await terminalSeen;
+		const { promise: quiescence } = Promise.withResolvers<void>();
+		const stalled = makeSession(manager, { quiescence });
+		const second = createRestartQueueController({
+			session: stalled.session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+		await second.handle({ identity, op: "request", requestId: "other-request", reason: "stall" });
+		for (const text of customMessageTexts(harness, "first-done")) {
+			expect(text).not.toContain("other-request");
+		}
+		const otherTexts = customMessageTexts(stalled, "other-request");
+		expect(otherTexts.length).toBeGreaterThanOrEqual(1);
+		expect(otherTexts.at(-1) ?? "").toMatch(/do not start another model turn/i);
+		controller.dispose();
+		second.dispose();
+	});
+
+	it("restore after completion emits the completed notice once", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const oldIdentity = identityFor(manager, "old-instance", 1);
+		const requestId = "restored-done";
+		const now = Date.now();
+		await appendQueueRecord(manager, oldIdentity, {
+			version: 1,
+			requestId,
+			sessionId: oldIdentity.sessionId,
+			state: "completed",
+			requestedAt: now,
+			updatedAt: now,
+			rootWasRunning: false,
+		});
+		manager.appendCustomMessageEntry(
+			"restart-queued",
+			`Restart ${requestId} is queued. Do not start another model turn until it completes.`,
+			true,
+			{ requestId, state: "queued" },
+		);
+		await manager.flush();
+		const harness = makeSession(manager);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identityFor(manager, "new-instance", 2),
+			restart: async () => {},
+		});
+
+		await controller.restore();
+		await controller.restore();
+
+		const texts = customMessageTexts(harness, requestId);
+		expect(texts).toHaveLength(1);
+		expect(texts[0]).toContain(requestId);
+		expect(texts[0]).toMatch(/complet/i);
+		expect(texts[0]).toMatch(/no longer applies|resume normal work/i);
+		expect(texts[0]).not.toMatch(/do not start another model turn/i);
+		controller.dispose();
+	});
 });
