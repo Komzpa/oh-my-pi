@@ -170,6 +170,29 @@ describe("worktree isolation helpers", () => {
 		expect(baseline.root.untrackedPatch).toContain(target);
 	});
 
+	// Regression: isolated:true died with "git open: Alternates form a cycle"
+	// because captureBaseline opened every nested clone under the cwd and one
+	// broken nested repo aborted the whole baseline. A nested repo that fails
+	// to open is now skipped (with a log line) instead of aborting isolation.
+	it("skips a nested repo that fails to open instead of aborting the baseline", async () => {
+		const repo = await createGitRepo();
+		await runGit(repo, ["config", "user.email", "test@example.com"]);
+		await runGit(repo, ["config", "user.name", "Test User"]);
+		await fs.writeFile(path.join(repo, "README.md"), "hi\n");
+		await runGit(repo, ["add", "README.md"]);
+		await runGit(repo, ["commit", "-q", "-m", "init"]);
+		const broken = path.join(repo, "nested");
+		await runGit(repo, ["init", "-q", "nested"]);
+		// Corrupt the nested clone so it fails at `git open` (same family as
+		// the reported "git open: Alternates form a cycle"): discovery still
+		// lists it via its `.git` dir, but capture must skip it, not abort.
+		await fs.rm(path.join(broken, ".git", "objects"), { recursive: true, force: true });
+
+		const baseline = await captureBaseline(repo);
+		expect(baseline.root.headCommit).not.toBe("");
+		expect(baseline.nested).toEqual([]);
+	});
+
 	// Real git worktree/stash/merge I/O is the contract under test and cannot be
 	// faked. One initialized fixture repo is built once in `beforeAll` (whose time
 	// is excluded from per-test body time) and shared: the costly `git init`,

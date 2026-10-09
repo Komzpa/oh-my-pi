@@ -123,6 +123,20 @@ const mockOpenRouterModels: Model<Api>[] = [
 	}),
 ];
 
+const inklingFree = buildModel({
+	id: "thinkingmachines/inkling:free",
+	name: "Inkling Free",
+	api: "openai-completions",
+	provider: "openrouter",
+	baseUrl: "https://openrouter.ai/api/v1",
+	reasoning: true,
+	thinking: { mode: "effort", efforts: [Effort.Low, Effort.High] },
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 1000000,
+	maxTokens: 8192,
+});
+
 const mockMaxSuffixModels: Model<Api>[] = [
 	buildModel({
 		id: "coding-router",
@@ -662,6 +676,24 @@ describe("parseModelPattern", () => {
 			expect(result.warning).toBeUndefined();
 		});
 
+		test("literal Inkling free route remains part of the model id", () => {
+			const result = parseModelPattern("openrouter/thinkingmachines/inkling:free", [inklingFree]);
+			expect(result.model?.provider).toBe("openrouter");
+			expect(result.model?.id).toBe("thinkingmachines/inkling:free");
+			expect(result.thinkingLevel).toBeUndefined();
+			expect(result.explicitThinkingLevel).toBe(false);
+			expect(result.warning).toBeUndefined();
+		});
+
+		test("Inkling free route accepts an explicit high effort after the literal id", () => {
+			const result = parseModelPattern("openrouter/thinkingmachines/inkling:free:high", [inklingFree]);
+			expect(result.model?.provider).toBe("openrouter");
+			expect(result.model?.id).toBe("thinkingmachines/inkling:free");
+			expect(result.thinkingLevel).toBe(Effort.High);
+			expect(result.explicitThinkingLevel).toBe(true);
+			expect(result.warning).toBeUndefined();
+		});
+
 		test("gpt-4o:extended matches the extended model with undefined thinking level", () => {
 			const result = parseModelPattern("openai/gpt-4o:extended", allModels);
 			expect(result.model?.id).toBe("openai/gpt-4o:extended");
@@ -1147,7 +1179,7 @@ describe("resolveAgentModelPatterns", () => {
 				agentModel: ["@definition"],
 				settings,
 			}),
-		).toEqual({ patterns: ["openai/gpt-4o"], role: "override" });
+		).toEqual({ patterns: ["openai/gpt-4o"], role: "override", inheritsParentModel: false });
 
 		expect(
 			resolveAgentModelSelection({
@@ -1156,7 +1188,7 @@ describe("resolveAgentModelPatterns", () => {
 				agentModel: ["@definition"],
 				settings,
 			}),
-		).toEqual({ patterns: ["anthropic/claude-sonnet-4-5"], role: "definition" });
+		).toEqual({ patterns: ["anthropic/claude-sonnet-4-5"], role: "definition", inheritsParentModel: false });
 
 		// An explicit selector carries no role identity, so the child must not
 		// capture the routing of a role that happens to name the same model.
@@ -1167,7 +1199,7 @@ describe("resolveAgentModelPatterns", () => {
 				agentModel: ["@definition"],
 				settings,
 			}),
-		).toEqual({ patterns: ["openai/gpt-4o"], role: undefined });
+		).toEqual({ patterns: ["openai/gpt-4o"], role: undefined, inheritsParentModel: false });
 	});
 
 	test("falls back to the active session model when @task is unset", () => {

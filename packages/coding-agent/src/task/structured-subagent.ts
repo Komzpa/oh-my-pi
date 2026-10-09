@@ -9,6 +9,7 @@ import * as os from "node:os";
 import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
+import type { Effort } from "@oh-my-pi/pi-ai";
 import { resolveAgentModelSelection, resolveConfiguredModelPatterns } from "../config/model-resolver";
 import {
 	type CompactionThresholdPair,
@@ -31,7 +32,7 @@ import { isIrcEnabled } from "../irc/messaging";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
-import { type ExecutorOptions, runSubprocess } from "./executor";
+import { type ExecutorOptions, runSubagentFollowUpTurn, runSubprocess } from "./executor";
 import {
 	applyEligibleNestedPatches,
 	type IsolationContext,
@@ -113,6 +114,8 @@ export interface StructuredSubagentRequest {
 	effort?: TaskEffort;
 	/** Caller's description of how open-ended the work is; steers the child's `auto` thinking classification. */
 	solutionSpace?: string;
+	/** Exact internal rung effort; wins over coarse effort and model selector defaults. */
+	thinkingLevel?: Effort;
 	identity?: StructuredSubagentIdentity;
 	index?: number;
 	parentToolCallId?: string;
@@ -161,6 +164,8 @@ export interface EffectiveSubagentPolicy {
 	modelRoute?: string;
 	/** Exact-name `task.agentServiceTierOverrides` entry for this agent, applied after model resolution. */
 	serviceTierOverride?: ServiceTierInheritSettingValue;
+	requiredModelServiceTiers?: Record<string, "priority">;
+	claudeEffortCap?: boolean;
 	/** Exact-name entry normalized to both child compaction threshold fields. */
 	compactionThresholdOverride?: CompactionThresholdPair;
 	parentActiveModelPattern?: string;
@@ -357,7 +362,11 @@ export async function resolveEffectiveSubagentPolicy(
 	// Role identity and patterns come from one call so they cannot be derived
 	// from different sources: the expansion below discards the alias, and the
 	// child's inherited retry-fallback chain is keyed off the role.
-	const { patterns: modelOverride, role: modelRole } = resolveAgentModelSelection(modelResolution);
+	const {
+		patterns: modelOverride,
+		role: modelRole,
+		inheritsParentModel,
+	} = resolveAgentModelSelection(modelResolution);
 	const isolationEnabled = cfgTaskIsolationEnabled.get(request.session.settings);
 	const isIsolated = request.isolation?.requested === true;
 	if (isIsolated && !isolationEnabled) {
@@ -375,7 +384,7 @@ export async function resolveEffectiveSubagentPolicy(
 		modelRole,
 		serviceTierOverride,
 		compactionThresholdOverride,
-		parentActiveModelPattern,
+		parentActiveModelPattern: inheritsParentModel ? parentActiveModelPattern : undefined,
 		schema,
 		planMode,
 		isIsolated,
@@ -418,16 +427,35 @@ async function applySpawnHook(
 			modelRole: policy.modelRole,
 			patterns: policy.modelOverride ?? [],
 			spawnKey,
+			isolated: request.isolation?.requested === true,
+			assignment: request.assignment,
 		},
 		request.signal,
 	);
 	if (spawnResult?.block) {
 		throw new StructuredSubagentError("preflight", spawnResult.reason ?? "Subagent spawn blocked by extension.");
 	}
-	if (spawnResult?.model === undefined) return policy;
+	if (spawnResult?.model === undefined) {
+		if (spawnResult?.enforce)
+			throw new StructuredSubagentError("preflight", "Mandatory routing has no available model.");
+		return policy;
+	}
+	// Ordinary routing preserves explicit rework selectors; mandatory session policy does not.
+	if (request.model !== undefined && !spawnResult.enforce) return policy;
 	const replacement = resolveConfiguredModelPatterns(spawnResult.model, request.session.settings);
-	if (replacement.length === 0) return policy;
-	return { ...policy, modelOverride: replacement, modelRoute: spawnResult.note };
+	if (replacement.length === 0) {
+		if (spawnResult.enforce)
+			throw new StructuredSubagentError("preflight", "Mandatory routing has no available model.");
+		return policy;
+	}
+	return {
+		...policy,
+		modelOverride: replacement,
+		parentActiveModelPattern: undefined,
+		modelRoute: spawnResult.note,
+		requiredModelServiceTiers: spawnResult.requiredModelServiceTiers,
+		claudeEffortCap: spawnResult.claudeEffortCap,
+	};
 }
 
 /** Reserve a session-global agent id only after preflight has succeeded. */
@@ -509,11 +537,14 @@ function buildExecutorOptions(
 		modelRole: policy.modelRole,
 		modelRoute: policy.modelRoute,
 		serviceTierOverride: policy.serviceTierOverride,
+		requiredModelServiceTiers: policy.requiredModelServiceTiers,
+		claudeEffortCap: policy.claudeEffortCap,
 		compactionThresholdOverride: policy.compactionThresholdOverride,
 		parentActiveModelPattern: policy.parentActiveModelPattern,
 		thinkingLevel: policy.effectiveAgent.thinkingLevel,
 		effort: request.effort,
 		solutionSpace: request.solutionSpace?.trim() || undefined,
+		exactThinkingLevel: request.thinkingLevel,
 		...(policy.schema.source === "none"
 			? {}
 			: {
@@ -860,6 +891,52 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			request.onArtifactsRetained(cleanupArtifacts);
 		}
 	}
+}
+
+/**
+ * Continue an existing task worker at an effort-only rung. No model selection,
+ * spawn hook, artifact lease, or id allocation runs here: the lifecycle owner
+ * supplies the original live session (or revives its same persisted transcript).
+ * The original invocation must keep the worker alive and retain its artifacts;
+ * ownership of retained temporary-artifact cleanup remains with its caller.
+ */
+export async function resumeStructuredSubagent(
+	request: Pick<
+		StructuredSubagentRequest,
+		| "session"
+		| "assignment"
+		| "index"
+		| "parentToolCallId"
+		| "maxRuntimeMs"
+		| "signal"
+		| "onProgress"
+		| "workPoolYieldItems"
+	>,
+	previous: StructuredSubagentResult,
+	thinkingLevel: Effort,
+): Promise<StructuredSubagentResult> {
+	const { policy } = previous;
+	const result = await runSubagentFollowUpTurn({
+		id: previous.result.id,
+		agent: policy.effectiveAgent,
+		message: renderSubagentPrompt(request.assignment),
+		thinkingLevel,
+		index: request.index,
+		modelRole: policy.modelRole,
+		outputSchema: policy.schema.schema,
+		outputSchemaMode: policy.schema.mode,
+		outputSchemaSource: policy.schema.source,
+		parentToolCallId: request.parentToolCallId,
+		artifactsDir: previous.artifactsDir,
+		maxRuntimeMs: request.maxRuntimeMs,
+		signal: request.signal,
+		onProgress: request.onProgress,
+		workPoolYieldItems: request.workPoolYieldItems,
+		eventBus: request.session.eventBus,
+		subagentEventBus: request.session.subagentEventBus,
+	});
+	attachStructuredOutputMetadata(result, policy.schema);
+	return { ...previous, result, mergeSummary: "", changesApplied: null };
 }
 
 /** Build the recovery suffix used by adapters after an isolated failure. */

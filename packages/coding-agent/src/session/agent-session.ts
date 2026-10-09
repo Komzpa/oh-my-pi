@@ -116,6 +116,8 @@ import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
+// Aliased: PR #10 imports the same symbol in this file, and both sit in one live build.
+import { AgentRegistry as SubagentRegistry } from "../registry/agent-registry";
 import {
 	DEFAULT_PREWALK_TARGET,
 	getModelMatchPreferences,
@@ -161,6 +163,7 @@ import type { Skill, SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand, loadSlashCommands } from "../extensibility/slash-commands";
 import { normalizeToolEventInput, resolveToolEventInput } from "../extensibility/tool-event-input";
 import { GoalRuntime } from "../goals/runtime";
+import { sendAgentMessageFromSession } from "../irc/messaging";
 import type { GoalModeState } from "../goals/state";
 import type { HindsightSessionState } from "../hindsight/state";
 import { InternalUrlRouter, type LocalProtocolOptions } from "../internal-urls";
@@ -235,6 +238,7 @@ import {
 } from "../tools/resolve";
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";
 import { supportsExternalThinking } from "../tools/think";
+import { getTodoArchiveSummaryFromEntries } from "../tools/todo";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
@@ -464,7 +468,7 @@ import {
 	cfgThemeDark,
 	cfgThemeLight,
 } from "../modes/settings";
-import { cfgTaskBatch, cfgTaskDisabledAgents } from "../task/settings";
+import { cfgTaskBatch, cfgTaskDisabledAgents, cfgTaskMaxConcurrency } from "../task/settings";
 import {
 	cfgBranchSummaryReserveTokens,
 	cfgExtendedContext,
@@ -841,6 +845,7 @@ export class AgentSession implements SettingsScope {
 	 * across a `/new` is dropped regardless of job-id reuse.
 	 */
 	#asyncDeliveryEpoch = 0;
+	#asyncReceiptDeliveries = new Map<string, Promise<void>>();
 
 	readonly #irc: IrcBridge;
 	#ircWakeTurnObserver:
@@ -848,6 +853,7 @@ export class AgentSession implements SettingsScope {
 		| undefined;
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
+	#agentRegistry: SubagentRegistry;
 	#agentKind: "main" | "sub" = "main";
 	#scoutAllowedBySpawnPolicy = true;
 	#providerSessionId: string | undefined;
@@ -1828,6 +1834,7 @@ export class AgentSession implements SettingsScope {
 			isStreaming: () => this.isStreaming,
 			queuedMessageCount: () => this.queuedMessageCount,
 			planModeEnabled: () => this.#planModeState?.enabled === true,
+			planningRepairMessage: () => this.#todo.planningRepairMessage,
 			model: () => this.model,
 			setCodeModeNamespacesInfo: info => {
 				this.#codeModeState.namespacesInfo = info;
@@ -1917,6 +1924,7 @@ export class AgentSession implements SettingsScope {
 		this.#streamingEditGuard = new StreamingEditGuard(streamGuardsHost);
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
+		this.#agentRegistry = config.agentRegistry ?? SubagentRegistry.global();
 		this.#agentKind = config.agentKind ?? "main";
 		// A subagent's streamed text reaches no output sink until the run settles
 		// (the parent sees only the yield), so a failed turn's partial prose is
@@ -2419,12 +2427,11 @@ export class AgentSession implements SettingsScope {
 	 * The per-turn tool-choice directive for the agent loop's `getToolChoice`. Priority:
 	 *   1. a HARD forced choice from the queue (genuine forces: user-force, eager-todo, …) —
 	 *      consuming (advances the queue generator);
-	 *   2. else, when a non-forcing preview is pending, a {@link SoftToolRequirement} — a
-	 *      PEEK (advances/pops nothing), so the agent-loop injects the reminder once per head
-	 *      and escalates to a forced `write` only if the model declines to
-	 *      resolve via `xd://resolve` or `xd://reject`. A compliant turn
-	 *      pays ZERO tool_choice change (no prompt-cache messages-cache invalidation);
-	 *   3. else undefined.
+	 *   2. else, a pending preview's non-forcing {@link SoftToolRequirement}, which keeps
+	 *      the existing `write` resolution priority and does not consume the queue;
+	 *   3. else, a fresh extension-provided native soft requirement. If its required tool is
+	 *      not active, fail closed before the model request rather than dropping the gate;
+	 *   4. else undefined.
 	 */
 	nextToolChoiceDirective(): ToolChoiceDirective | undefined {
 		const hard = this.#nextHardToolChoice();
@@ -2442,7 +2449,14 @@ export class AgentSession implements SettingsScope {
 				reminder: [buildResolveReminderMessage(head.sourceToolName)],
 			};
 		}
-		return undefined;
+		const requirement = this.#extensionRunner?.getSoftToolRequirement();
+		if (requirement === undefined) return undefined;
+		if (!this.agent.state.tools.some(tool => tool.name === requirement.toolName)) {
+			throw new Error(
+				`Required ${requirement.toolName} tool unavailable: extension soft tool requirement "${requirement.id}" cannot be enforced.`,
+			);
+		}
+		return requirement;
 	}
 
 	/** Peek the head non-forcing pending preview invoker, for the preview-resolution dispatch. */
@@ -2685,6 +2699,7 @@ export class AgentSession implements SettingsScope {
 		// generation, then drop any async-result follow-up already queued, so a
 		// prior session's background result cannot inject into the next transcript.
 		this.#asyncDeliveryEpoch += 1;
+		this.#asyncReceiptDeliveries.clear();
 		this.yieldQueue.clear("async-result");
 	}
 
@@ -2776,23 +2791,38 @@ export class AgentSession implements SettingsScope {
 	async #deliverAsyncJobResult(manager: AsyncJobManager, jobId: string, text: string, job?: AsyncJob): Promise<void> {
 		if (this.#isDisposed) return;
 		if (manager.isDeliverySuppressed(jobId)) return;
-		// Snapshot the generation before the async format step: a `/new` during it
-		// bumps the epoch, so this delivery belongs to the replaced session and
-		// must not enqueue — the suppression marker alone is unreliable because
-		// job-id reuse clears it.
-		const epoch = this.#asyncDeliveryEpoch;
-		const formatted = await this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta);
-		if (this.#isDisposed) return;
-		if (epoch !== this.#asyncDeliveryEpoch) return;
-		if (manager.isDeliverySuppressed(jobId)) return;
-		const durationMs = job ? Math.max(0, (job.endTime ?? Date.now()) - job.startTime) : undefined;
-		await this.yieldQueue.enqueueWithReceipt<AsyncResultEntry>("async-result", {
-			jobId,
-			result: formatted,
-			job,
-			durationMs,
-			epoch,
-		});
+		const receiptKey = `${job?.agentId ?? jobId}:${Bun.hash(text).toString(16)}`;
+		const existingDelivery = this.#asyncReceiptDeliveries.get(receiptKey);
+		if (existingDelivery) return existingDelivery;
+
+		const delivery = (async () => {
+			// Snapshot the generation before the async format step: a `/new` during it
+			// bumps the epoch, so this delivery belongs to the replaced session and
+			// must not enqueue — the suppression marker alone is unreliable because
+			// job-id reuse clears it.
+			const epoch = this.#asyncDeliveryEpoch;
+			const formatted = await this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta);
+			if (this.#isDisposed) return;
+			if (epoch !== this.#asyncDeliveryEpoch) return;
+			if (manager.isDeliverySuppressed(jobId)) return;
+			const durationMs = job ? Math.max(0, (job.endTime ?? Date.now()) - job.startTime) : undefined;
+			await this.yieldQueue.enqueueWithReceipt<AsyncResultEntry>("async-result", {
+				jobId,
+				result: formatted,
+				job,
+				durationMs,
+				epoch,
+			});
+		})();
+		this.#asyncReceiptDeliveries.set(receiptKey, delivery);
+		try {
+			await delivery;
+		} catch (error) {
+			if (this.#asyncReceiptDeliveries.get(receiptKey) === delivery) {
+				this.#asyncReceiptDeliveries.delete(receiptKey);
+			}
+			throw error;
+		}
 	}
 
 	/**
@@ -6707,7 +6737,8 @@ export class AgentSession implements SettingsScope {
 		const canCallTodoTool = this.getActiveToolNames().includes("todo");
 		if (!canCallTodoTool) return undefined;
 		const phases = this.getTodoPhases().filter(phase => phase.tasks.length > 0);
-		if (phases.length === 0) return undefined;
+		const archiveSummary = getTodoArchiveSummaryFromEntries(this.sessionManager.getBranch());
+		if (phases.length === 0 && !archiveSummary) return undefined;
 
 		let total = 0;
 		let closed = 0;
@@ -6724,11 +6755,14 @@ export class AgentSession implements SettingsScope {
 				return { content: this.#sanitizeGoalTodoText(task.content), status: task.status };
 			}),
 		}));
+		const archiveSummaryLine = archiveSummary
+			? `\nArchive summary: ${archiveSummary.count} archived task${archiveSummary.count === 1 ? "" : "s"} (${new Date(archiveSummary.fromAt).toISOString()} to ${new Date(archiveSummary.toAt).toISOString()}).`
+			: "";
 
 		return prompt.render(goalTodoContextPrompt, {
 			canCallTodoTool,
 			closed: String(closed),
-			open: String(open),
+			open: `${open}${archiveSummaryLine}`,
 			phases: promptPhases,
 			total: String(total),
 		});
@@ -7692,7 +7726,20 @@ export class AgentSession implements SettingsScope {
 				void this.dispose().finally(() => process.exit(0));
 			},
 			getContextUsage: () => this.getContextUsage(),
+			getTaskMaxConcurrency: () => cfgTaskMaxConcurrency.get(this.settings),
 			getAsyncJobSnapshot: () => this.getAsyncJobSnapshot(),
+			sendAgentMessage: (to, message) =>
+				sendAgentMessageFromSession(
+					{
+						agentRegistry: this.#agentRegistry,
+						settings: this.settings,
+						taskDepth: 0,
+						getAgentId: () => this.getAgentId(),
+						getSessionFile: () => this.sessionManager.getSessionFile(),
+					},
+					to,
+					message,
+				),
 			waitForIdle: () => this.waitForIdle(),
 			newSession: async options => {
 				const success = await this.newSession({ parentSession: options?.parentSession });
@@ -9590,6 +9637,12 @@ export class AgentSession implements SettingsScope {
 	/** Enables or disables priority service for the active model family. */
 	setFastMode(enabled: boolean): boolean {
 		return this.#models.setFastMode(enabled);
+	}
+
+	/** Set fast mode on one of this session's live direct subagents. */
+	setSubagentFastMode(id: string, enabled: boolean): boolean {
+		if (!this.#agentId) return false;
+		return this.#agentRegistry.setSubagentFastMode(this.#agentId, id, enabled);
 	}
 
 	/** Toggles priority service for the active model family. */

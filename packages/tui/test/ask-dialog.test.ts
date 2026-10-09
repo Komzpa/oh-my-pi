@@ -79,6 +79,24 @@ describe("AskDialogComponent", () => {
 		});
 	});
 
+	it("advertises the note hint in the footer frame (async and interactive share it)", () => {
+		const questions: ExtensionAskDialogQuestion[] = [
+			{
+				id: "q1",
+				question: "Choose one?",
+				options: [{ label: "Option A" }, { label: "Option B" }],
+			},
+		];
+
+		const component = new AskDialogComponent(questions, {
+			onSubmit: vi.fn(),
+			onCancel: vi.fn(),
+			onPrompt: vi.fn(),
+		});
+
+		expect(render(component)).toContain("note");
+	});
+
 	it("single-question, single-select: Space does not submit the highlighted answer", () => {
 		const onSubmit = vi.fn();
 		const questions: ExtensionAskDialogQuestion[] = [

@@ -268,16 +268,30 @@ export async function captureBaseline(
 	repoRoot: string,
 	budgetBytes: number = ISOLATION_BASELINE_MAX_CONTENT_BYTES,
 ): Promise<WorktreeBaseline> {
-	const [root, nestedPaths] = await Promise.all([
-		captureRepoBaseline(repoRoot, budgetBytes),
-		discoverNestedRepos(repoRoot),
-	]);
-	const nested = await Promise.all(
-		nestedPaths.map(async relativePath => ({
-			relativePath,
-			baseline: await captureRepoBaseline(path.join(repoRoot, relativePath), budgetBytes),
-		})),
+	const root = await captureRepoBaseline(repoRoot, budgetBytes);
+	// A nested clone that fails to open (e.g. "git open: Alternates form a
+	// cycle" from a corrupt alternates file) must not abort isolation for the
+	// healthy repos. Skip it with a log line; the alternative — failing the
+	// whole spawn — trades one broken nested checkout for zero completed work.
+	const nestedPaths = await discoverNestedRepos(repoRoot);
+	const settled = await Promise.all(
+		nestedPaths.map(async (relativePath): Promise<{ relativePath: string; baseline: RepoBaseline } | null> => {
+			try {
+				return {
+					relativePath,
+					baseline: await captureRepoBaseline(path.join(repoRoot, relativePath), budgetBytes),
+				};
+			} catch (error) {
+				logger.warn("Skipping nested repo baseline that failed to open; continuing isolation without it", {
+					repoRoot,
+					relativePath,
+					error: errorMessage(error),
+				});
+				return null;
+			}
+		}),
 	);
+	const nested = settled.filter((entry): entry is { relativePath: string; baseline: RepoBaseline } => entry !== null);
 	return { root, nested };
 }
 

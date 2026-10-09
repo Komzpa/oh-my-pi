@@ -8,7 +8,14 @@
 
 ### Fixed
 
+- Fixed restarted todo plans losing committed additions, content renames, and archive removals when older successful edits overlap rows already replayed from the session history.
+- Fixed the TODO HUD listing a live worker under "unassigned workers" when `todo schedule` recorded it as the owner of more than one open row: an explicitly owned worker is now shown on every row it owns, while an ambiguous description match stays unassigned.
+- Fixed todo restoration and copying dropping persisted task and phase metadata, including scheduling fields, after a restart.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
+- Starting a TODO task now preserves other in-progress rows while still refusing starts when planning repairs remain.
+- Fixed stale TODO finish-drift alerts crossing objective boundaries: a successful main-session `init` resets the prior objective's history, while ordinary TODO edits and rejected initialization preserve it.
+- Fixed coder checkout-lock false conflicts for same-batch spawns whose row owners are not recorded yet: the router now scopes unowned spawns from the spawn's own row title and lane path instead of falling back to the session cwd, and the refusal names the compared holder and spawn scopes.
+- Fixed overdue peer check-ins reporting messaging unavailable from an AgentSession command context by passing its private registry and identity to the shared delivery route.
 
 ## [18.4.12] - 2026-10-02
 

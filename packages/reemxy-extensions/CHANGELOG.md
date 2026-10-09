@@ -1,0 +1,34 @@
+# Changelog
+
+## [Unreleased]
+
+### Added
+
+- `/brrrr` persisted routing with hot user-wide model classes and blacklist reads, fast-only Luna, Cerebras light-role preference, fail-closed mandatory routing, and Claude implementation effort capped at high.
+
+### Fixed
+
+- Demote evidence-backed hard-fail models per role through the existing seed/user blacklist policy. Dots fabrication moves it behind unaffected coder, QA, verification and install candidates; publish (`git-pr-owner`) stays unchanged and free-first.
+- `todo_dispatch`: allow read-only shell loops, conditionals, and leading environment assignments in the chief-of-staff bash gate; recursively inspect command substitutions and refuse malformed or unsupported syntax. Restrict `git branch` to known listing forms so branch mutations remain worker work.
+- Use the canonical thinking-level enum for the `/brrrr` Claude effort cap; cover hot allow-list edits, child-session inheritance without disturbing the active parent's transcript, and unchanged mode-off routing.
+- Blocked worker rework messages when an active gate refuses the corresponding task dispatch.
+- Exclude the host-damaging Ling-3.0 free model from agent pools, fallbacks, and worker profiles.
+- Keep critical-row fast-lane routing from displacing a free model at the front of the chain.
+- Preserve the DeepSeek Flash fallbacks after removing Ling: shrink gate-runner, git-pr-owner, and scribe pools to four entries and leave all-unavailable chains unrouted.
+
+- Cover resumed non-task workers as wait-eligible staffing, plus fresh-owner slip reestimates and the stale-owner refusal control.
+- `todo_dispatch`: a `todo schedule` reestimate on a past-ETA running row that carries `evidence` (the failure reason) plus a new `estimate` is accepted under the same owner; a bare reestimate stays refused but the message names the evidence repair instead of demanding a kill (658).
+- `todo_dispatch`: a `todo` override naming `todo-plan-doctor`, `todo-replan`, `todo-link`, `unread-receipts` (or `idle-wait`) now clears the refusal it answers: the parser maps it to its demand key, the escalation gate skips suppressed demands, and the wait refusal stands down while `idle-wait` is suppressed (547, 590).
+- `todo_dispatch`: PLAN CHECK now intersects forecast, ready, unread-result, and overdue rows with the current TODO statuses, so completed or dropped rows are not reported from stale forecasts.
+
+## Unreleased
+
+- Route the free image-capable OpenRouter model first in coder, git-pr-owner, and ui-coder; raise `POOL_SIZES` coder 6→8, git-pr-owner 3→5, ui-coder 4→5 so every paid pool member stays in the pool. Reviewer, coder-strong, ui-coder-strong, adversary, retro-facilitator, and plan-doctor profiles remain the strong check after free-model work.
+- Wait gate counts a resumed live worker (running job under the owner's name, live registry entry) as staffing instead of idle-live-owner, so `wait` is allowed and no second writer is demanded (522, 546). Slip reestimate refusal exempts freshly started owners (<15 min, e.g. crash recovery) whose reestimate replans the remainder rather than slipping the old ETA (658); same-owner estimate-only reschedules on slipping rows stay refused (495, 598, 602).
+
+## Unreleased
+
+### Fixed
+
+- `todo_dispatch`: persist the dispatched retro-facilitator job names in the sprint state and restore them on `load()`, so a restart/reload no longer forgets a completed retrospective. `retrospective due` stops relisting the workers the retro already covered, while a genuinely new worker still opens its own window.
+- `todo_dispatch`: record the covered worker cohort and the retro receipt id in `finishRetro`, and pick up background retro completions (async-result branch entries) that never arrive as a task `tool_result` or job-snapshot entry. A completed retro clears the demand once, the covered workers stay excluded from later cohorts across restarts, and a new demand names only workers no earlier retro covered.

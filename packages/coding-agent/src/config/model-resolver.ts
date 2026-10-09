@@ -1304,6 +1304,7 @@ export interface AgentModelSelection {
 	patterns: string[];
 	/** Role alias the patterns came from (`@task` -> `task`), when the source named one. */
 	role: string | undefined;
+	inheritsParentModel: boolean;
 }
 
 /**
@@ -1314,7 +1315,11 @@ export interface AgentModelSelection {
  */
 export function resolveAgentModelSelection(options: AgentModelPatternResolutionOptions): AgentModelSelection {
 	const { source, patterns } = resolveEffectiveAgentModelSelection(options);
-	return { patterns, role: resolveExplicitModelRole(source, options.settings) };
+	return {
+		patterns,
+		role: resolveExplicitModelRole(source, options.settings),
+		inheritsParentModel: source === undefined,
+	};
 }
 
 /** Effective agent model patterns alone, for callers with no interest in role identity. */
@@ -1668,7 +1673,7 @@ export async function resolveModelOverrideWithAuthFallback(
 		lookupRegistry = { getAvailable: () => enabledModels };
 	}
 	const primary = resolveModelOverride(modelPatterns, lookupRegistry, settings);
-	if (!primary.model || !parentActiveModelPattern) {
+	if (!primary.model) {
 		return { ...primary, authFallbackUsed: false };
 	}
 
@@ -1676,6 +1681,15 @@ export async function resolveModelOverrideWithAuthFallback(
 	if (primaryKey === kNoAuth || isAuthenticated(primaryKey)) {
 		return { ...primary, authFallbackUsed: false };
 	}
+	for (const pattern of resolveConfiguredModelPatterns(modelPatterns, settings)) {
+		const candidate = resolveModelOverride([pattern], lookupRegistry, settings);
+		if (!candidate.model || modelsAreEqual(candidate.model, primary.model)) continue;
+		const candidateKey = await modelRegistry.getApiKey(candidate.model, sessionId);
+		if (candidateKey === kNoAuth || isAuthenticated(candidateKey)) {
+			return { ...candidate, authFallbackUsed: false };
+		}
+	}
+	if (!parentActiveModelPattern) return { ...primary, authFallbackUsed: false };
 
 	const fallback = resolveModelOverride([parentActiveModelPattern], lookupRegistry, settings);
 	if (!fallback.model) {
