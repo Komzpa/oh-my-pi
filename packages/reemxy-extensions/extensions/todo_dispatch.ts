@@ -299,6 +299,8 @@ function blankSprintState(): SprintState {
   };
 }
 
+/** Retro receipt ids are only consulted for membership, so keep the newest window; one id per retro is ~20 bytes. */
+const MAX_RETRO_RECEIPT_IDS = 500;
 /** Notice dedupe keeps only digests of the most recent keys; full notice texts made each persisted state megabytes. */
 export const MAX_NOTICE_KEYS = 200;
 
@@ -761,6 +763,11 @@ function retroFacilitatorResultId(event: unknown): string | undefined {
   if (typeof match !== "object" || match === null || !("id" in match)) return undefined;
   return typeof match.id === "string" ? match.id : undefined;
 }
+// Scan window paired with MAX_RETRO_RECEIPT_IDS: only receipts in the tail can be new, and only
+// retained ids are remembered, so an evicted receipt outside the window is never rediscovered and
+// re-clears demand. A receipt older than the window that was never processed keeps the old
+// behavior (demand persists until the next retro) instead of breaking the cap.
+const RETRO_RECEIPT_SCAN_ENTRIES = 500;
 function branchRetroReceiptIds(branch: unknown): string[] {
   const found: string[] = [];
   const scan = (text: string) => {
@@ -770,7 +777,7 @@ function branchRetroReceiptIds(branch: unknown): string[] {
       if (id !== undefined && !found.includes(id)) found.push(id);
     }
   };
-  const entries = Array.isArray(branch) ? branch : [];
+  const entries = Array.isArray(branch) ? branch.slice(-RETRO_RECEIPT_SCAN_ENTRIES) : [];
   for (const entry of entries) {
     if (typeof entry !== "object" || entry === null || !("type" in entry)) continue;
     const content = entry.type === "message"
@@ -1603,10 +1610,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           : { workerFinishes: [...sprintState.workerFinishes, { jobId: job.id, id, at, row: typeof job.label === "string" ? job.label : "" }] }),
       };
     }
-    if (facilitatorSettled) finishRetro();
-    for (const receipt of branchRetroReceiptIds(ctx.sessionManager.getBranch())) {
-      if (!sprintState.retroReceiptIds.includes(receipt)) finishRetro(receipt);
-    }
+    // One persist per loop: a burst of background receipts used to persist a full snapshot per receipt.
+    const freshReceipts = branchRetroReceiptIds(ctx.sessionManager.getBranch()).filter((receipt) => !sprintState.retroReceiptIds.includes(receipt));
+    if (facilitatorSettled || freshReceipts.length > 0) finishRetro(freshReceipts.length > 0 ? freshReceipts : undefined, false);
     if (open.length > 0 && sprintState.goalWorkStartedAt === null) {
       // Only finishes since the last retro start the next goal-work window; older ones were covered.
       const sinceRetro = sprintState.workerFinishes.filter((finish) => sprintState.lastRetroAt === null || finish.at >= sprintState.lastRetroAt);
@@ -1635,7 +1641,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     sprintState = { ...sprintState, rowStatuses: nextStatuses };
     persistSprintState();
   };
-  const finishRetro = (receipt?: string) => {
+  const finishRetro = (receipt?: string | string[], persist = true) => {
     const handledDeadlineAt = sprintState.retroDueReason === "deadline passed" ? sprintState.retroDueDeadlineAt : sprintState.handledDeadlineAt;
     const handledDeliveryKey = sprintState.retroDueReason === "goal delivered" ? sprintState.retroDueDeliveryKey : sprintState.handledDeliveryKey;
     const covered = new Set(sprintState.retroCoveredIds);
@@ -1652,12 +1658,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       reopenedRows: [],
       retroFacilitatorJobs: [],
       retroCoveredIds: [...covered],
-      retroReceiptIds: receipt !== undefined && !sprintState.retroReceiptIds.includes(receipt) ? [...sprintState.retroReceiptIds, receipt] : sprintState.retroReceiptIds,
+      retroReceiptIds: [...sprintState.retroReceiptIds, ...(Array.isArray(receipt) ? receipt : receipt === undefined ? [] as string[] : [receipt]).filter((id) => !sprintState.retroReceiptIds.includes(id))].slice(-MAX_RETRO_RECEIPT_IDS),
       ...(handledDeadlineAt === undefined ? {} : { handledDeadlineAt }),
       ...(handledDeliveryKey === undefined ? {} : { handledDeliveryKey }),
     };
     retroFacilitatorJobs.clear();
-    persistSprintState();
+    if (persist) persistSprintState();
   };
   const demandThreshold = (id: string): number => (id === "todo-replan" ? DEMAND_IGNORE_MAX_REPLAN : DEMAND_IGNORE_MAX);
   const isDemandEscalated = (id: string): boolean => (sprintState.ignoredDemands[id] ?? 0) >= demandThreshold(id);
@@ -1665,7 +1671,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // for OVERRIDE_SUPPRESS_TURNS turns (negative count). Both refusal sites consult
   // this so the named refusal stops blocking task and wait within that window.
   const isOverrideSuppressed = (id: string): boolean => (sprintState.ignoredDemands[demandClassOf(id)] ?? 0) < 0;
-  const trackDemands = (activeIds: string[]): void => {
+  // persist=false lets planCheck fold the tick into the loop's trailing persist: the in-memory
+  // counts stay authoritative and the decay lands on the next persisted record either way.
+  const trackDemands = (activeIds: string[], persist = true): void => {
     let changed = false;
     const next: Record<string, number> = { ...sprintState.ignoredDemands };
     const active = new Set(activeIds);
@@ -1679,18 +1687,18 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const keys = Object.keys(next).slice(-MAX_NOTICE_KEYS);
     const bounded: Record<string, number> = {};
     for (const key of keys) bounded[key] = next[key] as number;
-    if (changed) { sprintState = { ...sprintState, ignoredDemands: bounded }; persistSprintState(); }
+    if (changed) { sprintState = { ...sprintState, ignoredDemands: bounded }; if (persist) persistSprintState(); }
   };
-  const resetDemand = (id: string): void => {
+  const resetDemand = (id: string, persist = true): void => {
     if ((sprintState.ignoredDemands[id] ?? 0) === 0) return;
     sprintState = { ...sprintState, ignoredDemands: { ...sprintState.ignoredDemands, [id]: 0 } };
-    persistSprintState();
+    if (persist) persistSprintState();
   };
-  const applyTodoOverride = (input: unknown, ctx: ExtensionContext): string | undefined => {
+  const applyTodoOverride = (input: unknown, ctx: ExtensionContext, persist = true): string | undefined => {
     const gate = parseTodoOverride(input);
     if (!gate) return undefined;
     sprintState = { ...sprintState, ignoredDemands: { ...sprintState.ignoredDemands, [gate]: -OVERRIDE_SUPPRESS_TURNS } };
-    persistSprintState();
+    if (persist) persistSprintState();
     gateTrace(ctx, "override", { gate });
     return gate;
   };
@@ -3171,8 +3179,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       resetFinishHistory(ctx);
     }
     if (event.toolName === "todo") {
-      applyTodoOverride(event.input, ctx);
-      if (/retro/i.test(JSON.stringify(event.input ?? {}))) resetDemand("retro");
+      // One persist for both: the override sets ignoredDemands[gate]=-5 and the retro reset clears it back
+      // to 0 when the same input names retro, so persisting each step wrote a net-zero record in between.
+      const gate = applyTodoOverride(event.input, ctx, false);
+      const retroMentioned = /retro/i.test(JSON.stringify(event.input ?? {}));
+      if (retroMentioned) resetDemand("retro", false);
+      if (gate !== undefined || retroMentioned) persistSprintState();
       // R1/R2: refuse the same-owner reestimate on a slipping row before any other todo handling.
       if (!pauseGate?.paused) {
         const runningProfiles = new Map<string, string | undefined>();
@@ -3538,7 +3550,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ...(unlinked.length ? ["todo-link"] : []),
       ...(unread.length ? ["unread-receipts"] : []),
       ...(overdue.length ? ["missed-eta"] : []),
-    ]);
+    ], false);
     return problems.length
       ? `PLAN CHECK: ${problems.length} problem(s). ${problems.map((line, i) => `(${i + 1}) ${line}`).join(" ")}.${workerStatus ? ` ${workerStatus}` : ""} Fix them with the pass of skill://chief-of-staff.`
       : workerStatus
