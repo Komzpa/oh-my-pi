@@ -18,6 +18,8 @@ import {
 } from "@oh-my-pi/pi-coding-agent/task/restart-queue";
 import { captureSubagentsForRestart } from "@oh-my-pi/pi-coding-agent/task/restart-recovery";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { buildSessionContext } from "../../src/session/session-context";
+import type { SessionEntry } from "../../src/session/session-entries";
 
 interface SessionHarness {
 	session: AgentSession;
@@ -787,5 +789,126 @@ describe("restart queue controller", () => {
 		expect(texts[0]).toMatch(/no longer applies|resume normal work/i);
 		expect(texts[0]).not.toMatch(/do not start another model turn/i);
 		controller.dispose();
+	});
+});
+
+describe("restart-queued notice replay (session 01a0e3fe)", () => {
+	const timestamp = "2026-10-09T02:36:00.000Z";
+	let serial = 0;
+
+	function chainId(prefix: string): string {
+		serial++;
+		return `${prefix}-${serial}`;
+	}
+
+	function transition(parentId: string | null, requestId: string, state: string, instanceId: string): SessionEntry {
+		const id = chainId("transition");
+		return {
+			type: "custom",
+			id,
+			parentId,
+			timestamp,
+			customType: "restart_request_transition",
+			data: { record: { requestId, state }, identity: { instanceId, sessionId: "s1" } },
+		} as SessionEntry;
+	}
+
+	function queuedNotice(parentId: string | null, requestId: string): SessionEntry {
+		const id = chainId("notice");
+		return {
+			type: "custom_message",
+			id,
+			parentId,
+			timestamp,
+			customType: "restart-queued",
+			content:
+				"A restart-queue status is included in this message's structured details " +
+				"(`requestId` and `state`). If the state is `queued` or `draining`, finish the " +
+				"provider call and tool batch already in progress. Do not start another model turn. " +
+				"If the state is `cancelled`, disregard earlier queued notices and resume normal work.",
+			details: { requestId, state: "queued" },
+			display: true,
+		} as SessionEntry;
+	}
+
+	function userMessage(parentId: string | null, text: string): SessionEntry {
+		const id = chainId("message");
+		return {
+			type: "message",
+			id,
+			parentId,
+			timestamp,
+			message: { role: "user", content: [{ type: "text", text }], timestamp: 1 },
+		} as unknown as SessionEntry;
+	}
+
+	function activeQueuedNotices(messages: Array<{ role?: unknown; customType?: unknown; details?: unknown }>) {
+		return messages.filter(message => {
+			if (message.role !== "custom" || message.customType !== "restart-queued") return false;
+			const details = message.details;
+			if (!details || typeof details !== "object" || !("state" in details)) return false;
+			const state = details.state;
+			return state === "queued" || state === "draining" || state === "checkpointed" || state === "restarting";
+		});
+	}
+
+	it("filters queued notices whose requests completed or were superseded", () => {
+		// Mirrors session 01a0e3fe: three queued notices from older instances,
+		// every request completed, newest instance restarts, then the next turn.
+		const reqA = "omp-update-aaaa";
+		const reqB = "omp-update-bbbb";
+		const reqC = "omp-update-cccc";
+		const entries: SessionEntry[] = [];
+		let parent: string | null = null;
+		const push = (entry: SessionEntry) => {
+			entries.push(entry);
+			parent = entry.id;
+		};
+		push(userMessage(parent, "before restarts"));
+		push(transition(parent, reqA, "queued", "instance-1"));
+		push(queuedNotice(parent, reqA));
+		push(transition(parent, reqA, "completed", "instance-2"));
+		push(transition(parent, reqB, "queued", "instance-2"));
+		push(queuedNotice(parent, reqB));
+		push(transition(parent, reqB, "completed", "instance-3"));
+		push(transition(parent, reqC, "queued", "instance-3"));
+		push(queuedNotice(parent, reqC));
+		push(transition(parent, reqC, "draining", "instance-3"));
+		push(transition(parent, reqC, "checkpointed", "instance-3"));
+		push(transition(parent, reqC, "restarting", "instance-3"));
+		push(transition(parent, reqC, "completed", "instance-4"));
+		push(userMessage(parent, "first turn after restart"));
+
+		const context = buildSessionContext(entries, undefined, undefined, {});
+		expect(activeQueuedNotices(context.messages)).toHaveLength(0);
+
+		const transcript = buildSessionContext(entries, undefined, undefined, { transcript: true });
+		expect(activeQueuedNotices(transcript.messages).length).toBeGreaterThan(0);
+	});
+
+	it("keeps the notice for a request that is still queued", () => {
+		const requestId = "omp-update-still-queued";
+		const entries: SessionEntry[] = [];
+		let parent: string | null = null;
+		const push = (entry: SessionEntry) => {
+			entries.push(entry);
+			parent = entry.id;
+		};
+		push(userMessage(parent, "before restart"));
+		push(transition(parent, requestId, "queued", "instance-1"));
+		push(queuedNotice(parent, requestId));
+		push(userMessage(parent, "next turn"));
+
+		const context = buildSessionContext(entries, undefined, undefined, {});
+		const kept = activeQueuedNotices(context.messages);
+		expect(kept).toHaveLength(1);
+	});
+
+	it("adds no restart notice for a session without restart history", () => {
+		const entries: SessionEntry[] = [userMessage(null, "plain turn")];
+		const context = buildSessionContext(entries, undefined, undefined, {});
+		expect(
+			context.messages.filter(message => message.role === "custom" && message.customType === "restart-queued"),
+		).toHaveLength(0);
 	});
 });
