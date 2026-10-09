@@ -8,6 +8,10 @@
 
 ### Fixed
 
+- Graceful restart now replaces the process in place using `process.execve`, preserving its PID and terminal without retaining old session heaps. A replacement startup failure returns to the shell; the checkpoint remains resumable ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
+- Disposing a subagent or parent session settles restart-drain waiters with a terminal outcome instead of an unhandled rejection that could crash the lead process ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
+- Restart discovery reports extension entry hashes captured at load, so rolling installs can restart stale extension code even when the session already runs the current binary ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
+
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02

@@ -35,6 +35,56 @@ const LEGACY_SNAPCOMPACT_ARCHIVE_TEXT_GUARD = 250_000;
 const LEGACY_SNAPCOMPACT_TRUNCATED_CHARS_GUARD = 1_000_000;
 const SUPERSEDED_COMPACTION_SUMMARY = "[Superseded compaction summary elided after a newer compaction]";
 const SUPERSEDED_COMPACTION_SHORT_SUMMARY = "Superseded compaction elided";
+const RESTART_QUEUED_NOTICE_TYPE = "restart-queued";
+const RESTART_REQUEST_TRANSITION_TYPE = "restart_request_transition";
+const RESTART_TERMINAL_STATE: Record<string, true> = { completed: true, cancelled: true, failed: true };
+
+function restartNoticeTextContent(content: CustomMessageEntry["content"]): string {
+	if (typeof content === "string") return content;
+	let text = "";
+	for (const block of content) {
+		if (typeof block === "string") text += block;
+		else if (block && typeof block === "object" && "text" in block && typeof block.text === "string") {
+			text += block.text;
+		}
+	}
+	return text;
+}
+
+function restartNoticeRequestId(entry: CustomMessageEntry): string | undefined {
+	const details = entry.details;
+	if (details && typeof details === "object" && "requestId" in details) {
+		const requestId = details.requestId;
+		if (typeof requestId === "string" && requestId.length > 0) return requestId;
+	}
+	const text = restartNoticeTextContent(entry.content);
+	const detailed = /omp-update-[0-9a-fA-F-]{8,}/.exec(text)?.[0];
+	if (detailed) return detailed;
+	return /Restart ([A-Za-z0-9_:-]+)/.exec(text)?.[1];
+}
+
+function restartNoticeDetailState(entry: CustomMessageEntry): string | undefined {
+	const details = entry.details;
+	if (details && typeof details === "object" && "state" in details) {
+		const state = details.state;
+		return typeof state === "string" ? state : undefined;
+	}
+	return undefined;
+}
+
+function restartTransitionRecord(entry: SessionEntry): { requestId: string; state: string } | undefined {
+	if (entry.type !== "custom") return undefined;
+	if (entry.customType !== RESTART_REQUEST_TRANSITION_TYPE) return undefined;
+	const data = entry.data;
+	if (!data || typeof data !== "object" || !("record" in data)) return undefined;
+	const record = data.record;
+	if (!record || typeof record !== "object") return undefined;
+	if (!("requestId" in record) || !("state" in record)) return undefined;
+	const requestId = record.requestId;
+	const state = record.state;
+	if (typeof requestId !== "string" || typeof state !== "string") return undefined;
+	return { requestId, state };
+}
 
 function hasLegacySnapcompactFrames(archive: snapcompact.Archive): boolean {
 	return archive.frames.some(frame => frame.font === undefined && frame.variant === undefined);
@@ -272,6 +322,29 @@ export function buildSessionContext(
 		current = current.parentId ? byId.get(current.parentId) : undefined;
 	}
 	path.reverse();
+	// Restart-queue journal over the resolved path: latest state per requestId
+	// plus which request restarted last. A queued notice is stale when its own
+	// request reached a terminal transition, or when a later restart superseded
+	// it — including notices written by older binaries with no terminal follow-up.
+	const restartLatestStateById = new Map<string, string>();
+	const restartLastIndexById = new Map<string, number>();
+	for (let index = 0; index < path.length; index++) {
+		const entry = path[index];
+		if (!entry) continue;
+		const record = restartTransitionRecord(entry);
+		if (!record) continue;
+		restartLatestStateById.set(record.requestId, record.state);
+		restartLastIndexById.set(record.requestId, index);
+	}
+	let latestRestartRequestId: string | undefined;
+	let latestRestartIndex = -1;
+	for (const requestId of restartLastIndexById.keys()) {
+		const index = restartLastIndexById.get(requestId) ?? -1;
+		if (index > latestRestartIndex) {
+			latestRestartIndex = index;
+			latestRestartRequestId = requestId;
+		}
+	}
 
 	// Extract settings and find compaction
 	let thinkingLevel: string | undefined = "off";
@@ -394,6 +467,23 @@ export function buildSessionContext(
 				(entry.customType === PREWALK_PLAN_MESSAGE_TYPE || entry.customType === VIBE_MODE_CONTEXT_MESSAGE_TYPE)
 			) {
 				return;
+			}
+			if (!options?.transcript && entry.customType === RESTART_QUEUED_NOTICE_TYPE) {
+				// Terminal detection uses only the structured details.state: every
+				// queued notice's human-readable text also describes the terminal
+				// states ("resume normal work"), so content matching misfires on
+				// active notices. Notices without a structured state stay visible
+				// unless the journal resolves their requestId below.
+				const detailState = restartNoticeDetailState(entry);
+				const ownTerminal = detailState !== undefined && RESTART_TERMINAL_STATE[detailState] === true;
+				if (!ownTerminal) {
+					const requestId = restartNoticeRequestId(entry);
+					if (requestId !== undefined) {
+						const latestState = restartLatestStateById.get(requestId);
+						if (latestState !== undefined && RESTART_TERMINAL_STATE[latestState] === true) return;
+						if (latestRestartRequestId !== undefined && requestId !== latestRestartRequestId) return;
+					}
+				}
 			}
 			const message = customMessageEntryMessage(entry);
 			if (message) pushMessage(message);

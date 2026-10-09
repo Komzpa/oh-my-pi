@@ -1,0 +1,914 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
+import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import {
+	createRestartQueueController,
+	formatRestartRequestStatus,
+	isRestartResumePending,
+	restartNoticeText,
+	type RestartControlIdentity,
+	type RestartQueueController,
+	type RestartRequestRecord,
+} from "@oh-my-pi/pi-coding-agent/task/restart-queue";
+import { captureSubagentsForRestart } from "@oh-my-pi/pi-coding-agent/task/restart-recovery";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { buildSessionContext } from "../../src/session/session-context";
+import type { SessionEntry } from "../../src/session/session-entries";
+
+interface SessionHarness {
+	session: AgentSession;
+	deliveries: IrcMessage[];
+	customMessages: Array<{ details?: { requestId?: string; state?: string } }>;
+	notices: Array<{ level: string; message: string }>;
+	drainCount: number;
+	releaseCount: number;
+}
+
+interface SessionHarnessOptions {
+	quiescence?: Promise<void>;
+	wasRunning?: boolean;
+	queuedInputCount?: number;
+	onDelivery?: (message: IrcMessage) => void;
+	onCustomMessage?: (message: { details?: { requestId?: string; state?: string } }) => void | Promise<void>;
+}
+
+const managers = new Set<SessionManager>();
+const tempDirs: TempDir[] = [];
+
+function track(manager: SessionManager): SessionManager {
+	managers.add(manager);
+	return manager;
+}
+
+function makeTempDir(): string {
+	const temp = TempDir.createSync("@pi-restart-queue-");
+	tempDirs.push(temp);
+	return temp.path();
+}
+
+async function createRoot(cwd: string): Promise<{ manager: SessionManager; file: string }> {
+	const manager = track(SessionManager.create(cwd, path.join(cwd, "sessions")));
+	manager.appendMessage({ role: "user", content: "Root restart test", timestamp: Date.now() });
+	await manager.ensureOnDisk();
+	const file = manager.getSessionFile();
+	if (!file) throw new Error("Expected a durable root session file");
+	return { manager, file };
+}
+
+function makeSession(manager: SessionManager, options: SessionHarnessOptions = {}): SessionHarness {
+	const deliveries: IrcMessage[] = [];
+	const customMessages: SessionHarness["customMessages"] = [];
+	const notices: SessionHarness["notices"] = [];
+	let drainCount = 0;
+	let releaseCount = 0;
+	const session = {
+		sessionManager: manager,
+		agent: {
+			getPendingModelNewsCount: () => options.queuedInputCount ?? 0,
+		},
+		isStreaming: false,
+		beginRestartDrain: () => {
+			drainCount++;
+			let released = false;
+			return {
+				wasRunning: options.wasRunning ?? false,
+				waitForQuiescence: () => options.quiescence ?? Promise.resolve(),
+				release: () => {
+					if (released) return;
+					released = true;
+					releaseCount++;
+				},
+			};
+		},
+		sendCustomMessage: async (message: { details?: { requestId?: string; state?: string } }) => {
+			customMessages.push(message);
+			await options.onCustomMessage?.(message);
+		},
+		deliverIrcMessage: async (message: IrcMessage) => {
+			deliveries.push(message);
+			options.onDelivery?.(message);
+			return "woken" as const;
+		},
+		emitNotice: (level: string, message: string) => notices.push({ level, message }),
+	} as unknown as AgentSession;
+	return {
+		session,
+		deliveries,
+		customMessages,
+		notices,
+		get drainCount() {
+			return drainCount;
+		},
+		get releaseCount() {
+			return releaseCount;
+		},
+	};
+}
+
+function registerRoot(registry: AgentRegistry, session: AgentSession, file: string): void {
+	registry.register({
+		id: MAIN_AGENT_ID,
+		displayName: MAIN_AGENT_ID,
+		kind: "main",
+		session,
+		sessionFile: file,
+		status: "idle",
+	});
+}
+
+function identityFor(manager: SessionManager, instanceId: string, generation: number): RestartControlIdentity {
+	return { instanceId, sessionId: manager.getSessionId(), generation };
+}
+
+function coldRecord(identity: RestartControlIdentity, state: RestartRequestRecord["state"]): RestartRequestRecord {
+	const now = Date.now();
+	return {
+		version: 1,
+		requestId: "cold-restart-request",
+		sessionId: identity.sessionId,
+		state,
+		requestedAt: now,
+		updatedAt: now,
+		rootWasRunning: true,
+	};
+}
+
+async function appendQueueRecord(
+	manager: SessionManager,
+	identity: RestartControlIdentity,
+	record: RestartRequestRecord,
+): Promise<void> {
+	manager.appendCustomEntry("restart_request_transition", { version: 1, identity, record });
+	await manager.flush();
+}
+
+beforeEach(() => {
+	AgentLifecycleManager.resetGlobalForTests();
+	AgentRegistry.resetGlobalForTests();
+	IrcBus.resetGlobalForTests();
+});
+
+afterEach(async () => {
+	for (const manager of managers) await manager.close().catch(() => {});
+	managers.clear();
+	AgentLifecycleManager.resetGlobalForTests();
+	AgentRegistry.resetGlobalForTests();
+	IrcBus.resetGlobalForTests();
+	await Promise.all(tempDirs.splice(0).map(temp => temp.remove()));
+});
+
+describe("restart queue controller", () => {
+	it("restores the goal captured before a failed restart after relaunch", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const oldIdentity = identityFor(manager, "old-instance", 1);
+		const record = { ...coldRecord(oldIdentity, "failed"), goalModeBefore: { goalId: "goal-1" } };
+		await appendQueueRecord(manager, oldIdentity, record);
+		const harness = makeSession(manager);
+		registerRoot(AgentRegistry.global(), harness.session, manager.getSessionFile()!);
+		const restored: string[] = [];
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identityFor(manager, "new-instance", 2),
+			restart: async () => {},
+			restoreGoalMode: async snapshot => {
+				restored.push(snapshot.goalId);
+			},
+		});
+
+		await controller.restore();
+
+		expect(restored).toEqual(["goal-1"]);
+		expect(controller.snapshot().request).toMatchObject({ state: "failed", goalModeBefore: { goalId: "goal-1" } });
+		controller.dispose();
+	});
+
+	it("licenses active-goal startup only from a previous process checkpoint", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const oldIdentity = identityFor(manager, "old-instance", 1);
+		const nextIdentity = identityFor(manager, "next-instance", 1);
+		await appendQueueRecord(manager, oldIdentity, coldRecord(oldIdentity, "draining"));
+		expect(isRestartResumePending(manager.getBranch(), manager.getSessionId(), nextIdentity.instanceId)).toBe(false);
+		await appendQueueRecord(manager, oldIdentity, coldRecord(oldIdentity, "restarting"));
+		expect(isRestartResumePending(manager.getBranch(), manager.getSessionId(), nextIdentity.instanceId)).toBe(true);
+		expect(isRestartResumePending(manager.getBranch(), manager.getSessionId(), oldIdentity.instanceId)).toBe(false);
+		await appendQueueRecord(manager, nextIdentity, coldRecord(nextIdentity, "failed"));
+		expect(isRestartResumePending(manager.getBranch(), manager.getSessionId(), "third-instance")).toBe(false);
+	});
+	it("rejects stale identities, deduplicates, and retries cancellation delivery before releasing a held drain", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const { promise: quiescence, resolve: releaseQuiescence } = Promise.withResolvers<void>();
+		let failFirstCancelNotice = true;
+		const harness = makeSession(manager, {
+			quiescence,
+			onCustomMessage: message => {
+				if (message.details?.state === "cancelled" && failFirstCancelNotice) {
+					failFirstCancelNotice = false;
+					throw new Error("temporary delivery failure");
+				}
+			},
+		});
+		const restoredGoals: string[] = [];
+		const identity = identityFor(manager, "queue-instance", 1);
+		let restartCalls = 0;
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {
+				restartCalls++;
+			},
+			captureGoalMode: () => ({ goalId: "goal-cancel" }),
+			restoreGoalMode: async snapshot => {
+				restoredGoals.push(snapshot.goalId);
+			},
+		});
+
+		await expect(
+			controller.handle({ identity: { ...identity, generation: 2 }, op: "request", requestId: "stale" }),
+		).rejects.toThrow(/identity is stale/);
+		expect(
+			manager
+				.getBranch()
+				.filter(entry => entry.type === "custom" && entry.customType === "restart_request_transition"),
+		).toHaveLength(0);
+
+		const request = { identity, op: "request", requestId: "cancel-me", reason: "after this turn" } as const;
+		const accepted = await controller.handle(request);
+		const duplicate = await controller.handle(request);
+		expect(accepted.request?.requestId).toBe("cancel-me");
+		expect(duplicate.request?.requestId).toBe("cancel-me");
+		expect(harness.drainCount).toBe(1);
+		await expect(controller.handle({ ...request, reason: "different reason" })).rejects.toThrow(/already used/);
+
+		const cancelRequest = { identity, op: "cancel", requestId: "cancel-me" } as const;
+		await expect(controller.handle(cancelRequest)).rejects.toThrow(/cancellation notice could not be delivered/);
+		expect(controller.snapshot().request?.state).toBe("cancelled");
+		expect(harness.releaseCount).toBe(0);
+		expect(restartCalls).toBe(0);
+
+		const cancelled = await controller.handle(cancelRequest);
+		expect(cancelled.request?.state).toBe("cancelled");
+		expect(restartNoticeText(manager.getBranch(), "cancel-me")).toBe("Restart cancelled");
+		expect(harness.releaseCount).toBe(1);
+		expect(harness.customMessages.at(-1)?.details).toEqual({ requestId: "cancel-me", state: "cancelled" });
+		expect(restartCalls).toBe(0);
+		expect(restoredGoals).toEqual(["goal-cancel"]);
+		releaseQuiescence();
+		controller.dispose();
+	});
+
+	it("reports running workers and queued input in restart drain status", async () => {
+		const cwd = makeTempDir();
+		const { manager, file } = await createRoot(cwd);
+		const rootHarness = makeSession(manager, { queuedInputCount: 1 });
+		const registry = AgentRegistry.global();
+		registerRoot(registry, rootHarness.session, file);
+		const childHarness = makeSession(manager, { wasRunning: true });
+		registry.register({
+			id: "worker-capture",
+			displayName: "CaptureWatch",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: childHarness.session,
+			sessionFile: null,
+			status: "running",
+			createdAt: 1_000,
+		});
+		const identity = identityFor(manager, "queue-instance", 1);
+		const controller = createRestartQueueController({
+			session: rootHarness.session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+
+		const snapshot = await controller.handle({ identity, op: "request", requestId: "status-request" });
+
+		expect(snapshot.request?.drainStatus).toEqual({
+			runningWorkers: [{ id: "worker-capture", name: "CaptureWatch", startedAt: 1_000 }],
+			queuedInputCount: 1,
+		});
+		expect(formatRestartRequestStatus(snapshot.request, 721_000)).toBe(
+			"Restart waiting for 1 worker: CaptureWatch 12m; 1 queued input.",
+		);
+		expect(
+			formatRestartRequestStatus(
+				{
+					...snapshot.request!,
+					drainStatus: { ...snapshot.request!.drainStatus!, workerGraceDeadlineAt: 724_000 },
+				},
+				721_000,
+			),
+		).toBe("Restart waiting up to 3.0s for 1 worker to reach a safe point: CaptureWatch 12m; 1 queued input.");
+		controller.dispose();
+	});
+
+	it("restores the same child and root identities from a cold checkpoint exactly once", async () => {
+		const cwd = makeTempDir();
+		const { manager: oldRootManager, file: rootFile } = await createRoot(cwd);
+		const rootArtifactDir = rootFile.slice(0, -".jsonl".length);
+		const childManager = track(SessionManager.create(cwd, rootArtifactDir));
+		childManager.appendSessionInit({
+			systemPrompt: "Persisted child prompt",
+			task: "Continue the original child assignment",
+			tools: ["read", "yield"],
+		});
+		childManager.appendMessage({ role: "user", content: "Begin child work", timestamp: Date.now() });
+		await childManager.ensureOnDisk();
+		await childManager.flush();
+		const childFile = childManager.getSessionFile();
+		if (!childFile) throw new Error("Expected a durable child session file");
+		const childId = childManager.getSessionId();
+		const oldRoot = makeSession(oldRootManager);
+		const oldRegistry = AgentRegistry.global();
+		registerRoot(oldRegistry, oldRoot.session, rootFile);
+		oldRegistry.register({
+			id: childId,
+			displayName: "Original child",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: makeSession(childManager).session,
+			sessionFile: childFile,
+			status: "running",
+		});
+		const oldIdentity = identityFor(oldRootManager, "old-instance", 4);
+		const completedRequest = coldRecord(oldIdentity, "checkpointed");
+		await captureSubagentsForRestart(oldRoot.session, { requestId: completedRequest.requestId });
+		await appendQueueRecord(oldRootManager, oldIdentity, completedRequest);
+		await Promise.all([oldRootManager.close(), childManager.close()]);
+
+		AgentLifecycleManager.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
+		IrcBus.resetGlobalForTests();
+		const rootManager = track(await SessionManager.open(rootFile));
+		const rootDeliveries: IrcMessage[] = [];
+		const rootHarness = makeSession(rootManager, { onDelivery: message => rootDeliveries.push(message) });
+		const registry = AgentRegistry.global();
+		registerRoot(registry, rootHarness.session, rootFile);
+		registry.register({
+			id: childId,
+			displayName: "Original child",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: null,
+			sessionFile: childFile,
+			status: "parked",
+		});
+		const childDeliveries: IrcMessage[] = [];
+		const revivalIds: string[] = [];
+		let revivedChildSessionId: string | undefined;
+		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+			async ref => {
+				if (!ref.sessionFile) return undefined;
+				return async () => {
+					revivalIds.push(ref.id);
+					const revivedManager = track(await SessionManager.open(ref.sessionFile!));
+					revivedChildSessionId = revivedManager.getSessionId();
+					const childHarness = makeSession(revivedManager, {
+						onDelivery: message => {
+							childDeliveries.push(message);
+							registry.setStatus(ref.id, "running", childHarness.session);
+						},
+					});
+					return childHarness.session;
+				};
+			},
+			() => 0,
+		);
+
+		const currentIdentity = identityFor(rootManager, "new-instance", 5);
+		const controller = createRestartQueueController({
+			session: rootHarness.session,
+			identity: () => currentIdentity,
+			restart: async () => {},
+		});
+		await controller.restore();
+		await controller.restore();
+
+		expect(rootManager.getSessionId()).toBe(oldIdentity.sessionId);
+		expect(revivedChildSessionId).toBe(childId);
+		expect(revivalIds).toEqual([childId]);
+		expect(registry.get(childId)).toMatchObject({ id: childId, status: "running", sessionFile: childFile });
+		expect(childDeliveries).toHaveLength(1);
+		expect(childDeliveries[0]).toMatchObject({ from: MAIN_AGENT_ID, to: childId });
+		expect(rootDeliveries).toHaveLength(1);
+		expect(rootDeliveries[0]).toMatchObject({ from: MAIN_AGENT_ID, to: MAIN_AGENT_ID });
+		expect(controller.snapshot().request?.state).toBe("completed");
+		expect(restartNoticeText(rootManager.getBranch(), "cold-restart-request")).toBe("Restarted");
+		controller.dispose();
+	});
+
+	it("checkpoints running workers after grace without waiting for a hung worker to finish", async () => {
+		const cwd = makeTempDir();
+		const { manager: oldRootManager, file: rootFile } = await createRoot(cwd);
+		const rootArtifactDir = rootFile.slice(0, -".jsonl".length);
+		const registry = AgentRegistry.global();
+		const rootHarness = makeSession(oldRootManager);
+		registerRoot(registry, rootHarness.session, rootFile);
+		const hangingManager = track(SessionManager.create(cwd, rootArtifactDir));
+		hangingManager.appendSessionInit({
+			systemPrompt: "Persisted child prompt",
+			task: "Continue the hung child assignment",
+			tools: ["read", "yield"],
+		});
+		hangingManager.appendMessage({ role: "user", content: "Begin hung child work", timestamp: Date.now() });
+		await hangingManager.ensureOnDisk();
+		await hangingManager.flush();
+		const hangingFile = hangingManager.getSessionFile();
+		if (!hangingFile) throw new Error("Expected a durable hung child session file");
+		const hangingId = hangingManager.getSessionId();
+		const writingManager = track(SessionManager.create(cwd, rootArtifactDir));
+		writingManager.appendSessionInit({
+			systemPrompt: "Persisted child prompt",
+			task: "Finish the short child write",
+			tools: ["read", "yield"],
+		});
+		writingManager.appendMessage({ role: "user", content: "Begin short child work", timestamp: Date.now() });
+		await writingManager.ensureOnDisk();
+		await writingManager.flush();
+		const writingFile = writingManager.getSessionFile();
+		if (!writingFile) throw new Error("Expected a durable writing child session file");
+		const writePath = path.join(cwd, "child-write.txt");
+		await fs.writeFile(writePath, "partial");
+		const { promise: hungQuiescence } = Promise.withResolvers<void>();
+		const writingQuiescence = (async () => {
+			await Bun.sleep(5);
+			await fs.writeFile(writePath, "complete");
+		})();
+		registry.register({
+			id: hangingId,
+			displayName: "Hung child",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: makeSession(hangingManager, { wasRunning: true, quiescence: hungQuiescence }).session,
+			sessionFile: hangingFile,
+			status: "running",
+		});
+		registry.register({
+			id: writingManager.getSessionId(),
+			displayName: "Writing child",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: makeSession(writingManager, { wasRunning: true, quiescence: writingQuiescence }).session,
+			sessionFile: writingFile,
+			status: "running",
+		});
+		const identity = identityFor(oldRootManager, "restart-instance", 1);
+		const restartCalled = Promise.withResolvers<void>();
+		const controller = createRestartQueueController({
+			session: rootHarness.session,
+			identity: () => identity,
+			restartWorkerGraceMs: 25,
+			restart: async () => {
+				expect(await fs.readFile(writePath, "utf8")).toBe("complete");
+				restartCalled.resolve();
+			},
+		});
+
+		await controller.handle({ identity, op: "request", requestId: "worker-grace" });
+		await expect(
+			Promise.race([restartCalled.promise, Bun.sleep(250).then(() => "timed out" as const)]),
+		).resolves.toBe(undefined);
+
+		const handoff = oldRootManager
+			.getEntries()
+			.find(entry => entry.type === "custom" && entry.customType === "subagent_restart_handoff");
+		expect(handoff?.type).toBe("custom");
+		if (!handoff || handoff.type !== "custom") throw new Error("Expected durable restart handoff");
+		const children = (handoff.data as { children: Array<{ id: string; sessionFile: string; status: string }> })
+			.children;
+		expect(children).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: hangingId, sessionFile: path.resolve(hangingFile), status: "running" }),
+				expect.objectContaining({
+					id: writingManager.getSessionId(),
+					sessionFile: path.resolve(writingFile),
+					status: "running",
+				}),
+			]),
+		);
+		controller.dispose();
+	});
+
+	it("does not replay an older worker handoff after a later restart request failed", async () => {
+		const cwd = makeTempDir();
+		const { manager: oldRootManager, file: rootFile } = await createRoot(cwd);
+		const rootArtifactDir = rootFile.slice(0, -".jsonl".length);
+		const childManager = track(SessionManager.create(cwd, rootArtifactDir));
+		childManager.appendSessionInit({
+			systemPrompt: "Persisted child prompt",
+			task: "Continue the original child assignment",
+			tools: ["read", "yield"],
+		});
+		childManager.appendMessage({ role: "user", content: "Begin child work", timestamp: Date.now() });
+		await childManager.ensureOnDisk();
+		await childManager.flush();
+		const childFile = childManager.getSessionFile();
+		if (!childFile) throw new Error("Expected a durable child session file");
+		const childId = childManager.getSessionId();
+		const oldRoot = makeSession(oldRootManager);
+		const registry = AgentRegistry.global();
+		registerRoot(registry, oldRoot.session, rootFile);
+		registry.register({
+			id: childId,
+			displayName: "Older child",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: makeSession(childManager).session,
+			sessionFile: childFile,
+			status: "running",
+		});
+		const oldIdentity = identityFor(oldRootManager, "old-instance", 1);
+		await captureSubagentsForRestart(oldRoot.session, { requestId: "older-success" });
+		await appendQueueRecord(oldRootManager, oldIdentity, {
+			...coldRecord(oldIdentity, "failed"),
+			requestId: "new-failed-request",
+		});
+		await Promise.all([oldRootManager.close(), childManager.close()]);
+
+		AgentLifecycleManager.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
+		IrcBus.resetGlobalForTests();
+		const manager = track(await SessionManager.open(rootFile));
+		const harness = makeSession(manager);
+		const freshRegistry = AgentRegistry.global();
+		registerRoot(freshRegistry, harness.session, rootFile);
+		const revivalIds: string[] = [];
+		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+			async ref => {
+				if (ref.id !== childId || !ref.sessionFile) return undefined;
+				return async () => {
+					revivalIds.push(ref.id);
+					return makeSession(track(await SessionManager.open(ref.sessionFile!))).session;
+				};
+			},
+			() => 0,
+		);
+
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identityFor(manager, "new-instance", 2),
+			restart: async () => {},
+		});
+		await controller.restore();
+
+		expect(revivalIds).toEqual([]);
+		expect(harness.deliveries).toEqual([]);
+		expect(controller.snapshot().request).toMatchObject({ requestId: "new-failed-request", state: "failed" });
+		controller.dispose();
+	});
+
+	it("does not replay a root continuation with only an unresolved durable claim", async () => {
+		const cwd = makeTempDir();
+		const { manager, file } = await createRoot(cwd);
+		const harness = makeSession(manager);
+		const registry = AgentRegistry.global();
+		registerRoot(registry, harness.session, file);
+		const identity = identityFor(manager, "restart-instance", 1);
+		const record = coldRecord(identity, "completed");
+		await appendQueueRecord(manager, identity, record);
+		manager.appendCustomEntry("root_restart_continuation_receipt", {
+			version: 1,
+			rootSessionId: identity.sessionId,
+			requestId: record.requestId,
+			outcome: "continuation-claimed",
+			recordedAt: Date.now(),
+		});
+		await manager.flush();
+		const controller: RestartQueueController = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+
+		await controller.restore();
+		await controller.restore();
+
+		expect(harness.deliveries).toHaveLength(0);
+		const receipts = manager
+			.getBranch()
+			.filter(entry => entry.type === "custom" && entry.customType === "root_restart_continuation_receipt");
+		expect(receipts).toHaveLength(1);
+		expect(receipts[0]).toMatchObject({
+			type: "custom",
+			customType: "root_restart_continuation_receipt",
+			data: { outcome: "continuation-claimed" },
+		});
+		expect(controller.snapshot().request?.state).toBe("completed");
+		controller.dispose();
+	});
+	function mirrorCustomToBranch(manager: SessionManager) {
+		return (message: { details?: { requestId?: string; state?: string } }) => {
+			const payload = message as unknown as {
+				customType?: string;
+				content?: string;
+				display?: boolean;
+				details?: unknown;
+			};
+			manager.appendCustomMessageEntry(payload.customType, payload.content, payload.display, payload.details);
+		};
+	}
+
+	function restartQueuedBranchTexts(manager: SessionManager): string[] {
+		return manager
+			.getBranch()
+			.filter(entry => entry.type === "custom_message" && entry.customType === "restart-queued")
+			.map(entry => String(entry.type === "custom_message" ? (entry.content ?? "") : ""));
+	}
+
+	function customMessageTexts(harness: Pick<SessionHarness, "customMessages">, requestId: string): string[] {
+		return harness.customMessages
+			.map(message => message as unknown as { details?: { requestId?: string }; content?: unknown })
+			.filter(message => message.details?.requestId === requestId)
+			.map(message =>
+				typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? ""),
+			);
+	}
+
+	it("completed restart supersedes queued notice in context", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const requestId = "supersede-me";
+		const { promise: terminalSeen, resolve: onTerminal } = Promise.withResolvers<void>();
+		const harness = makeSession(manager, {
+			onCustomMessage: message => {
+				mirrorCustomToBranch(manager)(message);
+				const payload = message as unknown as { details?: { requestId?: string; state?: string } };
+				if (payload.details?.requestId === requestId && payload.details?.state === "completed") onTerminal();
+			},
+		});
+		const identity = identityFor(manager, "notice-instance", 1);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+
+		await controller.handle({ identity, op: "request", requestId, reason: "test supersede" });
+		// Await the terminal notice event itself: no wall-clock wait, the drain resolves it.
+		await terminalSeen;
+		manager.appendMessage({ role: "user", content: "next work after restart", timestamp: Date.now() });
+		const texts = restartQueuedBranchTexts(manager);
+
+		expect(texts.length).toBeGreaterThanOrEqual(2);
+		expect(texts[0]).toContain(requestId);
+		expect(texts[0]).toMatch(/do not start another model turn/i);
+		const last = texts.at(-1) ?? "";
+		expect(last).toContain(requestId);
+		expect(last).toMatch(/complet/i);
+		expect(last).toMatch(/no longer applies|resume normal work/i);
+		expect(last).not.toMatch(/do not start another model turn/i);
+		controller.dispose();
+	});
+
+	it("a request still queued keeps the restriction", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const { promise: quiescence } = Promise.withResolvers<void>();
+		const harness = makeSession(manager, { quiescence });
+		const identity = identityFor(manager, "queued-instance", 1);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+
+		// The queued notice is pushed synchronously during handle(), before it resolves.
+		await controller.handle({ identity, op: "request", requestId: "still-queued", reason: "stall" });
+		const texts = customMessageTexts(harness, "still-queued");
+		expect(texts.length).toBeGreaterThanOrEqual(1);
+		expect(texts[0]).toContain("still-queued");
+		expect(texts[0]).toMatch(/do not start another model turn/i);
+		controller.dispose();
+	});
+
+	it("cancelled restart clears the restriction", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const { promise: quiescence } = Promise.withResolvers<void>();
+		const harness = makeSession(manager, { quiescence });
+		const identity = identityFor(manager, "cancel-instance", 1);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+
+		await controller.handle({ identity, op: "request", requestId: "cancel-clear", reason: "stall" });
+		// Cancel awaits notice delivery before resolving, so the notice is captured here.
+		await controller.handle({ identity, op: "cancel", requestId: "cancel-clear" });
+		const texts = customMessageTexts(harness, "cancel-clear");
+		const last = texts.at(-1) ?? "";
+		expect(last).toContain("cancel-clear");
+		expect(last).toMatch(/cancel/i);
+		expect(last).toMatch(/no longer applies|resume normal work/i);
+		expect(last).not.toMatch(/do not start another model turn/i);
+		controller.dispose();
+	});
+
+	it("a different requestId completion does not clear a queued request", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const { promise: terminalSeen, resolve: onTerminal } = Promise.withResolvers<void>();
+		const harness = makeSession(manager, {
+			onCustomMessage: message => {
+				const payload = message as unknown as { details?: { requestId?: string; state?: string } };
+				if (payload.details?.requestId === "first-done" && payload.details?.state === "completed") onTerminal();
+			},
+		});
+		const identity = identityFor(manager, "scoped-instance", 1);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+
+		await controller.handle({ identity, op: "request", requestId: "first-done", reason: "fast" });
+		await terminalSeen;
+		const { promise: quiescence } = Promise.withResolvers<void>();
+		const stalled = makeSession(manager, { quiescence });
+		const second = createRestartQueueController({
+			session: stalled.session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+		await second.handle({ identity, op: "request", requestId: "other-request", reason: "stall" });
+		for (const text of customMessageTexts(harness, "first-done")) {
+			expect(text).not.toContain("other-request");
+		}
+		const otherTexts = customMessageTexts(stalled, "other-request");
+		expect(otherTexts.length).toBeGreaterThanOrEqual(1);
+		expect(otherTexts.at(-1) ?? "").toMatch(/do not start another model turn/i);
+		controller.dispose();
+		second.dispose();
+	});
+
+	it("restore after completion emits the completed notice once", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const oldIdentity = identityFor(manager, "old-instance", 1);
+		const requestId = "restored-done";
+		const now = Date.now();
+		await appendQueueRecord(manager, oldIdentity, {
+			version: 1,
+			requestId,
+			sessionId: oldIdentity.sessionId,
+			state: "completed",
+			requestedAt: now,
+			updatedAt: now,
+			rootWasRunning: false,
+		});
+		manager.appendCustomMessageEntry(
+			"restart-queued",
+			`Restart ${requestId} is queued. Do not start another model turn until it completes.`,
+			true,
+			{ requestId, state: "queued" },
+		);
+		await manager.flush();
+		const harness = makeSession(manager);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identityFor(manager, "new-instance", 2),
+			restart: async () => {},
+		});
+
+		await controller.restore();
+		await controller.restore();
+
+		const texts = customMessageTexts(harness, requestId);
+		expect(texts).toHaveLength(1);
+		expect(texts[0]).toContain(requestId);
+		expect(texts[0]).toMatch(/complet/i);
+		expect(texts[0]).toMatch(/no longer applies|resume normal work/i);
+		expect(texts[0]).not.toMatch(/do not start another model turn/i);
+		controller.dispose();
+	});
+});
+
+describe("restart-queued notice replay (session 01a0e3fe)", () => {
+	const timestamp = "2026-10-09T02:36:00.000Z";
+	let serial = 0;
+
+	function chainId(prefix: string): string {
+		serial++;
+		return `${prefix}-${serial}`;
+	}
+
+	function transition(parentId: string | null, requestId: string, state: string, instanceId: string): SessionEntry {
+		const id = chainId("transition");
+		return {
+			type: "custom",
+			id,
+			parentId,
+			timestamp,
+			customType: "restart_request_transition",
+			data: { record: { requestId, state }, identity: { instanceId, sessionId: "s1" } },
+		} as SessionEntry;
+	}
+
+	function queuedNotice(parentId: string | null, requestId: string): SessionEntry {
+		const id = chainId("notice");
+		return {
+			type: "custom_message",
+			id,
+			parentId,
+			timestamp,
+			customType: "restart-queued",
+			content:
+				"A restart-queue status is included in this message's structured details " +
+				"(`requestId` and `state`). If the state is `queued` or `draining`, finish the " +
+				"provider call and tool batch already in progress. Do not start another model turn. " +
+				"If the state is `cancelled`, disregard earlier queued notices and resume normal work.",
+			details: { requestId, state: "queued" },
+			display: true,
+		} as SessionEntry;
+	}
+
+	function userMessage(parentId: string | null, text: string): SessionEntry {
+		const id = chainId("message");
+		return {
+			type: "message",
+			id,
+			parentId,
+			timestamp,
+			message: { role: "user", content: [{ type: "text", text }], timestamp: 1 },
+		} as unknown as SessionEntry;
+	}
+
+	function activeQueuedNotices(messages: Array<{ role?: unknown; customType?: unknown; details?: unknown }>) {
+		return messages.filter(message => {
+			if (message.role !== "custom" || message.customType !== "restart-queued") return false;
+			const details = message.details;
+			if (!details || typeof details !== "object" || !("state" in details)) return false;
+			const state = details.state;
+			return state === "queued" || state === "draining" || state === "checkpointed" || state === "restarting";
+		});
+	}
+
+	it("filters queued notices whose requests completed or were superseded", () => {
+		// Mirrors session 01a0e3fe: three queued notices from older instances,
+		// every request completed, newest instance restarts, then the next turn.
+		const reqA = "omp-update-aaaa";
+		const reqB = "omp-update-bbbb";
+		const reqC = "omp-update-cccc";
+		const entries: SessionEntry[] = [];
+		let parent: string | null = null;
+		const push = (entry: SessionEntry) => {
+			entries.push(entry);
+			parent = entry.id;
+		};
+		push(userMessage(parent, "before restarts"));
+		push(transition(parent, reqA, "queued", "instance-1"));
+		push(queuedNotice(parent, reqA));
+		push(transition(parent, reqA, "completed", "instance-2"));
+		push(transition(parent, reqB, "queued", "instance-2"));
+		push(queuedNotice(parent, reqB));
+		push(transition(parent, reqB, "completed", "instance-3"));
+		push(transition(parent, reqC, "queued", "instance-3"));
+		push(queuedNotice(parent, reqC));
+		push(transition(parent, reqC, "draining", "instance-3"));
+		push(transition(parent, reqC, "checkpointed", "instance-3"));
+		push(transition(parent, reqC, "restarting", "instance-3"));
+		push(transition(parent, reqC, "completed", "instance-4"));
+		push(userMessage(parent, "first turn after restart"));
+
+		const context = buildSessionContext(entries, undefined, undefined, {});
+		expect(activeQueuedNotices(context.messages)).toHaveLength(0);
+
+		const transcript = buildSessionContext(entries, undefined, undefined, { transcript: true });
+		expect(activeQueuedNotices(transcript.messages).length).toBeGreaterThan(0);
+	});
+
+	it("keeps the notice for a request that is still queued", () => {
+		const requestId = "omp-update-still-queued";
+		const entries: SessionEntry[] = [];
+		let parent: string | null = null;
+		const push = (entry: SessionEntry) => {
+			entries.push(entry);
+			parent = entry.id;
+		};
+		push(userMessage(parent, "before restart"));
+		push(transition(parent, requestId, "queued", "instance-1"));
+		push(queuedNotice(parent, requestId));
+		push(userMessage(parent, "next turn"));
+
+		const context = buildSessionContext(entries, undefined, undefined, {});
+		const kept = activeQueuedNotices(context.messages);
+		expect(kept).toHaveLength(1);
+	});
+
+	it("adds no restart notice for a session without restart history", () => {
+		const entries: SessionEntry[] = [userMessage(null, "plain turn")];
+		const context = buildSessionContext(entries, undefined, undefined, {});
+		expect(
+			context.messages.filter(message => message.role === "custom" && message.customType === "restart-queued"),
+		).toHaveLength(0);
+	});
+});
