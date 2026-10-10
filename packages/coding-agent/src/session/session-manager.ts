@@ -790,6 +790,7 @@ export class SessionManager {
 	#hasTitleSlot = true;
 	#entries: SessionEntry[] = [];
 	#index = new SessionEntryIndex();
+	#branchSelectionRevision = 0;
 
 	/** File reflects all current entries; appends can go incrementally. */
 	#fileIsCurrent = false;
@@ -1877,6 +1878,7 @@ export class SessionManager {
 	}
 
 	#applyEntries(header: SessionHeader, entries: SessionEntry[]): void {
+		const previousLeafId = this.#index.leafId();
 		this.#header = header;
 		this.#entries = entries;
 		this.#sessionId = header.id;
@@ -1884,6 +1886,7 @@ export class SessionManager {
 		this.#titleSource = header.titleSource;
 		this.#titleUpdatedAt = header.timestamp;
 		this.#index.rebuild(entries);
+		if (this.#index.leafId() !== previousLeafId) this.#branchSelectionRevision++;
 	}
 
 	#freshEntryFields(): { id: string; parentId: string | null; timestamp: string } {
@@ -1895,6 +1898,7 @@ export class SessionManager {
 	}
 
 	#setLeaf(id: string | null): void {
+		this.#branchSelectionRevision++;
 		this.#index.setLeaf(id);
 		const batch = this.#atomicEntryBatch;
 		if (batch && !batch.collecting) {
@@ -3446,6 +3450,11 @@ export class SessionManager {
 
 	getLeafId(): string | null {
 		return this.#index.leafId();
+	}
+
+	/** Changes on explicit branch selections, including reselection, but not journal appends. */
+	getBranchSelectionRevision(): number {
+		return this.#branchSelectionRevision;
 	}
 
 	getLeafEntry(): SessionEntry | undefined {
