@@ -213,7 +213,7 @@ export async function runCodeReviewCommand(
 	const cwd = liveCommandCwd(api, ctx);
 	const parsed = extractReviewPrRefFromArgs(splitReviewArgs(args));
 	const focus = parsed.extraInstructions || undefined;
-	const choice = parsed.prRef ? { kind: "pr" as const, ref: parsed.prRef } : await selectReviewChoice(ctx);
+	const choice = parsed.prRef ? { kind: "pr" as const, ref: parsed.prRef } : await selectReviewChoice(ctx, cwd);
 	if (!choice) return undefined;
 	const target =
 		choice.kind === "pr"
@@ -281,6 +281,7 @@ export async function runAnnotateCommand(
 	if (!source) return undefined;
 	const result = await textDependencies.showTextReviewOverlay(ctx, source);
 	if (!result || result.annotations.length === 0) return undefined;
+	if (result.editedText !== undefined) source = { ...source, text: result.editedText };
 	let contextSummary: string | undefined;
 	if (shouldSummarizeTextReviewSource(source)) {
 		ctx.ui.setStatus("annotate-summary", "Rephrasing annotation source with the session model…");
