@@ -121,25 +121,43 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 		}
 
 		const ownerId = this.session.getSessionId?.();
-		const branchLeafId = manager.getBranch().at(-1)?.id;
+		const branch = manager.getBranch();
+		const branchLeafId = branch.at(-1)?.id;
+		const branchSelectionRevision = manager.getBranchSelectionRevision?.();
+		const notebookEntryId = getContextNotes(branch)?.entryId;
+		const resetBoundaryId = branch.findLast(entry => entry.type === "reset_boundary")?.id;
 		await manager.ensureOnDisk();
 		throwIfAborted(signal);
 		const currentManager = getExperimentalContextSession(this.session);
-		// A concurrent append (the in-flight assistant/tool message or its
-		// journal) moves the leaf without switching branches; only refuse when
-		// the snapshotted leaf left the active branch (a real branch switch).
+		const currentBranch = manager.getBranch();
+		// Unrelated appends may advance the leaf, but explicit tree selections
+		// must invalidate the snapshot even when its leaf remains an ancestor.
+		// Minimal SDK managers without selection tracking retain the strict leaf check.
+		const branchSelectionUnchanged =
+			branchSelectionRevision === undefined
+				? currentBranch.at(-1)?.id === branchLeafId
+				: manager.getBranchSelectionRevision?.() === branchSelectionRevision;
 		const branchStillExtendsSnapshot =
-			branchLeafId === undefined || manager.getBranch().some(entry => entry.id === branchLeafId);
+			branchLeafId === undefined || currentBranch.some(entry => entry.id === branchLeafId);
 		if (
 			currentManager !== manager ||
 			this.session.isDisposed?.() ||
 			!ownerId ||
 			this.session.getSessionId?.() !== ownerId ||
 			manager.getSessionId?.() !== ownerId ||
+			!branchSelectionUnchanged ||
 			!branchStillExtendsSnapshot
 		) {
 			throw new ToolError(
 				"Experimental context notes were not saved because the session branch changed. Retry the save; if it fails again, read the notebook with context_notes (no arguments) and rewrite it.",
+			);
+		}
+		if (
+			getContextNotes(currentBranch)?.entryId !== notebookEntryId ||
+			currentBranch.findLast(entry => entry.type === "reset_boundary")?.id !== resetBoundaryId
+		) {
+			throw new ToolError(
+				"Experimental context notes were not saved because the notebook changed. Read the notebook with context_notes (no arguments) before rewriting it.",
 			);
 		}
 
