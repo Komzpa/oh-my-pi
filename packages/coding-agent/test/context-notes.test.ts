@@ -9,6 +9,7 @@ import {
 import type { ContextNotesEntry } from "@oh-my-pi/pi-coding-agent/session/context-notes";
 import type { CustomEntry, ResetBoundaryEntry, SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { MemorySessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { ContextNotesTool, NewContextTool } from "@oh-my-pi/pi-coding-agent/tools/context-notes";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -232,6 +233,44 @@ describe("experimental context notes", () => {
 			await sessionManager.close();
 		}
 	});
+
+	it.each(["unchanged", "changed"] as const)(
+		"accepts a pending save only when a same-session reload keeps the leaf unchanged (leaf: %s)",
+		async selection => {
+			const changed = selection === "changed";
+			const sessionManager = SessionManager.create("/tmp", "/tmp/context-notes-reload", new MemorySessionStorage());
+			const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
+			const tool = ContextNotesTool.createIf(toolSession(settings, sessionManager));
+			if (!tool) throw new Error("expected context notes tool");
+			await tool.execute("initial", { text: "existing notebook" });
+			const base = sessionManager.appendCustomEntry("test_branch_base");
+			const descendant = sessionManager.appendCustomEntry("test_branch_descendant");
+			await sessionManager.flush();
+			const sessionFile = sessionManager.getSessionFile();
+			if (!sessionFile) throw new Error("expected persisted session file");
+			const ownerId = sessionManager.getSessionId();
+			if (changed) sessionManager.branch(base);
+			const pendingEnsure = Promise.withResolvers<void>();
+			const ensureSpy = vi.spyOn(sessionManager, "ensureOnDisk").mockImplementation(() => pendingEnsure.promise);
+			try {
+				const pendingWrite = tool.execute("reload", { text: "replacement notebook" });
+				await sessionManager.setSessionFile(sessionFile);
+				expect(sessionManager.getSessionId()).toBe(ownerId);
+				expect(sessionManager.getLeafId()).toBe(descendant);
+				pendingEnsure.resolve();
+				if (changed) {
+					await expect(pendingWrite).rejects.toThrow("session branch changed");
+					expect(getContextNotes(sessionManager.getBranch())?.text).toBe("existing notebook");
+				} else {
+					await expect(pendingWrite).resolves.toMatchObject({ details: { text: "replacement notebook" } });
+					expect(getContextNotes(sessionManager.getBranch())?.text).toBe("replacement notebook");
+				}
+			} finally {
+				ensureSpy.mockRestore();
+				await sessionManager.close();
+			}
+		},
+	);
 	it("does not append notes when the branch changes while disk preparation is pending", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });

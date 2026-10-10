@@ -1878,6 +1878,7 @@ export class SessionManager {
 	}
 
 	#applyEntries(header: SessionHeader, entries: SessionEntry[]): void {
+		const previousLeafId = this.#index.leafId();
 		this.#header = header;
 		this.#entries = entries;
 		this.#sessionId = header.id;
@@ -1885,6 +1886,7 @@ export class SessionManager {
 		this.#titleSource = header.titleSource;
 		this.#titleUpdatedAt = header.timestamp;
 		this.#index.rebuild(entries);
+		if (this.#index.leafId() !== previousLeafId) this.#branchSelectionRevision++;
 	}
 
 	#freshEntryFields(): { id: string; parentId: string | null; timestamp: string } {
