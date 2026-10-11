@@ -623,15 +623,16 @@ not an allowlist of model transports.
 - optional `:thinkingLevel` suffix (`off|minimal|low|medium|high|xhigh|max|auto|inherit`)
 - `@upstream` routing suffix on OpenRouter and Vercel Gateway selectors (for example, `openrouter/anthropic/claude-sonnet-5@anthropic:high`); an exact literal model id still wins
 
-`--provider` is legacy; `--model` is preferred. An exact `provider/modelId` is unambiguous; bare ids
-and fuzzy patterns are resolved against the available concrete models.
+`--provider` is legacy; `--model` is preferred. Provider-qualified shorthand may only add model-id tokens in order (split on `-`, `.`, `/`, `@`, `:` and digit runs), with named revision digits matching the next candidate revision digit without skipping or changing earlier digits; missing selectors resolve to nothing so fallback lists try the next entry, while bare patterns remain unchanged.
 
 Resolution precedence for exact selectors:
 
 1. exact `provider/modelId` reference
 2. exact bare id (case-insensitive); when several providers carry the same id, a preference ranking picks the winner (see below)
 3. retired effort-tier variant alias (collapsed catalog entries, e.g. `X`/`X-thinking` twins)
-4. provider-scoped fuzzy match, then substring matching with an alias-vs-dated pick
+4. provider-scoped token-preserving fuzzy match, then substring matching with an alias-vs-dated pick
+
+Known exact aliases and prefix extensions to dated snapshots remain supported when they preserve the requested model-id tokens.
 
 Glob scope patterns (used by `enabledModels` and CLI `--models`) run separately over concrete models after exact matching.
 

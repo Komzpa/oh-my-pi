@@ -101,7 +101,7 @@ or `--fork`.
 
 | Flag | Description |
 | --- | --- |
-| `--model <id-or-role>` | Model or configured role to use (role: `slow` or `@slow`; fuzzy model match: `opus`, `gpt-5.2`, or `openai/gpt-5.2`). |
+| `--model <id-or-role>` | Model or configured role to use (role: `slow` or `@slow`; fuzzy model match: `opus`, `gpt-5.2`, or `openai/gpt-5.2`; provider-qualified shorthand may add tokens but cannot skip or change named revision digits). |
 | `--smol <id>` | Smol/fast model for lightweight tasks (or `PI_SMOL_MODEL`). |
 | `--slow <id>` | Slow/reasoning model for thorough analysis (or `PI_SLOW_MODEL`). |
 | `--plan <id>` | Plan model for architectural planning (or `PI_PLAN_MODEL`). |
