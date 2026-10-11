@@ -16,8 +16,8 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 
 let tmp: TempDir;
 
-beforeAll(async () => {
-	tmp = new TempDir();
+beforeAll(() => {
+	tmp = TempDir.createSync("@models-last-good-");
 });
 
 afterAll(async () => {
@@ -137,7 +137,7 @@ test("1b: Invalid schema after good load keeps last-good providers with file:lin
 	}
 });
 
-test("1c: Fresh registry with bad file and in-memory last-good from prior load", async () => {
+test("1c: Fresh registry restores providers from the sidecar only", async () => {
 	const modelsPath = tmp.join("models-fresh.yml");
 	const authStorage = await AuthStorage.create(":memory:");
 
@@ -162,7 +162,7 @@ test("1c: Fresh registry with bad file and in-memory last-good from prior load",
 		const registry1 = new ModelRegistry(authStorage, modelsPath);
 		expect(registry1.getAvailable().some(m => m.provider === "firstprovider")).toBe(true);
 
-		// Corrupt the file
+		// Corrupt the file after the good load has persisted its validated snapshot.
 		await fs.writeFile(
 			modelsPath,
 			`providers:
@@ -173,11 +173,13 @@ test("1c: Fresh registry with bad file and in-memory last-good from prior load",
 `,
 		);
 
-		// Create a completely fresh registry - it has no in-memory last-good from previous instances
-		// So this tests that the system degrades gracefully
+		const sidecarPath = path.join(path.dirname(modelsPath), "models.last-good.yml");
+		expect(await fs.readFile(sidecarPath, "utf8")).toContain("firstprovider:");
+		// A new registry has no in-memory snapshot; restoration must come from disk.
 		const registry2 = new ModelRegistry(authStorage, modelsPath);
+		expect(registry2.getAvailable().some(m => m.provider === "firstprovider")).toBe(true);
 		const error2 = registry2.getError();
-		expect(error2).toBeDefined(); // Should have error since fresh instance
+		expect(error2?.filePath).toContain("models-fresh.yml");
 	} finally {
 		authStorage.close();
 	}
@@ -241,6 +243,9 @@ test("2: Valid edit takes effect on next load and error clears", async () => {
 		const registry3 = new ModelRegistry(authStorage, modelsPath);
 		expect(registry3.getAvailable().some(m => m.provider === "newprovider")).toBe(true);
 		expect(registry3.getError()).toBeUndefined(); // Error should clear on valid load
+		const sidecar = await fs.readFile(path.join(path.dirname(modelsPath), "models.last-good.yml"), "utf8");
+		expect(sidecar).toContain("newprovider:");
+		expect(sidecar).not.toContain("reloadprov:");
 	} finally {
 		authStorage.close();
 	}
@@ -254,16 +259,31 @@ test("3: models.yml with no custom providers loads with no error warning", async
 		// Write an empty models.yml (no custom providers)
 		await fs.writeFile(
 			modelsPath,
-			`# No custom providers
-`,
+			`{}
+			`,
 		);
 
 		const registry = new ModelRegistry(authStorage, modelsPath);
 		expect(registry.getError()).toBeUndefined();
+	} finally {
+		authStorage.close();
+	}
+});
 
-		// Built-in providers should still be available
-		const available = registry.getAvailable();
-		expect(available.length).toBeGreaterThan(0);
+test("4: Deleted models.yml retains the existing not-found behavior", async () => {
+	const modelsPath = tmp.join("models-deleted.yml");
+	const authStorage = await AuthStorage.create(":memory:");
+	try {
+		await fs.writeFile(
+			modelsPath,
+			`providers:\n  deletedprov:\n    baseUrl: http://localhost:8000/v1\n    api: openai-completions\n    auth: none\n    models:\n      - id: deleted-model\n        name: Deleted Model\n        input: [text]\n        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }\n        contextWindow: 1024\n`,
+		);
+		const loaded = new ModelRegistry(authStorage, modelsPath);
+		expect(loaded.getAvailable().some(model => model.provider === "deletedprov")).toBe(true);
+		await fs.rm(modelsPath);
+		const deleted = new ModelRegistry(authStorage, modelsPath);
+		expect(deleted.getError()).toBeUndefined();
+		expect(deleted.getAvailable().some(model => model.provider === "deletedprov")).toBe(false);
 	} finally {
 		authStorage.close();
 	}

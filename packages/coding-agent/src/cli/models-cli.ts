@@ -95,9 +95,11 @@ function writeLine(line = ""): void {
 	process.stdout.write(`${line}\n`);
 }
 
-function writeModelsConfigError(error: Error): void {
+function writeModelsConfigError(error: ConfigError): void {
 	const fileLine = error.filePath && error.line ? ` at ${error.filePath}:${error.line}` : "";
-	const status = error.message.includes("custom providers") ? " — custom providers disabled" : " — keeping last-good custom providers";
+	const status = error.message.includes("custom providers")
+		? " — custom providers disabled"
+		: " — keeping last-good custom providers";
 	writeLine(chalk.yellow(`Warning: models.yml validation failed${fileLine}${status}`));
 	for (const line of error.message.split("\n")) {
 		writeLine(`  ${line}`);
