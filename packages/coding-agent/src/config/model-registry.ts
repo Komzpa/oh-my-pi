@@ -281,6 +281,7 @@ export class ModelRegistry {
 	#providerOverrides: Map<string, ProviderOverride> = new Map();
 	#modelOverrides: Map<string, Map<string, ModelOverride>> = new Map();
 	#configError: ConfigError | undefined = undefined;
+	#lastGoodCustomModels: CustomModelsResult | undefined;
 	#modelsConfigFile: ConfigFile<ModelsConfig>;
 	#lastStaticLoadMtime: number | null = null;
 	#registeredProviderSources: Set<string> = new Set();
@@ -906,6 +907,10 @@ export class ModelRegistry {
 			configuredProviders = new Set<string>(),
 			error: configError,
 		} = logger.time("modelRegistry:loadCustomModels", () => this.#loadCustomModels());
+		if (customModelsResult.found && !customModelsResult.error) {
+			this.#lastGoodCustomModels = customModelsResult;
+			this.#saveSidecarLastGood(customModelsResult);
+		}
 		this.#configError = configError;
 		this.#keylessProviders = keylessProviders;
 		this.#discoverableProviders = discoverableProviders;
@@ -1553,6 +1558,43 @@ export class ModelRegistry {
 		}
 	}
 
+
+	#saveSidecarLastGood(result: CustomModelsResult): void {
+		const sidecarPath = `${this.#modelsConfigFile.path()}.last-good`;
+		if (!result.found || result.error) return;
+		try {
+			const providers: Record<string, unknown> = {};
+			for (const [name, override] of result.overrides) {
+				providers[name] = { baseUrl: override.baseUrl, api: override.baseUrlApis?.[0] };
+			}
+			const content = `providers:\n${Object.entries(providers).map(([k, v]) => `  ${k}:\n    baseUrl: ${(v as any).baseUrl}\n    api: ${(v as any).api}`).join('\n')}\n`;
+			const tempPath = `${sidecarPath}.tmp`;
+			Bun.write(tempPath, content);
+			try { fs.unlinkSync(sidecarPath); } catch {}
+			fs.renameSync(tempPath, sidecarPath);
+		} catch (err) {
+			logger.debug("Failed to save models.last-good sidecar", { err });
+		}
+	}
+
+	#loadSidecarLastGood(): CustomModelsResult | undefined {
+		const sidecarPath = `${this.#modelsConfigFile.path()}.last-good`;
+		try {
+			if (!require("fs").existsSync(sidecarPath)) return undefined;
+			const content = require("fs").readFileSync(sidecarPath, "utf-8").trim();
+			const parsed = require("bun").YAML.parse(content);
+			// Restore basic structure from sidecar
+			const overrides = new Map<string, ProviderOverride>();
+			for (const [name, cfg] of Object.entries(parsed.providers ?? {})) {
+				const c = cfg as any;
+				overrides.set(name, { baseUrl: c.baseUrl, baseUrlApis: c.api ? [c.api] : undefined } as any);
+			}
+			return { models: [], overrides, modelOverrides: new Map(), keylessProviders: new Set(), discoverableProviders: [], configuredProviders: new Set(Object.keys(parsed.providers ?? {})), found: true };
+		} catch (err) {
+			return undefined;
+		}
+	}
+
 	#loadCustomModels(): CustomModelsResult {
 		// Gateway mode: serve bundled + broker-discovered catalog metadata only.
 		// Local models.yml provider overrides (baseUrl/apiKey/headers/transport),
@@ -1575,6 +1617,10 @@ export class ModelRegistry {
 		const { value, error, status } = this.#modelsConfigFile.tryLoad();
 
 		if (status === "error") {
+			this.#configError = error;
+			if (this.#lastGoodCustomModels) return this.#lastGoodCustomModels;
+			const sidecar = this.#loadSidecarLastGood();
+			if (sidecar) { this.#lastGoodCustomModels = sidecar; return sidecar; }
 			return {
 				models: [],
 				overrides: new Map(),
