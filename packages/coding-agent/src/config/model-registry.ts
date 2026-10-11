@@ -281,6 +281,7 @@ export class ModelRegistry {
 	#providerOverrides: Map<string, ProviderOverride> = new Map();
 	#modelOverrides: Map<string, Map<string, ModelOverride>> = new Map();
 	#configError: ConfigError | undefined = undefined;
+	#lastGoodCustomModels: CustomModelsResult | undefined;
 	#modelsConfigFile: ConfigFile<ModelsConfig>;
 	#lastStaticLoadMtime: number | null = null;
 	#registeredProviderSources: Set<string> = new Set();
@@ -906,6 +907,9 @@ export class ModelRegistry {
 			configuredProviders = new Set<string>(),
 			error: configError,
 		} = logger.time("modelRegistry:loadCustomModels", () => this.#loadCustomModels());
+		if (customModelsResult.found && !customModelsResult.error) {
+			this.#lastGoodCustomModels = customModelsResult;
+		}
 		this.#configError = configError;
 		this.#keylessProviders = keylessProviders;
 		this.#discoverableProviders = discoverableProviders;
@@ -1575,6 +1579,10 @@ export class ModelRegistry {
 		const { value, error, status } = this.#modelsConfigFile.tryLoad();
 
 		if (status === "error") {
+			this.#configError = error;
+			if (this.#lastGoodCustomModels) {
+				return this.#lastGoodCustomModels;
+			}
 			return {
 				models: [],
 				overrides: new Map(),

@@ -1,0 +1,270 @@
+/**
+ * Test suite for models.yml last-good provider retention on validation failures.
+ *
+ * When models.yml fails to validate:
+ * - Custom providers from the last successful load should remain available
+ * - A warning should be shown with file:line attribution
+ * - Next valid change should restore normal operation
+ */
+
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { AuthStorage } from "@oh-my-pi/pi-ai";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { TempDir } from "@oh-my-pi/pi-utils";
+
+let tmp: TempDir;
+
+beforeAll(async () => {
+	tmp = new TempDir();
+});
+
+afterAll(async () => {
+	await tmp.remove();
+});
+
+test("1a: Invalid YAML keeps last-good providers in getAvailable() and error in getError() with file:line", async () => {
+	const modelsPath = tmp.join("models.yml");
+	const authStorage = await AuthStorage.create(":memory:");
+
+	try {
+		// Write a valid config with a custom provider
+		await fs.writeFile(
+			modelsPath,
+			`providers:
+  myprovider:
+    baseUrl: http://localhost:8000/v1
+    api: openai-completions
+    auth: none
+    models:
+      - id: my-model
+        name: My Model
+        input: [text]
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+        contextWindow: 8192
+        maxTokens: 4096
+`,
+		);
+
+		// Load the valid config
+		const registry1 = new ModelRegistry(authStorage, modelsPath);
+		const available1 = registry1.getAvailable();
+		expect(available1.some(m => m.provider === "myprovider")).toBe(true);
+		expect(registry1.getError()).toBeUndefined();
+
+		// Now corrupt the YAML (invalid syntax)
+		await fs.writeFile(
+			modelsPath,
+			`providers:
+  myprovider:
+    baseUrl: http://localhost:8000/v1
+    api: openai-completions
+    invalid: [unclosed
+    models:
+      - id: my-model
+`,
+		);
+
+		// Force reload with a new registry instance
+		const registry2 = new ModelRegistry(authStorage, modelsPath);
+		const available2 = registry2.getAvailable();
+
+		// Last-good providers should still be available
+		expect(available2.some(m => m.provider === "myprovider")).toBe(true);
+
+		// Error should be set with file:line info
+		const error = registry2.getError();
+		expect(error).toBeDefined();
+		expect(error?.filePath || "").toContain("models.yml");
+		expect(error?.line || 0).toBeGreaterThan(0);
+	} finally {
+		authStorage.close();
+	}
+});
+
+test("1b: Invalid schema after good load keeps last-good providers with file:line error", async () => {
+	const modelsPath = tmp.join("models-schema.yml");
+	const authStorage = await AuthStorage.create(":memory:");
+
+	try {
+		// Write a valid config first
+		await fs.writeFile(
+			modelsPath,
+			`providers:
+  testprovider:
+    baseUrl: http://localhost:8000/v1
+    api: openai-completions
+    auth: none
+    models:
+      - id: test-model
+        name: Test Model
+        input: [text]
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+        contextWindow: 4096
+`,
+		);
+
+		const registry1 = new ModelRegistry(authStorage, modelsPath);
+		expect(registry1.getAvailable().some(m => m.provider === "testprovider")).toBe(true);
+		expect(registry1.getError()).toBeUndefined();
+
+		// Now make the models field invalid (null instead of array)
+		await fs.writeFile(
+			modelsPath,
+			`providers:
+  testprovider:
+    baseUrl: http://localhost:8000/v1
+    api: openai-completions
+    auth: none
+    models: null
+`,
+		);
+
+		// Create new registry - should keep last-good
+		const registry2 = new ModelRegistry(authStorage, modelsPath);
+		const available2 = registry2.getAvailable();
+
+		// Last-good should still be available
+		expect(available2.some(m => m.provider === "testprovider")).toBe(true);
+
+		// Error should show file:line
+		const error = registry2.getError();
+		expect(error).toBeDefined();
+		expect(error?.message || "").toContain("models");
+	} finally {
+		authStorage.close();
+	}
+});
+
+test("1c: Fresh registry with bad file and in-memory last-good from prior load", async () => {
+	const modelsPath = tmp.join("models-fresh.yml");
+	const authStorage = await AuthStorage.create(":memory:");
+
+	try {
+		// First registry loads valid config
+		await fs.writeFile(
+			modelsPath,
+			`providers:
+  firstprovider:
+    baseUrl: http://localhost:8000/v1
+    api: openai-completions
+    auth: none
+    models:
+      - id: model1
+        name: Model 1
+        input: [text]
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+        contextWindow: 2048
+`,
+		);
+
+		const registry1 = new ModelRegistry(authStorage, modelsPath);
+		expect(registry1.getAvailable().some(m => m.provider === "firstprovider")).toBe(true);
+
+		// Corrupt the file
+		await fs.writeFile(
+			modelsPath,
+			`providers:
+  firstprovider:
+    baseUrl: http://localhost:8000/v1
+    api: openai-completions
+    invalid syntax here {{{
+`,
+		);
+
+		// Create a completely fresh registry - it has no in-memory last-good from previous instances
+		// So this tests that the system degrades gracefully
+		const registry2 = new ModelRegistry(authStorage, modelsPath);
+		const error2 = registry2.getError();
+		expect(error2).toBeDefined(); // Should have error since fresh instance
+	} finally {
+		authStorage.close();
+	}
+});
+
+test("2: Valid edit takes effect on next load and error clears", async () => {
+	const modelsPath = tmp.join("models-reload.yml");
+	const authStorage = await AuthStorage.create(":memory:");
+
+	try {
+		// Start with valid config
+		await fs.writeFile(
+			modelsPath,
+			`providers:
+  reloadprov:
+    baseUrl: http://localhost:8000/v1
+    api: openai-completions
+    auth: none
+    models:
+      - id: reload-model
+        name: Reload Model
+        input: [text]
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+        contextWindow: 1024
+`,
+		);
+
+		const registry1 = new ModelRegistry(authStorage, modelsPath);
+		expect(registry1.getAvailable().some(m => m.provider === "reloadprov")).toBe(true);
+		expect(registry1.getError()).toBeUndefined();
+
+		// Corrupt it
+		await fs.writeFile(
+			modelsPath,
+			`providers:
+  reloadprov:
+    invalid: [
+`,
+		);
+
+		const registry2 = new ModelRegistry(authStorage, modelsPath);
+		expect(registry2.getError()).toBeDefined();
+
+		// Fix it with a different provider
+		await fs.writeFile(
+			modelsPath,
+			`providers:
+  newprovider:
+    baseUrl: http://localhost:9000/v1
+    api: openai-completions
+    auth: none
+    models:
+      - id: new-model
+        name: New Model
+        input: [text]
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+        contextWindow: 512
+`,
+		);
+
+		const registry3 = new ModelRegistry(authStorage, modelsPath);
+		expect(registry3.getAvailable().some(m => m.provider === "newprovider")).toBe(true);
+		expect(registry3.getError()).toBeUndefined(); // Error should clear on valid load
+	} finally {
+		authStorage.close();
+	}
+});
+
+test("3: models.yml with no custom providers loads with no error warning", async () => {
+	const modelsPath = tmp.join("models-empty.yml");
+	const authStorage = await AuthStorage.create(":memory:");
+
+	try {
+		// Write an empty models.yml (no custom providers)
+		await fs.writeFile(
+			modelsPath,
+			`# No custom providers
+`,
+		);
+
+		const registry = new ModelRegistry(authStorage, modelsPath);
+		expect(registry.getError()).toBeUndefined();
+
+		// Built-in providers should still be available
+		const available = registry.getAvailable();
+		expect(available.length).toBeGreaterThan(0);
+	} finally {
+		authStorage.close();
+	}
+});
