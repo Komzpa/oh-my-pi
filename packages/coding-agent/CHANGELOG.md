@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed provider-qualified model selectors silently selecting a different revision: shorthand may only add model-id tokens in order, with named revision digits matching the next candidate revision digit without skips or changes, so missing ids fall through to the next fallback while bare patterns and known aliases remain supported.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02
