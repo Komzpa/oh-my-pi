@@ -88,14 +88,14 @@ function strongOrder(agent: string, config: PoolConfig, models: BrrrrModel[]): s
 }
 // Pool lengths are routing policy; model selectors and fallback order live in agent frontmatter.
 const POOL_SIZES: Record<string, number> = {
-	coder: 8,
-	"ui-coder": 5,
+	coder: 9,
+	"ui-coder": 6,
 	scout: 5,
-	"gate-runner": 4,
-	"git-pr-owner": 4,
-	scribe: 4,
-	reviewer: 3,
-	workhorse: 6,
+	"gate-runner": 5,
+	"git-pr-owner": 5,
+	scribe: 5,
+	reviewer: 4,
+	workhorse: 7,
 	"retro-facilitator": 3,
 	architect: 4,
 	"plan-doctor": 3,
@@ -274,6 +274,7 @@ const TASK_POOL: PoolConfig = {
 	pool: [
 		"openrouter/dots-studio/dots-3-note-preview:free",
 		"codex-lb/gpt-6-luna:medium",
+		"anthropic/claude-haiku-5-5:medium",
 		"kimi-code/kimi-for-coding:high",
 		"deepseek/deepseek-v4-pro:high",
 		"kimi-code/k3:high",

@@ -1148,6 +1148,8 @@ describe("agent router", () => {
 			const config = AGENT_POOLS[agent];
 			expect(config).toBeDefined();
 			for (const spec of config!.pool) {
+				// Haiku 5.5 cannot run below medium: low effort skips searches and tool calls (vendor guide).
+				if (spec.startsWith("anthropic/claude-haiku-5-5")) continue;
 				expect(canRunAtOrBelow(spec, intendedLevel)).toBe(true);
 			}
 		}
@@ -1400,11 +1402,11 @@ describe("agent router", () => {
 				expect(result?.model.every(model => !model.startsWith("codex-lb/") && !model.startsWith("deepseek/"))).toBe(
 					true,
 				);
-				expect(
-					["openrouter/", "kimi-code/", "claude-bridge/", "xiaomi/", "muse-code/"].some(provider =>
-						result?.model[0]?.startsWith(provider),
-					),
-				).toBe(true);
+			expect(
+				["openrouter/", "kimi-code/", "claude-bridge/", "xiaomi/", "muse-code/", "anthropic/"].some(provider =>
+					result?.model[0]?.startsWith(provider),
+				),
+			).toBe(true);
 			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -2120,6 +2122,7 @@ describe("agent router", () => {
 			"kimi-code/k3:high",
 			"deepseek/deepseek-v4-pro:high",
 			"kimi-code/kimi-for-coding:high",
+			"anthropic/claude-haiku-5-5:medium",
 			"codex-lb/gpt-6-luna:medium",
 			"codex-lb/gpt-6.1-sol:medium",
 			"codex-lb/Qwen3.8-27B",
@@ -2133,10 +2136,10 @@ describe("agent router", () => {
 				const withoutFree = TASK_ORDER.filter(spec => !spec.endsWith(":free"));
 				const models = withoutFree.map(spec => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, ""));
 				const result = await spawnTask("long-1", priorityCtx(models), file);
-				expect(result?.model?.[0]).toBe("codex-lb/gpt-6-luna:medium");
+				expect(result?.model?.[0]).toBe("anthropic/claude-haiku-5-5:medium");
 				expect(result?.model).toEqual([
-					"codex-lb/gpt-6-luna:medium",
-					...withoutFree.filter(spec => spec !== "codex-lb/gpt-6-luna:medium"),
+					"anthropic/claude-haiku-5-5:medium",
+					...withoutFree.filter(spec => spec !== "anthropic/claude-haiku-5-5:medium"),
 				]);
 				expect(result?.note).toContain("critical row");
 			} finally {
@@ -2173,7 +2176,7 @@ describe("agent router", () => {
 				// Unavailable models drop out of the order, so the chain holds
 				// only non-priority entries with Qwen and cerebras last.
 				const withoutPriority = TASK_ORDER.filter(
-					spec => spec !== "codex-lb/gpt-6-luna:medium" && spec !== "codex-lb/gpt-6.1-sol:medium",
+					spec => spec !== "codex-lb/gpt-6-luna:medium" && spec !== "codex-lb/gpt-6.1-sol:medium" && spec !== "anthropic/claude-haiku-5-5:medium",
 				);
 				const context = priorityCtx(
 					withoutPriority.map(spec => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "")),
@@ -2212,4 +2215,19 @@ test("R3: internal control URIs bypass the empty-write guard so proc:// kill pas
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("Haiku 5.5 sits in scout and every luna pool; brrrr strong models stay untouched", () => {
+	const pools = getAgentPools();
+	const all = (config: { pool: string[]; fallbacks: string[] }) => [...config.pool, ...config.fallbacks];
+	// Scout no longer routes to Haiku 4.5.
+	expect(pools.scout.pool.some(spec => spec.startsWith("anthropic/claude-haiku-5-5"))).toBe(true);
+	expect(all(pools.scout).some(spec => spec.startsWith("anthropic/claude-haiku-4-5"))).toBe(false);
+	// Every pool that still offers luna also offers Haiku 5.5.
+	for (const [agent, config] of Object.entries(pools)) {
+		if (!all(config).some(spec => spec.includes("gpt-6-luna"))) continue;
+		expect(all(config).some(spec => spec.startsWith("anthropic/claude-haiku-5-5")), agent).toBe(true);
+	}
+	// Brrrr is strong-models-only: Haiku 5.5 must not leak in.
+	expect(STRONG_MODELS.some(id => id.includes("claude-haiku-5-5"))).toBe(false);
 });

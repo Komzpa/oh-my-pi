@@ -5,6 +5,7 @@
 ### Added
 
 - `/brrrr` persisted routing with hot user-wide model classes and blacklist reads, fast-only Luna, Cerebras light-role preference, fail-closed mandatory routing, and Claude implementation effort capped at high.
+- Route `anthropic/claude-haiku-5-5` (medium effort, never below: low effort skips searches and tool calls) in scout — replacing `anthropic/claude-haiku-4-5` — and directly after every `codex-lb/gpt-6-luna` entry in coder, gate-runner, git-pr-owner, reviewer, scribe, ui-coder, workhorse, and the `task` pool. The brrrr strong-model set is unchanged.
 
 ### Fixed
 
