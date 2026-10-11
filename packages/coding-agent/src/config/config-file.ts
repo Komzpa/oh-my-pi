@@ -243,16 +243,12 @@ export class ConfigFile<T> implements IConfigFile<T> {
 		try {
 			let parsed: unknown;
 			const readPath = this.#resolveReadPath();
-			try {
-				if (readPath.endsWith(".json") || readPath.endsWith(".jsonc")) {
-					parsed = JSONC.parse(content);
-				} else if (readPath.endsWith(".yml") || readPath.endsWith(".yaml")) {
-					parsed = YAML.parse(content);
-				} else {
-					throw new Error(`Invalid config file path: ${readPath}`);
-				}
-			} catch (err) {
-				throw err;
+			if (readPath.endsWith(".json") || readPath.endsWith(".jsonc")) {
+				parsed = JSONC.parse(content);
+			} else if (readPath.endsWith(".yml") || readPath.endsWith(".yaml")) {
+				parsed = YAML.parse(content);
+			} else {
+				throw new Error(`Invalid config file path: ${readPath}`);
 			}
 
 			const checked = this.schema(parsed);

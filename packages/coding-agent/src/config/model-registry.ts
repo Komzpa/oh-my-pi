@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ApiKeyResolver, FetchImpl, ResolvedApiKey, UsageProvider } from "@oh-my-pi/pi-ai";
 import { type AuthApiKeyOptions, oauthAccountKey } from "@oh-my-pi/pi-ai/auth-storage";
@@ -1002,6 +1003,7 @@ export class ModelRegistry {
 	#loadModels() {
 		this.#resetStaticComposition();
 		// Load custom config first (to know which providers to override).
+		const customModelsResult = logger.time("modelRegistry:loadCustomModels", () => this.#loadCustomModels());
 		const {
 			models: customModels = [],
 			overrides = new Map(),
@@ -1010,7 +1012,7 @@ export class ModelRegistry {
 			discoverableProviders = [],
 			configuredProviders = new Set<string>(),
 			error: configError,
-		} = logger.time("modelRegistry:loadCustomModels", () => this.#loadCustomModels());
+		} = customModelsResult;
 		if (customModelsResult.found && !customModelsResult.error) {
 			this.#lastGoodCustomModels = customModelsResult;
 		}
@@ -1712,7 +1714,31 @@ export class ModelRegistry {
 				found: false,
 			};
 		}
-		const { value, error, status } = this.#modelsConfigFile.tryLoad();
+		let loaded = this.#modelsConfigFile.tryLoad();
+		let restoredFromSidecar = false;
+		const error = loaded.status === "error" ? loaded.error : undefined;
+		const configPath = this.#modelsConfigFile.path();
+		const sidecarPath = configPath ? path.join(path.dirname(configPath), "models.last-good.yml") : undefined;
+		if (loaded.status === "ok" && configPath && sidecarPath) {
+			const temporaryPath = `${sidecarPath}.${process.pid}.tmp`;
+			try {
+				fs.writeFileSync(temporaryPath, fs.readFileSync(configPath));
+				fs.renameSync(temporaryPath, sidecarPath);
+			} catch (writeError) {
+				try {
+					fs.rmSync(temporaryPath, { force: true });
+				} catch {}
+				logger.warn("Failed to persist last-good models config", { path: sidecarPath, error: writeError });
+			}
+		}
+		if (loaded.status === "error" && !this.#lastGoodCustomModels && sidecarPath) {
+			const sidecar = ModelsConfigFile.relocate(sidecarPath).tryLoad();
+			if (sidecar.status === "ok") {
+				loaded = sidecar;
+				restoredFromSidecar = true;
+			}
+		}
+		const { value, status } = loaded;
 
 		if (status === "error") {
 			this.#configError = error;
@@ -1860,6 +1886,7 @@ export class ModelRegistry {
 			keylessProviders,
 			discoverableProviders,
 			configuredProviders,
+			...(restoredFromSidecar ? { error } : {}),
 			found: true,
 		};
 	}
