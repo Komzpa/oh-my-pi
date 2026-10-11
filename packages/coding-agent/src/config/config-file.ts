@@ -67,10 +67,15 @@ export interface IConfigFile<T> {
 
 export class ConfigError extends Error {
 	readonly #message: string;
+	readonly filePath?: string;
+	readonly line?: number;
+
 	constructor(
 		public readonly id: string,
 		public readonly schemaErrors: ConfigSchemaError[] | null | undefined,
 		public readonly other?: { err: unknown; stage: string },
+		filePath?: string,
+		line?: number,
 	) {
 		let messages: string[] | undefined;
 		let cause: Error | undefined;
@@ -107,6 +112,8 @@ export class ConfigError extends Error {
 		super(message, { cause });
 		this.name = "LoadError";
 		this.#message = message;
+		this.filePath = filePath;
+		this.line = line;
 	}
 
 	override get message(): string {
@@ -236,12 +243,16 @@ export class ConfigFile<T> implements IConfigFile<T> {
 		try {
 			let parsed: unknown;
 			const readPath = this.#resolveReadPath();
-			if (readPath.endsWith(".json") || readPath.endsWith(".jsonc")) {
-				parsed = JSONC.parse(content);
-			} else if (readPath.endsWith(".yml") || readPath.endsWith(".yaml")) {
-				parsed = YAML.parse(content);
-			} else {
-				throw new Error(`Invalid config file path: ${readPath}`);
+			try {
+				if (readPath.endsWith(".json") || readPath.endsWith(".jsonc")) {
+					parsed = JSONC.parse(content);
+				} else if (readPath.endsWith(".yml") || readPath.endsWith(".yaml")) {
+					parsed = YAML.parse(content);
+				} else {
+					throw new Error(`Invalid config file path: ${readPath}`);
+				}
+			} catch (err) {
+				throw err;
 			}
 
 			const checked = this.schema(parsed);
@@ -250,7 +261,20 @@ export class ConfigFile<T> implements IConfigFile<T> {
 					instancePath: error.path.length === 0 ? "root" : error.path.join("."),
 					message: error.problem,
 				}));
-				const error = new ConfigError(this.id, schemaErrors);
+				let line: number | undefined;
+				// Extract line number from first key-path in the raw content
+				if (schemaErrors.length > 0 && schemaErrors[0].instancePath !== "root") {
+					const keyPath = schemaErrors[0].instancePath.split(".");
+					const firstKey = keyPath[0];
+					const lines = content.split("\n");
+					for (let i = 0; i < lines.length; i++) {
+						if (lines[i].includes(`${firstKey}:`)) {
+							line = i + 1; // 1-indexed for display
+							break;
+						}
+					}
+				}
+				const error = new ConfigError(this.id, schemaErrors, undefined, readPath, line);
 				logger.warn("Failed to parse config file", { path: this.path(), error });
 				return this.#storeCache({ error, status: "error" });
 			}
@@ -266,9 +290,20 @@ export class ConfigFile<T> implements IConfigFile<T> {
 			}
 			return this.#storeCache({ value, status: "ok" });
 		} catch (error) {
+			let line: number | undefined;
+			const readPath = this.#resolveReadPath();
+			// Extract line from YAML parse error if available
+			if (error instanceof Error && (error.message.includes("line") || "line" in error)) {
+				const lineMatch = error.message.match(/line (\d+)/i);
+				if (lineMatch) {
+					line = parseInt(lineMatch[1], 10);
+				} else if ("line" in error && typeof (error as Record<string, unknown>).line === "number") {
+					line = (error as Record<string, unknown>).line as number;
+				}
+			}
 			logger.warn("Failed to parse config file", { path: this.path(), error });
 			return this.#storeCache({
-				error: new ConfigError(this.id, undefined, { err: error, stage: "Unexpected" }),
+				error: new ConfigError(this.id, undefined, { err: error, stage: "Unexpected" }, readPath, line),
 				status: "error",
 			});
 		}
