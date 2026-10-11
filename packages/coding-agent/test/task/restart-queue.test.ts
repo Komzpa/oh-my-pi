@@ -790,6 +790,47 @@ describe("restart queue controller", () => {
 		expect(texts[0]).not.toMatch(/do not start another model turn/i);
 		controller.dispose();
 	});
+	it("cross-instance restore appends the terminal notice to the live next-turn list", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const oldIdentity = identityFor(manager, "instance-X", 1);
+		const requestId = "cross-instance-done";
+		const now = Date.now();
+		for (const state of ["queued", "draining", "checkpointed", "restarting"] as const) {
+			await appendQueueRecord(manager, oldIdentity, {
+				version: 1,
+				requestId,
+				sessionId: oldIdentity.sessionId,
+				state,
+				requestedAt: now,
+				updatedAt: now,
+				rootWasRunning: false,
+			});
+		}
+		manager.appendCustomMessageEntry(
+			"restart-queued",
+			`Restart ${requestId} is queued. Do not start another model turn until it completes.`,
+			true,
+			{ requestId, state: "queued" },
+		);
+		await manager.flush();
+		const harness = makeSession(manager);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identityFor(manager, "instance-Y", 2),
+			restart: async () => {},
+		});
+		await controller.restore();
+		await controller.restore();
+		const texts = customMessageTexts(harness, requestId);
+		expect(texts).toHaveLength(1);
+		expect(texts[0]).toContain(requestId);
+		expect(texts[0]).toMatch(/complet/i);
+		expect(texts[0]).toMatch(/no longer applies|resume normal work/i);
+		expect(texts[0]).not.toMatch(/do not start another model turn/i);
+		expect(controller.snapshot().request).toMatchObject({ requestId, state: "completed" });
+		controller.dispose();
+	});
 });
 
 describe("restart-queued notice replay (session 01a0e3fe)", () => {

@@ -500,9 +500,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			if (restartCompleted && record?.rootWasRunning) {
 				await sendRootContinuationOnce(this.#session, record.requestId);
 			}
-			if (record && (record.state === "completed" || record.state === "cancelled")) {
+			if (record && (record.state === "completed" || record.state === "cancelled" || record.state === "failed")) {
 				const notices = this.#restartNoticesFor(record.requestId);
-				if (notices.length > 0 && !notices.some(notice => notice.terminal)) {
+				if (notices.length > 0 && notices.some(notice => notice.terminal) === false) {
 					await this.#session.sendCustomMessage(
 						{
 							customType: RESTART_QUEUED_NOTICE_TYPE,
@@ -959,14 +959,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			const details: unknown = entry.details;
 			const detailedId = isObject(details) && typeof details.requestId === "string" ? details.requestId : undefined;
 			const detailedState = isObject(details) && typeof details.state === "string" ? details.state : undefined;
-			const content = typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content ?? "");
-			if (detailedId !== requestId && !content.includes(requestId)) continue;
+			if (detailedId !== requestId) continue;
 			notices.push({
-				terminal:
-					detailedState === "completed" ||
-					detailedState === "cancelled" ||
-					detailedState === "failed" ||
-					/no longer applies|resume normal work/i.test(content),
+				terminal: detailedState === "completed" || detailedState === "cancelled" || detailedState === "failed",
 			});
 		}
 		return notices;
