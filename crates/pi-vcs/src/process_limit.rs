@@ -419,6 +419,8 @@ impl ToolProcessLimit {
 		}
 		#[cfg(target_os = "linux")]
 		{
+			#[cfg(not(test))]
+			sweep_once_in_background();
 			state.created = true;
 			let result = systemd_user_manager_command(systemctl_bin())
 				.args(["--user", "set-property", "--runtime", &state.slice])
@@ -547,6 +549,12 @@ impl Drop for ToolProcessLimit {
 				let _ = systemd_user_manager_command(&systemctl)
 					.args(["--user", "stop", &slice])
 					.status();
+				// `set-property --runtime` writes `<slice>.d/` under the manager's runtime
+				// directory, and `stop` does not remove it. Revert after stop so the
+				// drop-in does not outlive the call.
+				let _ = systemd_user_manager_command(&systemctl)
+					.args(["--user", "revert", &slice])
+					.output();
 			});
 		}
 	}
@@ -575,6 +583,160 @@ fn systemd_property(unit: &str, property: &str) -> io::Result<String> {
 		return Err(io::Error::other(format!("systemd returned an empty {property} for {unit}")));
 	}
 	Ok(value)
+}
+
+/// Sweep runs once per process, on a detached thread, before the first slice is
+/// enforced. Failures are reported and never block a tool call.
+#[cfg(all(target_os = "linux", not(test)))]
+static SWEEP_ONCE: std::sync::Once = std::sync::Once::new();
+
+/// Batch size for `systemctl revert`: one manager call per chunk, never per unit.
+#[cfg(target_os = "linux")]
+const REVERT_BATCH: usize = 200;
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn sweep_once_in_background() {
+	SWEEP_ONCE.call_once(|| {
+		let spawned = std::thread::Builder::new()
+			.name("omp-tool-dropin-sweep".into())
+			.spawn(|| {
+				if let Err(error) = sweep_stale_call_dropins() {
+					eprintln!("omp: stale tool slice drop-in sweep failed: {error}");
+				}
+			});
+		if let Err(error) = spawned {
+			eprintln!("omp: could not start stale tool slice drop-in sweep: {error}");
+		}
+	});
+}
+
+/// Owner pid of a per-call tool slice: `omp-tool-call-<pid>-<id>.slice`, or
+/// `omp-tool-<session hash>-call-<pid>-<id>.slice` when session-parented.
+#[cfg(target_os = "linux")]
+fn call_slice_owner_pid(unit: &str) -> Option<u32> {
+	fn all_digits(text: &str) -> bool {
+		!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
+	}
+	let stem = unit.strip_prefix("omp-tool-")?.strip_suffix(".slice")?;
+	let call = match stem.strip_prefix("call-") {
+		Some(call) => call,
+		None => {
+			let (hash, call) = stem.split_once('-')?;
+			if hash.len() != 12 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+				return None;
+			}
+			call.strip_prefix("call-")?
+		},
+	};
+	let (pid, id) = call.split_once('-')?;
+	if !all_digits(pid) || !all_digits(id) {
+		return None;
+	}
+	pid.parse().ok()
+}
+
+/// Whether a pid names a live process. Anything uncertain counts as alive, so
+/// the sweep keeps a drop-in rather than removing it wrongly.
+#[cfg(target_os = "linux")]
+fn process_alive(pid: u32) -> bool {
+	let Ok(pid) = i32::try_from(pid) else {
+		return true;
+	};
+	if pid == 0 {
+		return true;
+	}
+	// SAFETY: signal 0 performs only the existence and permission check.
+	if unsafe { libc::kill(pid, 0) } == 0 {
+		return true;
+	}
+	std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Unit names whose drop-in may be reverted: the owner process is gone and the
+/// unit is not active. Any other name is never returned.
+#[cfg(target_os = "linux")]
+fn stale_call_slice_units<'a>(
+	units: impl IntoIterator<Item = &'a str>,
+	is_alive: impl Fn(u32) -> bool,
+	is_active: impl Fn(&str) -> bool,
+) -> Vec<&'a str> {
+	units
+		.into_iter()
+		.filter(|unit| {
+			call_slice_owner_pid(unit).is_some_and(|pid| !is_alive(pid)) && !is_active(unit)
+		})
+		.collect()
+}
+
+/// Active slice units. A failed query is an error, so the sweep keeps every
+/// drop-in rather than guessing.
+#[cfg(target_os = "linux")]
+fn active_slice_units() -> io::Result<std::collections::HashSet<String>> {
+	let output = systemd_user_manager_command(systemctl_bin())
+		.args(["--user", "list-units", "--type=slice", "--state=active", "--no-legend", "--plain"])
+		.output()?;
+	if !output.status.success() {
+		return Err(io::Error::other(format!(
+			"systemd could not list active slices: {}",
+			String::from_utf8_lossy(&output.stderr).trim()
+		)));
+	}
+	Ok(String::from_utf8_lossy(&output.stdout)
+		.lines()
+		.filter_map(|line| line.split_whitespace().next())
+		.map(str::to_owned)
+		.collect())
+}
+
+/// Reverts drop-ins of tool-call slices whose owner process is gone and whose
+/// unit is inactive. Called once per process from [`sweep_once_in_background`].
+#[cfg(all(target_os = "linux", not(test)))]
+fn sweep_stale_call_dropins() -> io::Result<()> {
+	// SAFETY: geteuid has no preconditions and does not access pointers.
+	let uid = unsafe { libc::geteuid() };
+	let (runtime_dir, _) = systemd_user_manager_env(None, uid);
+	sweep_stale_call_dropins_in(&std::path::Path::new(&runtime_dir).join("systemd/user.control"))
+}
+
+/// Sweep over an explicit `user.control` directory; tests pass a temp directory.
+#[cfg(target_os = "linux")]
+fn sweep_stale_call_dropins_in(control: &std::path::Path) -> io::Result<()> {
+	let entries = match std::fs::read_dir(&control) {
+		Ok(entries) => entries,
+		Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+		Err(error) => return Err(error),
+	};
+	let mut dropins = Vec::new();
+	for entry in entries {
+		let name = entry?.file_name();
+		let Some(unit) = name.to_str().and_then(|name| name.strip_suffix(".d")) else {
+			continue;
+		};
+		if unit.starts_with("omp-tool-") && unit.ends_with(".slice") {
+			dropins.push(unit.to_owned());
+		}
+	}
+	if dropins.is_empty() {
+		return Ok(());
+	}
+	let active = active_slice_units()?;
+	let stale = stale_call_slice_units(dropins.iter().map(String::as_str), process_alive, |unit| {
+		active.contains(unit)
+	});
+	for chunk in stale.chunks(REVERT_BATCH) {
+		let result = systemd_user_manager_command(systemctl_bin())
+			.args(["--user", "revert"])
+			.args(chunk)
+			.output()?;
+		if !result.status.success() {
+			eprintln!(
+				"omp: could not revert {} stale tool slice drop-ins: {}",
+				chunk.len(),
+				String::from_utf8_lossy(&result.stderr).trim()
+			);
+		}
+	}
+	Ok(())
 }
 
 #[cfg(test)]
@@ -1013,5 +1175,134 @@ exec "$@"
 			assert!(Instant::now() < deadline, "escaped descendant did not stop with its cgroup");
 			std::thread::sleep(Duration::from_millis(25));
 		}
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn call_slice_owner_pid_parses_plain_and_session_names() {
+		use super::call_slice_owner_pid;
+		assert_eq!(call_slice_owner_pid("omp-tool-call-4242-7.slice"), Some(4242));
+		assert_eq!(call_slice_owner_pid("omp-tool-0123456789ab-call-4242-7.slice"), Some(4242));
+		assert_eq!(call_slice_owner_pid("omp-tool-0123456789ab.slice"), None);
+		assert_eq!(call_slice_owner_pid("omp-tool-call-4242.slice"), None);
+		assert_eq!(call_slice_owner_pid("omp-tool-call-+4242-7.slice"), None);
+		assert_eq!(call_slice_owner_pid("omp-tool-short-call-4242-7.slice"), None);
+		assert_eq!(call_slice_owner_pid("user@1000.service"), None);
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn stale_sweep_keeps_live_owner_and_active_unit() {
+		use super::stale_call_slice_units;
+		let own = format!("omp-tool-call-{}-1.slice", std::process::id());
+		let dead = "omp-tool-call-4194303-1.slice";
+		let active = "omp-tool-call-4194302-1.slice";
+		let own_pid = std::process::id();
+		// Live owner: kept.
+		assert!(
+			stale_call_slice_units([own.as_str()], |pid| pid == own_pid, |_| false).is_empty()
+		);
+		// Dead owner, inactive unit: reverted.
+		assert_eq!(
+			stale_call_slice_units([dead], |_| false, |_| false),
+			vec![dead]
+		);
+		// Dead owner but active unit: kept.
+		assert!(stale_call_slice_units([active], |_| false, |unit| unit == active).is_empty());
+		// Names that are not tool-call slices are never touched.
+		assert!(
+			stale_call_slice_units(["user@1000.service"], |_| false, |_| false).is_empty()
+		);
+	}
+
+	/// Slice name enforced by `limit`, read from its state.
+	#[cfg(target_os = "linux")]
+	fn enforced_slice(limit: &ToolProcessLimit) -> String {
+		let _ = limit
+			.wrap_scope_command(
+				&[std::ffi::OsString::from("true")],
+				&super::ScopeEnvironment::default(),
+			)
+			.expect("enforce per-tool limit");
+		limit.state.lock().expect("state").slice.clone()
+	}
+
+	/// Runtime drop-in path that `set-property --runtime` writes for `slice`.
+	#[cfg(target_os = "linux")]
+	fn runtime_dropin(slice: &str) -> std::path::PathBuf {
+		// SAFETY: geteuid has no preconditions and does not access pointers.
+		let uid = unsafe { libc::geteuid() };
+		let (runtime, _) = super::systemd_user_manager_env(None, uid);
+		std::path::Path::new(&runtime)
+			.join("systemd/user.control")
+			.join(format!("{slice}.d"))
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	#[ignore = "requires a reachable systemd user manager; run explicitly on a live host"]
+	fn dropping_limit_removes_its_runtime_dropin() {
+		let process_limit = ToolProcessLimit::new(32);
+		let slice = enforced_slice(&process_limit);
+		assert_eq!(super::systemd_property(&slice, "TasksMax").expect("readback"), "32");
+		let dropin = runtime_dropin(&slice);
+		assert!(dropin.exists(), "set-property --runtime should write {}", dropin.display());
+		drop(process_limit);
+		let deadline = Instant::now() + Duration::from_secs(10);
+		while dropin.exists() {
+			assert!(Instant::now() < deadline, "runtime drop-in survived drop: {}", dropin.display());
+			std::thread::sleep(Duration::from_millis(25));
+		}
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	#[ignore = "requires a reachable systemd user manager; run explicitly on a live host"]
+	fn sweep_keeps_runtime_dropin_of_live_owner() {
+		// Temp directory only: never the host's user.control.
+		let pid = std::process::id();
+		let dir = std::env::temp_dir().join(format!("omp-dropin-neighbour-{pid}"));
+		let own = dir.join(format!("omp-tool-call-{pid}-1.slice.d"));
+		std::fs::create_dir_all(&own).expect("create neighbour drop-in");
+		super::sweep_stale_call_dropins_in(&dir).expect("sweep temp dir");
+		let kept = own.exists();
+		let _ = std::fs::remove_dir_all(&dir);
+		assert!(kept, "sweep removed a live owner's drop-in");
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	#[ignore = "requires a reachable systemd user manager; run explicitly on a live host"]
+	fn fifty_enforce_drop_cycles_leave_no_dropins_for_this_process() {
+		let pid = std::process::id();
+		let prefix = format!("omp-tool-call-{pid}-");
+		let count = || {
+			// SAFETY: geteuid has no preconditions and does not access pointers.
+			let uid = unsafe { libc::geteuid() };
+			let (runtime, _) = super::systemd_user_manager_env(None, uid);
+			std::fs::read_dir(std::path::Path::new(&runtime).join("systemd/user.control"))
+				.expect("read user.control")
+				.filter_map(Result::ok)
+				.filter(|entry| {
+					entry
+						.file_name()
+						.to_str()
+						.is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".slice.d"))
+				})
+				.count()
+		};
+		let before = count();
+		for _ in 0..50 {
+			let process_limit = ToolProcessLimit::new(32);
+			let slice = enforced_slice(&process_limit);
+			assert_eq!(super::systemd_property(&slice, "TasksMax").expect("readback"), "32");
+			drop(process_limit);
+		}
+		let deadline = Instant::now() + Duration::from_secs(30);
+		while count() > 0 && Instant::now() < deadline {
+			std::thread::sleep(Duration::from_millis(100));
+		}
+		eprintln!("marker drop-ins before={before} after={}", count());
+		assert_eq!(count(), 0, "leaked drop-ins for pid {pid}");
 	}
 }
