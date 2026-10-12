@@ -110,7 +110,6 @@ import {
 	cfgTaskStructured,
 } from "./settings";
 
-
 function createUsageTotals(): Usage {
 	return {
 		input: 0,
