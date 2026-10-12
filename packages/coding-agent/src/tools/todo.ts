@@ -148,6 +148,11 @@ export interface RequirementRowArtifactContext {
 	sessionManager?: { getBranch(): SessionEntry[] };
 	getAsyncJobSnapshot?: () => { running?: readonly { id: string; agentId?: string }[] } | undefined;
 	signal?: AbortSignal;
+	/**
+	 * Checkout a finished non-isolated worker actually ran in, captured at the task
+	 * execution boundary. Used only for a row scheduled to that exact owner.
+	 */
+	executionCheckout?: { owner: string; cwd: string };
 }
 
 const ABSOLUTE_ARTIFACT_PATH = /\/(?:home|srv|tmp|var|mnt|workspaces|Users)\/[^\s"'`),;]+/g;
@@ -227,11 +232,36 @@ async function resolveRequirementRowArtifact(
 	if (new Set(branchNames).size > 1) return unknownRequirementArtifact(`ambiguous branches ${branchNames.join(", ")}`);
 	if (new Set(paths).size > 1) return unknownRequirementArtifact(paths.join(", "));
 	const effectiveOwner = owner ?? "main";
-	const persistedCwd =
-		typeof task.artifactCwd === "string" &&
-		nodePath.isAbsolute(task.artifactCwd) &&
-		task.artifactOwner === effectiveOwner
-			? task.artifactCwd
+	// The binding persisted on the session's latest copy of this row counts even
+	// when the caller's in-memory plan predates it; it must be for the same owner
+	// and the same schedule, so a reassigned row never inherits an old checkout.
+	let persistedCwd: string | undefined;
+	const latest =
+		archived || !ctx.sessionManager
+			? []
+			: getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch())
+					.flatMap(phase => phase.tasks)
+					.filter(candidate => candidate.content === row);
+	const latestTask = latest.length === 1 ? latest[0]! : undefined;
+	const latestSchedule = latestTask && "schedule" in latestTask ? latestTask.schedule : undefined;
+	for (const candidate of [
+		task,
+		JSON.stringify(latestSchedule) === JSON.stringify(schedule) ? latestTask : undefined,
+	]) {
+		if (
+			!persistedCwd &&
+			typeof candidate?.artifactCwd === "string" &&
+			nodePath.isAbsolute(candidate.artifactCwd) &&
+			candidate.artifactOwner === effectiveOwner
+		)
+			persistedCwd = candidate.artifactCwd;
+	}
+	// An explicit execution checkout is authoritative for its exact owner, so the
+	// actual effective cwd a non-isolated worker ran in is never overridden by an
+	// older registry session mapping.
+	const finishedCheckout =
+		owner !== undefined && owner !== "main" && ctx.executionCheckout?.owner === owner
+			? ctx.executionCheckout.cwd
 			: undefined;
 
 	const running = archived ? [] : (ctx.getAsyncJobSnapshot?.()?.running ?? []);
@@ -269,7 +299,7 @@ async function resolveRequirementRowArtifact(
 				: ctx.cwd
 			: resources.length > 0 || persistedCwd
 				? undefined
-				: agent?.session?.sessionManager.getCwd();
+				: (finishedCheckout ?? agent?.session?.sessionManager.getCwd());
 	// A reassigned worker whose checkout is not known must not inherit the row's initial main checkout.
 	if (
 		!archived &&

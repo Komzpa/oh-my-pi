@@ -2446,6 +2446,11 @@ export interface SingleResult {
 	 * messageable after the run — summaries must not suggest otherwise.
 	 */
 	isolated?: boolean;
+	/**
+	 * Checkout a non-isolated run executed in, set by the task runner (never by
+	 * model output) so a finished auditor's row binding survives its disposal.
+	 */
+	checkoutCwd?: string;
 	/** Patch path for isolated worktree output */
 	patchPath?: string;
 	/**

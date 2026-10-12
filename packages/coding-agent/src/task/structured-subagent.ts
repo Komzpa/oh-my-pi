@@ -30,6 +30,7 @@ import type { TaskImage } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../irc/messaging";
 import { buildOutputValidator } from "../tools/output-schema-validator";
+import { bindRequirementRowArtifact, getLatestTodoPhasesFromEntries } from "../tools/todo";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { type ExecutorOptions, runSubprocess } from "./executor";
@@ -751,7 +752,34 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		}
 		let result: SingleResult;
 		if (!isolationContext) {
+			// Bind the actual execution checkout before any worker can finish. This also
+			// covers non-QA owners and async/wait receipts after registry cleanup.
+			const manager = request.session.sessionManager;
+			if (manager) {
+				const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
+				for (const phase of phases) {
+					for (const task of phase.tasks) {
+						if (!("schedule" in task)) continue;
+						const schedule = task.schedule;
+						if (!schedule || typeof schedule !== "object" || !("owner" in schedule) || schedule.owner !== id)
+							continue;
+						await bindRequirementRowArtifact(
+							{
+								cwd: baseOptions.cwd,
+								sessionManager: manager,
+								executionCheckout: { owner: id, cwd: baseOptions.cwd },
+							},
+							task.content,
+							phases,
+							{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
+						);
+					}
+				}
+			}
 			result = await runSubprocess(baseOptions);
+			// Recorded at the execution boundary so completion gates can bind the
+			// row after the worker leaves the registry; isolated runs never carry it.
+			result.checkoutCwd = baseOptions.cwd;
 			onSubprocessResult?.(result);
 		} else {
 			result = await runIsolatedSubprocess({
