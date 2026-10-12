@@ -1203,10 +1203,21 @@ export function decideTodoDispatch(
       })
       .map((row) => row.content),
   );
-  const staffingSnapshotComplete = jobs !== null;
-  const dispatchableReady = ownerlessReady.filter(
-    (candidate) =>
-      staffingSnapshotComplete &&
+  // A ready row already in progress whose owner just completed is an unread result waiting
+  // to be closed (live 2026-10-12: Fix #115 re-staffed after Fix115Countdown completed), not
+  // re-staffed. A pending row with a completed owner was never worked and still reopens;
+  // failed or cancelled owners stay dispatchable: that row still needs a worker.
+  const completedTaskOwners = new Set(
+    (jobs?.recent ?? [])
+      .filter((job) => job.type === "task" && job.status === "completed")
+      .flatMap((job) => [job.id, job.agentId ?? job.id, job.id.replace(/-\d+$/, "")]),
+  );
+   const staffingSnapshotComplete = jobs !== null;
+   const dispatchableReady = ownerlessReady.filter(
+     (candidate) =>
+       staffingSnapshotComplete &&
+      !(candidate.owner !== null && completedTaskOwners.has(candidate.owner) &&
+        openTasksByContent.get(candidate.content)?.status === "in_progress") &&
       // A restored owner that is not running after startup is dead (omp --resume brings nobody back):
       // its row is staffed again under the owner's name (live 21:48: 0 of 20 ran while two such rows waited).
       resourceExecutableContents.has(candidate.content) &&
@@ -2497,7 +2508,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const jobs = ctx.getAsyncJobSnapshot();
     const runningTasks = (jobs?.running ?? []).filter((job) => job.type === "task" && job.status === "running").length;
     const open = (decision.forecast.rows ?? []).filter((row) => row.status === "pending" || row.status === "in_progress");
-    const parked = open.length - runningTasks - (decision.externallyStaffedCount ?? 0);
+    // Dependency-blocked rows cannot start yet: when every ready row already has a running
+    // owner and the blocked rows wait on real outputs (not dangling links a rewrite could
+    // free), they are chain, not idle (live 2026-10-12), and leave the parked count. While
+    // a ready row still needs staffing they keep their pressure in the count.
+    const chiefReadyCandidates = decision.readyCandidates ?? [];
+    const chiefAllReadyStaffed = chiefReadyCandidates.length > 0 && chiefReadyCandidates.every((row) => row.ownership === "live-owned" || row.ownership === "shared-live-owner");
+    const chiefGenuineChain = chiefAllReadyStaffed && !hasReplannableWait(decision);
+    const parked = open.length - (chiefGenuineChain ? open.filter((row) => !row.ready).length : 0) - runningTasks - (decision.externallyStaffedCount ?? 0);
     if (!understaffed(ctx, runningTasks, parked) || lastTaskDispatchRefused) return;
     if (chiefRefusals >= MAX_CHIEF_REFUSALS) return; // it insists three times in a row: let it through
     chiefRefusals += 1;
@@ -2628,7 +2646,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return gateTrace(ctx, "waiting-on-staffed-work");
     }
     const open = (decision.forecast.rows ?? []).filter((row) => row.status === "pending" || row.status === "in_progress");
-    const parked = open.length - runningTasks - (decision.externallyStaffedCount ?? 0);
+    // Dependency-blocked rows cannot start yet: when every ready row already has a running
+    // owner and the blocked rows wait on real outputs (not dangling links a rewrite could
+    // free), they are chain, not idle (live 2026-10-12), and leave the parked count. While
+    // a ready row still needs staffing they keep their pressure in the count.
+    const replanReadyCandidates = decision.readyCandidates ?? [];
+    const replanAllReadyStaffed = replanReadyCandidates.length > 0 && replanReadyCandidates.every((row) => row.ownership === "live-owned" || row.ownership === "shared-live-owner");
+    const replanGenuineChain = replanAllReadyStaffed && !hasReplannableWait(decision);
+    const parked = open.length - (replanGenuineChain ? open.filter((row) => !row.ready).length : 0) - runningTasks - (decision.externallyStaffedCount ?? 0);
     // Starting every ready row must still fill the free slots; one ready row beside 19 chained ones
     // (seen live: 0 of 20 running) is a chain to split, not a staffed plan.
     const dispatchable = (decision.dispatchableReady ?? []).length;
