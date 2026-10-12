@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- `todo_dispatch`: lead chief-of-staff work refusals with the `task` action and count only the ready rows listed; omit worker capacity so a ceiling does not read as a quota. Keep unit/job staffing hints and read-only access.
 - Record served-model attribution, first-turn model and structured fallback triggers on task and wait outcomes; apply retry cooldown only to a recorded failing source model. Older core results retain an explicit unrecorded reason.
 - Demote evidence-backed hard-fail models per role through the existing seed/user blacklist policy. Dots fabrication moves it behind unaffected coder, QA, verification and install candidates; publish (`git-pr-owner`) stays unchanged and free-first.
 - `todo_dispatch`: allow read-only shell loops, conditionals, and leading environment assignments in the chief-of-staff bash gate; recursively inspect command substitutions and refuse malformed or unsupported syntax. Restrict `git branch` to known listing forms so branch mutations remain worker work.

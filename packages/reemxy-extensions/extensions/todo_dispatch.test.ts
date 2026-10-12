@@ -1927,13 +1927,13 @@ test("the main session is chief of staff: worker tools are refused while worker 
   });
   const plan: TodoScheduleInput = [{ name: "Release", tasks: [
     row("Merge main", [], "worker-merge"),
-    row("Replay", ["Merge main"]),
-    row("Pin bundle", ["Replay"]),
-    row("Publish", ["Pin bundle"]),
+    ...Array.from({ length: 4 }, (_, i) => row(`Running row ${i + 1}`, [], `worker-${i + 1}`)),
+    row("Persist 402 billing cooldown across sessions in #98", []),
+    row("Publish", ["Persist 402 billing cooldown across sessions in #98"]),
   ] }];
   const branch: unknown[] = [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } }];
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
-  let taskCap = 16;
+  let taskCap = 15;
   const api = {
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
     getActiveTools: () => ["task", "todo"],
@@ -1943,7 +1943,10 @@ test("the main session is chief of staff: worker tools are refused while worker 
     sendMessage: () => undefined,
   } as unknown as ExtensionAPI;
   const worker = { id: "task-merge", type: "task" as const, status: "running" as const, label: "merge", startTime: liveNow, agentId: "worker-merge" };
-  const jobs: Jobs = { running: [worker], recent: [], nonJobAgents: [{ id: "worker-merge", live: true }] };
+  const workers = [worker, ...Array.from({ length: 4 }, (_, i) => ({
+    ...worker, id: `task-${i + 1}`, agentId: `worker-${i + 1}`, label: `Running row ${i + 1}`,
+  }))];
+  const jobs: Jobs = { running: workers, recent: [], nonJobAgents: workers.map((job) => ({ id: job.agentId, live: true })) };
   let header: { id: string; parentSession?: string } = { id: "root" };
   try {
     await todoDispatch(api);
@@ -1971,7 +1974,13 @@ test("the main session is chief of staff: worker tools are refused while worker 
     expect((await roleOf())).toContain("skill://chief-of-staff");
     const refused = (await call("bash", { command: "bun test" }));
     expect(refused?.block).toBe(true);
-    expect(refused?.reason).toContain("1 of 16 possible workers");
+    expect(refused?.reason).toContain("Persist 402 billing cooldown across sessions in #98");
+    expect(refused?.reason).toMatch(/\btask\b/);
+    expect(refused?.reason).toMatch(/\b1 ready row\b/);
+    expect(refused?.reason).not.toContain("Publish");
+    expect(refused?.reason).not.toContain("possible workers");
+    expect(refused?.reason).toContain("unit:<name>");
+    expect(refused?.reason).toContain("job:<pid>");
     expect((await call("bash", { command: "git status --short" }))).toBeUndefined();
     expect((await call("read", { path: "src/a.ts" }))).toBeUndefined();
     expect((await call("write", { path: "agent://worker-merge", content: "go on" }))).toBeUndefined();
@@ -1991,10 +2000,10 @@ test("the main session is chief of staff: worker tools are refused while worker 
     (await call("task", {}));
     expect((await call("bash", { command: "bun test" }))?.block).toBe(true);
     // Every slot busy: the main session may do the work itself.
-    taskCap = 1;
+    taskCap = workers.length;
     expect((await call("bash", { command: "bun test" }))).toBeUndefined();
     // Subagents are workers, not chiefs.
-    taskCap = 16;
+    taskCap = 15;
     header = { id: "child", parentSession: "root" };
     expect((await call("bash", { command: "bun test" }))).toBeUndefined();
     expect((await roleOf())).not.toContain("chief of staff");
