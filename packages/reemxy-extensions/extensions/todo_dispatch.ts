@@ -443,12 +443,6 @@ const todoOpOf = (call: GateCall): string | undefined => {
   const op = (args as { op?: unknown }).op;
   return typeof op === "string" ? op : undefined;
 };
-// Grievance 567: a gate-refused `task` rework was still delivered to the idle
-// owner via `write agent://...`, which this blanket allow let through while
-// unread-receipts stood escalated, creating two writers (idle + -2 suffix).
-// Kills (proc://) stay always-allowed so stuck workers can be stopped; worker
-// messages (agent://) must pass the gate check so a refused call delivers
-// nothing. Internal steering uses sendWorkerSteering directly, not tool calls.
 const isKill = (call: GateCall): boolean => {
   if (call.name !== "write") return false;
   const path = (call.arguments as { path?: unknown } | undefined)?.path;
@@ -477,19 +471,15 @@ export function parseTodoOverride(input: unknown): string | undefined {
 export function decideGateCall(
   call: GateCall,
   gates: readonly ActiveGate[],
-  context?: { isRunningWorker?: (id: string) => boolean },
 ): GateDecision {
   if (READ_TIER.has(call.name)) return { allowed: true, remedyGateIds: [] };
   if (call.name === "context_notes") return { allowed: true, remedyGateIds: [] };
   if (isKill(call)) return { allowed: true, remedyGateIds: [] };
-  // R47: a check-in write to a currently running task job is one live writer talking
-  // to its own worker, so it passes; idle or parked targets keep the 567 refusal.
-  if (call.name === "write" && context?.isRunningWorker) {
+  // Messaging owns target lookup and rejects unknown ids. Gates must not require a
+  // running task: idle/parked workers and shell:/peer: routes are also valid replies.
+  if (call.name === "write") {
     const path = (call.arguments as { path?: unknown } | undefined)?.path;
-    if (typeof path === "string" && path.startsWith("agent://")) {
-      const target = path.slice("agent://".length).split("/")[0] ?? "";
-      if (target && context.isRunningWorker(target)) return { allowed: true, remedyGateIds: [] };
-    }
+    if (typeof path === "string" && path.startsWith("agent://")) return { allowed: true, remedyGateIds: [] };
   }
   if (gates.length === 0) return { allowed: true, remedyGateIds: [] };
   const passing = gates.filter((gate) => {
@@ -3454,12 +3444,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         satisfies: (call: GateCall) => call.name === "todo" || remedyTask(call),
       }));
       const gateCall = { name: event.toolName, arguments: (event.input ?? {}) as Record<string, unknown> };
-      const runningWorkers = new Set(
-        (ctx.getAsyncJobSnapshot()?.running ?? [])
-          .filter((job) => job.type === "task" && job.status === "running")
-          .flatMap((job) => (job.agentId ? [job.id, job.agentId] : [job.id])),
-      );
-      const verdict = decideGateCall(gateCall, gates, { isRunningWorker: (id: string) => runningWorkers.has(id) });
+      const verdict = decideGateCall(gateCall, gates);
       if (!verdict.allowed) {
         gateTrace(ctx, "escalation-refused", { toolName: event.toolName, gates: verdict.remedyGateIds });
         return { block: true, reason: `${verdict.reason}. ${ORDER}` };
