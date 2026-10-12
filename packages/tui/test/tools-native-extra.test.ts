@@ -80,14 +80,14 @@ function progress(id: string, extra: Partial<AgentProgress> = {}): AgentProgress
 }
 
 describe("native task", () => {
-	it("renders one agent node per subagent, no cards, with the assignment prefix stripped", () => {
+	it("renders one agent node per subagent, with the task summary passed through", () => {
 		const details: TaskToolDetails = {
 			projectAgentsDir: null,
 			results: [],
 			totalDurationMs: 0,
 			progress: [
 				progress("Alpha", {
-					task: "Complete assignment thoroughly:\n\n# Target\nFix the lexer",
+					task: "# Target\nFix the lexer",
 					currentTool: "read",
 					// `lastIntent` is an earlier call's; the running call carries its own.
 					lastIntent: "Searching the lexer",

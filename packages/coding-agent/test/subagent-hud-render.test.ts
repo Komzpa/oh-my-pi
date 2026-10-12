@@ -363,13 +363,13 @@ describe("subagent HUD lines", () => {
 				progress: makeProgress({
 					id: "ReviewShell",
 					agent: "scout",
-					task: "Complete assignment thoroughly:\n\n# Target\nFiles: src/foo.ts",
+					task: "# Target\nFiles: src/foo.ts",
 				}),
 			}),
 		]);
-		expect(multiLineTask).toContain("ReviewShell");
-		expect(multiLineTask).toContain("Complete assignment thoroughly: ↵ # Tar");
-		expect(multiLineTask).not.toContain("\n# Target");
+		expect(multiLineTask).toContain("# Target ↵ Files: src/foo.ts");
+		expect(multiLineTask).not.toContain("Complete assignment thoroughly:");
+		expect(multiLineTask).not.toContain("\nFiles: src/foo.ts");
 
 		const multiLineDesc = render([
 			makeSession({

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Agent hub task summaries display the task itself and no longer depend on a prompt prefix.
+
 ## [18.4.12] - 2026-10-02
 
 ### Changed
