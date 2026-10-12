@@ -120,7 +120,12 @@ export class IrcBus {
 		try {
 			const to = message.to === "shell" ? this.resolveShellReplyTarget(message.from) : message.to;
 			if (to.startsWith("shell:")) {
-				await writeShellReply(to, { from: message.from, ...(message.fromName ? { fromName: message.fromName } : {}), text: message.body, createdAt: message.ts });
+				await writeShellReply(to, {
+					from: message.from,
+					...(message.fromName ? { fromName: message.fromName } : {}),
+					text: message.body,
+					createdAt: message.ts,
+				});
 				return { to: message.to, outcome: "injected" };
 			}
 			if (message.to.startsWith("peer:")) {
