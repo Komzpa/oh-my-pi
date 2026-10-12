@@ -835,17 +835,6 @@ function structuredInstallRejection(job: unknown): boolean {
   }
   return false;
 }
-function pessimisticSecondsOf(tasks: TaskRow[], content: string): number | undefined {
-  const match = tasks.find((task) => task.content === content);
-  const schedule = match?.schedule;
-  const estimate = schedule !== null && typeof schedule === "object" && "estimate" in schedule
-    ? schedule.estimate
-    : undefined;
-  const seconds = estimate !== null && typeof estimate === "object" && "pessimisticSeconds" in estimate
-    ? estimate.pessimisticSeconds
-    : undefined;
-  return typeof seconds === "number" ? seconds : undefined;
-}
 function dispatchedResultAgent(result: unknown): string | undefined {
   if (typeof result !== "object" || result === null || !("agent" in result)) return undefined;
   const agent: unknown = result.agent;
@@ -1716,7 +1705,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       persistSprintState();
     }
   };
-  const touchSprintState = (ctx: ExtensionContext, phases: TodoScheduleInput, jobs: Jobs | null, now: number, deadline: DispatchInput["deadline"]) => {
+  const touchSprintState = (ctx: ExtensionContext, phases: TodoScheduleInput, jobs: Jobs | null, now: number, deadline: DispatchInput["deadline"], alarms: string[]) => {
     const tasks = phases.flatMap((phase) => phase.tasks);
     sprintLiveRows = new Set(tasks.map((task) => task.content));
     const open = tasks.filter((task) => isOpenRowStatus(task.status));
@@ -1816,14 +1805,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       (entry) => entry.total >= 2 && entry.fresh >= 1,
     ) || redispatchedRow;
     if (repeatedFailure) setRetroDue("repeated failure");
-    const missedEta = (jobs?.running ?? []).some((job) => {
-      if (job.type !== "task" || job.status !== "running") return false;
-      if (typeof job.startTime !== "number") return false;
-      if (sprintState.lastRetroAt !== null && job.startTime < sprintState.lastRetroAt) return false;
-      const pessimistic = pessimisticSecondsOf(tasks, typeof job.label === "string" ? job.label : "");
-      return typeof pessimistic === "number" && now - job.startTime > pessimistic * 1000;
-    });
-    if (missedEta) setRetroDue("missed ETA");
+    // A receipt covers the row's current attempt, not just its finished workers.
+    // An unchanged pre-retro estimate aging past ETA is not a new incident.
+    const freshMissedEta = open.some((task) =>
+      alarms.some((alarm) => alarm.startsWith(`missed-eta:${JSON.stringify(task.content)}:`)) &&
+      (sprintState.lastRetroAt === null ||
+        (task.schedule?.startedAt ?? 0) > sprintState.lastRetroAt ||
+        (task.schedule?.estimate?.updatedAt ?? 0) > sprintState.lastRetroAt),
+    );
+    if (freshMissedEta) setRetroDue("missed ETA");
     sprintState = { ...sprintState, rowStatuses: nextStatuses };
     persistSprintState();
   };
@@ -3554,14 +3544,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (!sprintState.retroDueReason) return "";
     const since = sprintState.lastRetroAt ?? sprintState.goalWorkStartedAt ?? now;
     const workerIds = retroWorkerIds();
-    return `retrospective due (${sprintState.retroDueReason}): read the Retro block in the final answer of the ${workerIds.length} workers who finished since ${safeTimestamp(since, timeZone)} from agent://<id> (do not write to them; a missing block is recorded as missing), then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}`;
+    return `retrospective due (${sprintState.retroDueReason}): read the Retro block in the final answer of the ${workerIds.length} workers who finished since ${safeTimestamp(since, timeZone)} from agent://<id> (do not write to them; a missing block is recorded as missing), then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}; for each red item, identify which instruction line (skill or prompt) missed it and output a mechanism row that edits that instruction.`;
   };
   const planCheck = (ctx: ExtensionContext, pending: unknown[] = []): string | null => {
     pendingSizingNoticeIds = [];
     const now = Date.now();
     const decision = currentDecision(ctx, now, pending);
     const phasesNow = sdk.getLatestTodoPhasesFromEntries([...ctx.sessionManager.getBranch(), ...pending] as never);
-    touchSprintState(ctx, phasesNow, ctx.getAsyncJobSnapshot(), now, decision.deadline);
+    touchSprintState(ctx, phasesNow, ctx.getAsyncJobSnapshot(), now, decision.deadline, decision.alarms);
     const retroAdvice = () => {
       if (!sprintState.retroDueReason) return "";
       const notifyKey = retroNotifyKey();
@@ -3844,6 +3834,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   pi.on("tool_result", async (event, ctx) => {
     await refreshLiveWorkerModels(ctx);
     if (singleWriterLane) return;
+    if (event.content?.some((part) => part.type === "text" && part.text.startsWith("Blocked:"))) {
+      setRetroDue("gate rejection");
+      persistSprintState();
+    } else if (event.toolName === "todo" && event.isError) {
+      setRetroDue("failed todo update");
+      persistSprintState();
+    }
     if (event.toolName === "todo") {
       // Only a successful tool result proves init passed validation and began a new objective.
       if (!event.isError && isMain(ctx) && (event.details as { op?: unknown } | undefined)?.op === "init")

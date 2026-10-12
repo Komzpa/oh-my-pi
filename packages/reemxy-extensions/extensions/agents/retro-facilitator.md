@@ -20,6 +20,7 @@ Read only the cited local files needed to verify evidence. If an answer names a
 receipt, rule, row, issue, or correction, inspect that source before turning it
 into a decision. If the source is missing, mark that decision as blocked on the
 missing evidence.
+For each red TUI item (gate rejection, failed todo update, or missed ETA), identify which instruction line (skill or prompt) missed it and output a `mechanism` row that edits that instruction, carrying the failing receipt and a regression check.
 
 Keep work to about 15 minutes. If it clearly will not fit or context is approaching compaction, stop at the next checkable point; return what is done with its receipt and propose a split of the rest to the lead.
 Return decisions. Each decision is one concrete keep or ban rule with:
