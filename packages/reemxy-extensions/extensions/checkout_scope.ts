@@ -24,13 +24,28 @@ export function checkoutKeyFromResources(resources: unknown, fallbackCwd: string
 
 export function checkoutScopesFromResources(resources: unknown): string[] | undefined {
 	if (!Array.isArray(resources) || resources.length === 0) return undefined;
-	const scopes = new Set<string>();
+	const keys: string[] = [];
 	for (const resource of resources) {
 		if (typeof resource !== "string") return undefined;
 		const value = resource.trim().replace(/^(?:path|repo|repository|checkout|worktree):/, "");
 		const key = normalizeCheckoutKey(value.replace(/:[^/]+$/, ""));
-		if (!key?.startsWith("path:")) return undefined;
-		let target = path.resolve(displayCheckoutKey(key));
+		if (!key) return undefined;
+		keys.push(key);
+	}
+	// A relative file path (src/x.ts) beside exactly one absolute worktree lives
+	// in that worktree. Without this, the row fell back to the session cwd and
+	// every sibling-worktree writer collided on the shared checkout. A bare word
+	// stays ambiguous: it may name another repository.
+	const absolute = keys.filter(key => key.startsWith("path:"));
+	const scopes = new Set<string>();
+	for (const key of keys) {
+		let resolved = key;
+		if (!key.startsWith("path:")) {
+			const relative = displayCheckoutKey(key);
+			if (absolute.length !== 1 || !relative.includes("/") || path.isAbsolute(relative)) return undefined;
+			resolved = `path:${path.join(displayCheckoutKey(absolute[0]!), relative)}`;
+		}
+		let target = path.resolve(displayCheckoutKey(resolved));
 		try {
 			let existing = target;
 			const suffix: string[] = [];
