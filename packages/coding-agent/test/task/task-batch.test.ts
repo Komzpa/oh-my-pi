@@ -363,11 +363,12 @@ describe("task.batch validation", () => {
 		expect(text).not.toContain("was missing");
 	});
 
-	it("advertises solutionSpace as required but still spawns a model call that omits it", async () => {
+	it("passes batch briefs verbatim, preserving an explicitly requested Retro", async () => {
 		mockDiscovery();
+		const brief = "Do A.\n\nPlease include a Retro block.\n";
 		const spawned: Array<string | undefined> = [];
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
-			spawned.push(options.assignment);
+			spawned.push(options.task);
 			return makeResult(options.id ?? "?");
 		});
 		const tool = await TaskTool.create(createSession({ settings: { "async.enabled": false, "task.batch": true } }));
@@ -382,7 +383,7 @@ describe("task.batch validation", () => {
 							type: "toolCall",
 							id: "tc-no-solution-space",
 							name: "task",
-							arguments: { context: "# Goal\nX", tasks: [{ name: "Alpha", task: "Do A." }] },
+							arguments: { context: "# Goal\nX", tasks: [{ name: "Alpha", task: brief }] },
 						},
 					],
 				},
@@ -400,9 +401,10 @@ describe("task.batch validation", () => {
 		});
 		await agent.prompt("go");
 
-		expect(spawned.map(assignment => assignment?.split("\n\n")[0])).toEqual(["Do A."]);
-		expect(spawned[0]).toContain("Is there a much simpler different way?");
-		expect(spawned[0]).toContain("End your final answer with a `Retro`");
+		expect(spawned).toEqual([brief]);
+		expect(spawned[0]).not.toContain("Complete assignment thoroughly:");
+		expect(spawned[0]).not.toContain("Is there a much simpler different way?");
+		expect(spawned[0]).not.toContain("End your final answer with a `Retro`");
 		const toolResult = agent.state.messages.find(message => message.role === "toolResult");
 		expect(toolResult?.role === "toolResult" && toolResult.isError).toBe(false);
 	});
@@ -468,9 +470,8 @@ describe("task.batch spawning", () => {
 		});
 		expect(neighboring.details?.results).toHaveLength(1);
 		expect(runSubprocess).toHaveBeenCalledTimes(1);
-		expect(runSubprocess.mock.calls[0]?.[0]?.assignment?.split("\n\n")[0]).toBe("Do the neighboring work.");
-		expect(runSubprocess.mock.calls[0]?.[0]?.assignment).toContain("Is there a much simpler different way?");
-		expect(runSubprocess.mock.calls[0]?.[0]?.assignment).toContain("End your final answer with a `Retro`");
+		expect(runSubprocess.mock.calls[0]?.[0]?.assignment).toBe("Do the neighboring work.");
+		expect(runSubprocess.mock.calls[0]?.[0]?.task).toBe("Do the neighboring work.");
 	});
 
 	it("spawns one background job per task item and forwards independent models and schemas with shared context", async () => {
@@ -558,11 +559,7 @@ describe("task.batch spawning", () => {
 		expect(byId.get("Beta")?.outputSchema).toEqual(betaSchema);
 		expect(byId.get("Beta")?.outputSchemaMode).toBe("permissive");
 		const assignments = seen.map(spawn => spawn.assignment ?? "");
-		expect(assignments.map(assignment => assignment.split("\n\n")[0]).sort()).toEqual(["Do A.", "Do B."]);
-		for (const assignment of assignments) {
-			expect(assignment).toContain("Is there a much simpler different way?");
-			expect(assignment).toContain("End your final answer with a `Retro`");
-		}
+		expect(assignments.sort()).toEqual(["Do A.", "Do B."]);
 		for (const spawn of seen) expect(spawn.parentAgentId).toBe("ParentA");
 	});
 
