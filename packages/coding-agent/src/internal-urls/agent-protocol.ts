@@ -23,7 +23,14 @@ import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { fuzzyFilter } from "@oh-my-pi/pi-tui/fuzzy";
 import { formatDuration, isEnoent, prompt } from "@oh-my-pi/pi-utils";
-import { type PeerSessionOptions, PeerSessionError, listPeerSessions, peerSessionDisplayName, sendPeerMessage, writeShellReply } from "../collab/registry";
+import {
+	type PeerSessionOptions,
+	PeerSessionError,
+	listPeerSessions,
+	peerSessionDisplayName,
+	sendPeerMessage,
+	writeShellReply,
+} from "../collab/registry";
 import { IrcBus } from "../irc/bus";
 import * as peerMessaging from "../irc/messaging";
 import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
@@ -189,9 +196,19 @@ export class AgentProtocolHandler implements ProtocolHandler {
 						const peers = await listPeerSessions(this.peerSessions);
 						fromName =
 							peers.find(peer => peer.sessionId === sid)?.displayName ??
-							peerSessionDisplayName({ sessionName: null, cwd: session.cwd, sessionId: sid, mainAgentId: senderId });
+							peerSessionDisplayName({
+								sessionName: null,
+								cwd: session.cwd,
+								sessionId: sid,
+								mainAgentId: senderId,
+							});
 					} catch {
-						fromName = peerSessionDisplayName({ sessionName: null, cwd: session.cwd, sessionId: sid, mainAgentId: senderId });
+						fromName = peerSessionDisplayName({
+							sessionName: null,
+							cwd: session.cwd,
+							sessionId: sid,
+							mainAgentId: senderId,
+						});
 					}
 					await writeShellReply(
 						to,
