@@ -4546,16 +4546,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				throw err;
 			}
 			mcpFollower?.bind(session);
-			// Deferred discovery has now had its chance to resolve explicit patterns.
-			// Only when it did not resolve (modelFallbackMessage set, no model) fail closed,
-			// so the spawn never silently runs on the role chain's model.
-			if (!model && modelFallbackMessage && modelPatterns.length > 0) {
-				const explicitModelError = explicitModelResolutionError(modelPatterns, modelRegistry, settings);
-				if (explicitModelError) {
-					session.dispose().catch(() => {});
-					throw explicitModelError;
-				}
-			}
 			// The SDK records a new session's initial model as the default role.
 			// Pin the child's own chain so a parent default sharing that model
 			// cannot steal its fallback routing. Resumed history keeps its role.
@@ -4567,6 +4557,16 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				formatModelStringWithRouting(session.model) === formatModelStringWithRouting(model)
 			) {
 				sessionManager.appendModelChange(formatModelStringWithRouting(model), retryFallbackRole);
+			}
+			// Deferred discovery has now had its chance to resolve explicit patterns.
+			// Only when it did not resolve (modelFallbackMessage set, no model) fail closed,
+			// so the spawn never silently runs on the role chain's model.
+			if (!model && modelFallbackMessage && modelPatterns.length > 0) {
+				const explicitModelError = explicitModelResolutionError(modelPatterns, modelRegistry, settings);
+				if (explicitModelError) {
+					session.dispose().catch(() => {});
+					throw explicitModelError;
+				}
 			}
 			sessionCreatedAt = performance.now();
 
