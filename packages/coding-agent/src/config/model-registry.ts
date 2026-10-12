@@ -199,6 +199,7 @@ interface CustomModelsResult {
 	discoverableProviders?: DiscoveryProviderConfig[];
 	configuredProviders?: Set<string>;
 	error?: ConfigError;
+	recovered?: boolean;
 	found: boolean;
 }
 
@@ -344,6 +345,7 @@ export class ModelRegistry {
 	#configError: ConfigError | undefined = undefined;
 	#warnedCompatKeys = new Set<string>();
 	#configWarnings: string[] = [];
+	#configRecovered = false;
 	#lastGoodCustomModels: CustomModelsResult | undefined;
 	#modelsConfigFile: ConfigFile<ModelsConfig>;
 	#lastStaticLoadMtime: number | null = null;
@@ -1000,6 +1002,11 @@ export class ModelRegistry {
 		return warnings;
 	}
 
+	/** Whether the failed primary load retained a validated in-memory or sidecar configuration. */
+	isUsingLastGoodConfig(): boolean {
+		return this.#configRecovered;
+	}
+
 	#loadModels() {
 		this.#resetStaticComposition();
 		// Load custom config first (to know which providers to override).
@@ -1017,6 +1024,7 @@ export class ModelRegistry {
 			this.#lastGoodCustomModels = customModelsResult;
 		}
 		this.#configError = configError;
+		this.#configRecovered = customModelsResult.recovered ?? false;
 		this.#keylessProviders = keylessProviders;
 		this.#discoverableProviders = discoverableProviders;
 		this.#customModelOverlays = customModels;
@@ -1722,7 +1730,7 @@ export class ModelRegistry {
 		if (loaded.status === "ok" && configPath && sidecarPath) {
 			const temporaryPath = `${sidecarPath}.${process.pid}.tmp`;
 			try {
-				fs.writeFileSync(temporaryPath, fs.readFileSync(configPath));
+				fs.writeFileSync(temporaryPath, fs.readFileSync(configPath), { mode: 0o600 });
 				fs.renameSync(temporaryPath, sidecarPath);
 			} catch (writeError) {
 				try {
@@ -1732,7 +1740,7 @@ export class ModelRegistry {
 			}
 		}
 		if (loaded.status === "error" && !this.#lastGoodCustomModels && sidecarPath) {
-			const sidecar = ModelsConfigFile.relocate(sidecarPath).tryLoad();
+			const sidecar = this.#modelsConfigFile.relocate(sidecarPath, configPath).tryLoad();
 			if (sidecar.status === "ok") {
 				loaded = sidecar;
 				restoredFromSidecar = true;
@@ -1741,9 +1749,8 @@ export class ModelRegistry {
 		const { value, status } = loaded;
 
 		if (status === "error") {
-			this.#configError = error;
 			if (this.#lastGoodCustomModels) {
-				return this.#lastGoodCustomModels;
+				return { ...this.#lastGoodCustomModels, error, recovered: true };
 			}
 			return {
 				models: [],
@@ -1886,7 +1893,7 @@ export class ModelRegistry {
 			keylessProviders,
 			discoverableProviders,
 			configuredProviders,
-			...(restoredFromSidecar ? { error } : {}),
+			...(restoredFromSidecar ? { error, recovered: true } : {}),
 			found: true,
 		};
 	}
