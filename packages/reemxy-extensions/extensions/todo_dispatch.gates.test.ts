@@ -574,7 +574,7 @@ test("a refused task dispatch opens bounded chief work without weakening the sta
     const bash = { command: "bun test extensions/one.test.ts" };
     const blocked = (await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "understaffed", input: bash }, ctx)) as { block?: boolean; reason?: string };
     expect(blocked?.block).toBe(true);
-    expect(blocked?.reason).toContain("do not run bash work yourself");
+    expect(blocked?.reason).toContain("is work for a worker");
     await handlers.get("tool_result")!({ toolName: "task", toolCallId: "refused-task", input: {}, content: [], isError: true }, ctx);
     expect(await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "bounded-after-refusal", input: bash }, ctx)).toBeUndefined();
     const note = (await handlers.get("context")!({ messages: [] }, ctx)) as { messages: Array<{ content: string }> };
@@ -2381,7 +2381,7 @@ test("external wait: an active unit is staffed, then exit wakes exactly once and
     expect(unstaffed.alarms.filter((alarm) => alarm.startsWith("ownerless-ready:"))).toEqual(['ownerless-ready:"Row A"']);
     const nag = await fixture.nag();
     expect(nag?.block).toBe(true);
-    expect(nag?.reason).toContain("a row that only waits on a unit or job: set owner unit:<name> or job:<pid>");
+    expect(nag?.reason).toContain("If a row only waits on a unit or job, set its owner to unit:<name> or job:<pid>");
     await fixture.checkIdle();
     await fixture.checkIdle();
     const wakes = fixture.sent.filter((message) => message.customType === "agent-focus-gym-eval-sandbox-wake");
@@ -2393,7 +2393,7 @@ test("external wait: an active unit is staffed, then exit wakes exactly once and
 test("external wait negative control: an unowned ready row is still nagged", async () => {
   const fixture = await externalWaitFixture(undefined, () => { throw new Error("unowned rows must not probe"); });
   try {
-    expect((await fixture.nag())?.reason).toContain("open row(s) sit idle");
+    expect((await fixture.nag())?.reason).toContain("is work for a worker");
     expect(fixture.decision().alarms).toContain('ownerless-ready:"Row A"');
   } finally { fixture.close(); }
 });
@@ -2401,7 +2401,7 @@ test("external wait negative control: an unowned ready row is still nagged", asy
 test("external wait: a nonexistent unit is unstaffed and nagged", async () => {
   const fixture = await externalWaitFixture(`unit:omp-nonexistent-${process.pid}.service`, isExternalWaitRunning);
   try {
-    expect((await fixture.nag())?.reason).toContain("open row(s) sit idle");
+    expect((await fixture.nag())?.reason).toContain("is work for a worker");
     expect(fixture.decision().alarms).toContain('ownerless-ready:"Row A"');
   } finally { fixture.close(); }
 });
