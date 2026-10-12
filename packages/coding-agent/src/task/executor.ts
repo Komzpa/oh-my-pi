@@ -2215,6 +2215,88 @@ const PROMPT_DISPATCH_IDLE_TIMEOUT_MS = 5_000;
 class PromptDispatchError extends Error {}
 
 /**
+ * A task image with bytes present, ready for the child's first prompt.
+ * Structurally an `ImageContent` with sha256/rn/index metadata preserved so
+ * auditors can tie the part back to its requirement row.
+ */
+interface FirstPromptImage {
+	type: "image";
+	data: string;
+	mimeType: string;
+	sha256?: string;
+	rn?: string;
+	index?: number;
+	sourcePath?: string;
+	artifactPath?: string;
+}
+
+/**
+ * Resolve task image references to prompt bytes exactly at the real
+ * first-prompt boundary. This is the only place task args become bytes:
+ * callers (flat/batch/structured) forward `TaskImage` refs untouched.
+ *
+ * - Inline `data` passes through as-is, metadata preserved.
+ * - References read `artifactPath` then `sourcePath`; the first readable file
+ *   whose bytes verify against the supplied `sha256` (when present) becomes a
+ *   real image part with sha256/rn/index metadata preserved.
+ * - Missing files, read failures, and SHA mismatches degrade to one child text
+ *   line containing `unavailable` and the SHA — the task continues with zero
+ *   image parts for that image.
+ * - No images leaves the prompt byte-identical: empty suffix, no images key.
+ */
+async function resolveTaskImagesForFirstPrompt(
+	images: TaskImage[] | undefined,
+): Promise<{ suffix: string; promptImages?: FirstPromptImage[] }> {
+	if (!images?.length) return { suffix: "" };
+	const promptImages: FirstPromptImage[] = [];
+	let suffix = "";
+	for (const image of images) {
+		if (image.data) {
+			promptImages.push({ ...image, data: image.data });
+			continue;
+		}
+		const sha = image.sha256 ?? "unknown";
+		const label = `Image${typeof image.index === "number" ? ` #${image.index}` : ""}${image.rn ? ` (${image.rn})` : ""}`;
+		let failure: string | undefined;
+		let loaded: { data: string; mimeType: string } | undefined;
+		for (const candidate of [image.artifactPath, image.sourcePath]) {
+			if (!candidate) continue;
+			let bytes: Buffer;
+			try {
+				bytes = await fs.readFile(candidate);
+			} catch {
+				failure = `no readable bytes at ${candidate}`;
+				continue;
+			}
+			if (image.sha256) {
+				const actual = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+				if (actual.toLowerCase() !== image.sha256.toLowerCase()) {
+					failure = `SHA mismatch at ${candidate} (expected ${image.sha256}, got ${actual})`;
+					continue;
+				}
+			}
+			loaded = { data: bytes.toString("base64"), mimeType: image.mimeType ?? "image/png" };
+			break;
+		}
+		if (loaded) {
+			promptImages.push({
+				type: "image",
+				data: loaded.data,
+				mimeType: loaded.mimeType,
+				...(image.sha256 ? { sha256: image.sha256 } : {}),
+				...(image.rn ? { rn: image.rn } : {}),
+				...(typeof image.index === "number" ? { index: image.index } : {}),
+				...(image.sourcePath ? { sourcePath: image.sourcePath } : {}),
+				...(image.artifactPath ? { artifactPath: image.artifactPath } : {}),
+			});
+		} else {
+			suffix += `\n[${label} unavailable: sha256=${sha} — ${failure ?? "no data, artifactPath, or sourcePath"}; continuing without pixels.]`;
+		}
+	}
+	return { suffix, ...(promptImages.length ? { promptImages } : {}) };
+}
+
+/**
  * Drive one assignment through a live session: send the prompt, wait for idle,
  * remind the agent to `yield` (up to {@link MAX_YIELD_RETRIES} times), then
  * classify the terminal assistant state. A soft-budget stop short-circuits the
@@ -2317,14 +2399,20 @@ async function driveSessionToYield(
 			// wins the race and this prompt throws AgentBusyError; back off through
 			// the caller hook and retry. Bounded so a wedged worker still resolves
 			// instead of hanging the batch.
+			// Task images resolve from refs to bytes exactly here, at the real
+			// first-prompt load — never earlier in task args. Empty stays
+			// byte-identical: no suffix, no images key.
+			const resolvedImages = await resolveTaskImagesForFirstPrompt(images);
+			const firstPromptText = resolvedImages.suffix ? `${task}${resolvedImages.suffix}` : task;
+			const firstPromptOptions = {
+				attribution: "agent" as const,
+				solutionSpace,
+				...(resolvedImages.promptImages ? { images: resolvedImages.promptImages } : {}),
+			};
 			let promptAttempts = 0;
 			for (;;) {
 				try {
-					await dispatchPrompt(
-						task,
-						{ attribution: "agent", solutionSpace, ...(images?.length ? { images } : {}) },
-						"initial prompt",
-					);
+					await dispatchPrompt(firstPromptText, firstPromptOptions, "initial prompt");
 					break;
 				} catch (error) {
 					promptAttempts++;

@@ -106,22 +106,53 @@ describe("requirements ledger auditor binding", () => {
 				const head = git(cwd, "rev-parse", "HEAD");
 				const row = "Reject empty result yield in #108";
 				manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
-					phases: [{ name: "Work", tasks: [{ content: row, status: "pending", schedule: { owner: "main", resources: [cwd] } }] }],
+					phases: [
+						{
+							name: "Work",
+							tasks: [{ content: row, status: "pending", schedule: { owner: "main", resources: [cwd] } }],
+						},
+					],
 				});
-				appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
-					getLatestRequirements(manager.getBranch()).map(requirement => ({ ...requirement, id: "R42", rows: [row] })));
+				appendRequirementsSnapshot(
+					{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
+					getLatestRequirements(manager.getBranch()).map(requirement => ({
+						...requirement,
+						id: "R42",
+						rows: [row],
+					})),
+				);
 				await runtime.prepareAuditorTaskCall("task", "string-receipt", {
-					agent: "qa-auditor", task: `Audit R42 for ${row}`, context: "",
+					agent: "qa-auditor",
+					task: `Audit R42 for ${row}`,
+					context: "",
 				});
 				const table = `| id | verdict | evidence | artifact |\n|---|---|---|---|\n| R42 | pass | exercised the build | TODO row "${row}" @ ${head} |\n\nRetro\n- kept the verdict table complete`;
 				const finalized = finalizeSubprocessOutput({
-					rawOutput: "", exitCode: 0, stderr: "", doneAborted: false, signalAborted: false,
-					yieldItems: [{ status: "success", data: table }], outputSchema: undefined,
+					rawOutput: "",
+					exitCode: 0,
+					stderr: "",
+					doneAborted: false,
+					signalAborted: false,
+					yieldItems: [{ status: "success", data: table }],
+					outputSchema: undefined,
 				});
 				if (!encoded) expect(finalized.rawOutput).toBe(table);
 				const outcome = await runtime.afterToolCall({
 					toolCall: { id: "string-receipt", name: "task" },
-					result: { content: [], details: { results: [{ index: 0, agent: "qa-auditor", id: "worker-string", exitCode: finalized.exitCode, output: encoded ? JSON.stringify(table) : finalized.rawOutput }] } },
+					result: {
+						content: [],
+						details: {
+							results: [
+								{
+									index: 0,
+									agent: "qa-auditor",
+									id: "worker-string",
+									exitCode: finalized.exitCode,
+									output: encoded ? JSON.stringify(table) : finalized.rawOutput,
+								},
+							],
+						},
+					},
 					isError: false,
 				} as never);
 				expect(outcome).toBeUndefined();
@@ -135,8 +166,9 @@ describe("requirements ledger auditor binding", () => {
 					getSessionFile: () => null,
 					sessionManager: manager,
 					getTodoPhases: () => getLatestTodoPhasesFromEntries(manager.getBranch()),
-					setTodoPhases: (phases: TodoPhase[]) => manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
-				} as ToolSession);
+					setTodoPhases: (phases: TodoPhase[]) =>
+						manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
+				} as unknown as ToolSession);
 				const done = await tool.execute("done-string-receipt", { op: "done", task: row });
 				expect(done.isError).not.toBe(true);
 				expect(getLatestTodoPhasesFromEntries(manager.getBranch())[0]?.tasks[0]?.status).toBe("completed");
@@ -151,17 +183,54 @@ describe("requirements ledger auditor binding", () => {
 			const { cwd, manager, runtime } = fixture();
 			try {
 				const head = git(cwd, "rev-parse", "HEAD");
-				await runtime.prepareAuditorTaskCall("task", "bad-string", { agent: "qa-auditor", task: "Audit R1", context: "" });
+				await runtime.prepareAuditorTaskCall("task", "bad-string", {
+					agent: "qa-auditor",
+					task: "Audit R1",
+					context: "",
+				});
 				const columns = ["id", "verdict", "evidence", "artifact"].filter(column => defect !== `missing ${column}`);
-				const values: Record<string, string> = { id: defect === "foreign Rn" ? "R2" : "R1", verdict: "pass", evidence: "exercised the build", artifact: head };
-				const table = [columns, columns.map(() => "---"), columns.map(column => values[column])].map(cells => `| ${cells.join(" | ")} |`).join("\n");
-				const finalized = finalizeSubprocessOutput({ rawOutput: "", exitCode: 0, stderr: "", doneAborted: false, signalAborted: false, yieldItems: [{ status: "success", data: table }], outputSchema: undefined });
+				const values: Record<string, string> = {
+					id: defect === "foreign Rn" ? "R2" : "R1",
+					verdict: "pass",
+					evidence: "exercised the build",
+					artifact: head,
+				};
+				const table = [columns, columns.map(() => "---"), columns.map(column => values[column])]
+					.map(cells => `| ${cells.join(" | ")} |`)
+					.join("\n");
+				const finalized = finalizeSubprocessOutput({
+					rawOutput: "",
+					exitCode: 0,
+					stderr: "",
+					doneAborted: false,
+					signalAborted: false,
+					yieldItems: [{ status: "success", data: table }],
+					outputSchema: undefined,
+				});
 				const outcome = await runtime.afterToolCall({
 					toolCall: { id: "bad-string", name: "task" },
-					result: { content: [], details: { results: [{ index: 0, agent: "qa-auditor", id: "worker-bad-string", exitCode: 0, output: finalized.rawOutput }] } },
+					result: {
+						content: [],
+						details: {
+							results: [
+								{
+									index: 0,
+									agent: "qa-auditor",
+									id: "worker-bad-string",
+									exitCode: 0,
+									output: finalized.rawOutput,
+								},
+							],
+						},
+					},
 					isError: false,
 				} as never);
-				expect(outcome?.content).toContainEqual(expect.objectContaining({ type: "text", text: expect.stringContaining("expected id, verdict, evidence, artifact") }));
+				expect(outcome?.content).toContainEqual(
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringContaining("expected id, verdict, evidence, artifact"),
+					}),
+				);
 				expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts).toBeUndefined();
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
@@ -1117,11 +1186,14 @@ describe("real row-scoped auditor receipts", () => {
 });
 
 describe("requirement image audit inputs", () => {
-	it("forwards referenced image pixels and sha256 to qa-auditor", async () => {
+	it("forwards referenced image sha256 and artifact path to qa-auditor", async () => {
 		const { cwd, manager, runtime } = fixture();
 		try {
+			manager.adoptArtifactManager({ dir: join(cwd, "artifacts") } as never);
+			mkdirSync(join(cwd, "artifacts"), { recursive: true });
 			const data = Buffer.from("stub image pixels").toString("base64");
 			const sha256 = createHash("sha256").update(Buffer.from(data, "base64")).digest("hex");
+			const artifactPath = join(cwd, "artifacts", `requirement-image-${sha256}`);
 			const requirements = getLatestRequirements(manager.getBranch());
 			appendRequirementsSnapshot(
 				{ appendEntry: (type, value) => manager.appendCustomEntry(type, value) },
@@ -1138,11 +1210,24 @@ describe("requirement image audit inputs", () => {
 			expect(revised).toBeDefined();
 			const result = revised as {
 				task: string;
-				images: Array<{ type: "image"; data: string; mimeType: string; sha256: string; rn: string; index: number }>;
+				images: Array<{
+					type: "image";
+					mimeType: string;
+					sha256: string;
+					rn: string;
+					index: number;
+					artifactPath?: string;
+					sourcePath?: string;
+				}>;
 			};
-			expect(result.images).toEqual([{ type: "image", data, mimeType: "image/png", sha256, rn: "R1", index: 1 }]);
+			expect(result.images).toEqual([
+				{ type: "image", mimeType: "image/png", sha256, rn: "R1", index: 1, artifactPath },
+			]);
+			expect(result.images[0]).not.toHaveProperty("data");
+			expect(readFileSync(artifactPath)).toEqual(Buffer.from(data, "base64"));
 			expect(result.task).toContain("QA AUDIT INPUT");
 			expect(result.task).toContain(`R1 Image #1: sha256=${sha256}`);
+			expect(result.task).toContain(artifactPath);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

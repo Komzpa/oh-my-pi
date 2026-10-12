@@ -2146,11 +2146,17 @@ export const LABEL_MAX = 80;
  * content part. `data` is base64; the sha256/rn/index metadata mirrors the
  * requirements-ledger `RequirementImage` so an auditor can tie the part back to
  * its `Rn` requirement row without rehashing.
+ *
+ * Bytes travel by reference: ledger-produced images carry `artifactPath` and/or
+ * `sourcePath` with no `data`. The executor resolves the reference to bytes
+ * exactly at the child's first-prompt boundary (verifying `sha256` when
+ * supplied) and never threads bytes through task args. Inline `data` remains
+ * accepted for callers that already hold bytes.
  */
-export interface TaskImage {
+interface TaskImageBase {
 	type: "image";
-	/** Base64 image bytes. */
-	data: string;
+	/** Base64 image bytes; absent for path/artifact references. */
+	data?: string;
 	mimeType: string;
 	/** sha256 hex of the decoded bytes, when known. */
 	sha256?: string;
@@ -2163,6 +2169,11 @@ export interface TaskImage {
 	/** Durable session artifact holding the bytes when no source file exists. */
 	artifactPath?: string;
 }
+/**
+ * At least one byte source is required: inline `data`, `artifactPath`, or
+ * `sourcePath`. Combinations (e.g. `data` plus its `artifactPath`) are allowed.
+ */
+export type TaskImage = TaskImageBase & ({ data: string } | { artifactPath: string } | { sourcePath: string });
 
 /** Single task item. Fields are optional defensively: args stream in token by token. */
 export interface TaskItem {

@@ -13,13 +13,19 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { RequirementsLedgerRuntime } from "@oh-my-pi/pi-coding-agent/session/requirements-ledger-runtime";
+import { loadEntriesFromFile, loadSessionMessagesReadOnly } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { getLatestRequirements, type RequirementLedgerItem } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
+import {
+	appendRequirementsSnapshot,
+	getLatestRequirements,
+	type RequirementLedgerItem,
+} from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { tagImageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { isTaskToolDetails, type TaskImage } from "@oh-my-pi/pi-tui/tools/task";
-import { __resetDirsFromEnvForTests, setAgentDir } from "@oh-my-pi/pi-utils";
+import { __resetDirsFromEnvForTests, prompt, setAgentDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
+import subagentUserPromptTemplate from "../../src/prompts/system/subagent-user-prompt.md" with { type: "text" };
 
 // A real, unmodified 4x4 RGBA PNG, not placeholder pixels.
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFUlEQVQI12P8z8DwnwEJMDGgAcICAIPRAgYt167zAAAAAElFTkSuQmCC";
@@ -36,6 +42,24 @@ function git(cwd: string, ...args: string[]): string {
 
 function sha256(bytes: Uint8Array): string {
 	return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+}
+
+// Keep the original pixels valid; a CRC-checked ancillary tEXt chunk makes
+// the raw PNG exactly 400 KiB (409,600 bytes), not 400 KB of base64 text.
+function largePng(): Buffer {
+	const original = Buffer.from(PNG, "base64");
+	const payload = Buffer.from(`Fixture\0${"x".repeat(400 * 1024 - original.length - 12 - 8)}`);
+	const chunk = Buffer.alloc(payload.length + 12);
+	chunk.writeUInt32BE(payload.length, 0);
+	chunk.write("tEXt", 4, "ascii");
+	payload.copy(chunk, 8);
+	let crc = 0xffffffff;
+	for (const byte of chunk.subarray(4, -4)) {
+		crc ^= byte;
+		for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+	}
+	chunk.writeUInt32BE((crc ^ 0xffffffff) >>> 0, chunk.length - 4);
+	return Buffer.concat([original.subarray(0, -12), chunk, original.subarray(-12)]);
 }
 
 beforeEach(async () => {
@@ -73,9 +97,15 @@ afterEach(async () => {
 async function dispatch(
 	image: ImageContent | undefined,
 	batch: boolean,
-	sourceBacked = false,
+	sourceBacked: boolean | "missing" = false,
+	auditorCount = 1,
+	worker?: { images?: (cwd: string) => Promise<TaskImage[]> },
 ): Promise<{
 	firstUser: UserMessage;
+	firstUsers: UserMessage[];
+	taskArgs: Record<string, unknown>;
+	storedTaskArgs: Record<string, unknown>;
+	originalTaskArgs: string;
 	manager: SessionManager;
 	cwd: string;
 	requirement: RequirementLedgerItem;
@@ -86,6 +116,12 @@ async function dispatch(
 		path.join(cwd, ".omp", "agents", "qa-auditor.md"),
 		Bun.file(new URL("../../src/prompts/agents/qa-auditor.md", import.meta.url)),
 	);
+	if (worker) {
+		await Bun.write(
+			path.join(cwd, ".omp", "agents", "pixel-worker.md"),
+			"---\nname: pixel-worker\ndescription: Exercise task image delivery\ntools: []\n---\nReturn the assigned task result.\n",
+		);
+	}
 	await Bun.write(path.join(cwd, "artifact.txt"), "audited\n");
 	if (sourceBacked && image) {
 		const sourcePath = path.join(cwd, "input.png");
@@ -108,7 +144,16 @@ async function dispatch(
 				: { content: ["Audit pixels"] },
 	});
 	child.input.push("image");
-	const item = { agent: "qa-auditor", name: "PixelAuditor", task: `Audit R1 for ${ROW}`, solutionSpace: "closed" };
+	const item = {
+		agent: worker ? "pixel-worker" : "qa-auditor",
+		name: "PixelAuditor",
+		task: `Audit R1 for ${ROW}`,
+		solutionSpace: "closed",
+		...(worker?.images ? { images: await worker.images(cwd) } : {}),
+	};
+	const items = Array.from({ length: auditorCount }, (_, index) => ({ ...item, name: `PixelAuditor${index + 1}` }));
+	const submittedArgs = batch ? { context: "Audit the linked image requirement", tasks: items } : item;
+	const originalTaskArgs = JSON.stringify(submittedArgs);
 	const parent = createMockModel({
 		id: "pixel-parent",
 		responses: [
@@ -121,14 +166,19 @@ async function dispatch(
 					},
 				],
 			},
-			{
-				content: [
-					{
-						type: "toolCall",
-						name: "task",
-						arguments: batch ? { context: "Audit the linked image requirement", tasks: [item] } : item,
-					},
-				],
+			async () => {
+				if (sourceBacked === "missing") {
+					const requirements = getLatestRequirements(manager.getBranch());
+					const referenced = requirements[0]?.images?.[0];
+					if (!referenced?.sourcePath) throw new Error("No ledger source image");
+					await fs.rm(referenced.sourcePath);
+					delete referenced.data;
+					appendRequirementsSnapshot(
+						{ appendEntry: (kind, data) => manager.appendCustomEntry(kind, data) },
+						requirements,
+					);
+				}
+				return { content: [{ type: "toolCall", name: "task", arguments: submittedArgs }] };
 			},
 			{ content: [{ type: "toolCall", name: "todo", arguments: { op: "done", task: ROW } }] },
 			{ content: [{ type: "toolCall", name: "yield", arguments: { type: "result", data: "finished" } }] },
@@ -164,7 +214,7 @@ async function dispatch(
 				"task.batch": batch,
 				"task.isolation.enabled": false,
 				"task.agentIdleTtlMs": 0,
-				"task.agentModelOverrides": { "qa-auditor": "mock/pixel-auditor" },
+				"task.agentModelOverrides": { "qa-auditor": "mock/pixel-auditor", "pixel-worker": "mock/pixel-auditor" },
 				modelRoles: { default: "mock/pixel-parent" },
 			}),
 			disableExtensionDiscovery: true,
@@ -189,20 +239,38 @@ async function dispatch(
 		);
 		if (!result || result.role !== "toolResult" || !isTaskToolDetails(result.details))
 			throw new Error("No real task result");
-		const childId = result.details.results?.[0]?.id;
-		const childSession = childId ? AgentRegistry.global().get(childId)?.session : undefined;
-		if (!childSession) throw new Error(`No accepted child session: ${JSON.stringify(result)}`);
-		// A batch may launch and discard a speculative child before the ledger
-		// enriches its arguments. Inspect the child actually returned by task,
-		// not the cancelled speculative model request.
-		const call = child.calls.find(call => call.options?.sessionId === childSession.sessionId);
-		expect(call).toBeDefined();
-		const firstUser = childSession.agent.state.messages.find(message => message.role === "user");
-		expect(firstUser).toBeDefined();
-		if (!firstUser || firstUser.role !== "user") throw new Error("No child user prompt");
+		const firstUsers = (result.details.results ?? []).map(childResult => {
+			expect(childResult.exitCode).toBe(0);
+			const childSession = childResult.id ? AgentRegistry.global().get(childResult.id)?.session : undefined;
+			if (!childSession) throw new Error(`No accepted child session: ${JSON.stringify(childResult)}`);
+			// Ignore cancelled speculative model requests; inspect returned children.
+			const call = child.calls.find(call => call.options?.sessionId === childSession.sessionId);
+			expect(call).toBeDefined();
+			const firstUser = childSession.agent.state.messages.find(message => message.role === "user");
+			if (!firstUser || firstUser.role !== "user") throw new Error("No child user prompt");
+			return firstUser;
+		});
+		const firstUser = firstUsers[0];
+		if (!firstUser) throw new Error("No returned children");
+		await manager.flush();
+		// Measure the persisted consumer-visible call, not storage's blob: codec.
+		const persisted = await loadSessionMessagesReadOnly(manager.getSessionFile()!);
+		const taskCall = persisted
+			.flatMap(message => (message.role === "assistant" ? message.content : []))
+			.find(part => part.type === "toolCall" && part.name === "task");
+		if (!taskCall || taskCall.type !== "toolCall") throw new Error("No persisted assistant task call");
+		const taskArgs = taskCall.arguments as Record<string, unknown>;
+		const stored = await loadEntriesFromFile(manager.getSessionFile()!);
+		const storedTaskCall = stored
+			.flatMap(entry =>
+				entry.type === "message" && entry.message.role === "assistant" ? entry.message.content : [],
+			)
+			.find(part => part.type === "toolCall" && part.name === "task");
+		if (!storedTaskCall || storedTaskCall.type !== "toolCall") throw new Error("No stored assistant task call");
+		const storedTaskArgs = storedTaskCall.arguments as Record<string, unknown>;
 		const requirement = getLatestRequirements(manager.getBranch())[0]!;
 		expect(requirement.classification).toBe("linked");
-		return { firstUser, manager, cwd, requirement };
+		return { firstUser, firstUsers, taskArgs, storedTaskArgs, originalTaskArgs, manager, cwd, requirement };
 	} finally {
 		await session?.dispose();
 		session = undefined;
@@ -221,6 +289,111 @@ function text(message: UserMessage): string {
 }
 
 describe("requirement pixels through the real task session path", () => {
+	it("keeps five auditors' persisted task image references below 20,000 JSON characters", async () => {
+		const bytes = largePng();
+		expect(bytes.length).toBe(409_600);
+		const dimensions = await new Bun.Image(bytes).metadata();
+		expect(dimensions.width).toBe(4);
+		expect(dimensions.height).toBe(4);
+		const expectedSha = sha256(bytes);
+		const { firstUsers, taskArgs, storedTaskArgs } = await dispatch(
+			{ type: "image", data: bytes.toString("base64"), mimeType: "image/png" },
+			true,
+			false,
+			5,
+		);
+		expect(firstUsers).toHaveLength(5);
+		for (const firstUser of firstUsers) {
+			expect(imageParts(firstUser)).toHaveLength(1);
+			expect((imageParts(firstUser)[0]! as TaskImage).sha256).toBe(expectedSha);
+		}
+		const serialized = JSON.stringify(taskArgs);
+		console.log(
+			`five-auditor oracle: raw PNG=${bytes.length} bytes; persisted args=${serialized.length} JSON characters; children=${firstUsers.length}; sha256=${expectedSha}`,
+		);
+		expect(serialized.length).toBeLessThan(20_000);
+		for (const args of [taskArgs, storedTaskArgs]) {
+			expect(JSON.stringify(args).length).toBeLessThan(20_000);
+			expect(JSON.stringify(args)).not.toContain(bytes.toString("base64"));
+			for (const item of args.tasks as { images: TaskImage[] }[]) {
+				expect(item.images).toHaveLength(1);
+				expect(item.images[0]).not.toHaveProperty("data");
+				expect(item.images[0]?.sha256).toBe(expectedSha);
+			}
+		}
+	}, 30_000);
+
+	// This non-auditor call bypasses intentional ledger protocol enrichment.
+	// Compare the exact JSON text of submitted and persisted assistant args.
+	it("negative control: image-less non-auditor task args stay byte-identical", async () => {
+		const { firstUser, taskArgs, originalTaskArgs } = await dispatch(undefined, false, false, 1, {});
+		expect(JSON.stringify(taskArgs)).toBe(originalTaskArgs);
+		expect(text(firstUser)).toBe(prompt.render(subagentUserPromptTemplate, { assignment: taskArgs.task as string }));
+		expect(imageParts(firstUser)).toEqual([]);
+		expect(text(firstUser)).not.toContain("unavailable");
+	}, 30_000);
+
+	for (const pathField of ["artifactPath", "sourcePath"] as const) {
+		it(`loads ${pathField}-only pixels into the real child's first prompt`, async () => {
+			const expectedSha = sha256(Buffer.from(PNG, "base64"));
+			const { firstUser, taskArgs } = await dispatch(undefined, false, false, 1, {
+				images: async cwd => {
+					const imagePath = path.join(cwd, "referenced.png");
+					await Bun.write(imagePath, Buffer.from(PNG, "base64"));
+					const reference = {
+						type: "image" as const,
+						mimeType: "image/png",
+						sha256: expectedSha,
+						rn: "R1",
+						index: 1,
+					};
+					return [
+						pathField === "artifactPath"
+							? { ...reference, artifactPath: imagePath }
+							: { ...reference, sourcePath: imagePath },
+					];
+				},
+			});
+			expect((taskArgs.images as TaskImage[])[0]).not.toHaveProperty("data");
+			expect(imageParts(firstUser)).toHaveLength(1);
+			const childImage = imageParts(firstUser)[0]! as ImageContent & TaskImage;
+			expect(childImage.sha256).toBe(expectedSha);
+			expect(childImage.rn).toBe("R1");
+			expect(childImage.index).toBe(1);
+		}, 30_000);
+	}
+
+	for (const failure of ["missing artifact", "mismatched SHA"] as const) {
+		it(`continues the real child task with unavailable and SHA text for ${failure}`, async () => {
+			const expectedSha = "f".repeat(64);
+			const { firstUser } = await dispatch(undefined, false, false, 1, {
+				images: async cwd => {
+					const artifactPath = path.join(cwd, "unavailable.png");
+					if (failure === "mismatched SHA") await Bun.write(artifactPath, Buffer.from(PNG, "base64"));
+					return [{ type: "image", mimeType: "image/png", sha256: expectedSha, rn: "R1", index: 1, artifactPath }];
+				},
+			});
+			expect(imageParts(firstUser)).toEqual([]);
+			expect(text(firstUser)).toContain("unavailable");
+			expect(text(firstUser)).toContain(expectedSha);
+		}, 30_000);
+	}
+
+	it("keeps a known missing source reference when ledger bytes are absent", async () => {
+		const expectedSha = sha256(Buffer.from(PNG, "base64"));
+		const { firstUser, taskArgs, requirement } = await dispatch(
+			{ type: "image", data: PNG, mimeType: "image/png" },
+			false,
+			"missing",
+		);
+		expect(requirement.images?.[0]?.data).toBeUndefined();
+		expect((taskArgs.images as TaskImage[])[0]).toMatchObject({ sha256: expectedSha, rn: "R1", index: 1 });
+		expect((taskArgs.images as TaskImage[])[0]).not.toHaveProperty("data");
+		expect(imageParts(firstUser)).toEqual([]);
+		expect(text(firstUser)).toContain("unavailable");
+		expect(text(firstUser)).toContain(expectedSha);
+	}, 30_000);
+
 	for (const batch of [false, true]) {
 		it(`delivers a real 4x4 PNG to the child's first user prompt (${batch ? "batch" : "flat"})`, async () => {
 			const { firstUser, manager, cwd, requirement } = await dispatch(

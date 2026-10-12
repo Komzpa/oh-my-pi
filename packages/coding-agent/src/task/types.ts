@@ -45,19 +45,30 @@ const outputSchemaInputSchema = type("object | boolean | string | null");
 // Coarse per-spawn thinking effort; must stay in sync with TASK_EFFORTS in ../thinking.
 const effortRule = '"lo" | "med" | "hi"' as const;
 // Image attachment delivered to the child's first prompt as a real image
-// content part. `data` is base64; sha256/rn/index metadata mirrors
-// `RequirementImage` so auditors can tie parts back to requirement rows.
-// Declared explicitly so schema validation neither strips nor rejects it.
+// content part. Bytes travel by reference: ledger-produced images carry
+// `artifactPath`/`sourcePath` with no `data`. Invariant: at least one byte
+// source is required. A single shape with a narrow check keeps the schema
+// deterministic (omptype rejects overlapping morph unions and their
+// intersections); the provider grammar sees one object, runtime rejects
+// sourceless images.
 const taskImageSchema = type({
 	type: "'image'",
-	data: "string",
 	mimeType: "string",
+	"data?": "string",
 	"sha256?": "string",
 	"rn?": "string",
 	"index?": "number",
 	"sourcePath?": "string",
 	"artifactPath?": "string",
 	"+": "delete",
+}).narrow((image, ctx) => {
+	const hasSource = (value: unknown): boolean => typeof value === "string" && value.length > 0;
+	return (
+		hasSource(image.data) ||
+		hasSource(image.artifactPath) ||
+		hasSource(image.sourcePath) ||
+		ctx.mustBe("an image with a byte source (data, artifactPath, or sourcePath)")
+	);
 });
 const taskImagesRule = taskImageSchema.array();
 

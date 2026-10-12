@@ -65,7 +65,6 @@ function extractRequirementImages(rawText: string, images: readonly ImageContent
 /** Payload shape the task tool forwards to the subagent's first message. */
 export interface RequirementAuditImagePayload {
 	type: "image";
-	data: string;
 	mimeType: string;
 	sha256: string;
 	rn: string;
@@ -273,15 +272,13 @@ export class RequirementsLedgerRuntime {
 							imagesChanged = true;
 						}
 					}
-					const imagePath = sourceExists ? image.sourcePath : image.artifactPath;
+					const imagePath = sourceExists ? image.sourcePath : (image.artifactPath ?? image.sourcePath);
 					imageLines.push(
-						`${source.id} Image #${image.index}: sha256=${image.sha256 ?? "unavailable"}${imagePath ? `, source=${imagePath}` : ""}${!image.sha256 && !imagePath ? " (bytes and source path both gone)" : ""}`,
+						`${source.id} Image #${image.index}: sha256=${image.sha256 ?? "unavailable"}${imagePath ? `, source=${imagePath}` : ""}${!image.sha256 && !imagePath ? " (bytes and source path both gone)" : ""}${image.sha256 && !imagePath ? " (source unavailable)" : ""}`,
 					);
-					const data = image.data;
-					if (!data || !image.sha256) continue;
+					if (!image.sha256 || !imagePath) continue;
 					imagePayloads.push({
 						type: "image",
-						data,
 						mimeType: image.mimeType ?? "image/png",
 						sha256: image.sha256,
 						rn: source.id,
