@@ -57,7 +57,7 @@ export async function runPeerListCommand(
 	}
 	print(chalk.green(`${sessions.length} active peer ${sessions.length === 1 ? "session" : "sessions"}`));
 	for (const session of sessions) {
-		const title = session.sessionName ? clean(session.sessionName) : clean(session.sessionId);
+		const label = clean(session.displayName);
 		const cwd = clean(shortenPath(session.cwd));
 		const details = [
 			`pid ${session.pid}`,
@@ -67,7 +67,7 @@ export async function runPeerListCommand(
 			`${session.agents.length} ${session.agents.length === 1 ? "agent" : "agents"}`,
 		];
 		print("");
-		print(`${session.instanceId}  ${title}  ${chalk.dim(cwd)}`);
+		print(`${session.instanceId}  ${label}  ${chalk.dim(cwd)}`);
 		print(`  ${chalk.dim(details.join(" | "))}`);
 	}
 	print(chalk.dim("Send: omp peers send <id|prefix|cwd|title> <text|@file> [--agent <id>]"));

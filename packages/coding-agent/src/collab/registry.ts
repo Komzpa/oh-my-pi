@@ -132,6 +132,8 @@ export interface PeerSessionSnapshot {
 	sessionId: string;
 	/** Human-readable session title, when one is set. */
 	sessionName: string | null;
+	/** Readable label: title, working directory, agent and session. */
+	displayName: string;
 	/** Host working directory. */
 	cwd: string;
 	/** Registry id of the main agent in this process. */
@@ -152,6 +154,8 @@ export interface PeerDeliveryReceipt {
 	agent: string;
 	outcome?: IrcDeliveryReceipt["outcome"] | "executed" | "queued";
 	reason?: string;
+	/** Readable label of the target session. */
+	targetName?: string;
 	/** Writable reply address for a shell sender, also readable with `omp peers inbox`. */
 	replyTo?: string;
 }
@@ -211,7 +215,7 @@ export class PeerSessionError extends Error {
 
 interface PeerSessionRegistrySource {
 	snapshot(): PeerSessionSnapshot;
-	deliver(request: { from: PeerMessageSender; text: string; agent?: string }): Promise<PeerDeliveryReceipt>;
+	deliver(request: { from: PeerMessageSender; text: string; agent?: string; fromName?: string }): Promise<PeerDeliveryReceipt>;
 }
 
 /** One resolved capability returned by {@link resolveCollabHostLink}. */
@@ -395,6 +399,20 @@ function resolvePeerCwd(cwd: string | (() => string)): string {
 	return typeof cwd === "string" ? cwd : cwd();
 }
 
+/** Single readable label for a peer session; addressing still uses ids. */
+export function peerSessionDisplayName(args: {
+	sessionName: string | null;
+	cwd: string;
+	sessionId: string;
+	mainAgentId: string;
+}): string {
+	const base = path.basename(args.cwd) || args.cwd;
+	const short = args.sessionId.slice(0, 8);
+	const tail = `(agent ${args.mainAgentId}, session ${short}…)`;
+	const title = args.sessionName?.trim() ? args.sessionName : null;
+	return title ? `${title} — ${base} ${tail}` : `${base} ${tail}`;
+}
+
 function validPeerMessage(text: string): boolean {
 	if (text.trim().length === 0 || Buffer.byteLength(text, "utf8") > MAX_PEER_MESSAGE_BYTES) return false;
 	for (const char of text) {
@@ -442,6 +460,15 @@ function parsePeerSnapshot(raw: unknown): PeerSessionSnapshot | null {
 		sessionName: peer.sessionName === null ? null : boundField(peer.sessionName),
 		cwd: boundField(peer.cwd),
 		mainAgentId: boundField(peer.mainAgentId),
+		displayName:
+			typeof peer.displayName === "string" && peer.displayName.length > 0
+				? boundField(peer.displayName)
+				: peerSessionDisplayName({
+						sessionName: peer.sessionName === null ? null : boundField(peer.sessionName),
+						cwd: boundField(peer.cwd),
+						sessionId: boundField(peer.sessionId),
+						mainAgentId: boundField(peer.mainAgentId),
+					}),
 		startedAt: peer.startedAt,
 		busy: typeof peer.busy === "boolean" ? peer.busy : null,
 		agents: agents as PeerAgentSnapshot[],
@@ -472,6 +499,7 @@ function boundPeerSnapshot(snapshot: PeerSessionSnapshot): PeerSessionSnapshot {
 		sessionName: snapshot.sessionName === null ? null : boundField(snapshot.sessionName),
 		cwd: boundField(snapshot.cwd),
 		mainAgentId: boundField(snapshot.mainAgentId),
+		displayName: boundField(snapshot.displayName),
 		agents: snapshot.agents.map(agent => ({
 			id: boundField(agent.id),
 			displayName: boundField(agent.displayName),
@@ -558,6 +586,9 @@ function handleConnection(
 					from,
 					text: fields.text,
 					...(typeof fields.agent === "string" ? { agent: fields.agent } : {}),
+					...(typeof fields.fromName === "string" && fields.fromName.length > 0
+						? { fromName: boundField(fields.fromName) }
+						: {}),
 				})
 				.then(receipt => respond({ ok: true, v: COLLAB_REGISTRY_VERSION, receipt }))
 				.catch(error => fail(error instanceof PeerSessionError ? error.code : "unavailable"));
@@ -777,21 +808,25 @@ export async function publishPeerSession(options: PeerSessionPublishOptions): Pr
 				senderReservations.clear();
 			}
 			const refs = options.registry.list();
+			const sessionName = options.title?.() ?? null;
+			const cwd = resolvePeerCwd(options.cwd);
+			const displayName = peerSessionDisplayName({ sessionName, cwd, sessionId, mainAgentId });
 			return {
 				instanceId,
 				generation,
 				pid: process.pid,
 				sessionId,
-				sessionName: options.title?.() ?? null,
-				cwd: resolvePeerCwd(options.cwd),
+				sessionName,
+				cwd,
 				mainAgentId,
+				displayName,
 				startedAt,
 				busy: options.isBusy?.() ?? null,
 				agents: refs
 					.filter(ref => ref.kind !== "advisor" && ref.session !== null && ref.status !== "aborted")
 					.map(ref => ({
 						id: ref.id,
-						displayName: ref.displayName,
+						displayName,
 						status: ref.status,
 						kind: ref.kind,
 					})),
@@ -833,7 +868,12 @@ export async function publishPeerSession(options: PeerSessionPublishOptions): Pr
 					}
 				}
 				const body = `${request.text}\n\n[${peerSenderNotice(request.from)}]`;
-				const receipt = await options.irc.send({ from: sender, to, body });
+				const receipt = await options.irc.send({
+					from: sender,
+					...(request.fromName ? { fromName: request.fromName } : {}),
+					to,
+					body,
+				});
 				if (receipt.outcome === "failed") {
 					return {
 						status: "failed",
@@ -1112,6 +1152,7 @@ function parsePeerReceipt(raw: unknown): PeerDeliveryReceipt | null {
 		status: receipt.status,
 		target: receipt.target,
 		agent: receipt.agent,
+		...(typeof receipt.targetName === "string" ? { targetName: receipt.targetName } : {}),
 		...(typeof receipt.outcome === "string" ? { outcome: receipt.outcome as PeerDeliveryReceipt["outcome"] } : {}),
 		...(typeof receipt.reason === "string" ? { reason: receipt.reason } : {}),
 	};
@@ -1129,6 +1170,8 @@ function shellInboxPath(address: string, options?: PeerSessionOptions): string {
 
 export interface ShellReply {
 	from: string;
+	/** Readable label of the sending session, when known. */
+	fromName?: string;
 	text: string;
 	createdAt: number;
 }
@@ -1148,10 +1191,15 @@ export async function readShellReplies(address: string, options?: PeerSessionOpt
 				continue;
 			}
 			if (typeof raw !== "object" || raw === null) continue;
-			const { from, text, createdAt } = raw as Record<string, unknown>;
+			const { from, text, createdAt, fromName } = raw as Record<string, unknown>;
 			if (typeof from !== "string" || !from.trim() || typeof text !== "string" || !validPeerMessage(text)) continue;
 			if (typeof createdAt !== "number" || !Number.isFinite(createdAt) || createdAt < 0) continue;
-			replies.push({ from, text, createdAt });
+			replies.push({
+				from,
+				text,
+				createdAt,
+				...(typeof fromName === "string" && fromName.length > 0 ? { fromName } : {}),
+			});
 		}
 		return replies;
 	} catch (error) {
@@ -1204,6 +1252,16 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 	if (!entry) throw new PeerSessionError("not_found", `target peer session is no longer active`);
 	const from = await shellSender(options.from, options.registry);
 	const replyTo = from.kind === "shell" ? `agent://shell:${from.id}` : undefined;
+	const senderName =
+		from.kind === "session"
+			? (live.find(item => item.snapshot.sessionId === from.sessionId)?.snapshot.displayName ??
+				peerSessionDisplayName({
+					sessionName: null,
+					cwd: from.cwd,
+					sessionId: from.sessionId,
+					mainAgentId: MAIN_AGENT_ID,
+				}))
+			: undefined;
 	const result = await query(
 		entry.meta,
 		{
@@ -1212,13 +1270,14 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 			generation: snapshot.generation,
 			from,
 			text,
+			...(senderName ? { fromName: senderName } : {}),
 			...(options.agent ? { agent: options.agent } : {}),
 		},
 		options.registry?.timeoutMs ?? (text.startsWith("/") ? DEFAULT_COMMAND_TIMEOUT_MS : DEFAULT_QUERY_TIMEOUT_MS),
 	);
 	if (result.status === "ok") {
 		const receipt = parsePeerReceipt((result.value as Record<string, unknown>).receipt);
-		if (receipt) return replyTo ? { ...receipt, replyTo } : receipt;
+		if (receipt) return { ...receipt, targetName: snapshot.displayName, ...(replyTo ? { replyTo } : {}) };
 		throw new PeerSessionError(
 			"delivery_uncertain",
 			"Peer returned an invalid receipt; delivery may have occurred. Do not retry without checking the target.",
