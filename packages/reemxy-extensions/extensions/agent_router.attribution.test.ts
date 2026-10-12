@@ -6,7 +6,9 @@ import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { createRouterState, recordTaskOutcome } from "./agent_router";
 
 const dirs: string[] = [];
-afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => {
+	for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
 const chosen = "deepseek/deepseek-v4-pro:high";
 const first = "xiaomi/mimo-v2.6-flash";
 const served = "codex-lb/gpt-6-luna:low";
@@ -17,16 +19,40 @@ async function outcome(result: Record<string, unknown>, wait = false) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "router-attribution-"));
 	dirs.push(dir);
 	const state = createRouterState();
-	state.spawns.set("worker", { kind: "spawn", spawnKey: "worker", agent: "coder", at, chosen, order: [chosen, first, served], recordedOutcome: false });
+	state.spawns.set("worker", {
+		kind: "spawn",
+		spawnKey: "worker",
+		agent: "coder",
+		at,
+		chosen,
+		order: [chosen, first, served],
+		recordedOutcome: false,
+	});
 	const cooldowns: string[] = [];
-	const context = { sessionManager: { getHeader: () => ({ id: "parent" }) }, modelRegistry: { isSelectorSuppressed: () => false, suppressSelector: (key: string) => cooldowns.push(key) } } as unknown as ExtensionContext;
-	const rows = await recordTaskOutcome({ toolName: wait ? "wait" : "task", details: wait ? { jobs: [{ id: "worker", status: "completed", durationMs: 100, ...result }] } : { results: [{ agent: "coder", exitCode: 0, durationMs: 100, ...result }] } } as never, context, state, { stateFile: path.join(dir, "spawns.jsonl") });
+	const context = {
+		sessionManager: { getHeader: () => ({ id: "parent" }) },
+		modelRegistry: { isSelectorSuppressed: () => false, suppressSelector: (key: string) => cooldowns.push(key) },
+	} as unknown as ExtensionContext;
+	const rows = await recordTaskOutcome(
+		{
+			toolName: wait ? "wait" : "task",
+			details: wait
+				? { jobs: [{ id: "worker", status: "completed", durationMs: 100, ...result }] }
+				: { results: [{ agent: "coder", exitCode: 0, durationMs: 100, ...result }] },
+		} as never,
+		context,
+		state,
+		{ stateFile: path.join(dir, "spawns.jsonl") },
+	);
 	return { row: rows[0]!, cooldowns };
 }
 
 test("served attribution preserves chosen and first turn on task and wait outcomes", async () => {
 	for (const wait of [false, true]) {
-		const { row } = await outcome({ resolvedModel: served, firstTurnModel: first, fallbacks: [{ from: first, to: served, at, reason }] }, wait);
+		const { row } = await outcome(
+			{ resolvedModel: served, firstTurnModel: first, fallbacks: [{ from: first, to: served, at, reason }] },
+			wait,
+		);
 		expect(row.chosen).toBe(chosen);
 		expect(row.resolvedModel).toBe(served);
 		expect(row.firstTurnModel).toBe(first);
@@ -35,12 +61,20 @@ test("served attribution preserves chosen and first turn on task and wait outcom
 });
 
 test("fallback outcome records exact provider error class status and message head", async () => {
-	const { row } = await outcome({ resolvedModel: served, firstTurnModel: first, fallbacks: [{ from: first, to: served, at, reason }] });
+	const { row } = await outcome({
+		resolvedModel: served,
+		firstTurnModel: first,
+		fallbacks: [{ from: first, to: served, at, reason }],
+	});
 	expect(row.fallbacks).toEqual([{ from: first, to: served, at, reason }]);
 });
 
 test("retry cooldown belongs only to the failing fallback source not chosen or successful served", async () => {
-	const { cooldowns } = await outcome({ resolvedModel: served, firstTurnModel: first, fallbacks: [{ from: first, to: served, at, reason }] });
+	const { cooldowns } = await outcome({
+		resolvedModel: served,
+		firstTurnModel: first,
+		fallbacks: [{ from: first, to: served, at, reason }],
+	});
 	expect(cooldowns).toEqual([first]);
 	expect(cooldowns).not.toContain(chosen);
 	expect(cooldowns).not.toContain(served);
