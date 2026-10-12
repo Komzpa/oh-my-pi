@@ -116,6 +116,7 @@ All non-header entries include:
 `SessionEntry` is the union of:
 
 - `message`
+- `tool_result_prune`
 - `model_usage`
 - `thinking_level_change`
 - `model_change`
@@ -131,6 +132,10 @@ All non-header entries include:
 - `credential_pin`
 - `session_init`
 - `mode_change`
+
+### `tool_result_prune`
+
+Append-only overlay written by automatic tool-result pruning. `targets[]` names earlier `message` entry ids and their replacement `notice`. It applies only on paths that contain it; the first overlay on the path wins per target. Its numeric `prunedAt` is copied to the projected tool result. Raw journal bytes and original tool payloads are never modified.
 
 ### `message`
 
@@ -489,9 +494,9 @@ The underlying model is append-only tree + mutable leaf pointer:
 - `resetLeaf()` sets `leafId = null`; next append creates a new root entry (`parentId: null`).
 - `branchWithSummary()` sets leaf to branch target and appends a `branch_summary` entry.
 
-`getEntries()` returns all non-header entries in insertion order. There is no separate persisted leaf field: loading rebuilds the leaf from the last physical entry. Pointer-only `branch()`/`resetLeaf()` changes therefore need a subsequent append to survive reload. `discardEntryDurably()` appends a metadata branch marker and rewrites the journal to make a discarded path durable.
+`getEntries()` returns raw non-header entries in insertion order. `getBranch()` returns the selected root-to-leaf path with `tool_result_prune` overlays applied, leaving raw entries unchanged. There is no separate persisted leaf field: loading rebuilds the leaf from the last physical entry. Pointer-only `branch()`/`resetLeaf()` changes therefore need a subsequent append to survive reload. `discardEntryDurably()` re-attaches `service_tier_change` and `tool_result_prune` metadata children, appends a metadata branch marker, and rewrites the journal to make a discarded path durable.
 
-`createBranchedSession(leafId, { copyArtifacts? })` creates a new identity containing only the selected root-to-leaf path. It drops old label records and recreates the resolved labels for retained entries. Unlike a full fork, it does not inherit the provider prompt-cache key. With `copyArtifacts` (used by `AgentSession.fork(entryId)`), the artifacts directory is copied in the background and the new artifact manager waits for the copy before allocating ids or resolving `artifact://`, as for a move to a sibling file.
+`createBranchedSession(leafId, { copyArtifacts? })` creates a new identity containing only the selected raw root-to-leaf path, preserving entry ids and prune target references so replay applies the same overlays. It drops old label records and recreates the resolved labels for retained entries. Unlike a full fork, it does not inherit the provider prompt-cache key. With `copyArtifacts` (used by `AgentSession.fork(entryId)`), the artifacts directory is copied in the background and the new artifact manager waits for the copy before allocating ids or resolving `artifact://`, as for a move to a sibling file.
 
 ## Context Reconstruction (`buildSessionContext`)
 
@@ -514,7 +519,7 @@ Algorithm:
    - a later `reset_boundary` hides everything through that boundary from model context and collapsed live transcript
    - otherwise the latest compaction emits its summary plus kept/post-compaction messages (provider-native replacement history may supply the kept model context)
    - full transcript export retains pre-reset history and renders compactions chronologically
-5. Convert `message`, `custom_message`, and `branch_summary` entries into messages. Other entry types only affect replay state or metadata.
+5. Apply `tool_result_prune` overlays on the path, then convert `message`, `custom_message`, and `branch_summary` entries into messages. The overlay itself emits no message; other entry types only affect replay state or metadata.
 6. Remove dangling tool calls from replay (unless explicitly retained for a mid-turn transcript), neutralizing protected reasoning metadata on rewritten turns; drop unsafe aborted/error assistant turns and their paired tool results from model context.
 
 ## Persistence Guarantees and Failure Model
@@ -548,6 +553,7 @@ Ordinary completed appends update memory and local file storage synchronously on
 - On the file and memory backends, a `SessionWriteConflictError` on durable bytes during a full rewrite means a writer without the lease (an older omp, an external tool) changed the file. The manager reads it back, keeps the entries it lacks as a side branch (the active leaf stays its own), and retries against the size it read, up to three times per rewrite. If that writer changes the file inside every retry, the session leaves the file to it and moves to a sibling (`reason: "contested"`) rather than re-serializing the transcript on every later write. A deleted file is recreated; a file that no longer reads as this session is left untouched and the session moves to a sibling. Indexed backends keep reporting the conflict, since there it can be the manager racing its own unconfirmed publish.
 - `appendEntriesAtomically()` groups a synchronous callback's appends into one atomic publication. Failure rolls back staged entries and repairs retained concurrent work.
 - Rewrites serve renames, entry rewrites, migrations/sanitization, move/fork, and recovery. Session-title changes normally update the fixed-width title slot and append a `title_change` audit entry instead of rewriting the body.
+- Automatic tool-result pruning appends one `tool_result_prune` entry and awaits ordinary `flush()`. It never rewrites or replaces an already-materialized journal: original bytes remain identical, the inode is preserved, and ordinary turns write O(new entries) bytes. Rare recovery rewrites after a latched append failure retain the same overlay decision.
 
 ### Error behavior
 
