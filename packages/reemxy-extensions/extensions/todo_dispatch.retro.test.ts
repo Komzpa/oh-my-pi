@@ -396,15 +396,14 @@ test("a single reopened row opens a retro", async () => {
   } finally { setSystemTime(); }
 });
 
-test("a running job past its row estimate opens a missed ETA retro", async () => {
+test("a row past its canonical forecast opens a missed ETA retro", async () => {
   setSystemTime(new Date(liveNow));
   try {
     const f = await fixture(
-      [{ name: "Work", tasks: [row("Ship feature", "in_progress")] }],
+      [{ name: "Work", tasks: [{ ...row("Ship feature", "in_progress"), schedule: { ...row("Ship feature").schedule, startedAt: liveNow - 200_000, estimate: { ...row("Ship feature").schedule.estimate, updatedAt: liveNow - 200_000 } } }] }],
       [{ id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" }],
       liveNow + 24 * 60 * 60_000,
     );
-    f.setRunning([{ id: "run-1", type: "task", status: "running", label: "Ship feature", startTime: liveNow - 200_000, agentId: "worker-b" }]);
     expect(await f.check()).toContain("retrospective due (missed ETA)");
   } finally { setSystemTime(); }
 });
@@ -434,5 +433,36 @@ test("a substituted worker result opens a retro", async () => {
     await f.dispatch("ShipFeature", "coder");
     await f.result("call-ShipFeature", [{ agent: "someone-else", exitCode: 0, durationMs: 100 }]);
     expect(await f.check()).toContain("retrospective due (substituted worker result)");
+  } finally { setSystemTime(); }
+});
+
+test.each([
+  ["gate rejection", "bash", true, "Blocked: chief-no-bash requires a worker", true],
+  ["failed todo update", "todo", true, "Invalid todo update", true],
+  ["ordinary bash error", "bash", true, "Command exited with code 1", false],
+])("red TUI event: %s", async (kind, toolName, isError, text, due) => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], [], liveNow + 24 * 60 * 60_000);
+    await f.handlers.get("tool_result")!({ toolName, toolCallId: "red-event", isError, content: [{ type: "text", text }] }, f.ctx);
+    const notice = await f.check();
+    if (due) {
+      expect(notice).toContain(`retrospective due (${kind})`);
+      expect(notice).toContain("which instruction line (skill or prompt) missed it");
+      expect(notice).toContain("mechanism row that edits that instruction");
+    } else expect(notice).not.toContain("retrospective due");
+  } finally { setSystemTime(); }
+});
+
+test.each([["past ETA", liveNow - 200_000, true], ["on-time row", liveNow - 1000, false]])("red TUI event: %s", async (_kind, startedAt, due) => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const task = { ...row("Ship feature", "in_progress"), schedule: { ...row("Ship feature").schedule, startedAt, estimate: { ...row("Ship feature").schedule.estimate, updatedAt: startedAt } } };
+    const f = await fixture([{ name: "Work", tasks: [task] }], [], liveNow + 24 * 60 * 60_000);
+    const notice = await f.check();
+    if (due) {
+      expect(notice).toContain("retrospective due (missed ETA)");
+      expect(notice).toContain("mechanism row that edits that instruction");
+    } else expect(notice).not.toContain("retrospective due");
   } finally { setSystemTime(); }
 });
