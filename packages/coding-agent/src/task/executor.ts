@@ -2168,6 +2168,15 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			emitSubagentEvent(event);
 			publishAdvisorState(session);
 			publishServingModel();
+			if (event.type === "message_end" && event.message.role === "assistant") {
+				progress.firstTurnModel ??= `${event.message.provider}/${event.message.model}`;
+			}
+			if (event.type === "retry_fallback_applied") {
+				const entry = session.sessionManager.getBranch().findLast(entry => entry.type === "model_change" && entry.resolvedModelIsFallback);
+				if (entry?.type === "model_change") {
+					(progress.fallbacks ??= []).push({ from: entry.fallback?.from ?? event.from, to: entry.model, at: entry.timestamp, reason: entry.fallback?.reason });
+				}
+			}
 			if (event.type === "auto_retry_start") {
 				progress.retryState = {
 					attempt: event.attempt,
@@ -2946,6 +2955,8 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		resolvedModelIdentity: progress.resolvedModelIdentity,
 		resolvedThinkingLevel: progress.resolvedThinkingLevel,
 		resolvedModelIsFallback: progress.resolvedModelIsFallback,
+		firstTurnModel: progress.firstTurnModel,
+		fallbacks: progress.fallbacks,
 		resolvedModelRoute: progress.resolvedModelRoute,
 		advisor: progress.advisor,
 		error: exitCode !== 0 && stderr ? stderr : undefined,
