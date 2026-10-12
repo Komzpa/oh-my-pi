@@ -109,7 +109,6 @@ import {
 	cfgTaskSpeculativeLaunch,
 } from "./settings";
 
-
 function createUsageTotals(): Usage {
 	return {
 		input: 0,
