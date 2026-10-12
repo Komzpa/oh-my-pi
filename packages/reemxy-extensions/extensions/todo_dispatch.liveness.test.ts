@@ -281,10 +281,10 @@ async function runMask(mask, repos, otherRepo) {
     // 1. chief-worker-work.
     {
       const probe = await d.call("bash", { command: "bun test" });
-      const isActive = probe.hookBlocked && /chief of staff/.test(probe.reason ?? "");
+      const isActive = probe.hookBlocked && /work for a worker/.test(probe.reason ?? "");
       note("chief-worker-work", isActive);
       if (isActive) {
-        expect(probe.reason, `${label}: refusal names dispatch`).toContain("Ready rows");
+        expect(probe.reason, `${label}: refusal names dispatch`).toContain("Start one with a task call for:");
         staff(["Row B", "Row C", "Row D"]);
         const again = await d.call("bash", { command: "bun test" });
         expect(again.admitted, `${label}: staffing clears the chief refusal (got: ${again.reason})`).toBe(true);
