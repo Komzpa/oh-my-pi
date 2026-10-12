@@ -660,6 +660,80 @@ test("every todo result in the main session ends with the plan's problems", asyn
   }
 }, 60_000);
 
+test("just-finished rows are closed, not re-staffed; dep-waiting rows are chain, not idle", async () => {
+  const cwd = repo("clean");
+  const now = Date.now();
+  const estimate = { optimisticSeconds: 300, likelySeconds: 600, pessimisticSeconds: 900, confidence: "medium" as const, basis: "gates fixture", updatedAt: now - 60_000 };
+  const row = (content: string, dependencies: string[], owner?: string) => ({
+    content,
+    status: owner ? ("in_progress" as const) : ("pending" as const),
+    schedule: { dependencies, resources: [content], ...(owner ? { owner } : {}), estimate },
+  });
+  type Row = { content: string; status: "in_progress" | "pending"; schedule: { dependencies: string[]; resources: string[]; owner?: string; estimate: typeof estimate } };
+  const taskJob = (id: string, status: string) =>
+    ({ id, agentId: id, type: "task", status, label: id, startTime: now } as never);
+  const setup = async (tasks: Row[], jobs: Jobs) => {
+    const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+    const providers: Array<(ctx: ExtensionContext) => unknown> = [];
+    const api = {
+      on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+      getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+      pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
+      registerSoftToolRequirementProvider: (p: ((ctx: ExtensionContext) => unknown) & { demand?: (ctx: ExtensionContext) => unknown }) => { providers.push(p.demand ?? p); },
+      appendEntry: () => undefined,
+      sendMessage: () => undefined,
+    } as unknown as ExtensionAPI;
+    await todoDispatch(api);
+    const branch = [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } }];
+    const ctx = {
+      cwd,
+      sessionManager: { getHeader: () => ({ id: "gates-finished" }), getBranch: () => branch, getSessionFile: () => undefined },
+      getAsyncJobSnapshot: () => jobs,
+      getTaskMaxConcurrency: () => 18,
+      isIdle: () => false,
+      hasPendingMessages: () => false,
+      setTimeout: () => ({}),
+      clearTimer: () => undefined,
+    } as unknown as ExtensionContext;
+    const wait = (await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "w", input: {} }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    const bash = (await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "b", input: { command: "bun test extensions/one.test.ts" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    const idleDemands = providers
+      .map((provider) => provider(ctx))
+      .filter(Boolean)
+      .filter((demand) => JSON.stringify(demand).includes("open row(s) sit idle"));
+    const decision = decideTodoDispatch({ phases: [{ name: "Work", tasks }] as never, jobs, isMainSession: true, taskEnabled: true, now, capacity: 18, deadline: { goalId: "goal-1", deadlineAt: now + 3_600_000 } }, sdk);
+    handlers.get("session_shutdown")?.({}, ctx);
+    return { wait, bash, idleDemands, decision };
+  };
+  try {
+    const finishedPair = [row("Fix #115 countdown", [], "Fix115Countdown"), row("Fix #116", [], "Fix116")];
+    // Case A (live 2026-10-12): Fix115Countdown completed and Fix116 still runs → the finished
+    // row is an unread result, not re-staffed: no wait refusal, no chief refusal.
+    const done = await setup(finishedPair, { running: [taskJob("Fix116", "running")], recent: [taskJob("Fix115Countdown", "completed")], nonJobAgents: [] });
+    expect(done.decision.dispatchableReady).toEqual([]);
+    expect(done.wait).toBeUndefined();
+    expect(done.bash).toBeUndefined();
+    // Case B: the owner failed → the row still needs a worker and the wait gate still says so.
+    const failed = await setup(finishedPair, { running: [taskJob("Fix116", "running")], recent: [taskJob("Fix115Countdown", "failed")], nonJobAgents: [] });
+    expect(failed.decision.dispatchableReady.map((candidate) => candidate.content)).toEqual(["Fix #115 countdown"]);
+    expect(failed.wait?.block).toBe(true);
+    expect(failed.wait?.reason).toContain("ready work lacks a distinct running worker");
+    expect(failed.wait?.reason).toContain("Fix #115 countdown");
+    // Case C (live 2026-10-12): one staffed row plus two dependency-waiting rows → idle count
+    // is 0: no MANDATORY REPLAN demand, no chief refusal, no wait refusal.
+    const chained = await setup(
+      [row("Fix #116", [], "Fix116"), row("Integrate both fixes", ["Fix #116"]), row("Publish upstream PR", ["Fix #116"])],
+      { running: [taskJob("Fix116", "running")], recent: [], nonJobAgents: [] },
+    );
+    expect(chained.decision.dispatchableReady).toEqual([]);
+    expect(chained.idleDemands).toEqual([]);
+    expect(chained.wait).toBeUndefined();
+    expect(chained.bash).toBeUndefined();
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("PLAN CHECK excludes forecast rows closed in the current TODO phases", async () => {
   const cwd = repo("clean");
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();

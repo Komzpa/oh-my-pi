@@ -10,6 +10,8 @@
 ### Fixed
 
 - `todo_dispatch`: prune sprint state to live rows before persisting and coalesce a burst of changes into one entry, capping settled children at 32, so long sessions stop growing the branch without bound.
+- `todo_dispatch`: an in-progress ready row whose owner just completed is an unread result waiting to be closed, not re-staffed — it leaves `dispatchableReady`, so the wait and chief gates stop demanding a new worker for it (pending rows with a completed owner still reopen; failed or cancelled owners stay dispatchable). Dependency-blocked rows waiting on real outputs are chain, not idle: once every ready row has a running owner they leave the parked/idle count in the chief and replan refusals, while dangling links and unstaffed ready rows keep their pressure.
+- `todo_dispatch`: lead chief-of-staff work refusals with the `task` action and list the ready rows by title in the refusal ("Start one with a task call for: ..."), no capacity or row-count number; dependency-waiting rows stay out of the list. Keep unit/job staffing hints and read-only access.
 - Record served-model attribution, first-turn model and structured fallback triggers on task and wait outcomes; apply retry cooldown only to a recorded failing source model. Older core results retain an explicit unrecorded reason.
 - `todo_dispatch`: an escalated gate admits `context_notes` check-ins while still blocking unrelated calls such as `bash`.
 - Demote evidence-backed hard-fail models per role through the existing seed/user blacklist policy. Dots fabrication moves it behind unaffected coder, QA, verification and install candidates; publish (`git-pr-owner`) stays unchanged and free-first.
