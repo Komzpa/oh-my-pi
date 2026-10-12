@@ -10,6 +10,7 @@ import type {
 	Usage,
 } from "@oh-my-pi/pi-ai";
 import { createSyntheticToolResultMessage } from "@oh-my-pi/pi-agent-core";
+import { projectToolResultPrunes, type ToolResultPruneTarget } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import {
 	directoryIsEnterable,
 	getBlobsDir,
@@ -67,6 +68,7 @@ import {
 	TITLE_CHANGE_ENTRY_TYPE,
 	type TitleChangeEntry,
 	type TtsrInjectionEntry,
+	type ToolResultPruneEntry,
 	type UsageStatistics,
 } from "./session-entries";
 import {
@@ -3176,6 +3178,13 @@ export class SessionManager {
 		return entry.id;
 	}
 
+	/** Append an automatic prune overlay without modifying any earlier entry. */
+	appendToolResultPrune(targets: ToolResultPruneTarget[], prunedAt: number): string {
+		const entry: ToolResultPruneEntry = { type: "tool_result_prune", ...this.#freshEntryFields(), prunedAt, targets };
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+
 	/**
 	 * Append to a non-active branch without changing the current leaf.
 	 * Used by work that retains ownership of a branch across tree navigation.
@@ -3491,10 +3500,10 @@ export class SessionManager {
 
 	/**
 	 * Walk from an entry to root, returning entries in path order. Includes all
-	 * entry types; use buildSessionContext() for the resolved LLM messages.
+	 * entry types, with tool-result prune overlays applied; raw getEntries() is unchanged.
 	 */
 	getBranch(fromId?: string): SessionEntry[] {
-		return this.#index.pathTo(fromId ?? this.#index.leafId());
+		return projectToolResultPrunes(this.#index.pathTo(fromId ?? this.#index.leafId()));
 	}
 
 	/**
@@ -3577,7 +3586,7 @@ export class SessionManager {
 		const entry = this.#index.get(entryId);
 		if (!entry) return;
 		const children = this.#index.childrenOf(entryId);
-		const canReparentChildren = children.every(child => child.type === "service_tier_change");
+		const canReparentChildren = children.every(child => child.type === "service_tier_change" || child.type === "tool_result_prune");
 		let leafId = entry.parentId;
 		if (canReparentChildren) {
 			for (const child of children) {
@@ -3622,7 +3631,7 @@ export class SessionManager {
 	 */
 	createBranchedSession(leafId: string, options?: { copyArtifacts?: boolean }): string | undefined {
 		const sourceSessionFile = this.#sessionFile;
-		const branchPath = this.getBranch(leafId);
+		const branchPath = this.#index.pathTo(leafId);
 		if (branchPath.length === 0) throw new Error(`Entry ${leafId} not found`);
 
 		// Drop label entries from the path; recreate them fresh from the resolved map.

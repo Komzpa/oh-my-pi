@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Tool-result pruning now returns pure decisions with stable branch-local projections instead of mutating historical messages.
+
 ## [18.4.11] - 2026-10-02
 
 ### Fixed
