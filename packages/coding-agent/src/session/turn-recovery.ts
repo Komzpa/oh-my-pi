@@ -69,10 +69,11 @@ import {
 	type ServingModel,
 	validateRetryFallbackChains,
 } from "./retry-fallback-chains";
-import { describeUsageFallback, providerFallbackReason } from "./retry-fallback-reason";
+import { describeUsageFallback } from "./retry-fallback-reason";
 import { getLatestCompactionEntry } from "./session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
+import { providerFallbackReason } from "./retry-fallback-reason";
 import { sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { journalJudgmentUsage } from "../judgment";
 import { classifyUnexpectedStop, isUnexpectedStopCandidate } from "./unexpected-stop-classifier";
