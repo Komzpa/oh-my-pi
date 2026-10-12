@@ -542,6 +542,39 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
   return blankSprintState();
 }
 
+/** Cap on retained settled job ids; ids older than this are never re-checked as "seen". */
+export const MAX_SEEN_JOB_IDS = 256;
+/** Cap on retained settled roster children; live children are always kept. */
+export const MAX_SETTLED_CHILDREN = 32;
+
+/**
+ * Bound sprint state to the rows still in the todo plan plus a recent window. Every array here
+ * only ever grew, so one long session persisted hundreds of megabytes of dead row names and job
+ * ids. `liveRows` null means the plan is not loaded yet: only the time-window pruning applies.
+ */
+export function pruneSprintState(
+  state: SprintState,
+  liveRows: ReadonlySet<string> | null,
+  now: number = Date.now(),
+): SprintState {
+  const keepRow = (row: string) => liveRows === null || liveRows.has(row);
+  const seenRows = state.seenRows.filter(keepRow);
+  const rowStatuses = Object.fromEntries(Object.entries(state.rowStatuses).filter(([row]) => keepRow(row)));
+  const reopenedRows = state.reopenedRows.filter(keepRow);
+  const lastNotices = Object.fromEntries(
+    Object.entries(state.lastNotices).filter(([key]) => liveRows === null || seenRows.some((row) => key.includes(row))),
+  );
+  const workerFinishes = state.workerFinishes.filter(
+    (finish) => now - finish.at < RECENT_FINISH_MS || keepRow(finish.row),
+  );
+  const recentJobIds = new Set(workerFinishes.map((finish) => finish.jobId));
+  const seenJobIds = state.seenJobIds.filter((id) => recentJobIds.has(id));
+  for (const id of state.seenJobIds.slice(-MAX_SEEN_JOB_IDS)) {
+    if (!seenJobIds.includes(id)) seenJobIds.push(id);
+  }
+  return { ...state, seenRows, rowStatuses, reopenedRows, lastNotices, workerFinishes, seenJobIds };
+}
+
 function mergePersistedChildren(
   previous: PersistedChild[],
   jobs: Jobs | null,
@@ -565,7 +598,11 @@ function mergePersistedChildren(
     const id = job.agentId ?? job.id;
     children.set(id, { id, owner: job.agentId ? job.id : null, live: true });
   }
-  return [...children.values()];
+  const merged = [...children.values()];
+  const settled = merged.filter((child) => !child.live);
+  return settled.length <= MAX_SETTLED_CHILDREN
+    ? merged
+    : [...merged.filter((child) => child.live), ...settled.slice(-MAX_SETTLED_CHILDREN)];
 }
 
 function restoredChildren(
@@ -1532,11 +1569,22 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     pendingSizingNoticeIds = [];
     pendingReplan = null;
   };
-  const persistSprintState = () => {
+  let sprintLiveRows: ReadonlySet<string> | null = null;
+  let sprintFlushScheduled = false;
+  // Prune to live rows before writing, and coalesce a burst of changes inside one turn into one
+  // entry: appends are immutable entries, so every write is another full snapshot in the branch.
+  const flushSprintState = () => {
+    sprintFlushScheduled = false;
+    sprintState = pruneSprintState(sprintState, sprintLiveRows);
     const json = JSON.stringify(sprintState);
     if (json === persistedSprintStateJson) return;
     persistedSprintStateJson = json;
     pi.appendEntry(SPRINT_STATE_ENTRY_TYPE, sprintState);
+  };
+  const persistSprintState = () => {
+    if (sprintFlushScheduled) return;
+    sprintFlushScheduled = true;
+    queueMicrotask(flushSprintState);
   };
   const sendHarnessNotice = (kind: string, rowKey: string, content: string, details?: unknown): boolean => {
     const key = noticeKey(kind, rowKey);
@@ -1576,6 +1624,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   const touchSprintState = (ctx: ExtensionContext, phases: TodoScheduleInput, jobs: Jobs | null, now: number, deadline: DispatchInput["deadline"]) => {
     const tasks = phases.flatMap((phase) => phase.tasks);
+    sprintLiveRows = new Set(tasks.map((task) => task.content));
     const open = tasks.filter((task) => isOpenRowStatus(task.status));
     const nonClosed = tasks.filter((task) => isNonClosedRowStatus(task.status));
     const previousHadOpen = Object.values(sprintState.rowStatuses).some(isNonClosedRowStatus);
@@ -1745,6 +1794,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return promise;
   };
   const load = (ctx: ExtensionContext) => {
+    flushSprintState();
     reset();
     persistedChildren = readPersistedChildren(ctx.sessionManager.getBranch());
     sprintState = readPersistedSprintState(ctx.sessionManager.getBranch());
@@ -1763,7 +1813,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   pi.on("session_tree", loadAndRefresh);
   pi.on("session_shutdown", (_event, ctx) => {
     persistRoster(ctx);
-    persistSprintState();
+    flushSprintState();
     reset();
     disarmPlanTicker();
   });
