@@ -19,6 +19,7 @@ async function fixture(initial: TodoScheduleInput, jobs: unknown[], deadlineAt =
   const branch: unknown[] = sharedBranch ?? [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: initial } } }];
   const state = { plan: initial };
   let recent = jobs;
+  let running: unknown[] = [];
   const intervals: Array<() => void> = [];
   const notices: string[] = [];
   await todoDispatch({
@@ -31,19 +32,20 @@ async function fixture(initial: TodoScheduleInput, jobs: unknown[], deadlineAt =
   const ctx = {
     cwd: "/tmp/retro-test",
     sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
-    getAsyncJobSnapshot: () => ({ running: [], recent, nonJobAgents: [] }),
+    getAsyncJobSnapshot: () => ({ running, recent, nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 6,
     hasPendingMessages: () => false,
     setInterval: (fn: () => void) => { intervals.push(fn); return fn as unknown as ReturnType<typeof setInterval>; },
     clearInterval: () => undefined,
   } as unknown as ExtensionContext;
   const check = async (phases: TodoScheduleInput = state.plan) => {
-    const result = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "retro-check", isError: false, content: [{ type: "text", text: "schedule" }], details: { phases } }, ctx)) as { content: Array<{ text?: string }> };
-    return result.content.map((part) => part.text ?? "").join("\n");
+    const result = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "retro-check", isError: false, content: [{ type: "text", text: "schedule" }], details: { phases } }, ctx)) as { content: Array<{ text?: string }> } | undefined;
+    return result?.content.map((part) => part.text ?? "").join("\n") ?? "";
   };
   const dispatch = async (name: string, agent = "retro-facilitator") => (await handlers.get("tool_call")!({ toolName: "task", toolCallId: `call-${name}`, input: { tasks: [{ name, agent, task: "facilitate" }] } }, ctx));
   const finish = async (agent = "retro-facilitator", isError = false) => (await handlers.get("tool_result")!({ toolName: "task", toolCallId: "retro-task", isError, details: { results: [{ agent, exitCode: 0, durationMs: 1000 }] } }, ctx));
-  return { handlers, branch, ctx, check, finish, dispatch, setPlan: (next: TodoScheduleInput) => { state.plan = next; }, setJobs: (next: unknown[]) => { recent = next; }, intervals, notices };
+  const result = async (toolCallId: string, results: unknown) => (await handlers.get("tool_result")!({ toolName: "task", toolCallId, isError: false, details: { results } }, ctx));
+  return { handlers, branch, ctx, check, finish, dispatch, result, setPlan: (next: TodoScheduleInput) => { state.plan = next; }, setJobs: (next: unknown[]) => { recent = next; }, setRunning: (next: unknown[]) => { running = next; }, intervals, notices };
 }
 
 test("a retro-facilitator that completes after a reload still records the completed-retro boundary", async () => {
@@ -68,7 +70,7 @@ test("a retro-facilitator that completes after a reload still records the comple
   } finally { setSystemTime(); }
 });
 
-test("a new worker finishing after the remembered retro re-opens the notice for its own cohort", async () => {
+test("a new worker finishing predictable work after the remembered retro opens no notice", async () => {
   setSystemTime(new Date(liveNow));
   try {
     const workers = [
@@ -81,14 +83,13 @@ test("a new worker finishing after the remembered retro re-opens the notice for 
     await b.handlers.get("session_branch")!({}, b.ctx);
     b.setJobs([...workers, { id: "SprintRetro", type: "task", status: "completed", label: "SprintRetro", startTime: liveNow - 1000, agentId: "SprintRetro" }]);
     expect((await b.check())).not.toContain("retrospective due");
-    // A genuinely new worker finishes after the boundary: its window lists it, not the old cohort.
-    // The deadline is already handled, so only a fresh goal-work window re-opens the notice.
+    // Incident-only retros: a genuinely new worker finishing predictable work does not
+    // re-open the notice, even three hours later; its Retro block accumulates for the
+    // next incident-driven retro.
     setSystemTime(new Date(liveNow + 3 * 60 * 60_000 + 60_000));
     b.setJobs([{ id: "done-c", type: "task", status: "completed", label: "Ship feature", startTime: liveNow + 3 * 60 * 60_000, agentId: "worker-c" }]);
     const again = (await b.check());
-    expect(again).toContain("retrospective due");
-    expect(again).toContain("worker-c");
-    expect(again).not.toContain("worker-a");
+    expect(again).not.toContain("retrospective due");
   } finally { setSystemTime(); }
 });
 
@@ -177,13 +178,18 @@ test("an async background retro receipt clears the demand and never relists cove
     const g = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], workers, liveNow - 1, f.branch);
     await g.handlers.get("session_branch")!({}, g.ctx);
     expect(await g.check()).not.toContain("retrospective due");
-    // Twelve genuinely new workers re-open the notice for their own cohort only.
+    // Twelve genuinely new workers finishing predictable work re-open no notice, even
+    // three hours later. A repeated failure on their cohort does, naming the incident.
     setSystemTime(new Date(liveNow + 3 * 60 * 60_000 + 60_000));
     g.setJobs(Array.from({ length: 12 }, (_, i) => ({ id: `fresh-done-${i}`, type: "task", status: "completed", label: "Ship feature", startTime: liveNow + 3 * 60 * 60_000 + i, agentId: `fresh-${i}` })));
+    expect(await g.check()).not.toContain("retrospective due");
+    g.setJobs([
+      ...Array.from({ length: 12 }, (_, i) => ({ id: `fresh-done-${i}`, type: "task", status: "completed", label: "Ship feature", startTime: liveNow + 3 * 60 * 60_000 + i, agentId: `fresh-${i}` })),
+      { id: "fresh-fail-1", type: "task", status: "failed", label: "Ship feature", startTime: liveNow + 3 * 60 * 60_000, agentId: "fresh-0" },
+      { id: "fresh-fail-2", type: "task", status: "failed", label: "Ship feature", startTime: liveNow + 3 * 60 * 60_000 + 1, agentId: "fresh-1" },
+    ]);
     const again = await g.check();
-    expect(again).toContain("retrospective due");
-    expect(again).toContain("fresh-0");
-    expect(again).not.toContain("orig-0");
+    expect(again).toContain("retrospective due (repeated failure)");
   } finally { setSystemTime(); }
 });
 
@@ -265,5 +271,110 @@ test.each([
     const notice = await f.check();
     if (due) expect(notice).toContain("retrospective due (user correction)");
     else expect(notice).not.toContain("retrospective due");
+  } finally { setSystemTime(); }
+});
+
+test("a predictable delivery plus three hours without incidents opens no retro", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture(
+      [{ name: "Work", tasks: [row("Ship feature", "completed")] }],
+      [{ id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" }],
+      liveNow + 24 * 60 * 60_000,
+    );
+    expect(await f.check()).not.toContain("retrospective due");
+    setSystemTime(new Date(liveNow + 3 * 60 * 60_000 + 60_000));
+    expect(await f.check()).not.toContain("retrospective due");
+  } finally { setSystemTime(); }
+});
+
+test("an updater rejection opens a retro naming the incident", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture(
+      [{ name: "Work", tasks: [row("Ship feature")] }],
+      [
+        { id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" },
+        { id: "deploy-1", type: "task", status: "failed", label: "Install candidate on update route", startTime: liveNow - 1000, agentId: "worker-b" },
+      ],
+      liveNow + 24 * 60 * 60_000,
+    );
+    expect(await f.check()).toContain("retrospective due (updater rejection)");
+  } finally { setSystemTime(); }
+});
+
+test("a single quota failure opens no retro but the same failure twice does", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture(
+      [{ name: "Work", tasks: [row("Ship feature")] }],
+      [
+        { id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" },
+        { id: "quota-1", type: "task", status: "failed", label: "RetraceExporterEstimateGap", startTime: liveNow - 2000, agentId: "quota-worker" },
+      ],
+      liveNow + 24 * 60 * 60_000,
+    );
+    expect(await f.check()).not.toContain("retrospective due");
+    f.setJobs([
+      { id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" },
+      { id: "quota-1", type: "task", status: "failed", label: "RetraceExporterEstimateGap", startTime: liveNow - 2000, agentId: "quota-worker" },
+      { id: "quota-2", type: "task", status: "failed", label: "RetraceExporterEstimateGap", startTime: liveNow - 1000, agentId: "quota-worker" },
+    ]);
+    expect(await f.check()).toContain("retrospective due (repeated failure)");
+  } finally { setSystemTime(); }
+});
+
+test("a single reopened row opens a retro", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture(
+      [{ name: "Work", tasks: [row("Ship feature", "completed")] }],
+      [{ id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" }],
+      liveNow + 24 * 60 * 60_000,
+    );
+    expect(await f.check()).not.toContain("retrospective due");
+    f.setPlan([{ name: "Work", tasks: [row("Ship feature", "pending")] }]);
+    expect(await f.check()).toContain("retrospective due (reopened row)");
+  } finally { setSystemTime(); }
+});
+
+test("a running job past its row estimate opens a missed ETA retro", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture(
+      [{ name: "Work", tasks: [row("Ship feature", "in_progress")] }],
+      [{ id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" }],
+      liveNow + 24 * 60 * 60_000,
+    );
+    f.setRunning([{ id: "run-1", type: "task", status: "running", label: "Ship feature", startTime: liveNow - 200_000, agentId: "worker-b" }]);
+    expect(await f.check()).toContain("retrospective due (missed ETA)");
+  } finally { setSystemTime(); }
+});
+
+test("an empty worker result opens a retro", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture(
+      [{ name: "Work", tasks: [row("Ship feature")] }],
+      [{ id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" }],
+      liveNow + 24 * 60 * 60_000,
+    );
+    await f.dispatch("ShipFeature", "coder");
+    await f.result("call-ShipFeature", []);
+    expect(await f.check()).toContain("retrospective due (empty worker result)");
+  } finally { setSystemTime(); }
+});
+
+test("a substituted worker result opens a retro", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture(
+      [{ name: "Work", tasks: [row("Ship feature")] }],
+      [{ id: "done", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" }],
+      liveNow + 24 * 60 * 60_000,
+    );
+    await f.dispatch("ShipFeature", "coder");
+    await f.result("call-ShipFeature", [{ agent: "someone-else", exitCode: 0, durationMs: 100 }]);
+    expect(await f.check()).toContain("retrospective due (substituted worker result)");
   } finally { setSystemTime(); }
 });

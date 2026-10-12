@@ -1307,8 +1307,8 @@ test("PLAN CHECK advises retrospectives for sprint triggers and clears after ret
       isError: false,
       content: [{ type: "text", text: "schedule: changed" }],
       details: { phases },
-    }, ctx)) as { content: Array<{ text?: string }> };
-    return result.content.map((part) => part.text ?? "").join("\n");
+    }, ctx)) as { content: Array<{ text?: string }> } | undefined;
+    return result?.content.map((part) => part.text ?? "").join("\n") ?? "";
   };
   const finishRetro = async () => {
     (await handlers.get("tool_result")!({
@@ -1333,25 +1333,20 @@ test("PLAN CHECK advises retrospectives for sprint triggers and clears after ret
     expect((await check())).toContain("retrospective due (user correction)");
     (await finishRetro());
 
+    // Incident-only retros: a predictable delivery opens no retro, even three hours
+    // later; the workers' Retro blocks accumulate for the next incident-driven one.
     plan = [{ name: "Retro", tasks: [row("Closed one", "completed"), row("Closed two", "completed"), row("Closed three", "completed")] }];
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    expect((await check())).toContain("retrospective due (goal delivered)");
+    expect((await check())).not.toContain("retrospective due");
+    setSystemTime(new Date(liveNow + 3 * 60 * 60_000 + 1));
+    expect((await check())).not.toContain("retrospective due");
+    setSystemTime(new Date(liveNow));
     (await finishRetro());
+
     plan = [{ name: "Retro", tasks: [row("Closed one"), row("Closed two"), row("Closed three")] }];
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    expect((await check())).toContain("retrospective due (3 reopened rows)");
+    expect((await check())).toContain("retrospective due (reopened row)");
     (await finishRetro());
-
-    plan = [{ name: "Retro", tasks: [row("Final close", "completed")] }];
-    branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    expect((await check())).toContain("retrospective due (goal delivered)");
-    (await finishRetro());
-
-    plan = [{ name: "Retro", tasks: [row("Long work")] }];
-    branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    (await check());
-    setSystemTime(new Date(liveNow + 3 * 60 * 60_000 + 1));
-    expect((await check())).toContain("retrospective due (3h goal work)");
   } finally {
     setSystemTime();
   }
