@@ -42,4 +42,38 @@ describe("YieldTool terminal result latch", () => {
 		);
 		await expect(tool.execute("call-later-terminal", { data: { answer: 0 } } as never)).rejects.toThrow("Stop now");
 	});
+
+	it("rejects an empty terminal result as a retryable error without completing (#108)", async () => {
+		// Missing data: the first yield bounces in-band and latches nothing, so a
+		// resubmission with the payload completes.
+		const tool = new YieldTool(createSession());
+		await expect(tool.execute("call-empty-result", { type: "result" } as never)).rejects.toThrow(/result needs data/);
+		const done = await tool.execute("call-real-result", {
+			type: "result",
+			data: { verdict: "clean" },
+		} as never);
+		expect(done.details).toMatchObject({ status: "success", data: { verdict: "clean" } });
+
+		// Explicitly empty payloads bounce the same way, then a real one completes.
+		const blank = new YieldTool(createSession());
+		await expect(blank.execute("call-blank", { type: "result", data: "" } as never)).rejects.toThrow(
+			/result needs data/,
+		);
+		await expect(blank.execute("call-empty-object", { type: "result", data: {} } as never)).rejects.toThrow(
+			/result needs data/,
+		);
+		await expect(blank.execute("call-empty-array", { type: "result", data: [] } as never)).rejects.toThrow(
+			/result needs data/,
+		);
+		const filled = await blank.execute("call-filled", {
+			type: "result",
+			data: { verdict: "clean" },
+		} as never);
+		expect(filled.details).toMatchObject({ status: "success", data: { verdict: "clean" } });
+
+		// Negative control: an error yield without data still completes as an error.
+		const failing = new YieldTool(createSession());
+		const failed = await failing.execute("call-error", { type: "error", error: "x" } as never);
+		expect(failed.details).toMatchObject({ status: "aborted", error: "x" });
+	});
 });

@@ -164,6 +164,20 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * True when a terminal `type: "result"` payload carries no answer: missing
+ * (`undefined`; strict-mode `null` is already normalized to it), blank text,
+ * or an empty container (`[]`, `{}`). Genuine scalars (`0`, `false`) count as
+ * content — only provably answer-less payloads are rejected.
+ */
+function isEmptyResultData(value: unknown): boolean {
+	if (value === undefined) return true;
+	if (typeof value === "string") return value.trim().length === 0;
+	if (Array.isArray(value)) return value.length === 0;
+	if (isPlainRecord(value)) return Object.keys(value).length === 0;
+	return false;
+}
+
+/**
  * Read the optional `error` argument, trimmed. Strict-mode providers (OpenAI/Codex) send
  * omitted optionals as `null`; non-strict OpenAI-compatible backends routinely fill the
  * optional string with `""` (or a filler such as `"unused"`) next to a valid `data`
@@ -581,6 +595,57 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		if (workPoolItemId !== undefined && errorMessage !== undefined) data = { error: errorMessage };
 		let schemaValidationOverridden = false;
 		let schemaValidationFailureCount = 0;
+		// A terminal `type: "result"` yield is the run's answer, so it must carry
+		// it in `data`. Without this, a data-less or explicitly empty (`""`, `{}`,
+		// `[]`) result is accepted as completed with an empty result and the real
+		// answer — e.g. a verdict table left in assistant text — is lost with no
+		// retry. Bounce it in-band so the model resubmits with the payload.
+		// Untouched: error yields (`type: "error"` takes the aborted path),
+		// incremental sections, workpool items, and the legitimate last-turn
+		// closes (accumulated sections, or resolvable last-turn text handled by
+		// the guards below).
+		if (
+			status === "success" &&
+			!isIncremental &&
+			workPoolItems.length === 0 &&
+			yieldType === "result" &&
+			isEmptyResultData(data)
+		) {
+			const closesIncrementalFlow = data === undefined && this.#hasIncrementalSections;
+			// Missing data still falls through to the guards below when one of them
+			// can speak: accumulated sections close the incremental flow, a
+			// last-turn source may resolve the text, and a schema validator owns
+			// the schema-bound punt message. Only a missing payload no guard can
+			// resolve — and any explicitly empty one (`""`, `{}`, `[]`) — bounces
+			// here.
+			const mayResolveLastTurn =
+				data === undefined &&
+				(this.#session.getLastAssistantText !== undefined ||
+					this.#session.getYieldReportText !== undefined ||
+					this.#validate !== undefined);
+			if (!closesIncrementalFlow && !mayResolveLastTurn) {
+				this.#emptyResultFailures++;
+				if (this.#emptyResultFailures > MAX_EMPTY_RESULT_RETRIES) {
+					const attemptCount = this.#emptyResultFailures;
+					this.#emptyResultFailures = 0;
+					const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
+					this.#claimTerminalResult();
+					return {
+						content: [{ type: "text", text: `Task aborted: ${error}` }],
+						details: {
+							data: undefined,
+							status: "aborted",
+							error,
+							type: yieldType,
+						},
+					};
+				}
+				const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
+				throw new Error(
+					`result needs data: pass your full final answer (e.g. the verdict table) in data, not in assistant text. ${YIELD_FORMAT_HINT} Empty result retries remaining before abort: ${remaining}.`,
+				);
+			}
+		}
 		// Unknown incremental labels are a hard contract mismatch with the closed caller
 		// schema. Reject before the last-turn short-circuit too: `type: ["findings"], result: {}`
 		// would otherwise be accepted as a typed last-turn incremental yield, then a sibling
