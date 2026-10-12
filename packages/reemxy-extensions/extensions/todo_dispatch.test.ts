@@ -907,7 +907,10 @@ test("restored roster excludes settled children but keeps parked children separa
   ];
   const jobs: Jobs = {
     running: [{ id: "job-running", agentId: "agent-running", type: "task", status: "running", label: "Running negative control", startTime: now }],
-    recent: [{ id: "job-completed", agentId: "agent-completed", type: "task", status: "completed", label: "Settled child", startTime: now - 1_000, endTime: now }],
+    recent: [
+      { id: "job-completed", agentId: "agent-completed", type: "task", status: "completed", label: "Settled child", startTime: now - 1_000, endTime: now },
+      { id: "job-parked", agentId: "agent-parked", type: "task", status: "running", label: "Known parked child", startTime: now },
+    ],
   };
   await todoDispatch({
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
@@ -934,6 +937,35 @@ test("restored roster excludes settled children but keeps parked children separa
   expect(prompt).not.toContain('- id="agent-running"');
   expect(prompt).toContain("Running task jobs (1; session-owned):");
   expect(prompt).toContain('"job-running" running agent="agent-running"');
+});
+
+test("restored roster drops children unknown to the current process after restart", async () => {
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const branch: unknown[] = [
+    {
+      type: "custom",
+      customType: "todo-dispatch-roster",
+      data: { version: 1, children: [{ id: "agent-stale", owner: "job-stale", live: true }] },
+    },
+    { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases } } },
+  ];
+  await todoDispatch({
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task"],
+    pi: extensionSdk,
+  } as unknown as ExtensionAPI);
+  const ctx = {
+    cwd: "/tmp/no-native-active-goal-fixture",
+    sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
+    getAsyncJobSnapshot: () => ({ running: [], recent: [] }),
+  } as unknown as ExtensionContext;
+  await handlers.get("session_start")!({}, ctx);
+  const result = (await handlers.get("context")!({ messages: [] }, ctx)) as
+    | { messages: Array<{ content: string }> }
+    | undefined;
+  const prompt = result?.messages[0]?.content ?? "";
+  expect(prompt).toContain("Parked/restored child roster (0;");
+  expect(prompt).not.toContain('- id="agent-stale"');
 });
 test("first-context 13-row dispatch becomes observation-only when paused", async () => {
   const liveNow = Date.now();

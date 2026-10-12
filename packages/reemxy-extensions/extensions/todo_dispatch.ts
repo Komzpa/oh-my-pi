@@ -630,7 +630,13 @@ function restoredChildren(
       .filter((job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled")
       .flatMap((job) => job.agentId ? [job.id, job.agentId] : [job.id]),
   );
+  // A persisted ID is resumable only while this process still knows its job.
+  // The snapshot has no agent registry entries; absent IDs are stale after eviction/restart.
+  const knownIds = new Set(
+    [...jobs.running, ...jobs.recent].flatMap((job) => job.agentId ? [job.id, job.agentId] : [job.id]),
+  );
   return previous.filter((child) =>
+    (knownIds.has(child.id) || (child.owner !== null && knownIds.has(child.owner))) &&
     !activeIds.has(child.id) && !(child.owner && activeIds.has(child.owner)) &&
     !settledIds.has(child.id) && !(child.owner && settledIds.has(child.owner)),
   );
