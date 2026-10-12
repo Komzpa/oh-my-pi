@@ -888,8 +888,10 @@ export function parseRequirementReceipt(
 	if (new Set(rows.map(row => row.id)).size !== rows.length) return null;
 	const grouped = expectedIds.map(id => {
 		const parts = rows.filter(row => row.id.replace(/[a-z]$/, "") === id);
-		if (!parts.length || (parts.length > 1 && parts.some(row => row.id === id))) return null;
+		if (!parts.length) return null;
 		if (parts.length === 1 && parts[0]!.id === id) return parts[0]!;
+		// An overall Rn row beside its letter sub-rows is the shape auditors are briefed
+		// to write; it joins the reduction, so its own pass never masks a failed sub-row.
 		const status = parts.some(row => row.status === "fail")
 			? "fail"
 			: parts.some(row => row.status === "unverifiable")

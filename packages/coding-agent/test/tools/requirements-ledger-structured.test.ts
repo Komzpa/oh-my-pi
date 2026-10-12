@@ -107,7 +107,9 @@ describe("structured qa-auditor requirement receipts", () => {
 			),
 		].join("\n");
 		expect(parseRequirementReceipt(JSON.stringify(parts), ["R7"])).toEqual(parseRequirementReceipt(table, ["R7"]));
-		expect(parseRequirementReceipt(JSON.stringify([...parts, row]), ["R7"])).toBeNull();
+		const withOverall = parseRequirementReceipt(JSON.stringify([{ ...row, verdict: "pass" }, ...parts]), ["R7"]);
+		expect(withOverall?.[0]?.status).toBe("fail");
+		expect(withOverall?.[0]?.subIds).toEqual(["R7", "R7a", "R7b"]);
 	});
 
 	it("applies the claimed/measured mismatch coercion to JSON receipts", () => {
@@ -122,5 +124,28 @@ describe("structured qa-auditor requirement receipts", () => {
 		expect(parsed![0]!.evidence.startsWith(`claimed ${row.claimed} ≠ measured ${row.measured}: `)).toBe(true);
 		const matching = { ...row, measured: "3149 entries, 163804637 bytes" };
 		expect(parseRequirementReceipt(JSON.stringify([matching]), [row.id])![0]!.status).toBe("pass");
+	});
+
+	it("accepts a yielded string table with an overall row, sub-rows and a trailing Retro block", () => {
+		// Shape of a real rejected qa-auditor result: the brief asked for an overall R4 row
+		// followed by R4a-R4f, and the worker contract appends its question answer and Retro.
+		const ask = "Answer to toolu_x [owner_intake]: Agent chats → tasks.md";
+		const artifact = "Ingest owner requests @ 69d9f94c0e7e7a37395bab8e067f0153366a0778";
+		const table = [
+			"|id|raw words|verdict|evidence|artifact identity|",
+			"|---|---|---|---|---|",
+			...["R4", "R4a", "R4b", "R4c"].map(id => `|${id}|${ask}|pass|${id} checked with \`sed -n 1,9p\`|${artifact}|`),
+			"",
+			"Is there a much simpler different way? No.",
+			"",
+			"Retro",
+			"- Worked: one batched read-only pass.",
+		].join("\n");
+		const parsed = parseRequirementReceipt(JSON.stringify(table), ["R4"], new Map([["R4", ask]]));
+		expect(parsed?.map(row => [row.id, row.status, row.subIds])).toEqual([
+			["R4", "pass", ["R4", "R4a", "R4b", "R4c"]],
+		]);
+		const failedSub = table.replace("|R4b|" + ask + "|pass|", "|R4b|" + ask + "|fail|");
+		expect(parseRequirementReceipt(JSON.stringify(failedSub), ["R4"])?.[0]?.status).toBe("fail");
 	});
 });
