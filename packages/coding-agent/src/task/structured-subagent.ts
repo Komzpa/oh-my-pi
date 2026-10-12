@@ -240,6 +240,27 @@ function trimToUndefined(value: string | undefined): string | undefined {
 	return trimmed || undefined;
 }
 
+/** Effort suffixes the router appends to its chosen model (`model:effort`). */
+const ROUTER_EFFORT_SUFFIXES = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/**
+ * Explicit effort from the router's chosen model pattern (`order[0]`).
+ * The router picks `model:effort` via `before_subagent_spawn`; when the caller
+ * did not specify its own `effort`/`thinkingLevel`, that suffix is the chosen
+ * effort and must win over agent frontmatter. Returns `undefined` when there
+ * is no usable suffix so the child falls back to its default.
+ */
+export function resolveRouterChosenEffort(modelOverride: string[] | undefined): Effort | undefined {
+	const first = modelOverride?.[0]?.trim();
+	if (!first) return undefined;
+	const separator = first.lastIndexOf(":");
+	if (separator <= first.indexOf("/")) return undefined;
+	const suffix = first
+		.slice(separator + 1)
+		.trim()
+		.toLowerCase();
+	return (ROUTER_EFFORT_SUFFIXES as readonly string[]).includes(suffix) ? (suffix as Effort) : undefined;
+}
 function resolveSchema(
 	request: StructuredSubagentRequest,
 	agent: AgentDefinition,
@@ -650,7 +671,9 @@ function buildExecutorOptions(
 		effort: request.effort,
 		solutionSpace: request.solutionSpace?.trim() || undefined,
 		structured: policy.structured,
-		exactThinkingLevel: request.thinkingLevel,
+		exactThinkingLevel:
+			request.thinkingLevel ??
+			(request.effort === undefined ? resolveRouterChosenEffort(policy.modelOverride) : undefined),
 		...(policy.schema.source === "none"
 			? {}
 			: {

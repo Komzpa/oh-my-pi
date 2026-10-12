@@ -19,10 +19,12 @@ import agentRouter, {
 	agentHasLiveModel,
 	countLiveWorkerModels,
 	createRouterState,
+	modelEffortOf,
 	recordRetryFallbackApplied,
 	recordTaskOutcome,
 	routeSubagentSpawn,
 } from "./agent_router";
+import { resolveRouterChosenEffort } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
 
 const AGENT_POOLS = getAgentPools();
 
@@ -2231,4 +2233,98 @@ test("Haiku 5.5 sits in scout and every luna pool; brrrr strong models stay unto
 	}
 	// Brrrr is strong-models-only: Haiku 5.5 must not leak in.
 	expect(STRONG_MODELS.some(id => id.includes("claude-haiku-5-5"))).toBe(false);
+});
+
+test("spawn effort mismatch: router opus:high survives frontmatter and clamps record a reason", async () => {
+	// (a) Router-chosen :high becomes the explicit child effort, winning over
+	// an agent frontmatter of another level (e.g. qa-auditor low).
+	expect(resolveRouterChosenEffort(["anthropic/claude-opus-5-5:high", "anthropic/claude-sonnet-5-5:medium"])).toBe("high");
+	expect(resolveRouterChosenEffort(["codex-lb/gpt-6-luna:high", "anthropic/claude-sonnet-5-5:medium"])).toBe("high");
+	expect(modelEffortOf("anthropic/claude-opus-5-5:high")).toBe("high");
+	expect(modelEffortOf("anthropic/claude-opus-5-5:low")).toBe("low");
+	// A real clamp (high -> low on the same model) records a fallbacks reason.
+	{
+		const { dir, file } = tempStateFile();
+		try {
+			const state = createRouterState();
+			const context = ctx();
+			const spawnKey = "EffortClamp-1";
+			const agent = "qa-auditor";
+			state.spawns.set(`${spawnKey}\0${agent}`, {
+				kind: "spawn",
+				spawnKey,
+				at: "2026-10-12T06:36:07.953Z",
+				sessionId: "session-1",
+				agent,
+				chosen: "anthropic/claude-opus-5-5:high",
+				order: ["anthropic/claude-opus-5-5:high", "anthropic/claude-sonnet-5-5:medium"],
+				recordedOutcome: false,
+			});
+			const rows = await recordTaskOutcome(
+				{
+					toolName: "task",
+					isError: false,
+					details: {
+						results: [{ agent, exitCode: 0, durationMs: 40728, resolvedModel: "anthropic/claude-opus-5-5:low" }],
+					},
+				},
+				context,
+				state,
+				{ stateFile: file, now: () => new Date("2026-10-12T06:36:49.316Z") },
+			);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]?.resolvedModel).toBe("anthropic/claude-opus-5-5:low");
+			expect(rows[0]?.fallbacks).toHaveLength(1);
+			expect(rows[0]?.fallbacks?.[0]).toMatchObject({ from: "anthropic/claude-opus-5-5:high", to: "anthropic/claude-opus-5-5:low" });
+			expect(String(rows[0]?.fallbacks?.[0]?.reason)).toBe("effort_clamp:high->low");
+			expect(rows[0]?.fallbackReason).toBe("effort_clamp:high->low");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+});
+
+test("spawn effort negative control: no router effort stays default and unrecorded", async () => {
+	// (c) No effort in frontmatter and no router effort -> default, not a mismatch.
+	expect(resolveRouterChosenEffort(undefined)).toBeUndefined();
+	expect(resolveRouterChosenEffort([])).toBeUndefined();
+	expect(resolveRouterChosenEffort(["anthropic/claude-opus-5-5"])).toBeUndefined();
+	expect(resolveRouterChosenEffort(["openrouter/dots-studio/dots-3-note-preview:free"])).toBeUndefined();
+	expect(modelEffortOf("anthropic/claude-opus-5-5")).toBeUndefined();
+	{
+		const { dir, file } = tempStateFile();
+		try {
+			const state = createRouterState();
+			const context = ctx();
+			const spawnKey = "EffortDefault-1";
+			const agent = "qa-auditor";
+			state.spawns.set(`${spawnKey}\0${agent}`, {
+				kind: "spawn",
+				spawnKey,
+				at: "2026-10-12T06:36:07.953Z",
+				sessionId: "session-1",
+				agent,
+				chosen: "anthropic/claude-opus-5-5",
+				order: ["anthropic/claude-opus-5-5"],
+				recordedOutcome: false,
+			});
+			const rows = await recordTaskOutcome(
+				{
+					toolName: "task",
+					isError: false,
+					details: {
+						results: [{ agent, exitCode: 0, durationMs: 1000, resolvedModel: "anthropic/claude-opus-5-5" }],
+					},
+				},
+				context,
+				state,
+				{ stateFile: file, now: () => new Date("2026-10-12T06:36:49.316Z") },
+			);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]?.fallbacks ?? []).toEqual([]);
+			expect(rows[0]?.fallbackReason).toBeUndefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
 });

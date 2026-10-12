@@ -860,6 +860,16 @@ function modelSelectorBase(spec: string): string {
 	return spec.slice(0, separator);
 }
 
+const THINKING_EFFORT_SUFFIXES = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export function modelEffortOf(spec: string | undefined): string | undefined {
+	if (!spec) return undefined;
+	const separator = spec.lastIndexOf(":");
+	if (separator <= spec.indexOf("/")) return undefined;
+	const suffix = spec.slice(separator + 1).trim().toLowerCase();
+	return (THINKING_EFFORT_SUFFIXES as readonly string[]).includes(suffix) ? suffix : undefined;
+}
+
 function modelSelectorsDiffer(left: string | undefined, right: string | undefined): boolean {
 	if (!left || !right) return false;
 	return modelSelectorBase(left) !== modelSelectorBase(right);
@@ -892,6 +902,15 @@ function takeFallbackReason(
 			(fallback.role === "fallback" || fallback.role === `subagent:${spawn.spawnKey}`));
 		if (index !== -1) fallbackReason ??= state.fallbacks.splice(index, 1)[0]?.reason;
 		fallbackReason ??= "unrecorded";
+	} else if (resolvedModel) {
+		const chosenEffort = modelEffortOf(spawn.chosen);
+		const resolvedEffort = modelEffortOf(resolvedModel);
+		if (chosenEffort !== undefined && chosenEffort !== resolvedEffort) {
+			const at = new Date().toISOString();
+			const reason = `effort_clamp:${chosenEffort}->${resolvedEffort ?? "default"}`;
+			fallbacks.push({ from: spawn.chosen, to: resolvedModel, at, reason });
+			fallbackReason ??= reason;
+		}
 	}
 	return { fallbackReason, fallbacks };
 }
