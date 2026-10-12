@@ -116,10 +116,17 @@ registerMessageCacheInvalidator(message => {
 /**
  * Shrinks one message for the provider. `completedCallIds` lists the tool calls
  * that already have a result; other calls of an assistant message stay intact.
+ * Completed call arguments shrink wherever the message sits, because the result
+ * already exists. Tool result text shrinks only when `shrinkResults` is set.
  * Returns the input message when nothing exceeds the limits.
  */
-export function shrinkToolHistoryMessage(message: AgentMessage, completedCallIds: ReadonlySet<string>): AgentMessage {
+export function shrinkToolHistoryMessage(
+	message: AgentMessage,
+	completedCallIds: ReadonlySet<string>,
+	shrinkResults: boolean,
+): AgentMessage {
 	if (message.role === "toolResult") {
+		if (!shrinkResults) return message;
 		const memo = shrunkMessages.get(message);
 		if (memo) return memo.message;
 		const result = message as ToolResultMessage;
@@ -223,19 +230,19 @@ export function completedToolCallIds(messages: readonly AgentMessage[], index: n
 /**
  * Returns a provider-bound copy of `messages` with oversized tool history shrunk.
  *
- * By default only tool calls/results before the latest real user turn are
- * eligible, so the user's current turn is replayed exactly. With `wholeContext`
- * (one forced retry after a post-compaction overflow) every completed call and
- * result in the active context is eligible, including the latest turn. Pending
- * calls are never rewritten. Returns the input array when nothing changed; never
- * mutates its input.
+ * Completed calls' arguments are shrunk in every turn, including the current one.
+ * Tool result text is eligible only before the latest real user turn, so the
+ * current turn's results replay exactly. With `wholeContext` (one forced retry
+ * after a post-compaction overflow) every result in the active context is eligible,
+ * including the latest turn. Pending calls are never rewritten. Returns the input
+ * array when nothing changed; never mutates its input.
  */
 export function shrinkOversizedToolHistory(messages: AgentMessage[], wholeContext = false): AgentMessage[] {
-	const end = wholeContext ? messages.length : latestUserTurnIndex(messages);
+	const resultEnd = wholeContext ? messages.length : latestUserTurnIndex(messages);
 	let out: AgentMessage[] | undefined;
-	for (let i = 0; i < end; i++) {
+	for (let i = 0; i < messages.length; i++) {
 		const message = messages[i]!;
-		const next = shrinkToolHistoryMessage(message, completedToolCallIds(messages, i));
+		const next = shrinkToolHistoryMessage(message, completedToolCallIds(messages, i), i < resultEnd);
 		if (next === message) continue;
 		out ??= messages.slice();
 		out[i] = next;
