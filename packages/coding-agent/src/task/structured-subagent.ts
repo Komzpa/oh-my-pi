@@ -228,7 +228,6 @@ export class StructuredSubagentError extends Error {
 
 const PLAN_MODE_TOOLS = ["read", "grep", "glob", "web_search"] as const;
 
-
 function trimToUndefined(value: string | undefined): string | undefined {
 	const trimmed = value?.trim();
 	return trimmed || undefined;
