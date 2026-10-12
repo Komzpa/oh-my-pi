@@ -4281,10 +4281,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					resolvedModel: model.id,
 				});
 			}
-			if (!model) {
-				const explicitModelError = explicitModelResolutionError(modelPatterns, modelRegistry, settings);
-				if (explicitModelError) throw explicitModelError;
-			}
 			// The exact-name `task.agentServiceTierOverrides` entry dispatch resolved
 			// for this agent. The session evaluates it against its final model —
 			// including patterns only it can resolve — so a concrete tier lands on
@@ -4526,6 +4522,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				: undefined;
 			let session: AgentSession;
 			let sessionPromise: Promise<CreateAgentSessionResult> | undefined;
+			let modelFallbackMessage: string | undefined;
 			try {
 				sessionPromise = createAgentSession(
 					buildSubagentSessionOptions(sessionSpec, subagentSettings, sessionManager, null, {
@@ -4539,7 +4536,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						},
 					}),
 				);
-				({ session } = await awaitAbortable(sessionPromise));
+				({ session, modelFallbackMessage } = await awaitAbortable(sessionPromise));
 			} catch (err) {
 				mcpFollower?.dispose();
 				// Abort raced session startup. The session may still resolve later
@@ -4549,6 +4546,16 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				throw err;
 			}
 			mcpFollower?.bind(session);
+			// Deferred discovery has now had its chance to resolve explicit patterns.
+			// Only when it did not resolve (modelFallbackMessage set, no model) fail closed,
+			// so the spawn never silently runs on the role chain's model.
+			if (!model && modelFallbackMessage && modelPatterns.length > 0) {
+				const explicitModelError = explicitModelResolutionError(modelPatterns, modelRegistry, settings);
+				if (explicitModelError) {
+					session.dispose().catch(() => {});
+					throw explicitModelError;
+				}
+			}
 			// The SDK records a new session's initial model as the default role.
 			// Pin the child's own chain so a parent default sharing that model
 			// cannot steal its fallback routing. Resumed history keeps its role.
