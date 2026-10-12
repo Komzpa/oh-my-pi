@@ -121,6 +121,20 @@ describe("tree selector entry labels", () => {
 		}
 	});
 
+	it('finds tool-result prune overlays by searching for "prune" in all mode', () => {
+		const prune = {
+			...base("prune", "u1"),
+			type: "tool_result_prune",
+			prunedAt: 1,
+			targets: [],
+		} as unknown as SessionEntry;
+		const selector = selectorFor([userEntry, prune]);
+		selector.handleInput(ALT_A);
+		selector.handleInput("prune");
+		expect(visibleRows(selector).join("\n")).not.toContain("No entries match");
+		expect(visibleRows(selector).join("\n").toLowerCase()).toContain("prune");
+	});
+
 	it("hides bookkeeping entries in the default view", () => {
 		const selector = selectorFor([userEntry, ...bookkeeping]);
 		const rows = visibleRows(selector).join("\n");

@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { type AgentMessage, Tokenizer } from "@oh-my-pi/pi-agent-core";
-import type { SessionMessageEntry } from "@oh-my-pi/pi-agent-core/compaction";
+import type { SessionEntry, SessionMessageEntry } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	applyShakeRegion,
 	collectShakeRegions,
 	DEFAULT_PRUNE_CONFIG,
 	invalidateMessageCache,
 	isEstimateCacheable,
+	projectToolResultPrunes,
 	pruneToolOutputs,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@oh-my-pi/pi-ai";
@@ -142,7 +143,7 @@ describe("estimate cache option split", () => {
 });
 
 describe("estimate cache invalidation seams", () => {
-	test("pruneToolOutputs drops the cached estimate of a pruned result", () => {
+	test("pruneToolOutputs projects a fresh estimate without invalidating the raw result", () => {
 		const big = toolResult("x".repeat(20_000));
 		const entries = [messageEntry(big as AgentMessage)];
 		const before = tokenizer.countMessage(big as AgentMessage);
@@ -155,9 +156,21 @@ describe("estimate cache invalidation seams", () => {
 		});
 		expect(result.prunedCount).toBe(1);
 
-		// After the in-place prune the estimate must reflect the short placeholder,
-		// not the stale full-content count.
-		const after = tokenizer.countMessage(big as AgentMessage);
+		const path: SessionEntry[] = [
+			...entries,
+			{
+				type: "tool_result_prune",
+				id: nextId(),
+				parentId: entries[0].id,
+				timestamp: new Date(result.prunedAt).toISOString(),
+				prunedAt: result.prunedAt,
+				targets: result.targets,
+			},
+		];
+		const projected = projectToolResultPrunes(path)[0] as SessionMessageEntry;
+		expect(projectToolResultPrunes(path)[0]).toBe(projected);
+		expect(tokenizer.countMessage(big as AgentMessage)).toBe(before);
+		const after = tokenizer.countMessage(projected.message);
 		expect(after).toBeLessThan(before);
 	});
 
