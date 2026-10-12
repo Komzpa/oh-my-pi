@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { OmpErrors, type Type } from "@oh-my-pi/omptype";
 import { getAgentDir, isEnoent, logger, stringifyYamlConfig } from "@oh-my-pi/pi-utils";
 import { JSONC, YAML } from "bun";
+import { isMap, isScalar, isSeq, parseDocument } from "yaml";
 
 /** Minimal subset of the AJV ConfigSchemaError shape this module actually relies on. */
 interface ConfigSchemaError {
@@ -16,6 +17,46 @@ interface ConfigSchemaError {
  * the migration over and over on the boot path.
  */
 const migratedPaths = new Set<string>();
+
+/** Diagnose failures using source ranges, never JavaScript error call-site coordinates. */
+function configErrorLine(content: string, keyPath?: readonly unknown[]): number | undefined {
+	try {
+		const document = parseDocument(content, { prettyErrors: false });
+		let offset: number | undefined;
+		if (keyPath) {
+			if (document.errors.length > 0) return undefined;
+			let node: unknown = document.contents;
+			for (const key of keyPath) {
+				if (isMap(node)) {
+					const pair = node.items.find(item => isScalar(item.key) && item.key.value === key);
+					if (!pair) break;
+					if (isScalar(pair.key)) offset = pair.key.range?.[0] ?? offset;
+					node = pair.value;
+				} else if (isSeq(node)) {
+					const index = typeof key === "number" ? key : Number(key);
+					if (!Number.isInteger(index) || index < 0 || index >= node.items.length) break;
+					node = node.items[index];
+				} else {
+					break;
+				}
+			}
+		} else {
+			offset = document.errors[0]?.pos[0];
+		}
+		if (offset === undefined || !Number.isInteger(offset) || offset < 0 || offset > content.length) {
+			return undefined;
+		}
+		// EOF errors belong to the last content line, not a synthetic line after its final newline.
+		const end = Math.min(offset, content.trimEnd().length);
+		let line = 1;
+		for (let i = 0; i < end; i++) {
+			if (content[i] === "\n") line++;
+		}
+		return line;
+	} catch {
+		return undefined;
+	}
+}
 
 function migrationKey(jsonPath: string, ymlPath: string): string {
 	return `${jsonPath}\u0000${ymlPath}`;
@@ -257,19 +298,7 @@ export class ConfigFile<T> implements IConfigFile<T> {
 					instancePath: error.path.length === 0 ? "root" : error.path.join("."),
 					message: error.problem,
 				}));
-				let line: number | undefined;
-				// Extract line number from first key-path in the raw content
-				if (schemaErrors.length > 0 && schemaErrors[0].instancePath !== "root") {
-					const keyPath = schemaErrors[0].instancePath.split(".");
-					const firstKey = keyPath[0];
-					const lines = content.split("\n");
-					for (let i = 0; i < lines.length; i++) {
-						if (lines[i].includes(`${firstKey}:`)) {
-							line = i + 1; // 1-indexed for display
-							break;
-						}
-					}
-				}
+				const line = configErrorLine(content, checked[0]?.path);
 				const error = new ConfigError(this.id, schemaErrors, undefined, readPath, line);
 				logger.warn("Failed to parse config file", { path: this.path(), error });
 				return this.#storeCache({ error, status: "error" });
@@ -286,17 +315,8 @@ export class ConfigFile<T> implements IConfigFile<T> {
 			}
 			return this.#storeCache({ value, status: "ok" });
 		} catch (error) {
-			let line: number | undefined;
 			const readPath = this.#resolveReadPath();
-			// Extract line from YAML parse error if available
-			if (error instanceof Error && (error.message.includes("line") || "line" in error)) {
-				const lineMatch = error.message.match(/line (\d+)/i);
-				if (lineMatch) {
-					line = parseInt(lineMatch[1], 10);
-				} else if ("line" in error && typeof (error as Record<string, unknown>).line === "number") {
-					line = (error as Record<string, unknown>).line as number;
-				}
-			}
+			const line = configErrorLine(content);
 			logger.warn("Failed to parse config file", { path: this.path(), error });
 			return this.#storeCache({
 				error: new ConfigError(this.id, undefined, { err: error, stage: "Unexpected" }, readPath, line),
@@ -311,7 +331,7 @@ export class ConfigFile<T> implements IConfigFile<T> {
 
 		let content: string;
 		try {
-			content = fs.readFileSync(this.#resolveReadPath(), "utf-8").trim();
+			content = fs.readFileSync(this.#resolveReadPath(), "utf-8");
 		} catch (error) {
 			if (isEnoent(error)) {
 				return this.#storeCache({ status: "not-found" });
