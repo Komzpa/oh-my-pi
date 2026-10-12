@@ -1544,6 +1544,7 @@ describe("agent router", () => {
 					status: "completed",
 					durationMs: 1234,
 					resolvedModel: "deepseek/deepseek-v4-pro:high",
+					fallbackReason: "unrecorded",
 				},
 			]);
 			expect(readJsonl(file)).toHaveLength(2);

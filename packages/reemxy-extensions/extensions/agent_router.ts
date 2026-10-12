@@ -325,7 +325,21 @@ export interface OutcomeRecord {
 	status: "completed" | "failed" | "cancelled";
 	durationMs: number;
 	resolvedModel?: string;
+	firstTurnModel?: string;
+	fallbacks?: OutcomeFallback[];
 	fallbackReason?: string;
+}
+
+export interface OutcomeFallback {
+	from: string;
+	to: string;
+	at: string;
+	reason: "unrecorded" | {
+		class: "quota" | "auth" | "other";
+		status?: number;
+		message: string;
+		source?: "provider-error" | "usage-preflight";
+	};
 }
 
 export interface SkippedModelRecord {
@@ -851,18 +865,45 @@ function modelSelectorsDiffer(left: string | undefined, right: string | undefine
 	return modelSelectorBase(left) !== modelSelectorBase(right);
 }
 
-function takeFallbackReason(state: RouterState, spawn: SpawnState, resolvedModel?: string): string | undefined {
-	if (!modelSelectorsDiffer(spawn.chosen, resolvedModel)) return undefined;
-	const chosenBase = modelSelectorBase(spawn.chosen);
-	const resolvedBase = resolvedModel ? modelSelectorBase(resolvedModel) : undefined;
-	const index = state.fallbacks.findIndex(fallback => {
-		const fromMatches = modelSelectorBase(fallback.from) === chosenBase;
-		const toMatches = resolvedBase === undefined || modelSelectorBase(fallback.to) === resolvedBase;
-		return fromMatches && toMatches;
-	});
-	if (index === -1) return undefined;
-	const [fallback] = state.fallbacks.splice(index, 1);
-	return fallback?.reason;
+function takeFallbackReason(
+	state: RouterState,
+	spawn: SpawnState,
+	resolvedModel: string | undefined,
+	result: Record<string, unknown>,
+): { fallbackReason?: string; fallbacks: OutcomeFallback[] } {
+	const fallbacks: OutcomeFallback[] = [];
+	if (Array.isArray(result.fallbacks)) {
+		for (const raw of result.fallbacks) {
+			if (!raw || typeof raw !== "object") continue;
+			const item = raw as Record<string, unknown>;
+			const from = stringValue(item.from), to = stringValue(item.to), at = stringValue(item.at);
+			if (!from || !to || !at) continue;
+			const reason = item.reason as OutcomeFallback["reason"] | undefined;
+			fallbacks.push({ from, to, at, reason: reason ?? "unrecorded" });
+		}
+	}
+	let fallbackReason = stringValue(result.fallbackReason);
+	if (fallbacks.length) {
+		fallbackReason ??= fallbacks.map(item => typeof item.reason === "string" ? item.reason : item.reason.message).join("; ");
+	} else if (modelSelectorsDiffer(spawn.chosen, resolvedModel)) {
+		const index = state.fallbacks.findIndex(fallback =>
+			modelSelectorBase(fallback.from) === modelSelectorBase(spawn.chosen) &&
+			modelSelectorBase(fallback.to) === modelSelectorBase(resolvedModel!) &&
+			(fallback.role === "fallback" || fallback.role === `subagent:${spawn.spawnKey}`));
+		if (index !== -1) fallbackReason ??= state.fallbacks.splice(index, 1)[0]?.reason;
+		fallbackReason ??= "unrecorded";
+	}
+	return { fallbackReason, fallbacks };
+}
+
+function recordFailingFallbackCooldowns(ctx: ExtensionContext, fallbacks: OutcomeFallback[]): void {
+	for (const fallback of fallbacks) {
+		if (typeof fallback.reason === "string" || fallback.reason.source !== "provider-error") continue;
+		const failed = modelSelectorBase(fallback.from);
+		if (!ctx.modelRegistry?.isSelectorSuppressed?.(failed)) {
+			ctx.modelRegistry?.suppressSelector?.(failed, Date.now() + 5 * 60 * 1000);
+		}
+	}
 }
 
 export function recordRetryFallbackApplied(
@@ -1012,7 +1053,8 @@ export async function recordTaskOutcome(
 			const spawn = matching[0]!;
 			spawn.recordedOutcome = true;
 			const resolvedModel = stringValue(job.resolvedModel);
-			const fallbackReason = takeFallbackReason(state, spawn, resolvedModel);
+			const { fallbackReason, fallbacks } = takeFallbackReason(state, spawn, resolvedModel, job);
+			recordFailingFallbackCooldowns(ctx, fallbacks);
 			if (status === "failed")
 				await markAuthDeadAfterFailure(
 					ctx,
@@ -1035,6 +1077,8 @@ export async function recordTaskOutcome(
 				status: status as OutcomeRecord["status"],
 				durationMs,
 				...(resolvedModel ? { resolvedModel } : {}),
+				...(stringValue(job.firstTurnModel) ? { firstTurnModel: stringValue(job.firstTurnModel) } : {}),
+				...(fallbacks.length ? { fallbacks } : {}),
 				...(fallbackReason ? { fallbackReason } : {}),
 			};
 			appendJsonl(options.stateFile ?? defaultStateFile(), record);
@@ -1061,7 +1105,8 @@ export async function recordTaskOutcome(
 		if (jobId && !spawn.jobId) spawn.jobId = jobId;
 		spawn.recordedOutcome = true;
 		const resolvedModel = stringValue(result.resolvedModel);
-		const fallbackReason = stringValue(result.fallbackReason) ?? takeFallbackReason(state, spawn, resolvedModel);
+		const { fallbackReason, fallbacks } = takeFallbackReason(state, spawn, resolvedModel, result);
+		recordFailingFallbackCooldowns(ctx, fallbacks);
 		if (statusFromResult(result, event.isError === true) === "failed")
 			await markAuthDeadAfterFailure(
 				ctx,
@@ -1084,6 +1129,8 @@ export async function recordTaskOutcome(
 			status: statusFromResult(result, event.isError === true),
 			durationMs,
 			...(resolvedModel ? { resolvedModel } : {}),
+			...(stringValue(result.firstTurnModel) ? { firstTurnModel: stringValue(result.firstTurnModel) } : {}),
+			...(fallbacks.length ? { fallbacks } : {}),
 			...(fallbackReason ? { fallbackReason } : {}),
 		};
 		appendJsonl(options.stateFile ?? defaultStateFile(), record);
