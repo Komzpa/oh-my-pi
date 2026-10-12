@@ -2345,7 +2345,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // `git -C <repo>` looks at another checkout the same way, and `fetch` only moves remote-tracking refs,
   // which a look at upstream needs (live 2026-09-28: `git -C repo fetch && git -C repo log` was refused,
   // so the chief staffed a scout for a one-second look).
-  const READ_ONLY_BASH = /^(?:grep|rg|ls|cat|head|tail|wc|pwd|echo|stat|test|\[|sha256sum|sha1sum|md5sum|readlink|realpath|file|cut|uniq|tr|nl|jq|cmp|basename|dirname|date|du|df)$/;
+  const READ_ONLY_BASH = /^(?:grep|rg|ls|cat|head|tail|wc|pwd|echo|stat|test|\[|sha256sum|sha1sum|md5sum|readlink|realpath|file|cut|uniq|tr|nl|jq|cmp|basename|dirname|date|du|df|free|uptime|ps|pgrep|ss)$/;
   // Live 2026-10-12: the chief was refused `git show … | cat && sed -n '160,170p' ledger | cut -c1-400`,
   // a pure look, so its rows went overdue. sed only as a line-range print, find and sort without write/exec flags.
   const readOnlyLook = (words: Array<{ value: string; dynamic: boolean }>) => {
@@ -2354,6 +2354,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (name.value === "sed") return args[0]?.value === "-n" && args.length >= 2 && /^(?:\d+|\$)(?:,(?:\d+|\$))?p$/.test(args[1].value);
     if (name.value === "find") return !args.some((word) => /^-(?:exec|execdir|ok|okdir|delete|fprint\w*|fls)$/.test(word.value));
     if (name.value === "sort") return !args.some((word) => /^(?:-o|--output)/.test(word.value));
+    if (name.value === "systemctl") return !args[0]?.dynamic && ["status", "is-active"].includes(args[0]?.value);
+    if (name.value === "journalctl") return !args.some((word) => word.dynamic || /^--(?:rotate|vacuum|flush|sync|relinquish-var|smart-relinquish-var|setup-keys|update-catalog)(?:[=-]|$)/.test(word.value));
     return READ_ONLY_BASH.test(name.value);
   };
   // Git mutation (add, commit, push, merge) is the git-pr-owner worker's job, never the chief's
@@ -2367,6 +2369,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     let cursor = 0;
     const check = (tokens: Token[]): boolean => {
       let at = 0;
+      // A leading checkout change is navigation, not delegated work. Classify every
+      // following command normally, so `cd x && make` still fails closed.
+      if (tokens[0]?.plain && tokens[0].value === "cd") {
+        if (!tokens[1] || tokens[1].value.startsWith("-") || !tokens[2]?.plain || tokens[2].value !== "&&") return false;
+        at = 3;
+      }
       const keyword = (words: string[]) => tokens[at]?.plain && words.includes(tokens[at].value);
       const take = (word: string) => {
         if (!keyword([word])) return false;
@@ -2381,7 +2389,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           if (words[subcommand].dynamic || !words[subcommand + 1]) return false;
           subcommand += 2;
         }
-        if (!words[subcommand] || words[subcommand].dynamic || !/^(?:status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|merge-base|fetch)$/.test(words[subcommand].value)) return false;
+        if (!words[subcommand] || words[subcommand].dynamic || !/^(?:status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|ls-tree|cat-file|merge-base|fetch)$/.test(words[subcommand].value)) return false;
         if (words[subcommand].value !== "branch") return true;
         // Bare names create branches; -d/-D/-m/-M/-c/-C and unknown options mutate or
         // cannot be classified. Only known listing forms belong to the chief.
@@ -2393,7 +2401,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           if (/^(?:-a|-r|-v|-vv|--all|--remotes|--show-current|--no-color|--color=never)$/.test(word.value)) continue;
           if (/^--(?:contains|no-contains|merged|no-merged)$/.test(word.value)) {
             if (words[i + 1] && !words[i + 1].value.startsWith("-")) {
-              if (words[++i].dynamic) return false;
+              const value = words[++i];
+              // tokenize has already recursively admitted this substitution's commands.
+              if (value.dynamic && value.value !== "$substitution") return false;
             }
             continue;
           }
@@ -2607,6 +2617,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (!isWorkerWork(event.toolName, event.input)) return;
     const decision = currentDecision(ctx);
     if (!decision.key || !decision.forecast || decision.goalPaused || !decision.staffingSnapshotComplete) return;
+    // Refusal must name work that can actually be delegated, not an empty task list.
+    if (!decision.dispatchableReady?.length) return;
     const jobs = ctx.getAsyncJobSnapshot();
     const runningTasks = (jobs?.running ?? []).filter((job) => job.type === "task" && job.status === "running").length;
     const open = (decision.forecast.rows ?? []).filter((row) => row.status === "pending" || row.status === "in_progress");
@@ -2625,7 +2637,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const ready = (decision.dispatchableReady ?? []).slice(0, MAX_TASK_DISPATCH).map((row) => JSON.stringify(shorten(row.content)));
     return {
       block: true,
-      reason: `Blocked: ${event.toolName} is work for a worker.${ready.length > 0 ? ` Start one with a task call for: ${ready.join(", ")}.` : ""} If a row only waits on a unit or job, set its owner to unit:<name> or job:<pid>. Reading (read, grep, find, git status/log/show/diff) stays allowed. ${ORDER}`,
+      reason: `Blocked: ${event.toolName} is work for a worker. Start one with a task call for: ${ready.join(", ")}. If a row only waits on a unit or job, set its owner to unit:<name> or job:<pid>. Reading (read, grep, find, git status/log/show/diff) stays allowed. ${ORDER}`,
     };
   };
   const completedPlanRows = (ctx: ExtensionContext): Array<{ content: string; schedule?: { owner?: unknown } }> => {
