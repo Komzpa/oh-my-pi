@@ -2414,14 +2414,16 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (chiefRefusals >= MAX_CHIEF_REFUSALS) return; // it insists three times in a row: let it through
     chiefRefusals += 1;
     gateTrace(ctx, `chief-refused-${event.toolName}`, { runningTasks, parked });
-    const ready = (decision.dispatchableReady ?? []).map((row) => JSON.stringify(shorten(row.content)));
+    const ready = (decision.dispatchableReady ?? []).slice(0, MAX_TASK_DISPATCH).map((row) => JSON.stringify(shorten(row.content)));
     return {
       block: true,
       reason: [
-        `You are chief of staff: ${runningTasks} of ${workerCapacity(ctx)} possible workers run while ${parked} open row(s) sit idle, so do not run ${event.toolName} work yourself. For a row that only waits on a unit or job: set owner unit:<name> or job:<pid>. While it is active, the row counts as staffed.`,
-        ready.length ? `Ready rows without a worker: ${ready.slice(0, MAX_TASK_DISPATCH).join(", ")}.` : undefined,
-        ORDER,
-        "Read-only looks (read, grep, find, git status/log/show/diff) stay allowed.",
+        `Blocked ${event.toolName} work.`,
+        ready.length
+          ? `Use task to start a worker for each of these ${ready.length} ready row${ready.length === 1 ? "" : "s"}: ${ready.join(", ")}. See skill://chief-of-staff.`
+          : ORDER,
+        "For a row waiting only on an active unit or job, set owner unit:<name> or job:<pid>. It counts as staffed.",
+        "Read-only calls (read, grep, find, git status/log/show/diff) stay allowed.",
         // Seen live 2026-09-25: the chief ran pgrep on its stalled git worker's hook, which is the worker's job.
         lastTaskDispatchRefused ? "The last task dispatch was refused: do bounded work yourself until the ready row can be dispatched." : undefined,
       ].filter(Boolean).join(" "),
