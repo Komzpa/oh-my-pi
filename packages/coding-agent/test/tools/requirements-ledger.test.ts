@@ -502,6 +502,49 @@ describe("canonical requirements ledger", () => {
 		).toBeNull();
 	});
 
+	it("fails a pass receipt whose claimed and measured figures disagree", () => {
+		const table = [
+			"| id | raw words | verdict | evidence | claimed | measured | artifact identity |",
+			"| --- | --- | --- | --- | --- | --- | --- |",
+			`| R1 | audit artifact | pass | rg -c todo-dispatch-sprint-state does not match | 3,149 entries / 163,804,637 B | 3,225 entries / 171,168,243 B | ${"a".repeat(40)} |`,
+		].join("\n");
+		const parsed = parseRequirementReceipt(table, ["R1"]);
+		expect(parsed).not.toBeNull();
+		expect(parsed![0]!.status).toBe("fail");
+		expect(parsed![0]!.evidence).toBe(
+			"claimed 3,149 entries / 163,804,637 B ≠ measured 3,225 entries / 171,168,243 B: rg -c todo-dispatch-sprint-state does not match",
+		);
+	});
+
+	it("passes when claimed and measured match by value despite different formatting", () => {
+		const table = [
+			"| id | raw words | verdict | evidence | claimed | measured | artifact identity |",
+			"| --- | --- | --- | --- | --- | --- | --- |",
+			`| R1 | audit artifact | pass | rg -c todo-dispatch-sprint-state does not match | 3,149 entries / 163,804,637 B | 3149 entries, 163804637 bytes | ${"a".repeat(40)} |`,
+		].join("\n");
+		const parsed = parseRequirementReceipt(table, ["R1"]);
+		expect(parsed).not.toBeNull();
+		expect(parsed![0]!.status).toBe("pass");
+		expect(parsed![0]!.evidence).toBe("rg -c todo-dispatch-sprint-state does not match");
+	});
+
+	it("still parses old receipts without claimed and measured columns", () => {
+		const table = [
+			"| id | raw words | verdict | evidence | artifact identity |",
+			"| --- | --- | --- | --- | --- |",
+			`| R1 | audit artifact | pass | inspected the build | ${"a".repeat(40)} |`,
+		].join("\n");
+		expect(parseRequirementReceipt(table, ["R1"])).toEqual([
+			{
+				id: "R1",
+				rawWords: "audit artifact",
+				status: "pass",
+				evidence: "inspected the build",
+				artifact: "a".repeat(40),
+			},
+		]);
+	});
+
 	it("rejects malformed and duplicate IDs without silently deleting asks", () => {
 		const requirements = createRequirementCandidates([], ["keep these words"], AT);
 		expect(parseRequirementsLedger({ version: 1, requirements: [...requirements, requirements[0]] })).toBeUndefined();

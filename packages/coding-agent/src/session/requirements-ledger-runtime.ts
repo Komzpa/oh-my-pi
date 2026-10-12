@@ -312,7 +312,7 @@ export class RequirementsLedgerRuntime {
 				...(imageLines.length ? ["Referenced images (Rn, sha256, source):", ...imageLines] : []),
 				"Current linked-row HEAD identities:",
 				...rowHeads,
-				"Return one complete Markdown table with columns id | raw words | verdict | evidence | artifact identity. Cover every linked Rn above, optionally with letter sub-ids for its clauses; verdict pass, fail or unverifiable. Name the exact audited TODO row in artifact identity and its full commit SHA when a clean checkout exists. For rows without a clean checkout, name the observed artifact; freshness uses saved TODO row history. Evidence must name what was actually exercised or observed; no partial table or truncated preview is accepted.",
+				"Return one complete Markdown table with columns id | raw words | verdict | evidence | artifact identity. Cover every linked Rn above, optionally with letter sub-ids for its clauses; verdict pass, fail or unverifiable. Name the exact audited TODO row in artifact identity and its full commit SHA when a clean checkout exists. For rows without a clean checkout, name the observed artifact; freshness uses saved TODO row history. Evidence must name what was actually exercised or observed; no partial table or truncated preview is accepted. When the task states a number or count to verify, add columns claimed | measured with the task's figure and your own recount in the same units; a differing pair is recorded as fail.",
 			].join("\n");
 			revised[index] = {
 				...item,

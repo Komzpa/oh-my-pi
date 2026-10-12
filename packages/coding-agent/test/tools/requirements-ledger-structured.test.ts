@@ -109,4 +109,18 @@ describe("structured qa-auditor requirement receipts", () => {
 		expect(parseRequirementReceipt(JSON.stringify(parts), ["R7"])).toEqual(parseRequirementReceipt(table, ["R7"]));
 		expect(parseRequirementReceipt(JSON.stringify([...parts, row]), ["R7"])).toBeNull();
 	});
+
+	it("applies the claimed/measured mismatch coercion to JSON receipts", () => {
+		const row = {
+			...fixture.requirements[0]!,
+			verdict: "pass",
+			claimed: "3,149 entries / 163,804,637 B",
+			measured: "3,225 entries / 171,168,243 B",
+		};
+		const parsed = parseRequirementReceipt(JSON.stringify([row]), [row.id]);
+		expect(parsed![0]!.status).toBe("fail");
+		expect(parsed![0]!.evidence.startsWith(`claimed ${row.claimed} ≠ measured ${row.measured}: `)).toBe(true);
+		const matching = { ...row, measured: "3149 entries, 163804637 bytes" };
+		expect(parseRequirementReceipt(JSON.stringify([matching]), [row.id])![0]!.status).toBe("pass");
+	});
 });

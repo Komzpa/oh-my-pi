@@ -699,6 +699,11 @@ function requirementTableCells(line: string): string[] | null {
 	});
 }
 
+/** Digit sequences in a receipt cell, with digit-group separators stripped for value comparison. */
+function receiptNumbers(cell: string): string[] {
+	return (cell.replace(/(?<=\d)[,_\s](?=\d)/g, "").match(/\d+/g) ?? []).map(value => value.replace(/^0+(?=\d)/, ""));
+}
+
 /** Accept one complete Markdown table or structured JSON receipt for this worker's requirements. */
 export function parseRequirementReceipt(
 	output: string,
@@ -755,6 +760,14 @@ export function parseRequirementReceipt(
 				if (keys.length !== 1 || typeof row[keys[0]!] !== "string") return null;
 				cells.push((row[keys[0]!] as string).trim());
 			}
+			for (const key of ["claimed", "measured"] as const) {
+				if (!Object.hasOwn(row, key)) {
+					cells.push("");
+					continue;
+				}
+				if (typeof row[key] !== "string") return null;
+				cells.push((row[key] as string).trim());
+			}
 			rowCells.push(cells);
 		}
 	} else {
@@ -767,6 +780,8 @@ export function parseRequirementReceipt(
 			status: number;
 			evidence: number;
 			artifact: number;
+			claimed: number;
+			measured: number;
 			width: number;
 		}> = [];
 		for (let line = 0; line < lines.length - 1; line++) {
@@ -790,8 +805,12 @@ export function parseRequirementReceipt(
 			const status = find(["status", "verdict"]);
 			const evidence = find(["evidence"]);
 			const artifact = find(["artifact", "artifactidentity"]);
+			const claimed = find(["claimed"]);
+			if (claimed < 0 && normalized.some(name => name === "claimed")) return null;
+			const measured = find(["measured"]);
+			if (measured < 0 && normalized.some(name => name === "measured")) return null;
 			if (id >= 0 && status >= 0 && evidence >= 0 && artifact >= 0) {
-				headers.push({ line, id, rawWords, status, evidence, artifact, width: cells.length });
+				headers.push({ line, id, rawWords, status, evidence, artifact, claimed, measured, width: cells.length });
 			}
 		}
 		if (headers.length !== 1) return null;
@@ -809,6 +828,8 @@ export function parseRequirementReceipt(
 				cells[header.status]!,
 				cells[header.evidence]!,
 				cells[header.artifact]!,
+				header.claimed >= 0 ? cells[header.claimed]! : "",
+				header.measured >= 0 ? cells[header.measured]! : "",
 			]);
 		}
 	}
@@ -820,7 +841,15 @@ export function parseRequirementReceipt(
 		artifact: string;
 	}> = [];
 	for (const cells of rowCells) {
-		const [id, rawWords, verdict, evidence, artifact] = cells as [string, string, string, string, string];
+		const [id, rawWords, verdict, evidence, artifact, claimed, measured] = cells as [
+			string,
+			string,
+			string,
+			string,
+			string,
+			string,
+			string,
+		];
 		const status = verdict.toLowerCase();
 		if (
 			!/^R[1-9]\d*[a-z]?$/.test(id) ||
@@ -832,7 +861,35 @@ export function parseRequirementReceipt(
 		) {
 			return null;
 		}
-		rows.push({ id, rawWords, status: status as RequirementVerdictStatus, evidence, artifact });
+		let finalStatus = status;
+		let finalEvidence = evidence;
+		if (
+			status === "pass" &&
+			claimed.trim() &&
+			measured.trim() &&
+			claimed.trim().toLowerCase() !== "n/a" &&
+			measured.trim().toLowerCase() !== "n/a"
+		) {
+			// Digit-group separators (`,` `_` spaces) are stripped so figures compare by value.
+			const [claimedNums, measuredNums] = [claimed, measured].map(
+				cell =>
+					(cell.replace(/(?<=\d)[,_\s](?=\d)/g, "").match(/\d+/g) ?? []).map(value => value.replace(/^0+(?=\d)/, "")),
+			);
+			if (
+				claimedNums.length !== measuredNums.length ||
+				claimedNums.some((value, index) => value !== measuredNums[index])
+			) {
+				finalStatus = "fail";
+				finalEvidence = `claimed ${claimed} ≠ measured ${measured}: ${evidence}`;
+			}
+		}
+		rows.push({
+			id,
+			rawWords,
+			status: finalStatus as RequirementVerdictStatus,
+			evidence: finalEvidence,
+			artifact,
+		});
 	}
 	if (new Set(rows.map(row => row.id)).size !== rows.length) return null;
 	const grouped = expectedIds.map(id => {
