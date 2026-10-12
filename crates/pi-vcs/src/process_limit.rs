@@ -590,7 +590,8 @@ fn systemd_property(unit: &str, property: &str) -> io::Result<String> {
 #[cfg(all(target_os = "linux", not(test)))]
 static SWEEP_ONCE: std::sync::Once = std::sync::Once::new();
 
-/// Batch size for `systemctl revert`: one manager call per chunk, never per unit.
+/// Batch size for `systemctl revert`: one manager call per chunk, never per
+/// unit.
 #[cfg(target_os = "linux")]
 const REVERT_BATCH: usize = 200;
 
@@ -618,15 +619,14 @@ fn call_slice_owner_pid(unit: &str) -> Option<u32> {
 		!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
 	}
 	let stem = unit.strip_prefix("omp-tool-")?.strip_suffix(".slice")?;
-	let call = match stem.strip_prefix("call-") {
-		Some(call) => call,
-		None => {
-			let (hash, call) = stem.split_once('-')?;
-			if hash.len() != 12 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-				return None;
-			}
-			call.strip_prefix("call-")?
-		},
+	let call = if let Some(call) = stem.strip_prefix("call-") {
+		call
+	} else {
+		let (hash, call) = stem.split_once('-')?;
+		if hash.len() != 12 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+			return None;
+		}
+		call.strip_prefix("call-")?
 	};
 	let (pid, id) = call.split_once('-')?;
 	if !all_digits(pid) || !all_digits(id) {
@@ -635,21 +635,18 @@ fn call_slice_owner_pid(unit: &str) -> Option<u32> {
 	pid.parse().ok()
 }
 
-/// Whether a pid names a live process. Anything uncertain counts as alive, so
-/// the sweep keeps a drop-in rather than removing it wrongly.
+/// Whether a pid has a visible `/proc/<pid>` entry. Anything uncertain counts
+/// as alive, so the sweep keeps a drop-in rather than removing it wrongly.
 #[cfg(target_os = "linux")]
 fn process_alive(pid: u32) -> bool {
-	let Ok(pid) = i32::try_from(pid) else {
-		return true;
-	};
 	if pid == 0 {
 		return true;
 	}
-	// SAFETY: signal 0 performs only the existence and permission check.
-	if unsafe { libc::kill(pid, 0) } == 0 {
-		return true;
+	match std::fs::metadata(std::path::Path::new("/proc").join(pid.to_string())) {
+		Ok(_) => true,
+		Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+		Err(_) => true,
 	}
-	std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// Unit names whose drop-in may be reverted: the owner process is gone and the
@@ -663,7 +660,11 @@ fn stale_call_slice_units<'a>(
 	units
 		.into_iter()
 		.filter(|unit| {
-			call_slice_owner_pid(unit).is_some_and(|pid| !is_alive(pid)) && !is_active(unit)
+			call_slice_owner_pid(unit).is_some_and(|pid| {
+				// An alive owner may be between set-property and scope start; unit
+				// inactivity does not make its in-flight drop-in stale.
+				!is_alive(pid) && !is_active(unit)
+			})
 		})
 		.collect()
 }
@@ -698,10 +699,15 @@ fn sweep_stale_call_dropins() -> io::Result<()> {
 	sweep_stale_call_dropins_in(&std::path::Path::new(&runtime_dir).join("systemd/user.control"))
 }
 
-/// Sweep over an explicit `user.control` directory; tests pass a temp directory.
+/// Sweep over an explicit `user.control` directory; tests pass a temp
+/// directory.
 #[cfg(target_os = "linux")]
+#[allow(
+	clippy::case_sensitive_file_extension_comparisons,
+	reason = "systemd unit type suffixes are lowercase by definition"
+)]
 fn sweep_stale_call_dropins_in(control: &std::path::Path) -> io::Result<()> {
-	let entries = match std::fs::read_dir(&control) {
+	let entries = match std::fs::read_dir(control) {
 		Ok(entries) => entries,
 		Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
 		Err(error) => return Err(error),
@@ -1199,19 +1205,21 @@ exec "$@"
 		let active = "omp-tool-call-4194302-1.slice";
 		let own_pid = std::process::id();
 		// Live owner: kept.
-		assert!(
-			stale_call_slice_units([own.as_str()], |pid| pid == own_pid, |_| false).is_empty()
-		);
+		assert!(stale_call_slice_units([own.as_str()], |pid| pid == own_pid, |_| false).is_empty());
 		// Dead owner, inactive unit: reverted.
-		assert_eq!(
-			stale_call_slice_units([dead], |_| false, |_| false),
-			vec![dead]
-		);
+		assert_eq!(stale_call_slice_units([dead], |_| false, |_| false), vec![dead]);
 		// Dead owner but active unit: kept.
 		assert!(stale_call_slice_units([active], |_| false, |unit| unit == active).is_empty());
 		// Names that are not tool-call slices are never touched.
+		assert!(stale_call_slice_units(["user@1000.service"], |_| false, |_| false).is_empty());
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn stale_sweep_keeps_live_owner_when_unit_is_inactive() {
+		let own = format!("omp-tool-call-{}-1.slice", std::process::id());
 		assert!(
-			stale_call_slice_units(["user@1000.service"], |_| false, |_| false).is_empty()
+			super::stale_call_slice_units([own.as_str()], super::process_alive, |_| false).is_empty()
 		);
 	}
 
@@ -1247,6 +1255,31 @@ exec "$@"
 		assert_eq!(super::systemd_property(&slice, "TasksMax").expect("readback"), "32");
 		let dropin = runtime_dropin(&slice);
 		assert!(dropin.exists(), "set-property --runtime should write {}", dropin.display());
+		let show = super::systemd_user_manager_command(super::systemctl_bin())
+			.args(["--user", "show", "-p", "TasksMax", &slice])
+			.output()
+			.expect("read TasksMax from systemd");
+		assert!(show.status.success(), "systemctl show failed: {:?}", show.status);
+		eprintln!(
+			"systemctl --user show -p TasksMax {slice}: {}",
+			String::from_utf8_lossy(&show.stdout).trim()
+		);
+		let control_group = super::systemd_user_manager_command(super::systemctl_bin())
+			.args(["--user", "show", "--value", "-p", "ControlGroup", &slice])
+			.output()
+			.expect("read slice ControlGroup");
+		assert!(control_group.status.success(), "systemctl ControlGroup failed");
+		let pids_max = std::fs::read_to_string(
+			std::path::Path::new("/sys/fs/cgroup")
+				.join(
+					String::from_utf8_lossy(&control_group.stdout)
+						.trim()
+						.trim_start_matches('/'),
+				)
+				.join("pids.max"),
+		)
+		.expect("read enforced slice pids.max");
+		eprintln!("pids.max while enforced: {}", pids_max.trim());
 		drop(process_limit);
 		let deadline = Instant::now() + Duration::from_secs(10);
 		while dropin.exists() {
