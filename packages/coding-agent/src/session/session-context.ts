@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { customMessageEntryMessage, isUserRequestEntry } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { getAnthropicCompactionPayload, isTurnStartEntry } from "@oh-my-pi/pi-agent-core/compaction";
+import { projectToolResultPrunes } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import {
 	coerceServiceTierByFamily,
 	type OpenAIResponsesHistoryPayload,
@@ -483,7 +484,7 @@ export function buildSessionContext(
 
 	// Walk from leaf to root, collecting path. Corrupt/pre-fix files can contain
 	// parent cycles; stop at the first repeat so session load is bounded.
-	const path: SessionEntry[] = [];
+	let path: SessionEntry[] = [];
 	const seenPathIds = new Set<string>();
 	let current: SessionEntry | undefined = leaf;
 	while (current && !seenPathIds.has(current.id)) {
@@ -500,6 +501,7 @@ export function buildSessionContextFromLeafPath(
 	options?: BuildSessionContextOptions,
 ): SessionContext {
 	path.reverse();
+	path = projectToolResultPrunes(path);
 
 	// Extract settings and find compaction
 	let thinkingLevel: string | undefined = "off";
