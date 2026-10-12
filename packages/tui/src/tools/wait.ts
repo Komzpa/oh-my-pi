@@ -23,7 +23,7 @@ import {
 	createCachedComponent,
 	type ConfiguredThinkingLevel,
 } from "../render/render-utils";
-import type { StructuredSubagentOutput } from "./task";
+import type { StructuredSubagentOutput, TaskModelFallback } from "./task";
 import type { RenderResultOptions, ToolRenderer, ToolActivitySummary } from "./renderer";
 import type { IrcDeliveryReceipt, IrcMessage } from "./irc";
 import type { TspSpan } from "@oh-my-pi/pi-wire";
@@ -55,6 +55,8 @@ export interface JobSnapshot {
 	exitCode?: number;
 	/** Effective task model selector, including an explicit reasoning suffix when configured. */
 	resolvedModel?: string;
+	firstTurnModel?: string;
+	fallbacks?: TaskModelFallback[];
 	/** Provider/id including routing, with no added thinking suffix. */
 	resolvedModelIdentity?: string;
 	/** Explicit thinking metadata, independent of the model identity. */
