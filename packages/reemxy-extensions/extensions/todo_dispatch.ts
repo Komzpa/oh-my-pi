@@ -24,7 +24,7 @@ type DispatchForecastApi = Pick<
   getTodoPlanningIssues?: (phases: TodoScheduleInput) => TodoPlanningIssue[];
 };
 
-type Jobs = Pick<AsyncJobSnapshot, "running" | "recent" | "nonJobAgents">;
+type Jobs = Pick<AsyncJobSnapshot, "running" | "recent">;
 type PersistedChild = { id: string; owner: string | null; live: boolean };
 type SprintWorkerFinish = { jobId: string; id: string; at: number; row: string };
 type SprintState = {
@@ -590,9 +590,6 @@ function mergePersistedChildren(
       .filter((child) => !settledIds.has(child.id) && !(child.owner && settledIds.has(child.owner)))
       .map((child) => [child.id, child]),
   );
-  for (const agent of jobs.nonJobAgents ?? []) {
-    children.set(agent.id, { id: agent.id, owner: children.get(agent.id)?.owner ?? null, live: agent.live });
-  }
   for (const job of jobs.running) {
     if (job.status !== "running") continue;
     const id = job.agentId ?? job.id;
@@ -614,7 +611,6 @@ function restoredChildren(
     ...jobs.running.filter((job) => job.status === "running").flatMap((job) =>
       job.agentId ? [job.id, job.agentId] : [job.id],
     ),
-    ...(jobs.nonJobAgents ?? []).filter((agent) => agent.live).map((agent) => agent.id),
   ]);
   const settledIds = new Set(
     jobs.recent
@@ -733,14 +729,11 @@ function staticKey(
             .map((job) => [job.id, job.type, job.status, job.label, job.agentId ?? null, job.startTime])
             .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
         );
-  const nonJobAgents = jobs?.nonJobAgents
-    ?.map(({ id, live }) => [id, live])
-    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   const restoredKey = restored.map(({ id, owner, live }) => [id, owner, live])
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   const persistedKey = persisted.map(({ id, owner, live }) => [id, owner, live])
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  return JSON.stringify([tasks, jobKey, nonJobAgents ?? null, restoredKey, persistedKey, deadline ?? null, capacity ?? null, startableCapacity ?? null, goalPaused]);
+  return JSON.stringify([tasks, jobKey, restoredKey, persistedKey, deadline ?? null, capacity ?? null, startableCapacity ?? null, goalPaused]);
 }
 
 function safeTimestamp(value: unknown, timeZone?: string): string {
@@ -879,8 +872,6 @@ function buildStaticPrompt(
   const runningLines = jobLines(running);
   const recentLines = jobLines(recentTasks).slice(0, MAX_ROWS);
   if (recentTasks.length > MAX_ROWS) recentLines.push(`- ${recentTasks.length - MAX_ROWS} more recent task jobs; inspect live hub jobs`);
-  const agents = jobs?.nonJobAgents;
-  const agentLines = agents?.map(({ id, live }) => `${JSON.stringify(id)}=${live}`) ?? [];
   const restoredLines = restored.map(({ id, owner, live }) =>
     `- id=${JSON.stringify(id)} owner=${JSON.stringify(owner)} last-known-live=${live}`,
   );
@@ -891,21 +882,20 @@ function buildStaticPrompt(
     "[TODO supervisor; advisory, not a user request]",
     `TODO rows ${snapshotRows.length}/${rows.length}; open=${openCount}; blocked=${blockedCount}; tail=${Math.max(0, rows.length - snapshotRows.length)}; Task cap=${shownCapacity}. Rows follow canonical order:`,
     ...(snapshotLines.length ? snapshotLines : ["- none"]),
-    "Owner labels and bare live non-job roster entries are not active staffing proof: count exact IDs in running task jobs, or a live roster entry that matches a persisted task-child owner. Idle live agents may be re-staffed but do not count as staffed. Do not dispatch blocked or dependency-waiting rows. Main coordinates staffed work; if Task dispatch is unavailable, main may do bounded safe work directly rather than leave the deliverable untouched.",
+    "Owner labels are not active staffing proof: count exact IDs in running task jobs or a persisted parked child matching a task-child owner. Idle live agents may be re-staffed but do not count as staffed. Do not dispatch blocked or dependency-waiting rows. Main coordinates staffed work; if Task dispatch is unavailable, main may do bounded safe work directly rather than leave the deliverable untouched.",
     goalPaused
-      ? "Paused goal: observation only; require evidence-based current O/L/P plus confidence for every nonclosed row, the full remaining scope, and exact Task/non-job worker roster. Do not start Task jobs or perform autonomous goal work."
+      ? "Paused goal: observation only; require evidence-based current O/L/P plus confidence for every nonclosed row, the full remaining scope, and exact Task/parked-child roster. Do not start Task jobs or perform autonomous goal work."
       : "Schedule every pending/in-progress/blocked row before work: evidence-based O/L/P plus confidence, explicit dependencies ([] only if proven independent), owner and exclusive resources when known; inspect/ask on unknowns, split pessimistic work >1h, and recover blockers safely. Once recorded, do not repeat planning without a new fact; move to the next deliverable-producing action.",
     `Fixed native deadline: ${deadline ? `${JSON.stringify(deadline.goalId)} at ${safeTimestamp(deadline.deadlineAt, deadline.timezone)} (immutable${goalPaused ? "; paused: observation only, no autonomous goal work" : ""})` : goalPaused ? "paused goal; deadline unavailable through host API (observation only, no autonomous goal work)" : "none"}.`,
     `Running task jobs (${running.length}; session-owned):`,
     ...(jobs === null ? ["- snapshot unavailable; inspect live hub state"] : runningLines.length ? runningLines : ["- none"]),
     `Recent task jobs (${recentTasks.length}; reconcile exact settlements):`,
     ...(jobs === null ? ["- snapshot unavailable"] : recentLines.length ? recentLines : ["- none"]),
-    agents === undefined ? "Non-job roster unavailable; inspect live hub before dispatch." : `Live non-job roster: ${agentLines.join(", ") || "none"}`,
     `Parked/restored child roster (${restored.length}; persisted last-known IDs, not proof of liveness):`,
     ...(restoredLines.length ? restoredLines : ["- none"]),
     goalPaused
-      ? "Paused observation only: reconcile every running job, live non-job agent, and parked/restored child against TODO ownership with exact IDs; do not resume or start jobs. An empty live snapshot is not nothing-to-reconcile."
-      : "Reconcile every running job, live non-job agent, and parked/restored child against TODO ownership before another batch. Require an exact resume of idle owners; fresh-dispatch only ready rows disjoint from all roster-owned work. An empty live snapshot is not nothing-to-reconcile.",
+      ? "Paused observation only: reconcile every running job and parked/restored child against TODO ownership with exact IDs; do not resume or start jobs. An empty live snapshot is not nothing-to-reconcile."
+      : "Reconcile every running job and parked/restored child against TODO ownership before another batch. Require an exact resume of idle owners; fresh-dispatch only ready rows disjoint from all roster-owned work. An empty live snapshot is not nothing-to-reconcile.",
   ].join("\n");
 }
 
@@ -1065,7 +1055,6 @@ export function decideTodoDispatch(
   const openContent = new Set(open.map(({ task }) => task.content));
   const activeTaskJobs =
     jobs?.running.filter((job) => job.type === "task" && job.status === "running") ?? [];
-  const nonJobAgents = jobs?.nonJobAgents;
   const persistedTaskChildren = input.persistedChildren ?? [];
   const livePersistedChildForOwner = (owner: string | null) => {
     if (owner === null) return undefined;
@@ -1079,7 +1068,7 @@ export function decideTodoDispatch(
       (child.owner !== null && input.idleResumeAttempts?.has(child.owner))
     )
       return undefined;
-    return nonJobAgents?.some((agent) => agent.id === child.id && agent.live === true) ? child : undefined;
+    return child;
   };
   const runningTaskWorkerIds = new Set(
     activeTaskJobs.map((job) => job.agentId ?? job.id),
@@ -1135,17 +1124,10 @@ export function decideTodoDispatch(
     .filter((row) => openContent.has(row.content) && row.ready)
     .map((row) => {
       const owner = typeof row.owner === "string" ? row.owner : null;
-      const registryAgent = owner === null || owner.toLowerCase() === "main"
-        ? undefined
-        : nonJobAgents?.find((agent) => agent.id === owner && agent.live === true);
       const activeRestoredChild = livePersistedChildForOwner(owner);
       const restoredOwner = owner === null
         ? undefined
         : input.restoredChildren?.find((child) => child.id === owner || child.owner === owner);
-      const jobAnyRunning = owner === null
-        ? undefined
-        : jobs?.running.find((active) => active.status === "running" &&
-          (active.agentId === owner || active.id === owner || active.id.replace(/-\d+$/, "") === owner));
       const jobByAgentId = owner === null
         ? undefined
         : activeTaskJobs.find((active) => active.agentId === owner);
@@ -1154,13 +1136,6 @@ export function decideTodoDispatch(
         : activeTaskJobs.find((active) => active.id === owner || active.id.replace(/-\d+$/, "") === owner);
       const liveWorkerId =
         jobByAgentId?.agentId || (jobById ? jobById.agentId || jobById.id : undefined) ||
-        // A resumed live worker (write agent://) runs without a task job: proc:// shows
-        // running and the registry entry is live (522, 546). Count any running job
-        // under the owner's name as staffing so wait is allowed and no second
-        // writer is demanded on the same worktree.
-        (jobAnyRunning && registryAgent !== undefined
-          ? (jobAnyRunning.agentId || jobAnyRunning.id)
-          : undefined) ||
         activeRestoredChild?.id;
       const sharedLiveOwner = liveWorkerId !== undefined && claimedLiveWorkerIds.has(liveWorkerId);
       if (liveWorkerId !== undefined && !sharedLiveOwner) claimedLiveWorkerIds.add(liveWorkerId);
@@ -1170,8 +1145,6 @@ export function decideTodoDispatch(
           ? "shared-live-owner" as const
           : liveWorkerId !== undefined
             ? "live-owned" as const
-            : registryAgent !== undefined
-              ? "idle-live-owner" as const
               : restoredOwner !== undefined
                 ? "restored-owner" as const
                 : owner === null
@@ -1214,7 +1187,7 @@ export function decideTodoDispatch(
       })
       .map((row) => row.content),
   );
-  const staffingSnapshotComplete = jobs !== null && nonJobAgents !== undefined;
+  const staffingSnapshotComplete = jobs !== null;
   const dispatchableReady = ownerlessReady.filter(
     (candidate) =>
       staffingSnapshotComplete &&
@@ -1970,8 +1943,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (!jobs) return;
     const running = jobs.running.filter((job) => job.status === "running");
     const runningTasks = running.filter((job) => job.type === "task");
-    const liveAgents = (jobs.nonJobAgents ?? []).filter((agent) => agent.live);
-    const idle = running.length === 0 && liveAgents.length === 0;
+    const parkedChildren = restoredChildren(persistedChildren, jobs).filter((child) => child.live);
+    const idle = running.length === 0 && parkedChildren.length === 0;
     const decision = currentDecision(ctx, Date.now(), [], false, true);
     if (!decision.key || !decision.forecast) return;
     const rows = decision.forecast.rows ?? [];
