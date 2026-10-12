@@ -699,11 +699,6 @@ function requirementTableCells(line: string): string[] | null {
 	});
 }
 
-/** Digit sequences in a receipt cell, with digit-group separators stripped for value comparison. */
-function receiptNumbers(cell: string): string[] {
-	return (cell.replace(/(?<=\d)[,_\s](?=\d)/g, "").match(/\d+/g) ?? []).map(value => value.replace(/^0+(?=\d)/, ""));
-}
-
 /** Accept one complete Markdown table or structured JSON receipt for this worker's requirements. */
 export function parseRequirementReceipt(
 	output: string,
@@ -871,9 +866,8 @@ export function parseRequirementReceipt(
 			measured.trim().toLowerCase() !== "n/a"
 		) {
 			// Digit-group separators (`,` `_` spaces) are stripped so figures compare by value.
-			const [claimedNums, measuredNums] = [claimed, measured].map(
-				cell =>
-					(cell.replace(/(?<=\d)[,_\s](?=\d)/g, "").match(/\d+/g) ?? []).map(value => value.replace(/^0+(?=\d)/, "")),
+			const [claimedNums, measuredNums] = [claimed, measured].map(cell =>
+				(cell.replace(/(?<=\d)[,_\s](?=\d)/g, "").match(/\d+/g) ?? []).map(value => value.replace(/^0+(?=\d)/, "")),
 			);
 			if (
 				claimedNums.length !== measuredNums.length ||
