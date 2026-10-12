@@ -163,6 +163,31 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Read the optional `error` argument. Strict-mode providers (OpenAI/Codex) send
+ * omitted optionals as `null`; non-strict OpenAI-compatible backends routinely
+ * fill the optional string with `""` next to a valid `data` payload. Both mean
+ * "no error" — an empty string is never a usable failure reason.
+ */
+function parseYieldError(value: unknown, options: { hasData: boolean }): string | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== "string") throw new Error("error must be a string");
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return undefined;
+	if (options.hasData && isPlaceholderYieldError(trimmed)) return undefined;
+	return trimmed;
+}
+
+/**
+ * Render an incremental yield's `type: [...]` labels as a quoted, comma-separated list for
+ * model-facing retry messages — keeps the failed section labelled even when the yield carried
+ * multiple labels at once.
+ */
+function formatYieldLabels(labels: readonly string[]): string {
+	if (labels.length === 0) return '""';
+	return labels.map(label => `"${label}"`).join(", ");
+}
+
 const PLACEHOLDER_YIELD_ERRORS = new Set([
 	"ignore",
 	"ignored",
@@ -187,31 +212,6 @@ function renderDataErrorConflictMessage(errorMessage: string, yieldType: string 
 		failureJson: JSON.stringify({ error: errorMessage }),
 		typeJson: yieldType === undefined ? undefined : JSON.stringify(yieldType),
 	});
-}
-
-/**
- * Read the optional `error` argument. Strict-mode providers (OpenAI/Codex) send
- * omitted optionals as `null`; non-strict OpenAI-compatible backends routinely
- * fill the optional string with `""` or a placeholder next to a valid `data`
- * payload. Both mean "no error" only when data is present.
- */
-function parseYieldError(value: unknown, options: { hasData: boolean }): string | undefined {
-	if (value === undefined || value === null) return undefined;
-	if (typeof value !== "string") throw new Error("error must be a string");
-	const trimmed = value.trim();
-	if (trimmed.length === 0) return undefined;
-	if (options.hasData && isPlaceholderYieldError(trimmed)) return undefined;
-	return trimmed;
-}
-
-/**
- * Render an incremental yield's `type: [...]` labels as a quoted, comma-separated list for
- * model-facing retry messages — keeps the failed section labelled even when the yield carried
- * multiple labels at once.
- */
-function formatYieldLabels(labels: readonly string[]): string {
-	if (labels.length === 0) return '""';
-	return labels.map(label => `"${label}"`).join(", ");
 }
 
 /**
