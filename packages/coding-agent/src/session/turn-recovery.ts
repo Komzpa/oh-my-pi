@@ -191,6 +191,8 @@ export interface RecoveryCompactionResult {
 
 type RequestBodyReadTimeoutRecovery = "not-applicable" | "handled-retry" | "handled-terminal";
 
+export type OversizedHistoryOverflowRecovery = "recover" | "shrink-retry" | "already-handled" | "terminal";
+
 /** Capabilities borrowed from the owning AgentSession. */
 export interface TurnRecoveryHost {
 	agent: Agent;
@@ -297,6 +299,14 @@ export class TurnRecovery {
 	#retryAbortController: AbortController | undefined;
 	#retryAttempt = 0;
 	#requestBodyReadTimeoutRecoveryPromptSequence: number | undefined;
+	#oversizedHistoryRecovery:
+		| {
+				phase: "compacted" | "shrunk" | "terminal";
+				promptSequence: number;
+				generation: number;
+				lastFailure: AssistantMessage;
+		  }
+		| undefined;
 	#retryPromise: Promise<void> | undefined;
 	#retryResolve: (() => void) | undefined;
 	#activeRetryFallback: ActiveRetryFallbackState | undefined;
@@ -450,6 +460,40 @@ export class TurnRecovery {
 		this.#streamStallContinueCount = 0;
 		this.#acceptTerminalEmptyStopForPrompt = false;
 		this.#activeFallbackCreditRedemption = undefined;
+		this.#oversizedHistoryRecovery = undefined;
+	}
+
+	/** Whole-context shrinking is confined to the one post-compaction retry. */
+	get shrinkWholeToolHistory(): boolean {
+		const recovery = this.#oversizedHistoryRecovery;
+		return (
+			recovery?.phase === "shrunk" &&
+			recovery.promptSequence === this.#host.promptSequence() &&
+			recovery.generation === this.#host.promptGeneration()
+		);
+	}
+
+	/** Consume only fresh overflow outcomes from the recovery compaction's model. */
+	routeOversizedHistoryOverflow(message: AssistantMessage): OversizedHistoryOverflowRecovery {
+		const recovery = this.#oversizedHistoryRecovery;
+		if (
+			!recovery ||
+			recovery.promptSequence !== this.#host.promptSequence() ||
+			recovery.generation !== this.#host.promptGeneration() ||
+			message.provider !== recovery.lastFailure.provider ||
+			message.model !== recovery.lastFailure.model
+		) {
+			return "recover";
+		}
+		if (recovery.phase === "terminal") return "terminal";
+		if (this.#isSameAssistantMessage(recovery.lastFailure, message)) return "already-handled";
+		recovery.lastFailure = message;
+		if (recovery.phase === "compacted") {
+			recovery.phase = "shrunk";
+			return "shrink-retry";
+		}
+		recovery.phase = "terminal";
+		return "terminal";
 	}
 
 	/** Sets whether one terminal empty stop is accepted for the current prompt. */
@@ -480,6 +524,7 @@ export class TurnRecovery {
 		if (!assistantTurnProducedOutput(message)) {
 			return;
 		}
+		this.#oversizedHistoryRecovery = undefined;
 		const model = this.#host.model();
 		if (model) {
 			const level = this.#host.thinkingLevel();
@@ -1187,6 +1232,8 @@ export class TurnRecovery {
 		options: { autoContinue: boolean; triggerContextTokens?: number; excludeMediaMethods?: boolean },
 	): Promise<RecoveryCompactionResult> {
 		const compactionEntryBefore = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
+		const promptSequence = this.#host.promptSequence();
+		const generation = this.#host.promptGeneration();
 		await this.dropPersistedAssistantTurn(assistantMessage);
 		const result = await this.#host.runAutoCompaction(reason, true, false, allowDefer, {
 			autoContinue: options.autoContinue,
@@ -1195,8 +1242,22 @@ export class TurnRecovery {
 			excludeMediaMethods: options.excludeMediaMethods,
 		});
 		const compactionEntryAfter = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
-		if (result.historyRewritten !== true && compactionEntryAfter === compactionEntryBefore) {
+		const committed = result.historyRewritten === true || compactionEntryAfter !== compactionEntryBefore;
+		if (!committed) {
 			this.#restoreFailedAssistantTurn(assistantMessage);
+		} else if (
+			reason === "overflow" &&
+			options.autoContinue &&
+			result.continuationScheduled &&
+			promptSequence === this.#host.promptSequence() &&
+			generation === this.#host.promptGeneration()
+		) {
+			this.#oversizedHistoryRecovery = {
+				phase: "compacted",
+				promptSequence,
+				generation,
+				lastFailure: assistantMessage,
+			};
 		}
 		return result;
 	}

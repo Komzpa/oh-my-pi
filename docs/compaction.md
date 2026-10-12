@@ -63,6 +63,17 @@ Native replay also requires a matching provider and a Responses-family API on th
 
 Disabling future native compaction does not disable normal replay of an existing payload. Compaction preparation has a separate, stricter reuse policy: local summarization must re-expand the original messages rather than treat an opaque placeholder as a readable summary.
 
+### Oversized tool history at the provider boundary
+
+Provider requests must shrink already-executed tool history without changing persisted session entries or their full values:
+
+- In completed turns, every nested tool-call argument string exceeding 16 KiB of UTF-8 bytes is replaced with `[omitted <N> bytes, sha256=<hex12>; full value kept in the session file]` in both normalized calls and native provider replay copies. Tool-call IDs, names, matching results, and unrelated signed or encrypted reasoning remain intact.
+- Tool-result text exceeding 256 KiB keeps its first and last 8 KiB with an omission marker between them. UTF-8 characters must remain valid.
+- Argument strings at or below 16 KiB and the in-flight current turn remain unchanged during normal conversion. Advancing to a new user turn must update cached conversion eligibility without rewriting history.
+- If overflow repeats immediately after recovery compaction, the next request applies the same shrink across the whole active completed tool history and retries once. A further overflow surfaces as an error and must not restart the recovery loop.
+
+The full argument values and tool-result text remain available in the session file. Shrinking is a request-only view, never a replacement for execution arguments or persisted history.
+
 ## Compaction pipeline
 
 ### Triggers
@@ -120,6 +131,7 @@ The automatic paths are intentionally different:
    - Context promotion is tried first; if a configured larger model is available, the agent switches model and retries without compacting.
    - If promotion is unavailable and compaction is enabled, automatic maintenance walks `compaction.methodOrder` with `reason: "overflow"` and `willRetry: true`; handoff is skipped because its request would reuse the overflowing input.
    - On success, `agent.continue()` is scheduled to retry the turn.
+   - If the retried request overflows again, completed tool history across the active context is shrunk at send time for one final retry; another overflow stops automatic recovery and surfaces the error.
 
 - **Incomplete-output recovery**
    - Trigger: same-model assistant message ends with `stopReason === "length"` and the message is not older than the latest compaction.
