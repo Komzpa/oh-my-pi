@@ -633,7 +633,11 @@ export function findRetryFallbackCandidates(
 		const exclusion = providerExhaustionExclusion(selector.provider);
 		if (!exclusion) return true;
 		options?.exclusions?.push(exclusion);
-		logger.warn("Skipping unavailable fallback provider", exclusion);
+		logger.warn("Skipping unavailable fallback provider", {
+			provider: exclusion.provider,
+			reason: exclusion.reason,
+			until: exclusion.until,
+		});
 		return false;
 	};
 	const parsedConfigured = parseRetryFallbackSelector(currentSelector, context.modelLookup);
