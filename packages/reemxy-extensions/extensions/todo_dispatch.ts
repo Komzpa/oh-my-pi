@@ -576,9 +576,10 @@ export function pruneSprintState(
   const seenRows = state.seenRows.filter(keepRow);
   const rowStatuses = Object.fromEntries(Object.entries(state.rowStatuses).filter(([row]) => keepRow(row)));
   const reopenedRows = state.reopenedRows.filter(keepRow);
-  const lastNotices = Object.fromEntries(
-    Object.entries(state.lastNotices).filter(([key]) => liveRows === null || seenRows.some((row) => key.includes(row))),
-  );
+  // lastNotices keys are `${kind}\0${hexDigest}`: they never contain a row name,
+  // so row-filtering drops every entry and identical PLAN CHECKs resend as new
+  // chief turns instead of silent notices. Keep the bounded cache intact.
+  const lastNotices = { ...state.lastNotices };
   const workerFinishes = state.workerFinishes.filter(
     (finish) => now - finish.at < RECENT_FINISH_MS || keepRow(finish.row),
   );
