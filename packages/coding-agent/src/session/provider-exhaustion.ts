@@ -1,11 +1,11 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { logger } from "@oh-my-pi/pi-utils";
+import { extractRetryHint, logger } from "@oh-my-pi/pi-utils";
 
 /**
- * Balance/billing failures are unavailable until a cheap health probe succeeds;
- * without a successful probe the ban lasts at least six hours.
+ * Billing and quota failures are unavailable until a cheap health probe succeeds;
+ * without explicit retry timing or a successful probe the ban lasts six hours.
  */
 export const PROVIDER_EXHAUSTION_COOLDOWN_MS = 6 * 60 * 60 * 1_000;
 
@@ -96,12 +96,13 @@ export function coolDownExhaustedProvider(provider: string, options?: { now?: nu
 	const detail = options?.reason?.trim() || "provider exhausted";
 	const reason = detail.startsWith("billing:") ? detail : `billing: ${detail}`;
 	const wasCooling = isProviderExhausted(provider, now);
-	persist({ provider, reason, recordedAt: now, until: now + PROVIDER_EXHAUSTION_COOLDOWN_MS });
+	const cooldownMs = extractRetryHint(undefined, detail) ?? PROVIDER_EXHAUSTION_COOLDOWN_MS;
+	persist({ provider, reason, recordedAt: now, until: now + cooldownMs });
 	if (!wasCooling) {
 		logger.warn("Provider exhausted; cooling down fallback routes", {
 			provider,
 			reason,
-			cooldownMs: PROVIDER_EXHAUSTION_COOLDOWN_MS,
+			cooldownMs,
 			stateFile: statePath(),
 		});
 	}
@@ -155,10 +156,15 @@ export async function probeExhaustedProvider(
 	}
 }
 
-/** Only billing failures ban a provider; rate limits and server errors retain short retries. */
+/** Billing and long-lived quota failures ban a provider; transient rate limits retain short retries. */
 export function isProviderExhaustionError(status: number | undefined, message: string | undefined): boolean {
 	const detail = message ?? "";
-	if (status === 429 || (status !== undefined && status >= 500 && status <= 599)) return false;
+	if (status === 429) {
+		return (
+			/per[\s_-]+day|daily|quota/iu.test(detail) || (extractRetryHint(undefined, detail) ?? 0) >= 10 * 60 * 1_000
+		);
+	}
+	if (status !== undefined && status >= 500 && status <= 599) return false;
 	if (status === 402 || /insufficient\s+balance/iu.test(detail)) return true;
 	return (
 		(status === 403 || (status === undefined && /\b403\b/iu.test(detail))) &&

@@ -116,4 +116,43 @@ describe("persisted provider billing cooldown", () => {
 			exclusions: [],
 		});
 	});
+
+	it("cools daily-quota 429 until retry-after and skips it in the next process", async () => {
+		const message = "429 Rate limit exceeded: free-models-per-day-high-balance. retry-after-ms=17354298";
+		const recorded = (await runProcess(
+			stateDir.path(),
+			`const now = Date.now();
+			logProviderTurnError({ stopReason: "error", provider: "openrouter", model: "dots-studio/dots-3-note-preview:free", errorStatus: 429, errorMessage: ${JSON.stringify(message)} });
+			return { now, classified: exhaustion.isProviderExhaustionError(429, ${JSON.stringify(message)}), record: exhaustion.providerExhaustionRecord("openrouter") };`,
+		)) as { now: number; classified: boolean; record?: { until: number } };
+		expect(recorded.classified).toBe(true);
+		expect(recorded.record).toBeDefined();
+		expect(recorded.record!.until - recorded.now).toBeGreaterThanOrEqual(17_354_298);
+		expect(recorded.record!.until - recorded.now).toBeLessThan(17_354_398);
+		const picked = await runProcess(
+			stateDir.path(),
+			`context.chains.default = ["openrouter/dots-studio/dots-3-note-preview:free", "codex-lb/gpt-5.5"]; return pick();`,
+		);
+		expect(picked).toEqual({
+			order: ["codex-lb"],
+			exclusions: [expect.objectContaining({ provider: "openrouter", until: recorded.record!.until })],
+		});
+	});
+
+	it("classifies long retry windows and quota messages but leaves two-second 429 unbanned", async () => {
+		const result = await runProcess(
+			stateDir.path(),
+			`logProviderTurnError({ stopReason: "error", provider: "deepseek", model: "deepseek-v4-pro", errorStatus: 429, errorMessage: "429 Rate limit exceeded retry-after-ms=2000" });
+			logProviderTurnError({ stopReason: "error", provider: "openrouter", model: "free", errorStatus: 429, errorMessage: "daily quota exceeded" });
+			const record = exhaustion.providerExhaustionRecord("openrouter");
+			return { long: exhaustion.isProviderExhaustionError(429, "rate limited retry-after-ms=600000"), short: exhaustion.isProviderExhaustionError(429, "rate limited retry-after-ms=2000"), fallback: record ? record.until - record.recordedAt : null, ...pick() };`,
+		);
+		expect(result).toEqual({
+			long: true,
+			short: false,
+			fallback: 6 * HOUR_MS,
+			order: ["deepseek", "kimi-code", "codex-lb"],
+			exclusions: [],
+		});
+	});
 });
