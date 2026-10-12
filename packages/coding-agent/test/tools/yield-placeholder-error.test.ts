@@ -16,7 +16,9 @@ function createSession(): ToolSession {
 describe("YieldTool placeholder errors", () => {
 	it("preserves untyped data/error conflict resend guidance", async () => {
 		const tool = new YieldTool(createSession());
-		const failure = await tool.execute("call-both", { data: { ok: true }, error: "boom" } as never).catch(err => err);
+		const failure = await tool
+			.execute("call-both", { data: { ok: true }, error: "boom" } as never)
+			.catch(err => err);
 		expect(failure).toBeInstanceOf(Error);
 		expect(String(failure.message)).toContain("Resubmit exactly one outcome");
 		expect(String(failure.message)).toContain(
@@ -24,6 +26,7 @@ describe("YieldTool placeholder errors", () => {
 		);
 		expect(String(failure.message)).toContain('For failure, resend only `{"error":"boom"}`');
 	});
+
 	it("accepts data alongside empty or placeholder errors from non-strict OpenAI-compatible backends", async () => {
 		// Each terminal submission uses a fresh session: a terminal result is
 		// one-shot (PR #108), so one tool can accept only one terminal result.
@@ -82,5 +85,4 @@ describe("YieldTool placeholder errors", () => {
 		);
 		expect(String(failure.message)).toContain('For failure, resend only `{"error":"contradictory source"}`');
 	});
-
 });
