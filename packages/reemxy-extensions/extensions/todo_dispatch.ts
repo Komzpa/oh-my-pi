@@ -3291,6 +3291,18 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     finishSession = ctx.sessionManager.getHeader()?.id;
     recedingSince = undefined;
     pendingFinishDelay = null;
+    // The answered demand must not linger as the lead's last word: the next
+    // tick's check repeats a pre-escalation text, so the digest dedupe would
+    // swallow it and leave the stale escalated demand standing. Drop the
+    // cached plan-check digests (and the repeat key) so the fresh check goes
+    // out once.
+    const keptNotices = Object.fromEntries(
+      Object.entries(sprintState.lastNotices).filter(([key]) => !key.startsWith("todo-plan-check ")),
+    );
+    sprintState = { ...sprintState, lastNotices: keptNotices };
+    lastIdlePlanCheck = null;
+    lastIdlePlanCheckAt = 0;
+    persistSprintState();
   };
 
   pi.on("before_subagent_spawn", async (event, ctx) => {
