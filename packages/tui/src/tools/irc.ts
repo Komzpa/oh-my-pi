@@ -8,6 +8,8 @@ export interface IrcMessage {
 	id: string;
 	/** Sender agent id. */
 	from: string;
+	/** Readable label of the sending session, when known. */
+	fromName?: string;
 	/** Recipient agent id (resolved; "all" is expanded by the tool, not stored). */
 	to: string;
 	body: string;
