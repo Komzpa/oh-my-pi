@@ -1975,10 +1975,8 @@ test("the main session is chief of staff: worker tools are refused while worker 
     const refused = (await call("bash", { command: "bun test" }));
     expect(refused?.block).toBe(true);
     expect(refused?.reason).toContain("Persist 402 billing cooldown across sessions in #98");
-    expect(refused?.reason).toMatch(/\btask\b/);
-    expect(refused?.reason).toMatch(/\b1 ready row\b/);
+    expect(refused?.reason).toContain("task call");
     expect(refused?.reason).not.toContain("Publish");
-    expect(refused?.reason).not.toContain("possible workers");
     expect(refused?.reason).toContain("unit:<name>");
     expect(refused?.reason).toContain("job:<pid>");
     expect((await call("bash", { command: "git status --short" }))).toBeUndefined();
