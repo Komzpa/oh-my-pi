@@ -207,13 +207,19 @@ test("repeated retro and checkpoint notices do not send another chief turn", asy
 				},
 				retro.ctx,
 			);
+			// Incident-only retros: completing the only row with no incident sends no
+			// retro notice. Reopening it does, once, with the incident named.
 			retroRow.status = "completed";
 			await retro.tick();
-			expect(retro.notices).toHaveLength(1);
-			expect(retro.notices[0]?.content).toContain("retrospective due (goal delivered)");
+			expect(retro.notices.filter((notice) => notice.content.includes("retrospective due"))).toHaveLength(0);
+			retroRow.status = "pending";
+			await retro.tick();
+			const reopened = retro.notices.filter((notice) => notice.content.includes("retrospective due"));
+			expect(reopened).toHaveLength(1);
+			expect(reopened[0]?.content).toContain("retrospective due (reopened row)");
 			now += 11 * 60_000;
 			await retro.tick();
-			expect(retro.notices).toHaveLength(1);
+			expect(retro.notices.filter((notice) => notice.content.includes("retrospective due"))).toHaveLength(1);
 		} finally {
 			retro.shutdown();
 		}

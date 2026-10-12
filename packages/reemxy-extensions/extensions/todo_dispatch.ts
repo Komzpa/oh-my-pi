@@ -765,8 +765,24 @@ function userWaitRows(phases: TodoScheduleInput): Array<{ content: string; quest
 function sprintSetKey(rows: string[]): string {
   return JSON.stringify([...rows].sort());
 }
-function rowDeliveryKey(tasks: TaskRow[]): string {
-  return sprintSetKey(tasks.map((task) => task.content));
+// A failed deploy/install job is how an updater or deploy rejection surfaces in the job
+// snapshot; quota failures on other labels do not match.
+const UPDATER_JOB_LABEL = /updat|deploy|install|publish|rollback|release|cutover/i;
+function pessimisticSecondsOf(tasks: TaskRow[], content: string): number | undefined {
+  const match = tasks.find((task) => task.content === content);
+  const schedule = match?.schedule;
+  const estimate = schedule !== null && typeof schedule === "object" && "estimate" in schedule
+    ? schedule.estimate
+    : undefined;
+  const seconds = estimate !== null && typeof estimate === "object" && "pessimisticSeconds" in estimate
+    ? estimate.pessimisticSeconds
+    : undefined;
+  return typeof seconds === "number" ? seconds : undefined;
+}
+function dispatchedResultAgent(result: unknown): string | undefined {
+  if (typeof result !== "object" || result === null || !("agent" in result)) return undefined;
+  const agent: unknown = result.agent;
+  return typeof agent === "string" ? agent : undefined;
 }
 function isCorrectionInput(text: string, source: string): boolean {
   if (source === "extension") return false;
@@ -1502,6 +1518,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let persistedSprintStateJson = JSON.stringify(sprintState);
   let dispatchGateBaseline: Map<string, string> | null = null;
   const taskCallBaselines = new Map<string, Map<string, string>>();
+  // Agents named by each task dispatch: a result that arrives empty or from an agent
+  // that was never dispatched means the row's owner did not do the dispatched work.
+  const dispatchedAgents = new Map<string, string[]>();
   // Names of dispatched retro-facilitator workers: an async facilitator settles through `wait`, and
   // the job snapshot carries no agent type, so the dispatch input is the only place to learn it.
   const retroFacilitatorJobs = new Set<string>();
@@ -1595,12 +1614,36 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ...(meta.deliveryKey === undefined ? { retroDueDeliveryKey: undefined } : { retroDueDeliveryKey: meta.deliveryKey }),
     };
   };
+  // An empty or substituted worker result is an incident: the next retro must observe
+  // expected vs actual from journals, receipts and transcripts.
+  const reportWorkerResultIncident = (event: { toolCallId: string; details?: unknown }) => {
+    const details = event.details;
+    const results = details !== null && typeof details === "object" && "results" in details
+      ? details.results
+      : undefined;
+    if (!Array.isArray(results) || results.length === 0) {
+      setRetroDue("empty worker result");
+      persistSprintState();
+      return;
+    }
+    const dispatched = dispatchedAgents.get(event.toolCallId) ?? [];
+    dispatchedAgents.delete(event.toolCallId);
+    if (dispatched.length === 0) return;
+    const substituted = results.some((result) => {
+      const agent = dispatchedResultAgent(result);
+      return agent !== undefined && agent.length > 0 && !dispatched.includes(agent);
+    });
+    if (substituted) {
+      setRetroDue("substituted worker result");
+      persistSprintState();
+    }
+  };
   const touchSprintState = (ctx: ExtensionContext, phases: TodoScheduleInput, jobs: Jobs | null, now: number, deadline: DispatchInput["deadline"]) => {
     const tasks = phases.flatMap((phase) => phase.tasks);
     sprintLiveRows = new Set(tasks.map((task) => task.content));
     const open = tasks.filter((task) => isOpenRowStatus(task.status));
     const nonClosed = tasks.filter((task) => isNonClosedRowStatus(task.status));
-    const previousHadOpen = Object.values(sprintState.rowStatuses).some(isNonClosedRowStatus);
+    const seenJobIdsBefore = new Set(sprintState.seenJobIds);
     const nextStatuses = Object.fromEntries(tasks.map((task) => [task.content, task.status]));
     for (const task of tasks) {
       const previous = sprintState.rowStatuses[task.content];
@@ -1642,7 +1685,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       sprintState = { ...sprintState, goalWorkStartedAt: Math.min(now, knownWorkerAt) };
     }
     if (sprintState.correctionPending) setRetroDue("user correction");
-    if (sprintState.reopenedRows.length >= 3) setRetroDue("3 reopened rows");
+    if (sprintState.reopenedRows.length >= 1) setRetroDue("reopened row");
     if (
       deadline &&
       nonClosed.length > 0 &&
@@ -1650,16 +1693,38 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       sprintState.handledDeadlineAt !== deadline.deadlineAt
     )
       setRetroDue("deadline passed", { deadlineAt: deadline.deadlineAt });
-    const deliveryKey = nonClosed.length === 0 && tasks.length > 0 ? rowDeliveryKey(tasks) : undefined;
-    if (
-      previousHadOpen &&
-      deliveryKey &&
-      sprintState.handledDeliveryKey !== deliveryKey
-    )
-      setRetroDue("goal delivered", { deliveryKey });
-    const retroStart = sprintState.lastRetroAt ?? sprintState.goalWorkStartedAt;
-    if (open.length > 0 && retroStart !== null && now - retroStart >= 3 * 60 * 60_000)
-      setRetroDue("3h goal work");
+    // Incident-only retros: a predictable delivery or quiet hours never open one on
+    // their own; the workers' Retro blocks accumulate for the next incident-driven
+    // retro. Only evidence this window has not seen yet can open one, so a retro that
+    // observed an incident does not re-fire on the same jobs.
+    const recentTaskJobs = (jobs?.recent ?? []).filter((job) => job.type === "task");
+    const updaterRejection = recentTaskJobs.find((job) =>
+      job.status === "failed" &&
+      !seenJobIdsBefore.has(job.id) &&
+      UPDATER_JOB_LABEL.test(typeof job.label === "string" ? job.label : ""),
+    );
+    if (updaterRejection) setRetroDue("updater rejection");
+    const failuresByLabel = new Map<string, { total: number; fresh: number }>();
+    for (const job of recentTaskJobs) {
+      if (job.status !== "failed") continue;
+      const label = typeof job.label === "string" ? job.label : "";
+      const entry = failuresByLabel.get(label) ?? { total: 0, fresh: 0 };
+      entry.total += 1;
+      if (!seenJobIdsBefore.has(job.id)) entry.fresh += 1;
+      failuresByLabel.set(label, entry);
+    }
+    const repeatedFailure = [...failuresByLabel.values()].some(
+      (entry) => entry.total >= 2 && entry.fresh >= 1,
+    );
+    if (repeatedFailure) setRetroDue("repeated failure");
+    const missedEta = (jobs?.running ?? []).some((job) => {
+      if (job.type !== "task" || job.status !== "running") return false;
+      if (typeof job.startTime !== "number") return false;
+      if (sprintState.lastRetroAt !== null && job.startTime < sprintState.lastRetroAt) return false;
+      const pessimistic = pessimisticSecondsOf(tasks, typeof job.label === "string" ? job.label : "");
+      return typeof pessimistic === "number" && now - job.startTime > pessimistic * 1000;
+    });
+    if (missedEta) setRetroDue("missed ETA");
     sprintState = { ...sprintState, rowStatuses: nextStatuses };
     persistSprintState();
   };
@@ -3284,7 +3349,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     if (event.toolName === "todo" && pendingReplan) pendingReplan.answered = pendingReplan.demands;
     if (event.toolName === "todo" && pendingTaskReconciliation?.linkDemanded) pendingTaskReconciliation.linkAnswered = true;
-    if (event.toolName === "task")
+    if (event.toolName === "task") {
+      const agents = taskItems(event.input)
+        .map((item) => item["agent"])
+        .filter((agent): agent is string => typeof agent === "string");
+      if (agents.length > 0) dispatchedAgents.set(event.toolCallId, agents);
       for (const item of taskItems(event.input)) {
         if (item.agent === "retro-facilitator" && typeof item.name === "string") {
           retroFacilitatorJobs.add(item.name);
@@ -3292,6 +3361,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           persistSprintState();
         }
       }
+    }
     if (event.toolName !== "task" || !dispatchGateBaseline) return;
     if (pendingIdleResumeOwner) idleResumeAttempts.add(pendingIdleResumeOwner);
     taskCallBaselines.set(event.toolCallId, new Map(dispatchGateBaseline));
@@ -3638,7 +3708,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     if (event.toolName !== "task") return;
     lastTaskDispatchRefused = Boolean(event.isError);
-    if (!event.isError && isRetroFacilitatorTaskResult(event)) finishRetro(retroFacilitatorResultId(event));
+    if (!event.isError && isRetroFacilitatorTaskResult(event)) {
+      dispatchedAgents.delete(event.toolCallId);
+      finishRetro(retroFacilitatorResultId(event));
+    } else if (!event.isError) reportWorkerResultIncident(event);
     const baseline = taskCallBaselines.get(event.toolCallId);
     taskCallBaselines.delete(event.toolCallId);
     if (!baseline || event.isError) return;
@@ -3757,6 +3830,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     dispatchGateBaseline = null;
     taskCallBaselines.clear();
+    dispatchedAgents.clear();
     armIdleCheck(ctx, decision);
   });
 }
