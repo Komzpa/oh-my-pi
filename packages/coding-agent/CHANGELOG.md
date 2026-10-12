@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- Fixed string `qa-auditor` yields being JSON-quoted in task results. Four-column Markdown verdict tables now bind omitted raw words to their authenticated audit assignment; five-column receipts remain supported, while missing verdicts, evidence, artifacts, and foreign requirement IDs remain rejected.
 - Fixed restored sessions showing an outdated todo checkpoint instead of the current plan, including newer edits and archived rows.
 - Fixed task dispatch dropping requirement image attachments before the auditor's first prompt. Images without an existing source file are saved once in the session artifacts, and QA audit inputs name that durable path.
 - Fixed complete structured JSON `qa-auditor` verdict rows being rejected as malformed tables. Bare row arrays, a single array under an object key, and single row objects now use the same required-field, verdict, ID and coverage validation as Markdown receipts; missing evidence or artifact identity remains rejected.

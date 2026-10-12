@@ -410,7 +410,7 @@ export class RequirementsLedgerRuntime {
 				...context.result.content,
 				{
 					type: "text",
-					text: `Blocked: requirements receipt rejected: ${rejected.join("; ")}. Call task with agent="qa-auditor", task="Audit <Rn> at the current clean row HEAD" returning one complete Markdown table with columns id | raw words | verdict | evidence | artifact identity (one row per linked Rn; each artifact identity must include the full current commit SHA from every corresponding linked row). Then retry`,
+					text: `Blocked: requirements receipt rejected: ${rejected.join("; ")}. Call task with agent="qa-auditor", task="Audit <Rn> at the current clean row HEAD" returning one complete Markdown table with columns id | verdict | evidence | artifact (one row per linked Rn; each artifact must include the full current commit SHA from every corresponding linked row). Then retry`,
 				},
 			],
 		};
@@ -616,12 +616,6 @@ export class RequirementsLedgerRuntime {
 		) {
 			return `${expectedIds.join(", ")}: auditor assignment session or worker identity did not match`;
 		}
-		const receipts = parseRequirementReceipt(output, expectedIds);
-		if (!receipts) {
-			const covered = new Set([...output.matchAll(/\|\s*(R[1-9]\d*)\s*\|/g)].map(match => match[1]!));
-			const missing = expectedIds.filter(id => !covered.has(id));
-			return `${expectedIds.join(", ")}: malformed or partial verdict table (expected id, verdict, evidence, artifact)${missing.length > 0 ? `; missing rows for ${missing.join(", ")}` : ""}`;
-		}
 		const branch = this.#host.sessionManager.getBranch();
 		const requirements = getLatestRequirements(branch);
 		const expected = expectedIds.map(id => requirements.find(requirement => requirement.id === id));
@@ -630,6 +624,16 @@ export class RequirementsLedgerRuntime {
 		}
 		if (requirementAuditSnapshot(requirements, expectedIds) !== assignment.snapshot) {
 			return `${expectedIds.join(", ")}: requirement raw sources or linked rows changed after audit dispatch`;
+		}
+		const receipts = parseRequirementReceipt(
+			output,
+			expectedIds,
+			new Map(expected.map(requirement => [requirement!.id, requirement!.rawText])),
+		);
+		if (!receipts) {
+			const covered = new Set([...output.matchAll(/\|\s*(R[1-9]\d*)\s*\|/g)].map(match => match[1]!));
+			const missing = expectedIds.filter(id => !covered.has(id));
+			return `${expectedIds.join(", ")}: malformed or partial verdict table (expected id, verdict, evidence, artifact)${missing.length > 0 ? `; missing rows for ${missing.join(", ")}` : ""}`;
 		}
 		const phases = getLatestTodoPhasesFromEntries(branch);
 		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();

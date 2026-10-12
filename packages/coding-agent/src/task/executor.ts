@@ -754,7 +754,7 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 				} else {
 					try {
 						rawOutput =
-							assembled.rawText && typeof completeData === "string"
+							typeof completeData === "string"
 								? completeData
 								: (JSON.stringify(completeData, null, 2) ?? "null");
 					} catch (err) {

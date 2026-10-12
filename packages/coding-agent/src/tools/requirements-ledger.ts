@@ -703,6 +703,7 @@ function requirementTableCells(line: string): string[] | null {
 export function parseRequirementReceipt(
 	output: string,
 	expectedIds: readonly string[],
+	rawWordsById?: ReadonlyMap<string, string>,
 ): Array<{
 	id: string;
 	rawWords: string;
@@ -785,10 +786,11 @@ export function parseRequirementReceipt(
 			};
 			const id = find(["id"]);
 			const rawWords = find(["rawwords", "rawtext"]);
+			if (rawWords < 0 && normalized.some(name => name === "rawwords" || name === "rawtext")) return null;
 			const status = find(["status", "verdict"]);
 			const evidence = find(["evidence"]);
 			const artifact = find(["artifact", "artifactidentity"]);
-			if (id >= 0 && rawWords >= 0 && status >= 0 && evidence >= 0 && artifact >= 0) {
+			if (id >= 0 && status >= 0 && evidence >= 0 && artifact >= 0) {
 				headers.push({ line, id, rawWords, status, evidence, artifact, width: cells.length });
 			}
 		}
@@ -801,7 +803,9 @@ export function parseRequirementReceipt(
 			if (cells.length !== header.width) return null;
 			rowCells.push([
 				cells[header.id]!,
-				cells[header.rawWords]!.replace(/<br\s*\/?>/gi, "\n"),
+				header.rawWords >= 0
+					? cells[header.rawWords]!.replace(/<br\s*\/?>/gi, "\n")
+					: (rawWordsById?.get(cells[header.id]!.replace(/[a-z]$/, "")) ?? ""),
 				cells[header.status]!,
 				cells[header.evidence]!,
 				cells[header.artifact]!,

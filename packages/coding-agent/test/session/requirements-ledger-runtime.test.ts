@@ -15,6 +15,7 @@ import {
 	type RequirementPublicationGate,
 } from "@oh-my-pi/pi-coding-agent/session/requirements-ledger-runtime";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { finalizeSubprocessOutput } from "@oh-my-pi/pi-coding-agent/task/executor";
 import {
 	appendRequirementsSnapshot,
 	classifyRequirement,
@@ -98,6 +99,76 @@ function receiptTable(head: string): string {
 }
 
 describe("requirements ledger auditor binding", () => {
+	for (const encoded of [false, true]) {
+		it(`accepts R42 four-column string yield${encoded ? " from an old JSON-quoting producer" : " verbatim"}`, async () => {
+			const { cwd, manager, runtime } = fixture();
+			try {
+				const head = git(cwd, "rev-parse", "HEAD");
+				const row = "Reject empty result yield in #108";
+				manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+					phases: [{ name: "Work", tasks: [{ content: row, status: "pending", schedule: { owner: "main", resources: [cwd] } }] }],
+				});
+				appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
+					getLatestRequirements(manager.getBranch()).map(requirement => ({ ...requirement, id: "R42", rows: [row] })));
+				await runtime.prepareAuditorTaskCall("task", "string-receipt", {
+					agent: "qa-auditor", task: `Audit R42 for ${row}`, context: "",
+				});
+				const table = `| id | verdict | evidence | artifact |\n|---|---|---|---|\n| R42 | pass | exercised the build | TODO row "${row}" @ ${head} |\n\nRetro\n- kept the verdict table complete`;
+				const finalized = finalizeSubprocessOutput({
+					rawOutput: "", exitCode: 0, stderr: "", doneAborted: false, signalAborted: false,
+					yieldItems: [{ status: "success", data: table }], outputSchema: undefined,
+				});
+				if (!encoded) expect(finalized.rawOutput).toBe(table);
+				const outcome = await runtime.afterToolCall({
+					toolCall: { id: "string-receipt", name: "task" },
+					result: { content: [], details: { results: [{ index: 0, agent: "qa-auditor", id: "worker-string", exitCode: finalized.exitCode, output: encoded ? JSON.stringify(table) : finalized.rawOutput }] } },
+					isError: false,
+				} as never);
+				expect(outcome).toBeUndefined();
+				const verdict = getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.[row];
+				expect(verdict?.status).toBe("pass");
+				expect(verdict?.rawWords).toBe("audit the artifact");
+				const tool = new TodoTool({
+					cwd,
+					hasUI: false,
+					settings: Settings.isolated(),
+					getSessionFile: () => null,
+					sessionManager: manager,
+					getTodoPhases: () => getLatestTodoPhasesFromEntries(manager.getBranch()),
+					setTodoPhases: (phases: TodoPhase[]) => manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
+				} as ToolSession);
+				const done = await tool.execute("done-string-receipt", { op: "done", task: row });
+				expect(done.isError).not.toBe(true);
+				expect(getLatestTodoPhasesFromEntries(manager.getBranch())[0]?.tasks[0]?.status).toBe("completed");
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	}
+
+	for (const defect of ["missing verdict", "missing evidence", "missing artifact", "foreign Rn"]) {
+		it(`rejects a string-yield table with ${defect}`, async () => {
+			const { cwd, manager, runtime } = fixture();
+			try {
+				const head = git(cwd, "rev-parse", "HEAD");
+				await runtime.prepareAuditorTaskCall("task", "bad-string", { agent: "qa-auditor", task: "Audit R1", context: "" });
+				const columns = ["id", "verdict", "evidence", "artifact"].filter(column => defect !== `missing ${column}`);
+				const values: Record<string, string> = { id: defect === "foreign Rn" ? "R2" : "R1", verdict: "pass", evidence: "exercised the build", artifact: head };
+				const table = [columns, columns.map(() => "---"), columns.map(column => values[column])].map(cells => `| ${cells.join(" | ")} |`).join("\n");
+				const finalized = finalizeSubprocessOutput({ rawOutput: "", exitCode: 0, stderr: "", doneAborted: false, signalAborted: false, yieldItems: [{ status: "success", data: table }], outputSchema: undefined });
+				const outcome = await runtime.afterToolCall({
+					toolCall: { id: "bad-string", name: "task" },
+					result: { content: [], details: { results: [{ index: 0, agent: "qa-auditor", id: "worker-bad-string", exitCode: 0, output: finalized.rawOutput }] } },
+					isError: false,
+				} as never);
+				expect(outcome?.content).toContainEqual(expect.objectContaining({ type: "text", text: expect.stringContaining("expected id, verdict, evidence, artifact") }));
+				expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts).toBeUndefined();
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	}
+
 	it("appends audit inputs to qa-auditor tasks and records a complete receipt", async () => {
 		const { cwd, manager, runtime } = fixture();
 		try {
