@@ -209,6 +209,10 @@ test("chief bash allows read-only loops and recursively checks substitutions", a
       'git -C "/x/with spaces" status',
       'echo \'$(rm x)\'',
       'for d in $(git ls-files); do echo "$d"; done',
+      // live 2026-10-12: both refused, the chief's rows went overdue
+      "git show --stat --format='%H %s' 1bddf84 && git show 1bddf84 | cat && sed -n '160,170p' docs/omp-patch-ledger.md | cut -c1-400",
+      "git -C /x log --oneline -1 && git -C /x ls-remote fork topic/x && sed -n '2400,2425p' /x/todo_dispatch.ts",
+      'find . -name "*.ts" | sort | uniq -c',
     ];
     for (const command of allowed) {
       expect((await outcome(state, cwd, { name: "bash", arguments: { command } })).executed, command).toBe(true);
@@ -229,6 +233,12 @@ test("chief bash blocks mutations inside structure and malformed shell", async (
       'echo `rm -rf x`',
       'VAR=1 bun test',
       'git branch -D x',
+      "sed -i 's/a/b/' x",
+      "sed -n 'w out' x",
+      "sed 's/a/b/' x",
+      'find . -delete',
+      'find . -exec rm {} ;',
+      'sort -o out x',
       'git branch new-name',
       'git branch -l new-name',
       'git branch --list --no-list new-name',
