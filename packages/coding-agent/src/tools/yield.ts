@@ -646,6 +646,51 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				);
 			}
 		}
+		// A success yield with no accumulated sections must carry its answer in `data`.
+		// A stray non-empty top-level key (`result`, `output`, `answer`) with `data`
+		// missing is the answer under the wrong key, so bounce it before last-turn text
+		// resolution can replace it with prose. An untyped yield whose `data` is explicitly
+		// empty bounces the same way the typed result does.
+		if (status === "success" && !isIncremental && workPoolItems.length === 0) {
+			const strayKey =
+				data === undefined
+					? Object.keys(raw).find(
+							key =>
+								key !== "type" &&
+								key !== "data" &&
+								key !== "error" &&
+								raw[key] !== null &&
+								!isEmptyResultData(raw[key]),
+						)
+					: undefined;
+			const emptyUntyped = yieldType === undefined && data !== undefined && isEmptyResultData(data);
+			if (strayKey !== undefined || emptyUntyped) {
+				this.#emptyResultFailures++;
+				if (this.#emptyResultFailures > MAX_EMPTY_RESULT_RETRIES) {
+					const attemptCount = this.#emptyResultFailures;
+					this.#emptyResultFailures = 0;
+					const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
+					this.#claimTerminalResult();
+					return {
+						content: [{ type: "text", text: `Task aborted: ${error}` }],
+						details: {
+							data: undefined,
+							status: "aborted",
+							error,
+							type: yieldType,
+						},
+					};
+				}
+				const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
+				const problem =
+					strayKey !== undefined
+						? `yield has no \`data\`: put your full answer in data, not in \`${strayKey}\``
+						: "yield data is empty: put your full answer in `data`";
+				throw new Error(
+					`${problem}. ${YIELD_FORMAT_HINT} Empty result retries remaining before abort: ${remaining}.`,
+				);
+			}
+		}
 		// Unknown incremental labels are a hard contract mismatch with the closed caller
 		// schema. Reject before the last-turn short-circuit too: `type: ["findings"], result: {}`
 		// would otherwise be accepted as a typed last-turn incremental yield, then a sibling

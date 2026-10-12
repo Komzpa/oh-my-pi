@@ -1815,3 +1815,39 @@ describe("YieldTool", () => {
 		expect(result.details?.data).toEqual({ $ref: "literal" });
 	});
 });
+
+describe("YieldTool wrong-key and untyped empty payloads (#108)", () => {
+	it("bounces a result carried under a stray key instead of accepting last-turn prose", async () => {
+		const tool = new YieldTool({
+			...createSession(),
+			getLastAssistantText: () => "Done.",
+		} as ToolSession);
+		await expect(
+			tool.execute("call-wrong-key", { type: "result", result: "| id | verdict |\n| 1 | clean |" } as never),
+		).rejects.toThrow(/not in `result`/);
+		const done = await tool.execute("call-real", {
+			type: "result",
+			data: "| id | verdict |\n| 1 | clean |",
+		} as never);
+		expect(done.details).toMatchObject({ status: "success", data: "| id | verdict |\n| 1 | clean |" });
+	});
+
+	it("bounces an untyped success yield whose data is empty", async () => {
+		const tool = new YieldTool(createSession());
+		await expect(tool.execute("call-untyped-empty", { data: "" } as never)).rejects.toThrow(/data is empty/);
+		const done = await tool.execute("call-untyped-real", { data: { verdict: "clean" } } as never);
+		expect(done.details).toMatchObject({ status: "success", data: { verdict: "clean" } });
+	});
+
+	it("negative control: a typed result carrying its table in data succeeds unchanged", async () => {
+		const tool = new YieldTool({
+			...createSession(),
+			getLastAssistantText: () => "Done.",
+		} as ToolSession);
+		const done = await tool.execute("call-control", {
+			type: "result",
+			data: "| id |verdict|",
+		} as never);
+		expect(done.details).toMatchObject({ status: "success", data: "| id |verdict|" });
+	});
+});
