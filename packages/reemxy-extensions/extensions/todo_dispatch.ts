@@ -2546,7 +2546,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const ready = (decision.dispatchableReady ?? []).slice(0, MAX_TASK_DISPATCH).map((row) => JSON.stringify(shorten(row.content)));
     return {
       block: true,
-      reason: `Blocked: ${event.toolName} is work for a worker. Start one with a task call for: ${ready.join(", ")}. If a row only waits on a unit or job, set its owner to unit:<name> or job:<pid>. Reading (read, grep, find, git status/log/show/diff) stays allowed. ${ORDER}`,
+      reason: `Blocked: ${event.toolName} is work for a worker.${ready.length > 0 ? ` Start one with a task call for: ${ready.join(", ")}.` : ""} If a row only waits on a unit or job, set its owner to unit:<name> or job:<pid>. Reading (read, grep, find, git status/log/show/diff) stays allowed. ${ORDER}`,
     };
   };
   const completedPlanRows = (ctx: ExtensionContext): Array<{ content: string; schedule?: { owner?: unknown } }> => {

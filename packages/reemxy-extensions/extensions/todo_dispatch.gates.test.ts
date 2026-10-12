@@ -2168,6 +2168,21 @@ async function slipCall(tasks: unknown[], jobs: Jobs, call: Call) {
   }
 }
 
+test("empty dispatchableReady refusal keeps external owner guidance without an empty task list", async () => {
+  const now = Date.now();
+  const tasks = Array.from({ length: 4 }, (_, i) => ({
+    ...slipRow(`Parked row ${i}`, "", 0, now),
+    status: "pending",
+    schedule: { ...slipRow(`Parked row ${i}`, "", 0, now).schedule, dependencies: ["External sign-off"] },
+  }));
+  const forecast = forecastTodoPlan([{ name: "Work", tasks }], { now });
+  expect(forecast.rows.filter((row) => row.ready)).toHaveLength(0);
+  const refusal = await slipCall(tasks, { running: [], recent: [], nonJobAgents: [] }, CALLS.bashTest);
+  expect(refusal?.block).toBe(true);
+  expect(refusal?.reason).not.toContain("for: .");
+  expect(refusal?.reason).toContain("set its owner to unit:<name> or job:<pid>");
+});
+
 test("R1 (case A): a same-owner reestimate on a slipping running row is refused with one exact action", async () => {
   const stale = Date.now() - 65 * 60_000;
   const tasks = () => [slipRow("Force-layout callouts", "IntegrateFacilityCallouts", 2, stale)];
