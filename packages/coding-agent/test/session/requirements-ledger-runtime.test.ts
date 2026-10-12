@@ -1352,3 +1352,113 @@ it("uses the new resource checkout and ignores an old artifact rejection without
 		rmSync(cwd, { recursive: true, force: true });
 	}
 });
+
+interface ScopedFixture {
+	cwd: string;
+	manager: SessionManager;
+	runtime: RequirementsLedgerRuntime;
+}
+describe("audit scope for foreign cited Rn", () => {
+	function scopedFixture() {
+		const fx = fixture();
+		const base = getLatestRequirements(fx.manager.getBranch())[0]!;
+		appendRequirementsSnapshot({ appendEntry: (type, data) => fx.manager.appendCustomEntry(type, data) }, [
+			{ ...base, id: "R4", rawText: "take whole teammate branch", rows: ["Row A", "Row B"] },
+			{ ...base, id: "R6", rawText: "audit the artifact", rows: ["Row C", "Row D"] },
+		]);
+		fx.manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			phases: [
+				{
+					name: "Work",
+					tasks: ["Row A", "Row B", "Row C", "Row D"].map(content => ({
+						content,
+						status: "pending",
+						schedule: { owner: "main", resources: [fx.cwd] },
+					})),
+				},
+			],
+		});
+		return fx;
+	}
+	function r6Receipt(artifact: string): string {
+		return [
+			"| id | raw words | verdict | evidence | artifact identity |",
+			"| --- | --- | --- | --- | --- |",
+			`| R6 | audit the artifact | pass | exercised the build | ${artifact} |`,
+		].join("\n");
+	}
+	async function deliverR6(fx: ScopedFixture, callId: string, artifact: (head: string) => string): Promise<void> {
+		const head = git(fx.cwd, "rev-parse", "HEAD");
+		await fx.runtime.afterToolCall({
+			toolCall: { id: callId, name: "task" },
+			result: {
+				content: [],
+				details: {
+					results: [
+						{
+							index: 0,
+							agent: "qa-auditor",
+							id: `${callId}-worker`,
+							exitCode: 0,
+							output: r6Receipt(artifact(head)),
+						},
+					],
+				},
+			},
+			isError: false,
+		} as never);
+	}
+	it("records the R6 verdict on its cited row when the task also cites a foreign R4", async () => {
+		const fx = scopedFixture();
+		try {
+			const revised = await fx.runtime.prepareAuditorTaskCall("task", "scoped-cited", {
+				agent: "qa-auditor",
+				task: "Audit R4 and R6 for row 'Row C'",
+				context: "",
+			});
+			expect(revised?.task).toContain('R6 row "Row C"');
+			expect(revised?.task).not.toContain('R4 row "');
+			expect(revised?.task).not.toContain("R4 (said at");
+			await deliverR6(fx, "scoped-cited", head => `Row C @ ${head}`);
+			const r6 = getLatestRequirements(fx.manager.getBranch()).find(requirement => requirement.id === "R6");
+			expect(r6?.rowVerdicts?.["Row C"]?.status).toBe("pass");
+			expect(r6?.rowVerdicts?.["Row D"]).toBeUndefined();
+			expect(
+				getLatestRequirements(fx.manager.getBranch()).find(requirement => requirement.id === "R4")?.rowVerdicts,
+			).toBeUndefined();
+		} finally {
+			rmSync(fx.cwd, { recursive: true, force: true });
+		}
+	});
+	it("still rejects an R6 receipt that names a row outside the assignment", async () => {
+		const fx = scopedFixture();
+		try {
+			await fx.runtime.prepareAuditorTaskCall("task", "scoped-foreign", {
+				agent: "qa-auditor",
+				task: "Audit R4 and R6 for row 'Row C'",
+				context: "",
+			});
+			await deliverR6(fx, "scoped-foreign", head => `Row D @ ${head}`);
+			const r6 = getLatestRequirements(fx.manager.getBranch()).find(requirement => requirement.id === "R6");
+			expect(r6?.rowVerdicts?.["Row C"]).toBeUndefined();
+			expect(r6?.rowVerdicts?.["Row D"]).toBeUndefined();
+		} finally {
+			rmSync(fx.cwd, { recursive: true, force: true });
+		}
+	});
+	it("assigns every linked row of a cited Rn when the task names no row", async () => {
+		const fx = scopedFixture();
+		try {
+			const revised = await fx.runtime.prepareAuditorTaskCall("task", "scoped-neighbour", {
+				agent: "qa-auditor",
+				task: "Audit R6 now",
+				context: "",
+			});
+			expect(revised?.task).toContain('R6 row "Row C"');
+			expect(revised?.task).toContain('R6 row "Row D"');
+			expect(revised?.task).not.toContain("R4 (said at");
+		} finally {
+			rmSync(fx.cwd, { recursive: true, force: true });
+		}
+	});
+});

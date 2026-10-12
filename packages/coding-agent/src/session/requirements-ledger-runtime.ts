@@ -230,9 +230,17 @@ export class RequirementsLedgerRuntime {
 		for (let index = 0; index < items.length; index++) {
 			const item = items[index];
 			if (!isRecord(item) || item.agent !== "qa-auditor" || typeof item.task !== "string") continue;
-			const citedIds = new Set(`${item.task}\n${sharedContext}`.match(/\bR[1-9]\d*\b/g) ?? []);
-			const ids = requirements
-				.filter(requirement => requirement.classification === "linked" && citedIds.has(requirement.id))
+			const auditTask = item.task;
+			const citedIds = new Set(`${auditTask}\n${sharedContext}`.match(/\bR[1-9]\d*\b/g) ?? []);
+			const citedLinked = requirements.filter(
+				requirement => requirement.classification === "linked" && citedIds.has(requirement.id),
+			);
+			// A cited row narrows the audit to the Rn that link it; an Rn whose rows are all uncited stays out.
+			const citedRowNames = new Set(
+				citedLinked.flatMap(requirement => requirement.rows).filter(row => auditTask.includes(row)),
+			);
+			const ids = citedLinked
+				.filter(requirement => citedRowNames.size === 0 || requirement.rows.some(row => citedRowNames.has(row)))
 				.map(requirement => requirement.id);
 			if (ids.length === 0) continue;
 
@@ -248,7 +256,6 @@ export class RequirementsLedgerRuntime {
 			const linkedRows = [
 				...new Set(ids.flatMap(id => requirements.find(requirement => requirement.id === id)!.rows)),
 			];
-			const auditTask = item.task;
 			const citedRows = linkedRows.filter(row => auditTask.includes(row));
 			const assignedRows = citedRows.length ? citedRows : linkedRows;
 			const imagePayloads: RequirementAuditImagePayload[] = [];
