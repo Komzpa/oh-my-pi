@@ -1885,6 +1885,9 @@ test("decideGateCall: reads, steering and non-done todo pass; other calls need a
   const allowed = decideGateCall({ name: "todo", arguments: { op: "done", task: "Row A" } }, [receipt]);
   expect(allowed.allowed).toBe(true);
   expect(allowed.remedyGateIds).toEqual(["receipt"]);
+  const notesAllowed = decideGateCall({ name: "context_notes", arguments: { text: "check-in" } }, [receipt]);
+  expect(notesAllowed.allowed).toBe(true);
+  expect(notesAllowed.remedyGateIds).toEqual([]);
 });
 
 test("parseTodoOverride names a gate id inside the override field", () => {
