@@ -95,6 +95,7 @@ function mockCreateAgentSession(session: AgentSession, modelFallbackMessage?: st
 		setToolUIContext: () => {},
 		eventBus: new EventBus(),
 		modelFallbackMessage,
+		modelPatternResolutionFailed: modelFallbackMessage === "Model not found",
 	};
 	return vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(result);
 }
@@ -246,6 +247,91 @@ describe("explicit spawn model resolution fails closed", () => {
 			expect(session.model?.provider).toBe("spawn-discovery");
 			expect(session.model?.id).toBe("discovered-spawn-model");
 			expect(usedModels).toEqual(["discovered-spawn-model"]);
+		} finally {
+			authStorage.close();
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+	it("prompts with a deferred explicit role's usage fallback instead of rejecting its warning", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "spawn-deferred-role-"));
+		const authStorage = await AuthStorage.create(":memory:");
+		const registry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
+		const createAgentSession = sdkModule.createAgentSession;
+		const session = createMockSession();
+		const prompt = vi.spyOn(session, "prompt");
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.usageAwareFallback": true,
+			"retry.usageReservePolicy": "confirm",
+		});
+		settings.setModelRole("task", "spawn-role/primary,spawn-role/fallback");
+		vi.spyOn(authStorage.health, "model").mockImplementation(async (_provider, options) =>
+			options.modelId === "primary"
+				? { state: "depleted", accounts: [{ credentialId: 1, credentialType: "oauth", state: "depleted" }] }
+				: { state: "healthy", accounts: [{ credentialId: 2, credentialType: "oauth", state: "healthy" }] },
+		);
+		const discover = vi.fn(async () =>
+			["primary", "fallback"].map(id => ({
+				id,
+				name: id,
+				reasoning: false,
+				input: ["text"] as ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128000,
+				maxTokens: 8192,
+			})),
+		);
+		let fallbackMessage: string | undefined;
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			const created = await createAgentSession({
+				...options,
+				agentDir: tempDir,
+				sessionManager: SessionManager.inMemory(tempDir),
+				disableExtensionDiscovery: true,
+				extensions: [
+					pi => {
+						pi.registerProvider("spawn-role", {
+							baseUrl: "https://spawn-role.example.com/v1",
+							api: "openai-completions",
+							apiKey: "test-key",
+							fetchDynamicModels: discover,
+						});
+					},
+				],
+				skills: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				rules: [],
+				enableMCP: false,
+				enableLsp: false,
+				skipPythonPreflight: true,
+			});
+			fallbackMessage = created.modelFallbackMessage;
+			Object.defineProperty(session, "model", { value: created.session.model });
+			await created.session.dispose();
+			return { ...created, session };
+		});
+		try {
+			expect(registry.getAll().filter(candidate => candidate.provider === "spawn-role")).toEqual([]);
+			const result = await runSubprocess({
+				cwd: tempDir,
+				agent: baseAgent,
+				task: "do work",
+				index: 0,
+				id: "spawn-deferred-role",
+				modelOverride: "task",
+				settings,
+				modelRegistry: registry,
+				enableLsp: false,
+			});
+			expect(fallbackMessage).toContain("spawn-role/primary -> spawn-role/fallback");
+			expect(result.error).toBeUndefined();
+			expect(result.exitCode).toBe(0);
+			expect(spy.mock.calls[0]?.[0]?.modelPattern).toEqual(["task"]);
+			expect(discover).toHaveBeenCalledTimes(1);
+			expect(session.model?.id).toBe("fallback");
+			expect(prompt).toHaveBeenCalledTimes(1);
 		} finally {
 			authStorage.close();
 			fs.rmSync(tempDir, { recursive: true, force: true });

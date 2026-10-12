@@ -935,6 +935,8 @@ export interface CreateAgentSessionResult {
 	mcpManager?: MCPManager;
 	/** Warning if session was restored with a different model than saved */
 	modelFallbackMessage?: string;
+	/** True only when deferred explicit model patterns resolved to no model after discovery. */
+	modelPatternResolutionFailed?: boolean;
 	/** LSP servers detected for startup; warmup may continue in the background */
 	lspServers?: LspStartupServerInfo[];
 	/** Start cache-aware online runtime model discovery after the first UI paint. */
@@ -2027,6 +2029,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	);
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
+	let modelPatternResolutionFailed: true | undefined;
 	let initialRetryFallback: InitialRetryFallbackState | undefined;
 	// Identify session model strings to restore in fallback order. We do an
 	// initial pass here so model-dependent setup (thinking-level resolution,
@@ -3168,6 +3171,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				break;
 			}
 			if (!model) {
+				modelPatternResolutionFailed = true;
 				const requested =
 					deferredModelPatterns.length === 1
 						? `"${deferredModelPatterns[0]}"`
@@ -5487,6 +5491,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			setToolUIContext,
 			mcpManager,
 			modelFallbackMessage,
+			modelPatternResolutionFailed,
 			lspServers,
 			startBackgroundModelDiscovery: startRuntimeDiscovery,
 			eventBus,
