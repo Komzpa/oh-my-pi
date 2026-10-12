@@ -251,6 +251,7 @@ describe("AgentSession retry fallback", () => {
 	// mutable retry-fallback cooldown state between tests.
 	beforeAll(async () => {
 		tempDir = TempDir.createSync("@pi-retry-fallback-");
+		process.env.OMP_AGENT_ROUTER_STATE_DIR = path.join(tempDir.path(), "router-state");
 		await initTheme();
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 		authStorage.keys.setRuntime("anthropic", "anthropic-test-key");

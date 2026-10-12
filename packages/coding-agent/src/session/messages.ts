@@ -77,7 +77,11 @@ import { titleTextFromSkillPrompt } from "@oh-my-pi/pi-tui/chat/skill-title-inpu
  */
 export function logProviderTurnError(msg: AssistantMessage, activeProvider = msg.provider): void {
 	if (msg.stopReason !== "error") return;
-	if (isProviderExhaustionError(msg.errorStatus, msg.errorMessage)) coolDownExhaustedProvider(activeProvider);
+	if (isProviderExhaustionError(msg.errorStatus, msg.errorMessage)) {
+		coolDownExhaustedProvider(activeProvider, {
+			reason: `${msg.errorStatus ?? ""} ${msg.errorMessage ?? "provider exhausted"}`.trim(),
+		});
+	}
 	logger.warn("agent turn ended with provider error", {
 		provider: msg.provider,
 		model: msg.model,

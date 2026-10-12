@@ -2201,7 +2201,9 @@ export class TurnRecovery {
 		},
 	): Promise<boolean> {
 		if (isProviderExhaustionError(failedMessage.errorStatus, failedMessage.errorMessage)) {
-			coolDownExhaustedProvider(this.#host.model()?.provider ?? failedMessage.provider);
+			coolDownExhaustedProvider(this.#host.model()?.provider ?? failedMessage.provider, {
+				reason: `${failedMessage.errorStatus ?? ""} ${failedMessage.errorMessage ?? "provider exhausted"}`.trim(),
+			});
 		}
 		const ceiling = this.#host.thinkingLevelCeiling();
 		const latestAssistant = options?.preserveFailedTurn
