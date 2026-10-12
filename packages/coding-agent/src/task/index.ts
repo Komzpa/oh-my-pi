@@ -28,7 +28,6 @@ import { $env, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "..";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
-import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
 import taskDescriptionTemplate from "../prompts/tools/task.md" with { type: "text" };
 import taskAsyncContractTemplate from "../prompts/tools/task-async-contract.md" with { type: "text" };
 import taskCoordinationAdvisoryTemplate from "../prompts/tools/task-coordination-advisory.md" with { type: "text" };
@@ -108,11 +107,6 @@ import {
 	cfgTaskStructured,
 } from "./settings";
 
-function renderSubagentUserPrompt(assignment: string): string {
-	return prompt.render(subagentUserPromptTemplate, {
-		assignment: assignment.trim(),
-	});
-}
 
 function createUsageTotals(): Usage {
 	return {
@@ -1614,7 +1608,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				route?.reason && route.rung && !route.rung.model
 					? route.previous.workerId
 					: (run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName())));
-			const assignment = (item.task ?? "").trim();
+			const assignment = item.task ?? "";
 			spawns.push({
 				agentId,
 				item,
@@ -1628,7 +1622,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					agentSource,
 					modelRole: policy.modelRole,
 					status: "pending",
-					task: renderSubagentUserPrompt(assignment),
+					task: assignment,
 					assignment,
 					recentTools: [],
 					recentOutput: [],
@@ -2211,7 +2205,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		onArtifactsRetained?: (cleanup: () => Promise<void>) => void,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
-		const assignment = `${(params.task ?? "").trim()}\n\nEvery message to the lead MUST answer exactly this question: Is there a much simpler different way?\n\nEnd your final answer with a \`Retro\` block of at most five lines: what worked and should be repeated, what failed and should be banned, what blocked you, and the exact receipt.`;
+		const assignment = params.task ?? "";
 		const route = this.#reworkRoutes.get(`${toolCallId}:${spawnIndex}`);
 		const context =
 			[this.#isBatchEnabled() ? params.context?.trim() : undefined, route?.context].filter(Boolean).join("\n\n") ||

@@ -25,7 +25,6 @@ import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
 import { loadOverallPlanReference } from "../plan-mode/plan-handoff";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
-import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
 import isolationRecoveryHintTemplate from "../prompts/tools/isolation-recovery-hint.md" with { type: "text" };
 import salvagedChildHintTemplate from "../prompts/tools/salvaged-child-hint.md" with { type: "text" };
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
@@ -229,9 +228,6 @@ export class StructuredSubagentError extends Error {
 
 const PLAN_MODE_TOOLS = ["read", "grep", "glob", "web_search"] as const;
 
-function renderSubagentPrompt(assignment: string): string {
-	return prompt.render(subagentUserPromptTemplate, { assignment: assignment.trim() });
-}
 
 function trimToUndefined(value: string | undefined): string | undefined {
 	const trimmed = value?.trim();
@@ -641,8 +637,8 @@ function buildExecutorOptions(
 		getApiKey: session.getApiKey,
 		credentialSourceSessionId: session.getCredentialSourceSessionId?.(),
 		agent: policy.effectiveAgent,
-		task: renderSubagentPrompt(request.assignment),
-		assignment: request.assignment.trim(),
+		task: request.assignment,
+		assignment: request.assignment,
 		preparedSession,
 		context: request.context?.trim() || undefined,
 		planReference: undefined,
@@ -757,8 +753,8 @@ function buildFailureResult(
 			id,
 			agent: policy.agent.name,
 			agentSource: policy.agent.source,
-			task: renderSubagentPrompt(request.assignment),
-			assignment: request.assignment.trim(),
+			task: request.assignment,
+			assignment: request.assignment,
 			description: request.invocationKind === "eval" ? trimToUndefined(request.identity?.label) : undefined,
 			exitCode: 1,
 			output: "",
@@ -1058,7 +1054,7 @@ export async function resumeStructuredSubagent(
 	const result = await runSubagentFollowUpTurn({
 		id: previous.result.id,
 		agent: policy.effectiveAgent,
-		message: renderSubagentPrompt(request.assignment),
+		message: request.assignment,
 		thinkingLevel,
 		index: request.index,
 		modelRole: policy.modelRole,
