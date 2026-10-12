@@ -4250,9 +4250,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				}),
 			);
 			let session: AgentSession;
-			let modelFallbackMessage: string | undefined;
+			let modelPatternResolutionFailed: boolean | undefined;
 			try {
-				({ session, modelFallbackMessage } = await awaitAbortable(sessionPromise));
+				({ session, modelPatternResolutionFailed } = await awaitAbortable(sessionPromise));
 			} catch (err) {
 				// Abort raced session startup. The session may still resolve later
 				// holding live LSP/MCP child processes — dispose it when it does so
@@ -4272,10 +4272,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			) {
 				sessionManager.appendModelChange(formatModelStringWithRouting(model), retryFallbackRole);
 			}
-			// Deferred discovery has now had its chance to resolve explicit patterns.
-			// Only when it did not resolve (modelFallbackMessage set, no model) fail closed,
-			// so the spawn never silently runs on the role chain's model.
-			if (!model && modelFallbackMessage && modelPatterns.length > 0) {
+			// The SDK owns deferred resolution; a warning about a successful role-chain
+			// usage fallback is not a resolution failure.
+			if (modelPatternResolutionFailed) {
 				const explicitModelError = explicitModelResolutionError(modelPatterns, modelRegistry, settings);
 				if (explicitModelError) {
 					session.dispose().catch(() => {});
