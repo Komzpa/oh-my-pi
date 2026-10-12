@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
@@ -188,10 +189,133 @@ describe("AgentSession per-turn prune persistence", () => {
 		expect(rebuiltText?.type === "text" ? rebuiltText.text : undefined).toBe(USELESS_NOTICE);
 	});
 
-	it("settles the run and restores the result when persisting the prune fails", async () => {
-		const rewriteEntries = vi
-			.spyOn(sessionManager, "rewriteEntries")
-			.mockRejectedValueOnce(new Error("injected rewrite failure"));
+	it("appends the automatic prune without rewriting the journal so resume and fork match live", async () => {
+		// Baseline: flush the seeded history, then snapshot the journal identity
+		// and bytes before the automatic per-turn prune fires.
+		await sessionManager.flush();
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected a persisted session file");
+		const before = fs.statSync(sessionFile);
+		const beforeBytes = fs.readFileSync(sessionFile);
+		const size0 = beforeBytes.length;
+		expect(size0).toBeGreaterThan(0);
+
+		const finalAssistant = {
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: "Continuing." }],
+			api: "anthropic-messages" as const,
+			provider: "anthropic" as const,
+			model: "claude-sonnet-4-5",
+			stopReason: "stop" as const,
+			usage: {
+				input: 100,
+				output: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 110,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		};
+		session.agent.emitExternalEvent({ type: "message_end", message: finalAssistant });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [finalAssistant] });
+		await session.waitForIdle();
+		await sessionManager.flush();
+
+		// Live context is blanked with prunedAt set.
+		const live = session.agent.state.messages.find(
+			candidate => candidate.role === "toolResult" && candidate.toolCallId === BIG_CALL_ID,
+		);
+		if (live?.role !== "toolResult" || !Array.isArray(live.content)) {
+			throw new Error("Expected the seeded tool result in live agent state");
+		}
+		const liveText = live.content.find(block => block.type === "text");
+		expect(liveText?.type === "text" ? liveText.text : undefined).toBe(USELESS_NOTICE);
+		expect(live.prunedAt).toBeDefined();
+		if (typeof live.prunedAt !== "number") throw new Error("Expected a numeric prunedAt on the live result");
+		const livePrunedAt = live.prunedAt;
+
+		// Append-only: same inode, larger file, original prefix byte-identical.
+		const after = fs.statSync(sessionFile);
+		const afterBytes = fs.readFileSync(sessionFile);
+		expect(after.ino).toBe(before.ino);
+		expect(afterBytes.length).toBeGreaterThan(size0);
+		expect(Buffer.from(afterBytes.subarray(0, size0)).equals(beforeBytes)).toBe(true);
+
+		// Raw payload stays on disk (in the preserved prefix); the appended
+		// tail carries exactly one prune overlay line and none of the payload.
+		expect(afterBytes.toString("utf8")).toContain("match line");
+		const tailText = afterBytes.subarray(size0).toString("utf8");
+		expect(tailText).not.toContain("match line");
+		const tailLines = tailText.split("\n").filter(line => line.trim().length > 0);
+		const pruneLines = tailLines.filter(line => line.includes("tool_result_prune"));
+		expect(pruneLines.length).toBe(1);
+
+		function expectPrunedRebuild(messages: AgentMessage[], prunedAt: number): void {
+			const rebuilt = messages.find(
+				candidate => candidate.role === "toolResult" && candidate.toolCallId === BIG_CALL_ID,
+			);
+			if (rebuilt?.role !== "toolResult" || !Array.isArray(rebuilt.content)) {
+				throw new Error("Expected the seeded tool result in the rebuilt context");
+			}
+			const text = rebuilt.content.find(block => block.type === "text");
+			expect(text?.type === "text" ? text.text : undefined).toBe(USELESS_NOTICE);
+			expect(rebuilt.prunedAt).toBe(prunedAt);
+		}
+
+		// Resume: reopening the file projects the same blanked content.
+		const resumed = await SessionManager.open(sessionFile, tempDir.path());
+		expectPrunedRebuild(resumed.buildSessionContext().messages, livePrunedAt);
+
+		// Branch scoping: the path ending at the target itself excludes the
+		// later prune overlay, so it still shows the original payload.
+		const target = sessionManager.getBranch().find(
+			candidate =>
+				candidate.type === "message" &&
+				candidate.message.role === "toolResult" &&
+				candidate.message.toolCallId === BIG_CALL_ID,
+		);
+		if (target?.type !== "message") throw new Error("Expected the seeded tool result entry on the branch");
+		const scoped = sessionManager
+			.getBranch(target.id)
+			.find(
+				candidate =>
+					candidate.type === "message" &&
+					candidate.message.role === "toolResult" &&
+					candidate.message.toolCallId === BIG_CALL_ID,
+			);
+		expect(scoped?.type === "message" ? scoped.message : undefined).toMatchObject({
+			content: [{ type: "text", text: "match line\n".repeat(20000) }],
+		});
+		expect(
+			scoped?.type === "message" && scoped.message.role === "toolResult" ? scoped.message.prunedAt : undefined,
+		).toBeUndefined();
+
+		// Fork (branch): a branched copy projects the same blanked content.
+		const leaf = sessionManager.getBranch().at(-1);
+		if (!leaf || typeof leaf !== "object" || !("id" in leaf)) {
+			throw new Error("Expected a leaf entry with an id");
+		}
+		const leafId = leaf.id;
+		if (typeof leafId !== "string") throw new Error("Expected a string leaf id");
+		const forkedFile = sessionManager.createBranchedSession(leafId);
+		if (!forkedFile) throw new Error("Expected createBranchedSession to return a file");
+		const forked = await SessionManager.open(forkedFile, tempDir.path());
+		expectPrunedRebuild(forked.buildSessionContext().messages, livePrunedAt);
+
+		// Fork (file copy): a forked manager projects the same blanked content.
+		const forkedCopy = await SessionManager.forkFrom(
+			sessionFile,
+			tempDir.path(),
+			path.join(tempDir.path(), "fork"),
+			undefined,
+			{ suppressBreadcrumb: true },
+		);
+		expectPrunedRebuild(forkedCopy.buildSessionContext().messages, livePrunedAt);
+	});
+
+	it("settles the run and keeps the appended prune when its flush fails", async () => {
+		const flush = vi.spyOn(sessionManager, "flush").mockRejectedValueOnce(new Error("injected flush failure"));
 		const runStates: string[] = [];
 		const unsubscribeRunState = session.subscribeRunState(state => runStates.push(state));
 		const settles: boolean[] = [];
@@ -224,23 +348,33 @@ describe("AgentSession per-turn prune persistence", () => {
 
 			// The run reports idle and publishes one terminal settle, so the UI
 			// stops its working indicator instead of spinning forever.
-			expect(rewriteEntries).toHaveBeenCalledTimes(1);
 			expect(runStates).toEqual(["idle"]);
 			expect(settles).toEqual([true]);
-			expect(notices.some(message => message.includes("injected rewrite failure"))).toBe(true);
-			// The blanked result was restored: live context matches durable history.
-			expect(liveResultText()).toBe("match line\n".repeat(20000));
-			const entry = sessionManager
-				.getBranch()
+			expect(notices.some(message => message.includes("injected flush failure"))).toBe(true);
+			// No rollback: live context keeps the projected overlay while raw history keeps the payload.
+			expect(liveResultText()).toBe(USELESS_NOTICE);
+			const raw = sessionManager
+				.getEntries()
 				.find(candidate => candidate.type === "message" && candidate.message.role === "toolResult");
-			expect(entry?.type === "message" ? entry.message : undefined).toMatchObject({
+			expect(raw?.type === "message" ? raw.message : undefined).toMatchObject({
 				content: [{ type: "text", text: "match line\n".repeat(20000) }],
-				prunedAt: undefined,
 			});
+			expect(raw?.type === "message" && raw.message.role === "toolResult" ? raw.message.prunedAt : undefined).toBeUndefined();
+			expect(sessionManager.getEntries().filter(entry => entry.type === "tool_result_prune")).toHaveLength(1);
+			await sessionManager.flush();
+			const sessionFile = sessionManager.getSessionFile();
+			if (!sessionFile) throw new Error("Expected a persisted session file");
+			const reopened = await SessionManager.open(sessionFile, tempDir.path());
+			const rebuilt = reopened
+				.buildSessionContext()
+				.messages.find(candidate => candidate.role === "toolResult" && candidate.toolCallId === BIG_CALL_ID);
+			expect(rebuilt?.role === "toolResult" ? rebuilt.content : undefined).toEqual([
+				{ type: "text", text: USELESS_NOTICE },
+			]);
 		} finally {
 			unsubscribe();
 			unsubscribeRunState();
-			rewriteEntries.mockRestore();
+			flush.mockRestore();
 		}
 	});
 

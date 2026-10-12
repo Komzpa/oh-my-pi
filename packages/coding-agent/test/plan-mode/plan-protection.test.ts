@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { type AgentToolCall, Tokenizer } from "@oh-my-pi/pi-agent-core";
-import type { SessionMessageEntry } from "@oh-my-pi/pi-agent-core/compaction/entries";
-import { DEFAULT_PRUNE_CONFIG, pruneToolOutputs } from "@oh-my-pi/pi-agent-core/compaction/pruning";
+import type { SessionEntry, SessionMessageEntry } from "@oh-my-pi/pi-agent-core/compaction/entries";
+import { DEFAULT_PRUNE_CONFIG, projectToolResultPrunes, pruneToolOutputs } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import { AGGRESSIVE_SHAKE_CONFIG, collectShakeRegions } from "@oh-my-pi/pi-agent-core/compaction/shake";
 import type { ProtectedToolContext } from "@oh-my-pi/pi-agent-core/compaction/tool-protection";
 import type { AssistantMessage, TextContent, ToolResultMessage, Usage } from "@oh-my-pi/pi-ai";
@@ -141,8 +141,14 @@ describe("plan-read protection in compaction", () => {
 		});
 
 		expect(result.prunedCount).toBe(1);
+		const projected = projectToolResultPrunes<SessionEntry>([...entries, {
+			type: "tool_result_prune", id: "prune", parentId: fileResult.id,
+			timestamp: new Date(result.prunedAt).toISOString(), prunedAt: result.prunedAt, targets: result.targets,
+		}]);
+		expect(projected[1]).toBe(planResult);
 		expect((planResult.message as ToolResultMessage).prunedAt).toBeUndefined();
-		expect(typeof (fileResult.message as ToolResultMessage).prunedAt).toBe("number");
+		expect(((projected[3] as SessionMessageEntry).message as ToolResultMessage).prunedAt).toBe(result.prunedAt);
+		expect((fileResult.message as ToolResultMessage).prunedAt).toBeUndefined();
 	});
 
 	it("excludes the plan read from shake regions", () => {

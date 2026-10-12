@@ -15,9 +15,8 @@
  *    (`totalTokens > 0`) with a terminal `stopReason` that is not `"aborted"` /
  *    `"error"`. Unsettled assistants never read or insert. Non-assistant roles
  *    are immutable once appended and cache by identity.
- * 2. **Owner invalidation.** `pruneToolOutputs` / `pruneSupersededToolResults`,
- *    `applyShakeRegion`, and `stripImagesFromMessage` rewrite message content in
- *    place under a stable identity. Each MUST call {@link invalidateMessageCache}
+ * 2. **Owner invalidation.** `applyShakeRegion` and `stripImagesFromMessage`
+ *    rewrite message content in place under a stable identity. Each MUST call {@link invalidateMessageCache}
  *    on the mutated message before the next convert/estimate pass. Invalidation
  *    bumps a symbol-keyed version tag on the message itself, so every live
  *    `Tokenizer` memo drops its stale entry at once without registering
@@ -32,7 +31,7 @@ const externalInvalidators = new Set<(message: AgentMessage) => void>();
 
 /**
  * Register a cache tied to message identity so owner mutations in this package
- * (prune/shake) can invalidate it across the package boundary. Returns an
+ * (shake/image stripping) can invalidate it across the package boundary. Returns an
  * unregister function. The coding-agent `convertToLlm` memo registers here.
  */
 export function registerMessageCacheInvalidator(invalidate: (message: AgentMessage) => void): () => void {
