@@ -9,6 +9,8 @@ import type {
 	TextContent,
 	Usage,
 } from "@oh-my-pi/pi-ai";
+import { createSyntheticToolResultMessage } from "@oh-my-pi/pi-agent-core";
+import { projectToolResultPrunes, type ToolResultPruneTarget } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import {
 	projectToolResultPrune,
 	projectToolResultPrunes,
