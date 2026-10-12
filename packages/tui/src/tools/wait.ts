@@ -23,10 +23,12 @@ import {
 	createCachedComponent,
 	type ConfiguredThinkingLevel,
 } from "../render/render-utils";
-import type { StructuredSubagentOutput, TaskModelFallback } from "./task";
+import type { StructuredSubagentOutput } from "./task";
 import type { RenderResultOptions, ToolRenderer, ToolActivitySummary } from "./renderer";
+
 import type { IrcDeliveryReceipt, IrcMessage } from "./irc";
 import type { TspSpan } from "@oh-my-pi/pi-wire";
+import type { TaskModelFallback } from "./task";
 import { card as cardNode, compact, elapsed, md, node, row, span, text } from "../native/describe";
 import type { NativeNode } from "../native/node";
 import { OwnerMemo } from "../native/memo";
