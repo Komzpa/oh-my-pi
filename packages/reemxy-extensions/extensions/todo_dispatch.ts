@@ -2257,7 +2257,17 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // `git -C <repo>` looks at another checkout the same way, and `fetch` only moves remote-tracking refs,
   // which a look at upstream needs (live 2026-09-28: `git -C repo fetch && git -C repo log` was refused,
   // so the chief staffed a scout for a one-second look).
-  const READ_ONLY_BASH = /^(?:grep|rg|ls|cat|head|tail|wc|pwd|echo|stat|test|\[|sha256sum|sha1sum|md5sum|readlink|realpath|file)$/;
+  const READ_ONLY_BASH = /^(?:grep|rg|ls|cat|head|tail|wc|pwd|echo|stat|test|\[|sha256sum|sha1sum|md5sum|readlink|realpath|file|cut|uniq|tr|nl|jq|cmp|basename|dirname|date|du|df)$/;
+  // Live 2026-10-12: the chief was refused `git show … | cat && sed -n '160,170p' ledger | cut -c1-400`,
+  // a pure look, so its rows went overdue. sed only as a line-range print, find and sort without write/exec flags.
+  const readOnlyLook = (words: Array<{ value: string; dynamic: boolean }>) => {
+    const [name, ...args] = words;
+    if (["sed", "find", "sort"].includes(name.value) && args.some((word) => word.dynamic)) return false;
+    if (name.value === "sed") return args[0]?.value === "-n" && args.length >= 2 && /^(?:\d+|\$)(?:,(?:\d+|\$))?p$/.test(args[1].value);
+    if (name.value === "find") return !args.some((word) => /^-(?:exec|execdir|ok|okdir|delete|fprint\w*|fls)$/.test(word.value));
+    if (name.value === "sort") return !args.some((word) => /^(?:-o|--output)/.test(word.value));
+    return READ_ONLY_BASH.test(name.value);
+  };
   // Git mutation (add, commit, push, merge) is the git-pr-owner worker's job, never the chief's
   // (user 2026-09-25: "чего чиф оф стафф гит дрочит, у него же писарь есть и гитарь?").
   // Inspect shell structure without executing it. Unknown syntax fails closed; substitutions
@@ -2277,7 +2287,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       };
       const simple = (words: Token[]) => {
         if (!words.length || words[0].dynamic) return false;
-        if (words[0].value !== "git") return READ_ONLY_BASH.test(words[0].value);
+        if (words[0].value !== "git") return readOnlyLook(words);
         let subcommand = 1;
         while (["-C", "-c"].includes(words[subcommand]?.value)) {
           if (words[subcommand].dynamic || !words[subcommand + 1]) return false;
