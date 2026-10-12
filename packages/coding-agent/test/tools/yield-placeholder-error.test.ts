@@ -16,9 +16,7 @@ function createSession(): ToolSession {
 describe("YieldTool placeholder errors", () => {
 	it("preserves untyped data/error conflict resend guidance", async () => {
 		const tool = new YieldTool(createSession());
-		const failure = await tool
-			.execute("call-both", { data: { ok: true }, error: "boom" } as never)
-			.catch(err => err);
+		const failure = await tool.execute("call-both", { data: { ok: true }, error: "boom" } as never).catch(err => err);
 		expect(failure).toBeInstanceOf(Error);
 		expect(String(failure.message)).toContain("Resubmit exactly one outcome");
 		expect(String(failure.message)).toContain(
