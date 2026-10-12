@@ -474,8 +474,8 @@ export function parseTodoOverride(input: unknown): string | undefined {
 }
 export function decideGateCall(call: GateCall, gates: readonly ActiveGate[]): GateDecision {
   if (READ_TIER.has(call.name)) return { allowed: true, remedyGateIds: [] };
+  if (call.name === "context_notes") return { allowed: true, remedyGateIds: [] };
   if (isKill(call)) return { allowed: true, remedyGateIds: [] };
-  if (call.name === "todo" && todoOpOf(call) !== "done") return { allowed: true, remedyGateIds: [] };
   if (gates.length === 0) return { allowed: true, remedyGateIds: [] };
   const passing = gates.filter((gate) => {
     try {
