@@ -11,6 +11,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { AuthStorage } from "@oh-my-pi/pi-ai";
+import { runModelsListing } from "@oh-my-pi/pi-coding-agent/cli/models-cli";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -288,3 +289,117 @@ test("4: Deleted models.yml retains the existing not-found behavior", async () =
 		authStorage.close();
 	}
 });
+
+const lineFixtures = [
+	{
+		name: "b-broken",
+		line: 18,
+		content: `providers:
+  qa-dummy:
+    baseUrl: http://127.0.0.1:18765
+    api: typesafe
+    auth: apiKey
+    apiKey: qa-dummy
+    models:
+      - id: qa-model-alpha
+        name: QA Model Alpha (qa-model-alpha)
+        api: typesafe
+        kind: judge
+        reasoning: false
+        input: [text]
+        contextWindow: 65536
+        maxTokens: 1
+        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}
+  qa-broken:
+    baseUrl: [this is not valid yaml
+`,
+	},
+	{
+		name: "c-null-models",
+		line: 22,
+		content: `providers:
+  qa-dummy:
+    baseUrl: http://127.0.0.1:18765
+    api: typesafe
+    auth: apiKey
+    apiKey: qa-dummy
+    models:
+      - id: qa-model-alpha
+        name: QA Model Alpha (qa-model-alpha)
+        api: typesafe
+        kind: judge
+        reasoning: false
+        input: [text]
+        contextWindow: 65536
+        maxTokens: 1
+        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}
+  qa-null:
+    baseUrl: http://127.0.0.1:18765
+    api: typesafe
+    auth: apiKey
+    apiKey: qa-null
+    models: null
+`,
+	},
+	{
+		name: "nested-model-id",
+		line: 8,
+		content: `providers:
+  qa-nested:
+    baseUrl: http://127.0.0.1:18765
+    api: openai-completions
+    auth: none
+    models:
+      - id: good-model
+      - id: null
+`,
+	},
+	{
+		name: "missing-model-id",
+		line: 6,
+		content: `providers:
+  qa-missing:
+    baseUrl: http://127.0.0.1:18765
+    api: openai-completions
+    auth: none
+    models:
+      - name: Missing ID
+`,
+	},
+];
+
+for (const fixture of lineFixtures) {
+	test(`exact warning line: ${fixture.name}`, async () => {
+		const fixtureDir = tmp.join(fixture.name);
+		await fs.mkdir(fixtureDir);
+		const modelsPath = path.join(fixtureDir, "models.yml");
+		await fs.writeFile(modelsPath, fixture.content);
+		const authStorage = await AuthStorage.create(":memory:");
+		try {
+			const registry = new ModelRegistry(authStorage, modelsPath);
+			expect(registry.getError()?.line).toBe(fixture.line);
+			const captured: string[] = [];
+			const originalWrite = process.stdout.write;
+			Reflect.set(process.stdout, "write", (chunk: string | Uint8Array) => {
+				captured.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+				return true;
+			});
+			try {
+				await runModelsListing({
+					modelRegistry: registry,
+					cwd: fixtureDir,
+					action: "ls",
+					pattern: "qa-*",
+					disableExtensionDiscovery: true,
+				});
+			} finally {
+				process.stdout.write = originalWrite;
+			}
+			expect(captured.join("")).toContain(
+				`Warning: models.yml validation failed at ${modelsPath}:${fixture.line} —`,
+			);
+		} finally {
+			authStorage.close();
+		}
+	});
+}
