@@ -127,16 +127,52 @@ describe("convertToLlm oversized tool history", () => {
 		expect(data.keep).toBe("short");
 	});
 
-	it("keeps the current turn's completed call and a pending call unchanged", () => {
+	it("shrinks the current turn's completed call but keeps its result and a pending call intact", () => {
 		const messages = [
 			user("start"),
 			assistant([taskCall("call-current", HUGE)]),
 			result("call-current", "done"),
 			assistant([taskCall("call-pending", HUGE)]),
 		];
+		const converted = convertToLlm(messages);
+		const [current, pending] = toolCalls(converted);
+		expect((current!.arguments.tasks as Array<{ data: string }>)[0]!.data).toStartWith("[omitted 400000 bytes");
+		expect((pending!.arguments.tasks as Array<{ data: string }>)[0]!.data).toBe(HUGE);
+		expect(resultText(converted, "call-current")).toBe("done");
+	});
+
+	it("sends a pending call shrunk on the next request once its result lands on the same array", () => {
+		const messages = [user("start"), assistant([taskCall("call-open", HUGE)])];
+		const [pending] = toolCalls(convertToLlm(messages));
+		expect((pending!.arguments.tasks as Array<{ data: string }>)[0]!.data).toBe(HUGE);
+
+		messages.push(result("call-open", "done"));
+		const converted = convertToLlm(messages);
+		const [done] = toolCalls(converted);
+		expect((done!.arguments.tasks as Array<{ data: string }>)[0]!.data).toStartWith("[omitted 400000 bytes");
+		expect(resultText(converted, "call-open")).toBe("done");
+	});
+
+	it("shrinks an older assistant's calls when a later batch result is appended to the same array", () => {
+		const messages = [
+			user("start"),
+			assistant([taskCall("call-a", HUGE), taskCall("call-b", HUGE)]),
+			result("call-a", "done"),
+		];
+		convertToLlm(messages);
+
+		messages.push(result("call-b", "done"));
 		const calls = toolCalls(convertToLlm(messages));
-		expect(calls.map(call => call.id)).toEqual(["call-current", "call-pending"]);
-		for (const call of calls) expect((call.arguments.tasks as Array<{ data: string }>)[0]!.data).toBe(HUGE);
+		expect(calls.map(call => call.id)).toEqual(["call-a", "call-b"]);
+		for (const call of calls) {
+			expect((call.arguments.tasks as Array<{ data: string }>)[0]!.data).toStartWith("[omitted 400000 bytes");
+		}
+	});
+
+	it("keeps the current turn's large tool result intact", () => {
+		const bigText = "x".repeat(300_000);
+		const messages = [user("start"), assistant([taskCall("call-now", "small")]), result("call-now", bigText)];
+		expect(resultText(convertToLlm(messages), "call-now")).toBe(bigText);
 	});
 
 	it("keeps a prior-turn pending call unchanged while shrinking its completed sibling", () => {
@@ -166,10 +202,12 @@ describe("convertToLlm oversized tool history", () => {
 		expect(resultText(messages as Message[], "call-big")).toBe(text);
 	});
 
-	it("shrinks the previous turn when a new user message is appended to the same array", () => {
+	it("shrinks the completed call of the current turn as soon as its result exists, and again on a new user message", () => {
 		const messages = fiveHugeCallTurn();
 		const first = convertToLlm(messages);
-		expect(JSON.stringify(first).length).toBeGreaterThan(2_000_000);
+		expect(JSON.stringify(first).length).toBeLessThan(100_000);
+		expect(toolCalls(first).map(call => call.id)).toEqual(["call-task"]);
+		expect(resultText(first, "call-task")).toBe("task complete");
 
 		messages.push(user("next"));
 		const second = convertToLlm(messages);
@@ -285,10 +323,12 @@ describe("convertToLlm oversized tool history", () => {
 			expect(payloadArguments(messages[1]!)).toBe(originalArguments);
 		});
 
-		it("keeps current-turn native arguments full, and the forced whole-context retry elides them", async () => {
+		it("elides current-turn native arguments once completed, keeping reasoning and the session payload full", async () => {
 			const messages = nativeTurn();
 			const current = nativeItem(await encode(convertToLlm(messages)), "function_call");
-			expect(current.arguments).toBe(originalArguments);
+			expect(current.arguments).toMatch(/^\{"tasks":\[\{"data":"\[omitted 400000 bytes/);
+			expect(nativeItem(await encode(convertToLlm(messages)), "reasoning").encrypted_content).toBe(encrypted);
+			expect(payloadArguments(messages[1]!)).toBe(originalArguments);
 
 			const forced = shrinkOversizedToolHistory(messages, true);
 			const input = await encode(convertToLlm(forced));

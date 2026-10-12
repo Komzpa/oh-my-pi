@@ -19,6 +19,7 @@ const OVERFLOW = "prompt is too long: 250000 tokens > 200000 maximum";
 // token estimates of both calls together stay below the auto-compaction threshold.
 const HUGE = "A".repeat(150_000);
 const HUGE_AFTER_RESET = "B".repeat(150_000);
+const RESULT = "R".repeat(262_145); // one byte over 256 KiB: only the forced retry shrinks it
 const SUMMARY = "SUMMARY-OF-OLDER-TURNS";
 const PROMPT = "continue the task";
 
@@ -98,8 +99,9 @@ describe("AgentSession oversized-history overflow recovery", () => {
 			description: "Stores one value",
 			parameters: stashParams,
 			execute: async (_id, params) => {
-				executedArgs.push(stashParams.assert(params).data);
-				return { content: [{ type: "text", text: "stored" }] };
+				const { data } = stashParams.assert(params);
+				executedArgs.push(data);
+				return { content: [{ type: "text", text: data === HUGE ? RESULT : "stored" }] };
 			},
 		};
 
@@ -194,6 +196,12 @@ describe("AgentSession oversized-history overflow recovery", () => {
 		return callIndex >= 0 && resultIndex > callIndex;
 	}
 
+	function resultText(messages: Message[], id: string): string {
+		const result = messages.find(message => message.role === "toolResult" && message.toolCallId === id);
+		if (result?.role !== "toolResult") throw new Error(`Expected a tool result for ${id}`);
+		return result.content.map(block => (block.type === "text" ? block.text : "")).join("");
+	}
+
 	it("compacts once, sends one shrunk current-turn retry, then surfaces the third overflow", async () => {
 		let overflowAttempts = 0;
 		const overflow: MockHandler = () => {
@@ -211,20 +219,25 @@ describe("AgentSession oversized-history overflow recovery", () => {
 		const [initial, firstOverflow, postCompaction, shrunkRetry] = result.sent;
 		expect(initial.json).not.toContain(HUGE);
 
-		// First overflow: the executed current-turn call goes out in full.
-		expect(toolCallData(firstOverflow.messages, "call-huge")).toBe(HUGE);
+		// First overflow: the executed call's completed arguments are shrunk; its result stays full.
+		expect(toolCallData(firstOverflow.messages, "call-huge")).toBe(omissionMarker(HUGE));
+		expect(resultText(firstOverflow.messages, "call-huge")).toBe(RESULT);
 		expect(firstOverflow.json).not.toContain(SUMMARY);
 
-		// Post-compaction: summary replaced older turns, current turn untouched.
+		// Post-compaction: summary replaced older turns; the current turn keeps its result full.
 		expect(postCompaction.json).toContain(SUMMARY);
 		expect(postCompaction.json).not.toContain("older request 0");
 		expect(postCompaction.json).toContain(PROMPT);
-		expect(toolCallData(postCompaction.messages, "call-huge")).toBe(HUGE);
+		expect(toolCallData(postCompaction.messages, "call-huge")).toBe(omissionMarker(HUGE));
+		expect(resultText(postCompaction.messages, "call-huge")).toBe(RESULT);
 		expect(pairedResult(postCompaction.messages, "call-huge")).toBe(true);
 
-		// Single forced retry: current-turn args omitted, pairing intact.
+		// Single forced retry: the current result is cut to head and tail; pairing intact.
 		expect(shrunkRetry.json.length).toBeLessThan(100_000);
 		expect(toolCallData(shrunkRetry.messages, "call-huge")).toBe(omissionMarker(HUGE));
+		expect(resultText(shrunkRetry.messages, "call-huge")).toMatch(
+			/^R{8192}\n\[omitted \d+ bytes, sha256=[0-9a-f]{12}; full value kept in the session file\]\nR{8192}$/,
+		);
 		expect(pairedResult(shrunkRetry.messages, "call-huge")).toBe(true);
 		expect(shrunkRetry.json).toContain(PROMPT);
 
@@ -250,11 +263,11 @@ describe("AgentSession oversized-history overflow recovery", () => {
 		const shrunkRetry = result.sent[3];
 		expect(toolCallData(shrunkRetry.messages, "call-huge")).toBe(omissionMarker(HUGE));
 
-		// Follow-on request after success: no forced shrink, both current-turn calls go out in full.
+		// Follow-on request after success: no forced result shrink; completed arguments stay shrunk.
 		const followOn = result.sent[4];
-		expect(followOn.json).not.toContain("[omitted ");
-		expect(toolCallData(followOn.messages, "call-huge")).toBe(HUGE);
-		expect(toolCallData(followOn.messages, "call-huge-2")).toBe(HUGE_AFTER_RESET);
+		expect(resultText(followOn.messages, "call-huge")).toBe(RESULT);
+		expect(toolCallData(followOn.messages, "call-huge")).toBe(omissionMarker(HUGE));
+		expect(toolCallData(followOn.messages, "call-huge-2")).toBe(omissionMarker(HUGE_AFTER_RESET));
 		expect(pairedResult(followOn.messages, "call-huge-2")).toBe(true);
 
 		expect(result.persistedArgs("call-huge")).toMatchObject({ arguments: { data: HUGE } });
