@@ -24,7 +24,9 @@ type DispatchForecastApi = Pick<
   getTodoPlanningIssues?: (phases: TodoScheduleInput) => TodoPlanningIssue[];
 };
 
-type Jobs = Pick<AsyncJobSnapshot, "running" | "recent">;
+type Jobs = Pick<AsyncJobSnapshot, "running" | "recent"> & {
+  nonJobAgents?: Array<{ id: string; live: boolean }>;
+};
 type PersistedChild = { id: string; owner: string | null; live: boolean };
 type SprintWorkerFinish = { jobId: string; id: string; at: number; row: string };
 export type SprintState = {
@@ -630,11 +632,11 @@ function restoredChildren(
       .filter((job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled")
       .flatMap((job) => job.agentId ? [job.id, job.agentId] : [job.id]),
   );
-  // A persisted ID is resumable only while this process still knows its job.
-  // The snapshot has no agent registry entries; absent IDs are stale after eviction/restart.
-  const knownIds = new Set(
-    [...jobs.running, ...jobs.recent].flatMap((job) => job.agentId ? [job.id, job.agentId] : [job.id]),
-  );
+  // Only current-process jobs or explicitly live registry entries prove resumability.
+  const knownIds = new Set([
+    ...[...jobs.running, ...jobs.recent].flatMap((job) => job.agentId ? [job.id, job.agentId] : [job.id]),
+    ...(jobs.nonJobAgents ?? []).filter((agent) => agent.live).map((agent) => agent.id),
+  ]);
   return previous.filter((child) =>
     (knownIds.has(child.id) || (child.owner !== null && knownIds.has(child.owner))) &&
     !activeIds.has(child.id) && !(child.owner && activeIds.has(child.owner)) &&

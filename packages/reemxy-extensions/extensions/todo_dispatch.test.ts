@@ -1030,7 +1030,7 @@ test("first-context 13-row dispatch becomes observation-only when paused", async
   expect(pausedPrompt).not.toContain("fresh-dispatch");
 });
 
-test("agent_end and shutdown persist child IDs for an empty-snapshot restart", async () => {
+test("agent_end and shutdown persist child IDs but drop stale IDs on an empty-snapshot restart", async () => {
   const branch: unknown[] = [
     { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases } } },
   ];
@@ -1102,11 +1102,26 @@ test("agent_end and shutdown persist child IDs for an empty-snapshot restart", a
     | { messages: Array<{ content: string }> }
     | undefined;
   const prompt = response?.messages[0]?.content ?? "";
-  expect(prompt).toContain("agent-parked-a");
-  expect(prompt).toContain("job-parked-a");
-  expect(prompt).toContain("agent-parked-b");
-  expect(prompt).toContain("job-parked-b");
+  expect(prompt).toContain("Parked/restored child roster (0;");
+  expect(prompt).not.toContain("agent-parked-a");
+  expect(prompt).not.toContain("job-parked-a");
+  expect(prompt).not.toContain("agent-parked-b");
+  expect(prompt).not.toContain("job-parked-b");
   expect(prompt).toContain("empty live snapshot is not nothing-to-reconcile");
+  const registryCtx = {
+    ...ctx,
+    getAsyncJobSnapshot: () => ({
+      ...emptyJobs,
+      nonJobAgents: [{ id: "agent-parked-a", live: true }, { id: "agent-parked-b", live: false }],
+    }),
+  } as ExtensionContext;
+  const registryResponse = (await resumedHandlers.get("context")!({ messages: [] }, registryCtx)) as
+    | { messages: Array<{ content: string }> }
+    | undefined;
+  const registryPrompt = registryResponse?.messages[0]?.content ?? "";
+  expect(registryPrompt).toContain("Parked/restored child roster (1;");
+  expect(registryPrompt).toContain('- id="agent-parked-a"');
+  expect(registryPrompt).not.toContain('- id="agent-parked-b"');
 });
 
 
