@@ -2417,16 +2417,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const ready = (decision.dispatchableReady ?? []).slice(0, MAX_TASK_DISPATCH).map((row) => JSON.stringify(shorten(row.content)));
     return {
       block: true,
-      reason: [
-        `Blocked ${event.toolName} work.`,
-        ready.length
-          ? `Use task to start a worker for each of these ${ready.length} ready row${ready.length === 1 ? "" : "s"}: ${ready.join(", ")}. See skill://chief-of-staff.`
-          : ORDER,
-        "For a row waiting only on an active unit or job, set owner unit:<name> or job:<pid>. It counts as staffed.",
-        "Read-only calls (read, grep, find, git status/log/show/diff) stay allowed.",
-        // Seen live 2026-09-25: the chief ran pgrep on its stalled git worker's hook, which is the worker's job.
-        lastTaskDispatchRefused ? "The last task dispatch was refused: do bounded work yourself until the ready row can be dispatched." : undefined,
-      ].filter(Boolean).join(" "),
+      reason: `Blocked: ${event.toolName} is work for a worker. Start one with a task call for: ${ready.join(", ")}. If a row only waits on a unit or job, set its owner to unit:<name> or job:<pid>. Reading (read, grep, find, git status/log/show/diff) stays allowed. ${ORDER}`,
     };
   };
   const completedPlanRows = (ctx: ExtensionContext): Array<{ content: string; schedule?: { owner?: unknown } }> => {
