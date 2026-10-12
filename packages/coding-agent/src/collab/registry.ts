@@ -215,7 +215,12 @@ export class PeerSessionError extends Error {
 
 interface PeerSessionRegistrySource {
 	snapshot(): PeerSessionSnapshot;
-	deliver(request: { from: PeerMessageSender; text: string; agent?: string; fromName?: string }): Promise<PeerDeliveryReceipt>;
+	deliver(request: {
+		from: PeerMessageSender;
+		text: string;
+		agent?: string;
+		fromName?: string;
+	}): Promise<PeerDeliveryReceipt>;
 }
 
 /** One resolved capability returned by {@link resolveCollabHostLink}. */

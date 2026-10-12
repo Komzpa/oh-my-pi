@@ -167,7 +167,9 @@ describe("peer sessions", () => {
 		await peersCli.runPeerListCommand({ json: false, registry: { dir } }, line => lines.push(line));
 		console.log(`PEER LIST:\n${lines.join("\n")}`);
 		let json = "";
-		await peersCli.runPeerListCommand({ json: true, registry: { dir } }, line => { json = line; });
+		await peersCli.runPeerListCommand({ json: true, registry: { dir } }, line => {
+			json = line;
+		});
 		const listed = JSON.parse(json).sessions.find((peer: PeerSessionSnapshot) => peer.sessionId === sessionId);
 		console.log(`PEER JSON MAIN LABEL: ${listed.agents[0].displayName}`);
 		expect(listed.agents[0].displayName).toContain(title);
@@ -176,29 +178,38 @@ describe("peer sessions", () => {
 		expect(lines.join("\n")).toContain(listed.displayName);
 		expect(target.snapshot.displayName).toBe("receiver (agent Main, session 02b05678…)");
 		const receipt = await sendPeerMessage({
-			registry: { dir }, from: { kind: "session", sessionId, cwd: "/work/hermes" },
-			target: target.snapshot.instanceId, text: "status?",
+			registry: { dir },
+			from: { kind: "session", sessionId, cwd: "/work/hermes" },
+			target: target.snapshot.instanceId,
+			text: "status?",
 		});
 		expect(receipt.targetName).toBe(target.snapshot.displayName);
 		const message = target.delivered[0]!;
 		expect(message.from).toBe(`peer:${sessionId}`);
 		expect(message.fromName).toBe(listed.displayName);
 		const visible = prompt.render(ircIncomingTemplate, {
-			from: message.from, fromName: message.fromName, message: message.body,
+			from: message.from,
+			fromName: message.fromName,
+			message: message.body,
 		});
 		expect(visible).toContain(`Incoming IRC message from ${listed.displayName}`);
 		expect(visible).toContain(`reply: write agent://peer:${sessionId}`);
 		const sent = await sendPeerMessage({
-			registry: { dir }, from: { kind: "shell" }, target: sender.snapshot.instanceId, text: "shell status?",
+			registry: { dir },
+			from: { kind: "shell" },
+			target: sender.snapshot.instanceId,
+			text: "shell status?",
 		});
-		const reply = await new AgentProtocolHandler({ dir }).write(
-			parseInternalUrl(sent.replyTo!), "readable reply", {
-				session: {
-					cwd: "/work/hermes", hasUI: false, agentRegistry: sender.registry,
-					getAgentId: () => MAIN_AGENT_ID, getSessionId: () => sessionId, settings: Settings.isolated(),
-				} as ToolSession,
-			},
-		);
+		const reply = await new AgentProtocolHandler({ dir }).write(parseInternalUrl(sent.replyTo!), "readable reply", {
+			session: {
+				cwd: "/work/hermes",
+				hasUI: false,
+				agentRegistry: sender.registry,
+				getAgentId: () => MAIN_AGENT_ID,
+				getSessionId: () => sessionId,
+				settings: Settings.isolated(),
+			} as ToolSession,
+		});
 		expect(reply.isError).toBe(false);
 		expect(await readShellReplies(sent.replyTo!.replace("agent://", ""), { dir })).toEqual([
 			expect.objectContaining({ from: `peer:${sessionId}`, fromName: listed.displayName, text: "readable reply" }),
