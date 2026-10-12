@@ -63,7 +63,7 @@ describe("persisted provider billing cooldown", () => {
 		);
 		const picked = (await runProcess(stateDir.path(), "return pick();")) as {
 			order: string[];
-			exclusions: Array<{ provider: string; reason: string }>;
+			exclusions: Array<{ provider: string; reason: string; until: number }>;
 		};
 
 		expect(picked.order).toEqual(["codex-lb"]);

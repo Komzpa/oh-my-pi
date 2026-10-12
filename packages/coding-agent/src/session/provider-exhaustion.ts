@@ -131,7 +131,7 @@ export function providerExhaustionExclusion(provider: string): ProviderExhaustio
  */
 export async function probeExhaustedProvider(
 	provider: string,
-	options: { url: string; headers?: HeadersInit; fetchFn?: FetchLike; timeoutMs?: number },
+	options: { url: string; headers?: RequestInit["headers"]; fetchFn?: FetchLike; timeoutMs?: number },
 ): Promise<boolean> {
 	const fetchFn = options.fetchFn ?? globalThis.fetch;
 	const controller = new AbortController();
