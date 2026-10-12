@@ -178,6 +178,7 @@ export class ConfigFile<T> implements IConfigFile<T> {
 	readonly #yamlFallbackPath: string | null;
 	readonly #jsonMigrationPath: string | null;
 	readonly #schemaSource: ConfigSchemaSource;
+	#formatPath: string;
 	#resolvedSchema?: Type;
 	#cache?: LoadResult<T>;
 	#auxValidate?: (value: T) => void;
@@ -189,6 +190,7 @@ export class ConfigFile<T> implements IConfigFile<T> {
 	) {
 		this.#schemaSource = typeof schema === "function" ? { kind: "eager", schema } : schema;
 		this.#basePath = configPath;
+		this.#formatPath = configPath;
 		if (configPath.endsWith(".yml")) {
 			this.#yamlFallbackPath = `${configPath.slice(0, -4)}.yaml`;
 			this.#jsonMigrationPath = `${configPath.slice(0, -4)}.json`;
@@ -223,9 +225,11 @@ export class ConfigFile<T> implements IConfigFile<T> {
 		migrateJsonToYml(this.#jsonMigrationPath, this.#basePath);
 	}
 
-	relocate(configPath?: string): ConfigFile<T> {
-		if (!configPath || configPath === this.#basePath) return this;
+	/** Relocate storage while optionally retaining the source configuration format. */
+	relocate(configPath?: string, formatPath?: string): ConfigFile<T> {
+		if (!configPath || (configPath === this.#basePath && !formatPath)) return this;
 		const result = new ConfigFile<T>(this.id, this.#schemaSource, configPath);
+		result.#formatPath = formatPath ?? configPath;
 		result.#auxValidate = this.#auxValidate;
 		result.#resolvedSchema = this.#resolvedSchema;
 		result.#ensureMigrated();
@@ -284,9 +288,9 @@ export class ConfigFile<T> implements IConfigFile<T> {
 		try {
 			let parsed: unknown;
 			const readPath = this.#resolveReadPath();
-			if (readPath.endsWith(".json") || readPath.endsWith(".jsonc")) {
+			if (this.#formatPath.endsWith(".json") || this.#formatPath.endsWith(".jsonc")) {
 				parsed = JSONC.parse(content);
-			} else if (readPath.endsWith(".yml") || readPath.endsWith(".yaml")) {
+			} else if (this.#formatPath.endsWith(".yml") || this.#formatPath.endsWith(".yaml")) {
 				parsed = YAML.parse(content);
 			} else {
 				throw new Error(`Invalid config file path: ${readPath}`);
