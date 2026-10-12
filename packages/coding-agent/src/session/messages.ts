@@ -57,6 +57,7 @@ import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
+import { completedToolCallIds, latestUserTurnIndex, shrinkToolHistoryMessage } from "./tool-history-shrink";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
 
 export {
@@ -1039,6 +1040,10 @@ interface ConvertArrayMemo {
 	output: Message[];
 	tail: AgentMessage | undefined;
 	prefixOutputLen: number;
+	/** Latest real user turn start (-1: none); history before it is send-shrunk. */
+	turnStart: number;
+	/** Output length contributed by messages[0 .. turnStart). */
+	turnOutputLen: number;
 }
 
 let convertGeneration = 0;
@@ -1216,6 +1221,12 @@ export function isUserAuthoredMessage(message: AgentMessage): boolean {
  * unchanged re-convert of the same array hands back the same outer `Message[]`.
  * Owner mutations (prune/shake/strip-images) invalidate the affected message
  * through the shared registry before the next pass.
+ *
+ * Completed tool calls/results before the latest real user turn are sent through
+ * {@link shrinkToolHistoryMessage}: oversized arguments and results are replaced by
+ * markers in a provider-only copy, while the user's current turn and the session
+ * file keep the full values. When a new user turn arrives on the same growing
+ * array, only the previously protected turn is reconverted.
  */
 export function convertToLlm(messages: AgentMessage[]): Message[] {
 	const len = messages.length;
@@ -1238,17 +1249,29 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 	// plus the appended suffix. The boundary-identity check (old tail still sits
 	// at its old index) rejects an in-place interior splice-replace that grew the
 	// array while swapping earlier identities, forcing a full rebuild.
-	let out: Message[];
-	let start: number;
-	if (
+	// A new real user turn in the appended suffix makes the previously protected
+	// turn eligible for shrinking; the scan stops at the old length.
+	const grew =
 		sameGeneration &&
 		len > memo.length &&
 		memo.length > 0 &&
 		messages[memo.length - 1] === memo.tail &&
-		memo.prefixOutputLen <= memo.output.length
-	) {
+		memo.prefixOutputLen <= memo.output.length;
+	const appendedTurn = grew ? latestUserTurnIndex(messages, memo.length) : -1;
+	const turnStart = !grew ? latestUserTurnIndex(messages) : appendedTurn >= 0 ? appendedTurn : memo.turnStart;
+
+	let out: Message[];
+	let start: number;
+	let turnOutputLen = 0;
+	if (grew && turnStart === memo.turnStart) {
 		out = memo.output.slice(0, memo.prefixOutputLen);
 		start = memo.length - 1;
+		turnOutputLen = memo.turnOutputLen;
+	} else if (grew && memo.turnStart >= 0 && memo.turnOutputLen <= memo.prefixOutputLen) {
+		// Reconvert from the old turn start: its completed tools are now history.
+		out = memo.output.slice(0, memo.turnOutputLen);
+		start = memo.turnStart;
+		turnOutputLen = memo.turnOutputLen;
 	} else {
 		out = [];
 		start = 0;
@@ -1259,9 +1282,11 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 	let prefixOutputLen = 0;
 	for (let i = start; i < len; i++) {
 		if (i === len - 1) prefixOutputLen = out.length;
+		if (i === turnStart) turnOutputLen = out.length;
 		const m = messages[i];
 		const interruptedNext = m.role === "assistant" && followedByInterruptedThinking(messages, i);
-		const fragment = convertOneCached(m, interruptedNext);
+		const source = i < turnStart ? shrinkToolHistoryMessage(m, completedToolCallIds(messages, i)) : m;
+		const fragment = convertOneCached(source, interruptedNext);
 		for (const msg of fragment) out.push(msg);
 	}
 	if (len === 0) prefixOutputLen = 0;
@@ -1274,6 +1299,8 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 		output: out,
 		tail,
 		prefixOutputLen,
+		turnStart,
+		turnOutputLen,
 	});
 	return out;
 }
