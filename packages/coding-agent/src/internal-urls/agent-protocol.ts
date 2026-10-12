@@ -23,7 +23,7 @@ import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { fuzzyFilter } from "@oh-my-pi/pi-tui/fuzzy";
 import { formatDuration, isEnoent, prompt } from "@oh-my-pi/pi-utils";
-import { type PeerSessionOptions, PeerSessionError, sendPeerMessage, writeShellReply } from "../collab/registry";
+import { type PeerSessionOptions, PeerSessionError, listPeerSessions, peerSessionDisplayName, sendPeerMessage, writeShellReply } from "../collab/registry";
 import { IrcBus } from "../irc/bus";
 import * as peerMessaging from "../irc/messaging";
 import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
@@ -183,9 +183,19 @@ export class AgentProtocolHandler implements ProtocolHandler {
 			try {
 				if (to === "shell") to = IrcBus.global().resolveShellReplyTarget(senderId);
 				if (to.startsWith("shell:")) {
+					const sid = session.getSessionId?.() ?? senderId;
+					let fromName: string | undefined;
+					try {
+						const peers = await listPeerSessions(this.peerSessions);
+						fromName =
+							peers.find(peer => peer.sessionId === sid)?.displayName ??
+							peerSessionDisplayName({ sessionName: null, cwd: session.cwd, sessionId: sid, mainAgentId: senderId });
+					} catch {
+						fromName = peerSessionDisplayName({ sessionName: null, cwd: session.cwd, sessionId: sid, mainAgentId: senderId });
+					}
 					await writeShellReply(
 						to,
-						{ from: `peer:${session.getSessionId?.() ?? senderId}`, text: content, createdAt: Date.now() },
+						{ from: `peer:${sid}`, ...(fromName ? { fromName } : {}), text: content, createdAt: Date.now() },
 						this.peerSessions,
 					);
 					return { content: [{ type: "text", text: `delivered to ${to} (shell inbox)` }], isError: false };
