@@ -11,6 +11,7 @@ import {
 	type ConvertToLlm,
 	DEFAULT_PRUNE_CONFIG,
 	defaultConvertToLlm,
+	projectToolResultPrunes,
 	type PruneResult,
 	pruneSupersededToolResults,
 	pruneToolOutputs,
@@ -111,13 +112,20 @@ function textEntry(text: string, timestamp: number): SessionMessageEntry {
 	return messageEntry(assistantMessage([{ type: "text", text }], timestamp), timestamp);
 }
 
-function resultText(entry: SessionEntry): string {
-	const message = (entry as SessionMessageEntry).message as ToolResultMessage;
-	return (message.content[0] as TextContent).text;
+function prunedPath(entries: SessionEntry[], result: PruneResult): SessionEntry[] {
+	return projectToolResultPrunes([...entries, {
+		type: "tool_result_prune", id: nextId(), parentId: entries.at(-1)?.id ?? null,
+		timestamp: new Date(result.prunedAt).toISOString(), prunedAt: result.prunedAt, targets: result.targets,
+	}]);
 }
 
-function resultMessage(entry: SessionEntry): ToolResultMessage {
-	return (entry as SessionMessageEntry).message as ToolResultMessage;
+function resultText(entry: SessionEntry, result?: PruneResult): string {
+	return (resultMessage(entry, result).content[0] as TextContent).text;
+}
+
+function resultMessage(entry: SessionEntry, result?: PruneResult): ToolResultMessage {
+	const projected = result ? prunedPath([entry], result)[0] : entry;
+	return (projected as SessionMessageEntry).message as ToolResultMessage;
 }
 
 function cfg(over: Partial<SupersedePruneConfig> = {}): SupersedePruneConfig {
@@ -193,9 +201,11 @@ describe("pruneSupersededToolResults — tail case", () => {
 
 		expect(result.prunedCount).toBe(1);
 		expect(result.tokensSaved).toBeGreaterThan(0);
-		expect(resultText(result1)).toBe("[Superseded by a newer read of this file]");
-		expect(resultText(result1)).toBe(SUPERSEDED_NOTICE);
-		expect(resultMessage(result1).prunedAt).toBeDefined();
+		expect(resultText(result1, result)).toBe("[Superseded by a newer read of this file]");
+		expect(resultText(result1, result)).toBe(SUPERSEDED_NOTICE);
+		expect(resultMessage(result1, result).prunedAt).toBe(result.prunedAt);
+		expect(resultText(result1)).toBe(FILE_CONTENT);
+		expect(resultMessage(result1).prunedAt).toBeUndefined();
 		// Latest read untouched.
 		expect(resultText(result2)).toBe(FILE_CONTENT);
 		expect(resultMessage(result2).prunedAt).toBeUndefined();
@@ -232,8 +242,8 @@ describe("pruneSupersededToolResults — tail case", () => {
 		);
 
 		expect(result.prunedCount).toBe(2);
-		expect(resultText(result1)).toBe(SUPERSEDED_NOTICE);
-		expect(resultText(result2)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(result1, result)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(result2, result)).toBe(SUPERSEDED_NOTICE);
 		expect(resultText(result3)).toBe(FILE_CONTENT);
 		expect(resultText(result4)).toBe(FILE_CONTENT);
 	});
@@ -290,17 +300,18 @@ describe("pruneSupersededToolResults — selectors", () => {
 		entries = [...entries, callA2, resultA2];
 		result = pruneSupersededToolResults(entries, tokenizer, cfg({ now: T0 + 2_000 }));
 		expect(result.prunedCount).toBe(1);
-		expect(resultText(resultA)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(resultA, result)).toBe(SUPERSEDED_NOTICE);
 		expect(resultText(resultB)).toBe(FILE_CONTENT);
 		expect(resultText(resultA2)).toBe(FILE_CONTENT);
+		entries = prunedPath(entries, result);
 
 		// A later selector-free read supersedes every selector-carrying read of the base path.
 		const [callFull, resultFull] = readPair("src/foo.ts", FILE_CONTENT, T0 + 3_000);
 		entries = [...entries, callFull, resultFull];
 		result = pruneSupersededToolResults(entries, tokenizer, cfg({ now: T0 + 3_000 }));
 		expect(result.prunedCount).toBe(2);
-		expect(resultText(resultB)).toBe(SUPERSEDED_NOTICE);
-		expect(resultText(resultA2)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(resultB, result)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(resultA2, result)).toBe(SUPERSEDED_NOTICE);
 		expect(resultText(resultFull)).toBe(FILE_CONTENT);
 	});
 
@@ -413,8 +424,8 @@ describe("pruneSupersededToolResults — protection & latest", () => {
 		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ now: T0 + 2_000 + 60 * 60_000 }));
 
 		expect(result.prunedCount).toBe(2);
-		expect(resultText(result1)).toBe(SUPERSEDED_NOTICE);
-		expect(resultText(result2)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(result1, result)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(result2, result)).toBe(SUPERSEDED_NOTICE);
 		expect(resultText(result3)).toBe(FILE_CONTENT);
 		expect(resultMessage(result3).prunedAt).toBeUndefined();
 	});
@@ -446,7 +457,7 @@ describe("pruneSupersededToolResults — protection & latest", () => {
 		expect(result.prunedCount).toBe(1);
 		expect(resultText(planResult1)).toBe(FILE_CONTENT);
 		expect(resultText(planResult2)).toBe(FILE_CONTENT);
-		expect(resultText(fooResult1)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(fooResult1, result)).toBe(SUPERSEDED_NOTICE);
 		expect(resultText(fooResult2)).toBe(FILE_CONTENT);
 	});
 
@@ -478,7 +489,7 @@ describe("pruneToolOutputs — supersede priority fold", () => {
 		});
 
 		expect(result.prunedCount).toBe(1);
-		expect(resultText(result1)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(result1, result)).toBe(SUPERSEDED_NOTICE);
 		expect(resultText(result2)).toBe(FILE_CONTENT);
 	});
 
@@ -513,8 +524,8 @@ describe("pruneToolOutputs — supersede priority fold", () => {
 			protectedTools: [],
 		});
 		expect(unprotectedRun.prunedCount).toBe(2);
-		expect(resultText(unprotectedFixture.oldResult)).toMatch(/^\[Output truncated - \d+ tokens\]$/);
-		expect(resultText(unprotectedFixture.newResult)).toMatch(/^\[Output truncated - \d+ tokens\]$/);
+		expect(resultText(unprotectedFixture.oldResult, unprotectedRun)).toMatch(/^\[Output truncated - \d+ tokens\]$/);
+		expect(resultText(unprotectedFixture.newResult, unprotectedRun)).toMatch(/^\[Output truncated - \d+ tokens\]$/);
 
 		// Default config shape is untouched.
 		expect(DEFAULT_PRUNE_CONFIG.supersedeKey).toBeUndefined();
@@ -541,8 +552,8 @@ describe("pruneSupersededToolResults — useless results", () => {
 
 		expect(result.prunedCount).toBe(1);
 		expect(result.tokensSaved).toBeGreaterThan(0);
-		expect(resultText(result1)).toBe(USELESS_NOTICE);
-		expect(resultMessage(result1).prunedAt).toBeDefined();
+		expect(resultText(result1, result)).toBe(USELESS_NOTICE);
+		expect(resultMessage(result1, result).prunedAt).toBe(result.prunedAt);
 	});
 
 	test("(b) blanked under the suffix rule near the tail", () => {
@@ -552,7 +563,7 @@ describe("pruneSupersededToolResults — useless results", () => {
 		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ pruneUseless: true, now: T0 + 1_000 }));
 
 		expect(result.prunedCount).toBe(1);
-		expect(resultText(result1)).toBe(USELESS_NOTICE);
+		expect(resultText(result1, result)).toBe(USELESS_NOTICE);
 	});
 
 	test("(c) NOT blanked when suffix large and not idle", () => {
@@ -606,7 +617,7 @@ describe("pruneSupersededToolResults — useless results", () => {
 		});
 
 		expect(result.prunedCount).toBe(1);
-		expect(resultText(result1)).toBe(USELESS_NOTICE);
+		expect(resultText(result1, result)).toBe(USELESS_NOTICE);
 	});
 
 	test("(g) a result both superseded and useless gets the supersede notice", () => {
@@ -618,7 +629,7 @@ describe("pruneSupersededToolResults — useless results", () => {
 		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ pruneUseless: true, now: T0 + 1_000 }));
 
 		expect(result.prunedCount).toBe(1);
-		expect(resultText(result1)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(result1, result)).toBe(SUPERSEDED_NOTICE);
 		expect(resultText(result2)).toBe(FILE_CONTENT);
 	});
 
@@ -647,7 +658,7 @@ describe("pruneToolOutputs — useless results", () => {
 		});
 
 		expect(result.prunedCount).toBe(1);
-		expect(resultText(result1)).toBe(USELESS_NOTICE);
+		expect(resultText(result1, result)).toBe(USELESS_NOTICE);
 		expect(resultText(result2)).toBe(FILE_CONTENT);
 	});
 
@@ -681,8 +692,8 @@ describe("pruneToolOutputs — small-result floor", () => {
 		expect(result.prunedCount).toBe(1);
 		expect(resultText(tinyResult)).toBe("ok");
 		expect(resultMessage(tinyResult).prunedAt).toBeUndefined();
-		expect(resultText(bigResult)).toMatch(/^\[Output truncated - \d+ tokens\]$/);
-		expect(resultMessage(bigResult).prunedAt).toBeDefined();
+		expect(resultText(bigResult, result)).toMatch(/^\[Output truncated - \d+ tokens\]$/);
+		expect(resultMessage(bigResult, result).prunedAt).toBe(result.prunedAt);
 	});
 });
 
@@ -708,7 +719,7 @@ describe("cache-stable boundary — warm prefix protection", () => {
 		const legacy = build();
 		const legacyRun = pruneToolOutputs(legacy.entries, tokenizer, base);
 		expect(legacyRun.prunedCount).toBe(1);
-		expect(resultText(legacy.result1)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(legacy.result1, legacyRun)).toBe(SUPERSEDED_NOTICE);
 
 		// Guard armed: result1's all-message suffix (BIG_TEXT + call2 + result2) far
 		// exceeds the window, so it is part of the warm cached prefix and is kept.
@@ -755,7 +766,7 @@ describe("cache-stable boundary — warm prefix protection", () => {
 		});
 
 		expect(result.prunedCount).toBe(1);
-		expect(resultText(result1)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(result1, result)).toBe(SUPERSEDED_NOTICE);
 		expect(resultText(result2)).toBe(FILE_CONTENT);
 	});
 
@@ -767,7 +778,7 @@ describe("cache-stable boundary — warm prefix protection", () => {
 		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ keepBoundaryId: call1.id, now: T0 + 1_000 }));
 
 		expect(result.prunedCount).toBe(1);
-		expect(resultText(result1)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(result1, result)).toBe(SUPERSEDED_NOTICE);
 		expect(resultText(result2)).toBe(FILE_CONTENT);
 	});
 
@@ -795,7 +806,7 @@ describe("cache-stable boundary — warm prefix protection", () => {
 		expect(result.prunedCount).toBe(1);
 		expect(resultText(result1)).toBe(FILE_CONTENT); // before boundary -> untouched
 		expect(resultMessage(result1).prunedAt).toBeUndefined();
-		expect(resultText(result2)).toBe(SUPERSEDED_NOTICE); // at/after boundary -> flushed
+		expect(resultText(result2, result)).toBe(SUPERSEDED_NOTICE); // at/after boundary -> flushed
 		expect(resultText(result3)).toBe(FILE_CONTENT); // latest -> kept
 	});
 
@@ -806,7 +817,7 @@ describe("cache-stable boundary — warm prefix protection", () => {
 
 		// protectTokens 0 -> the age path would prune both; the window is wide so the
 		// guard does not protect either; only keepBoundaryId shields result1.
-		pruneToolOutputs(entries, tokenizer, {
+		const result = pruneToolOutputs(entries, tokenizer, {
 			protectTokens: 0,
 			minimumSavings: 0,
 			protectedTools: [],
@@ -816,7 +827,7 @@ describe("cache-stable boundary — warm prefix protection", () => {
 
 		expect(resultText(result1)).toBe(FILE_CONTENT); // before boundary -> untouched
 		expect(resultMessage(result1).prunedAt).toBeUndefined();
-		expect(resultMessage(result2).prunedAt).toBeDefined(); // at/after boundary, in tail -> pruned
+		expect(resultMessage(result2, result).prunedAt).toBe(result.prunedAt); // at/after boundary, in tail -> pruned
 	});
 });
 
