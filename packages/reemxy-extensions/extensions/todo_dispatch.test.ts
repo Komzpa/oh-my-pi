@@ -16,7 +16,7 @@ import {
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import todoDispatch, { checkoutLockOwnerFromMessage, decideTodoDispatch, isDistantWaitReason, todoOverrunBudgetMs, type DispatchInput } from "./todo_dispatch";
 
-type Jobs = Pick<AsyncJobSnapshot, "running" | "recent" | "nonJobAgents">;
+type Jobs = Pick<AsyncJobSnapshot, "running" | "recent">;
 const now = Date.UTC(2026, 0, 1);
 const phases: TodoScheduleInput = [
   {
@@ -27,7 +27,7 @@ const phases: TodoScheduleInput = [
     ],
   },
 ];
-const emptyJobs: Jobs = { running: [], recent: [], nonJobAgents: [] };
+const emptyJobs: Jobs = { running: [], recent: [] };
 const forecastApi = { forecastTodoPlan, formatPlanForecast, formatTaskForecast };
 const extensionSdk = {
   ...forecastApi,
@@ -410,7 +410,7 @@ describe("todo dispatch supervisor", () => {
         phases: readyPlan("RosterWorker"),
         jobs: { running: [], recent: [], nonJobAgents: [{ id: "RosterWorker", live: true }] },
       }).readyCandidates[0]?.ownership,
-    ).toBe("idle-live-owner");
+    ).toBe("unverified");
     const activeRestored = decide({
       phases: readyPlan("RestoredWorker"),
       jobs: { running: [], recent: [], nonJobAgents: [{ id: "RestoredWorker", live: true }] },
@@ -432,7 +432,7 @@ describe("todo dispatch supervisor", () => {
         persistedChildren: [{ id: "RestoredWorker", owner: "job-restored-worker", live: true }],
         idleResumeAttempts: new Set(["RestoredWorker"]),
       }).readyCandidates[0]?.ownership,
-    ).toBe("idle-live-owner");
+    ).toBe("unverified");
     expect(
       decide({
         phases: readyPlan("RosterWorker"),
@@ -678,8 +678,8 @@ describe("todo dispatch supervisor", () => {
     ];
     const independentDecision = decide({ phases: independent, jobs, deadline: due });
     expect(independentDecision.readyCandidates.map((row) => row.ownership)).toEqual([
-      "idle-live-owner",
-      "idle-live-owner",
+      "unverified",
+      "unverified",
     ]);
     expect(independentDecision.dispatchableReady.map((row) => row.content)).toEqual([
       "Independent one",
@@ -788,7 +788,7 @@ describe("todo dispatch supervisor", () => {
     ];
     const chainDecision = decide({ phases: chain, jobs, deadline: due });
     expect(chainDecision.readyCandidates.map((row) => row.content)).toEqual(["First in chain"]);
-    expect(chainDecision.readyCandidates[0]?.ownership).toBe("idle-live-owner");
+    expect(chainDecision.readyCandidates[0]?.ownership).toBe("unverified");
     expect(chainDecision.alarms).not.toContain(
       `ownerless-ready:${JSON.stringify("Second in chain")}`,
     );
@@ -885,7 +885,7 @@ describe("todo dispatch supervisor", () => {
 
 });
 
-test("first context after restart reconciles persisted parked children when the live snapshot is empty", async () => {
+test("restored roster excludes settled children but keeps parked children separate from running jobs", async () => {
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   const branch: unknown[] = [
     {
@@ -894,8 +894,9 @@ test("first context after restart reconciles persisted parked children when the 
       data: {
         version: 1,
         children: [
-          { id: "agent-parked-a", owner: "job-parked-a", live: true },
-          { id: "agent-parked-b", owner: "job-parked-b", live: true },
+          { id: "agent-completed", owner: "job-completed", live: true },
+          { id: "agent-parked", owner: "job-parked", live: true },
+          { id: "agent-running", owner: "job-running", live: true },
         ],
       },
     },
@@ -904,6 +905,10 @@ test("first context after restart reconciles persisted parked children when the 
       message: { role: "toolResult", toolName: "todo", details: { phases } },
     },
   ];
+  const jobs: Jobs = {
+    running: [{ id: "job-running", agentId: "agent-running", type: "task", status: "running", label: "Running negative control", startTime: now }],
+    recent: [{ id: "job-completed", agentId: "agent-completed", type: "task", status: "completed", label: "Settled child", startTime: now - 1_000, endTime: now }],
+  };
   await todoDispatch({
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
       handlers.set(event, handler),
@@ -916,20 +921,19 @@ test("first context after restart reconciles persisted parked children when the 
       getHeader: () => ({ id: "root" }),
       getBranch: () => branch,
     },
-    getAsyncJobSnapshot: () => emptyJobs,
+    getAsyncJobSnapshot: () => jobs,
   } as unknown as ExtensionContext;
-  (await handlers.get("session_start")!({}, ctx));
+  await handlers.get("session_start")!({}, ctx);
   const result = (await handlers.get("context")!({ messages: [] }, ctx)) as
     | { messages: Array<{ content: string }> }
     | undefined;
   const prompt = result?.messages[0]?.content ?? "";
-  expect(prompt).toContain("job-parked-a");
-  expect(prompt).toContain("agent-parked-a");
-  expect(prompt).toContain("job-parked-b");
-  expect(prompt).toContain("agent-parked-b");
-  expect(prompt).toContain("parked/restored");
-  expect(prompt).toContain("exact resume");
-  expect(prompt).toContain("empty live snapshot is not nothing-to-reconcile");
+  expect(prompt).toContain("Parked/restored child roster (1;");
+  expect(prompt).toContain("agent-parked");
+  expect(prompt).not.toContain('- id="agent-completed"');
+  expect(prompt).not.toContain('- id="agent-running"');
+  expect(prompt).toContain("Running task jobs (1; session-owned):");
+  expect(prompt).toContain('"job-running" running agent="agent-running"');
 });
 test("first-context 13-row dispatch becomes observation-only when paused", async () => {
   const liveNow = Date.now();
@@ -988,7 +992,7 @@ test("first-context 13-row dispatch becomes observation-only when paused", async
   (await handlers.get("session_start")!({}, ctx));
   const pausedPrompt = (await request())?.messages[0]?.content ?? "";
   expect(pausedPrompt).toContain("Paused goal: observation only");
-  expect(pausedPrompt).toContain("exact Task/non-job worker roster");
+  expect(pausedPrompt).toContain("exact Task/parked-child roster");
   expect(pausedPrompt).toContain("#13 [pending] \"Overdue row 13\"");
   expect(pausedPrompt).not.toContain("immediately start distinct live workers");
   expect(pausedPrompt).not.toContain("fresh-dispatch");
