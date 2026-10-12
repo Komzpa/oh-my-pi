@@ -27,7 +27,7 @@ type DispatchForecastApi = Pick<
 type Jobs = Pick<AsyncJobSnapshot, "running" | "recent">;
 type PersistedChild = { id: string; owner: string | null; live: boolean };
 type SprintWorkerFinish = { jobId: string; id: string; at: number; row: string };
-type SprintState = {
+export type SprintState = {
   version: 1;
   seenRows: string[];
   lastPlanningSetKey: string | null;
