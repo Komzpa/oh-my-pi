@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Persist retry fallback triggers with their source model, error class, HTTP status and bounded message head, and expose first-turn model and fallback history on task results even when the triggering error is persisted after the switch.
+- Persist retry fallback triggers with their source model, error class, HTTP status and bounded message head, and expose first-turn model and fallback history on task results and running job snapshots even when the triggering error is persisted after the switch.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ## [18.4.12] - 2026-10-02
