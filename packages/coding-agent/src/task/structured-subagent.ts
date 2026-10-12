@@ -496,7 +496,6 @@ function buildExecutorOptions(
 		agent: policy.effectiveAgent,
 		task: renderSubagentPrompt(request.assignment),
 		assignment: request.assignment.trim(),
-		...(request.images?.length ? { images: request.images } : {}),
 		context: request.context?.trim() || undefined,
 		planReference: undefined,
 		// Task `name` is the spawn handle (id allocation). Eval `label` is a
@@ -546,6 +545,7 @@ function buildExecutorOptions(
 		enableMCP,
 		customTools: request.customTools,
 		workPoolYieldItems: request.workPoolYieldItems,
+		...(request.images?.length ? { images: request.images } : {}),
 		contextFiles: session.contextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md"),
 		skills,
 		autoloadSkills,
