@@ -3502,7 +3502,12 @@ export class SessionManager {
 	 * @param role Optional role (default: "default")
 	 * @param resolvedModelIsFallback Whether this transition selected a retry-fallback model
 	 */
-	appendModelChange(model: string, role?: string, resolvedModelIsFallback = false, fallback?: ModelChangeEntry["fallback"]): string {
+	appendModelChange(
+		model: string,
+		role?: string,
+		resolvedModelIsFallback = false,
+		fallback?: ModelChangeEntry["fallback"],
+	): string {
 		const entry: ModelChangeEntry = {
 			type: "model_change",
 			...this.#freshEntryFields(),

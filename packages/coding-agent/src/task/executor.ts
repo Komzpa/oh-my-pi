@@ -2172,9 +2172,16 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				progress.firstTurnModel ??= `${event.message.provider}/${event.message.model}`;
 			}
 			if (event.type === "retry_fallback_applied") {
-				const entry = session.sessionManager.getBranch().findLast(entry => entry.type === "model_change" && entry.resolvedModelIsFallback);
+				const entry = session.sessionManager
+					.getBranch()
+					.findLast(entry => entry.type === "model_change" && entry.resolvedModelIsFallback);
 				if (entry?.type === "model_change") {
-					(progress.fallbacks ??= []).push({ from: entry.fallback?.from ?? event.from, to: entry.model, at: entry.timestamp, reason: entry.fallback?.reason });
+					(progress.fallbacks ??= []).push({
+						from: entry.fallback?.from ?? event.from,
+						to: entry.model,
+						at: entry.timestamp,
+						reason: entry.fallback?.reason,
+					});
 				}
 			}
 			if (event.type === "auto_retry_start") {

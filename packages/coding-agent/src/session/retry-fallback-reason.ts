@@ -30,7 +30,12 @@ export function providerFallbackReason(message: AssistantMessage): TaskFallbackR
 	const id = AIError.classifyMessage(message);
 	const status = message.errorStatus ?? (Number(/^\s*(\d{3})\b/.exec(message.errorMessage ?? "")?.[1]) || undefined);
 	return {
-		class: AIError.is(id, AIError.Flag.UsageLimit) || status === 429 ? "quota" : AIError.is(id, AIError.Flag.AuthFailed) ? "auth" : "other",
+		class:
+			AIError.is(id, AIError.Flag.UsageLimit) || status === 429
+				? "quota"
+				: AIError.is(id, AIError.Flag.AuthFailed)
+					? "auth"
+					: "other",
 		...(status !== undefined ? { status } : {}),
 		message: (message.errorMessage ?? "provider returned an error without details").split("\n", 1)[0]!.slice(0, 400),
 		source: "provider-error",

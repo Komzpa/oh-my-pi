@@ -2106,7 +2106,13 @@ export class TurnRecovery {
 		role: string,
 		selector: RetryFallbackSelector,
 		currentSelector: string,
-		options?: { pinFallback?: boolean; apiKey?: string; signal?: AbortSignal; reason?: string; providerError?: AssistantMessage },
+		options?: {
+			pinFallback?: boolean;
+			apiKey?: string;
+			signal?: AbortSignal;
+			reason?: string;
+			providerError?: AssistantMessage;
+		},
 	): Promise<boolean> {
 		const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 		const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
@@ -2164,9 +2170,15 @@ export class TurnRecovery {
 		}
 		this.#host.sessionManager.appendModelChange(candidateSelector, EPHEMERAL_MODEL_CHANGE_ROLE, true, {
 			from: currentSelector,
-			reason: options?.providerError ? providerFallbackReason(options.providerError) : options?.reason ? {
-				class: "quota", message: options.reason.slice(0, 400), source: "usage-preflight",
-			} : undefined,
+			reason: options?.providerError
+				? providerFallbackReason(options.providerError)
+				: options?.reason
+					? {
+							class: "quota",
+							message: options.reason.slice(0, 400),
+							source: "usage-preflight",
+						}
+					: undefined,
 		});
 		this.#host.settings.getStorage()?.recordModelUsage(candidateSelector);
 		this.#host.setThinkingLevel(nextThinkingLevel);
@@ -2416,7 +2428,10 @@ export class TurnRecovery {
 		// chain: the base model must not be reported as the configured primary.
 		this.#markFallbackRouted();
 		await this.#host.setModelWithProviderSessionReset(baseModel);
-		this.#host.sessionManager.appendModelChange(baseSelector, EPHEMERAL_MODEL_CHANGE_ROLE, true, { from: currentSelector, reason: providerFallbackReason(failedMessage) });
+		this.#host.sessionManager.appendModelChange(baseSelector, EPHEMERAL_MODEL_CHANGE_ROLE, true, {
+			from: currentSelector,
+			reason: providerFallbackReason(failedMessage),
+		});
 		this.#host.settings.getStorage()?.recordModelUsage(baseSelector);
 		await this.#host.syncAfterModelChange(previousEditMode);
 		await this.#host.emitSessionEvent({

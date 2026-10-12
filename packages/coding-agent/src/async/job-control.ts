@@ -204,7 +204,8 @@ export function snapshotJobs(
 					resolvedThinkingLevel = parseConfiguredThinkingLevel(thinkingValue);
 				}
 				if (typeof progressRecord?.firstTurnModel === "string") firstTurnModel = progressRecord.firstTurnModel;
-				if (Array.isArray(progressRecord?.fallbacks)) fallbacks = progressRecord.fallbacks as JobSnapshot["fallbacks"];
+				if (Array.isArray(progressRecord?.fallbacks))
+					fallbacks = progressRecord.fallbacks as JobSnapshot["fallbacks"];
 				advisor = progressRecord?.advisor === true;
 				const completionValue = progressRecord?.completionPercent;
 				if (typeof completionValue === "number" && Number.isFinite(completionValue)) {
