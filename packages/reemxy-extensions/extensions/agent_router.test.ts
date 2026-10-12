@@ -1,5 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -20,11 +20,32 @@ import agentRouter, {
 	countLiveWorkerModels,
 	createRouterState,
 	modelEffortOf,
+	readModelBlacklist,
 	recordRetryFallbackApplied,
 	recordTaskOutcome,
 	routeSubagentSpawn,
 } from "./agent_router";
 import { resolveRouterChosenEffort } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
+
+// Isolation: router tests must never read the host
+// ~/.omp/agent/model-blacklist.json. Point the router at a temp empty file
+// for the whole file run; dynamic reads (routeSubagentSpawn,
+// readModelBlacklist) see it, and the MODEL_BLACKLIST uses below are
+// replaced with readModelBlacklist() so they see the same fixture.
+let routerBlacklistDir = "";
+let prevRouterBlacklist: string | undefined;
+beforeAll(() => {
+	routerBlacklistDir = mkdtempSync(join(tmpdir(), "router-blacklist-"));
+	const file = join(routerBlacklistDir, "blacklist.json");
+	writeFileSync(file, "[]");
+	prevRouterBlacklist = process.env.OMP_AGENT_ROUTER_BLACKLIST;
+	process.env.OMP_AGENT_ROUTER_BLACKLIST = file;
+});
+afterAll(() => {
+	if (prevRouterBlacklist === undefined) delete process.env.OMP_AGENT_ROUTER_BLACKLIST;
+	else process.env.OMP_AGENT_ROUTER_BLACKLIST = prevRouterBlacklist;
+	if (routerBlacklistDir) rmSync(routerBlacklistDir, { recursive: true, force: true });
+});
 
 const AGENT_POOLS = getAgentPools();
 
@@ -521,7 +542,7 @@ describe("agent router", () => {
 			models: {
 				list: () => availableModels,
 				resolve: (spec: string) =>
-					MODEL_BLACKLIST.includes(spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") as never)
+					readModelBlacklist().includes(spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") as never)
 						? blacklistedModel
 						: baseContext.models.resolve(spec),
 			} as ExtensionContext["models"],
@@ -536,7 +557,7 @@ describe("agent router", () => {
 			expect(result?.model[0]).toBe("openrouter/dots-studio/dots-3-note-preview:free");
 			expect(
 				result?.model.some(spec =>
-					MODEL_BLACKLIST.some(
+					readModelBlacklist().some(
 						blacklisted => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === blacklisted,
 					),
 				),

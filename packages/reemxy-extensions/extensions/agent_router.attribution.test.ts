@@ -1,9 +1,25 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { createRouterState, recordTaskOutcome } from "./agent_router";
+
+// Isolation: never read the host ~/.omp/agent/model-blacklist.json.
+let routerBlacklistDir = "";
+let prevRouterBlacklist: string | undefined;
+beforeAll(() => {
+	routerBlacklistDir = fs.mkdtempSync(path.join(os.tmpdir(), "router-blacklist-"));
+	const file = path.join(routerBlacklistDir, "blacklist.json");
+	fs.writeFileSync(file, "[]");
+	prevRouterBlacklist = process.env.OMP_AGENT_ROUTER_BLACKLIST;
+	process.env.OMP_AGENT_ROUTER_BLACKLIST = file;
+});
+afterAll(() => {
+	if (prevRouterBlacklist === undefined) delete process.env.OMP_AGENT_ROUTER_BLACKLIST;
+	else process.env.OMP_AGENT_ROUTER_BLACKLIST = prevRouterBlacklist;
+	if (routerBlacklistDir) fs.rmSync(routerBlacklistDir, { recursive: true, force: true });
+});
 
 const dirs: string[] = [];
 afterEach(() => {
