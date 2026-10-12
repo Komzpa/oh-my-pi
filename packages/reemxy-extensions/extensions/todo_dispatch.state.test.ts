@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { boundedNotices, MAX_NOTICE_KEYS, noticeDigest, noticeKey, pruneSprintState, readPersistedSprintState, SPRINT_STATE_ENTRY_TYPE } from "./todo_dispatch";
+import { boundedNotices, MAX_NOTICE_KEYS, noticeDigest, noticeKey, pruneSprintState, readPersistedSprintState, SPRINT_STATE_ENTRY_TYPE, type SprintState } from "./todo_dispatch";
 
 const planCheck = (i: number) => `PLAN CHECK: 3 problem(s). (1) row ${i} ${"suspect risk ".repeat(300)}`;
 
@@ -91,7 +91,7 @@ describe("sprint state prune keeps sessions bounded", () => {
 
 	test("a burst of state changes in one turn appends exactly one entry", async () => {
 		const live = new Set(["live-row"]);
-		let state = {
+		let state: SprintState = {
 			version: 1 as const,
 			seenRows: ["live-row"],
 			lastPlanningSetKey: null,
