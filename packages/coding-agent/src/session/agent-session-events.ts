@@ -61,7 +61,14 @@ export type AgentSessionEvent =
 	  }
 	| ({ type: "cache_warming_start" } & CacheWarmingRefreshStart)
 	| ({ type: "cache_warming_end" } & CacheWarmingRefreshEnd)
-	| { type: "retry_fallback_applied"; from: string; to: string; role: string; reason?: string }
+	| {
+			type: "retry_fallback_applied";
+			source?: "primary" | "advisor";
+			from: string;
+			to: string;
+			role: string;
+			reason?: string;
+	  }
 	| { type: "retry_fallback_succeeded"; model: string; role: string }
 	| { type: "model_changed" }
 	| { type: "config_warnings_changed" }

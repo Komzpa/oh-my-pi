@@ -26,8 +26,10 @@ import {
 import type { StructuredSubagentOutput } from "./task";
 import { describeJobTiles, type JobTile, type JobWidgetView, renderJobTileLines } from "./job-widget";
 import type { RenderResultOptions, ToolRenderer, ToolActivitySummary } from "./renderer";
+
 import type { IrcDeliveryReceipt, IrcMessage } from "./irc";
 import type { TspSpan } from "@oh-my-pi/pi-wire";
+import type { TaskModelFallback } from "./task";
 import { card as cardNode, compact, elapsed, keyed, md, node, row, span, text } from "../native/describe";
 import type { NativeNode } from "../native/node";
 import { OwnerMemo } from "../native/memo";
@@ -56,6 +58,8 @@ export interface JobSnapshot {
 	exitCode?: number;
 	/** Effective task model selector, including an explicit reasoning suffix when configured. */
 	resolvedModel?: string;
+	firstTurnModel?: string;
+	fallbacks?: TaskModelFallback[];
 	/** Provider/id including routing, with no added thinking suffix. */
 	resolvedModelIdentity?: string;
 	/** Explicit thinking metadata, independent of the model identity. */

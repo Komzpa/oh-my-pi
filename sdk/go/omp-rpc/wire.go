@@ -4043,10 +4043,11 @@ func (v CacheWarmingEndEvent) MarshalJSON() ([]byte, error) {
 }
 
 type RetryFallbackAppliedEvent struct {
-	From   string  `json:"from"`
-	To     string  `json:"to"`
-	Role   string  `json:"role"`
-	Reason *string `json:"reason,omitempty"`
+	From   string                           `json:"from"`
+	To     string                           `json:"to"`
+	Role   string                           `json:"role"`
+	Source *RetryFallbackAppliedEventSource `json:"source,omitempty"`
+	Reason *string                          `json:"reason,omitempty"`
 }
 
 func (v *RetryFallbackAppliedEvent) UnmarshalJSON(data []byte) error {
@@ -4060,6 +4061,7 @@ func (v *RetryFallbackAppliedEvent) decodeFrom(raw map[string]json.RawMessage) e
 	d.required("from", &out.From)
 	d.required("to", &out.To)
 	d.required("role", &out.Role)
+	d.optional("source", &out.Source)
 	d.optional("reason", &out.Reason)
 	if d.err != nil {
 		return d.err
@@ -4071,6 +4073,26 @@ func (v *RetryFallbackAppliedEvent) decodeFrom(raw map[string]json.RawMessage) e
 func (v RetryFallbackAppliedEvent) MarshalJSON() ([]byte, error) {
 	type plain RetryFallbackAppliedEvent
 	return encodeObject(plain(v), `"type":"retry_fallback_applied"`, nil)
+}
+
+type RetryFallbackAppliedEventSource string
+
+const (
+	RetryFallbackAppliedEventSourcePrimary RetryFallbackAppliedEventSource = "primary"
+	RetryFallbackAppliedEventSourceAdvisor RetryFallbackAppliedEventSource = "advisor"
+)
+
+func (v *RetryFallbackAppliedEventSource) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "RetryFallbackAppliedEventSource")
+	if err != nil {
+		return err
+	}
+	switch value := RetryFallbackAppliedEventSource(s); value {
+	case RetryFallbackAppliedEventSourcePrimary, RetryFallbackAppliedEventSourceAdvisor:
+		*v = value
+		return nil
+	}
+	return unknownValue("RetryFallbackAppliedEventSource", s)
 }
 
 type RetryFallbackSucceededEvent struct {

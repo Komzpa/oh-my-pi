@@ -3784,6 +3784,8 @@ pub struct RetryFallbackAppliedEvent {
 	pub to: String,
 	pub role: String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub source: Option<RetryFallbackAppliedEventSource>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub reason: Option<String>,
 }
 
@@ -5732,6 +5734,24 @@ impl LogoutAccountType {
 		match self {
 			Self::ApiKey => "api_key",
 			Self::Oauth => "oauth",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RetryFallbackAppliedEventSource {
+	#[serde(rename = "primary")]
+	Primary,
+	#[serde(rename = "advisor")]
+	Advisor,
+}
+
+impl RetryFallbackAppliedEventSource {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Primary => "primary",
+			Self::Advisor => "advisor",
 		}
 	}
 }

@@ -3943,6 +3943,13 @@
 				"role": {
 					"type": "string"
 				},
+				"source": {
+					"enum": [
+						"primary",
+						"advisor"
+					],
+					"type": "string"
+				},
 				"reason": {
 					"type": "string"
 				}

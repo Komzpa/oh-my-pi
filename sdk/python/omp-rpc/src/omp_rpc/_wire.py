@@ -1109,6 +1109,7 @@ class RetryFallbackAppliedEvent:
     from_model: str
     to_model: str
     role: str
+    source: Literal["primary", "advisor"] | None = None
     reason: str | None = None
 
 
@@ -2447,6 +2448,7 @@ def parse_retry_fallback_applied_event(value: object, path: str = "RetryFallback
         from_model=required(payload, "from", decode_str, path),
         to_model=required(payload, "to", decode_str, path),
         role=required(payload, "role", decode_str, path),
+        source=optional(payload, "source", cast('Decoder[Literal["primary", "advisor"]]', literal(frozenset({"primary", "advisor"}))), path),
         reason=optional(payload, "reason", decode_str, path),
     )
 

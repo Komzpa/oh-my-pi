@@ -125,6 +125,7 @@ export const eventDefs = {
 	),
 	RetryFallbackAppliedEvent: {
 		type: "'retry_fallback_applied'",
+		"source?": "'primary' | 'advisor'",
 		from: "string",
 		to: "string",
 		role: "string",
