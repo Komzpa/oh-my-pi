@@ -32,6 +32,11 @@ Return decisions. Each decision is one concrete keep or ban rule with:
   - `project` -> send to `scribe` for the repository's agent rules file.
   - `harness` -> write one `report_issue` for that harness defect.
   - `plan` -> apply as one todo batch.
+  - `mechanism` -> a code row against the owning script or module (example:
+    `src/scripts/update_source_omp.py` in tasks-loop) carrying the failing
+    receipt path and a test that reproduces it. A defect that blocked a deploy
+    or recurred MUST take this scope; a prose rule alone is not an acceptable
+    outcome for it.
 - Conflicts: name answers that disagree and the evidence that resolves, narrows,
   or blocks the rule.
 

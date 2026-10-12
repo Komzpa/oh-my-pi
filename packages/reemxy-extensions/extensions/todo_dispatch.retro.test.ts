@@ -324,6 +324,64 @@ test("a single quota failure opens no retro but the same failure twice does", as
   } finally { setSystemTime(); }
 });
 
+test("a completed install job whose result carries a non-zero exit opens an updater rejection", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture(
+      [{ name: "Work", tasks: [row("Ship feature")] }],
+      [{ id: "install-1", type: "task", status: "completed", label: "InstallWave4b-2", startTime: liveNow - 3000, agentId: "worker-b", result: { install_exit: 1 } }],
+      liveNow + 24 * 60 * 60_000,
+    );
+    expect(await f.check()).toContain("retrospective due (updater rejection)");
+  } finally { setSystemTime(); }
+});
+
+test("a completed install job whose result exits zero opens no retro", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture(
+      [{ name: "Work", tasks: [row("Ship feature")] }],
+      [{ id: "install-1", type: "task", status: "completed", label: "InstallWave4b-2", startTime: liveNow - 3000, agentId: "worker-b", result: { install_exit: 0 } }],
+      liveNow + 24 * 60 * 60_000,
+    );
+    expect(await f.check()).not.toContain("retrospective due");
+  } finally { setSystemTime(); }
+});
+
+test("a lead re-dispatch chain Foo to Foo-3 on one row opens repeated failure", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const reworked = {
+      ...row("Ship feature", "in_progress"),
+      schedule: {
+        dependencies: [],
+        estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180, confidence: "medium", basis: "retro fixture", updatedAt: liveNow },
+        owner: "Foo-3",
+        attemptHistory: [{ workerName: "Foo" }, { workerName: "Foo-2" }],
+      },
+    };
+    const f = await fixture([{ name: "Work", tasks: [reworked] }], [], liveNow + 24 * 60 * 60_000);
+    expect(await f.check()).toContain("retrospective due (repeated failure)");
+  } finally { setSystemTime(); }
+});
+
+test("a single attempt on one row opens no repeated failure", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const single = {
+      ...row("Ship feature", "in_progress"),
+      schedule: {
+        dependencies: [],
+        estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180, confidence: "medium", basis: "retro fixture", updatedAt: liveNow },
+        owner: "Foo",
+        attemptHistory: [],
+      },
+    };
+    const f = await fixture([{ name: "Work", tasks: [single] }], [], liveNow + 24 * 60 * 60_000);
+    expect(await f.check()).not.toContain("retrospective due");
+  } finally { setSystemTime(); }
+});
+
 test("a single reopened row opens a retro", async () => {
   setSystemTime(new Date(liveNow));
   try {

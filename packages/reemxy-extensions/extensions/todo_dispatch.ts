@@ -791,6 +791,28 @@ function sprintSetKey(rows: string[]): string {
 // A failed deploy/install job is how an updater or deploy rejection surfaces in the job
 // snapshot; quota failures on other labels do not match.
 const UPDATER_JOB_LABEL = /updat|deploy|install|publish|rollback|release|cutover/i;
+// A completed install/updater job can still carry a rejection in its structured result: a
+// non-zero install/updater/deploy exit or non-empty blocked/remaining gaps. The result records
+// the same fact the receipt does, so derive the incident from it here, once.
+function structuredInstallRejection(job: unknown): boolean {
+  if (typeof job !== "object" || job === null) return false;
+  const result = "result" in job ? job.result : "data" in job ? job.data : undefined;
+  if (typeof result !== "object" || result === null) return false;
+  // Unchecked cast to a named const: job results are untyped at this extension boundary.
+  const record = result as Record<string, unknown>;
+  for (const key of ["install_exit", "updater_exit", "deploy_exit", "exit_code"]) {
+    const value = record[key];
+    if (typeof value === "number" && value !== 0) return true;
+    if (typeof value === "string" && value.trim() !== "" && value.trim() !== "0") return true;
+  }
+  for (const key of ["blocked", "remaining", "gaps"]) {
+    const value = record[key];
+    if (Array.isArray(value) && value.length > 0) return true;
+    if (typeof value === "string" && value.trim() !== "") return true;
+    if (typeof value === "object" && value !== null && Object.keys(value).length > 0) return true;
+  }
+  return false;
+}
 function pessimisticSecondsOf(tasks: TaskRow[], content: string): number | undefined {
   const match = tasks.find((task) => task.content === content);
   const schedule = match?.schedule;
@@ -1732,12 +1754,33 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // retro. Only evidence this window has not seen yet can open one, so a retro that
     // observed an incident does not re-fire on the same jobs.
     const recentTaskJobs = (jobs?.recent ?? []).filter((job) => job.type === "task");
+    // A job can end `completed` while its structured result carries a non-zero install/updater/
+    // deploy exit or non-empty blocked/remaining gaps: that is an updater rejection too.
     const updaterRejection = recentTaskJobs.find((job) =>
-      job.status === "failed" &&
+      ["completed", "failed"].includes(job.status) &&
       !seenJobIdsBefore.has(job.id) &&
-      UPDATER_JOB_LABEL.test(typeof job.label === "string" ? job.label : ""),
+      UPDATER_JOB_LABEL.test(typeof job.label === "string" ? job.label : "") &&
+      (job.status === "failed" || structuredInstallRejection(job)),
     );
     if (updaterRejection) setRetroDue("updater rejection");
+    // A lead re-dispatch of one row, read from the row's own attempt data: owners
+    // Foo -> Foo-2 -> Foo-3 accumulated on one row, or the row sent out again after an
+    // attempt already completed. Parallel workers on one row are not a re-dispatch.
+    const redispatchedRow = tasks.some((task) => {
+      const schedule = task.schedule && typeof task.schedule === "object" ? task.schedule : undefined;
+      const attempts = Array.isArray(schedule?.attemptHistory) ? schedule.attemptHistory : [];
+      const names = [
+        typeof schedule?.owner === "string" ? schedule.owner : "",
+        ...attempts.map((attempt) => typeof attempt?.workerName === "string" ? attempt.workerName : ""),
+      ].filter((name) => name !== "");
+      const distinct = new Set(names);
+      const suffixChain = distinct.size >= 2 && new Set([...distinct].map((name) => name.replace(/-\d+$/, ""))).size === 1;
+      const completedIdx = attempts.findIndex((attempt) => attempt?.terminalStatus === "completed");
+      const afterCompleted = completedIdx >= 0 && (
+        attempts.length > completedIdx + 1 || (typeof schedule?.owner === "string" && schedule.owner !== "")
+      );
+      return suffixChain || afterCompleted;
+    });
     const failuresByLabel = new Map<string, { total: number; fresh: number }>();
     for (const job of recentTaskJobs) {
       if (job.status !== "failed") continue;
@@ -1749,7 +1792,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     const repeatedFailure = [...failuresByLabel.values()].some(
       (entry) => entry.total >= 2 && entry.fresh >= 1,
-    );
+    ) || redispatchedRow;
     if (repeatedFailure) setRetroDue("repeated failure");
     const missedEta = (jobs?.running ?? []).some((job) => {
       if (job.type !== "task" || job.status !== "running") return false;
