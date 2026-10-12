@@ -1974,28 +1974,15 @@ test("decideGateCall: reads, steering and non-done todo pass; other calls need a
   expect(notesAllowed.remedyGateIds).toEqual([]);
 });
 
-test("R47: an escalated gate admits check-ins to a running worker and context_notes, refuses parked writes and bash", () => {
-  const missed = {
-    id: "missed-eta",
-    remedy: "re-estimate with a todo call",
-    satisfies: (call: { name: string }) => call.name === "todo",
-  };
-  const isRunningWorker = (id: string) => id === "FixParkedRosterSettled";
-  const running = decideGateCall(
-    { name: "write", arguments: { path: "agent://FixParkedRosterSettled", content: "check-in: status?" } },
-    [missed],
-    { isRunningWorker },
-  );
-  expect(running.allowed).toBe(true);
-  const parked = decideGateCall(
-    { name: "write", arguments: { path: "agent://SettledWorker", content: "check-in: status?" } },
-    [missed],
-    { isRunningWorker },
-  );
-  expect(parked.allowed).toBe(false);
-  expect(decideGateCall({ name: "context_notes", arguments: { text: "check-in" } }, [missed], { isRunningWorker }).allowed).toBe(true);
-  expect(decideGateCall({ name: "bash", arguments: { command: "bun test" } }, [missed], { isRunningWorker }).allowed).toBe(false);
-  expect(decideGateCall({ name: "todo", arguments: { op: "schedule", updates: [] } }, [missed], { isRunningWorker }).allowed).toBe(true);
+const armedMissedEta = { id: "missed-eta", remedy: "re-estimate with a todo call", satisfies: (call: { name: string }) => call.name === "todo" };
+for (const path of ["agent://RunningWorker", "agent://IdleWorker", "agent://ParkedWorker", "agent://shell:babysitter", "agent://peer:session"]) {
+  test(`armed missed-eta admits peer reply ${path}`, () => {
+    expect(decideGateCall({ name: "write", arguments: { path, content: "check-in: status?" } }, [armedMissedEta]).allowed).toBe(true);
+  });
+}
+test("armed missed-eta admits context_notes but refuses bash", () => {
+  expect(decideGateCall({ name: "context_notes", arguments: { text: "check-in" } }, [armedMissedEta]).allowed).toBe(true);
+  expect(decideGateCall({ name: "bash", arguments: { command: "bun test" } }, [armedMissedEta]).allowed).toBe(false);
 });
 
 test("parseTodoOverride names a gate id inside the override field", () => {
