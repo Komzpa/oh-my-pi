@@ -222,11 +222,43 @@ test("chief bash allows read-only loops and recursively checks substitutions", a
   }
 });
 
+test("chief bash admits live read-only compound commands", async () => {
+  const cwd = repo("clean");
+  const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
+  try {
+    const allowed = [
+      "cd /path && git log --oneline -3; git status",
+      "free -g; uptime; pgrep -c chrome",
+      "git -C X log -1; git -C X branch -a --contains $(git -C X log -1 --format=%H -- f) | grep -v union | head",
+      "ps aux; df -h; du -sh .; cat f | head | tail | wc -l; ls; stat f; readlink f",
+      "systemctl status x; systemctl is-active x; journalctl -u x | rg error; ss -ltn; find . -name f",
+      "git cat-file -p HEAD; git ls-tree HEAD; git diff; git show; git rev-parse HEAD; git ls-remote fork",
+    ];
+    const results = [];
+    for (const command of allowed) {
+      results.push({ command, executed: (await outcome(state, cwd, { name: "bash", arguments: { command } })).executed });
+    }
+    expect(results).toEqual(allowed.map((command) => ({ command, executed: true })));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("chief bash blocks mutations inside structure and malformed shell", async () => {
   const cwd = repo("clean");
   const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
   try {
     const blocked = [
+      'cd x && make',
+      'bun test',
+      'bun check',
+      'cargo build',
+      'npm install',
+      'git push fork x',
+      'git commit -m x',
+      'curl -X POST http://x',
+      'ls > out.txt',
+      'rm -rf tmp',
       'for d in a b; do git commit -m x; done',
       'for d in a b; do rm "$d"; done',
       'echo "$(rm -rf x)"',
@@ -2155,7 +2187,7 @@ async function slipCall(tasks: unknown[], jobs: Jobs, call: Call) {
   }
 }
 
-test("empty dispatchableReady refusal keeps external owner guidance without an empty task list", async () => {
+test("empty dispatchableReady does not refuse work that cannot be delegated", async () => {
   const now = Date.now();
   const tasks = Array.from({ length: 4 }, (_, i) => ({
     ...slipRow(`Parked row ${i}`, "", 0, now),
@@ -2165,9 +2197,7 @@ test("empty dispatchableReady refusal keeps external owner guidance without an e
   const forecast = forecastTodoPlan([{ name: "Work", tasks }], { now });
   expect(forecast.rows.filter((row) => row.ready)).toHaveLength(0);
   const refusal = await slipCall(tasks, { running: [], recent: [], nonJobAgents: [] }, CALLS.bashTest);
-  expect(refusal?.block).toBe(true);
-  expect(refusal?.reason).not.toContain("for: .");
-  expect(refusal?.reason).toContain("set its owner to unit:<name> or job:<pid>");
+  expect(refusal?.block).not.toBe(true);
 });
 
 test("R1 (case A): a same-owner reestimate on a slipping running row is refused with one exact action", async () => {
