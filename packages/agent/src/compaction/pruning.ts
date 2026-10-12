@@ -6,6 +6,7 @@ import type { ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type { Tokenizer } from "../tokenizer";
 import type { AgentMessage, AgentToolCall } from "../types";
 import type { SessionEntry, SessionMessageEntry, ToolResultPruneEntry, ToolResultPruneTarget } from "./entries";
+
 import { type ConvertToLlm, defaultConvertToLlm, getMessageFromEntry } from "./messages";
 import {
 	collectToolCallsById,
@@ -89,7 +90,6 @@ export function projectToolResultPrune(entry: SessionMessageEntry, overlay: Tool
 	}
 	return projected;
 }
-
 export interface PruneConfig extends CacheLookbackConfig {
 	/** Final selected entries, populated only for a successful prune pass. */
 	selectedEntries?: SessionMessageEntry[];

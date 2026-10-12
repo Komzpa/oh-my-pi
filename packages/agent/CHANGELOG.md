@@ -190,6 +190,9 @@
 - Fixed completed tool calls being retried after a transient provider-stream read error; incomplete calls from the affected turn are now discarded.
 - Fixed previously read code being removed from context when a subsequent read returned a summary, truncated content, or an error.
 - Fixed intent tracing for tools that define i as a real argument, preserving the argument and its declared schema order.
+### Changed
+
+- Tool-result pruning now returns pure decisions with stable branch-local projections instead of mutating historical messages.
 
 ## [18.4.11] - 2026-10-02
 

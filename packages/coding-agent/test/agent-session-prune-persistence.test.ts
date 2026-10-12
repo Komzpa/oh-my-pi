@@ -340,7 +340,6 @@ describe("AgentSession per-turn prune persistence", () => {
 		expect(removed).toBe(1);
 		expect(JSON.stringify(sessionManager.getEntry(imageResultId))).not.toContain("image/png");
 	});
-
 	it("settles the run and keeps the appended prune when its flush fails", async () => {
 		const flush = vi.spyOn(sessionManager, "flush").mockRejectedValueOnce(new Error("injected flush failure"));
 		const runStates: string[] = [];
