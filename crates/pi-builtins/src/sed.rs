@@ -5392,7 +5392,6 @@ pub enum LineReader<'a> {
 }
 
 /// Return a LineReader that uses the ReadInput method fot the specified file.
-#[cfg(any(not(unix), test))]
 fn line_reader_read_input(file: impl Read + 'static) -> io::Result<LineReader<'static>> {
 	let boxed: Box<dyn Read> = Box::new(file);
 	let reader = BufReader::new(boxed);
@@ -5425,10 +5424,17 @@ impl<'a> LineReader<'a> {
 		// against the shell working directory.
 		let file = host.fs().open(host.resolve(path))?;
 
-		// Regular host files are read whole, never memory-mapped: sed runs in
-		// the host process, where truncating a mapped file under it raises
-		// SIGBUS and kills the host. Provider files and non-regular host files
-		// (pipes, process substitution) stream.
+	// Non-regular inputs (FIFOs, devices, sockets) must stream: reading them to
+	// EOF up front would block `sed -n '1p;1q' fifo` while the writer stays open.
+	#[cfg(unix)]
+	if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+		return line_reader_read_input(file);
+	}
+
+	// Regular host files are read whole, never memory-mapped: sed runs in
+	// the host process, where truncating a mapped file under it raises
+	// SIGBUS and kills the host. Provider files and non-regular host files
+	// (pipes, process substitution) stream.
 		#[cfg(unix)]
 		if file.native().is_some() && file.metadata().is_ok_and(|meta| meta.is_file()) {
 			return line_reader_slice_input(file);
@@ -6257,6 +6263,31 @@ mod tests {
 		fs::write(&release, b"go").unwrap();
 		let status = child.wait().unwrap();
 		assert!(status.success(), "child terminated by input truncation: {status}");
+	}
+
+	#[test]
+	#[cfg(unix)]
+	fn sed_fifo_input_streams_without_waiting_for_eof() {
+		use std::{io::Write, sync::mpsc, thread, time::Duration};
+
+		let dir = tempfile::tempdir().unwrap();
+		let fifo = dir.path().join("fifo");
+		nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+		// Read+write keeps a writer open for the whole test, so EOF never arrives.
+		let mut writer = fs::OpenOptions::new().read(true).write(true).open(&fifo).unwrap();
+		writer.write_all(b"one\n").unwrap();
+		let (tx, rx) = mpsc::channel();
+		let path = fifo.clone();
+		thread::spawn(move || {
+			let mut reader = LineReader::open(&path).expect("open fifo");
+			let line = reader.get_line().expect("read fifo").map(|chunk| chunk.as_bytes().to_vec());
+			let _ = tx.send(line);
+		});
+		let line = rx
+			.recv_timeout(Duration::from_secs(10))
+			.expect("fifo input must be streamed, not read to EOF");
+		assert_eq!(line.as_deref(), Some(&b"one"[..]));
+		drop(writer);
 	}
 
 	// is_newline_terminated, is_empty
