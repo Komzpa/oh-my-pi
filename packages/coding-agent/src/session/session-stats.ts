@@ -170,7 +170,7 @@ export class SessionStatsTracker {
 				}
 			}
 		}
-		for (const entry of activeModelUsageEntries(this.#host.sessionManager.getBranch())) addUsage(entry.usage);
+		for (const entry of activeModelUsageEntries(this.#host.sessionManager.getContextBranch())) addUsage(entry.usage);
 		return {
 			sessionFile: this.#host.sessionManager.getSessionFile(),
 			sessionId: this.#host.sessionId(),
@@ -223,7 +223,7 @@ export class SessionStatsTracker {
 			this.#tokenizer,
 			this.#host.session.settings?.revision,
 		);
-		const branchEntries = this.#host.sessionManager.getBranch();
+		const branchEntries = this.#host.sessionManager.getContextBranch();
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
 		let usedTokens = 0;
@@ -358,7 +358,7 @@ export class SessionStatsTracker {
 	recordAnchoredHistoryRewrite(tokensRemoved: number): void {
 		if (!Number.isFinite(tokensRemoved) || tokensRemoved <= 0) return;
 
-		const branchEntries = this.#host.sessionManager.getBranch();
+		const branchEntries = this.#host.sessionManager.getContextBranch();
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
 		for (let index = branchEntries.length - 1; index > compactionIndex; index--) {

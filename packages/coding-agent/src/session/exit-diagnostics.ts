@@ -103,39 +103,31 @@ function readSessionExit(entry: SessionEntry): SessionExitData | undefined {
  * the latest persisted process exit follows a non-terminal conversation tail.
  */
 export function createInterruptedTurnAbortMessage(
-	entries: readonly SessionEntry[],
+	entries: Iterable<SessionEntry>,
 	fallbackModel?: AssistantModelMetadata,
 ): AssistantMessage | undefined {
 	let exitIndex = -1;
 	let exit: SessionExitData | undefined;
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const candidate = readSessionExit(entries[index]!);
-		if (!candidate) continue;
-		exitIndex = index;
-		exit = candidate;
-		break;
-	}
-	if (!exit || (exit.kind === "normal" && !exit.pendingToolCalls?.length)) return undefined;
-
 	let tailIndex = -1;
 	let tail: AgentMessage | undefined;
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const entry = entries[index]!;
-		if (entry.type !== "message") continue;
-		tailIndex = index;
-		tail = entry.message;
-		break;
+	let previousAssistant: AssistantMessage | undefined;
+	let index = 0;
+	for (const entry of entries) {
+		const candidate = readSessionExit(entry);
+		if (candidate) {
+			exitIndex = index;
+			exit = candidate;
+		}
+		if (entry.type === "message") {
+			tailIndex = index;
+			tail = entry.message;
+			if (entry.message.role === "assistant") previousAssistant = entry.message;
+		}
+		index++;
 	}
+	if (!exit || (exit.kind === "normal" && !exit.pendingToolCalls?.length)) return undefined;
 	if (!tail || tailIndex > exitIndex) return undefined;
 	if (tail.role === "assistant" && !tail.content.some(isToolCallContent)) return undefined;
-
-	let previousAssistant: AssistantMessage | undefined;
-	for (let index = tailIndex; index >= 0; index--) {
-		const entry = entries[index]!;
-		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-		previousAssistant = entry.message;
-		break;
-	}
 	if (
 		tail.role === "toolResult" &&
 		(previousAssistant?.stopReason === "error" || previousAssistant?.stopReason === "aborted")
@@ -167,20 +159,22 @@ export function createInterruptedTurnAbortMessage(
 }
 
 /** Pairs the last interrupted assistant turn's unresolved calls before resume builds model context. */
-export function createInterruptedToolResults(entries: readonly SessionEntry[]): ToolResultMessage[] {
+export function createInterruptedToolResults(entries: Iterable<SessionEntry>): ToolResultMessage[] {
 	let tail: AgentMessage | undefined;
 	let assistant: AssistantMessage | undefined;
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const entry = entries[index];
-		if (entry?.type !== "message") continue;
-		tail ??= entry.message;
-		if (entry.message.role === "assistant") {
-			assistant = entry.message;
-			break;
+	const pending = new Map<string, PendingToolCallRecord>();
+	for (const entry of entries) {
+		if (entry.type === "message") {
+			tail = entry.message;
+			if (entry.message.role === "assistant") assistant = entry.message;
+			applyMessageEntry(pending, entry.message);
+		} else {
+			const marker = readToolExecutionStart(entry);
+			if (marker) applyToolExecutionStart(pending, marker);
 		}
 	}
 	if (!assistant || (tail?.role !== "assistant" && tail?.role !== "toolResult")) return [];
-	const pendingIds = new Set(collectPendingToolCalls(entries).map(call => call.toolCallId));
+	const pendingIds = new Set([...pending.values()].map(call => call.toolCallId));
 	const results: ToolResultMessage[] = [];
 	for (const call of assistant.content) {
 		if (call.type !== "toolCall" || !pendingIds.has(call.id)) continue;
@@ -304,7 +298,7 @@ function applyMessageEntry(pending: Map<string, PendingToolCallRecord>, message:
 }
 
 /** Finds tool calls left pending at the end of a session branch. */
-export function collectPendingToolCalls(entries: readonly SessionEntry[]): PendingToolCallDiagnostic[] {
+export function collectPendingToolCalls(entries: Iterable<SessionEntry>): PendingToolCallDiagnostic[] {
 	const pending = new Map<string, PendingToolCallRecord>();
 	for (const entry of entries) {
 		if (entry.type === "message") {
@@ -336,7 +330,7 @@ function formatPendingToolCall(call: PendingToolCallDiagnostic): string {
 }
 
 /** Builds the resume warning shown when a prior branch ended mid-tool-call. */
-export function describePendingToolCalls(entries: readonly SessionEntry[]): string | undefined {
+export function describePendingToolCalls(entries: Iterable<SessionEntry>): string | undefined {
 	const pending = collectPendingToolCalls(entries);
 	if (pending.length === 0) return undefined;
 	const formatted = pending.map(formatPendingToolCall).join(", ");

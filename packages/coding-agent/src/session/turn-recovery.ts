@@ -848,14 +848,13 @@ export class TurnRecovery {
 		const persistenceKey = sessionMessagePersistenceKey(message);
 		if (!persistenceKey) return;
 		let branchEntry: SessionEntry | undefined;
-		for (const entry of this.#host.sessionManager.getBranch().slice().reverse()) {
+		for (const entry of this.#host.sessionManager.iterateBranch("message")) {
 			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 			if (sessionMessagePersistenceKey(entry.message) !== persistenceKey) continue;
 			if (!sameMessageContent(entry.message, message) && !this.#isSameAssistantMessage(entry.message, message)) {
 				continue;
 			}
 			branchEntry = entry;
-			break;
 		}
 		if (!branchEntry) return;
 		if (this.#pendingRetryErrors.some(error => error.entryId === branchEntry.id)) return;
@@ -875,24 +874,19 @@ export class TurnRecovery {
 		completion: { status: "recovered"; supersedingMessage: AssistantMessage } | { status: "superseded" },
 	): Promise<RetryErrorUpdate[]> {
 		if (this.#pendingRetryErrors.length === 0) return [];
-		const branch = this.#host.sessionManager.getBranch();
 		const branchById = new Map<string, SessionEntry>();
-		for (const entry of branch) {
-			branchById.set(entry.id, entry);
+		const byKey = new Map<string, SessionEntry>();
+		for (const entry of this.#host.sessionManager.iterateBranch("message")) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			const key = sessionMessagePersistenceKey(entry.message);
+			if (this.#pendingRetryErrors.some(pending => pending.entryId === entry.id)) branchById.set(entry.id, entry);
+			if (key && this.#pendingRetryErrors.some(pending => pending.persistenceKey === key)) byKey.set(key, entry);
 		}
 		const retryErrors: RetryErrorUpdate[] = [];
 		for (const pending of this.#pendingRetryErrors) {
 			let entry = branchById.get(pending.entryId);
 			if (entry?.type !== "message" || entry.message.role !== "assistant") {
-				entry = branch
-					.slice()
-					.reverse()
-					.find(
-						candidate =>
-							candidate.type === "message" &&
-							candidate.message.role === "assistant" &&
-							sessionMessagePersistenceKey(candidate.message) === pending.persistenceKey,
-					);
+				entry = byKey.get(pending.persistenceKey);
 			}
 			if (entry?.type !== "message" || entry.message.role !== "assistant") continue;
 			let retryRecovery: AssistantRetryRecovery;
@@ -1186,7 +1180,7 @@ export class TurnRecovery {
 		allowDefer: boolean,
 		options: { autoContinue: boolean; triggerContextTokens?: number; excludeMediaMethods?: boolean },
 	): Promise<RecoveryCompactionResult> {
-		const compactionEntryBefore = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
+		const compactionEntryBefore = getLatestCompactionEntry(this.#host.sessionManager.iterateBranch("compaction"));
 		await this.dropPersistedAssistantTurn(assistantMessage);
 		const result = await this.#host.runAutoCompaction(reason, true, false, allowDefer, {
 			autoContinue: options.autoContinue,
@@ -1194,8 +1188,8 @@ export class TurnRecovery {
 			phase: "mid_turn",
 			excludeMediaMethods: options.excludeMediaMethods,
 		});
-		const compactionEntryAfter = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
-		if (result.historyRewritten !== true && compactionEntryAfter === compactionEntryBefore) {
+		const compactionEntryAfter = getLatestCompactionEntry(this.#host.sessionManager.iterateBranch("compaction"));
+		if (result.historyRewritten !== true && compactionEntryAfter?.id === compactionEntryBefore?.id) {
 			this.#restoreFailedAssistantTurn(assistantMessage);
 		}
 		return result;
@@ -1214,20 +1208,8 @@ export class TurnRecovery {
 	}
 
 	#discardAcceptedTerminalEmptyStop(assistantMessage: AssistantMessage): void {
-		const branch = this.#host.sessionManager.getBranch();
-		const branchEntry = branch
-			.slice()
-			.reverse()
-			.find(
-				entry =>
-					entry.type === "message" &&
-					entry.message.role === "assistant" &&
-					this.#isSameAssistantMessage(entry.message, assistantMessage),
-			);
-		const parentEntry =
-			branchEntry?.parentId === null || branchEntry?.parentId === undefined
-				? undefined
-				: branch.find(entry => entry.id === branchEntry.parentId);
+		const branchEntry = this.#findPersistedAssistantEntry(assistantMessage);
+		const parentEntry = branchEntry?.parentId ? this.#host.sessionManager.getEntry(branchEntry.parentId) : undefined;
 		const prunePrompt = parentEntry?.type === "custom_message";
 
 		this.removeAssistantMessageFromActiveContext(assistantMessage, "accepted-terminal-empty-stop");
@@ -1257,24 +1239,10 @@ export class TurnRecovery {
 	discardAssistantTurn(assistantMessage: AssistantMessage): string | undefined {
 		this.removeAssistantMessageFromActiveContext(assistantMessage);
 
-		const branch = this.#host.sessionManager.getBranch();
-		const persistedEntryId = this.#host.persistedAssistantEntryId(assistantMessage);
-		const branchEntry =
-			(persistedEntryId === undefined
-				? undefined
-				: branch.find(
-						entry =>
-							entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
-					)) ??
-			branch
-				.slice()
-				.reverse()
-				.find(
-					entry =>
-						entry.type === "message" &&
-						entry.message.role === "assistant" &&
-						this.#isSameAssistantMessage(entry.message as AssistantMessage, assistantMessage),
-				);
+		const branchEntry = this.#findPersistedAssistantEntry(
+			assistantMessage,
+			this.#host.persistedAssistantEntryId(assistantMessage),
+		);
 		if (!branchEntry) {
 			return undefined;
 		}
@@ -1288,6 +1256,15 @@ export class TurnRecovery {
 		return branchEntry.id;
 	}
 
+	#findPersistedAssistantEntry(message: AssistantMessage, preferredId?: string): SessionEntry | undefined {
+		let latest: SessionEntry | undefined;
+		for (const entry of this.#host.sessionManager.iterateBranch("message")) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			if (entry.id === preferredId) return entry;
+			if (this.#isSameAssistantMessage(entry.message, message)) latest = entry;
+		}
+		return latest;
+	}
 	#isSameAssistantMessage(left: AssistantMessage, right: AssistantMessage): boolean {
 		return (
 			left === right ||
@@ -3047,24 +3024,7 @@ export class TurnRecovery {
 			}
 		}
 		const anchor = messages[replayStart - 1] as AssistantMessage;
-		const branch = this.#host.sessionManager.getBranch();
-		const persistedEntryId = this.#host.persistedAssistantEntryId(anchor);
-		const anchorEntry =
-			(persistedEntryId === undefined
-				? undefined
-				: branch.find(
-						entry =>
-							entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
-					)) ??
-			branch
-				.slice()
-				.reverse()
-				.find(
-					entry =>
-						entry.type === "message" &&
-						entry.message.role === "assistant" &&
-						this.#isSameAssistantMessage(entry.message as AssistantMessage, anchor),
-				);
+		const anchorEntry = this.#findPersistedAssistantEntry(anchor, this.#host.persistedAssistantEntryId(anchor));
 		if (anchorEntry) {
 			this.#host.withBashBranchTransition(() => {
 				this.#host.sessionManager.branch(anchorEntry.id);
