@@ -625,6 +625,55 @@ describe("canonical requirements ledger", () => {
 		expect(classifyRequirement(requirements, "R8", "not-a-requirement")).toHaveProperty("error");
 	});
 
+	it("offers row linking or not-a-requirement instead of another merged directive when no merge target is linked", () => {
+		const requirements = createRequirementCandidates(
+			[],
+			Array.from({ length: 21 }, (_, index) => `legacy ask ${index + 1}`),
+			AT,
+		);
+		requirements[18] = {
+			...requirements[18]!,
+			classification: "not-a-requirement",
+			reason: "duplicate of the approval ask",
+		};
+		const result = classifyRequirement(requirements, "R20", "merged", { mergeInto: "R19" });
+		if (!("error" in result)) throw new Error("expected the inactive merge target to block the call");
+		const recovery = result.error;
+		expect(recovery).not.toContain('classification="merged"');
+		expect(recovery).not.toContain("mergeInto=");
+		expect(recovery).toContain('classification="linked"');
+		expect(recovery).toContain("rows=");
+		expect(recovery).toContain('classification="not-a-requirement"');
+		expect(recovery).toContain("reason=");
+		const directiveIds = [...recovery.matchAll(/id="([^"]*)"/g)].map(match => match[1]);
+		expect(directiveIds).toContain("R20");
+		expect(directiveIds.filter(directiveId => directiveId !== "R20")).toEqual([]);
+	});
+
+	it("lists only linked non-source requirements as available merge targets on invalid-target recovery", () => {
+		const row = "Proven ledger row";
+		const requirements = createRequirementCandidates(
+			[],
+			Array.from({ length: 21 }, (_, index) => `legacy ask ${index + 1}`),
+			AT,
+		);
+		requirements[0] = { ...requirements[0]!, classification: "linked", rows: [row] };
+		requirements[1] = { ...requirements[1]!, classification: "merged", rows: [], mergeInto: "R1" };
+		requirements[18] = {
+			...requirements[18]!,
+			classification: "not-a-requirement",
+			reason: "duplicate of the approval ask",
+		};
+		const result = classifyRequirement(requirements, "R20", "merged", { mergeInto: "R19" });
+		if (!("error" in result)) throw new Error("expected the inactive merge target to block the call");
+		const recovery = result.error;
+		expect(recovery).toContain('Available active merge targets: ["R1"]');
+		const availability = recovery.match(/Available active merge targets: (\[[^\]]*\])/)?.[1];
+		expect(JSON.parse(availability ?? "[]")).toEqual(["R1"]);
+		expect(recovery).not.toMatch(/mergeInto="R\d+"/);
+		expect(recovery).not.toContain(row);
+	});
+
 	it("counts candidates and unverifiable verdicts as open, excluding merged and rejected asks", () => {
 		const requirements = createRequirementCandidates(
 			[],

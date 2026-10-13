@@ -439,18 +439,18 @@ export function classifyRequirement(
 		const mergeInto = options.mergeInto;
 		if (!mergeInto || mergeInto === id) {
 			return {
-				error: `Blocked: merging ${id} ("${source.rawText}") requires a different existing Rn in mergeInto. Call todo with op="classify", id="${id}", classification="merged", mergeInto="<other Rn>". Then retry`,
+				error: `Blocked: merging ${id} ("${source.rawText}") requires a different existing Rn in mergeInto. ${formatMergeRecovery(source, requirements)}. Then retry`,
 			};
 		}
 		const targetIndex = next.findIndex(requirement => requirement.id === mergeInto);
 		if (targetIndex < 0)
 			return {
-				error: `Blocked: unknown merge target ${mergeInto} for ${id}. Call todo op="view" to list current requirements, then call todo with op="classify", id="${id}", classification="merged", mergeInto="<existing Rn>". Then retry`,
+				error: `Blocked: unknown merge target ${mergeInto} for ${id}. ${formatMergeRecovery(source, requirements)}. Then retry`,
 			};
 		const target = next[targetIndex]!;
 		if (target.classification === "merged" || target.classification === "not-a-requirement") {
 			return {
-				error: `Blocked: merge target ${mergeInto} is not an active requirement. Call todo with op="classify", id="${id}", classification="merged", mergeInto="<active Rn>". Then retry`,
+				error: `Blocked: merge target ${mergeInto} is not an active requirement. ${formatMergeRecovery(source, requirements)}. Then retry`,
 			};
 		}
 		const mergedRows = [...new Set([...target.rows, ...source.rows])];
@@ -1157,6 +1157,18 @@ export function getPersistedRequirementAuditorAssignments(
 		return restored;
 	}
 	return restored;
+}
+
+/** Merge-target recovery hint: linked-target availability, never a chosen target. */
+function formatMergeRecovery(
+	source: Pick<RequirementLedgerItem, "id" | "rawText">,
+	requirements: readonly RequirementLedgerItem[],
+): string {
+	const active = requirements
+		.filter(requirement => requirement.classification === "linked" && requirement.id !== source.id)
+		.map(requirement => requirement.id);
+	if (active.length === 0) return `Call ${formatClassifyCall(source, [])}`;
+	return `Call todo with op="classify", id="${source.id}", classification="merged", mergeInto="<active Rn>". Available active merge targets: ${JSON.stringify(active)}`;
 }
 
 /** Exact `todo classify` call for one unclassified candidate, filled with its real id and words. */
