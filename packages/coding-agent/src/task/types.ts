@@ -48,22 +48,22 @@ const effortRule = '"lo" | "med" | "hi"' as const;
 export const taskItemSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
+	"resources?": "string[]",
 	task: "string",
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"resources?": "string[]",
 	"tools?": "string[]",
 	"+": "delete",
 });
 const taskItemSchemaIsolated = type({
 	"name?": "string",
 	agent: "string = 'task'",
+	"resources?": "string[]",
 	task: "string",
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"resources?": "string[]",
 	"tools?": "string[]",
 	"isolated?": "boolean",
 	"+": "delete",
@@ -72,11 +72,11 @@ const taskItemSchemaIsolated = type({
 export const taskSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
+	"resources?": "string[]",
 	task: "string",
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"resources?": "string[]",
 	"tools?": "string[]",
 	"isolated?": "boolean",
 	"+": "delete",
@@ -84,11 +84,11 @@ export const taskSchema = type({
 const taskSchemaNoIsolation = type({
 	"name?": "string",
 	agent: "string = 'task'",
+	"resources?": "string[]",
 	task: "string",
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"resources?": "string[]",
 	"tools?": "string[]",
 	"+": "delete",
 });
@@ -183,13 +183,13 @@ function createTaskSchema(options: {
 		const item = type.raw({
 			"name?": "string",
 			agent,
+			"resources?": "string[]",
 			task: "string",
 			solutionSpace: "string",
 			...effortField,
 			...schemaFields,
 			...toolsField,
 			...seanceFields,
-			"resources?": "string[]",
 			"+": "delete",
 		});
 		return guardBatchAgent(
@@ -218,13 +218,13 @@ function createTaskSchema(options: {
 	return type.raw({
 		"name?": "string",
 		agent,
+		"resources?": "string[]",
 		task: "string",
 		solutionSpace: "string",
 		...effortField,
 		...schemaFields,
 		...toolsField,
 		...seanceFields,
-		"resources?": "string[]",
 		"+": "delete",
 	});
 }
