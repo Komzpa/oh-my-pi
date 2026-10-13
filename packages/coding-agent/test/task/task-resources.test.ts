@@ -133,7 +133,10 @@ describe("task resources", () => {
 		const absent = taskSchema({ task: "t", solutionSpace: "s" }) as Record<string, unknown>;
 		expect(Object.hasOwn(absent, "resources")).toBe(false);
 		for (const bad of ["x", [1], null, [["nested"]]]) {
-			expect(flat({ task: "t", solutionSpace: "s", resources: bad }) instanceof type.errors, `rejects ${JSON.stringify(bad)}`).toBe(true);
+			expect(
+				flat({ task: "t", solutionSpace: "s", resources: bad }) instanceof type.errors,
+				`rejects ${JSON.stringify(bad)}`,
+			).toBe(true);
 		}
 		const batch = getTaskSchema({ isolationEnabled: true, batchEnabled: true });
 		const bout = batch({
@@ -141,7 +144,9 @@ describe("task resources", () => {
 			tasks: [{ task: "t", solutionSpace: "s", resources: ["/x"] }],
 		}) as { tasks: Array<Record<string, unknown>> };
 		expect(bout.tasks[0]?.resources).toEqual(["/x"]);
-		expect(batch({ context: "ctx", tasks: [{ task: "t", solutionSpace: "s", resources: "x" }] }) instanceof type.errors).toBe(true);
+		expect(
+			batch({ context: "ctx", tasks: [{ task: "t", solutionSpace: "s", resources: "x" }] }) instanceof type.errors,
+		).toBe(true);
 	});
 
 	it("rejects blank entries before launch with an error naming the task", async () => {
@@ -153,9 +158,10 @@ describe("task resources", () => {
 			tasks: [{ name: "Scopey", task: "Do it.", solutionSpace: "one fix", resources: [""] }],
 		} as unknown as TaskParams);
 		expect(JSON.stringify(result.content)).toContain("Scopey");
-		const text = result.content.find(p => p.type === "text")?.type === "text"
-			? (result.content.find(p => p.type === "text") as { text: string }).text
-			: "";
+		const text =
+			result.content.find(p => p.type === "text")?.type === "text"
+				? (result.content.find(p => p.type === "text") as { text: string }).text
+				: "";
 		expect(text).toContain("Scopey");
 		expect(text).toContain("resources");
 	});

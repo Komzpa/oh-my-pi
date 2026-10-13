@@ -248,7 +248,8 @@ function validateEffort(effort: TaskEffort | undefined, label: string): string |
 /** Reject a malformed `resources` declaration on internal/stale-transcript calls that bypass the wire schema. `[]` is valid (owns nothing); entries must be non-blank strings. */
 function validateResources(resources: TaskItem["resources"], label: string): string | undefined {
 	if (resources === undefined) return undefined;
-	if (!Array.isArray(resources)) return `${label} has an invalid \`resources\` value ${JSON.stringify(resources)}. Provide an array of checkout path strings, or omit it.`;
+	if (!Array.isArray(resources))
+		return `${label} has an invalid \`resources\` value ${JSON.stringify(resources)}. Provide an array of checkout path strings, or omit it.`;
 	for (const entry of resources) {
 		if (typeof entry !== "string" || entry.trim() === "") {
 			return `${label} has an invalid \`resources\` entry ${JSON.stringify(entry)}. Every entry must be a non-blank checkout path string.`;
@@ -274,7 +275,10 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 			}
 			const effortError = validateEffort(item.effort, `Task ${i + 1}${item.name ? ` (\`${item.name}\`)` : ""}`);
 			if (effortError) return effortError;
-			const resourcesError = validateResources(item.resources, `Task ${i + 1}${item.name ? ` (\`${item.name}\`)` : ""}`);
+			const resourcesError = validateResources(
+				item.resources,
+				`Task ${i + 1}${item.name ? ` (\`${item.name}\`)` : ""}`,
+			);
 			if (resourcesError) return resourcesError;
 		}
 		const seen = new Map<string, string>();
