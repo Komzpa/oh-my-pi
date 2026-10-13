@@ -18,6 +18,7 @@
 ### Fixed
 
 - Fixed string `qa-auditor` yields being JSON-quoted in task results. Four-column Markdown verdict tables now bind omitted raw words to their authenticated audit assignment; five-column receipts remain supported, while missing verdicts, evidence, artifacts, and foreign requirement IDs remain rejected.
+- Fixed bare approval replies being captured as requirements and blocking subsequent tool calls.
 - Fixed restored sessions showing an outdated todo checkpoint instead of the current plan, including newer edits and archived rows.
 - Fixed auditor image dispatch duplicating image bytes in task arguments; referenced images now use SHA-256-addressed artifacts or source paths ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed task dispatch dropping requirement image attachments before the auditor's first prompt. Images without an existing source file are saved once in the session artifacts, and QA audit inputs name that durable path.

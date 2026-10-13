@@ -118,6 +118,8 @@ Artifact freshness refusals include the resolved checkout's cwd, HEAD and dirty 
 
 Freshness uses `getRequirementVerdictStaleness` (`null` when fresh); receipt intake, completion refusals, and hidden publication notices name the exact failing check rather than a generic artifact mismatch. Reasons distinguish unresolved artifact/cwd mapping, row scope or duplicates, missing/non-pass verdicts, unauthenticated auditors, file SHA-256 ambiguity/mismatch or dirty file artifacts, invalid/stale HEAD, missing/uncited/older saved TODO changes, and missing/invalid receipt or invalid saved-change timestamps. Clean checkout receipts must cite exactly the current row HEAD, never an obsolete dispatch-time HEAD. Dirty/headless rows retain saved-row-history freshness only after artifact resolution succeeds. Raw words are compared before artifact identity against the whitespace-normalized complete immutable ask; diagnostics give the requirement ID, normalized lengths, and zero-based first differing character without quoting source text. A dropped `[Image #N]` prefix reports raw words at character 0 even when the file SHA matches.
 
+Bare approval replies are not requirement candidates: a main-session user message that is only `go`, `ok`, `да`, or `продолжай` (normalized as above) with no images is ignored, creating no requirement and no overdue-classify gate, so it allocates no requirement ID.
+
 ### User-owned pending checks
 
 `block` additionally accepts `awaitingUser: { action: string; ids?: string[] }`. The action must not be blank; omit this field for agent-owned blockers. It is saved as row metadata without verifying completion. `unblock` clears both the blocker note and pending user check.

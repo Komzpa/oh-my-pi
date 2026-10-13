@@ -742,6 +742,70 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
+	it("does not capture bare approval replies or block after the next assistant stop", () => {
+		const manager = SessionManager.inMemory();
+		const runtime = new RequirementsLedgerRuntime({
+			agent: {} as never,
+			agentKind: () => "main",
+			cwd: () => "/",
+			sessionManager: manager,
+			onSettledAssistantMessage: () => {},
+			setPublicationGate: () => {},
+		});
+		const before = getLatestRequirements(manager.getBranch());
+
+		for (const approval of ["go", "  OK! ", "да,", " ПРОДОЛЖАЙ. "]) {
+			runtime.captureCandidate(approval);
+		}
+
+		expect(getLatestRequirements(manager.getBranch())).toEqual(before);
+		manager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "Understood." }],
+			stopReason: "stop",
+		} as never);
+		expect(runtime.refuseOverdueCandidate("bash")).toBeUndefined();
+	});
+
+	it("keeps approval-prefixed instructions verbatim and allocates no ID for ignored approvals", () => {
+		const manager = SessionManager.inMemory();
+		const runtime = new RequirementsLedgerRuntime({
+			agent: {} as never,
+			agentKind: () => "main",
+			cwd: () => "/",
+			sessionManager: manager,
+			onSettledAssistantMessage: () => {},
+			setPublicationGate: () => {},
+		});
+
+		runtime.captureCandidate("go");
+		runtime.captureCandidate("go fix the login bug");
+		runtime.captureCandidate("ok, also preserve the old receipts");
+
+		expect(getLatestRequirements(manager.getBranch()).map(({ id, rawText }) => [id, rawText])).toEqual([
+			["R1", "go fix the login bug"],
+			["R2", "ok, also preserve the old receipts"],
+		]);
+	});
+
+	it("retains referenced image evidence when approval text accompanies an image", () => {
+		const manager = SessionManager.inMemory();
+		const runtime = new RequirementsLedgerRuntime({
+			agent: {} as never,
+			agentKind: () => "main",
+			cwd: () => "/",
+			sessionManager: manager,
+			onSettledAssistantMessage: () => {},
+			setPublicationGate: () => {},
+		});
+		const data = Buffer.from("image bytes").toString("base64");
+
+		runtime.captureCandidate("ok [Image #1, 4x4]", [{ type: "image", data, mimeType: "image/png" }]);
+
+		const [requirement] = getLatestRequirements(manager.getBranch());
+		expect(requirement?.rawText).toBe("ok [Image #1, 4x4]");
+		expect(requirement?.images?.[0]?.sha256).toBe(createHash("sha256").update(Buffer.from(data, "base64")).digest("hex"));
+	});
 });
 
 describe("awaiting-user publication gate", () => {

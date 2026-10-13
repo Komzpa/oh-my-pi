@@ -158,6 +158,7 @@ export class RequirementsLedgerRuntime {
 
 	captureCandidate(rawText: string, images?: readonly ImageContent[]): void {
 		if (this.#host.agentKind() !== "main" || !rawText.trim() || rawText.trimStart().startsWith("/")) return;
+		if (!images?.length && /^(go|ok|да|продолжай)$/i.test(rawText.trim().replace(/[\s.!?,]+$/u, ""))) return;
 		const requirements = getLatestRequirements(this.#host.sessionManager.getBranch());
 		const referenced = extractRequirementImages(rawText, images);
 		appendRequirementsSnapshot(
