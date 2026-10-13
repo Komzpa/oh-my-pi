@@ -7,7 +7,7 @@
 - Fixed stale `qa-auditor` receipts being accepted after a clean row advances: receipt intake and TODO completion now require the current row HEAD, not its dispatch-time HEAD ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed generic requirement freshness refusals: receipt intake, TODO completion, and publication notices now surface the precise failing reason, with raw-source/image-prefix differences reported before artifact identity without quoting private text ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed TODO completion after a non-isolated worker finishes and leaves the agent registry: the worker's actual effective cwd is bound on its assigned rows before execution and survives registry cleanup, so a fresh `qa-auditor` pass at the current HEAD still completes the row ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
-- Fixed requirement relinking: `todo view` now renders the amendment history (relinked rows, old→new rows, and reason) for every requirement, and `todo classify` accepts `relink: true` to change rows on an already-linked requirement with a nonblank reason ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
+- Fixed requirement relinking: `todo view` now renders its own session's amendment history (relinked rows, old→new rows, and reason), and `todo classify` accepts `relink: true` to change rows on an already-linked requirement with a nonblank reason ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 
 ### Added
 

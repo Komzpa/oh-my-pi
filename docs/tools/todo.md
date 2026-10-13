@@ -47,6 +47,7 @@ The tool returns a single-shot `AgentToolResult`:
   - Empty final state with no errors: `Todo list cleared.` (`Todo list is empty.` for a pure-`view` call).
   - Non-empty final state: remaining-item list, current phase progress, then a per-phase tree.
   - Op-specific errors prefix the summary with `Errors: ...`; schema failures instead return `Invalid todo arguments: ...`. Both set `isError: true` and leave returned/persisted phases at their pre-call state.
+  - Read-only views append relink amendment history from that tool instance's session manager only (requirement id, timestamp, old/new rows, and reason), without writing a ledger snapshot.
 - `details`:
   - `phases: TodoPhase[]`
   - `storage: "session" | "memory"`

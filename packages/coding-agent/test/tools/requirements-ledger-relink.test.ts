@@ -263,6 +263,46 @@ describe("reasoned requirement relink", () => {
 		expect(viewText).toContain(JSON.stringify(ROW_A));
 	});
 
+	it("keeps relink history isolated between concurrent TodoTool instances", async () => {
+		const amended = harness();
+		const untouched = harness();
+		seedMislinked(amended.manager);
+		seedMislinked(untouched.manager);
+		const relinked = await amended.tool.execute("relink", {
+			op: "classify",
+			id: "R3",
+			classification: "linked",
+			rows: [ROW_B, ROW_C],
+			reason: REASON,
+			relink: true,
+		});
+		expect(relinked.isError).toBeUndefined();
+		const amendedSnapshots = amended.snapshots();
+		const untouchedSnapshots = untouched.snapshots();
+		// Both calls start before either settles; exercise both session orderings.
+		const [plainFirst, amendedSecond] = await Promise.all([
+			untouched.tool.execute("plain-first", { op: "view" }),
+			amended.tool.execute("amended-second", { op: "view" }),
+		]);
+		const [amendedFirst, plainSecond] = await Promise.all([
+			amended.tool.execute("amended-first", { op: "view" }),
+			untouched.tool.execute("plain-second", { op: "view" }),
+		]);
+		for (const view of [plainFirst, plainSecond]) {
+			expect(view.isError).toBeUndefined();
+			expect(textOf(view)).not.toContain("relinked at");
+			expect(textOf(view)).not.toContain(REASON);
+		}
+		for (const view of [amendedFirst, amendedSecond]) {
+			expect(view.isError).toBeUndefined();
+			expect(textOf(view)).toContain("R3 relinked at");
+			expect(textOf(view)).toContain(REASON);
+		}
+		expect(r3Of(untouched.manager).amendments).toBeUndefined();
+		expect(amended.snapshots()).toBe(amendedSnapshots);
+		expect(untouched.snapshots()).toBe(untouchedSnapshots);
+	});
+
 	it("materializes retained-row receipts from a legacy all-row verdict before dropping it", async () => {
 		const { manager, tool } = harness();
 		appendRequirementsSnapshot({ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) }, [

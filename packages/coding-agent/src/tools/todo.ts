@@ -1142,6 +1142,30 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
+		const result = await this.#executeTodo(_toolCallId, params, _signal, _onUpdate, _context);
+		if (result.details?.op === "view" && this.session.sessionManager) {
+			const amendments = getLatestRequirements(this.session.sessionManager.getBranch()).flatMap(requirement =>
+				(requirement.amendments ?? []).map(
+					amendment =>
+						`${requirement.id} relinked at ${amendment.at}: rows ${JSON.stringify(amendment.oldRows)} -> ${JSON.stringify(amendment.newRows)} (${amendment.reason})`,
+				),
+			);
+			if (amendments.length > 0) {
+				for (const content of result.content) {
+					if (content.type === "text") content.text += `\n${amendments.join("\n")}`;
+				}
+			}
+		}
+		return result;
+	}
+
+	async #executeTodo(
+		_toolCallId: string,
+		params: TodoToolParamsType<TodoSchema>,
+		_signal?: AbortSignal,
+		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
+		_context?: AgentToolContext,
+	): Promise<AgentToolResult<TodoToolDetails>> {
 		// Publish the session checkout for rows created below. Set here at the
 		// top of execute() (untouched by #92); row-creating ops reach
 		// applyParams synchronously, and todo concurrency is exclusive.
@@ -1214,22 +1238,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 
 		return {
-			content: [
-				{
-					type: "text",
-					text: [
-						formatSummary(effective, errors, readOnly),
-						...(readOnly && sessionManager
-							? getLatestRequirements(sessionManager.getBranch()).flatMap(requirement =>
-									(requirement.amendments ?? []).map(
-										amendment =>
-											`${requirement.id} relinked at ${amendment.at}: rows ${JSON.stringify(amendment.oldRows)} -> ${JSON.stringify(amendment.newRows)} (${amendment.reason})`,
-									),
-								)
-							: []),
-					].join("\n"),
-				},
-			],
+			content: [{ type: "text", text: formatSummary(effective, errors, readOnly) }],
 			details,
 			isError: errors.length > 0 ? true : undefined,
 		};
