@@ -24,6 +24,14 @@ import type { PositionedSessionEntry } from "@oh-my-pi/pi-coding-agent/session/s
 import { migrateSessionEntries } from "@oh-my-pi/pi-coding-agent/session/session-migrations";
 import { FileSessionStorage, type WriteTextAtomicOptions } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { serializeTitleSlot } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
+import {
+	createTodoHudStateData,
+	getLatestTodoPhasesFromEntries,
+	getTodoHudVisibility,
+	isTodoStateEntryMetadata,
+	TODO_HUD_STATE_CUSTOM_TYPE,
+	USER_TODO_EDIT_CUSTOM_TYPE,
+} from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { makeAssistantMessage } from "./helpers";
 
@@ -784,4 +792,90 @@ describe("bounded resume memory", () => {
 		// detects a heap metric that cannot see the large string payloads.
 		expect(result.retainedAfterOpenBytes, JSON.stringify(result)).toBeGreaterThan(64 * MiB);
 	}, 60_000);
+});
+
+describe("todo state from a metadata-filtered branch", () => {
+	const phasesA = [{ name: "Phase A", tasks: [{ content: "Task A", status: "pending" as const }] }];
+	const phasesB = [{ name: "Phase B", tasks: [{ content: "Task B", status: "in_progress" as const }] }];
+	const phasesSibling = [{ name: "Sibling", tasks: [{ content: "Elsewhere", status: "pending" as const }] }];
+
+	function todoResult(
+		id: string,
+		parentId: string,
+		phases: unknown,
+		extra: Record<string, unknown> = {},
+	): SessionEntry {
+		return {
+			type: "message",
+			id,
+			parentId,
+			timestamp,
+			message: {
+				role: "toolResult",
+				toolCallId: `call-${id}`,
+				toolName: "todo",
+				content: [{ type: "text", text: "ok" }],
+				details: { op: "set", phases },
+				isError: false,
+				timestamp: 3,
+				...extra,
+			},
+		} as SessionEntry;
+	}
+
+	it("selects only todo snapshots and HUD choices, replaying identically to the full branch", async () => {
+		using dir = TempDir.createSync("@resume-todo-branch-");
+		const entries: SessionEntry[] = [
+			user("root", null, "plan it"),
+			todoResult("t1", "root", phasesA),
+			tool("big", "t1", "y".repeat(MiB)),
+			todoResult("t-error", "big", phasesSibling, { isError: true }),
+			{
+				type: "custom",
+				id: "hud",
+				parentId: "t-error",
+				timestamp,
+				customType: TODO_HUD_STATE_CUSTOM_TYPE,
+				data: { sourceEntryId: "t2", fingerprint: JSON.stringify(phasesB), visibility: "dismissed" },
+			},
+			{
+				type: "custom",
+				id: "t2",
+				parentId: "hud",
+				timestamp,
+				customType: USER_TODO_EDIT_CUSTOM_TYPE,
+				data: { phases: phasesB },
+			},
+			{ type: "custom", id: "other", parentId: "t2", timestamp, customType: "unrelated", data: {} },
+			todoResult("t-sibling", "t1", phasesSibling),
+			user("tail", "other", "continue"),
+		];
+		const file = await writeJournal(dir.path(), entries);
+		const session = await SessionManager.open(file, dir.path(), undefined, { suppressBreadcrumb: true });
+		try {
+			const filtered = session.getBranchMatching(isTodoStateEntryMetadata);
+			expect(filtered.map(entry => entry.id)).toEqual(["t1", "t-error", "hud", "t2"]);
+			const full = session.getBranch();
+			expect(getLatestTodoPhasesFromEntries(filtered)).toEqual(getLatestTodoPhasesFromEntries(full));
+			expect(getLatestTodoPhasesFromEntries(filtered)).toEqual(phasesB);
+			expect(getTodoHudVisibility(filtered, phasesB)).toBe("dismissed");
+			expect(createTodoHudStateData(filtered, phasesB, "revealed")).toEqual(
+				createTodoHudStateData(full, phasesB, "revealed"),
+			);
+
+			// Entries appended live carry the same metadata as entries scanned from disk.
+			session.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: phasesA });
+			const appended = session.getBranchMatching(isTodoStateEntryMetadata);
+			expect(appended).toHaveLength(5);
+			expect(getLatestTodoPhasesFromEntries(appended)).toEqual(phasesA);
+
+			session.branch("t-sibling");
+			expect(session.getBranchMatching(isTodoStateEntryMetadata).map(entry => entry.id)).toEqual([
+				"t1",
+				"t-sibling",
+			]);
+		} finally {
+			await session.close();
+		}
+	});
 });
