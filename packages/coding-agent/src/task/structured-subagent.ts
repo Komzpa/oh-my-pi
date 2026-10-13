@@ -123,8 +123,6 @@ export interface StructuredSubagentRequest {
 	effort?: TaskEffort;
 	/** Caller's description of how open-ended the work is; steers the child's `auto` thinking classification. */
 	solutionSpace?: string;
-	/** Declared exclusive checkout paths for this child; absent = undeclared, [] = owns nothing. */
-	resources?: string[];
 	identity?: StructuredSubagentIdentity;
 	index?: number;
 	parentToolCallId?: string;
@@ -157,6 +155,8 @@ export interface StructuredSubagentRequest {
 	/** Workpool items accepted by the child yield tool during this turn. */
 	workPoolYieldItems?: WorkPoolYieldItem[];
 	signal?: AbortSignal;
+	/** Declared exclusive checkout paths for this child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
 	onProgress?: (progress: AgentProgress) => void;
 }
 
