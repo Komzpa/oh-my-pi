@@ -338,7 +338,7 @@ const bashSchemaWithAsync = type({
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
 	"pty?": "boolean",
-	"async?": type("boolean").describe("run in background; this worker still owns the running command"),
+	"async?": "boolean",
 });
 
 const bashSchemaWithService = type({
@@ -360,7 +360,7 @@ const bashSchemaWithAsyncAndService = type({
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
 	"pty?": "boolean",
-	"async?": type("boolean").describe("run in background; this worker still owns the running command"),
+	"async?": "boolean",
 	"name?": "string <= 48",
 	"ready?": type({
 		"log?": "string",
