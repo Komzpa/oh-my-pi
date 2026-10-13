@@ -187,7 +187,7 @@ async function auditMainRow(options: { agent?: string; subRowFail?: boolean; mov
 				getSessionSpawns: () => "*",
 				sessionManager: manager,
 				getTodoPhases: () => phases,
-				setTodoPhases: next => {
+				setTodoPhases: (next: TodoPhase[]) => {
 					phases = next;
 				},
 			} as unknown as ToolSession);
