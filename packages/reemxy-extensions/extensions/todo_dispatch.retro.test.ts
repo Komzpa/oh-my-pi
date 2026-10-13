@@ -348,6 +348,25 @@ test("a completed install job whose result exits zero opens no retro", async () 
   } finally { setSystemTime(); }
 });
 
+test.each([1, 0])("task settlement records install_exit=%s immediately and only once", async (installExit) => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], [], liveNow + 24 * 60 * 60_000);
+    const job = { id: "install-hook", type: "task", status: "completed", label: "InstallWave4b-2", startTime: liveNow - 3000, agentId: "worker-b", result: { install_exit: installExit } };
+    await f.result("install-call", [job]);
+    const state = () => f.branch.findLast((entry) => entry.type === "custom" && entry.data?.workerFinishes)?.data;
+    // No todo result or timer tick has run: the task result itself must persist the incident.
+    expect(state()?.retroDueReason).toBe(installExit === 1 ? "updater rejection" : null);
+    expect(state()?.seenJobIds).toEqual([job.id]);
+    expect(state()?.workerFinishes).toEqual([{ jobId: job.id, id: "worker-b", at: job.startTime, row: job.label }]);
+    await f.finish();
+    expect(state()?.retroDueReason).toBeNull();
+    f.setJobs([job]);
+    expect(await f.check()).not.toContain("retrospective due");
+    expect(state()?.workerFinishes).toHaveLength(1);
+  } finally { setSystemTime(); }
+});
+
 test("a lead re-dispatch chain Foo to Foo-3 on one row opens repeated failure", async () => {
   setSystemTime(new Date(liveNow));
   try {
