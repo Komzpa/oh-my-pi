@@ -1180,7 +1180,7 @@ export class TurnRecovery {
 		allowDefer: boolean,
 		options: { autoContinue: boolean; triggerContextTokens?: number; excludeMediaMethods?: boolean },
 	): Promise<RecoveryCompactionResult> {
-		const compactionEntryBefore = getLatestCompactionEntry(this.#host.sessionManager.iterateBranch("compaction"));
+		const compactionEntryBefore = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
 		await this.dropPersistedAssistantTurn(assistantMessage);
 		const result = await this.#host.runAutoCompaction(reason, true, false, allowDefer, {
 			autoContinue: options.autoContinue,
@@ -1188,8 +1188,8 @@ export class TurnRecovery {
 			phase: "mid_turn",
 			excludeMediaMethods: options.excludeMediaMethods,
 		});
-		const compactionEntryAfter = getLatestCompactionEntry(this.#host.sessionManager.iterateBranch("compaction"));
-		if (result.historyRewritten !== true && compactionEntryAfter?.id === compactionEntryBefore?.id) {
+		const compactionEntryAfter = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
+		if (result.historyRewritten !== true && compactionEntryAfter === compactionEntryBefore) {
 			this.#restoreFailedAssistantTurn(assistantMessage);
 		}
 		return result;
