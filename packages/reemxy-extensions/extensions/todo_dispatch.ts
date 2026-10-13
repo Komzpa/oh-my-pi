@@ -1705,6 +1705,31 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       persistSprintState();
     }
   };
+  // Both task receipts and plan snapshots settle through this path. Remembering the
+  // job ID here prevents a later timer tick from reopening a covered install incident.
+  const settleSprintJobs = (jobs: Jobs["recent"], now: number) => {
+    let facilitatorSettled = false;
+    let updaterRejected = false;
+    for (const job of jobs) {
+      if (job.type !== "task" || !["completed", "failed"].includes(job.status)) continue;
+      if (sprintState.seenJobIds.includes(job.id)) continue;
+      const id = job.agentId ?? job.id;
+      const at = typeof job.startTime === "number" ? job.startTime : now;
+      const facilitator = [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name));
+      if (facilitator && job.status === "completed") facilitatorSettled = true;
+      if (UPDATER_JOB_LABEL.test(typeof job.label === "string" ? job.label : "") &&
+        (job.status === "failed" || structuredInstallRejection(job))) updaterRejected = true;
+      // Failed workers are usually provider refusals, not retro participants.
+      sprintState = {
+        ...sprintState,
+        seenJobIds: [...sprintState.seenJobIds, job.id],
+        ...(job.status !== "completed" || facilitator
+          ? {}
+          : { workerFinishes: [...sprintState.workerFinishes, { jobId: job.id, id, at, row: typeof job.label === "string" ? job.label : "" }] }),
+      };
+    }
+    return { facilitatorSettled, updaterRejected };
+  };
   const touchSprintState = (ctx: ExtensionContext, phases: TodoScheduleInput, jobs: Jobs | null, now: number, deadline: DispatchInput["deadline"], alarms: string[]) => {
     const tasks = phases.flatMap((phase) => phase.tasks);
     sprintLiveRows = new Set(tasks.map((task) => task.content));
@@ -1723,25 +1748,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const taskJobs = [...(jobs?.running ?? []), ...(jobs?.recent ?? [])].filter((job) => job.type === "task");
       if (taskJobs.some((job) => typeof job.label === "string" && job.label.includes(task.content))) addSeenRow(task.content);
     }
-    let facilitatorSettled = false;
-    for (const job of jobs?.recent ?? []) {
-      if (job.type !== "task" || !["completed", "failed"].includes(job.status)) continue;
-      if (sprintState.seenJobIds.includes(job.id)) continue;
-      const id = job.agentId ?? job.id;
-      const at = typeof job.startTime === "number" ? job.startTime : now;
-      const facilitator = [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name));
-      if (facilitator && job.status === "completed") facilitatorSettled = true;
-      // Only a worker that finished is a retro participant: a cancelled one did no work, and a
-      // failed one is usually a provider refusal (429/402), which would make a quota outage itself
-      // look like a sprint worth a retrospective.
-      sprintState = {
-        ...sprintState,
-        seenJobIds: [...sprintState.seenJobIds, job.id],
-        ...(job.status !== "completed" || facilitator
-          ? {}
-          : { workerFinishes: [...sprintState.workerFinishes, { jobId: job.id, id, at, row: typeof job.label === "string" ? job.label : "" }] }),
-      };
-    }
+    const { facilitatorSettled, updaterRejected } = settleSprintJobs(jobs?.recent ?? [], now);
     // One persist per loop: a burst of background receipts used to persist a full snapshot per receipt.
     const freshReceipts = branchRetroReceiptIds(ctx.sessionManager.getBranch()).filter((receipt) => !sprintState.retroReceiptIds.includes(receipt));
     if (facilitatorSettled || freshReceipts.length > 0) finishRetro(freshReceipts.length > 0 ? freshReceipts : undefined, false);
@@ -1765,15 +1772,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // retro. Only evidence this window has not seen yet can open one, so a retro that
     // observed an incident does not re-fire on the same jobs.
     const recentTaskJobs = (jobs?.recent ?? []).filter((job) => job.type === "task");
-    // A job can end `completed` while its structured result carries a non-zero install/updater/
-    // deploy exit or non-empty blocked/remaining gaps: that is an updater rejection too.
-    const updaterRejection = recentTaskJobs.find((job) =>
-      ["completed", "failed"].includes(job.status) &&
-      !seenJobIdsBefore.has(job.id) &&
-      UPDATER_JOB_LABEL.test(typeof job.label === "string" ? job.label : "") &&
-      (job.status === "failed" || structuredInstallRejection(job)),
-    );
-    if (updaterRejection) setRetroDue("updater rejection");
+    if (updaterRejected) setRetroDue("updater rejection");
     // A lead re-dispatch of one row, read from the row's own attempt data: owners
     // Foo -> Foo-2 -> Foo-3 accumulated on one row, or the row sent out again after an
     // attempt already completed. Parallel workers on one row are not a re-dispatch.
@@ -3896,7 +3895,26 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (!event.isError && isRetroFacilitatorTaskResult(event)) {
       dispatchedAgents.delete(event.toolCallId);
       finishRetro(retroFacilitatorResultId(event));
-    } else if (!event.isError) reportWorkerResultIncident(event);
+    } else if (!event.isError) {
+      const details = event.details as { results?: unknown } | undefined;
+      if (Array.isArray(details?.results)) {
+        const recent = ctx.getAsyncJobSnapshot()?.recent ?? [];
+        const settled = details.results.flatMap((value) => {
+          if (typeof value !== "object" || value === null || typeof value.id !== "string") return [];
+          const snapshot = recent.find((job) => job.id === value.id);
+          const status = value.status ?? (value.aborted ? "cancelled" : typeof value.exitCode === "number" ? (value.exitCode === 0 ? "completed" : "failed") : undefined);
+          if (!["completed", "failed"].includes(status)) return [];
+          return [{ ...snapshot, ...value, id: value.id, type: "task", status,
+            agentId: value.agentId ?? snapshot?.agentId ?? value.id,
+            label: value.label ?? snapshot?.label ?? value.description ?? value.id,
+          }];
+        });
+        const { updaterRejected } = settleSprintJobs(settled, Date.now());
+        if (updaterRejected) setRetroDue("updater rejection");
+        if (settled.length > 0) persistSprintState();
+      }
+      reportWorkerResultIncident(event);
+    }
     const baseline = taskCallBaselines.get(event.toolCallId);
     taskCallBaselines.delete(event.toolCallId);
     if (!baseline || event.isError) return;
