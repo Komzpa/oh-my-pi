@@ -343,6 +343,34 @@ describe("typed identity: accepted receipts", () => {
 		expect(statusOf(fx, ROW)).toBe("completed");
 	});
 
+	for (const changed of [false, true]) {
+		it(`${changed ? "rejects changed" : "accepts fresh"} readback receipt without checkout mapping`, async () => {
+			const receipt = path.join(tempDir("omp-production-receipt-"), "readback.json");
+			fs.writeFileSync(receipt, JSON.stringify({ source: "litterbox cards readback", at: AT, rows: 8, open: 8 }));
+			const identity = fileId(receipt);
+			const row = "Curated news cards published to Litterbox";
+			const fx = await harness([row], {}, { [row]: ["litterbox prod ingest"] });
+			await fx.prepare(row);
+			expect(await fx.receive(artifactCell(row, [identity]))).toBeUndefined();
+			expect(verdictOf(fx, row)?.status).toBe("pass");
+			if (changed) {
+				fs.writeFileSync(receipt, JSON.stringify({ source: "litterbox cards readback", at: AT, rows: 7, open: 7 }));
+			}
+			const done = await fx.done("production-receipt", row);
+			if (changed) {
+				expect(done.isError).toBe(true);
+				const text = textOf(done);
+				expect(text).toContain("stale file");
+				expect(text).toContain(identity.split("@sha256=")[1]!);
+				expect(text).toContain(fileId(receipt).split("@sha256=")[1]!);
+				expect(statusOf(fx, row)).toBe("pending");
+			} else {
+				expect(done.isError).not.toBe(true);
+				expect(statusOf(fx, row)).toBe("completed");
+			}
+		});
+	}
+
 	it("P3 accepts a git receipt scoped to a listed path and ignores unrelated dirt in the same repo", async () => {
 		const { root: repo, head } = await initRepo({
 			"src/a.ts": "export const a = 1;\n",

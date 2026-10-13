@@ -284,6 +284,8 @@ async function resolveTypedRequirementArtifact(
 		| { error: string }
 		| { legacy: true; commits: string[] }
 		| undefined;
+	// Optional resource pins do not turn a typed file/readback receipt into a Git
+	// checkout: its own declared target and current SHA-256 govern freshness.
 	if (targets === undefined && receipt !== undefined) {
 		parsed = parseRequirementReceiptIdentities(receipt);
 		if ("error" in parsed) return unknownRequirementArtifact(row, `invalid typed identity (${parsed.error})`);
