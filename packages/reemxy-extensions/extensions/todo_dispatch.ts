@@ -822,8 +822,14 @@ function structuredInstallRejection(job: unknown): boolean {
   if (typeof result !== "object" || result === null) return false;
   // Unchecked cast to a named const: job results are untyped at this extension boundary.
   const record = result as Record<string, unknown>;
+  // Exit keys are matched across case and separators so a camelCase installExit reads the
+  // same as install_exit, and a top-level terminal status of blocked/failed is a rejection.
+  const normalised: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) normalised[key.toLowerCase().replace(/[_\-\s]/g, "")] = value;
+  const status = normalised.status;
+  if (typeof status === "string" && ["blocked", "failed"].includes(status.trim().toLowerCase())) return true;
   for (const key of ["install_exit", "updater_exit", "deploy_exit", "exit_code"]) {
-    const value = record[key];
+    const value = normalised[key.toLowerCase().replace(/[_\-\s]/g, "")];
     if (typeof value === "number" && value !== 0) return true;
     if (typeof value === "string" && value.trim() !== "" && value.trim() !== "0") return true;
   }
@@ -892,6 +898,52 @@ function branchRetroReceiptIds(branch: unknown): string[] {
     }
   }
   return found;
+}
+
+// Async dispatch returns no inline results; the real worker completion arrives later as an
+// async-result `<task-result status="completed">…<output>…</output>…</task-result>` on the branch.
+// Reconcile those completed updater jobs here so settleSprintJobs sees their rejection payloads.
+function branchAsyncTaskResults(branch: unknown): (Jobs["recent"][number] & { result?: unknown })[] {
+  const out: (Jobs["recent"][number] & { result?: unknown })[] = [];
+  const entries = Array.isArray(branch) ? branch.slice(-RETRO_RECEIPT_SCAN_ENTRIES) : [];
+  const scan = (text: string) => {
+    for (const match of text.matchAll(/<task-result\b[^>]*>([\s\S]*?)<\/task-result>/g)) {
+      const block = match[0];
+      const status = /<task-result\b[^>]*\bstatus="([^"]*)"/i.exec(block)?.[1];
+      if (status !== "completed") continue;
+      const outputText = /<output>([\s\S]*?)<\/output>/.exec(match[1])?.[1]?.trim();
+      if (!outputText) continue;
+      const idMatch = /\bid="([^"]*)"/.exec(/<task-result\b[^>]*>/i.exec(block)?.[0] ?? "");
+      const jobId = idMatch?.[1] ?? `async-${out.length}`;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(outputText);
+      } catch {
+        continue;
+      }
+      if (!UPDATER_JOB_LABEL.test(jobId)) continue;
+      out.push({
+        id: jobId,
+        type: "task",
+        status: "completed",
+        label: jobId,
+        startTime: 0,
+        result: parsed,
+      });
+    }
+  };
+  for (const entry of entries) {
+    if (typeof entry !== "object" || entry === null || !("type" in entry)) continue;
+    const content = entry.type === "message"
+      ? (typeof entry.message === "object" && entry.message !== null && "content" in entry.message ? entry.message.content : undefined)
+      : ("content" in entry ? entry.content : undefined);
+    const parts = typeof content === "string" ? [content] : Array.isArray(content) ? content : [];
+    for (const part of parts) {
+      if (typeof part === "string") scan(part);
+      else if (typeof part === "object" && part !== null && "text" in part && typeof part.text === "string") scan(part.text);
+    }
+  }
+  return out;
 }
 function taskDetails(task: TaskRow, timeZone?: string): string {
   const schedule = task.schedule && typeof task.schedule === "object" ? task.schedule : undefined;
@@ -1689,6 +1741,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ? details.results
       : undefined;
     if (!Array.isArray(results) || results.length === 0) {
+      // An async dispatch returns no inline results while its workers are still pending; the
+      // completion arrives later as an async-result. That is not an empty worker result.
+      const progress = details !== null && typeof details === "object" && "progress" in details
+        ? details.progress
+        : undefined;
+      if (Array.isArray(progress) && progress.length > 0) return;
       setRetroDue("empty worker result");
       persistSprintState();
       return;
@@ -1748,7 +1806,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const taskJobs = [...(jobs?.running ?? []), ...(jobs?.recent ?? [])].filter((job) => job.type === "task");
       if (taskJobs.some((job) => typeof job.label === "string" && job.label.includes(task.content))) addSeenRow(task.content);
     }
-    const { facilitatorSettled, updaterRejected } = settleSprintJobs(jobs?.recent ?? [], now);
+    const { facilitatorSettled, updaterRejected } = settleSprintJobs([...branchAsyncTaskResults(ctx.sessionManager.getBranch()), ...(jobs?.recent ?? [])], now);
     // One persist per loop: a burst of background receipts used to persist a full snapshot per receipt.
     const freshReceipts = branchRetroReceiptIds(ctx.sessionManager.getBranch()).filter((receipt) => !sprintState.retroReceiptIds.includes(receipt));
     if (facilitatorSettled || freshReceipts.length > 0) finishRetro(freshReceipts.length > 0 ? freshReceipts : undefined, false);
