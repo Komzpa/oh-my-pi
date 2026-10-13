@@ -78,6 +78,7 @@ export const taskSchema = type({
 	"schemaMode?": '"permissive" | "strict"',
 	"resources?": "string[]",
 	"tools?": "string[]",
+	"isolated?": "boolean",
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
@@ -89,6 +90,7 @@ const taskSchemaNoIsolation = type({
 	"schemaMode?": '"permissive" | "strict"',
 	"resources?": "string[]",
 	"tools?": "string[]",
+	"+": "delete",
 });
 function guardBatchAgent(schema: BaseType): BaseType {
 	// Inspect the input before undeclared-key deletion can erase the requested agent.
