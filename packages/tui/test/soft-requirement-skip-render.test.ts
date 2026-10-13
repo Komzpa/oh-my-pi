@@ -45,6 +45,26 @@ describe("soft requirement skip rendering", () => {
 			const described = component.describe();
 			expect(described.k).toBe("card");
 			expect(JSON.stringify(described)).toContain("Tool call was skipped: waiting for todo.");
+			const rendered = Bun.stripANSI(component.render(100).join("\n"));
+			expect(rendered).toContain("Skipped (waiting for todo)");
+		} finally {
+			component.stopAnimation();
+		}
+	});
+
+	it("still hides an interrupt-skipped wait call", () => {
+		const ui = { requestRender() {}, requestComponentRender() {}, resetDisplay() {} } as unknown as TUI;
+		const component = new ToolExecutionComponent("wait", {}, {}, undefined, ui);
+		try {
+			component.updateResult(
+				{
+					content: [{ type: "text", text: "Tool call was skipped: interrupted." }],
+					details: { __synthetic: true, source: "interrupt_skipped" },
+					isError: true,
+				},
+				false,
+			);
+			expect(component.render(100)).toEqual([]);
 		} finally {
 			component.stopAnimation();
 		}

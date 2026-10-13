@@ -468,6 +468,7 @@
 - Fixed pasted drive-less `file:///…` URLs (forwarded from a macOS pasteboard or remote session) staying undecoded on Windows instead of loading as image paths.
 - Fixed an output artifact whose file cannot be opened (e.g. a directory in the way) being reported on Windows as a write failure and retried later, instead of a terminal open failure.
 - Fixed plan review's Contents in Tern: clicking an entry, or moving through them with the arrow keys, now scrolls the plan to that section.
+- Fixed soft-requirement skips of `wait` calls rendering nothing in `render()`; only interrupt skips are hidden now, so the "waiting for <tool>" status shows.
 
 ### Removed
 
