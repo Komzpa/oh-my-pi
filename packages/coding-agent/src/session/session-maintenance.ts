@@ -793,7 +793,9 @@ export class SessionMaintenance {
 	 * skips the disk rewrite.
 	 */
 	async dropImages(): Promise<{ removed: number }> {
-		const branchEntries = this.#host.sessionManager.getBranch();
+		// Raw entries: prune projections are detached text-only copies, and the
+		// images of a pruned tool result live only in the raw journal entry.
+		const branchEntries = this.#host.sessionManager.getRawBranch();
 		let removed = 0;
 		for (const entry of branchEntries) {
 			if (entry.type === "message") {

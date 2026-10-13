@@ -316,6 +316,31 @@ describe("AgentSession per-turn prune persistence", () => {
 		expectPrunedRebuild(forkedCopy.buildSessionContext().messages, livePrunedAt);
 	});
 
+	it("dropImages strips images from the raw journal entry of an already-pruned tool result", async () => {
+		const IMAGE_CALL_ID = "call-image-pruned";
+		const imageResultId = sessionManager.appendMessage({
+			role: "toolResult",
+			toolCallId: IMAGE_CALL_ID,
+			toolName: "read",
+			content: [
+				{ type: "text", text: "screenshot" },
+				{ type: "image", data: "AAAA", mimeType: "image/png" },
+			],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		sessionManager.appendToolResultPrune([{ entryId: imageResultId, notice: "[pruned]" }], Date.now());
+
+		// The projected branch shows the text-only notice; the raw entry still holds the image.
+		const projected = sessionManager.getBranch().find(entry => entry.id === imageResultId);
+		expect(JSON.stringify(projected)).not.toContain("image/png");
+		expect(JSON.stringify(sessionManager.getEntry(imageResultId))).toContain("image/png");
+
+		const { removed } = await session.dropImages();
+		expect(removed).toBe(1);
+		expect(JSON.stringify(sessionManager.getEntry(imageResultId))).not.toContain("image/png");
+	});
+
 	it("settles the run and keeps the appended prune when its flush fails", async () => {
 		const flush = vi.spyOn(sessionManager, "flush").mockRejectedValueOnce(new Error("injected flush failure"));
 		const runStates: string[] = [];
