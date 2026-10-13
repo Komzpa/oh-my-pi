@@ -632,10 +632,20 @@ describe("experimental context management", () => {
 		});
 		const notebookText = `Durable notebook:\n${"- task state entry line. ".repeat(64)}`;
 		await contextNotes.execute("save-notebook", { text: notebookText });
+		// Seed a prior rollover whose kept tail is separated from the notebook
+		// and original request by discarded assistant payloads.
+		manager.appendMessage(assistant("discarded work ".repeat(128)));
+		const keptId = manager.appendMessage(assistant("kept result"));
+		manager.appendCompaction("earlier rollover", undefined, keptId, 1000, {
+			details: { kind: "experimental-context-rollover", version: 1 },
+		});
+		for (const message of [assistant("further work ".repeat(128)), assistant("latest result")])
+			manager.appendMessage(message);
+		agent.replaceMessages(manager.buildSessionContext().messages);
 		await session.compact();
 		const entry = manager
 			.getEntries()
-			.find((candidate): candidate is CompactionEntry => candidate.type === "compaction");
+			.findLast((candidate): candidate is CompactionEntry => candidate.type === "compaction");
 		if (!entry) throw new Error("Expected a rollover boundary");
 		const expected =
 			computeNonMessageTokens(session, agent.tokenizer, session.settings.revision) +

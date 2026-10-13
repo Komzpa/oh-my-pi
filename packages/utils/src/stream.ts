@@ -625,16 +625,21 @@ export function parseJsonlLenient<T>(buffer: string, options: { onMalformedRecor
 			}
 		}
 		if (error) {
-			const nextNewline = buffer.indexOf("\n", read);
+			const recoveryStart = values.length > 0 ? read : 0;
+			const nextNewline = buffer.indexOf("\n", recoveryStart);
 			const malformedEnd = nextNewline === -1 ? buffer.length : nextNewline;
-			if (buffer.substring(read, malformedEnd).trim().length > 0) options.onMalformedRecord?.();
+			if (buffer.substring(recoveryStart, malformedEnd).trim().length > 0) options.onMalformedRecord?.();
 			if (nextNewline === -1) break;
 			buffer = buffer.substring(nextNewline + 1);
 			continue;
 		}
 		if (read === 0) {
-			if (buffer.trim().length > 0) options.onMalformedRecord?.();
-			break;
+			const nextNewline = buffer.indexOf("\n");
+			const malformedEnd = nextNewline === -1 ? buffer.length : nextNewline;
+			if (buffer.substring(0, malformedEnd).trim().length > 0) options.onMalformedRecord?.();
+			if (nextNewline === -1) break;
+			buffer = buffer.substring(nextNewline + 1);
+			continue;
 		}
 		buffer = buffer.substring(read);
 		if (done) break;

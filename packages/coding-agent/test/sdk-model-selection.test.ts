@@ -2297,6 +2297,61 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		}
 	});
 
+	test("checks only one historical configuration payload per kind during resume", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected bundled model");
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendModelChange(`${model.provider}/${model.id}`);
+		for (let i = 0; i < 100; i++) {
+			sessionManager.appendThinkingLevelChange(Effort.High);
+			sessionManager.appendServiceTierChange({ openai: "priority" });
+		}
+		const iterate = sessionManager.iterateBranch.bind(sessionManager);
+		const decoded = { thinking_level_change: 0, service_tier_change: 0 };
+		let unfilteredReads = 0;
+		vi.spyOn(sessionManager, "iterateBranch").mockImplementation(function* (type) {
+			for (const entry of iterate(type)) {
+				if (!type) unfilteredReads++;
+				if (type === "thinking_level_change" || type === "service_tier_change") decoded[type]++;
+				yield entry;
+			}
+		});
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			model,
+			authStorage: fixtureAuthStorage,
+			modelRegistry: fixtureModelRegistry,
+			sessionManager,
+			settings: Settings.isolated(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+			rules: [],
+			preloadedCustomToolPaths: [],
+			toolNames: ["read"],
+		});
+		try {
+			const startupDecoded = { ...decoded, unfiltered: unfilteredReads };
+			expect(session.thinkingLevel).toBe(Effort.High);
+			expect(sessionManager.buildSessionContext().serviceTier).toEqual({ openai: "priority" });
+			expect(startupDecoded).toEqual({
+				thinking_level_change: 1,
+				service_tier_change: 1,
+				// An in-memory context replay reads the path once; the existence
+				// check reads one item. Exit recovery must not add another scan.
+				unfiltered: sessionManager.getEntryCount() + 1,
+			});
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	test("restores role model max selector from extension provider after startup resume", async () => {
 		const defaultModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!defaultModel) {

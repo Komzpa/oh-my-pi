@@ -16,9 +16,11 @@ import {
 	describePendingToolCalls,
 	hasRestorableTurn,
 	SESSION_EXIT_CUSTOM_TYPE,
+	type SessionExitData,
 	TOOL_EXECUTION_START_CUSTOM_TYPE,
 	type ToolExecutionStartData,
 } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
+import { createInterruptedTurnAbortMessageFromMetadata } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
@@ -60,6 +62,40 @@ describe("session exit diagnostics", () => {
 		authStorage = undefined;
 		tempDir?.removeSync();
 		tempDir = undefined;
+	});
+
+	it("selects only the branch tail and latest exit payload from indexed metadata", () => {
+		const sessionManager = SessionManager.inMemory();
+		for (let i = 0; i < 100; i++) {
+			sessionManager.appendMessage({ role: "user", content: `old ${i}`, timestamp: i });
+			sessionManager.appendMessage({
+				role: "assistant",
+				content: [{ type: "text", text: `old reply ${i}` }],
+				api: pendingAssistant.api,
+				provider: pendingAssistant.provider,
+				model: pendingAssistant.model,
+				usage: pendingAssistant.usage,
+				stopReason: "stop",
+				timestamp: i,
+			});
+		}
+		sessionManager.appendMessage(pendingAssistant);
+		sessionManager.appendCustomEntry(SESSION_EXIT_CUSTOM_TYPE, {
+			reason: "exit",
+			kind: "process_exit",
+			recordedAt: "2026-07-11T02:20:08.800Z",
+		});
+		// An invalid newer marker must not hide the prior valid process exit.
+		sessionManager.appendCustomEntry(SESSION_EXIT_CUSTOM_TYPE, { reason: "invalid", kind: "unknown" });
+		const expected = createInterruptedTurnAbortMessage(sessionManager.getBranch());
+		let reads = 0;
+		const recovered = createInterruptedTurnAbortMessageFromMetadata(sessionManager.getBranchMetadata(), id => {
+			reads++;
+			return sessionManager.getEntry(id);
+		});
+		expect(recovered).toEqual(expected);
+		expect(recovered).toMatchObject({ role: "assistant", stopReason: "aborted", model: pendingAssistant.model });
+		expect(reads).toBeLessThanOrEqual(4);
 	});
 
 	it("records a durable tool start marker and shutdown diagnostic before a pending result exists", async () => {
@@ -128,17 +164,18 @@ describe("session exit diagnostics", () => {
 			.find(entry => entry.type === "custom" && entry.customType === SESSION_EXIT_CUSTOM_TYPE);
 		await reopened.close();
 		if (exitEntry?.type !== "custom") throw new Error("Expected session exit marker");
-		expect(exitEntry.data).toMatchObject({
-			reason: "dispose",
-			kind: "normal",
-			pendingToolCalls: [
-				{
-					toolCallId: "toolu_repro",
-					toolName: "bash",
-					args: { command: "bun run check:ts" },
-				},
-			],
-		});
+		const exit = exitEntry.data as SessionExitData;
+		expect(exit.reason).toBe("dispose");
+		expect(exit.kind).toBe("normal");
+		expect(exit.pendingToolCalls?.length).toBe(1);
+		const exitPending = exit.pendingToolCalls?.[0];
+		if (!exitPending) throw new Error("Expected pending tool diagnostic");
+		expect(exitPending.toolCallId).toBe("toolu_repro");
+		expect(exitPending.toolName).toBe("bash");
+		if (exitPending.args === null || typeof exitPending.args !== "object" || !("command" in exitPending.args)) {
+			throw new Error("Expected pending command arguments");
+		}
+		expect(exitPending.args.command).toBe("bun run check:ts");
 	});
 
 	it("signal teardown persists the postmortem reason, not the generic dispose", async () => {

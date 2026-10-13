@@ -3,7 +3,13 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { type CompactionSummaryMessage, INTERRUPTED_THINKING_MESSAGE_TYPE } from "../../src/session/messages";
-import { buildSessionContext, type StrippedToolCallsMarker } from "../../src/session/session-context";
+import {
+	buildSessionContext,
+	buildSessionContextFromLeafPath,
+	selectSessionContextEntriesFromLeafPath,
+	type SessionContextEntryMetadata,
+	type StrippedToolCallsMarker,
+} from "../../src/session/session-context";
 import type { SessionEntry } from "../../src/session/session-entries";
 
 const timestamp = "2026-07-09T00:00:00.000Z";
@@ -80,6 +86,53 @@ describe("buildSessionContext snapcompact archives", () => {
 
 		expect(summary.images?.map(image => image.data)).toEqual(["base64-frame"]);
 		expect(summary.blocks?.map(block => block.type)).toEqual(["text", "image", "text"]);
+	});
+});
+
+describe("session context entry selection", () => {
+	it("keeps the newest legacy assistant beyond a reset boundary", () => {
+		const path: SessionContextEntryMetadata[] = [
+			{ id: "current-user", parentId: "reset", type: "message", messageRole: "user" },
+			{ id: "reset", parentId: "new-assistant", type: "reset_boundary" },
+			{ id: "new-assistant", parentId: "old-assistant", type: "message", messageRole: "assistant" },
+			{ id: "old-assistant", parentId: null, type: "message", messageRole: "assistant" },
+		];
+
+		const selected = selectSessionContextEntriesFromLeafPath(path, id => ({ id }) as unknown as SessionEntry);
+
+		expect(selected.map(entry => entry.id)).toEqual(["current-user", "reset", "new-assistant"]);
+	});
+
+	it("preserves full-context model inference when compaction omits the assistant tail", () => {
+		const oldAssistant = assistantEntry("old-assistant", null, "stop", "old", 1);
+		const newestAssistant = assistantEntry("new-assistant", "old-assistant", "stop", "new", 2);
+		if (newestAssistant.type !== "message" || newestAssistant.message.role !== "assistant")
+			throw new Error("Expected assistant history");
+		newestAssistant.message.model = "new-default";
+		const compaction: SessionEntry = {
+			type: "compaction",
+			id: "compact",
+			parentId: "new-assistant",
+			timestamp,
+			summary: "summarized assistant turns",
+			firstKeptEntryId: "tail-user",
+			tokensBefore: 10,
+		};
+		const tail = userEntry("tail-user", "compact", "after compaction", 3);
+		const fullBranch = [oldAssistant, newestAssistant, compaction, tail];
+		const full = buildSessionContext(fullBranch);
+		const path: SessionContextEntryMetadata[] = [tail, compaction, newestAssistant, oldAssistant].map(entry => ({
+			id: entry.id,
+			parentId: entry.parentId,
+			type: entry.type,
+			messageRole: entry.type === "message" ? entry.message.role : undefined,
+		}));
+		const selected = selectSessionContextEntriesFromLeafPath(path, id => fullBranch.find(entry => entry.id === id)!);
+		const projected = buildSessionContextFromLeafPath(selected);
+
+		expect(selected.map(entry => entry.id)).toContain("new-assistant");
+		expect(projected.models.default).toBe("anthropic/new-default");
+		expect(projected.models.default).toBe(full.models.default);
 	});
 });
 

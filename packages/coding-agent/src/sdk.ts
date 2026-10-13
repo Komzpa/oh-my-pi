@@ -197,7 +197,10 @@ import {
 	formatCredentialDisabledNotice,
 } from "./session/credential-disabled-notice";
 import { DateCwdReminderInjector } from "./session/date-cwd-reminder";
-import { createInterruptedToolResults, createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
+import {
+	createInterruptedToolResults,
+	createInterruptedTurnAbortMessageFromMetadata,
+} from "./session/exit-diagnostics";
 import { recoverInlineSloppyEdit } from "./session/inline-edit-recovery";
 import {
 	type CustomMessage,
@@ -2011,19 +2014,25 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	// evidence that the old process can no longer finish that turn. Preserve the
 	// partial transcript and append one terminal aborted assistant record before
 	// rebuilding runtime context. The helper is idempotent once that record exists.
-	let existingBranch = logger.time("getSessionBranch", () => sessionManager.getBranch());
-	const interruptedTurnAbort = createInterruptedTurnAbortMessage(existingBranch);
+	const startupBranchMetadata = sessionManager.getBranchMetadata();
+	const interruptedTurnAbort = createInterruptedTurnAbortMessageFromMetadata(startupBranchMetadata, id =>
+		sessionManager.getEntry(id),
+	);
 	if (interruptedTurnAbort) {
-		for (const result of createInterruptedToolResults(existingBranch)) sessionManager.appendMessage(result);
+		for (const result of createInterruptedToolResults(sessionManager.iterateBranch()))
+			sessionManager.appendMessage(result);
 		sessionManager.appendMessage(interruptedTurnAbort);
-		existingBranch = logger.time("getRecoveredSessionBranch", () => sessionManager.getBranch());
 	}
 	let existingSession = logger.time("loadSessionContext", () =>
 		deobfuscateSessionContext(sessionManager.buildSessionContext(), obfuscator),
 	);
-	const hasExistingSession = existingBranch.length > 0;
-	const hasThinkingEntry = existingBranch.some(entry => entry.type === "thinking_level_change");
-	const hasServiceTierEntry = existingBranch.some(entry => entry.type === "service_tier_change");
+	let hasExistingSession = false;
+	for (const _entry of sessionManager.iterateBranch()) {
+		hasExistingSession = true;
+		break;
+	}
+	const hasThinkingEntry = !sessionManager.iterateBranch("thinking_level_change").next().done;
+	const hasServiceTierEntry = !sessionManager.iterateBranch("service_tier_change").next().done;
 
 	const deferredModelPatterns = Array.isArray(options.modelPattern)
 		? options.modelPattern.map(pattern => pattern.trim()).filter(Boolean)
@@ -3453,15 +3462,19 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// has selected its final model, use that model to terminate the
 		// interrupted turn before the live agent consumes the restored context.
 		if (model) {
-			const selectedModelAbort = createInterruptedTurnAbortMessage(existingBranch, {
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
-			});
+			const selectedModelAbort = createInterruptedTurnAbortMessageFromMetadata(
+				sessionManager.getBranchMetadata(),
+				id => sessionManager.getEntry(id),
+				{
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+				},
+			);
 			if (selectedModelAbort) {
-				for (const result of createInterruptedToolResults(existingBranch)) sessionManager.appendMessage(result);
+				for (const result of createInterruptedToolResults(sessionManager.iterateBranch()))
+					sessionManager.appendMessage(result);
 				sessionManager.appendMessage(selectedModelAbort);
-				existingBranch = logger.time("getRecoveredUserTailBranch", () => sessionManager.getBranch());
 				existingSession = logger.time("loadRecoveredUserTailContext", () =>
 					deobfuscateSessionContext(sessionManager.buildSessionContext(), obfuscator),
 				);
