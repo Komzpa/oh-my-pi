@@ -244,6 +244,64 @@ test("chief bash admits live read-only compound commands", async () => {
   }
 });
 
+test("chief bash admits cd-led looks, absolute-path binaries, gh reads and extended git reads", async () => {
+  const cwd = repo("clean");
+  const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
+  try {
+    const allowed = [
+      "cd /home/kom/proj/ai_pr/omp-lane-escalated-gate && git ls-remote fork topic/x; git status --short; git log --oneline -3",
+      "/usr/bin/git log --oneline -1 && /usr/bin/git merge-base HEAD origin/main",
+      "/usr/local/bin/git status; /bin/sed -n '1,3p' f",
+      "gh api repos/x/y/pulls/1 --jq .title",
+      'gh api "repos/x/y/actions/runs?head_sha=$(gh api repos/x/y/pulls/1 --jq .head.sha)"',
+      "gh api -X GET repos/x/y",
+      "gh pr view 1 --repo x/y && gh pr checks 1 && gh pr list && gh pr diff 1",
+      "gh run view 1 && gh run list",
+      "git -C /x show HEAD | git -C /x patch-id --stable",
+      "git cat-file -p HEAD; git rev-list --count HEAD; git for-each-ref refs/heads; git name-rev HEAD; git describe --tags",
+      "git blame -L 1,3 f; git shortlog -sn; git grep -n todo -- f",
+    ];
+    const results = [];
+    for (const command of allowed) {
+      results.push({ command, executed: (await outcome(state, cwd, { name: "bash", arguments: { command } })).executed });
+    }
+    expect(results).toEqual(allowed.map((command) => ({ command, executed: true })));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("chief bash still refuses cd-led mutations, absolute mutators and gh writes", async () => {
+  const cwd = repo("clean");
+  const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
+  try {
+    const blocked = [
+      "cd x && rm y",
+      "cd $HOME && git status",
+      "/usr/bin/git push",
+      "/bin/sed -i s/a/b/ f",
+      "cd x && git push",
+      "git push",
+      "git commit -m x",
+      "gh api -X POST repos/x/y/issues",
+      "gh api repos/x/y -f a=b",
+      "gh api repos/x/y --method PATCH",
+      "gh api repos/x/y --input body.json",
+      "gh pr merge 1",
+      "gh pr comment 1 --body x",
+      "gh pr create",
+      "gh run rerun 1",
+    ];
+    const results = [];
+    for (const command of blocked) {
+      results.push({ command, executed: (await outcome(state, cwd, { name: "bash", arguments: { command } })).executed });
+    }
+    expect(results).toEqual(blocked.map((command) => ({ command, executed: false })));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("chief bash blocks mutations inside structure and malformed shell", async () => {
   const cwd = repo("clean");
   const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };

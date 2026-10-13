@@ -2348,6 +2348,27 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (name.value === "journalctl") return !args.some((word) => word.dynamic || /^--(?:rotate|vacuum|flush|sync|relinquish-var|smart-relinquish-var|setup-keys|update-catalog)(?:[=-]|$)/.test(word.value));
     return READ_ONLY_BASH.test(name.value);
   };
+  // gh reads: `gh api` stays a look only while its method is GET and it sends no fields or body.
+  // The PR and run views are looks; other gh verbs (pr merge/comment/create, run rerun) stay worker work.
+  const readOnlyGh = (words: Array<{ value: string; dynamic: boolean }>) => {
+    const [, sub, ...args] = words;
+    if (!sub || sub.dynamic) return false;
+    if (sub.value === "pr" || sub.value === "run") {
+      const verb = args[0];
+      if (!verb || verb.dynamic) return false;
+      return (sub.value === "pr" ? ["view", "checks", "list", "diff"] : ["view", "list"]).includes(verb.value);
+    }
+    if (sub.value !== "api") return false;
+    for (let i = 0; i < args.length; i += 1) {
+      const word = args[i];
+      if (/^(?:-f|-F)/.test(word.value) || /^--(?:field|raw-field|input)(?:=|$)/.test(word.value)) return false;
+      const method = word.value.match(/^(?:-X|--method=?)(.*)$/);
+      if (!method) continue;
+      const value = method[1] || args[++i];
+      if (!value || value.dynamic || value.value.toUpperCase() !== "GET") return false;
+    }
+    return true;
+  };
   // Git mutation (add, commit, push, merge) is the git-pr-owner worker's job, never the chief's
   // (user 2026-09-25: "чего чиф оф стафф гит дрочит, у него же писарь есть и гитарь?").
   // Inspect shell structure without executing it. Unknown syntax fails closed; substitutions
@@ -2362,7 +2383,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       // A leading checkout change is navigation, not delegated work. Classify every
       // following command normally, so `cd x && make` still fails closed.
       if (tokens[0]?.plain && tokens[0].value === "cd") {
-        if (!tokens[1] || tokens[1].value.startsWith("-") || !tokens[2]?.plain || tokens[2].value !== "&&") return false;
+        if (!tokens[1] || tokens[1].dynamic || tokens[1].value.startsWith("-") || !tokens[2]?.plain || tokens[2].value !== "&&") return false;
         at = 3;
       }
       const keyword = (words: string[]) => tokens[at]?.plain && words.includes(tokens[at].value);
@@ -2373,13 +2394,17 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       };
       const simple = (words: Token[]) => {
         if (!words.length || words[0].dynamic) return false;
+        // A static absolute binary (/usr/bin/git, /bin/sed) is judged by its basename.
+        const binary = words[0].value.match(/^\/(?:usr\/(?:local\/)?)?s?bin\/([^/]+)$/);
+        if (binary) words = [{ ...words[0], value: binary[1] }, ...words.slice(1)];
+        if (words[0].value === "gh") return readOnlyGh(words);
         if (words[0].value !== "git") return readOnlyLook(words);
         let subcommand = 1;
         while (["-C", "-c"].includes(words[subcommand]?.value)) {
           if (words[subcommand].dynamic || !words[subcommand + 1]) return false;
           subcommand += 2;
         }
-        if (!words[subcommand] || words[subcommand].dynamic || !/^(?:status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|ls-tree|cat-file|merge-base|fetch)$/.test(words[subcommand].value)) return false;
+        if (!words[subcommand] || words[subcommand].dynamic || !/^(?:status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|ls-tree|cat-file|merge-base|fetch|patch-id|rev-list|for-each-ref|name-rev|describe|blame|shortlog|grep)$/.test(words[subcommand].value)) return false;
         if (words[subcommand].value !== "branch") return true;
         // Bare names create branches; -d/-D/-m/-M/-c/-C and unknown options mutate or
         // cannot be classified. Only known listing forms belong to the chief.
