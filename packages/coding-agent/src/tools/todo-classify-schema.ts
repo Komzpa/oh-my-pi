@@ -10,9 +10,14 @@ export const classifyTodoSchema = type({
 	),
 	"rows?": type("string").array().describe("exact todo row contents for classify linked"),
 	"mergeInto?": type("string").describe("target Rn for classify merged"),
-	"reason?": type("string").describe("reason required when classify uses not-a-requirement or relink=true"),
+	"reason?": type("string").describe(
+		"reason required for not-a-requirement, relink=true, or owner-backed supersession",
+	),
 	"relink?": type("boolean").describe(
 		"relink=true changes rows on an already-linked requirement (linked -> linked only); requires reason and at least one row",
+	),
+	"supersededBy?": type("string").describe(
+		"exact newer owner Rn authorizing a classification change; requires reason and records append-only history",
 	),
 	"resources?": type("string")
 		.array()

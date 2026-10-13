@@ -111,7 +111,7 @@ async function multiRowFixture(quotedRows = false) {
 }
 
 describe("multi-row audit retry identity", () => {
-	it("rejects an R24a receipt with a diagnostic naming the expected exact R24", async () => {
+	it("refuses sub-rows with conflicting artifacts and requests an exact-parent restatement", async () => {
 		const { cwd, manager, rows, runtime } = await multiRowFixture();
 		try {
 			const row = rows[0]!;
@@ -131,7 +131,7 @@ describe("multi-row audit retry identity", () => {
 								agent: "qa-auditor",
 								id: "suffix-row-qa",
 								exitCode: 0,
-								output: `| id | verdict | evidence | artifact |\n| --- | --- | --- | --- |\n| R24a | pass | read ${row.artifactPath} | ${row.content} @ sha256=${row.sha256} |`,
+								output: `| id | verdict | evidence | artifact |\n| --- | --- | --- | --- |\n| R24a | pass | read first artifact | row "${row.content}" @ file:${row.artifactPath}@sha256=${row.sha256} |\n| R24b | fail | different artifact | row "${row.content}" @ file:${rows[1]!.artifactPath}@sha256=${rows[1]!.sha256} |`,
 							},
 						],
 					},
@@ -140,8 +140,10 @@ describe("multi-row audit retry identity", () => {
 			} as never);
 			const diagnostic = JSON.stringify(result?.content) ?? "";
 			expect(diagnostic).toContain("requirements receipt rejected");
-			expect(diagnostic).toContain("R24a");
-			expect(diagnostic).toMatch(/expected[^\n]*\bR24\b/i);
+			expect(diagnostic).toContain("R24b");
+			expect(diagnostic).toContain("exact assigned ID R24");
+			expect(diagnostic).toContain("restate one row");
+			expect(diagnostic).toContain("discard a failing clause");
 			const requirement = getLatestRequirements(manager.getBranch())[0]!;
 			for (const linkedRow of rows) expect(requirement.rowVerdicts?.[linkedRow.content]).toBeUndefined();
 			expect(getPersistedRequirementAuditRejections(manager.getBranch(), manager.getSessionId()).has("R24")).toBe(
@@ -297,4 +299,69 @@ describe("multi-row audit retry identity", () => {
 			await fs.rm(cwd, { recursive: true, force: true });
 		}
 	});
+});
+
+describe("authenticated parent verdicts from auditor sub-rows", () => {
+	for (const status of ["pass", "fail", "unverifiable"] as const) {
+		it(`records R18 as ${status} when its second clause is ${status}`, async () => {
+			const { cwd, manager, rows, runtime } = await fixture();
+			try {
+				const row = rows[0]!;
+				appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [
+					{ ...getLatestRequirements(manager.getBranch())[0]!, id: "R18" },
+				]);
+				const identity = `row "${row.content}" @ file:${row.artifactPath}@sha256=${row.sha256}`;
+				await runtime.prepareAuditorTaskCall("task", "sub-row-audit", {
+					name: "main",
+					agent: "qa-auditor",
+					task: "Recount both clauses",
+				});
+				const result = await runtime.afterToolCall({
+					toolCall: { id: "sub-row-audit", name: "task" },
+					result: {
+						content: [],
+						details: {
+							results: [
+								{
+									index: 0,
+									agent: "qa-auditor",
+									id: "sub-row-worker",
+									exitCode: 0,
+									output: [
+										"| id | verdict | evidence | artifact-identity |",
+										"| --- | --- | --- | --- |",
+										`| R18a | pass | first clause exercised | ${identity} |`,
+										`| R18b | ${status} | second clause exercised | ${identity} |`,
+									].join("\n"),
+								},
+							],
+						},
+					},
+					isError: false,
+				} as never);
+				expect(result).toBeUndefined();
+				const receipt = getLatestRequirements(manager.getBranch())[0]!.rowVerdicts?.[row.content];
+				expect(receipt?.status).toBe(status);
+				expect(receipt?.evidence).toContain("R18a");
+				expect(receipt?.evidence).toContain("first clause exercised");
+				expect(receipt?.evidence).toContain("R18b");
+				expect(receipt?.evidence).toContain("second clause exercised");
+				const tool = new TodoTool({
+					cwd,
+					hasUI: false,
+					settings: Settings.isolated(),
+					getSessionFile: () => null,
+					getSessionSpawns: () => "*",
+					sessionManager: manager,
+					getTodoPhases: () => getLatestTodoPhasesFromEntries(manager.getBranch()),
+					setTodoPhases: phases => manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
+				} as ToolSession);
+				expect((await tool.execute("finish", { op: "done", task: row.content })).isError).toBe(
+					status === "pass" ? undefined : true,
+				);
+			} finally {
+				await fs.rm(cwd, { recursive: true, force: true });
+			}
+		});
+	}
 });

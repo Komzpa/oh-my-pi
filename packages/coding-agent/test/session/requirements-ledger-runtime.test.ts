@@ -1647,7 +1647,7 @@ it("keeps text-only QA inputs free of image fields", async () => {
 });
 
 describe("PR41 review boundaries", () => {
-	it("rejects split receipts that replace the immutable ask", async () => {
+	it("rejects a split receipt for an unassigned parent", async () => {
 		const { cwd, manager, runtime } = fixture();
 		try {
 			await runtime.prepareAuditorTaskCall("task", "split-review", {
@@ -1668,7 +1668,7 @@ describe("PR41 review boundaries", () => {
 								exitCode: 0,
 								output: receiptTable(gitIdentity(cwd, git(cwd, "rev-parse", "HEAD"))).replace(
 									"| R1 | audit the artifact |",
-									"| R1a | unrelated words |",
+									"| R2a | unrelated words |",
 								),
 							},
 						],

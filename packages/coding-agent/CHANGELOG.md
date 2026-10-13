@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed cancelled requirements permanently blocking publication: classification can now change with an explicit newer owner requirement and a reason, preserving append-only history and refusing ownerless changes ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
+- Fixed honest clause-by-clause audits being lost to suffixed IDs: authenticated sub-rows now preserve all evidence and fold to the assigned parent, with fail and unverifiable taking precedence over pass; the auditor prompt includes the exact table header ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed requirement audits binding unrelated IDs quoted in task prose; scope now follows exact task names and TODO ownership, preserved across session hydration ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed valid requirement passes being rejected when auditors omit image tags or reformat owner words; authenticated assignment snapshots now bind the original source while foreign IDs and stale artifacts remain rejected ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed TODO completion overwriting concurrent plan edits during artifact checks; changed plans now require a retry without losing rows or bindings ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))

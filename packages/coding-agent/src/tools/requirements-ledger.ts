@@ -80,12 +80,15 @@ export interface RequirementImage {
 /** `needs-user-restatement` is set once when every backing for an image is gone. */
 export type RequirementImageState = "needs-user-restatement";
 
-/** One reasoned relink of a linked requirement to a different row set. */
-export interface RequirementRelinkAmendment {
+/** One reasoned row change or owner-backed classification change, oldest first. */
+export interface RequirementAmendment {
 	at: string;
 	oldRows: string[];
 	newRows: string[];
 	reason: string;
+	supersededBy?: string;
+	oldClassification?: RequirementClassification;
+	newClassification?: RequirementClassification;
 }
 
 export interface RequirementLedgerItem {
@@ -103,8 +106,8 @@ export interface RequirementLedgerItem {
 	imageState?: RequirementImageState;
 	/** Set once the `needs-user-restatement` question has been surfaced for this user message. */
 	imageQuestionAsked?: true;
-	/** Reasoned linked -> linked row changes, oldest first; the raw ask itself never changes. */
-	amendments?: RequirementRelinkAmendment[];
+	/** Append-only changes; original identity and source words remain immutable. */
+	amendments?: RequirementAmendment[];
 }
 
 export interface RequirementsLedgerData {
@@ -251,15 +254,30 @@ function parseRequirement(value: unknown): RequirementLedgerItem | undefined {
 					isRowList(amendment.oldRows) &&
 					isRowList(amendment.newRows) &&
 					typeof amendment.reason === "string" &&
-					amendment.reason.trim().length > 0,
+					amendment.reason.trim().length > 0 &&
+					(amendment.supersededBy === undefined
+						? amendment.oldClassification === undefined && amendment.newClassification === undefined
+						: typeof amendment.supersededBy === "string" &&
+							REQUIREMENT_ID.test(amendment.supersededBy) &&
+							typeof amendment.oldClassification === "string" &&
+							Object.hasOwn(CLASSIFICATIONS, amendment.oldClassification) &&
+							typeof amendment.newClassification === "string" &&
+							Object.hasOwn(CLASSIFICATIONS, amendment.newClassification)),
 			))
 	)
 		return undefined;
-	const amendments = (value.amendments as RequirementRelinkAmendment[] | undefined)?.map(amendment => ({
+	const amendments = (value.amendments as RequirementAmendment[] | undefined)?.map(amendment => ({
 		at: amendment.at,
 		oldRows: [...amendment.oldRows],
 		newRows: [...amendment.newRows],
 		reason: amendment.reason,
+		...(amendment.supersededBy === undefined
+			? {}
+			: {
+					supersededBy: amendment.supersededBy,
+					oldClassification: amendment.oldClassification,
+					newClassification: amendment.newClassification,
+				}),
 	}));
 
 	return {
@@ -291,6 +309,13 @@ export function parseRequirementsLedger(value: unknown): RequirementsLedgerData 
 		requirements.push(requirement);
 	}
 	for (const requirement of requirements) {
+		let ownerAt = requirement.at;
+		for (const amendment of requirement.amendments ?? []) {
+			if (!amendment.supersededBy) continue;
+			const owner = requirements.find(item => item.id === amendment.supersededBy);
+			if (!owner || owner.id === requirement.id || Date.parse(owner.at) <= Date.parse(ownerAt)) return undefined;
+			ownerAt = owner.at;
+		}
 		if (requirement.classification !== "merged") continue;
 		const target = requirements.find(candidate => candidate.id === requirement.mergeInto);
 		if (
@@ -371,11 +396,13 @@ export interface ClassifyRequirementOptions {
 	mergeInto?: string;
 	/** Reasoned linked -> linked row change; requires `reason` and at least one row. */
 	relink?: boolean;
+	/** Exact newer canonical owner requirement authorizing a classification change. */
+	supersededBy?: string;
 }
 
 export type ClassifyRequirementResult = { requirements: RequirementLedgerItem[] } | { error: string };
 
-/** Classify one candidate exactly once without renumbering or normalizing its source words. */
+/** Classify once, or record a reasoned transition authorized by a newer owner statement. */
 export function classifyRequirement(
 	requirements: readonly RequirementLedgerItem[],
 	id: string,
@@ -389,7 +416,29 @@ export function classifyRequirement(
 			error: `Blocked: requirement ${id} is unknown. No classify call can target it; call todo op="view" to list current requirements and rows, then ${classifyForm}`,
 		};
 	const source = requirements[sourceIndex]!;
-	if (options.relink) return relinkRequirement(requirements, sourceIndex, classification, options);
+	const superseding =
+		options.supersededBy === undefined
+			? undefined
+			: requirements.find(requirement => requirement.id === options.supersededBy);
+	if (options.supersededBy !== undefined) {
+		const previousAuthority = source.amendments?.filter(amendment => amendment.supersededBy).at(-1);
+		const previousAt = previousAuthority
+			? requirements.find(requirement => requirement.id === previousAuthority.supersededBy)?.at
+			: source.at;
+		if (
+			source.classification === "candidate" ||
+			!superseding ||
+			superseding.id === id ||
+			!previousAt ||
+			Date.parse(superseding.at) <= Date.parse(previousAt) ||
+			!options.reason?.trim()
+		) {
+			return {
+				error: `Blocked: changing ${id} requires supersededBy="<newer owner Rn>" and a nonblank reason; cite an existing owner statement strictly newer than the original requirement and its last superseding statement. Candidate requirements must be classified normally.`,
+			};
+		}
+	}
+	if (options.relink && !superseding) return relinkRequirement(requirements, sourceIndex, classification, options);
 	const restatementTarget = requirements.find(requirement => requirement.id === options.mergeInto);
 	const resolvesImage =
 		source.imageState === "needs-user-restatement" &&
@@ -398,9 +447,9 @@ export function classifyRequirement(
 		restatementTarget.at > source.at &&
 		!restatementTarget.imageState &&
 		new RegExp(`\\b${id}\\b`).test(restatementTarget.rawText);
-	if (source.classification !== "candidate" && !resolvesImage) {
+	if (source.classification !== "candidate" && !resolvesImage && !superseding) {
 		return {
-			error: `Blocked: ${id} has already been classified as ${source.classification}; no further classify call can target it`,
+			error: `Blocked: ${id} has already been classified as ${source.classification}; a classification change requires supersededBy="<newer owner Rn>" and a nonblank reason. Use relink=true with a reason only for linked -> linked row changes`,
 		};
 	}
 	if (classification === "not-a-requirement" && !options.reason?.trim()) {
@@ -472,6 +521,20 @@ export function classifyRequirement(
 		updatedSource.mergeInto = mergeInto;
 	}
 
+	if (superseding) {
+		updatedSource.amendments = [
+			...(source.amendments ?? []),
+			{
+				at: new Date().toISOString(),
+				oldRows: [...source.rows],
+				newRows: [...updatedSource.rows],
+				oldClassification: source.classification,
+				newClassification: classification,
+				supersededBy: superseding.id,
+				reason: options.reason!.trim(),
+			},
+		];
+	}
 	next[sourceIndex] = updatedSource;
 	return { requirements: next };
 }
@@ -1054,8 +1117,9 @@ export function parseRequirementReceipt(
 }> | null {
 	const expected = new Set(expectedIds);
 	if (expected.size === 0 || expected.size !== expectedIds.length) return null;
+	const parentOf = (id: string): string => id.match(/^(R[1-9]\d*)[a-z]+$/)?.[1] ?? id;
 	const isUnrelatedId = (id: unknown): boolean =>
-		typeof id === "string" && /^R[1-9]\d*$/.test(id.trim()) && !expected.has(id.trim());
+		typeof id === "string" && /^R[1-9]\d*[a-z]*$/.test(id.trim()) && !expected.has(parentOf(id.trim()));
 	let parsedOutput: unknown;
 	try {
 		parsedOutput = JSON.parse(output);
@@ -1099,9 +1163,9 @@ export function parseRequirementReceipt(
 					keys.length === 0 &&
 					aliases[0] === "raw_words" &&
 					typeof row.id === "string" &&
-					rawWordsById?.has(row.id)
+					rawWordsById?.has(parentOf(row.id))
 				) {
-					cells.push(rawWordsById.get(row.id)!);
+					cells.push(rawWordsById.get(parentOf(row.id))!);
 					continue;
 				}
 				if (keys.length !== 1 || typeof row[keys[0]!] !== "string") return null;
@@ -1172,7 +1236,7 @@ export function parseRequirementReceipt(
 				cells[header.id]!,
 				header.rawWords >= 0
 					? cells[header.rawWords]!.replace(/<br\s*\/?>/gi, "\n")
-					: (rawWordsById?.get(cells[header.id]!) ?? ""),
+					: (rawWordsById?.get(parentOf(cells[header.id]!)) ?? ""),
 				cells[header.status]!,
 				cells[header.evidence]!,
 				cells[header.artifact]!,
@@ -1188,6 +1252,8 @@ export function parseRequirementReceipt(
 		evidence: string;
 		artifact: string;
 	}> = [];
+	const receivedIds = new Set<string>();
+	const parentRows = new Map<string, boolean>();
 	for (const cells of rowCells) {
 		const [id, rawWords, verdict, evidence, artifact, claimed, measured] = cells as [
 			string,
@@ -1199,12 +1265,24 @@ export function parseRequirementReceipt(
 			string,
 		];
 		const status = verdict.toLowerCase();
-		const parentId = /^R[1-9]\d*[a-z]$/.test(id) ? id.replace(/[a-z]$/, "") : undefined;
-		if (parentId && expected.has(parentId)) onIdentityError?.(id, parentId);
+		const parentId = parentOf(id);
+		const split = parentId !== id;
+		// Sub-rows are clause evidence, not new requirements. Only the authenticated
+		// assignment may bind them to a canonical parent; duplicate/mixed forms fail closed.
+		if (split && !rawWordsById?.has(parentId)) {
+			onIdentityError?.(id, parentId);
+			return null;
+		}
+		if (receivedIds.has(id) || (parentRows.has(parentId) && (!split || !parentRows.get(parentId)))) {
+			onIdentityError?.(id, parentId);
+			return null;
+		}
+		receivedIds.add(id);
+		parentRows.set(parentId, split);
 		if (
-			!/^R[1-9]\d*$/.test(id) ||
-			!expected.has(id) ||
-			(!rawWords && !rawWordsById?.has(id)) ||
+			!/^R[1-9]\d*[a-z]*$/.test(id) ||
+			!expected.has(parentId) ||
+			(!rawWords && !rawWordsById?.has(parentId)) ||
 			!Object.hasOwn(VERDICT_STATUSES, status) ||
 			!evidence ||
 			!artifact
@@ -1245,13 +1323,27 @@ export function parseRequirementReceipt(
 				}
 			}
 		}
-		rows.push({
-			id,
-			rawWords: rawWordsById?.get(id) ?? rawWords,
-			status: finalStatus as RequirementVerdictStatus,
-			evidence: finalEvidence,
-			artifact,
-		});
+		const prior = rows.find(row => row.id === parentId);
+		const clauseEvidence = split ? `${id}: ${finalEvidence}` : finalEvidence;
+		if (prior) {
+			// Never let a passing clause erase a fail/unverifiable clause or change
+			// its artifact. All clauses must cover the same authenticated row identity.
+			if (prior.artifact !== artifact) {
+				onIdentityError?.(id, parentId);
+				return null;
+			}
+			if (finalStatus === "fail" || (finalStatus === "unverifiable" && prior.status === "pass"))
+				prior.status = finalStatus as RequirementVerdictStatus;
+			prior.evidence += `\n${clauseEvidence}`;
+		} else {
+			rows.push({
+				id: parentId,
+				rawWords: rawWordsById?.get(parentId) ?? rawWords,
+				status: finalStatus as RequirementVerdictStatus,
+				evidence: clauseEvidence,
+				artifact,
+			});
+		}
 	}
 	if (new Set(rows.map(row => row.id)).size !== rows.length) return null;
 	return rows.length === expectedIds.length && expectedIds.every(id => rows.some(row => row.id === id)) ? rows : null;

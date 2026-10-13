@@ -10,6 +10,10 @@ import { describe, expect, it } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import {
+	RequirementsLedgerRuntime,
+	type RequirementPublicationGate,
+} from "@oh-my-pi/pi-coding-agent/session/requirements-ledger-runtime";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	appendRequirementsSnapshot,
@@ -354,5 +358,187 @@ describe("classify todo schema relink flag", () => {
 			relink: "true",
 		});
 		expect(rejected instanceof type.errors).toBe(true);
+	});
+});
+
+describe("owner-backed requirement supersession", () => {
+	const foldRow = "Fold cancelled branch rows";
+	const cancellation = "Cancel the fold rows; the owner reset the scope";
+	const resetAt = "2026-10-12T09:01:00.000Z";
+
+	async function scopeReset() {
+		const fixture = harness();
+		await fixture.tool.execute("fold-plan", { op: "init", items: [foldRow] });
+		appendRequirementsSnapshot(
+			{ appendEntry: (customType, data) => fixture.manager.appendCustomEntry(customType, data) },
+			[
+				linkedItem("R5", "Fold the branch rows", [foldRow]),
+				{
+					id: "R14",
+					at: resetAt,
+					rawText: cancellation,
+					classification: "not-a-requirement",
+					rows: [],
+					reason: "Owner cancellation",
+				},
+			],
+		);
+		return fixture;
+	}
+
+	it("reclassifies cancelled R5 by R14, retaining history and removing its publication gate", async () => {
+		const { manager, tool, snapshots } = await scopeReset();
+		let gate: RequirementPublicationGate | undefined;
+		const notices: string[] = [];
+		const runtime = new RequirementsLedgerRuntime({
+			agent: {} as never,
+			agentKind: () => "main",
+			cwd: () => "/tmp",
+			sessionManager: manager,
+			onSettledAssistantMessage: () => {},
+			queueModelNotice: notice => {
+				notices.push(notice);
+			},
+			setPublicationGate: next => {
+				gate = next;
+			},
+		});
+		const message = { content: [{ type: "text", text: "Scope reset applied" }], stopReason: "stop" } as never;
+		const publication = gate!;
+		expect((await publication(message, new AbortController().signal))?.replacementText).toContain(
+			"Not audit-verified",
+		);
+		expect(notices.join("\n")).toContain("R5");
+		expect((await tool.execute("blocked-fold", { op: "done", task: foldRow })).isError).toBe(true);
+		const before = snapshots();
+		const result = await tool.execute("cancel-fold", {
+			op: "classify",
+			id: "R5",
+			classification: "not-a-requirement",
+			supersededBy: "R14",
+			reason: cancellation,
+		});
+		expect(result.isError).toBeUndefined();
+		const current = getLatestRequirements(manager.getBranch()).find(item => item.id === "R5")!;
+		expect([current.classification, current.rows, current.rawText, current.at]).toEqual([
+			"not-a-requirement",
+			[],
+			"Fold the branch rows",
+			AT,
+		]);
+		expect(current.amendments).toEqual([
+			expect.objectContaining({
+				supersededBy: "R14",
+				oldClassification: "linked",
+				newClassification: "not-a-requirement",
+				oldRows: [foldRow],
+				newRows: [],
+				reason: cancellation,
+			}),
+		]);
+		expect(snapshots()).toBe(before + 1);
+		const history = manager.getBranch().flatMap(entry => {
+			if (entry.type !== "custom" || entry.customType !== REQUIREMENTS_LEDGER_CUSTOM_TYPE) return [];
+			return parseRequirementsLedger(entry.data)?.requirements.filter(item => item.id === "R5") ?? [];
+		});
+		expect(history.map(item => item.classification)).toEqual(["linked", "not-a-requirement"]);
+		runtime.syncPublicationGate();
+		expect(await publication(message, new AbortController().signal)).toBeUndefined();
+		expect((await tool.execute("retired-fold", { op: "done", task: foldRow })).isError).toBeUndefined();
+		const view = await tool.execute("history", { op: "view" });
+		expect(textOf(view)).toContain("R14");
+		expect(textOf(view)).toContain(cancellation);
+	});
+
+	it("refuses a classification change without a newer owner statement and a reason", async () => {
+		const { manager, tool, snapshots } = await scopeReset();
+		appendRequirementsSnapshot({ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) }, [
+			...getLatestRequirements(manager.getBranch()),
+			{
+				id: "R4",
+				at: AT,
+				rawText: "Earlier scope",
+				classification: "not-a-requirement",
+				rows: [],
+				reason: "Earlier statement",
+			},
+		]);
+		const before = snapshots();
+		for (const options of [
+			{ reason: cancellation },
+			{ supersededBy: "R99", reason: cancellation },
+			{ supersededBy: "R5", reason: cancellation },
+			{ supersededBy: "R4", reason: cancellation },
+			{ supersededBy: "R14", reason: " " },
+		]) {
+			const result = await tool.execute("unauthorised-reset", {
+				op: "classify",
+				id: "R5",
+				classification: "not-a-requirement",
+				...options,
+			});
+			expect(result.isError).toBe(true);
+			expect(snapshots()).toBe(before);
+			expect(getLatestRequirements(manager.getBranch()).find(item => item.id === "R5")?.classification).toBe(
+				"linked",
+			);
+		}
+	});
+
+	it("requires fresh owner authority for reactivation and keeps both amendments", async () => {
+		const { manager, tool, snapshots } = await scopeReset();
+		expect(
+			(
+				await tool.execute("cancel", {
+					op: "classify",
+					id: "R5",
+					classification: "not-a-requirement",
+					supersededBy: "R14",
+					reason: cancellation,
+				})
+			).isError,
+		).toBeUndefined();
+		const before = snapshots();
+		expect(
+			(
+				await tool.execute("reuse-owner", {
+					op: "classify",
+					id: "R5",
+					classification: "linked",
+					rows: [foldRow],
+					supersededBy: "R14",
+					reason: "Undo cancellation",
+				})
+			).isError,
+		).toBe(true);
+		expect(snapshots()).toBe(before);
+		appendRequirementsSnapshot({ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) }, [
+			...getLatestRequirements(manager.getBranch()),
+			{
+				id: "R16",
+				at: "2026-10-12T09:02:00.000Z",
+				rawText: "Resume folding R5",
+				classification: "not-a-requirement",
+				rows: [],
+				reason: "Owner scope change",
+			},
+		]);
+		expect(
+			(
+				await tool.execute("restore", {
+					op: "classify",
+					id: "R5",
+					classification: "linked",
+					rows: [foldRow],
+					supersededBy: "R16",
+					reason: "Owner resumed fold work",
+				})
+			).isError,
+		).toBeUndefined();
+		const current = getLatestRequirements(manager.getBranch()).find(item => item.id === "R5")!;
+		expect(current.amendments?.map(amendment => amendment.supersededBy)).toEqual(["R14", "R16"]);
+		expect(current.classification).toBe("linked");
+		expect(current.rowVerdicts).toBeUndefined();
+		expect((await tool.execute("no-old-pass", { op: "done", task: foldRow })).isError).toBe(true);
 	});
 });

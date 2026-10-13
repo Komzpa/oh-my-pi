@@ -1424,9 +1424,10 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		const result = await this.#executeTodo(_toolCallId, params, _signal, _onUpdate, _context);
 		if (result.details?.op === "view" && this.session.sessionManager) {
 			const amendments = getLatestRequirements(this.session.sessionManager.getBranch()).flatMap(requirement =>
-				(requirement.amendments ?? []).map(
-					amendment =>
-						`${requirement.id} relinked at ${amendment.at}: rows ${JSON.stringify(amendment.oldRows)} -> ${JSON.stringify(amendment.newRows)} (${amendment.reason})`,
+				(requirement.amendments ?? []).map(amendment =>
+					amendment.supersededBy
+						? `${requirement.id} superseded by ${amendment.supersededBy} at ${amendment.at}: ${amendment.oldClassification} -> ${amendment.newClassification}; rows ${JSON.stringify(amendment.oldRows)} -> ${JSON.stringify(amendment.newRows)} (${amendment.reason})`
+						: `${requirement.id} relinked at ${amendment.at}: rows ${JSON.stringify(amendment.oldRows)} -> ${JSON.stringify(amendment.newRows)} (${amendment.reason})`,
 				),
 			);
 			if (amendments.length > 0) {
@@ -1764,6 +1765,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 			reason,
 			mergeInto,
 			relink: params.relink === true,
+			supersededBy: typeof params.supersededBy === "string" ? params.supersededBy : undefined,
 		});
 		if ("error" in result) return { content: [{ type: "text", text: result.error }], details, isError: true };
 		if (resources || deployment) {

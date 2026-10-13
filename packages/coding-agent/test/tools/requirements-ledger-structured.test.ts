@@ -108,25 +108,28 @@ describe("structured qa-auditor requirement receipts", () => {
 		expect(parseRequirementReceipt(missingColumn, [row.id])).toBeNull();
 	});
 
-	it("accepts only exact assigned IDs and reports suffix identities", () => {
+	it("folds authenticated JSON clauses and refuses ambiguous or unauthenticated sub-rows", () => {
 		const row = fixture.requirements[0]!;
-		const exact = { ...row, id: "R7", verdict: "pass" };
-		expect(parseRequirementReceipt(JSON.stringify([exact]), ["R7"], new Map([["R7", row.raw_words]]))).toEqual([
-			{ id: "R7", rawWords: row.raw_words, status: "pass", evidence: row.evidence, artifact: row.artifact_identity },
+		const source = new Map([["R7", row.raw_words]]);
+		const first = { ...row, id: "R7a", verdict: "unverifiable", evidence: "clause A access missing" };
+		const second = { ...row, id: "R7b", verdict: "fail", evidence: "clause B observed wrong output" };
+		expect(parseRequirementReceipt(JSON.stringify([first, second]), ["R7"], source)).toEqual([
+			{
+				id: "R7",
+				rawWords: row.raw_words,
+				status: "fail",
+				evidence: "R7a: clause A access missing\nR7b: clause B observed wrong output",
+				artifact: row.artifact_identity,
+			},
 		]);
-		let identityError: [string, string] | undefined;
-		const suffix = { ...exact, id: "R7a" };
-		expect(
-			parseRequirementReceipt(
-				JSON.stringify([suffix]),
-				["R7"],
-				new Map([["R7", row.raw_words]]),
-				(received, expected) => {
-					identityError = [received, expected];
-				},
-			),
-		).toBeNull();
-		expect(identityError).toEqual(["R7a", "R7"]);
+		expect(parseRequirementReceipt(JSON.stringify([first]), ["R7"])).toBeNull();
+		for (const invalid of [
+			[first, first],
+			[{ ...first, id: "R7" }, second],
+			[first, { ...second, artifact_identity: "foreign artifact" }],
+		]) {
+			expect(parseRequirementReceipt(JSON.stringify(invalid), ["R7"], source)).toBeNull();
+		}
 	});
 
 	it("applies the claimed/measured mismatch coercion to JSON receipts", () => {

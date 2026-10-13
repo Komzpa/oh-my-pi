@@ -635,7 +635,7 @@ export class RequirementsLedgerRuntime {
 			expectedIds,
 			new Map(expected.map(requirement => [requirement!.id, requirement!.rawText])),
 			(receivedId, expectedParentId) => {
-				identityFailure ??= `${expectedParentId}: received requirement ID ${receivedId}; expected exact assigned ID ${expectedParentId}`;
+				identityFailure ??= `${expectedParentId}: received requirement ID ${receivedId}; restate one row with exact assigned ID ${expectedParentId}, verdict pass|fail|unverifiable, all clause evidence, and one unchanged assigned artifact identity. Do not mix parent and sub-row IDs or discard a failing clause.`;
 			},
 		);
 		if (!receipts) {
