@@ -309,10 +309,22 @@ function todoPhasesFingerprint(phases: readonly TodoPhase[]): string {
 	);
 }
 
+/**
+ * Copy JSON-shaped todo data out of a session entry by value. Entry payloads may be proxies from a lazily
+ * loading session store, which structuredClone rejects; every replayed row starts as plain data.
+ */
+function copyTodoData<T>(value: T): T {
+	if (value === null || typeof value !== "object") return value;
+	if (Array.isArray(value)) return value.map(item => copyTodoData(item)) as T;
+	const copy: Record<string, unknown> = {};
+	for (const [key, child] of Object.entries(value)) copy[key] = copyTodoData(child);
+	return copy as T;
+}
+
 function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
 	if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
 		const phases = (entry.data as { phases?: unknown } | undefined)?.phases;
-		return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
+		return Array.isArray(phases) ? copyTodoData(phases as TodoPhase[]) : undefined;
 	}
 	if (entry.type !== "message") return undefined;
 	const message = entry.message as {
@@ -324,7 +336,7 @@ function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
 	if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) return undefined;
 	if (message.details?.op === "view") return undefined;
 	const phases = message.details?.phases;
-	return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
+	return Array.isArray(phases) ? copyTodoData(phases as TodoPhase[]) : undefined;
 }
 
 function isTodoReworkAttempt(value: unknown): value is TodoReworkAttempt {
@@ -398,7 +410,7 @@ function isTodoPersistedEdit(value: unknown): value is TodoPersistedEdit {
 function compactTodoEditFromEntry(entry: SessionEntry): TodoPersistedEdit | undefined {
 	if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
 		const edit = (entry.data as { edit?: unknown } | undefined)?.edit;
-		return isTodoPersistedEdit(edit) ? edit : undefined;
+		return isTodoPersistedEdit(edit) ? copyTodoData(edit) : undefined;
 	}
 	if (entry.type !== "message") return undefined;
 	const message = entry.message as {
@@ -409,7 +421,7 @@ function compactTodoEditFromEntry(entry: SessionEntry): TodoPersistedEdit | unde
 	};
 	if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) return undefined;
 	if (message.details?.op === "view") return undefined;
-	return isTodoPersistedEdit(message.details?.edit) ? message.details.edit : undefined;
+	return isTodoPersistedEdit(message.details?.edit) ? copyTodoData(message.details.edit) : undefined;
 }
 
 type TodoReplayResult = { phases: TodoPhase[]; mutable: boolean };
