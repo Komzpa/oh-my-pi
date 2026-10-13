@@ -2830,6 +2830,13 @@ interface PreparedToolCall {
 	blocked?: boolean;
 	blockReason?: string;
 	prepareError?: unknown;
+	/**
+	 * Gate deferral for the sibling-todo ordering barrier: when the batch holds
+	 * explicit todo mutations, a non-todo call skips `beforeToolCall` here and
+	 * `executeToolCalls` evaluates it once after the todo mutations settle, so
+	 * the gate reads post-mutation state. Never set alongside `blocked`.
+	 */
+	deferredGate?: boolean;
 }
 
 /**
@@ -2936,6 +2943,20 @@ function formatToolNotFoundMessage(
 }
 
 /**
+ * Whether a call is an explicit todo mutation (`op="classify"`, `"append"`,
+ * …). Only `op="view"` reads without mutating; a missing or unrecognized op is
+ * treated as a mutation so the sibling ordering barrier still applies. The
+ * prepare phase and `executeToolCalls` share this predicate to agree on which
+ * calls form the mutation barrier.
+ */
+function isTodoMutationCall(name: string, args: unknown): boolean {
+	if (name !== "todo") return false;
+	if (typeof args !== "object" || args === null) return true;
+	if (!("op" in args)) return true;
+	return args.op !== "view";
+}
+
+/**
  * Pre-dispatch phase for every pending tool call on `assistantMessage`, run in
  * call order: intent extraction, argument validation, and the `beforeToolCall`
  * hook. A hook `args` revision is revalidated against the tool schema and
@@ -2953,6 +2974,12 @@ async function prepareToolCallDispatch(
 ): Promise<Map<string, PreparedToolCall>> {
 	const { resolveFallbackTool, suggestFallbackToolNames, intentTracing, beforeToolCall } = config;
 	const prepared = new Map<string, PreparedToolCall>();
+	// Sibling-todo ordering barrier: when the batch holds explicit todo
+	// mutations, non-todo calls skip `beforeToolCall` here so the gate reads
+	// post-mutation state after `executeToolCalls` runs the mutations first.
+	const batchHasTodoMutation = assistantMessage.content.some(
+		call => call.type === "toolCall" && isTodoMutationCall(call.name, call.arguments),
+	);
 	for (const toolCall of assistantMessage.content) {
 		if (toolCall.type !== "toolCall") continue;
 		if ((toolCall as CursorExecResolvedCarrier)[kCursorExecResolved] === true) continue;
@@ -3019,6 +3046,10 @@ async function prepareToolCallDispatch(
 		const effectiveArgs = validate(argsForExecution);
 		if (effectiveArgs === undefined) continue;
 		entry.args = effectiveArgs;
+		if (batchHasTodoMutation && !isTodoMutationCall(toolCall.name, effectiveArgs)) {
+			entry.deferredGate = true;
+			continue;
+		}
 		if (!beforeToolCall || !tool) continue;
 		let beforeResult: BeforeToolCallResult | undefined;
 		try {
@@ -3058,6 +3089,8 @@ async function prepareToolCallDispatch(
  * Final calls that can still reach tool execution after pre-dispatch policy.
  * Omitting a call is deliberate: reconciliation discards its direct candidate
  * and streamed children before final admission can release deferred work.
+ * Deferred-gate calls are omitted for the same reason: their candidate would
+ * otherwise launch and cache pre-gate arguments before the deferred hook runs.
  */
 function transformedExecutionArgs(
 	prepared: PreparedToolCall,
@@ -3096,6 +3129,7 @@ async function speculativeFinalCalls(
 		if (
 			!prepared ||
 			prepared.blocked ||
+			prepared.deferredGate === true ||
 			prepared.prepareError !== undefined ||
 			prepared.validationErrorMessage !== undefined
 		) {
@@ -3156,6 +3190,7 @@ async function executeToolCalls(
 		resolveFallbackTool,
 		suggestFallbackToolNames,
 		afterToolCall,
+		beforeToolCall,
 	} = config;
 	type ToolCallContent = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
 	// Defensive: the outer loop already filters exec-resolved blocks before
@@ -3229,12 +3264,13 @@ async function executeToolCalls(
 			result: undefined as AgentToolResult<any> | undefined,
 			isError: false,
 			skipped: false,
-			toolResultMessage: undefined as ToolResultMessage | undefined,
 			resultEmitted: false,
+			toolResultMessage: undefined as ToolResultMessage | undefined,
 			validationErrorMessage: prepared.validationErrorMessage,
 			blocked: prepared.blocked === true,
 			blockReason: prepared.blockReason,
 			prepareError: prepared.prepareError,
+			deferredGate: prepared.deferredGate === true,
 			preparedContext: prepared.additionalContext,
 			reportedContext: [] as string[],
 			executionArgs: prepared.executionArgs,
@@ -3631,6 +3667,74 @@ async function executeToolCalls(
 		await checkSteering().catch(() => undefined);
 	};
 
+	// Sibling-todo ordering barrier, second half: evaluate the deferred
+	// `beforeToolCall` gates once the todo mutations settle, so sibling
+	// execution tools read post-mutation state. A failed classify leaves the
+	// candidate unclassified, so the gate still blocks — classification failure
+	// never bypasses it. Each gate runs exactly once per call: the prepare
+	// phase skipped these calls, and this is their single evaluation.
+	const evaluateDeferredGates = async (): Promise<void> => {
+		for (const record of records) {
+			if (!record.deferredGate) continue;
+			record.deferredGate = false;
+			if (record.validationErrorMessage !== undefined) continue;
+			const { toolCall, tool } = record;
+			if (!beforeToolCall || !tool) continue;
+			let gateResult: BeforeToolCallResult | undefined;
+			try {
+				gateResult = await beforeToolCall(
+					{ assistantMessage, toolCall, tool, args: record.args, context: currentContext },
+					signal,
+				);
+			} catch (e) {
+				record.prepareError = e;
+				continue;
+			}
+			if (gateResult?.block) {
+				record.blocked = true;
+				record.blockReason = gateResult.reason;
+				continue;
+			}
+			if (isNonBlankContext(gateResult?.additionalContext)) {
+				record.preparedContext = gateResult.additionalContext;
+			}
+			if (gateResult?.args !== undefined) {
+				// A hook revision supersedes any cached admission-time transform
+				// result: runTool must derive execution args from the revised call.
+				record.executionArgs = undefined;
+				try {
+					const revised = validateToolArguments(tool, { ...toolCall, arguments: gateResult.args });
+					toolCall.arguments = gateResult.args;
+					record.args = revised;
+				} catch (validationError) {
+					record.args = gateResult.args;
+					record.validationErrorMessage =
+						validationError instanceof Error ? validationError.message : String(validationError);
+				}
+			}
+		}
+	};
+
+	const barrierActive = records.some(record => record.deferredGate);
+	const mutationIndices: number[] = [];
+	const restIndices: number[] = [];
+	if (barrierActive) {
+		records.forEach((record, index) => {
+			if (isTodoMutationCall(record.toolCall.name, record.args)) {
+				mutationIndices.push(index);
+			} else {
+				restIndices.push(index);
+			}
+		});
+	}
+	// Phase-two starts wait on this gate: it resolves after the mutation phase
+	// settles and the deferred gates are evaluated. Promise chaining only —
+	// no polling, timeouts, or sleeps.
+	const phaseTwo = barrierActive ? Promise.withResolvers<void>() : undefined;
+	const phaseTwoGate = phaseTwo?.promise;
+	const releasePhaseTwo = (): void => phaseTwo?.resolve();
+	const orderedIndices: number[] | undefined = barrierActive ? [...mutationIndices, ...restIndices] : undefined;
+
 	let lastExclusive: Promise<void> = Promise.resolve();
 	let sharedTasks: Promise<void>[] = [];
 	const tasks: Promise<void>[] = [];
@@ -3707,7 +3811,9 @@ async function executeToolCalls(
 					STEERING_INTERRUPT_POLL_MS,
 				)
 			: undefined;
-	for (let index = 0; index < records.length; index++) {
+	const totalRecords = orderedIndices?.length ?? records.length;
+	for (let position = 0; position < totalRecords; position++) {
+		const index = orderedIndices?.[position] ?? position;
 		const record = records[index];
 		const concurrencyMode = record.tool?.concurrency;
 		let concurrency: "shared" | "exclusive";
@@ -3724,7 +3830,12 @@ async function executeToolCalls(
 		} else {
 			concurrency = concurrencyMode ?? "shared";
 		}
-		const start = concurrency === "exclusive" ? Promise.all([lastExclusive, ...sharedTasks]) : lastExclusive;
+		const chainStart = concurrency === "exclusive" ? Promise.all([lastExclusive, ...sharedTasks]) : lastExclusive;
+		// Under the barrier, phase-two records additionally wait for the todo
+		// mutations to settle and their deferred gates to be evaluated, however
+		// the model ordered the batch. Mutation records chain as before.
+		const inPhaseTwo = barrierActive && position >= mutationIndices.length;
+		const start = inPhaseTwo && phaseTwoGate !== undefined ? Promise.all([chainStart, phaseTwoGate]) : chainStart;
 		const task = start.then(() => runTool(record, index));
 		tasks.push(task);
 		if (concurrency === "exclusive") {
@@ -3735,6 +3846,11 @@ async function executeToolCalls(
 		}
 	}
 	try {
+		if (barrierActive && phaseTwoGate !== undefined) {
+			await Promise.allSettled(tasks.slice(0, mutationIndices.length));
+			await evaluateDeferredGates();
+			releasePhaseTwo();
+		}
 		await Promise.allSettled(tasks);
 	} finally {
 		steeringWatchAbortController.abort();

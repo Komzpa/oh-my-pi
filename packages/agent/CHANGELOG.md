@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed sibling tool calls in a batch that also mutates the todo list being gated against pre-mutation state: their `beforeToolCall` gates now run after the todo mutations settle, their speculative candidates no longer launch or cache pre-gate arguments, and execution receives the hook's revised arguments ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
+
 ## [18.4.11] - 2026-10-02
 
 ### Fixed
