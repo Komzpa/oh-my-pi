@@ -83,7 +83,7 @@ function toolSession(
 			shellPath: SERVICE_SHELL,
 		}),
 	} as unknown as ToolSession;
-	cfgAsyncEnabled.set(session.settings, options.async ?? false);
+	cfgAsyncEnabled.override(session.settings, options.async ?? false);
 	return session;
 }
 
