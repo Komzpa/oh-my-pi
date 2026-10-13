@@ -4165,7 +4165,9 @@ export class SessionManager {
 		const entry = this.#index.get(entryId);
 		if (!entry) return;
 		const children = this.#index.childrenOf(entryId);
-		const canReparentChildren = children.every(child => child.type === "service_tier_change" || child.type === "tool_result_prune");
+		const canReparentChildren = children.every(
+			child => child.type === "service_tier_change" || child.type === "tool_result_prune",
+		);
 		let leafId = entry.parentId;
 		if (canReparentChildren) {
 			for (const child of children) {

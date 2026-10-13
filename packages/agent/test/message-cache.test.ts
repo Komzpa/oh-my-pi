@@ -156,10 +156,17 @@ describe("estimate cache invalidation seams", () => {
 		});
 		expect(result.prunedCount).toBe(1);
 
-		const path: SessionEntry[] = [...entries, {
-			type: "tool_result_prune", id: nextId(), parentId: entries[0].id,
-			timestamp: new Date(result.prunedAt).toISOString(), prunedAt: result.prunedAt, targets: result.targets,
-		}];
+		const path: SessionEntry[] = [
+			...entries,
+			{
+				type: "tool_result_prune",
+				id: nextId(),
+				parentId: entries[0].id,
+				timestamp: new Date(result.prunedAt).toISOString(),
+				prunedAt: result.prunedAt,
+				targets: result.targets,
+			},
+		];
 		const projected = projectToolResultPrunes(path)[0] as SessionMessageEntry;
 		expect(projectToolResultPrunes(path)[0]).toBe(projected);
 		expect(tokenizer.countMessage(big as AgentMessage)).toBe(before);
