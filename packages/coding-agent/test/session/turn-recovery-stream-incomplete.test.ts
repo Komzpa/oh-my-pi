@@ -188,4 +188,17 @@ describe("TurnRecovery stream_incomplete after committed text", () => {
 		});
 		expect(subject.handleCommittedTextStreamStall(message)).toBe(false);
 	});
+
+	it("continues when the stream-drop diagnostic is only in errorClassificationMessage", () => {
+		const calls: RecoveryCalls = { appended: [], continued: [] };
+		const subject = recovery({ textOutputCommitted: true, calls });
+		const message = assistant({
+			content: [...textOnly],
+			errorId: STREAM_INCOMPLETE_ERROR_ID,
+			errorMessage: "Request failed",
+			errorClassificationMessage: STREAM_INCOMPLETE_MESSAGE,
+		});
+		expect(subject.handleCommittedTextStreamStall(message)).toBe(true);
+		expect(calls.continued).toEqual([expect.objectContaining({ source: "stream-stall-continue" })]);
+	});
 });

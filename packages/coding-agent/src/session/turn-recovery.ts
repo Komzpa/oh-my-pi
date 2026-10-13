@@ -1675,7 +1675,10 @@ export class TurnRecovery {
 			AIError.PYTHON_HTTP2_STREAM_RESET_PATTERN.test(errorMessage) ||
 			AIError.PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(errorMessage) ||
 			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage) ||
-			AIError.isTransientStreamDropError(errorMessage)
+			// Providers such as Cursor keep the raw diagnostic in errorClassificationMessage and
+			// display-only text in errorMessage; retry classification reads both, so must this.
+			AIError.isTransientStreamDropError(errorMessage) ||
+			AIError.isTransientStreamDropError(message.errorClassificationMessage ?? "")
 		);
 	}
 	/**
