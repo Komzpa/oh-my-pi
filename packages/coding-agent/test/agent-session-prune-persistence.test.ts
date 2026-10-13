@@ -269,12 +269,14 @@ describe("AgentSession per-turn prune persistence", () => {
 
 		// Branch scoping: the path ending at the target itself excludes the
 		// later prune overlay, so it still shows the original payload.
-		const target = sessionManager.getBranch().find(
-			candidate =>
-				candidate.type === "message" &&
-				candidate.message.role === "toolResult" &&
-				candidate.message.toolCallId === BIG_CALL_ID,
-		);
+		const target = sessionManager
+			.getBranch()
+			.find(
+				candidate =>
+					candidate.type === "message" &&
+					candidate.message.role === "toolResult" &&
+					candidate.message.toolCallId === BIG_CALL_ID,
+			);
 		if (target?.type !== "message") throw new Error("Expected the seeded tool result entry on the branch");
 		const scoped = sessionManager
 			.getBranch(target.id)
@@ -359,7 +361,9 @@ describe("AgentSession per-turn prune persistence", () => {
 			expect(raw?.type === "message" ? raw.message : undefined).toMatchObject({
 				content: [{ type: "text", text: "match line\n".repeat(20000) }],
 			});
-			expect(raw?.type === "message" && raw.message.role === "toolResult" ? raw.message.prunedAt : undefined).toBeUndefined();
+			expect(
+				raw?.type === "message" && raw.message.role === "toolResult" ? raw.message.prunedAt : undefined,
+			).toBeUndefined();
 			expect(sessionManager.getEntries().filter(entry => entry.type === "tool_result_prune")).toHaveLength(1);
 			await sessionManager.flush();
 			const sessionFile = sessionManager.getSessionFile();
