@@ -647,13 +647,20 @@ export class RequirementsLedgerRuntime {
 			return `${expectedIds.join(", ")}: malformed or partial verdict table (expected id, verdict, evidence, artifact)${missing.length > 0 ? `; missing rows for ${missing.join(", ")}` : ""}`;
 		}
 		const phases = getLatestTodoPhasesFromEntries(branch);
+		// A bare `X @ …` segment labels a row only when X is a row this session knows.
+		// Pass every TODO row here: a foreign row label must never project onto the
+		// row the Rn is linked to.
+		const knownRows = new Set([
+			...requirements.flatMap(requirement => requirement.rows),
+			...phases.flatMap(phase => phase.tasks.map(task => task.content)),
+		]);
 		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
 		const updates = new Map<string, Record<string, RequirementVerdict>>();
 		for (const receipt of receipts) {
 			const requirement = expected.find(entry => entry?.id === receipt.id)!;
 			const scopedRows = requirement.rows.filter(row => !assignment.rows || assignment.rows.includes(row));
 			const namedRows = requirement.rows.filter(
-				row => getRequirementRowArtifactIdentity(receipt.artifact, row, scopedRows) !== undefined,
+				row => getRequirementRowArtifactIdentity(receipt.artifact, row, scopedRows, knownRows) !== undefined,
 			);
 			if (namedRows.some(row => !scopedRows.includes(row)))
 				return `${receipt.id}: artifact names a row outside this audit assignment`;
@@ -670,7 +677,7 @@ export class RequirementsLedgerRuntime {
 				);
 				const lastChange = getTodoRowChanges(this.#host.sessionManager.getBranch()).get(row);
 				const receivedAt = new Date().toISOString();
-				const identity = getRequirementRowArtifactIdentity(receipt.artifact, row, rows);
+				const identity = getRequirementRowArtifactIdentity(receipt.artifact, row, rows, knownRows);
 				if (identity === undefined)
 					return `${receipt.id}: artifact identity did not identify ${JSON.stringify(row)}; resolved checkout: ${formatRequirementGateArtifact(artifact)}`;
 				const verdict: RequirementVerdict = {

@@ -1735,3 +1735,103 @@ describe("audit scope for foreign cited Rn", () => {
 		}
 	});
 });
+
+describe("replay: R1 audit for row A while R2 is linked to row B", () => {
+	// Real raw words captured for the drive's R1: a whole user message (858 chars once
+	// whitespace-collapsed) whose words mention R2 and "DRIVE41 row B", and which embeds a
+	// pipe table that any receipt must escape for its own table cell.
+	const R1_RAW_TEXT =
+		"DRIVE41-FOREIGN-RN-20261013T111231Z-B turn 1. Disposable drive session. Make exactly these tool calls in this order, then stop. Do not read skills or docs. Do not narrate; call the tools. 1. todo op=append: add a row titled exactly DRIVE41 row A. 2. todo op=append: add a row titled exactly DRIVE41 row B. 3. todo op=classify: create requirement R1 with text R1 the build must compile linked to row DRIVE41 row A. Create requirement R2 with text R2 the tests must pass linked to row DRIVE41 row B. 4. task agent=qa-auditor with task: Audit R2 for row DRIVE41 row A. The receipt must be one Markdown verdict table with exactly one row: | R2 | R2 the tests must pass | pass | evidence | artifact | n/a | n/a | 5. todo op=done task=DRIVE41 row A using that receipt. After step 5, print the exact toolResult text you received for each of steps 4 and 5, verbatim.";
+	const R2_RAW_TEXT = "R2 the tests must pass";
+
+	function replayFixture() {
+		const fx = fixture();
+		const base = getLatestRequirements(fx.manager.getBranch())[0]!;
+		appendRequirementsSnapshot({ appendEntry: (type, data) => fx.manager.appendCustomEntry(type, data) }, [
+			{ ...base, id: "R1", rawText: R1_RAW_TEXT, rows: ["DRIVE41 row A"] },
+			{ ...base, id: "R2", rawText: R2_RAW_TEXT, rows: ["DRIVE41 row B"] },
+		]);
+		fx.manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			phases: [
+				{
+					name: "Work",
+					tasks: [
+						{ content: "DRIVE41 row A", status: "in_progress", schedule: { owner: "main", resources: [fx.cwd] } },
+						{ content: "DRIVE41 row B", status: "pending", schedule: { owner: "main", resources: [fx.cwd] } },
+					],
+				},
+			],
+		});
+		return fx;
+	}
+
+	async function deliverReplay(
+		fx: ScopedFixture,
+		callId: string,
+		id: string,
+		rawWords: string,
+		artifact: (head: string) => string,
+	): Promise<void> {
+		const head = git(fx.cwd, "rev-parse", "HEAD");
+		const escapedWords = rawWords.replaceAll("\\", "\\\\").replaceAll("|", "\\|").replaceAll("\n", "<br>");
+		await fx.runtime.afterToolCall({
+			toolCall: { id: callId, name: "task" },
+			result: {
+				content: [],
+				details: {
+					results: [
+						{
+							index: 0,
+							agent: "qa-auditor",
+							id: `${callId}-worker`,
+							exitCode: 0,
+							output: [
+								"| id | raw words | verdict | evidence | artifact identity |",
+								"| --- | --- | --- | --- | --- |",
+								`| ${id} | ${escapedWords} | pass | exercised the build | ${artifact(head)} |`,
+							].join("\n"),
+						},
+					],
+				},
+			},
+			isError: false,
+		} as never);
+	}
+
+	it("accepts an R1-only receipt for row A while R2 is linked to row B", async () => {
+		const fx = replayFixture();
+		try {
+			const revised = await fx.runtime.prepareAuditorTaskCall("task", "replay-r1", {
+				agent: "qa-auditor",
+				task: "Audit R1 for row DRIVE41 row A at its current artifact.",
+				context: "R2 was classified to row DRIVE41 row B while row DRIVE41 row A was in progress.",
+			});
+			expect(revised?.task).toContain('R1 row "DRIVE41 row A"');
+			expect(revised?.task).not.toContain("R2 (said at");
+			await deliverReplay(fx, "replay-r1", "R1", R1_RAW_TEXT, head => `DRIVE41 row A @ ${head}`);
+			const requirements = getLatestRequirements(fx.manager.getBranch());
+			expect(requirements.find(requirement => requirement.id === "R1")?.rowVerdicts?.["DRIVE41 row A"]?.status).toBe(
+				"pass",
+			);
+			expect(requirements.find(requirement => requirement.id === "R2")?.rowVerdicts).toBeUndefined();
+		} finally {
+			rmSync(fx.cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("still rejects an R2 receipt cited for row A", async () => {
+		const fx = replayFixture();
+		try {
+			await fx.runtime.prepareAuditorTaskCall("task", "replay-r2", {
+				agent: "qa-auditor",
+				task: "Audit R2 for row DRIVE41 row A at its current artifact.",
+				context: "",
+			});
+			await deliverReplay(fx, "replay-r2", "R2", R2_RAW_TEXT, head => `DRIVE41 row A @ ${head}`);
+			const requirements = getLatestRequirements(fx.manager.getBranch());
+			expect(requirements.find(requirement => requirement.id === "R2")?.rowVerdicts).toBeUndefined();
+		} finally {
+			rmSync(fx.cwd, { recursive: true, force: true });
+		}
+	});
+});
