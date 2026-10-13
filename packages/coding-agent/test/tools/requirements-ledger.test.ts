@@ -462,6 +462,22 @@ describe("canonical todo row metadata", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+	it("resolves an Rn-prefixed row label to the assigned row but keeps rejecting foreign rows", () => {
+		const assigned = "Rebuild PR #54 from Maksim tip";
+		const foreign = "Write take-whole-teammate-branch rule into global rules";
+		const sha = "a".repeat(40);
+		const knownRows = new Set([assigned, foreign]);
+		// R42 shape: an R4 receipt in a merged-source audit whose artifact cites the
+		// R6 label for the row R4 itself is assigned to. R4 is linked to two rows, so
+		// the legacy single-row projection cannot accept it: only the explicit label can.
+		expect(
+			getRequirementRowArtifactIdentity(`R6 row "${assigned}" @ ${sha}`, assigned, [assigned, foreign], knownRows),
+		).toBe(`R6 row "${assigned}" @ ${sha}`);
+		// A label naming a row the receipt is not assigned to must never resolve to it.
+		expect(
+			getRequirementRowArtifactIdentity(`R6 row "${foreign}" @ ${sha}`, assigned, [assigned, foreign], knownRows),
+		).toBeUndefined();
+	});
 });
 
 describe("canonical requirements ledger", () => {

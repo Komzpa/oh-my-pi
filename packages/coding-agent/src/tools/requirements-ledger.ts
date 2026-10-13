@@ -555,7 +555,8 @@ export function isRequirementLinkedToRow(requirements: readonly RequirementLedge
 
 /**
  * Explicit row label of one artifact segment: quoted `row "Row" @ …` (optionally
- * `TODO row "Row" @ …`, with `\"` and `\\` escapes) or bare `Row @ …`.
+ * prefixed with `TODO` or an `R<n>` requirement id, e.g. `R6 row "Row" @ …`,
+ * with `\"` and `\\` escapes) or bare `Row @ …`.
  * A bare `X @` is a row label only when `X` is a known row; otherwise it is an
  * opaque artifact description and MUST NOT be guessed as a row.
  */
@@ -563,7 +564,7 @@ export function getRequirementReceiptArtifactRowLabel(
 	segment: string,
 	knownRows: ReadonlySet<string>,
 ): string | undefined {
-	const quoted = /^\s*(?:TODO\s+)?row\s+"((?:[^"\\]|\\.)*)"\s*@/i.exec(segment);
+	const quoted = /^\s*(?:(?:TODO|R[1-9]\d*)\s+)?row\s+"((?:[^"\\]|\\.)*)"\s*@/i.exec(segment);
 	if (quoted) return quoted[1]!.replace(/\\(.)/g, "$1");
 	const at = segment.indexOf(" @ ");
 	if (at < 0) return undefined;
