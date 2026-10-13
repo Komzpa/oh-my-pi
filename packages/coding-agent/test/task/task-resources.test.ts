@@ -131,29 +131,27 @@ describe("task resources", () => {
 					const schema = getTaskSchema({ isolationEnabled, batchEnabled, defaultAgent });
 					const input = batchEnabled
 						? {
-							context: "ctx",
-							tasks: [
-								{
-									task: "t",
-									solutionSpace: "s",
-									resources: ["/a", "/b"],
-									isolated: true,
-									junk: "discard",
-								},
-							],
-							junk: "discard",
-						}
+								context: "ctx",
+								tasks: [
+									{
+										task: "t",
+										solutionSpace: "s",
+										resources: ["/a", "/b"],
+										isolated: true,
+										junk: "discard",
+									},
+								],
+								junk: "discard",
+							}
 						: {
-							task: "t",
-							solutionSpace: "s",
-							resources: ["/a", "/b"],
-							isolated: true,
-							junk: "discard",
-						};
+								task: "t",
+								solutionSpace: "s",
+								resources: ["/a", "/b"],
+								isolated: true,
+								junk: "discard",
+							};
 					const parsed = schema(input) as Record<string, unknown>;
-					const item = batchEnabled
-						? (parsed.tasks as Array<Record<string, unknown>>)[0]!
-						: parsed;
+					const item = batchEnabled ? (parsed.tasks as Array<Record<string, unknown>>)[0]! : parsed;
 					expect(item.resources).toEqual(["/a", "/b"]);
 					expect(Object.hasOwn(item, "isolated")).toBe(isolationEnabled);
 					if (isolationEnabled) expect(item.isolated).toBe(true);
@@ -174,9 +172,7 @@ describe("task resources", () => {
 					const itemWithout = batchEnabled
 						? (parsedWithout.tasks as Array<Record<string, unknown>>)[0]!
 						: parsedWithout;
-					const itemEmpty = batchEnabled
-						? (parsedEmpty.tasks as Array<Record<string, unknown>>)[0]!
-						: parsedEmpty;
+					const itemEmpty = batchEnabled ? (parsedEmpty.tasks as Array<Record<string, unknown>>)[0]! : parsedEmpty;
 					expect(Object.hasOwn(itemWithout, "resources")).toBe(false);
 					expect(itemEmpty.resources).toEqual([]);
 				}
