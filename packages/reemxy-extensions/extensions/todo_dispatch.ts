@@ -1,5 +1,7 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
@@ -82,6 +84,36 @@ const ROSTER_ENTRY_TYPE = "todo-dispatch-roster";
 export const SPRINT_STATE_ENTRY_TYPE = "todo-dispatch-sprint-state";
 const CHIEF_RULES_ENTRY_TYPE = "chief-rules-after-compaction";
 const WORKER_BRIEF_ENTRY_TYPE = "worker-brief-after-compaction";
+const TODO_ERROR_ENTRY_TYPE = "todo-error-reminder";
+const COMPACTION_DEDUPED_ENTRY_TYPES = [CHIEF_RULES_ENTRY_TYPE, WORKER_BRIEF_ENTRY_TYPE, TODO_ERROR_ENTRY_TYPE];
+// Latest-wins view for the three append-only custom types: keep only the newest message per
+// customType by message order, preserve every unrelated message and the retained order, never
+// mutate the input. Returns the original array when no type repeats, so callers can keep the
+// pass-through behavior unchanged in the common case.
+function dedupeLatestWinsCompactionMessages(messages: AgentMessage[]): AgentMessage[] {
+  const lastIndexByType: Record<string, number> = {};
+  let hasDuplicate = false;
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (message.role !== "custom" || !COMPACTION_DEDUPED_ENTRY_TYPES.includes(message.customType)) continue;
+    const customType = message.customType;
+    if (lastIndexByType[customType] !== undefined) hasDuplicate = true;
+    lastIndexByType[customType] = index;
+  }
+  if (!hasDuplicate) return messages;
+  return messages.filter((message, index) => {
+    if (message.role !== "custom" || !COMPACTION_DEDUPED_ENTRY_TYPES.includes(message.customType)) return true;
+    return lastIndexByType[message.customType] === index;
+  });
+}
+// Canonical surviving model context for the compact guard: project the branch through the shared
+// buildSessionContext producer and check whether that customType still reaches the model. Never
+// re-derive retained ranges or compaction boundaries here. Canonical builder errors must surface.
+function survivingCompactionCustomType(ctx: ExtensionContext, customType: string): boolean {
+  const branch = ctx.sessionManager.getBranch();
+  const context = buildSessionContext(branch);
+  return context.messages.some((message) => message.role === "custom" && message.customType === customType);
+}
 // A merge whose conflicts are all resolved is one `git commit` away. Seen live: a planner kept a
 // resolved merge open for hours behind feature rows and gates while main moved on, and spawned a
 // fresh round of merge workers for every move. Past these ages the gate demands commit, then push.
@@ -2485,14 +2517,17 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const header = ctx.sessionManager.getHeader();
     return header !== null && !header.parentSession;
   };
-  // The full chief-of-staff runbook (main) or a worker's original brief (subagent) drops out of
-  // context at compaction — the summary replaces it. Re-persist it once, right after each
-  // compaction, as a custom message entry that joins LLM context without starting a turn
-  // (sendMessage deliverAs "nextTurn", no triggerTurn: appends to session history, no turn).
-  // The per-request CHIEF_OF_STAFF one-liner stays in the `context` hook as the cheap pointer;
-  // this entry carries the full text so the rules survive the compacted prefix.
+  // The full chief-of-staff runbook (main) or a worker's original brief (subagent) can drop out of
+  // context at compaction when the summary replaces the retained prefix. Conditionally re-persist it
+  // once, right after a compaction that drops it, as a custom message entry that joins LLM context
+  // without starting a turn (sendMessage deliverAs "nextTurn", no triggerTurn: appends to session history, no turn).
+  // The canonical post-compaction model context (buildSessionContext) decides: when the newest copy still
+  // survives, append nothing so the journal stays append-only without duplicates. The per-request
+  // CHIEF_OF_STAFF one-liner stays in the `context` hook as the cheap pointer; this entry carries the
+  // full text only when the rules are genuinely missing after compaction.
   pi.on("session_compact", (_event, ctx) => {
     if (isMain(ctx)) {
+      if (survivingCompactionCustomType(ctx, CHIEF_RULES_ENTRY_TYPE)) return;
       const chief = host.getActiveSkills?.().find((skill) => skill.name === "chief-of-staff");
       let text: string | undefined;
       if (chief?.filePath) {
@@ -2510,6 +2545,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       }
       return;
     }
+    if (survivingCompactionCustomType(ctx, WORKER_BRIEF_ENTRY_TYPE)) return;
     const init = ctx.sessionManager.getBranch().find((entry) => entry.type === "session_init");
     const brief = init && "task" in init && typeof init.task === "string" ? init.task : undefined;
     if (brief) {
@@ -3840,13 +3876,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // a user-started run, and a goal session lives mostly on autonomous continuations and restarts.
   // The kill switch stops only what can block a call (demands, refusals); this note only informs, so it stays.
   pi.on("context", async (event, ctx) => {
+    const deduped = dedupeLatestWinsCompactionMessages(event.messages);
+    const passThrough = deduped !== event.messages ? { messages: deduped } : undefined;
     await refreshLiveWorkerModels(ctx);
-    if (singleWriterLane) return;
+    if (singleWriterLane) return passThrough;
     const now = Date.now();
-    if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()), now / 1_000)) return;
+    if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()), now / 1_000)) return passThrough;
     const decision = currentDecision(ctx, now);
     const chief = isMain(ctx) && pi.getActiveTools().includes("task");
-    if (!decision.prompt && !chief) return;
+    if (!decision.prompt && !chief) return passThrough;
     const attemptedIdleOwners = decision.readyCandidates
       .filter((row) => row.ownership === "idle-live-owner" && row.owner && idleResumeAttempts.has(row.owner))
       .map((row) => row.owner!);
@@ -3870,7 +3908,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         ? [`${decision.prompt}${attemptedIdleOwners.length ? `\nFAIL CLOSED: exact idle worker resume already attempted once for ${attemptedIdleOwners.join(", ")}; inspect the exact session/result, do not retry or create a duplicate writer.` : ""}`]
         : []),
     ].join("\n");
-    return { messages: [...event.messages, { role: "developer", content, timestamp: now }] };
+    return { messages: [...deduped, { role: "developer", content, timestamp: now }] };
   });
 
   const armIdleCheck = (ctx: ExtensionContext, decision = currentDecision(ctx)) => {
