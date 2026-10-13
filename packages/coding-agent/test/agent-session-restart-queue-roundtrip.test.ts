@@ -110,9 +110,12 @@ describe("AgentSession restart queue round trip", () => {
 	}
 
 	function restartQueueCheckpoints(manager: SessionManager) {
+		// Compare the persisted JSON shape: demand-loaded entries may be mutation-tracking proxies,
+		// which bun's structural matchers do not treat as plain arrays and objects.
 		return manager
 			.getEntries()
-			.filter(entry => entry.type === "custom" && entry.customType === "omp:restart-pending-queues");
+			.filter(entry => entry.type === "custom" && entry.customType === "omp:restart-pending-queues")
+			.map(entry => JSON.parse(JSON.stringify(entry)) as typeof entry);
 	}
 
 	async function reopenSession(sessionFile: string, responses: MockResponse[] = []): Promise<AgentSession> {
