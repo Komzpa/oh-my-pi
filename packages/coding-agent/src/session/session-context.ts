@@ -358,7 +358,6 @@ export function buildSessionContext(
 	// with the wrong model id, which previously clobbered the user's pick on
 	// resume (issue #849).
 	let hasExplicitDefaultModel = false;
-
 	// Restart-queue journal over the resolved path: latest state per requestId
 	// plus which request restarted last. A queued notice is stale when its own
 	// request reached a terminal transition, or when a later restart superseded
