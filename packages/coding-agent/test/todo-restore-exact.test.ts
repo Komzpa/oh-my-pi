@@ -4,7 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TodoTracker, type TodoTrackerHost } from "@oh-my-pi/pi-coding-agent/session/todo-tracker";
-import { applyOpsToPhases, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import {
+	applyOpsToPhases,
+	getLatestTodoPhasesFromEntries,
+	getLatestTodoSnapshotIdentity,
+	USER_TODO_EDIT_CUSTOM_TYPE,
+} from "@oh-my-pi/pi-coding-agent/tools/todo";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 const phases = [
@@ -107,6 +113,69 @@ describe("exact todo restoration", () => {
 			});
 		}
 	}
+
+	it("replays the /todo view over the full branch of a session reopened from disk", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "omp-todo-view-"));
+		directories.push(directory);
+		const manager = SessionManager.create(directory, directory);
+		managers.push(manager);
+		manager.appendMessage({
+			role: "toolResult",
+			toolCallId: "todo-init",
+			toolName: "todo",
+			content: [{ type: "text", text: "Todo initialized" }],
+			details: { op: "init", phases, storage: "session" },
+			isError: false,
+			timestamp: Date.now(),
+		});
+		await manager.ensureOnDisk();
+		await manager.close();
+		const restored = await SessionManager.open(manager.getSessionFile()!);
+		managers.push(restored);
+		// The /todo command reads the whole branch, not the tracker's cached state.
+		const entries = restored.getBranch();
+		expect(getLatestTodoSnapshotIdentity(entries)).toBeDefined();
+		expect(getLatestTodoPhasesFromEntries(entries)).toEqual(phases);
+	});
+
+	it("replays rows from entry payloads that structuredClone rejects", () => {
+		// Lazily loading session stores may hand out mutation-tracking proxies of persisted payloads.
+		const track = <T extends object>(value: T): T =>
+			new Proxy(value, {
+				get(target, key, receiver) {
+					const child = Reflect.get(target, key, receiver);
+					return child && typeof child === "object" ? track(child) : child;
+				},
+			});
+		const entries = [
+			track({
+				type: "custom",
+				id: "snapshot",
+				parentId: null,
+				customType: USER_TODO_EDIT_CUSTOM_TYPE,
+				data: { phases },
+			}),
+			track({
+				type: "custom",
+				id: "archive",
+				parentId: "snapshot",
+				customType: USER_TODO_EDIT_CUSTOM_TYPE,
+				data: {
+					edit: {
+						v: 1,
+						kind: "archive",
+						at: 1_791_200_000_000,
+						archivedPhases: [{ name: "Deferred", tasks: [phases[1]!.tasks[1]!] }],
+					},
+				},
+			}),
+		] as unknown as SessionEntry[];
+		expect(() => structuredClone(entries[0])).toThrow();
+		const replayed = getLatestTodoPhasesFromEntries(entries);
+		expect(replayed[0]!.tasks).toEqual(phases[0]!.tasks);
+		expect(replayed[1]!.tasks.map(task => task.content)).toEqual(["Publish"]);
+		expect(() => structuredClone(replayed)).not.toThrow();
+	});
 
 	it("restores committed compact edits, renames and archives after a restart checkpoint", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "omp-todo-restart-"));
