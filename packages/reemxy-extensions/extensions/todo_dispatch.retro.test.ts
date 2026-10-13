@@ -348,6 +348,49 @@ test("a completed install job whose result exits zero opens no retro", async () 
   } finally { setSystemTime(); }
 });
 
+test("an async install dispatch that settles through an async-result opens an updater rejection", async () => {
+  // Wave-6 install replay: the task tool_result carried results:[] with the worker still pending
+  // (async dispatch), and the real {install_exit:1} payload arrived only as a later async-result.
+  // The empty-result misfire must not claim the window, and the reconciled completion must fire
+  // the updater rejection.
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], [], liveNow + 24 * 60 * 60_000);
+    await f.handlers.get("tool_result")!({ toolName: "task", toolCallId: "async-dispatch", isError: false, details: { results: [], progress: [{ name: "InstallReplay", status: "pending" }] } }, f.ctx);
+    f.branch.push({ type: "custom_message", customType: "async-result", content: '<system-notice>\nBackground job install-1 has completed.\n<task-result id="install-1" agent="InstallReplay" status="completed" duration="2m48s">\n<output>{"install_exit":1}</output>\n</task-result>' });
+    expect(await f.check()).toContain("retrospective due (updater rejection)");
+  } finally { setSystemTime(); }
+});
+
+test.each([
+  ["a camelCase installExit", { installExit: 1 }],
+  ["a terminal status of blocked", { status: "blocked" }],
+  ["a terminal status of failed", { status: "failed" }],
+  ["the full installFailure payload", { status: "blocked", installExit: 1, installFailure: "install failed", notDone: ["verify"] }],
+])("a completed install job whose result has %s opens an updater rejection", async (_kind, result) => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture(
+      [{ name: "Work", tasks: [row("Ship feature")] }],
+      [{ id: "install-1", type: "task", status: "completed", label: "InstallWave6-7", startTime: liveNow - 3000, agentId: "worker-b", result }],
+      liveNow + 24 * 60 * 60_000,
+    );
+    expect(await f.check()).toContain("retrospective due (updater rejection)");
+  } finally { setSystemTime(); }
+});
+
+test("a completed non-install job whose result looks like a rejection opens no updater rejection", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture(
+      [{ name: "Work", tasks: [row("Ship feature")] }],
+      [{ id: "ship-1", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-b", result: { status: "blocked", installExit: 1 } }],
+      liveNow + 24 * 60 * 60_000,
+    );
+    expect(await f.check()).not.toContain("retrospective due");
+  } finally { setSystemTime(); }
+});
+
 test.each([1, 0])("task settlement records install_exit=%s immediately and only once", async (installExit) => {
   setSystemTime(new Date(liveNow));
   try {
