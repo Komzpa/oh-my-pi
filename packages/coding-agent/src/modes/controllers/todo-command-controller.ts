@@ -433,9 +433,8 @@ export class TodoCommandController {
 			}),
 			getPersistedRequirementAuditRejections(branch, this.ctx.sessionManager.getHeader()?.id ?? null),
 		);
-		const unmet = open.flatMap(item => item.issues);
-		if (unmet.length === 0) return true;
-		this.ctx.showError(formatDoneGateRefusal(unmet));
+		if (open.every(item => item.issues.length === 0)) return true;
+		this.ctx.showError(formatDoneGateRefusal(open));
 		return false;
 	}
 

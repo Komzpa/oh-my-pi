@@ -92,24 +92,50 @@ describe("structured qa-auditor requirement receipts", () => {
 		expect(parseRequirementReceipt(JSON.stringify(fixture), [...ids, "R11"])).toBeNull();
 	});
 
-	it("uses the same parent and sub-id coverage and verdict reduction as markdown", () => {
+	it("rejects explicitly empty JSON raw words even with the assigned source map", () => {
 		const row = fixture.requirements[0]!;
-		const parts = [
-			{ ...row, id: "R7a", verdict: "pass" },
-			{ ...row, id: "R7b", verdict: "FAIL" },
-		];
-		const table = [
-			"| id | raw words | verdict | evidence | artifact |",
-			"| --- | --- | --- | --- | --- |",
-			...parts.map(
-				part =>
-					`| ${part.id} | ${part.raw_words.replaceAll("\n", "<br>")} | ${part.verdict} | ${part.evidence.replaceAll("|", "\\|")} | ${part.artifact_identity} |`,
+		const rawWordsById = new Map([[row.id, row.raw_words]]);
+		expect(parseRequirementReceipt(JSON.stringify([{ ...row, raw_words: " " }]), [row.id], rawWordsById)).toBeNull();
+		expect(parseRequirementReceipt(JSON.stringify([row]), [row.id], rawWordsById)?.[0]?.rawWords).toBe(row.raw_words);
+	});
+
+	it("rejects an empty Markdown raw-words cell but permits a missing column with the assigned source map", () => {
+		const row = fixture.requirements[0]!;
+		const rawWordsById = new Map([[row.id, row.raw_words]]);
+		const empty = `| id | raw words | verdict | evidence | artifact |\n| --- | --- | --- | --- | --- |\n| ${row.id} | | ${row.verdict} | inspected artifact | ${row.artifact_identity} |`;
+		expect(parseRequirementReceipt(empty, [row.id], rawWordsById)).toBeNull();
+		const missingColumn = `| id | verdict | evidence | artifact |\n| --- | --- | --- | --- |\n| ${row.id} | ${row.verdict} | inspected artifact | ${row.artifact_identity} |`;
+		expect(parseRequirementReceipt(missingColumn, [row.id], rawWordsById)).toEqual([
+			{
+				id: row.id,
+				rawWords: row.raw_words,
+				status: row.verdict,
+				evidence: "inspected artifact",
+				artifact: row.artifact_identity,
+			},
+		]);
+		expect(parseRequirementReceipt(missingColumn, [row.id])).toBeNull();
+	});
+
+	it("accepts only exact assigned IDs and reports suffix identities", () => {
+		const row = fixture.requirements[0]!;
+		const exact = { ...row, id: "R7", verdict: "pass" };
+		expect(parseRequirementReceipt(JSON.stringify([exact]), ["R7"], new Map([["R7", row.raw_words]]))).toEqual([
+			{ id: "R7", rawWords: row.raw_words, status: "pass", evidence: row.evidence, artifact: row.artifact_identity },
+		]);
+		let identityError: [string, string] | undefined;
+		const suffix = { ...exact, id: "R7a" };
+		expect(
+			parseRequirementReceipt(
+				JSON.stringify([suffix]),
+				["R7"],
+				new Map([["R7", row.raw_words]]),
+				(received, expected) => {
+					identityError = [received, expected];
+				},
 			),
-		].join("\n");
-		expect(parseRequirementReceipt(JSON.stringify(parts), ["R7"])).toEqual(parseRequirementReceipt(table, ["R7"]));
-		const withOverall = parseRequirementReceipt(JSON.stringify([{ ...row, verdict: "pass" }, ...parts]), ["R7"]);
-		expect(withOverall?.[0]?.status).toBe("fail");
-		expect(withOverall?.[0]?.subIds).toEqual(["R7", "R7a", "R7b"]);
+		).toBeNull();
+		expect(identityError).toEqual(["R7a", "R7"]);
 	});
 
 	it("applies the claimed/measured mismatch coercion to JSON receipts", () => {
@@ -124,28 +150,5 @@ describe("structured qa-auditor requirement receipts", () => {
 		expect(parsed![0]!.evidence.startsWith(`claimed ${row.claimed} ≠ measured ${row.measured}: `)).toBe(true);
 		const matching = { ...row, measured: "3149 entries, 163804637 bytes" };
 		expect(parseRequirementReceipt(JSON.stringify([matching]), [row.id])![0]!.status).toBe("pass");
-	});
-
-	it("accepts a yielded string table with an overall row, sub-rows and a trailing Retro block", () => {
-		// Shape of a real rejected qa-auditor result: the brief asked for an overall R4 row
-		// followed by R4a-R4f, and the worker contract appends its question answer and Retro.
-		const ask = "Answer to toolu_x [owner_intake]: Agent chats → tasks.md";
-		const artifact = "Ingest owner requests @ 69d9f94c0e7e7a37395bab8e067f0153366a0778";
-		const table = [
-			"|id|raw words|verdict|evidence|artifact identity|",
-			"|---|---|---|---|---|",
-			...["R4", "R4a", "R4b", "R4c"].map(id => `|${id}|${ask}|pass|${id} checked with \`sed -n 1,9p\`|${artifact}|`),
-			"",
-			"Is there a much simpler different way? No.",
-			"",
-			"Retro",
-			"- Worked: one batched read-only pass.",
-		].join("\n");
-		const parsed = parseRequirementReceipt(JSON.stringify(table), ["R4"], new Map([["R4", ask]]));
-		expect(parsed?.map(row => [row.id, row.status, row.subIds])).toEqual([
-			["R4", "pass", ["R4", "R4a", "R4b", "R4c"]],
-		]);
-		const failedSub = table.replace("|R4b|" + ask + "|pass|", "|R4b|" + ask + "|fail|");
-		expect(parseRequirementReceipt(JSON.stringify(failedSub), ["R4"])?.[0]?.status).toBe("fail");
 	});
 });

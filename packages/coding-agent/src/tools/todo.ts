@@ -1278,13 +1278,12 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				}),
 				getPersistedRequirementAuditRejections(branch, sessionManager.getSessionId?.() ?? null),
 			);
-			const unmet = open.flatMap(item => item.issues);
-			if (unmet.length > 0) {
+			if (open.some(item => item.issues.length > 0)) {
 				return {
 					content: [
 						{
 							type: "text",
-							text: formatDoneGateRefusal(unmet),
+							text: formatDoneGateRefusal(open),
 						},
 					],
 					details: { op: "done", phases: previousPhases, storage },

@@ -58,7 +58,7 @@ function doneText(done: unknown): string {
 	return "";
 }
 
-async function auditMainRow(options: { agent?: string; subRowFail?: boolean; moveHeadAfterAudit?: boolean }) {
+async function auditMainRow(options: { agent?: string; fail?: boolean; moveHeadAfterAudit?: boolean }) {
 	const cwd = mkdtempSync(join(tmpdir(), "omp-worker-checkout-"));
 	try {
 		initGitRepo(cwd);
@@ -101,13 +101,8 @@ async function auditMainRow(options: { agent?: string; subRowFail?: boolean; mov
 			const outputLines = [
 				"| id | raw words | verdict | evidence | artifact identity |",
 				"|---|---|---|---|---|",
-				`| R7 | ${raw} | pass | inspected worker checkout | ${row} @ ${head} |`,
+				`| R7 | ${raw} | ${options.fail ? "fail" : "pass"} | inspected worker checkout | ${row} @ ${head} |`,
 			];
-			if (options.subRowFail) {
-				outputLines.push(
-					`| R7a | ${raw} | fail | inspected worker checkout; R7a sub-clause of R7 | ${row} @ ${head} |`,
-				);
-			}
 			const output = outputLines.join("\n");
 			vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
 				agents: ["qa-auditor", "reviewer"].map(name => ({
@@ -233,11 +228,18 @@ describe("non-isolated worker checkout binding", () => {
 		expect(text).not.toContain("unknown checkout for owner");
 		expect(text).not.toContain("checkout mapping unavailable");
 	});
-	it("rejects a failed R7a sub-row while R7 passes", async () => {
-		const { done } = await auditMainRow({ subRowFail: true });
+	it("rejects a failed exact R7 receipt", async () => {
+		const { done, requirements, accepted } = await auditMainRow({ fail: true });
 		expect(done.isError).toBe(true);
+		expect(accepted).toBeUndefined();
+		expect(
+			requirements.find(requirement => requirement.id === "R7")?.rowVerdicts?.[
+				"Row completes after its worker leaves the registry"
+			]?.status,
+		).toBe("fail");
 		const text = doneText(done);
-		expect(text).toContain("R7a");
+		expect(text).toContain("R7");
+		expect(text).toContain("fail, not pass");
 		expect(text).not.toContain("unknown checkout for owner");
 		expect(text).not.toContain("checkout mapping unavailable");
 		expect(text).not.toContain("missing rows");

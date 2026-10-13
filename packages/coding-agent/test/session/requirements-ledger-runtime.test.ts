@@ -1093,7 +1093,7 @@ describe("real row-scoped auditor receipts", () => {
 		}
 	});
 
-	it("replays R16 sub-id and R17 JSON wait receipts through the native done gate", async () => {
+	it("replays exact-ID R16 and R17 JSON wait receipts through the native done gate", async () => {
 		const { cwd, manager, runtime, gate } = fixture();
 		const row = "Match leader colour to frame and thin frames";
 		const other = "Land four review lanes and serve result";
@@ -1131,13 +1131,11 @@ describe("real row-scoped auditor receipts", () => {
 					phases = next;
 				},
 			} as ToolSession);
-			// Session 01a0fc32, AuditR16LeaderStyle: yield.data.result used R16e/f/g.
+			// Session 01a0fc32, AuditR16LeaderStyle: yield.data.result used the assigned R16 ID.
 			const table = [
 				"| id | raw words | verdict | evidence | artifact identity |",
 				"|---|---|---|---|---|",
-				`| R16e | ${raw} | pass | e2e/facility-callout-frame-colour.spec.ts:71 asserts leaderColour equals frameColour | ${row} @ ${head} |`,
-				`| R16f | ${raw} | pass | e2e/facility-callout-frame-colour.spec.ts:67-68 asserts width 1 texture px | ${row} @ ${head} |`,
-				`| R16g | ${raw} | pass | doc/product-requirements.md contains the clause | ${row} @ ${head} |`,
+				`| R16 | ${raw} | pass | e2e/facility-callout-frame-colour.spec.ts:71 asserts leaderColour equals frameColour; width 1 texture px; doc/product-requirements.md contains the clause | ${row} @ ${head} |`,
 			].join("\n");
 			async function deliver(output: string, worker: string, auditedRow = row): Promise<void> {
 				await runtime.prepareAuditorTaskCall("task", worker, {
@@ -1188,7 +1186,7 @@ describe("real row-scoped auditor receipts", () => {
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 			await deliver(
 				JSON.stringify({
-					result: table.replace(`| R16f | ${raw} | pass`, `| R16f | ${raw} | fail`),
+					result: table.replace(`| R16 | ${raw} | pass`, `| R16 | ${raw} | fail`),
 				}),
 				"AuditR16Failed",
 			);
@@ -1196,7 +1194,7 @@ describe("real row-scoped auditor receipts", () => {
 			expect(getLatestRequirements(manager.getBranch())[0]!.rowVerdicts![other]?.status).toBe("pass");
 			await deliver(
 				JSON.stringify({
-					result: table.replace(`| R16f | ${raw} | pass`, `| R16f | ${raw} | unverifiable`),
+					result: table.replace(`| R16 | ${raw} | pass`, `| R16 | ${raw} | unverifiable`),
 				}),
 				"AuditR16Unverifiable",
 			);

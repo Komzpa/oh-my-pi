@@ -620,14 +620,27 @@ export interface RequirementGateArtifact {
 	head: string | null;
 	dirty: boolean;
 	sha256?: string;
+	dirtyFingerprint?: string;
 	lastChange?: { at: string; id: string };
 	cwd?: string;
 	reason?: string;
 	awaitingUser?: { action: string; ids?: string[] };
 }
 
-export function formatRequirementGateArtifact(artifact: RequirementGateArtifact): string {
-	return `cwd=${artifact.cwd ? shortenPath(artifact.cwd) : "unknown"}, head=${artifact.head ?? "unknown"}, dirty=${artifact.dirty}${artifact.sha256 ? `, sha256=${artifact.sha256}` : ""}${artifact.reason ? `, reason=${artifact.reason}` : ""}`;
+export function formatRequirementGateArtifact(artifact: RequirementGateArtifact, row?: string): string {
+	const details = `cwd=${artifact.cwd ? shortenPath(artifact.cwd) : "unknown"}, dirty=${artifact.dirty}${artifact.dirtyFingerprint ? `, dirty-fingerprint=${artifact.dirtyFingerprint}` : ""}${artifact.reason ? `, reason=${artifact.reason}` : ""}`;
+	if (row !== undefined) {
+		const identity = artifact.sha256
+			? `sha256=${artifact.sha256}`
+			: (artifact.head ??
+				(artifact.lastChange && !artifact.reason
+					? `observed artifact (saved TODO change ${artifact.lastChange.id})`
+					: undefined));
+		return identity
+			? `row ${JSON.stringify(row)} @ ${identity}, ${details}`
+			: `row ${JSON.stringify(row)}: head=unknown, ${details}`;
+	}
+	return `cwd=${artifact.cwd ? shortenPath(artifact.cwd) : "unknown"}, head=${artifact.head ?? "unknown"}, dirty=${artifact.dirty}${artifact.sha256 ? `, sha256=${artifact.sha256}` : ""}${artifact.dirtyFingerprint ? `, dirty-fingerprint=${artifact.dirtyFingerprint}` : ""}${artifact.reason ? `, reason=${artifact.reason}` : ""}`;
 }
 
 /** Precise staleness diagnosis for the rows being closed or published. Null means fresh. */
@@ -692,26 +705,34 @@ export function getRequirementVerdictStaleness(
 	return null;
 }
 
+export interface RequirementDoneGateIssue {
+	requirement: RequirementLedgerItem;
+	issues: string[];
+	awaitingUserIssues: string[];
+	auditRows: Array<{ row: string; ids: string[]; artifact: RequirementGateArtifact }>;
+}
+
 /** All completion surfaces use this owner for row selection, freshness, and refusal reasons. */
 export async function evaluateRequirementDoneGate(
 	requirements: readonly RequirementLedgerItem[],
 	rows: readonly string[],
 	getArtifact: (row: string) => Promise<RequirementGateArtifact>,
 	rejections: ReadonlyMap<string, string> = new Map(),
-): Promise<Array<{ requirement: RequirementLedgerItem; issues: string[]; awaitingUserIssues: string[] }>> {
+): Promise<RequirementDoneGateIssue[]> {
 	const targets = new Set(rows);
 	const artifacts = new Map<string, Promise<RequirementGateArtifact>>();
-	const open: Array<{ requirement: RequirementLedgerItem; issues: string[]; awaitingUserIssues: string[] }> = [];
+	const open: RequirementDoneGateIssue[] = [];
 	for (const requirement of requirements) {
 		if (requirement.classification !== "linked") continue;
 		const issues: string[] = [];
 		const awaitingUserIssues: string[] = [];
+		const auditRows: RequirementDoneGateIssue["auditRows"] = [];
 		// An image-only ask whose bytes and source path are both gone cannot be
 		// audited at all. Ask the user once and stop demanding qa-auditor passes
 		// for it — an unanswerable audit demand is a gate loop.
 		if (requirement.imageState === "needs-user-restatement") {
 			const issue = `${requirement.id}: the attached image is gone from this session — please restate it in words or re-attach it in a new message naming ${requirement.id}; then associate that new candidate with todo op="classify", id="${requirement.id}", classification="merged", mergeInto="<new Rn>" and request a fresh audit`;
-			open.push({ requirement, issues: [issue], awaitingUserIssues: [issue] });
+			open.push({ requirement, issues: [issue], awaitingUserIssues: [issue], auditRows });
 			continue;
 		}
 		for (const row of requirement.rows) {
@@ -757,9 +778,18 @@ export async function evaluateRequirementDoneGate(
 				const issue = `${requirement.id} (${JSON.stringify(row)}): ${reason}${rejection ? `; rejected receipt: ${rejection}` : ""}`;
 				issues.push(issue);
 				if (pending && !auditedAfterCheck) awaitingUserIssues.push(issue);
+				else {
+					auditRows.push({
+						row,
+						ids: requirements
+							.filter(item => item.classification === "linked" && item.rows.includes(row))
+							.map(item => item.id),
+						artifact: current,
+					});
+				}
 			}
 		}
-		if (issues.length) open.push({ requirement, issues, awaitingUserIssues });
+		if (issues.length) open.push({ requirement, issues, awaitingUserIssues, auditRows });
 	}
 	return open;
 }
@@ -855,13 +885,13 @@ export function parseRequirementReceipt(
 	output: string,
 	expectedIds: readonly string[],
 	rawWordsById?: ReadonlyMap<string, string>,
+	onIdentityError?: (receivedId: string, expectedParentId: string) => void,
 ): Array<{
 	id: string;
 	rawWords: string;
 	status: RequirementVerdictStatus;
 	evidence: string;
 	artifact: string;
-	subIds?: string[];
 }> | null {
 	const expected = new Set(expectedIds);
 	if (expected.size === 0 || expected.size !== expectedIds.length) return null;
@@ -970,7 +1000,7 @@ export function parseRequirementReceipt(
 				cells[header.id]!,
 				header.rawWords >= 0
 					? cells[header.rawWords]!.replace(/<br\s*\/?>/gi, "\n")
-					: (rawWordsById?.get(cells[header.id]!.replace(/[a-z]$/, "")) ?? ""),
+					: (rawWordsById?.get(cells[header.id]!) ?? ""),
 				cells[header.status]!,
 				cells[header.evidence]!,
 				cells[header.artifact]!,
@@ -997,9 +1027,11 @@ export function parseRequirementReceipt(
 			string,
 		];
 		const status = verdict.toLowerCase();
+		const parentId = /^R[1-9]\d*[a-z]$/.test(id) ? id.replace(/[a-z]$/, "") : undefined;
+		if (parentId && expected.has(parentId)) onIdentityError?.(id, parentId);
 		if (
-			!/^R[1-9]\d*[a-z]?$/.test(id) ||
-			!expected.has(id.replace(/[a-z]$/, "")) ||
+			!/^R[1-9]\d*$/.test(id) ||
+			!expected.has(id) ||
 			!rawWords ||
 			!Object.hasOwn(VERDICT_STATUSES, status) ||
 			!evidence ||
@@ -1037,31 +1069,7 @@ export function parseRequirementReceipt(
 		});
 	}
 	if (new Set(rows.map(row => row.id)).size !== rows.length) return null;
-	const grouped = expectedIds.map(id => {
-		const parts = rows.filter(row => row.id.replace(/[a-z]$/, "") === id);
-		if (!parts.length) return null;
-		if (parts.length === 1 && parts[0]!.id === id) return parts[0]!;
-		// An overall Rn row beside its letter sub-rows is the shape auditors are briefed
-		// to write; it joins the reduction, so its own pass never masks a failed sub-row.
-		const status = parts.some(row => row.status === "fail")
-			? "fail"
-			: parts.some(row => row.status === "unverifiable")
-				? "unverifiable"
-				: "pass";
-		return {
-			id,
-			// Split rows must each echo the complete immutable ask. Different echoes
-			// remain different so freshness comparison rejects partial/reworded asks.
-			rawWords: parts.every(row => row.rawWords === parts[0]!.rawWords)
-				? parts[0]!.rawWords
-				: parts.map(row => row.rawWords).join("; "),
-			status: status as RequirementVerdictStatus,
-			evidence: parts.map(row => `${row.id}: ${row.evidence}`).join("; "),
-			artifact: parts.map(row => row.artifact).join("; "),
-			subIds: parts.map(row => row.id),
-		};
-	});
-	return grouped.some(row => row === null) ? null : grouped.filter(row => row !== null);
+	return rows.length === expectedIds.length && expectedIds.every(id => rows.some(row => row.id === id)) ? rows : null;
 }
 
 /** Restore rejected QA receipt reasons from the newest assignment snapshot. */
@@ -1294,7 +1302,21 @@ export function formatRequirementPublicationStatus(
 	return `Not audit-verified: ${ids}${open.length > 3 ? ", …" : ""} (${open.length} of ${total})`;
 }
 
-/** Done-gate refusal for linked rows without a fresh qa-auditor pass. */
-export function formatDoneGateRefusal(unmet: readonly string[]): string {
-	return `Blocked: todo done is blocked until every linked requirement has a fresh qa-auditor pass for this row artifact: ${unmet.join("; ")}. Request a fresh qa-auditor pass with task agent="qa-auditor", task="Audit <Rn> for <exact row> at its current artifact", then retry todo with op="done", task="<exact row>" (or op="done", items=["<row1>", ...])`;
+/** Done-gate refusal with one current-artifact audit retry per blocked TODO row. */
+export function formatDoneGateRefusal(open: readonly RequirementDoneGateIssue[]): string {
+	const issues = open.flatMap(item => item.issues);
+	const byRow = new Map<string, { ids: Set<string>; artifact: RequirementGateArtifact }>();
+	for (const item of open) {
+		for (const audit of item.auditRows) {
+			const retry = byRow.get(audit.row) ?? { ids: new Set<string>(), artifact: audit.artifact };
+			for (const id of audit.ids) retry.ids.add(id);
+			byRow.set(audit.row, retry);
+		}
+	}
+	const calls = [...byRow].map(([row, retry]) => {
+		const ids = [...retry.ids].join(", ");
+		const task = `Audit exact requirement IDs ${ids} for TODO row ${JSON.stringify(row)} at its current artifact (${formatRequirementGateArtifact(retry.artifact, row)}). Return one table row per exact ID; do not append letter suffixes.`;
+		return `agent="qa-auditor", task=${JSON.stringify(task)}`;
+	});
+	return `Blocked: todo done is blocked until every linked requirement has a fresh qa-auditor pass for this row artifact: ${issues.join("; ")}.${calls.length ? ` Request one fresh audit per row: ${calls.join("; ")}.` : ""} Then retry todo with op="done", task="<exact row>" (or op="done", items=["<row1>", ...])`;
 }

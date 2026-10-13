@@ -236,9 +236,10 @@ export class RequirementsLedgerRuntime {
 				requirement => requirement.classification === "linked" && citedIds.has(requirement.id),
 			);
 			// A cited row narrows the audit to the Rn that link it; an Rn whose rows are all uncited stays out.
-			const citedRowNames = new Set(
-				citedLinked.flatMap(requirement => requirement.rows).filter(row => auditTask.includes(row)),
-			);
+			const knownRows = [...new Set(citedLinked.flatMap(requirement => requirement.rows))];
+			const quotedRows = new Set(knownRows.filter(row => auditTask.includes(JSON.stringify(row))));
+			// An explicit quoted label takes precedence over raw substring matches in sibling labels.
+			const citedRowNames = quotedRows.size ? quotedRows : new Set(knownRows.filter(row => auditTask.includes(row)));
 			const ids = citedLinked
 				.filter(requirement => citedRowNames.size === 0 || requirement.rows.some(row => citedRowNames.has(row)))
 				.map(requirement => requirement.id);
@@ -255,7 +256,7 @@ export class RequirementsLedgerRuntime {
 			const linkedRows = [
 				...new Set(ids.flatMap(id => requirements.find(requirement => requirement.id === id)!.rows)),
 			];
-			const citedRows = linkedRows.filter(row => auditTask.includes(row));
+			const citedRows = linkedRows.filter(row => citedRowNames.has(row));
 			const assignedRows = citedRows.length ? citedRows : linkedRows;
 			const imagePayloads: RequirementAuditImagePayload[] = [];
 			const imageLines: string[] = [];
@@ -300,7 +301,12 @@ export class RequirementsLedgerRuntime {
 						checkoutCache,
 					);
 					rowHeads.push(
-						`${id} row ${JSON.stringify(row)} at ${artifact.cwd}: ${artifact.head ?? "HEAD unavailable"}${artifact.dirty ? " (dirty)" : ""}`,
+						`${id} ${formatRequirementGateArtifact(
+							!artifact.head && !artifact.sha256
+								? { ...artifact, lastChange: getTodoRowChanges(branch).get(row) }
+								: artifact,
+							row,
+						)}`,
 					);
 				}
 			}
@@ -311,7 +317,7 @@ export class RequirementsLedgerRuntime {
 				...(imageLines.length ? ["Referenced images (Rn, sha256, source):", ...imageLines] : []),
 				"Current linked-row HEAD identities:",
 				...rowHeads,
-				"Return one complete Markdown table with columns id | raw words | verdict | evidence | artifact identity. Cover every linked Rn above, optionally with letter sub-ids for its clauses; verdict pass, fail or unverifiable. Name the exact audited TODO row in artifact identity and its full commit SHA when a clean checkout exists. For rows without a clean checkout, name the observed artifact; freshness uses saved TODO row history. Evidence must name what was actually exercised or observed; no partial table or truncated preview is accepted. When the task states a number or count to verify, add columns claimed | measured with the task's figure and your own recount in the same units; a differing pair is recorded as fail.",
+				"Return one complete Markdown table with columns id | raw words | verdict | evidence | artifact identity. Cover every linked Rn above with exactly one row using its exact assigned ID; never append letter suffixes or invent split IDs. Verdict: pass, fail or unverifiable. Name the exact audited TODO row in artifact identity and its full commit SHA when a clean checkout exists. For rows without a clean checkout, name the observed artifact; freshness uses saved TODO row history. Evidence must name what was actually exercised or observed; no partial table or truncated preview is accepted. When the task states a number or count to verify, add columns claimed | measured with the task's figure and your own recount in the same units; a differing pair is recorded as fail.",
 			].join("\n");
 			revised[index] = {
 				...item,
@@ -387,7 +393,12 @@ export class RequirementsLedgerRuntime {
 					continue;
 				}
 				const issue = await this.#acceptReceipt(result.id, { ...assignment, workerId: result.id }, result.output);
-				if (issue) rejected.push(issue);
+				if (issue) {
+					rejected.push(issue);
+					this.#persistPendingAuditors({ workerId: result.id, ids: assignment.ids, reason: issue });
+				} else {
+					this.#persistPendingAuditors(undefined, assignment.ids);
+				}
 				continue;
 			}
 			const worker = progress.find(value => isRecord(value) && value.index === assignment.index);
@@ -405,7 +416,7 @@ export class RequirementsLedgerRuntime {
 				...context.result.content,
 				{
 					type: "text",
-					text: `Blocked: requirements receipt rejected: ${rejected.join("; ")}. Call task with agent="qa-auditor", task="Audit <Rn> at the current clean row HEAD" returning one complete Markdown table with columns id | verdict | evidence | artifact (one row per linked Rn; each artifact must include the full current commit SHA from every corresponding linked row). Then retry`,
+					text: `Blocked: requirements receipt rejected: ${rejected.join("; ")}.`,
 				},
 			],
 		};
@@ -620,12 +631,17 @@ export class RequirementsLedgerRuntime {
 		if (requirementAuditSnapshot(requirements, expectedIds) !== assignment.snapshot) {
 			return `${expectedIds.join(", ")}: requirement raw sources or linked rows changed after audit dispatch`;
 		}
+		let identityFailure: string | undefined;
 		const receipts = parseRequirementReceipt(
 			output,
 			expectedIds,
 			new Map(expected.map(requirement => [requirement!.id, requirement!.rawText])),
+			(receivedId, expectedParentId) => {
+				identityFailure ??= `${expectedParentId}: received requirement ID ${receivedId}; expected exact assigned ID ${expectedParentId}`;
+			},
 		);
 		if (!receipts) {
+			if (identityFailure) return identityFailure;
 			const covered = new Set([...output.matchAll(/\|\s*(R[1-9]\d*)\s*\|/g)].map(match => match[1]!));
 			const missing = expectedIds.filter(id => !covered.has(id));
 			return `${expectedIds.join(", ")}: malformed or partial verdict table (expected id, verdict, evidence, artifact)${missing.length > 0 ? `; missing rows for ${missing.join(", ")}` : ""}`;
