@@ -33,7 +33,7 @@ import type {
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { getProjectAgentDir, logger, TempDir } from "@oh-my-pi/pi-utils";
+import { currentLoopPhase, getProjectAgentDir, logger, TempDir } from "@oh-my-pi/pi-utils";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 describe("ExtensionRunner", () => {
@@ -95,6 +95,41 @@ describe("ExtensionRunner", () => {
 			errors: result.errors.filter(error => isTestScoped(error.path)),
 		};
 	};
+
+	for (const event of ["tool_call", "tool_result"] as const) {
+		it(`releases the ${event} phase while an extension handler awaits`, async () => {
+			const runner = new ExtensionRunner([], new ExtensionRuntime(), tempDir.path(), sessionManager, modelRegistry);
+			const entered = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			const phases: Array<string | undefined> = [];
+			vi.spyOn(runner, "hasHandlers").mockImplementation(name => name === event);
+			const dispatch = async () => {
+				phases.push(currentLoopPhase());
+				entered.resolve();
+				await release.promise;
+				phases.push(currentLoopPhase());
+				return undefined;
+			};
+			const spy = event === "tool_call" ? vi.spyOn(runner, "emitToolCall") : vi.spyOn(runner, "emitToolResult");
+			spy.mockImplementation(dispatch);
+			const tool: AgentTool = {
+				name: "phase-probe",
+				label: "Probe",
+				description: "Probe",
+				parameters: Type.Object({}),
+				approval: "read",
+				execute: async () => ({ content: [{ type: "text", text: "done" }] }),
+			};
+			const execution = new ExtensionToolWrapper(tool, runner).execute("phase-call", {});
+			await entered.promise;
+			const waitingPhase = currentLoopPhase();
+			release.resolve();
+			await execution;
+			vi.restoreAllMocks();
+			expect(phases).toEqual([`extension.${event}:phase-probe`, undefined]);
+			expect(waitingPhase).toBeUndefined();
+		});
+	}
 
 	it("reflects SessionManager.moveTo() changes instead of the constructor-time snapshot (/move)", async () => {
 		const dirA = tempDir.join("dirA");

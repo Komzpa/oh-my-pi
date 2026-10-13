@@ -40,6 +40,11 @@
 
 ### Fixed
 
+- Fixed the status-line FPS meter showing `lag 0ms` while the UI froze for seconds or minutes. Event-loop blocks and long frame gaps now feed `lag`, and the worst one stays visible for 60s after it ends instead of vanishing with the 5s sample window.
+- Fixed the FPS meter logging the first frame after an idle period as a `frame-gap` drop. The gap is now measured from the earliest pending input or render request to the paint, so idle time no longer counts.
+- Fixed the status-line FPS text staying frozen after rendering stopped. It now decays to `0fps` on a listener-scoped timer, and frames repainted only to update the meter are not sampled, so an idle meter does not keep itself alive.
+- Fixed the status-line FPS meter `lag` value measuring the idle gap between frames instead of input-to-paint latency. `lag` now reports the delay from the earliest unpainted keystroke to the frame that paints it, and stays at 0 when idle.
+
 - The `find` card marks searches cut short by its 20 s budget as `timed out` ([#18161](https://github.com/can1357/oh-my-pi/pull/18161) by [@will-bogusz](https://github.com/will-bogusz))
 - Tern's classic renderer no longer leaves stale inline images over text while an answer streams or the pane resizes.
 - The native composer's first frame shows the cached thinking/effort level instead of the plain model icon.
