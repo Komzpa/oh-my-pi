@@ -10,7 +10,10 @@ export const classifyTodoSchema = type({
 	),
 	"rows?": type("string").array().describe("exact todo row contents for classify linked"),
 	"mergeInto?": type("string").describe("target Rn for classify merged"),
-	"reason?": type("string").describe("reason required when classify uses not-a-requirement"),
+	"reason?": type("string").describe("reason required when classify uses not-a-requirement or relink=true"),
+	"relink?": type("boolean").describe(
+		"relink=true changes rows on an already-linked requirement (linked -> linked only); requires reason and at least one row",
+	),
 });
 
 export type TodoToolSchema<TodoParams> = FluentType<TodoParams | typeof classifyTodoSchema.infer>;

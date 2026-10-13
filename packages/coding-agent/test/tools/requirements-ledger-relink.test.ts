@@ -1,0 +1,318 @@
+/**
+ * Behavioral contract for reasoned requirement relink (PR #41 amendment path).
+ *
+ * These tests deliberately exercise the externally observable contract only:
+ * classifyRequirement and TodoTool classify with `relink: true`, persisted ledger
+ * readback, and the todo view history. They fail until the canonical writer
+ * (requirements-ledger.ts / todo.ts) lands the relink amendment implementation.
+ */
+import { describe, expect, it } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import {
+	appendRequirementsSnapshot,
+	getLatestRequirements,
+	getRequirementRowVerdict,
+	parseRequirementsLedger,
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+} from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
+import type { RequirementLedgerItem, RequirementVerdict } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
+import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { classifyTodoSchema } from "../../src/tools/todo-classify-schema";
+
+const AT = "2026-10-12T09:00:00.000Z";
+const RECEIVED_AT = "2026-10-12T10:00:00.000Z";
+const REASON = "R3 covers mail, Drive and Photos import, not the Gmail API credential lookup";
+const ROW_A = "Find Gmail API import credential";
+const ROW_B = "Import mail history";
+const ROW_C = "Import Drive and Photos media";
+
+interface RequirementRelinkAmendment {
+	at: string;
+	oldRows: string[];
+	newRows: string[];
+	reason: string;
+}
+type AmendedRequirement = RequirementLedgerItem & { amendments?: RequirementRelinkAmendment[] };
+
+function receipt(rowChangeId: string): RequirementVerdict {
+	return {
+		status: "pass",
+		evidence: "qa-auditor verified the row artifact",
+		artifact: "b".repeat(40),
+		workerId: "qa-auditor",
+		auditor: "qa-auditor",
+		receivedAt: RECEIVED_AT,
+		rowChangeId,
+	};
+}
+
+function linkedItem(
+	id: string,
+	rawText: string,
+	rows: string[],
+	rowVerdicts?: Record<string, RequirementVerdict>,
+): RequirementLedgerItem {
+	return {
+		id,
+		at: AT,
+		rawText,
+		classification: "linked",
+		rows: [...rows],
+		...(rowVerdicts ? { rowVerdicts } : {}),
+	};
+}
+
+function seedMislinked(manager: SessionManager): void {
+	appendRequirementsSnapshot({ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) }, [
+		linkedItem("R1", "credential lookup ask", [ROW_A], { [ROW_A]: receipt("1") }),
+		{ id: "R2", at: AT, rawText: "unrelated candidate ask", classification: "candidate", rows: [] },
+		linkedItem("R3", "mail+Drive+Photos", [ROW_A, ROW_B], {
+			[ROW_A]: receipt("2"),
+			[ROW_B]: receipt("3"),
+		}),
+	]);
+}
+
+function harness() {
+	const manager = SessionManager.inMemory();
+	let phases: TodoPhase[] = [
+		{
+			name: "Work",
+			tasks: [
+				{ content: ROW_A, status: "pending" },
+				{ content: ROW_B, status: "pending" },
+				{ content: ROW_C, status: "pending" },
+			],
+		},
+	];
+	const session: ToolSession = {
+		cwd: "/tmp",
+		hasUI: false,
+		getSessionFile: () => null,
+		settings: Settings.isolated(),
+		getSessionSpawns: () => "*",
+		sessionManager: manager,
+		getTodoPhases: () => phases,
+		setTodoPhases: next => {
+			phases = next;
+		},
+	};
+	// The tests' cast boundary: classify payloads keep their real shape here.
+	const rawTool = new TodoTool(session);
+	const tool = {
+		execute: (name: string, params: Record<string, unknown>) => rawTool.execute(name, params as never),
+	};
+	const snapshots = () =>
+		manager
+			.getBranch()
+			.filter(entry => entry.type === "custom" && entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE).length;
+	return { manager, tool, snapshots };
+}
+
+function textOf(result: { content: unknown }): string {
+	return (result.content as Array<{ type: string; text?: string }>)
+		.map(part => (part.type === "text" ? (part.text ?? "") : ""))
+		.join("\n");
+}
+
+function r3Of(manager: SessionManager): AmendedRequirement {
+	const item = getLatestRequirements(manager.getBranch()).find(requirement => requirement.id === "R3");
+	if (!item) throw new Error("R3 missing from persisted ledger");
+	return item as AmendedRequirement;
+}
+
+describe("reasoned requirement relink", () => {
+	it("relinks a linked requirement to new rows and records the amendment with old rows and reason", async () => {
+		const { manager, tool } = harness();
+		seedMislinked(manager);
+		const result = await tool.execute("relink", {
+			op: "classify",
+			id: "R3",
+			classification: "linked",
+			rows: [ROW_B, ROW_C],
+			reason: REASON,
+			relink: true,
+		});
+		expect(result.isError).toBeUndefined();
+		const r3 = r3Of(manager);
+		expect(r3.rows).toEqual([ROW_B, ROW_C]);
+		expect(r3.amendments).toHaveLength(1);
+		const amendment = r3.amendments![0]!;
+		expect(amendment.oldRows).toEqual([ROW_A, ROW_B]);
+		expect(amendment.newRows).toEqual([ROW_B, ROW_C]);
+		expect(amendment.reason).toBe(REASON);
+		expect(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(amendment.at)).toBe(true);
+		// Immutable identity survives the relink.
+		expect([r3.id, r3.rawText, r3.at]).toEqual(["R3", "mail+Drive+Photos", AT]);
+		expect(
+			parseRequirementsLedger({ version: 1, requirements: getLatestRequirements(manager.getBranch()) }),
+		).toBeDefined();
+	});
+
+	it("keeps intersection and other-requirement receipts usable while invalidating affected rows", async () => {
+		const { manager, tool } = harness();
+		seedMislinked(manager);
+		const relinked = await tool.execute("relink", {
+			op: "classify",
+			id: "R3",
+			classification: "linked",
+			rows: [ROW_B, ROW_C],
+			reason: REASON,
+			relink: true,
+		});
+		expect(relinked.isError).toBeUndefined();
+		const r3 = r3Of(manager);
+		// Retained row keeps its receipt.
+		expect(getRequirementRowVerdict(r3, ROW_B)?.receivedAt).toBe(RECEIVED_AT);
+		// Dropped row's receipt is invalidated; the added row gets no receipt.
+		expect(getRequirementRowVerdict(r3, ROW_A)).toBeUndefined();
+		expect(getRequirementRowVerdict(r3, ROW_C)).toBeUndefined();
+		// The untouched other requirement's receipt stays usable.
+		const r1 = getLatestRequirements(manager.getBranch()).find(requirement => requirement.id === "R1")!;
+		expect(getRequirementRowVerdict(r1, ROW_A)?.receivedAt).toBe(RECEIVED_AT);
+	});
+
+	it("refuses a relink without a reason and persists nothing", async () => {
+		const { manager, tool, snapshots } = harness();
+		seedMislinked(manager);
+		const before = snapshots();
+		for (const params of [
+			{ op: "classify", id: "R3", classification: "linked", rows: [ROW_C], relink: true },
+			{ op: "classify", id: "R3", classification: "linked", rows: [ROW_C], relink: true, reason: "   " },
+		]) {
+			const result = await tool.execute("no-reason", params as never);
+			expect(result.isError).toBe(true);
+			expect(textOf(result)).toContain("reason");
+			expect(snapshots()).toBe(before);
+			expect(r3Of(manager).rows).toEqual([ROW_A, ROW_B]);
+			expect(r3Of(manager).amendments).toBeUndefined();
+		}
+	});
+
+	it("refuses a relink to empty rows so it cannot unlink to zero rows", async () => {
+		const { manager, tool, snapshots } = harness();
+		seedMislinked(manager);
+		const before = snapshots();
+		const result = await tool.execute("empty-rows", {
+			op: "classify",
+			id: "R3",
+			classification: "linked",
+			rows: [],
+			reason: REASON,
+			relink: true,
+		});
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("row");
+		expect(snapshots()).toBe(before);
+		expect(r3Of(manager).rows).toEqual([ROW_A, ROW_B]);
+		expect(r3Of(manager).amendments).toBeUndefined();
+	});
+
+	it("keeps ordinary classify write-once and allows relink only on a linked requirement", async () => {
+		const { manager, tool } = harness();
+		seedMislinked(manager);
+		// Negative control: without relink, a linked requirement stays write-once.
+		const ordinary = await tool.execute("reclassify", {
+			op: "classify",
+			id: "R3",
+			classification: "linked",
+			rows: [ROW_C],
+		});
+		expect(ordinary.isError).toBe(true);
+		expect(textOf(ordinary)).toContain("already been classified");
+		// relink=true is only for linked -> linked.
+		const onCandidate = await tool.execute("relink-candidate", {
+			op: "classify",
+			id: "R2",
+			classification: "linked",
+			rows: [ROW_A],
+			reason: REASON,
+			relink: true,
+		});
+		expect(onCandidate.isError).toBe(true);
+		expect(textOf(onCandidate)).toContain("relink");
+		expect(r3Of(manager).rows).toEqual([ROW_A, ROW_B]);
+	});
+
+	it("keeps previous rows and reason in the persisted ledger and the todo view history", async () => {
+		const { manager, tool } = harness();
+		seedMislinked(manager);
+		const relinked = await tool.execute("relink", {
+			op: "classify",
+			id: "R3",
+			classification: "linked",
+			rows: [ROW_B, ROW_C],
+			reason: REASON,
+			relink: true,
+		});
+		expect(relinked.isError).toBeUndefined();
+		// Persisted readback keeps the full amendment history.
+		const r3 = r3Of(manager);
+		expect(r3.amendments).toHaveLength(1);
+		expect(r3.amendments![0]!.oldRows).toEqual([ROW_A, ROW_B]);
+		expect(r3.amendments![0]!.reason).toBe(REASON);
+		// The todo view surfaces the same history: the reason and the previous rows.
+		const view = await tool.execute("view", { op: "view" });
+		const viewText = textOf(view);
+		expect(viewText).toContain("R3");
+		expect(viewText).toContain(REASON);
+		expect(viewText).toContain(JSON.stringify(ROW_A));
+	});
+
+	it("materializes retained-row receipts from a legacy all-row verdict before dropping it", async () => {
+		const { manager, tool } = harness();
+		appendRequirementsSnapshot({ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) }, [
+			linkedItem("R1", "credential lookup ask", [ROW_A], { [ROW_A]: receipt("1") }),
+			{
+				id: "R3",
+				at: AT,
+				rawText: "mail+Drive+Photos",
+				classification: "linked",
+				rows: [ROW_A, ROW_B],
+				verdict: { ...receipt("7"), artifact: `${ROW_A} @ ${"b".repeat(40)}; ${ROW_B} @ ${"b".repeat(40)}` },
+			},
+		]);
+		const relinked = await tool.execute("relink", {
+			op: "classify",
+			id: "R3",
+			classification: "linked",
+			rows: [ROW_B, ROW_C],
+			reason: REASON,
+			relink: true,
+		});
+		expect(relinked.isError).toBeUndefined();
+		const r3 = r3Of(manager);
+		// The all-row legacy receipt is removed after retained rows are materialized.
+		expect(r3.verdict).toBeUndefined();
+		expect(getRequirementRowVerdict(r3, ROW_B)?.receivedAt).toBe(RECEIVED_AT);
+		// A legacy receipt cannot carry to a newly linked row.
+		expect(getRequirementRowVerdict(r3, ROW_C)).toBeUndefined();
+	});
+});
+
+describe("classify todo schema relink flag", () => {
+	it("accepts a boolean relink flag with a reason and rejects a non-boolean relink", () => {
+		const accepted = classifyTodoSchema({
+			op: "classify",
+			id: "R3",
+			classification: "linked",
+			rows: [ROW_B],
+			reason: REASON,
+			relink: true,
+		});
+		expect(accepted instanceof type.errors).toBe(false);
+		const rejected = classifyTodoSchema({
+			op: "classify",
+			id: "R3",
+			classification: "linked",
+			rows: [ROW_B],
+			reason: REASON,
+			relink: "true",
+		});
+		expect(rejected instanceof type.errors).toBe(true);
+	});
+});

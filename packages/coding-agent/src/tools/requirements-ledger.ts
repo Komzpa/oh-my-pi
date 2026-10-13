@@ -75,6 +75,14 @@ export interface RequirementImage {
 /** `needs-user-restatement` is set once when every backing for an image is gone. */
 export type RequirementImageState = "needs-user-restatement";
 
+/** One reasoned relink of a linked requirement to a different row set. */
+export interface RequirementRelinkAmendment {
+	at: string;
+	oldRows: string[];
+	newRows: string[];
+	reason: string;
+}
+
 export interface RequirementLedgerItem {
 	id: string;
 	at: string;
@@ -90,6 +98,8 @@ export interface RequirementLedgerItem {
 	imageState?: RequirementImageState;
 	/** Set once the `needs-user-restatement` question has been surfaced for this user message. */
 	imageQuestionAsked?: true;
+	/** Reasoned linked -> linked row changes, oldest first; the raw ask itself never changes. */
+	amendments?: RequirementRelinkAmendment[];
 }
 
 export interface RequirementsLedgerData {
@@ -226,6 +236,30 @@ function parseRequirement(value: unknown): RequirementLedgerItem | undefined {
 	if (value.images !== undefined && images === undefined) return undefined;
 	if (value.imageState !== undefined && value.imageState !== "needs-user-restatement") return undefined;
 	if (value.imageQuestionAsked !== undefined && value.imageQuestionAsked !== true) return undefined;
+	const isRowList = (rows: unknown): rows is string[] =>
+		Array.isArray(rows) && rows.every(row => typeof row === "string" && row.trim().length > 0);
+	if (
+		value.amendments !== undefined &&
+		(!Array.isArray(value.amendments) ||
+			!value.amendments.every(
+				amendment =>
+					isRecord(amendment) &&
+					typeof amendment.at === "string" &&
+					ISO_TIMESTAMP.test(amendment.at) &&
+					Number.isFinite(Date.parse(amendment.at)) &&
+					isRowList(amendment.oldRows) &&
+					isRowList(amendment.newRows) &&
+					typeof amendment.reason === "string" &&
+					amendment.reason.trim().length > 0,
+			))
+	)
+		return undefined;
+	const amendments = (value.amendments as RequirementRelinkAmendment[] | undefined)?.map(amendment => ({
+		at: amendment.at,
+		oldRows: [...amendment.oldRows],
+		newRows: [...amendment.newRows],
+		reason: amendment.reason,
+	}));
 
 	return {
 		id: value.id,
@@ -240,6 +274,7 @@ function parseRequirement(value: unknown): RequirementLedgerItem | undefined {
 		...(images === undefined ? {} : { images: structuredClone(images) }),
 		...(value.imageState === undefined ? {} : { imageState: value.imageState }),
 		...(value.imageQuestionAsked === true ? { imageQuestionAsked: true } : {}),
+		...(amendments === undefined ? {} : { amendments }),
 	};
 }
 
@@ -333,6 +368,8 @@ export interface ClassifyRequirementOptions {
 	rows?: readonly string[];
 	reason?: string;
 	mergeInto?: string;
+	/** Reasoned linked -> linked row change; requires `reason` and at least one row. */
+	relink?: boolean;
 }
 
 export type ClassifyRequirementResult = { requirements: RequirementLedgerItem[] } | { error: string };
@@ -351,6 +388,7 @@ export function classifyRequirement(
 			error: `Blocked: requirement ${id} is unknown. No classify call can target it; call todo op="view" to list current requirements and rows, then ${classifyForm}`,
 		};
 	const source = requirements[sourceIndex]!;
+	if (options.relink) return relinkRequirement(requirements, sourceIndex, classification, options);
 	const restatementTarget = requirements.find(requirement => requirement.id === options.mergeInto);
 	const resolvesImage =
 		source.imageState === "needs-user-restatement" &&
@@ -437,6 +475,69 @@ export function classifyRequirement(
 	return { requirements: next };
 }
 
+/**
+ * Move a linked requirement to a new row set with a recorded reason. Receipts of
+ * rows in the symmetric difference are cleared; retained rows keep theirs.
+ */
+function relinkRequirement(
+	requirements: readonly RequirementLedgerItem[],
+	sourceIndex: number,
+	classification: RequirementDecision,
+	options: ClassifyRequirementOptions,
+): ClassifyRequirementResult {
+	const source = requirements[sourceIndex]!;
+	const id = source.id;
+	const relinkForm = `todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"], relink=true, reason="<why the rows change>"`;
+	if (classification !== "linked")
+		return {
+			error: `Blocked: relink=true only relinks linked -> linked for ${id}; classification="${classification}" cannot relink. Call ${relinkForm}`,
+		};
+	if (source.classification !== "linked")
+		return {
+			error: `Blocked: relink=true requires ${id} to already be linked; it is ${source.classification}. Classify it normally first, then call ${relinkForm}`,
+		};
+	const reason = options.reason?.trim();
+	if (!reason)
+		return {
+			error: `Blocked: relinking ${id} ("${source.rawText}") requires a reason. Call ${relinkForm}. Then retry`,
+		};
+	if (!options.rows?.length || options.rows.some(row => typeof row !== "string" || row.trim() === ""))
+		return {
+			error: `Blocked: relinking ${id} ("${source.rawText}") requires at least one TODO row; relink cannot unlink to zero rows. Call ${relinkForm}. When no matching row exists yet, first create it with todo op="append", items=["<exact todo row>"] (or op="init"), then retry`,
+		};
+	const oldRows = [...source.rows];
+	const newRows = [...new Set(options.rows)];
+	const retained = newRows.filter(row => oldRows.includes(row));
+	const rowVerdicts: Record<string, RequirementVerdict> = {};
+	for (const row of retained) {
+		// Canonical row receipts carry over unchanged. A legacy all-row receipt is first
+		// projected onto this row against the OLD row set (ambiguous ones resolve to
+		// nothing and are dropped), and only when it can persist as a row receipt.
+		const scoped =
+			(source.rowVerdicts && Object.hasOwn(source.rowVerdicts, row)) || source.verdict?.receivedAt
+				? getRequirementRowVerdict(source, row)
+				: undefined;
+		if (!scoped) continue;
+		Object.defineProperty(rowVerdicts, row, {
+			value: scoped,
+			enumerable: true,
+			configurable: true,
+			writable: true,
+		});
+	}
+	const updatedSource: RequirementLedgerItem = {
+		...source,
+		rows: newRows,
+		amendments: [...(source.amendments ?? []), { at: new Date().toISOString(), oldRows, newRows, reason }],
+	};
+	delete updatedSource.verdict;
+	if (Object.keys(rowVerdicts).length > 0) updatedSource.rowVerdicts = rowVerdicts;
+	else delete updatedSource.rowVerdicts;
+	const next = [...requirements];
+	next[sourceIndex] = updatedSource;
+	return { requirements: next };
+}
+
 /** Counts active requirements; merged and explicitly rejected asks do not block completion. */
 export function countRequirements(requirements: readonly RequirementLedgerItem[]): RequirementCounts {
 	let total = 0;
@@ -458,16 +559,43 @@ export function isRequirementLinkedToRow(requirements: readonly RequirementLedge
 	return requirements.some(requirement => requirement.classification === "linked" && requirement.rows.includes(row));
 }
 
+/**
+ * Explicit row label of one artifact segment: quoted `row "Row" @ …` (optionally
+ * `TODO row "Row" @ …`, with `\"` and `\\` escapes) or bare `Row @ …`.
+ * A bare `X @` is a row label only when `X` is a known row; otherwise it is an
+ * opaque artifact description and MUST NOT be guessed as a row.
+ */
+export function getRequirementReceiptArtifactRowLabel(
+	segment: string,
+	knownRows: ReadonlySet<string>,
+): string | undefined {
+	const quoted = /^\s*(?:TODO\s+)?row\s+"((?:[^"\\]|\\.)*)"\s*@/i.exec(segment);
+	if (quoted) return quoted[1]!.replace(/\\(.)/g, "$1");
+	const at = segment.indexOf(" @ ");
+	if (at < 0) return undefined;
+	const label = segment.slice(0, at).trim();
+	return label && knownRows.has(label) ? label : undefined;
+}
+
 /** Scope explicitly named artifact segments before comparing a row's commit identity. */
 export function getRequirementRowArtifactIdentity(
 	artifact: string,
 	row: string,
 	rows: readonly string[],
+	knownRows: ReadonlySet<string> = new Set(rows),
 ): string | undefined {
 	const segments = artifact.split(";").map(segment => segment.trim());
-	const named = segments.filter(segment => segment.startsWith(`${row} @ `));
+	// Whole-label equality only: a row never binds through a substring of another label.
+	// An explicit label matches even outside `rows`, so callers can detect foreign rows.
+	const named = segments.filter(segment => getRequirementReceiptArtifactRowLabel(segment, knownRows) === row);
 	if (named.length) return named.join("; ");
-	if (rows.some(candidate => segments.some(segment => segment.startsWith(`${candidate} @ `)))) return undefined;
+	// An explicit label naming any row (assigned or foreign) scopes the cell:
+	// never silently accept an explicitly labelled cell for an unnamed row,
+	// and never project legacy unnamed artifacts onto a labelled row.
+	if (segments.some(segment => getRequirementReceiptArtifactRowLabel(segment, knownRows) !== undefined))
+		return undefined;
+	// Legacy unlabelled cells project only onto a member of the given row set.
+	if (!rows.includes(row)) return undefined;
 	if (rows.length === 1) return artifact;
 	const heads = [...artifact.matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!);
 	return heads.length === rows.length ? heads[rows.indexOf(row)] : undefined;
@@ -479,12 +607,18 @@ export function getRequirementRowVerdict(
 	row: string,
 ): RequirementVerdict | undefined {
 	if (!requirement.rows.includes(row)) return undefined;
-	const verdict =
-		requirement.rowVerdicts && Object.hasOwn(requirement.rowVerdicts, row)
-			? requirement.rowVerdicts[row]
-			: requirement.verdict;
+	// A `rowVerdicts` entry is owned by its map key, so its identity is scoped to
+	// that one row; only the legacy all-row `verdict` is projected across every row.
+	const owned = !!requirement.rowVerdicts && Object.hasOwn(requirement.rowVerdicts, row);
+	const verdict = owned ? requirement.rowVerdicts![row] : requirement.verdict;
 	if (!verdict) return undefined;
-	const artifact = getRequirementRowArtifactIdentity(verdict.artifact, row, requirement.rows);
+	const knownRows = new Set(requirement.rows);
+	const artifact = getRequirementRowArtifactIdentity(
+		verdict.artifact,
+		row,
+		owned ? [row] : requirement.rows,
+		knownRows,
+	);
 	return artifact === undefined ? undefined : { ...verdict, artifact };
 }
 

@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed TODO completion after a non-isolated worker finishes and leaves the agent registry: the worker's actual effective cwd is bound on its assigned rows before execution and survives registry cleanup, so a fresh `qa-auditor` pass at the current HEAD still completes the row ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
+- Fixed requirement relinking: `todo view` now renders the amendment history (relinked rows, old→new rows, and reason) for every requirement, and `todo classify` accepts `relink: true` to change rows on an already-linked requirement with a nonblank reason ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 
 ### Added
 

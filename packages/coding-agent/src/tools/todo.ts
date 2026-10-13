@@ -1214,7 +1214,22 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 
 		return {
-			content: [{ type: "text", text: formatSummary(effective, errors, readOnly) }],
+			content: [
+				{
+					type: "text",
+					text: [
+						formatSummary(effective, errors, readOnly),
+						...(readOnly && sessionManager
+							? getLatestRequirements(sessionManager.getBranch()).flatMap(requirement =>
+									(requirement.amendments ?? []).map(
+										amendment =>
+											`${requirement.id} relinked at ${amendment.at}: rows ${JSON.stringify(amendment.oldRows)} -> ${JSON.stringify(amendment.newRows)} (${amendment.reason})`,
+									),
+								)
+							: []),
+					].join("\n"),
+				},
+			],
 			details,
 			isError: errors.length > 0 ? true : undefined,
 		};
@@ -1337,6 +1352,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 			rows,
 			reason,
 			mergeInto,
+			relink: params.relink === true,
 		});
 		if ("error" in result) return { content: [{ type: "text", text: result.error }], details, isError: true };
 		appendRequirementsSnapshot(
