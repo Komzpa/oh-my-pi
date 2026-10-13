@@ -483,8 +483,18 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		return [`Path: ${truncateForPrompt(targetPath)}`, `Content:\n${truncateForPrompt(content)}`];
 	};
 	readonly label = "Write";
+	/**
+	 * agent://-only mode is a presentation of the device-only transport (the
+	 * enforcement is the device-only gate below, which already admits only
+	 * coordination and device targets): it holds only while `deviceOnlyWrite`
+	 * does, so a runtime full-write grant (which clears `deviceOnlyWrite`, or
+	 * rolls it back) flips both together.
+	 */
+	get #agentOnly(): boolean {
+		return this.session.agentOnlyWrite === true && this.session.deviceOnlyWrite === true;
+	}
 	get description(): string {
-		if (this.session.agentOnlyWrite === true && this.session.pendingFullWriteDescription !== true) {
+		if (this.#agentOnly && this.session.pendingFullWriteDescription !== true) {
 			return prompt.render(writeAgentOnlyDescription);
 		}
 		const deviceOnly = this.session.deviceOnlyWrite === true && this.session.pendingFullWriteDescription !== true;
@@ -796,20 +806,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		}
 		const content = rawContent ?? "";
 		// Coordination writes (peer messages, background-work cancellation) touch no
-		// files, so neither gate below applies to them.
+		// files, so the device-only gate below does not apply to them.
 		const coordination =
 			policy?.scope === "coordination" || (target !== undefined && policy?.cancels?.(target.url) === true);
-		// A read-only agent's `write` grant is the agent:// message transport
-		// only (see createTools): peer messages and `agent://all` broadcasts
-		// proceed, every other target is rejected before any handler, guard,
-		// conflict resolver, or bridge sees it. Narrower than the device-only
-		// transport and checked first: a read-only agent may write messages and
-		// nothing else.
-		if (this.session.agentOnlyWrite === true && policy?.scope !== "coordination") {
-			throw new ToolError(
-				"This `write` tool is limited to agent:// messages: call it with path `agent://<id>` and the message text in `content` (`agent://all` broadcasts to all peers). Filesystem, device, and every other write are not available to read-only agents.",
-			);
-		}
 		// A device-only session grants `write` purely as the device transport (see
 		// createTools): device dispatches, coordination writes, and the session's
 		// local:// sandbox proceed; every other target is rejected before any
@@ -830,6 +829,11 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				this.session.isToolActive?.("yield") === true
 					? " To deliver results to the caller, return the content in `yield` instead."
 					: "";
+			if (this.#agentOnly) {
+				throw new ToolError(
+					"This `write` tool is limited to agent:// messages: call it with path `agent://<id>` and the message text in `content` (`agent://all` broadcasts to all peers); mounted xd:// devices stay callable (`read xd://` lists them). Filesystem writes are not available elsewhere to read-only agents.",
+				);
+			}
 			throw new ToolError(
 				"This `write` tool is limited to the xd:// device transport and local:// session scratch: call it with path `xd://<tool>` and the device's JSON arguments in `content` (`read xd://` lists mounted devices), or write a `local://<name>` file. Filesystem writes are not available elsewhere." +
 					yieldFallback,

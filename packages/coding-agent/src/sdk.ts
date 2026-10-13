@@ -4232,6 +4232,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
+		// A read-only agent's synthetic agent:// `write` (see createTools) is the
+		// reply transport: it must be active even though the explicit list omits it.
+		if (toolSession.agentOnlyWrite === true && toolRegistry.has("write") && !initialToolNames.includes("write")) {
+			initialToolNames.push("write");
+		}
+
 		setSessionActiveToolNames(initialToolNames);
 		const { systemPrompt } = await logger.time(
 			"buildSystemPrompt",
@@ -4613,6 +4619,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// The primary may carry a dormant xd:// write transport. Advisors use
 			// their own configured tool slate, so a selected write is always full.
 			deviceOnlyWrite: undefined,
+			agentOnlyWrite: undefined,
 			pendingFullWriteDescription: undefined,
 			get cwd() {
 				return sessionManager.getCwd();

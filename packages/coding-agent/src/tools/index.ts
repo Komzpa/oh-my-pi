@@ -907,8 +907,13 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	// other write stays rejected. `deviceOnlyWrite` is set alongside so the
 	// shared restricted-transport bookkeeping (tool rebuilds, direct file
 	// mutation frames) treats the grant as synthetic.
-	if (requestedTools !== undefined) {
-		const agentOnly = !requestedTools.includes("write") && isReadOnlyToolNames(requestedTools);
+	// Classified on the caller's declared list (`toolNames`), not on
+	// `requestedTools`: resolveBuiltinToolPlan appends read-tier conveniences
+	// (e.g. `think` under externalThinking) that are not in READ_ONLY_TOOL_NAMES.
+	// Restricted sessions own an exact capability list and never get the grant.
+	if (requestedTools !== undefined && !restrictToolNames) {
+		const declaredTools = toolNames === undefined ? undefined : normalizeToolNames(toolNames);
+		const agentOnly = !requestedTools.includes("write") && isReadOnlyToolNames(declaredTools);
 		session.agentOnlyWrite = agentOnly ? true : undefined;
 		if (agentOnly) {
 			session.deviceOnlyWrite = true;

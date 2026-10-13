@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
@@ -114,5 +115,28 @@ describe("read-only agent reply via write agent://", () => {
 	it("keeps edit refused: edit is never mounted for a read-only tool list", async () => {
 		const tools = await readOnlyTools();
 		expect(tools.map(tool => tool.name)).not.toContain("edit");
+	});
+
+	it("does not grant write to a restricted session that owns its exact tool list", async () => {
+		const session = { ...readOnlySession(), restrictToolNames: true } as ToolSession;
+		const tools = await createTools(session, [...READ_ONLY_AGENT_TOOLS]);
+		expect(tools.map(tool => tool.name)).not.toContain("write");
+		expect(session.agentOnlyWrite).toBeUndefined();
+	});
+
+	it("still grants the agent-only write when externalThinking appends think to the plan", async () => {
+		const session = readOnlySession();
+		session.settings = Settings.isolated({ "tools.xdev": false, externalThinking: true });
+		const model = getBundledModel("anthropic", "claude-fable-5");
+		session.getActiveModel = () => model;
+		const tools = await createTools(session, [...READ_ONLY_AGENT_TOOLS]);
+		expect(tools.map(tool => tool.name)).toContain("think");
+		expect(tools.map(tool => tool.name)).toContain("write");
+		expect(session.agentOnlyWrite).toBe(true);
+	});
+
+	it("does not mount write for a list with a mutating tool", async () => {
+		const tools = await createTools(readOnlySession(), ["read", "bash"]);
+		expect(tools.map(tool => tool.name)).not.toContain("write");
 	});
 });
