@@ -3718,16 +3718,11 @@ export class SessionManager {
 		}
 	}
 
-	/**
-	 * Read-only current-branch entries, in path order, whose payload-free metadata matches; others are
-	 * never read. Entries come back without mutation tracking so callers may structuredClone them.
-	 */
+	/** Current-branch entries, in path order, whose payload-free metadata matches; others are never read. */
 	getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
 		const entries: SessionEntry[] = [];
 		for (const metadata of this.#index.metadataPath()) {
-			if (!predicate(metadata)) continue;
-			const entry = this.#index.get(metadata.id, false)!;
-			entries.push((originalEntries.get(entry) as SessionEntry | undefined) ?? entry);
+			if (predicate(metadata)) entries.push(this.#index.get(metadata.id, false)!);
 		}
 		return entries;
 	}

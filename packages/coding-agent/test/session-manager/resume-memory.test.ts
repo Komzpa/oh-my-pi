@@ -855,8 +855,6 @@ describe("todo state from a metadata-filtered branch", () => {
 		try {
 			const filtered = session.getBranchMatching(isTodoStateEntryMetadata);
 			expect(filtered.map(entry => entry.id)).toEqual(["t1", "t-error", "hud", "t2"]);
-			// Read-only todo replay may deep-clone payloads; demand-read entries must not be tracking proxies.
-			expect(() => structuredClone(filtered)).not.toThrow();
 			const full = session.getBranch();
 			expect(getLatestTodoPhasesFromEntries(filtered)).toEqual(getLatestTodoPhasesFromEntries(full));
 			expect(getLatestTodoPhasesFromEntries(filtered)).toEqual(phasesB);
