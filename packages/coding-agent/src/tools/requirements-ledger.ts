@@ -3,6 +3,13 @@ import { isRecord } from "@oh-my-pi/pi-utils";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 import type { SessionEntry } from "../session/session-entries";
+import receiptHeader from "../prompts/session/requirements-ledger-receipt-header.md" with { type: "text" };
+import {
+	formatRequirementIdentity,
+	parseRequirementIdentity,
+	splitRequirementIdentitySegments,
+	type RequirementIdentity,
+} from "../utils/requirement-artifact";
 declare module "@oh-my-pi/pi-tui/tools/todo" {
 	interface TodoItem {
 		/** User-owned check; does not constitute verification or close the row. */
@@ -572,6 +579,16 @@ export function getRequirementReceiptArtifactRowLabel(
 	return label && knownRows.has(label) ? label : undefined;
 }
 
+/** Every explicit row label in an artifact cell, in order, without duplicates. */
+export function getRequirementReceiptArtifactRowLabels(artifact: string, knownRows: ReadonlySet<string>): string[] {
+	const labels: string[] = [];
+	for (const segment of splitRequirementIdentitySegments(artifact)) {
+		const label = getRequirementReceiptArtifactRowLabel(segment, knownRows);
+		if (label !== undefined && !labels.includes(label)) labels.push(label);
+	}
+	return labels;
+}
+
 /** Scope explicitly named artifact segments before comparing a row's commit identity. */
 export function getRequirementRowArtifactIdentity(
 	artifact: string,
@@ -579,10 +596,23 @@ export function getRequirementRowArtifactIdentity(
 	rows: readonly string[],
 	knownRows: ReadonlySet<string> = new Set(rows),
 ): string | undefined {
-	const segments = artifact.split(";").map(segment => segment.trim());
-	// Whole-label equality only: a row never binds through a substring of another label.
-	// An explicit label matches even outside `rows`, so callers can detect foreign rows.
-	const named = segments.filter(segment => getRequirementReceiptArtifactRowLabel(segment, knownRows) === row);
+	const segments = splitRequirementIdentitySegments(artifact).map(segment => segment.trim());
+	// A labelled identity list continues until the next explicit row label.
+	// Typed continuations and bare legacy commits inherit scope; opaque prose does not.
+	const named: string[] = [];
+	let label: string | undefined;
+	for (const segment of segments) {
+		const explicit = getRequirementReceiptArtifactRowLabel(segment, knownRows);
+		if (explicit !== undefined) label = explicit;
+		const continuation =
+			explicit === undefined && label === row ? parseRequirementReceiptIdentities(segment) : undefined;
+		if (
+			explicit === row ||
+			(explicit === undefined && label === row && /^(?:git|file|deploy):/.test(segment)) ||
+			(continuation && "legacy" in continuation && continuation.commits.length > 0)
+		)
+			named.push(segment);
+	}
 	if (named.length) return named.join("; ");
 	// An explicit label naming any row (assigned or foreign) scopes the cell:
 	// never silently accept an explicitly labelled cell for an unnamed row,
@@ -617,6 +647,46 @@ export function getRequirementRowVerdict(
 	return artifact === undefined ? undefined : { ...verdict, artifact };
 }
 
+/** Parse typed segments once; a typed syntax error is never a legacy SHA receipt. */
+export function parseRequirementReceiptIdentities(
+	artifact: string,
+): { identities: RequirementIdentity[] } | { error: string } | { legacy: true; commits: string[] } {
+	const segments = splitRequirementIdentitySegments(artifact).map(segment =>
+		segment.replace(/^\s*(?:TODO\s+)?row\s+"(?:[^"\\]|\\.)*"\s*@\s*/i, "").trim(),
+	);
+	if (!segments.some(segment => /^(?:git|file|deploy):/i.test(segment)))
+		return {
+			legacy: true,
+			commits: [...segments.join("; ").matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!.toLowerCase()),
+		};
+	const identities: RequirementIdentity[] = [];
+	for (const segment of segments) {
+		const parsed = parseRequirementIdentity(segment);
+		if ("error" in parsed) return { error: parsed.error };
+		identities.push(parsed.identity);
+	}
+	return { identities };
+}
+
+/** Meaningful declarations only; notes, status, and owner changes do not alter a typed target. */
+export function requirementRowDeclarationSnapshot(phases: readonly TodoPhase[], rows: readonly string[]): string {
+	return JSON.stringify(
+		rows.map(row => [
+			row,
+			phases
+				.flatMap(phase => phase.tasks)
+				.filter(task => task.content === row)
+				.map(task => {
+					const schedule = "schedule" in task && isRecord(task.schedule) ? task.schedule : undefined;
+					return [
+						task.deployment ?? null,
+						Array.isArray(schedule?.resources) ? [...schedule.resources].sort() : null,
+					];
+				}),
+		]),
+	);
+}
+
 export interface RequirementGateArtifact {
 	head: string | null;
 	dirty: boolean;
@@ -626,9 +696,16 @@ export interface RequirementGateArtifact {
 	cwd?: string;
 	reason?: string;
 	awaitingUser?: { action: string; ids?: string[] };
+	/** Canonical identities offered to QA, or checked against this exact receipt. */
+	identities?: RequirementIdentity[];
+	identityCheck?: { artifact: string; reason?: string };
 }
 
 export function formatRequirementGateArtifact(artifact: RequirementGateArtifact, row?: string): string {
+	if (artifact.identities?.length) {
+		const identity = artifact.identities.map(formatRequirementIdentity).join("; ");
+		return `${row === undefined ? "" : `row ${JSON.stringify(row)} @ `}${identity}${artifact.reason ? `, reason=${artifact.reason}` : ""}`;
+	}
 	const details = `cwd=${artifact.cwd ? shortenPath(artifact.cwd) : "unknown"}, dirty=${artifact.dirty}${artifact.dirtyFingerprint ? `, dirty-fingerprint=${artifact.dirtyFingerprint}` : ""}${artifact.reason ? `, reason=${artifact.reason}` : ""}`;
 	if (row !== undefined) {
 		const identity = artifact.sha256
@@ -644,6 +721,28 @@ export function formatRequirementGateArtifact(artifact: RequirementGateArtifact,
 	return `cwd=${artifact.cwd ? shortenPath(artifact.cwd) : "unknown"}, head=${artifact.head ?? "unknown"}, dirty=${artifact.dirty}${artifact.sha256 ? `, sha256=${artifact.sha256}` : ""}${artifact.dirtyFingerprint ? `, dirty-fingerprint=${artifact.dirtyFingerprint}` : ""}${artifact.reason ? `, reason=${artifact.reason}` : ""}`;
 }
 
+/** Authenticate source words before invoking any typed receipt probe. */
+export function getRequirementVerdictSourceIssue(
+	requirement: RequirementLedgerItem,
+	row: string,
+	verdict: RequirementVerdict,
+): string | null {
+	if (verdict.status !== "pass")
+		return `requirement ${requirement.id} verdict for row ${JSON.stringify(row)} is ${verdict.status}, not pass`;
+	if (verdict.auditor !== "qa-auditor" || !verdict.workerId.trim())
+		return `no authenticated qa-auditor identity for row ${JSON.stringify(row)}`;
+	if (verdict.rawWords !== undefined) {
+		const want = requirement.rawText.replace(/\s+/g, " ").trim();
+		const got = verdict.rawWords.replace(/\s+/g, " ").trim();
+		if (got !== want) {
+			let index = 0;
+			while (index < got.length && index < want.length && got[index] === want[index]) index++;
+			return `${requirement.id} raw words differ for row ${JSON.stringify(row)} at char ${index} (source ${want.length} chars vs receipt ${got.length} chars)`;
+		}
+	}
+	return null;
+}
+
 /** Precise staleness diagnosis for the rows being closed or published. Null means fresh. */
 export function getRequirementVerdictStaleness(
 	requirement: RequirementLedgerItem,
@@ -654,29 +753,24 @@ export function getRequirementVerdictStaleness(
 	const seen = new Set<string>();
 	for (const current of artifacts) {
 		const row = JSON.stringify(current.row);
-		if (current.reason) return `row ${row}: unresolved artifact (${current.reason})`;
+		if (current.reason && !current.identityCheck) return `row ${row}: unresolved artifact (${current.reason})`;
 		if (!requirement.rows.includes(current.row)) return `row ${row} is not linked to requirement ${requirement.id}`;
 		if (seen.has(current.row)) return `duplicate artifact for row ${row}`;
 		seen.add(current.row);
 		const verdict = getRequirementRowVerdict(requirement, current.row);
 		if (!verdict) return `requirement ${requirement.id} has no verdict for row ${row}`;
-		if (verdict.status !== "pass")
-			return `requirement ${requirement.id} verdict for row ${row} is ${verdict.status}, not pass`;
-		if (verdict.auditor !== "qa-auditor" || !verdict.workerId.trim())
-			return `no authenticated qa-auditor identity for row ${row}`;
-		// Raw words run before artifact identity: a matching file SHA must not hide a
-		// receipt that dropped part of the ask, such as an `[Image #1, …]` prefix.
-		// Only lengths and the first differing index are reported, never source text.
-		if (verdict.rawWords !== undefined) {
-			const want = requirement.rawText.replace(/\s+/g, " ").trim();
-			const got = verdict.rawWords.replace(/\s+/g, " ").trim();
-			if (got !== want) {
-				let index = 0;
-				while (index < got.length && index < want.length && got[index] === want[index]) index++;
-				return `${requirement.id} raw words differ for row ${row} at char ${index} (source ${want.length} chars vs receipt ${got.length} chars)`;
-			}
+		const sourceIssue = getRequirementVerdictSourceIssue(requirement, current.row, verdict);
+		if (sourceIssue) return sourceIssue;
+		const typed = parseRequirementReceiptIdentities(verdict.artifact);
+		if ("error" in typed) return `row ${row}: invalid typed identity (${typed.error})`;
+		if (current.identityCheck?.artifact === verdict.artifact && current.identityCheck.reason)
+			return `row ${row}: ${current.identityCheck.reason}`;
+		if ("identities" in typed || current.identityCheck?.artifact === verdict.artifact) {
+			if (!current.identityCheck || current.identityCheck.artifact !== verdict.artifact)
+				return `row ${row}: unverifiable typed identity (receipt was not probed)`;
+			continue;
 		}
-		const hashes = [...verdict.artifact.matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!.toLowerCase());
+		const hashes = typed.commits;
 		if (current.sha256) {
 			if (current.dirty) return `dirty file artifact for row ${row}`;
 			if (hashes.length !== 1)
@@ -700,8 +794,10 @@ export function getRequirementVerdictStaleness(
 		}
 		if (!FULL_COMMIT_SHA.test(current.head)) return `invalid HEAD ${JSON.stringify(current.head)} for row ${row}`;
 		const heads = new Set(hashes);
-		if (heads.size !== 1 || !heads.has(current.head.toLowerCase()))
-			return `stale HEAD ${JSON.stringify(current.head)} for row ${row}`;
+		if (heads.size !== 1)
+			return `ambiguous Git commit in verdict artifact for row ${row}: expected one commit, found ${heads.size}`;
+		if (!heads.has(current.head.toLowerCase()))
+			return `stale HEAD (git) for row ${row}: expected ${hashes[0]}, observed ${current.head.toLowerCase()}`;
 	}
 	return null;
 }
@@ -717,7 +813,7 @@ export interface RequirementDoneGateIssue {
 export async function evaluateRequirementDoneGate(
 	requirements: readonly RequirementLedgerItem[],
 	rows: readonly string[],
-	getArtifact: (row: string) => Promise<RequirementGateArtifact>,
+	getArtifact: (row: string, receipt?: string) => Promise<RequirementGateArtifact>,
 	rejections: ReadonlyMap<string, string> = new Map(),
 ): Promise<RequirementDoneGateIssue[]> {
 	const targets = new Set(rows);
@@ -739,10 +835,13 @@ export async function evaluateRequirementDoneGate(
 		for (const row of requirement.rows) {
 			if (!targets.has(row)) continue;
 			const verdict = getRequirementRowVerdict(requirement, row);
-			let artifact = artifacts.get(row);
+			const sourceIssue = verdict ? getRequirementVerdictSourceIssue(requirement, row, verdict) : undefined;
+			const receipt = !sourceIssue && verdict?.status === "pass" ? verdict.artifact : undefined;
+			const cacheKey = JSON.stringify([row, receipt]);
+			let artifact = artifacts.get(cacheKey);
 			if (!artifact) {
-				artifact = getArtifact(row);
-				artifacts.set(row, artifact);
+				artifact = getArtifact(row, receipt);
+				artifacts.set(cacheKey, artifact);
 			}
 			const current = await artifact;
 			const pending = current.awaitingUser;
@@ -828,6 +927,8 @@ export interface RequirementAuditAssignment {
 	index?: number;
 	/** Explicit row scope from the audit task; absent on old all-row assignments. */
 	rows?: string[];
+	/** Meaningful row declarations reviewed at dispatch; notes, status, and owner edits are excluded. */
+	rowDeclarations?: string;
 }
 /** Unclassified candidates gate mutating tools from the moment their user message is captured, in the same turn. */
 export function getUnclassifiedRequirementCandidates(entries: readonly SessionEntry[]): RequirementLedgerItem[] {
@@ -863,6 +964,10 @@ function requirementTableCells(line: string): string[] | null {
 		return text.startsWith("`") && text.endsWith("`") ? text.slice(1, -1).trim() : text;
 	});
 }
+const [idHeader, rawWordsHeader, statusHeader, evidenceHeader, artifactHeader] = receiptHeader
+	.trim()
+	.split("|")
+	.map(cell => cell.toLowerCase().replace(/[^a-z]/g, ""));
 
 /** Accept one complete Markdown table or structured JSON receipt for this worker's requirements. */
 export function parseRequirementReceipt(
@@ -879,6 +984,8 @@ export function parseRequirementReceipt(
 }> | null {
 	const expected = new Set(expectedIds);
 	if (expected.size === 0 || expected.size !== expectedIds.length) return null;
+	const isUnrelatedId = (id: unknown): boolean =>
+		typeof id === "string" && /^R[1-9]\d*$/.test(id.trim()) && !expected.has(id.trim());
 	let parsedOutput: unknown;
 	try {
 		parsedOutput = JSON.parse(output);
@@ -914,6 +1021,7 @@ export function parseRequirementReceipt(
 		];
 		for (const row of candidates[0]) {
 			if (!isRecord(row)) return null;
+			if (isUnrelatedId(row.id)) continue;
 			const cells: string[] = [];
 			for (const aliases of fields) {
 				const keys = aliases.filter(key => Object.hasOwn(row, key));
@@ -959,12 +1067,12 @@ export function parseRequirementReceipt(
 				const matches = normalized.flatMap((name, index) => (names.includes(name) ? [index] : []));
 				return matches.length === 1 ? matches[0]! : -1;
 			};
-			const id = find(["id"]);
-			const rawWords = find(["rawwords", "rawtext"]);
+			const id = find([idHeader!]);
+			const rawWords = find([rawWordsHeader!, "rawtext"]);
 			if (rawWords < 0 && normalized.some(name => name === "rawwords" || name === "rawtext")) return null;
-			const status = find(["status", "verdict"]);
-			const evidence = find(["evidence"]);
-			const artifact = find(["artifact", "artifactidentity"]);
+			const status = find(["status", statusHeader!]);
+			const evidence = find([evidenceHeader!]);
+			const artifact = find(["artifact", artifactHeader!]);
 			const claimed = find(["claimed"]);
 			if (claimed < 0 && normalized.some(name => name === "claimed")) return null;
 			const measured = find(["measured"]);
@@ -979,6 +1087,7 @@ export function parseRequirementReceipt(
 			if (!lines[line]!.trim()) break;
 			const cells = requirementTableCells(lines[line]!);
 			if (!cells) break;
+			if (isUnrelatedId(cells[header.id])) continue;
 			if (cells.length !== header.width) return null;
 			rowCells.push([
 				cells[header.id]!,
@@ -1134,6 +1243,7 @@ export function getPersistedRequirementAuditorAssignments(
 				ids: [...requirementIds],
 				snapshot,
 				sessionId,
+				...(typeof value.rowDeclarations === "string" ? { rowDeclarations: value.rowDeclarations } : {}),
 				...(Array.isArray(value.rows) &&
 				value.rows.every(
 					row =>

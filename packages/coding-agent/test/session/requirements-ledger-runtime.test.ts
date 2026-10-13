@@ -25,6 +25,7 @@ import {
 	evaluateRequirementDoneGate,
 	getPersistedRequirementAuditRejections,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
+import { formatRequirementIdentity } from "@oh-my-pi/pi-coding-agent/utils/requirement-artifact";
 import {
 	getLatestTodoPhasesFromEntries,
 	getRequirementRowArtifact,
@@ -36,6 +37,10 @@ const AT = "2026-09-28T12:00:00.000Z";
 
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+function gitIdentity(cwd: string, commit: string): string {
+	return formatRequirementIdentity({ kind: "git", repo: cwd, commit });
 }
 
 function fixture(
@@ -90,12 +95,38 @@ function fixture(
 	return { cwd, manager, runtime, notices, gate: () => gate };
 }
 
-function receiptTable(head: string): string {
+function receiptTable(head: string, evidence = "exercised the build"): string {
 	return [
 		"| id | raw words | verdict | evidence | artifact identity |",
 		"| --- | --- | --- | --- | --- |",
-		`| R1 | audit the artifact | pass | exercised the build | ${head} |`,
+		`| R1 | audit the artifact | pass | ${evidence} | ${head} |`,
 	].join("\n");
+}
+
+async function auditFixtureArtifact(
+	runtime: RequirementsLedgerRuntime,
+	workerId: string,
+	artifact: string,
+	evidence: string,
+): Promise<void> {
+	await runtime.prepareAuditorTaskCall("task", workerId, {
+		agent: "qa-auditor",
+		task: "Audit R1 please",
+		context: "",
+	});
+	const outcome = await runtime.afterToolCall({
+		toolCall: { id: workerId, name: "task" },
+		result: {
+			content: [],
+			details: {
+				results: [
+					{ index: 0, agent: "qa-auditor", id: workerId, exitCode: 0, output: receiptTable(artifact, evidence) },
+				],
+			},
+		},
+		isError: false,
+	} as never);
+	expect(outcome).toBeUndefined();
 }
 
 describe("requirements ledger auditor binding", () => {
@@ -126,7 +157,7 @@ describe("requirements ledger auditor binding", () => {
 					task: `Audit R42 for ${row}`,
 					context: "",
 				});
-				const table = `| id | verdict | evidence | artifact |\n|---|---|---|---|\n| R42 | pass | exercised the build | TODO row "${row}" @ ${head} |\n\nRetro\n- kept the verdict table complete`;
+				const table = `| id | verdict | evidence | artifact |\n|---|---|---|---|\n| R42 | pass | exercised the build | TODO row "${row}" @ ${gitIdentity(cwd, head)} |\n\nRetro\n- kept the verdict table complete`;
 				const finalized = finalizeSubprocessOutput({
 					rawOutput: "",
 					exitCode: 0,
@@ -254,7 +285,15 @@ describe("requirements ledger auditor binding", () => {
 				result: {
 					content: [],
 					details: {
-						results: [{ index: 0, agent: "qa-auditor", id: "worker-1", exitCode: 0, output: receiptTable(head) }],
+						results: [
+							{
+								index: 0,
+								agent: "qa-auditor",
+								id: "worker-1",
+								exitCode: 0,
+								output: receiptTable(gitIdentity(cwd, head)),
+							},
+						],
 					},
 				},
 				isError: false,
@@ -289,7 +328,7 @@ describe("requirements ledger auditor binding", () => {
 								agent: "qa-auditor",
 								id: "worker-1",
 								exitCode: 0,
-								output: receiptTable(head),
+								output: receiptTable(gitIdentity(cwd, head)),
 								truncated: true,
 							},
 						],
@@ -319,7 +358,7 @@ describe("requirements ledger auditor binding", () => {
 				isError: false,
 			} as never);
 			expect(pending).toBeUndefined();
-			const envelope = `<task-result id="worker-async" agent="qa-auditor" status="completed"><output>${JSON.stringify({ report: receiptTable(head) })}</output></task-result>`;
+			const envelope = `<task-result id="worker-async" agent="qa-auditor" status="completed"><output>${JSON.stringify({ report: receiptTable(gitIdentity(cwd, head)) })}</output></task-result>`;
 			await runtime.consumeAsyncResult({
 				role: "custom",
 				customType: ASYNC_RESULT_MESSAGE_TYPE,
@@ -383,7 +422,15 @@ describe("requirements ledger auditor binding", () => {
 				result: {
 					content: [],
 					details: {
-						results: [{ index: 0, agent: "qa-auditor", id: "worker-1", exitCode: 0, output: receiptTable(head) }],
+						results: [
+							{
+								index: 0,
+								agent: "qa-auditor",
+								id: "worker-1",
+								exitCode: 0,
+								output: receiptTable(gitIdentity(cwd, head)),
+							},
+						],
 					},
 				},
 				isError: false,
@@ -400,7 +447,8 @@ describe("requirements ledger auditor binding", () => {
 			);
 			expect(verdict).toMatchObject({ settled: true });
 			expect(JSON.stringify(verdict)).toContain("R1");
-			expect(notices.join("\n")).toContain(`stale HEAD "${git(cwd, "rev-parse", "HEAD")}" for row "Build artifact"`);
+			expect(notices.join("\n")).toContain(head);
+			expect(notices.join("\n")).toContain(git(cwd, "rev-parse", "HEAD"));
 			// Publication refuses the stale row without erasing its durable evidence.
 			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]?.status).toBe("pass");
 		} finally {
@@ -430,7 +478,7 @@ describe("requirements ledger auditor binding", () => {
 								agent: "qa-auditor",
 								id: "worker-stale",
 								exitCode: 0,
-								output: receiptTable(dispatchHead),
+								output: receiptTable(gitIdentity(cwd, dispatchHead)),
 							},
 						],
 					},
@@ -438,7 +486,8 @@ describe("requirements ledger auditor binding", () => {
 				isError: false,
 			} as never);
 			expect(outcome?.content?.[0]).toMatchObject({ type: "text" });
-			expect(JSON.stringify(outcome?.content)).toContain("stale HEAD");
+			expect(JSON.stringify(outcome?.content)).toContain(dispatchHead);
+			expect(JSON.stringify(outcome?.content)).toContain(git(cwd, "rev-parse", "HEAD"));
 			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts).toBeUndefined();
 			const todo = new TodoTool({
 				cwd,
@@ -482,7 +531,7 @@ describe("requirements ledger auditor binding", () => {
 								agent: "qa-auditor",
 								id: "worker-unrelated",
 								exitCode: 0,
-								output: receiptTable("f".repeat(40)),
+								output: receiptTable(gitIdentity(cwd, "f".repeat(40))),
 							},
 						],
 					},
@@ -547,7 +596,7 @@ describe("receipt recording across delivery channels and worker renames", () => 
 					content: [
 						{
 							type: "text",
-							text: `Delivery: not auto-delivered; recovered by this snapshot.\n\`\`\`\n${`<task-result id="worker-wait" agent="qa-auditor" status="completed"><preview full-output="agent://worker-wait">${receiptTable(head)}</preview></task-result>`}\n\`\`\``,
+							text: `Delivery: not auto-delivered; recovered by this snapshot.\n\`\`\`\n${`<task-result id="worker-wait" agent="qa-auditor" status="completed"><preview full-output="agent://worker-wait">${receiptTable(gitIdentity(cwd, head))}</preview></task-result>`}\n\`\`\``,
 						},
 					],
 				},
@@ -578,7 +627,7 @@ describe("receipt recording across delivery channels and worker renames", () => 
 						text: envelope(
 							"FreeRoutesInstallVerdict-2",
 							"qa-auditor",
-							JSON.stringify({ result: receiptTable(head) }),
+							JSON.stringify({ result: receiptTable(gitIdentity(cwd, head)) }),
 						),
 					},
 				],
@@ -619,7 +668,7 @@ describe("receipt recording across delivery channels and worker renames", () => 
 					content: [
 						{
 							type: "text",
-							text: `Delivery: not auto-delivered; recovered by this snapshot.\n\`\`\`\n${envelope("worker-wait-bad", "scout", JSON.stringify({ result: receiptTable(head) }))}\n\`\`\``,
+							text: `Delivery: not auto-delivered; recovered by this snapshot.\n\`\`\`\n${envelope("worker-wait-bad", "scout", JSON.stringify({ result: receiptTable(gitIdentity(cwd, head)) }))}\n\`\`\``,
 						},
 					],
 				},
@@ -910,7 +959,7 @@ describe("awaiting-user publication gate", () => {
 			const verdict = {
 				status: "pass" as const,
 				evidence: "server-side QA",
-				artifact: head,
+				artifact: gitIdentity(cwd, head),
 				workerId: "qa-before",
 				auditor: "qa-auditor" as const,
 				receivedAt: AT,
@@ -947,7 +996,7 @@ describe("awaiting-user publication gate", () => {
 	});
 
 	it("accepts a fresh QA pass after a pending check was recorded", async () => {
-		const { cwd, manager, gate } = fixture();
+		const { cwd, manager, runtime, gate } = fixture();
 		try {
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
 				phases: [
@@ -964,22 +1013,12 @@ describe("awaiting-user publication gate", () => {
 					},
 				],
 			});
-			const requirement = getLatestRequirements(manager.getBranch())[0]!;
-			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [
-				{
-					...requirement,
-					rowVerdicts: {
-						"Build artifact": {
-							status: "pass",
-							evidence: "Archive exercised",
-							artifact: git(cwd, "rev-parse", "HEAD"),
-							workerId: "qa-after",
-							auditor: "qa-auditor",
-							receivedAt: new Date(Date.now() + 1000).toISOString(),
-						},
-					},
-				},
-			]);
+			await auditFixtureArtifact(
+				runtime,
+				"qa-after",
+				gitIdentity(cwd, git(cwd, "rev-parse", "HEAD")),
+				"Archive exercised",
+			);
 			expect(
 				await gate()?.(
 					{ content: [{ type: "text", text: "verified" }], stopReason: "stop" } as never,
@@ -1036,7 +1075,8 @@ describe("real row-scoped auditor receipts", () => {
 			expect(git(resource, "status", "--porcelain")).toBe("");
 			expect(await getRequirementRowArtifact({ cwd, sessionManager: manager }, rows[0]!, phases)).toEqual({
 				cwd: resource,
-				head,
+				head: null,
+				identities: [{ kind: "git", repo: resource, commit: head }],
 				dirty: false,
 			});
 			const savedOnly: TodoPhase[] = [
@@ -1054,7 +1094,7 @@ describe("real row-scoped auditor receipts", () => {
 			const output = [
 				"| id | raw words | verdict | evidence | artifact identity |",
 				"|---|---|---|---|---|",
-				`| R7 | ${raw.replaceAll("\n", "<br>")} | pass | inspected plaquePhysics.ts:675 and facilityScene.ts:8765-8769 | ${rows[0]} @ ${head}; ${rows[1]} @ ${head} |`,
+				`| R7 | ${raw.replaceAll("\n", "<br>")} | pass | inspected plaquePhysics.ts:675 and facilityScene.ts:8765-8769 | row ${JSON.stringify(rows[0])} @ ${gitIdentity(resource, head)}; row ${JSON.stringify(rows[1])} @ ${gitIdentity(resource, head)} |`,
 			].join("\n");
 			const outcome = await runtime.afterToolCall({
 				toolCall: { id: owner, name: "task" },
@@ -1067,7 +1107,7 @@ describe("real row-scoped auditor receipts", () => {
 			expect(outcome).toBeUndefined();
 			for (const row of rows) {
 				expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.[row]?.artifact).toBe(
-					`${row} @ ${head}`,
+					`row ${JSON.stringify(row)} @ ${gitIdentity(resource, head)}`,
 				);
 			}
 			const tool = new TodoTool({
@@ -1093,7 +1133,13 @@ describe("real row-scoped auditor receipts", () => {
 			expect(stale.isError).toBe(true);
 			expect(JSON.stringify(stale.content)).toContain(resource);
 			expect(JSON.stringify(stale.content)).toContain(movedHead);
-			expect(JSON.stringify(stale.content)).toContain("dirty=false");
+			expect(JSON.stringify(stale.content)).toContain(head);
+			expect(await getRequirementRowArtifact({ cwd, sessionManager: manager }, rows[1]!, phases)).toEqual({
+				cwd: resource,
+				head: null,
+				dirty: false,
+				identities: [{ kind: "git", repo: resource, commit: movedHead }],
+			});
 			// The labels, not cell order or another row's SHA, select each row's fresh artifact.
 			const otherResource = join(cwd, "scene-worktree");
 			git(cwd, "worktree", "add", "--detach", otherResource, head);
@@ -1121,8 +1167,8 @@ describe("real row-scoped auditor receipts", () => {
 								id: owner,
 								exitCode: 0,
 								output: output.replace(
-									`${rows[0]} @ ${head}; ${rows[1]} @ ${head}`,
-									`${rows[1]} @ ${head}; ${rows[0]} @ ${movedHead}`,
+									`row ${JSON.stringify(rows[0])} @ ${gitIdentity(resource, head)}; row ${JSON.stringify(rows[1])} @ ${gitIdentity(resource, head)}`,
+									`row ${JSON.stringify(rows[1])} @ ${gitIdentity(otherResource, head)}; row ${JSON.stringify(rows[0])} @ ${gitIdentity(resource, movedHead)}`,
 								),
 							},
 						],
@@ -1181,7 +1227,7 @@ describe("real row-scoped auditor receipts", () => {
 			const table = [
 				"| id | raw words | verdict | evidence | artifact identity |",
 				"|---|---|---|---|---|",
-				`| R16 | ${raw} | pass | e2e/facility-callout-frame-colour.spec.ts:71 asserts leaderColour equals frameColour; width 1 texture px; doc/product-requirements.md contains the clause | ${row} @ ${head} |`,
+				`| R16 | ${raw} | pass | e2e/facility-callout-frame-colour.spec.ts:71 asserts leaderColour equals frameColour; width 1 texture px; doc/product-requirements.md contains the clause | ${row} @ ${gitIdentity(cwd, head)} |`,
 			].join("\n");
 			async function deliver(output: string, worker: string, auditedRow = row): Promise<void> {
 				await runtime.prepareAuditorTaskCall("task", worker, {
@@ -1221,7 +1267,7 @@ describe("real row-scoped auditor receipts", () => {
 			expect(phases[0]!.tasks.map(task => task.status)).toEqual(["completed", "in_progress"]);
 			await deliver(
 				JSON.stringify({
-					result: `| id | raw words | verdict | evidence | artifact identity |\n|---|---|---|---|---|\n| R16 | ${raw} | pass | exercised the other lane | ${other} @ ${head} |`,
+					result: `| id | raw words | verdict | evidence | artifact identity |\n|---|---|---|---|---|\n| R16 | ${raw} | pass | exercised the other lane | ${other} @ ${gitIdentity(cwd, head)} |`,
 				}),
 				"AuditOtherRow",
 				other,
@@ -1398,7 +1444,7 @@ describe("PR41 review boundaries", () => {
 								agent: "qa-auditor",
 								id: "split-worker",
 								exitCode: 0,
-								output: receiptTable(git(cwd, "rev-parse", "HEAD")).replace(
+								output: receiptTable(gitIdentity(cwd, git(cwd, "rev-parse", "HEAD"))).replace(
 									"| R1 | audit the artifact |",
 									"| R1a | unrelated words |",
 								),
@@ -1532,24 +1578,14 @@ describe("compact ledger publication notice", () => {
 		}
 	});
 	it("leaves a fully verified answer untouched with no model notice", async () => {
-		const { cwd, manager, notices, gate } = fixture();
+		const { cwd, runtime, notices, gate } = fixture();
 		try {
-			const requirement = getLatestRequirements(manager.getBranch())[0]!;
-			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [
-				{
-					...requirement,
-					rowVerdicts: {
-						"Build artifact": {
-							status: "pass",
-							evidence: "exercised build",
-							artifact: git(cwd, "rev-parse", "HEAD"),
-							workerId: "qa-verified",
-							auditor: "qa-auditor",
-							receivedAt: AT,
-						},
-					},
-				},
-			]);
+			await auditFixtureArtifact(
+				runtime,
+				"qa-verified",
+				gitIdentity(cwd, git(cwd, "rev-parse", "HEAD")),
+				"exercised build",
+			);
 			expect(
 				await gate()?.(
 					{ content: [{ type: "text", text: "  Verified.\n" }], stopReason: "stop" } as never,
@@ -1564,7 +1600,7 @@ describe("compact ledger publication notice", () => {
 });
 
 it("uses the new resource checkout and ignores an old artifact rejection without waiving QA", async () => {
-	const { cwd, manager, notices, gate } = fixture();
+	const { cwd, manager, runtime, notices, gate } = fixture();
 	const resource = join(cwd, "new-resource");
 	try {
 		git(cwd, "worktree", "add", "--detach", resource, "HEAD");
@@ -1598,28 +1634,16 @@ it("uses the new resource checkout and ignores an old artifact rejection without
 				},
 			],
 		});
-		expect((await getRequirementRowArtifact({ cwd, sessionManager: manager }, "Build artifact", phases)).head).toBe(
-			head,
+		expect(await getRequirementRowArtifact({ cwd, sessionManager: manager }, "Build artifact", phases)).toMatchObject(
+			{
+				head: null,
+				identities: [{ kind: "git", repo: resource, commit: head }],
+			},
 		);
 		const message = { content: [{ type: "text", text: "Result" }], stopReason: "stop" } as never;
 		expect((await gate()?.(message, new AbortController().signal))?.replacementText).toContain("Not audit-verified:");
 		expect(notices[0]).not.toContain("receipt artifact mismatch");
-		const requirement = getLatestRequirements(manager.getBranch())[0]!;
-		appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [
-			{
-				...requirement,
-				rowVerdicts: {
-					"Build artifact": {
-						status: "pass",
-						evidence: "new checkout exercised",
-						artifact: head,
-						workerId: "qa-current",
-						auditor: "qa-auditor",
-						receivedAt: AT,
-					},
-				},
-			},
-		]);
+		await auditFixtureArtifact(runtime, "qa-current", gitIdentity(resource, head), "new checkout exercised");
 		expect(await gate()?.(message, new AbortController().signal)).toBeUndefined();
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
@@ -1661,7 +1685,7 @@ describe("audit scope for foreign cited Rn", () => {
 		].join("\n");
 	}
 	async function deliverR6(fx: ScopedFixture, callId: string, artifact: (head: string) => string): Promise<void> {
-		const head = git(fx.cwd, "rev-parse", "HEAD");
+		const head = gitIdentity(fx.cwd, git(fx.cwd, "rev-parse", "HEAD"));
 		await fx.runtime.afterToolCall({
 			toolCall: { id: callId, name: "task" },
 			result: {
@@ -1692,7 +1716,7 @@ describe("audit scope for foreign cited Rn", () => {
 			expect(revised?.task).toContain('R6 row "Row C"');
 			expect(revised?.task).not.toContain('R4 row "');
 			expect(revised?.task).not.toContain("R4 (said at");
-			await deliverR6(fx, "scoped-cited", head => `Row C @ ${head}`);
+			await deliverR6(fx, "scoped-cited", head => `row "Row C" @ ${head}`);
 			const r6 = getLatestRequirements(fx.manager.getBranch()).find(requirement => requirement.id === "R6");
 			expect(r6?.rowVerdicts?.["Row C"]?.status).toBe("pass");
 			expect(r6?.rowVerdicts?.["Row D"]).toBeUndefined();
@@ -1711,7 +1735,7 @@ describe("audit scope for foreign cited Rn", () => {
 				task: "Audit R4 and R6 for row 'Row C'",
 				context: "",
 			});
-			await deliverR6(fx, "scoped-foreign", head => `Row D @ ${head}`);
+			await deliverR6(fx, "scoped-foreign", head => `row "Row D" @ ${head}`);
 			const r6 = getLatestRequirements(fx.manager.getBranch()).find(requirement => requirement.id === "R6");
 			expect(r6?.rowVerdicts?.["Row C"]).toBeUndefined();
 			expect(r6?.rowVerdicts?.["Row D"]).toBeUndefined();

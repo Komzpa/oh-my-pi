@@ -6,7 +6,7 @@ import { setAssistantPublicationGate } from "@oh-my-pi/pi-agent-core/assistant-p
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import { createHash } from "node:crypto";
 import { imageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
-import { isRecord } from "@oh-my-pi/pi-utils";
+import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
@@ -19,12 +19,15 @@ import {
 	getPersistedRequirementAuditorAssignments,
 	getPersistedRequirementAuditRejections,
 	getRequirementAuditSources,
+	getRequirementReceiptArtifactRowLabels,
 	getRequirementRowArtifactIdentity,
+	getRequirementVerdictSourceIssue,
 	getRequirementVerdictStaleness,
 	evaluateRequirementDoneGate,
 	type RequirementVerdict,
 	parseRequirementReceipt,
 	requirementAuditSnapshot,
+	requirementRowDeclarationSnapshot,
 	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
 	type RequirementAuditAssignment,
 	type RequirementImage,
@@ -87,6 +90,8 @@ import { READ_ONLY_TOOL_NAMES } from "../task/read-only-policy";
 import { BUNDLED_QA_AUDITOR_TEMPLATE } from "../task/agents";
 import type { AgentDefinition } from "../task/types";
 import { artifactsDirsFromRegistry } from "../internal-urls/registry-helpers";
+import auditInputTemplate from "../prompts/session/requirements-ledger-audit-input.md" with { type: "text" };
+import receiptHeader from "../prompts/session/requirements-ledger-receipt-header.md" with { type: "text" };
 
 /** The harness renames a worker whose requested name is taken by appending `-<n>`. */
 function sameWorkerIdentity(a: string, b: string): boolean {
@@ -240,8 +245,12 @@ export class RequirementsLedgerRuntime {
 			const quotedRows = new Set(knownRows.filter(row => auditTask.includes(JSON.stringify(row))));
 			// An explicit quoted label takes precedence over raw substring matches in sibling labels.
 			const citedRowNames = quotedRows.size ? quotedRows : new Set(knownRows.filter(row => auditTask.includes(row)));
-			const ids = citedLinked
-				.filter(requirement => citedRowNames.size === 0 || requirement.rows.some(row => citedRowNames.has(row)))
+			const assignedRows = citedRowNames.size ? [...citedRowNames] : knownRows;
+			const ids = requirements
+				.filter(
+					requirement =>
+						requirement.classification === "linked" && requirement.rows.some(row => assignedRows.includes(row)),
+				)
 				.map(requirement => requirement.id);
 			if (ids.length === 0) continue;
 
@@ -253,11 +262,6 @@ export class RequirementsLedgerRuntime {
 				).values(),
 			];
 			const rowHeads: string[] = [];
-			const linkedRows = [
-				...new Set(ids.flatMap(id => requirements.find(requirement => requirement.id === id)!.rows)),
-			];
-			const citedRows = linkedRows.filter(row => citedRowNames.has(row));
-			const assignedRows = citedRows.length ? citedRows : linkedRows;
 			const imagePayloads: RequirementAuditImagePayload[] = [];
 			const imageLines: string[] = [];
 			for (const source of sources) {
@@ -311,14 +315,12 @@ export class RequirementsLedgerRuntime {
 				}
 			}
 
-			const protocol = [
-				"QA AUDIT INPUT (original user words; merged sources retain their own Rn):",
-				...sources.map(source => `${source.id} (said at ${source.at}): ${source.rawText}`),
-				...(imageLines.length ? ["Referenced images (Rn, sha256, source):", ...imageLines] : []),
-				"Current linked-row HEAD identities:",
-				...rowHeads,
-				"Return one complete Markdown table with columns id | raw words | verdict | evidence | artifact identity. Cover every linked Rn above with exactly one row using its exact assigned ID; never append letter suffixes or invent split IDs. Verdict: pass, fail or unverifiable. Name the exact audited TODO row in artifact identity and its full commit SHA when a clean checkout exists. For rows without a clean checkout, name the observed artifact; freshness uses saved TODO row history. Evidence must name what was actually exercised or observed; no partial table or truncated preview is accepted. When the task states a number or count to verify, add columns claimed | measured with the task's figure and your own recount in the same units; a differing pair is recorded as fail.",
-			].join("\n");
+			const protocol = prompt.render(auditInputTemplate, {
+				sources: sources.map(source => `${source.id} (said at ${source.at}): ${source.rawText}`),
+				imageLines,
+				rowHeads,
+				receiptHeader: receiptHeader.trim(),
+			});
 			revised[index] = {
 				...item,
 				task: `${item.task}\n\n${protocol}`,
@@ -331,6 +333,7 @@ export class RequirementsLedgerRuntime {
 				agent: "qa-auditor",
 				index,
 				rows: assignedRows,
+				rowDeclarations: requirementRowDeclarationSnapshot(phases, assignedRows),
 			});
 		}
 
@@ -568,9 +571,9 @@ export class RequirementsLedgerRuntime {
 		const open = await evaluateRequirementDoneGate(
 			requirements,
 			[...new Set(requirements.filter(item => item.classification === "linked").flatMap(item => item.rows))],
-			async row => ({
+			async (row, receipt) => ({
 				...(await getRequirementRowArtifact(
-					{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager, signal },
+					{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager, signal, receipt },
 					row,
 					phases,
 					checkoutCache,
@@ -647,29 +650,64 @@ export class RequirementsLedgerRuntime {
 			return `${expectedIds.join(", ")}: malformed or partial verdict table (expected id, verdict, evidence, artifact)${missing.length > 0 ? `; missing rows for ${missing.join(", ")}` : ""}`;
 		}
 		const phases = getLatestTodoPhasesFromEntries(branch);
-		// A bare `X @ …` segment labels a row only when X is a row this session knows.
-		// Pass every TODO row here: a foreign row label must never project onto the
-		// row the Rn is linked to.
-		const knownRows = new Set([
-			...requirements.flatMap(requirement => requirement.rows),
-			...phases.flatMap(phase => phase.tasks.map(task => task.content)),
-		]);
+		// Declared targets must still match dispatch before any typed probe can reach a newly declared URL or unit.
+		if (
+			assignment.rowDeclarations !== undefined &&
+			requirementRowDeclarationSnapshot(phases, assignment.rows ?? []) !== assignment.rowDeclarations
+		) {
+			return `${expectedIds.join(", ")}: row artifact declarations have changed after audit dispatch`;
+		}
 		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
 		const updates = new Map<string, Record<string, RequirementVerdict>>();
 		for (const receipt of receipts) {
 			const requirement = expected.find(entry => entry?.id === receipt.id)!;
+			const knownRows = new Set([
+				...requirements.flatMap(requirement => requirement.rows),
+				...phases.flatMap(phase => phase.tasks.map(task => task.content)),
+			]);
 			const scopedRows = requirement.rows.filter(row => !assignment.rows || assignment.rows.includes(row));
+			// Assignment authentication above makes this an auditor receipt. Check only
+			// its immutable source echo here; retain its real fail/unverifiable status below.
+			const sourceIssue = getRequirementVerdictSourceIssue(requirement, scopedRows[0] ?? requirement.rows[0]!, {
+				status: "pass",
+				evidence: receipt.evidence,
+				artifact: receipt.artifact,
+				rawWords: receipt.rawWords,
+				workerId,
+				auditor: "qa-auditor",
+			});
+			if (sourceIssue) return `${receipt.id}: ${sourceIssue}`;
 			const namedRows = requirement.rows.filter(
 				row => getRequirementRowArtifactIdentity(receipt.artifact, row, scopedRows, knownRows) !== undefined,
 			);
-			if (namedRows.some(row => !scopedRows.includes(row)))
-				return `${receipt.id}: artifact names a row outside this audit assignment`;
+			// A label naming a linked-but-unassigned row, or any label when no assigned row
+			// is named, is out of scope; reject before any artifact identity check and name
+			// both sides. Unrelated `x @ y` evidence beside an assigned row stays evidence.
+			const artifactLabels = getRequirementReceiptArtifactRowLabels(receipt.artifact, knownRows);
+			const outsideLabels = artifactLabels.filter(
+				label => !scopedRows.includes(label) && (requirement.rows.includes(label) || namedRows.length === 0),
+			);
+			if (outsideLabels.length > 0) {
+				// Retry form names only the assigned rows' own current typed identities; no foreign target is probed.
+				const retries: string[] = [];
+				for (const row of scopedRows) {
+					const own = await getRequirementRowArtifact(
+						{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager },
+						row,
+						phases,
+						checkoutCache,
+					);
+					if (own.identities?.length) retries.push(formatRequirementGateArtifact(own, row));
+				}
+				return `${receipt.id}: artifact names a row outside this audit assignment (assigned: ${scopedRows.map(row => JSON.stringify(row)).join(", ") || "none"}; named: ${artifactLabels.map(label => JSON.stringify(label)).join(", ")})${retries.length ? `; retry with ${retries.join("; ")}` : ""}`;
+			}
 			const rows = namedRows.length ? namedRows : scopedRows;
 			if (!rows.length) return `${receipt.id}: receipt did not identify an assigned TODO row`;
 			const rowVerdicts: Record<string, RequirementVerdict> = {};
 			for (const row of rows) {
+				const identity = getRequirementRowArtifactIdentity(receipt.artifact, row, rows, knownRows);
 				const artifact = await bindRequirementRowArtifact(
-					{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager },
+					{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager, receipt: identity },
 					row,
 					phases,
 					this.#appender(),
@@ -677,7 +715,6 @@ export class RequirementsLedgerRuntime {
 				);
 				const lastChange = getTodoRowChanges(this.#host.sessionManager.getBranch()).get(row);
 				const receivedAt = new Date().toISOString();
-				const identity = getRequirementRowArtifactIdentity(receipt.artifact, row, rows, knownRows);
 				if (identity === undefined)
 					return `${receipt.id}: artifact identity did not identify ${JSON.stringify(row)}; resolved checkout: ${formatRequirementGateArtifact(artifact)}`;
 				const verdict: RequirementVerdict = {
@@ -688,14 +725,16 @@ export class RequirementsLedgerRuntime {
 					workerId,
 					auditor: "qa-auditor",
 					receivedAt,
-					...((!artifact.head || artifact.dirty) && lastChange ? { rowChangeId: lastChange.id } : {}),
+					...((!artifact.head || artifact.dirty) && !artifact.identityCheck && lastChange
+						? { rowChangeId: lastChange.id }
+						: {}),
 				};
 				const staleReason = getRequirementVerdictStaleness(
 					{ ...requirement, rowVerdicts: { [row]: { ...verdict, status: "pass" } } },
 					[{ row, ...artifact, lastChange }],
 				);
 				if (staleReason !== null) {
-					return `${receipt.id}: ${staleReason}; row ${JSON.stringify(row)} resolved checkout: ${formatRequirementGateArtifact(artifact)}`;
+					return `${receipt.id}: ${staleReason}; row ${JSON.stringify(row)} resolved checkout: ${formatRequirementGateArtifact(artifact, artifact.identities?.length ? row : undefined)}`;
 				}
 				Object.defineProperty(rowVerdicts, row, {
 					value: verdict,
@@ -711,7 +750,12 @@ export class RequirementsLedgerRuntime {
 			expectedIds.some(
 				id => currentRequirements.find(requirement => requirement.id === id)?.classification !== "linked",
 			) ||
-			requirementAuditSnapshot(currentRequirements, expectedIds) !== assignment.snapshot
+			requirementAuditSnapshot(currentRequirements, expectedIds) !== assignment.snapshot ||
+			(assignment.rowDeclarations !== undefined &&
+				requirementRowDeclarationSnapshot(
+					getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch()),
+					assignment.rows ?? [],
+				) !== assignment.rowDeclarations)
 		) {
 			return `${expectedIds.join(", ")}: requirement raw sources or linked rows changed during artifact resolution`;
 		}
@@ -839,6 +883,7 @@ export class RequirementsLedgerRuntime {
 					ids: assignment.ids,
 					snapshot: assignment.snapshot,
 					rows: assignment.rows,
+					rowDeclarations: assignment.rowDeclarations,
 				})),
 			rejected: [...rejections].map(([id, reason]) => ({ workerId: "", ids: [id], reason })),
 		});

@@ -5,6 +5,7 @@ import {
 	type TodoPhase,
 	type TodoCompletionTransition,
 	type TodoToolDetails,
+	type TodoDeploymentBinding,
 } from "@oh-my-pi/pi-tui/tools/todo";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
@@ -18,6 +19,20 @@ import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
 
 import { AgentRegistry } from "../registry/agent-registry";
+import {
+	checkRequirementIdentity,
+	currentRequirementIdentity,
+	formatRequirementIdentity,
+	hashArtifactFile,
+	identityOf,
+	type Identity,
+	REQUIREMENT_ARTIFACT_LIMITS,
+	parseRequirementIdentity,
+	type RequirementIdentity,
+	type RequirementIdentityTarget,
+	resolveResourceArtifact,
+	sameIdentity,
+} from "../utils/requirement-artifact";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 
@@ -28,6 +43,9 @@ import {
 	formatDoneGateRefusal,
 	getLatestRequirements,
 	evaluateRequirementDoneGate,
+	getRequirementRowVerdict,
+	parseRequirementReceiptIdentities,
+	getRequirementReceiptArtifactRowLabels,
 	getPersistedRequirementAuditRejections,
 	prepareAwaitingUserCheck,
 	type RequirementsLedgerAppender,
@@ -140,8 +158,13 @@ export interface RequirementRowArtifact {
 	head: string | null;
 	dirty: boolean;
 	sha256?: string;
+	/** SHA-256 over HEAD plus sorted dirty-path status and content; set only for dirty Git checkouts. */
+	dirtyFingerprint?: string;
 	reason?: string;
 	awaitingUser?: TodoItem["awaitingUser"];
+	/** Canonical identities offered to QA, or the exact receipt checked by its typed probes. */
+	identities?: RequirementIdentity[];
+	identityCheck?: { artifact: string; reason?: string };
 }
 
 export interface RequirementRowArtifactContext {
@@ -154,6 +177,8 @@ export interface RequirementRowArtifactContext {
 	 * execution boundary. Used only for a row scheduled to that exact owner.
 	 */
 	executionCheckout?: { owner: string; cwd: string };
+	/** Saved receipt artifact to authenticate by kind before any owner or checkout lookup. */
+	receipt?: string;
 }
 
 const ABSOLUTE_ARTIFACT_PATH = /\/(?:home|srv|tmp|var|mnt|workspaces|Users)\/[^\s"'`),;]+/g;
@@ -173,6 +198,165 @@ export async function getRequirementRowArtifact(
 	const tasks = phases.flatMap(phase => phase.tasks).filter(task => task.content === row);
 	const pending = tasks.length === 1 && tasks[0]!.status === "blocked" ? tasks[0]!.awaitingUser : undefined;
 	return pending?.action.trim() ? { ...artifact, awaitingUser: pending } : artifact;
+}
+
+/**
+ * Declared typed targets of one row: its deploy string, or every explicit absolute
+ * resource (an exact Git root is a `git:` location; any other file or directory is a
+ * `file:` target, a directory by manifest). Explicit absolute resources never fall
+ * through to the owner map; legacy textual descriptors keep the old resolver.
+ * A receipt keeps its own immutable `paths=`; the Git root never widens or invents them.
+ */
+async function declaredRequirementTargets(
+	task: TodoItem,
+): Promise<RequirementIdentityTarget[] | { error: string } | undefined> {
+	if (task.deployment !== undefined) {
+		const parsed = parseRequirementIdentity(task.deployment);
+		if ("error" in parsed) return { error: parsed.error };
+		if (parsed.identity.kind !== "deploy") return { error: "deployment declaration is not a deploy: identity" };
+		const { value: _value, ...target } = parsed.identity;
+		return [target];
+	}
+	const schedule = (task as TodoItem & { schedule?: unknown }).schedule;
+	const resources = isRecord(schedule) && Array.isArray(schedule.resources) ? schedule.resources : [];
+	if (
+		resources.length === 0 ||
+		resources.some(resource => typeof resource !== "string" || !nodePath.isAbsolute(resource))
+	)
+		return undefined;
+	const targets: RequirementIdentityTarget[] = [];
+	for (const resource of resources as string[]) {
+		const info = await fs.promises.lstat(resource).catch(() => undefined);
+		const repo = info?.isDirectory() ? vcs.git(resource)?.info().repoRoot : undefined;
+		if (repo === undefined || nodePath.resolve(repo) !== nodePath.resolve(resource)) {
+			// Missing, symlinked, or special paths stay typed: the helper reports them unverifiable.
+			targets.push({ kind: "file", path: resource });
+			continue;
+		}
+		targets.push({ kind: "git", repo });
+	}
+	return targets;
+}
+
+/** Read-only coverage of a parsed receipt against the row's own declared targets; no probe runs here. */
+function requirementReceiptCoverageIssue(
+	row: string,
+	targets: readonly RequirementIdentityTarget[],
+	identities: readonly RequirementIdentity[],
+): string | undefined {
+	const covered = new Set<number>();
+	for (const identity of identities) {
+		const index = targets.findIndex(target => {
+			if (target.kind === "file") return identity.kind === "file" && identity.path === target.path;
+			if (target.kind === "git") return identity.kind === "git" && nodePath.resolve(identity.repo) === target.repo;
+			if (identity.kind !== "deploy") return false;
+			const { value: _value, ...declared } = identity;
+			return JSON.stringify(declared) === JSON.stringify(target);
+		});
+		if (index < 0)
+			return `receipt identity ${formatRequirementIdentity(identity)} is outside row ${JSON.stringify(row)}'s declared targets`;
+		const target = targets[index]!;
+		if (identity.kind === "git" && target.kind === "git") {
+			if (identity.paths?.length === 0) return `receipt git identity for ${target.repo} names an empty paths list`;
+		}
+		covered.add(index);
+	}
+	const uncovered = targets.filter((_target, index) => !covered.has(index));
+	if (uncovered.length)
+		return `receipt does not cover declared ${uncovered.map(target => (target.kind === "file" ? target.path : target.kind === "git" ? target.repo : target.target)).join(", ")}`;
+	return undefined;
+}
+
+/** Typed row identity: kind parse and declared coverage, then real probes; never owner-map fallback. */
+async function resolveTypedRequirementArtifact(
+	ctx: RequirementRowArtifactContext,
+	row: string,
+	task: TodoItem,
+): Promise<RequirementRowArtifact | undefined> {
+	const declaredTargets = await declaredRequirementTargets(task);
+	const receipt = ctx.receipt;
+	let targets: RequirementIdentityTarget[] | { error: string } | undefined = declaredTargets;
+	let parsed:
+		| { identities: RequirementIdentity[] }
+		| { error: string }
+		| { legacy: true; commits: string[] }
+		| undefined;
+	if (targets === undefined && receipt !== undefined) {
+		parsed = parseRequirementReceiptIdentities(receipt);
+		if ("error" in parsed) return unknownRequirementArtifact(row, `invalid typed identity (${parsed.error})`);
+		if (!("legacy" in parsed))
+			targets = parsed.identities.map(identity => {
+				if (identity.kind === "deploy") {
+					const { value: _value, ...target } = identity;
+					return target;
+				}
+				if (identity.kind === "git")
+					return {
+						kind: "git",
+						repo: identity.repo,
+						...(identity.paths !== undefined ? { paths: identity.paths } : {}),
+					};
+				return { kind: "file", path: identity.path };
+			});
+	}
+	if (!targets) return undefined;
+	if ("error" in targets) return unknownRequirementArtifact(row, `invalid typed declaration (${targets.error})`);
+	const resolvedTargets = targets;
+	const location = resolvedTargets
+		.map(target => (target.kind === "file" ? target.path : target.kind === "git" ? target.repo : target.target))
+		.join("; ");
+	// Current identities of the row's OWN targets are the exact QA input and the quoted retry form.
+	const current = async (): Promise<RequirementRowArtifact> => {
+		const identities: RequirementIdentity[] = [];
+		const errors: string[] = [];
+		for (const target of resolvedTargets) {
+			const resolved = await currentRequirementIdentity(target, ctx.signal);
+			if ("error" in resolved) errors.push(resolved.error);
+			else identities.push(resolved.identity);
+		}
+		return errors.length
+			? { cwd: location, head: null, dirty: false, reason: `current identity unavailable (${errors.join("; ")})` }
+			: { cwd: location, head: null, dirty: false, identities };
+	};
+	if (receipt === undefined) return current();
+	const reject = async (reason: string): Promise<RequirementRowArtifact> => {
+		const own = await current();
+		const retry = own.identities
+			? `retry with row ${JSON.stringify(row)} @ ${own.identities.map(formatRequirementIdentity).join("; ")}`
+			: own.reason!;
+		return { ...own, reason: undefined, identityCheck: { artifact: receipt, reason: `${reason}; ${retry}` } };
+	};
+	let receiptIdentities = parsed ?? parseRequirementReceiptIdentities(receipt);
+	if ("legacy" in receiptIdentities) {
+		const target = resolvedTargets.length === 1 ? resolvedTargets[0] : undefined;
+		const labels = getRequirementReceiptArtifactRowLabels(receipt, new Set([row]));
+		if (
+			target?.kind !== "git" ||
+			target.paths !== undefined ||
+			labels.length !== 1 ||
+			labels[0] !== row ||
+			receiptIdentities.commits.length !== 1
+		)
+			return reject("receipt has no unambiguous row-bound Git identity");
+		receiptIdentities = { identities: [{ kind: "git", repo: target.repo, commit: receiptIdentities.commits[0]! }] };
+	}
+	if ("error" in receiptIdentities) return reject(`invalid typed identity (${receiptIdentities.error})`);
+	const coverageIssue = requirementReceiptCoverageIssue(row, resolvedTargets, receiptIdentities.identities);
+	if (coverageIssue) return reject(coverageIssue);
+	for (const identity of receiptIdentities.identities) {
+		const check = await checkRequirementIdentity(identity, ctx.signal);
+		if (check.state === "stale")
+			return reject(`stale ${check.kind} ${check.location}: expected ${check.expected}, observed ${check.observed}`);
+		if (check.state === "unverifiable")
+			return reject(`unverifiable ${check.kind} ${check.location}: expected ${check.expected} (${check.reason})`);
+	}
+	return {
+		cwd: location,
+		head: null,
+		dirty: false,
+		identities: receiptIdentities.identities,
+		identityCheck: { artifact: receipt },
+	};
 }
 
 /** Resolve a row's persisted checkout, then read its current HEAD and dirty state without blocking the CLI. */
@@ -215,6 +399,9 @@ async function resolveRequirementRowArtifact(
 		if (historical?.status === "completed") task = historical;
 	}
 	if (!task) return unknownRequirementArtifact("unknown row");
+	// Typed declarations resolve by receipt kind before owner/registry/checkout lookup.
+	const typed = await resolveTypedRequirementArtifact(ctx, row, task);
+	if (typed) return typed;
 
 	const schedule = (task as TodoItem & { schedule?: unknown }).schedule;
 	const metadata = isRecord(schedule) ? schedule : undefined;
@@ -224,14 +411,22 @@ async function resolveRequirementRowArtifact(
 	const branchNames: string[] = [];
 	for (const resource of resources) {
 		if (typeof resource !== "string") continue;
+		// An exact absolute path is a filesystem path verbatim: leading and trailing
+		// whitespace is part of the name and is never trimmed (norm 16). Legacy
+		// textual descriptor trimming applies only to non-path descriptors.
+		if (nodePath.isAbsolute(resource)) {
+			paths.push(resource);
+			continue;
+		}
 		const value = resource.trim();
+		// Legacy textual descriptor: trimmed text that is itself an absolute path
+		// binds it verbatim; otherwise embedded absolute paths are extracted.
 		if (nodePath.isAbsolute(value)) paths.push(value);
 		else paths.push(...(value.match(ABSOLUTE_ARTIFACT_PATH) ?? []));
 		const branch = /^(?:branch:|branch=|refs\/heads\/)(.+)$/.exec(value)?.[1];
 		if (branch) branchNames.push(branch);
 	}
 	if (new Set(branchNames).size > 1) return unknownRequirementArtifact(`ambiguous branches ${branchNames.join(", ")}`);
-	if (new Set(paths).size > 1) return unknownRequirementArtifact(paths.join(", "));
 	const effectiveOwner = owner ?? "main";
 	// The binding persisted on the session's latest copy of this row counts even
 	// when the caller's in-memory plan predates it; it must be for the same owner
@@ -257,9 +452,10 @@ async function resolveRequirementRowArtifact(
 		)
 			persistedCwd = candidate.artifactCwd;
 	}
-	// An explicit execution checkout is authoritative for its exact owner, so the
-	// actual effective cwd a non-isolated worker ran in is never overridden by an
-	// older registry session mapping.
+	const declaredDeployment =
+		task.deployment ??
+		(JSON.stringify(latestSchedule) === JSON.stringify(schedule) ? latestTask?.deployment : undefined);
+	if (declaredDeployment) return unknownRequirementArtifact(`unresolved deployment ${declaredDeployment}`);
 	const finishedCheckout =
 		owner !== undefined && owner !== "main" && ctx.executionCheckout?.owner === owner
 			? ctx.executionCheckout.cwd
@@ -270,7 +466,7 @@ async function resolveRequirementRowArtifact(
 	const registry = AgentRegistry.global();
 	let agent = archived || owner === undefined ? undefined : registry.get(owner);
 	if (!agent && activeJob?.agentId) agent = registry.get(activeJob.agentId);
-	if (!agent && !archived && paths.length === 0 && !persistedCwd) {
+	if (!agent && !archived && paths.length === 0 && !persistedCwd && !finishedCheckout) {
 		for (const reference of registry.list()) {
 			if (!("todoRow" in reference) || reference.todoRow !== row) continue;
 			if (agent) return unknownRequirementArtifact(`ambiguous registered owners for ${JSON.stringify(row)}`);
@@ -331,7 +527,9 @@ async function resolveRequirementRowArtifact(
 		}
 	}
 	const uniquePaths = [...new Set(paths)];
-	if (uniquePaths.length > 1) return unknownRequirementArtifact(uniquePaths.join(", "));
+	// Explicit resources win over any checkout: several files, a single file, or a
+	// non-Git directory are bound by their content SHA (manifest for sets).
+	if (uniquePaths.length > 1) return resolveResourceArtifact(uniquePaths, ctx.signal);
 	const path = uniquePaths[0] ?? persistedCwd ?? ownerCwd;
 	if (!path)
 		return unknownRequirementArtifact(
@@ -340,27 +538,104 @@ async function resolveRequirementRowArtifact(
 
 	try {
 		const info = await fs.promises.stat(path);
-		if (info.isFile()) {
-			const hash = createHash("sha256");
-			for await (const chunk of fs.createReadStream(path)) hash.update(chunk);
-			return { cwd: path, head: null, dirty: false, sha256: hash.digest("hex") };
-		}
+		if (info.isFile()) return resolveResourceArtifact([path], ctx.signal);
 		if (!info.isDirectory()) return unknownRequirementArtifact(path, "resource is neither a file nor a directory");
 	} catch {
 		return unknownRequirementArtifact(path, "resource path is missing or inaccessible");
 	}
 	const cwd = path;
 	const repo = vcs.git(cwd);
-	if (!repo) return unknownRequirementArtifact(cwd, "not a Git checkout");
+	if (!repo) return resolveResourceArtifact([cwd], ctx.signal);
 	const repoRoot = repo.info().repoRoot;
 	let current = checkoutCache?.get(repoRoot);
 	if (!current) {
-		current = Promise.all([repo.headSha(ctx.signal), repo.statusPorcelain({ untracked: "all" }, ctx.signal)])
-			.then(([head, status]) => ({ cwd: repoRoot, head: head ?? null, dirty: status.length > 0 }))
+		current = Promise.all([
+			repo.headSha(ctx.signal),
+			repo.statusPorcelain({ untracked: "all", nulTerminated: true }, ctx.signal),
+		])
+			.then(async ([head, status]): Promise<RequirementRowArtifact> => {
+				if (!status) return { cwd: repoRoot, head: head ?? null, dirty: false };
+				const fingerprint = await dirtyCheckoutFingerprint(repoRoot, head ?? null, status, ctx.signal);
+				if ("reason" in fingerprint) return unknownRequirementArtifact(repoRoot, fingerprint.reason);
+				// Fail closed on concurrent drift: the fingerprint is the audited identity
+				// only while HEAD and the full porcelain status/path set still match after
+				// all hashing.
+				const [headAfter, statusAfter] = await Promise.all([
+					repo.headSha(ctx.signal),
+					repo.statusPorcelain({ untracked: "all", nulTerminated: true }, ctx.signal),
+				]);
+				if (headAfter !== head || statusAfter !== status)
+					return unknownRequirementArtifact(repoRoot, "dirty checkout changed while fingerprinting");
+				return { cwd: repoRoot, head: head ?? null, dirty: true, dirtyFingerprint: fingerprint.sha256 };
+			})
 			.catch(() => unknownRequirementArtifact(repoRoot, "Git HEAD or status unavailable"));
 		checkoutCache?.set(repoRoot, current);
 	}
 	return current;
+}
+
+/**
+ * Content identity of a dirty checkout: HEAD plus every porcelain entry sorted by
+ * path, each with its status code and current content. A path whose status stays
+ * `M` still changes the fingerprint when its bytes change. Deleted paths hash as
+ * absent, symlinks by target (never followed), renames by both paths; anything
+ * else (directories such as submodules, unreadable or oversized files) fails closed.
+ */
+async function dirtyCheckoutFingerprint(
+	repoRoot: string,
+	head: string | null,
+	status: string,
+	signal?: AbortSignal,
+): Promise<{ sha256: string } | { reason: string }> {
+	const fields = status.split("\0");
+	const entries: Array<[path: string, code: string, origin: string]> = [];
+	for (let index = 0; index < fields.length; index++) {
+		const field = fields[index]!;
+		if (!field) continue;
+		const code = field.slice(0, 2);
+		// Porcelain -z writes the rename/copy source as the following field.
+		const origin = code.includes("R") || code.includes("C") ? (fields[++index] ?? "") : "";
+		entries.push([field.slice(3), code, origin]);
+	}
+	if (entries.length > REQUIREMENT_ARTIFACT_LIMITS.maxFiles)
+		return { reason: `dirty checkout exceeds file-count bound ${REQUIREMENT_ARTIFACT_LIMITS.maxFiles}` };
+	entries.sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+	const hash = createHash("sha256").update(`head\0${head ?? ""}\0`);
+	let bytes = 0;
+	const seen: Array<[absolute: string, relative: string, identity: Identity]> = [];
+	for (const [relative, code, origin] of entries) {
+		const absolute = nodePath.join(repoRoot, relative);
+		let content: string;
+		try {
+			const info = await fs.promises.lstat(absolute);
+			seen.push([absolute, relative, identityOf(info)]);
+			if (info.isSymbolicLink()) content = `symlink\0${await fs.promises.readlink(absolute)}`;
+			else if (info.isFile()) {
+				bytes += info.size;
+				if (bytes > REQUIREMENT_ARTIFACT_LIMITS.maxBytes)
+					return { reason: `dirty checkout exceeds aggregate byte bound ${REQUIREMENT_ARTIFACT_LIMITS.maxBytes}` };
+				content = `file\0${await hashArtifactFile(absolute, signal)}`;
+			} else return { reason: `${relative}: dirty path is neither a file nor a symlink` };
+		} catch (error) {
+			if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+				signal?.throwIfAborted();
+				return { reason: `${relative}: ${error instanceof Error ? error.message : String(error)}` };
+			}
+			content = "absent";
+		}
+		hash.update(`${code}\0${relative}\0${origin}\0${content}\0`);
+	}
+	// Re-check every earlier entry's metadata after all hashing, so a file rewritten
+	// while a later file was hashed fails closed (same stability contract as the
+	// explicit-set manifest recheck in resolveResourceArtifact).
+	for (const [absolute, relative, identity] of seen) {
+		const current = await fs.promises
+			.lstat(absolute)
+			.then(identityOf)
+			.catch(() => undefined);
+		if (!current || !sameIdentity(identity, current)) return { reason: `${relative}: changed while fingerprinting` };
+	}
+	return { sha256: hash.digest("hex") };
 }
 
 /** Persist an unambiguous live audit checkout on the canonical TODO row before the worker can disappear. */
@@ -372,7 +647,10 @@ export async function bindRequirementRowArtifact(
 	checkoutCache?: Map<string, Promise<RequirementRowArtifact>>,
 ): Promise<RequirementRowArtifact> {
 	const artifact = await getRequirementRowArtifact(ctx, row, phases, checkoutCache);
-	if (!artifact.head || artifact.dirty || !ctx.sessionManager) return artifact;
+	// Typed rows bind nothing else: their declarations and artifactCwd are never overwritten.
+	if (artifact.identities || artifact.identityCheck) return artifact;
+	// Unresolved mappings bind nothing; resolved Git, file and manifest identities persist their real cwd.
+	if (artifact.reason || (!artifact.head && !artifact.sha256) || !ctx.sessionManager) return artifact;
 	let original: TodoItem | undefined;
 	for (const phase of phases) {
 		for (const task of phase.tasks) {
@@ -1268,9 +1546,9 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 			const open = await evaluateRequirementDoneGate(
 				getLatestRequirements(branch),
 				targets.map(target => target.content),
-				async row => ({
+				async (row, receipt) => ({
 					...(await getRequirementRowArtifact(
-						{ cwd: this.session.cwd, sessionManager, signal },
+						{ cwd: this.session.cwd, sessionManager, signal, receipt },
 						row,
 						previousPhases,
 						checkoutCache,
@@ -1279,7 +1557,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				}),
 				getPersistedRequirementAuditRejections(branch, sessionManager.getSessionId?.() ?? null),
 			);
-			if (open.some(item => item.issues.length > 0)) {
+			if (open.length > 0) {
 				return {
 					content: [
 						{
@@ -1357,6 +1635,97 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 			}
 		}
 		const requirements = getLatestRequirements(sessionManager.getBranch());
+		const resourcesSupplied = params.resources !== undefined;
+		const resources = Array.isArray(params.resources)
+			? params.resources.filter((resource): resource is string => typeof resource === "string")
+			: undefined;
+		const deploymentSupplied = params.deployment !== undefined;
+		let deployment: TodoDeploymentBinding | undefined;
+		if (deploymentSupplied) {
+			const value = params.deployment;
+			const parsed =
+				typeof value === "string" ? parseRequirementIdentity(value) : { error: "deployment must be a string" };
+			if (
+				classification !== "linked" ||
+				!Array.isArray(params.rows) ||
+				params.rows.length === 0 ||
+				params.rows.some(row => typeof row !== "string" || !row.trim()) ||
+				"error" in parsed ||
+				parsed.identity.kind !== "deploy" ||
+				resourcesSupplied
+			) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Blocked: deployment for ${id} requires classification="linked", nonempty exact TODO rows, and one canonical deploy identity${"error" in parsed ? ` (${parsed.error})` : ""}; deployment and resources are mutually exclusive. Call todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"], deployment="deploy:<HTTP(S) URL>@<version> field=<dot.path>" (or "deploy:<unit.service>@<version> scope=<user|system> env=<ENV_IDENTIFIER>"). Then retry`,
+						},
+					],
+					details,
+					isError: true,
+				};
+			}
+			deployment = formatRequirementIdentity(parsed.identity);
+		}
+		if (
+			resourcesSupplied &&
+			(classification !== "linked" ||
+				!resources ||
+				resources.length === 0 ||
+				resources.length !== (params.resources as unknown[]).length ||
+				resources.some(path => !nodePath.isAbsolute(path)))
+		) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Blocked: resources for ${id} must be a nonempty list of absolute paths on classification="linked". Call todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"], resources=["/absolute/file-or-checkout"]. Then retry`,
+					},
+				],
+				details,
+				isError: true,
+			};
+		}
+		const affectedRows = new Set<string>();
+		let replacingBinding = false;
+		for (const task of previousPhases.flatMap(phase => phase.tasks)) {
+			if (!rows?.includes(task.content)) continue;
+			const schedule = "schedule" in task && isRecord(task.schedule) ? task.schedule : undefined;
+			const hasResources = Array.isArray(schedule?.resources) && schedule.resources.length > 0;
+			if (deployment) {
+				const previous = task.deployment;
+				if (previous !== deployment) {
+					affectedRows.add(task.content);
+					if (previous || hasResources) replacingBinding = true;
+				}
+			} else if (resources) {
+				// Resource identity is the order-independent manifest (common parent plus
+				// sorted entries), so a pure reorder binds the same artifact, not a replacement.
+				const previousResources = Array.isArray(schedule?.resources)
+					? schedule.resources.filter((entry): entry is string => typeof entry === "string")
+					: [];
+				const sameResourceSet =
+					!task.deployment &&
+					previousResources.length === resources.length &&
+					JSON.stringify([...previousResources].sort()) === JSON.stringify([...resources].sort());
+				if (!sameResourceSet) {
+					affectedRows.add(task.content);
+					if (task.deployment || hasResources) replacingBinding = true;
+				}
+			}
+		}
+		if (replacingBinding && (params.relink !== true || !reason?.trim())) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Blocked: replacing a saved deployment or resource binding for ${id} requires relink=true and a nonblank reason. Call todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"], relink=true, reason="<why the artifact binding changes>", deployment="deploy:<HTTP(S)-URL>@<version> field=<dot.path>" (or deployment="deploy:<literal.service>@<version> scope=<user|system> env=<ENV_KEY>", or resources=["/absolute/file-or-checkout"]). Then retry`,
+					},
+				],
+				details,
+				isError: true,
+			};
+		}
 		const result = classifyRequirement(requirements, id, classification, {
 			rows,
 			reason,
@@ -1364,6 +1733,55 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 			relink: params.relink === true,
 		});
 		if ("error" in result) return { content: [{ type: "text", text: result.error }], details, isError: true };
+		if (resources || deployment) {
+			// Omitted bindings remain untouched; an explicit cutover stores exactly
+			// one primary artifact descriptor on each selected row.
+			const phases = clonePhases(previousPhases);
+			for (const task of phases.flatMap(phase => phase.tasks)) {
+				if (!rows?.includes(task.content)) continue;
+				const schedule = "schedule" in task && isRecord(task.schedule) ? task.schedule : {};
+				if (deployment) {
+					task.deployment = deployment;
+					if (Object.hasOwn(schedule, "resources")) {
+						const updatedSchedule = { ...schedule };
+						delete updatedSchedule.resources;
+						Object.assign(task, { schedule: updatedSchedule });
+					}
+				} else if (resources) {
+					delete task.deployment;
+					Object.assign(task, { schedule: { ...schedule, resources: [...resources] } });
+				}
+			}
+			sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			this.session.setTodoPhases?.(phases);
+			details.phases = phases;
+		}
+		if (affectedRows.size > 0) {
+			result.requirements = result.requirements.map(requirement => {
+				if (!requirement.rows.some(row => affectedRows.has(row))) return requirement;
+				const updated = { ...requirement };
+				const rowVerdicts = { ...requirement.rowVerdicts };
+				for (const row of requirement.rows) {
+					if (affectedRows.has(row)) {
+						delete rowVerdicts[row];
+					} else if (!Object.hasOwn(rowVerdicts, row)) {
+						const verdict = getRequirementRowVerdict(requirement, row);
+						if (verdict) {
+							Object.defineProperty(rowVerdicts, row, {
+								value: verdict,
+								enumerable: true,
+								configurable: true,
+								writable: true,
+							});
+						}
+					}
+				}
+				delete updated.verdict;
+				if (Object.keys(rowVerdicts).length > 0) updated.rowVerdicts = rowVerdicts;
+				else delete updated.rowVerdicts;
+				return updated;
+			});
+		}
 		appendRequirementsSnapshot(
 			{ appendEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data) },
 			result.requirements,

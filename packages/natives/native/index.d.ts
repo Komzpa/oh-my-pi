@@ -486,6 +486,8 @@ export declare class VcsGitRepo {
   defaultBranch(signal?: unknown | undefined | null): Promise<string | undefined | null>
   /** Resolve a revision. */
   resolveRef(name: string, signal?: unknown | undefined | null): Promise<string | undefined | null>
+  /** Exact literal entry in a full immutable commit tree. */
+  treeEntry(commit: string, path: string, signal?: unknown | undefined | null): Promise<VcsGitTreeEntry | undefined | null>
   /** Test revision existence. */
   refExists(name: string, signal?: unknown | undefined | null): Promise<boolean>
   /** Tags pointing at a revision. */
@@ -3353,6 +3355,12 @@ export interface VcsGitRepoInfo {
   commonDir: string
   headPath: string
   isReftable: boolean
+}
+
+/** One exact immutable Git tree entry, without blob content. */
+export interface VcsGitTreeEntry {
+  oid: string
+  mode: number
 }
 
 /** Resolved HEAD state. */

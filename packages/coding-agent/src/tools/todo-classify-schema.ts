@@ -14,6 +14,12 @@ export const classifyTodoSchema = type({
 	"relink?": type("boolean").describe(
 		"relink=true changes rows on an already-linked requirement (linked -> linked only); requires reason and at least one row",
 	),
+	"resources?": type("string")
+		.array()
+		.describe("absolute files or checkouts whose identity is the audited artifact for every linked row"),
+	"deployment?": type("string").describe(
+		"linked rows only; deploy:<HTTP(S)URL>@<version> field=<dotJSONpath> or deploy:<UNIT.service>@<version> scope=<user|system> env=<ENV_IDENTIFIER>; mutually exclusive with resources; replacing a saved binding requires relink=true and reason",
+	),
 });
 
 export type TodoToolSchema<TodoParams> = FluentType<TodoParams | typeof classifyTodoSchema.infer>;

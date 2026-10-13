@@ -422,9 +422,9 @@ export class TodoCommandController {
 		const open = await evaluateRequirementDoneGate(
 			requirements,
 			targets.map(target => target.content),
-			async row => ({
+			async (row, receipt) => ({
 				...(await getRequirementRowArtifact(
-					{ cwd: this.ctx.sessionManager.getCwd(), sessionManager: this.ctx.sessionManager },
+					{ cwd: this.ctx.sessionManager.getCwd(), sessionManager: this.ctx.sessionManager, receipt },
 					row,
 					current,
 					checkoutCache,

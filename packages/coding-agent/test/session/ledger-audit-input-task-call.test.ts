@@ -23,6 +23,7 @@ import {
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { formatRequirementIdentity } from "@oh-my-pi/pi-coding-agent/utils/requirement-artifact";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const AT = "2026-09-28T12:00:00.000Z";
@@ -195,7 +196,7 @@ describe("ledger audit input reaches the auditor task call", () => {
 		return { captured, repo };
 	}
 
-	it("no extension handlers: qa-auditor task citing R1 carries QA AUDIT INPUT", async () => {
+	it("no extension handlers: qa-auditor task carries raw R1 source and the exact typed row identity", async () => {
 		const { captured, repo } = await dispatchTask({
 			toolArgs: { agent: "qa-auditor", task: "Audit R1 at the current clean row HEAD" },
 		});
@@ -203,14 +204,16 @@ describe("ledger audit input reaches the auditor task call", () => {
 			expect(captured).toHaveLength(1);
 			const params = captured[0] as Record<string, unknown>;
 			expect(typeof params.task).toBe("string");
-			expect(params.task as string).toContain("QA AUDIT INPUT");
-			expect(params.task as string).toContain("Current linked-row HEAD identities");
+			expect(params.task as string).toContain("audit the artifact");
+			expect(params.task as string).toContain(
+				`R1 row "Build artifact" @ ${formatRequirementIdentity({ kind: "git", repo, commit: git(repo, "rev-parse", "HEAD") })}`,
+			);
 		} finally {
 			rmSync(repo, { recursive: true, force: true });
 		}
 	});
 
-	it("extension handler without revision: qa-auditor task citing R1 still carries QA AUDIT INPUT", async () => {
+	it("extension handler without revision: qa-auditor task retains raw R1 source and the exact typed row identity", async () => {
 		const { captured, repo } = await dispatchTask({
 			toolArgs: { agent: "qa-auditor", task: "Audit R1 at the current clean row HEAD" },
 			extensionRunner: passthroughRunner(),
@@ -218,8 +221,10 @@ describe("ledger audit input reaches the auditor task call", () => {
 		try {
 			expect(captured).toHaveLength(1);
 			const params = captured[0] as Record<string, unknown>;
-			expect(params.task as string).toContain("QA AUDIT INPUT");
-			expect(params.task as string).toContain("Current linked-row HEAD identities");
+			expect(params.task as string).toContain("audit the artifact");
+			expect(params.task as string).toContain(
+				`R1 row "Build artifact" @ ${formatRequirementIdentity({ kind: "git", repo, commit: git(repo, "rev-parse", "HEAD") })}`,
+			);
 		} finally {
 			rmSync(repo, { recursive: true, force: true });
 		}
@@ -232,7 +237,6 @@ describe("ledger audit input reaches the auditor task call", () => {
 		try {
 			expect(captured).toHaveLength(1);
 			const params = captured[0] as Record<string, unknown>;
-			expect(params.task as string).not.toContain("QA AUDIT INPUT");
 			expect(params.task as string).toBe("Refactor the login handler");
 		} finally {
 			rmSync(repo, { recursive: true, force: true });

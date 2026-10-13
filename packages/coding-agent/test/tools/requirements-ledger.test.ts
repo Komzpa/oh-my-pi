@@ -33,6 +33,7 @@ import {
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 	type RequirementLedgerItem,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
+import { formatRequirementIdentity } from "@oh-my-pi/pi-coding-agent/utils/requirement-artifact";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 const AT = "2026-09-28T12:00:00.000Z";
@@ -104,10 +105,12 @@ describe("canonical todo row metadata", () => {
 				["Worker row", worker],
 			] as const) {
 				const artifact = await getRequirementRowArtifact({ cwd: main }, row, persisted);
+				const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
 				expect(artifact).toEqual({
 					cwd,
 					dirty: false,
-					head: execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim(),
+					head: null,
+					identities: [{ kind: "git", repo: cwd, commit }],
 				});
 			}
 		} finally {
@@ -146,9 +149,15 @@ describe("canonical todo row metadata", () => {
 			const bound = await bindRequirementRowArtifact({ cwd, sessionManager: manager }, "Dispatch row", original, {
 				appendEntry: (type, data) => manager.appendCustomEntry(type, data),
 			});
-			expect(bound).toEqual({ cwd, head, dirty: false });
+			expect(bound).toEqual({
+				cwd,
+				head: null,
+				dirty: false,
+				identities: [{ kind: "git", repo: cwd, commit: head }],
+			});
 			const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
-			expect(persisted[0]?.tasks[0]).toMatchObject({ artifactCwd: cwd, artifactOwner: "qa-worker" });
+			expect(persisted[0]?.tasks[0]?.artifactCwd).toBeUndefined();
+			expect(persisted[0]?.tasks[0]).toMatchObject({ schedule: { owner: "qa-worker", resources: [cwd] } });
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -193,8 +202,9 @@ describe("canonical todo row metadata", () => {
 			const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: resource, encoding: "utf8" }).trim();
 			expect(await getRequirementRowArtifact({ cwd: sessionCwd }, "Resource row", phases)).toEqual({
 				cwd: resource,
-				head,
+				head: null,
 				dirty: false,
+				identities: [{ kind: "git", repo: resource, commit: head }],
 			});
 		} finally {
 			registry.unregister(owner);
@@ -290,9 +300,10 @@ describe("canonical todo row metadata", () => {
 			);
 			const changed = await getRequirementRowArtifact({ cwd, sessionManager: manager }, "Build artifact", phases);
 			expect(changed.head).not.toBe(head);
-			expect(getRequirementVerdictStaleness(requirement, [{ row: "Build artifact", ...changed }])).toBe(
-				`stale HEAD "${changed.head}" for row "Build artifact"`,
-			);
+			const staleReason = getRequirementVerdictStaleness(requirement, [{ row: "Build artifact", ...changed }]);
+			expect(staleReason).not.toBeNull();
+			expect(staleReason).toContain(head);
+			expect(staleReason).toContain(changed.head!);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -412,10 +423,18 @@ describe("canonical todo row metadata", () => {
 			const [commitArtifact, binaryArtifact] = await Promise.all(
 				rows.map(row => getRequirementRowArtifact({ cwd: repo }, row, phases)),
 			);
-			const cell = `${rows[0]} @ ${commit}; ${rows[1]} @ installed omp sha256 ${binaryHash}`;
-			expect(getRequirementRowArtifactIdentity(cell, rows[0]!, rows)).toBe(`${rows[0]} @ ${commit}`);
+			expect(commitArtifact).toMatchObject({ cwd: repo, head: null, dirty: false });
+			expect(commitArtifact.identities).toEqual([{ kind: "git", repo, commit }]);
+			expect(binaryArtifact).toMatchObject({ cwd: binary, head: null, dirty: false });
+			expect(binaryArtifact.identities).toEqual([{ kind: "file", path: binary, sha256: binaryHash }]);
+			const commitIdentity = formatRequirementIdentity({ kind: "git", repo, commit });
+			const fileIdentity = formatRequirementIdentity({ kind: "file", path: binary, sha256: binaryHash });
+			const cell = `row ${JSON.stringify(rows[0])} @ ${commitIdentity}; row ${JSON.stringify(rows[1])} @ ${fileIdentity}`;
+			expect(getRequirementRowArtifactIdentity(cell, rows[0]!, rows)).toBe(
+				`row ${JSON.stringify(rows[0])} @ ${commitIdentity}`,
+			);
 			expect(getRequirementRowArtifactIdentity(cell, rows[1]!, rows)).toBe(
-				`${rows[1]} @ installed omp sha256 ${binaryHash}`,
+				`row ${JSON.stringify(rows[1])} @ ${fileIdentity}`,
 			);
 			const verdict = (artifact: string) => ({
 				status: "pass" as const,
@@ -434,13 +453,22 @@ describe("canonical todo row metadata", () => {
 					[rows[1]!]: verdict(cell),
 				},
 			};
+			const commitScoped = getRequirementRowArtifactIdentity(cell, rows[0]!, rows)!;
+			const binaryScoped = getRequirementRowArtifactIdentity(cell, rows[1]!, rows)!;
+			const [freshCommit, freshBinary] = await Promise.all([
+				getRequirementRowArtifact({ cwd: repo, receipt: commitScoped }, rows[0]!, phases),
+				getRequirementRowArtifact({ cwd: repo, receipt: binaryScoped }, rows[1]!, phases),
+			]);
+			expect(freshCommit.identityCheck?.artifact).toBe(commitScoped);
+			expect(freshBinary.identityCheck?.artifact).toBe(binaryScoped);
 			expect(
 				getRequirementVerdictStaleness(requirement, [
-					{ row: rows[0]!, ...commitArtifact! },
-					{ row: rows[1]!, ...binaryArtifact! },
+					{ row: rows[0]!, ...freshCommit },
+					{ row: rows[1]!, ...freshBinary },
 				]),
 			).toBeNull();
-			const staleCell = `${rows[0]} @ ${"f".repeat(40)}; ${rows[1]} @ installed omp sha256 ${binaryHash}`;
+			const staleCommit = "f".repeat(40);
+			const staleCell = `row ${JSON.stringify(rows[0])} @ ${formatRequirementIdentity({ kind: "git", repo, commit: staleCommit })}; row ${JSON.stringify(rows[1])} @ ${fileIdentity}`;
 			const stale = {
 				...requirement,
 				rowVerdicts: {
@@ -448,16 +476,24 @@ describe("canonical todo row metadata", () => {
 					[rows[1]!]: verdict(staleCell),
 				},
 			};
-			expect(
-				getRequirementVerdictStaleness(stale, [
-					{ row: rows[0]!, ...commitArtifact! },
-					{ row: rows[1]!, ...binaryArtifact! },
-				]),
-			).toBe(`stale HEAD "${commit}" for row "Commit artifact"`);
-			expect(getRequirementVerdictStaleness(stale, [{ row: rows[0]!, ...commitArtifact! }])).toBe(
-				`stale HEAD "${commit}" for row "Commit artifact"`,
+			const staleScopedCommit = getRequirementRowArtifactIdentity(staleCell, rows[0]!, rows)!;
+			const staleProbedCommit = await getRequirementRowArtifact(
+				{ cwd: repo, receipt: staleScopedCommit },
+				rows[0]!,
+				phases,
 			);
-			expect(getRequirementVerdictStaleness(stale, [{ row: rows[1]!, ...binaryArtifact! }])).toBeNull();
+			const staleReason = getRequirementVerdictStaleness(stale, [
+				{ row: rows[0]!, ...staleProbedCommit },
+				{ row: rows[1]!, ...freshBinary },
+			]);
+			expect(staleReason).not.toBeNull();
+			expect(staleReason).toContain(staleCommit);
+			expect(staleReason).toContain(commit);
+			const staleSingle = getRequirementVerdictStaleness(stale, [{ row: rows[0]!, ...staleProbedCommit }]);
+			expect(staleSingle).not.toBeNull();
+			expect(staleSingle).toContain(staleCommit);
+			expect(staleSingle).toContain(commit);
+			expect(getRequirementVerdictStaleness(stale, [{ row: rows[1]!, ...freshBinary }])).toBeNull();
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -897,17 +933,17 @@ describe("todo requirement classification", () => {
 					requirements,
 				);
 			}
-			appendPass(auditedHead, "qa-run", "qa-auditor");
+			appendPass(`git:${cwd}@${auditedHead}`, "qa-run", "qa-auditor");
 			const stale = await tool.execute("stale-pass", { op: "done", task: "Build artifact" });
 			expect(stale.isError).toBe(true);
 			expect(getPhases()[0]?.tasks[0]?.status).toBe("pending");
 			appendPass("artifact-sha", "arbitrary-worker");
 			const fakeArtifact = await tool.execute("fake-artifact", { op: "done", task: "Build artifact" });
 			expect(fakeArtifact.isError).toBe(true);
-			appendPass(currentHead, "arbitrary-worker");
+			appendPass(`git:${cwd}@${currentHead}`, "arbitrary-worker");
 			const fakeWorker = await tool.execute("fake-worker", { op: "done", task: "Build artifact" });
 			expect(fakeWorker.isError).toBe(true);
-			appendPass(currentHead, "qa-run", "qa-auditor");
+			appendPass(`git:${cwd}@${currentHead}`, "qa-run", "qa-auditor");
 			writeFileSync(join(cwd, "artifact.txt"), "dirty after audit\n");
 			const dirty = await tool.execute("dirty-pass", { op: "done", task: "Build artifact" });
 			expect(dirty.isError).toBe(true);

@@ -16,7 +16,11 @@ import {
 	createRequirementCandidates,
 	getLatestRequirements,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
-import { TodoTool, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import {
+	TodoTool,
+	USER_TODO_EDIT_CUSTOM_TYPE,
+	getLatestTodoPhasesFromEntries,
+} from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 /** Fixture-only: items carry runtime-lane schedule metadata the converged TodoItem omits (#92). */
@@ -239,7 +243,6 @@ describe("non-isolated worker checkout binding", () => {
 		).toBe("fail");
 		const text = doneText(done);
 		expect(text).toContain("R7");
-		expect(text).toContain("fail, not pass");
 		expect(text).not.toContain("unknown checkout for owner");
 		expect(text).not.toContain("checkout mapping unavailable");
 		expect(text).not.toContain("missing rows");
@@ -259,7 +262,8 @@ describe("non-isolated worker checkout binding", () => {
 						content: row,
 						status: "pending",
 						artifactOwner: "main",
-						schedule: { owner: worker, resources: [isolated] },
+						// A legacy textual resource descriptor keeps this on the owner/check-out resolver.
+						schedule: { owner: worker, resources: [`worktree: ${isolated}`] },
 					},
 				],
 			},
@@ -344,6 +348,9 @@ describe("non-isolated worker checkout binding", () => {
 			const verdict = getLatestRequirements(manager.getBranch()).find(requirement => requirement.id === "R7")
 				?.rowVerdicts?.[row];
 			expect(verdict?.status).toBe("pass");
+			// Lose the saved binding after valid QA, without changing the legacy resource declaration.
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			expect(getLatestTodoPhasesFromEntries(manager.getBranch())[0]!.tasks[0]!.artifactCwd).toBeUndefined();
 			git(cwd, "worktree", "remove", "--force", isolated);
 			const tool = new TodoTool({
 				cwd,
