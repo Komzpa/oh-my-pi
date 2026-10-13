@@ -5,6 +5,8 @@ import * as logger from "@oh-my-pi/pi-utils/logger";
 
 export const DEFAULT_FRAME_DROP_THRESHOLD_MS = 250;
 const WINDOW_MS = 5_000;
+/** A freeze stays in the displayed lag this long after it ends, so it is visible once the UI thaws. */
+export const STALL_HOLD_MS = 60_000;
 const STATUS_UPDATE_MS = 1_000;
 const STACK_LINE_LIMIT = 5;
 const LOG_FILE_PATTERN = /^omp\.\d{4}-\d{2}-\d{2}\.\d+\.log(?:\.\d+)?$/;
@@ -36,6 +38,12 @@ interface FrameSample {
 	readonly lagMs: number;
 }
 
+interface StallSample {
+	/** Monotonic time the stall ended (when it was observed). */
+	readonly atMs: number;
+	readonly durationMs: number;
+}
+
 export interface FrameTelemetryOptions {
 	readonly now?: () => number;
 	readonly dateNow?: () => number;
@@ -49,6 +57,8 @@ export class FrameTelemetry {
 	#thresholdMs: number;
 	#loggerWarn: (message: string, context?: Record<string, unknown>) => void;
 	#samples: FrameSample[] = [];
+	/** Loop blocks and frame gaps over the threshold; held for STALL_HOLD_MS so a freeze outlives the rolling window. */
+	#stalls: StallSample[] = [];
 	/** Earliest input or render request not yet painted; the frame-gap clock. Idle time never counts. */
 	#pendingSinceMs: number | undefined;
 	/** A render was requested by something other than the meter's own listener refresh. */
@@ -181,6 +191,7 @@ export class FrameTelemetry {
 		if (!meterOnly) this.#samples.push({ atMs: now, renderMs, lagMs });
 		this.#trim(now);
 		if (gapMs > this.#thresholdMs) {
+			this.#recordStall(now, gapMs);
 			this.logDrop({
 				kind: "frame-gap",
 				durationMs: gapMs,
@@ -193,6 +204,11 @@ export class FrameTelemetry {
 	}
 
 	logLoopBlock(blockedMs: number, cpuMs: number, phase: string): void {
+		// Keystrokes typed during the block sit in the stdin buffer and are only recorded after it,
+		// so input-to-paint lag reads ~0. The block itself is the lag the user experienced.
+		const now = this.#now();
+		this.#recordStall(now, blockedMs);
+		this.#refreshStatus(now, true);
 		this.logDrop({
 			kind: "loop-block",
 			durationMs: blockedMs,
@@ -245,9 +261,15 @@ export class FrameTelemetry {
 		return this.#phaseStack.slice(-STACK_LINE_LIMIT).join(" > ");
 	}
 
+	#recordStall(now: number, durationMs: number): void {
+		if (durationMs > 0) this.#stalls.push({ atMs: now, durationMs });
+	}
+
 	#trim(now: number): void {
 		const minAt = now - WINDOW_MS;
 		while (this.#samples[0] && this.#samples[0].atMs < minAt) this.#samples.shift();
+		const stallMinAt = now - STALL_HOLD_MS;
+		this.#stalls = this.#stalls.filter(stall => stall.atMs >= stallMinAt);
 	}
 
 	#refreshStatus(now: number, force = false): void {
@@ -273,7 +295,9 @@ export class FrameTelemetry {
 		const p50Ms = percentile(renderTimes, 0.5);
 		const p95Ms = percentile(renderTimes, 0.95);
 		const maxMs = renderTimes[renderTimes.length - 1] ?? 0;
-		const lagMs = samples.reduce((max, sample) => Math.max(max, sample.lagMs), 0);
+		const inputLagMs = samples.reduce((max, sample) => Math.max(max, sample.lagMs), 0);
+		const stallMs = this.#stalls.reduce((max, stall) => Math.max(max, stall.durationMs), 0);
+		const lagMs = Math.max(inputLagMs, stallMs);
 		const text = `${Math.round(fps)}fps p50 ${formatMs(p50Ms)} p95 ${formatMs(p95Ms)} max ${formatMs(
 			maxMs,
 		)} lag ${formatLag(lagMs)}`;
