@@ -10,7 +10,11 @@ import type {
 	Usage,
 } from "@oh-my-pi/pi-ai";
 import { createSyntheticToolResultMessage } from "@oh-my-pi/pi-agent-core";
-import { projectToolResultPrunes, type ToolResultPruneTarget } from "@oh-my-pi/pi-agent-core/compaction/pruning";
+import {
+	projectToolResultPrune,
+	projectToolResultPrunes,
+	type ToolResultPruneTarget,
+} from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import {
 	directoryIsEnterable,
 	getBlobsDir,
@@ -790,7 +794,9 @@ export type ReadonlySessionManager = Pick<
 	| "getEntry"
 	| "getLabel"
 	| "getBranch"
-	| "getContextBranch"
+	| "getBranchMatching"
+	| "getLatestBranchMatching"
+	| "buildSessionContext"
 	| "getEntryCount"
 	| "hasEntryType"
 	| "iterateEntries"
@@ -3780,13 +3786,65 @@ export class SessionManager {
 		}
 	}
 
-	/** Current-branch entries, in path order, whose payload-free metadata matches; others are never read. */
+	/** Project selected entries in decreasing path-index order, scanning each overlay at most once. */
+	#branchPruneProjector(path: readonly SessionContextEntryMetadata[]) {
+		let nextOverlayIndex = path.length - 1;
+		const overlaysByTarget = new Map<string, { entry: ToolResultPruneEntry; notice: string }>();
+		const selectedOverlays = new Map<string, ToolResultPruneEntry>();
+		return (entry: SessionEntry, index: number): SessionEntry => {
+			if (entry.type === "tool_result_prune") selectedOverlays.set(entry.id, entry);
+			if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.prunedAt !== undefined)
+				return entry;
+			// Only overlays after this target can apply. Moving backwards lets an earlier
+			// overlay replace a later one, preserving the canonical first-overlay-wins rule.
+			for (; nextOverlayIndex > index; nextOverlayIndex--) {
+				const metadata = path[nextOverlayIndex]!;
+				if (metadata.type !== "tool_result_prune") continue;
+				const overlay =
+					selectedOverlays.get(metadata.id) ?? (this.#index.get(metadata.id, false)! as ToolResultPruneEntry);
+				// Reverse target order also preserves the first notice for duplicate targets.
+				for (let i = overlay.targets.length - 1; i >= 0; i--) {
+					const target = overlay.targets[i]!;
+					overlaysByTarget.set(target.entryId, { entry: overlay, notice: target.notice });
+				}
+			}
+			const overlay = overlaysByTarget.get(entry.id);
+			return overlay ? projectToolResultPrune(entry, overlay.entry, overlay.notice) : entry;
+		};
+	}
+
+	/** Matching current-branch entries in path order, with only selected payloads and required prune overlays read. */
 	getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
+		const path = this.#index.metadataPath();
 		const entries: SessionEntry[] = [];
-		for (const metadata of this.#index.metadataPath()) {
-			if (predicate(metadata)) entries.push(this.#index.get(metadata.id, false)!);
+		const indices: number[] = [];
+		for (let i = 0; i < path.length; i++) {
+			const metadata = path[i]!;
+			if (predicate(metadata)) {
+				entries.push(this.#index.get(metadata.id, false)!);
+				indices.push(i);
+			}
 		}
+		const project = this.#branchPruneProjector(path);
+		for (let i = entries.length - 1; i >= 0; i--) entries[i] = project(entries[i]!, indices[i]!);
 		return entries;
+	}
+
+	/** Matching current-branch entries newest first; selected payloads and required prune overlays are read lazily. */
+	*iterateBranchMatchingNewestFirst(
+		predicate: (metadata: SessionContextEntryMetadata) => boolean,
+	): IterableIterator<SessionEntry> {
+		const path = this.#index.metadataPath();
+		const project = this.#branchPruneProjector(path);
+		for (let i = path.length - 1; i >= 0; i--) {
+			const metadata = path[i]!;
+			if (predicate(metadata)) yield project(this.#index.get(metadata.id, false)!, i);
+		}
+	}
+
+	/** Latest current-branch entry whose payload-free metadata matches, or undefined on a miss. */
+	getLatestBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry | undefined {
+		return this.iterateBranchMatchingNewestFirst(predicate).next().value;
 	}
 
 	/**

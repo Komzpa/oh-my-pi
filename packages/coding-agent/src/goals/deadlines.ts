@@ -1,9 +1,12 @@
+import type { SessionContextEntryMetadata } from "../session/session-context";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const STATE_ENTRY = "reemxy-goal-deadlines";
+export const GOAL_FOCUS_CUSTOM_TYPE = "pi-goal-focus";
+export const GOAL_STATE_CUSTOM_TYPE = "pi-goal-state";
+export const GOAL_DEADLINE_TOOL_NAME = "goal_deadline";
 const MAX_UNIX_SECONDS = 253_402_300_799;
-
 function isUnixSeconds(value: number): boolean {
 	return Number.isSafeInteger(value) && value <= MAX_UNIX_SECONDS;
 }
@@ -65,6 +68,44 @@ export interface GoalFocusAuthority {
 	goal: ActiveGoalRef | null;
 	explicit: boolean;
 }
+/**
+ * Payload-free selector for every entry that can resolve goal focus or a
+ * goal deadline. Filtered branches stay in path order, so the explicit
+ * native/plugin pass keeps precedence over the legacy `pi-goal-state`
+ * fallback exactly as the full-branch replay does.
+ */
+export function isGoalDeadlineEntryMetadata(metadata: SessionContextEntryMetadata): boolean {
+	if (metadata.type === "custom")
+		return (
+			metadata.customType === STATE_ENTRY ||
+			metadata.customType === GOAL_FOCUS_CUSTOM_TYPE ||
+			metadata.customType === GOAL_STATE_CUSTOM_TYPE
+		);
+	if (metadata.type === "mode_change") return true;
+	return (
+		metadata.type === "message" &&
+		metadata.messageRole === "toolResult" &&
+		metadata.toolName === GOAL_DEADLINE_TOOL_NAME
+	);
+}
+
+type GoalDeadlineBranchSource = {
+	getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): readonly unknown[];
+};
+
+/** Read only entries that can resolve goal focus or deadline state, in branch order. */
+export function getGoalDeadlineBranchEntries(manager: GoalDeadlineBranchSource): readonly unknown[] {
+	return manager.getBranchMatching(isGoalDeadlineEntryMetadata);
+}
+
+/** Resolve the deadline over the manager's selective goal/focus branch slice. */
+export function readGoalDeadlineFromManager(
+	manager: GoalDeadlineBranchSource,
+	cwd?: string,
+	options: { includePaused?: boolean } = {},
+): { goalId: string; deadlineAt: number; paused?: boolean } | undefined {
+	return readGoalDeadline(getGoalDeadlineBranchEntries(manager), cwd, options);
+}
 
 function resolveGoalFocusAuthority(
 	entries: readonly unknown[],
@@ -87,7 +128,7 @@ function resolveGoalFocusAuthority(
 				explicit: true,
 			};
 		}
-		if (entry?.type === "custom" && entry.customType === "pi-goal-focus") {
+		if (entry?.type === "custom" && entry.customType === GOAL_FOCUS_CUSTOM_TYPE) {
 			const id = typeof entry.data?.focusedGoalId === "string" ? entry.data.focusedGoalId : null;
 			let goal: ActiveGoalRef | null = null;
 			if (id !== null) {
@@ -107,7 +148,7 @@ function resolveGoalFocusAuthority(
 	// They remain readable only when neither owner has recorded an explicit choice.
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index] as { type?: unknown; customType?: unknown; data?: { goal?: unknown } };
-		if (entry?.type === "custom" && entry.customType === "pi-goal-state") {
+		if (entry?.type === "custom" && entry.customType === GOAL_STATE_CUSTOM_TYPE) {
 			const goal = goalRef(entry.data?.goal);
 			return goal ? { owner: "plugin", goal, explicit: false } : { owner: null, goal: null, explicit: false };
 		}
@@ -172,7 +213,7 @@ export function rehydrateDeadlineState(entries: readonly unknown[]): DeadlineSta
 		};
 		if (entry?.type === "custom" && entry.customType === STATE_ENTRY)
 			return validState(entry.data) ? entry.data : null;
-		if (entry?.type === "message" && entry.message?.toolName === "goal_deadline") {
+		if (entry?.type === "message" && entry.message?.toolName === GOAL_DEADLINE_TOOL_NAME) {
 			const candidate = entry.message.details?.state;
 			return validState(candidate) ? candidate : null;
 		}

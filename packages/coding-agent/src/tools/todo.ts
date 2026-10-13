@@ -51,10 +51,12 @@ import {
 	getPersistedRequirementAuditRejections,
 	prepareAwaitingUserCheck,
 	type RequirementsLedgerAppender,
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
 } from "./requirements-ledger";
 
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
-import { readGoalDeadline } from "../goals/deadlines";
+import { readGoalDeadline, readGoalDeadlineFromManager } from "../goals/deadlines";
 import { applyTodoExecutorObservation, appendTodoReworkAttempt, type TodoExecutorObservation } from "./todo-executor";
 
 /** Whether an unknown value is a persisted todo phase. */
@@ -262,9 +264,19 @@ export interface RequirementRowArtifact {
 
 export interface RequirementRowArtifactContext {
 	cwd: string;
-	sessionManager?: { getBranch(): SessionEntry[] };
+	sessionManager?: {
+		getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[];
+	};
 	getAsyncJobSnapshot?: () => { running?: readonly { id: string; agentId?: string }[] } | undefined;
 	signal?: AbortSignal;
+}
+
+type TodoBranchSource = Pick<RequirementRowArtifactContext, "sessionManager">;
+
+/** Read only entries that carry todo state or HUD choices. */
+function getTodoBranchEntries(manager: TodoBranchSource["sessionManager"]): SessionEntry[] {
+	if (!manager) return [];
+	return manager.getBranchMatching(isTodoStateEntryMetadata);
 }
 
 const ABSOLUTE_ARTIFACT_PATH = /\/(?:home|srv|tmp|var|mnt|workspaces|Users)\/[^\s"'`),;]+/g;
@@ -305,7 +317,7 @@ async function resolveRequirementRowArtifact(
 	if (!task && ctx.sessionManager) {
 		let historical: TodoItem | undefined;
 		let ambiguous = false;
-		observeLatestTodoPhases(ctx.sessionManager.getBranch(), snapshot => {
+		observeLatestTodoPhases(getTodoBranchEntries(ctx.sessionManager), snapshot => {
 			let match: TodoItem | undefined;
 			for (const phase of snapshot) {
 				for (const candidate of phase.tasks) {
@@ -470,7 +482,7 @@ export async function bindRequirementRowArtifact(
 	// An archived row already has persisted checkout ownership; never resurrect it in the active plan.
 	if (!original) return artifact;
 
-	const currentPhases = getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch());
+	const currentPhases = getLatestTodoPhasesFromEntries(getTodoBranchEntries(ctx.sessionManager));
 	let current: TodoItem | undefined;
 	for (const phase of currentPhases) {
 		for (const task of phase.tasks) {
@@ -814,12 +826,13 @@ function replayTodoEdit(
 	return { phases: applied.phases, mutable: true };
 }
 
-export function shouldPersistTodoFullSnapshotCheckpoint(entries: SessionEntry[]): boolean {
+export function shouldPersistTodoFullSnapshotCheckpoint(entriesNewestFirst: Iterable<SessionEntry>): boolean {
 	let compactEditsSinceSnapshot = 0;
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const entry = entries[i]!;
+	for (const entry of entriesNewestFirst) {
 		if (canonicalTodoPhases(entry)) return compactEditsSinceSnapshot >= TODO_FULL_SNAPSHOT_CHECKPOINT_INTERVAL;
-		if (compactTodoEditFromEntry(entry)) compactEditsSinceSnapshot++;
+		// Once the interval is reached the answer is `true` whether or not a snapshot is found, so stop reading.
+		if (compactTodoEditFromEntry(entry) && ++compactEditsSinceSnapshot >= TODO_FULL_SNAPSHOT_CHECKPOINT_INTERVAL)
+			return true;
 	}
 	return true;
 }
@@ -2153,7 +2166,10 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		const entry = resolved;
 		const sessionManager = this.session.sessionManager;
 		if ((entry.op === "rm" || entry.op === "init") && sessionManager) {
-			const linkedRequirements = getLatestRequirements(sessionManager.getBranch()).filter(
+			const requirementEntries = sessionManager.getBranchMatching(
+				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+			);
+			const linkedRequirements = getLatestRequirements(requirementEntries).filter(
 				requirement => requirement.classification === "linked",
 			);
 			const targetErrors: string[] = [];
@@ -2187,8 +2203,11 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		}
 		const op = entry.op;
 		const now = Date.now();
-		const entries = this.session.sessionManager?.getBranch() ?? [];
-		const deadline = readGoalDeadline(entries, this.session.cwd, { includePaused: true });
+		const todoEntries = getTodoBranchEntries(this.session.sessionManager);
+		const manager = this.session.sessionManager;
+		const deadline = manager
+			? readGoalDeadlineFromManager(manager, this.session.cwd, { includePaused: true })
+			: readGoalDeadline(todoEntries, this.session.cwd, { includePaused: true });
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
@@ -2197,7 +2216,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		const failed = errors.length > 0;
 		const archived = !readOnly && !failed ? archiveTodoPhases(updated, now) : undefined;
 		const effective = archived?.phases ?? (failed ? previousPhases : updated);
-		const archivedPhases = op === "init" && !failed ? [] : getLatestTodoArchiveFromEntries(entries);
+		const archivedPhases = op === "init" && !failed ? [] : getLatestTodoArchiveFromEntries(todoEntries);
 		const newArchive = archived?.archivedPhases ?? [];
 		// A schedule rename changes titles, not statuses: content-keyed completion
 		// diffing must not report renamed closed rows as newly completed.
@@ -2225,7 +2244,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		const archiveSummary =
 			op === "init" && !failed
 				? getTodoArchiveSummaryFromEntries([], archiveEdit)
-				: getTodoArchiveSummaryFromEntries(entries, archiveEdit);
+				: getTodoArchiveSummaryFromEntries(todoEntries, archiveEdit);
 		if (archiveSummary) details.archiveSummary = archiveSummary;
 		if (readOnly && entry.archive) details.archivedPhases = archivedPhases;
 		if (deadline) details.deadlineAt = deadline.deadlineAt;
@@ -2260,7 +2279,13 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		const selectorErrors: string[] = [];
 		const targets = getCompletionTargets(previousPhases, { task, phase, items }, selectorErrors);
 		if (selectorErrors.length === 0) {
-			const branch = sessionManager.getBranch();
+			const branch = sessionManager.getBranchMatching(
+				metadata =>
+					isTodoStateEntryMetadata(metadata) ||
+					(metadata.type === "custom" &&
+						(metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE ||
+							metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE)),
+			);
 			const changes = getTodoRowChanges(branch);
 			const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
 			const open = await evaluateRequirementDoneGate(
@@ -2355,7 +2380,11 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				};
 			}
 		}
-		const requirements = getLatestRequirements(sessionManager.getBranch());
+		const requirements = getLatestRequirements(
+			sessionManager.getBranchMatching(
+				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+			),
+		);
 		const result = classifyRequirement(requirements, id, classification, {
 			rows,
 			reason,

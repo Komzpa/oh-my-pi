@@ -373,6 +373,12 @@ function mergeLlmCompactionPreserveData(
 	return snapcompact.stripPreservedArchive(Object.keys(preserveData).length > 0 ? preserveData : undefined);
 }
 
+/** Read only the latest compaction payload, never earlier summaries or preserved archives. */
+function latestBranchCompactionEntry(sessionManager: SessionManager): CompactionEntry | null {
+	const entry = sessionManager.getLatestBranchMatching(metadata => metadata.type === "compaction");
+	return entry?.type === "compaction" ? entry : null;
+}
+
 /** Wrap a handoff document as a compaction summary: append the cumulative file-operations tag and derive entry details. */
 function handoffSummaryFromDocument(
 	document: string,
@@ -817,7 +823,7 @@ export class SessionMaintenance {
 		}
 
 		if (mode === "thinking") {
-			const latestCompaction = getLatestCompactionEntry(this.#host.sessionManager.iterateBranch("compaction"));
+			const latestCompaction = latestBranchCompactionEntry(this.#host.sessionManager);
 			let compactionIndex = -1;
 			const hasRemoteReplacementHistory = getOpenAiRemoteCompactionPayload(latestCompaction) !== undefined;
 			let anchorIndex = -1;
@@ -1813,7 +1819,7 @@ export class SessionMaintenance {
 			);
 			if (!safeToContinue) {
 				const warning = compactionDeadEndWarning("clear large tool output");
-				const entry = getLatestCompactionEntry(this.#host.sessionManager.iterateBranch("compaction"));
+				const entry = latestBranchCompactionEntry(this.#host.sessionManager);
 				if (entry) {
 					entry.warning = warning;
 					await this.#host.sessionManager.rewriteEntries();
@@ -2292,14 +2298,18 @@ export class SessionMaintenance {
 		let snapshotFound = false;
 		let hasLaterEntries = false;
 		let keptFound = false;
-		for (const entry of this.#host.sessionManager.iterateBranch()) {
-			if (entry.id === armed.result.firstKeptEntryId) keptFound = true;
+		let hasLaterBoundary = false;
+		// This validity check consumes only path facts; no entry payload needs to be read.
+		this.#host.sessionManager.getBranchMatching(metadata => {
+			if (metadata.id === armed.result.firstKeptEntryId) keptFound = true;
 			if (snapshotFound) {
 				hasLaterEntries = true;
-				if (entry.type === "compaction" || entry.type === "reset_boundary") return false;
+				if (metadata.type === "compaction" || metadata.type === "reset_boundary") hasLaterBoundary = true;
 			}
-			if (entry.id === armed.snapshotLeafId) snapshotFound = true;
-		}
+			if (metadata.id === armed.snapshotLeafId) snapshotFound = true;
+			return false;
+		});
+		if (hasLaterBoundary) return false;
 		if (!snapshotFound) return false;
 		if (hasLaterEntries) {
 			const nativeAnthropic = isRecord(armed.result.preserveData?.anthropicCompaction);
@@ -2790,7 +2800,7 @@ export class SessionMaintenance {
 		// The error shouldn't trigger another compaction since we already compacted.
 		// Example: opus fails -> switch to codex -> compact -> switch back to opus -> opus error
 		// is still in context but shouldn't trigger compaction again.
-		const compactionEntry = getLatestCompactionEntry(this.#host.sessionManager.iterateBranch("compaction"));
+		const compactionEntry = latestBranchCompactionEntry(this.#host.sessionManager);
 		const errorIsFromBeforeCompaction =
 			compactionEntry !== null && assistantMessage.timestamp < new Date(compactionEntry.timestamp).getTime();
 		const payloadRejection =
@@ -4526,7 +4536,7 @@ export class SessionMaintenance {
 					// immediately, so a later stamp would not appear until some
 					// unrelated rebuild.
 					if (deadEndWarning && frameRescueResult) {
-						const stampEntry = getLatestCompactionEntry(this.#host.sessionManager.iterateBranch("compaction"));
+						const stampEntry = latestBranchCompactionEntry(this.#host.sessionManager);
 						if (stampEntry) {
 							stampEntry.warning = deadEndWarning;
 							await this.#host.sessionManager.rewriteEntries();
@@ -5245,8 +5255,7 @@ export class SessionMaintenance {
 			// the branch's LATEST compaction entry — a frame rescue may have
 			// superseded `savedCompactionEntry` with a rebuilt one, and the
 			// collapsed transcript badges only the active entry.
-			const stampEntry =
-				getLatestCompactionEntry(this.#host.sessionManager.iterateBranch("compaction")) ?? savedCompactionEntry;
+			const stampEntry = latestBranchCompactionEntry(this.#host.sessionManager) ?? savedCompactionEntry;
 			if (stampEntry) {
 				stampEntry.warning = deadEndWarning;
 				await this.#host.sessionManager.rewriteEntries();

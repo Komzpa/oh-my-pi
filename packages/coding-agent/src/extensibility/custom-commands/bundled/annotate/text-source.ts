@@ -101,7 +101,9 @@ export async function selectSessionTextReviewSource(
 	ctx: CustomCommandContext,
 	options?: { autoSelect?: "latest-assistant" },
 ): Promise<TextReviewSource | undefined> {
-	const branch = ctx.sessionManager.getBranch();
+	const branch = ctx.sessionManager.getBranchMatching(
+		metadata => metadata.type === "message" || metadata.type === "custom_message",
+	);
 	const latest = latestAssistantEntry(branch);
 	if (options?.autoSelect === "latest-assistant") {
 		if (!latest) {

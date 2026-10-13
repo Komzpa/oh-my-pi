@@ -15,11 +15,12 @@ import {
 import contextNotesDescription from "../prompts/tools/context-notes.md" with { type: "text" };
 import newContextDescription from "../prompts/tools/new-context.md" with { type: "text" };
 import type { ToolSession } from ".";
+import type { SessionContextEntryMetadata } from "../session/session-context";
+import type { SessionEntry } from "../session/session-entries";
 import { throwIfAborted } from "./tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 import { cfgCompactionExperimentalContextManagement } from "../session/context-settings";
-
 const contextNotesSchema = type({
 	"text?": type("string").describe("Entire replacement notebook text. Omit to read; use an empty string to clear."),
 });
@@ -40,6 +41,20 @@ export interface NewContextToolDetails {
 }
 
 type ExperimentalContextSessionManager = NonNullable<ToolSession["sessionManager"]>;
+
+/**
+ * Minimal branch slice for the experimental notebook. `reset_boundary`
+ * stays in the filter so `getContextNotes` keeps its post-reset semantics
+ * on the selective slice.
+ */
+export function isContextNotesBranchMetadata(metadata: SessionContextEntryMetadata): boolean {
+	if (metadata.type === "reset_boundary") return true;
+	return metadata.type === "custom" && metadata.customType === CONTEXT_NOTES_ENTRY_TYPE;
+}
+
+function getContextNotesBranchEntries(manager: ExperimentalContextSessionManager): SessionEntry[] {
+	return manager.getBranchMatching(isContextNotesBranchMetadata);
+}
 
 function resolveExperimentalContextSession(session: ToolSession): ExperimentalContextSessionManager | undefined {
 	if (cfgCompactionExperimentalContextManagement.get(session.settings) !== true || session.isDisposed?.()) {
@@ -106,7 +121,7 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 			throw new ToolError("context_notes text must be a string.");
 		}
 		if (params.text === undefined) {
-			const notes = getContextNotes(manager.getBranch());
+			const notes = getContextNotes(getContextNotesBranchEntries(manager));
 			return {
 				content: [{ type: "text", text: notes?.text ?? "No context notes are stored for this session branch." }],
 				details: notes ? { entryId: notes.entryId, text: notes.text } : { entryId: undefined, text: "" },
@@ -121,24 +136,25 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 		}
 
 		const ownerId = this.session.getSessionId?.();
-		const branch = manager.getBranch();
-		const branchLeafId = branch.at(-1)?.id;
+		const branch = getContextNotesBranchEntries(manager);
+		const branchLeafId = manager.getLeafId();
 		const branchSelectionRevision = manager.getBranchSelectionRevision?.();
 		const notebookEntryId = getContextNotes(branch)?.entryId;
 		const resetBoundaryId = branch.findLast(entry => entry.type === "reset_boundary")?.id;
 		await manager.ensureOnDisk();
 		throwIfAborted(signal);
 		const currentManager = getExperimentalContextSession(this.session);
-		const currentBranch = manager.getBranch();
+		const currentBranch = getContextNotesBranchEntries(manager);
 		// Unrelated appends may advance the leaf, but explicit tree selections
 		// must invalidate the snapshot even when its leaf remains an ancestor.
 		// Minimal SDK managers without selection tracking retain the strict leaf check.
+		const currentLeafId = manager.getLeafId();
 		const branchSelectionUnchanged =
 			branchSelectionRevision === undefined
-				? currentBranch.at(-1)?.id === branchLeafId
+				? currentLeafId === branchLeafId
 				: manager.getBranchSelectionRevision?.() === branchSelectionRevision;
 		const branchStillExtendsSnapshot =
-			branchLeafId === undefined || currentBranch.some(entry => entry.id === branchLeafId);
+			branchLeafId === null || manager.getBranchMatching(metadata => metadata.id === branchLeafId).length > 0;
 		if (
 			currentManager !== manager ||
 			this.session.isDisposed?.() ||

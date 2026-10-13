@@ -1227,7 +1227,9 @@ export class TurnRecovery {
 		allowDefer: boolean,
 		options: { autoContinue: boolean; triggerContextTokens?: number; excludeMediaMethods?: boolean },
 	): Promise<RecoveryCompactionResult> {
-		const compactionEntryBefore = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
+		const compactionEntryBefore = getLatestCompactionEntry(
+			this.#host.sessionManager.getBranchMatching(metadata => metadata.type === "compaction"),
+		);
 		const promptSequence = this.#host.promptSequence();
 		const generation = this.#host.promptGeneration();
 		await this.dropPersistedAssistantTurn(assistantMessage);
@@ -1237,8 +1239,12 @@ export class TurnRecovery {
 			phase: "mid_turn",
 			excludeMediaMethods: options.excludeMediaMethods,
 		});
-		const compactionEntryAfter = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
-		const committed = result.historyRewritten === true || compactionEntryAfter !== compactionEntryBefore;
+		const compactionEntryAfter = getLatestCompactionEntry(
+			this.#host.sessionManager.getBranchMatching(metadata => metadata.type === "compaction"),
+		);
+		// Compare identity: a fresh compaction summary has a distinct id from the
+		// before-entry even though both are the branch's latest compaction entry.
+		const committed = result.historyRewritten === true || compactionEntryAfter?.id !== compactionEntryBefore?.id;
 		if (!committed) {
 			this.#restoreFailedAssistantTurn(assistantMessage);
 		} else if (

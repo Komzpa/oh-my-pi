@@ -1,5 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
-import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import { buildSessionContext, sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { describe, expect, setSystemTime, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -17,6 +17,15 @@ import {
   type TodoScheduleInput,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import todoDispatch, { checkoutLockOwnerFromMessage, decideTodoDispatch, isDistantWaitReason, todoOverrunBudgetMs, type DispatchInput } from "./todo_dispatch";
+
+function branchMock(getBranch: () => unknown[]) {
+  return {
+    getBranch,
+    getBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().filter(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+    getLatestBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().findLast(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+    buildSessionContext: () => buildSessionContext(getBranch() as SessionEntry[]),
+  };
+}
 
 type Jobs = Pick<AsyncJobSnapshot, "running" | "recent">;
 const now = Date.UTC(2026, 0, 1);
@@ -924,7 +933,7 @@ test("restored roster excludes settled children but keeps parked children separa
     cwd: "/tmp/no-native-active-goal-fixture",
     sessionManager: {
       getHeader: () => ({ id: "root" }),
-      getBranch: () => branch,
+      ...branchMock(() => branch),
     },
     getAsyncJobSnapshot: () => jobs,
   } as unknown as ExtensionContext;
@@ -958,7 +967,7 @@ test("restored roster drops children unknown to the current process after restar
   } as unknown as ExtensionAPI);
   const ctx = {
     cwd: "/tmp/no-native-active-goal-fixture",
-    sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
+    sessionManager: { getHeader: () => ({ id: "root" }), ...branchMock(() => branch) },
     getAsyncJobSnapshot: () => ({ running: [], recent: [] }),
   } as unknown as ExtensionContext;
   await handlers.get("session_start")!({}, ctx);
@@ -1008,7 +1017,7 @@ test("first-context 13-row dispatch becomes observation-only when paused", async
   } as unknown as ExtensionAPI);
   const ctx = {
     cwd: "/tmp/no-native-active-goal-fixture",
-    sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
+    sessionManager: { getHeader: () => ({ id: "root" }), ...branchMock(() => branch) },
     getAsyncJobSnapshot: () => emptyJobs,
     getTaskMaxConcurrency: () => 13,
   } as unknown as ExtensionContext;
@@ -1067,7 +1076,7 @@ test("agent_end and shutdown persist child IDs but drop stale IDs on an empty-sn
   } as unknown as ExtensionAPI);
   const ctx = {
     cwd: "/tmp/no-native-active-goal-fixture",
-    sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
+    sessionManager: { getHeader: () => ({ id: "root" }), ...branchMock(() => branch) },
     getAsyncJobSnapshot: () => jobs,
   } as unknown as ExtensionContext;
   (await handlers.get("agent_end")!({}, ctx));
@@ -1140,12 +1149,12 @@ test("an unchanged open plan remains in context on each request and clears on co
     cwd: "/tmp/no-native-active-goal-fixture",
     sessionManager: {
       getHeader: () => ({ id: "root" }),
-      getBranch: () => [
+      ...branchMock(() => [
         {
           type: "message",
           message: { role: "toolResult", toolName: "todo", details: { phases: plan } },
         },
-      ],
+      ]),
     },
     getAsyncJobSnapshot: () => emptyJobs,
   } as unknown as ExtensionContext;
@@ -1203,10 +1212,10 @@ test("todo schedule result plan check uses the just-returned phases", async () =
     cwd: "/tmp/no-native-active-goal-fixture",
     sessionManager: {
       getHeader: () => ({ id: "root" }),
-      getBranch: () => [{
+      ...branchMock(() => [{
         type: "message",
         message: { role: "toolResult", toolName: "todo", details: { phases: stale } },
-      }],
+      }]),
     },
     getAsyncJobSnapshot: () => ({
       running: [{
@@ -1266,7 +1275,7 @@ test("PLAN CHECK advises executor planning only for three unseen rows and clears
   } as unknown as ExtensionAPI);
   const ctx = {
     cwd: "/tmp/planning-round-fixture",
-    sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
+    sessionManager: { getHeader: () => ({ id: "root" }), ...branchMock(() => branch) },
     getAsyncJobSnapshot: () => jobs,
     getTaskMaxConcurrency: () => 6,
   } as unknown as ExtensionContext;
@@ -1345,7 +1354,7 @@ test("PLAN CHECK advises retrospectives for sprint triggers and clears after ret
   } as unknown as ExtensionAPI);
   const ctx = {
     cwd: "/tmp/retro-fixture",
-    sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
+    sessionManager: { getHeader: () => ({ id: "root" }), ...branchMock(() => branch) },
     getAsyncJobSnapshot: () => jobs,
     getTaskMaxConcurrency: () => 6,
   } as unknown as ExtensionContext;
@@ -1478,7 +1487,7 @@ test("idle lifecycle wakes once per active plan/alarm and suppresses paused or c
   await todoDispatch(api);
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => header, getBranch: () => branch },
+    sessionManager: { getHeader: () => header, ...branchMock(() => branch) },
     getAsyncJobSnapshot: () => emptyJobs,
     getTaskMaxConcurrency: () => 2,
     isIdle: () => idle,
@@ -1650,7 +1659,7 @@ test("overdue follow-through re-arms by minute and dispatches only actionable, r
     await todoDispatch(api);
     const ctx = {
       cwd,
-      sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
+      sessionManager: { getHeader: () => ({ id: "root" }), ...branchMock(() => branch) },
       getAsyncJobSnapshot: () => jobs,
       getTaskMaxConcurrency: () => capacity,
       isIdle: () => true,
@@ -1832,7 +1841,7 @@ test("dependency waits remain allowed until independently runnable work appears"
     await todoDispatch(api);
     const ctx = {
       cwd,
-      sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
+      sessionManager: { getHeader: () => ({ id: "root" }), ...branchMock(() => branch) },
       getAsyncJobSnapshot: () => jobs,
       getTaskMaxConcurrency: () => taskCap,
       isIdle: () => false,
@@ -1931,7 +1940,7 @@ test("a genuine output-chained plan with external gates stays silent instead of 
     await todoDispatch(api);
     const ctx = {
       cwd,
-      sessionManager: { getHeader: () => ({ id: "genuine-chain" }), getBranch: () => branch },
+      sessionManager: { getHeader: () => ({ id: "genuine-chain" }), ...branchMock(() => branch) },
       getAsyncJobSnapshot: () => jobs,
       getTaskMaxConcurrency: () => 16,
       isIdle: () => false,
@@ -2000,7 +2009,7 @@ test("the main session is chief of staff: worker tools are refused while worker 
     await todoDispatch(api);
     const ctx = {
       cwd,
-      sessionManager: { getHeader: () => header, getBranch: () => branch },
+      sessionManager: { getHeader: () => header, ...branchMock(() => branch) },
       getAsyncJobSnapshot: () => jobs,
       getTaskMaxConcurrency: () => taskCap,
       isIdle: () => false,
@@ -2093,7 +2102,7 @@ test("a worker started but never linked to a row does not silence dispatch for t
     await todoDispatch(api);
     const ctx = {
       cwd,
-      sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
+      sessionManager: { getHeader: () => ({ id: "root" }), ...branchMock(() => branch) },
       getAsyncJobSnapshot: () => jobs,
       getTaskMaxConcurrency: () => 16,
       isIdle: () => false,
@@ -2147,7 +2156,7 @@ test("session_compact re-persists the full chief rules exactly once for a main s
   } as unknown as ExtensionAPI);
   const ctx = {
     cwd: "/tmp/chief-rules-main-fixture",
-    sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => [] },
+    sessionManager: { getHeader: () => ({ id: "root" }), ...branchMock(() => []) },
   } as unknown as ExtensionContext;
   const compact = () => handlers.get("session_compact")!({}, ctx);
   await compact();
@@ -2176,7 +2185,7 @@ test("the context hook does not add the chief rules per request, and no entry ap
     cwd: "/tmp/chief-rules-ctx-fixture",
     sessionManager: {
       getHeader: () => ({ id: "root" }),
-      getBranch: () => [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases } } }],
+      ...branchMock(() => [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases } } }]),
     },
     getAsyncJobSnapshot: () => emptyJobs,
   } as unknown as ExtensionContext;
@@ -2207,7 +2216,7 @@ test("session_compact re-persists a worker's original brief", async () => {
     cwd: "/tmp/chief-rules-worker-fixture",
     sessionManager: {
       getHeader: () => ({ id: "sub", parentSession: "root" }),
-      getBranch: () => [{ type: "session_init", task: brief }],
+      ...branchMock(() => [{ type: "session_init", task: brief }]),
     },
   } as unknown as ExtensionContext;
   await handlers.get("session_compact")!({}, ctx);
@@ -2245,7 +2254,7 @@ test("a resolved merge left open is committed first, and a merge gets one worker
     await todoDispatch(api);
     const ctx = {
       cwd,
-      sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => [], getSessionFile: () => undefined },
+      sessionManager: { getHeader: () => ({ id: "root" }), ...branchMock(() => []), getSessionFile: () => undefined },
       getAsyncJobSnapshot: () => jobs,
       getTaskMaxConcurrency: () => 20,
       isIdle: () => true,
@@ -2325,7 +2334,7 @@ const addUser = (h: CompactionHarness, content: string) => h.add({ type: "messag
 const addAssistant = (h: CompactionHarness, content: string) => h.add({ type: "message", message: { role: "assistant", content: [{ type: "text", text: content }], api: "anthropic-messages", provider: "anthropic", model: "chief-rules-regression-fixture", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: "stop", timestamp: 0 } });
 const ctxFor = (journal: SessionEntry[], header: { id: string; parentSession?: string }): ExtensionContext => ({
   cwd: "/tmp/chief-rules-regression-fixture",
-  sessionManager: { getHeader: () => header, getBranch: () => journal },
+  sessionManager: { getHeader: () => header, ...branchMock(() => journal) },
   getAsyncJobSnapshot: () => emptyJobs,
 } as unknown as ExtensionContext);
 // Complete append-only entries use real session shapes; buildSessionContext is the model-view authority.

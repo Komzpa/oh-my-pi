@@ -61,7 +61,6 @@ import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
 import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { IrcBus } from "../irc/bus";
-import { sendAgentMessageFromSession } from "../irc/messaging";
 import type { MCPManager } from "../mcp/manager";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import { initializeExtensions } from "../modes/runtime-init";
@@ -2069,7 +2068,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			}
 			if (event.type === "retry_fallback_applied") {
 				const entry = session.sessionManager
-					.getBranch()
+					.getBranchMatching(metadata => metadata.type === "model_change")
 					.findLast(entry => entry.type === "model_change" && entry.resolvedModelIsFallback);
 				if (entry?.type === "model_change") {
 					(progress.fallbacks ??= []).push({

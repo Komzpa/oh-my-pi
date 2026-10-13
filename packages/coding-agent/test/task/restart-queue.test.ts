@@ -482,8 +482,12 @@ describe("restart queue controller", () => {
 			.find(entry => entry.type === "custom" && entry.customType === "subagent_restart_handoff");
 		expect(handoff?.type).toBe("custom");
 		if (!handoff || handoff.type !== "custom") throw new Error("Expected durable restart handoff");
-		const children = (handoff.data as { children: Array<{ id: string; sessionFile: string; status: string }> })
-			.children;
+		// Assert the durable JSON payload: Bun's asymmetric matchers reject mutation-tracking array proxies.
+		const handoffData: unknown = JSON.parse(JSON.stringify(handoff.data));
+		if (!handoffData || typeof handoffData !== "object" || !("children" in handoffData)) {
+			throw new Error("Expected restart handoff children");
+		}
+		const children = handoffData.children;
 		expect(children).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ id: hangingId, sessionFile: path.resolve(hangingFile), status: "running" }),

@@ -6,12 +6,22 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { formatPlanForecast, formatTaskForecast, formatTaskForecastDisplay } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import {
 	forecastPlanWithUserWaits as forecastTodoPlan,
 	getPlanningIssuesWithUserWaits as getTodoPlanningIssues,
 } from "./todo-schedule-away";
 import todoDispatch, { decideTodoDispatch } from "./todo_dispatch";
+
+function branchMock(getBranch: () => unknown[]) {
+  return {
+    getBranch,
+    getBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().filter(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+    getLatestBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().findLast(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+  };
+}
 
 const APPROVE = "Approve the load-test budget";
 const DEPLOY = "Deploy the load test with the budget";
@@ -161,7 +171,7 @@ async function session(phases: unknown[], branch: unknown[], running: Array<{ id
 	const jobs = running.map((job) => ({ id: job.id, agentId: job.id, type: "task", status: "running", label: job.label, startTime: now }));
 	const ctx = {
 		cwd,
-		sessionManager: { getHeader: () => ({ id: "away-session" }), getBranch: () => branch, getSessionFile: () => undefined },
+		sessionManager: { getHeader: () => ({ id: "away-session" }), ...branchMock(() => branch), getSessionFile: () => undefined },
 		getAsyncJobSnapshot: () => ({ running: jobs, recent: [], nonJobAgents: jobs.map((job) => ({ id: job.id, live: true })) }),
 		getTaskMaxConcurrency: () => 20,
 		hasPendingMessages: () => false,

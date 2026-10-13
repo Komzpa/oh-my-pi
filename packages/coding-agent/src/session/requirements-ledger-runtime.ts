@@ -25,6 +25,7 @@ import {
 	type RequirementVerdict,
 	parseRequirementReceipt,
 	requirementAuditSnapshot,
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
 	type RequirementAuditAssignment,
 	type RequirementImage,
@@ -81,6 +82,7 @@ import {
 	getLatestTodoPhasesFromEntries,
 	getRequirementRowArtifact,
 	getTodoRowChanges,
+	isTodoStateEntryMetadata,
 	type RequirementRowArtifact,
 } from "../tools/todo";
 import { READ_ONLY_TOOL_NAMES } from "../task/read-only-policy";
@@ -158,7 +160,11 @@ export class RequirementsLedgerRuntime {
 
 	captureCandidate(rawText: string, images?: readonly ImageContent[]): void {
 		if (this.#host.agentKind() !== "main" || !rawText.trim() || rawText.trimStart().startsWith("/")) return;
-		const requirements = getLatestRequirements(this.#host.sessionManager.getBranch());
+		const requirements = getLatestRequirements(
+			this.#host.sessionManager.getBranchMatching(
+				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+			),
+		);
 		const referenced = extractRequirementImages(rawText, images);
 		appendRequirementsSnapshot(
 			this.#appender(),
@@ -173,7 +179,12 @@ export class RequirementsLedgerRuntime {
 		// stay possible while a candidate awaits classification. `peers` is the
 		// live-roster list (not in READ_ONLY_TOOL_NAMES); `ask` is already there.
 		if (toolName === "peers" || READ_ONLY_TOOL_NAMES.has(toolName)) return undefined;
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getBranchMatching(
+			metadata =>
+				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+				(metadata.type === "message" && metadata.messageRole === "assistant") ||
+				isTodoStateEntryMetadata(metadata),
+		);
 		const overdue = getOverdueRequirementCandidates(branch);
 		if (overdue.length === 0) return undefined;
 		const rows = openTodoRowContents(branch);
@@ -194,7 +205,11 @@ export class RequirementsLedgerRuntime {
 		const sessionId = this.#sessionId();
 		if (!sessionId) return undefined;
 
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getBranchMatching(
+			metadata =>
+				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+				isTodoStateEntryMetadata(metadata),
+		);
 		const requirements = getLatestRequirements(branch);
 		const phases = getLatestTodoPhasesFromEntries(branch);
 		const sharedContext = typeof input.context === "string" ? input.context : "";
@@ -501,7 +516,11 @@ export class RequirementsLedgerRuntime {
 			);
 			this.#noticeState = noticeState;
 		}
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getBranchMatching(
+			metadata =>
+				(metadata.type === "message" && metadata.messageRole === "user") ||
+				(metadata.type === "custom" && metadata.customType === "requirements_awaiting_user_notice"),
+		);
 		const userMessage = branch.findLast(entry => entry.type === "message" && entry.message.role === "user");
 		const announced = new Set<string>();
 		for (const entry of branch) {
@@ -551,7 +570,12 @@ export class RequirementsLedgerRuntime {
 		staleById: Map<string, string[]>;
 		awaitingUserIssues: Set<string>;
 	}> {
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getBranchMatching(
+			metadata =>
+				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+				(metadata.type === "custom" && metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE) ||
+				isTodoStateEntryMetadata(metadata),
+		);
 		const requirements = getLatestRequirements(branch);
 		const phases = getLatestTodoPhasesFromEntries(branch);
 		const changes = getTodoRowChanges(branch);
@@ -613,7 +637,11 @@ export class RequirementsLedgerRuntime {
 		) {
 			return `${expectedIds.join(", ")}: auditor assignment session or worker identity did not match`;
 		}
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getBranchMatching(
+			metadata =>
+				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+				isTodoStateEntryMetadata(metadata),
+		);
 		const requirements = getLatestRequirements(branch);
 		const expected = expectedIds.map(id => requirements.find(requirement => requirement.id === id));
 		if (expected.some(requirement => !requirement || requirement.classification !== "linked")) {
@@ -633,6 +661,7 @@ export class RequirementsLedgerRuntime {
 			return `${expectedIds.join(", ")}: malformed or partial verdict table (expected id, verdict, evidence, artifact)${missing.length > 0 ? `; missing rows for ${missing.join(", ")}` : ""}`;
 		}
 		const phases = getLatestTodoPhasesFromEntries(branch);
+		const changes = getTodoRowChanges(branch);
 		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
 		const updates = new Map<string, Record<string, RequirementVerdict>>();
 		for (const receipt of receipts) {
@@ -654,7 +683,7 @@ export class RequirementsLedgerRuntime {
 					this.#appender(),
 					checkoutCache,
 				);
-				const lastChange = getTodoRowChanges(this.#host.sessionManager.getBranch()).get(row);
+				const lastChange = changes.get(row);
 				const receivedAt = new Date().toISOString();
 				const identity = getRequirementRowArtifactIdentity(receipt.artifact, row, rows);
 				if (identity === undefined)
@@ -690,7 +719,11 @@ export class RequirementsLedgerRuntime {
 			}
 			updates.set(receipt.id, rowVerdicts);
 		}
-		const currentRequirements = getLatestRequirements(this.#host.sessionManager.getBranch());
+		const currentRequirements = getLatestRequirements(
+			this.#host.sessionManager.getBranchMatching(
+				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+			),
+		);
 		if (
 			expectedIds.some(
 				id => currentRequirements.find(requirement => requirement.id === id)?.classification !== "linked",
@@ -787,10 +820,15 @@ export class RequirementsLedgerRuntime {
 	}
 
 	#restorePendingAuditors(): void {
+		const branch = this.#host.sessionManager.getBranchMatching(
+			metadata =>
+				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+				(metadata.type === "custom" && metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE),
+		);
 		const restored = getPersistedRequirementAuditorAssignments(
-			this.#host.sessionManager.getBranch(),
+			branch,
 			this.#sessionId(),
-			getLatestRequirements(this.#host.sessionManager.getBranch()),
+			getLatestRequirements(branch),
 		);
 		this.#pendingAuditors.clear();
 		for (const [workerId, assignment] of restored) this.#pendingAuditors.set(workerId, assignment);
@@ -802,7 +840,13 @@ export class RequirementsLedgerRuntime {
 	): void {
 		const sessionId = this.#sessionId();
 		if (!sessionId) return;
-		const rejections = getPersistedRequirementAuditRejections(this.#host.sessionManager.getBranch(), sessionId);
+		const rejections = getPersistedRequirementAuditRejections(
+			this.#host.sessionManager.getBranchMatching(
+				metadata =>
+					metadata.type === "custom" && metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
+			),
+			sessionId,
+		);
 		for (const id of acceptedIds) rejections.delete(id);
 		if (rejected) {
 			for (const id of rejected.ids) rejections.set(id, rejected.reason);
@@ -842,7 +886,11 @@ export class RequirementsLedgerRuntime {
 	}
 
 	#getPublicationGeneration(): number {
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getBranchMatching(
+			metadata =>
+				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+				isTodoStateEntryMetadata(metadata),
+		);
 		const state = JSON.stringify([getLatestRequirements(branch), getLatestTodoPhasesFromEntries(branch)]);
 		if (state !== this.#publicationState) {
 			this.#publicationState = state;
@@ -851,7 +899,11 @@ export class RequirementsLedgerRuntime {
 		return this.#publicationGeneration;
 	}
 	syncPublicationGate(): void {
-		const requirements = getLatestRequirements(this.#host.sessionManager.getBranch());
+		const requirements = getLatestRequirements(
+			this.#host.sessionManager.getBranchMatching(
+				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+			),
+		);
 		const active =
 			this.#host.agentKind() === "main" &&
 			requirements.some(

@@ -4,10 +4,20 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { expect, test, vi } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { execFileSync } from "node:child_process";
 import todoDispatch, { noticeDigest } from "./todo_dispatch";
 import { getAgentPools } from "./agent_router";
+
+function branchMock(getBranch: () => unknown[]) {
+	return {
+		getBranch,
+		getBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().filter(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+		getLatestBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().findLast(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+	};
+}
 
 type WaitTestTask = {
 	content: string;
@@ -103,14 +113,14 @@ function forecastTodoPlan(phases: WaitTestPhase[], { now }: { now: number }) {
 async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initialJobs: unknown[] = []) {
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	const notices: Array<{ customType: string; content: string }> = [];
-	const entries: Array<{ customType: string; data?: unknown }> = [];
+	const entries: Array<{ type: "custom"; customType: string; data?: unknown }> = [];
 	const intervals: Array<() => void | Promise<void>> = [];
 	const timeouts: Array<() => void | Promise<void>> = [];
 	let recent = initialJobs;
 	const api = {
 		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
 		getActiveTools: () => ["task", "todo", "wait"],
-		appendEntry: (customType: string, data?: unknown) => entries.push({ customType, data }),
+		appendEntry: (customType: string, data?: unknown) => entries.push({ type: "custom", customType, data }),
 		sendMessage: (message: { customType: string; content: string }) => notices.push(message),
 		pi: {
 			forecastTodoPlan,
@@ -126,7 +136,7 @@ async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initia
 		cwd: "/tmp/todo-notice-test",
 		sessionManager: {
 			getHeader: () => ({ id: "notice-root" }),
-			getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
+			...branchMock(() => [{ type: "custom", customType: "user_todo_edit", data: { phases } }, ...entries]),
 			getSessionFile: () => undefined,
 		},
 		getAsyncJobSnapshot: () => ({ running: [], recent, nonJobAgents: [] }),
@@ -323,7 +333,7 @@ test("wait is allowed when open rows depend on running work or user approval", a
 		cwd: "/tmp/todo-wait-test",
 		sessionManager: {
 			getHeader: () => ({ id: "wait-once" }),
-			getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
+			...branchMock(() => [{ type: "custom", customType: "user_todo_edit", data: { phases } }]),
 			getSessionFile: () => undefined,
 		},
 		getAsyncJobSnapshot: () => ({
@@ -395,7 +405,7 @@ async function waitOnReadyRowWithStaleOwner(
 			cwd,
 			sessionManager: {
 				getHeader: () => ({ id: "wait-ready" }),
-				getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
+				...branchMock(() => [{ type: "custom", customType: "user_todo_edit", data: { phases } }]),
 				getSessionFile: () => undefined,
 			},
 			getAsyncJobSnapshot: () => ({
@@ -467,7 +477,7 @@ test("capacity reports zero when no authenticated worker profile can start", asy
 		cwd: "/tmp/todo-wait-capacity-test",
 		sessionManager: {
 			getHeader: () => ({ id: "capacity-zero" }),
-			getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
+			...branchMock(() => [{ type: "custom", customType: "user_todo_edit", data: { phases } }]),
 			getSessionFile: () => undefined,
 		},
 		getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
@@ -579,7 +589,7 @@ test("PLAN CHECK puts stale no-commit workers first and never aborts them", asyn
 		cwd: worktrees[0],
 		sessionManager: {
 			getHeader: () => ({ id: "no-commit" }),
-			getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
+			...branchMock(() => [{ type: "custom", customType: "user_todo_edit", data: { phases } }]),
 			getSessionFile: () => sessionFile,
 		},
 		getAsyncJobSnapshot: () => ({
@@ -637,7 +647,7 @@ test("dispatcher renders forecast and deadline times in the persisted goal timez
 		cwd: "/tmp/todo-wait-timezone-test",
 		sessionManager: {
 			getHeader: () => ({ id: "timezone" }),
-			getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
+			...branchMock(() => [{ type: "custom", customType: "user_todo_edit", data: { phases } }]),
 			getSessionFile: () => undefined,
 		},
 		getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
@@ -693,7 +703,7 @@ test("wait refusals deduplicate by rendered content across plan revisions", asyn
 			cwd,
 			sessionManager: {
 				getHeader: () => ({ id: "wait-dedup" }),
-				getBranch: () => [{ type: "custom", customType: "user_todo_edit", data: { phases } }],
+				...branchMock(() => [{ type: "custom", customType: "user_todo_edit", data: { phases } }]),
 				getSessionFile: () => undefined,
 			},
 			getAsyncJobSnapshot: () => ({ running, recent: [], nonJobAgents: [{ id: "worker-a", live: true }] }),
@@ -765,7 +775,7 @@ test("OMP_LANE_UNIT suppresses chief gates, retros and continuation nudges", asy
 		}
 		const ctx = {
 			cwd,
-			sessionManager: { getHeader: () => ({ id: "lane-root" }), getBranch: () => branch },
+			sessionManager: { getHeader: () => ({ id: "lane-root" }), ...branchMock(() => branch) },
 			getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
 			getTaskMaxConcurrency: () => 16,
 			isIdle: () => true,

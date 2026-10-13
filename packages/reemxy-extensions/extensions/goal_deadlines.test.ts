@@ -7,7 +7,11 @@ import { GoalRuntime } from "@oh-my-pi/pi-coding-agent/goals/runtime";
 import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
 import { z } from "zod";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import goalDeadlines, {
+	latestDeadlineStateEntries,
 	derivePresence,
 	REMINDER_MAX_CHARS,
 	remainingPercent,
@@ -28,6 +32,14 @@ import {
 	formatLocalTimestamp,
 	resolveTimeZone,
 } from "./deadlines";
+
+function branchMock(getBranch: () => unknown[]) {
+	return {
+		getBranch,
+		getBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().filter(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+		getLatestBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().findLast(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+	};
+}
 
 const state: DeadlineState = {
 	version: 1,
@@ -89,6 +101,26 @@ describe("goal deadline reminders", () => {
 				{ type: "custom", customType: STATE_ENTRY, data: newer },
 			]),
 		).toEqual(newer);
+	});
+
+	test("latest invalid deadline carrier does not revive an older valid schedule", () => {
+		for (const latest of [
+			{ type: "custom", customType: STATE_ENTRY, data: { version: 1 } },
+			{ type: "message", message: { role: "toolResult", toolName: "goal_deadline", details: { state: { version: 1 } } } },
+		]) {
+			const branch = [
+				{ type: "custom", customType: STATE_ENTRY, data: state },
+				latest,
+				{ type: "custom_message", customType: STATE_ENTRY, content: "Not deadline state" },
+				{ type: "message", message: { role: "assistant", toolName: "goal_deadline", content: "Not a tool result" } },
+			];
+			const ctx = { sessionManager: branchMock(() => branch) } as unknown as ExtensionContext;
+			const entries = latestDeadlineStateEntries(ctx);
+			expect(entries).toEqual([latest]);
+			expect(rehydrateDeadlineState(entries)).toBeNull();
+			branch.splice(1, 1);
+			expect(rehydrateDeadlineState(latestDeadlineStateEntries(ctx))).toEqual(state);
+		}
 	});
 
 	test("binds to the latest focused goal state", () => {
@@ -313,7 +345,7 @@ describe("automatic presence", () => {
 		const ctx = {
 			cwd: "/tmp",
 			hasUI: false,
-			sessionManager: { getBranch: () => [userEntry(now - 60_000)] },
+			sessionManager: branchMock(() => [userEntry(now - 60_000)]),
 		} as unknown as ExtensionContext;
 		const result = handlers.get("context")?.(
 			{ messages: [{ role: "user", content: "I am here", timestamp: now - 60_000 }] },
@@ -327,7 +359,6 @@ describe("automatic presence", () => {
 });
 
 test("vetoes native and plugin goal completion until branch TODO work is closed", () => {
-	let branch: unknown[] = [{ id: "native-branch" }];
 	const reducerBranches: unknown[] = [];
 	let phases = [
 		{
@@ -340,12 +371,16 @@ test("vetoes native and plugin goal completion until branch TODO work is closed"
 			],
 		},
 	];
+	let branch: unknown[] = [
+		{ id: "native-branch", type: "custom", customType: "user_todo_edit", data: { phases } },
+		{ type: "message", message: { role: "assistant", content: "Unrelated branch tail" } },
+	];
 	const host: {
 		getLatestTodoPhasesFromEntries?: (entries: unknown[]) => typeof phases;
 	} = {
 		getLatestTodoPhasesFromEntries: entries => {
 			reducerBranches.push(entries);
-			return phases;
+			return getLatestTodoPhasesFromEntries(entries);
 		},
 	};
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
@@ -358,12 +393,10 @@ test("vetoes native and plugin goal completion until branch TODO work is closed"
 	} as unknown as ExtensionAPI);
 	const branchReads: unknown[] = [];
 	const ctx = {
-		sessionManager: {
-			getBranch: () => {
-				branchReads.push(branch);
-				return branch;
-			},
-		},
+		sessionManager: branchMock(() => {
+			branchReads.push(branch);
+			return branch;
+		}),
 	} as unknown as ExtensionContext;
 	const toolCall = handlers.get("tool_call")!;
 	const invoke = (toolName: string, input: Record<string, unknown>) => toolCall({ toolName, input }, ctx);
@@ -374,12 +407,12 @@ test("vetoes native and plugin goal completion until branch TODO work is closed"
 	expect(native.reason).toContain("Repair export");
 	expect(native.reason).toContain("Repair retrieval");
 	expect(native.reason).toContain("1 abandoned");
-	expect(reducerBranches[0]).toBe(branch);
+	expect(reducerBranches[0]).toEqual([branch[0]]);
 
-	branch = [{ id: "plugin-branch" }];
+	branch = [{ id: "plugin-branch", type: "message", message: { role: "toolResult", toolName: "todo", details: { phases } } }];
 	const plugin = invoke("update_goal", { status: "complete" }) as { block?: boolean; reason?: string };
 	expect(plugin.block).toBe(true);
-	expect(reducerBranches[1]).toBe(branch);
+	expect(reducerBranches[1]).toEqual(branch);
 
 	phases = [
 		{
@@ -390,9 +423,10 @@ test("vetoes native and plugin goal completion until branch TODO work is closed"
 			],
 		},
 	];
+	branch.push({ id: "closed-branch", type: "custom", customType: "user_todo_edit", data: { phases } });
 	expect(invoke("goal", { op: "complete" })).toBeUndefined();
 	expect(invoke("update_goal", { status: "complete" })).toBeUndefined();
-	expect(reducerBranches[2]).toBe(branch);
+	expect(reducerBranches[2]).toEqual(branch);
 	expect(branchReads).toHaveLength(4);
 
 	const callsBeforeUnrelated = branchReads.length;
@@ -447,7 +481,7 @@ test("native lifecycle preserves the original deadline without reviving stale go
 				},
 				setWidget: () => {},
 			},
-			sessionManager: { getBranch: () => branch },
+			sessionManager: branchMock(() => branch),
 		} as unknown as ExtensionContext;
 		const runtime = new GoalRuntime({
 			getState: () => goalState,
@@ -671,7 +705,7 @@ test("names deadline_at seconds and rejects implausible future seconds", async (
 	const ctx = {
 		cwd: "/tmp",
 		hasUI: false,
-		sessionManager: { getBranch: () => [] },
+		sessionManager: branchMock(() => []),
 	} as unknown as ExtensionContext;
 
 	expect(deadlineTool!.description).toContain("deadline_at is a Unix timestamp in seconds, not milliseconds");
@@ -727,7 +761,7 @@ test("clear lets an explicit set replace a corrupted immutable final deadline", 
 	const ctx = {
 		cwd: "/tmp",
 		hasUI: false,
-		sessionManager: { getBranch: () => [{ type: "custom", customType: STATE_ENTRY, data: corrupted }, ...branch] },
+		sessionManager: branchMock(() => [{ type: "custom", customType: STATE_ENTRY, data: corrupted }, ...branch]),
 	} as unknown as ExtensionContext;
 	handlers.get("session_start")?.({}, ctx);
 
@@ -778,7 +812,7 @@ test("persists a hard deadline without inventing goal focus or requiring goal me
 		const ctx = {
 			cwd: "/tmp",
 			hasUI: false,
-			sessionManager: { getBranch: () => [] },
+			sessionManager: branchMock(() => []),
 		} as unknown as ExtensionContext;
 		return deadlineTool!.execute(
 			"set",

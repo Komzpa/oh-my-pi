@@ -340,11 +340,22 @@ export interface ToolSession {
 	/** Get session file */
 	getSessionFile: () => string | null;
 	/**
-	 * Owning journal; full SDK managers also supply registered identity and the
-	 * cost ledger (`appendModelUsage`) without changing advisor-local IDs.
+	 * Owning journal; selective branch readers and leaf identity are required for live tools.
+	 * Full reads remain available for explicit raw-history access. SDK managers also supply
+	 * registered identity and the cost ledger (`appendModelUsage`) without changing advisor-local IDs.
 	 */
-	sessionManager?: Pick<SessionManager, "appendCustomEntry" | "ensureOnDisk" | "flush" | "getBranch" | "getEntries"> &
-		Partial<Pick<SessionManager, "getSessionId" | "getLeafId" | "getBranchSelectionRevision" | "appendModelUsage">>;
+	sessionManager?: Pick<
+		SessionManager,
+		| "appendCustomEntry"
+		| "ensureOnDisk"
+		| "flush"
+		| "getBranch"
+		| "getBranchMatching"
+		| "getLatestBranchMatching"
+		| "getEntries"
+		| "getLeafId"
+	> &
+		Partial<Pick<SessionManager, "getSessionId" | "getBranchSelectionRevision" | "appendModelUsage">>;
 	/** Get eval kernel owner ID for session-scoped retained-kernel cleanup. */
 	getEvalKernelOwnerId?: () => string | null;
 	/** Current enabled eval prelude definitions. */

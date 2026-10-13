@@ -36,12 +36,22 @@ import { join } from "node:path";
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
 import { readGoalDeadline } from "./deadlines";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import {
   formatPlanForecast,
   formatTaskForecast,
   forecastTodoPlan,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import todoDispatch, { decideGateCall, parseTodoOverride } from "./todo_dispatch";
+
+function branchMock(getBranch: () => unknown[]) {
+  return {
+    getBranch,
+    getBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().filter(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+    getLatestBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().findLast(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+  };
+}
 
 const sdk = { forecastTodoPlan, formatPlanForecast, formatTaskForecast, readGoalDeadline, getLatestTodoPhasesFromEntries, agentPauseGate };
 // omp session-tools.ts PLANNING_CONTROL_TOOLS plus the read tier (mirrors gates.test.ts).
@@ -139,7 +149,7 @@ async function driveMask(mask, repos) {
   await todoDispatch(api);
   const ctx = {
     cwd: st.cwd,
-    sessionManager: { getHeader: () => ({ id: `liveness-${mask}` }), getBranch: () => st.branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: `liveness-${mask}` }), ...branchMock(() => st.branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => st.jobs,
     getTaskMaxConcurrency: () => 20,
     isIdle: () => false,
@@ -357,7 +367,7 @@ async function armMissedEtaEscalation(repos) {
   };
   const ctx = {
     cwd: repos.clean,
-    sessionManager: { getHeader: () => ({ id: "liveness-union" }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "liveness-union" }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => jobs,
     getTaskMaxConcurrency: () => 20,
     isIdle: () => false,

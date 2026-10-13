@@ -10,6 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import agentRouter, {
 	getAgentPools,
 	MODEL_BLACKLIST,
@@ -51,6 +53,14 @@ afterAll(() => {
 
 const AGENT_POOLS = getAgentPools();
 
+function branchMock(getBranch: () => unknown[]) {
+	return {
+		getBranch,
+		getBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().filter(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+		getLatestBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().findLast(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+	};
+}
+
 function ctx(overrides: Partial<ExtensionContext> = {}): ExtensionContext {
 	const models = Object.values(AGENT_POOLS)
 		.flatMap(config => [...config.pool, ...config.fallbacks])
@@ -59,8 +69,14 @@ function ctx(overrides: Partial<ExtensionContext> = {}): ExtensionContext {
 			const slash = base.indexOf("/");
 			return { provider: base.slice(0, slash), id: base.slice(slash + 1) };
 		});
+	const sessionManager = overrides.sessionManager instanceof SessionManager
+		? overrides.sessionManager
+		: {
+			getHeader: () => ({ id: "session-1" }),
+			...branchMock(overrides.sessionManager?.getBranch?.bind(overrides.sessionManager) ?? (() => [])),
+			...overrides.sessionManager,
+		};
 	return {
-		sessionManager: { getHeader: () => ({ id: "session-1" }) },
 		models: {
 			list: () => models,
 			resolve: (spec: string) =>
@@ -69,6 +85,7 @@ function ctx(overrides: Partial<ExtensionContext> = {}): ExtensionContext {
 				),
 		},
 		...overrides,
+		sessionManager,
 	} as unknown as ExtensionContext;
 }
 
@@ -1201,6 +1218,7 @@ describe("agent router", () => {
 						},
 					},
 				},
+				{ type: "message", message: { role: "assistant", content: "Unrelated history" } },
 			];
 			let reads = 0;
 			const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
@@ -1208,7 +1226,7 @@ describe("agent router", () => {
 				setLabel: () => undefined,
 				pi: {
 					getLatestTodoPhasesFromEntries: (entries: unknown[]) => {
-						expect(entries).toBe(branch);
+						expect(entries).toEqual([branch[0]]);
 						reads += 1;
 						return getLatestTodoPhasesFromEntries(entries);
 					},
@@ -2198,7 +2216,7 @@ describe("agent router", () => {
 				.map(model => ({ ...model, ...MODEL_DETAILS[`${model.provider}/${model.id}`] }));
 			return {
 				...base,
-				sessionManager: { getHeader: () => ({ id: "session-1" }), getBranch: () => [] },
+				sessionManager: { getHeader: () => ({ id: "session-1" }), ...branchMock(() => []) },
 				models: {
 					list: () => models,
 					resolve: (spec: string) =>

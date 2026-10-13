@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
+- Session branch reads for per-turn, per-tool, per-render, and per-todo-write checks now load only the matching entries instead of materializing the whole selected branch. Session files are unchanged; export, review, dump, and tree views still load the full transcript.
 
 ## [18.4.12] - 2026-10-02
 

@@ -110,9 +110,13 @@ describe("AgentSession restart queue round trip", () => {
 	}
 
 	function restartQueueCheckpoints(manager: SessionManager) {
-		return manager
-			.getEntries()
-			.filter(entry => entry.type === "custom" && entry.customType === "omp:restart-pending-queues");
+		return (
+			manager
+				.getEntries()
+				.filter(entry => entry.type === "custom" && entry.customType === "omp:restart-pending-queues")
+				// Assert the durable JSON payload: Bun's partial matchers reject recursively proxied arrays.
+				.map(entry => JSON.parse(JSON.stringify(entry)))
+		);
 	}
 
 	async function reopenSession(sessionFile: string, responses: MockResponse[] = []): Promise<AgentSession> {

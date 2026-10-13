@@ -13,6 +13,7 @@ import {
 	getRequirementRowArtifact,
 	getTodoRowChanges,
 	type RequirementRowArtifact,
+	isTodoStateEntryMetadata,
 } from "../../tools/todo";
 import { type TodoItem, type TodoPersistedEdit, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { cfgTaskMaxConcurrency } from "../../task/settings";
@@ -24,6 +25,8 @@ import {
 	getLatestRequirements,
 	evaluateRequirementDoneGate,
 	getPersistedRequirementAuditRejections,
+	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 } from "../../tools/requirements-ledger";
 
 const USAGE = [
@@ -156,7 +159,7 @@ export class TodoCommandController {
 	 * back to cached session state.
 	 */
 	#currentPhases(): TodoPhase[] {
-		const entries = this.ctx.sessionManager.getBranch();
+		const entries = this.ctx.sessionManager.getBranchMatching(isTodoStateEntryMetadata);
 		if (getLatestTodoSnapshotIdentity(entries) !== undefined) return getLatestTodoPhasesFromEntries(entries);
 		return this.ctx.session.getTodoPhases();
 	}
@@ -437,7 +440,13 @@ export class TodoCommandController {
 		const targets = getCompletionTargets(current, todoOp, selectorErrors);
 		// applyOpsToPhases below surfaces selector errors to the user.
 		if (selectorErrors.length > 0) return true;
-		const branch = this.ctx.sessionManager.getBranch();
+		const branch = this.ctx.sessionManager.getBranchMatching(
+			metadata =>
+				isTodoStateEntryMetadata(metadata) ||
+				(metadata.type === "custom" &&
+					(metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE ||
+						metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE)),
+		);
 		const requirements = getLatestRequirements(branch);
 		if (requirements.length === 0) return true;
 		const changes = getTodoRowChanges(branch);
