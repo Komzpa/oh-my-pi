@@ -2,7 +2,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -536,7 +536,8 @@ describe("real executor terminal yield with worker-owned bash", () => {
 					};
 				}
 				const firstResult = session.messages.find(
-					message => message.role === "toolResult" && message.toolCallId === "first-yield",
+					(message): message is ToolResultMessage =>
+						message.role === "toolResult" && message.toolCallId === "first-yield",
 				);
 				if (!firstResult) {
 					await waitForFile(accepted);
