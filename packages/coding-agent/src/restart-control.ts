@@ -548,13 +548,13 @@ export async function confirmRestartSession(sessionId: string): Promise<void> {
 	const onDisconnect = (): void => commit.reject(new Error("Restart parent disconnected before handoff"));
 	process.on("message", onMessage);
 	process.once("disconnect", onDisconnect);
-	const timer = setTimeout(() => commit.reject(new Error("Restart parent did not commit the handoff")), 30_000);
+	// No deadline: restore() has already run recovery effects, and the parent commits only after its
+	// own teardown. Wait while the parent stays connected; the disconnect handler ends the wait.
 	try {
 		process.send({ type: "restart-ready", sessionId });
 		await commit.promise;
 		process.disconnect?.();
 	} finally {
-		clearTimeout(timer);
 		process.off("message", onMessage);
 		process.off("disconnect", onDisconnect);
 	}

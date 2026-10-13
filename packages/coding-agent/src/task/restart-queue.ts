@@ -497,9 +497,6 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			if (record && (record.state === "completed" || record.state === "cancelled" || record.state === "failed")) {
 				await this.#restoreGoalModeFor(record);
 			}
-			if (restartCompleted && record?.rootWasRunning) {
-				await sendRootContinuationOnce(this.#session, record.requestId);
-			}
 			if (record && (record.state === "completed" || record.state === "cancelled" || record.state === "failed")) {
 				const notices = this.#restartNoticesFor(record.requestId);
 				if (notices.length > 0 && notices.some(notice => notice.terminal) === false) {
@@ -515,6 +512,11 @@ class RestartQueueControllerImpl implements RestartQueueController {
 					);
 					await this.#session.sessionManager.flush();
 				}
+			}
+			// Last: the continuation wakes the model without awaiting its turn, so the terminal notice that
+			// lifts the restart restriction must already be queued ahead of it.
+			if (restartCompleted && record?.rootWasRunning) {
+				await sendRootContinuationOnce(this.#session, record.requestId);
 			}
 		});
 		return this.#restorePromise;

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
@@ -525,5 +525,59 @@ describe("AgentSession restart queue round trip", () => {
 		expect(currentManager().getSessionId()).toBe(sessionId);
 		expect(reopened.agent.peekSteeringQueue()).toEqual([]);
 		expect(reopened.agent.peekFollowUpQueue()).toEqual([]);
+	});
+	it("does not replay a cancelled restart's checkpoint after the user empties the queue", async () => {
+		if (!sessionManager) throw new Error("Expected a session manager");
+		appendPriorAssistant(currentManager());
+		session = createSession(sessionManager);
+		const lease = session.beginRestartDrain();
+		session.agent.followUp({ role: "user", content: "removed before quit", timestamp: Date.now() });
+		await lease.waitForQuiescence();
+		expect(restartQueueCheckpoints(currentManager()).at(-1)).toMatchObject({
+			data: { followUp: [{ content: "removed before quit" }] },
+		});
+		lease.release();
+		session.clearQueue();
+		const sessionFile = currentManager().getSessionFile();
+		if (!sessionFile) throw new Error("Expected a resumable session file");
+		expect(restartQueueCheckpoints(currentManager()).at(-1)).toMatchObject({
+			data: { steering: [], followUp: [] },
+		});
+
+		await session.dispose();
+		session = undefined;
+		sessionManager = undefined;
+		const reopened = await reopenSession(sessionFile);
+		expect(reopened.agent.peekFollowUpQueue()).toEqual([]);
+	});
+
+	it("retries quiescence on the same lease after a rejected wait", async () => {
+		if (!sessionManager) throw new Error("Expected a session manager");
+		session = createSession(sessionManager);
+		session.agent.followUp({ role: "user", content: "queued", timestamp: Date.now() });
+		const ensureOnDisk = vi.spyOn(sessionManager, "ensureOnDisk").mockResolvedValue();
+		const onDisk = vi.spyOn(sessionManager, "isSessionOnDisk").mockReturnValue(false);
+		const lease = session.beginRestartDrain();
+		try {
+			await expect(lease.waitForQuiescence()).rejects.toThrow("not resumable on disk");
+			ensureOnDisk.mockRestore();
+			onDisk.mockRestore();
+			await lease.waitForQuiescence();
+		} finally {
+			lease.release();
+		}
+	});
+
+	it("acknowledges prompt admission once a drain queues the prompt", async () => {
+		if (!sessionManager) throw new Error("Expected a session manager");
+		session = createSession(sessionManager);
+		const lease = session.beginRestartDrain();
+		try {
+			let admitted = 0;
+			await session.prompt("queued during drain", { onPromptAdmitted: () => admitted++ });
+			expect(admitted).toBe(1);
+		} finally {
+			lease.release();
+		}
 	});
 });
