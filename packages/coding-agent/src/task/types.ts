@@ -78,6 +78,7 @@ export const taskSchema = type({
 	"schemaMode?": '"permissive" | "strict"',
 	"resources?": "string[]",
 	"tools?": "string[]",
+	"isolated?": "boolean",
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
@@ -89,6 +90,7 @@ const taskSchemaNoIsolation = type({
 	"schemaMode?": '"permissive" | "strict"',
 	"resources?": "string[]",
 	"tools?": "string[]",
+	"+": "delete",
 });
 const taskSchemaBatch = type({
 	context: "string",
@@ -161,6 +163,7 @@ function createTaskSchema(options: {
 			...schemaFields,
 			...toolsField,
 			"resources?": "string[]",
+			"+": "delete",
 		});
 		return type.raw({
 			context: "string",

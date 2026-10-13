@@ -320,6 +320,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
 	if ("tools" in params) item.tools = params.tools;
+	if ("effort" in params) item.effort = params.effort;
 	if ("resources" in params) item.resources = params.resources;
 	if ("isolated" in params) item.isolated = params.isolated;
 	return [item];
@@ -343,6 +344,7 @@ function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string
 	if ("outputSchema" in item) spawn.outputSchema = item.outputSchema;
 	if ("schemaMode" in item) spawn.schemaMode = item.schemaMode;
 	if ("tools" in item) spawn.tools = item.tools;
+	if ("effort" in item) spawn.effort = item.effort;
 	if ("resources" in item) spawn.resources = item.resources;
 	if (item.isolated !== undefined) {
 		spawn.isolated = item.isolated;
