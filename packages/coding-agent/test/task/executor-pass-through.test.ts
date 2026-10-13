@@ -526,6 +526,48 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(spy.mock.calls[0]?.[0]?.thinkingLevelCeiling).toBe(Effort.High);
 	});
 
+	it("keeps task.maxEffort opt-in: no caller effort means only the implementation high cap", async () => {
+		const model = getBundledModel("anthropic", "claude-opus-4-6");
+		if (!model) throw new Error("Expected claude-opus-4-6 model to exist");
+		const settings = Settings.isolated({ "task.maxEffort": "low" });
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "coder", model: ["@task"] },
+			id: "subagent-impl-worker-max-effort-optin",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevelCeiling).toBe(Effort.High);
+	});
+
+	it("caps a hosted Claude model identified by catalog class rather than provider", async () => {
+		const base = getBundledModel("anthropic", "claude-opus-4-6");
+		if (!base) throw new Error("Expected claude-opus-4-6 model to exist");
+		const model = { ...base, provider: "amazon-bedrock", id: "anthropic.claude-opus-4-6-v1" } as Model;
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "coder", model: ["@task"] },
+			id: "subagent-impl-worker-hosted-claude",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevelCeiling).toBe(Effort.High);
+	});
+
 	it("leaves a review role on a Claude model unclamped", async () => {
 		const model = getBundledModel("anthropic", "claude-opus-4-6");
 		if (!model) throw new Error("Expected claude-opus-4-6 model to exist");

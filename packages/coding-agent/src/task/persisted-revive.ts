@@ -6,6 +6,7 @@ import { validateAgentAccountPools } from "../config/account-pools";
 import type { ModelRegistry } from "../config/model-registry";
 import { resolveAgentAdvisorRolePattern } from "../config/model-resolver";
 import { formatModelRoleAlias } from "../config/model-roles";
+import { resolveModelOverride } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { MCPManager } from "../mcp/manager";
 import { initializeExtensions } from "../modes/runtime-init";
@@ -24,10 +25,12 @@ import {
 import type { EventBus } from "../utils/event-bus";
 import {
 	attachIrcWakeTurnMonitor,
+	capImplementationWorkerEffortCeiling,
 	compactionThresholdSettings,
 	createMCPProxyTools,
 	createSubagentSettings,
 	followMCPTools,
+	isImplementationWorkerAgent,
 	subagentRetryFallbackRole,
 } from "./executor";
 import { cfgTaskAgentAccountPools } from "./settings";
@@ -201,6 +204,13 @@ export function createPersistedSubagentReviverFactory(
 			const mcpProxyTools = mcpManager ? createMCPProxyTools(mcpManager) : [];
 			let session: AgentSession;
 			try {
+				// The spawn-time implementation-worker Claude cap is not persisted;
+				// recompute it from the persisted agent name and resolved model.
+				const revivedModel =
+					init.resolvedModel && isImplementationWorkerAgent(init.agent ?? "")
+						? resolveModelOverride([init.resolvedModel], ctx.modelRegistry, ctx.settings).model
+						: undefined;
+				const revivedEffortCeiling = capImplementationWorkerEffortCeiling(init.agent ?? "", revivedModel, undefined);
 				({ session } = await createAgentSession({
 					cwd: ctx.session.sessionManager.getCwd(),
 					authStorage: ctx.authStorage,
@@ -210,6 +220,7 @@ export function createPersistedSubagentReviverFactory(
 					modelRegistry: ctx.modelRegistry,
 					...(persistedModelPattern ? { modelPattern: persistedModelPattern } : {}),
 					modelPatternAuthFallback: init.resolvedModel,
+					...(revivedEffortCeiling ? { thinkingLevelCeiling: revivedEffortCeiling } : {}),
 					settings: subagentSettings,
 					sessionManager: reopened,
 					agentId: ref.id,
