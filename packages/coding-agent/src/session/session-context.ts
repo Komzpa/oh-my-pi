@@ -61,7 +61,7 @@ function restartNoticeRequestId(entry: CustomMessageEntry): string | undefined {
 	const text = restartNoticeTextContent(entry.content);
 	const detailed = /omp-update-[0-9a-fA-F-]{8,}/.exec(text)?.[0];
 	if (detailed) return detailed;
-	return /Restart ([A-Za-z0-9_:-]+)/.exec(text)?.[1];
+	return /Restart ([A-Za-z0-9_.:-]+)/.exec(text)?.[1];
 }
 
 function restartNoticeDetailState(entry: CustomMessageEntry): string | undefined {
