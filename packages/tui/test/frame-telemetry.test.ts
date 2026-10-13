@@ -180,6 +180,55 @@ describe("FrameTelemetry idle handling", () => {
 		off();
 	});
 
+	test("a 30s loop block with input during it shows as lag and is held, then decays", () => {
+		let now = 0;
+		const telemetry = new FrameTelemetry({ now: () => now, loggerWarn: () => {} });
+		telemetry.beginRender("provider");
+		now = 5;
+		telemetry.endRender("provider", true);
+		// Loop blocked 30s; the key typed meanwhile is only processed after the block ends.
+		now = 30_005;
+		telemetry.logLoopBlock(30_000, 29_000, "render:provider");
+		telemetry.recordInput("key");
+		telemetry.beginRender("provider");
+		now += 4;
+		telemetry.endRender("provider", true);
+		expect(telemetry.snapshot.lagMs).toBeGreaterThanOrEqual(30_000);
+		expect(telemetry.statusText).toContain("lag 30.0s");
+		// Still visible well after the 5s sample window, until the hold period ends.
+		now += 59_000;
+		telemetry.refresh();
+		expect(telemetry.statusText).toContain("lag 30.0s");
+		now += 2_000;
+		telemetry.refresh();
+		expect(telemetry.snapshot.lagMs).toBe(0);
+		expect(telemetry.statusText).toContain("lag 0ms");
+	});
+
+	test("a long frame gap also feeds the displayed lag", () => {
+		let now = 0;
+		const telemetry = new FrameTelemetry({ now: () => now, thresholdMs: 250, loggerWarn: () => {} });
+		telemetry.recordRenderRequest();
+		now = 12_000;
+		telemetry.beginRender("provider");
+		telemetry.endRender("provider", true);
+		expect(telemetry.snapshot.lagMs).toBe(12_000);
+		now += 20_000;
+		telemetry.refresh();
+		expect(telemetry.snapshot.lagMs).toBe(12_000);
+	});
+
+	test("idle without a stall keeps lag at 0ms", () => {
+		let now = 0;
+		const telemetry = new FrameTelemetry({ now: () => now, loggerWarn: () => {} });
+		for (let i = 0; i < 5; i++) {
+			now += 20_000;
+			telemetry.refresh();
+		}
+		expect(telemetry.snapshot.lagMs).toBe(0);
+		expect(telemetry.statusText).toContain("lag 0ms");
+	});
+
 	test("refresh timer stops when the last listener unsubscribes", () => {
 		const telemetry = new FrameTelemetry({ loggerWarn: () => {} });
 		const off = telemetry.onStatusTextChange(() => {});
