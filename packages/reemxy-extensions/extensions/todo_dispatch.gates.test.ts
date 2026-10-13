@@ -675,6 +675,52 @@ test("a refused task dispatch opens bounded chief work without weakening the sta
   }
 }, 60_000);
 
+test("empty dispatchable ready after restored-child filtering admits chief bash without a refusal", async () => {
+  const cwd = repo("clean");
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const now = Date.now();
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: () => undefined,
+  } as unknown as ExtensionAPI;
+  await todoDispatch(api);
+  // A live parked child is restored at startup. Its ownerless ready rows cannot be staffed while it
+  // is unlinked, so dispatchableReady is empty even though raw ready rows exist.
+  const branch = [
+    { type: "custom", customType: "todo-dispatch-roster", data: { version: 1, children: [{ id: "agent-parked", owner: "job-parked", live: true }] } },
+    { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks: [{
+      content: "Row B",
+      status: "pending",
+      schedule: { dependencies: [], resources: ["Row B"], estimate: { optimisticSeconds: 300, likelySeconds: 600, pessimisticSeconds: 900, confidence: "medium" as const, basis: "gates fixture", updatedAt: now - 60_000 } },
+    }] }] } } },
+  ];
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: "gates-empty-ready" }), getBranch: () => branch, getSessionFile: () => undefined },
+    getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [{ id: "agent-parked", live: true }] }),
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => false,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  try {
+    await handlers.get("session_start")!({}, ctx);
+    const bash = { command: "bun test extensions/one.test.ts" };
+    const result = (await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "empty-ready", input: bash }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    // No refusal may name an empty task list; with nothing delegable, the chief bash is admitted.
+    expect(result?.reason ?? "", "no empty-list refusal").not.toMatch(/for: *(?:\.|$)/m);
+    expect(result?.block, "chief bash admitted when no ready row is delegable").not.toBe(true);
+  } finally {
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("every todo result in the main session ends with the plan's problems", async () => {
   const cwd = repo("clean");
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
