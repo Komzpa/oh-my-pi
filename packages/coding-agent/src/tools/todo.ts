@@ -13,6 +13,7 @@ import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
+import type { SessionContextEntryMetadata } from "../session/session-context";
 import type { SessionEntry } from "../session/session-entries";
 
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
@@ -158,6 +159,13 @@ export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
 
 export const TODO_HUD_STATE_CUSTOM_TYPE = "todo_hud_state";
 
+/** Entries that can carry todo state or HUD choices; replay over only these is equivalent to the full branch. */
+export function isTodoStateEntryMetadata(metadata: SessionContextEntryMetadata): boolean {
+	if (metadata.type === "custom")
+		return metadata.customType === USER_TODO_EDIT_CUSTOM_TYPE || metadata.customType === TODO_HUD_STATE_CUSTOM_TYPE;
+	return metadata.type === "message" && metadata.messageRole === "toolResult" && metadata.toolName === "todo";
+}
+
 export type TodoHudVisibility = "dismissed" | "revealed";
 
 export interface TodoSnapshotIdentity {
@@ -200,70 +208,61 @@ function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
 	return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
 }
 
-/**
- * Scan the branch once, oldest to newest, without materializing entries: retain only the
- * latest canonical snapshot plus tiny matching HUD choices keyed by source entry id.
- */
-function scanTodoSnapshots(
-	entries: Iterable<SessionEntry>,
-	requestedFingerprint?: string,
-): {
-	identity: TodoSnapshotIdentity | undefined;
-	phases: TodoPhase[] | undefined;
-	hudChoices: Record<string, TodoHudVisibility> | undefined;
-} {
-	let identity: TodoSnapshotIdentity | undefined;
-	let phases: TodoPhase[] | undefined;
-	let hudChoices: Record<string, TodoHudVisibility> | undefined;
-	for (const entry of entries) {
-		const snapshotPhases = canonicalTodoPhases(entry);
-		if (snapshotPhases) {
-			phases = snapshotPhases;
-			identity = { sourceEntryId: entry.id, fingerprint: todoPhasesFingerprint(snapshotPhases) };
-			continue;
-		}
-		if (requestedFingerprint === undefined) continue;
-		if (entry.type !== "custom" || entry.customType !== TODO_HUD_STATE_CUSTOM_TYPE) continue;
-		const data = entry.data as Partial<TodoHudStateEntryData> | undefined;
-		if (data?.fingerprint !== requestedFingerprint) continue;
-		if (!data.sourceEntryId) continue;
-		if (data.visibility !== "dismissed" && data.visibility !== "revealed") continue;
-		hudChoices ??= Object.create(null) as Record<string, TodoHudVisibility>;
-		hudChoices[data.sourceEntryId] = data.visibility;
-	}
-	return { identity, phases, hudChoices };
-}
-
 /** Identify the latest durable canonical todo snapshot on the active branch. */
-export function getLatestTodoSnapshotIdentity(entries: Iterable<SessionEntry>): TodoSnapshotIdentity | undefined {
-	return scanTodoSnapshots(entries).identity;
+export function getLatestTodoSnapshotIdentity(entries: SessionEntry[]): TodoSnapshotIdentity | undefined {
+	let latest: TodoPhase[] | undefined;
+	let sourceEntryId: string | undefined;
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const phases = canonicalTodoPhases(entries[i]);
+		if (phases) {
+			latest = phases;
+			sourceEntryId = entries[i].id;
+			break;
+		}
+	}
+	if (!latest || !sourceEntryId) return undefined;
+	return { sourceEntryId, fingerprint: todoPhasesFingerprint(latest) };
 }
 
 /** Return the persisted HUD choice only when it targets the current canonical snapshot exactly. */
 export function getTodoHudVisibility(
-	entries: Iterable<SessionEntry>,
+	entries: SessionEntry[],
 	phases: readonly TodoPhase[],
 ): TodoHudVisibility | undefined {
-	const requestedFingerprint = todoPhasesFingerprint(phases);
-	const { identity, hudChoices } = scanTodoSnapshots(entries, requestedFingerprint);
-	if (!identity || identity.fingerprint !== requestedFingerprint) return undefined;
-	return hudChoices?.[identity.sourceEntryId];
+	const snapshot = getLatestTodoSnapshotIdentity(entries);
+	if (!snapshot || snapshot.fingerprint !== todoPhasesFingerprint(phases)) return undefined;
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry.type !== "custom" || entry.customType !== TODO_HUD_STATE_CUSTOM_TYPE) continue;
+		const data = entry.data as Partial<TodoHudStateEntryData> | undefined;
+		if (
+			data?.sourceEntryId === snapshot.sourceEntryId &&
+			data.fingerprint === snapshot.fingerprint &&
+			(data.visibility === "dismissed" || data.visibility === "revealed")
+		) {
+			return data.visibility;
+		}
+	}
+	return undefined;
 }
 
 /** Build persisted HUD metadata only for phases matching the latest durable canonical snapshot. */
 export function createTodoHudStateData(
-	entries: Iterable<SessionEntry>,
+	entries: SessionEntry[],
 	phases: readonly TodoPhase[],
 	visibility: TodoHudVisibility,
 ): TodoHudStateEntryData | undefined {
-	const identity = scanTodoSnapshots(entries).identity;
-	if (!identity || identity.fingerprint !== todoPhasesFingerprint(phases)) return undefined;
-	return { ...identity, visibility };
+	const snapshot = getLatestTodoSnapshotIdentity(entries);
+	if (!snapshot || snapshot.fingerprint !== todoPhasesFingerprint(phases)) return undefined;
+	return { ...snapshot, visibility };
 }
 
-export function getLatestTodoPhasesFromEntries(entries: Iterable<SessionEntry>): TodoPhase[] {
-	const snapshotPhases = scanTodoSnapshots(entries).phases;
-	return snapshotPhases ? clonePhases(snapshotPhases) : [];
+export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPhase[] {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const phases = canonicalTodoPhases(entries[i]);
+		if (phases) return clonePhases(phases);
+	}
+	return [];
 }
 
 function resolveTaskOrError(

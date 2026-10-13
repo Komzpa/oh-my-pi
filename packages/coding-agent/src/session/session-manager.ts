@@ -45,6 +45,7 @@ import {
 	type BuildSessionContextOptions,
 	buildSessionContextFromPath,
 	selectSessionContextEntries,
+	type SessionContextEntryMetadata,
 	sessionContextEntryMetadata,
 	type SessionContext,
 } from "./session-context";
@@ -3715,6 +3716,15 @@ export class SessionManager {
 		for (const metadata of this.#index.metadataPath()) {
 			if (!type || metadata.type === type) yield this.#index.get(metadata.id, false)!;
 		}
+	}
+
+	/** Current-branch entries, in path order, whose payload-free metadata matches; others are never read. */
+	getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
+		const entries: SessionEntry[] = [];
+		for (const metadata of this.#index.metadataPath()) {
+			if (predicate(metadata)) entries.push(this.#index.get(metadata.id, false)!);
+		}
+		return entries;
 	}
 
 	/**

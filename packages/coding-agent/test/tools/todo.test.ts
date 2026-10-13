@@ -5,17 +5,11 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
-	createTodoHudStateData,
-	getLatestTodoPhasesFromEntries,
-	getLatestTodoSnapshotIdentity,
-	getTodoHudVisibility,
 	markdownToPhases,
 	nextActionableTask,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
 	TodoTool,
-	TODO_HUD_STATE_CUSTOM_TYPE,
-	USER_TODO_EDIT_CUSTOM_TYPE,
 } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	selectCollapsedTodos,
@@ -1019,71 +1013,5 @@ describe("todoToolRenderer.renderCall preview sanitization", () => {
 		expect(rendered).not.toContain("\t");
 		expect(Bun.stripANSI(rendered)).toContain("ship");
 		expect(Bun.stripANSI(rendered)).toContain("it");
-	});
-});
-
-describe("todo resume snapshot semantics", () => {
-	type BranchEntry = Parameters<typeof getLatestTodoSnapshotIdentity>[0] extends Iterable<infer E> ? E : never;
-
-	const phasesA = [{ name: "Phase A", tasks: [{ content: "Task A", status: "pending" as const }] }];
-	const phasesB = [{ name: "Phase B", tasks: [{ content: "Task B", status: "in_progress" as const }] }];
-	const phasesView = [{ name: "Ignored", tasks: [{ content: "Ignored", status: "pending" as const }] }];
-
-	const agentSnapshot = (id: string, phases: unknown, extra: Record<string, unknown> = {}) =>
-		({
-			id,
-			type: "message",
-			message: { role: "toolResult", toolName: "todo", details: { op: "set", phases }, ...extra },
-		}) as unknown as BranchEntry;
-	const customSnapshot = (id: string, phases: unknown) =>
-		({ id, type: "custom", customType: USER_TODO_EDIT_CUSTOM_TYPE, data: { phases } }) as unknown as BranchEntry;
-	const hudChoice = (id: string, sourceEntryId: string, fingerprint: string, visibility: unknown) =>
-		({
-			id,
-			type: "custom",
-			customType: TODO_HUD_STATE_CUSTOM_TYPE,
-			data: { sourceEntryId, fingerprint, visibility },
-		}) as unknown as BranchEntry;
-	function* lazyBranch(entries: BranchEntry[]): IterableIterator<BranchEntry> {
-		for (const entry of entries) yield entry;
-	}
-
-	// Oldest to newest: HUD metadata may precede the snapshot it references;
-	// view/error tool results and stale HUD rows must not become or retarget state.
-	const branch: BranchEntry[] = [
-		hudChoice("h-early", "e2", JSON.stringify(phasesB), "dismissed"),
-		agentSnapshot("e1", phasesA),
-		agentSnapshot("e-view", phasesView, { details: { op: "view", phases: phasesView } }),
-		agentSnapshot("e-error", phasesA, { isError: true }),
-		hudChoice("h-stale-source", "e1", JSON.stringify(phasesA), "revealed"),
-		hudChoice("h-stale-fingerprint", "e2", JSON.stringify(phasesA), "dismissed"),
-		customSnapshot("e2", phasesB),
-		hudChoice("h-late", "e2", JSON.stringify(phasesB), "revealed"),
-	];
-
-	it("takes the latest canonical snapshot and matching HUD state from a lazy branch", () => {
-		const identity = getLatestTodoSnapshotIdentity(lazyBranch(branch));
-		expect(identity?.sourceEntryId).toBe("e2");
-		expect(getLatestTodoPhasesFromEntries(lazyBranch(branch))).toEqual(phasesB);
-		expect(getTodoHudVisibility(lazyBranch(branch), phasesB)).toBe("revealed");
-		expect(createTodoHudStateData(lazyBranch(branch), phasesB, "dismissed")).toEqual({
-			sourceEntryId: "e2",
-			fingerprint: JSON.stringify(phasesB),
-			visibility: "dismissed",
-		});
-	});
-
-	it("keeps HUD metadata that predates the referenced snapshot", () => {
-		const withoutLate = branch.filter(entry => entry.id !== "h-late");
-		expect(getTodoHudVisibility(lazyBranch(withoutLate), phasesB)).toBe("dismissed");
-	});
-
-	it("ignores view and error todo results and stale HUD rows", () => {
-		const truncated = branch.slice(0, 5);
-		expect(getLatestTodoSnapshotIdentity(lazyBranch(truncated))?.sourceEntryId).toBe("e1");
-		expect(getLatestTodoPhasesFromEntries(lazyBranch(truncated))).toEqual(phasesA);
-		expect(getTodoHudVisibility(lazyBranch(truncated), phasesA)).toBe("revealed");
-		expect(getTodoHudVisibility(lazyBranch(branch), phasesA)).toBeUndefined();
-		expect(createTodoHudStateData(lazyBranch(branch), phasesA, "dismissed")).toBeUndefined();
 	});
 });

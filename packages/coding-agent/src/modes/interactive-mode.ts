@@ -132,6 +132,7 @@ import { HistoryStorage } from "../session/history-storage";
 import { syncTextPrediction, textPredictionBackend } from "../predict/client";
 import { setWordPredictionHost } from "@oh-my-pi/pi-tui/prompt/word-completion";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
+import { isTodoStateEntryMetadata } from "../tools/todo";
 import { resolveMarkdownLinkTargets } from "../internal-urls/hyperlink-targets";
 import { modelMentionDisplayName } from "@oh-my-pi/pi-tui/prompt/model-mention-syntax";
 import { modelMentionChipLabel, shiftImageMarkers } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
@@ -4019,7 +4020,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#syncTodoHudState(owner: AgentSession): void {
 		this.#cancelTodoAutoClearTimer();
 		const phases = this.todoPhases;
-		const persisted = getTodoHudVisibility(owner.sessionManager.iterateBranch(), phases);
+		const persisted = getTodoHudVisibility(owner.sessionManager.getBranchMatching(isTodoStateEntryMetadata), phases);
 		this.#todoHudHidden = persisted === "dismissed";
 		if (persisted || phases.length === 0) return;
 		const tasks = phases.flatMap(phase => phase.tasks);
@@ -4040,7 +4041,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#todoAutoClearTimer = undefined;
 			await owner.settleInFlightMessagePersistence();
 			if (!isCurrent()) return;
-			const data = createTodoHudStateData(owner.sessionManager.iterateBranch(), this.todoPhases, "dismissed");
+			const data = createTodoHudStateData(
+				owner.sessionManager.getBranchMatching(isTodoStateEntryMetadata),
+				this.todoPhases,
+				"dismissed",
+			);
 			if (!data) return;
 			owner.sessionManager.appendCustomEntry(TODO_HUD_STATE_CUSTOM_TYPE, data);
 			await owner.sessionManager.flush();
@@ -8102,7 +8107,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			const appendReveal = (data: TodoHudStateEntryData): void => {
 				owner.sessionManager.appendCustomEntry(TODO_HUD_STATE_CUSTOM_TYPE, data);
 			};
-			const data = createTodoHudStateData(owner.sessionManager.iterateBranch(), this.todoPhases, "revealed");
+			const data = createTodoHudStateData(
+				owner.sessionManager.getBranchMatching(isTodoStateEntryMetadata),
+				this.todoPhases,
+				"revealed",
+			);
 			if (data) {
 				try {
 					appendReveal(data);
@@ -8126,7 +8135,7 @@ export class InteractiveMode implements InteractiveModeContext {
 						)
 							return;
 						const settledData = createTodoHudStateData(
-							owner.sessionManager.iterateBranch(),
+							owner.sessionManager.getBranchMatching(isTodoStateEntryMetadata),
 							this.todoPhases,
 							"revealed",
 						);

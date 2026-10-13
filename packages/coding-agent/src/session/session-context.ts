@@ -218,6 +218,7 @@ export interface SessionContextEntryMetadata {
 	parentId: string | null;
 	type: SessionEntry["type"];
 	messageRole?: string;
+	toolName?: string;
 	userRequest?: boolean;
 	customType?: string;
 	assistantProvider?: string;
@@ -230,6 +231,7 @@ export function sessionContextEntryMetadata(entry: SessionEntry): SessionContext
 		parentId: entry.parentId,
 		type: entry.type,
 		messageRole: entry.type === "message" ? entry.message.role : undefined,
+		toolName: entry.type === "message" && entry.message.role === "toolResult" ? entry.message.toolName : undefined,
 		userRequest: isUserRequestEntry(entry),
 		customType: entry.type === "custom" ? entry.customType : undefined,
 		assistantProvider:
