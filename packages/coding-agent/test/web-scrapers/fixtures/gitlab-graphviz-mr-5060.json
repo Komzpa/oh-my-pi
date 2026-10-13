@@ -1,0 +1,25 @@
+{
+ "title": "common tree_adjust: saturate when overflowing addition in delta calculation",
+ "description": "Gitlab: fixes #2758<br/>\nReported-by: @kost\n\nAlong with some other related commits added along the way.",
+ "state": "merged",
+ "author": {
+  "name": "Matthew Fernandez",
+  "username": "smattr"
+ },
+ "created_at": "2026-10-03T00:12:16.909Z",
+ "updated_at": "2026-10-08T00:16:21.859Z",
+ "source_branch": "smattr/gitlab-2758",
+ "target_branch": "main",
+ "labels": [],
+ "upvotes": 0,
+ "downvotes": 0,
+ "user_notes_count": 0,
+ "assignees": [
+  {
+   "name": "Matthew Fernandez"
+  }
+ ],
+ "draft": false,
+ "merge_status": "can_be_merged",
+ "detailed_merge_status": "not_open"
+}
