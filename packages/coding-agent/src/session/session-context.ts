@@ -340,6 +340,25 @@ export function buildSessionContext(
 		current = current.parentId ? byId.get(current.parentId) : undefined;
 	}
 	path.reverse();
+
+	// Extract settings and find compaction
+	let thinkingLevel: string | undefined = "off";
+	let configuredThinkingLevel: string | undefined;
+	let serviceTier: ServiceTierByFamily | undefined;
+	const models: Record<string, string> = {};
+	let compaction: CompactionEntry | null = null;
+	const injectedTtsrRulesSet = new Set<string>();
+	let mode = "none";
+	let modeData: Record<string, unknown> | undefined;
+	// Track whether an explicit `model_change` with role="default" has been
+	// seen on this path. Once a user (or the agent itself) records an
+	// explicit default, later assistant-message inference must NOT overwrite
+	// it: temporary fallbacks (retry fallback, context promotion) and
+	// server-side model downgrades both produce assistant messages tagged
+	// with the wrong model id, which previously clobbered the user's pick on
+	// resume (issue #849).
+	let hasExplicitDefaultModel = false;
+
 	// Restart-queue journal over the resolved path: latest state per requestId
 	// plus which request restarted last. A queued notice is stale when its own
 	// request reached a terminal transition, or when a later restart superseded
@@ -363,24 +382,6 @@ export function buildSessionContext(
 			latestRestartRequestId = requestId;
 		}
 	}
-
-	// Extract settings and find compaction
-	let thinkingLevel: string | undefined = "off";
-	let configuredThinkingLevel: string | undefined;
-	let serviceTier: ServiceTierByFamily | undefined;
-	const models: Record<string, string> = {};
-	let compaction: CompactionEntry | null = null;
-	const injectedTtsrRulesSet = new Set<string>();
-	let mode = "none";
-	let modeData: Record<string, unknown> | undefined;
-	// Track whether an explicit `model_change` with role="default" has been
-	// seen on this path. Once a user (or the agent itself) records an
-	// explicit default, later assistant-message inference must NOT overwrite
-	// it: temporary fallbacks (retry fallback, context promotion) and
-	// server-side model downgrades both produce assistant messages tagged
-	// with the wrong model id, which previously clobbered the user's pick on
-	// resume (issue #849).
-	let hasExplicitDefaultModel = false;
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
