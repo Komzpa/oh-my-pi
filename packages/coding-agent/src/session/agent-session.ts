@@ -5523,17 +5523,12 @@ export class AgentSession implements SettingsScope {
 	 */
 	#syncAgentSessionId(sessionId?: string, notifyChange = true): void {
 		const currentSessionId = this.sessionManager.getSessionId();
-		// One live slice lifecycle (poller + exit hooks) per AgentSession: the previous
-		// transcript's slice is stopped when the active session id changes. Switching back
-		// creates a fresh lifecycle.
-		for (const [staleId, stale] of this.#sessionSlices) {
-			if (staleId === currentSessionId) continue;
-			this.#sessionSlices.delete(staleId);
-			void stale
-				.stop()
-				.catch(error =>
-					logger.warn("Previous session slice did not stop", { sessionId: staleId, error: String(error) }),
-				);
+		// A session switch (/new, /resume, fork) must not kill processes the user started in
+		// the previous transcript: older lifecycles stop sampling but keep ownership, and are
+		// stopped only on dispose/shutdown. Switching back resumes the existing lifecycle.
+		for (const [id, lifecycle] of this.#sessionSlices) {
+			if (id === currentSessionId) lifecycle.resume();
+			else lifecycle.release();
 		}
 		if (!this.#isDisposed && !this.#sessionSlices.has(currentSessionId)) {
 			this.#sessionSlices.set(

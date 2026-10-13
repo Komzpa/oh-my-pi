@@ -144,6 +144,7 @@ export class SessionSliceLifecycle {
 	#groupsFn: (slice: string) => Promise<CpuGroup[]>;
 	#owned = false;
 	#stopped = false;
+	#released = false;
 	#stopCall?: Promise<void>;
 	#timer?: NodeJS.Timeout;
 	#polling = false;
@@ -197,15 +198,42 @@ export class SessionSliceLifecycle {
 		await Bun.write(path.join(directory, "boot-id"), await Bun.file("/proc/sys/kernel/random/boot_id").text());
 		this.#owned = true;
 		if (this.#stopped) return;
+		if (!this.#released) this.#startTimer();
+		await this.poll().catch(error =>
+			logger.debug("Initial session CPU sample unavailable", { error: String(error) }),
+		);
+	}
+
+	#startTimer(): void {
 		this.#timer = setInterval(
 			() =>
 				void this.poll().catch(error => logger.debug("Session CPU sample unavailable", { error: String(error) })),
 			15_000,
 		);
 		this.#timer.unref();
-		await this.poll().catch(error =>
-			logger.debug("Initial session CPU sample unavailable", { error: String(error) }),
-		);
+	}
+
+	/**
+	 * The transcript moved to another session id: stop sampling but keep ownership, so
+	 * background processes started here survive a /new, /resume or fork. Only stop() kills.
+	 */
+	release(): void {
+		if (this.#released || this.#stopped) return;
+		this.#released = true;
+		clearInterval(this.#timer);
+		this.#timer = undefined;
+		this.#hotSamples = 0;
+	}
+
+	/** The transcript returned to this session id. */
+	resume(): void {
+		if (!this.#released) return;
+		this.#released = false;
+		if (this.#owned && !this.#stopped) this.#startTimer();
+	}
+
+	get released(): boolean {
+		return this.#released;
 	}
 
 	async #groups(slice: string): Promise<CpuGroup[]> {
@@ -237,7 +265,7 @@ export class SessionSliceLifecycle {
 	}
 
 	async poll(now = Date.now()): Promise<void> {
-		if (!this.#owned || this.#stopped || this.#polling) return;
+		if (!this.#owned || this.#stopped || this.#released || this.#polling) return;
 		this.#polling = true;
 		try {
 			const groups = await this.#groupsFn(this.slice);

@@ -297,3 +297,71 @@ it("takes over only own-process or old incomplete slice markers", async () => {
 		await fs.rm(root, { recursive: true, force: true });
 	}
 });
+
+it.skipIf(process.platform !== "linux")("release stops sampling without stopping; resume restores it", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+	try {
+		let calls = 0;
+		const lifecycle = new SessionSliceLifecycle(
+			{ sessionId: crypto.randomUUID(), isIdleOrWaiting: () => true, sendNotice: async () => {} },
+			root,
+			{
+				groups: async () => {
+					calls++;
+					return [];
+				},
+			},
+		);
+		await lifecycle.ready;
+		const initial = calls;
+		lifecycle.release();
+		expect(lifecycle.released).toBe(true);
+		await lifecycle.poll();
+		expect(calls).toBe(initial);
+		lifecycle.resume();
+		expect(lifecycle.released).toBe(false);
+		await lifecycle.poll();
+		expect(calls).toBe(initial + 1);
+		// Leave no unit behind: nothing was started in this slice, so stop() is a no-op systemctl call.
+		await lifecycle.stop().catch(() => {});
+	} finally {
+		await fs.rm(root, { recursive: true, force: true });
+	}
+});
+
+it.skipIf(!live)(
+	"a session switch (release) keeps a running slice process alive; dispose (stop) kills it",
+	async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+		const sessionId = crypto.randomUUID();
+		const unit = `${prefix}switch.service`;
+		const lifecycle = new SessionSliceLifecycle(
+			{ sessionId, isIdleOrWaiting: () => false, sendNotice: async () => {} },
+			root,
+		);
+		try {
+			await lifecycle.ready;
+			const env = await toolSessionEnvironment(
+				sessionId,
+				managerEnv as Record<string, string>,
+				path.join(root, "bin"),
+			);
+			run(
+				[path.join(root, "bin", "systemd-run"), "--user", "--collect", `--unit=${unit}`, "/bin/sleep", "120"],
+				env,
+			);
+			const pid = Number(run(["systemctl", "--user", "show", unit, "-p", "MainPID", "--value"]));
+			expect(pid).toBeGreaterThan(0);
+			lifecycle.release();
+			await Bun.sleep(300);
+			expect(await Bun.file(`/proc/${pid}/stat`).exists()).toBe(true);
+			await lifecycle.stop();
+			expect(await Bun.file(`/proc/${pid}/stat`).exists()).toBe(false);
+		} finally {
+			Bun.spawnSync(["systemctl", "--user", "stop", unit], { env: managerEnv });
+			await lifecycle.stop().catch(() => {});
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	},
+	30_000,
+);
