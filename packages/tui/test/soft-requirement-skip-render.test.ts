@@ -10,7 +10,7 @@ describe("soft requirement skip rendering", () => {
 
 	it("renders a single muted waiting row instead of a failed tool card", () => {
 		const ui = { requestRender() {}, requestComponentRender() {}, resetDisplay() {} } as unknown as TUI;
-		const component = new ToolExecutionComponent("read", { path: "skill://bitbucket-prs" }, {}, undefined, ui);
+		const component = new ToolExecutionComponent("read", { path: "skill://example" }, {}, undefined, ui);
 		try {
 			component.updateResult(
 				{
@@ -22,7 +22,7 @@ describe("soft requirement skip rendering", () => {
 			);
 			const rendered = Bun.stripANSI(component.render(100).join("\n"));
 			expect(rendered).toContain("Skipped (waiting for todo)");
-			expect(rendered).not.toContain("skill://bitbucket-prs");
+			expect(rendered).not.toContain("skill://example");
 			expect(rendered).not.toContain("Tool call was skipped");
 			expect(rendered.trim().split("\n")).toHaveLength(1);
 		} finally {
