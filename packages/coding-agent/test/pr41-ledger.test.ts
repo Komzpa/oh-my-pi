@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "bun:test";
 
 import {
-	isFreshRequirementVerdict,
+	getRequirementVerdictStaleness,
 	parseRequirementReceipt,
 	type RequirementLedgerItem,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
@@ -91,10 +91,12 @@ describe("persisted verdict freshness", () => {
 
 	it("keeps a pass fresh only when the raw-words echo matches the immutable ask", () => {
 		const artifacts = [{ row: "Build artifact", head: SHA_A, dirty: false }];
-		expect(isFreshRequirementVerdict(artifact("build the thing", `Build artifact @ ${SHA_A}`), artifacts)).toBe(true);
 		expect(
-			isFreshRequirementVerdict(artifact("ship the thing instead", `Build artifact @ ${SHA_A}`), artifacts),
-		).toBe(false);
+			getRequirementVerdictStaleness(artifact("build the thing", `Build artifact @ ${SHA_A}`), artifacts),
+		).toBeNull();
+		expect(
+			getRequirementVerdictStaleness(artifact("ship the thing instead", `Build artifact @ ${SHA_A}`), artifacts),
+		).toBe('R1 raw words differ for row "Build artifact" at char 0 (source 15 chars vs receipt 22 chars)');
 	});
 
 	it("invalidates a pass when two linked rows swap commits", () => {
@@ -113,17 +115,17 @@ describe("persisted verdict freshness", () => {
 			},
 		};
 		expect(
-			isFreshRequirementVerdict(requirement, [
+			getRequirementVerdictStaleness(requirement, [
 				{ row: "Build artifact", head: SHA_A, dirty: false },
 				{ row: "Review artifact", head: SHA_B, dirty: false },
 			]),
-		).toBe(true);
+		).toBeNull();
 		expect(
-			isFreshRequirementVerdict(requirement, [
+			getRequirementVerdictStaleness(requirement, [
 				{ row: "Build artifact", head: SHA_B, dirty: false },
 				{ row: "Review artifact", head: SHA_A, dirty: false },
 			]),
-		).toBe(false);
+		).toBe(`stale HEAD "${SHA_B}" for row "Build artifact"`);
 	});
 
 	it("invalidates a multi-row pass that does not name one audited commit per linked row", () => {
@@ -142,11 +144,11 @@ describe("persisted verdict freshness", () => {
 			},
 		};
 		expect(
-			isFreshRequirementVerdict(requirement, [
+			getRequirementVerdictStaleness(requirement, [
 				{ row: "Build artifact", head: SHA_A, dirty: false },
 				{ row: "Review artifact", head: SHA_B, dirty: false },
 			]),
-		).toBe(false);
+		).toBe(`stale HEAD "${SHA_B}" for row "Review artifact"`);
 	});
 });
 

@@ -51,8 +51,6 @@ export interface RequirementVerdict {
 	auditor?: "qa-auditor";
 	/** Receipt echo of the immutable ask; a pass is stale when it differs from `rawText`. */
 	rawWords?: string;
-	/** Clean row HEADs captured when QA was dispatched, keyed by linked row. */
-	boundHeads?: Record<string, string>;
 	/** Row receipt time and the saved todo change it reviewed (ties within one millisecond stay ordered). */
 	receivedAt?: string;
 	rowChangeId?: string;
@@ -155,10 +153,6 @@ function parseVerdict(value: unknown): RequirementVerdict | undefined {
 		workerId: value.workerId,
 		...(value.auditor === "qa-auditor" ? { auditor: "qa-auditor" as const } : {}),
 		...(typeof value.rawWords === "string" && value.rawWords.trim() ? { rawWords: value.rawWords } : {}),
-		...(isRecord(value.boundHeads) &&
-		Object.values(value.boundHeads).every(head => typeof head === "string" && FULL_COMMIT_SHA.test(head))
-			? { boundHeads: value.boundHeads as Record<string, string> }
-			: {}),
 		...(typeof value.receivedAt === "string" ? { receivedAt: value.receivedAt } : {}),
 		...(typeof value.rowChangeId === "string" ? { rowChangeId: value.rowChangeId } : {}),
 	};
@@ -636,45 +630,66 @@ export function formatRequirementGateArtifact(artifact: RequirementGateArtifact)
 	return `cwd=${artifact.cwd ? shortenPath(artifact.cwd) : "unknown"}, head=${artifact.head ?? "unknown"}, dirty=${artifact.dirty}${artifact.sha256 ? `, sha256=${artifact.sha256}` : ""}${artifact.reason ? `, reason=${artifact.reason}` : ""}`;
 }
 
-/** The one freshness rule, evaluated only for the rows being closed or published. */
-export function isFreshRequirementVerdict(
+/** Precise staleness diagnosis for the rows being closed or published. Null means fresh. */
+export function getRequirementVerdictStaleness(
 	requirement: RequirementLedgerItem,
 	artifacts: readonly ({ row: string } & RequirementGateArtifact)[],
-): boolean {
-	if (requirement.classification !== "linked" || artifacts.length === 0) return false;
+): string | null {
+	if (requirement.classification !== "linked") return `requirement ${requirement.id} is not linked`;
+	if (artifacts.length === 0) return `requirement ${requirement.id} has no row artifacts to check`;
 	const seen = new Set<string>();
-	return artifacts.every(current => {
-		if (current.reason || !requirement.rows.includes(current.row) || seen.has(current.row)) return false;
+	for (const current of artifacts) {
+		const row = JSON.stringify(current.row);
+		if (current.reason) return `row ${row}: unresolved artifact (${current.reason})`;
+		if (!requirement.rows.includes(current.row)) return `row ${row} is not linked to requirement ${requirement.id}`;
+		if (seen.has(current.row)) return `duplicate artifact for row ${row}`;
 		seen.add(current.row);
 		const verdict = getRequirementRowVerdict(requirement, current.row);
-		if (verdict?.status !== "pass" || verdict.auditor !== "qa-auditor" || !verdict.workerId.trim()) return false;
-		if (
-			verdict.rawWords !== undefined &&
-			verdict.rawWords.replace(/\s+/g, " ").trim() !== requirement.rawText.replace(/\s+/g, " ").trim()
-		)
-			return false;
+		if (!verdict) return `requirement ${requirement.id} has no verdict for row ${row}`;
+		if (verdict.status !== "pass")
+			return `requirement ${requirement.id} verdict for row ${row} is ${verdict.status}, not pass`;
+		if (verdict.auditor !== "qa-auditor" || !verdict.workerId.trim())
+			return `no authenticated qa-auditor identity for row ${row}`;
+		// Raw words run before artifact identity: a matching file SHA must not hide a
+		// receipt that dropped part of the ask, such as an `[Image #1, …]` prefix.
+		// Only lengths and the first differing index are reported, never source text.
+		if (verdict.rawWords !== undefined) {
+			const want = requirement.rawText.replace(/\s+/g, " ").trim();
+			const got = verdict.rawWords.replace(/\s+/g, " ").trim();
+			if (got !== want) {
+				let index = 0;
+				while (index < got.length && index < want.length && got[index] === want[index]) index++;
+				return `${requirement.id} raw words differ for row ${row} at char ${index} (source ${want.length} chars vs receipt ${got.length} chars)`;
+			}
+		}
 		const hashes = [...verdict.artifact.matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!.toLowerCase());
 		if (current.sha256) {
-			return !current.dirty && hashes.length === 1 && hashes[0] === current.sha256.toLowerCase();
+			if (current.dirty) return `dirty file artifact for row ${row}`;
+			if (hashes.length !== 1)
+				return `ambiguous file SHA in verdict artifact for row ${row}: found ${hashes.length}`;
+			if (hashes[0] !== current.sha256.toLowerCase())
+				return `sha256 mismatch for row ${row}: receipt ${hashes[0]} vs file ${current.sha256.toLowerCase()}`;
+			continue;
 		}
 		if (!current.head || current.dirty) {
-			return (
-				!!verdict.receivedAt &&
-				!!current.lastChange &&
-				verdict.rowChangeId === current.lastChange.id &&
-				Date.parse(verdict.receivedAt) >= Date.parse(current.lastChange.at)
-			);
+			// Only resolved artifacts may fall back to the baseline saved-row-history rule.
+			if (!current.lastChange) return `no saved TODO change for row ${row}`;
+			if (!verdict.receivedAt) return `missing receipt timestamp for row ${row}`;
+			if (verdict.rowChangeId !== current.lastChange.id)
+				return `verdict for row ${row} does not cite the saved TODO change`;
+			const receivedAt = Date.parse(verdict.receivedAt);
+			const changedAt = Date.parse(current.lastChange.at);
+			if (!Number.isFinite(receivedAt)) return `invalid receipt timestamp for row ${row}`;
+			if (!Number.isFinite(changedAt)) return `invalid saved TODO change timestamp for row ${row}`;
+			if (receivedAt < changedAt) return `verdict for row ${row} predates the saved TODO change`;
+			continue;
 		}
-		if (!FULL_COMMIT_SHA.test(current.head)) return false;
-		const heads = new Set(
-			[...verdict.artifact.matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!.toLowerCase()),
-		);
-		return (
-			heads.size === 1 &&
-			(heads.has(current.head.toLowerCase()) ||
-				(!!verdict.boundHeads?.[current.row] && heads.has(verdict.boundHeads[current.row]!.toLowerCase())))
-		);
-	});
+		if (!FULL_COMMIT_SHA.test(current.head)) return `invalid HEAD ${JSON.stringify(current.head)} for row ${row}`;
+		const heads = new Set(hashes);
+		if (heads.size !== 1 || !heads.has(current.head.toLowerCase()))
+			return `stale HEAD ${JSON.stringify(current.head)} for row ${row}`;
+	}
+	return null;
 }
 
 /** All completion surfaces use this owner for row selection, freshness, and refusal reasons. */
@@ -717,15 +732,18 @@ export async function evaluateRequirementDoneGate(
 			let reason: string | undefined;
 			if (pending && !auditedAfterCheck)
 				reason = `awaiting user: ${pending.action}${pending.ids?.length ? ` (ids: ${pending.ids.join(", ")})` : ""}`;
-			else if (!verdict) reason = `${requirement.id} needs a fresh qa-auditor pass`;
-			else if (verdict.status !== "pass")
-				reason = `${requirement.id} ${verdict.status === "fail" ? "failed" : "unverifiable"}: ${verdict.evidence}`;
-			else if (!verdict.workerId.trim() || verdict.auditor !== "qa-auditor")
-				reason = `${requirement.id} has no authenticated qa-auditor identity on its receipt`;
 			else {
-				// A new QA pass can satisfy a user-owned check, but still must match this artifact.
-				if (!isFreshRequirementVerdict(requirement, [{ row, ...current }]))
-					reason = `${requirement.id} pass is stale: artifact ${verdict.artifact} does not match the current row artifact or saved todo change; resolved checkout: ${formatRequirementGateArtifact(current)}`;
+				// Missing, non-pass, unauthenticated, and stale receipts all come from the
+				// canonical producer, so every gate surface reports the same exact cause.
+				// The receipt's failure evidence trails the artifact and is never parsed as a cause.
+				const staleReason = getRequirementVerdictStaleness(requirement, [{ row, ...current }]);
+				if (staleReason !== null) {
+					const evidence =
+						verdict && verdict.status !== "pass"
+							? `; verdict ${verdict.status} evidence: ${verdict.evidence}`
+							: "";
+					reason = `${requirement.id} freshness check failed: ${staleReason}; resolved checkout: ${formatRequirementGateArtifact(current)}${evidence}`;
+				}
 			}
 			if (reason) {
 				const savedRejection = rejections.get(requirement.id);
@@ -777,7 +795,6 @@ export interface RequirementAuditAssignment {
 	agent: "qa-auditor";
 	workerId?: string;
 	index?: number;
-	boundHeads?: Record<string, string>;
 	/** Explicit row scope from the audit task; absent on old all-row assignments. */
 	rows?: string[];
 }
@@ -1106,12 +1123,7 @@ export function getPersistedRequirementAuditorAssignments(
 				ids.length === 0 ||
 				ids.some(id => typeof id !== "string" || !/^R[1-9]\d*$/.test(id)) ||
 				new Set(ids).size !== ids.length ||
-				typeof snapshot !== "string" ||
-				(value.boundHeads !== undefined &&
-					(!isRecord(value.boundHeads) ||
-						!Object.values(value.boundHeads).every(
-							head => typeof head === "string" && FULL_COMMIT_SHA.test(head),
-						)))
+				typeof snapshot !== "string"
 			) {
 				continue;
 			}
@@ -1130,7 +1142,6 @@ export function getPersistedRequirementAuditorAssignments(
 				ids: [...requirementIds],
 				snapshot,
 				sessionId,
-				...(isRecord(value.boundHeads) ? { boundHeads: value.boundHeads as Record<string, string> } : {}),
 				...(Array.isArray(value.rows) &&
 				value.rows.every(
 					row =>
@@ -1203,6 +1214,11 @@ export function formatRequirementGateNotice(
 		);
 		const refs = new Set<string>();
 		for (const issue of issues) {
+			const staleReason = issue.split("freshness check failed: ")[1]?.split("; resolved checkout: ")[0];
+			if (staleReason) {
+				if (!details.has(staleReason)) details.set(staleReason, `D${details.size + 1}`);
+				refs.add(details.get(staleReason)!);
+			}
 			const rejection = issue.split("; rejected receipt: ")[1];
 			if (rejection) {
 				const reason = rejection.includes("artifact identity")

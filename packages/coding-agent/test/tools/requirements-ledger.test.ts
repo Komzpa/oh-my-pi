@@ -27,7 +27,7 @@ import {
 	getLatestRequirements,
 	getRequirementAuditSources,
 	getRequirementRowArtifactIdentity,
-	isFreshRequirementVerdict,
+	getRequirementVerdictStaleness,
 	parseRequirementReceipt,
 	parseRequirementsLedger,
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
@@ -262,7 +262,7 @@ describe("canonical todo row metadata", () => {
 			await tool.execute("next-plan", { op: "init", items: ["New plan"] });
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 			const archived = await getRequirementRowArtifact({ cwd, sessionManager: manager }, "Build artifact", phases);
-			expect(isFreshRequirementVerdict(requirement, [{ row: "Build artifact", ...archived }])).toBe(true);
+			expect(getRequirementVerdictStaleness(requirement, [{ row: "Build artifact", ...archived }])).toBeNull();
 			const unknown = await getRequirementRowArtifact({ cwd }, "legacy row", [
 				{
 					name: "Legacy",
@@ -279,7 +279,9 @@ describe("canonical todo row metadata", () => {
 			writeFileSync(join(cwd, "artifact.txt"), "committed change\n");
 			const dirty = await getRequirementRowArtifact({ cwd, sessionManager: manager }, "Build artifact", phases);
 			expect(dirty).toMatchObject({ cwd, head, dirty: true });
-			expect(isFreshRequirementVerdict(requirement, [{ row: "Build artifact", ...dirty }])).toBe(false);
+			expect(getRequirementVerdictStaleness(requirement, [{ row: "Build artifact", ...dirty }])).toBe(
+				'no saved TODO change for row "Build artifact"',
+			);
 			execFileSync("git", ["add", "artifact.txt"], { cwd });
 			execFileSync(
 				"git",
@@ -288,7 +290,9 @@ describe("canonical todo row metadata", () => {
 			);
 			const changed = await getRequirementRowArtifact({ cwd, sessionManager: manager }, "Build artifact", phases);
 			expect(changed.head).not.toBe(head);
-			expect(isFreshRequirementVerdict(requirement, [{ row: "Build artifact", ...changed }])).toBe(false);
+			expect(getRequirementVerdictStaleness(requirement, [{ row: "Build artifact", ...changed }])).toBe(
+				`stale HEAD "${changed.head}" for row "Build artifact"`,
+			);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -431,11 +435,11 @@ describe("canonical todo row metadata", () => {
 				},
 			};
 			expect(
-				isFreshRequirementVerdict(requirement, [
+				getRequirementVerdictStaleness(requirement, [
 					{ row: rows[0]!, ...commitArtifact! },
 					{ row: rows[1]!, ...binaryArtifact! },
 				]),
-			).toBe(true);
+			).toBeNull();
 			const staleCell = `${rows[0]} @ ${"f".repeat(40)}; ${rows[1]} @ installed omp sha256 ${binaryHash}`;
 			const stale = {
 				...requirement,
@@ -445,13 +449,15 @@ describe("canonical todo row metadata", () => {
 				},
 			};
 			expect(
-				isFreshRequirementVerdict(stale, [
+				getRequirementVerdictStaleness(stale, [
 					{ row: rows[0]!, ...commitArtifact! },
 					{ row: rows[1]!, ...binaryArtifact! },
 				]),
-			).toBe(false);
-			expect(isFreshRequirementVerdict(stale, [{ row: rows[0]!, ...commitArtifact! }])).toBe(false);
-			expect(isFreshRequirementVerdict(stale, [{ row: rows[1]!, ...binaryArtifact! }])).toBe(true);
+			).toBe(`stale HEAD "${commit}" for row "Commit artifact"`);
+			expect(getRequirementVerdictStaleness(stale, [{ row: rows[0]!, ...commitArtifact! }])).toBe(
+				`stale HEAD "${commit}" for row "Commit artifact"`,
+			);
+			expect(getRequirementVerdictStaleness(stale, [{ row: rows[1]!, ...binaryArtifact! }])).toBeNull();
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -657,8 +663,8 @@ describe("canonical requirements ledger", () => {
 		const ledger = parseRequirementsLedger({ version: 1, requirements });
 		expect(ledger?.requirements[0]?.rawText).toBe("legacy pass");
 		expect(countRequirements(ledger!.requirements)).toEqual({ total: 1, passed: 0, open: 1, failed: 0 });
-		expect(isFreshRequirementVerdict(ledger!.requirements[0]!, [{ row: "Row", head: sha, dirty: false }])).toBe(
-			false,
+		expect(getRequirementVerdictStaleness(ledger!.requirements[0]!, [{ row: "Row", head: sha, dirty: false }])).toBe(
+			'no authenticated qa-auditor identity for row "Row"',
 		);
 	});
 });
@@ -892,7 +898,7 @@ describe("todo requirement classification", () => {
 
 describe("PR41 artifact and restatement boundaries", () => {
 	it("rejects an unresolved artifact even when saved row timestamps match", async () => {
-		const { isFreshRequirementVerdict } = ledgerReviewExports;
+		const { getRequirementVerdictStaleness } = ledgerReviewExports;
 		const req = {
 			...createRequirementCandidates([], ["audit"], "2026-10-01T00:00:00.000Z")[0]!,
 			classification: "linked" as const,
@@ -910,7 +916,7 @@ describe("PR41 artifact and restatement boundaries", () => {
 			},
 		};
 		expect(
-			isFreshRequirementVerdict(req, [
+			getRequirementVerdictStaleness(req, [
 				{
 					row: "row",
 					head: null,
@@ -919,12 +925,12 @@ describe("PR41 artifact and restatement boundaries", () => {
 					lastChange: { at: "2026-10-01T00:00:00.000Z", id: "change" },
 				},
 			]),
-		).toBe(false);
+		).toBe('row "row": unresolved artifact (owner unresolved)');
 		expect(
-			isFreshRequirementVerdict(req, [
+			getRequirementVerdictStaleness(req, [
 				{ row: "row", head: null, dirty: true, lastChange: { at: "2026-10-01T00:00:00.000Z", id: "change" } },
 			]),
-		).toBe(true);
+		).toBeNull();
 	});
 	it("shortens the home path in artifact refusal output", () => {
 		expect(

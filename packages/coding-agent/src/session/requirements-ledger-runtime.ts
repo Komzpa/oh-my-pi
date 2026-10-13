@@ -20,7 +20,7 @@ import {
 	getPersistedRequirementAuditRejections,
 	getRequirementAuditSources,
 	getRequirementRowArtifactIdentity,
-	isFreshRequirementVerdict,
+	getRequirementVerdictStaleness,
 	evaluateRequirementDoneGate,
 	type RequirementVerdict,
 	parseRequirementReceipt,
@@ -251,7 +251,6 @@ export class RequirementsLedgerRuntime {
 				).values(),
 			];
 			const rowHeads: string[] = [];
-			const boundHeads: Record<string, string> = {};
 			const linkedRows = [
 				...new Set(ids.flatMap(id => requirements.find(requirement => requirement.id === id)!.rows)),
 			];
@@ -299,7 +298,6 @@ export class RequirementsLedgerRuntime {
 						this.#appender(),
 						checkoutCache,
 					);
-					if (artifact.head && !artifact.dirty) boundHeads[row] = artifact.head;
 					rowHeads.push(
 						`${id} row ${JSON.stringify(row)} at ${artifact.cwd}: ${artifact.head ?? "HEAD unavailable"}${artifact.dirty ? " (dirty)" : ""}`,
 					);
@@ -325,7 +323,6 @@ export class RequirementsLedgerRuntime {
 				sessionId,
 				agent: "qa-auditor",
 				index,
-				boundHeads,
 				rows: assignedRows,
 			});
 		}
@@ -668,18 +665,13 @@ export class RequirementsLedgerRuntime {
 					auditor: "qa-auditor",
 					receivedAt,
 					...((!artifact.head || artifact.dirty) && lastChange ? { rowChangeId: lastChange.id } : {}),
-					...(artifact.head &&
-					assignment.boundHeads?.[row] &&
-					artifact.head.toLowerCase() !== assignment.boundHeads[row]!.toLowerCase()
-						? { boundHeads: { [row]: assignment.boundHeads[row]! } }
-						: {}),
 				};
-				if (
-					!isFreshRequirementVerdict({ ...requirement, rowVerdicts: { [row]: { ...verdict, status: "pass" } } }, [
-						{ row, ...artifact, lastChange },
-					])
-				) {
-					return `${receipt.id}: artifact identity ${identity} is not the current row artifact or newer than its saved TODO change; row ${JSON.stringify(row)} resolved checkout: ${formatRequirementGateArtifact(artifact)}`;
+				const staleReason = getRequirementVerdictStaleness(
+					{ ...requirement, rowVerdicts: { [row]: { ...verdict, status: "pass" } } },
+					[{ row, ...artifact, lastChange }],
+				);
+				if (staleReason !== null) {
+					return `${receipt.id}: ${staleReason}; row ${JSON.stringify(row)} resolved checkout: ${formatRequirementGateArtifact(artifact)}`;
 				}
 				Object.defineProperty(rowVerdicts, row, {
 					value: verdict,
@@ -822,7 +814,6 @@ export class RequirementsLedgerRuntime {
 					agent: assignment.agent,
 					ids: assignment.ids,
 					snapshot: assignment.snapshot,
-					boundHeads: assignment.boundHeads,
 					rows: assignment.rows,
 				})),
 			rejected: [...rejections].map(([id, reason]) => ({ workerId: "", ids: [id], reason })),

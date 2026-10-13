@@ -370,7 +370,7 @@ describe("requirements ledger auditor binding", () => {
 	});
 
 	it("stales a pass after a new row commit", async () => {
-		const { cwd, manager, runtime, gate } = fixture();
+		const { cwd, manager, runtime, gate, notices } = fixture();
 		try {
 			const head = git(cwd, "rev-parse", "HEAD");
 			await runtime.prepareAuditorTaskCall("task", "call-4", {
@@ -400,17 +400,18 @@ describe("requirements ledger auditor binding", () => {
 			);
 			expect(verdict).toMatchObject({ settled: true });
 			expect(JSON.stringify(verdict)).toContain("R1");
+			expect(notices.join("\n")).toContain(`stale HEAD "${git(cwd, "rev-parse", "HEAD")}" for row "Build artifact"`);
 			// Publication refuses the stale row without erasing its durable evidence.
 			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]?.status).toBe("pass");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
-	it("accepts the dispatch-time HEAD after a clean row advance and rejects unrelated SHAs", async () => {
+	it("rejects a stale dispatch-time HEAD after a clean row advance", async () => {
 		const { cwd, manager, runtime } = fixture();
 		try {
-			const boundHead = git(cwd, "rev-parse", "HEAD");
-			await runtime.prepareAuditorTaskCall("task", "call-bound-head", {
+			const dispatchHead = git(cwd, "rev-parse", "HEAD");
+			await runtime.prepareAuditorTaskCall("task", "call-stale-head", {
 				agent: "qa-auditor",
 				task: "Audit R1 please",
 				context: "",
@@ -418,8 +419,8 @@ describe("requirements ledger auditor binding", () => {
 			writeFileSync(join(cwd, "artifact.txt"), "advanced after dispatch\n");
 			git(cwd, "add", "artifact.txt");
 			git(cwd, "commit", "-m", "advance after dispatch");
-			const accepted = await runtime.afterToolCall({
-				toolCall: { id: "call-bound-head", name: "task" },
+			const outcome = await runtime.afterToolCall({
+				toolCall: { id: "call-stale-head", name: "task" },
 				result: {
 					content: [],
 					details: {
@@ -427,16 +428,18 @@ describe("requirements ledger auditor binding", () => {
 							{
 								index: 0,
 								agent: "qa-auditor",
-								id: "worker-bound",
+								id: "worker-stale",
 								exitCode: 0,
-								output: receiptTable(boundHead),
+								output: receiptTable(dispatchHead),
 							},
 						],
 					},
 				},
 				isError: false,
 			} as never);
-			expect(accepted).toBeUndefined();
+			expect(outcome?.content?.[0]).toMatchObject({ type: "text" });
+			expect(JSON.stringify(outcome?.content)).toContain("stale HEAD");
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts).toBeUndefined();
 			const todo = new TodoTool({
 				cwd,
 				hasUI: false,
@@ -446,9 +449,15 @@ describe("requirements ledger auditor binding", () => {
 				getTodoPhases: () => getLatestTodoPhasesFromEntries(manager.getBranch()),
 				setTodoPhases: (phases: TodoPhase[]) => manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
 			} as never);
-			const done = await todo.execute("done-bound-head", { op: "done", task: "Build artifact" } as never);
-			expect(done.isError).toBeUndefined();
-			expect(getLatestTodoPhasesFromEntries(manager.getBranch())[0]?.tasks[0]?.status).toBe("completed");
+			const done = await todo.execute("done-stale-head", { op: "done", task: "Build artifact" } as never);
+			expect(done.isError).toBe(true);
+			expect(getLatestTodoPhasesFromEntries(manager.getBranch())[0]?.tasks[0]?.status).not.toBe("completed");
+			writeFileSync(join(cwd, "artifact.txt"), "advanced again\n");
+			git(cwd, "add", "artifact.txt");
+			git(cwd, "commit", "-m", "advance again");
+			const doneH3 = await todo.execute("done-stale-head-h3", { op: "done", task: "Build artifact" } as never);
+			expect(doneH3.isError).toBe(true);
+			expect(getLatestTodoPhasesFromEntries(manager.getBranch())[0]?.tasks[0]?.status).not.toBe("completed");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
