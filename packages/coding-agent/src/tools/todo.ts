@@ -1,11 +1,11 @@
 import {
 	type TodoStatus,
+	type TodoDeploymentBinding,
 	type TodoOperation,
 	type TodoItem,
 	type TodoPhase,
 	type TodoCompletionTransition,
 	type TodoToolDetails,
-	type TodoDeploymentBinding,
 } from "@oh-my-pi/pi-tui/tools/todo";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
