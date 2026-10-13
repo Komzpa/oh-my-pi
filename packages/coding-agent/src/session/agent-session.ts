@@ -5523,6 +5523,18 @@ export class AgentSession implements SettingsScope {
 	 */
 	#syncAgentSessionId(sessionId?: string, notifyChange = true): void {
 		const currentSessionId = this.sessionManager.getSessionId();
+		// One live slice lifecycle (poller + exit hooks) per AgentSession: the previous
+		// transcript's slice is stopped when the active session id changes. Switching back
+		// creates a fresh lifecycle.
+		for (const [staleId, stale] of this.#sessionSlices) {
+			if (staleId === currentSessionId) continue;
+			this.#sessionSlices.delete(staleId);
+			void stale
+				.stop()
+				.catch(error =>
+					logger.warn("Previous session slice did not stop", { sessionId: staleId, error: String(error) }),
+				);
+		}
 		if (!this.#isDisposed && !this.#sessionSlices.has(currentSessionId)) {
 			this.#sessionSlices.set(
 				currentSessionId,

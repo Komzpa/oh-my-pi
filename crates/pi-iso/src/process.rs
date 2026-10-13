@@ -28,9 +28,9 @@ pub fn background_child(command: &mut Command) {
 					return Err(std::io::Error::last_os_error());
 				}
 				// IOPRIO_WHO_PROCESS=1, pid=0 (self), class BE=2 in bits 13..15.
-				if libc::syscall(libc::SYS_ioprio_set, 1, 0, (2 << 13) | 7) != 0 {
-					return Err(std::io::Error::last_os_error());
-				}
+				// Advisory: sandboxes (seccomp) may deny ioprio_set; the child must
+				// still start, at nice 19 only.
+				let _ = libc::syscall(libc::SYS_ioprio_set, 1, 0, (2 << 13) | 7);
 				Ok(())
 			});
 		}

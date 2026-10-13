@@ -98,7 +98,11 @@ export async function readStoredDaemonRecord(dir: string): Promise<StoredDaemonR
 		typeof daemon.pid === "number"
 	) {
 		const startTime = processStartTime(daemon.pid);
-		if (!startTime || !("processStartTime" in meta) || meta.processStartTime !== startTime) {
+		// Records written before processStartTime existed carry no stored value: unknown,
+		// not stale. Keep them while the pid is alive; only a dead pid or a recorded
+		// start time that no longer matches proves the daemon gone or the pid reused.
+		const recorded = "processStartTime" in meta ? meta.processStartTime : undefined;
+		if (!startTime || (recorded !== undefined && recorded !== startTime)) {
 			await fs.rm(dir, { recursive: true, force: true });
 			return undefined;
 		}

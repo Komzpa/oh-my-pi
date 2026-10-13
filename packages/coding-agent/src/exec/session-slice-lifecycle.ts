@@ -65,6 +65,37 @@ export async function reapOrphanSessionSlices(root = registryRoot): Promise<stri
 	return reaped;
 }
 
+/** Stale-incomplete marker age after which a crash between mkdir and the owner write may be taken over. */
+export const INCOMPLETE_MARKER_MIN_AGE_MS = 60_000;
+
+/**
+ * An existing slice directory may be reused only when it provably is ours: its marker names
+ * this process, or it never got a complete marker (crash between mkdir and write) and is old.
+ * Anything else belongs to another instance and stays untouched.
+ */
+export async function canTakeOverSliceDirectory(
+	directory: string,
+	now = Date.now(),
+	minAgeMs = INCOMPLETE_MARKER_MIN_AGE_MS,
+): Promise<boolean> {
+	let owner: unknown;
+	try {
+		owner = await Bun.file(path.join(directory, ISOLATION_OWNER_FILE)).json();
+	} catch {
+		owner = undefined;
+	}
+	if (typeof owner === "object" && owner !== null && "pid" in owner && typeof owner.pid === "number") {
+		// A complete marker of another process is its ownership; reapOrphanSessionSlices already
+		// removed dead ones, so a survivor is live or unproven.
+		return owner.pid === process.pid;
+	}
+	try {
+		return now - (await fs.stat(directory)).mtimeMs >= minAgeMs;
+	} catch {
+		return false;
+	}
+}
+
 export interface CpuGroup {
 	name: string;
 	usage: number;
@@ -155,7 +186,13 @@ export class SessionSliceLifecycle {
 		const directory = path.join(this.#root, this.slice);
 		await fs.mkdir(this.#root, { recursive: true, mode: 0o700 });
 		// Exclusive creation prevents another live process from stealing the canonical slice.
-		await fs.mkdir(directory, { mode: 0o700 });
+		try {
+			await fs.mkdir(directory, { mode: 0o700 });
+		} catch (error) {
+			// A resume with the same session id can meet its own (or a crash-torn) marker directory.
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST" || !(await canTakeOverSliceDirectory(directory)))
+				throw error;
+		}
 		await writeIsolationOwner(directory, this.#host.sessionId);
 		await Bun.write(path.join(directory, "boot-id"), await Bun.file("/proc/sys/kernel/random/boot_id").text());
 		this.#owned = true;

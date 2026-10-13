@@ -8,7 +8,12 @@ import { sessionSliceName } from "@oh-my-pi/pi-natives";
 import { getDaemonRuntimeRoot } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
-import { SessionSliceLifecycle, formatHogUserLine, reapOrphanSessionSlices } from "../src/exec/session-slice-lifecycle";
+import {
+	SessionSliceLifecycle,
+	canTakeOverSliceDirectory,
+	formatHogUserLine,
+	reapOrphanSessionSlices,
+} from "../src/exec/session-slice-lifecycle";
 import { toolSessionEnvironment } from "../src/exec/session-slice";
 import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
@@ -19,7 +24,7 @@ import { prompt } from "@oh-my-pi/pi-utils";
 
 const live = process.platform === "linux" && process.env.OMP_SLICE_LIVE_TEST === "1";
 const prefix = `qa-slice-${process.pid}-`;
-const managerEnv = { ...process.env, XDG_RUNTIME_DIR: "/run/user/1000" };
+const managerEnv = { ...process.env, XDG_RUNTIME_DIR: `/run/user/${process.getuid?.()}` };
 // Live CPU proof deliberately uses the platform clock: fake timers cannot advance kernel cpu.stat.
 
 function run(args: string[], env: NodeJS.ProcessEnv = managerEnv): string {
@@ -270,3 +275,25 @@ it.skipIf(!live)(
 		}
 	},
 );
+
+it("takes over only own-process or old incomplete slice markers", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+	try {
+		const own = path.join(root, "own");
+		await fs.mkdir(own);
+		await writeIsolationOwner(own, "x");
+		expect(await canTakeOverSliceDirectory(own)).toBe(true);
+
+		const foreign = path.join(root, "foreign");
+		await fs.mkdir(foreign);
+		await Bun.write(path.join(foreign, ISOLATION_OWNER_FILE), JSON.stringify({ pid: process.pid + 1, id: "x" }));
+		expect(await canTakeOverSliceDirectory(foreign, Date.now() + 3_600_000)).toBe(false);
+
+		const torn = path.join(root, "torn");
+		await fs.mkdir(torn);
+		expect(await canTakeOverSliceDirectory(torn)).toBe(false);
+		expect(await canTakeOverSliceDirectory(torn, Date.now() + 3_600_000)).toBe(true);
+	} finally {
+		await fs.rm(root, { recursive: true, force: true });
+	}
+});

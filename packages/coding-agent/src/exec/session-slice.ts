@@ -36,8 +36,16 @@ export async function toolSessionEnvironment(
 ): Promise<Record<string, string>> {
 	if (process.platform !== "linux" || !sessionId) return env;
 	const slice = sessionSliceName(sessionId);
-	const searchPath = env.PATH ?? process.env.PATH ?? "";
-	const real = env.OMP_SYSTEMD_RUN_REAL ?? Bun.which("systemd-run", { PATH: searchPath });
+	// The shim must never be its own target: drop shimDir from the lookup PATH and
+	// ignore an inherited OMP_SYSTEMD_RUN_REAL that names the shim (exec loop).
+	const rest = (env.PATH ?? process.env.PATH ?? "")
+		.split(path.delimiter)
+		.filter(entry => entry !== shimDir)
+		.join(path.delimiter);
+	const shimTarget = path.join(shimDir, "systemd-run");
+	const inherited = env.OMP_SYSTEMD_RUN_REAL;
+	const real =
+		inherited && path.resolve(inherited) !== shimTarget ? inherited : Bun.which("systemd-run", { PATH: rest });
 	if (!real) throw new Error("systemd-run is required for session-owned tool processes");
 	let ready = shims.get(shimDir);
 	if (!ready) {
@@ -51,10 +59,6 @@ export async function toolSessionEnvironment(
 		shims.set(shimDir, ready);
 	}
 	await ready;
-	const rest = searchPath
-		.split(path.delimiter)
-		.filter(entry => entry !== shimDir)
-		.join(path.delimiter);
 	return {
 		...env,
 		OMP_SESSION_ID: sessionId,

@@ -198,6 +198,19 @@ impl<SE: extensions::ShellExtensions> std::ops::DerefMut for ShellForCommand<'_,
 	}
 }
 
+/// The wrapper that must contain this launch, if any. Reparented launches
+/// (`detach_reparent`, e.g. `nohup cmd &`) never get one: a per-call scope
+/// would kill them with the call, defeating the reparent.
+fn applicable_external_wrapper(
+	params: &ExecutionParameters,
+) -> Option<&std::sync::Arc<dyn crate::interp::ExternalCommandWrapper>> {
+	if params.detach_reparent {
+		None
+	} else {
+		params.external_command_wrapper()
+	}
+}
+
 /// Composes a `std::process::Command` to execute the given command.
 /// Appropriately configures the command name and arguments, redirections,
 /// injected file descriptors, environment variables, etc.
@@ -270,12 +283,8 @@ pub fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtensions>(
 	// per-call scope (e.g. the tool process-limit slice, stopped on drop)
 	// would still contain them via cgroup membership and kill them when the
 	// call ends, so they bypass the external-command wrapper entirely.
-	let wrapped = if context.params.detach_reparent {
-		None
-	} else {
-		context
-			.params
-			.external_command_wrapper()
+	let wrapped = {
+		applicable_external_wrapper(&context.params)
 			.map(|wrapper| {
 				wrapper.wrap_external_command(
 					OsStr::new(command_name),
@@ -1217,4 +1226,37 @@ pub const fn child_session_action(
 	}
 
 	ChildSessionAction::DetachSession
+}
+
+#[cfg(test)]
+mod detach_wrapper_tests {
+	use std::{
+		ffi::{OsStr, OsString},
+		sync::Arc,
+	};
+
+	use super::applicable_external_wrapper;
+	use crate::interp::{ExecutionParameters, ExternalCommandWrapper};
+
+	struct Noop;
+	impl ExternalCommandWrapper for Noop {
+		fn wrap_external_command(
+			&self,
+			_: &OsStr,
+			_: &OsStr,
+			_: &[OsString],
+			_: &[(OsString, OsString)],
+		) -> std::io::Result<Option<(OsString, Vec<OsString>)>> {
+			Ok(None)
+		}
+	}
+
+	#[test]
+	fn reparented_launch_bypasses_wrapper_but_normal_launch_keeps_it() {
+		let mut params = ExecutionParameters::default();
+		params.set_external_command_wrapper(Arc::new(Noop));
+		assert!(applicable_external_wrapper(&params).is_some());
+		params.detach_reparent = true;
+		assert!(applicable_external_wrapper(&params).is_none());
+	}
 }

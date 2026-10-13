@@ -70,6 +70,22 @@ describe("daemon birth identity", () => {
 			expect((await readStoredDaemonRecord(dir)) !== undefined).toBe(name === "history");
 		}
 	});
+	it("keeps a live pre-upgrade record that has no stored start time, and reaps a mismatched one", async () => {
+		if (process.platform !== "linux") return;
+		using temp = TempDir.createSync("qa-slice-legacy-");
+		const legacy = path.join(temp.path(), "legacy");
+		await fs.mkdir(legacy);
+		await Bun.write(path.join(legacy, "meta.json"), JSON.stringify({ daemon: { pid: process.pid } }));
+		await Bun.write(path.join(legacy, "spec.json"), "{}");
+		expect(await readStoredDaemonRecord(legacy)).toBeDefined();
+		const reused = path.join(temp.path(), "reused");
+		await fs.mkdir(reused);
+		await Bun.write(
+			path.join(reused, "meta.json"),
+			JSON.stringify({ daemon: { pid: process.pid }, processStartTime: "0" }),
+		);
+		expect(await readStoredDaemonRecord(reused)).toBeUndefined();
+	});
 	it("negative control: retains a matching live record and terminal history", async () => {
 		if (process.platform !== "linux") return;
 		using temp = TempDir.createSync("qa-slice-control-");

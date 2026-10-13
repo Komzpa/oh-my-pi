@@ -1,12 +1,19 @@
 import type { Browser, LaunchOptions, PuppeteerNode } from "puppeteer-core";
 
-/** Prefix before exec so Chromium's initial renderers inherit both priorities. */
-export function backgroundBrowserCommand(executablePath: string, args: string[]): string[] {
+/**
+ * Prefix before exec so Chromium's initial renderers inherit both priorities.
+ * Priority is a hint: a missing `nice`/`ionice` (busybox/Alpine) drops only that
+ * prefix and never blocks the launch.
+ */
+export function backgroundBrowserCommand(
+	executablePath: string,
+	args: string[],
+	which: (name: string) => string | null = name => Bun.which(name),
+): string[] {
 	if (process.platform !== "linux") return [executablePath, ...args];
-	const nice = Bun.which("nice");
-	const ionice = Bun.which("ionice");
-	if (!nice || !ionice) throw new Error("Linux browser launches require nice and ionice on PATH.");
-	return [nice, "-n", "19", ionice, "-c2", "-n7", executablePath, ...args];
+	const nice = which("nice");
+	const ionice = which("ionice");
+	return [...(nice ? [nice, "-n", "19"] : []), ...(ionice ? [ionice, "-c2", "-n7"] : []), executablePath, ...args];
 }
 
 /** Keep Puppeteer's own process ownership and CDP setup, without a post-spawn race. */

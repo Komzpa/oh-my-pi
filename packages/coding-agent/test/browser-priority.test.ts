@@ -21,6 +21,19 @@ test.skipIf(process.platform !== "linux")("browser argv sets priority before exe
 	expect(nice(await Bun.file(`/proc/${process.pid}/stat`).text())).toBe(nice(before));
 });
 
+test.skipIf(process.platform !== "linux")("missing nice or ionice degrades to the available prefix", () => {
+	const only = (have: string[]) => (name: string) => (have.includes(name) ? `/usr/bin/${name}` : null);
+	expect(backgroundBrowserCommand("/b", ["--x"], only([]))).toEqual(["/b", "--x"]);
+	expect(backgroundBrowserCommand("/b", ["--x"], only(["nice"]))).toEqual(["/usr/bin/nice", "-n", "19", "/b", "--x"]);
+	expect(backgroundBrowserCommand("/b", ["--x"], only(["ionice"]))).toEqual([
+		"/usr/bin/ionice",
+		"-c2",
+		"-n7",
+		"/b",
+		"--x",
+	]);
+});
+
 test.skipIf(process.platform !== "linux")(
 	"Puppeteer retains pipe and filtered defaults under priority prefix",
 	async () => {

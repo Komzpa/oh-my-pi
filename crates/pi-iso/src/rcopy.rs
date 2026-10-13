@@ -498,6 +498,14 @@ mod tests {
 mod background_priority_tests {
 	#[test]
 	fn git_capture_background_priority_preserves_parent() {
+		// The native priority path needs no `ionice` binary; only this test's
+		// probe does, so hosts without util-linux skip it instead of failing.
+		let has_ionice = std::env::var_os("PATH")
+			.is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("ionice").is_file()));
+		if !has_ionice {
+			eprintln!("skipping: ionice not on PATH");
+			return;
+		}
 		let parent_pid = std::process::id();
 		let parent_before = std::fs::read_to_string(format!("/proc/{parent_pid}/stat")).unwrap();
 		let output = super::git_capture(&std::env::temp_dir(), &[

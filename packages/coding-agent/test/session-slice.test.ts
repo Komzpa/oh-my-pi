@@ -85,6 +85,19 @@ describe("session process boundary", () => {
 		const args = ["--user", "--scope", "--slice=omp-keep.slice", "/bin/true"];
 		expect(await argumentsOf(args)).toEqual(args);
 	});
+	it("never resolves or inherits the shim as its own systemd-run target", async () => {
+		const shimDir = path.join(root, "bin");
+		const shim = path.join(shimDir, "systemd-run");
+		const pathWithShimFirst = `${shimDir}${path.delimiter}/usr/bin:/bin`;
+		const viaPath = await toolSessionEnvironment(sid, { PATH: pathWithShimFirst }, shimDir);
+		expect(viaPath.OMP_SYSTEMD_RUN_REAL).not.toBe(shim);
+		const viaInherited = await toolSessionEnvironment(
+			sid,
+			{ PATH: pathWithShimFirst, OMP_SYSTEMD_RUN_REAL: shim },
+			shimDir,
+		);
+		expect(viaInherited.OMP_SYSTEMD_RUN_REAL).not.toBe(shim);
+	});
 	it("can apply the environment twice without recursive shims or PATH duplication", async () => {
 		const again = await toolSessionEnvironment(sid, env, path.join(root, "bin"));
 		expect(again).toEqual(env);
