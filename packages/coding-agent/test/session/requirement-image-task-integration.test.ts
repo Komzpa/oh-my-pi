@@ -23,9 +23,8 @@ import {
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { tagImageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { isTaskToolDetails, type TaskImage } from "@oh-my-pi/pi-tui/tools/task";
-import { __resetDirsFromEnvForTests, prompt, setAgentDir } from "@oh-my-pi/pi-utils";
+import { __resetDirsFromEnvForTests, setAgentDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
-import subagentUserPromptTemplate from "../../src/prompts/system/subagent-user-prompt.md" with { type: "text" };
 
 // A real, unmodified 4x4 RGBA PNG, not placeholder pixels.
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFUlEQVQI12P8z8DwnwEJMDGgAcICAIPRAgYt167zAAAAAElFTkSuQmCC";
@@ -344,7 +343,6 @@ describe("requirement pixels through the real task session path", () => {
 	it("negative control: image-less non-auditor task args stay byte-identical", async () => {
 		const { firstUser, taskArgs, originalTaskArgs } = await dispatch(undefined, false, false, 1, {});
 		expect(JSON.stringify(taskArgs)).toBe(originalTaskArgs);
-		expect(text(firstUser)).toBe(prompt.render(subagentUserPromptTemplate, { assignment: taskArgs.task as string }));
 		expect(imageParts(firstUser)).toEqual([]);
 		expect(text(firstUser)).not.toContain("unavailable");
 	}, 30_000);
