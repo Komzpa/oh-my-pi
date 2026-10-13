@@ -1,4 +1,6 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { describe, expect, setSystemTime, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2152,10 +2154,6 @@ test("session_compact re-persists the full chief rules exactly once for a main s
   expect(sent).toHaveLength(1);
   expect(sent[0]?.[0]).toMatchObject({ customType: "chief-rules-after-compaction", content: fullText, display: false });
   expect(sent[0]?.[1]).toMatchObject({ deliverAs: "nextTurn" });
-  // A second compaction emits one fresh copy, not two: the handler is per-event, never accumulating.
-  await compact();
-  expect(sent).toHaveLength(2);
-  expect(sent[1]?.[0]).toMatchObject({ content: fullText });
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -2297,4 +2295,138 @@ test("a resolved merge left open is committed first, and a merge gets one worker
     handlers.get("session_shutdown")?.({}, { getAsyncJobSnapshot: () => emptyJobs } as unknown as ExtensionContext);
     rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+type ModelMessage = { role: string; content?: string; customType?: string };
+type NewSessionEntry = SessionEntry extends unknown ? Omit<SessionEntry, "id" | "parentId" | "timestamp"> : never;
+interface CompactionHarness {
+  journal: SessionEntry[];
+  add: (entry: NewSessionEntry) => SessionEntry;
+  compact: (firstKeptEntryId: string) => Promise<void>;
+  contextMessages: () => Promise<ModelMessage[]>;
+}
+const CHIEF_RULES_TYPE = "chief-rules-after-compaction";
+const WORKER_BRIEF_TYPE = "worker-brief-after-compaction";
+const TODO_ERROR_TYPE = "todo-error-reminder";
+const FULL_RULES = "## Critical path first\nThis is the full chief-of-staff runbook sentinel.\n";
+const WORKER_TASK = "Complete assignment thoroughly:\n\n# Target\nRow Y\n";
+
+const customOf = (messages: ModelMessage[], customType: string) =>
+  messages.filter((message) => message.role === "custom" && message.customType === customType).map((message) => message.content);
+const copiesIn = (journal: SessionEntry[], customType: string) =>
+  journal.filter((entry) => entry.type === "custom_message" && entry.customType === customType);
+const skillFixture = () => {
+  const dir = mkdtempSync(join(tmpdir(), "chief-rules-regression-"));
+  const file = join(dir, "SKILL.md");
+  writeFileSync(file, FULL_RULES);
+  return { dir, file };
+};
+const addUser = (h: CompactionHarness, content: string) => h.add({ type: "message", message: { role: "user", content, timestamp: 0 } });
+const addAssistant = (h: CompactionHarness, content: string) => h.add({ type: "message", message: { role: "assistant", content: [{ type: "text", text: content }], api: "anthropic-messages", provider: "anthropic", model: "chief-rules-regression-fixture", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: "stop", timestamp: 0 } });
+const ctxFor = (journal: SessionEntry[], header: { id: string; parentSession?: string }): ExtensionContext => ({
+  cwd: "/tmp/chief-rules-regression-fixture",
+  sessionManager: { getHeader: () => header, getBranch: () => journal },
+  getAsyncJobSnapshot: () => emptyJobs,
+} as unknown as ExtensionContext);
+// Complete append-only entries use real session shapes; buildSessionContext is the model-view authority.
+async function compactionHarness(opts: { main: boolean; skillFile?: string; task?: string }): Promise<CompactionHarness> {
+  const journal: SessionEntry[] = [];
+  const add = (entry: NewSessionEntry) => {
+    const value = { ...entry, id: `e${journal.length}`, parentId: journal.at(-1)?.id ?? null, timestamp: new Date(0).toISOString() } as SessionEntry;
+    journal.push(value);
+    return value;
+  };
+  if (opts.task !== undefined) add({ type: "session_init", task: opts.task, systemPrompt: "", tools: [] });
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const header = opts.main ? { id: "root" } : { id: "sub", parentSession: "root" };
+  await todoDispatch({ on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler), getActiveTools: () => ["task"], pi: { ...extensionSdk, getActiveSkills: () => (opts.skillFile ? [{ name: "chief-of-staff", filePath: opts.skillFile }] : []) }, appendEntry: () => undefined, sendMessage: (message: { customType: string; content: string }) => add({ type: "custom_message", customType: message.customType, content: message.content, display: false }) } as unknown as ExtensionAPI);
+  const ctx = ctxFor(journal, header);
+  const compact = async (firstKeptEntryId: string) => {
+    add({ type: "compaction", summary: "summary", firstKeptEntryId, tokensBefore: 1 });
+    await handlers.get("session_compact")!({}, ctx);
+  };
+  const contextMessages = async () => {
+    const messages = buildSessionContext(journal).messages as ModelMessage[];
+    const result = (await handlers.get("context")!({ type: "context", messages }, ctx)) as { messages: ModelMessage[] } | undefined;
+    return result?.messages ?? messages;
+  };
+  return { journal, add, compact, contextMessages };
+}
+describe("extension-only context accumulation regression", () => {
+  test("duplicate main history keeps newest rules and todo error without mutating journal or reordering ordinary messages", async () => {
+    const { dir, file } = skillFixture();
+    try {
+      const h = await compactionHarness({ main: true, skillFile: file });
+      h.add({ type: "custom_message", customType: CHIEF_RULES_TYPE, content: "stale", display: false });
+      addUser(h, "first");
+      h.add({ type: "custom_message", customType: TODO_ERROR_TYPE, content: "old error", display: false });
+      h.add({ type: "custom_message", customType: CHIEF_RULES_TYPE, content: FULL_RULES, display: false });
+      addAssistant(h, "middle");
+      h.add({ type: "custom_message", customType: TODO_ERROR_TYPE, content: "new error", display: false });
+      const source = structuredClone(h.journal);
+      const messages = await h.contextMessages();
+      expect(customOf(messages, CHIEF_RULES_TYPE)).toEqual([FULL_RULES]);
+      expect(customOf(messages, TODO_ERROR_TYPE)).toEqual(["new error"]);
+      expect(messages.filter(m => m.role === "user" || m.role === "assistant").map(m => m.role)).toEqual(["user", "assistant"]);
+      expect(h.journal).toEqual(source);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("five retained compactions keep all three latest custom types in model context without journal appends", async () => {
+    const { dir, file } = skillFixture();
+    try {
+      const h = await compactionHarness({ main: true, skillFile: file });
+      const start = addUser(h, "start");
+      h.add({ type: "custom_message", customType: CHIEF_RULES_TYPE, content: FULL_RULES, display: false });
+      h.add({ type: "custom_message", customType: WORKER_BRIEF_TYPE, content: WORKER_TASK, display: false });
+      h.add({ type: "custom_message", customType: TODO_ERROR_TYPE, content: "todo error 0", display: false });
+      const chiefCount = copiesIn(h.journal, CHIEF_RULES_TYPE).length;
+      const briefCount = copiesIn(h.journal, WORKER_BRIEF_TYPE).length;
+      for (let i = 0; i < 5; i++) {
+        addUser(h, `turn ${i}`);
+        h.add({ type: "custom_message", customType: TODO_ERROR_TYPE, content: `todo error ${i + 1}`, display: false });
+        await h.compact(start.id);
+      }
+      const before = structuredClone(h.journal);
+      const messages = await h.contextMessages();
+      expect(customOf(messages, CHIEF_RULES_TYPE)).toEqual([FULL_RULES]);
+      expect(customOf(messages, WORKER_BRIEF_TYPE)).toEqual([WORKER_TASK]);
+      expect(customOf(messages, TODO_ERROR_TYPE)).toEqual(["todo error 5"]);
+      expect(copiesIn(h.journal, CHIEF_RULES_TYPE)).toHaveLength(chiefCount);
+      expect(copiesIn(h.journal, WORKER_BRIEF_TYPE)).toHaveLength(briefCount);
+      expect(h.journal).toEqual(before);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("five compactions reinject rules after they are dropped", async () => {
+    const { dir, file } = skillFixture();
+    try {
+      const h = await compactionHarness({ main: true, skillFile: file });
+      for (let i = 0; i < 5; i++) {
+        const user = addUser(h, `turn ${i}`);
+        h.add({ type: "custom_message", customType: TODO_ERROR_TYPE, content: `todo error ${i}`, display: false });
+        await h.compact(user.id);
+      }
+      expect(copiesIn(h.journal, CHIEF_RULES_TYPE)).toHaveLength(5);
+      expect(customOf(await h.contextMessages(), CHIEF_RULES_TYPE)).toEqual([FULL_RULES]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("five compactions reinject a genuinely dropped worker brief", async () => {
+    const h = await compactionHarness({ main: false, task: WORKER_TASK });
+    for (let i = 0; i < 5; i++) {
+      const user = addUser(h, `turn ${i}`);
+      await h.compact(user.id);
+    }
+    expect(copiesIn(h.journal, WORKER_BRIEF_TYPE)).toHaveLength(5);
+    expect(customOf(await h.contextMessages(), WORKER_BRIEF_TYPE)).toEqual([WORKER_TASK]);
+  });
+  test("five worker compactions retaining the newest brief do not append copies", async () => {
+    const h = await compactionHarness({ main: false, task: WORKER_TASK });
+    const task = h.journal[0]!;
+    for (let i = 0; i < 5; i++) {
+      addUser(h, `turn ${i}`);
+      const newest = copiesIn(h.journal, WORKER_BRIEF_TYPE).at(-1);
+      await h.compact(newest?.id ?? task.id);
+    }
+    expect(copiesIn(h.journal, WORKER_BRIEF_TYPE)).toHaveLength(1);
+    expect(customOf(await h.contextMessages(), WORKER_BRIEF_TYPE)).toEqual([WORKER_TASK]);
+  });
 });
