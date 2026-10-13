@@ -105,6 +105,11 @@ pub struct Executor {
 	terminated:               bool,
 	skippable_comments:       Vec<(u32, String)>,
 	recovered_snapshot_lines: HashSet<u32>,
+	/// Malformed op header seen on the most recent row. A later row makes it
+	/// final (error); ending a streaming parse on it drops it as an incomplete
+	/// trailing header (`PUT`, `PUT >`, a half-quoted `MV`); an authoritative
+	/// end rejects it.
+	deferred_malformed:       Option<ParseFailure>,
 }
 
 impl Default for Executor {
@@ -125,6 +130,7 @@ impl Executor {
 			terminated:               false,
 			skippable_comments:       Vec::new(),
 			recovered_snapshot_lines: HashSet::new(),
+			deferred_malformed:       None,
 		}
 	}
 
@@ -165,6 +171,9 @@ impl Executor {
 	fn feed(&mut self, token: Token) -> Result<(), ParseFailure> {
 		if self.terminated {
 			return Ok(());
+		}
+		if let Some(error) = self.deferred_malformed.take() {
+			return Err(error);
 		}
 		match token {
 			Token::EnvelopeBegin { .. } => self.consume_comments(),
@@ -243,6 +252,10 @@ impl Executor {
 
 	fn finish(mut self, streaming: bool) -> Result<Parsed, ParseFailure> {
 		self.consume_comments()?;
+		let deferred = self.deferred_malformed.take();
+		if !streaming && let Some(error) = deferred {
+			return Err(error);
+		}
 		if streaming {
 			let flush = self
 				.pending
@@ -336,11 +349,16 @@ impl Executor {
 			// Only this absorption path changes: with no hunk open the row already
 			// fails with the legacy "no preceding hunk header" error, which the
 			// legacy parity fixtures pin byte-for-byte.
+			// The rejection is deferred one row: a streamed call may end on a
+			// half-typed header, which `finish(streaming)` must discard rather
+			// than error on and hide the valid edits before it.
 			if is_malformed_op_header(text) {
-				return fail_at(
+				self.deferred_malformed = fail_at::<()>(
 					line_num,
-					&format!("{} Got {}.", MALFORMED_OP_HEADER, messages::json_quote(text)),
-				);
+					&format!("{} Got {}.", MALFORMED_OP_HEADER, messages::preview_row(text)),
+				)
+				.err();
+				return Ok(());
 			}
 			let minus = text.trim_start().starts_with('-');
 			if !minus {

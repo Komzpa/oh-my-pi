@@ -774,13 +774,13 @@ mod tests {
 	fn fresh_tag_lookups_ignore_ascii_case() {
 		let store = EditStore::new();
 		let path = Path::new("fresh");
-		let tag = store.record(path, "hello\n", Some(&[1]));
+		let tag = store.record(path, "hello\nworld\n", Some(&[1]));
 		assert!(!tag.is_empty());
 		let lower = tag.to_ascii_lowercase();
 		assert!(store.by_hash(path, &lower).is_some());
 		assert_eq!(store.paths_with_hash(&lower), vec![path.to_owned()]);
 		assert!(store.has_hash(path, &lower));
-		store.record_seen_lines(path, &lower, &[1]);
+		store.record_seen_lines(path, &lower, &[2]);
 		assert_eq!(
 			store
 				.by_hash(path, &tag)
@@ -788,7 +788,7 @@ mod tests {
 				.seen_lines
 				.as_ref()
 				.map(|s| s.len()),
-			Some(1)
+			Some(2)
 		);
 		assert!(store.by_hash(path, "0000").is_none());
 		assert!(store.by_hash(Path::new("elsewhere"), &lower).is_none());

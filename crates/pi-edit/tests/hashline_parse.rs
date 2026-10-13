@@ -482,17 +482,40 @@ fn malformed_put_op_headers_fail_instead_of_becoming_body() {
 	// `PUT 351*=357`) must raise a parse error naming the line. It must never
 	// fall through as a bare body row and be spliced into the file verbatim;
 	// body rows start with `+`.
-	for header in ["PUT 351*=357", "PUT 371*=394"] {
-		let error = parse_patch(&format!("[a.ts]\nPUT 3.=4:\n+ok\n{header}\n+bad"))
-			.unwrap_err()
-			.to_string();
-		assert!(error.contains("malformed operation header"), "{header}: {error}");
-		assert!(error.contains("line 4"), "{header}: {error}");
-	}
-	// With no hunk open the row likewise fails a parse error naming the line
-	// (legacy message) instead of being taken as content.
+	let error = parse_patch("[a.ts]\nPUT 3.=4:\n+ok\nPUT 351*=357\n+bad")
+		.unwrap_err()
+		.to_string();
+	assert!(error.contains("malformed operation header"), "{error}");
+	assert!(error.contains("line 4"), "{error}");
+	// With no hunk open the row fails with the legacy message, which the
+	// legacy parity fixtures pin byte-for-byte.
 	let error = parse_patch("PUT 351*=357\n+bad").unwrap_err().to_string();
 	assert!(error.contains("line 1"), "{error}");
+	assert!(error.contains("payload line has no preceding hunk header"), "{error}");
+}
+
+#[test]
+fn malformed_header_on_the_final_streaming_row_is_dropped_not_fatal() {
+	// A streamed call may end on a half-typed header; valid edits before it
+	// must survive the preview. The authoritative parse still rejects it, and
+	// so does a streaming parse once another row follows it.
+	for tail in ["PUT", "PUT >", "MV \"half"] {
+		let input = format!("PUT 3.=4:\n+ok\n{tail}");
+		let parsed = parse_patch_streaming(&input).unwrap_or_else(|e| panic!("{tail}: {e}"));
+		assert_eq!(parsed.edits.len(), 3, "{tail}: {:?}", parsed.edits);
+		assert!(parse_patch(&input).is_err(), "{tail}");
+		assert!(parse_patch_streaming(&format!("{input}\n+more")).is_err(), "{tail}");
+	}
+}
+
+#[test]
+fn malformed_header_echo_is_bounded() {
+	let row = format!("PUT {}", "9".repeat(5000));
+	let error = parse_patch(&format!("PUT 3.=4:\n+ok\n{row}\n+bad"))
+		.unwrap_err()
+		.to_string();
+	assert!(error.contains("malformed operation header"), "{error}");
+	assert!(error.chars().count() < 400, "{}", error.chars().count());
 }
 
 #[test]

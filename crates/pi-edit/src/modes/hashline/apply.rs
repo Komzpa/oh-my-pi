@@ -26,6 +26,15 @@ use crate::{error::EditError, store::Clipboard};
 pub static STRUCTURAL_CLOSER_RE: LazyLock<Regex> =
 	LazyLock::new(|| Regex::new(r"^\s*[)\]}]+[;,]?\s*$").expect("valid structural-closer regex"));
 
+/// A structural closer, ignoring a trailing comment (`} // bar`,
+/// `}; /* end */`).
+pub fn is_structural_closer(text: &str) -> bool {
+	static COMMENTED: LazyLock<Regex> = LazyLock::new(|| {
+		Regex::new(r"^\s*[)\]}]+[;,]?\s*(?://.*|/\*.*\*/)\s*$").expect("valid commented-closer regex")
+	});
+	STRUCTURAL_CLOSER_RE.is_match(text) || COMMENTED.is_match(text)
+}
+
 /// Behavior when an anonymous paste has no available cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmptyPaste {
@@ -845,7 +854,7 @@ fn repair_landings(edits: &[Edit], lines: &[&str], path: Option<&str>) -> (Vec<E
 		// for a member like `private:`, landing invalid code — and `PUT >N:`
 		// / `PUT >N*` on a closer promised exactly that gap.
 		if has_content(anchor_text)
-			&& !STRUCTURAL_CLOSER_RE.is_match(anchor_text)
+			&& !is_structural_closer(anchor_text)
 			&& indent_deeper(leading_indent(anchor_text), &target)
 		{
 			let mut landing = group.anchor;

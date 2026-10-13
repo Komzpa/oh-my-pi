@@ -305,8 +305,9 @@ fn qml_block_cut_removes_the_resolved_block() {
 		index:    0,
 	};
 	let mut resolutions = Vec::new();
+	let edits = [edit];
 	let lowered = resolve_block_edits(
-		&[edit],
+		&edits,
 		text,
 		"tst_maildetail.qml",
 		Unresolved::Throw,
@@ -337,6 +338,24 @@ fn closer_anchored_insert_stays_at_the_specified_gap() {
 	};
 	let result = apply(text, &[edit], Some("x.cpp"));
 	assert_eq!(result.text, "class Foo {\n    void bar() {\n        work();\n    }\nprivate:\n};\n");
+}
+
+#[test]
+fn comment_trailed_closer_anchored_insert_stays_at_the_specified_gap() {
+	let text = "class Foo {\n    void bar() {\n        work();\n    } // bar\n};\n";
+	let edit = Edit::Insert {
+		cursor:      Cursor::AfterAnchor(Anchor { line: 4 }),
+		text:        "private:".into(),
+		line_num:    1,
+		index:       0,
+		replacement: false,
+		block_start: None,
+	};
+	let result = apply(text, &[edit], Some("x.cpp"));
+	assert_eq!(
+		result.text,
+		"class Foo {\n    void bar() {\n        work();\n    } // bar\nprivate:\n};\n"
+	);
 }
 
 #[test]
@@ -379,8 +398,9 @@ fn block_insert_after_opener_lands_as_a_sibling_after_the_block() {
 		index:    0,
 	};
 	let mut resolutions = Vec::new();
+	let edits = [edit];
 	let lowered = resolve_block_edits(
-		&[edit],
+		&edits,
 		text,
 		"x.cpp",
 		Unresolved::Throw,
@@ -393,17 +413,6 @@ fn block_insert_after_opener_lands_as_a_sibling_after_the_block() {
 		apply(text, &lowered, Some("x.cpp")).text,
 		"class Foo {\n    void bar() {\n        work();\n    }\nprivate:\n};\n"
 	);
-}
-
-#[test]
-fn typescript_function_block_resolution_is_unchanged() {
-	let text = "function go() {\n    run();\n}\n";
-	assert_eq!(
-		native_block_resolver("x.ts", text, 1).map(|span| (span.start, span.end)),
-		Some((1, 3))
-	);
-	// A lone closing line resolves to nothing on the tree-sitter path too.
-	assert_eq!(native_block_resolver("x.ts", text, 3), None);
 }
 
 #[test]

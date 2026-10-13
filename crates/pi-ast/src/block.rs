@@ -56,8 +56,9 @@ fn first_content_column(code: &str, row: usize) -> Option<usize> {
 /// tree-sitter grammar here, but its blocks are brace groups. Any other
 /// unrecognized language keeps resolving to nothing.
 fn brace_fallback_for(lang: Option<&str>, path: Option<&str>) -> bool {
-	if let Some(lang) = lang {
-		return lang.trim().eq_ignore_ascii_case("qml");
+	// A blank hint counts as omitted, exactly as in `resolve_language`.
+	if let Some(lang) = lang.map(str::trim).filter(|lang| !lang.is_empty()) {
+		return lang.eq_ignore_ascii_case("qml");
 	}
 	path
 		.and_then(|path| std::path::Path::new(path.trim()).extension())
@@ -129,7 +130,8 @@ fn brace_block_span(code: &str, line: u32) -> Option<BlockRange> {
 				block_comment = true;
 				i += 2;
 			},
-			b'"' | b'\'' => {
+			// Backtick template literals are strings too, so a `}` inside one never closes a group.
+			b'"' | b'\'' | b'`' => {
 				string_delim = byte;
 				i += 1;
 			},
@@ -1475,6 +1477,31 @@ mod tests {
 		let code = "Item {\n    width: 100\n}\n";
 		assert_eq!(resolve(code, "x.qml", 2), None);
 		assert_eq!(resolve(code, "x.qml", 3), None);
+	}
+
+	#[test]
+	fn qml_braces_inside_template_literals_do_not_close_blocks() {
+		let code = "Item {\n    property string value: `}`\n    property string open: \
+		            `{`\n}\nRectangle {\n}\n";
+		assert_eq!(resolve(code, "x.qml", 1), Some(BlockRange { start_line: 1, end_line: 4 }));
+	}
+
+	#[test]
+	fn blank_language_hint_falls_back_to_the_path() {
+		let code = "Item {\n    width: 100\n}\n";
+		let range = |lang: &str| {
+			block_range_at(BlockRangeOptions {
+				code: code.to_string(),
+				path: Some("x.qml".to_string()),
+				lang: Some(lang.to_string()),
+				line: 1,
+			})
+			.unwrap()
+		};
+		assert_eq!(range(""), Some(BlockRange { start_line: 1, end_line: 3 }));
+		assert_eq!(range("  "), Some(BlockRange { start_line: 1, end_line: 3 }));
+		assert_eq!(range("qml"), Some(BlockRange { start_line: 1, end_line: 3 }));
+		assert_eq!(range("nonsense"), None);
 	}
 
 	#[test]
