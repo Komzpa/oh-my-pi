@@ -24,6 +24,8 @@ import agentRouter, {
 	recordRetryFallbackApplied,
 	recordTaskOutcome,
 	routeSubagentSpawn,
+	readSessionHeaderId,
+	SESSION_HEADER_PEEK_BYTES,
 } from "./agent_router";
 import { resolveRouterChosenEffort } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
 
@@ -400,6 +402,82 @@ describe("agent router", () => {
 			await parent.close();
 			if (previous === undefined) delete process.env.OMP_AGENT_ROUTER_MODE_DIR;
 			else process.env.OMP_AGENT_ROUTER_MODE_DIR = previous;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a child inherits brrrr from the parent header without parsing the parent transcript", async () => {
+		const { dir } = tempStateFile();
+		const previous = process.env.OMP_AGENT_ROUTER_MODE_DIR;
+		process.env.OMP_AGENT_ROUTER_MODE_DIR = join(dir, "modes");
+		const handlers = new Map();
+		const commands = new Map();
+		let active: SessionManager | undefined;
+		const api = {
+			on: (event, handler) => handlers.set(event, handler),
+			registerCommand: (name, command) => commands.set(name, command),
+			appendEntry: (customType, data) => active?.appendCustomEntry(customType, data),
+		};
+		const ui = { setStatus: () => {}, notify: () => {} };
+		const parents: SessionManager[] = [];
+		const children: SessionManager[] = [];
+		const originalOpen = SessionManager.open;
+		try {
+			agentRouter(api);
+			const childOf = async (enabled: boolean): Promise<ExtensionContext> => {
+				const parent = SessionManager.create(dir, dir);
+				parents.push(parent);
+				active = parent;
+				const parentContext = ctx({ sessionManager: parent, ui });
+				await handlers.get("session_start")({}, parentContext);
+				await commands.get("brrrr").handler(enabled ? "" : "off", parentContext);
+				// A long parent history: everything after the header must stay unread.
+				for (let i = 0; i < 200; i++) parent.appendCustomEntry("history-filler", { i, text: "x".repeat(2048) });
+				await parent.ensureOnDisk();
+				await parent.flush();
+				const parentFile = parent.getSessionFile();
+				const child = await originalOpen.call(SessionManager, join(dir, `child-${parents.length}.jsonl`), dir, undefined, {
+					initialCwd: dir,
+					parentSession: parentFile,
+					suppressBreadcrumb: true,
+				});
+				children.push(child);
+				active = child;
+				return ctx({ sessionManager: child, ui });
+			};
+			const onContext = await childOf(true);
+			const offContext = await childOf(false);
+			let parentOpens = 0;
+			SessionManager.open = (...args) => {
+				parentOpens++;
+				return originalOpen.apply(SessionManager, args);
+			};
+			await handlers.get("session_start")({}, onContext);
+			await handlers.get("session_start")({}, offContext);
+			expect(parentOpens).toBe(0);
+			expect(JSON.parse(readFileSync(brrrrModeFile(onContext), "utf8")).enabled).toBe(true);
+			expect(JSON.parse(readFileSync(brrrrModeFile(offContext), "utf8")).enabled).toBe(false);
+		} finally {
+			SessionManager.open = originalOpen;
+			for (const manager of [...children, ...parents]) await manager.close();
+			if (previous === undefined) delete process.env.OMP_AGENT_ROUTER_MODE_DIR;
+			else process.env.OMP_AGENT_ROUTER_MODE_DIR = previous;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("readSessionHeaderId skips the title slot and reads only the header prefix", () => {
+		const dir = mkdtempSync(join(tmpdir(), "router-header-"));
+		try {
+			const file = join(dir, "parent.jsonl");
+			const title = JSON.stringify({ type: "title", v: 1, title: "t", pad: " ".repeat(200) });
+			const header = JSON.stringify({ type: "session", version: 3, id: "parent-id", cwd: dir });
+			writeFileSync(file, `${title}\n${header}\n${"{not json\n".repeat(SESSION_HEADER_PEEK_BYTES)}`);
+			expect(readSessionHeaderId(file)).toBe("parent-id");
+			writeFileSync(file, `${title}\n{"type":"message","id":"m"}\n`);
+			expect(readSessionHeaderId(file)).toBeUndefined();
+			expect(readSessionHeaderId(join(dir, "missing.jsonl"))).toBeUndefined();
+		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
