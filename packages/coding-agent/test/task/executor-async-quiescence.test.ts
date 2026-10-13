@@ -1,15 +1,23 @@
 /** Owner work settles before yield reminders, never after terminal acceptance. */
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import type { CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { runSubagentFollowUpTurn, runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 import { createSessionDefaults } from "../helpers/session-defaults";
 
 const baseAgent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
@@ -433,4 +441,267 @@ describe("runSubprocess async work and terminal acceptance", () => {
 		await cleanupOutcome;
 		expect(cleanupSettled).toBe(true);
 	}, 15_000);
+});
+
+describe("real executor terminal yield with worker-owned bash", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		AsyncJobManager.resetForTests();
+	});
+
+	// Event-based file wait: the fixture child signals through files, so the
+	// test awaits the real filesystem event instead of polling on a timer.
+	async function waitForFile(pathname: string): Promise<void> {
+		if (await Bun.file(pathname).exists()) return;
+		const dir = path.dirname(pathname);
+		const base = path.basename(pathname);
+		const { promise, resolve } = Promise.withResolvers<void>();
+		const watcher = fs.watch(dir, (_event, filename) => {
+			if (filename === base) {
+				watcher.close();
+				resolve();
+			}
+		});
+		void Bun.file(pathname).exists().then(exists => {
+			if (exists) {
+				watcher.close();
+				resolve();
+			}
+		});
+		await promise;
+	}
+
+	async function runOwnedJob(options: { autoBackground?: boolean; finish?: "before-yield" | "after-refusal" } = {}) {
+		using root = TempDir.createSync("@omp-yield-live-job-");
+		const id = "yield-live-job";
+		const dir = root.path();
+		const accepted = path.join(dir, "accepted");
+		const release = path.join(dir, "release");
+		const cutover = path.join(dir, "cutover");
+		const fixture = path.join(dir, "fixture.ts");
+		// Updater-shaped fixture: writes an accepted marker, pauses before
+		// cutover, then writes the cutover marker. The pause is file-gated
+		// (after-refusal), immediate (before-yield), or never-ending
+		// (abandonment). A module file with static imports lets the gated
+		// child watch the filesystem directly; the test awaits filesystem
+		// events and job promises, never a guessed duration.
+		if (options.finish === "before-yield") {
+			await Bun.write(
+				fixture,
+				`await Bun.write(${JSON.stringify(accepted)}, "accepted"); await Bun.write(${JSON.stringify(cutover)}, "installed");`,
+			);
+		} else if (options.finish === "after-refusal") {
+			await Bun.write(
+				fixture,
+				`import { watch } from "node:fs"; await Bun.write(${JSON.stringify(accepted)}, "accepted"); const gated = Promise.withResolvers(); const watcher = watch(${JSON.stringify(dir)}, (_event, filename) => { if (filename === "release") { watcher.close(); gated.resolve(); } }); if (await Bun.file(${JSON.stringify(release)}).exists()) { watcher.close(); } else { await gated.promise; } await Bun.write(${JSON.stringify(cutover)}, "installed");`,
+			);
+		} else {
+			await Bun.write(
+				fixture,
+				`await Bun.write(${JSON.stringify(accepted)}, "accepted"); await Promise.withResolvers().promise;`,
+			);
+		}
+		const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)}`;
+		const manager = new AsyncJobManager({});
+		AsyncJobManager.setInstance(manager);
+		const auth = createInMemoryAuthStorage();
+		auth.keys.setRuntime("mock", "test-key");
+		const modelRegistry = new ModelRegistry(auth);
+		const sessionRef: { current?: AgentSession } = {};
+		let jobStarted = false;
+		let jobId = "";
+		let jobCommand = "";
+		let jobStartedAt = 0;
+		let refused = 0;
+		const mock = createMockModel({
+			handler: async () => {
+				const session = sessionRef.current;
+				if (!session) throw new Error("session not ready");
+				if (!jobStarted) {
+					jobStarted = true;
+					return {
+						content: [
+							{
+								type: "toolCall",
+								id: "start-job",
+								name: "bash",
+								arguments: { command, timeout: 30, ...(options.autoBackground ? {} : { async: true }) },
+							},
+						],
+					};
+				}
+				const firstResult = session.messages.find(
+					message => message.role === "toolResult" && message.toolCallId === "first-yield",
+				);
+				if (!firstResult) {
+					await waitForFile(accepted);
+					expect(await Bun.file(accepted).text()).toBe("accepted");
+					const job = manager.getRunningOwnerJobs(id)[0] ?? manager.getAllJobs({ ownerId: id })[0];
+					if (!job) throw new Error("worker-owned bash job missing");
+					expect(job.type).toBe("bash");
+					jobId = job.id;
+					jobCommand = (job.process?.command ?? job.label).replace(/\s+/g, " ").slice(0, 120);
+					jobStartedAt = job.startTime;
+					expect(
+						JSON.stringify(
+							session.messages.find(
+								message => message.role === "toolResult" && message.toolCallId === "start-job",
+							),
+						),
+					).toContain("still running and owned by this worker");
+					// Watched delivery is suppressed, like the incident's
+					// bg_113 row: the guard must still see the running job.
+					if (options.finish === undefined) manager.watchJobs([jobId]);
+					if (options.finish === "before-yield") await job.promise;
+					return {
+						content: [
+							{
+								type: "toolCall" as const,
+								id: "first-yield",
+								name: "yield",
+								arguments: { data: { report: "done" } },
+							},
+						],
+					};
+				}
+				if (
+					session.messages.find(
+						message => message.role === "toolResult" && message.toolCallId === "finished-yield",
+					) ??
+					session.messages.find(
+						message => message.role === "toolResult" && message.toolCallId === "second-yield",
+					)
+				) {
+					throw new Error("unexpected extra model turn after terminal acceptance");
+				}
+				if (
+					session.messages.find(message => message.role === "toolResult" && message.toolCallId === "wait-job")
+				) {
+					expect(manager.getJob(jobId)?.status).toBe("completed");
+					return {
+						content: [
+							{
+								type: "toolCall" as const,
+								id: "finished-yield",
+								name: "yield",
+								arguments: { data: { report: "done" } },
+							},
+						],
+					};
+				}
+				if (firstResult.isError !== true) throw new Error("first yield was accepted without refusal");
+				refused += 1;
+				expect(JSON.stringify(firstResult)).toContain(jobId);
+				expect(JSON.stringify(firstResult)).toContain("elapsed");
+				expect(JSON.stringify(firstResult)).toContain(process.execPath);
+				expect(manager.getJob(jobId)?.status).toBe("running");
+				expect(manager.getJob(jobId)?.abortController.signal.aborted).toBe(false);
+				if (options.finish === "after-refusal") {
+					await Bun.write(release, "go");
+					return { content: [{ type: "toolCall", id: "wait-job", name: "wait", arguments: {} }] };
+				}
+				return {
+					content: [
+						{
+							type: "toolCall" as const,
+							id: "second-yield",
+							name: "yield",
+							arguments: { data: { report: "done" } },
+						},
+					],
+				};
+			},
+		});
+		const created = await sdkModule.createAgentSession({
+			cwd: root.path(),
+			agentDir: root.path(),
+			modelRegistry,
+			model: mock,
+			sessionManager: SessionManager.inMemory(root.path()),
+			settings: Settings.isolated({
+				"compaction.enabled": false,
+				"retry.enabled": false,
+				"todo.enabled": false,
+				"todo.reminders": false,
+				"async.enabled": true,
+				"launch.enabled": false,
+				"bash.autoBackground.enabled": options.autoBackground ?? false,
+				"bash.autoBackground.thresholdMs": 0,
+			}),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+			requireYieldTool: true,
+			toolNames: ["bash", "wait", "yield"],
+			parentTaskPrefix: id,
+			agentId: id,
+			taskDepth: 1,
+		});
+		sessionRef.current = created.session;
+		const session = created.session;
+		session.agent.streamFn = mock.stream;
+		vi.spyOn(AgentLifecycleManager.global(), "ensureLive").mockResolvedValue(session);
+		try {
+			const result = await runSubagentFollowUpTurn({ id, agent: baseAgent, message: "run the updater fixture" });
+			const installed = await Bun.file(cutover).exists();
+			const job = manager.getJob(jobId);
+			return {
+				result,
+				refused,
+				installed,
+				jobId,
+				command: jobCommand,
+				jobStatus: job?.status,
+				startedAt: jobStartedAt,
+			};
+		} finally {
+			await manager.dispose({ timeoutMs: 1000 });
+			await session.dispose();
+			auth.close();
+		}
+	}
+
+	for (const autoBackground of [false, true]) {
+		it(`refuses once before accepting abandonment through the real executor (auto-background=${autoBackground})`, async () => {
+			const { result, refused, installed, jobId, command, jobStatus, startedAt } =
+				await runOwnedJob({ autoBackground });
+			expect(result.exitCode).toBe(0);
+			expect(refused).toBe(1);
+			expect(result.abandonedJobs).toEqual([
+				{
+					id: jobId,
+					type: "bash",
+					command,
+					startedAt,
+					elapsedMs: expect.any(Number),
+				},
+			]);
+			expect(result.extractedToolData?.yield).toHaveLength(1);
+			expect(result.stderr).toContain(jobId);
+			expect(jobStatus).toBe("cancelled");
+			expect(installed).toBe(false);
+		}, 20_000);
+	}
+
+	it("preserves the updater through refusal and accepts its receipt after wait", async () => {
+		const { result, refused, installed } = await runOwnedJob({ finish: "after-refusal" });
+		expect(result.exitCode).toBe(0);
+		expect(refused).toBe(1);
+		expect(installed).toBe(true);
+		expect(result.abandonedJobs).toBeUndefined();
+		expect(result.stderr).toBe("");
+	}, 20_000);
+
+	it("accepts the first terminal yield when the job has already finished", async () => {
+		const { result, refused, installed } = await runOwnedJob({ finish: "before-yield" });
+		expect(result.exitCode).toBe(0);
+		expect(refused).toBe(0);
+		expect(installed).toBe(true);
+		expect(result.abandonedJobs).toBeUndefined();
+	}, 20_000);
 });
