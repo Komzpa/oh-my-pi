@@ -652,6 +652,9 @@ class TreeList implements Component {
 			case "reset_boundary":
 				parts.push("reset boundary");
 				break;
+			case "tool_result_prune":
+				parts.push("tool result prune", "prune");
+				break;
 			case "session_init":
 				parts.push("session init");
 				break;

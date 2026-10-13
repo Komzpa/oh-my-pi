@@ -3992,7 +3992,21 @@ export class SessionManager {
 	 * entry types, with tool-result prune overlays applied; raw getEntries() is unchanged.
 	 */
 	getBranch(fromId?: string): SessionEntry[] {
-		return projectToolResultPrunes(this.#index.pathTo(fromId ?? this.#index.leafId()));
+		return projectToolResultPrunes(this.#getRawBranch(fromId));
+	}
+
+	/**
+	 * Walk from an entry to root WITHOUT prune overlays: the live journal entries.
+	 * In-place rewriters (`dropImages`) must use this; the projected branch holds
+	 * detached text-only copies, so mutating them would leave the raw payload
+	 * (e.g. images in a pruned tool result) in the journal.
+	 */
+	getRawBranch(fromId?: string): SessionEntry[] {
+		return this.#getRawBranch(fromId);
+	}
+
+	#getRawBranch(fromId?: string): SessionEntry[] {
+		return this.#index.pathTo(fromId ?? this.#index.leafId());
 	}
 
 	/** Materialize only the current model/collapsed-display dependency closure. */

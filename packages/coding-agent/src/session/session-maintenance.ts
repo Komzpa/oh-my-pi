@@ -828,7 +828,9 @@ export class SessionMaintenance {
 	 * and skips the disk rewrite.
 	 */
 	async dropImages(): Promise<{ removed: number; tokensFreed: number }> {
-		const branchEntries = this.#host.sessionManager.getBranch();
+		// Raw entries: prune projections are detached text-only copies, and the
+		// images of a pruned tool result live only in the raw journal entry.
+		const branchEntries = this.#host.sessionManager.getRawBranch();
 		const countOptions = { excludeEncryptedReasoning: true } as const;
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
