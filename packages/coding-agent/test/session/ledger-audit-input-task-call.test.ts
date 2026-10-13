@@ -68,7 +68,9 @@ function seedLinkedRequirement(manager: SessionManager, cwd: string): void {
 		phases: [
 			{
 				name: "Work",
-				tasks: [{ content: "Build artifact", status: "pending", schedule: { owner: "AuditInput", resources: [cwd] } }],
+				tasks: [
+					{ content: "Build artifact", status: "pending", schedule: { owner: "AuditInput", resources: [cwd] } },
+				],
 			},
 		],
 	});
