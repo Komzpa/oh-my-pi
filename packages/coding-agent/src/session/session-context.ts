@@ -290,7 +290,6 @@ export function buildSessionContext(
 		current = current.parentId ? byId.get(current.parentId) : undefined;
 	}
 	path.reverse();
-	path = projectToolResultPrunes(path);
 
 	// Extract settings and find compaction
 	let thinkingLevel: string | undefined = "off";
@@ -309,6 +308,7 @@ export function buildSessionContext(
 	// with the wrong model id, which previously clobbered the user's pick on
 	// resume (issue #849).
 	let hasExplicitDefaultModel = false;
+	path = projectToolResultPrunes(path);
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
