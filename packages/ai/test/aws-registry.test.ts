@@ -34,10 +34,16 @@ describe("AWS provider availability", () => {
 					AWS_EC2_METADATA_DISABLED: undefined,
 				},
 				async () => {
-					getEnvApiKey("bedrock-mantle");
+					// Fresh module instance: the module-scoped probe cache is guaranteed cold,
+					// regardless of which earlier test or file already warmed the shared one.
+					const cold = (await import(
+						`../src/registry/aws.ts?cold-ec2-probe=${Bun.nanoseconds()}`
+					)) as typeof import("../src/registry/aws");
+					cold.hasAwsCredentialSource();
 					const afterFirst = readFileSyncSpy.mock.calls.filter(call => String(call[0]).includes("/sys/")).length;
 					expect(afterFirst).toBeGreaterThan(0);
-					getEnvApiKey("bedrock-mantle");
+					cold.hasAwsCredentialSource();
+					cold.hasAwsCredentialSource();
 					const afterMore = readFileSyncSpy.mock.calls.filter(call => String(call[0]).includes("/sys/")).length;
 					expect(afterMore).toBe(afterFirst);
 				},

@@ -11459,15 +11459,19 @@ export class AgentSession implements SettingsScope {
 			// own peer-conversation cache), that cost is repeated on every ephemeral
 			// turn. Content blocks are treated as immutable after construction
 			// throughout this codebase (see `convertOneCached`'s identity-keyed
-			// cache), so a one-level detach — new message wrapper, new content
-			// array — is enough to stop a caller mutating what we hand to the
-			// conversion pipeline while it awaits.
+			// cache), so a shallow detach — new message wrapper, new content array,
+			// new top-level block objects (strings are immutable and stay shared) —
+			// stops a caller replacing or editing block fields while the pipeline
+			// awaits. Nested objects inside a block (e.g. tool-call arguments) are
+			// shared by design; they are not mutated after construction.
 			messages.push(
 				...history.map(
 					message =>
 						({
 							...message,
-							content: Array.isArray(message.content) ? [...message.content] : message.content,
+							content: Array.isArray(message.content)
+								? message.content.map(block => ({ ...block }))
+								: message.content,
 						}) as AgentMessage,
 				),
 			);

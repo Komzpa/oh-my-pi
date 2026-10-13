@@ -167,6 +167,41 @@ describe("AgentSession message pipeline", () => {
 		expect(delivered).toEqual(chunks);
 	});
 
+	it("detaches caller history message wrappers and content blocks before side inference", async () => {
+		const original: Message = { role: "user", content: [{ type: "text", text: "kept" }], timestamp: 1 };
+		const originalBlock = (original.content as TextContent[])[0];
+		let seen: Context | undefined;
+		const session = new AgentSession({
+			agent: new Agent({
+				initialState: { model: getBundledModel("openai", "gpt-4o-mini"), systemPrompt: [], tools: [] },
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: createModelRegistryStub() as never,
+			sideStreamFn: (_model, context) => {
+				seen = context;
+				const stream = new AssistantMessageEventStream();
+				stream.push({ type: "done", reason: "stop", message: createAssistantMessage("ok") });
+				return stream;
+			},
+		});
+		sessions.push(session);
+		await session.runEphemeralTurn({ promptText: "Question?", history: [original] });
+		const copy = seen?.messages.find(
+			m =>
+				m.role === "user" &&
+				Array.isArray(m.content) &&
+				m.content[0]?.type === "text" &&
+				(m.content[0] as TextContent).text === "kept",
+		);
+		expect(copy).toBeDefined();
+		expect(copy).not.toBe(original);
+		const copiedBlock = (copy!.content as TextContent[])[0];
+		expect(copiedBlock).not.toBe(originalBlock);
+		copiedBlock.text = "changed";
+		expect(originalBlock.text).toBe("kept");
+	});
+
 	it.each([false, true])("propagates async delivery failure, final flush=%s", async finalFlush => {
 		const session = sideSession(["A", finalFlush ? "$" : "B"], finalFlush);
 		await expect(
