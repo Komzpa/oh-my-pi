@@ -1610,3 +1610,4 @@
 - Restored mouse clicks, hover, and wheel scrolling in Plan Review.
 
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@9564980a39cb](https://github.com/can1357/oh-my-pi/blob/9564980a39cb785a32bdca76de97e0b0cc58f20c/packages/coding-agent/CHANGELOG.md).
+- Fixed unclassified-candidate gate refusals suggesting unrelated open TODO rows as a runnable `rows=[...]` classify selection. The `rows` parameter now carries available rows only: the refusal keeps the non-executable `rows=["<exact todo row>"]` placeholder with the exact requirement ID and raw text, and appends the available rows once as a separate list; blocking and read-only behavior are unchanged.

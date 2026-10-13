@@ -1019,8 +1019,12 @@ export function formatClassifyCall(
 	requirement: Pick<RequirementLedgerItem, "id" | "rawText">,
 	rows: readonly string[],
 ): string {
+	// `rows` are available open rows, never a selected link: without a canonical
+	// candidate-to-row binding the refusal cannot guess which row fits. The
+	// suggested call stays a placeholder until classified with the exact row the
+	// requirement's originating ask/tool call proves.
 	if (rows.length > 0) {
-		return `todo with op="classify", id="${requirement.id}", classification="linked", rows=${JSON.stringify(rows)} (or classification="not-a-requirement" with reason="<why this is not a requirement>")`;
+		return `todo with op="classify", id="${requirement.id}", classification="linked", rows=["<exact todo row>"] (no confident row match: classify with the exact row proven by this requirement's originating ask/tool call; or classification="not-a-requirement" with reason="<why this is not a requirement>")`;
 	}
 	return `todo with op="classify", id="${requirement.id}", classification="linked", rows=["<exact todo row>"] (no todo row exists yet: first create one with todo op="append", items=["<exact todo row>"] (or op="init"), then retry the classify call; or classification="not-a-requirement" with reason="<why this is not a requirement>")`;
 }
@@ -1031,11 +1035,15 @@ export function formatOverdueClassifyRefusal(
 	overdue: readonly RequirementLedgerItem[],
 	rows: readonly string[],
 ): string {
+	// No canonical candidate-to-row binding exists on the ledger item or the
+	// capture path (user raw text only), so available rows are appended once as
+	// a separate list and never as a runnable rows selection.
 	const parts = overdue.map(
 		requirement =>
 			`requirement ${requirement.id} (${JSON.stringify(requirement.rawText)}) is an unclassified candidate. Call ${formatClassifyCall(requirement, rows)}`,
 	);
-	return `Blocked: ${toolName} is blocked because ${parts.join("; ")}. Then retry ${toolName}`;
+	const available = rows.length > 0 ? ` Available todo rows: ${JSON.stringify([...rows])}.` : ``;
+	return `Blocked: ${toolName} is blocked because ${parts.join("; ")}.${available} Then retry ${toolName}`;
 }
 
 /** Compact model-only context: raw asks and worker evidence stay in the ledger. */

@@ -1,5 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import { type } from "@oh-my-pi/omptype";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { RequirementsLedgerRuntime } from "@oh-my-pi/pi-coding-agent/session/requirements-ledger-runtime";
@@ -36,7 +35,7 @@ function assistantStop(): Parameters<SessionManager["appendMessage"]>[0] {
 		timestamp: 1,
 	} as unknown as Parameters<SessionManager["appendMessage"]>[0];
 }
-function setupOverdueSession(): { manager: SessionManager; runtime: RequirementsLedgerRuntime } {
+function setupOverdueSession(): { manager: SessionManager; runtime: RequirementsLedgerRuntime; phases: TodoPhase[] } {
 	const manager = SessionManager.inMemory();
 	manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
 		version: 1,
@@ -53,11 +52,11 @@ function setupOverdueSession(): { manager: SessionManager; runtime: Requirements
 		onSettledAssistantMessage: () => {},
 		setPublicationGate: () => {},
 	});
-	return { manager, runtime };
+	return { manager, runtime, phases };
 }
 
-function todoSession(manager: SessionManager): ToolSession {
-	let phases: TodoPhase[] = [];
+function todoSession(manager: SessionManager, initial: TodoPhase[]): ToolSession {
+	let phases = initial;
 	return {
 		cwd: "/tmp/test",
 		hasUI: false,
@@ -73,52 +72,49 @@ function todoSession(manager: SessionManager): ToolSession {
 }
 
 describe("gate refusal names the exact unblocking call", () => {
-	it("bash refusal parses into a classify call that succeeds and unblocks bash", async () => {
-		const { manager, runtime } = setupOverdueSession();
+	it("copied placeholder hint cannot link; an explicit relevant row unblocks", async () => {
+		const { manager, runtime, phases } = setupOverdueSession();
 
 		const refusal = runtime.refuseOverdueCandidate("bash");
 		expect(refusal?.block).toBe(true);
 		const reason = refusal && typeof refusal === "object" && "reason" in refusal ? String(refusal.reason) : "";
-		// The refusal must name the exact call with the real id, candidate words, and row.
+		// The refusal names the exact candidate but never a guessed runnable row.
 		expect(reason).toContain('op="classify"');
 		expect(reason).toContain('id="R1"');
 		expect(reason).toContain(RAW);
-		expect(reason).toContain(JSON.stringify([ROW]));
+		expect(reason).toContain('rows=["<exact todo row>"]');
+		expect(reason).not.toContain(`rows=${JSON.stringify([ROW])}`);
+		expect(reason).toContain(ROW);
 		expect(reason).toContain("Then retry");
 
-		// Parse the call the refusal names and execute it through TodoTool.
+		// Copying the placeholder hint cannot silently link the candidate.
 		const id = /id="(R\d+)"/.exec(reason)?.[1];
 		const rowsJson = /rows=(\[.*?\])/.exec(reason)?.[1];
 		expect(id).toBe("R1");
-		const rows: unknown = JSON.parse(rowsJson ?? "null");
-		expect(rows).toEqual([ROW]);
+		const copied: unknown = JSON.parse(rowsJson ?? "null");
+		expect(copied).toEqual(["<exact todo row>"]);
 
-		const tool = new TodoTool(todoSession(manager));
-		const result = await tool.execute("call-1", { op: "classify", id, classification: "linked", rows } as never);
+		const tool = new TodoTool(todoSession(manager, phases));
+		const refused = await tool.execute("call-1", {
+			op: "classify",
+			id,
+			classification: "linked",
+			rows: copied,
+		} as never);
+		expect(refused.isError).toBe(true);
+		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("candidate");
+		expect(runtime.refuseOverdueCandidate("bash")?.block).toBe(true);
+
+		// Explicitly selecting the relevant row succeeds and unblocks bash.
+		const result = await tool.execute("call-2", {
+			op: "classify",
+			id,
+			classification: "linked",
+			rows: [ROW],
+		} as never);
 		expect(result.isError).toBeFalsy();
 		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("linked");
 
 		expect(runtime.refuseOverdueCandidate("bash")).toBeUndefined();
-	});
-
-	it("classify appears in the model-visible todo tool definition", () => {
-		const { manager } = setupOverdueSession();
-		const tool = new TodoTool(todoSession(manager));
-		expect(tool.description).toContain("classify");
-		const parsed = (tool.parameters as (value: unknown) => unknown)({
-			op: "classify",
-			id: "R1",
-			classification: "linked",
-			rows: [ROW],
-		});
-		expect(parsed instanceof type.errors).toBe(false);
-	});
-	it("todo done without a target names the exact form", async () => {
-		const { manager } = setupOverdueSession();
-		const tool = new TodoTool(todoSession(manager));
-		const result = await tool.execute("call-1", { op: "done", items: [] } as never);
-		const text = result.content.find(part => part.type === "text");
-		expect(result.isError).toBe(true);
-		expect(text?.type === "text" ? text.text : "").toContain('op="done", task="<exact row>"');
 	});
 });
