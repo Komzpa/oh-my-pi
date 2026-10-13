@@ -15,6 +15,7 @@ import {
 	windowsPathToWslMount,
 } from "@oh-my-pi/pi-utils";
 import { InternalUrlRouter } from "../internal-urls";
+import type { ResolveContext } from "../internal-urls/types";
 import { type InternalUrlFilesystem, joinUrlPath, UrlFsError } from "../internal-urls/url-filesystem";
 import { ToolAbortError } from "./tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
@@ -669,6 +670,20 @@ async function tryDelimitedPathSplit(
 	return parts;
 }
 
+/** Whether an internal-URL list has a URL with its own path segments followed by an unanchored local part. */
+function hasAmbiguousRelativeTail(parts: readonly string[]): boolean {
+	let urlHasPath = false;
+	for (const part of parts) {
+		if (isInternalUrlPath(part)) {
+			const afterScheme = part.slice(part.indexOf("://") + 3);
+			urlHasPath = urlHasPath || afterScheme.includes("/");
+			continue;
+		}
+		if (urlHasPath && !/^(?:\/|\.\.?\/|~|[A-Za-z]:[\\/])/.test(part)) return true;
+	}
+	return false;
+}
+
 /**
  * Split one path-like entry whose multiple targets were flattened into one
  * string. Existing paths are kept intact, so real filenames containing spaces,
@@ -680,6 +695,8 @@ export async function splitDelimitedPathEntry(
 	options: {
 		splitter?: PathEntrySplitter;
 		routedUrlPredicate?: (entry: string) => boolean;
+		/** Caller session context, so file-backed internal URLs (`local://`) locate under the caller's own root. */
+		context?: ResolveContext;
 	} = {},
 ): Promise<string[] | null> {
 	const normalizedEntry = normalizePathLikeInput(entry);
@@ -690,11 +707,17 @@ export async function splitDelimitedPathEntry(
 		return parts?.every(options.routedUrlPredicate) ? parts : null;
 	}
 	// An internal URL that still carries a top-level `;` is a flattened list
-	// (`history://A;history://B`, `skill://x;/abs/path`, grievances #483/#492):
-	// fan it out the same way read's mixed-URL recovery does. A URL whose parts
-	// do not each name a URL or an existing literal path stays whole.
+	// (`history://A;history://B`, `skill://x;/abs/path`): fan it out the same way
+	// read's mixed-URL recovery does. Splitting is deliberately strict: every
+	// part must be a URL or an existing literal path without glob characters, so
+	// `catalog://items;active` and `skill://demo;*.md` stay whole. When a URL part
+	// has its own path segments, a relative tail (`skill://demo/a;b.md`) is
+	// ambiguous with a literal `;` in the resource name, so only anchored tails
+	// (absolute, `./`, `../`, `~`) fan out and the URL keeps literal precedence.
 	if (isInternalUrlPath(normalizedEntry)) {
-		return splitMixedUrlPathList(normalizedEntry, cwd, isInternalUrlPath);
+		const parts = await splitMixedUrlPathList(normalizedEntry, cwd, isInternalUrlPath, options.context);
+		if (!parts) return null;
+		return hasAmbiguousRelativeTail(parts) ? null : parts;
 	}
 	// A real POSIX file may contain a delimiter and a selector-shaped tail
 	// (`a;b:1-2`, `a b:1-2`). Preserve the raw entry whenever the full literal
@@ -719,6 +742,15 @@ export async function splitDelimitedPathEntry(
 	);
 }
 
+/** Whether the complete internal URL locates an existing local target; locate failures mean "does not". */
+async function internalUrlLocatesExisting(entry: string, cwd: string, context?: ResolveContext): Promise<boolean> {
+	try {
+		return (await InternalUrlRouter.instance().locate(entry, { cwd, ...context })) !== null;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Split a `;` list that names URLs alongside local paths
  * (`https://x;src/a.ts:1-20`, `omp://;Makefile:1-3`). Engages only when URL
@@ -732,10 +764,16 @@ export async function splitMixedUrlPathList(
 	entry: string,
 	cwd: string,
 	isUrl: (part: string) => boolean,
+	context?: ResolveContext,
 ): Promise<string[] | null> {
 	const normalizedEntry = normalizePathLikeInput(entry);
 	if (!normalizedEntry.includes(";") || !isUrl(normalizedEntry)) return null;
-	if (!isInternalUrlPath(normalizedEntry)) {
+	if (isInternalUrlPath(normalizedEntry)) {
+		// A file-backed internal URL may legitimately carry a literal `;`
+		// (`local://notes;README.md` names the artifact `notes;README.md`). When the
+		// whole URL locates an existing target it is one path, never a list.
+		if (await internalUrlLocatesExisting(normalizedEntry, cwd, context)) return null;
+	} else {
 		if ((await probeLiteralPathExists(normalizedEntry, cwd)) !== "missing") return null;
 		const selectorSplit = splitPathAndSel(normalizedEntry);
 		if (selectorSplit.sel !== undefined && (await probeLiteralPathExists(selectorSplit.path, cwd)) !== "missing") {
@@ -756,7 +794,7 @@ export async function splitMixedUrlPathList(
 export async function expandDelimitedPathEntries(
 	entries: readonly string[],
 	cwd: string,
-	options: { splitter?: PathEntrySplitter } = {},
+	options: { splitter?: PathEntrySplitter; context?: ResolveContext } = {},
 ): Promise<string[]> {
 	const expanded: string[] = [];
 	for (const entry of entries) {
@@ -1373,6 +1411,8 @@ export interface ToolScopeOptions {
 	fanOutFileTargets?: boolean;
 	/** Extra hint appended to "Path not found" when stat fails and the user supplied multiple paths. */
 	multipathStatHint?: string;
+	/** Caller session context for locating file-backed internal URLs while expanding `;` lists. */
+	context?: ResolveContext;
 	/** Materialize readable external URLs to local text files before scope derivation. */
 	resolveExternalUrl?: (rawPath: string) => Promise<ResolvedExternalSearchUrl | undefined>;
 }
@@ -1398,12 +1438,12 @@ export interface ToolScopeResolution {
  *  5. stat the resolved base path through `filesystem` so callers can branch on directory vs file scope.
  */
 export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<ToolScopeResolution> {
-	const { rawPaths: inputs, cwd, internalUrlAction } = opts;
+	const { rawPaths: inputs, cwd, internalUrlAction, context } = opts;
 	const normalizedRawPaths = inputs.map(normalizePathLikeInput);
 	if (normalizedRawPaths.some(rawPath => rawPath.length === 0)) {
 		throw new ToolError("Search scope entries must be non-empty paths or globs");
 	}
-	const rawPaths = await expandDelimitedPathEntries(normalizedRawPaths, cwd);
+	const rawPaths = await expandDelimitedPathEntries(normalizedRawPaths, cwd, { context });
 	if (rawPaths.some(rawPath => rawPath.length === 0)) {
 		throw new ToolError("Search scope entries must be non-empty paths or globs");
 	}

@@ -9,7 +9,7 @@
 ### Fixed
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
-- Fixed `;`-separated path lists containing internal URLs (`history://A;history://B`, `skill://x;/abs/path`) being parsed as a single path ("Unknown skill: …;skill:"); search and find now fan them out the same way `read` already did
+- Fixed `;`-separated path lists containing internal URLs (`history://A;history://B`, `skill://x;/abs/path`) being parsed as a single path ("Unknown skill: …;skill:"); search and find now fan them out the same way `read` already did when every local part is an existing file without glob characters (`skill://demo;*.md`, a literal `;` inside a URL path, and a file-backed URL that locates as a whole such as `local://notes;README.md` stay whole)
 
 ## [18.4.12] - 2026-10-02
 
