@@ -806,6 +806,47 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 		expect(requirement?.rawText).toBe("ok [Image #1, 4x4]");
 		expect(requirement?.images?.[0]?.sha256).toBe(createHash("sha256").update(Buffer.from(data, "base64")).digest("hex"));
 	});
+
+	it("gates a same-turn candidate against mutating tools until it is classified", () => {
+		const manager = SessionManager.inMemory();
+		const runtime = new RequirementsLedgerRuntime({
+			agent: {} as never,
+			agentKind: () => "main",
+			cwd: () => "/",
+			sessionManager: manager,
+			onSettledAssistantMessage: () => {},
+			setPublicationGate: () => {},
+		});
+
+		runtime.captureCandidate("write probe.txt into the repo");
+		expect(runtime.refuseOverdueCandidate("write")?.block).toBe(true);
+		expect(runtime.refuseOverdueCandidate("bash")?.block).toBe(true);
+		expect(runtime.refuseOverdueCandidate("read")).toBeUndefined();
+		expect(runtime.refuseOverdueCandidate("todo")).toBeUndefined();
+
+		const classified = classifyRequirement(getLatestRequirements(manager.getBranch()), "R1", "linked", {
+			rows: ["Write probe"],
+		});
+		if ("error" in classified) throw new Error(classified.error);
+		appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, classified.requirements);
+		expect(runtime.refuseOverdueCandidate("write")).toBeUndefined();
+	});
+
+	it("does not gate a user message that produces no candidate", () => {
+		const manager = SessionManager.inMemory();
+		const runtime = new RequirementsLedgerRuntime({
+			agent: {} as never,
+			agentKind: () => "main",
+			cwd: () => "/",
+			sessionManager: manager,
+			onSettledAssistantMessage: () => {},
+			setPublicationGate: () => {},
+		});
+
+		runtime.captureCandidate("go");
+		expect(getLatestRequirements(manager.getBranch())).toEqual([]);
+		expect(runtime.refuseOverdueCandidate("write")).toBeUndefined();
+	});
 });
 
 describe("awaiting-user publication gate", () => {

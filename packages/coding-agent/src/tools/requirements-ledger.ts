@@ -828,26 +828,9 @@ export interface RequirementAuditAssignment {
 	/** Explicit row scope from the audit task; absent on old all-row assignments. */
 	rows?: string[];
 }
-/** Candidates become overdue after an assistant turn ends later in the same branch. */
+/** Unclassified candidates gate mutating tools from the moment their user message is captured, in the same turn. */
 export function getOverdueRequirementCandidates(entries: readonly SessionEntry[]): RequirementLedgerItem[] {
-	const capturedAt = new Map<string, number>();
-	let latestAssistantStop = -1;
-	for (let index = 0; index < entries.length; index++) {
-		const entry = entries[index]!;
-		if (entry.type === "custom" && entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) {
-			for (const requirement of getLatestRequirements([entry])) {
-				if (!capturedAt.has(requirement.id)) capturedAt.set(requirement.id, index);
-			}
-		}
-		if (entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "stop") {
-			latestAssistantStop = index;
-		}
-	}
-	return getLatestRequirements(entries).filter(
-		requirement =>
-			requirement.classification === "candidate" &&
-			(capturedAt.get(requirement.id) ?? Infinity) < latestAssistantStop,
-	);
+	return getLatestRequirements(entries).filter(requirement => requirement.classification === "candidate");
 }
 function requirementTableCells(line: string): string[] | null {
 	const trimmed = line.trim();
