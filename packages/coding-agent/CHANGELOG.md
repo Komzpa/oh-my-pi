@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Fixed crashed long-session resume retaining discarded history: file journals and read-only collapsed history now share streaming migrations and a lightweight byte index, materialize selected context, and read historical entries on demand without a permanent full-history payload cache. Full-history reads, historical edits, and concurrent rewrite publication preserve the complete journal. Mutable historical entries use tracking proxies; canonical session snapshots unwrap them before cloning.
+- Fixed long-session resume retaining discarded history in memory while preserving context, history, tree navigation, exports, and persisted edits ([#123](https://github.com/Komzpa/oh-my-pi/pull/123) by [@Komzpa](https://github.com/Komzpa)).
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
