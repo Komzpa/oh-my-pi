@@ -484,7 +484,7 @@ export function buildSessionContext(
 
 	// Walk from leaf to root, collecting path. Corrupt/pre-fix files can contain
 	// parent cycles; stop at the first repeat so session load is bounded.
-	let path: SessionEntry[] = [];
+	const path: SessionEntry[] = [];
 	const seenPathIds = new Set<string>();
 	let current: SessionEntry | undefined = leaf;
 	while (current && !seenPathIds.has(current.id)) {
@@ -519,7 +519,6 @@ export function buildSessionContextFromLeafPath(
 	// with the wrong model id, which previously clobbered the user's pick on
 	// resume (issue #849).
 	let hasExplicitDefaultModel = false;
-	path = projectToolResultPrunes(path);
 
 
 	const projectedPath = projectToolResultPrunes(path);
