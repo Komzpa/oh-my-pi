@@ -794,6 +794,50 @@ describe("restart queue controller", () => {
 		expect(texts[0]).not.toMatch(/do not start another model turn/i);
 		controller.dispose();
 	});
+	it("queues the terminal notice before waking the root with its continuation", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const oldIdentity = identityFor(manager, "instance-X", 1);
+		const requestId = "notice-before-continuation";
+		const now = Date.now();
+		for (const state of ["queued", "draining", "checkpointed", "restarting"] as const) {
+			await appendQueueRecord(manager, oldIdentity, {
+				version: 1,
+				requestId,
+				sessionId: oldIdentity.sessionId,
+				state,
+				requestedAt: now,
+				updatedAt: now,
+				rootWasRunning: true,
+			});
+		}
+		manager.appendCustomMessageEntry(
+			"restart-queued",
+			`Restart ${requestId} is queued. Do not start another model turn until it completes.`,
+			true,
+			{ requestId, state: "queued" },
+		);
+		await manager.flush();
+		const order: string[] = [];
+		const harness = makeSession(manager, {
+			onCustomMessage: () => {
+				order.push("notice");
+			},
+			onDelivery: () => {
+				order.push("continuation");
+			},
+		});
+		registerRoot(AgentRegistry.global(), harness.session, manager.getSessionFile()!);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identityFor(manager, "instance-Y", 2),
+			restart: async () => {},
+		});
+		await controller.restore();
+		expect(order).toEqual(["notice", "continuation"]);
+		controller.dispose();
+	});
+
 	it("cross-instance restore appends the terminal notice to the live next-turn list", async () => {
 		const cwd = makeTempDir();
 		const { manager } = await createRoot(cwd);
@@ -947,6 +991,28 @@ describe("restart-queued notice replay (session 01a0e3fe)", () => {
 		const context = buildSessionContext(entries, undefined, undefined, {});
 		const kept = activeQueuedNotices(context.messages);
 		expect(kept).toHaveLength(1);
+	});
+
+	it("keeps a detail-free notice whose request id contains periods", () => {
+		const requestId = "request.id";
+		const entries: SessionEntry[] = [];
+		let parent: string | null = null;
+		const push = (entry: SessionEntry) => {
+			entries.push(entry);
+			parent = entry.id;
+		};
+		push(userMessage(parent, "before restart"));
+		push(transition(parent, requestId, "queued", "instance-1"));
+		const notice = queuedNotice(parent, requestId) as unknown as Record<string, unknown>;
+		notice.details = undefined;
+		notice.content = `Restart ${requestId} is queued. Do not start another model turn until it completes.`;
+		push(notice as unknown as SessionEntry);
+		push(userMessage(parent, "next turn"));
+
+		const context = buildSessionContext(entries, undefined, undefined, {});
+		expect(
+			context.messages.filter(message => message.role === "custom" && message.customType === "restart-queued"),
+		).toHaveLength(1);
 	});
 
 	it("adds no restart notice for a session without restart history", () => {

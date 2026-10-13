@@ -4022,6 +4022,10 @@ export class AgentSession implements SettingsScope {
 				this.#settlePendingNextTurnDelivery(nextTurnDelivery, false);
 			}
 			if (queuedDelivery === undefined) return;
+			// Only a drain (or an already-active checkpoint) owns queue state. An ordinary abort
+			// must not write a checkpoint that a later resume would replay; the live-queue
+			// restore path already handles that delivery.
+			if (this.#restartDrainLeaseCount === 0 && !this.#restartPendingQueuesCheckpointActive) return;
 
 			// The message_end belongs to a superseded turn, so its transcript
 			// entry must not be appended. Persist the unacknowledged delivery
@@ -6756,7 +6760,14 @@ export class AgentSession implements SettingsScope {
 			wasRunning,
 			waitForQuiescence: () => {
 				if (released) return Promise.reject(new Error("Restart drain lease has already been released"));
-				this.#restartDrainQuiescence ??= this.#waitForRestartDrainQuiescence(generation);
+				if (this.#restartDrainQuiescence === undefined) {
+					const attempt = this.#waitForRestartDrainQuiescence(generation);
+					this.#restartDrainQuiescence = attempt;
+					// A rejected wait must not stay cached: the pause error tells the caller to retry on the same lease.
+					attempt.catch(() => {
+						if (this.#restartDrainQuiescence === attempt) this.#restartDrainQuiescence = undefined;
+					});
+				}
 				return this.#restartDrainQuiescence;
 			},
 			release: () => {
@@ -6771,6 +6782,9 @@ export class AgentSession implements SettingsScope {
 				this.#restartDrainStoppedRun = false;
 				this.#restartDrainNeedsResume = false;
 				if (this.#isDisposed) return;
+				// The restart was cancelled: a checkpoint written during the drain is stale once the
+				// live queues move on, so supersede it with the current state before they do.
+				this.#supersedeRestartCheckpoint();
 				if (resume) {
 					if (!this.#abortInProgress && !this.agent.isAborting && !this.#advisors.autoResumeSuppressed) {
 						if (!agentPauseGate.paused) this.#scheduleAgentContinue({ source: "restart-drain-cancelled" });
@@ -6889,6 +6903,25 @@ export class AgentSession implements SettingsScope {
 		) {
 			throw new Error("Restart drain blocked: the pending queue checkpoint is not resumable on disk.");
 		}
+	}
+
+	/**
+	 * Keep the newest restart checkpoint equal to the live queues once a checkpoint exists and no
+	 * drain owns it. Called only from explicit queue edits and drain release, never from the
+	 * agent's dequeue path: a message claimed for delivery is not yet in the snapshot's delivery
+	 * suffix there, and an interim checkpoint would drop it if its atomic commit then failed. Without this, a cancelled restart or a queue edit leaves an older snapshot
+	 * that `#restorePendingRestartMessages` would replay on the next resume.
+	 */
+	#supersedeRestartCheckpoint(): void {
+		if (!this.#restartPendingQueuesCheckpointActive || this.#restartDrainLeaseCount > 0 || this.#isDisposed) return;
+		const checkpoint: RestartPendingQueues = {
+			...this.agent.snapshotPendingQueues(),
+			pendingNextTurn: [...this.#pendingNextTurnMessages],
+		};
+		const signature = restartPendingQueuesSignature(checkpoint);
+		if (signature === this.#lastRestartPendingQueuesSignature) return;
+		this.#lastRestartPendingQueuesSignature = signature;
+		this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, checkpoint);
 	}
 
 	async #queueRestartMessage(message: CustomMessage): Promise<void> {
@@ -8038,7 +8071,12 @@ export class AgentSession implements SettingsScope {
 		return this.#admitSubmission(
 			async () => {
 				if (this.#restartDrainLeaseCount > 0) {
+					// Admission is acknowledged as soon as the message is queued, before the
+					// checkpoint persistence below. Registered extension commands are rejected by
+					// followUp() with "cannot be queued": they have no deferred form, so a drain
+					// refuses them rather than replaying them after the restart.
 					await this.followUp(text, options?.images, {
+						onPromptAdmitted: options?.onPromptAdmitted,
 						attribution: options?.attribution,
 						expandPromptTemplates: options?.expandPromptTemplates,
 						synthetic: options?.synthetic,
@@ -9150,6 +9188,7 @@ export class AgentSession implements SettingsScope {
 				timestamp: submittedAt,
 				attribution: options?.attribution,
 				rawText: text,
+				onPromptAdmitted: options?.onPromptAdmitted,
 			});
 			return;
 		}
@@ -9177,6 +9216,7 @@ export class AgentSession implements SettingsScope {
 			// user's prompt anchor, matching the live agent_start clear.
 			synthetic: true,
 		});
+		options.onPromptAdmitted?.();
 		this.#scheduleIdleQueueDrain();
 	}
 
@@ -9899,6 +9939,7 @@ export class AgentSession implements SettingsScope {
 		}
 		this.agent.replaceQueues(steeringAll.filter(keep), followUpAll.filter(keep));
 		this.#reconcileQueuedMessageDrain();
+		this.#supersedeRestartCheckpoint();
 		return { steering, followUp };
 	}
 
@@ -9991,6 +10032,7 @@ export class AgentSession implements SettingsScope {
 		const removed = selected[index];
 		this.agent.replaceQueue(queue, this.#withoutQueuedUserMessage(selected, index));
 		this.#reconcileQueuedMessageDrain();
+		this.#supersedeRestartCheckpoint();
 		return toRestoredQueuedMessage(removed);
 	}
 
@@ -10016,6 +10058,7 @@ export class AgentSession implements SettingsScope {
 		// single transition — never the group in both queues or in neither — and the
 		// agent's in-flight steering watchers wake.
 		this.agent.moveFollowUpsToSteering(this.#withoutQueuedUserMessage(followUp, index), promoted);
+		this.#supersedeRestartCheckpoint();
 		this.#allowQueuedMessageDrainRetry();
 		this.#scheduleIdleQueueDrain();
 		return true;
@@ -10070,6 +10113,7 @@ export class AgentSession implements SettingsScope {
 			const removed = steering[fromSteer];
 			this.agent.replaceQueues(this.#withoutQueuedUserMessage(steering, fromSteer), followUp.slice());
 			this.#reconcileQueuedMessageDrain();
+			this.#supersedeRestartCheckpoint();
 			return toRestoredQueuedMessage(removed);
 		}
 		const fromFollowUp = lastUserIndex(followUp);
@@ -10077,6 +10121,7 @@ export class AgentSession implements SettingsScope {
 			const removed = followUp[fromFollowUp];
 			this.agent.replaceQueues(steering.slice(), this.#withoutQueuedUserMessage(followUp, fromFollowUp));
 			this.#reconcileQueuedMessageDrain();
+			this.#supersedeRestartCheckpoint();
 			return toRestoredQueuedMessage(removed);
 		}
 		return undefined;

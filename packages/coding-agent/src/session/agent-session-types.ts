@@ -480,6 +480,8 @@ export interface FollowUpOptions {
 	expandPromptTemplates?: boolean;
 	/** Explicit billing/initiator attribution. */
 	attribution?: MessageAttribution;
+	/** Called synchronously once the message is on its queue. See {@link PromptOptions.onPromptAdmitted}. */
+	onPromptAdmitted?: () => void;
 }
 
 /** Options for AgentSession.steer(). */
