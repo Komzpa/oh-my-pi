@@ -466,12 +466,14 @@ describe("real executor terminal yield with worker-owned bash", () => {
 				resolve();
 			}
 		});
-		void Bun.file(pathname).exists().then(exists => {
-			if (exists) {
-				watcher.close();
-				resolve();
-			}
-		});
+		void Bun.file(pathname)
+			.exists()
+			.then(exists => {
+				if (exists) {
+					watcher.close();
+					resolve();
+				}
+			});
 		await promise;
 	}
 
@@ -571,15 +573,11 @@ describe("real executor terminal yield with worker-owned bash", () => {
 					session.messages.find(
 						message => message.role === "toolResult" && message.toolCallId === "finished-yield",
 					) ??
-					session.messages.find(
-						message => message.role === "toolResult" && message.toolCallId === "second-yield",
-					)
+					session.messages.find(message => message.role === "toolResult" && message.toolCallId === "second-yield")
 				) {
 					throw new Error("unexpected extra model turn after terminal acceptance");
 				}
-				if (
-					session.messages.find(message => message.role === "toolResult" && message.toolCallId === "wait-job")
-				) {
+				if (session.messages.find(message => message.role === "toolResult" && message.toolCallId === "wait-job")) {
 					expect(manager.getJob(jobId)?.status).toBe("completed");
 					return {
 						content: [
@@ -672,8 +670,9 @@ describe("real executor terminal yield with worker-owned bash", () => {
 
 	for (const autoBackground of [false, true]) {
 		it(`refuses once before accepting abandonment through the real executor (auto-background=${autoBackground})`, async () => {
-			const { result, refused, installed, jobId, command, jobStatus, startedAt } =
-				await runOwnedJob({ autoBackground });
+			const { result, refused, installed, jobId, command, jobStatus, startedAt } = await runOwnedJob({
+				autoBackground,
+			});
 			expect(result.exitCode).toBe(0);
 			expect(refused).toBe(1);
 			expect(result.abandonedJobs).toEqual([

@@ -471,7 +471,6 @@ export class AsyncJobManager {
 		return this.#filterJobs(this.#jobs.values(), { ownerId }).filter(job => job.status === "running");
 	}
 
-
 	/** Settled background jobs, newest first; foreground-backed jobs stay hidden. */
 	getRecentJobs(limit = 10, filter?: AsyncJobFilter): AsyncJob[] {
 		return this.#visibleJobs(filter)

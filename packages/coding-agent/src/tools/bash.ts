@@ -808,7 +808,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		}
 		lines.push(formatBackgroundNotice(jobId, timeoutSec));
 		const owner = this.session.requireYieldTool ? "this worker" : "this session";
-		lines.push(`Command is still running and owned by ${owner}. Wait for its result before submitting a final yield.`);
+		lines.push(
+			`Command is still running and owned by ${owner}. Wait for its result before submitting a final yield.`,
+		);
 		return {
 			content: [{ type: "text", text: lines.join("\n") }],
 			details,
