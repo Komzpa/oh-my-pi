@@ -223,6 +223,7 @@ import {
 	kStreamingPartialJson,
 } from "../utils/block-symbols";
 import { deterministicUuid } from "../utils/deterministic-id";
+import { isSubagentElapsedNote } from "../utils/subagent-elapsed-note";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { connectProxiedSocket, getProxyForUrl, wrapFetchForProxy } from "../utils/proxy";
 import { createRequestDebugSession, isRequestDebugEnabled, type RequestDebugResponseLog } from "../utils/request-debug";
@@ -6621,6 +6622,12 @@ async function buildGrpcRequestForWireMode(
 	wireMode: CursorWireMode,
 ): Promise<CursorTransportRequest> {
 	const blobStore = state.blobStore;
+	// The subagent elapsed note is advisory scaffolding with no wire slot: left
+	// in place it would become the active userMessageAction instead of the
+	// resumeAction a trailing tool result needs.
+	if (context.messages.some(isSubagentElapsedNote)) {
+		context = { ...context, messages: context.messages.filter(message => !isSubagentElapsedNote(message)) };
+	}
 
 	const systemPromptIds = buildCursorSystemPromptJsons(context.systemPrompt).map(json =>
 		storeCursorBlob(blobStore, new TextEncoder().encode(json)),

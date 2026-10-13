@@ -1,27 +1,18 @@
-import type { Context } from "@oh-my-pi/pi-ai";
+import type { Context, DeveloperMessage } from "@oh-my-pi/pi-ai";
+import { markPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
+import { isSubagentElapsedNote } from "@oh-my-pi/pi-ai/utils/subagent-elapsed-note";
 import { prompt } from "@oh-my-pi/pi-utils";
 import subagentElapsedNoteTemplate from "../prompts/tools/subagent-elapsed-note.md" with { type: "text" };
 
-const SUBAGENT_ELAPSED_NOTE = /^elapsed \d+s \/ 900s$/;
-
 export function withSubagentElapsedSignal(context: Context, elapsedSeconds: number): Context {
-	const messages = context.messages.filter(
-		message =>
-			message.role !== "developer" ||
-			!message.synthetic ||
-			typeof message.content !== "string" ||
-			!SUBAGENT_ELAPSED_NOTE.test(message.content),
-	);
-	return {
-		...context,
-		messages: [
-			...messages,
-			{
-				role: "developer",
-				content: prompt.render(subagentElapsedNoteTemplate, { elapsedSeconds }),
-				synthetic: true,
-				timestamp: Date.now(),
-			},
-		],
+	const messages = context.messages.filter(message => !isSubagentElapsedNote(message));
+	const note: DeveloperMessage = {
+		role: "developer",
+		content: prompt.render(subagentElapsedNoteTemplate, { elapsedSeconds }),
+		synthetic: true,
+		timestamp: Date.now(),
 	};
+	// Provider cache logic skips per-call context: the note changes every request.
+	markPerCallContextMessage(note);
+	return { ...context, messages: [...messages, note] };
 }

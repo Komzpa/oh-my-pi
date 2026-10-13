@@ -68,6 +68,7 @@ import {
 	resolveCacheRetention,
 } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
+import { isSubagentElapsedNote } from "../utils/subagent-elapsed-note";
 import {
 	clearStreamingPartialJson,
 	copyPerCallContextMessage,
@@ -4790,21 +4791,10 @@ type AnthropicControlSpec = { toolChanges: AnthropicToolChange[]; effort?: Anthr
 
 type AnthropicControlCarrier = object & { [ANTHROPIC_CONTROL]?: AnthropicControlSpec };
 
-const ANTHROPIC_SUBAGENT_ELAPSED_NOTE = /^elapsed \d+s \/ 900s$/;
-
-function isAnthropicSubagentElapsedNote(message: Message): boolean {
-	return (
-		message.role === "developer" &&
-		message.synthetic === true &&
-		typeof message.content === "string" &&
-		ANTHROPIC_SUBAGENT_ELAPSED_NOTE.test(message.content)
-	);
-}
-
 function anthropicRetainedMessageCount(messages: readonly Message[]): number {
 	let count = 0;
 	for (const message of messages) {
-		if (!isAnthropicSubagentElapsedNote(message)) count++;
+		if (!isSubagentElapsedNote(message)) count++;
 	}
 	return count;
 }

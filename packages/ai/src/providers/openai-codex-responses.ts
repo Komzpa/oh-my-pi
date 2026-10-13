@@ -62,6 +62,7 @@ import {
 } from "../utils";
 import { clearStreamingPartialJson, kStreamingLastParseLen, kStreamingPartialJson } from "../utils/block-symbols";
 import { hasVisibleAssistantContent } from "../utils/empty-completion-retry";
+import { isSubagentElapsedNote } from "../utils/subagent-elapsed-note";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { escapeHarmonyControlTokens, isHarmonyDialectModel } from "../utils/harmony-leak";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
@@ -2024,22 +2025,11 @@ function getCodexTurnStartedAtUnixMs(context: Context): number {
  * The trailing subagent elapsed signal is provider-only scaffolding, not
  * conversation: skipping it keeps tool-result continuations within the turn.
  */
-const CODEX_SUBAGENT_ELAPSED_NOTE = /^elapsed \d+s \/ 900s$/;
-
-function isCodexSubagentElapsedNote(message: Context["messages"][number] | undefined): boolean {
-	return (
-		message?.role === "developer" &&
-		message.synthetic === true &&
-		typeof message.content === "string" &&
-		CODEX_SUBAGENT_ELAPSED_NOTE.test(message.content)
-	);
-}
-
 function isCodexWithinTurnContinuation(context: Context): boolean {
 	for (let i = context.messages.length - 1; i >= 0; i--) {
 		const message = context.messages[i];
 		if (message?.role === "toolResult") continue;
-		if (isCodexSubagentElapsedNote(message)) continue;
+		if (isSubagentElapsedNote(message)) continue;
 		return message?.role === "assistant";
 	}
 	return false;
@@ -5112,7 +5102,7 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 			const normalizedContent = normalizeInputMessageContent(model, msg.content);
 			if (normalizedContent.length === 0) continue;
 			const inputItem: CodexMarkableInputItem = { role: msg.role, content: normalizedContent };
-			if (isCodexSubagentElapsedNote(msg)) {
+			if (isSubagentElapsedNote(msg)) {
 				// Per-request elapsed scaffolding rides the wire but stays out of the
 				// chain baseline/prefix walk.
 				inputItem[CODEX_TRANSIENT_INPUT_ITEM] = true;
