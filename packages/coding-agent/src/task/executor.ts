@@ -4,6 +4,7 @@
  * Runs each subagent on the main thread and forwards AgentEvents for progress tracking.
  */
 
+import { findFallbackEntryForEvent } from "./fallback-attribution";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
@@ -2164,6 +2165,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			progress.contextWindow = contextWindow;
 			scheduleProgress(true);
 		};
+		const attributedFallbackEntries = new Set<string>();
 		return session.subscribe(event => {
 			emitSubagentEvent(event);
 			publishAdvisorState(session);
@@ -2172,10 +2174,13 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				progress.firstTurnModel ??= `${event.message.provider}/${event.message.model}`;
 			}
 			if (event.type === "retry_fallback_applied") {
-				const entry = session.sessionManager
-					.getBranch()
-					.findLast(entry => entry.type === "model_change" && entry.resolvedModelIsFallback);
-				if (entry?.type === "model_change") {
+				const entry = findFallbackEntryForEvent(
+					session.sessionManager.getBranch(),
+					event.from,
+					attributedFallbackEntries,
+				);
+				if (entry) {
+					attributedFallbackEntries.add(entry.id);
 					(progress.fallbacks ??= []).push({
 						from: entry.fallback?.from ?? event.from,
 						to: entry.model,
