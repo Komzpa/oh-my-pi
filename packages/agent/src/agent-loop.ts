@@ -1242,6 +1242,7 @@ async function runLoopBody(
 		let hostToolChoice: ToolChoice | undefined;
 		let softRequiredTool: string | undefined;
 		let softSatisfies: SoftToolRequirement["satisfies"];
+		let softRequirementReminder: string | undefined;
 		let directiveResolvedForTurn = false;
 		let turnOpen = false;
 		// A trailing assistant message with unpaired tool calls: the harness
@@ -1337,6 +1338,7 @@ async function runLoopBody(
 						hostToolChoice = directive === undefined || isSoftToolRequirement(directive) ? undefined : directive;
 						softRequiredTool = softReq?.toolName;
 						softSatisfies = softReq?.satisfies;
+						softRequirementReminder = softReq ? firstReminderSentence(softReq.reminder) : undefined;
 						const softRequirementId = softRequirementState.id;
 						if (softReq !== undefined) {
 							if (softReq.id !== softRequirementId) {
@@ -1620,12 +1622,13 @@ async function runLoopBody(
 					// reminder pays no message-cache invalidation. Re-engage so the loop
 					// never yields while the requirement is unmet.
 					for (const toolCall of toolCalls) {
-						const result = createAbortedToolResult(
-							toolCall,
-							stream,
-							"skipped",
-							`Not executed: call the \`${softRequiredTool}\` tool to resolve the pending action before using other tools.`,
-						);
+						const reason = [`waiting for the \`${softRequiredTool}\` tool first`, softRequirementReminder]
+							.filter(Boolean)
+							.join(" — ");
+						const result = createAbortedToolResult(toolCall, stream, "skipped", reason, {
+							source: "soft_requirement_skipped",
+							waitingFor: softRequiredTool,
+						});
 						currentContext.messages.push(result);
 						newMessages.push(result);
 						toolResults.push(result);
@@ -2828,6 +2831,30 @@ function resolveToolForCall(
 	);
 }
 
+function firstReminderSentence(reminders: AgentMessage[]): string | undefined {
+	const text: string[] = [];
+	for (const reminder of reminders) {
+		const content = (reminder as { content?: unknown }).content;
+		if (typeof content === "string") text.push(content);
+		else if (Array.isArray(content)) {
+			for (const part of content) {
+				if (part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part) {
+					const value = part.text;
+					if (typeof value === "string") text.push(value);
+				}
+			}
+		}
+	}
+	const flattened = text
+		.join(" ")
+		.replace(/<[^>]*>/gu, " ")
+		.replace(/\s+/gu, " ")
+		.trim();
+	if (!flattened) return undefined;
+	const sentence = flattened.match(/^.*?[.!?](?=\s|$)/u)?.[0];
+	return sentence ?? flattened;
+}
+
 /** Shortest suggestable segment; below this the match is noise (`id`, `to`). */
 const MIN_TOOL_NAME_SUGGESTION_SEGMENT = 3;
 /** Cap on names listed for an ambiguous miss, so the error stays readable. */
@@ -3862,9 +3889,11 @@ export interface SyntheticToolResultDetails {
 		| "assistant_stop_aborted"
 		| "assistant_stop_error"
 		| "assistant_stop_skipped"
+		| "soft_requirement_skipped"
 		| "assistant_stop_length"
 		| "interrupt_skipped";
 	executed: false;
+	waitingFor?: string;
 	upstreamError?: string;
 }
 
@@ -3898,19 +3927,22 @@ export function isSyntheticToolResultMessage(
 function syntheticDetailsFor(
 	reason: "aborted" | "error" | "skipped" | "length",
 	errorMessage: string | undefined,
+	options?: { source?: SyntheticToolResultDetails["source"]; waitingFor?: string },
 ): SyntheticToolResultDetails {
 	const source: SyntheticToolResultDetails["source"] =
-		reason === "aborted"
+		options?.source ??
+		(reason === "aborted"
 			? "assistant_stop_aborted"
 			: reason === "error"
 				? "assistant_stop_error"
 				: reason === "length"
 					? "assistant_stop_length"
-					: "assistant_stop_skipped";
+					: "assistant_stop_skipped");
 	return {
 		__synthetic: true,
 		source,
 		executed: false,
+		...(options?.waitingFor ? { waitingFor: options.waitingFor } : {}),
 		...(reason === "error" && errorMessage ? { upstreamError: errorMessage } : {}),
 	};
 }
@@ -3923,6 +3955,7 @@ export function createSyntheticToolResultMessage(
 	toolCall: Extract<AssistantMessage["content"][number], { type: "toolCall" }>,
 	reason: "aborted" | "error" | "skipped" | "length",
 	errorMessage?: string,
+	options?: { source?: SyntheticToolResultDetails["source"]; waitingFor?: string },
 ): ToolResultMessage<SyntheticToolResultDetails> {
 	const message =
 		reason === "aborted"
@@ -3930,9 +3963,11 @@ export function createSyntheticToolResultMessage(
 			: reason === "length"
 				? "Tool call was not executed because the assistant hit its output token limit (stop_reason: length) before the arguments could complete; the recorded arguments are truncated and unsafe to run. Do NOT retry by re-emitting the same large payload — split the work into several smaller tool calls (e.g. for `write`/`edit`, write the first chunk then append the rest with subsequent `edit` insert ops, or break the file into multiple `write` targets)"
 				: reason === "skipped"
-					? "Tool call was not executed because the assistant ended its turn"
+					? options?.source === "soft_requirement_skipped"
+						? "Tool call was skipped"
+						: "Tool call was not executed because the assistant ended its turn"
 					: "Tool call was not executed because the provider stream ended with an error before the tool could run";
-	const details = syntheticDetailsFor(reason, errorMessage);
+	const details = syntheticDetailsFor(reason, errorMessage, options);
 	return {
 		role: "toolResult",
 		toolCallId: toolCall.id,
@@ -3953,8 +3988,9 @@ function createAbortedToolResult(
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	reason: "aborted" | "error" | "skipped" | "length",
 	errorMessage?: string,
+	options?: { source?: SyntheticToolResultDetails["source"]; waitingFor?: string },
 ): ToolResultMessage {
-	const toolResultMessage = createSyntheticToolResultMessage(toolCall, reason, errorMessage);
+	const toolResultMessage = createSyntheticToolResultMessage(toolCall, reason, errorMessage, options);
 	const result: AgentToolResult<SyntheticToolResultDetails> = {
 		content: toolResultMessage.content,
 		details: toolResultMessage.details,

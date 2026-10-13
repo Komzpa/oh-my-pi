@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a tool call skipped while a soft tool requirement is pending telling the model "the assistant ended its turn"; the result now says which tool it is waiting for and repeats the first sentence of the reminder, and carries `source: "soft_requirement_skipped"` with `waitingFor` in its details
+
 ## [18.10.4] - 2026-10-13
 
 ### Added

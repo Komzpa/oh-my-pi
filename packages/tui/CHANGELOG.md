@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a tool call skipped while a soft tool requirement is pending rendering as a failed tool card; it now shows a single `Skipped (waiting for <tool>)` row
+
 ## [18.10.4] - 2026-10-13
 
 ### Added
