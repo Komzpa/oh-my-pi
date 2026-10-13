@@ -10,6 +10,7 @@ import type { BunFile } from "bun";
 
 /** Latch-cache bound enforced by `ensurePersistedRoster` (see MAX_PERSISTED_ROSTER_LATCHES). */
 const MAX_PERSISTED_ROSTER_LATCHES = 32;
+const MAX_PERSISTED_TERMINAL_SUBAGENTS_PER_ROOT = 128;
 
 function sessionHeader(id: string): string {
 	return JSON.stringify({
@@ -282,6 +283,44 @@ describe("persisted roster latch semantics", () => {
 		// A's failed scan dropped its latch: a retry re-scans A.
 		await ensurePersistedRoster(registry, rootA);
 		expect(countReaddirs(readdirs, scanDir(rootA))).toBe(2);
+	});
+
+	it("bounds terminal refs but restores an explicitly requested evicted child", async () => {
+		using tempDir = TempDir.createSync("@omp-roster-terminal-bound-");
+		const dir = tempDir.path();
+		const rootFile = path.join(dir, "main.jsonl");
+		const rootDir = scanDir(rootFile);
+		const childCount = MAX_PERSISTED_TERMINAL_SUBAGENTS_PER_ROOT + 12;
+		const childId = (index: number) => `Worker-${String(index).padStart(3, "0")}`;
+		await Bun.write(rootFile, `${sessionHeader("main")}\n`);
+		await Promise.all(
+			Array.from({ length: childCount }, (_, index) => {
+				const id = childId(index);
+				const childFile = path.join(rootDir, `${id}.jsonl`);
+				return Bun.write(childFile, `${sessionHeader(id)}\n${sessionInitRecord()}\n`);
+			}),
+		);
+		const registry = new AgentRegistry();
+
+		await ensurePersistedRoster(registry, rootFile);
+		const terminalRefs = () =>
+			registry
+				.list()
+				.filter(ref => ref.kind === "sub" && ref.status === "parked" && ref.sessionFile?.startsWith(`${rootDir}/`));
+		expect(terminalRefs()).toHaveLength(MAX_PERSISTED_TERMINAL_SUBAGENTS_PER_ROOT);
+		const evictedId = Array.from({ length: childCount }, (_, index) => childId(index)).find(
+			id => registry.get(id) === undefined,
+		);
+		expect(evictedId).toBeDefined();
+		if (!evictedId) throw new Error("Expected the terminal roster bound to evict a child ref");
+		expect(registry.get(evictedId)).toBeUndefined();
+
+		// This is the `write agent://<id>` path: the caller supplies the root and
+		// the requested recipient, so the persisted scanner keeps this old id
+		// resident long enough for the lifecycle manager to revive it.
+		await ensurePersistedRoster(registry, rootFile, evictedId);
+		expect(registry.get(evictedId)).toMatchObject({ id: evictedId, status: "parked" });
+		expect(terminalRefs()).toHaveLength(MAX_PERSISTED_TERMINAL_SUBAGENTS_PER_ROOT);
 	});
 
 	it("bounds remembered latches by evicting only settled ones", async () => {

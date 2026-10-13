@@ -24,6 +24,8 @@ import {
 	type AfterToolCallResult,
 	type Agent,
 	AgentBusyError,
+	TOOL_INTERRUPT_ABORT_REASON,
+	agentPauseGate,
 	type AgentEvent,
 	type AgentMessage,
 	type AgentState,
@@ -44,6 +46,10 @@ import {
 	type ThinkingLevel,
 	type ToolChoiceDirective,
 } from "@oh-my-pi/pi-agent-core";
+import {
+	getAssistantPublicationGate,
+	setAssistantPublicationGate,
+} from "@oh-my-pi/pi-agent-core/assistant-publication";
 import {
 	type CompactionPreparation,
 	type CompactionResult,
@@ -112,10 +118,14 @@ import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import { formatUsageResetWindow } from "@oh-my-pi/pi-tui/overlays/usage-display";
 import { loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
+import { AgentRegistry } from "../registry/agent-registry";
+import { runningAgentsFromRegistryOutsideJobs } from "../async/job-control";
 import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
+// Aliased: PR #10 imports the same symbol in this file, and both sit in one live build.
+import { AgentRegistry as SubagentRegistry } from "../registry/agent-registry";
 import {
 	DEFAULT_PREWALK_TARGET,
 	getModelMatchPreferences,
@@ -125,6 +135,7 @@ import {
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily, isServiceTierForFamily, serviceTierSettingToTier } from "../config/service-tier";
 import { combine, type SettingsScope } from "../config/registry";
+import type { MCPLoadResult } from "../mcp/manager";
 import type { Settings } from "../config/settings";
 import { RawSseDebugBuffer } from "@oh-my-pi/pi-tui/apps/debug/raw-sse-buffer";
 import { getEditStore } from "../edit/store";
@@ -135,6 +146,7 @@ import type { PythonResult } from "../eval/py/executor";
 import { formatEvalStateContext } from "../eval/state";
 import { WorkPoolRegistry } from "../task/workpool";
 import { type BashPtyOptions, type BashResult, releaseShellSessions } from "../exec/bash-executor";
+import { SessionSliceLifecycle } from "../exec/session-slice-lifecycle";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { CustomTool } from "../extensibility/custom-tools/types";
@@ -154,13 +166,18 @@ import { emitSessionShutdownEvent, TOP_LEVEL_AGENT } from "../extensibility/exte
 import { extensionEventFromSessionEvent } from "../extensibility/extensions/lifecycle-mirror";
 import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
-import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
+import type {
+	BeforeAssistantMessageEventResult,
+	CompactOptions,
+	ContextUsage,
+} from "../extensibility/extensions/types";
 import type { CustomCommandContext } from "../extensibility/custom-commands/types";
 import { SkillDescriptionCatalog } from "../extensibility/skill-descriptions";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand, loadSlashCommands } from "../extensibility/slash-commands";
 import { normalizeToolEventInput, resolveToolEventInput } from "../extensibility/tool-event-input";
 import { GoalRuntime } from "../goals/runtime";
+import { sendAgentMessageFromSession } from "../irc/messaging";
 import type { GoalModeState } from "../goals/state";
 import type { HindsightSessionState } from "../hindsight/state";
 import { InternalUrlRouter, type LocalProtocolOptions } from "../internal-urls";
@@ -235,7 +252,13 @@ import {
 } from "../tools/resolve";
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";
 import { supportsExternalThinking } from "../tools/think";
+import { getTodoArchiveSummaryFromEntries } from "../tools/todo";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import {
+	appendRequirementsSnapshot,
+	createRequirementCandidates,
+	getLatestRequirements,
+} from "../tools/requirements-ledger";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { AgentDefinition } from "../task/types";
@@ -248,7 +271,7 @@ import { extractFileMentions, generateFileMentionMessages } from "../utils/file-
 import { normalizeModelContextImages } from "../utils/image-loading";
 import { TokenRateMeter } from "../utils/token-rate";
 import { resumeCommand } from "../utils/resume-command";
-import { generateSessionTitle } from "../utils/title-generator";
+import { generateSessionTitle, setTerminalTitleTaskNow } from "../utils/title-generator";
 import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
 import type { VibeModeState } from "../vibe/state";
 import type { AgentSessionEvent, AgentSessionEventListener } from "./agent-session-events";
@@ -278,6 +301,7 @@ import type {
 	SessionOAuthAccountList,
 	SessionStats,
 	SteerOptions,
+	RestartDrainLease,
 	UsageFallbackConfirmer,
 } from "./agent-session-types";
 import { writeArtifact } from "./artifacts";
@@ -411,9 +435,11 @@ import { resolveOpenAIWebsocketPreference } from "./settings-stream-fn";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { skillPromptTitleInput } from "@oh-my-pi/pi-tui/chat/skill-title-input";
 import { ToolChoiceQueue } from "./tool-choice-queue";
+import { shrinkOversizedToolHistory } from "./tool-history-shrink";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
 import { YieldQueue } from "./yield-queue";
+import { RequirementsLedgerRuntime, type RequirementPublicationGate } from "./requirements-ledger-runtime";
 
 export * from "./agent-session-events";
 export * from "./agent-session-types";
@@ -464,7 +490,7 @@ import {
 	cfgThemeDark,
 	cfgThemeLight,
 } from "../modes/settings";
-import { cfgTaskBatch, cfgTaskDisabledAgents } from "../task/settings";
+import { cfgTaskBatch, cfgTaskDisabledAgents, cfgTaskMaxConcurrency } from "../task/settings";
 import {
 	cfgBranchSummaryReserveTokens,
 	cfgExtendedContext,
@@ -619,6 +645,63 @@ type AgentContinueOutcome =
  */
 type PromptDispatchOutcome = { sessionClaimed: boolean };
 
+const RESTART_PENDING_QUEUES_CUSTOM_TYPE = "omp:restart-pending-queues";
+
+interface RestartPendingQueues {
+	steering: AgentMessage[];
+	followUp: AgentMessage[];
+	pendingNextTurn: CustomMessage[];
+}
+
+function isRestartPendingQueues(value: unknown): value is RestartPendingQueues {
+	if (!isRecord(value)) return false;
+	return (
+		Array.isArray(value.steering) &&
+		value.steering.every(
+			(message): message is AgentMessage =>
+				isRecord(message) && typeof message.role === "string" && typeof message.timestamp === "number",
+		) &&
+		Array.isArray(value.followUp) &&
+		value.followUp.every(
+			(message): message is AgentMessage =>
+				isRecord(message) && typeof message.role === "string" && typeof message.timestamp === "number",
+		) &&
+		Array.isArray(value.pendingNextTurn) &&
+		value.pendingNextTurn.every(
+			(message): message is CustomMessage =>
+				isRecord(message) && message.role === "custom" && typeof message.timestamp === "number",
+		)
+	);
+}
+
+function restartQueueFingerprintMessage(message: AgentMessage): Record<string, unknown> {
+	const normalized = { ...(message as unknown as Record<string, unknown>) };
+	if (
+		message.role === "custom" &&
+		(message.customType === "goal-continuation" || message.customType === "restart-queued")
+	) {
+		delete normalized.timestamp;
+	}
+	return normalized;
+}
+
+function restartPendingQueuesSignature(queues: RestartPendingQueues): string {
+	return JSON.stringify({
+		steering: queues.steering.map(restartQueueFingerprintMessage),
+		followUp: queues.followUp.map(restartQueueFingerprintMessage),
+		pendingNextTurn: queues.pendingNextTurn.map(restartQueueFingerprintMessage),
+	});
+}
+
+type PendingNextTurnDelivery = {
+	boundary: CustomMessage;
+	messages: CustomMessage[];
+	promptGeneration: number;
+	sessionId: string;
+	inputMessageSeen: boolean;
+	settled: boolean;
+};
+
 type ActiveAgentContinue = {
 	schedulerToken: number;
 	source: string;
@@ -714,16 +797,10 @@ export class AgentSession implements SettingsScope {
 	/** Tail of the serialized {@link refreshSkillsAndCommands} chain. */
 	#skillsAndCommandsRefresh: Promise<void> = Promise.resolve();
 	/**
-	 * Raw text the caller originally submitted for a queued plain `role: "user"`
-	 * message — before slash/custom-command rewriting, prompt-template expansion,
-	 * or `^model` mention substitution. Recorded by `#queueUserMessage`, the same
-	 * point `#queueCustomMessage` stamps `__queueChipText` for skill invocations;
-	 * a side map (not a message field) because `UserMessage` has no free-form
-	 * details slot to carry it, and it must never reach the model or persisted
-	 * session content. `removeQueuedMessage` matches against it so an RPC client
-	 * removing by the exact text it submitted can find its own transformed queued
-	 * entry without unsafely replaying a (possibly side-effecting) slash/custom
-	 * command.
+	 * Raw text the caller originally submitted for a user message, before slash/custom-command
+	 * rewriting, prompt-template expansion, or `^model` mention substitution. The side map
+	 * keeps it out of provider and persisted message content; queued prompts also use it for
+	 * exact `removeQueuedMessage` matching.
 	 */
 	readonly #queuedMessageRawText = new WeakMap<AgentMessage, string>();
 
@@ -754,6 +831,7 @@ export class AgentSession implements SettingsScope {
 
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	#pendingNextTurnMessages: CustomMessage[] = [];
+	#pendingNextTurnDeliveryByMessage = new Map<CustomMessage, PendingNextTurnDelivery>();
 	#scheduledHiddenNextTurnGeneration: number | undefined = undefined;
 	#queuedMessageDrainScheduled = false;
 	/** A single model-only notebook reminder queued for the current prompt generation. */
@@ -786,6 +864,8 @@ export class AgentSession implements SettingsScope {
 	#planModeReminderCount = 0;
 	#planModeReminderAwaitingProgress = false;
 	readonly #todo: TodoTracker;
+	readonly #requirementsLedger: RequirementsLedgerRuntime;
+	#requirementsPublicationGate: RequirementPublicationGate | undefined;
 	readonly #modelMentions: ModelMentionRegistry;
 	#workPoolYieldItems: readonly WorkPoolYieldItem[] = [];
 	/** Item set matching the last successfully rebuilt provider prompt. The base
@@ -841,6 +921,7 @@ export class AgentSession implements SettingsScope {
 	 * across a `/new` is dropped regardless of job-id reuse.
 	 */
 	#asyncDeliveryEpoch = 0;
+	#asyncReceiptDeliveries = new Map<string, Promise<void>>();
 
 	readonly #irc: IrcBridge;
 	#ircWakeTurnObserver:
@@ -848,6 +929,7 @@ export class AgentSession implements SettingsScope {
 		| undefined;
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
+	#agentRegistry: SubagentRegistry;
 	#agentKind: "main" | "sub" = "main";
 	#scoutAllowedBySpawnPolicy = true;
 	#providerSessionId: string | undefined;
@@ -863,6 +945,8 @@ export class AgentSession implements SettingsScope {
 	#adoptedResetMarkers = new Map<string, number>();
 	// Extension system
 	#extensionRunner: ExtensionRunner | undefined = undefined;
+	/** Out-of-band receipts tied to the exact finalized messages admitted by the native gate. */
+	#settledAssistantStatuses = new WeakSet<AssistantMessage>();
 	#getEvalPreludes: (() => readonly EvalPreludeDefinition[]) | undefined;
 	#reconcileBrowserMcpFilter: AgentSessionConfig["reconcileBrowserMcpFilter"];
 	#skillDescriptions: SkillDescriptionCatalog;
@@ -877,6 +961,8 @@ export class AgentSession implements SettingsScope {
 	#turnIndex = 0;
 	#messageEndPersistenceTail: Promise<void> = Promise.resolve();
 	#pendingMessageEndPersistence = new Map<string, Promise<void>>();
+	#restartPendingQueuesCheckpointActive = false;
+	#lastRestartPendingQueuesSignature: string | undefined;
 	#persistedMessageKeys: { anchor: string; keys: Set<string> } | undefined;
 
 	// Custom commands (TypeScript slash commands)
@@ -892,6 +978,13 @@ export class AgentSession implements SettingsScope {
 	#imageDescriptionAbortControllers = new Set<AbortController>();
 	#queuedMessageDrainBlocked = false;
 	#modeExitDrainSuppressionDepth = 0;
+	#restartDrainLeaseCount = 0;
+	#restartWaitAbort = new AbortController();
+	#restartDrainGeneration = 0;
+	#restartDrainQuiescence: Promise<void> | undefined;
+	#restartDrainStoppedRun = false;
+	#restartDrainNeedsResume = false;
+	#restartDrainReleaseWaiters = new Set<(outcome: "released" | "disposed") => void>();
 	#usagePreflightReadyForNextModelCall = false;
 	#usagePreflightReadyModel: Model | undefined;
 	#detachUsageBeforeQueueDequeue: (() => void) | undefined;
@@ -900,6 +993,7 @@ export class AgentSession implements SettingsScope {
 	#anthropicSlowModeLane: string | undefined;
 	/** `<lane>#<window>` of the wrap-up window this session already told the model about. */
 	#anthropicWrapUpHinted: string | undefined;
+	#detachRestartDrainBeforeModelCall: (() => void) | undefined;
 
 	#transformContext: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 	#onPayload: SimpleStreamOptions["onPayload"] | undefined;
@@ -915,6 +1009,8 @@ export class AgentSession implements SettingsScope {
 	#sideStreamFn: StreamFn;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#disconnectOwnedMcpManager: (() => Promise<void>) | undefined;
+	#reloadOwnedMcpManager: (() => Promise<MCPLoadResult>) | undefined;
+	#mcpReloadInFlight: Promise<MCPLoadResult> | undefined;
 
 	readonly #ttsr: TtsrCoordinator;
 	readonly #stats: SessionStatsTracker;
@@ -1118,6 +1214,12 @@ export class AgentSession implements SettingsScope {
 	 *  the agent responds to the peer. Skip only when a queued steer/follow-up will itself drive a
 	 *  resume turn whose aside poll already consumes these (no double-wake). */
 	#resumeStrandedIrcAsides(): void {
+		if (this.#restartDrainLeaseCount > 0) {
+			if (this.#isDisposed || this.isStreaming || !this.#irc.hasPending()) return;
+			const records = [...this.#irc.drainDeferredWakes(), ...this.#irc.drainPending()];
+			for (const record of records) this.agent.followUp(record);
+			return;
+		}
 		if (this.#modeExitDrainSuppressionDepth > 0 || this.#isDisposed || this.isStreaming || !this.#irc.hasPending()) {
 			return;
 		}
@@ -1200,6 +1302,10 @@ export class AgentSession implements SettingsScope {
 	 *  because #canAutoContinueForFollowUp suppresses follow-up auto-resume while a user interrupt is
 	 *  in effect, even though the wake left a provider-valid tail. */
 	#wakeForIrc(records: AgentMessage[]): void {
+		if (this.#restartDrainLeaseCount > 0) {
+			for (const record of records) this.agent.followUp(record);
+			return;
+		}
 		if (this.#modeExitDrainSuppressionDepth > 0) {
 			this.#irc.queueAside(records);
 			return;
@@ -1427,9 +1533,16 @@ export class AgentSession implements SettingsScope {
 
 	/** Live generation tok/s for the working row; fed by this session's own streamed deltas. */
 	readonly tokenRate: TokenRateMeter;
+	#sessionSlices = new Map<string, SessionSliceLifecycle>();
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
+		this.agent.requireQueuedMessagePersistenceAcknowledgement();
+		this.#detachRestartDrainBeforeModelCall = this.agent.addBeforeModelCall(() => {
+			if (this.#restartDrainLeaseCount === 0) return;
+			this.#restartDrainStoppedRun = true;
+			return { stop: true, reason: "Session restart drain" };
+		});
 		this.tokenRate = new TokenRateMeter(text => this.agent.tokenizer.countTokens(text));
 		this.#reseedTokenRate();
 		this.agent.setQueuedMessageGrouping(
@@ -1438,6 +1551,7 @@ export class AgentSession implements SettingsScope {
 		);
 		this.#codeModeState = config.codeModeState ?? {};
 		this.sessionManager = config.sessionManager;
+		this.#restorePendingRestartMessages();
 		this.settings = config.settings;
 		this.#skillDescriptions = config.skillDescriptions ?? new SkillDescriptionCatalog();
 		this.memoryEnabled = config.memoryEnabled ?? true;
@@ -1478,6 +1592,7 @@ export class AgentSession implements SettingsScope {
 			kernelOwnerId: config.evalKernelOwnerId ?? `agent-session:${Snowflake.next()}`,
 		});
 		this.#evalToolSession = config.evalToolSession;
+		if (this.#evalToolSession) this.#evalToolSession.getRestartDrainSignal = () => this.#restartWaitAbort.signal;
 		const initialEvalStateContext = this.#buildEvalStateContextMessage();
 		if (initialEvalStateContext) this.agent.appendMessage(initialEvalStateContext);
 		const ircHost: IrcBridgeHost = {
@@ -1485,6 +1600,8 @@ export class AgentSession implements SettingsScope {
 			sessionManager: this.sessionManager,
 			isDisposed: () => this.#isDisposed,
 			isStreaming: () => this.isStreaming,
+			isRestartDraining: () => this.isRestartDraining,
+			queueForRestart: record => this.#queueRestartMessage(record),
 			planModeEnabled: () => this.#planModeState?.enabled === true,
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			wakeForIrc: records => this.#wakeForIrc(records),
@@ -1813,7 +1930,8 @@ export class AgentSession implements SettingsScope {
 			}
 			return thunks;
 		});
-		this.#convertToLlm = config.convertToLlm ?? convertToLlm;
+		const configuredConvertToLlm = config.convertToLlm ?? convertToLlm;
+		this.#convertToLlm = messages => configuredConvertToLlm(this.prepareToolHistoryForProvider(messages));
 		this.getXdevToolEntries = config.getXdevToolEntries ?? (() => []);
 		const sessionToolsHost: SessionToolsHost = {
 			agent: this.agent,
@@ -1828,6 +1946,7 @@ export class AgentSession implements SettingsScope {
 			isStreaming: () => this.isStreaming,
 			queuedMessageCount: () => this.queuedMessageCount,
 			planModeEnabled: () => this.#planModeState?.enabled === true,
+			planningRepairMessage: () => this.#todo.planningRepairMessage,
 			model: () => this.model,
 			setCodeModeNamespacesInfo: info => {
 				this.#codeModeState.namespacesInfo = info;
@@ -1867,6 +1986,7 @@ export class AgentSession implements SettingsScope {
 			skillsReloadable: config.skillsReloadable,
 		});
 		this.#disconnectOwnedMcpManager = config.disconnectOwnedMcpManager;
+		this.#reloadOwnedMcpManager = config.reloadOwnedMcpManager;
 		const ttsrHost: TtsrCoordinatorHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -1917,7 +2037,26 @@ export class AgentSession implements SettingsScope {
 		this.#streamingEditGuard = new StreamingEditGuard(streamGuardsHost);
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
+		this.#agentRegistry = config.agentRegistry ?? SubagentRegistry.global();
 		this.#agentKind = config.agentKind ?? "main";
+		this.#requirementsLedger = new RequirementsLedgerRuntime({
+			agent: this.agent,
+			agentKind: () => this.#agentKind,
+			cwd: () => this.sessionManager.getCwd(),
+			sessionManager: this.sessionManager,
+			onSettledAssistantMessage: message => this.#settledAssistantStatuses.add(message),
+			queueModelNotice: async content => {
+				await this.sendCustomMessage(
+					{ customType: "requirements-gate-notice", content, display: false, attribution: "agent" },
+					{ deliverAs: "nextTurn" },
+				);
+			},
+			setPublicationGate: gate => {
+				this.#requirementsPublicationGate = gate;
+				this.#syncAssistantPublicationGate();
+			},
+		});
+		this.#syncAssistantPublicationGate();
 		// A subagent's streamed text reaches no output sink until the run settles
 		// (the parent sees only the yield), so a failed turn's partial prose is
 		// replay-safe and transient provider errors after it stay retryable —
@@ -1944,6 +2083,22 @@ export class AgentSession implements SettingsScope {
 		}
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
 			this.#loopGuards.onAssistantEvent(message, assistantMessageEvent);
+			if (getAssistantPublicationGate(this.agent)) {
+				// Withheld streams still drive internal safety and token accounting, never public delivery.
+				if (assistantMessageEvent.type === "start") {
+					this.#ttsr.onAssistantMessageStart();
+					this.tokenRate.begin(message.timestamp);
+				} else if (
+					assistantMessageEvent.type === "text_delta" ||
+					assistantMessageEvent.type === "thinking_delta" ||
+					assistantMessageEvent.type === "toolcall_delta"
+				) {
+					this.tokenRate.push(assistantMessageEvent.delta);
+				}
+				void this.#ttsr
+					.checkMessageUpdate({ type: "message_update", message, assistantMessageEvent })
+					.catch(error => logger.warn("TTSR raw stream check failed", { error }));
+			}
 		});
 		// Tool-result hook owns synchronous post-tool actions that must affect the current loop.
 		this.agent.afterToolCall = ctx => this.#afterToolCall(ctx);
@@ -2150,6 +2305,7 @@ export class AgentSession implements SettingsScope {
 			removeAssistantMessageFromActiveContext: message =>
 				this.#recovery.removeAssistantMessageFromActiveContext(message),
 			dropPersistedAssistantTurn: message => this.#recovery.dropPersistedAssistantTurn(message),
+			routeOversizedHistoryOverflow: message => this.#recovery.routeOversizedHistoryOverflow(message),
 			retainTerminalFailure: message => {
 				this.#prunedTerminalFailure = message;
 			},
@@ -2419,12 +2575,11 @@ export class AgentSession implements SettingsScope {
 	 * The per-turn tool-choice directive for the agent loop's `getToolChoice`. Priority:
 	 *   1. a HARD forced choice from the queue (genuine forces: user-force, eager-todo, …) —
 	 *      consuming (advances the queue generator);
-	 *   2. else, when a non-forcing preview is pending, a {@link SoftToolRequirement} — a
-	 *      PEEK (advances/pops nothing), so the agent-loop injects the reminder once per head
-	 *      and escalates to a forced `write` only if the model declines to
-	 *      resolve via `xd://resolve` or `xd://reject`. A compliant turn
-	 *      pays ZERO tool_choice change (no prompt-cache messages-cache invalidation);
-	 *   3. else undefined.
+	 *   2. else, a pending preview's non-forcing {@link SoftToolRequirement}, which keeps
+	 *      the existing `write` resolution priority and does not consume the queue;
+	 *   3. else, a fresh extension-provided native soft requirement. If its required tool is
+	 *      not active, fail closed before the model request rather than dropping the gate;
+	 *   4. else undefined.
 	 */
 	nextToolChoiceDirective(): ToolChoiceDirective | undefined {
 		const hard = this.#nextHardToolChoice();
@@ -2442,7 +2597,14 @@ export class AgentSession implements SettingsScope {
 				reminder: [buildResolveReminderMessage(head.sourceToolName)],
 			};
 		}
-		return undefined;
+		const requirement = this.#extensionRunner?.getSoftToolRequirement();
+		if (requirement === undefined) return undefined;
+		if (!this.agent.state.tools.some(tool => tool.name === requirement.toolName)) {
+			throw new Error(
+				`Required ${requirement.toolName} tool unavailable: extension soft tool requirement "${requirement.id}" cannot be enforced.`,
+			);
+		}
+		return requirement;
 	}
 
 	/** Peek the head non-forcing pending preview invoker, for the preview-resolution dispatch. */
@@ -2617,7 +2779,10 @@ export class AgentSession implements SettingsScope {
 			agentId: job.agentId,
 		}));
 		const delivery = manager.getDeliveryState(ownerFilter);
-		return { running, recent, delivery };
+		const nonJobAgents = runningAgentsFromRegistryOutsideJobs(AgentRegistry.global(), manager, this.#agentId).map(
+			({ id, live }) => ({ id, live }),
+		);
+		return { running, recent, delivery, nonJobAgents };
 	}
 
 	/**
@@ -2685,6 +2850,7 @@ export class AgentSession implements SettingsScope {
 		// generation, then drop any async-result follow-up already queued, so a
 		// prior session's background result cannot inject into the next transcript.
 		this.#asyncDeliveryEpoch += 1;
+		this.#asyncReceiptDeliveries.clear();
 		this.yieldQueue.clear("async-result");
 	}
 
@@ -2704,7 +2870,9 @@ export class AgentSession implements SettingsScope {
 		if (!manager) return false;
 		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
 		return (
-			manager.getRunningJobs(ownerFilter).some(job => !manager.isDeliverySuppressed(job.id)) ||
+			manager
+				.getRunningJobs(ownerFilter, { includeForeground: true })
+				.some(job => job.foreground === true || !manager.isDeliverySuppressed(job.id)) ||
 			manager.hasPendingDeliveries(ownerFilter) ||
 			// Delivered but not yet injected: the sink has enqueued the
 			// async-result follow-up on the yield queue, and the manager no
@@ -2719,8 +2887,8 @@ export class AgentSession implements SettingsScope {
 	 * Public view of the pending-async-wake state for run drivers: true while
 	 * owner-scoped async work can still re-wake this session's run (a running
 	 * background job with an unsuppressed delivery, or a queued / in-flight
-	 * delivery). The task executor's quiescence barrier polls this to
-	 * distinguish a scheduling pause from terminal completion.
+	 * delivery). The task executor waits on this before yield reminders, but
+	 * an accepted terminal yield ends the run regardless of pending work.
 	 */
 	hasPendingAsyncWork(): boolean {
 		return this.#hasPendingAsyncWake();
@@ -2738,7 +2906,9 @@ export class AgentSession implements SettingsScope {
 		return this.#admittedSubmissionsSettled.promise;
 	}
 
-	async #admitSubmission<T>(work: () => Promise<T>): Promise<T> {
+	async #admitSubmission<T>(work: () => Promise<T>, options: { allowDuringRestartDrain?: boolean } = {}): Promise<T> {
+		// Check and count synchronously so a drain cannot slip between the guard and admission.
+		if (this.#restartDrainLeaseCount > 0 && options.allowDuringRestartDrain !== true) throw new AgentBusyError();
 		this.#admittedSubmissionCount++;
 		try {
 			return await work();
@@ -2776,23 +2946,38 @@ export class AgentSession implements SettingsScope {
 	async #deliverAsyncJobResult(manager: AsyncJobManager, jobId: string, text: string, job?: AsyncJob): Promise<void> {
 		if (this.#isDisposed) return;
 		if (manager.isDeliverySuppressed(jobId)) return;
-		// Snapshot the generation before the async format step: a `/new` during it
-		// bumps the epoch, so this delivery belongs to the replaced session and
-		// must not enqueue — the suppression marker alone is unreliable because
-		// job-id reuse clears it.
-		const epoch = this.#asyncDeliveryEpoch;
-		const formatted = await this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta);
-		if (this.#isDisposed) return;
-		if (epoch !== this.#asyncDeliveryEpoch) return;
-		if (manager.isDeliverySuppressed(jobId)) return;
-		const durationMs = job ? Math.max(0, (job.endTime ?? Date.now()) - job.startTime) : undefined;
-		await this.yieldQueue.enqueueWithReceipt<AsyncResultEntry>("async-result", {
-			jobId,
-			result: formatted,
-			job,
-			durationMs,
-			epoch,
-		});
+		const receiptKey = `${job?.agentId ?? jobId}:${Bun.hash(text).toString(16)}`;
+		const existingDelivery = this.#asyncReceiptDeliveries.get(receiptKey);
+		if (existingDelivery) return existingDelivery;
+
+		const delivery = (async () => {
+			// Snapshot the generation before the async format step: a `/new` during it
+			// bumps the epoch, so this delivery belongs to the replaced session and
+			// must not enqueue — the suppression marker alone is unreliable because
+			// job-id reuse clears it.
+			const epoch = this.#asyncDeliveryEpoch;
+			const formatted = await this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta);
+			if (this.#isDisposed) return;
+			if (epoch !== this.#asyncDeliveryEpoch) return;
+			if (manager.isDeliverySuppressed(jobId)) return;
+			const durationMs = job ? Math.max(0, (job.endTime ?? Date.now()) - job.startTime) : undefined;
+			await this.yieldQueue.enqueueWithReceipt<AsyncResultEntry>("async-result", {
+				jobId,
+				result: formatted,
+				job,
+				durationMs,
+				epoch,
+			});
+		})();
+		this.#asyncReceiptDeliveries.set(receiptKey, delivery);
+		try {
+			await delivery;
+		} catch (error) {
+			if (this.#asyncReceiptDeliveries.get(receiptKey) === delivery) {
+				this.#asyncReceiptDeliveries.delete(receiptKey);
+			}
+			throw error;
+		}
 	}
 
 	/**
@@ -2937,12 +3122,16 @@ export class AgentSession implements SettingsScope {
 	#recordSessionExit(reason: postmortem.Reason | "dispose"): void {
 		if (this.#exitRecorded) return;
 		this.#exitRecorded = true;
-		const pendingToolCalls = collectPendingToolCalls(this.sessionManager.getBranch());
-		if (
-			pendingToolCalls.length === 0 &&
-			!this.sessionManager.getEntries().some(entry => entry.type === "message" && entry.message.role === "assistant")
-		) {
-			return;
+		const pendingToolCalls = collectPendingToolCalls(this.sessionManager.iterateBranch());
+		if (pendingToolCalls.length === 0) {
+			let hasAssistant = false;
+			for (const entry of this.sessionManager.iterateBranch("message")) {
+				if (entry.type === "message" && entry.message.role === "assistant") {
+					hasAssistant = true;
+					break;
+				}
+			}
+			if (!hasAssistant) return;
 		}
 		const kind: SessionExitData["kind"] =
 			reason === "dispose" || reason === postmortem.Reason.MANUAL
@@ -3155,9 +3344,14 @@ export class AgentSession implements SettingsScope {
 
 	/** Commit messages in emission order without waiting for notification listeners. */
 	#queueMessageEndPersistence(message: AgentMessage, promptGeneration: number): Promise<void> {
+		if (message.role === "custom") {
+			const delivery = this.#pendingNextTurnDeliveryByMessage.get(message);
+			if (delivery) delivery.inputMessageSeen = true;
+		}
 		const key = sessionMessagePersistenceKey(message);
+		const queuedDelivery = this.agent.queuedMessageDeliveryQueue(message);
 		const pending = this.#messageEndPersistenceTail
-			.then(() => this.#persistMessageEnd(message, promptGeneration))
+			.then(() => this.#persistMessageEnd(message, promptGeneration, queuedDelivery))
 			.finally(() => {
 				if (key !== undefined && this.#pendingMessageEndPersistence.get(key) === pending) {
 					this.#pendingMessageEndPersistence.delete(key);
@@ -3166,6 +3360,53 @@ export class AgentSession implements SettingsScope {
 		if (key !== undefined) this.#pendingMessageEndPersistence.set(key, pending);
 		this.#messageEndPersistenceTail = pending.catch(() => {});
 		return pending;
+	}
+
+	#reservePendingNextTurnMessages(consumed?: CustomMessage[]): CustomMessage[] {
+		if (!consumed) {
+			const pending = this.#pendingNextTurnMessages;
+			this.#pendingNextTurnMessages = [];
+			return pending;
+		}
+
+		const remaining = [...this.#pendingNextTurnMessages];
+		for (const message of consumed) {
+			const index = remaining.indexOf(message);
+			if (index !== -1) remaining.splice(index, 1);
+		}
+		this.#pendingNextTurnMessages = [];
+		return [...consumed, ...remaining];
+	}
+
+	#registerPendingNextTurnDelivery(
+		messages: CustomMessage[],
+		promptGeneration: number,
+	): PendingNextTurnDelivery | undefined {
+		const boundary = messages[messages.length - 1];
+		if (!boundary) return;
+		const delivery: PendingNextTurnDelivery = {
+			boundary,
+			messages,
+			promptGeneration,
+			sessionId: this.sessionManager.getSessionId(),
+			inputMessageSeen: false,
+			settled: false,
+		};
+		for (const message of messages) this.#pendingNextTurnDeliveryByMessage.set(message, delivery);
+		return delivery;
+	}
+
+	#settlePendingNextTurnDelivery(delivery: PendingNextTurnDelivery, committed: boolean): void {
+		if (delivery.settled) return;
+		delivery.settled = true;
+		for (const message of delivery.messages) {
+			if (this.#pendingNextTurnDeliveryByMessage.get(message) === delivery) {
+				this.#pendingNextTurnDeliveryByMessage.delete(message);
+			}
+		}
+		if (!committed && this.sessionManager.getSessionId() === delivery.sessionId) {
+			this.#pendingNextTurnMessages = [...delivery.messages, ...this.#pendingNextTurnMessages];
+		}
 	}
 
 	async #waitForSessionMessagePersistence(message: AgentMessage): Promise<void> {
@@ -3217,7 +3458,7 @@ export class AgentSession implements SettingsScope {
 
 	#buildPersistedMessageKeySet(): Set<string> {
 		const keys = new Set<string>();
-		for (const entry of this.sessionManager.getBranch()) {
+		for (const entry of this.sessionManager.iterateBranch("message")) {
 			if (entry.type !== "message") continue;
 			const key = sessionMessagePersistenceKey(entry.message);
 			if (key !== undefined) keys.add(key);
@@ -3246,9 +3487,7 @@ export class AgentSession implements SettingsScope {
 		if (key === undefined) return false;
 		const keys = this.#ensurePersistedMessageKeys();
 		if (!keys.has(key)) return false;
-		const branch = this.sessionManager.getBranch();
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const entry = branch[index];
+		for (const entry of this.sessionManager.iterateBranch("message")) {
 			if (entry.type !== "message") continue;
 			if (sessionMessagePersistenceKey(entry.message) !== key) continue;
 			if (!sameMessageContent(entry.message, message)) continue;
@@ -3321,6 +3560,20 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
+	/** Keep async QA receipts serialized after a successful transcript commit. */
+	#queueRequirementMessageEndPersistence(message: AgentMessage, promptGeneration: number): Promise<void> {
+		const persistence = this.#queueMessageEndPersistence(message, promptGeneration);
+		if (message.role !== "custom" || message.customType !== ASYNC_RESULT_MESSAGE_TYPE) return persistence;
+		const pending = persistence.then(async () => {
+			if (this.#promptGeneration !== promptGeneration) return;
+			await this.#requirementsLedger
+				.consumeAsyncResult(message)
+				.catch(error => logger.warn("Requirements ledger async consume failed", { error }));
+		});
+		this.#messageEndPersistenceTail = pending.catch(() => {});
+		return pending;
+	}
+
 	/**
 	 * Builds the transient checkpoint-active reminder for a successful
 	 * checkpoint tool result, or undefined otherwise. The reminder is queued as
@@ -3349,12 +3602,152 @@ export class AgentSession implements SettingsScope {
 		};
 	}
 
-	#persistMessageEnd(message: AgentMessage, promptGeneration: number): void {
+	#persistMessageEnd(
+		message: AgentMessage,
+		promptGeneration: number,
+		queuedDelivery: "steering" | "followUp" | undefined,
+	): void | Promise<void> {
+		const nextTurnDelivery =
+			message.role === "custom" ? this.#pendingNextTurnDeliveryByMessage.get(message) : undefined;
+		if (nextTurnDelivery && nextTurnDelivery.promptGeneration !== promptGeneration) {
+			if (message.role === "custom" && message === nextTurnDelivery.boundary) {
+				this.#settlePendingNextTurnDelivery(nextTurnDelivery, false);
+			}
+			return;
+		}
+		if (message.role === "custom" && nextTurnDelivery && message !== nextTurnDelivery.boundary) return;
+
+		if (this.#promptGeneration !== promptGeneration) {
+			if (message.role === "custom" && nextTurnDelivery) {
+				this.#settlePendingNextTurnDelivery(nextTurnDelivery, false);
+			}
+			if (queuedDelivery === undefined) return;
+
+			// The message_end belongs to a superseded turn, so its transcript
+			// entry must not be appended. Persist the unacknowledged delivery
+			// with the queue checkpoint; only a transcript commit may ack it.
+			return this.sessionManager.appendEntriesAtomically(() => {
+				const queues = this.agent.snapshotPendingQueues();
+				this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, {
+					...queues,
+					pendingNextTurn: [...this.#pendingNextTurnMessages],
+				});
+			});
+		}
+
+		if (message.role === "custom" && nextTurnDelivery) {
+			return this.#persistPendingNextTurnDelivery(message, nextTurnDelivery, promptGeneration, queuedDelivery);
+		}
+
+		if (queuedDelivery === undefined || !this.#restartPendingQueuesCheckpointActive) {
+			const afterCommit = this.#persistMessageEndEntry(message, promptGeneration);
+			if (queuedDelivery !== undefined) this.agent.acknowledgeQueuedMessagePersistence(message);
+			afterCommit?.();
+			return;
+		}
+
+		return this.sessionManager
+			.appendEntriesAtomically(() => {
+				const afterCommit = this.#persistMessageEndEntry(message, promptGeneration);
+				const queues = this.agent.snapshotPendingQueues(message, queuedDelivery);
+				this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, {
+					...queues,
+					pendingNextTurn: [...this.#pendingNextTurnMessages],
+				});
+				return afterCommit;
+			})
+			.then(afterCommit => {
+				this.agent.acknowledgeQueuedMessagePersistence(message);
+				afterCommit?.();
+			});
+	}
+
+	/** Persist hidden input as one batch at the last message, together with
+	 * the remaining queue checkpoint. */
+	#persistPendingNextTurnDelivery(
+		message: CustomMessage,
+		delivery: PendingNextTurnDelivery,
+		promptGeneration: number,
+		queuedDelivery: "steering" | "followUp" | undefined,
+	): void | Promise<void> {
+		const appendDeliveredMessages = (): (() => void) | undefined => {
+			let afterCommit: (() => void) | undefined;
+			for (const pendingMessage of delivery.messages) {
+				const effect = this.#persistMessageEndEntry(pendingMessage, promptGeneration);
+				if (effect) {
+					const previous = afterCommit;
+					if (previous) {
+						afterCommit = () => {
+							previous();
+							effect();
+						};
+					} else {
+						afterCommit = effect;
+					}
+				}
+			}
+			return afterCommit;
+		};
+		const acknowledgeQueuedMessage = (): void => {
+			if (queuedDelivery !== undefined) this.agent.acknowledgeQueuedMessagePersistence(message);
+		};
+
+		if (!this.#restartPendingQueuesCheckpointActive) {
+			let afterCommit: (() => void) | undefined;
+			try {
+				afterCommit = appendDeliveredMessages();
+			} catch (error) {
+				this.#settlePendingNextTurnDelivery(delivery, false);
+				throw error;
+			}
+			acknowledgeQueuedMessage();
+			this.#settlePendingNextTurnDelivery(delivery, true);
+			afterCommit?.();
+			return;
+		}
+
+		let committed = false;
+		return this.sessionManager
+			.appendEntriesAtomically(() => {
+				if (
+					this.#promptGeneration !== promptGeneration ||
+					this.sessionManager.getSessionId() !== delivery.sessionId
+				) {
+					return;
+				}
+				const afterCommit = appendDeliveredMessages();
+				const queues =
+					queuedDelivery === undefined
+						? this.agent.snapshotPendingQueues()
+						: this.agent.snapshotPendingQueues(message, queuedDelivery);
+				this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, {
+					...queues,
+					pendingNextTurn: [...this.#pendingNextTurnMessages],
+				});
+				committed = true;
+				return afterCommit;
+			})
+			.then(
+				afterCommit => {
+					if (!committed) {
+						this.#settlePendingNextTurnDelivery(delivery, false);
+						return;
+					}
+					acknowledgeQueuedMessage();
+					this.#settlePendingNextTurnDelivery(delivery, true);
+					afterCommit?.();
+				},
+				error => {
+					this.#settlePendingNextTurnDelivery(delivery, false);
+					throw error;
+				},
+			);
+	}
+
+	#persistMessageEndEntry(message: AgentMessage, promptGeneration: number): (() => void) | undefined {
 		// Session transitions may replace the transcript before a queued commit
 		// runs. Never append the previous conversation to the replacement session.
 		if (this.#promptGeneration !== promptGeneration) {
-			// The message has already left the agent queue. If it was a deferred TTSR
-			// delivery, queue cleanup cannot clear its reservation.
 			if (message.role === "custom" && message.customType === "ttsr-injection") {
 				this.#ttsr.releaseDeferredReservationFromDetails(message.details);
 			}
@@ -3377,7 +3770,7 @@ export class AgentSession implements SettingsScope {
 				);
 			}
 			if (message.role === "custom" && message.customType === "ttsr-injection") {
-				this.#ttsr.markInjectedFromDetails(message.details);
+				return () => this.#ttsr.markInjectedFromDetails(message.details);
 			}
 			return;
 		}
@@ -3603,7 +3996,7 @@ export class AgentSession implements SettingsScope {
 		// extension notifications must not own or delay the persistence work.
 		const messageEndPersistence =
 			event.type === "message_end"
-				? this.#queueMessageEndPersistence(event.message, eventPromptGeneration)
+				? this.#queueRequirementMessageEndPersistence(event.message, eventPromptGeneration)
 				: undefined;
 
 		// Deobfuscate assistant message content for display emission — the LLM echoes back
@@ -3640,14 +4033,28 @@ export class AgentSession implements SettingsScope {
 		// concurrently and message_update skips the await, so a reset placed after
 		// it could land behind the new message's first deltas and clear them.
 		if (event.type === "turn_start") this.#ttsr.onTurnStart();
-		if (event.type === "message_start" && event.message.role === "assistant") this.#ttsr.onAssistantMessageStart();
+		if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_start" &&
+			event.message.role === "assistant"
+		) {
+			this.#ttsr.onAssistantMessageStart();
+		}
 
 		// Meter generation per session: each session tracks its own stream, so a
 		// background subagent holds a live reading by the time it is focused and
 		// the main session's reading survives focus round-trips.
-		if (event.type === "message_start" && event.message.role === "assistant") {
+		if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_start" &&
+			event.message.role === "assistant"
+		) {
 			this.tokenRate.begin(event.message.timestamp);
-		} else if (event.type === "message_update" && event.message.role === "assistant") {
+		} else if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_update" &&
+			event.message.role === "assistant"
+		) {
 			const delta = event.assistantMessageEvent;
 			if (delta.type === "text_delta" || delta.type === "thinking_delta" || delta.type === "toolcall_delta") {
 				this.tokenRate.push(delta.delta);
@@ -3715,12 +4122,25 @@ export class AgentSession implements SettingsScope {
 
 		if (event.type === "tool_stream_update") this.#streamingEditGuard.maybeAbort(event);
 
-		if (await this.#ttsr.checkMessageUpdate(event)) return;
+		if (!getAssistantPublicationGate(this.agent) && (await this.#ttsr.checkMessageUpdate(event))) return;
 
 		// Handle session persistence
 		if (event.type === "message_end") {
 			await messageEndPersistence;
 			if (this.#promptGeneration !== eventPromptGeneration) return;
+			if (event.message.role === "user" && event.message.attribution === "user") {
+				const rawText = this.#queuedMessageRawText.get(event.message);
+				if (rawText !== undefined)
+					this.#captureRawRequirementCandidate(
+						rawText,
+						"content" in event.message
+							? (event.message.content as unknown[]).filter(
+									(c): c is ImageContent =>
+										!!c && typeof c === "object" && (c as { type?: string }).type === "image",
+								)
+							: [],
+					);
+			}
 			if (interruptedThinkingMessage) {
 				this.sessionManager.appendCustomMessageEntry(
 					interruptedThinkingMessage.customType,
@@ -3734,6 +4154,9 @@ export class AgentSession implements SettingsScope {
 
 			if (event.message.role === "assistant") {
 				const assistantMsg = event.message as AssistantMessage;
+				// Record provider exhaustion before fallback recovery replaces
+				// the last assistant message.
+				logProviderTurnError(assistantMsg, this.model?.provider ?? assistantMsg.provider);
 				// Fold this turn's timing into per-model perf aggregates (drives the
 				// /models TPS/TTFT display). Errored turns measure nothing; aborted
 				// turns with reported usage are still valid throughput samples.
@@ -3819,14 +4242,9 @@ export class AgentSession implements SettingsScope {
 					// checkpoint; locate the toolResult's own entry by identity since the
 					// transient reminder entry follows it (last-entry would branch-cut the
 					// reminder instead of leaving it on the active path).
-					const entries = this.sessionManager.getEntries();
 					let checkpointEntryId: string | null = null;
-					for (let i = entries.length - 1; i >= 0; i--) {
-						const entry = entries[i];
-						if (entry.type === "message" && entry.message === event.message) {
-							checkpointEntryId = entry.id;
-							break;
-						}
+					for (const entry of this.sessionManager.iterateEntries("message")) {
+						if (entry.type === "message" && entry.message === event.message) checkpointEntryId = entry.id;
 					}
 					if (this.#checkpointState) {
 						this.#checkpointState.checkpointEntryId = checkpointEntryId;
@@ -3898,12 +4316,6 @@ export class AgentSession implements SettingsScope {
 				});
 			};
 			maintenanceRoute("entered");
-
-			// Surface provider stream failures in the main log. The routing trace
-			// above is debug-only and drops the error fields, so a session dying
-			// repeatedly on provider errors otherwise leaves no actionable trace
-			// outside the session transcript (issue #6177).
-			logProviderTurnError(msg);
 
 			// Invalidate GitHub Copilot credentials on a hard auth failure (401, or an
 			// expired/revoked token) so stale tokens aren't reused on the next request.
@@ -4201,7 +4613,8 @@ export class AgentSession implements SettingsScope {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
 				}
-				const todoContinuationScheduled = await this.#todo.checkCompletion(msg);
+				const todoContinuationScheduled =
+					!this.#settledAssistantStatuses.has(msg) && (await this.#todo.checkCompletion(msg));
 				if (todoContinuationScheduled) {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
@@ -4369,6 +4782,11 @@ export class AgentSession implements SettingsScope {
 		});
 		this.#schedulePostPromptTask(
 			async signal => {
+				if (this.#restartDrainLeaseCount > 0) {
+					this.#restartDrainNeedsResume = true;
+					this.#skipAgentContinue("session-unavailable", request);
+					return;
+				}
 				// Defense in depth: if compaction/handoff slipped onto the post-prompt queue
 				// alongside us (e.g. via a scheduler we don't own), refuse to start a fresh
 				// streaming turn — agent.continue() here would race the handoff's session
@@ -4478,6 +4896,10 @@ export class AgentSession implements SettingsScope {
 		this.#schedulePostPromptTask(
 			async signal => {
 				await Promise.resolve();
+				if (this.#restartDrainLeaseCount > 0) {
+					this.#restartDrainNeedsResume = true;
+					return;
+				}
 				if (signal.aborted) return;
 				if (this.agent.hasQueuedMessages()) {
 					this.#scheduleAgentContinue({
@@ -4548,7 +4970,7 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
-	#afterToolCall(ctx: AfterToolCallContext): AfterToolCallResult | undefined {
+	async #afterToolCall(ctx: AfterToolCallContext): Promise<AfterToolCallResult | undefined> {
 		if (
 			this.#isTerminalYieldToolResult({
 				toolName: ctx.toolCall.name,
@@ -4561,7 +4983,15 @@ export class AgentSession implements SettingsScope {
 			this.#synchronouslyTerminatedYieldToolCallIds.add(ctx.toolCall.id);
 			this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
 		}
-		return this.#ttsr.afterToolCall(ctx);
+		const receipt = await this.#requirementsLedger.afterToolCall(ctx);
+		const ttsrResult = this.#ttsr.afterToolCall(ctx);
+		if (!receipt) return ttsrResult;
+		if (!ttsrResult) return receipt;
+		return {
+			...ttsrResult,
+			...receipt,
+			...(receipt.content && ttsrResult.content ? { content: [...ttsrResult.content, ...receipt.content] } : {}),
+		};
 	}
 	/**
 	 * Emits the extension `tool_call` event for a loop-dispatched call at
@@ -4576,12 +5006,33 @@ export class AgentSession implements SettingsScope {
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
 		const runner = this.#extensionRunner;
 		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
-		const ttsrResult = await this.#ttsr.beforeToolCall(ctx);
+		if (this.#agentKind === "main" && this.getActiveToolNames().includes("todo") && ctx.tool.name !== "todo") {
+			const refusal = this.#requirementsLedger.refuseOverdueCandidate(ctx.tool.name);
+			if (refusal) {
+				runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
+				return refusal;
+			}
+		}
+		let preparedArgs = ctx.args;
+		if (this.#agentKind === "main" && ctx.tool.name === "task") {
+			const revised = await this.#requirementsLedger.prepareAuditorTaskCall(
+				ctx.tool.name,
+				ctx.toolCall.id,
+				preparedArgs,
+				signal,
+			);
+			if (revised !== undefined) preparedArgs = revised;
+		}
+		const preparedContext = { ...ctx, args: preparedArgs };
+		const ttsrResult = await this.#ttsr.beforeToolCall(preparedContext);
 		if (ttsrResult) {
 			runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
+			if (!ttsrResult.block && ttsrResult.args === undefined && preparedArgs !== ctx.args) {
+				return { ...ttsrResult, args: preparedArgs };
+			}
 			return ttsrResult;
 		}
-		if (!runner?.hasHandlers("tool_call")) return undefined;
+		if (!runner?.hasHandlers("tool_call")) return preparedArgs !== ctx.args ? { args: preparedArgs } : undefined;
 		const metadata = ctx.toolCall.providerMetadata;
 		const computer = metadata?.type === "computer" ? metadata : undefined;
 		// Parity with the wrapper's pre-emit short-circuit: an already-denied
@@ -4589,13 +5040,13 @@ export class AgentSession implements SettingsScope {
 		// or user policy), so resolving under the most permissive mode is exact;
 		// the wrapper still enforces the mode-accurate gate before execution.
 		const userPolicies: Record<string, unknown> = cfgToolsApproval.get(this.settings);
-		const approvalArgs = computer ? { actions: computer.actions } : ctx.args;
+		const approvalArgs = computer ? { actions: computer.actions } : preparedArgs;
 		if (resolveApproval(ctx.tool, approvalArgs, "yolo", userPolicies).policy === "deny") {
 			return undefined;
 		}
 		const eventArgs = computer
 			? { actions: computer.actions, pendingSafetyChecks: computer.pendingSafetyChecks }
-			: ctx.args;
+			: preparedArgs;
 		runner.markToolCallEmitted(ctx.toolCall.id, ctx.tool.name);
 		let callResult: Awaited<ReturnType<ExtensionRunner["emitToolCall"]>>;
 		try {
@@ -4618,10 +5069,11 @@ export class AgentSession implements SettingsScope {
 		}
 		// A computer call's event input is a synthetic {actions, pendingSafetyChecks}
 		// view, not the execution params — a revision cannot map back onto them.
-		const args = callResult?.input !== undefined && !computer ? callResult.input : undefined;
+		const revisedArgs = callResult?.input !== undefined && !computer ? callResult.input : undefined;
 		const additionalContext = callResult?.additionalContext;
-		if (args === undefined && additionalContext === undefined) return undefined;
-		return { args, additionalContext };
+		const finalArgs = revisedArgs ?? (preparedArgs !== ctx.args ? preparedArgs : undefined);
+		if (finalArgs === undefined && additionalContext === undefined) return undefined;
+		return { args: finalArgs, additionalContext };
 	}
 
 	/** Find the last assistant message in agent state (including aborted ones) */
@@ -4735,6 +5187,14 @@ export class AgentSession implements SettingsScope {
 			signal: this.#postPromptTasksAbortController.signal,
 		});
 		if (this.#promptGeneration !== generation || this.#abortInProgress || this.#isDisposed) {
+			this.#resetSessionStopContinuationState();
+			return false;
+		}
+		if (
+			lastAssistantMessage &&
+			this.#settledAssistantStatuses.has(lastAssistantMessage) &&
+			result?.decision !== "block"
+		) {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}
@@ -5023,8 +5483,62 @@ export class AgentSession implements SettingsScope {
 	 * (login/logout, token refresh that surfaces a new account UUID) without
 	 * needing to re-call `#syncAgentSessionId()` on every such event.
 	 */
+	/** Compose the extension pre-publication gate with the requirements-ledger gate. */
+	#syncAssistantPublicationGate(): void {
+		const runner = this.#extensionRunner;
+		const requirementsGate = this.#agentKind === "main" ? this.#requirementsPublicationGate : undefined;
+		const hasExtensionGate = this.#agentKind === "main" && runner?.hasHandlers("before_assistant_message") === true;
+		if (!hasExtensionGate && !requirementsGate) {
+			setAssistantPublicationGate(this.agent, undefined);
+			return;
+		}
+		setAssistantPublicationGate(this.agent, async (message, signal) => {
+			let extensionResult: BeforeAssistantMessageEventResult | undefined;
+			if (hasExtensionGate && runner) {
+				extensionResult = await runner.emitBeforeAssistantMessage({
+					type: "before_assistant_message",
+					message,
+					signal,
+				});
+				if (
+					extensionResult?.settled === true &&
+					!signal.aborted &&
+					message.stopReason !== "aborted" &&
+					!message.content.some(block => block.type === "toolCall")
+				) {
+					this.#settledAssistantStatuses.add(message);
+				}
+			}
+			if (requirementsGate) {
+				const requirementsResult = await requirementsGate(message, signal);
+				if (requirementsResult !== undefined) return requirementsResult;
+			}
+			return extensionResult;
+		});
+	}
+
 	#syncAgentSessionId(sessionId?: string, notifyChange = true): void {
 		const currentSessionId = this.sessionManager.getSessionId();
+		if (!this.#isDisposed && !this.#sessionSlices.has(currentSessionId)) {
+			this.#sessionSlices.set(
+				currentSessionId,
+				new SessionSliceLifecycle({
+					sessionId: currentSessionId,
+					isIdleOrWaiting: () => !this.isStreaming || this.agent.state.pendingToolCalls.size > 0,
+					sendNotice: async content => {
+						if (this.#isDisposed || this.sessionManager.getSessionId() !== currentSessionId) return;
+						await this.sendCustomMessage(
+							{ customType: "session-owned-cpu", content, display: false, attribution: "agent" },
+							{ deliverAs: "nextTurn" },
+						);
+					},
+					sendUserLine: line => {
+						if (this.#isDisposed || this.sessionManager.getSessionId() !== currentSessionId) return;
+						this.emitNotice("warning", line, "session-slice");
+					},
+				}),
+			);
+		}
 		if (this.#observedSessionId === undefined) {
 			this.#observedSessionId = currentSessionId;
 		} else if (this.#observedSessionId !== currentSessionId) {
@@ -5123,6 +5637,7 @@ export class AgentSession implements SettingsScope {
 	 */
 	beginDispose(): void {
 		this.#isDisposed = true;
+		setAssistantPublicationGate(this.agent, undefined);
 		for (const dispose of this.#disposers.splice(0)) dispose();
 		this.#modelDiscoveryAbortController.abort();
 		this.#queuedMessageDrainBlocked = false;
@@ -5131,6 +5646,14 @@ export class AgentSession implements SettingsScope {
 		this.#detachUsageBeforeQueueDequeue = undefined;
 		this.#detachUsageBeforeModelCall?.();
 		this.#detachUsageBeforeModelCall = undefined;
+		this.#detachRestartDrainBeforeModelCall?.();
+		this.#detachRestartDrainBeforeModelCall = undefined;
+		this.#restartDrainLeaseCount = 0;
+		this.#restartDrainGeneration++;
+		this.#restartDrainQuiescence = undefined;
+		this.#restartDrainStoppedRun = false;
+		this.#restartDrainNeedsResume = false;
+		this.#resolveRestartDrainReleaseWaiters("disposed");
 		if (this.agent.prepareQueuedMessages === this.#prepareQueuedUserMessages) {
 			this.agent.prepareQueuedMessages = undefined;
 		}
@@ -5340,6 +5863,7 @@ export class AgentSession implements SettingsScope {
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		releaseShellSessions(this.sessionManager.getSessionId());
 		const results = await Promise.allSettled([
+			...Array.from(this.#sessionSlices.values(), lifecycle => lifecycle.stop()),
 			this.#disposeOwnedAsyncJobs(),
 			this.#eval.disposeKernels(),
 			this.#releaseOwnedBrowserTabs(this.sessionManager.getSessionId()),
@@ -5757,6 +6281,197 @@ export class AgentSession implements SettingsScope {
 		return this.agent.isAborting;
 	}
 
+	/** True while one or more restart callers hold drain leases. */
+	get isRestartDraining(): boolean {
+		return this.#restartDrainLeaseCount > 0;
+	}
+
+	/** Settle when all drain leases release, or report terminal disposal without rejecting. */
+	waitForRestartDrainRelease(): Promise<"released" | "disposed"> {
+		if (this.#isDisposed) return Promise.resolve("disposed");
+		if (!this.isRestartDraining) return Promise.resolve("released");
+		const waiter = Promise.withResolvers<"released" | "disposed">();
+		this.#restartDrainReleaseWaiters.add(waiter.resolve);
+		return waiter.promise;
+	}
+
+	/**
+	 * Close prompt admission and stop this session after its current provider/tool
+	 * batch. Queued input and completed side effects are persisted before the
+	 * lease reports quiescence; other AgentSession instances remain independent.
+	 */
+	beginRestartDrain(): RestartDrainLease {
+		if (this.#isDisposed) throw new Error("Cannot drain a disposed session for restart");
+		if (this.#restartDrainLeaseCount === 0) {
+			this.#restartWaitAbort.abort(TOOL_INTERRUPT_ABORT_REASON);
+			this.#restartDrainGeneration++;
+			this.#restartDrainQuiescence = undefined;
+			this.#restartDrainStoppedRun = false;
+			this.#restartDrainNeedsResume = false;
+			this.#lastRestartPendingQueuesSignature = undefined;
+		}
+		const generation = this.#restartDrainGeneration;
+		const wasRunning = this.isStreaming;
+		this.#restartDrainLeaseCount++;
+		let released = false;
+		return {
+			wasRunning,
+			waitForQuiescence: () => {
+				if (released) return Promise.reject(new Error("Restart drain lease has already been released"));
+				this.#restartDrainQuiescence ??= this.#waitForRestartDrainQuiescence(generation);
+				return this.#restartDrainQuiescence;
+			},
+			release: () => {
+				if (released) return;
+				released = true;
+				if (this.#isDisposed || generation !== this.#restartDrainGeneration) return;
+				if (--this.#restartDrainLeaseCount > 0) return;
+				this.#restartWaitAbort = new AbortController();
+				this.#restartDrainGeneration++;
+				this.#restartDrainQuiescence = undefined;
+				const resume = this.#restartDrainStoppedRun || this.#restartDrainNeedsResume;
+				this.#restartDrainStoppedRun = false;
+				this.#restartDrainNeedsResume = false;
+				if (this.#isDisposed) return;
+				if (resume) {
+					if (!this.#abortInProgress && !this.agent.isAborting && !this.#advisors.autoResumeSuppressed) {
+						if (!agentPauseGate.paused) this.#scheduleAgentContinue({ source: "restart-drain-cancelled" });
+					}
+					this.#resolveRestartDrainReleaseWaiters("released");
+					return;
+				}
+				this.#scheduleIdleQueueDrain();
+				this.#resumeStrandedIrcAsides();
+				this.#resolveRestartDrainReleaseWaiters("released");
+			},
+		};
+	}
+	#resolveRestartDrainReleaseWaiters(outcome: "released" | "disposed"): void {
+		for (const resolve of this.#restartDrainReleaseWaiters) resolve(outcome);
+		this.#restartDrainReleaseWaiters.clear();
+	}
+
+	async #waitForRestartDrainQuiescence(generation: number): Promise<void> {
+		const assertLease = (): void => {
+			if (this.#restartDrainLeaseCount === 0 || generation !== this.#restartDrainGeneration) {
+				throw new Error("Restart drain lease was released before quiescence completed");
+			}
+		};
+		const paused = Promise.withResolvers<never>();
+		const rejectForPause = (): void => {
+			paused.reject(
+				new Error(
+					"Restart drain blocked by the process-wide user pause; resume the existing pause and retry. The drain will not resume it.",
+				),
+			);
+		};
+		const detachPause = agentPauseGate.onChange(isPaused => {
+			if (isPaused && this.isStreaming) rejectForPause();
+		});
+		if (agentPauseGate.paused && this.isStreaming) rejectForPause();
+		try {
+			await Promise.race([
+				(async () => {
+					await this.waitForAdmittedSubmissions();
+					assertLease();
+					await this.waitForIdle();
+					assertLease();
+					await this.#settleRestartDrainEffects(generation);
+					assertLease();
+					await this.waitForIdle();
+					assertLease();
+					await this.#bash.flushPending();
+					this.#eval.flushPending();
+					this.#resumeStrandedIrcAsides();
+					await this.#persistPendingRestartMessages();
+					assertLease();
+					await this.yieldQueue.flush("idle");
+					if (this.yieldQueue.has()) {
+						throw new Error(
+							"Restart drain blocked: a yield receipt remains in memory because it cannot be delivered by the idle flush.",
+						);
+					}
+					await this.waitForIdle();
+					assertLease();
+					await this.#drainInFlightEventHandlers();
+					assertLease();
+					await this.settleInFlightMessagePersistence();
+					assertLease();
+					await this.sessionManager.flush();
+					assertLease();
+				})(),
+				paused.promise,
+			]);
+		} finally {
+			detachPause();
+		}
+	}
+
+	async #settleRestartDrainEffects(generation: number): Promise<void> {
+		const manager = this.#asyncJobManager;
+		if (!manager || !this.#agentId) return;
+		const filter = { ownerId: this.#agentId };
+		for (;;) {
+			if (this.#restartDrainLeaseCount === 0 || generation !== this.#restartDrainGeneration) {
+				throw new Error("Restart drain lease was released before side effects settled");
+			}
+			const effects = manager.getRunningJobs(filter).filter(job => job.type !== "task");
+			if (effects.length > 0) await Promise.all(effects.map(job => job.promise));
+			if (manager.hasPendingDeliveries(filter)) {
+				if (!(await manager.drainDeliveries({ filter }))) {
+					throw new Error("Restart drain blocked: an owner-scoped background-effect receipt did not settle");
+				}
+				continue;
+			}
+			if (manager.getRunningJobs(filter).some(job => job.type !== "task")) continue;
+			return;
+		}
+	}
+
+	async #persistPendingRestartMessages(): Promise<void> {
+		this.#resumeStrandedIrcAsides();
+		const pendingNextTurn = [...this.#pendingNextTurnMessages];
+		const queues = this.agent.snapshotPendingQueues();
+		const checkpoint: RestartPendingQueues = {
+			...queues,
+			pendingNextTurn,
+		};
+		const signature = restartPendingQueuesSignature(checkpoint);
+		if (signature === this.#lastRestartPendingQueuesSignature) return;
+		this.#lastRestartPendingQueuesSignature = signature;
+		this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, checkpoint);
+		this.#restartPendingQueuesCheckpointActive = true;
+		if (pendingNextTurn.length > 0 || queues.steering.length > 0 || queues.followUp.length > 0) {
+			this.#restartDrainNeedsResume = true;
+		}
+		await this.sessionManager.ensureOnDisk();
+		if (
+			!this.sessionManager.isSessionOnDisk() &&
+			(queues.steering.length > 0 || queues.followUp.length > 0 || pendingNextTurn.length > 0)
+		) {
+			throw new Error("Restart drain blocked: the pending queue checkpoint is not resumable on disk.");
+		}
+	}
+
+	async #queueRestartMessage(message: CustomMessage): Promise<void> {
+		this.agent.followUp(message);
+		await this.#persistPendingRestartMessages();
+		await this.sessionManager.flush();
+	}
+
+	#restorePendingRestartMessages(): void {
+		const branch = this.sessionManager.getBranch();
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry?.type !== "custom" || entry.customType !== RESTART_PENDING_QUEUES_CUSTOM_TYPE) continue;
+			if (!isRestartPendingQueues(entry.data)) return;
+			this.agent.replaceQueues(entry.data.steering, entry.data.followUp);
+			this.#pendingNextTurnMessages = entry.data.pendingNextTurn;
+			this.#restartPendingQueuesCheckpointActive = true;
+			return;
+		}
+	}
+
 	/**
 	 * Wait until streaming, event persistence, and deferred recovery work are fully settled.
 	 * Call outside callbacks whose completion the session awaits to avoid waiting on yourself.
@@ -6077,6 +6792,23 @@ export class AgentSession implements SettingsScope {
 		return this.#tools.refreshBaseSystemPrompt(commitIf);
 	}
 
+	/** Actual owned-runtime reload, never a command-metadata refresh or global lookup. */
+	reloadMCPRuntime(): Promise<MCPLoadResult> {
+		if (this.isDisposed) throw new Error("Cannot reload MCP on a disposed session");
+		if (this.isStreaming || this.isBashRunning || this.isEvalRunning)
+			throw new Error("MCP reload requires an idle session");
+		if (!this.#reloadOwnedMcpManager) throw new Error("This session does not own an MCP runtime");
+		if (this.#mcpReloadInFlight) return this.#mcpReloadInFlight;
+		const pending = this.#reloadOwnedMcpManager();
+		this.#mcpReloadInFlight = pending;
+		void pending
+			.finally(() => {
+				if (this.#mcpReloadInFlight === pending) this.#mcpReloadInFlight = undefined;
+			})
+			.catch(() => {});
+		return pending;
+	}
+
 	/** Replaces connected MCP tools and enables them immediately. */
 	refreshMCPTools(mcpTools: CustomTool[]): Promise<void> {
 		return this.#tools.refreshMCPTools(mcpTools);
@@ -6186,17 +6918,20 @@ export class AgentSession implements SettingsScope {
 	#buildEvalStateContextMessage(): CustomMessage | undefined {
 		const session = this.#evalToolSession;
 		if (!session) return undefined;
-		const historyHasEval = this.sessionManager.getBranch().some(entry => {
-			if (entry.type !== "message") return false;
+		let historyHasEval = false;
+		for (const entry of this.sessionManager.iterateBranch("message")) {
+			if (entry.type !== "message") continue;
 			const message = entry.message;
-			if (message.role === "pythonExecution" || (message.role === "toolResult" && message.toolName === "eval")) {
-				return true;
+			if (
+				message.role === "pythonExecution" ||
+				(message.role === "toolResult" && message.toolName === "eval") ||
+				(message.role === "assistant" &&
+					message.content.some(block => block.type === "toolCall" && block.name === "eval"))
+			) {
+				historyHasEval = true;
+				break;
 			}
-			return (
-				message.role === "assistant" &&
-				message.content.some(block => block.type === "toolCall" && block.name === "eval")
-			);
-		});
+		}
 		const content = formatEvalStateContext(session, { historyHasEval });
 		if (!content) return undefined;
 		return {
@@ -6239,6 +6974,11 @@ export class AgentSession implements SettingsScope {
 
 	#convertToLlmForSideRequest(messages: AgentMessage[]): Message[] {
 		return this.#providerBoundary.convertToLlmForSideRequest(messages);
+	}
+
+	/** Prepare a send-only copy; tool execution and persisted history retain the original arguments. */
+	prepareToolHistoryForProvider(messages: AgentMessage[]): AgentMessage[] {
+		return this.#recovery.shrinkWholeToolHistory ? shrinkOversizedToolHistory(messages, true) : messages;
 	}
 
 	/** Convert session messages using the same pre-LLM pipeline as the active session. */
@@ -6445,7 +7185,7 @@ export class AgentSession implements SettingsScope {
 		let completed: CompletedRewindState | undefined;
 		let pending: { entryId: string; startedAt: string; messageCount: number } | undefined;
 		let messageCount = 0;
-		for (const entry of this.sessionManager.getBranch()) {
+		for (const entry of this.sessionManager.iterateBranch()) {
 			if (entry.type === "message") messageCount++;
 			if (isSuccessfulCheckpointEntry(entry)) {
 				completed = undefined;
@@ -6707,7 +7447,8 @@ export class AgentSession implements SettingsScope {
 		const canCallTodoTool = this.getActiveToolNames().includes("todo");
 		if (!canCallTodoTool) return undefined;
 		const phases = this.getTodoPhases().filter(phase => phase.tasks.length > 0);
-		if (phases.length === 0) return undefined;
+		const archiveSummary = getTodoArchiveSummaryFromEntries(this.sessionManager.getBranch());
+		if (phases.length === 0 && !archiveSummary) return undefined;
 
 		let total = 0;
 		let closed = 0;
@@ -6724,11 +7465,14 @@ export class AgentSession implements SettingsScope {
 				return { content: this.#sanitizeGoalTodoText(task.content), status: task.status };
 			}),
 		}));
+		const archiveSummaryLine = archiveSummary
+			? `\nArchive summary: ${archiveSummary.count} archived task${archiveSummary.count === 1 ? "" : "s"} (${new Date(archiveSummary.fromAt).toISOString()} to ${new Date(archiveSummary.toAt).toISOString()}).`
+			: "";
 
 		return prompt.render(goalTodoContextPrompt, {
 			canCallTodoTool,
 			closed: String(closed),
-			open: String(open),
+			open: `${open}${archiveSummaryLine}`,
 			phases: promptPhases,
 			total: String(total),
 		});
@@ -6844,7 +7588,22 @@ export class AgentSession implements SettingsScope {
 	 * {@link PromptDroppedError} instead.
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
-		return this.#admitSubmission(() => this.#prompt(text, options));
+		return this.#admitSubmission(
+			async () => {
+				if (this.#restartDrainLeaseCount > 0) {
+					await this.followUp(text, options?.images, {
+						attribution: options?.attribution,
+						expandPromptTemplates: options?.expandPromptTemplates,
+						synthetic: options?.synthetic,
+					});
+					await this.#persistPendingRestartMessages();
+					await this.sessionManager.flush();
+					return true;
+				}
+				return this.#prompt(text, options);
+			},
+			{ allowDuringRestartDrain: true },
+		);
 	}
 
 	async #prompt(text: string, options?: PromptOptions): Promise<boolean> {
@@ -6886,13 +7645,17 @@ export class AgentSession implements SettingsScope {
 		// Handle extension commands first (execute immediately, even during streaming)
 		if (expandPromptTemplates && text.startsWith("/")) {
 			if (options?.runCommands !== false) {
-				const handled = await this.#tryExecuteExtensionCommand(text, options?.onPromptAdmitted);
+				const handled = await this.#tryExecuteExtensionCommand(
+					text,
+					options?.onPromptAdmitted,
+					options?.throwOnCommandError,
+				);
 				if (handled) {
 					return false;
 				}
 
 				// Try custom commands (TypeScript slash commands)
-				const customResult = await this.#tryExecuteCustomCommand(text);
+				const customResult = await this.#tryExecuteCustomCommand(text, options?.throwOnCommandError);
 				if (customResult !== null) {
 					if (customResult === "") {
 						return false;
@@ -7051,6 +7814,9 @@ export class AgentSession implements SettingsScope {
 					userInitiated: options?.userInitiated === true ? true : undefined,
 				}
 			: { role: "user" as const, content: userContent, attribution: promptAttribution, timestamp: submittedAt };
+		if (message.role === "user" && message.attribution === "user" && this.getActiveToolNames().includes("todo")) {
+			this.#captureRawRequirementCandidate(typedText, options?.images);
+		}
 
 		const preludeMessages: AgentMessage[] = [];
 		if (eagerTodoPrelude) {
@@ -7120,7 +7886,21 @@ export class AgentSession implements SettingsScope {
 			queueOnly?: boolean;
 		},
 	): Promise<boolean> {
-		return this.#admitSubmission(() => this.#promptCustomMessage(message, options));
+		return this.#admitSubmission(
+			async () => {
+				if (this.#restartDrainLeaseCount > 0) {
+					const normalized = await this.#normalizeAgentMessageImages({
+						role: "custom",
+						...message,
+						timestamp: Date.now(),
+					});
+					await this.#queueRestartMessage(normalized);
+					return true;
+				}
+				return this.#promptCustomMessage(message, options);
+			},
+			{ allowDuringRestartDrain: true },
+		);
 	}
 
 	async #promptCustomMessage<T = unknown>(
@@ -7396,6 +8176,7 @@ export class AgentSession implements SettingsScope {
 			"toolChoice" | "images" | "skipCompactionCheck" | "solutionSpace" | "onPromptAdmitted"
 		> & {
 			prependMessages?: AgentMessage[];
+			consumeNextTurnMessages?: CustomMessage[];
 			skipPostPromptRecoveryWait?: boolean;
 			acceptTerminalEmptyStop?: boolean;
 		},
@@ -7409,6 +8190,7 @@ export class AgentSession implements SettingsScope {
 		this.#promptSequence++;
 		const setupAbort = new AbortController();
 		this.#promptSetupAbortController = setupAbort;
+		let pendingNextTurnDelivery: PendingNextTurnDelivery | undefined;
 		try {
 			options?.onPromptAdmitted?.();
 			await this.#recovery.maybeRestoreRetryFallbackPrimary();
@@ -7490,12 +8272,14 @@ export class AgentSession implements SettingsScope {
 			// promotion/summary can rebuild the base prompt and clear a roster delta
 			// it subsumes, avoiding a contradictory materialized notice.
 			const xdevMountNoticeIndex = messages.length;
+			// Keep restored hidden inputs reserved until their last message commits with
+			// the updated checkpoint.
+			const pendingNextTurnMessages = this.#reservePendingNextTurnMessages(options?.consumeNextTurnMessages);
+			pendingNextTurnDelivery = this.#registerPendingNextTurnDelivery(pendingNextTurnMessages, generation);
 			messages.push(message);
-			// Inject any pending "nextTurn" messages as context alongside the user message
-			for (const msg of this.#pendingNextTurnMessages) {
+			for (const msg of pendingNextTurnMessages.slice(options?.consumeNextTurnMessages?.length ?? 0)) {
 				messages.push(msg);
 			}
-			this.#pendingNextTurnMessages = [];
 
 			// Auto-read @filepath mentions
 			const fileMentions = extractFileMentions(expandedText);
@@ -7620,6 +8404,9 @@ export class AgentSession implements SettingsScope {
 			return true;
 		} finally {
 			// The per-turn before_agent_start override lives only for this turn.
+			if (pendingNextTurnDelivery && !pendingNextTurnDelivery.inputMessageSeen) {
+				this.#settlePendingNextTurnDelivery(pendingNextTurnDelivery, false);
+			}
 			this.#tools.clearTurnSystemPromptOverride();
 			this.#usagePreflightReadyForNextModelCall = false;
 			this.#endInFlight();
@@ -7631,7 +8418,7 @@ export class AgentSession implements SettingsScope {
 	 * Try to execute an extension command. Returns true if command was found and executed.
 	 * `onRouted` fires once the command is found, before its handler runs.
 	 */
-	async #tryExecuteExtensionCommand(text: string, onRouted?: () => void): Promise<boolean> {
+	async #tryExecuteExtensionCommand(text: string, onRouted?: () => void, throwOnError = false): Promise<boolean> {
 		if (!this.#extensionRunner) return false;
 
 		// Parse command name and args
@@ -7656,6 +8443,7 @@ export class AgentSession implements SettingsScope {
 				event: "command",
 				error: err instanceof Error ? err.message : String(err),
 			});
+			if (throwOnError) throw err;
 			return true;
 		}
 	}
@@ -7692,7 +8480,20 @@ export class AgentSession implements SettingsScope {
 				void this.dispose().finally(() => process.exit(0));
 			},
 			getContextUsage: () => this.getContextUsage(),
+			getTaskMaxConcurrency: () => cfgTaskMaxConcurrency.get(this.settings),
 			getAsyncJobSnapshot: () => this.getAsyncJobSnapshot(),
+			sendAgentMessage: (to, message) =>
+				sendAgentMessageFromSession(
+					{
+						agentRegistry: this.#agentRegistry,
+						settings: this.settings,
+						taskDepth: 0,
+						getAgentId: () => this.getAgentId(),
+						getSessionFile: () => this.sessionManager.getSessionFile(),
+					},
+					to,
+					message,
+				),
 			waitForIdle: () => this.waitForIdle(),
 			newSession: async options => {
 				const success = await this.newSession({ parentSession: options?.parentSession });
@@ -7745,7 +8546,7 @@ export class AgentSession implements SettingsScope {
 	 * Try to execute a custom command. Returns the prompt string if found, null otherwise.
 	 * If the command returns void, returns empty string to indicate it was handled.
 	 */
-	async #tryExecuteCustomCommand(text: string): Promise<string | null> {
+	async #tryExecuteCustomCommand(text: string, throwOnError = false): Promise<string | null> {
 		if (this.#customCommands.length === 0 && this.#mcpPromptCommands.length === 0) return null;
 
 		// Parse command name and args
@@ -7784,6 +8585,7 @@ export class AgentSession implements SettingsScope {
 				const message = err instanceof Error ? err.message : String(err);
 				logger.error("Custom command failed", { commandName, error: message });
 			}
+			if (throwOnError) throw err;
 			return ""; // Command was handled (with error)
 		}
 	}
@@ -8013,6 +8815,7 @@ export class AgentSession implements SettingsScope {
 	#scheduleQueuedMessageDrain(): void {
 		if (
 			this.#queuedMessageDrainScheduled ||
+			this.#restartDrainLeaseCount > 0 ||
 			this.#modeExitDrainSuppressionDepth > 0 ||
 			this.#queuedMessageDrainBlocked ||
 			!this.#canAutoContinueForFollowUp() ||
@@ -8026,6 +8829,7 @@ export class AgentSession implements SettingsScope {
 			shouldContinue: () => {
 				this.#queuedMessageDrainScheduled = false;
 				return (
+					this.#restartDrainLeaseCount === 0 &&
 					this.#modeExitDrainSuppressionDepth === 0 &&
 					this.#canAutoContinueForFollowUp() &&
 					this.agent.hasQueuedMessages()
@@ -8092,6 +8896,13 @@ export class AgentSession implements SettingsScope {
 		this.#scheduledHiddenNextTurnGeneration = generation;
 		this.#schedulePostPromptTask(
 			async () => {
+				if (this.#restartDrainLeaseCount > 0) {
+					if (this.#scheduledHiddenNextTurnGeneration === generation) {
+						this.#scheduledHiddenNextTurnGeneration = undefined;
+					}
+					this.#restartDrainNeedsResume = true;
+					return;
+				}
 				if (this.#scheduledHiddenNextTurnGeneration === generation) {
 					this.#scheduledHiddenNextTurnGeneration = undefined;
 				}
@@ -8121,7 +8932,6 @@ export class AgentSession implements SettingsScope {
 		}
 
 		const queuedMessages = [...this.#pendingNextTurnMessages];
-		this.#pendingNextTurnMessages = [];
 		const message = queuedMessages[queuedMessages.length - 1];
 		if (!message) {
 			return;
@@ -8129,15 +8939,11 @@ export class AgentSession implements SettingsScope {
 
 		const prependMessages = queuedMessages.slice(0, -1);
 		const textContent = this.#getCustomMessageTextContent(message);
-		try {
-			await this.#promptWithMessage(message, textContent, {
-				prependMessages,
-				skipPostPromptRecoveryWait: true,
-			});
-		} catch (error) {
-			this.#pendingNextTurnMessages = [...queuedMessages, ...this.#pendingNextTurnMessages];
-			throw error;
-		}
+		await this.#promptWithMessage(message, textContent, {
+			prependMessages,
+			consumeNextTurnMessages: queuedMessages,
+			skipPostPromptRecoveryWait: true,
+		});
 	}
 
 	#getCustomMessageTextContent(message: Pick<CustomMessage, "content">): string {
@@ -8295,7 +9101,9 @@ export class AgentSession implements SettingsScope {
 			acceptTerminalEmptyStop?: boolean;
 		},
 	): Promise<boolean> {
-		return this.#admitSubmission(() => this.#sendCustomMessage(message, options));
+		return this.#admitSubmission(() => this.#sendCustomMessage(message, options), {
+			allowDuringRestartDrain: true,
+		});
 	}
 
 	async #sendCustomMessage<T = unknown>(
@@ -8358,6 +9166,10 @@ export class AgentSession implements SettingsScope {
 			timestamp: Date.now(),
 		};
 		const normalizedAppMessage = await this.#normalizeAgentMessageImages(appMessage);
+		if (this.#restartDrainLeaseCount > 0 && (options?.deliverAs !== "nextTurn" || options.triggerTurn === true)) {
+			await this.#queueRestartMessage(normalizedAppMessage);
+			return false;
+		}
 		if (this.isStreaming) {
 			// Queued into a turn the agent owns: that turn holds the session. Busy only
 			// from another prompt's setup claims nothing (that prompt decides).
@@ -8779,6 +9591,12 @@ export class AgentSession implements SettingsScope {
 
 	setTodoPhases(phases: TodoPhase[]): void {
 		this.#todo.setPhases(phases);
+		// The tab label's task half tracks what the session is doing now (R5):
+		// the current in-progress todo row wins while one exists; clearing back
+		// to the session title happens when the row completes or the list resets.
+		if (this.#agentKind !== "main") return;
+		const inProgress = phases.flatMap(phase => phase.tasks).find(task => task.status === "in_progress");
+		setTerminalTitleTaskNow(inProgress?.content);
 	}
 
 	/** Active item labels accepted by this pooled turn's incremental yield tool. */
@@ -9220,6 +10038,7 @@ export class AgentSession implements SettingsScope {
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			// Re-apply the configured selector so the new session does not inherit
 			// the previous session's auto-classified effort: auto stays auto but
 			// restarts at the provisional level; a pinned level re-resolves to itself.
@@ -9269,6 +10088,14 @@ export class AgentSession implements SettingsScope {
 					type: "session_switch",
 					reason: "new",
 					previousSessionFile,
+				});
+			}
+			try {
+				await this.#sessionSwitchReconciler?.();
+			} catch (error) {
+				logger.warn("Failed to reconcile session mode after new session", {
+					sessionFile: this.sessionFile,
+					error: String(error),
 				});
 			}
 
@@ -9376,6 +10203,7 @@ export class AgentSession implements SettingsScope {
 			this.#freshProviderSessionId = undefined;
 			this.#adoptInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			this.#advisors.reattachRecorderFeeds();
 			advisorRecordersDetached = false;
@@ -9590,6 +10418,12 @@ export class AgentSession implements SettingsScope {
 	/** Enables or disables priority service for the active model family. */
 	setFastMode(enabled: boolean): boolean {
 		return this.#models.setFastMode(enabled);
+	}
+
+	/** Set fast mode on one of this session's live direct subagents. */
+	setSubagentFastMode(id: string, enabled: boolean): boolean {
+		if (!this.#agentId) return false;
+		return this.#agentRegistry.setSubagentFastMode(this.#agentId, id, enabled);
 	}
 
 	/** Toggles priority service for the active model family. */
@@ -9890,6 +10724,7 @@ export class AgentSession implements SettingsScope {
 				this.sessionManager.branchWithSummary(null, report, { startedAt: checkpointState.startedAt });
 			}
 		});
+		this.#requirementsLedger.syncPublicationGate();
 
 		const rewoundAt = new Date().toISOString();
 		const details = { report, startedAt: checkpointState.startedAt, rewoundAt };
@@ -10586,8 +11421,25 @@ export class AgentSession implements SettingsScope {
 			timestamp: Date.now(),
 		});
 		if (history?.length) {
-			// Detach before the conversion pipeline can await or mutate caller-owned messages.
-			messages.push(...structuredClone(history));
+			// Detach before the conversion pipeline can await or mutate caller-owned
+			// messages, without paying to walk every nested content block. A full
+			// `structuredClone` here is O(bytes of caller-supplied history): with a
+			// large or growing side-channel thread (BTW follow-ups, an extension's
+			// own peer-conversation cache), that cost is repeated on every ephemeral
+			// turn. Content blocks are treated as immutable after construction
+			// throughout this codebase (see `convertOneCached`'s identity-keyed
+			// cache), so a one-level detach — new message wrapper, new content
+			// array — is enough to stop a caller mutating what we hand to the
+			// conversion pipeline while it awaits.
+			messages.push(
+				...history.map(
+					message =>
+						({
+							...message,
+							content: Array.isArray(message.content) ? [...message.content] : message.content,
+						}) as AgentMessage,
+				),
+			);
 		}
 		messages.push({
 			role: "user",
@@ -10810,7 +11662,7 @@ export class AgentSession implements SettingsScope {
 
 			const model = this.model;
 			if (model) {
-				const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.getBranch(), {
+				const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.iterateBranch(), {
 					api: model.api,
 					provider: model.provider,
 					model: model.id,
@@ -10822,10 +11674,8 @@ export class AgentSession implements SettingsScope {
 				}
 			}
 
-			const hasThinkingEntry = this.sessionManager.getBranch().some(entry => entry.type === "thinking_level_change");
-			const hasServiceTierEntry = this.sessionManager
-				.getBranch()
-				.some(entry => entry.type === "service_tier_change");
+			const hasThinkingEntry = [...this.sessionManager.iterateBranch("thinking_level_change")].length > 0;
+			const hasServiceTierEntry = [...this.sessionManager.iterateBranch("service_tier_change")].length > 0;
 			const defaultThinkingLevel = parseConfiguredThinkingLevel(cfgDefaultThinkingLevel.get(this.settings));
 			const configuredServiceTierByFamily = buildServiceTierByFamily(
 				cfgTierOpenai.get(this.settings),
@@ -10866,6 +11716,7 @@ export class AgentSession implements SettingsScope {
 					error: String(error),
 				});
 			}
+			this.#requirementsLedger.syncPublicationGate();
 			// Refresh the workspace-roots block to match the resumed session's directory set.
 			// Wrapped so a rebuild failure (e.g. a gate that intentionally fails in tests)
 			// doesn't roll back an otherwise-successful session switch.
@@ -11094,6 +11945,7 @@ export class AgentSession implements SettingsScope {
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			await this.#memory.resetContextForNewTranscript();
 
@@ -11216,6 +12068,7 @@ export class AgentSession implements SettingsScope {
 			this.#modelMentions.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			await this.#memory.resetContextForNewTranscript();
 
@@ -11558,6 +12411,7 @@ export class AgentSession implements SettingsScope {
 		this.#advisors.resetSessionState({ preserveCost: true });
 		this.#todo.syncFromBranch();
 		this.#modelMentions.syncFromBranch();
+		this.#requirementsLedger.syncPublicationGate();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 
 		this.#branchSummaryAbortController = undefined;
@@ -11685,10 +12539,9 @@ export class AgentSession implements SettingsScope {
 	 * Get all user messages from session for branch selector.
 	 */
 	getUserMessagesForBranching(): Array<{ entryId: string; text: string }> {
-		const entries = this.sessionManager.getEntries();
 		const result: Array<{ entryId: string; text: string }> = [];
 
-		for (const entry of entries) {
+		for (const entry of this.sessionManager.iterateEntries("message")) {
 			if (entry.type !== "message") continue;
 			if (entry.message.role !== "user") continue;
 
@@ -12818,5 +13671,8 @@ export class AgentSession implements SettingsScope {
 	 */
 	consumeActiveFallbackCreditRedemption(targetModel?: Model): AnthropicFallbackCreditHandle | undefined {
 		return this.#recovery.consumeActiveFallbackCreditRedemption(targetModel);
+	}
+	#captureRawRequirementCandidate(rawText: string, images?: readonly ImageContent[]): void {
+		if (this.getActiveToolNames().includes("todo")) this.#requirementsLedger.captureCandidate(rawText, images);
 	}
 }

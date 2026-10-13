@@ -139,6 +139,8 @@ export interface ScopedModelItem {
 export type ModelRoleSelectionScope = "global" | "project";
 
 export interface ModelHubCallbacks {
+	/** Switch only the active session to this model (writes nothing to config). */
+	onSelectForSession: (model: Model) => void;
 	/** Persist a role assignment. */
 	onAssign: (
 		model: Model,
@@ -165,6 +167,8 @@ export interface ModelHubOptions {
 	initialProviderId?: string;
 	/** `provider/id` of the session's model, marked current in the native picker. */
 	currentSelector?: string;
+	/** The model actively running this session, shown in the header alongside the configured default. */
+	currentSessionModel?: Model;
 }
 
 interface SidebarEntry extends HubSidebarEntry<"recent" | "roles" | "all" | "separator" | "provider"> {
@@ -356,15 +360,15 @@ export class ModelHubComponent implements Component {
 	#refreshSpinnerInterval?: Timer;
 	#renderBodyPane = (width: number, height: number | undefined): readonly string[] => {
 		const rows = Math.max(1, Math.floor(height ?? 10));
-		const lines: string[] = [this.#statusRow(width)];
+		const lines: string[] = [this.#statusRow(width), this.#renderSessionFactsRow(width)];
 		const entry = this.#activeEntry();
 		if (entry.kind === "roles" && this.#assigning === null) {
-			lines.push(...this.#renderRolesView(width, rows - 1));
+			lines.push(...this.#renderRolesView(width, rows - 2));
 		} else if (entry.kind === "provider" && entry.locked && this.#assigning === null) {
-			lines.push(...this.#renderLockedView(entry, width, rows - 1));
+			lines.push(...this.#renderLockedView(entry, width, rows - 2));
 		} else {
 			lines.push(this.#renderModelKindTabs(width));
-			this.#browser.setMaxVisible(rows - 2 - 5);
+			this.#browser.setMaxVisible(rows - 3 - 5);
 			this.#browser.setFocused(this.#focus === "list");
 			lines.push(...this.#browser.render(width));
 		}
@@ -383,6 +387,7 @@ export class ModelHubComponent implements Component {
 	#nativeVersion = 0;
 	#nativeCache: { version: number; picker: boolean; node: NativeNode } | undefined;
 	#currentSelector: string | undefined;
+	#currentSessionModel: Model | undefined;
 	/** The opening online catalog refresh is still in flight (an empty scope then shows as loading). */
 	#catalogRefreshing = false;
 	#kindTabsMemo: { candidates: readonly ModelBrowserItem[]; tabs: TspPickerProps["tabs"] } | undefined;
@@ -412,6 +417,7 @@ export class ModelHubComponent implements Component {
 		this.#scopedModels = scopedModels;
 		this.#callbacks = callbacks;
 		this.#currentSelector = options.currentSelector;
+		this.#currentSessionModel = options.currentSessionModel;
 
 		this.#browser = new ModelBrowser(settings, {
 			emptyText: () => this.#emptyStateMessage(),
@@ -1097,7 +1103,10 @@ export class ModelHubComponent implements Component {
 			}
 			return;
 		}
-		this.#openRoleStrip(item);
+		this.#currentSessionModel = item.model;
+		this.#currentSelector = `${item.model.provider}/${item.model.id}`;
+		this.#requestRender();
+		this.#callbacks.onSelectForSession(item.model);
 	}
 
 	#roleForScope(role: string, scope: ModelRoleSelectionScope): ResolvedModelRoleValue {
@@ -1847,6 +1856,12 @@ export class ModelHubComponent implements Component {
 			this.#focus = "list";
 			return;
 		}
+		// Alt+R opens the role editor without consuming the printable search key.
+		if (this.#focus === "list" && this.#assigning === null && matchesKey(data, "alt+r")) {
+			const selected = this.#browser.getSelected();
+			if (selected && selected.id !== "separator") this.#openRoleStrip(selected);
+			return;
+		}
 
 		const beforeQuery = this.#browser.query;
 		const isPrintable = extractPrintableText(data) !== undefined;
@@ -2078,10 +2093,16 @@ export class ModelHubComponent implements Component {
 
 	#routeMouseEvent(event: SgrMouseEvent): boolean {
 		if (this.#assignmentPending) return true;
-		const { footerColumn, bodyHeight, contentLine, overSidebar, overBody, bodyLine } = this.#frame.locate(
-			event.row,
-			event.col,
-		);
+		const {
+			footerColumn,
+			bodyHeight,
+			contentLine,
+			overSidebar,
+			overBody,
+			bodyLine: rawBodyLine,
+		} = this.#frame.locate(event.row, event.col);
+		// The session-facts row sits above the status row, which the shared frame's own bodyLine offset accounts for.
+		const bodyLine = rawBodyLine - 1;
 		const entry = this.#activeEntry();
 
 		// Footer strip chips (columns stay in frame coordinates).
@@ -2317,6 +2338,18 @@ export class ModelHubComponent implements Component {
 		}
 		return truncateToWidth(theme.fg("muted", ` ${text}`), width);
 	}
+	/** Header line distinguishing this session's live model from the default new sessions will start with. */
+	#renderSessionFactsRow(width: number): string {
+		const sessionLabel = this.#currentSessionModel
+			? `${this.#currentSessionModel.provider}/${this.#currentSessionModel.id}`
+			: "—";
+		const defaultAssignment = this.#roles.default;
+		const defaultLabel = defaultAssignment
+			? `${defaultAssignment.model.provider}/${defaultAssignment.model.id}`
+			: "—";
+		const text = ` ${theme.fg("dim", "Session:")} ${sessionLabel}   ${theme.fg("dim", "New sessions:")} ${defaultLabel}`;
+		return truncateToWidth(text, width);
+	}
 
 	/** Clamp a roles row to `width`; the bg band is reserved for mouse hover. */
 	#finishRolesRow(line: string, width: number, hovered: boolean): string {
@@ -2490,7 +2523,10 @@ export class ModelHubComponent implements Component {
 			lines.push(truncateToWidth(theme.fg("muted", "  Add an API key for this provider in config."), width));
 		}
 		if (entry.oauth) {
-			this.#lockedLoginLine = lines.length + 1; // +1 for the status row offset handled by caller
+			// `bodyLine` in the mouse router is already view-local (the frame drops
+			// the status and session-facts rows), so the login row's own push index
+			// is its click row.
+			this.#lockedLoginLine = lines.length;
 			lines.push(
 				truncateToWidth(
 					theme.fg("accent", `  ${theme.nav.cursor} Log in with OAuth (${formatKeyHint("enter")})`),
@@ -2583,7 +2619,9 @@ export class ModelHubComponent implements Component {
 		if (this.#focus === "scope") {
 			return `${enterRight} models · ${upDown} providers · type to search · ${altLeftRight} kind${refresh} · ${cancel} close`;
 		}
-		return `${enter} assign roles · ${upDown} models · ${left} providers · type to search · ${altLeftRight} kind${refresh} · ${cancel} close`;
+		const selected = this.#browser.getSelected();
+		const roleHint = this.#focus === "list" && selected && selected.id !== "separator" ? " · Alt+R roles" : "";
+		return `Enter: use for this session${roleHint} · ${upDown} models · ${left} providers · type to search · ${altLeftRight} kind${refresh} · ${cancel} close`;
 	}
 
 	#renderFooter(width: number): string {
@@ -2747,7 +2785,7 @@ export class ModelHubComponent implements Component {
 	};
 
 	#describeBody(): NativeNode {
-		const children: NativeChild[] = [this.#describeStatus()];
+		const children: NativeChild[] = [this.#describeStatus(), this.#describeSessionFacts()];
 		const entry = this.#activeEntry();
 		if (entry.kind === "roles" && this.#assigning === null) {
 			children.push(...this.#describeRolesView());
@@ -2773,6 +2811,31 @@ export class ModelHubComponent implements Component {
 			);
 		}
 		return node("col", { gap: "sm", grow: 1 }, children, "body");
+	}
+
+	/** Session/default facts for native surfaces (mirrors #renderSessionFactsRow). */
+	#describeSessionFacts(): NativeNode {
+		const { sessionLabel, defaultLabel } = this.#sessionFactsLabels();
+		return node(
+			"text",
+			{
+				spans: [span("Session: ", "dim"), span(sessionLabel), span("   New sessions: ", "dim"), span(defaultLabel)],
+				truncate: "end",
+			},
+			undefined,
+			"sessionFacts",
+		);
+	}
+
+	#sessionFactsLabels(): { sessionLabel: string; defaultLabel: string } {
+		const sessionLabel = this.#currentSessionModel
+			? `${this.#currentSessionModel.provider}/${this.#currentSessionModel.id}`
+			: "—";
+		const defaultAssignment = this.#roles.default;
+		const defaultLabel = defaultAssignment
+			? `${defaultAssignment.model.provider}/${defaultAssignment.model.id}`
+			: "—";
+		return { sessionLabel, defaultLabel };
 	}
 
 	#describeStatus(): NativeNode {
@@ -3016,9 +3079,10 @@ export class ModelHubComponent implements Component {
 		const rolesView = entry.kind === "roles" && this.#assigning === null;
 		const lockedView = entry.kind === "provider" && entry.locked === true && this.#assigning === null;
 		const strip = this.#strip;
+		const { sessionLabel, defaultLabel } = this.#sessionFactsLabels();
 		const props: TspPickerProps = {
 			title: "Models",
-			subtitle: this.#pickerSubtitle(entry, rolesView),
+			subtitle: this.#pickerSubtitle(entry, rolesView) ?? `Session: ${sessionLabel}   New sessions: ${defaultLabel}`,
 			icon: "cpu",
 			noun: rolesView ? "roles" : "models",
 			size: "lg",
@@ -3318,7 +3382,7 @@ export class ModelHubComponent implements Component {
 		return compact([
 			pickerAction(
 				"assign",
-				"Assign role",
+				"Use for session",
 				"enter",
 				this.#browser.pickerSelected ? { primary: true } : { primary: true, disabled: "No model selected" },
 			),
@@ -3827,7 +3891,7 @@ export class ModelHubComponent implements Component {
 			return [keys("models", "enter", "right"), upDown("providers"), search, kind, refresh, cancel("close")];
 		}
 		return [
-			keys("assign roles", "enter"),
+			keys("use for session", "enter"),
 			upDown("models"),
 			keys("providers", "left"),
 			search,

@@ -1,0 +1,1 @@
+The OMP process restarted while this assignment was running. Continue the original assignment from your persisted session_init and conversation history; do not repeat completed work or rely on an old output artifact as proof of completion.

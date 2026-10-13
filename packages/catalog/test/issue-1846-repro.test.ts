@@ -128,8 +128,8 @@ describe("issue #1846: Xiaomi Token Plan provider support", () => {
 		const models = await opts.fetchDynamicModels?.();
 
 		expect(opts.providerId).toBe("xiaomi-token-plan-cn");
-		expect(models?.map(model => model.id)).toEqual([...MIMO_V26_IDS]);
-		for (const id of MIMO_V26_IDS) {
+		expect(models?.map(model => model.id)).toEqual(["mimo-v2.6-flash", "mimo-v2.6-pro"]);
+		for (const id of ["mimo-v2.6-flash", "mimo-v2.6-pro"]) {
 			const spec = models?.find(model => model.id === id);
 			if (!spec) throw new Error(`Missing discovered Xiaomi model ${id}`);
 			const model = buildModel(spec);

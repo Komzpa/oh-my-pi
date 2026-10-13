@@ -68,10 +68,12 @@ import {
 	type ServingModel,
 	validateRetryFallbackChains,
 } from "./retry-fallback-chains";
+import { coolDownExhaustedProvider, isProviderExhaustionError } from "./provider-exhaustion";
 import { describeUsageFallback } from "./retry-fallback-reason";
 import { getLatestCompactionEntry } from "./session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
+import { providerFallbackReason } from "./retry-fallback-reason";
 import { sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { journalJudgmentUsage } from "../judgment";
 import { classifyUnexpectedStop, isUnexpectedStopCandidate } from "./unexpected-stop-classifier";
@@ -191,6 +193,8 @@ export interface RecoveryCompactionResult {
 
 type RequestBodyReadTimeoutRecovery = "not-applicable" | "handled-retry" | "handled-terminal";
 
+export type OversizedHistoryOverflowRecovery = "recover" | "shrink-retry" | "already-handled" | "terminal";
+
 /** Capabilities borrowed from the owning AgentSession. */
 export interface TurnRecoveryHost {
 	agent: Agent;
@@ -297,6 +301,14 @@ export class TurnRecovery {
 	#retryAbortController: AbortController | undefined;
 	#retryAttempt = 0;
 	#requestBodyReadTimeoutRecoveryPromptSequence: number | undefined;
+	#oversizedHistoryRecovery:
+		| {
+				phase: "compacted" | "shrunk" | "terminal";
+				promptSequence: number;
+				generation: number;
+				lastFailure: AssistantMessage;
+		  }
+		| undefined;
 	#retryPromise: Promise<void> | undefined;
 	#retryResolve: (() => void) | undefined;
 	#activeRetryFallback: ActiveRetryFallbackState | undefined;
@@ -450,6 +462,40 @@ export class TurnRecovery {
 		this.#streamStallContinueCount = 0;
 		this.#acceptTerminalEmptyStopForPrompt = false;
 		this.#activeFallbackCreditRedemption = undefined;
+		this.#oversizedHistoryRecovery = undefined;
+	}
+
+	/** Whole-context shrinking is confined to the one post-compaction retry. */
+	get shrinkWholeToolHistory(): boolean {
+		const recovery = this.#oversizedHistoryRecovery;
+		return (
+			recovery?.phase === "shrunk" &&
+			recovery.promptSequence === this.#host.promptSequence() &&
+			recovery.generation === this.#host.promptGeneration()
+		);
+	}
+
+	/** Consume only fresh overflow outcomes from the recovery compaction's model. */
+	routeOversizedHistoryOverflow(message: AssistantMessage): OversizedHistoryOverflowRecovery {
+		const recovery = this.#oversizedHistoryRecovery;
+		if (
+			!recovery ||
+			recovery.promptSequence !== this.#host.promptSequence() ||
+			recovery.generation !== this.#host.promptGeneration() ||
+			message.provider !== recovery.lastFailure.provider ||
+			message.model !== recovery.lastFailure.model
+		) {
+			return "recover";
+		}
+		if (recovery.phase === "terminal") return "terminal";
+		if (this.#isSameAssistantMessage(recovery.lastFailure, message)) return "already-handled";
+		recovery.lastFailure = message;
+		if (recovery.phase === "compacted") {
+			recovery.phase = "shrunk";
+			return "shrink-retry";
+		}
+		recovery.phase = "terminal";
+		return "terminal";
 	}
 
 	/** Sets whether one terminal empty stop is accepted for the current prompt. */
@@ -480,6 +526,7 @@ export class TurnRecovery {
 		if (!assistantTurnProducedOutput(message)) {
 			return;
 		}
+		this.#oversizedHistoryRecovery = undefined;
 		const model = this.#host.model();
 		if (model) {
 			const level = this.#host.thinkingLevel();
@@ -848,14 +895,13 @@ export class TurnRecovery {
 		const persistenceKey = sessionMessagePersistenceKey(message);
 		if (!persistenceKey) return;
 		let branchEntry: SessionEntry | undefined;
-		for (const entry of this.#host.sessionManager.getBranch().slice().reverse()) {
+		for (const entry of this.#host.sessionManager.iterateBranch("message")) {
 			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 			if (sessionMessagePersistenceKey(entry.message) !== persistenceKey) continue;
 			if (!sameMessageContent(entry.message, message) && !this.#isSameAssistantMessage(entry.message, message)) {
 				continue;
 			}
 			branchEntry = entry;
-			break;
 		}
 		if (!branchEntry) return;
 		if (this.#pendingRetryErrors.some(error => error.entryId === branchEntry.id)) return;
@@ -875,24 +921,19 @@ export class TurnRecovery {
 		completion: { status: "recovered"; supersedingMessage: AssistantMessage } | { status: "superseded" },
 	): Promise<RetryErrorUpdate[]> {
 		if (this.#pendingRetryErrors.length === 0) return [];
-		const branch = this.#host.sessionManager.getBranch();
 		const branchById = new Map<string, SessionEntry>();
-		for (const entry of branch) {
-			branchById.set(entry.id, entry);
+		const byKey = new Map<string, SessionEntry>();
+		for (const entry of this.#host.sessionManager.iterateBranch("message")) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			const key = sessionMessagePersistenceKey(entry.message);
+			if (this.#pendingRetryErrors.some(pending => pending.entryId === entry.id)) branchById.set(entry.id, entry);
+			if (key && this.#pendingRetryErrors.some(pending => pending.persistenceKey === key)) byKey.set(key, entry);
 		}
 		const retryErrors: RetryErrorUpdate[] = [];
 		for (const pending of this.#pendingRetryErrors) {
 			let entry = branchById.get(pending.entryId);
 			if (entry?.type !== "message" || entry.message.role !== "assistant") {
-				entry = branch
-					.slice()
-					.reverse()
-					.find(
-						candidate =>
-							candidate.type === "message" &&
-							candidate.message.role === "assistant" &&
-							sessionMessagePersistenceKey(candidate.message) === pending.persistenceKey,
-					);
+				entry = byKey.get(pending.persistenceKey);
 			}
 			if (entry?.type !== "message" || entry.message.role !== "assistant") continue;
 			let retryRecovery: AssistantRetryRecovery;
@@ -1187,6 +1228,8 @@ export class TurnRecovery {
 		options: { autoContinue: boolean; triggerContextTokens?: number; excludeMediaMethods?: boolean },
 	): Promise<RecoveryCompactionResult> {
 		const compactionEntryBefore = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
+		const promptSequence = this.#host.promptSequence();
+		const generation = this.#host.promptGeneration();
 		await this.dropPersistedAssistantTurn(assistantMessage);
 		const result = await this.#host.runAutoCompaction(reason, true, false, allowDefer, {
 			autoContinue: options.autoContinue,
@@ -1195,8 +1238,22 @@ export class TurnRecovery {
 			excludeMediaMethods: options.excludeMediaMethods,
 		});
 		const compactionEntryAfter = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
-		if (result.historyRewritten !== true && compactionEntryAfter === compactionEntryBefore) {
+		const committed = result.historyRewritten === true || compactionEntryAfter !== compactionEntryBefore;
+		if (!committed) {
 			this.#restoreFailedAssistantTurn(assistantMessage);
+		} else if (
+			reason === "overflow" &&
+			options.autoContinue &&
+			result.continuationScheduled &&
+			promptSequence === this.#host.promptSequence() &&
+			generation === this.#host.promptGeneration()
+		) {
+			this.#oversizedHistoryRecovery = {
+				phase: "compacted",
+				promptSequence,
+				generation,
+				lastFailure: assistantMessage,
+			};
 		}
 		return result;
 	}
@@ -1214,20 +1271,8 @@ export class TurnRecovery {
 	}
 
 	#discardAcceptedTerminalEmptyStop(assistantMessage: AssistantMessage): void {
-		const branch = this.#host.sessionManager.getBranch();
-		const branchEntry = branch
-			.slice()
-			.reverse()
-			.find(
-				entry =>
-					entry.type === "message" &&
-					entry.message.role === "assistant" &&
-					this.#isSameAssistantMessage(entry.message, assistantMessage),
-			);
-		const parentEntry =
-			branchEntry?.parentId === null || branchEntry?.parentId === undefined
-				? undefined
-				: branch.find(entry => entry.id === branchEntry.parentId);
+		const branchEntry = this.#findPersistedAssistantEntry(assistantMessage);
+		const parentEntry = branchEntry?.parentId ? this.#host.sessionManager.getEntry(branchEntry.parentId) : undefined;
 		const prunePrompt = parentEntry?.type === "custom_message";
 
 		this.removeAssistantMessageFromActiveContext(assistantMessage, "accepted-terminal-empty-stop");
@@ -1257,24 +1302,10 @@ export class TurnRecovery {
 	discardAssistantTurn(assistantMessage: AssistantMessage): string | undefined {
 		this.removeAssistantMessageFromActiveContext(assistantMessage);
 
-		const branch = this.#host.sessionManager.getBranch();
-		const persistedEntryId = this.#host.persistedAssistantEntryId(assistantMessage);
-		const branchEntry =
-			(persistedEntryId === undefined
-				? undefined
-				: branch.find(
-						entry =>
-							entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
-					)) ??
-			branch
-				.slice()
-				.reverse()
-				.find(
-					entry =>
-						entry.type === "message" &&
-						entry.message.role === "assistant" &&
-						this.#isSameAssistantMessage(entry.message as AssistantMessage, assistantMessage),
-				);
+		const branchEntry = this.#findPersistedAssistantEntry(
+			assistantMessage,
+			this.#host.persistedAssistantEntryId(assistantMessage),
+		);
 		if (!branchEntry) {
 			return undefined;
 		}
@@ -1288,6 +1319,15 @@ export class TurnRecovery {
 		return branchEntry.id;
 	}
 
+	#findPersistedAssistantEntry(message: AssistantMessage, preferredId?: string): SessionEntry | undefined {
+		let latest: SessionEntry | undefined;
+		for (const entry of this.#host.sessionManager.iterateBranch("message")) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			if (entry.id === preferredId) return entry;
+			if (this.#isSameAssistantMessage(entry.message, message)) latest = entry;
+		}
+		return latest;
+	}
 	#isSameAssistantMessage(left: AssistantMessage, right: AssistantMessage): boolean {
 		return (
 			left === right ||
@@ -1553,8 +1593,12 @@ export class TurnRecovery {
 	 * Mid-generation transport death: the local idle watchdog's stream stall, an
 	 * HTTP/2 stream reset, or a gateway close without the terminal event. A
 	 * premature close (no finish_reason/terminal event) is the same failure
-	 * class as a stall or reset. Resets and closes are ignored while a
-	 * deliberate abort, disposal, or streaming-edit abort owns the stream.
+	 * class as a stall or reset, and so is a transport drop the provider or a
+	 * proxy reports in its own words (for example a Responses `stream_incomplete`
+	 * error event for an upstream websocket that closed before
+	 * `response.completed`); `AIError.isTransientStreamDropError` owns that
+	 * wording. Resets and closes are ignored while a deliberate abort, disposal,
+	 * or streaming-edit abort owns the stream.
 	 */
 	#isMidStreamTransportFailure(message: AssistantMessage, id: number): boolean {
 		if (message.stopReason !== "error" || !AIError.retriable(id)) return false;
@@ -1567,7 +1611,8 @@ export class TurnRecovery {
 			HTTP2_STREAM_RESET_ERROR_RE.test(errorMessage) ||
 			AIError.PYTHON_HTTP2_STREAM_RESET_PATTERN.test(errorMessage) ||
 			AIError.PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(errorMessage) ||
-			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage)
+			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage) ||
+			AIError.isTransientStreamDropError(errorMessage)
 		);
 	}
 	/**
@@ -1854,12 +1899,16 @@ export class TurnRecovery {
 		let fallback: { role: string; selector: RetryFallbackSelector; apiKey: string } | undefined;
 		const ceiling = this.#host.thinkingLevelCeiling();
 		const chainKeys = this.retryFallbackChainKeys(currentSelector, currentModel);
+		const currentProviderDepleted = this.#host.modelRegistry.authStorage.health.isProviderDepleted(
+			currentModel.provider,
+		);
 		for (const role of chainKeys) {
 			for (const candidate of this.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
 				if (this.isRetryFallbackSelectorSuppressed(candidate)) continue;
 				const resolved = resolveModelOverride([candidate.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidateModel = resolved.model ?? this.#host.modelRegistry.find(candidate.provider, candidate.id);
 				if (!candidateModel || !this.#host.modelRegistry.hasConfiguredAuth(candidateModel)) continue;
+				if (currentProviderDepleted && candidateModel.provider === currentModel.provider) continue;
 				if (ceiling !== undefined && !modelSupportsEffortCeiling(candidateModel, ceiling)) continue;
 				// A usage fallback must also fit: skip a candidate whose window cannot
 				// hold the live context so we never switch onto an oversized request
@@ -1986,7 +2035,13 @@ export class TurnRecovery {
 		role: string,
 		selector: RetryFallbackSelector,
 		currentSelector: string,
-		options?: { pinFallback?: boolean; apiKey?: string; signal?: AbortSignal; reason?: string },
+		options?: {
+			pinFallback?: boolean;
+			apiKey?: string;
+			signal?: AbortSignal;
+			reason?: string;
+			providerError?: AssistantMessage;
+		},
 	): Promise<boolean> {
 		const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 		const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
@@ -2042,7 +2097,18 @@ export class TurnRecovery {
 			if (this.#activeRetryFallback) this.#activeRetryFallback.served = servedBeforeSwap;
 			return false;
 		}
-		this.#host.sessionManager.appendModelChange(candidateSelector, EPHEMERAL_MODEL_CHANGE_ROLE, true);
+		this.#host.sessionManager.appendModelChange(candidateSelector, EPHEMERAL_MODEL_CHANGE_ROLE, true, {
+			from: currentSelector,
+			reason: options?.providerError
+				? providerFallbackReason(options.providerError)
+				: options?.reason
+					? {
+							class: "quota",
+							message: options.reason.slice(0, 400),
+							source: "usage-preflight",
+						}
+					: undefined,
+		});
 		this.#host.settings.getStorage()?.recordModelUsage(candidateSelector);
 		this.#host.setThinkingLevel(nextThinkingLevel);
 		if (!this.#activeRetryFallback) {
@@ -2078,6 +2144,11 @@ export class TurnRecovery {
 			wrapAround?: boolean;
 		},
 	): Promise<boolean> {
+		if (isProviderExhaustionError(failedMessage.errorStatus, failedMessage.errorMessage)) {
+			coolDownExhaustedProvider(this.#host.model()?.provider ?? failedMessage.provider, {
+				reason: `${failedMessage.errorStatus ?? ""} ${failedMessage.errorMessage ?? "provider exhausted"}`.trim(),
+			});
+		}
 		const ceiling = this.#host.thinkingLevelCeiling();
 		const latestAssistant = options?.preserveFailedTurn
 			? failedMessage
@@ -2089,12 +2160,16 @@ export class TurnRecovery {
 			? this.#host.modelRegistry.find(failedMessage.provider, failedMessage.model)
 			: undefined;
 		const creditTargets = failedModel ? fallbackCreditTargets(failedModel) : [];
+		// The active model is the failed request's provider, even when an error wrapper rewrites message.provider.
+		const failedProvider = this.#host.model()?.provider ?? failedMessage.provider;
+		const failedProviderIsDepleted = this.#host.modelRegistry.authStorage.health.isProviderDepleted(failedProvider);
 		for (const role of this.retryFallbackChainKeys(currentSelector)) {
 			for (const selector of this.findRetryFallbackCandidates(role, currentSelector, undefined, options)) {
 				if (this.isRetryFallbackSelectorSuppressed(selector)) continue;
 				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 				if (!candidate) continue;
+				if (failedProviderIsDepleted && candidate.provider === failedProvider) continue;
 				// A candidate that would leave the request exactly as it is — same
 				// routed model, same effective thinking level — is not a switch, and
 				// must never be applied: `findRetryFallbackCandidates` excludes the
@@ -2147,6 +2222,7 @@ export class TurnRecovery {
 				const applied = await this.applyRetryFallbackCandidate(role, selector, currentSelector, {
 					...options,
 					reason: `Request failed: ${failedMessage.errorMessage ?? "provider returned an error without details"}`,
+					providerError: failedMessage,
 				});
 				const editModeChanged = this.#host.resolveActiveEditMode() !== previousEditMode;
 				if (applied && options?.pinFallback === true && canRedeemFallbackCredit && !editModeChanged) {
@@ -2245,7 +2321,7 @@ export class TurnRecovery {
 	 * fallback that makes Fast a safe default. Returns false when the current
 	 * model is not a fast variant, the base id is missing, or it has no key.
 	 */
-	async #tryFireworksFastFallback(currentSelector: string): Promise<boolean> {
+	async #tryFireworksFastFallback(currentSelector: string, failedMessage: AssistantMessage): Promise<boolean> {
 		const model = this.#activeFireworksFastModel();
 		if (!model) return false;
 		const baseModel = this.#host.modelRegistry.find("fireworks", toFireworksBaseModelId(model.id));
@@ -2258,7 +2334,10 @@ export class TurnRecovery {
 		// chain: the base model must not be reported as the configured primary.
 		this.#markFallbackRouted();
 		await this.#host.setModelWithProviderSessionReset(baseModel);
-		this.#host.sessionManager.appendModelChange(baseSelector, EPHEMERAL_MODEL_CHANGE_ROLE, true);
+		this.#host.sessionManager.appendModelChange(baseSelector, EPHEMERAL_MODEL_CHANGE_ROLE, true, {
+			from: currentSelector,
+			reason: providerFallbackReason(failedMessage),
+		});
 		this.#host.settings.getStorage()?.recordModelUsage(baseSelector);
 		await this.#host.syncAfterModelChange(previousEditMode);
 		await this.#host.emitSessionEvent({
@@ -2620,7 +2699,7 @@ export class TurnRecovery {
 			// best-effort, degrade to Standard on failure) and triggers on hard router
 			// errors the generic retry classifier would otherwise reject.
 			if (!switchedModel && allowModelFallback && options?.fireworksFastFallback) {
-				switchedModel = await this.#tryFireworksFastFallback(currentSelector);
+				switchedModel = await this.#tryFireworksFastFallback(currentSelector, message);
 			}
 			if (switchedModel) {
 				delayMs = 0;
@@ -3047,24 +3126,7 @@ export class TurnRecovery {
 			}
 		}
 		const anchor = messages[replayStart - 1] as AssistantMessage;
-		const branch = this.#host.sessionManager.getBranch();
-		const persistedEntryId = this.#host.persistedAssistantEntryId(anchor);
-		const anchorEntry =
-			(persistedEntryId === undefined
-				? undefined
-				: branch.find(
-						entry =>
-							entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
-					)) ??
-			branch
-				.slice()
-				.reverse()
-				.find(
-					entry =>
-						entry.type === "message" &&
-						entry.message.role === "assistant" &&
-						this.#isSameAssistantMessage(entry.message as AssistantMessage, anchor),
-				);
+		const anchorEntry = this.#findPersistedAssistantEntry(anchor, this.#host.persistedAssistantEntryId(anchor));
 		if (anchorEntry) {
 			this.#host.withBashBranchTransition(() => {
 				this.#host.sessionManager.branch(anchorEntry.id);

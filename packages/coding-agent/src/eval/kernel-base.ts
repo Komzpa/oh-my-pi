@@ -65,9 +65,12 @@ export interface KernelShutdownOptions {
 /** Per-language lifecycle configuration consumed by each kernel's `start()`. */
 export interface KernelStartOptions {
 	cwd: string;
+	sessionId?: string;
 	env?: Record<string, string | undefined>;
 	/** Explicit interpreter path; skips discovery when set. */
 	interpreter?: string;
+	/** Keep subagent kernels out of the user's desktop session. */
+	maskDesktopSession?: boolean;
 	signal?: AbortSignal;
 	deadlineMs?: number;
 }

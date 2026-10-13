@@ -20,6 +20,8 @@ import {
 	type AuthGatewayRouteOptions,
 	buildGatewayApiKeyResolver,
 	mirrorRequestAbort,
+	observeGatewayProviderFailure,
+	observeGatewayProviderSuccess,
 	recordGatewayUsage,
 	resolveGatewayApiKey,
 } from "../dispatch";
@@ -109,10 +111,12 @@ export async function handleSystemOne(
 		// when the upstream reported tokens only (TypeSafe).
 		const body = systemOne.encodeResponse(result);
 		if (result.usage.cost.total === 0) calculateCost(model, result.usage);
+		observeGatewayProviderSuccess(bootOpts.storage, model.provider);
 		recordGatewayUsage(bootOpts.storage, model, client, result.usage);
 		return json(200, body, gatewayResponseHeaders(model, { requestId, costUsd: result.usage.cost.total, startedAt }));
 	} catch (error) {
 		if (controller.signal.aborted) return aborted();
+		observeGatewayProviderFailure(bootOpts.storage, model, error);
 		const classified = classifyGatewayError(error);
 		logger.warn("auth-gateway judgment failed", { format: "systemone", error: classified.message, peer });
 		return systemOne.formatError(classified.status, classified.type, classified.message);

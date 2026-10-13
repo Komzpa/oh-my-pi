@@ -1858,7 +1858,9 @@ async function openCodexWebSocketTransport(
 					requestSetup.requestSignal,
 					onSseEvent,
 				),
-				requestBodyForState: structuredCloneJSON(requestContext.transformedBody),
+				requestBodyForState: structuredCloneJSON(
+					splitCodexTransientTail(requestContext.transformedBody).comparable,
+				),
 				transport: "websocket",
 			};
 		}
@@ -1902,7 +1904,7 @@ async function openCodexWebSocketTransport(
 		websocketRequest = replacementWebsocketRequest as typeof websocketRequest;
 	}
 	recordCodexTurnRequestDiagnostics(websocketState, websocketRequest, "websocket", canAppendBeforeRequest);
-	const requestBodyForState = structuredCloneJSON(requestContext.transformedBody);
+	const requestBodyForState = structuredCloneJSON(splitCodexTransientTail(requestContext.transformedBody).comparable);
 	// `onPayload` may rewrite the outgoing frame (e.g. drop `stream_options`);
 	// recorded state must reflect what was actually sent — the sequential-cutoff
 	// summary decoder keys off it.
@@ -1952,12 +1954,27 @@ function getCodexTurnStartedAtUnixMs(context: Context): number {
  * last assistant message is tool results), false when a new user turn starts.
  * Mirrors codex-rs, which scopes `x-codex-turn-state` to a single turn and
  * clears it when the next one begins.
+ *
+ * The trailing subagent elapsed signal is provider-only scaffolding, not
+ * conversation: skipping it keeps tool-result continuations within the turn.
  */
+const CODEX_SUBAGENT_ELAPSED_NOTE = /^elapsed \d+s \/ 900s$/;
+
+function isCodexSubagentElapsedNote(message: Context["messages"][number] | undefined): boolean {
+	return (
+		message?.role === "developer" &&
+		message.synthetic === true &&
+		typeof message.content === "string" &&
+		CODEX_SUBAGENT_ELAPSED_NOTE.test(message.content)
+	);
+}
+
 function isCodexWithinTurnContinuation(context: Context): boolean {
 	for (let i = context.messages.length - 1; i >= 0; i--) {
-		const role = context.messages[i]?.role;
-		if (role === "toolResult") continue;
-		return role === "assistant";
+		const message = context.messages[i];
+		if (message?.role === "toolResult") continue;
+		if (isCodexSubagentElapsedNote(message)) continue;
+		return message?.role === "assistant";
 	}
 	return false;
 }
@@ -3737,6 +3754,38 @@ function recordCodexTurnUsageDiagnostics(
 	CODEX_DEBUG && logger.debug("[codex] codex turn diagnostics", { diagnostics: state.stats.lastTurn });
 }
 
+/**
+ * Marker for wire input items rendered from synthetic developer scaffolding
+ * (e.g. the per-request subagent elapsed signal). The note text changes every
+ * turn, so it must ride along on the wire but stay out of the chain baseline
+ * and the prefix walk — the same treatment the trailing juice scaffolding
+ * gets in openai-responses.ts. A symbol (not a string key) so it can never
+ * leak onto the wire: JSON and structuredClone both drop symbol keys.
+ */
+const CODEX_TRANSIENT_INPUT_ITEM = Symbol("codexTransientInputItem");
+
+/** Wire input item carrying the transient-scaffolding mark. */
+type CodexMarkableInputItem = ResponseInput[number] & { [CODEX_TRANSIENT_INPUT_ITEM]?: boolean };
+
+function isCodexTransientInputItem(item: unknown): boolean {
+	if (!item || typeof item !== "object") return false;
+	return CODEX_TRANSIENT_INPUT_ITEM in item && item[CODEX_TRANSIENT_INPUT_ITEM] === true;
+}
+
+/**
+ * Split trailing transient scaffolding off a request body for chain
+ * comparison. Returns the same body reference when no trailing transient
+ * items are present, so the common path allocates nothing.
+ */
+function splitCodexTransientTail(body: RequestBody): { comparable: RequestBody; transientTail: InputItem[] } {
+	const input = body.input;
+	if (!Array.isArray(input) || input.length === 0) return { comparable: body, transientTail: [] };
+	let end = input.length;
+	while (end > 0 && isCodexTransientInputItem(input[end - 1])) end -= 1;
+	if (end === input.length) return { comparable: body, transientTail: [] };
+	return { comparable: { ...body, input: input.slice(0, end) }, transientTail: input.slice(end) };
+}
+
 const CODEX_CHAIN_TOP_LEVEL_EXCLUDE_MAP = {
 	service_tier: true,
 };
@@ -3758,19 +3807,26 @@ function buildCodexChainedRequestBody(
 	requestBody: RequestBody,
 	state: CodexWebSocketSessionState | undefined,
 ): RequestBody {
+	// Transient scaffolding (e.g. the refreshed elapsed note) rides the wire
+	// but is not conversation history: compare without it, re-append after.
+	const { comparable, transientTail } = splitCodexTransientTail(requestBody);
 	const chainable =
 		state?.canAppend === true &&
-		(state.lastRequest?.service_tier === "ultrafast") === (requestBody.service_tier === "ultrafast");
+		(state.lastRequest?.service_tier === "ultrafast") === (comparable.service_tier === "ultrafast");
 	const appendInput = chainable
 		? buildResponsesDeltaInput(
 				state.lastRequest,
 				state.lastResponseItems,
-				requestBody,
+				comparable,
 				CODEX_CHAIN_TOP_LEVEL_EXCLUDE_MAP,
 			)
 		: null;
 	if (appendInput && appendInput.length > 0 && state?.lastResponseId) {
-		return { ...requestBody, previous_response_id: state.lastResponseId, input: appendInput };
+		return {
+			...requestBody,
+			previous_response_id: state.lastResponseId,
+			input: [...appendInput, ...transientTail],
+		};
 	}
 	if (chainable && state) {
 		// Chaining was eligible but the prefix/options check failed: history
@@ -4929,7 +4985,13 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 
 			const normalizedContent = normalizeInputMessageContent(model, msg.content);
 			if (normalizedContent.length === 0) continue;
-			messages.push({ role: msg.role, content: normalizedContent });
+			const inputItem: CodexMarkableInputItem = { role: msg.role, content: normalizedContent };
+			if (isCodexSubagentElapsedNote(msg)) {
+				// Per-request elapsed scaffolding rides the wire but stays out of the
+				// chain baseline/prefix walk.
+				inputItem[CODEX_TRANSIENT_INPUT_ITEM] = true;
+			}
+			messages.push(inputItem);
 			msgIndex += 1;
 			continue;
 		}

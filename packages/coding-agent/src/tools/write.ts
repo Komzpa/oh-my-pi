@@ -31,6 +31,7 @@ import { getLspBatchRequest } from "../lsp/batch";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
 
 import writeDescription from "../prompts/tools/write.md" with { type: "text" };
+import writeAgentOnlyDescription from "../prompts/tools/write-agent-only.md" with { type: "text" };
 import writeDeviceOnlyDescription from "../prompts/tools/write-device-only.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 
@@ -194,6 +195,7 @@ async function assertNotReadSelectorMisfire(target: string, content: string, cwd
 const writeSchema = type({
 	path: "string",
 	"content?": "string",
+	"replace?": type("boolean").describe("Confirm this write intentionally replaces existing file content."),
 });
 
 /** Write arguments; `content` may be omitted only where the target scheme's write policy allows it. */
@@ -458,6 +460,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 	};
 	readonly label = "Write";
 	get description(): string {
+		if (this.session.agentOnlyWrite === true && this.session.pendingFullWriteDescription !== true) {
+			return prompt.render(writeAgentOnlyDescription);
+		}
 		const deviceOnly = this.session.deviceOnlyWrite === true && this.session.pendingFullWriteDescription !== true;
 		return prompt.render(deviceOnly ? writeDeviceOnlyDescription : writeDescription);
 	}
@@ -760,22 +765,30 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			throw new ToolError(`content is required for ${path}.`);
 		}
 		const content = rawContent ?? "";
+		// A read-only agent's `write` grant is the agent:// message transport
+		// only (see createTools): peer messages and `agent://all` broadcasts
+		// proceed, every other target is rejected before any handler, guard,
+		// conflict resolver, or bridge sees it. Narrower than the device-only
+		// transport and checked first: a read-only agent may write messages and
+		// nothing else.
+		if (this.session.agentOnlyWrite === true && policy?.scope !== "coordination") {
+			throw new ToolError(
+				"This `write` tool is limited to agent:// messages: call it with path `agent://<id>` and the message text in `content` (`agent://all` broadcasts to all peers). Filesystem, device, and every other write are not available to read-only agents.",
+			);
+		}
 		// A device-only session grants `write` purely as the device transport (see
-		// createTools): device dispatches and coordination messages proceed, every
-		// other target is rejected before any handler, guard, conflict resolver, or
-		// bridge sees it. Active plan mode additionally permits its sandbox, but does
-		// not relax the restriction for working-tree or other internal URLs.
+		// createTools): device dispatches and coordination messages proceed, and
+		// the session-local artifact sandbox remains writable for scratch notes.
+		// Every other target is rejected before any handler, guard, conflict
+		// resolver, or bridge sees it.
 		if (
 			this.session.deviceOnlyWrite === true &&
 			policy?.scope !== "device" &&
 			policy?.scope !== "coordination" &&
-			!(
-				this.session.getPlanModeState?.()?.enabled === true &&
-				(await targetsLocalSandbox(this.session, path, signal))
-			)
+			!(await targetsLocalSandbox(this.session, path, signal))
 		) {
 			throw new ToolError(
-				"This `write` tool is limited to the xd:// device transport: call it with path `xd://<tool>` and the device's JSON arguments in `content` (`read xd://` lists mounted devices). Active plan mode additionally permits local:// sandbox drafts. Filesystem writes are not available elsewhere.",
+				"This `write` tool is limited to the xd:// device transport: call it with path `xd://<tool>` and the device's JSON arguments in `content` (`read xd://` lists mounted devices). Session-local local:// sandbox writes are also available for scratch notes. Filesystem writes are not available elsewhere.",
 			);
 		}
 		return untilAborted(signal, async () => {

@@ -26,6 +26,24 @@ export function formatResultOutputFallback(result: Pick<SingleResult, "output" |
 }
 
 /**
+ * Authored task failure check shared by the task writer and the requirements
+ * ledger: a missing result, a tool-level error, an abort, a non-zero exit, or
+ * a runner error all mean the work needs recovery, never "completed".
+ */
+export function isFailedTaskSingleResult(
+	result: { isError?: boolean },
+	singleResult?: { aborted?: boolean; exitCode?: number; error?: unknown },
+): boolean {
+	return (
+		result.isError === true ||
+		!singleResult ||
+		(singleResult.aborted ?? false) ||
+		singleResult.exitCode !== 0 ||
+		singleResult.error !== undefined
+	);
+}
+
+/**
  * Head of `output` that fits the inline budget. Prefers a line boundary so a
  * markdown preview does not end mid-row, but falls back to a hard cut when the
  * only boundary is near the start (pretty-printed JSON whose second line is
@@ -35,6 +53,14 @@ function previewHead(output: string): string {
 	const slice = output.slice(0, FULL_OUTPUT_THRESHOLD);
 	const lastNewline = slice.lastIndexOf("\n");
 	return lastNewline >= FULL_OUTPUT_THRESHOLD / 2 ? slice.slice(0, lastNewline) : slice;
+}
+
+function formatRetainedBackgroundJob(job: NonNullable<SingleResult["retainedBackgroundJobs"]>[number]): string {
+	const details = [`type=${job.type}`, `status=${job.status}`];
+	if (job.pid !== undefined) details.push(`pid=${job.pid}`);
+	if (job.label) details.push(`label=${job.label}`);
+	if (job.agentId) details.push(`agent=${job.agentId}`);
+	return `- ${job.id} (${details.join(", ")})`;
 }
 
 /** Render the `<task-result>` envelope for a settled run. */
@@ -79,6 +105,9 @@ export function formatTaskResultSummary(
 					lineCount: result.outputMeta.lineCount,
 					charSize: formatBytes(result.outputMeta.charCount),
 				}
+			: undefined,
+		retainedBackgroundJobs: result.retainedBackgroundJobs?.length
+			? result.retainedBackgroundJobs.map(formatRetainedBackgroundJob).join("\n")
 			: undefined,
 		mergeSummary: options.mergeSummary ?? "",
 	});

@@ -106,6 +106,7 @@
         "@opentelemetry/sdk-trace-node": "catalog:",
         "axe-core": "4.13.0",
         "puppeteer-core": "catalog:",
+        "yaml": "2.9.1",
       },
       "devDependencies": {
         "@types/bun": "catalog:",
@@ -217,6 +218,19 @@
         "@types/bun": "catalog:",
         "arkregex": "0.0.8",
         "arktype": "2.2.3",
+      },
+    },
+    "packages/reemxy-extensions": {
+      "name": "@oh-my-pi/reemxy-extensions",
+      "version": "18.3.0",
+      "dependencies": {
+        "@oh-my-pi/pi-agent-core": "catalog:",
+        "@oh-my-pi/pi-coding-agent": "catalog:",
+        "@oh-my-pi/pi-tui": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "zod": "^3.25.76",
       },
     },
     "packages/snapcompact": {
@@ -724,6 +738,8 @@
     "@oh-my-pi/pi-utils": ["@oh-my-pi/pi-utils@workspace:packages/utils"],
 
     "@oh-my-pi/pi-wire": ["@oh-my-pi/pi-wire@workspace:packages/wire"],
+
+    "@oh-my-pi/reemxy-extensions": ["@oh-my-pi/reemxy-extensions@workspace:packages/reemxy-extensions"],
 
     "@oh-my-pi/snapcompact": ["@oh-my-pi/snapcompact@workspace:packages/snapcompact"],
 

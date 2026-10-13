@@ -10,7 +10,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { getThemeByName, initTheme, theme, type Theme } from "@oh-my-pi/pi-tui/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { AskTool } from "@oh-my-pi/pi-coding-agent/tools/ask";
+import { AskTool as PendingAskTool } from "@oh-my-pi/pi-coding-agent/tools/ask";
 import { askToolRenderer } from "@oh-my-pi/pi-tui/tools/ask";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
@@ -23,6 +23,12 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 // 1x1 transparent PNG.
 const TINY_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+
+class AskTool extends PendingAskTool {
+	constructor(session: ToolSession) {
+		super(session, { interactiveAnswer: true });
+	}
+}
 
 function createSession(overrides: Partial<ToolSession> = {}): ToolSession {
 	return {

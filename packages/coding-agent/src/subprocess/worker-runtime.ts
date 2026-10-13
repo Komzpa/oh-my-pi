@@ -9,6 +9,7 @@ import {
 	isCompiledBinary,
 	resolveRuntimeModule,
 } from "@oh-my-pi/pi-utils";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import packageJson from "../../package.json" with { type: "json" };
 
 /**
@@ -208,7 +209,7 @@ async function installOnnxRuntimeCudaProviders(packageDir: string, runtimeDir: s
 		);
 	}
 
-	const proc = Bun.spawn([process.execPath, script], {
+	const proc = spawnBackground([process.execPath, script], {
 		cwd: runtimeDir,
 		env: { ...Bun.env, BUN_BE_BUN: "1", ONNXRUNTIME_NODE_INSTALL: ONNX_RUNTIME_CUDA_INSTALL },
 		stdout: "pipe",

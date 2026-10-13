@@ -20,10 +20,11 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentsHubDeps } from "@oh-my-pi/pi-coding-agent/modes/agents-hub-deps";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
+import { TaskTool, checkoutLockOwnerFromTaskError } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import * as isolationRunner from "@oh-my-pi/pi-coding-agent/task/isolation-runner";
+import * as evalToolsModule from "@oh-my-pi/pi-coding-agent/task/eval-tools";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { AgentProgress, SingleResult, TaskParams } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -38,13 +39,18 @@ const taskAgent: AgentDefinition = {
 	source: "bundled",
 };
 
-function createSession(options: { manager?: AsyncJobManager; settings?: Record<string, unknown> }): ToolSession {
+function createSession(options: {
+	manager?: AsyncJobManager;
+	settings?: Record<string, unknown>;
+	planMode?: boolean;
+}): ToolSession {
 	return {
 		cwd: "/tmp",
 		hasUI: false,
 		settings: Settings.isolated(options.settings ?? {}),
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
+		getPlanModeState: options.planMode ? () => ({ enabled: true }) : undefined,
 		asyncJobManager: options.manager,
 	} as unknown as ToolSession;
 }
@@ -117,6 +123,161 @@ describe("task spawn routing", () => {
 		}
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
+	});
+
+	it("drops built-in names from Task.tools and reports the correction", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [{ ...taskAgent, tools: ["read"] }],
+			projectAgentsDir: null,
+		});
+		const runSpy = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? "?"));
+		const tool = await TaskTool.create(createSession({ settings: { "async.enabled": false } }));
+
+		const result = await tool.execute("builtin-tool-name", {
+			agent: "task",
+			task: "Read the assigned file.",
+			tools: ["read"],
+		} as TaskParams);
+
+		expect(runSpy).toHaveBeenCalledTimes(1);
+		expect(runSpy.mock.calls[0]?.[0].customTools).toBeUndefined();
+		expect(getFirstText(result)).toContain(
+			"Note: `read` is a built-in tool provided by agent `task`; it was removed from `tools`, which accepts eval-defined tools only.",
+		);
+	});
+	it("allows an available built-in tool in plan mode", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [{ ...taskAgent, tools: ["read"] }],
+			projectAgentsDir: null,
+		});
+		const runSpy = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? "?"));
+		const tool = await TaskTool.create(createSession({ planMode: true, settings: { "async.enabled": false } }));
+
+		const result = await tool.execute("plan-mode-builtin", {
+			agent: "task",
+			task: "Read the assigned file.",
+			tools: ["read"],
+		} as TaskParams);
+
+		expect(runSpy).toHaveBeenCalledTimes(1);
+		expect(getFirstText(result)).not.toContain("Eval-defined tools are unavailable in plan mode.");
+	});
+
+	it("keeps rejecting unknown eval tool names", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [taskAgent], projectAgentsDir: null });
+		const runSpy = vi.spyOn(executorModule, "runSubprocess");
+		const tool = await TaskTool.create(createSession({ settings: { "async.enabled": false } }));
+
+		const result = await tool.execute("unknown-eval-tool", {
+			agent: "task",
+			task: "Use the requested tool.",
+			tools: ["nope"],
+		} as TaskParams);
+
+		expect(getFirstText(result)).toContain("Task execution failed: Unknown eval tool(s): nope.");
+		expect(runSpy).not.toHaveBeenCalled();
+	});
+
+	it("passes defined eval tools through to the child", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [taskAgent], projectAgentsDir: null });
+		vi.spyOn(evalToolsModule, "describeEvalTools").mockResolvedValue([
+			{
+				name: "word_count",
+				description: "Count words.",
+				parameters: { type: "object", properties: {} },
+				language: "js",
+			},
+		]);
+		const runSpy = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? "?"));
+		const tool = await TaskTool.create(createSession({ settings: { "async.enabled": false } }));
+
+		await tool.execute("defined-eval-tool", {
+			agent: "task",
+			task: "Count the words.",
+			tools: ["word_count"],
+		} as TaskParams);
+
+		expect(runSpy).toHaveBeenCalledTimes(1);
+		expect(runSpy.mock.calls[0]?.[0].customTools?.map(customTool => customTool.name)).toEqual(["word_count"]);
+	});
+
+	it("drops built-in names from batch Task.tools and reports the correction after pre-execute planning", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [{ ...taskAgent, tools: ["read"] }],
+			projectAgentsDir: null,
+		});
+		const runSpy = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? "?"));
+		const tool = await TaskTool.create(createSession({ settings: { "task.batch": true, "async.enabled": false } }));
+
+		const args = {
+			i: "Spawning audit child",
+			context: "audit",
+			tasks: [{ name: "AuditChild", agent: "task", task: "Read the assigned file.", tools: ["read"] }],
+		};
+		// Pre-execute planning (the approval-stage spawn resolution) runs
+		// `resolveSpawnItems` over the call args before `execute` dispatches.
+		const session = await tool.speculation.stream?.open?.({
+			coordinator: {
+				maxInFlight: 1,
+				admit: async () => undefined,
+				authorizeLaunch: async () => ({ allowed: false, reason: "test denies speculative launches" }),
+				close: () => {},
+				discardChildren: async () => {},
+			},
+			parentToolCallId: "batch-builtin",
+		});
+		expect(session).toBeDefined();
+		session?.matchesFinalArgs?.(args);
+		// The pre-execute pass must not rewrite the caller's args: the
+		// transcript keeps the requested names for the correction notice.
+		expect(args.tasks.map(item => item.tools)).toEqual([["read"]]);
+		session?.discard("regression test finished");
+
+		// `execute` receives a validated copy of the call args (fresh items).
+		const result = await tool.execute("batch-builtin", structuredClone(args));
+
+		expect(runSpy).toHaveBeenCalledTimes(1);
+		expect(runSpy.mock.calls[0]?.[0].customTools).toBeUndefined();
+		expect(getFirstText(result)).toContain(
+			"Note: `read` is a built-in tool provided by agent `task`; it was removed from `tools`, which accepts eval-defined tools only.",
+		);
+	});
+
+	it("keeps rejecting unknown eval tool names in batch form", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [taskAgent], projectAgentsDir: null });
+		const runSpy = vi.spyOn(executorModule, "runSubprocess");
+		const tool = await TaskTool.create(createSession({ settings: { "task.batch": true, "async.enabled": false } }));
+
+		const args = {
+			i: "Spawning audit child",
+			context: "audit",
+			tasks: [{ name: "AuditChild", agent: "task", task: "Use the requested tool.", tools: ["nope_audit_tool"] }],
+		};
+		const session = await tool.speculation.stream?.open?.({
+			coordinator: {
+				maxInFlight: 1,
+				admit: async () => undefined,
+				authorizeLaunch: async () => ({ allowed: false, reason: "test denies speculative launches" }),
+				close: () => {},
+				discardChildren: async () => {},
+			},
+			parentToolCallId: "batch-unknown",
+		});
+		session?.matchesFinalArgs?.(args);
+		session?.discard("regression test finished");
+
+		const result = await tool.execute("batch-unknown", structuredClone(args));
+
+		expect(getFirstText(result)).toContain("Task execution failed: Unknown eval tool(s): nope_audit_tool.");
+		expect(runSpy).not.toHaveBeenCalled();
 	});
 
 	it("returns immediately on spawn and delivers the follow-up hint when the job completes", async () => {
@@ -447,6 +608,78 @@ describe("task spawn routing", () => {
 			gate.resolve();
 			await job.promise;
 		}
+	});
+
+	it("forwards exact fallback attribution in running job snapshots before settle", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [taskAgent], projectAgentsDir: null });
+		const gate = deferred();
+		const firstTurnModel = "custom/primary";
+		const fallbacks: NonNullable<AgentProgress["fallbacks"]> = [
+			{
+				from: "custom/primary",
+				to: "custom/fallback",
+				at: "2026-01-01T00:00:00.000Z",
+				reason: { class: "quota", status: 429, message: "Quota exceeded", source: "provider-error" },
+			},
+		];
+		let publishProgress: ((metadata: Partial<AgentProgress>) => void) | undefined;
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			const progress: AgentProgress = {
+				...makeResult(options.id ?? "?"),
+				status: "running",
+				resolvedModel: "custom/fallback",
+				firstTurnModel,
+				fallbacks,
+				recentTools: [],
+				recentOutput: [],
+				toolCount: 0,
+				cost: 0,
+			};
+			options.onProgress?.(progress);
+			publishProgress = metadata => options.onProgress?.({ ...progress, ...metadata });
+			await gate.promise;
+			return makeResult(options.id ?? "?", { firstTurnModel, fallbacks });
+		});
+		const manager = createManager();
+		const session = createSession({ manager });
+		const tool = await TaskTool.create(session);
+		const result = await tool.execute("tc-attribution", {
+			agent: "task",
+			name: "Attribution",
+			task: "work",
+		} as TaskParams);
+		const job = manager.getJob(result.details!.async!.jobId)!;
+		try {
+			await pollUntil(
+				() => publishProgress !== undefined && getJobProgress(job)?.resolvedModel === "custom/fallback",
+			);
+			const running = snapshotJobs(session, [job])[0];
+			expect(running?.status).toBe("running");
+			expect(job.resultText).toBeUndefined();
+			expect(running?.firstTurnModel).toBe("custom/primary");
+			expect(running?.fallbacks).toEqual([
+				{
+					from: "custom/primary",
+					to: "custom/fallback",
+					at: "2026-01-01T00:00:00.000Z",
+					reason: { class: "quota", status: 429, message: "Quota exceeded", source: "provider-error" },
+				},
+			]);
+
+			// Sparse updates must retain attribution already received from the executor.
+			publishProgress!({ tokens: 2, firstTurnModel: undefined, fallbacks: undefined });
+			await pollUntil(() => getJobProgress(job)?.tokens === 2);
+			const sparse = snapshotJobs(session, [job])[0];
+			expect(sparse?.status).toBe("running");
+			expect(sparse?.firstTurnModel).toBe("custom/primary");
+			expect(sparse?.fallbacks).toEqual(running?.fallbacks);
+		} finally {
+			gate.resolve();
+			await job.promise;
+		}
+		expect(snapshotJobs(session, [job])[0]?.status).toBe("completed");
+		expect(snapshotJobs(session, [job])[0]?.firstTurnModel).toBe("custom/primary");
+		expect(snapshotJobs(session, [job])[0]?.fallbacks).toEqual(fallbacks);
 	});
 
 	it("clears stale model metadata and fallback state from detached progress", async () => {
@@ -1006,5 +1239,16 @@ describe("task spawn routing", () => {
 
 		gates.get("Fifth")!.resolve();
 		await Promise.all(jobs.map(job => job.promise));
+	});
+});
+
+describe("checkout-lock fast refusal", () => {
+	it("extracts the holding owner so the tool can return NOT STARTED", () => {
+		expect(
+			checkoutLockOwnerFromTaskError(
+				"Refusing coder: coder worker ExactWorker is running in this checkout; pass isolated: true.",
+			),
+		).toBe("ExactWorker");
+		expect(checkoutLockOwnerFromTaskError("Task execution failed: boom")).toBeUndefined();
 	});
 });

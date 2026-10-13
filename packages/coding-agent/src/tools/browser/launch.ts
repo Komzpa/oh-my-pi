@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { $which, getPuppeteerDir, logger, removeWithRetries } from "@oh-my-pi/pi-utils";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import type * as BrowsersNs from "@oh-my-pi/pi-utils/browsers";
 import type {
 	Browser,
@@ -29,6 +30,7 @@ import stealthCodecsScript from "../puppeteer/12_stealth_codecs.txt" with { type
 import stealthWorkerScript from "../puppeteer/13_stealth_worker.txt" with { type: "text" };
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { withDownload } from "../../downloads/activity";
+import { launchBackgroundBrowser } from "./priority";
 
 export const DEFAULT_VIEWPORT = { width: 1365, height: 768, deviceScaleFactor: 1.25 };
 
@@ -328,7 +330,7 @@ async function isChromiumExecutable(p: string): Promise<boolean> {
 	if (process.platform !== "linux") return true;
 	try {
 		const probeTimeoutMs = 3000;
-		const proc = Bun.spawn([p, "--version"], {
+		const proc = spawnBackground([p, "--version"], {
 			stdout: "pipe",
 			stderr: "ignore",
 			signal: AbortSignal.timeout(probeTimeoutMs),
@@ -537,10 +539,16 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 	}
 	try {
 		const executablePath = await ensureChromiumExecutable();
-		const browser = await puppeteer.launch({
+		// Chrome can move itself to app.slice over the user bus. Remove both
+		// addresses (empty values still discover the bus) from this child alone.
+		const env = { ...process.env };
+		delete env.DBUS_SESSION_BUS_ADDRESS;
+		delete env.DBUS_STARTER_ADDRESS;
+		const browser = await launchBackgroundBrowser(puppeteer, {
 			headless: opts.headless,
 			defaultViewport: opts.headless ? initialViewport : null,
 			executablePath,
+			env,
 			args: launchArgs,
 			ignoreDefaultArgs: [
 				...new Set([...stealthIgnoreDefaultArgs(executablePath), ...(opts.ignoreDefaultArgs ?? [])]),

@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ApiKeyResolver, FetchImpl, ResolvedApiKey, UsageProvider } from "@oh-my-pi/pi-ai";
 import type { AuthApiKeyOptions } from "@oh-my-pi/pi-ai/auth-storage";
@@ -45,7 +46,15 @@ import {
 } from "@oh-my-pi/pi-catalog/provider-models";
 import { toModelSpec } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
 import { modelKind, type ModelKind } from "@oh-my-pi/pi-catalog/types";
-import { getAgentDir, isBunTestRuntime, logger, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
+import {
+	extractHttpStatusFromError,
+	getAgentDir,
+	isBunTestRuntime,
+	logger,
+	wrapFetchForExtraCa,
+} from "@oh-my-pi/pi-utils";
+import * as AIError from "@oh-my-pi/pi-ai/error";
+import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
 import { resolveProviderModelReference } from "../config/model-resolver";
 import { generateCodexAttestation } from "../live/attestation";
 import type { AuthStorage } from "../session/auth-storage";
@@ -181,6 +190,7 @@ interface CustomModelsResult {
 	discoverableProviders?: DiscoveryProviderConfig[];
 	configuredProviders?: Set<string>;
 	error?: ConfigError;
+	recovered?: boolean;
 	found: boolean;
 }
 
@@ -281,6 +291,8 @@ export class ModelRegistry {
 	#providerOverrides: Map<string, ProviderOverride> = new Map();
 	#modelOverrides: Map<string, Map<string, ModelOverride>> = new Map();
 	#configError: ConfigError | undefined = undefined;
+	#configRecovered = false;
+	#lastGoodCustomModels: CustomModelsResult | undefined;
 	#modelsConfigFile: ConfigFile<ModelsConfig>;
 	#lastStaticLoadMtime: number | null = null;
 	#registeredProviderSources: Set<string> = new Set();
@@ -894,9 +906,15 @@ export class ModelRegistry {
 		return this.#configError;
 	}
 
+	/** Whether the failed primary load retained a validated in-memory or sidecar configuration. */
+	isUsingLastGoodConfig(): boolean {
+		return this.#configRecovered;
+	}
+
 	#loadModels() {
 		this.#resetStaticComposition();
 		// Load custom config first (to know which providers to override).
+		const customModelsResult = logger.time("modelRegistry:loadCustomModels", () => this.#loadCustomModels());
 		const {
 			models: customModels = [],
 			overrides = new Map(),
@@ -905,8 +923,12 @@ export class ModelRegistry {
 			discoverableProviders = [],
 			configuredProviders = new Set<string>(),
 			error: configError,
-		} = logger.time("modelRegistry:loadCustomModels", () => this.#loadCustomModels());
+		} = customModelsResult;
+		if (customModelsResult.found && !customModelsResult.error) {
+			this.#lastGoodCustomModels = customModelsResult;
+		}
 		this.#configError = configError;
+		this.#configRecovered = customModelsResult.recovered ?? false;
 		this.#keylessProviders = keylessProviders;
 		this.#discoverableProviders = discoverableProviders;
 		this.#customModelOverlays = customModels;
@@ -1572,9 +1594,36 @@ export class ModelRegistry {
 				found: false,
 			};
 		}
-		const { value, error, status } = this.#modelsConfigFile.tryLoad();
+		let loaded = this.#modelsConfigFile.tryLoad();
+		let restoredFromSidecar = false;
+		const error = loaded.status === "error" ? loaded.error : undefined;
+		const configPath = this.#modelsConfigFile.path();
+		const sidecarPath = configPath ? path.join(path.dirname(configPath), "models.last-good.yml") : undefined;
+		if (loaded.status === "ok" && configPath && sidecarPath) {
+			const temporaryPath = `${sidecarPath}.${process.pid}.tmp`;
+			try {
+				fs.writeFileSync(temporaryPath, fs.readFileSync(configPath), { mode: 0o600 });
+				fs.renameSync(temporaryPath, sidecarPath);
+			} catch (writeError) {
+				try {
+					fs.rmSync(temporaryPath, { force: true });
+				} catch {}
+				logger.warn("Failed to persist last-good models config", { path: sidecarPath, error: writeError });
+			}
+		}
+		if (loaded.status === "error" && !this.#lastGoodCustomModels && sidecarPath) {
+			const sidecar = this.#modelsConfigFile.relocate(sidecarPath, configPath).tryLoad();
+			if (sidecar.status === "ok") {
+				loaded = sidecar;
+				restoredFromSidecar = true;
+			}
+		}
+		const { value, status } = loaded;
 
 		if (status === "error") {
+			if (this.#lastGoodCustomModels) {
+				return { ...this.#lastGoodCustomModels, error, recovered: true };
+			}
 			return {
 				models: [],
 				overrides: new Map(),
@@ -1708,6 +1757,7 @@ export class ModelRegistry {
 			keylessProviders,
 			discoverableProviders,
 			configuredProviders,
+			...(restoredFromSidecar ? { error, recovered: true } : {}),
 			found: true,
 		};
 	}
@@ -2993,13 +3043,52 @@ export class ModelRegistry {
 	resolver(target: string | ApiKeyResolverModel, optionsOrSessionId?: ApiKeyResolverOptions | string): ApiKeyResolver {
 		const options = typeof optionsOrSessionId === "string" ? { sessionId: optionsOrSessionId } : optionsOrSessionId;
 		if (typeof target === "string") {
-			return createApiKeyResolver(this, target, options);
+			return this.#attachProviderCallObservers(target, createApiKeyResolver(this, target, options));
 		}
-		return createApiKeyResolver(this, target.provider, {
-			...options,
-			baseUrl: target.baseUrl,
-			modelId: target.id,
-		});
+		return this.#attachProviderCallObservers(
+			target.provider,
+			createApiKeyResolver(this, target.provider, {
+				...options,
+				baseUrl: target.baseUrl,
+				modelId: target.id,
+			}),
+		);
+	}
+
+	#attachProviderCallObservers(provider: string, resolver: ApiKeyResolver): ApiKeyResolver {
+		resolver.onProviderCallSucceeded = message => this.authStorage.health.markProviderSucceeded(message.provider);
+		resolver.onProviderCallFailed = error => {
+			const candidate =
+				typeof error === "object" && error !== null
+					? (error as {
+							errorClassificationMessage?: unknown;
+							errorMessage?: unknown;
+							errorStatus?: unknown;
+							message?: unknown;
+						})
+					: undefined;
+			const message =
+				error instanceof Error
+					? error.message
+					: typeof error === "string"
+						? error
+						: (candidate?.errorClassificationMessage ??
+							candidate?.errorMessage ??
+							candidate?.message ??
+							String(error));
+			if (typeof message !== "string") return;
+			const status =
+				typeof candidate?.errorStatus === "number"
+					? candidate.errorStatus
+					: (AIError.status(error) ?? extractHttpStatusFromError(message));
+			const retryAfterMs = status === 429 ? extractProviderRetryHint(provider, message) : undefined;
+			const resetAtMs =
+				retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+					? Date.now() + retryAfterMs
+					: undefined;
+			this.authStorage.health.markProviderDepleted(provider, { status, message, resetAtMs });
+		};
+		return resolver;
 	}
 
 	async #peekApiKeyForProvider(provider: string): Promise<string | undefined> {

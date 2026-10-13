@@ -750,21 +750,9 @@ mod read {
 
 	use super::{Cli, Val};
 
-	/// Load a file through the injected filesystem. Native files are memory
-	/// mapped when possible; everything else is read through the handle.
-	pub fn load_file(
-		fs: &BlockingFs,
-		path: &Path,
-	) -> io::Result<Box<dyn core::ops::Deref<Target = [u8]>>> {
+	/// Load a file through the injected filesystem into an owned buffer.
+	pub fn load_file(fs: &BlockingFs, path: &Path) -> io::Result<Box<dyn core::ops::Deref<Target = [u8]>>> {
 		let mut file = fs.open(path)?;
-		if let Some(native) = file.native()
-			// SAFETY: the mapping is read-only and dropped before any in-place
-			// replacement of the file; concurrent external truncation is the
-			// same hazard upstream jaq accepts.
-			&& let Ok(mmap) = unsafe { memmap2::Mmap::map(native) }
-		{
-			return Ok(Box::new(mmap));
-		}
 		let mut bytes = Vec::new();
 		file.read_to_end(&mut bytes)?;
 		Ok(Box::new(bytes))
@@ -1427,12 +1415,13 @@ pub(crate) fn jq_builtin<SE: ShellExtensions>() -> Registration<SE> {
 
 #[cfg(test)]
 mod tests {
-	use std::{collections::HashMap, io::Write, path::PathBuf};
+	use std::{collections::HashMap, fs, io::Write, path::PathBuf, process::Command, thread, time::Duration};
 
 	use clap::Parser as _;
 
-	use super::Jq;
+	use super::{read, Jq};
 	use crate::host::{Host, Utility, run_util};
+
 
 	fn run_jq_in(
 		cwd: PathBuf,
@@ -1464,6 +1453,47 @@ mod tests {
 	fn run_jq(args: &[&str], stdin: &str) -> (i32, String, String) {
 		let (code, capture) = run_util::<Jq>(args, stdin, ".");
 		(code, capture.out(), capture.err())
+	}
+
+	#[test]
+	fn jq_input_truncation_does_not_kill_process() {
+		const INPUT: &str = "OMP_JQ_TRUNCATION_INPUT";
+		const READY: &str = "OMP_JQ_TRUNCATION_READY";
+		const RELEASE: &str = "OMP_JQ_TRUNCATION_RELEASE";
+		if let (Some(input), Some(ready), Some(release)) = (
+			std::env::var_os(INPUT), std::env::var_os(READY), std::env::var_os(RELEASE),
+		) {
+			let bytes = read::load_file(&pi_vfs::BlockingFs::native(), PathBuf::from(input).as_path())
+				.expect("open jq input");
+			fs::write(ready, b"ready").unwrap();
+			let release = PathBuf::from(release);
+			while !release.exists() {
+				thread::sleep(Duration::from_millis(1));
+			}
+			std::hint::black_box(bytes[1024 * 1024 - 1]);
+			return;
+		}
+
+		let dir = tempfile::tempdir().unwrap();
+		let input = dir.path().join("input.json");
+		let ready = dir.path().join("ready");
+		let release = dir.path().join("release");
+		fs::write(&input, vec![b' '; 1024 * 1024]).unwrap();
+		let mut child = Command::new(std::env::current_exe().unwrap())
+			.args(["--exact", "jq::tests::jq_input_truncation_does_not_kill_process", "--nocapture"])
+			.env(INPUT, &input)
+			.env(READY, &ready)
+			.env(RELEASE, &release)
+			.spawn()
+			.unwrap();
+		while !ready.exists() {
+			assert!(child.try_wait().unwrap().is_none(), "child exited before mapping");
+			thread::sleep(Duration::from_millis(1));
+		}
+		fs::write(&input, b"{}").unwrap();
+		fs::write(&release, b"go").unwrap();
+		let status = child.wait().unwrap();
+		assert!(status.success(), "child terminated by input truncation: {status}");
 	}
 
 	#[test]

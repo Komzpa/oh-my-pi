@@ -829,6 +829,19 @@ const costSegment: StatusLineSegment = {
 	},
 };
 
+const fpsSegment: StatusLineSegment = {
+	id: "fps",
+	render(ctx) {
+		const text = ctx.fpsText;
+		if (!text) return { content: "", visible: false };
+		return { content: theme.fg("muted", text), visible: true };
+	},
+	describe(ctx) {
+		const text = ctx.fpsText;
+		return text ? segView([span(text, "muted")]) : null;
+	},
+};
+
 const contextPctSegment: StatusLineSegment = {
 	id: "context_pct",
 	render(ctx) {
@@ -1288,6 +1301,7 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	token_total: tokenTotalSegment,
 	token_rate: tokenRateSegment,
 	cost: costSegment,
+	fps: fpsSegment,
 	context_pct: contextPctSegment,
 	context_total: contextTotalSegment,
 	time_spent: timeSpentSegment,

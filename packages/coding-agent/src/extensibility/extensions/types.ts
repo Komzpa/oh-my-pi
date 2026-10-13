@@ -31,12 +31,13 @@ import type {
 	AgentMessage,
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	SoftToolRequirement,
 	ThinkingLevel,
 	ToolApproval,
 	ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
-import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ContextUsage } from "@oh-my-pi/pi-tui/status-line/types";
+import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	Api,
 	AssistantMessage,
@@ -487,6 +488,8 @@ export interface ExtensionContext {
 	mode: ExtensionMode;
 	/** Get current context usage for the active model. */
 	getContextUsage(): ContextUsage | undefined;
+	/** Current task worker concurrency limit, if this host has settings available. */
+	getTaskMaxConcurrency(): number | undefined;
 	/** Get a read-only snapshot of async jobs owned by this session. */
 	getAsyncJobSnapshot(): AsyncJobSnapshot | null;
 	/** Compact the session context (interactive mode shows UI). */
@@ -511,10 +514,18 @@ export interface ExtensionContext {
 	abort(): void;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
+	/**
+	 * Set `/fast` for a live direct subagent owned by this session. Returns false
+	 * when the id is not an owned live subagent or its model has no tier control.
+	 * The change applies to the subagent's next provider request.
+	 */
+	setSubagentFastMode?(id: string, enabled: boolean): boolean;
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
 	/** Identity of the agent this session runs: the top-level session or a subagent. */
 	agent: ExtensionAgentIdentity;
+	/** Send a message to a live or revivable agent peer through the same route as `write agent://<id>`. */
+	sendAgentMessage(to: string, message: string): Promise<{ delivered: boolean; text: string }>;
 	/**
 	 * Whether the current project/workspace is trusted. OMP performs no
 	 * project-trust gating — project-level settings and extensions load
@@ -861,6 +872,10 @@ export interface BeforeSubagentSpawnEvent {
 	patterns: string[];
 	/** Stable per-spawn key for deterministic selection, when the caller supplies one. */
 	spawnKey?: string;
+	/** Whether the caller explicitly requested an isolated worktree. */
+	isolated?: boolean;
+	/** Verbatim task assignment text; lets routing gates scope checkouts before row owners are recorded. */
+	assignment?: string;
 }
 
 export type {
@@ -871,6 +886,15 @@ export type {
 	TurnEndEvent,
 	TurnStartEvent,
 } from "../shared-events";
+
+/** Awaited before a main-session assistant draft enters public state or output. */
+export interface BeforeAssistantMessageEvent {
+	type: "before_assistant_message";
+	/** Detached inspection draft. Mutating it does not change the delivered message. */
+	message: AssistantMessage;
+	/** Aborted on cancellation or when this handler exceeds its time budget. */
+	signal: AbortSignal;
+}
 
 /** Fired when a message starts (user, assistant, or toolResult) */
 export interface MessageStartEvent {
@@ -1035,6 +1059,8 @@ export interface UserPythonEvent {
 export interface InputEvent {
 	type: "input";
 	text: string;
+	/** Original submitted text, unchanged by earlier input-handler transforms. */
+	readonly rawText: string;
 	images?: ImageContent[];
 	source: "interactive" | "rpc" | "extension";
 }
@@ -1213,6 +1239,7 @@ export type ExtensionEvent =
 	| SessionStopEvent
 	| TurnStartEvent
 	| TurnEndEvent
+	| BeforeAssistantMessageEvent
 	| MessageStartEvent
 	| MessageUpdateEvent
 	| MessageEndEvent
@@ -1261,6 +1288,10 @@ export interface ContextEventResult {
 export interface AssistantMessageRewriteResult {
 	content?: AssistantMessage["content"];
 }
+export interface BeforeAssistantMessageEventResult {
+	replacementText: string;
+	settled?: true;
+}
 
 export type BeforeProviderRequestEventResult = unknown;
 
@@ -1305,6 +1336,12 @@ export interface BeforeSubagentSpawnEventResult {
 	reason?: string;
 	/** Human-readable routing explanation surfaced with the resolved model. */
 	note?: string;
+	/** Mandatory routing policy overrides explicit caller selectors and fails closed. */
+	enforce?: boolean;
+	/** Exact provider/model service tiers enforced on every child request, including fallback. */
+	requiredModelServiceTiers?: Record<string, "priority">;
+	/** Cap Claude implementation effort at high without changing other models. */
+	claudeEffortCap?: boolean;
 }
 
 export type {
@@ -1417,6 +1454,10 @@ export interface ExtensionAPI {
 	on(event: "session_stop", handler: ExtensionHandler<SessionStopEvent, SessionStopEventResult>): void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
+	on(
+		event: "before_assistant_message",
+		handler: ExtensionHandler<BeforeAssistantMessageEvent, BeforeAssistantMessageEventResult>,
+	): void;
 	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): void;
 	on(event: "message_update", handler: ExtensionHandler<MessageUpdateEvent>): void;
 	on(event: "message_end", handler: ExtensionHandler<MessageEndEvent>): void;
@@ -1445,6 +1486,13 @@ export interface ExtensionAPI {
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "user_python", handler: ExtensionHandler<UserPythonEvent, UserPythonEventResult>): void;
 	on(event: "mcp_notification", handler: ExtensionHandler<McpNotificationEvent>): void;
+	/**
+	 * Register the single extension-owned provider for the native agent loop's soft tool gate.
+	 * The host evaluates it synchronously at each model-choice boundary with a fresh context;
+	 * Return undefined whenever the action is not currently safe. The host asks only after higher-priority queued
+	 * hard tool choices and pending-preview resolution requirements are absent. Register during extension load.
+	 */
+	registerSoftToolRequirementProvider(provider: (ctx: ExtensionContext) => SoftToolRequirement | undefined): void;
 
 	// =========================================================================
 	// Tool Registration
@@ -1892,7 +1940,9 @@ export interface ExtensionContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	getSystemPrompt: () => string[];
+	sendAgentMessage?: (to: string, message: string) => Promise<{ delivered: boolean; text: string }>;
 	runEphemeralTurn?: (options: EphemeralTurnOptions) => Promise<EphemeralTurnResult>;
+	setSubagentFastMode?: (id: string, enabled: boolean) => boolean;
 }
 
 /** Actions for ExtensionCommandContext (ctx.* in command handlers). */
@@ -1920,6 +1970,8 @@ export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionAction
 export interface Extension {
 	path: string;
 	resolvedPath: string;
+	/** SHA-256 of the entry file at module load, preserved when rebinding. */
+	sourceHash?: string;
 	label?: string;
 	handlers: Map<string, HandlerFn[]>;
 	tools: Map<string, RegisteredTool<any, any>>;
@@ -1932,6 +1984,8 @@ export interface Extension {
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
 	shortcuts: Map<KeyId, ExtensionShortcut>;
+	/** Native soft tool gate provider registered by this extension, if any. */
+	softToolRequirementProvider?: (ctx: ExtensionContext) => SoftToolRequirement | undefined;
 }
 
 /**
@@ -1942,6 +1996,7 @@ export interface Extension {
 export interface PreparedExtension {
 	path: string;
 	resolvedPath: string;
+	sourceHash?: string;
 	factory: ExtensionFactory | null;
 	error: string | null;
 }

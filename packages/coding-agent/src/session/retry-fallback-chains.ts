@@ -1,5 +1,6 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
+import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { cfgModelRoles } from "../config/model-settings";
 import { formatModelSelectorValue, parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
@@ -14,6 +15,7 @@ import { resolveConfiguredModelPatterns, resolveModelRoleValue } from "../config
 import { getRoleInfo, isKindRole } from "../config/model-roles";
 
 import { cfgRetryFallbackChains, cfgRetryFallbackRevertPolicy } from "./settings";
+import { type ProviderExhaustionExclusion, providerExhaustionExclusion } from "./provider-exhaustion";
 
 /** Configured fallback chains keyed by role or model selector. */
 export type RetryFallbackChains = Record<string, string[]>;
@@ -606,7 +608,7 @@ export function findRetryFallbackCandidates(
 	chainKey: string,
 	currentSelector: string,
 	currentModel?: Model | null,
-	options?: { allowMissingPrimary?: boolean; wrapAround?: boolean },
+	options?: { allowMissingPrimary?: boolean; wrapAround?: boolean; exclusions?: ProviderExhaustionExclusion[] },
 ): RetryFallbackSelector[] {
 	const chain = getRetryFallbackEffectiveChain(
 		context,
@@ -615,6 +617,17 @@ export function findRetryFallbackCandidates(
 		currentModel,
 		options?.allowMissingPrimary === true,
 	);
+	const available = (selector: RetryFallbackSelector): boolean => {
+		const exclusion = providerExhaustionExclusion(selector.provider);
+		if (!exclusion) return true;
+		options?.exclusions?.push(exclusion);
+		logger.warn("Skipping unavailable fallback provider", {
+			provider: exclusion.provider,
+			reason: exclusion.reason,
+			until: exclusion.until,
+		});
+		return false;
+	};
 	const parsedConfigured = parseRetryFallbackSelector(currentSelector, context.modelLookup);
 	const currentPlainSelector = currentModel
 		? formatModelSelectorValue(formatModelString(currentModel), parsedConfigured?.thinkingLevel)
@@ -622,7 +635,7 @@ export function findRetryFallbackCandidates(
 	const parsedCurrent =
 		parsedConfigured ??
 		(currentPlainSelector ? parseRetryFallbackSelector(currentPlainSelector, context.modelLookup) : undefined);
-	if (!parsedCurrent) return chain;
+	if (!parsedCurrent) return chain.filter(available);
 	if (chain.length <= 1) return [];
 	const currentBaseSelector = formatRetryFallbackBaseSelector(parsedCurrent);
 	const currentPlainBaseSelector =
@@ -634,7 +647,8 @@ export function findRetryFallbackCandidates(
 	);
 	if (exactIndex >= 0) {
 		const candidatesAfter = chain.slice(exactIndex + 1);
-		return options?.wrapAround ? [...candidatesAfter, ...chain.slice(0, exactIndex)] : candidatesAfter;
+		const candidates = options?.wrapAround ? [...candidatesAfter, ...chain.slice(0, exactIndex)] : candidatesAfter;
+		return candidates.filter(available);
 	}
 	const baseIndex = currentBaseSelector
 		? chain.findIndex(selector => {
@@ -644,7 +658,8 @@ export function findRetryFallbackCandidates(
 		: -1;
 	if (baseIndex >= 0) {
 		const candidatesAfter = chain.slice(baseIndex + 1);
-		return options?.wrapAround ? [...candidatesAfter, ...chain.slice(0, baseIndex)] : candidatesAfter;
+		const candidates = options?.wrapAround ? [...candidatesAfter, ...chain.slice(0, baseIndex)] : candidatesAfter;
+		return candidates.filter(available);
 	}
-	return chain;
+	return chain.filter(available);
 }

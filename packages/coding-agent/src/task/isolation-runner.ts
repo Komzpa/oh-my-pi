@@ -431,13 +431,38 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 				// Nothing changed since the run-end capture the caller already
 				// merged or applied: a branch now would only duplicate that work.
 				if (capture.fingerprint === handedOff) return;
-				const commitResult = await commitToBranch(
-					handle.mergedDir,
-					taskBaseline,
-					opts.agentId,
-					opts.description,
-					undefined,
-				);
+				let commitResult: CommitToBranchResult | null;
+				try {
+					commitResult = await commitToBranch(
+						handle.mergedDir,
+						taskBaseline,
+						opts.agentId,
+						opts.description,
+						undefined,
+					);
+				} catch (mergeErr) {
+					// Same contract as the run-end merge failure: the workspace
+					// holds the only copy of what the replay did not land on the
+					// task branch, so keep it and report the kept path and the
+					// rescue branch instead of letting the `finally` below
+					// remove it.
+					retainWorkspace = true;
+					const rescueBranch = await rescueTaskBranch(
+						opts.context.repoRoot,
+						`omp/task/${opts.agentId}`,
+						taskBaseline.root.headCommit,
+					);
+					const retained = await retainIsolationWorkspace(handle.mergedDir, handle.backend);
+					throw new Error(
+						renderIsolationError({
+							kind: "merge-failed",
+							message: mergeErr instanceof Error ? mergeErr.message : String(mergeErr),
+							rescueBranch,
+							retainedDir: retained.dir,
+							sidecarMissing: !retained.sidecarOk,
+						}),
+					);
+				}
 				AgentRegistry.global().setHistory(opts.agentId, {
 					patchPath: patchResult.patchPath,
 					branchName: commitResult?.branchName,
@@ -504,28 +529,34 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 				const branchName = `omp/task/${opts.agentId}`;
 				const rescueBranch = await rescueTaskBranch(opts.context.repoRoot, branchName, baseSha);
 				const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+				// A failed merge-back must never remove the worktree or drop the
+				// worker's commits: whatever the replay did not land on the task
+				// branch lives only in the isolation repository. Capture the
+				// delta patch from the live workspace first (retention moves the
+				// workspace aside), then keep it and report where it lives next
+				// to the rescue branch.
+				let artifacts: IsolationPatchArtifacts | undefined;
+				let captureError: string | undefined;
 				try {
-					const capture = await writeIsolationPatch(isolationDir, baseline, opts.artifactsDir, opts.agentId);
-					return rememberAgentArtifacts({
-						...result,
-						...capture.artifacts,
-						error: renderIsolationError({ kind: "merge-failed", message: msg, rescueBranch }),
-					});
+					artifacts = (await writeIsolationPatch(isolationDir, baseline, opts.artifactsDir, opts.agentId))
+						.artifacts;
 				} catch (patchErr) {
-					retainWorkspace = true;
-					const retained = await retainIsolationWorkspace(isolationDir, isolationBackend);
-					return rememberAgentArtifacts({
-						...result,
-						error: renderIsolationError({
-							kind: "merge-failed",
-							message: msg,
-							captureError: patchErr instanceof Error ? patchErr.message : String(patchErr),
-							rescueBranch,
-							retainedDir: retained.dir,
-							sidecarMissing: !retained.sidecarOk,
-						}),
-					});
+					captureError = patchErr instanceof Error ? patchErr.message : String(patchErr);
 				}
+				retainWorkspace = true;
+				const retained = await retainIsolationWorkspace(isolationDir, isolationBackend);
+				return rememberAgentArtifacts({
+					...result,
+					...artifacts,
+					error: renderIsolationError({
+						kind: "merge-failed",
+						message: msg,
+						captureError,
+						rescueBranch,
+						retainedDir: retained.dir,
+						sidecarMissing: !retained.sidecarOk,
+					}),
+				});
 			}
 			handedOff = deltaFingerprint(commitResult?.rootPatch ?? "", commitResult?.nestedPatches ?? []);
 			// The branch holds the root-repo work, but nested-repo patches exist

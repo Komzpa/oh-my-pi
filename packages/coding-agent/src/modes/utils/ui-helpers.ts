@@ -47,6 +47,7 @@ import { imageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import type { CompactionQueuedMessage, InteractiveModeContext, RenderSessionContextOptions } from "../../modes/types";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
+import { restartNoticeText } from "../../task/restart-queue";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
 	type CustomMessage,
@@ -186,6 +187,22 @@ export class UiHelpers {
 			case "hookMessage":
 			case "custom": {
 				if (message.display) {
+					if (message.customType === "restart-queued") {
+						const details = message.details as { requestId?: unknown } | undefined;
+						const requestId = details?.requestId;
+						const label =
+							typeof requestId === "string"
+								? restartNoticeText(this.ctx.viewSession.sessionManager.getBranch(), requestId)
+								: "Restart queued";
+						const component = new CustomMessageComponent({
+							...message,
+							role: "custom",
+							customType: label,
+							content: "",
+						});
+						this.ctx.chatContainer.addChild(component);
+						break;
+					}
 					if (message.customType === "async-result") {
 						const component = buildAsyncResultBlock(message);
 						this.ctx.chatContainer.addChild(component);
@@ -924,7 +941,7 @@ export class UiHelpers {
 			collapseCompactedHistory: cfgDisplayCollapseCompacted.get(settings),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 		});
-		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
+		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntryCount();
 
 		// Build against a detached container. Incremental construction still yields
 		// to terminal input, while paints keep using the complete visible transcript
@@ -970,7 +987,7 @@ export class UiHelpers {
 				} else {
 					await this.ctx.renderSessionContextIncrementally(context, renderOptions);
 				}
-				if (this.ctx.viewSession.sessionManager.getEntries().length === replayEntryCount) {
+				if (this.ctx.viewSession.sessionManager.getEntryCount() === replayEntryCount) {
 					break;
 				}
 				replayAttempts++;
@@ -981,7 +998,7 @@ export class UiHelpers {
 					logger.warn("renderInitialMessages: transcript replay did not converge; accepting current replay", {
 						attempts: replayAttempts,
 						replayEntryCount,
-						currentEntryCount: this.ctx.viewSession.sessionManager.getEntries().length,
+						currentEntryCount: this.ctx.viewSession.sessionManager.getEntryCount(),
 					});
 					break;
 				}
@@ -993,7 +1010,7 @@ export class UiHelpers {
 					collapseCompactedHistory: cfgDisplayCollapseCompacted.get(settings),
 					keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 				});
-				replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
+				replayEntryCount = this.ctx.viewSession.sessionManager.getEntryCount();
 				await refreshAssistantMessageLinkTargets(
 					this.ctx,
 					context.messages.filter((message): message is AssistantMessage => message.role === "assistant"),
@@ -1024,9 +1041,8 @@ export class UiHelpers {
 			committed = true;
 
 			// Show compaction info if session was compacted.
-			const allEntries = this.ctx.viewSession.sessionManager.getEntries();
 			let compactionCount = 0;
-			for (const entry of allEntries) {
+			for (const entry of this.ctx.viewSession.sessionManager.iterateEntries("compaction")) {
 				if (entry.type === "compaction") {
 					compactionCount++;
 				}

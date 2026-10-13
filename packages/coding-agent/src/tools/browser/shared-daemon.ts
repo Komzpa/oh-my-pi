@@ -1,23 +1,19 @@
 /**
- * Shared automation Chromium owned by the per-project daemon broker.
- *
- * Instead of every omp process launching (and sometimes orphaning) a private
- * Chromium, the headless browser kind attaches to one broker-supervised Chrome
- * per project directory — sessions and subagents each open their own tabs in
- * it. The broker stops the daemon when the last omp client in the project
- * exits, so Chrome can never outlive omp, and concurrent acquisitions across
- * processes converge on a single launch instead of a launch storm.
+ * Automation Chromium shared only within one transcript session and project.
+ * Its broker starts through the existing native resource scope; Chromium and
+ * descendants inherit that session cgroup. Concurrent opens in that session
+ * converge on one browser, but another transcript has a separate runtime and
+ * profile. Closing the last broker client retains the existing idle teardown.
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
 import { daemonClientForProject } from "../../launch/client";
 import { describeQuietly, stopQuietly, waitReady } from "../../launch/ensure";
-import { daemonRuntimeDir } from "../../launch/paths";
 import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/daemon";
 import { throwIfAborted } from "../tool-errors";
 import { probeCdpStatus } from "./attach";
-import { resolveSharedBrowserLaunchSpec } from "./launch";
+import { resolveSharedBrowserLaunchSpec, type SharedBrowserLaunchSpec } from "./launch";
 
 /** Chrome prints this on stderr once the CDP listener is up; the broker's ready probe captures the line. */
 const READY_LOG_PATTERN = String.raw`DevTools listening on ws://\S+`;
@@ -32,6 +28,7 @@ export interface SharedBrowserEndpoint {
 	daemonName: string;
 	/** Canonical project directory owning the broker (used to address later stop requests). */
 	projectDir: string;
+	runtimeDir: string;
 }
 
 /** Stable broker daemon name for the shared automation browser. */
@@ -56,6 +53,34 @@ async function probeEndpoint(wsEndpoint: string): Promise<boolean> {
 }
 
 /**
+ * Chrome registers its main process with the user systemd manager over the
+ * session bus and systemd then moves it into `app.slice/app-<name>-<pid>.scope`,
+ * away from the session slice that owns the automation browser. The session bus
+ * must therefore be absent from this child: an empty value is not enough (GDBus
+ * then falls back to `$XDG_RUNTIME_DIR/bus`), so the variables are removed.
+ * `env -u` execs in place, keeping Chrome's pid as the recorded daemon pid.
+ * Only this browser child loses the bus; other broker children keep it.
+ */
+function browserSpawnCommand(launch: SharedBrowserLaunchSpec): {
+	application: string;
+	args: string[];
+} {
+	if (process.platform !== "linux") return { application: launch.executablePath, args: launch.args };
+	return {
+		application: "/usr/bin/env",
+		args: [
+			"-u",
+			"DBUS_SESSION_BUS_ADDRESS",
+			"-u",
+			"DBUS_STARTER_ADDRESS",
+			"--",
+			launch.executablePath,
+			...launch.args,
+		],
+	};
+}
+
+/**
  * Ensure the project-shared automation Chromium is running and reachable,
  * launching it under the daemon broker when needed. Idempotent across
  * processes: losers of the start race adopt the winner's endpoint on the next
@@ -69,21 +94,23 @@ async function probeEndpoint(wsEndpoint: string): Promise<boolean> {
  */
 export async function ensureSharedBrowser(opts: {
 	projectDir: string;
+	sessionId?: string;
 	headless: boolean;
 	viewport?: { width: number; height: number };
 	signal?: AbortSignal;
 }): Promise<SharedBrowserEndpoint | null> {
-	const client = await daemonClientForProject(opts.projectDir);
+	const client = await daemonClientForProject(opts.projectDir, opts.sessionId);
 	const name = sharedBrowserDaemonName(opts.headless);
 	// Stable profile under the broker's runtime dir: reused across launches, and
 	// never contended by pre-daemon Chromiums that used throwaway temp profiles.
-	const userDataDir = path.join(daemonRuntimeDir(client.projectDir), `${name}.profile`);
+	const userDataDir = path.join(client.runtimeDir, `${name}.profile`);
 	const launch = await resolveSharedBrowserLaunchSpec({
 		headless: opts.headless,
 		userDataDir,
 		viewport: opts.viewport,
 	});
 	if (!launch) return null;
+	const spawn = browserSpawnCommand(launch);
 	await fs.mkdir(userDataDir, { recursive: true });
 	for (let attempt = 0; attempt < ENSURE_ATTEMPTS; attempt++) {
 		throwIfAborted(opts.signal);
@@ -93,7 +120,7 @@ export async function ensureSharedBrowser(opts: {
 				existing.readyAt !== undefined ? existing : await waitReady(client, name, "Shared browser", opts.signal);
 			const wsEndpoint = wsEndpointOf(settled);
 			if (wsEndpoint && (await probeEndpoint(wsEndpoint))) {
-				return { wsEndpoint, daemonName: name, projectDir: client.projectDir };
+				return { wsEndpoint, daemonName: name, projectDir: client.projectDir, runtimeDir: client.runtimeDir };
 			}
 			// Live record but unreachable Chrome (wedged, or readiness never
 			// matched): replace it rather than handing out a dead endpoint.
@@ -106,8 +133,8 @@ export async function ensureSharedBrowser(opts: {
 					op: "start",
 					spec: {
 						name,
-						application: launch.executablePath,
-						args: launch.args,
+						application: spawn.application,
+						args: spawn.args,
 						env: {},
 						cwd: client.projectDir,
 						pty: false,
@@ -122,7 +149,7 @@ export async function ensureSharedBrowser(opts: {
 			if (started.op !== "start") continue;
 			const wsEndpoint = started.readyTimedOut ? undefined : wsEndpointOf(started.daemon);
 			if (wsEndpoint && (await probeEndpoint(wsEndpoint))) {
-				return { wsEndpoint, daemonName: name, projectDir: client.projectDir };
+				return { wsEndpoint, daemonName: name, projectDir: client.projectDir, runtimeDir: client.runtimeDir };
 			}
 			await stopQuietly(client, name, "Shared browser", opts.signal);
 		} catch (error) {

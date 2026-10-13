@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
+import type { Model } from "@oh-my-pi/pi-ai";
 import { resolveThresholdTokens, shouldCompact } from "@oh-my-pi/pi-agent-core/compaction";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { EffectiveExtensionRoots } from "@oh-my-pi/pi-coding-agent/capability/types";
@@ -19,7 +21,6 @@ import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
 	findRetryFallbackCandidates,
 	getRetryFallbackChains,
@@ -27,12 +28,14 @@ import {
 	type RetryFallbackRole,
 	resolveRetryFallbackChainKey,
 } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { FileSessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
+import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
-import { buildWakeRelayBody } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { SingleResult } from "@oh-my-pi/pi-tui/tools/task";
+import { buildWakeRelayBody } from "@oh-my-pi/pi-coding-agent/task/executor";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
@@ -40,6 +43,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import { createSessionDefaults } from "../helpers/session-defaults";
 
 import { cfgAdvisorEnabled } from "@oh-my-pi/pi-coding-agent/advisor/settings";
+import type { Context } from "@oh-my-pi/pi-ai";
 
 const tempDirs: TempDir[] = [];
 
@@ -141,12 +145,16 @@ async function createPersistedSession(
 	modelRole?: string,
 	advisor?: string,
 	contract?: {
+		assignmentStartedAt?: number;
 		tools?: string[];
 		readOnly?: boolean;
 		agent?: string;
 		isolated?: boolean;
 		retryFallback?: RetryFallbackRole;
 		compactionThreshold?: { thresholdPercent: number; thresholdTokens: number };
+		retryFallbackRole?: string;
+		retryFallbackPrimary?: string;
+		retryFallbackChain?: string[];
 	},
 ): Promise<string> {
 	const manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
@@ -155,6 +163,7 @@ async function createPersistedSession(
 	manager.appendSessionInit({
 		systemPrompt: "persisted prompt",
 		task: "persisted task",
+		assignmentStartedAt: contract?.assignmentStartedAt,
 		tools: contract?.tools ?? ["read", "yield"],
 		restrictToolNames,
 		modelRole,
@@ -167,6 +176,11 @@ async function createPersistedSession(
 		...(contract?.compactionThreshold !== undefined
 			? { compactionThreshold: contract.compactionThreshold }
 			: undefined),
+		...(contract?.retryFallbackRole !== undefined ? { retryFallbackRole: contract.retryFallbackRole } : undefined),
+		...(contract?.retryFallbackPrimary !== undefined
+			? { retryFallbackPrimary: contract.retryFallbackPrimary }
+			: undefined),
+		...(contract?.retryFallbackChain !== undefined ? { retryFallbackChain: contract.retryFallbackChain } : undefined),
 	});
 	manager.appendMessage({
 		role: "assistant",
@@ -476,6 +490,34 @@ describe("persisted subagent revival", () => {
 		expect(activeToolNames).toEqual([["read", "yield"]]);
 	});
 
+	it("restores the original assignment clock for cold-revived elapsed signals", async () => {
+		const cwd = makeTempDir("@pi-elapsed-revive-");
+		const assignmentStartedAt = 1_000;
+		const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, { assignmentStartedAt });
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+
+		const ref = createRef(sessionFile);
+		const reviver = await createFactory(cwd)(ref);
+		if (!reviver) throw new Error("Expected a persisted reviver");
+		await reviver(ref);
+
+		const now = vi.spyOn(Date, "now").mockReturnValue(21_000);
+		try {
+			const context: Context = { systemPrompt: ["stable"], messages: [], tools: [] };
+			const transformed = await capturedOptions?.transformProviderContext?.(context, {} as never);
+			expect(transformed?.messages.at(-1)).toMatchObject({
+				role: "developer",
+				content: "elapsed 20s / 900s",
+				synthetic: true,
+			});
+		} finally {
+			now.mockRestore();
+		}
+	});
 	it("preserves explicitly writable cold-revival contracts", async () => {
 		const cwd = makeTempDir("@pi-write-revive-");
 		const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, {
@@ -951,6 +993,97 @@ describe("persisted subagent revival", () => {
 			expect(msg?.body).toContain("[some-provider/some-model]");
 			expect(msg?.body).toContain("402 usage balance exhausted");
 			expect(msg?.body).toContain(`history://${ref.id}`);
+			AgentLifecycleManager.resetGlobalForTests();
+			AgentRegistry.resetGlobalForTests();
+			IrcBus.resetGlobalForTests();
+		});
+		it("reinstalls the spawn fallback chain so a quota-403 wake turn can fail over", async () => {
+			// A cold-revived worker builds fresh settings: without the spawn's
+			// `subagent:<id>` chain its wake turn dies on the first quota 403/429
+			// (e.g. `[kimi-code/...] 403 ... 5-hour usage limit`) instead of
+			// failing over to the next profile model like a fresh spawn.
+			const cwd = makeTempDir("@pi-revive-quota-failover-");
+			AgentRegistry.resetGlobalForTests();
+			AgentLifecycleManager.resetGlobalForTests();
+			IrcBus.resetGlobalForTests();
+			const sessionFile = await createPersistedSession(cwd, false, undefined, undefined, {
+				retryFallbackRole: "subagent:persisted-restricted",
+				retryFallbackPrimary: "test-quota/model-a",
+				retryFallbackChain: ["test-quota/model-b", "test-other/model-c"],
+			});
+			MCPManager.setInstance({ getTools: () => [] } as unknown as MCPManager);
+			let capturedSettings: Settings | undefined;
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+				if (!options) throw new Error("Expected createAgentSession options");
+				capturedSettings = options.settings as Settings;
+				const handle = createRevivedSession([]);
+				return { session: handle.session } as CreateAgentSessionResult;
+			});
+			const ref = createRef(sessionFile);
+			AgentRegistry.global().register({
+				id: "Main",
+				displayName: "Main",
+				kind: "main",
+				session: null,
+				status: "idle",
+			});
+			AgentRegistry.global().register({
+				id: ref.id,
+				displayName: ref.displayName,
+				kind: "sub",
+				session: null,
+				sessionFile,
+				status: "parked",
+			});
+			const reviver = await createFactory(cwd)(ref);
+			if (!reviver) throw new Error("Expected a persisted reviver");
+			await reviver(ref);
+			if (!capturedSettings) throw new Error("Expected createAgentSession to capture settings");
+
+			// The revived settings carry the spawn's chain and role pin...
+			expect(cfgRetryFallbackChains.get(capturedSettings)).toMatchObject({
+				"subagent:persisted-restricted": ["test-quota/model-b", "test-other/model-c"],
+			});
+			expect(capturedSettings.getModelRole("subagent:persisted-restricted")).toBe("test-quota/model-a");
+
+			// ...so the wake turn's recovery routes the quota-dead primary to
+			// its chain and offers the next profile model instead of dying.
+			const quotaModel = (provider: string, id: string): Model =>
+				buildModel({
+					provider,
+					id,
+					name: id,
+					api: "openai-completions",
+					baseUrl: `https://${provider}.example.test`,
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 200_000,
+					maxTokens: 8192,
+				});
+			const bySelector: Record<string, Model> = {
+				"test-quota/model-a": quotaModel("test-quota", "model-a"),
+				"test-quota/model-b": quotaModel("test-quota", "model-b"),
+				"test-other/model-c": quotaModel("test-other", "model-c"),
+			};
+			const settings = capturedSettings;
+			const context = {
+				chains: getRetryFallbackChains(settings),
+				getModelRole: (role: string) => settings.getModelRole(role),
+				modelLookup: {
+					find: (provider: string, id: string) => bySelector[`${provider}/${id}`],
+					hasProvider: () => true,
+				},
+			};
+			const primary = bySelector["test-quota/model-a"];
+			expect(resolveRetryFallbackChainKey(context, "test-quota/model-a", primary)).toBe(
+				"subagent:persisted-restricted",
+			);
+			expect(
+				findRetryFallbackCandidates(context, "subagent:persisted-restricted", "test-quota/model-a", primary).map(
+					selector => selector.raw,
+				),
+			).toEqual(["test-quota/model-b", "test-other/model-c"]);
 			AgentLifecycleManager.resetGlobalForTests();
 			AgentRegistry.resetGlobalForTests();
 			IrcBus.resetGlobalForTests();

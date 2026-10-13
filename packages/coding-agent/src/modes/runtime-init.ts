@@ -9,6 +9,7 @@
 import { runExtensionCompact, runExtensionSetModel } from "../extensibility/extensions/compact-handler";
 import { getSessionSlashCommands } from "../extensibility/extensions/get-commands-handler";
 import type { ExtensionError, ExtensionMode, ExtensionUIContext } from "../extensibility/extensions/types";
+import { sendAgentMessageFromSession } from "../irc/messaging";
 import type { AgentSession } from "../session/agent-session";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 
@@ -146,7 +147,9 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			shutdown,
 			getContextUsage: () => session.getContextUsage(),
 			getSystemPrompt: () => session.systemPrompt,
+			sendAgentMessage: (to, message) => sendAgentMessageFromSession(session, to, message),
 			runEphemeralTurn: args => session.runEphemeralTurn(args),
+			setSubagentFastMode: (id, enabled) => session.setSubagentFastMode(id, enabled),
 			compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
 		},
 		// ExtensionCommandContextActions — commands invokable via prompt("/command")

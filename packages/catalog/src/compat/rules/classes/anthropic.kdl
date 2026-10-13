@@ -84,6 +84,31 @@ class "anthropic" {
 			thinking-prefix-binding #true
 		}
 	}
+	// Haiku 5.5 uses adaptive thinking with efforts (default effort medium) and,
+	// like Sonnet/Opus 5.5, rejects forced tool selection.
+	// https://platform.claude.com/docs/en/models/haiku-5-5/overview
+	// Adaptive thinking-mode and effort tiers arrive via the generic
+	// `revision ">=4.7 <45.1"` rules below, so this block sets only the axes
+	// those rules do not own; upper-bounded for the same reason as above.
+	family "haiku" {
+		revision ">=5.5 <6" {
+			supports-forced-tool-choice #false
+		}
+	}
+	// Haiku 5.5 bills prompts above 100K input tokens at the long-context rates.
+	// The 1h cache-write rate is not modelled: the cost schema has no 1h write field.
+	// https://platform.claude.com/docs/en/models/haiku-5-5/overview
+	on "anthropic" {
+		models "claude-haiku-5-5" {
+			long-context-cost {
+				input-threshold 100000
+				input 0.5
+				output 2.5
+				cache-read 0.05
+				cache-write 0.625
+			}
+		}
+	}
 	on "anthropic" "cloudflare-ai-gateway" "google-vertex" {
 		family "fable" {
 			revision ">=5" {
@@ -160,8 +185,13 @@ class "anthropic" {
 	}
 	on "amazon-bedrock" "anthropic" "cloudflare-ai-gateway" "github-copilot" "gitlab-duo" \
 		"google-vertex" "opencode-zen" "vercel-ai-gateway" {
+		// Upper-bounded on purpose like the Opus/Sonnet rules above: Haiku 5.5+
+		// uses adaptive thinking, so an open rule would tie with the generic
+		// `revision ">=4.7 <45.1"` adaptive rule and throw AmbiguousOverlapError.
 		family "haiku" {
-			thinking-mode "budget"
+			revision "<5" {
+				thinking-mode "budget"
+			}
 		}
 	}
 	on "amazon-bedrock" "anthropic" "cloudflare-ai-gateway" "github-copilot" "gitlab-duo" \

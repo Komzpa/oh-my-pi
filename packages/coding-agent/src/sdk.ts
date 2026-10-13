@@ -59,6 +59,7 @@ import {
 } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
 import type { EffectiveExtensionRoots } from "./capability/types";
+import { publishPeerSession } from "./collab/registry";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
 import { isAuthenticated, kNoAuth, ModelRegistry } from "./config/model-registry";
@@ -134,6 +135,7 @@ import {
 } from "./extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import type { HindsightSessionState } from "./hindsight/state";
+import { IrcBus } from "./irc/bus";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
 import { setSharedLspEnabled } from "./lsp/client";
@@ -150,6 +152,7 @@ import {
 } from "./mcp";
 import { parseMCPToolName } from "@oh-my-pi/pi-tui/tools/mcp";
 import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } from "./mcp/startup-events";
+import { reloadMCPServers } from "./mcp/reload";
 import { resolveMCPToolAlias } from "./mcp/tool-bridge";
 import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import { MEMORY_BACKEND_TOOL_NAMES } from "./memory-backend/tool-names";
@@ -281,7 +284,7 @@ import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { isFilesystemSourcePath } from "./tools/path-utils";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
 import { queueResolveHandler } from "./tools/resolve";
-import { USER_TODO_EDIT_CUSTOM_TYPE } from "./tools/todo";
+import { shouldPersistTodoFullSnapshotCheckpoint, USER_TODO_EDIT_CUSTOM_TYPE } from "./tools/todo";
 import { ttsTool } from "./tools/tts";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
@@ -620,6 +623,8 @@ export interface CreateAgentSessionOptions {
 	providerPromptCacheKeySource?: "explicit" | "fork";
 	/** Absolute wall-clock deadline in Unix epoch milliseconds. */
 	deadline?: number;
+	/** Additional provider-context transform applied after SDK request shaping. */
+	transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
 
 	/** Custom tools to register (in addition to built-in tools). Accepts both CustomTool and ToolDefinition. */
 	customTools?: (CustomTool | ToolDefinition)[];
@@ -797,6 +802,8 @@ export interface CreateAgentSessionOptions {
 
 	/** Whether UI is available (enables interactive tools like ask). Default: false */
 	hasUI?: boolean;
+	/** Publish this top-level session in the owner-private local peer-session registry. Default: false. */
+	publishPeerSession?: boolean;
 	/**
 	 * A human can answer synchronous prompts even without a terminal UI (e.g. an
 	 * ACP client rendering elicitation forms). Enables `ask` without enabling
@@ -852,6 +859,8 @@ export interface CreateAgentSessionResult {
 	mcpManager?: MCPManager;
 	/** Warning if session was restored with a different model than saved */
 	modelFallbackMessage?: string;
+	/** True only when deferred explicit model patterns resolved to no model after discovery. */
+	modelPatternResolutionFailed?: boolean;
 	/** LSP servers detected for startup; warmup may continue in the background */
 	lspServers?: LspStartupServerInfo[];
 	/** Start cache-aware online runtime model discovery after the first UI paint. */
@@ -1841,19 +1850,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	// evidence that the old process can no longer finish that turn. Preserve the
 	// partial transcript and append one terminal aborted assistant record before
 	// rebuilding runtime context. The helper is idempotent once that record exists.
-	let existingBranch = logger.time("getSessionBranch", () => sessionManager.getBranch());
-	const interruptedTurnAbort = createInterruptedTurnAbortMessage(existingBranch);
+	const interruptedTurnAbort = createInterruptedTurnAbortMessage(sessionManager.iterateBranch());
 	if (interruptedTurnAbort) {
-		for (const result of createInterruptedToolResults(existingBranch)) sessionManager.appendMessage(result);
+		for (const result of createInterruptedToolResults(sessionManager.iterateBranch()))
+			sessionManager.appendMessage(result);
 		sessionManager.appendMessage(interruptedTurnAbort);
-		existingBranch = logger.time("getRecoveredSessionBranch", () => sessionManager.getBranch());
 	}
 	let existingSession = logger.time("loadSessionContext", () =>
 		deobfuscateSessionContext(sessionManager.buildSessionContext(), obfuscator),
 	);
-	const hasExistingSession = existingBranch.length > 0;
-	const hasThinkingEntry = existingBranch.some(entry => entry.type === "thinking_level_change");
-	const hasServiceTierEntry = existingBranch.some(entry => entry.type === "service_tier_change");
+	let hasExistingSession = false;
+	for (const _entry of sessionManager.iterateBranch()) {
+		hasExistingSession = true;
+		break;
+	}
+	const hasThinkingEntry = [...sessionManager.iterateBranch("thinking_level_change")].length > 0;
+	const hasServiceTierEntry = [...sessionManager.iterateBranch("service_tier_change")].length > 0;
 
 	const deferredModelPatterns = Array.isArray(options.modelPattern)
 		? options.modelPattern.map(pattern => pattern.trim()).filter(Boolean)
@@ -1897,6 +1909,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	);
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
+	let modelPatternResolutionFailed: true | undefined;
 	let initialRetryFallback: InitialRetryFallbackState | undefined;
 	// Identify session model strings to restore in fallback order. We do an
 	// initial pass here so model-dependent setup (thinking-level resolution,
@@ -2169,6 +2182,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			get cwd() {
 				return sessionManager.getCwd();
 			},
+			submitUserReply:
+				options.hasUI === true
+					? text => {
+							void session?.sendUserMessage(text).catch(error => {
+								logger.warn("Ask reply delivery failed", { error: String(error) });
+							});
+						}
+					: undefined,
 			isToolActive: name => activeToolNames.has(name),
 			setActiveToolNames,
 			toolRegistry,
@@ -2212,6 +2233,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			get skills() {
 				return session?.skills ?? skills;
 			},
+			get messages() {
+				return agent?.state.messages ?? [];
+			},
 			refreshSkills: () => session.refreshSkills(),
 			rules: allRules,
 			activeRules: [...rulebookRules, ...alwaysApplyRules, ...ttsrManager.getRules()],
@@ -2236,6 +2260,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getHindsightSessionState: () => session?.getHindsightSessionState(),
 			getMnemopiSessionState: () => session?.getMnemopiSessionState(),
 			getAgentId: () => resolvedAgentId,
+			agentKind,
 			getToolByName: name => session?.getToolByName(name),
 			getToolForEvalBridge: name => session?.getToolForEvalBridge(name),
 			getEvalBridgeToolNames: () => session?.getEvalBridgeToolNames() ?? [],
@@ -2281,7 +2306,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getFileMutationVersion: path => fileMutationVersions.get(path) ?? 0,
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
-			persistTodoPhases: phases => sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
+			persistTodoPhases: (phases, edit) => {
+				if (edit) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
+				} else if (shouldPersistTodoFullSnapshotCheckpoint(sessionManager.getBranch())) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				}
+			},
 			getWorkPoolYieldItems: () => session?.getWorkPoolYieldItems() ?? [],
 			getLastAssistantText: () => session?.getLastAssistantText(),
 			getYieldReportText: toolCallId => resolveYieldReportText(session?.messages ?? [], toolCallId),
@@ -3039,6 +3070,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				break;
 			}
 			if (!model) {
+				modelPatternResolutionFailed = true;
 				const requested =
 					deferredModelPatterns.length === 1
 						? `"${deferredModelPatterns[0]}"`
@@ -3176,15 +3208,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// has selected its final model, use that model to terminate the
 		// interrupted turn before the live agent consumes the restored context.
 		if (model) {
-			const selectedModelAbort = createInterruptedTurnAbortMessage(existingBranch, {
+			const selectedModelAbort = createInterruptedTurnAbortMessage(sessionManager.iterateBranch(), {
 				api: model.api,
 				provider: model.provider,
 				model: model.id,
 			});
 			if (selectedModelAbort) {
-				for (const result of createInterruptedToolResults(existingBranch)) sessionManager.appendMessage(result);
+				for (const result of createInterruptedToolResults(sessionManager.iterateBranch()))
+					sessionManager.appendMessage(result);
 				sessionManager.appendMessage(selectedModelAbort);
-				existingBranch = logger.time("getRecoveredUserTailBranch", () => sessionManager.getBranch());
 				existingSession = logger.time("loadRecoveredUserTailContext", () =>
 					deobfuscateSessionContext(sessionManager.buildSessionContext(), obfuscator),
 				);
@@ -3605,7 +3637,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			emitEvent: event => cursorEventEmitter?.(event),
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
-			persistTodoPhases: phases => sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
+			persistTodoPhases: (phases, edit) => {
+				if (edit) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
+				} else if (shouldPersistTodoFullSnapshotCheckpoint(sessionManager.getBranch())) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				}
+			},
 			// `pi_grep` carries its own context width and match cap, which the
 			// shared grep instance fixed at construction cannot express. Gated on
 			// the grant: the factory builds a fresh tool and `executeTool` prefers
@@ -4111,11 +4149,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// Keep per-request volatility out of the system prompt: the date/cwd
 			// reminder rides on the first user turn so open-weight providers keep
 			// their tool-schema prefix cache (#7404).
-			return dateCwdReminder.transform(
+			const withDateReminder = dateCwdReminder.transform(
 				transformed,
 				formatLocalCalendarDate(),
 				normalizePromptPath(sessionManager.getCwd()),
 			);
+			return options.transformProviderContext
+				? options.transformProviderContext(withDateReminder, transformModel)
+				: withDateReminder;
 		};
 		const onPayload = async (payload: unknown, model?: Model, signal?: AbortSignal) => {
 			return await extensionRunner.emitBeforeProviderRequest(payload, model, signal);
@@ -4240,7 +4281,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// namespace/project discovery on the original repo's git remote. Re-read it
 			// per turn from the SessionManager.
 			cwdResolver: () => sessionManager.getCwd(),
-			convertToLlm: convertToLlmFinal,
+			convertToLlm: messages => convertToLlmFinal(session?.prepareToolHistoryForProvider(messages) ?? messages),
 			onPayload,
 			onResponse,
 			sessionId: providerSessionId,
@@ -4537,9 +4578,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					}
 				: undefined,
 			disconnectOwnedMcpManager: ownedMcpManager ? () => ownedMcpManager.disconnectAll() : undefined,
+			reloadOwnedMcpManager: ownedMcpManager
+				? async () => {
+						if (agentRegistry.list().some(ref => ref.session !== session && ref.session?.isStreaming))
+							throw new Error("MCP reload requires shared-manager workers to be idle");
+						return reloadMCPServers(session, ownedMcpManager, settings);
+					}
+				: undefined,
 			ttsrManager,
 			obfuscator,
 			agentId: resolvedAgentId,
+			agentRegistry,
 			agentKind,
 			providerSessionId: options.providerSessionId,
 			providerPromptCacheKeySource,
@@ -4857,6 +4906,24 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// process-global postmortem list.
 		let unsubscribeMcpNotifications: (() => void) | undefined;
 		let unregisterMcpPostmortem: (() => void) | undefined;
+		let closePeerPublication: (() => Promise<void>) | undefined;
+
+		if (agentKind === "main" && options.publishPeerSession === true && options.agentRegistry === undefined) {
+			try {
+				const publication = await publishPeerSession({
+					sessionId: () => sessionManager.getSessionId(),
+					cwd: () => sessionManager.getCwd(),
+					title: () => sessionManager.getSessionName() ?? null,
+					mainAgentId: resolvedAgentId,
+					registry: agentRegistry,
+					irc: IrcBus.global(),
+					isBusy: () => session.isStreaming,
+				});
+				closePeerPublication = () => publication.close();
+			} catch (error) {
+				logger.warn("Failed to publish peer session", { error: String(error) });
+			}
+		}
 
 		{
 			const originalDispose = session.dispose.bind(session);
@@ -4892,6 +4959,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					restoreProviderToggles?.();
 					unsubscribeMcpNotifications?.();
 					unregisterMcpPostmortem?.();
+					await closePeerPublication?.();
+					closePeerPublication = undefined;
 					for (const callback of disposeCallbacks) callback();
 					disposeCallbacks.clear();
 					// Drop refs so the process-global postmortem list doesn't retain
@@ -5044,11 +5113,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
 						transformed = await dropUnreadableContextImages(transformed, transformModel);
 						transformed = await blobBroker.decorateContext(transformed, transformModel);
-						return captureDateCwdReminder.transform(
+						const withDateReminder = captureDateCwdReminder.transform(
 							transformed,
 							formatLocalCalendarDate(),
 							normalizePromptPath(sessionManager.getCwd()),
 						);
+						return options.transformProviderContext
+							? options.transformProviderContext(withDateReminder, transformModel)
+							: withDateReminder;
 					},
 					temperature: agent.temperature,
 					topP: agent.topP,
@@ -5222,6 +5294,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			setToolUIContext,
 			mcpManager,
 			modelFallbackMessage,
+			modelPatternResolutionFailed,
 			lspServers,
 			startBackgroundModelDiscovery: startRuntimeDiscovery,
 			eventBus,

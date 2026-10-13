@@ -13,6 +13,7 @@ import { isVideoPath } from "@oh-my-pi/pi-tui/prompt/video";
 import { untilAborted } from "@oh-my-pi/pi-utils/abortable";
 import { TempDir } from "@oh-my-pi/pi-utils/temp";
 import { $which } from "@oh-my-pi/pi-utils/which";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 
 const VIDEO_MIME_BY_EXT: Record<string, string> = {
 	".mp4": "video/mp4",
@@ -118,7 +119,7 @@ async function framePassthroughFlag(): Promise<string[]> {
 	if (cachedFpsModeFlag) return cachedFpsModeFlag;
 	try {
 		const ffmpeg = requireMediaBinary("ffmpeg");
-		const child = Bun.spawn([ffmpeg, "-version"], { stdout: "pipe", stderr: "pipe" });
+		const child = spawnBackground([ffmpeg, "-version"], { stdout: "pipe", stderr: "pipe" });
 		const [stdout, ,] = await Promise.all([readStream(child.stdout), readStream(child.stderr), child.exited]);
 		const major = Number.parseInt(stdout.split("\n")[0]?.split("version")[1]?.trim().split(".")[0] ?? "", 10);
 		cachedFpsModeFlag = Number.isFinite(major) && major < 5 ? ["-vsync", "0"] : ["-fps_mode", "passthrough"];
@@ -173,7 +174,7 @@ function parseFrameRate(value: string | undefined): number | undefined {
 export async function probeVideo(absolutePath: string, signal?: AbortSignal): Promise<VideoMetadata> {
 	const ffprobe = requireMediaBinary("ffprobe");
 	if (signal?.aborted) throw new VideoError("Video operation aborted.");
-	const child = Bun.spawn(
+	const child = spawnBackground(
 		[
 			ffprobe,
 			"-v",
@@ -307,7 +308,7 @@ export interface VideoPng {
 export async function runFfmpeg(args: string[], signal?: AbortSignal): Promise<void> {
 	const ffmpeg = requireMediaBinary("ffmpeg");
 	if (signal?.aborted) throw new VideoError("Video operation aborted.");
-	const child = Bun.spawn([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", ...args], {
+	const child = spawnBackground([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", ...args], {
 		stdout: "pipe",
 		stderr: "pipe",
 	});

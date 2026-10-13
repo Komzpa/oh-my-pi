@@ -1259,7 +1259,7 @@ export async function createSessionManager(
 	// An explicit startup goal starts fresh even when implicit auto-resume is configured.
 	if (parsed.goal === undefined && cfgAutoResume.get(activeSettings)) {
 		const manager = await SessionManager.continueRecent(cwd, parsed.sessionDir);
-		if (manager.getEntries().length > 0) {
+		if (manager.getEntryCount() > 0) {
 			parsed.continue = true;
 		}
 		return manager;
@@ -2127,7 +2127,7 @@ export async function runRootCommand(
 		}
 
 		if (sessionManager && (parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || foreignSource)) {
-			const pendingToolWarning = describePendingToolCalls(sessionManager.getBranch());
+			const pendingToolWarning = describePendingToolCalls(sessionManager.iterateBranch());
 			if (pendingToolWarning) {
 				logger.warn("Resumed session has pending tool calls", {
 					sessionId: sessionManager.getSessionId(),
@@ -2167,6 +2167,7 @@ export async function runRootCommand(
 		sessionOptions.authStorage = authStorage;
 		sessionOptions.modelRegistry = modelRegistry;
 		sessionOptions.hasUI = isInteractive || mode === "rpc-ui";
+		sessionOptions.publishPeerSession = isInteractive || mode === "rpc-ui" || parsedArgs.print || autoPrint;
 		sessionOptions.settingsApproval = isInteractive;
 		sessionOptions.settings = settingsInstance;
 		sessionOptions.onPrewalkWarning = warning => {

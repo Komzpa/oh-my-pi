@@ -59,6 +59,63 @@ describe("task schema (single-spawn)", () => {
 			expect("schema" in parsed).toBe(false);
 		}
 	});
+
+	it("retains inline and artifact/source image references in every flat and per-item schema variant", () => {
+		const images = [
+			{
+				type: "image",
+				data: "AA==",
+				mimeType: "image/png",
+				sha256: "a".repeat(64),
+				rn: "R1",
+				index: 1,
+				artifactPath: "/session/image.png",
+			},
+			{ type: "image", data: "AA==", mimeType: "image/png" },
+			{
+				type: "image",
+				artifactPath: "/session/artifact.png",
+				mimeType: "image/png",
+				sha256: "b".repeat(64),
+				rn: "R2",
+				index: 2,
+			},
+			{
+				type: "image",
+				sourcePath: "/input/source.png",
+				mimeType: "image/png",
+				sha256: "c".repeat(64),
+				rn: "R3",
+				index: 3,
+			},
+		];
+		const item = { agent: "scout", task: "Audit R1", solutionSpace: "closed", images };
+		for (const isolationEnabled of [false, true]) {
+			for (const batchEnabled of [false, true]) {
+				for (const dynamic of [false, true]) {
+					const schema = getTaskSchema({
+						isolationEnabled,
+						batchEnabled,
+						defaultAgent: dynamic ? "scout" : "task",
+						effortEnabled: dynamic,
+						evalToolsEnabled: !dynamic,
+					});
+					const args = batchEnabled ? { context: "Audit images", tasks: [item] } : item;
+					const parsed = schema(args);
+					expect(parsed instanceof type.errors).toBe(false);
+					expect(parsed).toMatchObject(batchEnabled ? { tasks: [{ images }] } : { images });
+					const invalid = { ...item, images: [{ type: "image", data: 42, mimeType: "image/png" }] };
+					expect(
+						schema(batchEnabled ? { context: "Audit images", tasks: [invalid] } : invalid) instanceof type.errors,
+					).toBe(true);
+					const neither = { ...item, images: [{ type: "image", mimeType: "image/png" }] };
+					expect(
+						schema(batchEnabled ? { context: "Audit images", tasks: [neither] } : neither) instanceof type.errors,
+					).toBe(true);
+				}
+			}
+		}
+	});
 });
 
 describe("task spawn validation", () => {
