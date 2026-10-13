@@ -56,7 +56,7 @@ export interface RequirementVerdict {
 	artifact: string;
 	workerId: string;
 	auditor?: "qa-auditor";
-	/** Receipt echo of the immutable ask; a pass is stale when it differs from `rawText`. */
+	/** Canonical source bound by the authenticated audit snapshot, not the auditor's prose echo. */
 	rawWords?: string;
 	/** Row receipt time and the saved todo change it reviewed (ties within one millisecond stay ordered). */
 	receivedAt?: string;
@@ -1039,7 +1039,7 @@ function requirementNumericBoundSatisfied(bound: RequirementNumericBound, measur
 	}
 }
 
-/** Accept one complete Markdown table or structured JSON receipt for this worker's requirements. */
+/** Parse one complete receipt; supplied source words are authoritative after assignment authentication. */
 export function parseRequirementReceipt(
 	output: string,
 	expectedIds: readonly string[],
@@ -1095,6 +1095,15 @@ export function parseRequirementReceipt(
 			const cells: string[] = [];
 			for (const aliases of fields) {
 				const keys = aliases.filter(key => Object.hasOwn(row, key));
+				if (
+					keys.length === 0 &&
+					aliases[0] === "raw_words" &&
+					typeof row.id === "string" &&
+					rawWordsById?.has(row.id)
+				) {
+					cells.push(rawWordsById.get(row.id)!);
+					continue;
+				}
 				if (keys.length !== 1 || typeof row[keys[0]!] !== "string") return null;
 				cells.push((row[keys[0]!] as string).trim());
 			}
@@ -1195,7 +1204,7 @@ export function parseRequirementReceipt(
 		if (
 			!/^R[1-9]\d*$/.test(id) ||
 			!expected.has(id) ||
-			!rawWords ||
+			(!rawWords && !rawWordsById?.has(id)) ||
 			!Object.hasOwn(VERDICT_STATUSES, status) ||
 			!evidence ||
 			!artifact
@@ -1238,7 +1247,7 @@ export function parseRequirementReceipt(
 		}
 		rows.push({
 			id,
-			rawWords,
+			rawWords: rawWordsById?.get(id) ?? rawWords,
 			status: finalStatus as RequirementVerdictStatus,
 			evidence: finalEvidence,
 			artifact,

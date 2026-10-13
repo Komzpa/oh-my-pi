@@ -11,6 +11,7 @@ Shared edits need one integration owner{{#if ircEnabled}}; siblings coordinate v
 
 # Inputs
 `name`: CamelCase ≤32, auto-generated if omitted; address agent by name. `outputSchema` overrides agent/session schemas.
+For requirement audits, `name` MUST exactly match that TODO row's `schedule.owner`; an omitted or unmatched name receives no requirement assignment. Scope NEVER comes from IDs or row names quoted in task prose or shared context.
 `solutionSpace`: describe how open-ended the child's problem is: whether the fix or design is given, or which causes or designs remain open. Volume of work does not widen it; NEVER mention sibling agents or coordination. (`one fix: rename, names given`; `one fix: slice end in paginate`; `single-flight cache load; races easy to miss`; `several retry API shapes; error classes to choose`; `deadlock cause open, no repro`)
 {{#if evalToolsEnabled}}`tools`: eval-defined, run in your kernel.
 {{/if}}{{#if effortEnabled}}`effort`: `"lo"`|`"med"`|`"hi"` by how open-ended the problem is.

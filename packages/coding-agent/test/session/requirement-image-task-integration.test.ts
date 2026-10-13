@@ -135,13 +135,22 @@ async function dispatch(
 	git(cwd, "commit", "-m", "audited artifact");
 	const head = git(cwd, "rev-parse", "HEAD");
 	const raw = image ? "[Image #1, 4x4] do not do this" : "Do not do this";
+	const assignedRows = Array.from({ length: auditorCount }, (_, index) => (index === 0 ? ROW : `${ROW} ${index + 1}`));
 	const table = `| id | raw words | verdict | evidence | artifact identity |\n|---|---|---|---|---|\n| R1 | ${raw} | pass | mock audit | ${ROW} @ ${head} |`;
 	const child = createMockModel({
 		id: "pixel-auditor",
-		handler: context =>
-			(context.tools ?? []).some(tool => tool.name === "yield")
-				? { content: [{ type: "toolCall", name: "yield", arguments: { type: "result", data: { report: table } } }] }
-				: { content: ["Audit pixels"] },
+		handler: context => {
+			const assignedRow =
+				assignedRows.find(row =>
+					context.messages.some(
+						message => message.role === "user" && text(message).includes(`row ${JSON.stringify(row)} @`),
+					),
+				) ?? ROW;
+			const report = table.replace(`${ROW} @`, `${assignedRow} @`);
+			return (context.tools ?? []).some(tool => tool.name === "yield")
+				? { content: [{ type: "toolCall", name: "yield", arguments: { type: "result", data: { report } } }] }
+				: { content: ["Audit pixels"] };
+		},
 	});
 	child.input.push("image");
 	const item = {
@@ -162,7 +171,7 @@ async function dispatch(
 					{
 						type: "toolCall",
 						name: "todo",
-						arguments: { op: "classify", id: "R1", classification: "linked", rows: [ROW] },
+						arguments: { op: "classify", id: "R1", classification: "linked", rows: assignedRows },
 					},
 				],
 			},
@@ -193,7 +202,14 @@ async function dispatch(
 	const manager = SessionManager.create(cwd, path.join(root, "sessions"));
 	manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
 		phases: [
-			{ name: "Work", tasks: [{ content: ROW, status: "pending", schedule: { owner: "main", resources: [cwd] } }] },
+			{
+				name: "Work",
+				tasks: assignedRows.map((content, index) => ({
+					content,
+					status: "pending",
+					schedule: { owner: batch ? items[index]!.name : item.name, resources: [cwd] },
+				})),
+			},
 		],
 	});
 	try {
@@ -425,7 +441,11 @@ describe("requirement pixels through the real task session path", () => {
 				onSettledAssistantMessage: () => {},
 				setPublicationGate: () => {},
 			});
-			await runtime.prepareAuditorTaskCall("task", "repeat", { agent: "qa-auditor", task: `Audit R1 for ${ROW}` });
+			await runtime.prepareAuditorTaskCall("task", "repeat", {
+				name: "main",
+				agent: "qa-auditor",
+				task: `Audit R1 for ${ROW}`,
+			});
 			expect((await fs.stat(artifactPath)).mtimeMs).toBe(before.mtimeMs);
 		}, 30_000);
 	}

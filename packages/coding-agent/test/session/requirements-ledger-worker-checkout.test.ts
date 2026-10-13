@@ -101,7 +101,7 @@ async function auditMainRow(options: { agent?: string; fail?: boolean; moveHeadA
 				{ ...createRequirementCandidates([], [raw], AT)[0]!, id: "R7", classification: "linked", rows: [row] },
 			]);
 			const agent = options.agent ?? "qa-auditor";
-			await runtime.prepareAuditorTaskCall("task", worker, { agent, task: "Audit R7 now" });
+			await runtime.prepareAuditorTaskCall("task", worker, { name: worker, agent, task: "Audit R7 now" });
 			const outputLines = [
 				"| id | raw words | verdict | evidence | artifact identity |",
 				"|---|---|---|---|---|",
@@ -332,7 +332,11 @@ describe("non-isolated worker checkout binding", () => {
 				getSessionSpawns: () => "*",
 				sessionManager: manager,
 			} as unknown as ToolSession);
-			await runtime.prepareAuditorTaskCall("task", worker, { agent: "qa-auditor", task: "Audit R7 now" });
+			await runtime.prepareAuditorTaskCall("task", worker, {
+				name: worker,
+				agent: "qa-auditor",
+				task: "Audit R7 now",
+			});
 			const taskResult = await taskTool.execute(worker, {
 				agent: "qa-auditor",
 				task: "Audit R7 now",

@@ -189,7 +189,7 @@ export class RequirementsLedgerRuntime {
 		};
 	}
 
-	/** Adds the immutable audit inputs to qa-auditor tasks that cite linked Rn IDs. */
+	/** Audit scope comes only from named workers' structured TODO ownership, never task prose or quoted IDs. */
 	async prepareAuditorTaskCall(
 		toolName: string,
 		toolCallId: string,
@@ -203,7 +203,6 @@ export class RequirementsLedgerRuntime {
 		const branch = this.#host.sessionManager.getBranch();
 		const requirements = getLatestRequirements(branch);
 		const phases = getLatestTodoPhasesFromEntries(branch);
-		const sharedContext = typeof input.context === "string" ? input.context : "";
 		const multiple = Array.isArray(input.tasks);
 		const items = multiple ? (input.tasks as unknown[]) : [input];
 		const revised = [...items];
@@ -211,20 +210,26 @@ export class RequirementsLedgerRuntime {
 		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
 		let imagesChanged = false;
 
+		const scopes = items.map(item => {
+			if (!isRecord(item) || item.agent !== "qa-auditor" || typeof item.name !== "string") return [];
+			return phases
+				.flatMap(phase => phase.tasks)
+				.flatMap(task => {
+					const schedule = "schedule" in task && isRecord(task.schedule) ? task.schedule : undefined;
+					return schedule?.owner === item.name ? [task.content] : [];
+				});
+		});
 		const hasAuditorTask = items.some(item => isRecord(item) && item.agent === "qa-auditor");
 		const resolvedAuditor = hasAuditorTask
 			? getAgent((await discoverAgents(this.#host.cwd())).agents, "qa-auditor")
 			: undefined;
 		if (hasAuditorTask && !(await isBundledQaAuditor(resolvedAuditor))) {
-			const citedIds = new Set(
-				items.flatMap(item =>
-					isRecord(item) && item.agent === "qa-auditor" && typeof item.task === "string"
-						? (`${item.task}\n${sharedContext}`.match(/\bR[1-9]\d*\b/g) ?? [])
-						: [],
-				),
-			);
+			const assignedRows = new Set(scopes.flat());
 			const ids = requirements
-				.filter(requirement => requirement.classification === "linked" && citedIds.has(requirement.id))
+				.filter(
+					requirement =>
+						requirement.classification === "linked" && requirement.rows.some(row => assignedRows.has(row)),
+				)
 				.map(requirement => requirement.id);
 			if (ids.length > 0)
 				this.#auditorRefusals.set(toolCallId, { ids, source: resolvedAuditor?.source ?? "unavailable" });
@@ -235,17 +240,7 @@ export class RequirementsLedgerRuntime {
 		for (let index = 0; index < items.length; index++) {
 			const item = items[index];
 			if (!isRecord(item) || item.agent !== "qa-auditor" || typeof item.task !== "string") continue;
-			const auditTask = item.task;
-			const citedIds = new Set(`${auditTask}\n${sharedContext}`.match(/\bR[1-9]\d*\b/g) ?? []);
-			const citedLinked = requirements.filter(
-				requirement => requirement.classification === "linked" && citedIds.has(requirement.id),
-			);
-			// A cited row narrows the audit to the Rn that link it; an Rn whose rows are all uncited stays out.
-			const knownRows = [...new Set(citedLinked.flatMap(requirement => requirement.rows))];
-			const quotedRows = new Set(knownRows.filter(row => auditTask.includes(JSON.stringify(row))));
-			// An explicit quoted label takes precedence over raw substring matches in sibling labels.
-			const citedRowNames = quotedRows.size ? quotedRows : new Set(knownRows.filter(row => auditTask.includes(row)));
-			const assignedRows = citedRowNames.size ? [...citedRowNames] : knownRows;
+			const assignedRows = scopes[index]!;
 			const ids = requirements
 				.filter(
 					requirement =>
@@ -666,8 +661,8 @@ export class RequirementsLedgerRuntime {
 				...phases.flatMap(phase => phase.tasks.map(task => task.content)),
 			]);
 			const scopedRows = requirement.rows.filter(row => !assignment.rows || assignment.rows.includes(row));
-			// Assignment authentication above makes this an auditor receipt. Check only
-			// its immutable source echo here; retain its real fail/unverifiable status below.
+			// The authenticated assignment snapshot supplies canonical source words;
+			// the auditor's optional prose echo is not requirement identity.
 			const sourceIssue = getRequirementVerdictSourceIssue(requirement, scopedRows[0] ?? requirement.rows[0]!, {
 				status: "pass",
 				evidence: receipt.evidence,

@@ -61,7 +61,7 @@ function setup(extra: "unlinked" | "different row" | "same row" = "unlinked") {
 					content,
 					status: "pending",
 					resources: [file],
-					schedule: { owner: "main", resources: [file] },
+					schedule: { owner: content === ROW ? "main" : "OtherAudit", resources: [file] },
 				})),
 			},
 		],
@@ -93,6 +93,7 @@ function setup(extra: "unlinked" | "different row" | "same row" = "unlinked") {
 		async receive(output: string | ((auditInput: string) => string)) {
 			const callId = `priority-${++call}`;
 			const prepared = await runtime.prepareAuditorTaskCall("task", callId, {
+				name: "main",
 				agent: "qa-auditor",
 				task: `Audit R42 for ${JSON.stringify(ROW)}`,
 				context: "",
@@ -231,7 +232,6 @@ describe("receipt priority #924: real runtime intake", () => {
 	for (const defect of [
 		"missing",
 		"duplicate",
-		"raw source",
 		"wrong row",
 		"changed identity",
 		"malformed verdict",
@@ -245,7 +245,6 @@ describe("receipt priority #924: real runtime intake", () => {
 			let output = receipt(artifact);
 			if (defect === "missing") output = output.replace(/\n\| R42 \|[^\n]*/, "");
 			if (defect === "duplicate") output += `\n${output.split("\n")[2]}`;
-			if (defect === "raw source") output = receipt(artifact, "pass", "", `${RAW42} changed`);
 			if (defect === "wrong row") output = receipt(artifact, "pass", "", RAW42, OTHER_ROW);
 			if (defect === "changed identity") writeFileSync(fx.file, "changed artifact\n");
 			if (defect === "malformed verdict") output = receipt(artifact, "approved");

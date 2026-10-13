@@ -85,7 +85,7 @@ async function multiRowFixture(quotedRows = false) {
 				tasks: rows.map(row => ({
 					content: row.content,
 					status: "pending",
-					schedule: { owner: "main", resources: [row.artifactPath] },
+					schedule: { owner: row === rows[0] ? "main" : "OtherAudit", resources: [row.artifactPath] },
 				})),
 			},
 		],
@@ -116,6 +116,7 @@ describe("multi-row audit retry identity", () => {
 		try {
 			const row = rows[0]!;
 			await runtime.prepareAuditorTaskCall("task", "suffix-row-audit", {
+				name: "main",
 				agent: "qa-auditor",
 				task: `Audit R24 for ${row.content} @ sha256=${row.sha256}`,
 			});
@@ -157,6 +158,7 @@ describe("multi-row audit retry identity", () => {
 			const row = rows[0]!;
 			const other = rows[1]!;
 			await runtime.prepareAuditorTaskCall("task", "exact-row-audit", {
+				name: "main",
 				agent: "qa-auditor",
 				task: `Audit R24 for ${row.content} @ sha256=${row.sha256}`,
 			});
@@ -171,7 +173,7 @@ describe("multi-row audit retry identity", () => {
 								agent: "qa-auditor",
 								id: "exact-row-qa",
 								exitCode: 0,
-								output: `| id | verdict | evidence | artifact |\n| --- | --- | --- | --- |\n| R24 | pass | read ${row.artifactPath} | ${row.content} @ sha256=${row.sha256} |`,
+								output: `| id | verdict | evidence | artifact |\n| --- | --- | --- | --- |\n| R24 | pass | read ${row.artifactPath} | row ${JSON.stringify(row.content)} @ file:${row.artifactPath}@sha256=${row.sha256} |`,
 							},
 						],
 					},
@@ -214,10 +216,16 @@ describe("multi-row audit retry identity", () => {
 				},
 			]);
 			const artifact = formatRequirementGateArtifact(
-				{ head: null, dirty: false, sha256: row.sha256, cwd: row.artifactPath },
+				{
+					head: null,
+					dirty: false,
+					identities: [{ kind: "file", path: row.artifactPath, sha256: row.sha256 }],
+					cwd: row.artifactPath,
+				},
 				row.content,
 			);
 			const prepared = await runtime.prepareAuditorTaskCall("task", "quoted-row-audit", {
+				name: "main",
 				agent: "qa-auditor",
 				task: `Audit exact requirement IDs R24, R25 for TODO ${artifact}`,
 			});
@@ -280,7 +288,6 @@ describe("multi-row audit retry identity", () => {
 				expect(rowCalls[0]).toMatch(/\bR24\b/);
 				expect(rowCalls[0]).not.toMatch(/\bR24[a-z]\b/i);
 				expect(rowCalls[0]).toContain(`sha256=${row.sha256}`);
-				expect(rowCalls[0]).toContain(`row ${JSON.stringify(row.content)} @ sha256=${row.sha256}`);
 				for (const other of rows.filter(candidate => candidate !== row)) {
 					expect(rowCalls[0]).not.toContain(other.content);
 					expect(rowCalls[0]).not.toContain(other.sha256);

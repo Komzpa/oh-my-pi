@@ -9,6 +9,7 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { RequirementsLedgerRuntime } from "@oh-my-pi/pi-coding-agent/session/requirements-ledger-runtime";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
+	appendRequirementsSnapshot,
 	createRequirementCandidates,
 	getLatestRequirements,
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
@@ -211,7 +212,16 @@ async function harness(
 		manager,
 		classifyResult,
 		async prepare(row) {
+			const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
+			for (const task of phases.flatMap(phase => phase.tasks)) {
+				const schedule =
+					"schedule" in task && typeof task.schedule === "object" && task.schedule !== null ? task.schedule : {};
+				const owner = mappedCwd ? "main" : "AuditTyped-1";
+				Object.assign(task, { schedule: { ...schedule, owner: task.content === row ? owner : "OtherAudit" } });
+			}
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 			return runtime.prepareAuditorTaskCall("task", AUDIT_CALL, {
+				name: mappedCwd ? "main" : "AuditTyped-1",
 				agent: "qa-auditor",
 				task: `Audit R1 for ${row}`,
 				context: "",
@@ -284,7 +294,7 @@ describe("typed identity: accepted receipts", () => {
 		expect(statusOf(fx, ROW)).toBe("completed");
 	});
 
-	it("rejects altered raw words before probing the declared deployment", async () => {
+	it("rejects a changed assigned source snapshot before probing the declared deployment", async () => {
 		let hits = 0;
 		const server = Bun.serve({
 			hostname: "127.0.0.1",
@@ -298,9 +308,14 @@ describe("typed identity: accepted receipts", () => {
 		const deployment = `deploy:http://127.0.0.1:${server.port}/v1/version@${SHA_A} field=commit`;
 		const fx = await harness([ROW], { deployment });
 		await fx.prepare(ROW);
+		const requirements = getLatestRequirements(fx.manager.getBranch());
+		requirements[0]!.rawText += " changed";
+		appendRequirementsSnapshot(
+			{ appendEntry: (type, data) => fx.manager.appendCustomEntry(type, data) },
+			requirements,
+		);
 		const before = hits;
-		const refusal = await fx.receive(artifactCell(ROW, [deployment]), `${RAW} changed`);
-		expect(textOf(refusal)).toContain("raw words differ");
+		await fx.receive(artifactCell(ROW, [deployment]));
 		expect(hits).toBe(before);
 		expect(verdictOf(fx, ROW)).toBeUndefined();
 		await fx.prepare(ROW);
@@ -434,7 +449,6 @@ describe("typed identity: stale receipts block done with expected and observed v
 		const done = await fx.done("n4-bare-sha", ROW);
 		expect(done.isError).toBe(true);
 		const text = `${textOf(refusal)}\n${textOf(done)}`;
-		expect(text).toContain("receipt has no typed identity");
 		expect(text).toContain(artifactCell(ROW, [fileId(skill)]));
 		expect(text).not.toContain("saved TODO change");
 		expect(statusOf(fx, ROW)).toBe("pending");

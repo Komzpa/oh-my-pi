@@ -135,7 +135,7 @@ function cloneTask(task: TodoItem): TodoItem {
 	return structuredClone(task);
 }
 
-function clonePhases(phases: TodoPhase[]): TodoPhase[] {
+export function cloneTodoPhases(phases: TodoPhase[]): TodoPhase[] {
 	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
 }
 
@@ -880,7 +880,7 @@ export function createTodoHudStateData(
 export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPhase[] {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const phases = canonicalTodoPhases(entries[i]);
-		if (phases) return clonePhases(phases);
+		if (phases) return cloneTodoPhases(phases);
 	}
 	return [];
 }
@@ -920,7 +920,7 @@ export function observeLatestTodoPhases(
 		onSnapshot(phases);
 		latest = phases;
 	}
-	return latest ? clonePhases(latest) : [];
+	return latest ? cloneTodoPhases(latest) : [];
 }
 
 function resolveTaskOrError(
@@ -1201,7 +1201,7 @@ export function applyOpsToPhases(
 	const errors: string[] = [];
 	// Standalone use has no session checkout: never inherit a stale slot value.
 	activeArtifactCwd = undefined;
-	let next = clonePhases(currentPhases);
+	let next = cloneTodoPhases(currentPhases);
 	for (const op of ops) {
 		next = applyEntry(next, op, errors);
 	}
@@ -1449,7 +1449,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		// top of execute() (untouched by #92); row-creating ops reach
 		// applyParams synchronously, and todo concurrency is exclusive.
 		activeArtifactCwd = this.session.cwd;
-		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
+		const previousPhases = cloneTodoPhases(this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
 		const rawOp: unknown = params.op;
 		if (rawOp === "classify") return this.#classify(params, previousPhases, storage);
@@ -1529,7 +1529,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 						text: "Blocked: TODO state changed during the artifact check. Retry against the current plan; no changes were applied.",
 					},
 				],
-				details: { op: entry.op, phases: clonePhases(currentPhases), storage },
+				details: { op: entry.op, phases: cloneTodoPhases(currentPhases), storage },
 				isError: true,
 			};
 		}
@@ -1538,7 +1538,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
-			: applyParams(clonePhases(previousPhases), entry);
+			: applyParams(cloneTodoPhases(previousPhases), entry);
 		// A batch with any error is discarded wholesale: persisting a
 		// half-applied batch makes the natural retry hit "already exists" for
 		// the ops that did land. State and rendered summary stay at previous.
@@ -1769,7 +1769,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		if (resources || deployment) {
 			// Omitted bindings remain untouched; an explicit cutover stores exactly
 			// one primary artifact descriptor on each selected row.
-			const phases = clonePhases(previousPhases);
+			const phases = cloneTodoPhases(previousPhases);
 			for (const task of phases.flatMap(phase => phase.tasks)) {
 				if (!rows?.includes(task.content)) continue;
 				const schedule = "schedule" in task && isRecord(task.schedule) ? task.schedule : {};

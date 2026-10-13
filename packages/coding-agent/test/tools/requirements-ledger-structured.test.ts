@@ -92,18 +92,9 @@ describe("structured qa-auditor requirement receipts", () => {
 		expect(parseRequirementReceipt(JSON.stringify(fixture), [...ids, "R11"])).toBeNull();
 	});
 
-	it("rejects explicitly empty JSON raw words even with the assigned source map", () => {
+	it("binds a missing Markdown raw-words column to the assigned source map", () => {
 		const row = fixture.requirements[0]!;
 		const rawWordsById = new Map([[row.id, row.raw_words]]);
-		expect(parseRequirementReceipt(JSON.stringify([{ ...row, raw_words: " " }]), [row.id], rawWordsById)).toBeNull();
-		expect(parseRequirementReceipt(JSON.stringify([row]), [row.id], rawWordsById)?.[0]?.rawWords).toBe(row.raw_words);
-	});
-
-	it("rejects an empty Markdown raw-words cell but permits a missing column with the assigned source map", () => {
-		const row = fixture.requirements[0]!;
-		const rawWordsById = new Map([[row.id, row.raw_words]]);
-		const empty = `| id | raw words | verdict | evidence | artifact |\n| --- | --- | --- | --- | --- |\n| ${row.id} | | ${row.verdict} | inspected artifact | ${row.artifact_identity} |`;
-		expect(parseRequirementReceipt(empty, [row.id], rawWordsById)).toBeNull();
 		const missingColumn = `| id | verdict | evidence | artifact |\n| --- | --- | --- | --- |\n| ${row.id} | ${row.verdict} | inspected artifact | ${row.artifact_identity} |`;
 		expect(parseRequirementReceipt(missingColumn, [row.id], rawWordsById)).toEqual([
 			{

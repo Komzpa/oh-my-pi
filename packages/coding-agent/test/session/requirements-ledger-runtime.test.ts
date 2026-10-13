@@ -24,6 +24,7 @@ import {
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 	evaluateRequirementDoneGate,
 	getPersistedRequirementAuditRejections,
+	getPersistedRequirementAuditorAssignments,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import { formatRequirementIdentity } from "@oh-my-pi/pi-coding-agent/utils/requirement-artifact";
 import {
@@ -110,6 +111,7 @@ async function auditFixtureArtifact(
 	evidence: string,
 ): Promise<void> {
 	await runtime.prepareAuditorTaskCall("task", workerId, {
+		name: "main",
 		agent: "qa-auditor",
 		task: "Audit R1 please",
 		context: "",
@@ -130,6 +132,183 @@ async function auditFixtureArtifact(
 }
 
 describe("requirements ledger auditor binding", () => {
+	it("uses only structured row ownership when a packet quotes unrelated R6 examples", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
+			Object.assign(phases[0]!.tasks[0]!, { schedule: { owner: "FindingXAudit", resources: [cwd] } });
+			phases[0]!.tasks.push({ content: "Unrelated manifest", status: "pending" });
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			appendRequirementsSnapshot(
+				{ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) },
+				[
+					...getLatestRequirements(manager.getBranch()),
+					{
+						...createRequirementCandidates([], ["unrelated manifest requirement"], AT)[0]!,
+						id: "R6",
+						classification: "linked",
+						rows: ["Unrelated manifest"],
+					},
+				],
+			);
+			const input = {
+				context: 'Quoted syntax: `R6 row "Unrelated manifest" @ file:/tmp/example@sha256=…`',
+				tasks: [
+					{
+						name: "FindingXAudit",
+						agent: "qa-auditor",
+						task: "Verify finding X. An example mentions R6; do not audit it.",
+					},
+				],
+			};
+			const revised = await runtime.prepareAuditorTaskCall("task", "grievance937", input);
+			expect(revised).toBeDefined();
+			await runtime.afterToolCall({
+				toolCall: { id: "grievance937", name: "task" },
+				result: {
+					content: [],
+					details: {
+						results: [
+							{
+								index: 0,
+								agent: "qa-auditor",
+								id: "FindingXAudit",
+								exitCode: 0,
+								output: receiptTable(gitIdentity(cwd, git(cwd, "rev-parse", "HEAD"))),
+							},
+						],
+					},
+				},
+				isError: false,
+			} as never);
+			const requirements = getLatestRequirements(manager.getBranch());
+			expect(
+				requirements.find(requirement => requirement.id === "R1")?.rowVerdicts?.["Build artifact"]?.status,
+			).toBe("pass");
+			expect(requirements.find(requirement => requirement.id === "R6")).toEqual({
+				...createRequirementCandidates([], ["unrelated manifest requirement"], AT)[0]!,
+				id: "R6",
+				classification: "linked",
+				rows: ["Unrelated manifest"],
+			});
+			expect(
+				await runtime.prepareAuditorTaskCall("task", "unassigned937", { agent: "qa-auditor", task: "Audit R6" }),
+			).toBeUndefined();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+	for (const scenario of ["image-prefix-omitted", "foreign-id", "foreign-artifact", "changed-source"] as const) {
+		it(`binds free-text R23 audit by structured ownership and source snapshot: ${scenario}`, async () => {
+			const { cwd, manager, runtime } = fixture();
+			const row = "Merge open PRs #44 #45 #57 into PR #60 branch";
+			const words = "Merge all four open PR branches without dropping their commits";
+			const raw = `[Image #1, 1568x622] ${words}`;
+			let phases: TodoPhase[] = [
+				{
+					name: "Work",
+					tasks: [Object.assign({ content: row, status: "pending" as const }, { schedule: { resources: [cwd] } })],
+				},
+			];
+			const appender = { appendEntry: (type: string, data?: unknown) => manager.appendCustomEntry(type, data) };
+			const tool = new TodoTool({
+				cwd,
+				hasUI: false,
+				settings: Settings.isolated(),
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				sessionManager: manager,
+				getTodoPhases: () => phases,
+				setTodoPhases: next => {
+					phases = next;
+				},
+			} as ToolSession);
+			try {
+				manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				appendRequirementsSnapshot(appender, [
+					{ ...createRequirementCandidates([], [raw], AT)[0]!, id: "R23", classification: "linked", rows: [row] },
+				]);
+				// Scheduling is owned by PR #92; replay its durable result through #41's canonical reader.
+				Object.assign(phases[0]!.tasks[0]!, { schedule: { owner: "AuditR23MergeRow", resources: [cwd] } });
+				manager.appendMessage({
+					role: "toolResult",
+					toolCallId: "schedule-r23",
+					toolName: "todo",
+					content: [],
+					details: { op: "schedule", phases },
+					isError: false,
+					timestamp: Date.now(),
+				});
+				const head = git(cwd, "rev-parse", "HEAD");
+				expect(
+					await runtime.prepareAuditorTaskCall("task", "unmatched-r23", {
+						name: "OtherAudit",
+						agent: "qa-auditor",
+						task: `Audit R23 for ${row}`,
+					}),
+				).toBeUndefined();
+				await runtime.afterToolCall({
+					toolCall: { id: "unmatched-r23", name: "task" },
+					result: { content: [], details: { progress: [{ index: 0, agent: "qa-auditor", id: "OtherAudit" }] } },
+					isError: false,
+				} as never);
+				await runtime.prepareAuditorTaskCall("task", "r23", {
+					name: "AuditR23MergeRow",
+					agent: "qa-auditor",
+					task: "Check the merge result and run the merge oracle.",
+				});
+				await runtime.afterToolCall({
+					toolCall: { id: "r23", name: "task" },
+					result: {
+						content: [],
+						details: { progress: [{ index: 0, agent: "qa-auditor", id: "AuditR23MergeRow" }] },
+					},
+					isError: false,
+				} as never);
+				const assignments = getPersistedRequirementAuditorAssignments(
+					manager.getBranch(),
+					manager.getSessionId(),
+					getLatestRequirements(manager.getBranch()),
+				);
+				expect(assignments.get("AuditR23MergeRow")?.rows).toEqual([row]);
+				expect(assignments.get("AuditR23MergeRow")?.ids).toEqual(["R23"]);
+				expect(assignments.has("OtherAudit")).toBe(false);
+				if (scenario === "changed-source") {
+					const requirements = getLatestRequirements(manager.getBranch());
+					requirements[0]!.rawText += " and verify the deployed version";
+					appendRequirementsSnapshot(appender, requirements);
+				}
+				const id = scenario === "foreign-id" ? "R24" : "R23";
+				const artifact = gitIdentity(cwd, scenario === "foreign-artifact" ? "f".repeat(40) : head);
+				const table = `| id | raw words | verdict | evidence | artifact identity |\n|---|---|---|---|---|\n| ${id} | ${words} | pass | exercised the merge oracle | row ${JSON.stringify(row)} @ ${artifact} |`;
+				await runtime.afterToolCall({
+					toolCall: { id: "wait-r23", name: "wait" },
+					result: {
+						content: [
+							{
+								type: "text",
+								text: `<task-result id="AuditR23MergeRow" agent="qa-auditor" status="completed"><output>${table}</output></task-result>`,
+							},
+						],
+					},
+					isError: false,
+				} as never);
+				const done = await tool.execute("done-r23", { op: "done", task: row });
+				const verdict = getLatestRequirements(manager.getBranch())[0]!.rowVerdicts?.[row];
+				if (scenario === "image-prefix-omitted") {
+					expect(done.isError).not.toBe(true);
+					expect(phases[0]!.tasks[0]!.status).toBe("completed");
+					expect(verdict?.rawWords).toBe(raw);
+				} else {
+					expect(done.isError).toBe(true);
+					expect(phases[0]!.tasks[0]!.status).toBe("pending");
+					expect(verdict).toBeUndefined();
+				}
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	}
 	for (const encoded of [false, true]) {
 		it(`accepts R42 four-column string yield${encoded ? " from an old JSON-quoting producer" : " verbatim"}`, async () => {
 			const { cwd, manager, runtime } = fixture();
@@ -153,6 +332,7 @@ describe("requirements ledger auditor binding", () => {
 					})),
 				);
 				await runtime.prepareAuditorTaskCall("task", "string-receipt", {
+					name: "main",
 					agent: "qa-auditor",
 					task: `Audit R42 for ${row}`,
 					context: "",
@@ -215,6 +395,7 @@ describe("requirements ledger auditor binding", () => {
 			try {
 				const head = git(cwd, "rev-parse", "HEAD");
 				await runtime.prepareAuditorTaskCall("task", "bad-string", {
+					name: "main",
 					agent: "qa-auditor",
 					task: "Audit R1",
 					context: "",
@@ -274,6 +455,7 @@ describe("requirements ledger auditor binding", () => {
 		try {
 			const head = git(cwd, "rev-parse", "HEAD");
 			const revised = await runtime.prepareAuditorTaskCall("task", "call-1", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Please audit R1 now",
 				context: "",
@@ -313,6 +495,7 @@ describe("requirements ledger auditor binding", () => {
 		try {
 			const head = git(cwd, "rev-parse", "HEAD");
 			await runtime.prepareAuditorTaskCall("task", "call-2", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R1 please",
 				context: "",
@@ -348,6 +531,7 @@ describe("requirements ledger auditor binding", () => {
 		try {
 			const head = git(cwd, "rev-parse", "HEAD");
 			await runtime.prepareAuditorTaskCall("task", "call-3", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R1 in background",
 				context: "",
@@ -378,6 +562,7 @@ describe("requirements ledger auditor binding", () => {
 		const { cwd, manager, runtime, notices, gate } = fixture();
 		try {
 			await runtime.prepareAuditorTaskCall("task", "call-invalid", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R1 in background",
 				context: "",
@@ -413,6 +598,7 @@ describe("requirements ledger auditor binding", () => {
 		try {
 			const head = git(cwd, "rev-parse", "HEAD");
 			await runtime.prepareAuditorTaskCall("task", "call-4", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R1 please",
 				context: "",
@@ -460,6 +646,7 @@ describe("requirements ledger auditor binding", () => {
 		try {
 			const dispatchHead = git(cwd, "rev-parse", "HEAD");
 			await runtime.prepareAuditorTaskCall("task", "call-stale-head", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R1 please",
 				context: "",
@@ -516,6 +703,7 @@ describe("requirements ledger auditor binding", () => {
 		const { cwd, manager, runtime } = fixture();
 		try {
 			await runtime.prepareAuditorTaskCall("task", "call-unrelated-head", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R1 please",
 				context: "",
@@ -550,6 +738,7 @@ describe("requirements ledger auditor binding", () => {
 		);
 		try {
 			await runtime.prepareAuditorTaskCall("task", "call-edited-profile", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R1 please",
 				context: "",
@@ -574,6 +763,7 @@ describe("receipt recording across delivery channels and worker renames", () => 
 
 	async function dispatchAndPark(runtime: RequirementsLedgerRuntime, callId: string, workerId: string): Promise<void> {
 		await runtime.prepareAuditorTaskCall("task", callId, {
+			name: "main",
 			agent: "qa-auditor",
 			task: "Audit R1 please",
 			context: "",
@@ -646,6 +836,7 @@ describe("receipt recording across delivery channels and worker renames", () => 
 		);
 		try {
 			const revised = await runtime.prepareAuditorTaskCall("task", "call-input", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R1 please",
 				context: "",
@@ -1090,7 +1281,11 @@ describe("real row-scoped auditor receipts", () => {
 				head,
 				dirty: false,
 			});
-			await runtime.prepareAuditorTaskCall("task", owner, { agent: "qa-auditor", task: "Audit R7 now" });
+			await runtime.prepareAuditorTaskCall("task", owner, {
+				name: owner,
+				agent: "qa-auditor",
+				task: "Audit R7 now",
+			});
 			const output = [
 				"| id | raw words | verdict | evidence | artifact identity |",
 				"|---|---|---|---|---|",
@@ -1154,7 +1349,11 @@ describe("real row-scoped auditor receipts", () => {
 				},
 			];
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
-			await runtime.prepareAuditorTaskCall("task", "distinct-rows", { agent: "qa-auditor", task: "Audit R7 now" });
+			await runtime.prepareAuditorTaskCall("task", "distinct-rows", {
+				name: owner,
+				agent: "qa-auditor",
+				task: "Audit R7 now",
+			});
 			const distinct = await runtime.afterToolCall({
 				toolCall: { id: "distinct-rows", name: "task" },
 				result: {
@@ -1196,7 +1395,10 @@ describe("real row-scoped auditor receipts", () => {
 				{
 					name: "Work",
 					tasks: [
-						{ content: row, status: "pending", artifactCwd: cwd, artifactOwner: "main" },
+						Object.assign(
+							{ content: row, status: "pending" as const, artifactCwd: cwd, artifactOwner: "main" },
+							{ schedule: { owner: "main" } },
+						),
 						{ content: other, status: "pending" },
 					],
 				},
@@ -1230,7 +1432,12 @@ describe("real row-scoped auditor receipts", () => {
 				`| R16 | ${raw} | pass | e2e/facility-callout-frame-colour.spec.ts:71 asserts leaderColour equals frameColour; width 1 texture px; doc/product-requirements.md contains the clause | ${row} @ ${gitIdentity(cwd, head)} |`,
 			].join("\n");
 			async function deliver(output: string, worker: string, auditedRow = row): Promise<void> {
+				for (const task of phases[0]!.tasks) {
+					Object.assign(task, { schedule: { owner: task.content === auditedRow ? "main" : "OtherAudit" } });
+				}
+				manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 				await runtime.prepareAuditorTaskCall("task", worker, {
+					name: "main",
 					agent: "qa-auditor",
 					task: `Audit R16 at the current clean row HEAD for the row '${auditedRow}'.`,
 				});
@@ -1304,7 +1511,15 @@ describe("real row-scoped auditor receipts", () => {
 				{
 					name: "Work",
 					tasks: [
-						{ content: scratch, status: "pending", artifactCwd: join(cwd, "missing"), artifactOwner: "main" },
+						Object.assign(
+							{
+								content: scratch,
+								status: "pending" as const,
+								artifactCwd: join(cwd, "missing"),
+								artifactOwner: "main",
+							},
+							{ schedule: { owner: "main" } },
+						),
 					],
 				},
 			];
@@ -1314,6 +1529,7 @@ describe("real row-scoped auditor receipts", () => {
 				{ ...requirement, id: "R17", rawText: bashRaw, rows: [scratch, other] },
 			]);
 			await runtime.prepareAuditorTaskCall("task", "bash", {
+				name: "main",
 				agent: "qa-auditor",
 				task: `Audit R17 at the current clean row HEAD for the row "${scratch}".`,
 			});
@@ -1367,6 +1583,7 @@ describe("requirement image audit inputs", () => {
 				})),
 			);
 			const revised = await runtime.prepareAuditorTaskCall("task", "image-call", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R1 for Build artifact",
 			});
@@ -1416,6 +1633,7 @@ it("keeps text-only QA inputs free of image fields", async () => {
 	const { cwd, runtime } = fixture();
 	try {
 		const revised = await runtime.prepareAuditorTaskCall("task", "text-call", {
+			name: "main",
 			agent: "qa-auditor",
 			task: "Audit R1 for Build artifact",
 		});
@@ -1432,7 +1650,11 @@ describe("PR41 review boundaries", () => {
 	it("rejects split receipts that replace the immutable ask", async () => {
 		const { cwd, manager, runtime } = fixture();
 		try {
-			await runtime.prepareAuditorTaskCall("task", "split-review", { agent: "qa-auditor", task: "Audit R1" });
+			await runtime.prepareAuditorTaskCall("task", "split-review", {
+				name: "main",
+				agent: "qa-auditor",
+				task: "Audit R1",
+			});
 			await runtime.afterToolCall({
 				toolCall: { id: "split-review", name: "task" },
 				result: {
@@ -1473,12 +1695,13 @@ describe("PR41 review boundaries", () => {
 						tasks: ["Build artifact", "Other row"].map(content => ({
 							content,
 							status: "pending",
-							schedule: { owner: "main", resources: [cwd] },
+							schedule: { owner: content === "Build artifact" ? "main" : "OtherAudit", resources: [cwd] },
 						})),
 					},
 				],
 			});
 			await runtime.prepareAuditorTaskCall("task", "scope-review", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R1 for row 'Build artifact'",
 			});
@@ -1656,7 +1879,7 @@ interface ScopedFixture {
 	runtime: RequirementsLedgerRuntime;
 }
 describe("audit scope for foreign cited Rn", () => {
-	function scopedFixture() {
+	function scopedFixture(assignedRows = ["Row C"]) {
 		const fx = fixture();
 		const base = getLatestRequirements(fx.manager.getBranch())[0]!;
 		appendRequirementsSnapshot({ appendEntry: (type, data) => fx.manager.appendCustomEntry(type, data) }, [
@@ -1670,7 +1893,7 @@ describe("audit scope for foreign cited Rn", () => {
 					tasks: ["Row A", "Row B", "Row C", "Row D"].map(content => ({
 						content,
 						status: "pending",
-						schedule: { owner: "main", resources: [fx.cwd] },
+						schedule: { owner: assignedRows.includes(content) ? "main" : "OtherAudit", resources: [fx.cwd] },
 					})),
 				},
 			],
@@ -1709,6 +1932,7 @@ describe("audit scope for foreign cited Rn", () => {
 		const fx = scopedFixture();
 		try {
 			const revised = await fx.runtime.prepareAuditorTaskCall("task", "scoped-cited", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R4 and R6 for row 'Row C'",
 				context: "",
@@ -1731,6 +1955,7 @@ describe("audit scope for foreign cited Rn", () => {
 		const fx = scopedFixture();
 		try {
 			await fx.runtime.prepareAuditorTaskCall("task", "scoped-foreign", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R4 and R6 for row 'Row C'",
 				context: "",
@@ -1743,10 +1968,11 @@ describe("audit scope for foreign cited Rn", () => {
 			rmSync(fx.cwd, { recursive: true, force: true });
 		}
 	});
-	it("assigns every linked row of a cited Rn when the task names no row", async () => {
-		const fx = scopedFixture();
+	it("assigns exactly the structured owner's linked rows when prose names no row", async () => {
+		const fx = scopedFixture(["Row C", "Row D"]);
 		try {
 			const revised = await fx.runtime.prepareAuditorTaskCall("task", "scoped-neighbour", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R6 now",
 				context: "",
@@ -1781,7 +2007,11 @@ describe("replay: R1 audit for row A while R2 is linked to row B", () => {
 					name: "Work",
 					tasks: [
 						{ content: "DRIVE41 row A", status: "in_progress", schedule: { owner: "main", resources: [fx.cwd] } },
-						{ content: "DRIVE41 row B", status: "pending", schedule: { owner: "main", resources: [fx.cwd] } },
+						{
+							content: "DRIVE41 row B",
+							status: "pending",
+							schedule: { owner: "OtherAudit", resources: [fx.cwd] },
+						},
 					],
 				},
 			],
@@ -1826,6 +2056,7 @@ describe("replay: R1 audit for row A while R2 is linked to row B", () => {
 		const fx = replayFixture();
 		try {
 			const revised = await fx.runtime.prepareAuditorTaskCall("task", "replay-r1", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R1 for row DRIVE41 row A at its current artifact.",
 				context: "R2 was classified to row DRIVE41 row B while row DRIVE41 row A was in progress.",
@@ -1847,6 +2078,7 @@ describe("replay: R1 audit for row A while R2 is linked to row B", () => {
 		const fx = replayFixture();
 		try {
 			await fx.runtime.prepareAuditorTaskCall("task", "replay-r2", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R2 for row DRIVE41 row A at its current artifact.",
 				context: "",

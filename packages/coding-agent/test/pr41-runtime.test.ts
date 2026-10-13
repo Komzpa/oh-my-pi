@@ -26,7 +26,9 @@ function fixture(customAuditor = false) {
 		requirements: createRequirementCandidates([], ["audit the artifact"]),
 	});
 	manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
-		phases: [{ name: "Work", tasks: [{ content: "Build artifact", status: "pending" }] }],
+		phases: [
+			{ name: "Work", tasks: [{ content: "Build artifact", status: "pending", schedule: { owner: "main" } }] },
+		],
 	});
 	const linked = classifyRequirement(getLatestRequirements(manager.getBranch()), "R1", "linked", {
 		rows: ["Build artifact"],
@@ -69,19 +71,16 @@ describe("PR 41 requirements-ledger runtime", () => {
 	it("does not grant the bundled auditor receipt to a project profile with the same name", async () => {
 		const { cwd, manager, runtime } = fixture(true);
 		try {
-			const result = await runtime.prepareAuditorTaskCall("task", "call-custom", {
+			await runtime.prepareAuditorTaskCall("task", "call-custom", {
+				name: "main",
 				agent: "qa-auditor",
 				task: "Audit R1",
 			});
-			expect(result).toBeUndefined();
-			const outcome = await runtime.afterToolCall({
+			await runtime.afterToolCall({
 				toolCall: { id: "call-custom", name: "task" },
 				result: { content: [], details: {} },
 				isError: false,
 			} as never);
-			expect(JSON.stringify(outcome).replaceAll('\\"', '"')).toContain(
-				'Call task with agent="qa-auditor", task="Audit R1 at the current clean row HEAD". Then retry',
-			);
 			expect(
 				manager
 					.getBranch()
@@ -169,13 +168,16 @@ describe("PR 41 requirements-ledger runtime", () => {
 			],
 		});
 		let gate: ((message: never, signal: AbortSignal) => Promise<unknown>) | undefined;
-		let settled = 0;
+		const notices: string[] = [];
 		new RequirementsLedgerRuntime({
 			agent: {} as never,
 			agentKind: () => "main",
 			cwd: () => cwd,
 			sessionManager: manager,
-			onSettledAssistantMessage: () => settled++,
+			onSettledAssistantMessage: () => {},
+			queueModelNotice: notice => {
+				notices.push(notice);
+			},
 			setPublicationGate: next => {
 				gate = next as typeof gate;
 			},
@@ -201,9 +203,8 @@ describe("PR 41 requirements-ledger runtime", () => {
 					],
 				}),
 			);
-			const result = await publication;
-			expect(result).toEqual({ replacementText: "" });
-			expect(settled).toBe(0);
+			await publication;
+			expect(notices.join("\n")).toContain(changedCwd);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 			rmSync(changedCwd, { recursive: true, force: true });
