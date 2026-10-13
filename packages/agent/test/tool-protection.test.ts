@@ -75,10 +75,17 @@ describe("conditional tool-result protection", () => {
 		});
 
 		expect(result.prunedCount).toBe(1);
-		const projected = projectToolResultPrunes<SessionEntry>([...entries, {
-			type: "tool_result_prune", id: "prune", parentId: fileResult.id,
-			timestamp: new Date(result.prunedAt).toISOString(), prunedAt: result.prunedAt, targets: result.targets,
-		}]);
+		const projected = projectToolResultPrunes<SessionEntry>([
+			...entries,
+			{
+				type: "tool_result_prune",
+				id: "prune",
+				parentId: fileResult.id,
+				timestamp: new Date(result.prunedAt).toISOString(),
+				prunedAt: result.prunedAt,
+				targets: result.targets,
+			},
+		]);
 		const projectedFile = projected[3] as SessionMessageEntry;
 		expect(projected[1]).toBe(skillResult);
 		expect((fileResult.message as ToolResultMessage).prunedAt).toBeUndefined();
