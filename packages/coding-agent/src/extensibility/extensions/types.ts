@@ -1041,6 +1041,8 @@ export interface BeforeAgentStartEvent {
 /** Fired in the parent session before a subagent (task tool or eval `agent()`) resolves its model. */
 export interface BeforeSubagentSpawnEvent {
 	type: "before_subagent_spawn";
+	/** Declared exclusive checkout paths for this child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
 	/** Agent definition name being spawned. */
 	agent: string;
 	invocationKind: "task" | "eval";

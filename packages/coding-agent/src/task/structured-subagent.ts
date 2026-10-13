@@ -123,6 +123,8 @@ export interface StructuredSubagentRequest {
 	effort?: TaskEffort;
 	/** Caller's description of how open-ended the work is; steers the child's `auto` thinking classification. */
 	solutionSpace?: string;
+	/** Declared exclusive checkout paths for this child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
 	identity?: StructuredSubagentIdentity;
 	index?: number;
 	parentToolCallId?: string;
@@ -467,6 +469,7 @@ async function applySpawnHook(
 	const spawnResult = await emit(
 		{
 			type: "before_subagent_spawn",
+			...(request.resources !== undefined ? { resources: request.resources } : {}),
 			agent: policy.agentName,
 			invocationKind: request.invocationKind,
 			modelRole: policy.modelRole,

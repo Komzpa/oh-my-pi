@@ -18,7 +18,8 @@ Shared edits need one integration owner{{#if ircEnabled}}; siblings coordinate v
 {{#if evalToolsEnabled}}`tools`: eval-defined, run in your kernel.
 {{/if}}{{#if effortEnabled}}`effort`: `"lo"`|`"med"`|`"hi"` by how open-ended the problem is.
 {{/if}}{{#if structured}}`schemaMode`: default permissive warns after retries; strict fails.
-{{/if}}{{#if isolationEnabled}}{{#if applyIsolatedChanges}}`isolated`: worktree; successful changes apply to parent.
+{{/if}}`resources`: optional `string[]` of checkout paths the child edits; when present it alone defines ownership; `[]` claims nothing; omit it to use the harness fallback (row owner, then title, then cwd — never prose paths).
+{{#if isolationEnabled}}{{#if applyIsolatedChanges}}`isolated`: worktree; successful changes apply to parent.
 {{else}}`isolated`: worktree; changes retained, not applied.
 {{/if}}{{/if}}Children start blank;{{#if ircEnabled}} parent IRC steers immediately;{{/if}} large payloads via `local://<path>`, NEVER inline.
 

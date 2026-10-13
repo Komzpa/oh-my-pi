@@ -52,6 +52,7 @@ export const taskItemSchema = type({
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
+	"resources?": "string[]",
 	"tools?": "string[]",
 	"+": "delete",
 });
@@ -62,6 +63,7 @@ const taskItemSchemaIsolated = type({
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
+	"resources?": "string[]",
 	"tools?": "string[]",
 	"isolated?": "boolean",
 	"+": "delete",
@@ -74,8 +76,8 @@ export const taskSchema = type({
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
+	"resources?": "string[]",
 	"tools?": "string[]",
-	"isolated?": "boolean",
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
@@ -85,8 +87,8 @@ const taskSchemaNoIsolation = type({
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
+	"resources?": "string[]",
 	"tools?": "string[]",
-	"+": "delete",
 });
 const taskSchemaBatch = type({
 	context: "string",
@@ -140,6 +142,7 @@ function createTaskSchema(options: {
 				...effortField,
 				...schemaFields,
 				...toolsField,
+				"resources?": "string[]",
 				"isolated?": "boolean",
 				"+": "delete",
 			});
@@ -157,7 +160,7 @@ function createTaskSchema(options: {
 			...effortField,
 			...schemaFields,
 			...toolsField,
-			"+": "delete",
+			"resources?": "string[]",
 		});
 		return type.raw({
 			context: "string",
@@ -174,6 +177,7 @@ function createTaskSchema(options: {
 			...effortField,
 			...schemaFields,
 			...toolsField,
+			"resources?": "string[]",
 			"isolated?": "boolean",
 			"+": "delete",
 		});
@@ -186,6 +190,7 @@ function createTaskSchema(options: {
 		...effortField,
 		...schemaFields,
 		...toolsField,
+		"resources?": "string[]",
 		"+": "delete",
 	});
 }

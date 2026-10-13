@@ -245,6 +245,17 @@ function validateEffort(effort: TaskEffort | undefined, label: string): string |
 	if (effort === undefined || TASK_EFFORTS.includes(effort)) return undefined;
 	return `${label} has an invalid \`effort\` value ${JSON.stringify(effort)}. Use "lo", "med", or "hi".`;
 }
+/** Reject a malformed `resources` declaration on internal/stale-transcript calls that bypass the wire schema. `[]` is valid (owns nothing); entries must be non-blank strings. */
+function validateResources(resources: TaskItem["resources"], label: string): string | undefined {
+	if (resources === undefined) return undefined;
+	if (!Array.isArray(resources)) return `${label} has an invalid \`resources\` value ${JSON.stringify(resources)}. Provide an array of checkout path strings, or omit it.`;
+	for (const entry of resources) {
+		if (typeof entry !== "string" || entry.trim() === "") {
+			return `${label} has an invalid \`resources\` entry ${JSON.stringify(entry)}. Every entry must be a non-blank checkout path string.`;
+		}
+	}
+	return undefined;
+}
 
 function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string | undefined {
 	const hasTask = typeof params.task === "string" && params.task.trim() !== "";
@@ -263,6 +274,8 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 			}
 			const effortError = validateEffort(item.effort, `Task ${i + 1}${item.name ? ` (\`${item.name}\`)` : ""}`);
 			if (effortError) return effortError;
+			const resourcesError = validateResources(item.resources, `Task ${i + 1}${item.name ? ` (\`${item.name}\`)` : ""}`);
+			if (resourcesError) return resourcesError;
 		}
 		const seen = new Map<string, string>();
 		for (const item of tasks) {
@@ -285,7 +298,7 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 			? "Missing `tasks`. Provide a `tasks` array (one subagent per item) with a shared `context`."
 			: "Missing `task`. Provide complete, self-contained instructions for the agent.";
 	}
-	return validateEffort(params.effort, "The call");
+	return validateEffort(params.effort, "The call") ?? validateResources(params.resources, "The call");
 }
 
 /**
@@ -303,7 +316,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
 	if ("tools" in params) item.tools = params.tools;
-	if ("effort" in params) item.effort = params.effort;
+	if ("resources" in params) item.resources = params.resources;
 	if ("isolated" in params) item.isolated = params.isolated;
 	return [item];
 }
@@ -326,7 +339,7 @@ function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string
 	if ("outputSchema" in item) spawn.outputSchema = item.outputSchema;
 	if ("schemaMode" in item) spawn.schemaMode = item.schemaMode;
 	if ("tools" in item) spawn.tools = item.tools;
-	if ("effort" in item) spawn.effort = item.effort;
+	if ("resources" in item) spawn.resources = item.resources;
 	if (item.isolated !== undefined) {
 		spawn.isolated = item.isolated;
 	} else if ("isolated" in params) {
@@ -1659,6 +1672,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				agent: params.agent,
 				...this.#resultParams(params),
 				...(params.effort !== undefined ? { effort: params.effort } : {}),
+				...(Object.hasOwn(params, "resources") ? { resources: params.resources } : {}),
 				solutionSpace: params.solutionSpace,
 				...(params.tools?.length
 					? {
