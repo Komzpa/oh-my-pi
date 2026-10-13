@@ -52,6 +52,7 @@ export class FrameTelemetry {
 	#lastFrameAtMs: number | undefined;
 	#lastFrameStartedAtMs: number | undefined;
 	#lastInputAtMs: number | undefined;
+	#pendingInputAtMs: number | undefined;
 	#handling: string | undefined;
 	#renderTarget: string | undefined;
 	#phaseStack: string[] = [];
@@ -99,6 +100,7 @@ export class FrameTelemetry {
 
 	recordInput(label = "key"): void {
 		this.#lastInputAtMs = this.#dateNow();
+		if (this.#pendingInputAtMs === undefined) this.#pendingInputAtMs = this.#now();
 		this.#handling = label;
 	}
 
@@ -120,7 +122,9 @@ export class FrameTelemetry {
 
 		const renderMs = Math.max(0, now - startedAt);
 		const gapMs = this.#lastFrameAtMs === undefined ? 0 : Math.max(0, now - this.#lastFrameAtMs);
-		const lagMs = Math.max(0, gapMs - renderMs);
+		const pendingInputAtMs = this.#pendingInputAtMs;
+		this.#pendingInputAtMs = undefined;
+		const lagMs = pendingInputAtMs === undefined ? 0 : Math.max(0, now - pendingInputAtMs);
 		this.#lastFrameAtMs = now;
 		this.#samples.push({ atMs: now, renderMs, lagMs });
 		this.#trim(now);
