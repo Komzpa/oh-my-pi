@@ -419,6 +419,7 @@ async function openOnKind(
 		const browser = await untilAborted(openSignal, () =>
 			acquireBrowser(kind, {
 				cwd: session.cwd,
+				sessionId: session.getSessionId?.() ?? undefined,
 				viewport: params.viewport
 					? {
 							width: params.viewport.width,

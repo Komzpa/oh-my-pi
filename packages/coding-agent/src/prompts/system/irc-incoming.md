@@ -1,5 +1,6 @@
 <irc>
-Incoming IRC message from agent `{{from}}`{{#if replyTo}} (reply to {{replyTo}}){{/if}}:
+Incoming IRC message from {{#if fromName}}{{fromName}} (agent `{{from}}`){{else}}agent `{{from}}`{{/if}}{{#if replyTo}} (reply to {{replyTo}}){{/if}}:
+reply: write agent://{{from}}
 
 {{message}}
 

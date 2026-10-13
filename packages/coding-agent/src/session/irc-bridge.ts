@@ -14,6 +14,8 @@ export interface IrcBridgeHost {
 	sessionManager: SessionManager;
 	isDisposed(): boolean;
 	isStreaming(): boolean;
+	isRestartDraining(): boolean;
+	queueForRestart(record: CustomMessage): Promise<void>;
 	planModeEnabled(): boolean;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	wakeForIrc(records: AgentMessage[]): void;
@@ -174,7 +176,12 @@ export class IrcBridge {
 	/** Delivers an IRC message into the recipient session without awaiting any wake turn. */
 	async deliver(msg: IrcMessage): Promise<"injected" | "woken"> {
 		if (this.#host.isDisposed()) throw new Error("Recipient session is disposed.");
-		const streaming = this.#host.isStreaming();
+		const recipient = AgentRegistry.global().get(msg.to);
+		// The task owns a running child before its first core prompt starts.
+		// Waking in that setup window steals the brief's dispatch ownership.
+		const dispatchPending =
+			recipient?.kind === "sub" && recipient.status === "running" && !this.#host.agent.state.isStreaming;
+		const streaming = this.#host.isStreaming() || dispatchPending;
 		const planModeIdle = !streaming && this.#host.planModeEnabled();
 		// An idle subagent runs a monitored wake turn whose output is relayed
 		// back to the sender (task executor `relayWakeTurnOutput`); the main
@@ -185,6 +192,7 @@ export class IrcBridge {
 			customType: "irc:incoming",
 			content: prompt.render(ircIncomingTemplate, {
 				from: msg.from,
+				fromName: msg.fromName ?? "",
 				message: msg.body,
 				replyTo: msg.replyTo ?? "",
 				interrupting: streaming,
@@ -194,6 +202,7 @@ export class IrcBridge {
 			details: {
 				id: msg.id,
 				from: msg.from,
+				...(msg.fromName ? { fromName: msg.fromName } : {}),
 				message: msg.body,
 				...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
 				...(msg.wakeRelay ? { wakeRelay: true } : {}),
@@ -202,7 +211,15 @@ export class IrcBridge {
 			timestamp: msg.ts,
 		};
 		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
+		if (this.#host.isRestartDraining()) {
+			await this.#host.queueForRestart(record);
+			return "injected";
+		}
 		if (streaming) {
+			if (dispatchPending) {
+				this.#host.agent.followUp(record);
+				return "injected";
+			}
 			const recipientParentId = AgentRegistry.global().get(msg.to)?.parentId;
 			if (recipientParentId === msg.from) {
 				this.#host.agent.steer({

@@ -15,12 +15,12 @@ use super::{
 		self, BARE_BODY_AUTO_PIPED_WARNING, BARE_RANGE_AUTO_PUT_WARNING, COLON_ON_REGISTER_PUT,
 		COLONLESS_PUT_TAKES_NO_BODY, COLONLESS_SPAN_PUT, CUT_COLON_IGNORED_WARNING,
 		CUT_TAKES_NO_BODY, DIFF_OLD_ROWS_IGNORED_WARNING, EMPTY_INSERT, EMPTY_PUT_AUTO_CUT_WARNING,
-		MINUS_BULLET_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED, MOVE_TAKES_NO_BODY,
+		MALFORMED_OP_HEADER, MINUS_BULLET_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED, MOVE_TAKES_NO_BODY,
 		READ_METADATA_IGNORED_WARNING, REGISTER_PUT_TAKES_NO_BODY, REM_TAKES_NO_BODY,
 		REPLACE_PAIR_COALESCED_WARNING, SNAPSHOT_ROWS_AUTO_PUT_WARNING,
 	},
 	prefixes::{is_read_metadata_line, strip_one_leading_hashline_prefix},
-	tokenizer::{BlockTarget, Token, Tokenizer, is_hunk_header_text},
+	tokenizer::{BlockTarget, Token, Tokenizer, is_hunk_header_text, is_malformed_op_header},
 	types::{Anchor, BlockMode, BlockSpan, Cursor, Edit, FileOp, ParsedRange, PasteTarget},
 };
 use crate::error::EditError;
@@ -329,6 +329,18 @@ impl Executor {
 			}
 			if let Some(message) = bodyless_message(&pending.target, pending.had_colon) {
 				return fail_at(line_num, message);
+			}
+			// A malformed op header (grievance 558: `PUT 351*=357`) names an op
+			// keyword but parses as no target. Absorbing it here would splice the
+			// row and its body verbatim into the file; body rows start with `+`.
+			// Only this absorption path changes: with no hunk open the row already
+			// fails with the legacy "no preceding hunk header" error, which the
+			// legacy parity fixtures pin byte-for-byte.
+			if is_malformed_op_header(text) {
+				return fail_at(
+					line_num,
+					&format!("{} Got {}.", MALFORMED_OP_HEADER, messages::json_quote(text)),
+				);
 			}
 			let minus = text.trim_start().starts_with('-');
 			if !minus {

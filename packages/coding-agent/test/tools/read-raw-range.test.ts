@@ -52,6 +52,10 @@ describe("read tool raw range exactness", () => {
 
 		expect(output.trimEnd()).toBe("L31");
 	});
+	it("returns one line for the JSONL-style :N:raw selector", async () => {
+		const output = getTextOutput(await tool.execute("call-raw-suffix", { path: `${filePath}:31:raw` }));
+		expect(output.trimEnd()).toBe("L31");
+	});
 
 	it("returns exactly the requested raw range at the start of the file", async () => {
 		const result = await tool.execute("call-raw-head", { path: `${filePath}:raw:1-2` });

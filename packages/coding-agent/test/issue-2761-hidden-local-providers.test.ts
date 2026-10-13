@@ -75,6 +75,9 @@ function createHub(registry: ModelRegistry): ModelHubComponent {
 	const settings = Settings.isolated({});
 	const ui = { requestRender: () => {}, terminal: { rows: 40 } } as unknown as TUI;
 	const callbacks: ModelHubCallbacks = {
+		onSelectForSession: () => {
+			throw new Error("Unexpected session-only model selection in provider visibility test");
+		},
 		onAssign: () => {},
 		onUnassign: () => {},
 		onLoginRequest: () => {},

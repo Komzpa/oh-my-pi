@@ -857,7 +857,15 @@ fn repair_landings(
 			.get((group.anchor - 1) as usize)
 			.map_or("", String::as_str);
 		let mut outward = None;
-		if has_content(anchor_text) && indent_deeper(leading_indent(anchor_text), &target) {
+		// An insert anchored on a structural closer stays at the gap the
+		// locator specified: sliding a shallower body would carry it past the
+		// closer of the construct containing the anchor — past a class closer
+		// for a member like `private:`, landing invalid code — and `PUT >N:`
+		// / `PUT >N*` on a closer promised exactly that gap.
+		if has_content(anchor_text)
+			&& !STRUCTURAL_CLOSER_RE.is_match(anchor_text)
+			&& indent_deeper(leading_indent(anchor_text), &target)
+		{
 			let mut landing = group.anchor;
 			let mut crossed = 0;
 			let mut blocked = false;

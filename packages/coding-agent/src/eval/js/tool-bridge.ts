@@ -3,7 +3,7 @@ import { toolWireSchema, validateToolArguments } from "@oh-my-pi/pi-ai";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { ToolSession } from "../../tools";
-import { committedTodoPhases } from "../../tools/todo";
+import { committedTodoEdit, committedTodoPhases } from "../../tools/todo";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { schemaDeclaresIntentField } from "../../utils/tool-schema";
 import { findEnabledEvalPrelude, invokeEvalPrelude } from "../preludes";
@@ -334,7 +334,7 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 			// rehydration reads; without this the in-memory update is lost on the
 			// next resume/rewind/fork and stale todos trigger a false reminder.
 			const phases = committedTodoPhases(result);
-			if (phases) options.session.persistTodoPhases?.(phases);
+			if (phases) options.session.persistTodoPhases?.(phases, committedTodoEdit(result));
 		}
 		return bridgeValueFromToolResult(name, normalizedArgs, result, options.emitStatus);
 	} catch (error) {

@@ -241,11 +241,11 @@ impl EditStore {
 	pub fn record_seen_lines(&self, path: &Path, hash: &str, lines: &[u32]) {
 		let mut state = self.inner.lock();
 		touch(&mut state, path);
-		if let Some(version) = state
-			.histories
-			.get_mut(path)
-			.and_then(|h| h.versions.iter_mut().find(|v| v.snapshot.hash == hash))
-		{
+		if let Some(version) = state.histories.get_mut(path).and_then(|h| {
+			h.versions
+				.iter_mut()
+				.find(|v| v.snapshot.hash.eq_ignore_ascii_case(hash))
+		}) {
 			merge_seen(&mut version.snapshot, Some(lines));
 		}
 	}
@@ -271,7 +271,7 @@ impl EditStore {
 			.get(path)?
 			.versions
 			.iter()
-			.find(|v| v.snapshot.hash == hash)
+			.find(|v| v.snapshot.hash.eq_ignore_ascii_case(hash))
 			.map(|v| v.snapshot.clone())
 	}
 
@@ -295,7 +295,7 @@ impl EditStore {
 			.histories
 			.values()
 			.flat_map(|h| h.versions.iter())
-			.filter(|v| v.snapshot.hash == hash)
+			.filter(|v| v.snapshot.hash.eq_ignore_ascii_case(hash))
 			.map(|v| v.snapshot.clone())
 			.collect()
 	}
@@ -618,5 +618,27 @@ mod tests {
 		let file = std::fs::File::create(&path).unwrap();
 		file.set_len(MAX_SNAPSHOT_FILE_BYTES + 1).unwrap();
 		assert!(EditStore::new().record_file(&path, None).is_none());
+	}
+	#[test]
+	fn fresh_tag_lookups_ignore_ascii_case() {
+		let store = EditStore::new();
+		let path = Path::new("fresh");
+		let tag = store.record(path, "hello\n", Some(&[1]));
+		assert!(!tag.is_empty());
+		let lower = tag.to_ascii_lowercase();
+		assert!(store.by_hash(path, &lower).is_some());
+		assert_eq!(store.find_by_hash(&lower).len(), 1);
+		store.record_seen_lines(path, &lower, &[1]);
+		assert_eq!(
+			store
+				.by_hash(path, &tag)
+				.unwrap()
+				.seen_lines
+				.as_ref()
+				.map(|s| s.len()),
+			Some(1)
+		);
+		assert!(store.by_hash(path, "0000").is_none());
+		assert!(store.by_hash(Path::new("elsewhere"), &lower).is_none());
 	}
 }

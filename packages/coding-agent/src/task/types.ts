@@ -42,17 +42,49 @@ export interface SubagentEventPayload {
 
 // Keep this explicit: ArkType serializes `unknown` as a boolean subschema, which llama.cpp grammars reject.
 const outputSchemaInputSchema = type("object | boolean | string | null");
+const evalToolsField = type("string[]").describe(
+	"Names of eval-defined tools only; built-in tools come from the agent profile.",
+);
 // Coarse per-spawn thinking effort; must stay in sync with TASK_EFFORTS in ../thinking.
 const effortRule = '"lo" | "med" | "hi"' as const;
+// Image attachment delivered to the child's first prompt as a real image
+// content part. Bytes travel by reference: ledger-produced images carry
+// `artifactPath`/`sourcePath` with no `data`. Invariant: at least one byte
+// source is required. A single shape with a narrow check keeps the schema
+// deterministic (omptype rejects overlapping morph unions and their
+// intersections); the provider grammar sees one object, runtime rejects
+// sourceless images.
+const taskImageSchema = type({
+	type: "'image'",
+	mimeType: "string",
+	"data?": "string",
+	"sha256?": "string",
+	"rn?": "string",
+	"index?": "number",
+	"sourcePath?": "string",
+	"artifactPath?": "string",
+	"+": "delete",
+}).narrow((image, ctx) => {
+	const hasSource = (value: unknown): boolean => typeof value === "string" && value.length > 0;
+	return (
+		hasSource(image.data) ||
+		hasSource(image.artifactPath) ||
+		hasSource(image.sourcePath) ||
+		ctx.mustBe("an image with a byte source (data, artifactPath, or sourcePath)")
+	);
+});
+const taskImagesRule = taskImageSchema.array();
 
 export const taskItemSchema = type({
+	"images?": taskImagesRule,
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
 	solutionSpace: "string",
+	"rework?": "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
+	"tools?": evalToolsField,
 	"+": "delete",
 });
 const taskItemSchemaIsolated = type({
@@ -60,10 +92,12 @@ const taskItemSchemaIsolated = type({
 	agent: "string = 'task'",
 	task: "string",
 	solutionSpace: "string",
+	"rework?": "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
+	"tools?": evalToolsField,
 	"isolated?": "boolean",
+	"images?": taskImagesRule,
 	"+": "delete",
 });
 
@@ -72,20 +106,24 @@ export const taskSchema = type({
 	agent: "string = 'task'",
 	task: "string",
 	solutionSpace: "string",
+	"rework?": "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
+	"tools?": evalToolsField,
 	"isolated?": "boolean",
+	"images?": taskImagesRule,
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
+	"images?": taskImagesRule,
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
 	solutionSpace: "string",
+	"rework?": "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
+	"tools?": evalToolsField,
 	"+": "delete",
 });
 const taskSchemaBatch = type({
@@ -125,7 +163,7 @@ function createTaskSchema(options: {
 }): BaseType {
 	const agent = taskAgentSchemaRule(options.defaultAgent);
 	const effortField = options.effortEnabled ? { "effort?": effortRule } : {};
-	const toolsField = options.evalToolsEnabled ? { "tools?": "string[]" } : {};
+	const toolsField = options.evalToolsEnabled ? { "tools?": evalToolsField } : {};
 	if (options.batchEnabled) {
 		if (options.isolationEnabled) {
 			const item = type.raw({
@@ -133,11 +171,13 @@ function createTaskSchema(options: {
 				agent,
 				task: "string",
 				solutionSpace: "string",
+				"rework?": "string",
 				...effortField,
 				"outputSchema?": outputSchemaInputSchema,
 				"schemaMode?": '"permissive" | "strict"',
 				...toolsField,
 				"isolated?": "boolean",
+				"images?": taskImagesRule,
 				"+": "delete",
 			});
 			return type.raw({
@@ -151,10 +191,12 @@ function createTaskSchema(options: {
 			agent,
 			task: "string",
 			solutionSpace: "string",
+			"rework?": "string",
 			...effortField,
 			"outputSchema?": outputSchemaInputSchema,
 			"schemaMode?": '"permissive" | "strict"',
 			...toolsField,
+			"images?": taskImagesRule,
 			"+": "delete",
 		});
 		return type.raw({
@@ -169,11 +211,13 @@ function createTaskSchema(options: {
 			agent,
 			task: "string",
 			solutionSpace: "string",
+			"rework?": "string",
 			...effortField,
 			"outputSchema?": outputSchemaInputSchema,
 			"schemaMode?": '"permissive" | "strict"',
 			...toolsField,
 			"isolated?": "boolean",
+			"images?": taskImagesRule,
 			"+": "delete",
 		});
 	}
@@ -182,10 +226,12 @@ function createTaskSchema(options: {
 		agent,
 		task: "string",
 		solutionSpace: "string",
+		"rework?": "string",
 		...effortField,
 		"outputSchema?": outputSchemaInputSchema,
 		"schemaMode?": '"permissive" | "strict"',
 		...toolsField,
+		"images?": taskImagesRule,
 		"+": "delete",
 	});
 }

@@ -283,7 +283,9 @@ Handlers and tool `execute` receive `ctx` with:
 - `getContextUsage()`
 - `getAsyncJobSnapshot()` returns the current session's read-only async-job snapshot, or `null` when no session owns the context
 - `compact(instructionsOrOptions?)`: accepts summary focus text or `CompactOptions`, including one-off `mode: "soft" | "remote" | "snapcompact"`, `onComplete`, `onError`, and `suppressContinuation`
+- `sendAgentMessage(to, message)` sends an agent peer message and returns `{ delivered, text }`
 - `isIdle()`, `hasPendingMessages()`, `abort()`
+- `setSubagentFastMode(id, enabled)` (optional; changes a live direct child's `/fast` mode)
 - `shutdown()`
 - `getSystemPrompt()`
 - `isProjectTrusted()` — always `true`; OMP does not ask for per-directory trust before loading project inputs
@@ -291,6 +293,16 @@ Handlers and tool `execute` receive `ctx` with:
 - `runEphemeralTurn(...)` (optional; see below)
 - `memory` (optional structured memory runtime — status/search/save across the configured backend)
 - `setInterval(fn, ms, ...args)` / `setTimeout(fn, ms, ...args)` / `clearTimer(timer)` — managed timers (see below)
+
+### Live subagent fast mode (`ctx.setSubagentFastMode`)
+
+Hosts that support this API let a handler change `/fast` for a live direct child by its exact agent id. It returns `false` when the target is not a live child owned by the current session or the child's model has no service-tier control. A successful change applies to the child's next provider request; an in-flight request keeps its current tier. Older hosts may omit the method.
+
+```ts
+if (ctx.setSubagentFastMode?.(agentId, isCritical)) {
+  // The child's next request will use the selected model's fast tier.
+}
+```
 
 ### Ephemeral side turns (`ctx.runEphemeralTurn`)
 
@@ -319,6 +331,19 @@ Hooks may start a side turn, including from delayed callbacks. Only `context`, `
 Tool calls are always discarded rather than executed. Pass `tools: false` to remove tool definitions after context transforms and set `toolChoice: "none"` at the provider boundary. Omitting it preserves `/btw`'s tool catalog for prompt-cache reuse; disabling it may reduce cache hits. Bedrock Converse rejects tool opt-out if the transformed history still contains tool calls or results. Existing context/provider hooks still run. It is not a sandbox or a guarantee that arbitrary extension hooks have no side effects. Model inference consumes the configured provider's resources. `dedupeReply` defaults to `true`, collapses runs of more than three identical lines, and caps the returned reply at 4 KiB. Set it to `false` to disable those transformations; `replyText` is still trimmed. Callers should use `replyText` for the final result.
 
 Use `history` only for detached prior side-turn messages; it is cloned with `structuredClone`, so pass cloneable message data. A `conversationKey` keeps related side turns on one provider lineage. Rotate it after cancellation or failure before retrying. A side turn also rejects with a retryable error if its session or exact model instance changes before dispatch; callers should retry from a new current-context snapshot rather than reuse the old one.
+
+### Agent peer messages (`ctx.sendAgentMessage`)
+
+Extensions can send the same peer messages that `write agent://<id>` sends:
+
+```ts
+const result = await ctx.sendAgentMessage("Scout", "Status check: are you still blocked?");
+if (!result.delivered) {
+  ctx.ui.notify(result.text, "warning");
+}
+```
+
+`sendAgentMessage(to: string, message: string): Promise<{ delivered: boolean; text: string }>` uses the current session's agent id as the sender. It follows normal peer-messaging availability rules: IRC must be enabled and the session must have an agent registry. Unavailable messaging, an unknown recipient, or another delivery failure resolves with `delivered: false` and a human-readable `text`; it does not throw for ordinary delivery failures.
 
 ### Background work (`ctx.setInterval` / `ctx.setTimeout`)
 
@@ -413,6 +438,7 @@ Cancelable pre-events:
 - `cache_warming_decision` — fired before each prompt-cache warming refresh with the warmer's economics (`warmCost`, `missCost`, `continuationProbability`, `action`). Return `{ action: "warm" | "stop" }` to override; the last handler returning an action wins, handler failures or answers slower than 2 seconds leave the warmer's decision standing, and a `"stop"` override ends warming until the next real request. Only the main agent loop warms; task/subagent sessions never fire this. The refresh itself replays the real request through the same provider path, so `before_provider_request` and `after_provider_response` fire for it too; a replacement payload must stay byte-identical to the real one for the refresh to hit the cache.
 - `turn_start` / `turn_end`
 - `assistant_message` — awaited once per finalized assistant message before agent context, persistence, `message_end`, or tool dispatch. Return `{ content }` to replace text for history, persistence, `message_end` consumers, and the next provider request; handlers chain. Text already delivered through streaming updates (`message_update`, ACP/RPC chunks) is not retracted, so clients that render from the stream may keep showing the original text. Text blocks must retain their count, order, and positions; only their text may change. All non-text blocks and other block metadata must remain unchanged. Unchanged text retains its original `textSignature` (even if the handler drops or changes it); edited text loses its signature so provider replay state is never reused for different text. Invalid replacements and handler errors are reported and skipped. If aborted while a handler is pending, completed rewrites so far are retained and remaining handlers are skipped.
+- `before_assistant_message` — awaited main-session publication gate. Receives `{ type: "before_assistant_message", message: AssistantMessage, signal: AbortSignal }` and returns `undefined` to approve or `{ replacementText: string, settled?: true }` to replace narrative before any assistant output, public state, or persistence. Registering this hook opts main sessions into withholding; unguarded and task/subagent sessions keep ordinary streaming.
 - `message_start` / `message_update` / `message_end` — lifecycle notifications; `message_end` receives a detached snapshot, so in-place changes cannot rewrite agent or provider context
 
 ```ts
@@ -422,6 +448,12 @@ pi.on("assistant_message", event => ({
 	),
 }));
 ```
+
+`before_assistant_message` runs after normal assistant transformations on a finalized draft. Each handler receives its own detached inspection copy of the original message; mutation is not an output channel. The first returned replacement wins and cannot be undone by later handlers, which still run and can fail closed. Replacement removes text, thinking, images, tool intent, and opaque provider replay payload while retaining executable tool-call IDs and arguments. Use `replacementText: ""` to suppress narrative on a tool-bearing draft. Approved output uses the ordinary message lifecycle without replaying withheld deltas, and the same approved content becomes session history and the next provider context.
+
+Publication handlers use the existing 30-second handler budget. Exceptions, malformed results, timeout, or cancellation withhold the draft and use a deterministic delivery refusal; timeout and cancellation abort the handler's event signal. The native `Agent.beforeAssistantMessage(message, signal)` callback backs this boundary; extensions use `pi.on("before_assistant_message", handler)` rather than installing it themselves. Internal stream safety checks and token accounting continue on the raw stream.
+
+Return `settled: true` only for a replaced no-tool status response that should end the current prompt without claiming task completion. Its receipt is private, tied to the admitted message, and ignored for tool-bearing or cancelled drafts. It suppresses built-in TODO completion reminders and advisory `session_stop` continuations for that response, not TODO state changes. The session still emits and awaits `session_stop`; unrelated explicit `{ decision: "block", reason }` refusals, safety retries, and cancellation retain their normal behavior.
 
 `before_agent_start` prepares policy for an ordinary prompt and for each steering or follow-up batch containing user work when that batch is actually dequeued. It is not an enqueue notification: a live batch can fire it without another `agent_start`. Queue peeks, provider retries, tool-only iterations, and synthetic-only queued continuations do not fire it. Explicit synthetic prompts retain their ordinary prompt lifecycle.
 

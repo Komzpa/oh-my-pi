@@ -1,4 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { ToolResultPruneEntry, ToolResultPruneTarget } from "@oh-my-pi/pi-agent-core/compaction/entries";
+export type { ToolResultPruneEntry, ToolResultPruneTarget };
 import type {
 	ImageContent,
 	MessageAttribution,
@@ -7,7 +9,7 @@ import type {
 	TextContent,
 	Usage,
 } from "@oh-my-pi/pi-ai";
-import type { StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
+import type { StructuredSubagentSchemaMode, TaskFallbackReason } from "@oh-my-pi/pi-tui/tools/task";
 import type { CompactionMethod } from "./compaction-methods";
 import type { RetryFallbackRole } from "./retry-fallback-chains";
 
@@ -111,6 +113,8 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	role?: string;
 	/** True when this transition selected a retry-fallback model rather than the configured model. */
 	resolvedModelIsFallback?: boolean;
+	/** Causal trigger; persisted at the switch even when error persistence completes later. */
+	fallback?: { from: string; reason?: TaskFallbackReason };
 }
 
 export interface ServiceTierChangeEntry extends SessionEntryBase {
@@ -238,6 +242,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	systemPrompt: string;
 	/** Initial task/user message */
 	task: string;
+	/** Original assignment start time in epoch milliseconds; absent on legacy sessions. */
+	assignmentStartedAt?: number;
 	/** Tools available to the agent */
 	tools: string[];
 	/** Agent definition name (for example `scout` or `reviewer`). */
@@ -266,6 +272,12 @@ export interface SessionInitEntry extends SessionEntryBase {
 	compactionThreshold?: { thresholdPercent: number; thresholdTokens: number };
 	/** True when the subagent ran inside an isolation worktree: never revivable, transcript-only after park. Absent on older files. */
 	isolated?: boolean;
+	/** Spawn-installed `subagent:<id>` retry-fallback role, so cold revival can reinstall the same chain. Absent when the spawn installed none. */
+	retryFallbackRole?: string;
+	/** Primary model selector the retry-fallback role is pinned to. Absent when no chain was installed. */
+	retryFallbackPrimary?: string;
+	/** Model selectors after the primary in the spawn's profile ladder. Absent or empty when no chain was installed. */
+	retryFallbackChain?: string[];
 }
 
 /** Mode change entry - tracks agent mode transitions (e.g. plan mode). */
@@ -316,7 +328,8 @@ export type SessionEntry =
 	| SessionInitEntry
 	| ModeChangeEntry
 	| CredentialPinEntry
-	| ResetBoundaryEntry;
+	| ResetBoundaryEntry
+	| ToolResultPruneEntry;
 
 /** Raw logical file entry after loaders strip any fixed-width title slot. */
 export type FileEntry = SessionHeader | SessionEntry;

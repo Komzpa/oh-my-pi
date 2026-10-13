@@ -2141,6 +2141,40 @@ export interface StructuredSubagentOutput {
 /** Display cap for a normalized one-line label (roster line, registry `displayName`, prompt field). */
 export const LABEL_MAX = 80;
 
+/**
+ * One image attachment forwarded to a child's first prompt as a real image
+ * content part. `data` is base64; the sha256/rn/index metadata mirrors the
+ * requirements-ledger `RequirementImage` so an auditor can tie the part back to
+ * its `Rn` requirement row without rehashing.
+ *
+ * Bytes travel by reference: ledger-produced images carry `artifactPath` and/or
+ * `sourcePath` with no `data`. The executor resolves the reference to bytes
+ * exactly at the child's first-prompt boundary (verifying `sha256` when
+ * supplied) and never threads bytes through task args. Inline `data` remains
+ * accepted for callers that already hold bytes.
+ */
+interface TaskImageBase {
+	type: "image";
+	/** Base64 image bytes; absent for path/artifact references. */
+	data?: string;
+	mimeType: string;
+	/** sha256 hex of the decoded bytes, when known. */
+	sha256?: string;
+	/** Requirement id (e.g. "R1") this image was cited by, when known. */
+	rn?: string;
+	/** One-based `[Image #N]` marker position, when known. */
+	index?: number;
+	/** Attachment source file path when the image is file-backed. */
+	sourcePath?: string;
+	/** Durable session artifact holding the bytes when no source file exists. */
+	artifactPath?: string;
+}
+/**
+ * At least one byte source is required: inline `data`, `artifactPath`, or
+ * `sourcePath`. Combinations (e.g. `data` plus its `artifactPath`) are allowed.
+ */
+export type TaskImage = TaskImageBase & ({ data: string } | { artifactPath: string } | { sourcePath: string });
+
 /** Single task item. Fields are optional defensively: args stream in token by token. */
 export interface TaskItem {
 	/** Stable agent name; becomes the registry/IRC id. Default = generated AdjectiveNoun. */
@@ -2151,6 +2185,8 @@ export interface TaskItem {
 	task?: string;
 	/** How open-ended the work is; required by the schema and the child's sole `auto` thinking classification input. */
 	solutionSpace?: string;
+	/** Chief's one-line rejection reason for redispatching a completed row. */
+	rework?: string;
 	/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */
 	effort?: "lo" | "med" | "hi";
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
@@ -2161,6 +2197,8 @@ export interface TaskItem {
 	tools?: string[];
 	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
 	isolated?: boolean;
+	/** Image attachments delivered as real image content parts in the child's first prompt. */
+	images?: TaskImage[];
 }
 
 /**
@@ -2178,6 +2216,8 @@ export interface TaskParams {
 	task?: string;
 	/** How open-ended the work is (flat form); see {@link TaskItem.solutionSpace}. */
 	solutionSpace?: string;
+	/** Chief's one-line rejection reason for redispatching a completed row. */
+	rework?: string;
 	/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */
 	effort?: "lo" | "med" | "hi";
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
@@ -2190,8 +2230,10 @@ export interface TaskParams {
 	tasks?: TaskItem[];
 	/** Batch form: shared background prepended to every assignment; required by the batch schema. */
 	context?: string;
-	/** Run in an isolated worktree (flat form; per-item in batch form). */
+	/** Run this spawn in an isolated worktree (flat form; per-item in batch form). */
 	isolated?: boolean;
+	/** Image attachments (flat form) delivered as real image content parts in the child's first prompt. */
+	images?: TaskImage[];
 }
 
 /**
@@ -2310,6 +2352,8 @@ export interface AgentProgress {
 	resolvedThinkingLevel?: ConfiguredThinkingLevel;
 	/** True when {@link resolvedModel} is the target of an active retry fallback (not the originally configured model). Lets observer-only UIs (collab guests, Agent Hub rows with no live session) flag the fallback and keep the provider. */
 	resolvedModelIsFallback?: boolean;
+	firstTurnModel?: string;
+	fallbacks?: TaskModelFallback[];
 	/** Extension routing note (e.g. model-pools) explaining why {@link resolvedModel} was chosen. */
 	resolvedModelRoute?: string;
 	/** True when a live advisor was attached to this run's session, not merely enabled in settings. */
@@ -2352,6 +2396,20 @@ export interface AgentProgress {
 	inflightTaskDetails?: TaskToolDetails;
 }
 
+export interface TaskFallbackReason {
+	class: "quota" | "auth" | "other";
+	status?: number;
+	message: string;
+	source: "provider-error" | "usage-preflight";
+}
+
+export interface TaskModelFallback {
+	from: string;
+	to: string;
+	at: string;
+	reason?: TaskFallbackReason;
+}
+
 /** Result from a single agent execution */
 export interface SingleResult {
 	index: number;
@@ -2391,6 +2449,10 @@ export interface SingleResult {
 	resolvedThinkingLevel?: ConfiguredThinkingLevel;
 	/** True when {@link resolvedModel} is the target of an active retry fallback. Mirrors {@link AgentProgress.resolvedModelIsFallback} onto the settled result. */
 	resolvedModelIsFallback?: boolean;
+	/** Model on the first assistant attempt, including a failed request. */
+	firstTurnModel?: string;
+	/** Retry switches with their durable triggering provider error or usage preflight. */
+	fallbacks?: TaskModelFallback[];
 	/** Mirrors {@link AgentProgress.resolvedModelRoute} onto the settled result. */
 	resolvedModelRoute?: string;
 	/** Retains {@link AgentProgress.advisor} after the advised session is disposed. */
@@ -2444,6 +2506,19 @@ export interface SingleResult {
 		attempt: number;
 		errorMessage: string;
 	};
+	/**
+	 * Background jobs that still belonged to the worker when it failed or was
+	 * aborted. Preserved so the parent can see follow-on processes the worker
+	 * started before a terminal provider/runtime failure.
+	 */
+	retainedBackgroundJobs?: Array<{
+		id: string;
+		type: "bash" | "task" | "eval";
+		status: "running" | "completed" | "failed" | "cancelled";
+		label?: string;
+		agentId?: string;
+		pid?: number;
+	}>;
 	/** Output metadata for agent:// URL integration */
 	outputMeta?: { lineCount: number; charCount: number };
 }

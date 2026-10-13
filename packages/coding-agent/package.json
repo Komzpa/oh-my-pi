@@ -388,6 +388,14 @@
 			"types": "./src/hindsight/*.ts",
 			"import": "./src/hindsight/*.ts"
 		},
+		"./goals/runtime": {
+			"types": "./src/goals/runtime.ts",
+			"import": "./src/goals/runtime.ts"
+		},
+		"./goals/state": {
+			"types": "./src/goals/state.ts",
+			"import": "./src/goals/state.ts"
+		},
 		"./modes": {
 			"types": "./src/modes/index.ts",
 			"import": "./src/modes/index.ts"
@@ -560,7 +568,8 @@
 		"@opentelemetry/sdk-trace-base": "catalog:",
 		"@opentelemetry/sdk-trace-node": "catalog:",
 		"axe-core": "4.13.0",
-		"puppeteer-core": "catalog:"
+		"puppeteer-core": "catalog:",
+		"yaml": "2.9.1"
 	},
 	"devDependencies": {
 		"@types/bun": "catalog:"

@@ -16,11 +16,7 @@ import type { CustomMessage } from "./messages";
 import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { truncateMiddle } from "@oh-my-pi/pi-tui/tools/streaming-output";
 
-/**
- * `customType` of the injected async-result follow-up message. The task
- * executor's run monitor matches on it to invalidate a previously recorded
- * yield: a result injected after the yield supersedes that yield's payload.
- */
+/** `customType` of the injected owner-scoped async-result follow-up message. */
 export const ASYNC_RESULT_MESSAGE_TYPE = "async-result";
 
 /** Result payloads longer than this spill to an artifact with an inline preview. */
@@ -49,6 +45,7 @@ export interface AsyncResultEntry {
 
 type AsyncResultJobDetails = {
 	jobId: string;
+	agentId?: string;
 	type?: AsyncJobType;
 	label?: string;
 	durationMs?: number;
@@ -98,6 +95,8 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 		const structuredJson = structured && structured.status !== "valid" ? renderStructuredJson(structured) : undefined;
 		return {
 			jobId: entry.jobId,
+			result: entry.result,
+			agentId: entry.job?.agentId,
 			// The job manager disambiguates a requested job id when it collides
 			// with another live job (e.g. a task job reusing a vibe turn's job
 			// id), suffixing `jobId` — but the task's artifacts are still
@@ -105,7 +104,6 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 			// advertised `agent://` URL from that, or the delivery would point
 			// at an id with no backing `<id>.md`/`.json` on disk.
 			agentUrlId: entry.job?.agentId ?? entry.jobId,
-			result: entry.result,
 			type: entry.job?.type,
 			label: entry.job?.label,
 			durationMs: entry.durationMs,
@@ -123,6 +121,7 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 		meta: { source: { type: "report", value: "background job delivery" } },
 		jobs: jobs.map(job => ({
 			jobId: job.jobId,
+			...(job.agentId ? { agentId: job.agentId } : {}),
 			type: job.type,
 			label: job.label,
 			durationMs: job.durationMs,

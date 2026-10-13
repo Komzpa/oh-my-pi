@@ -51,7 +51,14 @@ import {
 	recoverHarmonyToolCall,
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
-import { cloneJsonTree, logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
+import {
+	cloneJsonTree,
+	logger,
+	popLoopPhase,
+	pushLoopPhase,
+	sanitizeText,
+	structuredCloneJSON,
+} from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { LiveSteeringChannel } from "./live-steering";
 import { agentPauseGate } from "./pause";
@@ -73,6 +80,13 @@ import {
 	startExecuteToolSpan,
 	startInvokeAgentSpan,
 } from "./telemetry";
+import {
+	admitAssistantMessage,
+	getAssistantPublicationGate,
+	ASSISTANT_GATE_REFUSAL,
+	isAssistantNarrativeReplaced,
+	replaceAssistantNarrative,
+} from "./assistant-publication";
 import { createAdditionalContextMessage, isNonBlankContext, joinAdditionalContext } from "./tool-context";
 import type {
 	AgentContext,
@@ -1176,6 +1190,7 @@ async function runLoopBody(
 	initialMessages: AgentMessage[],
 	streamFn?: StreamFn,
 ): Promise<void> {
+	const publicationGate = getAssistantPublicationGate(config);
 	let deadlineTimer: Timer | undefined;
 	if (config.deadline !== undefined) {
 		const deadlineAbortController = new AbortController();
@@ -1228,6 +1243,7 @@ async function runLoopBody(
 		let hostToolChoice: ToolChoice | undefined;
 		let softRequiredTool: string | undefined;
 		let softSatisfies: SoftToolRequirement["satisfies"];
+		let softRequirementReminder: string | undefined;
 		let directiveResolvedForTurn = false;
 		let turnOpen = false;
 		// A trailing assistant message with unpaired tool calls: the harness
@@ -1323,6 +1339,7 @@ async function runLoopBody(
 						hostToolChoice = directive === undefined || isSoftToolRequirement(directive) ? undefined : directive;
 						softRequiredTool = softReq?.toolName;
 						softSatisfies = softReq?.satisfies;
+						softRequirementReminder = softReq ? firstReminderSentence(softReq.reminder) : undefined;
 						const softRequirementId = softRequirementState.id;
 						if (softReq !== undefined) {
 							if (softReq.id !== softRequirementId) {
@@ -1480,9 +1497,17 @@ async function runLoopBody(
 				}
 				if (recovered) {
 					message = snapshotAssistantMessage(message);
+					await config.transformAssistantMessage?.(message, signal);
+					await admitAssistantMessage(message, publicationGate, signal, abortReasonText);
 					currentContext.messages.push(message);
-					stream.push({ type: "message_start", message: snapshotAssistantMessage(message) });
-					stream.push({ type: "message_end", message: snapshotAssistantMessage(message) });
+					stream.push({
+						type: "message_start",
+						message: publicationGate ? message : snapshotAssistantMessage(message),
+					});
+					stream.push({
+						type: "message_end",
+						message: publicationGate ? message : snapshotAssistantMessage(message),
+					});
 				}
 				newMessages.push(message);
 
@@ -1579,7 +1604,14 @@ async function runLoopBody(
 					toolCalls.every(toolCall => softSatisfies?.(toolCall) ?? toolCall.name === softRequiredTool);
 				const softGateActive =
 					softRequiredTool !== undefined && !hardToolChoiceBlocks(config.toolChoice, softRequiredTool);
-				const softNonCompliant = softGateActive && !calledOnlyRequiredTool;
+				const softReadOnlyDetour =
+					softGateActive &&
+					hasMoreToolCalls &&
+					!calledOnlyRequiredTool &&
+					toolCalls.every(toolCall =>
+						isReadOnlyToolCall(currentContext.tools, toolCall, config.resolveFallbackTool),
+					);
+				const softNonCompliant = softGateActive && !calledOnlyRequiredTool && !softReadOnlyDetour;
 
 				const toolResults: ToolResultMessage[] = [];
 				const additionalMessages: AgentMessage[] = [];
@@ -1597,12 +1629,16 @@ async function runLoopBody(
 					// reminder pays no message-cache invalidation. Re-engage so the loop
 					// never yields while the requirement is unmet.
 					for (const toolCall of toolCalls) {
-						const result = createAbortedToolResult(
-							toolCall,
-							stream,
-							"skipped",
-							`Not executed: call the \`${softRequiredTool}\` tool to resolve the pending action before using other tools.`,
-						);
+						const reason = [
+							`Skipped: waiting for the \`${softRequiredTool}\` tool first`,
+							softRequirementReminder,
+						]
+							.filter(Boolean)
+							.join(" — ");
+						const result = createAbortedToolResult(toolCall, stream, "skipped", reason, {
+							source: "soft_requirement_skipped",
+							waitingFor: softRequiredTool,
+						});
 						currentContext.messages.push(result);
 						newMessages.push(result);
 						toolResults.push(result);
@@ -1868,13 +1904,38 @@ function openLiveSteering(
 	});
 }
 
+function removeSupersededGoalContext(messages: AgentContext["messages"]): AgentContext["messages"] {
+	let newestGoalContext = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message?.role === "custom" && message.customType === "goal-mode-context") {
+			newestGoalContext = i;
+			break;
+		}
+	}
+	if (newestGoalContext <= 0) return messages;
+	let hasOlderGoalContext = false;
+	for (let i = 0; i < newestGoalContext; i++) {
+		const message = messages[i];
+		if (message?.role === "custom" && message.customType === "goal-mode-context") {
+			hasOlderGoalContext = true;
+			break;
+		}
+	}
+	if (!hasOlderGoalContext) return messages;
+	return messages.filter(
+		(message, index) =>
+			index >= newestGoalContext || message.role !== "custom" || message.customType !== "goal-mode-context",
+	);
+}
+
 async function prepareProviderCall(
 	context: AgentContext,
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
 ): Promise<PreparedProviderCall> {
 	const model = config.getModel?.() ?? config.model;
-	let messages = context.messages;
+	let messages = removeSupersededGoalContext(context.messages);
 	if (config.transformContext) {
 		messages = await config.transformContext(messages, signal);
 	}
@@ -1943,6 +2004,7 @@ async function streamAssistantResponse(
 	prepared?: PreparedProviderCall,
 	canDispatchFinalToolCalls?: (message: AssistantMessage) => boolean,
 ): Promise<AssistantMessage> {
+	const publicationGate = getAssistantPublicationGate(config);
 	const providerCall = prepared ?? (await prepareProviderCall(context, config, signal));
 	const { model, context: llmContext, promptToolWireTools, ownedDialect } = providerCall;
 
@@ -2103,6 +2165,7 @@ async function streamAssistantResponse(
 
 			let providerStreamSettled = false;
 			let speculationSettled = false;
+			let finalMessagePublished = false;
 			const responseIterator = response[Symbol.asyncIterator]();
 			const finishAbortedStream = async (): Promise<AssistantMessage> => {
 				try {
@@ -2113,7 +2176,7 @@ async function streamAssistantResponse(
 				}
 				await speculationCoordinator?.discardAll("run aborted", "aborted");
 				speculationSettled = true;
-				const aborted = emitAbortedAssistantMessage(
+				const aborted = await emitAbortedAssistantMessage(
 					partialMessage,
 					addedPartial,
 					completedToolCallIds,
@@ -2122,8 +2185,42 @@ async function streamAssistantResponse(
 					stream,
 					requestSignal,
 				);
+				finalMessagePublished = true;
 				await finishChat(aborted);
 				return aborted;
+			};
+			const finishFailedStream = async (error: unknown): Promise<AssistantMessage> => {
+				await speculationCoordinator?.discardAll("provider stream failed", "aborted");
+				speculationSettled = true;
+				// A throwing iterator/result has no terminal event. Preserve its private
+				// draft's completed calls, usage, and real error without a raw fallback.
+				const failed = snapshotAssistantMessage(
+					retainCompletedToolCalls(
+						{
+							...(partialMessage ?? createGateStopMessage(model, undefined)),
+							stopReason: requestSignal?.aborted ? "aborted" : "error",
+							errorMessage: requestSignal?.aborted
+								? abortReasonText(requestSignal)
+								: error instanceof Error
+									? error.message
+									: String(error),
+						},
+						completedToolCallIds,
+					),
+				);
+				try {
+					await config.transformAssistantMessage?.(failed, requestSignal);
+				} catch {
+					replaceAssistantNarrative(failed, ASSISTANT_GATE_REFUSAL);
+				}
+				await admitAssistantMessage(failed, publicationGate, requestSignal, abortReasonText);
+				context.messages.push(failed);
+				finalMessagePublished = true;
+				stream.push({ type: "message_start", message: failed });
+				stream.push({ type: "message_end", message: failed });
+				await finishChat(failed);
+				providerStreamSettled = true;
+				return failed;
 			};
 
 			// Set up a single abort race: register the abort listener once for the whole
@@ -2189,6 +2286,7 @@ async function streamAssistantResponse(
 						if (config.transformAssistantMessage) {
 							await config.transformAssistantMessage(finalMessage, requestSignal);
 						}
+						await admitAssistantMessage(finalMessage, publicationGate, requestSignal, abortReasonText);
 						// A pre-dispatch hook may request approval or change external state, so
 						// do not run it until the outer loop has established this tool turn can
 						// actually dispatch. The same gate keeps host-deferred speculation from
@@ -2229,10 +2327,17 @@ async function streamAssistantResponse(
 						} else {
 							context.messages.push(finalMessage);
 						}
+						finalMessagePublished = true;
 						if (!addedPartial) {
-							stream.push({ type: "message_start", message: snapshotAssistantMessage(finalMessage) });
+							stream.push({
+								type: "message_start",
+								message: publicationGate ? finalMessage : snapshotAssistantMessage(finalMessage),
+							});
 						}
-						stream.push({ type: "message_end", message: snapshotAssistantMessage(finalMessage) });
+						stream.push({
+							type: "message_end",
+							message: publicationGate ? finalMessage : snapshotAssistantMessage(finalMessage),
+						});
 						await finishChat(finalMessage);
 						speculationSettled = true;
 						providerStreamSettled = true;
@@ -2295,6 +2400,10 @@ async function streamAssistantResponse(
 					switch (event.type) {
 						case "start":
 							partialMessage = event.partial;
+							if (publicationGate) {
+								config.onAssistantMessageEvent?.(partialMessage, event);
+								break;
+							}
 							if (addedPartial) {
 								context.messages[context.messages.length - 1] = partialMessage;
 								completedToolCallIds.clear();
@@ -2390,41 +2499,43 @@ async function streamAssistantResponse(
 									}
 								}
 								partialMessage = event.partial;
-								context.messages[context.messages.length - 1] = partialMessage;
+								if (addedPartial) context.messages[context.messages.length - 1] = partialMessage;
 								config.onAssistantMessageEvent?.(partialMessage, event);
-								// Track which blocks are still streaming: open blocks are
-								// re-cloned on every delta, finalized blocks are shared.
-								const contentIndex = (event as { contentIndex?: number }).contentIndex;
-								if (contentIndex !== undefined) {
-									if (event.type.endsWith("_start")) openBlocks.add(contentIndex);
-									else if (event.type.endsWith("_end")) openBlocks.delete(contentIndex);
+								if (!publicationGate) {
+									// Track which blocks are still streaming: open blocks are
+									// re-cloned on every delta, finalized blocks are shared.
+									const contentIndex = event.contentIndex;
+									if (contentIndex !== undefined) {
+										if (event.type.endsWith("_start")) openBlocks.add(contentIndex);
+										else if (event.type.endsWith("_end")) openBlocks.delete(contentIndex);
+									}
+									// READ-ONLY-CONSUMER INVARIANT: `message` and
+									// `assistantMessageEvent.partial` intentionally share one snapshot,
+									// and the snapshot is rebuilt incrementally — only the delta's
+									// block, open blocks, and newly appended blocks are deep-cloned;
+									// finalized blocks are carried over from the previous snapshot by
+									// reference (see `snapshotAssistantMessageIncremental`), so they are
+									// shared across ALL message_update snapshots of the turn.
+									// Consumers MUST treat both fields — and every content block inside
+									// them — as read-only: mutating a snapshot would corrupt every
+									// earlier and later snapshot of the turn, not just this one. In
+									// exchange, per-delta work is proportional to the live stream
+									// instead of the whole turn (issue #10605).
+									const messageSnapshot: AssistantMessage = turnSnapshot
+										? snapshotAssistantMessageIncremental(
+												partialMessage,
+												turnSnapshot,
+												contentIndex ?? -1,
+												openBlocks,
+											)
+										: snapshotAssistantMessage(partialMessage);
+									turnSnapshot = messageSnapshot;
+									stream.push({
+										type: "message_update",
+										assistantMessageEvent: snapshotAssistantMessageEvent(event, messageSnapshot),
+										message: messageSnapshot,
+									});
 								}
-								// READ-ONLY-CONSUMER INVARIANT: `message` and
-								// `assistantMessageEvent.partial` intentionally share one snapshot,
-								// and the snapshot is rebuilt incrementally — only the delta's
-								// block, open blocks, and newly appended blocks are deep-cloned;
-								// finalized blocks are carried over from the previous snapshot by
-								// reference (see `snapshotAssistantMessageIncremental`), so they are
-								// shared across ALL message_update snapshots of the turn.
-								// Consumers MUST treat both fields — and every content block inside
-								// them — as read-only: mutating a snapshot would corrupt every
-								// earlier and later snapshot of the turn, not just this one. In
-								// exchange, per-delta work is proportional to the live stream
-								// instead of the whole turn (issue #10605).
-								const messageSnapshot: AssistantMessage = turnSnapshot
-									? snapshotAssistantMessageIncremental(
-											partialMessage,
-											turnSnapshot,
-											contentIndex ?? -1,
-											openBlocks,
-										)
-									: snapshotAssistantMessage(partialMessage);
-								turnSnapshot = messageSnapshot;
-								stream.push({
-									type: "message_update",
-									assistantMessageEvent: snapshotAssistantMessageEvent(event, messageSnapshot),
-									message: messageSnapshot,
-								});
 							}
 							if (
 								event.type === "toolcall_end" &&
@@ -2437,6 +2548,9 @@ async function streamAssistantResponse(
 							break;
 					}
 				}
+			} catch (error) {
+				if (!publicationGate || finalMessagePublished || error instanceof HarmonyLeakInterruption) throw error;
+				return await finishFailedStream(error);
 			} finally {
 				detachAbortListener?.();
 				cancelArgStreams();
@@ -2469,6 +2583,7 @@ async function streamAssistantResponse(
 					await config.transformAssistantMessage(trailing, requestSignal);
 				}
 				trailing = snapshotAssistantMessage(trailing);
+				await admitAssistantMessage(trailing, publicationGate, requestSignal, abortReasonText);
 				const finalToolCallsCanDispatch =
 					!requestSignal?.aborted &&
 					(canDispatchFinalToolCalls?.(trailing) ??
@@ -2504,14 +2619,24 @@ async function streamAssistantResponse(
 					context.messages[context.messages.length - 1] = trailing;
 				} else {
 					context.messages.push(trailing);
-					stream.push({ type: "message_start", message: snapshotAssistantMessage(trailing) });
+					stream.push({
+						type: "message_start",
+						message: publicationGate ? trailing : snapshotAssistantMessage(trailing),
+					});
 				}
-				stream.push({ type: "message_end", message: snapshotAssistantMessage(trailing) });
+				stream.push({
+					type: "message_end",
+					message: publicationGate ? trailing : snapshotAssistantMessage(trailing),
+				});
+				finalMessagePublished = true;
 				await finishChat(trailing);
 				speculationSettled = true;
 				providerStreamSettled = true;
 				return trailing;
 			} catch (error) {
+				if (publicationGate && !finalMessagePublished && !(error instanceof HarmonyLeakInterruption)) {
+					return await finishFailedStream(error);
+				}
 				if (!speculationSettled) {
 					await speculationCoordinator?.discardAll("provider stream finalization failed", "aborted");
 				}
@@ -2536,7 +2661,8 @@ function retainCompletedToolCalls(
 	let droppedIncompleteToolCall = false;
 	const content = message.content.filter(block => {
 		if (block.type !== "toolCall") return true;
-		const keep = completedToolCallIds.has(block.id);
+		const keep =
+			completedToolCallIds.has(block.id) || (block as CursorExecResolvedCarrier)[kCursorExecResolved] === true;
 		if (!keep) droppedIncompleteToolCall = true;
 		return keep;
 	});
@@ -2659,7 +2785,7 @@ export function abortReasonText(signal: AbortSignal | undefined): string {
 	return "Request was aborted";
 }
 
-function emitAbortedAssistantMessage(
+async function emitAbortedAssistantMessage(
 	partialMessage: AssistantMessage | null,
 	addedPartial: boolean,
 	completedToolCallIds: ReadonlySet<string>,
@@ -2667,7 +2793,8 @@ function emitAbortedAssistantMessage(
 	config: AgentLoopConfig,
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	requestSignal: AbortSignal | undefined,
-): AssistantMessage {
+): Promise<AssistantMessage> {
+	const publicationGate = getAssistantPublicationGate(config);
 	const model = config.getModel?.() ?? config.model;
 	const errorMessage = abortReasonText(requestSignal);
 	const errorId =
@@ -2705,13 +2832,27 @@ function emitAbortedAssistantMessage(
 		retained.toolCallAbortMessages = toolCallAbortMessages;
 	}
 	const abortedMessage = snapshotAssistantMessage(retained);
+	if (publicationGate) {
+		try {
+			await config.transformAssistantMessage?.(abortedMessage, requestSignal);
+		} catch {
+			replaceAssistantNarrative(abortedMessage, ASSISTANT_GATE_REFUSAL);
+		}
+		await admitAssistantMessage(abortedMessage, publicationGate, requestSignal, abortReasonText);
+	}
 	if (addedPartial) {
 		context.messages[context.messages.length - 1] = abortedMessage;
 	} else {
 		context.messages.push(abortedMessage);
-		stream.push({ type: "message_start", message: snapshotAssistantMessage(abortedMessage) });
+		stream.push({
+			type: "message_start",
+			message: publicationGate ? abortedMessage : snapshotAssistantMessage(abortedMessage),
+		});
 	}
-	stream.push({ type: "message_end", message: snapshotAssistantMessage(abortedMessage) });
+	stream.push({
+		type: "message_end",
+		message: publicationGate ? abortedMessage : snapshotAssistantMessage(abortedMessage),
+	});
 	return abortedMessage;
 }
 
@@ -2763,6 +2904,47 @@ function resolveToolForCall(
 		// mid-stream roster change cannot widen what this request can reach.
 		resolveFallbackTool?.(toolCall.name, tools ?? [])
 	);
+}
+
+function isReadOnlyToolCall(
+	tools: AgentContext["tools"],
+	toolCall: AgentToolCall,
+	resolveFallbackTool: AgentLoopConfig["resolveFallbackTool"],
+): boolean {
+	const tool = resolveToolForCall(tools, toolCall, resolveFallbackTool);
+	if (!tool?.approval) return false;
+	// Todo's approval tier is intentionally broad; only its view operation is a read.
+	if (tool.name === "todo") return toolCall.arguments.op === "view";
+	try {
+		const approval = typeof tool.approval === "function" ? tool.approval(toolCall.arguments) : tool.approval;
+		return typeof approval === "string" ? approval === "read" : approval.tier === "read";
+	} catch {
+		return false;
+	}
+}
+
+function firstReminderSentence(reminders: AgentMessage[]): string | undefined {
+	const text: string[] = [];
+	for (const reminder of reminders) {
+		const content = (reminder as { content?: unknown }).content;
+		if (typeof content === "string") text.push(content);
+		else if (Array.isArray(content)) {
+			for (const part of content) {
+				if (part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part) {
+					const value = part.text;
+					if (typeof value === "string") text.push(value);
+				}
+			}
+		}
+	}
+	const flattened = text
+		.join(" ")
+		.replace(/<[^>]*>/gu, " ")
+		.replace(/\s+/gu, " ")
+		.trim();
+	if (!flattened) return undefined;
+	const sentence = flattened.match(/^.*?[.!?](?=\s|$)/u)?.[0];
+	return sentence ?? flattened;
 }
 
 /** Shortest suggestable segment; below this the match is noise (`id`, `to`). */
@@ -2888,8 +3070,8 @@ async function prepareToolCallDispatch(
 				continue;
 			}
 			if (intent) {
-				toolCall.intent = intent;
-			} else if (typeof tool?.intent === "function") {
+				if (!isAssistantNarrativeReplaced(assistantMessage)) toolCall.intent = intent;
+			} else if (!isAssistantNarrativeReplaced(assistantMessage) && typeof tool?.intent === "function") {
 				try {
 					const derived = tool.intent(strippedArgs as never)?.trim();
 					if (derived) {
@@ -3412,6 +3594,7 @@ async function executeToolCalls(
 					executionStarted = true;
 					let rawResult: unknown;
 					try {
+						pushLoopPhase(`tool.${toolCall.name}.execute`);
 						rawResult = await tool.execute(
 							toolCall.id,
 							executionArgs,
@@ -3428,6 +3611,7 @@ async function executeToolCalls(
 							toolContext,
 						);
 					} finally {
+						popLoopPhase();
 						await streamSession?.discard("outer tool completed without committing stream speculation");
 					}
 					completedToolExecution = true;
@@ -3706,9 +3890,11 @@ export interface SyntheticToolResultDetails {
 		| "assistant_stop_aborted"
 		| "assistant_stop_error"
 		| "assistant_stop_skipped"
+		| "soft_requirement_skipped"
 		| "assistant_stop_length"
 		| "interrupt_skipped";
 	executed: false;
+	waitingFor?: string;
 	upstreamError?: string;
 }
 
@@ -3742,19 +3928,22 @@ export function isSyntheticToolResultMessage(
 function syntheticDetailsFor(
 	reason: "aborted" | "error" | "skipped" | "length",
 	errorMessage: string | undefined,
+	options?: { source?: SyntheticToolResultDetails["source"]; waitingFor?: string },
 ): SyntheticToolResultDetails {
 	const source: SyntheticToolResultDetails["source"] =
-		reason === "aborted"
+		options?.source ??
+		(reason === "aborted"
 			? "assistant_stop_aborted"
 			: reason === "error"
 				? "assistant_stop_error"
 				: reason === "length"
 					? "assistant_stop_length"
-					: "assistant_stop_skipped";
+					: "assistant_stop_skipped");
 	return {
 		__synthetic: true,
 		source,
 		executed: false,
+		...(options?.waitingFor ? { waitingFor: options.waitingFor } : {}),
 		...(reason === "error" && errorMessage ? { upstreamError: errorMessage } : {}),
 	};
 }
@@ -3767,6 +3956,7 @@ export function createSyntheticToolResultMessage(
 	toolCall: Extract<AssistantMessage["content"][number], { type: "toolCall" }>,
 	reason: "aborted" | "error" | "skipped" | "length",
 	errorMessage?: string,
+	options?: { source?: SyntheticToolResultDetails["source"]; waitingFor?: string },
 ): ToolResultMessage<SyntheticToolResultDetails> {
 	const message =
 		reason === "aborted"
@@ -3774,9 +3964,9 @@ export function createSyntheticToolResultMessage(
 			: reason === "length"
 				? "Tool call was not executed because the assistant hit its output token limit (stop_reason: length) before the arguments could complete; the recorded arguments are truncated and unsafe to run. Do NOT retry by re-emitting the same large payload — split the work into several smaller tool calls (e.g. for `write`/`edit`, write the first chunk then append the rest with subsequent `edit` insert ops, or break the file into multiple `write` targets)"
 				: reason === "skipped"
-					? "Tool call was not executed because the assistant ended its turn"
+					? "Tool call was skipped"
 					: "Tool call was not executed because the provider stream ended with an error before the tool could run";
-	const details = syntheticDetailsFor(reason, errorMessage);
+	const details = syntheticDetailsFor(reason, errorMessage, options);
 	return {
 		role: "toolResult",
 		toolCallId: toolCall.id,
@@ -3797,8 +3987,9 @@ function createAbortedToolResult(
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	reason: "aborted" | "error" | "skipped" | "length",
 	errorMessage?: string,
+	options?: { source?: SyntheticToolResultDetails["source"]; waitingFor?: string },
 ): ToolResultMessage {
-	const toolResultMessage = createSyntheticToolResultMessage(toolCall, reason, errorMessage);
+	const toolResultMessage = createSyntheticToolResultMessage(toolCall, reason, errorMessage, options);
 	const result: AgentToolResult<SyntheticToolResultDetails> = {
 		content: toolResultMessage.content,
 		details: toolResultMessage.details,

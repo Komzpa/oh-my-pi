@@ -1,19 +1,13 @@
-/**
- * Quiescence barrier fresh-yield contract (PR #6119 review): a terminal
- * `yield` recorded while owner background jobs are still pending parks the
- * run instead of terminating it, and an async-result delivered after that
- * yield supersedes it — the run only completes on a yield that postdates
- * every delivered result. A model that never refreshes its yield must fail
- * the run rather than surface the stale payload as a clean success.
- */
+/** Owner work settles before yield reminders, never after terminal acceptance. */
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import type { CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
+import { runSubagentFollowUpTurn, runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { createSessionDefaults } from "../helpers/session-defaults";
@@ -55,13 +49,7 @@ interface AsyncSessionOptions {
 	dispose?: () => Promise<void>;
 }
 
-/**
- * Mock session with the owner-async surface the barrier drives:
- * `hasPendingAsyncWork` / `getAsyncJobSnapshot` / `settleAsyncWork`. The job
- * "finishes" during the first settle, which injects the async-result
- * follow-up (custom message_start) and a plain assistant reaction WITHOUT a
- * fresh yield — exactly the review's stale-yield scenario.
- */
+/** Mock owner work completes during settlement, injecting an async result. */
 function createAsyncSession(
 	onPrompt: (params: { text: string; promptIndex: number; harness: AsyncQuiescenceHarness }) => void,
 	options: AsyncSessionOptions = {},
@@ -176,27 +164,65 @@ function mockCreateAgentSession(session: AgentSession) {
 	} as CreateAgentSessionResult);
 }
 
-describe("runSubprocess async quiescence fresh-yield contract", () => {
+describe("runSubprocess async work and terminal acceptance", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		AsyncJobManager.resetForTests();
 	});
 
-	it("parks a pending yield, injects the result, and completes on the fresh yield", async () => {
-		const harness = createAsyncSession(({ promptIndex, harness: h }) => {
-			if (promptIndex === 1) {
-				// Terminal yield while the background job is still running.
-				h.emitTerminalYield({ report: "STALE: build passing (job still running)" });
-				return;
-			}
-			if (promptIndex === 2) {
-				// Async-pending notice: the model stands by. The job then
-				// finishes during the barrier's settle.
-				return;
-			}
-			// Reminder ladder after the async-result invalidated the yield:
-			// submit the fresh yield that accounts for the job outcome.
-			h.emitTerminalYield({ report: "FRESH: build failed, see job-1" });
+	it("cancels and reaps pending owner jobs when a follow-up accepts terminal yield", async () => {
+		const id = "follow-up-owner-cleanup";
+		const manager = new AsyncJobManager({});
+		AsyncJobManager.setInstance(manager);
+		const ownerStopped = Promise.withResolvers<void>();
+		const otherStopped = Promise.withResolvers<void>();
+		const ownerJobId = manager.register(
+			"eval",
+			"pending follow-up work",
+			async ({ signal }) => {
+				signal.addEventListener("abort", () => ownerStopped.resolve(), { once: true });
+				await ownerStopped.promise;
+				return "owner stopped";
+			},
+			{ ownerId: id },
+		);
+		const otherJobId = manager.register(
+			"eval",
+			"another owner's work",
+			async ({ signal }) => {
+				signal.addEventListener("abort", () => otherStopped.resolve(), { once: true });
+				await otherStopped.promise;
+				return "other owner stopped";
+			},
+			{ ownerId: "another-owner" },
+		);
+		const harness = createAsyncSession(({ harness: h }) => {
+			expect(manager.getJob(ownerJobId)?.status).toBe("running");
+			h.emitTerminalYield({ report: "FIRST" });
+		});
+		harness.session.setWorkPoolYieldItems = async () => {};
+		vi.spyOn(AgentLifecycleManager.global(), "ensureLive").mockResolvedValue(harness.session);
+
+		try {
+			const result = await runSubagentFollowUpTurn({ id, agent: baseAgent, message: "continue" });
+
+			expect(result.exitCode).toBe(0);
+			expect(JSON.parse(result.output)).toEqual({ report: "FIRST" });
+			expect(manager.getJob(ownerJobId)?.abortController.signal.aborted).toBe(true);
+			expect(manager.getJob(ownerJobId)?.status).toBe("cancelled");
+			expect(manager.getJob(ownerJobId)?.endTime).toBeNumber();
+			expect(manager.getJob(otherJobId)?.status).toBe("running");
+			expect(manager.getJob(otherJobId)?.abortController.signal.aborted).toBe(false);
+		} finally {
+			await manager.dispose({ timeoutMs: 1000 });
+		}
+	});
+
+	it("keeps terminal acceptance final when a late async result is delivered", async () => {
+		const harness = createAsyncSession(({ harness: h }) => {
+			h.emitTerminalYield({ report: "FIRST" });
+			h.finishJob();
+			h.emitTerminalYield({ report: "LATER" });
 		});
 		mockCreateAgentSession(harness.session);
 
@@ -205,19 +231,15 @@ describe("runSubprocess async quiescence fresh-yield contract", () => {
 			agent: baseAgent,
 			task: "do the work",
 			index: 0,
-			id: "quiescence-fresh-yield",
+			id: "quiescence-first-yield",
 		});
 
-		// Run did not terminate on the parked yield: the barrier noticed, the
-		// job settled, and the ladder demanded exactly one more prompt.
-		expect(harness.prompts).toHaveLength(3);
-		expect(harness.settleCalls()).toBe(1);
-		// The parked yield stopped the turn without killing the run.
-		expect(harness.abortCalls()).toBeGreaterThanOrEqual(1);
-		// The fresh yield — not the stale one — is the result of record.
+		expect(harness.prompts).toHaveLength(1);
+		expect(harness.settleCalls()).toBe(0);
+		expect(harness.abortCalls()).toBe(1);
 		expect(result.exitCode).toBe(0);
-		expect(result.output).toContain("FRESH: build failed");
-		expect(result.output).not.toContain("STALE");
+		expect(JSON.parse(result.output)).toEqual({ report: "FIRST" });
+		expect(result.extractedToolData?.yield).toHaveLength(1);
 	});
 
 	it("waits for a pending owner job before spending a yield reminder", async () => {
@@ -244,12 +266,9 @@ describe("runSubprocess async quiescence fresh-yield contract", () => {
 		expect(result.output).toContain("Build failed; job-1 delivered its result.");
 	});
 
-	it("fails the run when the model never refreshes the superseded yield", async () => {
-		const harness = createAsyncSession(({ promptIndex, harness: h }) => {
-			if (promptIndex === 1) {
-				h.emitTerminalYield({ report: "STALE: build passing (job still running)" });
-			}
-			// Notice and every reminder: the model never yields again.
+	it("does not demand a refreshed yield after terminal acceptance", async () => {
+		const harness = createAsyncSession(({ harness: h }) => {
+			h.emitTerminalYield({ report: "FIRST" });
 		});
 		mockCreateAgentSession(harness.session);
 
@@ -258,16 +277,14 @@ describe("runSubprocess async quiescence fresh-yield contract", () => {
 			agent: baseAgent,
 			task: "do the work",
 			index: 0,
-			id: "quiescence-stale-refusal",
+			id: "quiescence-no-refresh",
 		});
 
-		// task + notice + full reminder ladder (3).
-		expect(harness.prompts).toHaveLength(5);
-		// Stale payload must not read as success; it ships only as failed-run
-		// salvage with an explicit reason.
-		expect(result.exitCode).toBe(1);
-		expect(result.error).toContain("refreshed yield");
-		expect(result.output).toContain("STALE: build passing");
+		expect(harness.prompts).toHaveLength(1);
+		expect(harness.settleCalls()).toBe(0);
+		expect(result.exitCode).toBe(0);
+		expect(result.error).toBeUndefined();
+		expect(JSON.parse(result.output)).toEqual({ report: "FIRST" });
 	});
 
 	it("terminates immediately on yield when no owner async work is pending", async () => {

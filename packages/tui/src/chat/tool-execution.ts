@@ -910,7 +910,8 @@ export class ToolExecutionComponent extends Container {
 	 * mounted so toggling it is one prop change.
 	 */
 	override describe(cx?: DescribeContext): NativeNode {
-		if (this.#toolName === "wait" && this.#isBenignSkip()) return EMPTY_NODE;
+		if (this.#toolName === "wait" && this.#isBenignSkip() && this.#softRequirementWaitTarget() === undefined)
+			return EMPTY_NODE;
 		const dataFirst = cx?.supports("tool") === true;
 		const key = [
 			dataFirst,
@@ -1780,12 +1781,17 @@ export class ToolExecutionComponent extends Container {
 	 * #contentText fallback and the benign-skip path so both render identically.
 	 */
 	#renderDefaultCard(contentWidth: number): string {
+		const waitingFor = this.#softRequirementWaitTarget();
 		return formatDefaultToolExecution(
 			{
-				label: this.#toolLabel,
-				args: this.#args,
+				label: waitingFor ? `Skipped (waiting for ${waitingFor})` : this.#toolLabel,
+				args: waitingFor ? undefined : this.#args,
 				result: this.#result
-					? { output: this.#getTextOutput(), isError: this.#result.isError, skipped: this.#isBenignSkip() }
+					? {
+							output: waitingFor ? "" : this.#getTextOutput(),
+							isError: this.#result.isError,
+							skipped: this.#isBenignSkip(),
+						}
 					: undefined,
 				options: this.#renderState,
 			},
@@ -1805,8 +1811,15 @@ export class ToolExecutionComponent extends Container {
 		const details = this.#result.details as
 			| { __synthetic?: boolean; __interrupted?: boolean; source?: string; execution?: string }
 			| undefined;
+		if (details?.source === "soft_requirement_skipped") return details.__synthetic === true;
 		if (details?.source !== "interrupt_skipped") return false;
 		return details.__synthetic === true || (details.__interrupted === true && details.execution === "started");
+	}
+
+	#softRequirementWaitTarget(): string | undefined {
+		if (!this.#result) return undefined;
+		const details = this.#result.details as { source?: string; waitingFor?: string } | undefined;
+		return details?.source === "soft_requirement_skipped" ? details.waitingFor : undefined;
 	}
 
 	/**

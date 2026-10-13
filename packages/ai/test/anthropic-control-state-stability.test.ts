@@ -232,4 +232,18 @@ describe("Anthropic controls derived from the transcript", () => {
 		// The steer's effort goes out exactly once, as its own control message.
 		expect(steered.payload.messages.flatMap(message => message.output_config?.effort ?? [])).toEqual(["medium"]);
 	});
+	it("records controls at the retained-history index with a provider-only elapsed note", async () => {
+		const withElapsedNote: Message[] = [
+			user("start"),
+			{
+				role: "developer",
+				content: "elapsed 5s / 900s",
+				synthetic: true,
+				timestamp: clock++,
+			},
+		];
+		const first = await capture(withElapsedNote, Effort.High);
+
+		expect(first.message.requestControls?.messageIndex).toBe(1);
+	});
 });

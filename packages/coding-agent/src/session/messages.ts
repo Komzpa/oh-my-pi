@@ -53,9 +53,11 @@ import { convertMessageToLlm } from "@oh-my-pi/pi-agent-core/compaction/messages
 import type { AssistantMessage, ImageContent, Message, TextContent, UserMessage } from "@oh-my-pi/pi-ai";
 import { copyPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
+import { coolDownExhaustedProvider, isProviderExhaustionError } from "./provider-exhaustion";
 import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
+import { completedToolCallIds, latestUserTurnIndex, shrinkToolHistoryMessage } from "./tool-history-shrink";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
 
 export {
@@ -73,8 +75,13 @@ import { titleTextFromSkillPrompt } from "@oh-my-pi/pi-tui/chat/skill-title-inpu
  * Logs provider-error turns so their actual cause is available outside the
  * session transcript. No-op for non-error stop reasons.
  */
-export function logProviderTurnError(msg: AssistantMessage): void {
+export function logProviderTurnError(msg: AssistantMessage, activeProvider = msg.provider): void {
 	if (msg.stopReason !== "error") return;
+	if (isProviderExhaustionError(msg.errorStatus, msg.errorMessage)) {
+		coolDownExhaustedProvider(activeProvider, {
+			reason: `${msg.errorStatus ?? ""} ${msg.errorMessage ?? "provider exhausted"}`.trim(),
+		});
+	}
 	logger.warn("agent turn ended with provider error", {
 		provider: msg.provider,
 		model: msg.model,
@@ -988,6 +995,10 @@ interface ConvertArrayMemo {
 	output: Message[];
 	tail: AgentMessage | undefined;
 	prefixOutputLen: number;
+	/** Latest real user turn start (-1: none); history before it is send-shrunk. */
+	turnStart: number;
+	/** Output length contributed by messages[0 .. turnStart). */
+	turnOutputLen: number;
 }
 
 let convertGeneration = 0;
@@ -1147,6 +1158,21 @@ function convertOneCached(m: AgentMessage, interruptedNext: boolean): Message[] 
 }
 
 /**
+ * True when a tool result in the appended suffix (from `from`) answers a call of
+ * an assistant before `from - 1`. The boundary reconvert cannot reach that
+ * message, so the caller must rebuild the output.
+ */
+function appendedResultReachesOlderCall(messages: readonly AgentMessage[], from: number): boolean {
+	if (messages[from - 1]?.role === "assistant") return false;
+	for (let i = from; i < messages.length; i++) {
+		const role = messages[i]!.role;
+		if (role === "assistant") return false;
+		if (role === "toolResult") return true;
+	}
+	return false;
+}
+
+/**
  * Transform AgentMessages (including custom types) to LLM-compatible Messages.
  *
  * This is used by:
@@ -1159,6 +1185,14 @@ function convertOneCached(m: AgentMessage, interruptedNext: boolean): Message[] 
  * unchanged re-convert of the same array hands back the same outer `Message[]`.
  * Owner mutations (prune/shake/strip-images) invalidate the affected message
  * through the shared registry before the next pass.
+ *
+ * Completed tool calls are sent through {@link shrinkToolHistoryMessage}: oversized
+ * arguments are replaced by markers in a provider-only copy, in every turn, since
+ * the result already exists. Tool results are shrunk only before the latest real
+ * user turn; the current turn's results and the session file keep full values.
+ * When a new user turn arrives on the same growing array, only the previously
+ * protected turn is reconverted. A pending call that gets its result on the same
+ * array is reconverted at the boundary, so it shrinks on the next send.
  */
 export function convertToLlm(messages: AgentMessage[]): Message[] {
 	const len = messages.length;
@@ -1181,17 +1215,32 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 	// plus the appended suffix. The boundary-identity check (old tail still sits
 	// at its old index) rejects an in-place interior splice-replace that grew the
 	// array while swapping earlier identities, forcing a full rebuild.
-	let out: Message[];
-	let start: number;
-	if (
+	// A new real user turn in the appended suffix makes the previously protected
+	// turn's results eligible for shrinking; the scan stops at the old length. A result that
+	// completes a call of an older assistant (parallel or async batch) forces a
+	// rebuild; per-message conversion stays cached.
+	const grew =
 		sameGeneration &&
 		len > memo.length &&
 		memo.length > 0 &&
 		messages[memo.length - 1] === memo.tail &&
-		memo.prefixOutputLen <= memo.output.length
-	) {
+		memo.prefixOutputLen <= memo.output.length &&
+		!appendedResultReachesOlderCall(messages, memo.length);
+	const appendedTurn = grew ? latestUserTurnIndex(messages, memo.length) : -1;
+	const turnStart = !grew ? latestUserTurnIndex(messages) : appendedTurn >= 0 ? appendedTurn : memo.turnStart;
+
+	let out: Message[];
+	let start: number;
+	let turnOutputLen = 0;
+	if (grew && turnStart === memo.turnStart) {
 		out = memo.output.slice(0, memo.prefixOutputLen);
 		start = memo.length - 1;
+		turnOutputLen = memo.turnOutputLen;
+	} else if (grew && memo.turnStart >= 0 && memo.turnOutputLen <= memo.prefixOutputLen) {
+		// Reconvert from the old turn start: its results are now eligible history.
+		out = memo.output.slice(0, memo.turnOutputLen);
+		start = memo.turnStart;
+		turnOutputLen = memo.turnOutputLen;
 	} else {
 		out = [];
 		start = 0;
@@ -1202,9 +1251,11 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 	let prefixOutputLen = 0;
 	for (let i = start; i < len; i++) {
 		if (i === len - 1) prefixOutputLen = out.length;
+		if (i === turnStart) turnOutputLen = out.length;
 		const m = messages[i];
 		const interruptedNext = m.role === "assistant" && followedByInterruptedThinking(messages, i);
-		const fragment = convertOneCached(m, interruptedNext);
+		const source = shrinkToolHistoryMessage(m, completedToolCallIds(messages, i), i < turnStart);
+		const fragment = convertOneCached(source, interruptedNext);
 		for (const msg of fragment) out.push(msg);
 	}
 	if (len === 0) prefixOutputLen = 0;
@@ -1217,6 +1268,8 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 		output: out,
 		tail,
 		prefixOutputLen,
+		turnStart,
+		turnOutputLen,
 	});
 	return out;
 }

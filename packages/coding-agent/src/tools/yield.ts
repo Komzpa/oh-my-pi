@@ -20,6 +20,7 @@ import {
 } from "@oh-my-pi/pi-ai/utils/schema";
 import { prompt } from "@oh-my-pi/pi-utils";
 import yieldDescription from "../prompts/tools/yield.md" with { type: "text" };
+import yieldDataErrorConflictMessage from "../prompts/tools/yield-data-error-conflict.md" with { type: "text" };
 import { subprocessToolRegistry } from "../task/subprocess-tool-registry";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { ToolSession } from ".";
@@ -163,15 +164,32 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * True when a terminal `type: "result"` payload carries no answer: missing
+ * (`undefined`; strict-mode `null` is already normalized to it), blank text,
+ * or an empty container (`[]`, `{}`). Genuine scalars (`0`, `false`) count as
+ * content — only provably answer-less payloads are rejected.
+ */
+function isEmptyResultData(value: unknown): boolean {
+	if (value === undefined) return true;
+	if (typeof value === "string") return value.trim().length === 0;
+	if (Array.isArray(value)) return value.length === 0;
+	if (isPlainRecord(value)) return Object.keys(value).length === 0;
+	return false;
+}
+
+/**
  * Read the optional `error` argument. Strict-mode providers (OpenAI/Codex) send
  * omitted optionals as `null`; non-strict OpenAI-compatible backends routinely
  * fill the optional string with `""` next to a valid `data` payload. Both mean
  * "no error" — an empty string is never a usable failure reason.
  */
-function parseYieldError(value: unknown): string | undefined {
-	if (value === undefined || value === null || value === "") return undefined;
-	if (typeof value === "string") return value;
-	throw new Error("error must be a string");
+function parseYieldError(value: unknown, options: { hasData: boolean }): string | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== "string") throw new Error("error must be a string");
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return undefined;
+	if (options.hasData && isPlaceholderYieldError(trimmed)) return undefined;
+	return trimmed;
 }
 
 /**
@@ -182,6 +200,32 @@ function parseYieldError(value: unknown): string | undefined {
 function formatYieldLabels(labels: readonly string[]): string {
 	if (labels.length === 0) return '""';
 	return labels.map(label => `"${label}"`).join(", ");
+}
+
+const PLACEHOLDER_YIELD_ERRORS = new Set([
+	"ignore",
+	"ignored",
+	"n/a",
+	"na",
+	"none",
+	"not applicable",
+	"null",
+	"placeholder",
+	"undefined",
+	"unused",
+	"x",
+]);
+
+function isPlaceholderYieldError(value: string): boolean {
+	return PLACEHOLDER_YIELD_ERRORS.has(value.trim().toLowerCase());
+}
+
+function renderDataErrorConflictMessage(errorMessage: string, yieldType: string | string[] | undefined): string {
+	return prompt.render(yieldDataErrorConflictMessage, {
+		errorJson: JSON.stringify(errorMessage),
+		failureJson: JSON.stringify({ error: errorMessage }),
+		typeJson: yieldType === undefined ? undefined : JSON.stringify(yieldType),
+	});
 }
 
 /**
@@ -302,6 +346,9 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	#schemaValidationFailures = 0;
 	#emptyResultFailures = 0;
 	#hasIncrementalSections = false;
+	// A terminal acceptance closes submission for the session's lifetime.
+	// Later yields, including incremental sections, must not mutate its result.
+	#terminalResultSubmitted = false;
 	readonly #session: ToolSession;
 	readonly #parameters: TSchema;
 	#workPoolBatchKey = "";
@@ -417,6 +464,22 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		this.#emptyResultFailures = 0;
 	}
 
+	/**
+	 * One-shot latch for terminal results: the first accepted terminal result is
+	 * the run's answer and can never be replaced. Throws the stop instruction when
+	 * a later terminal yield reaches the accept point (642/665). Deliberately
+	 * never cleared in resetTurnState() so a woken parked worker cannot overwrite
+	 * the stored result on a follow-up turn.
+	 */
+	#claimTerminalResult(): void {
+		if (this.#terminalResultSubmitted) {
+			throw new Error(
+				"The result was already submitted and accepted; it cannot be replaced. Stop now — do not call yield again.",
+			);
+		}
+		this.#terminalResultSubmitted = true;
+	}
+
 	#workPoolItems(): readonly WorkPoolYieldItem[] {
 		const items = this.#session.getWorkPoolYieldItems?.() ?? [];
 		const key = items.map(item => `${item.index}:${item.id}`).join("\0");
@@ -434,6 +497,11 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		_onUpdate?: AgentToolUpdateCallback<YieldDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<YieldDetails>> {
+		if (this.#terminalResultSubmitted) {
+			throw new Error(
+				"The result was already submitted and accepted; it cannot be replaced or appended to. Stop now — do not call yield again.",
+			);
+		}
 		if (!isPlainRecord(params)) throw new Error("yield arguments must be an object");
 		const raw = params;
 		const workPoolItems = this.#workPoolItems();
@@ -441,7 +509,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		let yieldType: string | string[] | undefined;
 		// Strict-mode providers send omitted optionals as `null`; treat it as absent.
 		let data: unknown = raw.data === null ? undefined : raw.data;
-		const errorMessage = parseYieldError(raw.error);
+		const errorMessage = parseYieldError(raw.error, { hasData: data !== undefined });
 		if (workPoolItems.length > 0) {
 			const item = resolveWorkPoolYieldItem(workPoolItems, raw.key);
 			workPoolItemId = item.id;
@@ -462,7 +530,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		const isIncremental = Array.isArray(yieldType) && yieldType.length > 0;
 
 		if (errorMessage !== undefined && data !== undefined) {
-			throw new Error("yield cannot contain both data and error");
+			throw new Error(renderDataErrorConflictMessage(errorMessage, yieldType));
 		}
 		if (errorMessage === undefined && data === undefined && yieldType === undefined) {
 			this.#emptyResultFailures++;
@@ -470,6 +538,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				const attemptCount = this.#emptyResultFailures;
 				this.#emptyResultFailures = 0;
 				const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
+				if (workPoolItems.length === 0 && !isIncremental) this.#claimTerminalResult();
 				return {
 					content: [{ type: "text", text: `Task aborted: ${error}` }],
 					details: {
@@ -489,6 +558,102 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		const status = errorMessage !== undefined ? "aborted" : "success";
 		let schemaValidationOverridden = false;
 		let schemaValidationFailureCount = 0;
+		// A terminal `type: "result"` yield is the run's answer, so it must carry
+		// it in `data`. Without this, a data-less or explicitly empty (`""`, `{}`,
+		// `[]`) result is accepted as completed with an empty result and the real
+		// answer — e.g. a verdict table left in assistant text — is lost with no
+		// retry. Bounce it in-band so the model resubmits with the payload.
+		// Untouched: error yields (`type: "error"` takes the aborted path),
+		// incremental sections, workpool items, and the legitimate last-turn
+		// closes (accumulated sections, or resolvable last-turn text handled by
+		// the guards below).
+		if (
+			status === "success" &&
+			!isIncremental &&
+			workPoolItems.length === 0 &&
+			yieldType === "result" &&
+			isEmptyResultData(data)
+		) {
+			const closesIncrementalFlow = data === undefined && this.#hasIncrementalSections;
+			// Missing data still falls through to the guards below when one of them
+			// can speak: accumulated sections close the incremental flow, a
+			// last-turn source may resolve the text, and a schema validator owns
+			// the schema-bound punt message. Only a missing payload no guard can
+			// resolve — and any explicitly empty one (`""`, `{}`, `[]`) — bounces
+			// here.
+			const mayResolveLastTurn =
+				data === undefined &&
+				(this.#session.getLastAssistantText !== undefined ||
+					this.#session.getYieldReportText !== undefined ||
+					this.#validate !== undefined);
+			if (!closesIncrementalFlow && !mayResolveLastTurn) {
+				this.#emptyResultFailures++;
+				if (this.#emptyResultFailures > MAX_EMPTY_RESULT_RETRIES) {
+					const attemptCount = this.#emptyResultFailures;
+					this.#emptyResultFailures = 0;
+					const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
+					this.#claimTerminalResult();
+					return {
+						content: [{ type: "text", text: `Task aborted: ${error}` }],
+						details: {
+							data: undefined,
+							status: "aborted",
+							error,
+							type: yieldType,
+						},
+					};
+				}
+				const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
+				throw new Error(
+					`result needs data: pass your full final answer (e.g. the verdict table) in data, not in assistant text. ${YIELD_FORMAT_HINT} Empty result retries remaining before abort: ${remaining}.`,
+				);
+			}
+		}
+		// A success yield with no accumulated sections must carry its answer in `data`.
+		// A stray non-empty top-level key (`result`, `output`, `answer`) with `data`
+		// missing is the answer under the wrong key, so bounce it before last-turn text
+		// resolution can replace it with prose. An untyped yield whose `data` is explicitly
+		// empty bounces the same way the typed result does.
+		if (status === "success" && !isIncremental && workPoolItems.length === 0) {
+			const strayKey =
+				data === undefined
+					? Object.keys(raw).find(
+							key =>
+								key !== "type" &&
+								key !== "data" &&
+								key !== "error" &&
+								raw[key] !== null &&
+								!isEmptyResultData(raw[key]),
+						)
+					: undefined;
+			const emptyUntyped = yieldType === undefined && data !== undefined && isEmptyResultData(data);
+			if (strayKey !== undefined || emptyUntyped) {
+				this.#emptyResultFailures++;
+				if (this.#emptyResultFailures > MAX_EMPTY_RESULT_RETRIES) {
+					const attemptCount = this.#emptyResultFailures;
+					this.#emptyResultFailures = 0;
+					const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
+					this.#claimTerminalResult();
+					return {
+						content: [{ type: "text", text: `Task aborted: ${error}` }],
+						details: {
+							data: undefined,
+							status: "aborted",
+							error,
+							type: yieldType,
+						},
+					};
+				}
+				const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
+				const problem =
+					strayKey !== undefined
+						? `yield has no \`data\`: put your full answer in data, not in \`${strayKey}\``
+						: "yield data is empty: put your full answer in `data`";
+				throw new Error(
+					`${problem}. ${YIELD_FORMAT_HINT} Empty result retries remaining before abort: ${remaining}.`,
+				);
+			}
+		}
 		// Unknown incremental labels are a hard contract mismatch with the closed caller
 		// schema. Reject before the last-turn short-circuit too: `type: ["findings"], result: {}`
 		// would otherwise be accepted as a typed last-turn incremental yield, then a sibling
@@ -537,6 +702,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					const attemptCount = this.#emptyResultFailures;
 					this.#emptyResultFailures = 0;
 					const error = `yield resolved to an empty last-turn result after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
+					if (workPoolItems.length === 0 && !isIncremental) this.#claimTerminalResult();
 					return {
 						content: [{ type: "text", text: `Task aborted: ${error}` }],
 						details: {
@@ -613,6 +779,9 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 
 		this.#emptyResultFailures = 0;
 		if (status === "success" && isIncremental) this.#hasIncrementalSections = true;
+		// Accept point: latch the one-shot terminal guard. Deliberately not cleared
+		// in resetTurnState() — see #claimTerminalResult.
+		if (workPoolItems.length === 0 && !isIncremental) this.#claimTerminalResult();
 		let workPoolComplete = false;
 		let completedWorkPoolItem: WorkPoolYieldItem | undefined;
 		let remainingWorkPoolItems: readonly WorkPoolYieldItem[] = [];

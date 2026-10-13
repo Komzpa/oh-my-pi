@@ -296,6 +296,18 @@ describe("goal runtime", () => {
 		expect(harness.persists).toHaveLength(0);
 	});
 
+	it("keeps a user-paused goal paused when restart recovery preserves active goals", async () => {
+		const harness = createHarness({
+			state: { enabled: false, mode: "active", goal: createGoal({ status: "paused" }) },
+		});
+
+		const resumed = await harness.runtime.onThreadResumed({ preserveActiveGoal: true });
+
+		expect(resumed?.enabled).toBe(false);
+		expect(resumed?.goal.status).toBe("paused");
+		expect(harness.persists).toHaveLength(0);
+	});
+
 	it("escapes XML in goal helpers and rendered prompts", () => {
 		const objective = "Fix <root>&keep>safe";
 		const goal = createGoal({ objective });

@@ -417,6 +417,42 @@ describe("ExtensionUiController editor UI", () => {
 		expect(harness.editor.getText()).toBe("half typed prompt!");
 	});
 
+	it("submits the async dialog's note prompt on the Ctrl+Enter chord (\x1b[13;5u)", async () => {
+		const harness = makeHarness();
+		const questions: ExtensionAskDialogQuestion[] = [
+			{ id: "confirm", question: "Continue?", options: [{ label: "Yes" }] },
+		];
+		const pending = harness.controller.showAskDialog(questions);
+		const ask = harness.editorContainer.children[0];
+		expect(ask).toBeInstanceOf(AskDialogComponent);
+
+		// Open the note prompt (same editor the async ask reuses), type, and
+		// submit with the Ctrl+Enter chord the follow-up path relies on.
+		ask?.handleInput?.("n");
+		const promptEditor = harness.editorContainer.children[0];
+		expect(promptEditor).toBeInstanceOf(HookEditorComponent);
+		promptEditor?.handleInput?.("m");
+		promptEditor?.handleInput?.("y");
+		promptEditor?.handleInput?.(" ");
+		promptEditor?.handleInput?.("n");
+		promptEditor?.handleInput?.("o");
+		promptEditor?.handleInput?.("t");
+		promptEditor?.handleInput?.("e");
+		promptEditor?.handleInput?.("\x1b[13;5u");
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// The note prompt resolved and the ask surface was restored; submit the
+		// highlighted option and confirm the note rides along.
+		const restored = harness.editorContainer.children[0];
+		expect(restored).toBe(ask);
+		restored?.handleInput?.("\n");
+		expect(await pending).toMatchObject({
+			kind: "submit",
+			results: [{ id: "confirm", selectedOptions: ["Yes"], note: "my note" }],
+		});
+	});
+
 	it("bridges addAutocompleteProvider factories to the interactive mode context (#4919)", async () => {
 		const harness = makeHarness();
 		const ui = await harness.init();

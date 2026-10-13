@@ -123,6 +123,20 @@ const mockOpenRouterModels: Model<Api>[] = [
 	}),
 ];
 
+const inklingFree = buildModel({
+	id: "thinkingmachines/inkling:free",
+	name: "Inkling Free",
+	api: "openai-completions",
+	provider: "openrouter",
+	baseUrl: "https://openrouter.ai/api/v1",
+	reasoning: true,
+	thinking: { mode: "effort", efforts: [Effort.Low, Effort.High] },
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 1000000,
+	maxTokens: 8192,
+});
+
 const mockMaxSuffixModels: Model<Api>[] = [
 	buildModel({
 		id: "coding-router",
@@ -386,6 +400,53 @@ function roleChainModel(provider: string, id: string): Model<Api> {
 		maxTokens: 8192,
 	});
 }
+
+describe("explicit model ids fail closed", () => {
+	const haiku = roleChainModel("anthropic", "claude-haiku-4-5");
+	const availableModels = [haiku, ...mockModels];
+
+	test("missing explicit Haiku 5.5 does not silently select Haiku 4.5", () => {
+		const result = parseModelPattern("anthropic/claude-haiku-5-5", [haiku]);
+		expect(result.model).toBeUndefined();
+	});
+
+	test("explicit Haiku 5 cannot skip the earlier revision digit in Haiku 4.5", () => {
+		expect(parseModelPattern("anthropic/claude-haiku-5", [haiku]).model).toBeUndefined();
+	});
+
+	test("override skips a missing explicit id and selects the next entry with its thinking level", () => {
+		const result = resolveModelOverride(["anthropic/claude-haiku-5-5:medium", "anthropic/claude-sonnet-4-5:high"], {
+			getAvailable: () => availableModels,
+		});
+		expect(result.model?.provider).toBe("anthropic");
+		expect(result.model?.id).toBe("claude-sonnet-4-5");
+		expect(result.thinkingLevel).toBe(Effort.High);
+		expect(result.explicitThinkingLevel).toBe(true);
+	});
+
+	test("bare haiku still resolves by partial matching", () => {
+		const result = parseModelPattern("haiku", availableModels);
+		expect(result.model?.id).toBe("claude-haiku-4-5");
+	});
+
+	test("exact explicit id keeps its thinking suffix", () => {
+		const result = parseModelPattern("anthropic/claude-haiku-4-5:medium", availableModels);
+		expect(result.model?.provider).toBe("anthropic");
+		expect(result.model?.id).toBe("claude-haiku-4-5");
+		expect(result.thinkingLevel).toBe(Effort.Medium);
+		expect(result.explicitThinkingLevel).toBe(true);
+	});
+
+	test("missing provider does not reinterpret an explicit selector as a partial raw id", () => {
+		const shadow = roleChainModel("custom", "anthropic/claude-haiku-5-5-preview");
+		expect(parseModelPattern("anthropic/claude-haiku-5-5", [shadow]).model).toBeUndefined();
+	});
+
+	test("an undated explicit id can extend to a dated snapshot without changing revision tokens", () => {
+		const dated = roleChainModel("anthropic", "claude-haiku-4-5-20251001");
+		expect(parseModelPattern("anthropic/claude-haiku-4-5", [dated]).model?.id).toBe(dated.id);
+	});
+});
 
 describe("pickDefaultAvailableModel", () => {
 	test("prefers Codex OAuth over plain OpenAI for the shared GPT default", () => {
@@ -657,6 +718,24 @@ describe("parseModelPattern", () => {
 			const result = parseModelPattern("openrouter/qwen/qwen3-coder:exacto:high", allModels);
 			expect(result.model?.id).toBe("qwen/qwen3-coder:exacto");
 			expect(result.model?.provider).toBe("openrouter");
+			expect(result.thinkingLevel).toBe(Effort.High);
+			expect(result.explicitThinkingLevel).toBe(true);
+			expect(result.warning).toBeUndefined();
+		});
+
+		test("literal Inkling free route remains part of the model id", () => {
+			const result = parseModelPattern("openrouter/thinkingmachines/inkling:free", [inklingFree]);
+			expect(result.model?.provider).toBe("openrouter");
+			expect(result.model?.id).toBe("thinkingmachines/inkling:free");
+			expect(result.thinkingLevel).toBeUndefined();
+			expect(result.explicitThinkingLevel).toBe(false);
+			expect(result.warning).toBeUndefined();
+		});
+
+		test("Inkling free route accepts an explicit high effort after the literal id", () => {
+			const result = parseModelPattern("openrouter/thinkingmachines/inkling:free:high", [inklingFree]);
+			expect(result.model?.provider).toBe("openrouter");
+			expect(result.model?.id).toBe("thinkingmachines/inkling:free");
 			expect(result.thinkingLevel).toBe(Effort.High);
 			expect(result.explicitThinkingLevel).toBe(true);
 			expect(result.warning).toBeUndefined();
@@ -1147,7 +1226,7 @@ describe("resolveAgentModelPatterns", () => {
 				agentModel: ["@definition"],
 				settings,
 			}),
-		).toEqual({ patterns: ["openai/gpt-4o"], role: "override" });
+		).toEqual({ patterns: ["openai/gpt-4o"], role: "override", inheritsParentModel: false });
 
 		expect(
 			resolveAgentModelSelection({
@@ -1156,7 +1235,7 @@ describe("resolveAgentModelPatterns", () => {
 				agentModel: ["@definition"],
 				settings,
 			}),
-		).toEqual({ patterns: ["anthropic/claude-sonnet-4-5"], role: "definition" });
+		).toEqual({ patterns: ["anthropic/claude-sonnet-4-5"], role: "definition", inheritsParentModel: false });
 
 		// An explicit selector carries no role identity, so the child must not
 		// capture the routing of a role that happens to name the same model.
@@ -1167,7 +1246,7 @@ describe("resolveAgentModelPatterns", () => {
 				agentModel: ["@definition"],
 				settings,
 			}),
-		).toEqual({ patterns: ["openai/gpt-4o"], role: undefined });
+		).toEqual({ patterns: ["openai/gpt-4o"], role: undefined, inheritsParentModel: false });
 	});
 
 	test("falls back to the active session model when @task is unset", () => {

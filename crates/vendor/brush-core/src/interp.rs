@@ -1,5 +1,6 @@
 use std::{
 	collections::VecDeque,
+	ffi::{OsStr, OsString},
 	io::Write,
 	path::{Path, PathBuf},
 	sync::Arc,
@@ -82,6 +83,21 @@ pub trait SpawnObserver: Send + Sync {
 	fn on_spawn(&self, pid: i32, pgid: Option<i32>);
 }
 
+/// Optional hook that places each external command in an embedding-owned
+/// process boundary before it is spawned.
+pub trait ExternalCommandWrapper: Send + Sync {
+	/// Returns a replacement executable and argv, or the original command when
+	/// no wrapper is needed. Errors prevent an unrestricted launch.
+	/// `env` is the complete effective child environment, including unset state.
+	fn wrap_external_command(
+		&self,
+		executable: &OsStr,
+		argv0: &OsStr,
+		args: &[OsString],
+		env: &[(OsString, OsString)],
+	) -> std::io::Result<Option<(OsString, Vec<OsString>)>>;
+}
+
 /// Parameters for execution.
 #[derive(Clone, Default)]
 pub struct ExecutionParameters {
@@ -106,6 +122,8 @@ pub struct ExecutionParameters {
 	pub suppress_errexit:     bool,
 	/// Optional hook reporting spawned external children for scoped teardown.
 	spawn_observer:           Option<Arc<dyn SpawnObserver>>,
+	/// Optional per-external-command process boundary.
+	external_command_wrapper: Option<Arc<dyn ExternalCommandWrapper>>,
 }
 
 impl ExecutionParameters {
@@ -154,6 +172,16 @@ impl ExecutionParameters {
 	/// Returns the active spawn-observer hook, if any.
 	pub fn spawn_observer(&self) -> Option<&Arc<dyn SpawnObserver>> {
 		self.spawn_observer.as_ref()
+	}
+
+	/// Assigns a wrapper that must be applied before external commands spawn.
+	pub fn set_external_command_wrapper(&mut self, wrapper: Arc<dyn ExternalCommandWrapper>) {
+		self.external_command_wrapper = Some(wrapper);
+	}
+
+	/// Returns the active external-command wrapper, if any.
+	pub fn external_command_wrapper(&self) -> Option<&Arc<dyn ExternalCommandWrapper>> {
+		self.external_command_wrapper.as_ref()
 	}
 
 	/// Returns the standard input file; usable with `write!` et al.

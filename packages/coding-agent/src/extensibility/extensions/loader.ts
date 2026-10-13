@@ -213,6 +213,13 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		this.extension.handlers.set(event, list);
 	}
 
+	registerSoftToolRequirementProvider(provider: NonNullable<Extension["softToolRequirementProvider"]>): void {
+		if (this.extension.softToolRequirementProvider !== undefined) {
+			throw new Error(`Extension "${this.extension.path}" already registered a soft tool requirement provider`);
+		}
+		this.extension.softToolRequirementProvider = provider;
+	}
+
 	registerTool<TParams extends TSchema = TSchema, TDetails = unknown>(tool: ToolDefinition<TParams, TDetails>): void {
 		const registered = {
 			definition: tool,
@@ -416,6 +423,9 @@ async function runExtensionFactory(
 async function importExtensionModule(extensionPath: string, cwd: string): Promise<PreparedExtension> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
 	try {
+		const sourceHash = new Bun.CryptoHasher("sha256")
+			.update(await Bun.file(resolvedPath).arrayBuffer())
+			.digest("hex");
 		const module = (await withHostGuard(() => loadLegacyPiModule(resolvedPath))) as LoadedExtensionModule;
 		const factory = getExtensionFactory(module);
 
@@ -428,7 +438,7 @@ async function importExtensionModule(extensionPath: string, cwd: string): Promis
 			};
 		}
 
-		return { path: extensionPath, factory, resolvedPath, error: null };
+		return { path: extensionPath, factory, resolvedPath, sourceHash, error: null };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		return { path: extensionPath, factory: null, resolvedPath, error: `Failed to load extension: ${message}` };
@@ -448,6 +458,7 @@ async function bindExtension(
 	}
 	try {
 		const extension = createExtension(extensionPath, imported.resolvedPath);
+		extension.sourceHash = imported.sourceHash;
 		const api = new ConcreteExtensionAPI(PiCodingAgent, extension, runtime, cwd, eventBus);
 		await withHostGuard(() => runExtensionFactory(factory, api, runtime));
 

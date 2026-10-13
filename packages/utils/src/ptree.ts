@@ -9,6 +9,7 @@
 
 import { Process } from "@oh-my-pi/pi-natives";
 import type { Spawn, Subprocess } from "bun";
+import { backgroundCommand } from "./background-priority";
 
 type InMask = "pipe" | "ignore" | Buffer | Uint8Array | null;
 
@@ -637,7 +638,7 @@ function spawnInternal<In extends InMask = InMask>(
 	const { timeout = -1, signal, stderr, detached, subreaper = false, ...rest } = opts ?? {};
 	const useSubreaper = subreaper && process.platform === "linux";
 	const commandEnv = rest.env ?? Bun.env;
-	const child = Bun.spawn(useSubreaper ? [process.execPath, "-e", LINUX_SUBREAPER_SCRIPT] : cmd, {
+	const child = Bun.spawn(backgroundCommand(useSubreaper ? [process.execPath, "-e", LINUX_SUBREAPER_SCRIPT] : cmd), {
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",

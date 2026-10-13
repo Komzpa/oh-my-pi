@@ -103,6 +103,59 @@ describe("executeBash", () => {
 			removeSyncWithRetries(tempDir);
 		}
 	});
+	it.skipIf(process.platform === "win32")("masks desktop session variables only for subagent shells", async () => {
+		const desktopEnv = {
+			PATH: Bun.env.PATH ?? "",
+			HOME: tempDir,
+			SHELL: "/bin/bash",
+			WAYLAND_DISPLAY: "wayland-user",
+			DISPLAY: ":99",
+			DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+			XDG_RUNTIME_DIR: "/run/user/1000",
+			XAUTHORITY: "/run/user/1000/Xauthority",
+			DBUS_STARTER_ADDRESS: "unix:path=/run/user/1000/bus",
+			SWAYSOCK: "/run/user/1000/sway-ipc.sock",
+		};
+		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+			shell: "/bin/bash",
+			args: ["-c"],
+			env: desktopEnv,
+			prefix: undefined,
+		});
+		const snapshotPath = path.join(tempDir, "desktop-snapshot.sh");
+		fs.writeFileSync(
+			snapshotPath,
+			Object.entries(desktopEnv)
+				.map(([key, value]) => `export ${key}=${shellQuote(value)}`)
+				.join("\n"),
+		);
+		vi.spyOn(shellSnapshot, "getOrCreateSnapshot").mockResolvedValue(snapshotPath);
+		const command =
+			"/usr/bin/env; printf '%s\\n' \"$WAYLAND_DISPLAY|$DISPLAY|$DBUS_SESSION_BUS_ADDRESS|$XDG_RUNTIME_DIR\"";
+		const main = await executeBash(command, { cwd: tempDir });
+		const subagent = await executeBash(command, {
+			cwd: tempDir,
+			sessionKey: "desktop-mask-test",
+			maskDesktopSession: true,
+		});
+		expect(main.output).toContain("wayland-user|:99|unix:path=/run/user/1000/bus|/run/user/1000");
+		expect(subagent.output).not.toContain("wayland-user");
+		expect(subagent.output).not.toContain(":99");
+		expect(subagent.output).not.toContain("XDG_RUNTIME_DIR=/run/user/1000");
+		expect(subagent.output).not.toContain("|/run/user/1000");
+		for (const key of ["XAUTHORITY", "DBUS_STARTER_ADDRESS", "SWAYSOCK"]) {
+			expect(subagent.output).not.toContain(`${key}=`);
+		}
+		expect(subagent.output).toContain("omp-worker-runtime-desktop-mask-test-");
+		const fixtureBus = "unix:path=/tmp/omp-fixture-owned-bus";
+		const fixture = await executeBash(command, {
+			cwd: tempDir,
+			sessionKey: "desktop-mask-fixture-test",
+			maskDesktopSession: true,
+			env: { DBUS_SESSION_BUS_ADDRESS: fixtureBus },
+		});
+		expect(fixture.output).toContain(fixtureBus);
+	});
 
 	it("omits minimizer options when the feature is disabled", () => {
 		const group: ShellMinimizerSettings = {

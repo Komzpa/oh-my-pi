@@ -560,15 +560,16 @@ not an allowlist of model transports.
 - optional `:thinkingLevel` suffix (`off|minimal|low|medium|high|xhigh|max|auto|inherit`)
 - `@upstream` routing suffix on OpenRouter and Vercel Gateway selectors (for example, `openrouter/anthropic/claude-sonnet-5@anthropic:high`); an exact literal model id still wins
 
-`--provider` is legacy; `--model` is preferred. An exact `provider/modelId` is unambiguous; bare ids
-and fuzzy patterns are resolved against the available concrete models.
+`--provider` is legacy; `--model` is preferred. Provider-qualified shorthand may only add model-id tokens in order (split on `-`, `.`, `/`, `@`, `:` and digit runs), with named revision digits matching the next candidate revision digit without skipping or changing earlier digits; missing selectors resolve to nothing so fallback lists try the next entry, while bare patterns remain unchanged.
 
 Resolution precedence for exact selectors:
 
 1. exact `provider/modelId` reference
 2. exact bare id (case-insensitive); when several providers carry the same id, a preference ranking picks the winner (see below)
 3. retired effort-tier variant alias (collapsed catalog entries, e.g. `X`/`X-thinking` twins)
-4. provider-scoped fuzzy match, then substring matching with an alias-vs-dated pick
+4. provider-scoped token-preserving fuzzy match, then substring matching with an alias-vs-dated pick
+
+Known exact aliases and prefix extensions to dated snapshots remain supported when they preserve the requested model-id tokens.
 
 Glob scope patterns (used by `enabledModels` and CLI `--models`) run separately over concrete models after exact matching.
 
@@ -598,10 +599,9 @@ that the saved model still exists and resolves a usable credential.
 
 Model roles assign model selectors to workloads. Configure them under `modelRoles` in `config.yml`, not in `models.yml`; `models.yml` defines providers and model metadata.
 
-Built-in roles are grouped in the model picker:
+The model hub’s primary model list is session-only: pressing `Enter` applies the selected model to this session only — it immediately switches the current session through the session model setter, does not write settings, and does not ask a role question. Its footer identifies this action as `Enter: use for this session`. Pressing `Alt+R` opens the role/fallback editor for the selected model: role and fallback rows are grouped under human-readable role names, and `Enter` there assigns the model to the highlighted role (or unassigns it when that model already holds the role).
 
-- **Chat roles:** `default`, `smol`, `slow`, `vision`, `plan`, `commit`, `tiny`, `memory`, `task`, and `advisor`. The `tiny` and `memory` roles accept both ordinary chat models and `tiny` catalog models.
-- **Model-kind roles:** `image`, `web`, `speech`, `dictation`, and `judge`. These select image generation, search/grounded chat, text-to-speech, speech-to-text, and judgment runners respectively. The `judge` role also accepts tiny and chat models.
+The hub header presents two separate facts: the model active in the current session and the configured default model for new sessions. At both 100- and 200-column terminal widths, the model list and role/fallback editor remain usable. Role details identify the current holder, scope, and effect; Enter assigns the selected model to the role, or unassigns it when that model already holds the role. Fallback choices are distinct: retry the exact model, retry any model from the same provider, or append the selected model to the default retry chain. The generic Task profile declares `@task`, but request-level and per-agent model overrides and `agent_router` can supersede that selection. Other unmodeled agents inherit the parent/session model or configured default; they do not universally use `@task`.
 
 `vision` and `image` are different workloads: `vision` selects a chat model for image analysis, such as `read screenshot.png?q=...`; `image` selects a model with catalog kind `image` for `generate_image`. Assigning a model to `vision` does not give it image-input support: image questions additionally check that the model can send image input to its provider.
 
