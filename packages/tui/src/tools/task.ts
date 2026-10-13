@@ -2236,6 +2236,7 @@ export interface TaskItem {
 	tools?: string[];
 	/** Declared exclusive checkout paths for this child; absent = undeclared, [] = owns nothing. */
 	resources?: string[];
+	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
 	isolated?: boolean;
 }
 
