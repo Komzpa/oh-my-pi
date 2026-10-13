@@ -271,6 +271,47 @@ test("chief bash admits cd-led looks, absolute-path binaries, gh reads and exten
   }
 });
 
+test("chief bash admits git global options and read-only pager sinks", async () => {
+  const cwd = repo("clean");
+  const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
+  try {
+    const allowed = [
+      "/usr/bin/git -C /x/worktree status --short --branch | cat; /usr/bin/git -C /x/worktree log --oneline A..B | cat",
+      "git -c core.pager=cat log -1",
+      "/usr/bin/git --no-pager --git-dir=/x/.git log -1 | head -5",
+      "git -C /x --work-tree=/x status | wc -l",
+    ];
+    const results = [];
+    for (const command of allowed) {
+      results.push({ command, executed: (await outcome(state, cwd, { name: "bash", arguments: { command } })).executed });
+    }
+    expect(results).toEqual(allowed.map((command) => ({ command, executed: true })));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("chief bash still refuses git mutations, tee pipes, redirects and chained mutators", async () => {
+  const cwd = repo("clean");
+  const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
+  try {
+    const refused = [
+      "git -C x commit -m y",
+      "git -C x status | tee file",
+      "git status > out.txt",
+      "git -C x push",
+      "cat a; rm b",
+    ];
+    const results = [];
+    for (const command of refused) {
+      results.push({ command, executed: (await outcome(state, cwd, { name: "bash", arguments: { command } })).executed });
+    }
+    expect(results).toEqual(refused.map((command) => ({ command, executed: false })));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("chief bash still refuses cd-led mutations, absolute mutators and gh writes", async () => {
   const cwd = repo("clean");
   const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };

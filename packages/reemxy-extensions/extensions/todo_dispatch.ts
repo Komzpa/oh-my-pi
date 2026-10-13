@@ -2392,17 +2392,27 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         at += 1;
         return true;
       };
-      const simple = (words: Token[]) => {
+      const simple = (words: Token[], piped = false) => {
         if (!words.length || words[0].dynamic) return false;
         // A static absolute binary (/usr/bin/git, /bin/sed) is judged by its basename.
         const binary = words[0].value.match(/^\/(?:usr\/(?:local\/)?)?s?bin\/([^/]+)$/);
         if (binary) words = [{ ...words[0], value: binary[1] }, ...words.slice(1)];
+        // `cat`, `head`, `tail` and `wc` are looks only as a pipe sink: flags and numbers, never files.
+        if (piped && ["cat", "head", "tail", "wc"].includes(words[0].value) && words.slice(1).some((word) => word.dynamic || !/^(?:-\S*|\d+)$/.test(word.value))) return false;
         if (words[0].value === "gh") return readOnlyGh(words);
         if (words[0].value !== "git") return readOnlyLook(words);
         let subcommand = 1;
-        while (["-C", "-c"].includes(words[subcommand]?.value)) {
-          if (words[subcommand].dynamic || !words[subcommand + 1]) return false;
-          subcommand += 2;
+        // Global options precede the subcommand: `-C <dir>`, `-c k=v`, `--no-pager`, `--git-dir=…`, `--work-tree=…`.
+        for (;;) {
+          const option = words[subcommand];
+          if (!option) break;
+          if (option.dynamic) return false;
+          if (["-C", "-c"].includes(option.value)) {
+            if (!words[subcommand + 1]) return false;
+            subcommand += 2;
+          } else if (/^--(?:no-pager|git-dir=|work-tree=)/.test(option.value)) {
+            subcommand += 1;
+          } else break;
         }
         if (!words[subcommand] || words[subcommand].dynamic || !/^(?:status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|ls-tree|cat-file|merge-base|fetch|patch-id|rev-list|for-each-ref|name-rev|describe|blame|shortlog|grep)$/.test(words[subcommand].value)) return false;
         if (words[subcommand].value !== "branch") return true;
@@ -2431,16 +2441,18 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const list = (stops: string[]): boolean => {
         while (tokens[at]?.newline) at += 1;
         if (at === tokens.length || keyword(stops)) return false;
+        let piped = false;
         while (at < tokens.length) {
-          if (!statement()) return false;
+          if (!statement(piped)) return false;
           if (at === tokens.length || keyword(stops)) return true;
           const separator = tokens[at++];
           if (!separator.plain || !Object.hasOwn(separators, separator.value)) return false;
+          piped = separator.value === "|";
           if (at === tokens.length || keyword(stops)) return separator.value === ";";
         }
         return true;
       };
-      const statement = (): boolean => {
+      const statement = (piped = false): boolean => {
         while (tokens[at]?.assignment) at += 1;
         if (take("for")) {
           const variable = tokens[at++];
@@ -2463,7 +2475,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         if (tokens[at]?.plain && Object.hasOwn(reserved, tokens[at].value)) return false;
         const start = at;
         while (at < tokens.length && !(tokens[at].plain && Object.hasOwn(separators, tokens[at].value))) at += 1;
-        return simple(tokens.slice(start, at));
+        return simple(tokens.slice(start, at), piped);
       };
       return list([]) && at === tokens.length;
     };
