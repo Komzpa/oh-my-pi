@@ -8284,7 +8284,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#getRequirementHudCounts(): { total: number; passed: number; open: number; failed: number } {
 		const sessionManager = (this.#todoPhasesOwner ?? this.session).sessionManager;
 		const leafId = sessionManager.getLeafId();
-		const entryCount = sessionManager.getEntries().length;
+		const entryCount = sessionManager.getEntryCount();
 		const cached = this.#requirementHudCountsCache;
 		if (cached?.sessionManager === sessionManager && cached.leafId === leafId && cached.entryCount === entryCount) {
 			return cached.counts;
