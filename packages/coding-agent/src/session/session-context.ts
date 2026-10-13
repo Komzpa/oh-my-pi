@@ -501,7 +501,6 @@ export function buildSessionContextFromLeafPath(
 	options?: BuildSessionContextOptions,
 ): SessionContext {
 	path.reverse();
-	path = projectToolResultPrunes(path);
 
 	// Extract settings and find compaction
 	let thinkingLevel: string | undefined = "off";
@@ -520,6 +519,7 @@ export function buildSessionContextFromLeafPath(
 	// with the wrong model id, which previously clobbered the user's pick on
 	// resume (issue #849).
 	let hasExplicitDefaultModel = false;
+	path = projectToolResultPrunes(path);
 	const keepRestartNotice = createRestartNoticeFilter(path);
 
 	for (const entry of path) {
