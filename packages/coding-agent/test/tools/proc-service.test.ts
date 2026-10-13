@@ -65,7 +65,7 @@ function toolSession(
 	manager?: AsyncJobManager,
 	options: { launch?: boolean; async?: boolean } = {},
 ): ToolSession {
-	return {
+	const session = {
 		cwd,
 		hasUI: false,
 		getAgentId: () => "Main",
@@ -74,7 +74,7 @@ function toolSession(
 		asyncJobManager: manager,
 		settings: Settings.isolated({
 			"launch.enabled": options.launch ?? true,
-			"async.enabled": options.async ?? false,
+			"async.enabled": false,
 			"bash.autoBackground.enabled": false,
 			"bash.autoBackground.thresholdMs": 60_000,
 			"bashInterceptor.enabled": false,
@@ -82,6 +82,8 @@ function toolSession(
 			shellPath: SERVICE_SHELL,
 		}),
 	} as unknown as ToolSession;
+	session.settings.set("async.enabled", options.async ?? false);
+	return session;
 }
 
 function steeringContext(steeringSignal: AbortSignal): AgentToolContext {
