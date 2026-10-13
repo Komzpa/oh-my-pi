@@ -109,7 +109,7 @@ describe("structured qa-auditor requirement receipts", () => {
 			{
 				id: row.id,
 				rawWords: row.raw_words,
-				status: row.verdict,
+				status: row.verdict as RequirementVerdictStatus,
 				evidence: "inspected artifact",
 				artifact: row.artifact_identity,
 			},
