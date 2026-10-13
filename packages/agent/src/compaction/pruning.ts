@@ -80,7 +80,11 @@ export function projectToolResultPrunes<T extends SessionEntry>(path: readonly T
 		if (!projected) {
 			projected = {
 				...entry,
-				message: { ...entry.message, content: [{ type: "text", text: overlay.notice }], prunedAt: overlay.entry.prunedAt },
+				message: {
+					...entry.message,
+					content: [{ type: "text", text: overlay.notice }],
+					prunedAt: overlay.entry.prunedAt,
+				},
 			};
 			cache.set(entry, projected);
 		}
