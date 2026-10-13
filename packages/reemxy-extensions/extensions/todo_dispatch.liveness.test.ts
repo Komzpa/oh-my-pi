@@ -228,7 +228,7 @@ async function runMask(mask, repos, otherRepo) {
       const isActive = probe.hookBlocked && /planning-failure word/.test(probe.reason ?? "");
       note("planning-failure-name", isActive);
       if (isActive) {
-        expect(probe.reason, `${label}: refusal names the rename remedy`).toContain("semantic noun");
+        expect(probe.reason, `${label}: refusal names the rename remedy`).toContain("verb first");
         const remedy = await d.call("task", { tasks: [{ name: "AuthOptionPicker", agent: "coder", task: "Auth" }] });
         if (!remedy.admitted) deadlockFindings.push({ combination: `${label}+rename`, refusal: remedy.reason ?? "(admission)" });
         expect(remedy.admitted, `${label}: renamed worker admitted (got: ${remedy.reason})`).toBe(true);

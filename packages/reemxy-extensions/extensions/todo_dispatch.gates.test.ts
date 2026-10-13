@@ -581,12 +581,16 @@ test("task calls refuse planning-failure worker names but allow verb-first neigh
       expect(refusal?.block, name).toBe(true);
       expect(refusal?.reason, name).toContain(word);
       expect(refusal?.reason, name).toContain("skill step 8");
+      expect(refusal?.reason, name).toContain("verb first");
+      expect(refusal?.reason, name).not.toContain("semantic noun");
     }
     for (const [name, word] of Object.entries(reopenBlocked)) {
       const refusal = (await call(name, "Export pipeline"));
       expect(refusal?.block, name).toBe(true);
       expect(refusal?.reason, name).toContain(word);
       expect(refusal?.reason, name).toContain("skill step 8");
+      expect(refusal?.reason, name).toContain("verb first");
+      expect(refusal?.reason, name).not.toContain("semantic noun");
     }
     // A fresh row staffed under a Fix/Repair name is new work, not a reopen: it passes.
     for (const name of ["FixRowB", "AskSelectorRepair"]) {
