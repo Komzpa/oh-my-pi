@@ -9,6 +9,7 @@ import {
 import type { ContextNotesEntry } from "@oh-my-pi/pi-coding-agent/session/context-notes";
 import type { CustomEntry, ResetBoundaryEntry, SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { MemorySessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { ContextNotesTool, NewContextTool } from "@oh-my-pi/pi-coding-agent/tools/context-notes";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -132,6 +133,144 @@ describe("experimental context notes", () => {
 		const advisorBound = toolSession(settings, SessionManager.inMemory(), "advisor-session");
 		expect(ContextNotesTool.createIf(advisorBound)).toBeNull();
 	});
+	it("saves notes when the branch is extended while disk preparation is pending", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
+		const tool = ContextNotesTool.createIf(toolSession(settings, sessionManager));
+		if (!tool) throw new Error("expected context notes tool");
+		const pendingEnsure = Promise.withResolvers<void>();
+		const ensureSpy = vi.spyOn(sessionManager, "ensureOnDisk").mockImplementation(() => pendingEnsure.promise);
+		try {
+			sessionManager.appendCustomEntry("existing_journal_entry");
+			const pendingWrite = tool.execute("concurrent-append", { text: "save despite journal append" });
+			await Promise.resolve();
+			sessionManager.appendCustomEntry("concurrent_journal_entry");
+			pendingEnsure.resolve();
+			await expect(pendingWrite).resolves.toMatchObject({ details: { text: "save despite journal append" } });
+			expect(getContextNotes(sessionManager.getBranch())).toMatchObject({ text: "save despite journal append" });
+		} finally {
+			ensureSpy.mockRestore();
+			await sessionManager.close();
+		}
+	});
+	it("rejects an overlapping replacement without hiding the first saved notebook", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
+		const tool = ContextNotesTool.createIf(toolSession(settings, sessionManager));
+		if (!tool) throw new Error("expected context notes tool");
+		sessionManager.appendCustomEntry("existing_journal_entry");
+		const pendingEnsure = Promise.withResolvers<void>();
+		const ensureSpy = vi.spyOn(sessionManager, "ensureOnDisk").mockImplementation(() => pendingEnsure.promise);
+		try {
+			const firstWrite = tool.execute("first-save", { text: "first notebook" });
+			const secondWrite = tool.execute("overlapping-save", { text: "must not replace the first notebook" });
+			const writes = Promise.allSettled([firstWrite, secondWrite]);
+			pendingEnsure.resolve();
+			const results = await writes;
+			expect(results[0]).toMatchObject({ status: "fulfilled", value: { details: { text: "first notebook" } } });
+			expect(results[1]).toMatchObject({
+				status: "rejected",
+				reason: { message: expect.stringContaining("notebook changed") },
+			});
+			expect(getContextNotes(sessionManager.getBranch())?.text).toBe("first notebook");
+			expect(
+				sessionManager
+					.getEntries()
+					.filter(entry => entry.type === "custom" && entry.customType === CONTEXT_NOTES_ENTRY_TYPE),
+			).toHaveLength(1);
+		} finally {
+			ensureSpy.mockRestore();
+			await sessionManager.close();
+		}
+	});
+
+	it.each(["descendant", "round-trip", "summary"] as const)(
+		"rejects a pending save after a %s tree selection even when the captured leaf is still on the branch",
+		async selection => {
+			const sessionManager = SessionManager.inMemory();
+			const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
+			const tool = ContextNotesTool.createIf(toolSession(settings, sessionManager));
+			if (!tool) throw new Error("expected context notes tool");
+			const base = sessionManager.appendCustomEntry("test_branch_base");
+			const descendant = sessionManager.appendCustomEntry("test_branch_descendant");
+			sessionManager.branch(base);
+			const pendingEnsure = Promise.withResolvers<void>();
+			const ensureSpy = vi.spyOn(sessionManager, "ensureOnDisk").mockImplementation(() => pendingEnsure.promise);
+			try {
+				const pendingWrite = tool.execute("stale-selection", { text: "must not persist" });
+				if (selection === "summary") {
+					sessionManager.branchWithSummary(descendant, "selected a different branch position");
+				} else {
+					sessionManager.branch(descendant);
+					if (selection === "round-trip") sessionManager.branch(base);
+				}
+				pendingEnsure.resolve();
+				await expect(pendingWrite).rejects.toThrow("session branch changed");
+				expect(getContextNotes(sessionManager.getBranch())).toBeUndefined();
+			} finally {
+				ensureSpy.mockRestore();
+				await sessionManager.close();
+			}
+		},
+	);
+
+	it.each(["leaf", "context"] as const)("rejects a pending first notebook save after a %s reset", async reset => {
+		const sessionManager = SessionManager.inMemory();
+		const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
+		const tool = ContextNotesTool.createIf(toolSession(settings, sessionManager));
+		if (!tool) throw new Error("expected context notes tool");
+		const pendingEnsure = Promise.withResolvers<void>();
+		const ensureSpy = vi.spyOn(sessionManager, "ensureOnDisk").mockImplementation(() => pendingEnsure.promise);
+		try {
+			const pendingWrite = tool.execute("stale-reset", { text: "must not persist" });
+			if (reset === "leaf") sessionManager.resetLeaf();
+			else sessionManager.appendResetBoundary();
+			pendingEnsure.resolve();
+			await expect(pendingWrite).rejects.toThrow("not saved");
+			expect(getContextNotes(sessionManager.getBranch())).toBeUndefined();
+		} finally {
+			ensureSpy.mockRestore();
+			await sessionManager.close();
+		}
+	});
+
+	it.each(["unchanged", "changed"] as const)(
+		"accepts a pending save only when a same-session reload keeps the leaf unchanged (leaf: %s)",
+		async selection => {
+			const changed = selection === "changed";
+			const sessionManager = SessionManager.create("/tmp", "/tmp/context-notes-reload", new MemorySessionStorage());
+			const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
+			const tool = ContextNotesTool.createIf(toolSession(settings, sessionManager));
+			if (!tool) throw new Error("expected context notes tool");
+			await tool.execute("initial", { text: "existing notebook" });
+			const base = sessionManager.appendCustomEntry("test_branch_base");
+			const descendant = sessionManager.appendCustomEntry("test_branch_descendant");
+			await sessionManager.flush();
+			const sessionFile = sessionManager.getSessionFile();
+			if (!sessionFile) throw new Error("expected persisted session file");
+			const ownerId = sessionManager.getSessionId();
+			if (changed) sessionManager.branch(base);
+			const pendingEnsure = Promise.withResolvers<void>();
+			const ensureSpy = vi.spyOn(sessionManager, "ensureOnDisk").mockImplementation(() => pendingEnsure.promise);
+			try {
+				const pendingWrite = tool.execute("reload", { text: "replacement notebook" });
+				await sessionManager.setSessionFile(sessionFile);
+				expect(sessionManager.getSessionId()).toBe(ownerId);
+				expect(sessionManager.getLeafId()).toBe(descendant);
+				pendingEnsure.resolve();
+				if (changed) {
+					await expect(pendingWrite).rejects.toThrow("session branch changed");
+					expect(getContextNotes(sessionManager.getBranch())?.text).toBe("existing notebook");
+				} else {
+					await expect(pendingWrite).resolves.toMatchObject({ details: { text: "replacement notebook" } });
+					expect(getContextNotes(sessionManager.getBranch())?.text).toBe("replacement notebook");
+				}
+			} finally {
+				ensureSpy.mockRestore();
+				await sessionManager.close();
+			}
+		},
+	);
 	it("does not append notes when the branch changes while disk preparation is pending", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
@@ -140,9 +279,11 @@ describe("experimental context notes", () => {
 		const pendingEnsure = Promise.withResolvers<void>();
 		const ensureSpy = vi.spyOn(sessionManager, "ensureOnDisk").mockImplementation(() => pendingEnsure.promise);
 		try {
+			const base = sessionManager.appendCustomEntry("test_branch_base");
+			sessionManager.appendCustomEntry("test_branch_tip");
 			const pendingWrite = tool.execute("stale-branch", { text: "must not persist" });
 			await Promise.resolve();
-			sessionManager.appendCustomEntry("test_branch_change");
+			sessionManager.branch(base);
 			pendingEnsure.resolve();
 			await expect(pendingWrite).rejects.toThrow("session branch changed");
 			expect(getContextNotes(sessionManager.getBranch())).toBeUndefined();

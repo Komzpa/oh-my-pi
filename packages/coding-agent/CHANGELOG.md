@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed experimental `context_notes` saves failing with "the session branch changed" when an unrelated entry was appended to the session while the save was waiting on the session file; only an actual branch selection, notebook change, or context reset rejects a save now
+
 ## [18.10.4] - 2026-10-13
 
 ### Added
