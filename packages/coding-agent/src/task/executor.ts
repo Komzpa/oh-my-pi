@@ -2638,7 +2638,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	const yieldAbortReason = lastYield?.status === "aborted" ? lastYield.error || "Subagent aborted task" : undefined;
 	const abandonedJobs = lastYield?.abandonedJobs;
 	if (abandonedJobs?.length) {
-		const warning = `Terminal yield abandoned running processes: ${abandonedJobs.map(job => job.id).join(", ")}. Task cleanup cancels unfinished bash jobs.`;
+		const warning = `Terminal yield abandoned running processes: ${abandonedJobs.map(job => job.id).join(", ")}. Task cleanup cancels unfinished owner jobs.`;
 		stderr = stderr ? `${stderr}\n${warning}` : warning;
 	}
 	const { abortedViaYield, hasYield } = finalized;

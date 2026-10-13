@@ -18,18 +18,29 @@ import {
 	sanitizeSchemaForStrictMode,
 	tryEnforceStrictSchema,
 } from "@oh-my-pi/pi-ai/utils/schema";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { TERMINAL_STATES } from "@oh-my-pi/pi-tui/apps/ps-data";
-import { formatDuration } from "@oh-my-pi/pi-tui/render/render-utils";
+import { formatDuration, previewLine } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { AbandonedJob } from "@oh-my-pi/pi-tui/tools/task";
 import { daemonClientForProject } from "../launch/client";
 import { hasLiveOwnedService, listServicesTolerant } from "../launch/services";
 import yieldDescription from "../prompts/tools/yield.md" with { type: "text" };
 import yieldDataErrorConflictMessage from "../prompts/tools/yield-data-error-conflict.md" with { type: "text" };
+import yieldAlreadySubmittedMessage from "../prompts/tools/yield-already-submitted.md" with { type: "text" };
+import yieldResultNeedsDataTemplate from "../prompts/tools/yield-result-needs-data.md" with { type: "text" };
+import yieldRunningProcessesTemplate from "../prompts/tools/yield-running-processes.md" with { type: "text" };
+import yieldServicesUnverifiedTemplate from "../prompts/tools/yield-services-unverified.md" with { type: "text" };
 import { subprocessToolRegistry } from "../task/subprocess-tool-registry";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { ToolSession } from ".";
 import { buildOutputValidator, formatAllValidationIssues } from "./output-schema-validator";
+
+/** Display-cell cap for a running command shown in the refusal message. */
+const RUNNING_COMMAND_PREVIEW_WIDTH = 120;
+
+function previewRunningCommand(command: string): string {
+	return previewLine(sanitizeText(command), RUNNING_COMMAND_PREVIEW_WIDTH);
+}
 
 const YIELD_FORMAT_HINT = 'Submit success as {"data":<your output>} or failure as {"error":"message"}.';
 
@@ -375,8 +386,9 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	#schemaValidationFailures = 0;
 	#emptyResultFailures = 0;
 	#hasIncrementalSections = false;
-	// A terminal acceptance closes submission for the session's lifetime.
-	// Later yields, including incremental sections, must not mutate its result.
+	// A terminal acceptance closes submission for the current monitored run.
+	// Later yields in that run, including incremental sections, must not mutate
+	// its result. resetTurnState() re-arms the latch for the next monitored run.
 	#terminalResultSubmitted = false;
 	readonly #session: ToolSession;
 	readonly #parameters: TSchema;
@@ -503,24 +515,30 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		this.#schemaValidationFailures = 0;
 		this.#emptyResultFailures = 0;
 		this.#warnedRunningJobs.clear();
+		// Each monitored run (initial, follow-up, IRC wake) owns its own result;
+		// the executor's per-run monitor ignores yields from a settled run.
+		this.#terminalResultSubmitted = false;
 	}
 
 	/**
 	 * One-shot latch for terminal results: the first accepted terminal result is
 	 * the run's answer and can never be replaced. Throws the stop instruction when
-	 * a later terminal yield reaches the accept point (642/665). Deliberately
-	 * never cleared in resetTurnState() so a woken parked worker cannot overwrite
-	 * the stored result on a follow-up turn.
+	 * a later terminal yield reaches the accept point. The latch is reserved
+	 * before awaiting the running-job check so sibling terminal calls executing
+	 * concurrently cannot both be accepted; a refusal rolls the reservation back.
+	 * Only resetTurnState() (a new monitored run) clears it.
 	 */
 	async #claimTerminalResult(signal?: AbortSignal): Promise<AbandonedJob[] | undefined> {
 		if (this.#terminalResultSubmitted) {
-			throw new Error(
-				"The result was already submitted and accepted; it cannot be replaced. Stop now — do not call yield again.",
-			);
+			throw new Error(yieldAlreadySubmittedMessage.trim());
 		}
-		const abandonedJobs = await this.#checkRunningJobs(signal);
 		this.#terminalResultSubmitted = true;
-		return abandonedJobs;
+		try {
+			return await this.#checkRunningJobs(signal);
+		} catch (error) {
+			this.#terminalResultSubmitted = false;
+			throw error;
+		}
 	}
 
 	async #checkRunningJobs(signal?: AbortSignal): Promise<AbandonedJob[] | undefined> {
@@ -530,7 +548,13 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		if (hasLiveOwnedService(this.#session)) {
 			const owner = this.#session.getSessionId?.() ?? ownerId;
 			const client = await daemonClientForProject(this.#session.cwd);
-			const { services } = await listServicesTolerant(this.#session, signal);
+			const { services, error: listError } = await listServicesTolerant(this.#session, signal);
+			// Fail closed: an empty roster from a failed broker request is not
+			// evidence that no owned service is running.
+			if (listError !== undefined && !this.#warnedRunningJobs.has("service-list-unverified")) {
+				this.#warnedRunningJobs.add("service-list-unverified");
+				throw new Error(prompt.render(yieldServicesUnverifiedTemplate, { error: sanitizeText(listError) }).trim());
+			}
 			for (const service of services) {
 				if (service.owner !== owner || service.persist || service.detached || TERMINAL_STATES[service.state])
 					continue;
@@ -554,7 +578,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				jobs.push({
 					id: daemon.name,
 					type: "service",
-					command: (command ?? daemon.name).replace(/\s+/g, " ").slice(0, 120),
+					command: previewRunningCommand(command ?? daemon.name),
 					startedAt: daemon.startedAt,
 					elapsedMs: Math.max(0, Date.now() - daemon.startedAt),
 				});
@@ -563,11 +587,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		// Teardown reaps every owner job including foreground-backed and
 		// delivery-suppressed rows; the guard enumerates that same set.
 		for (const job of this.#session.asyncJobManager?.getRunningOwnerJobs(ownerId) ?? []) {
-			if (job.type !== "bash") continue;
 			jobs.push({
 				id: job.id,
-				type: "bash",
-				command: (job.process?.command ?? job.label).replace(/\s+/g, " ").slice(0, 120),
+				type: job.type,
+				command: previewRunningCommand(job.process?.command ?? job.label),
 				startedAt: job.startTime,
 				elapsedMs: Math.max(0, Date.now() - job.startTime),
 			});
@@ -576,14 +599,26 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		const key = (job: AbandonedJob): string => `${job.type}:${job.id}:${job.startedAt}`;
 		if (jobs.some(job => !this.#warnedRunningJobs.has(key(job)))) {
 			for (const job of jobs) this.#warnedRunningJobs.add(key(job));
-			const running = jobs
-				.map(job => `${job.id}: ${job.command} (elapsed ${formatDuration(job.elapsedMs)})`)
-				.join("\n");
 			throw new Error(
-				`Terminal yield refused: this worker still owns running processes:\n${running}\nWait for them to finish, or explicitly kill them with proc://<id>/kill or mark a service persist/detached with proc://<id>/mode, then yield again. A second terminal yield with the same processes still running is accepted with abandonedJobs; unfinished bash jobs are cancelled by task cleanup.`,
+				prompt
+					.render(yieldRunningProcessesTemplate, {
+						jobs: jobs.map(job => ({ id: job.id, command: job.command, elapsed: formatDuration(job.elapsedMs) })),
+					})
+					.trim(),
 			);
 		}
 		return jobs;
+	}
+
+	/**
+	 * True when `data` is absent or empty AND the declared output schema (if any)
+	 * does not explicitly accept that empty value. A schema that legitimately
+	 * allows `[]`, `{}` or `""` keeps ownership of the verdict via `#validate`.
+	 */
+	#isEmptyTerminalData(data: unknown): boolean {
+		if (!isEmptyResultData(data)) return false;
+		if (data === undefined || this.#validate === undefined) return true;
+		return !this.#validate(data).success;
 	}
 
 	#workPoolItems(): readonly WorkPoolYieldItem[] {
@@ -604,9 +639,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<YieldDetails>> {
 		if (this.#terminalResultSubmitted) {
-			throw new Error(
-				"The result was already submitted and accepted; it cannot be replaced or appended to. Stop now — do not call yield again.",
-			);
+			throw new Error(yieldAlreadySubmittedMessage.trim());
 		}
 		if (!isPlainRecord(params)) throw new Error("yield arguments must be an object");
 		const raw = params;
@@ -683,8 +716,8 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			status === "success" &&
 			!isIncremental &&
 			workPoolItems.length === 0 &&
-			yieldType === "result" &&
-			isEmptyResultData(data)
+			(yieldType === "result" || (typeof yieldType === "string" && data !== undefined)) &&
+			this.#isEmptyTerminalData(data)
 		) {
 			const closesIncrementalFlow = data === undefined && this.#hasIncrementalSections;
 			// Missing data still falls through to the guards below when one of them
@@ -718,7 +751,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				}
 				const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
 				throw new Error(
-					`result needs data: pass your full final answer (e.g. the verdict table) in data, not in assistant text. ${YIELD_FORMAT_HINT} Empty result retries remaining before abort: ${remaining}.`,
+					prompt.render(yieldResultNeedsDataTemplate, { formatHint: YIELD_FORMAT_HINT, remaining }).trim(),
 				);
 			}
 		}
@@ -739,14 +772,14 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 								!isEmptyResultData(raw[key]),
 						)
 					: undefined;
-			const emptyUntyped = yieldType === undefined && data !== undefined && isEmptyResultData(data);
+			const emptyUntyped = yieldType === undefined && data !== undefined && this.#isEmptyTerminalData(data);
 			if (strayKey !== undefined || emptyUntyped) {
 				this.#emptyResultFailures++;
 				if (this.#emptyResultFailures > MAX_EMPTY_RESULT_RETRIES) {
 					const attemptCount = this.#emptyResultFailures;
 					this.#emptyResultFailures = 0;
 					const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
-					this.#claimTerminalResult();
+					const abandonedJobs = await this.#claimTerminalResult(_signal);
 					return {
 						content: [{ type: "text", text: `Task aborted: ${error}` }],
 						details: {
@@ -754,6 +787,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 							status: "aborted",
 							error,
 							type: yieldType,
+							abandonedJobs,
 						},
 					};
 				}

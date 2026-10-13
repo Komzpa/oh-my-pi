@@ -2296,7 +2296,7 @@ export interface ReviewData {
 /** Worker-owned processes still running when a warned terminal yield was accepted. */
 export interface AbandonedJob {
 	id: string;
-	type: "bash" | "service";
+	type: "bash" | "task" | "eval" | "service";
 	command: string;
 	startedAt: number;
 	elapsedMs: number;
