@@ -24,6 +24,7 @@ import { WriteTool } from "../../src/tools/write";
 import { sharedBrowserDaemonName } from "../../src/tools/browser/shared-daemon";
 import type { ToolSession } from "../../src/tools";
 import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/daemon";
+import { cfgAsyncEnabled } from "../../src/tools/settings";
 
 function startBroker(projectDir: string, runtimeDir: string): Promise<void> {
 	const previous = [
@@ -82,7 +83,7 @@ function toolSession(
 			shellPath: SERVICE_SHELL,
 		}),
 	} as unknown as ToolSession;
-	session.settings.set("async.enabled", options.async ?? false);
+	cfgAsyncEnabled.set(session.settings, options.async ?? false);
 	return session;
 }
 
