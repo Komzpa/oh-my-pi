@@ -1268,6 +1268,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * focus attach.
 	 */
 	#todoPhasesOwner?: AgentSession;
+	#requirementHudCountsCache?: {
+		sessionManager: SessionManager;
+		leafId: string | null;
+		entryCount: number;
+		counts: { total: number; passed: number; open: number; failed: number };
+	};
 	#todoHudHidden = false;
 	hideThinkingBlock = false;
 	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
@@ -8275,10 +8281,22 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * native terminals see requirement counts even when checklist rows are
 	 * absent (`todoHudNative` is `undefined` with no phases).
 	 */
+	#getRequirementHudCounts(): { total: number; passed: number; open: number; failed: number } {
+		const sessionManager = (this.#todoPhasesOwner ?? this.session).sessionManager;
+		const leafId = sessionManager.getLeafId();
+		const entryCount = sessionManager.getEntries().length;
+		const cached = this.#requirementHudCountsCache;
+		if (cached?.sessionManager === sessionManager && cached.leafId === leafId && cached.entryCount === entryCount) {
+			return cached.counts;
+		}
+
+		const counts = countRequirements(getLatestRequirements(sessionManager.getBranch()));
+		this.#requirementHudCountsCache = { sessionManager, leafId, entryCount, counts };
+		return counts;
+	}
+
 	describeRequirementHudSummary(): NativeNode | undefined {
-		const counts = countRequirements(
-			getLatestRequirements((this.#todoPhasesOwner ?? this.session).sessionManager.getBranch()),
-		);
+		const counts = this.#getRequirementHudCounts();
 		if (counts.total === 0) return undefined;
 		return text([
 			span("TODO", "accent strong"),
@@ -8287,9 +8305,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	renderRequirementHudSegment(renderBase: (width: number) => readonly string[], width: number): readonly string[] {
-		const counts = countRequirements(
-			getLatestRequirements((this.#todoPhasesOwner ?? this.session).sessionManager.getBranch()),
-		);
+		const counts = this.#getRequirementHudCounts();
 		const wasHidden = this.#todoHudHidden;
 		const compact = this.isCompactTodoMode();
 		const hasOutstandingRequirements = counts.open > 0 || counts.failed > 0;

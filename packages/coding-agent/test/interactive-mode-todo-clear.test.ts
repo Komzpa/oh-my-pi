@@ -695,6 +695,28 @@ describe("InteractiveMode todo HUD anchor", () => {
 			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: 1, requirements: [] });
 		}
 	});
+	it("reuses requirement counts across unchanged HUD renders and refreshes after append", () => {
+		mode.setTodos([{ name: "Work", tasks: [{ content: "Build artifact", status: "pending" }] }]);
+		const manager = session.sessionManager;
+		const getBranch = vi.spyOn(manager, "getBranch");
+		manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
+			version: 1,
+			requirements: createRequirementCandidates([], ["first ask"], "2026-09-28T12:00:00.000Z"),
+		});
+		getBranch.mockClear();
+		try {
+			for (let render = 0; render < 50; render++) renderTodos(mode);
+			expect(getBranch).toHaveBeenCalledTimes(1);
+			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
+				version: 1,
+				requirements: createRequirementCandidates([], ["first ask", "new ask"], "2026-09-28T12:01:00.000Z"),
+			});
+			expect(renderTodos(mode)).toContain("req 2 · 0 ✓ · 2 open · 0 ✗");
+			expect(getBranch).toHaveBeenCalledTimes(2);
+		} finally {
+			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: 1, requirements: [] });
+		}
+	});
 	it("renders requirement counts in the TODO HUD and compact header", async () => {
 		cfgTasksTodoClearDelay.override(session.settings, -1);
 		const at = "2026-09-28T12:00:00.000Z";
