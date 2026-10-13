@@ -14,6 +14,7 @@ import {
 	setTerminalTitleState,
 	setTerminalTitleTaskNow,
 } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { setNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 import { mockWindowsConsoleTitle, type WindowsConsoleTitleMock } from "./terminal-title-test-utils";
@@ -110,7 +111,9 @@ describe("session label carries the project", () => {
 		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tabtitle-"));
 		scratchDirs.push(scratch);
 		const project = path.join(scratch, projectName);
-		fs.mkdirSync(path.join(project, ".git"), { recursive: true });
+		fs.mkdirSync(project, { recursive: true });
+		// A real repository: the VCS API rejects a bare empty `.git` directory.
+		Bun.spawnSync(["git", "init", "-q", project]);
 		return project;
 	}
 
@@ -149,13 +152,13 @@ describe("session label carries the project", () => {
 	});
 
 	it("falls back to the directory name when there is no session name", () => {
-		// Stubbed: the scratch dir lives under /tmp, which has its own `.git`
-		// uphill on this machine — pin the true no-repo branch instead.
-		const existsSpy = spyOn(fs, "existsSync").mockReturnValue(false);
+		// The VCS lookup is stubbed to "no repository": a scratch dir under /tmp may
+		// have its own `.git` uphill on some machines. The cwd stays real.
+		const repoSpy = spyOn(vcs, "repo").mockReturnValue(null);
 		try {
 			expect(buildSessionTerminalLabel(undefined, makePlainDir("lonely-dir"))).toBe("lonely-dir");
 		} finally {
-			existsSpy.mockRestore();
+			repoSpy.mockRestore();
 		}
 	});
 
@@ -166,12 +169,16 @@ describe("session label carries the project", () => {
 		expect(buildSessionTerminalLabel("Deep fix", nested)).toBe("demo-repo · Deep fix");
 	});
 
-	it("resolves the project from a jujutsu workspace root", () => {
-		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tabtitle-"));
-		scratchDirs.push(scratch);
-		const project = path.join(scratch, "demo-repo");
-		fs.mkdirSync(path.join(project, ".jj"), { recursive: true });
-		expect(buildSessionTerminalLabel("Deep fix", project)).toBe("demo-repo · Deep fix");
+	it("takes the project from whatever root the shared VCS API reports (Jujutsu included)", () => {
+		const plain = makePlainDir("nested-cwd");
+		const repoSpy = spyOn(vcs, "repo").mockReturnValue({ root: () => "/work/jj-project" } as unknown as ReturnType<
+			typeof vcs.repo
+		>);
+		try {
+			expect(buildSessionTerminalLabel("Deep fix", plain)).toBe("jj-project · Deep fix");
+		} finally {
+			repoSpy.mockRestore();
+		}
 	});
 
 	it("resolves the project through a symlinked cwd", () => {
@@ -181,19 +188,56 @@ describe("session label carries the project", () => {
 		expect(buildSessionTerminalLabel("Deep fix", link)).toBe("demo-repo · Deep fix");
 	});
 
-	it("uses only the basename for a cwd absent on this machine", () => {
-		// A collab guest echoing the host's remote cwd must not walk the local
-		// filesystem: the remote path's basename is the whole project hint.
-		expect(buildSessionTerminalLabel("Fix thing", "/nonexistent/host/path/my-tool")).toBe("my-tool · Fix thing");
+	it("resolves the root through the shared VCS API, not a private .git walk", () => {
+		const project = makeProject("demo-repo");
+		const spy = spyOn(vcs, "repo");
+		try {
+			buildSessionTerminalLabel("Fix", path.join(project, "never-created"));
+			expect(spy).toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("uses only the basename for a remote cwd, even one that exists locally", () => {
+		// A collab guest echoing the host's cwd must not walk the local filesystem:
+		// here the "remote" path is a real local repo, and still only its last
+		// segment is used, not the repo root above it.
+		const project = makeProject("demo-repo");
+		const nested = path.join(project, "sub");
+		fs.mkdirSync(nested);
+		expect(buildSessionTerminalLabel("Fix thing", nested, undefined, true)).toBe("sub · Fix thing");
+	});
+
+	it("parses a Windows host cwd on any guest platform", () => {
+		expect(buildSessionTerminalLabel("Fix thing", "C:\\work\\repo", undefined, true)).toBe("repo · Fix thing");
+		expect(buildSessionTerminalLabel(undefined, "C:\\work\\repo\\", undefined, true)).toBe("repo");
+		expect(buildSessionTerminalLabel("Fix thing", "/home/host/my-tool", undefined, true)).toBe("my-tool · Fix thing");
+	});
+
+	it("never truncates the project, even when the session name is exactly the project", () => {
+		const longName = "a-very-long-repository-name-that-exceeds-forty-columns-by-far";
+		const project = makeProject(longName);
+		expect(buildSessionTerminalLabel(longName, project)).toBe(longName);
+		expect(buildSessionTerminalLabel(`${longName} · ${"x".repeat(60)}`, project)).toBe(
+			`${longName} · ${"x".repeat(39)}…`,
+		);
+	});
+
+	it("caps a de-duplicated overlong task by display width", () => {
+		const project = makeProject("demo-repo");
+		const label = buildSessionTerminalLabel(`demo-repo · ${"漢".repeat(40)}`, project)!;
+		expect(label.startsWith("demo-repo · ")).toBe(true);
+		expect(Bun.stringWidth(label.slice("demo-repo · ".length))).toBeLessThanOrEqual(40);
 	});
 
 	it("falls back to the directory name outside a repo", () => {
 		// Same stub as above: pin the true no-repo branch.
-		const existsSpy = spyOn(fs, "existsSync").mockReturnValue(false);
+		const repoSpy = spyOn(vcs, "repo").mockReturnValue(null);
 		try {
 			expect(buildSessionTerminalLabel("Fix thing", makePlainDir("lonely"))).toBe("lonely · Fix thing");
 		} finally {
-			existsSpy.mockRestore();
+			repoSpy.mockRestore();
 		}
 	});
 
@@ -228,7 +272,9 @@ describe("label tracks what the session is doing now", () => {
 		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tabtitle-"));
 		scratchDirs.push(scratch);
 		const project = path.join(scratch, projectName);
-		fs.mkdirSync(path.join(project, ".git"), { recursive: true });
+		fs.mkdirSync(project, { recursive: true });
+		// A real repository: the VCS API rejects a bare empty `.git` directory.
+		Bun.spawnSync(["git", "init", "-q", project]);
 		return project;
 	}
 
@@ -279,6 +325,15 @@ describe("label tracks what the session is doing now", () => {
 		setSessionTerminalTitle("Topic A", project);
 		setSessionTerminalTitle("Topic B", project);
 		expect(lastTitle()).toBe(`${BRAND} > demo-repo · Topic B`);
+	});
+
+	it("a remote collab cwd keeps its host-side name across task updates", () => {
+		setSessionTerminalTitle("Topic A", "C:\\work\\host-repo", { remoteCwd: true });
+		expect(lastTitle()).toBe(`${BRAND} > host-repo · Topic A`);
+		setTerminalTitleTaskNow("Do it");
+		expect(lastTitle()).toBe(`${BRAND} > host-repo · Do it`);
+		setTerminalTitleTaskNow(undefined);
+		setSessionTerminalTitle(undefined);
 	});
 
 	it("carries the composed label into the native TSP title", () => {

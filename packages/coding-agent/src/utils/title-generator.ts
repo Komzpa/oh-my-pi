@@ -15,6 +15,7 @@ import {
 	type Model,
 	retryTransientCompletion,
 } from "@oh-my-pi/pi-ai";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing";
 import { writeTerminalSequence } from "@oh-my-pi/pi-tui";
 import { isNativeRendering, onNativeRenderingChange } from "@oh-my-pi/pi-tui/native/state";
@@ -586,9 +587,9 @@ export function clearSessionTitleProjectCache(): void {
 }
 
 /**
- * Walk up to the first directory containing `.git` or `.jj` (sync, no
- * subprocess). Starts from the real path so symlinked cwds resolve inside the
- * repo they point into; `.git` may be a file (worktree) or a directory.
+ * Root of the Git/Jujutsu repository containing `from`, through the shared VCS
+ * API (sync, no subprocess). Starts from the real path so a symlinked cwd
+ * resolves inside the repo it points into.
  */
 function findRepoRoot(from: string): string | undefined {
 	let dir: string;
@@ -597,28 +598,31 @@ function findRepoRoot(from: string): string | undefined {
 	} catch {
 		dir = from;
 	}
-	for (;;) {
-		if (fs.existsSync(path.join(dir, ".git")) || fs.existsSync(path.join(dir, ".jj"))) return dir;
-		const parent = path.dirname(dir);
-		if (parent === dir) return undefined;
-		dir = parent;
+	try {
+		return vcs.repo(dir)?.root() ?? undefined;
+	} catch {
+		return undefined;
 	}
+}
+
+/** Last non-empty segment of a path from any platform (`/` and `\` both separate). */
+function remoteBasename(remotePath: string): string | undefined {
+	return remotePath.split(/[\\/]+/).findLast(segment => segment !== "");
 }
 
 /**
  * The project owning `cwd`: basename of the containing repo root, falling back
- * to basename(cwd) outside a repo. A cwd that does not exist on this machine
- * (e.g. a collab host's remote path echoed back to a guest) never walks the
- * local filesystem — only the basename is used, so a remote path can neither
- * match an unrelated local repo uphill nor inherit its name. Returns undefined
- * when neither yields a name.
+ * to basename(cwd) outside a repo. A `remote` cwd belongs to another machine
+ * (a collab host's cwd echoed to a guest): it is never looked up on the local
+ * filesystem, so it can neither match an unrelated local checkout nor depend on
+ * the guest's path syntax — only its last segment, split on both `/` and `\`,
+ * is used. Returns undefined when nothing yields a name.
  */
-function resolveProjectName(cwd: string): string | undefined {
+function resolveProjectName(cwd: string, remote = false): string | undefined {
+	if (remote) return sanitizeTerminalTitlePart(remoteBasename(cwd));
 	const resolved = path.resolve(cwd);
 	if (gitProjectCache.has(resolved)) return gitProjectCache.get(resolved);
-	const project = fs.existsSync(resolved)
-		? sanitizeTerminalTitlePart(path.basename(findRepoRoot(resolved) ?? resolved))
-		: getFallbackTerminalTitle(cwd);
+	const project = sanitizeTerminalTitlePart(path.basename(findRepoRoot(resolved) ?? resolved));
 	gitProjectCache.set(resolved, project);
 	return project;
 }
@@ -647,13 +651,20 @@ export function buildSessionTerminalLabel(
 	sessionName: string | undefined,
 	cwd?: string,
 	taskNow?: string,
+	remoteCwd = false,
 ): string | undefined {
 	const name = sanitizeTerminalTitlePart(sessionName);
 	const task = sanitizeTerminalTitlePart(taskNow) ?? name;
-	if (!task) return cwd === undefined ? undefined : (resolveProjectName(cwd) ?? getFallbackTerminalTitle(cwd));
+	if (!task) {
+		if (cwd === undefined) return undefined;
+		return resolveProjectName(cwd, remoteCwd) ?? (remoteCwd ? undefined : getFallbackTerminalTitle(cwd));
+	}
 	if (cwd === undefined) return truncateToWidth(task, SESSION_TASK_MAX_COLUMNS);
-	const project = resolveProjectName(cwd);
-	if (!project || project === task) return truncateToWidth(task, SESSION_TASK_MAX_COLUMNS);
+	const project = resolveProjectName(cwd, remoteCwd);
+	// The task that is exactly the project IS the label: the project is never
+	// truncated, however long its name.
+	if (project && project === task) return project;
+	if (!project) return truncateToWidth(task, SESSION_TASK_MAX_COLUMNS);
 	const bare = task.startsWith(project + SESSION_LABEL_PROJECT_SEPARATOR)
 		? task.slice(project.length + SESSION_LABEL_PROJECT_SEPARATOR.length)
 		: task;
@@ -736,7 +747,11 @@ function writeTerminalTitle(title: string, recomposeStaticOnFailure = false): vo
  * title carries in the card form `<icon> <CODE>: <name>` that Tern indexes
  * parked panes by, else the cwd.
  */
-export function setSessionTerminalTitle(sessionName: string | undefined, cwd?: string): void {
+export function setSessionTerminalTitle(
+	sessionName: string | undefined,
+	cwd?: string,
+	options?: { remoteCwd?: boolean },
+): void {
 	// An authoritative session title (rename, new session, focus swap) supersedes
 	// any extension override so the base title tracks the real session again.
 	//
@@ -750,7 +765,13 @@ export function setSessionTerminalTitle(sessionName: string | undefined, cwd?: s
 	terminalTitleRuntime.extensionOverride = undefined;
 	terminalTitleRuntime.sessionName = sanitizeTerminalTitlePart(sessionName);
 	terminalTitleRuntime.cwd = cwd;
-	terminalTitleRuntime.label = buildSessionTerminalLabel(sessionName, cwd, terminalTitleRuntime.taskNow);
+	terminalTitleRuntime.remoteCwd = options?.remoteCwd === true;
+	terminalTitleRuntime.label = buildSessionTerminalLabel(
+		sessionName,
+		cwd,
+		terminalTitleRuntime.taskNow,
+		terminalTitleRuntime.remoteCwd,
+	);
 	emitTerminalTitle();
 	reportTernSession();
 }
@@ -775,6 +796,7 @@ export function setTerminalTitleTaskNow(task: string | undefined): void {
 		terminalTitleRuntime.sessionName,
 		terminalTitleRuntime.cwd,
 		terminalTitleRuntime.taskNow,
+		terminalTitleRuntime.remoteCwd,
 	);
 	emitTerminalTitle();
 }
@@ -904,6 +926,8 @@ const terminalTitleRuntime: {
 	sessionName: string | undefined;
 	/** The cwd the label's project resolves from, stored so a later task update recomposes without losing the project. */
 	cwd: string | undefined;
+	/** True when `cwd` is another machine's path (collab guest), never resolved locally. */
+	remoteCwd: boolean;
 	/** The current in-progress todo row; shown as the task half while set. */
 	taskNow: string | undefined;
 	/** The branch's pull request, shown in the native title only. */
@@ -936,6 +960,7 @@ const terminalTitleRuntime: {
 	label: undefined,
 	sessionName: undefined,
 	cwd: undefined,
+	remoteCwd: false,
 	taskNow: undefined,
 	pullRequest: undefined,
 	unwatchNative: undefined,

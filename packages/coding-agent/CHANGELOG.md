@@ -190,6 +190,8 @@
 ### Changed
 
 - Tool approval prompts now replace the composer like `ask`, show one row per detail, and approve with `Ctrl+Enter` (or `Ctrl+Q`) instead of `Enter` ([#15548](https://github.com/can1357/oh-my-pi/pull/15548) by [@H4vC](https://github.com/H4vC))
+- Terminal tab titles now read `<project> · <task>`: the project is the Git/Jujutsu repository root (or the directory outside a repo), and the task is the in-progress todo row of the session you are viewing, falling back to the session name; the native Tern/TSP title uses the same label. A collab guest labels the tab with the last segment of the host's working directory, parsed on any OS and never looked up on the guest's filesystem ([#94](https://github.com/Komzpa/oh-my-pi/pull/94))
+- `/dump all` writes a zip to the temp directory with the main transcript, the LLM request JSON, and one file per subagent transcript (nested subagents included, killed ones marked aborted); the TUI copies the archive path to the clipboard. Plain `/dump` is unchanged ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ### Fixed
 

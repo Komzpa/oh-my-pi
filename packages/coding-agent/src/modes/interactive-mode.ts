@@ -1266,6 +1266,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * focus attach.
 	 */
 	#todoPhasesOwner?: AgentSession;
+	/** True once init has pushed the shell title and claimed the terminal title runtime. */
+	#terminalTitleClaimed = false;
 	#todoHudHidden = false;
 	hideThinkingBlock = false;
 	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
@@ -2334,6 +2336,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			cwd: () => this.sessionManager.getCwd(),
 		});
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+		this.#terminalTitleClaimed = true;
+		this.#syncTerminalTitleTask();
 		// Seeds the border, the status-line `vim` segment, and the cursor shape in one call.
 		// Deliberately here rather than beside #applyVimMode in the constructor: that runs before
 		// #focusController exists, which updateEditorBorderColor dereferences.
@@ -4129,6 +4133,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 		owner.setTodoPhases(next);
 		this.todoPhases = next;
+		this.#syncTerminalTitleTask();
 		this.#syncTodoHudState(owner);
 		this.#renderTodoList();
 		this.ui.requestRender();
@@ -4545,14 +4550,23 @@ export class InteractiveMode implements InteractiveModeContext {
 		return [...leadingLines, combinedLine];
 	}
 
+	/**
+	 * Point the tab title's task half at the in-progress row of the todo list the
+	 * UI is displaying (the focused session's, not whichever session last wrote).
+	 * Deferred until init has pushed and claimed the terminal title: emitting an
+	 * OSC title earlier would make `pushTerminalTitle()` save OMP's own title
+	 * instead of the shell's, and `popTerminalTitle()` would restore the wrong one.
+	 */
+	#syncTerminalTitleTask(): void {
+		if (!this.#terminalTitleClaimed) return;
+		const inProgress = this.todoPhases.flatMap(phase => phase.tasks).find(task => task.status === "in_progress");
+		setTerminalTitleTaskNow(inProgress?.content);
+	}
+
 	async #loadTodoList(source: AgentSession = this.session): Promise<void> {
 		this.todoPhases = source.getTodoPhases();
 		this.#todoPhasesOwner = source;
-		// A focus/session switch lands the previous session's in-progress row in
-		// the title runtime; recompute from this list so the task half always
-		// describes the session the tab is showing.
-		const inProgress = this.todoPhases.flatMap(phase => phase.tasks).find(task => task.status === "in_progress");
-		setTerminalTitleTaskNow(inProgress?.content);
+		this.#syncTerminalTitleTask();
 		this.#syncTodoHudState(source);
 		this.#renderTodoList();
 	}
@@ -8621,6 +8635,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			];
 		}
 		this.#todoPhasesOwner = this.viewSession;
+		this.#syncTerminalTitleTask();
 		this.#syncTodoHudState(this.viewSession);
 		this.#renderTodoList();
 		this.ui.requestRender();

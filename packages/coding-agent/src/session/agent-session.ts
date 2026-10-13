@@ -262,7 +262,7 @@ import {
 	parseCardTitleReply,
 	splitCardTitle,
 } from "../utils/title-card";
-import { generateSessionTitle, nerdGlyphsActive, setTerminalTitleTaskNow } from "../utils/title-generator";
+import { generateSessionTitle, nerdGlyphsActive } from "../utils/title-generator";
 import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
 import type { VibeModeState } from "../vibe/state";
 import type { AgentSessionEvent, AgentSessionEventListener } from "./agent-session-events";
@@ -9342,12 +9342,9 @@ export class AgentSession implements SettingsScope {
 
 	setTodoPhases(phases: TodoPhase[]): void {
 		this.#todo.setPhases(phases);
-		// The tab label's task half tracks what the session is doing now (R5):
-		// the current in-progress todo row wins while one exists; clearing back
-		// to the session title happens when the row completes or the list resets.
-		if (this.#agentKind !== "main") return;
-		const inProgress = phases.flatMap(phase => phase.tasks).find(task => task.status === "in_progress");
-		setTerminalTitleTaskNow(inProgress?.content);
+		// The terminal title is NOT touched here: the tab shows the session the UI
+		// displays, so InteractiveMode (which knows the focused session) derives the
+		// title's task half from the todo list it renders.
 	}
 
 	/** Active item labels accepted by this pooled turn's incremental yield tool. */
