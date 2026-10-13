@@ -41,6 +41,38 @@ describe("test runner watchdog", () => {
 	}, 15_000);
 });
 
+describe("test runner environment", () => {
+	test("removes inherited lane mode without dropping unrelated child environment", async () => {
+		using dir = TempDir.createSync("omp-test-runner-env-");
+		const observed = dir.join("child.json");
+		const commands = [
+			{
+				label: "lane environment probe",
+				cwd: ".",
+				command: [
+					process.execPath,
+					"-e",
+					`await Bun.write(${JSON.stringify(observed)}, JSON.stringify({ laneMode: process.env.OMP_LANE_UNIT !== undefined, control: process.env.OMP_LANE_TEST_CONTROL }));`,
+				],
+			},
+		];
+		const result = await ptree.exec(
+			[
+				process.execPath,
+				"-e",
+				`import { runTestCommandsInParallel } from ${JSON.stringify(import.meta.resolve("./ci-test-ts.ts"))}; await runTestCommandsInParallel(${JSON.stringify(commands)}, 1);`,
+			],
+			{
+				env: { ...Bun.env, OMP_LANE_UNIT: "qa-owner-strand", OMP_LANE_TEST_CONTROL: "kept", NO_COLOR: "1" },
+				timeout: 10_000,
+				detached: true,
+			},
+		);
+		expect(result.exitCode).toBe(0);
+		expect(await Bun.file(observed).json()).toEqual({ laneMode: false, control: "kept" });
+	}, 15_000);
+});
+
 describe("OMP_TEST_SHARD", () => {
 	test("shards partition every chunk exactly once, balanced to within one", () => {
 		const chunks = Array.from({ length: 79 }, (_, i) => i);

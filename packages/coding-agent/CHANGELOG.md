@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed test runs launched from worker lanes silently disabling chief-gate checks; the test harness now removes inherited single-writer lane mode ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed cancelled requirements permanently blocking publication: classification can now change with an explicit newer owner requirement and a reason, preserving append-only history and refusing ownerless changes ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed honest clause-by-clause audits being lost to suffixed IDs: authenticated sub-rows now preserve all evidence and fold to the assigned parent, with fail and unverifiable taking precedence over pass; the auditor prompt includes the exact table header ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed requirement audits binding unrelated IDs quoted in task prose; scope now follows exact task names and TODO ownership, preserved with phase metadata and artifact bindings across session hydration and plan edits ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
