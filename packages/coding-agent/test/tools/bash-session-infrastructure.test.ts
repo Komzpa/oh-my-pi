@@ -22,7 +22,11 @@ const incidents = [
 	"kill $(pgrep -u kom dbus-broker); dbus-broker --scope user &",
 	"rm -f /run/user/1000/bus && dbus-daemon --session --address=unix:path=/run/user/1000/bus --fork",
 ];
+// Payload nesting beyond the inspection depth is refused rather than trusted.
+let deeplyNested = "true";
+for (let i = 0; i < 6; i++) deeplyNested = `sh -c '${deeplyNested.replaceAll("'", `'\\''`)}'`;
 const dangerous = [
+	deeplyNested,
 	...incidents,
 	"kill -TERM $(pgrep -f 'systemd --user')",
 	'kill "$(pgrep dbus-daemon)"',
@@ -34,6 +38,10 @@ const dangerous = [
 	"systemctl --user stop dbus.service",
 	"systemctl restart --user dbus-broker.service",
 	"systemctl --user kill 'dbus*'",
+	`sh -c 'rm -f "$XDG_RUNTIME_DIR/bus"'`,
+	"bash -lc 'killall dbus-broker'",
+	"sudo env FOO=1 sh -c \"sh -c 'pkill plasmashell'\"",
+	"eval 'rm -f /run/user/1000/bus'",
 ];
 for (const target of [
 	"dbus-broker",
@@ -59,6 +67,9 @@ const allowed = [
 	"echo 'killall dbus-broker'",
 	"printf '%s' '/run/user/1000/bus'",
 	"pgrep dbus-broker; killall my-worker",
+	"sh -c 'echo killall dbus-broker'",
+	"bash -c 'killall my-worker'",
+	"sh script.sh",
 ];
 
 describe("bash session infrastructure default denies", () => {

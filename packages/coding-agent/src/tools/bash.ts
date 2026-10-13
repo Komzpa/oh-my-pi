@@ -300,8 +300,27 @@ const SESSION_COMMAND_WRAPPERS: Record<string, true> = {
 	nohup: true,
 };
 
+const SESSION_MAX_PAYLOAD_DEPTH = 4;
+const SESSION_PAYLOAD_SHELLS: Record<string, true> = { sh: true, bash: true, zsh: true, dash: true, ksh: true };
+
+/** Command strings an executable will itself run as shell code (`-c` payloads, `eval` arguments). */
+function shellPayloads(executable: string | undefined, args: string[]): string[] {
+	if (!executable) return [];
+	if (executable === "eval") return args.length > 0 ? [args.join(" ")] : [];
+	if (!Object.hasOwn(SESSION_PAYLOAD_SHELLS, executable)) return [];
+	const payloads: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		// Short-option clusters such as `-c`, `-lc`, `-ic` carry the command flag.
+		if (/^-[A-Za-z]*c[A-Za-z]*$/u.test(args[i]) && i + 1 < args.length) payloads.push(args[i + 1]);
+	}
+	return payloads;
+}
+
 /** Default denies precede user allows and apply to every execution backend. */
-function targetsSessionInfrastructure(command: string): boolean {
+function targetsSessionInfrastructure(command: string, depth = 0): boolean {
+	// Nested `sh -c` payloads are inspected recursively; absurd nesting is refused
+	// outright instead of being trusted as unparseable.
+	if (depth > SESSION_MAX_PAYLOAD_DEPTH) return true;
 	const segments = tokenizeShellSegments(command);
 	for (let index = 0; index < segments.length; index++) {
 		const tokens = segments[index];
@@ -331,6 +350,11 @@ function targetsSessionInfrastructure(command: string): boolean {
 			if (args.at(-1) === "$" && segments[index + 1]?.[0]?.split("/").pop() === "pgrep") {
 				if (SESSION_PROCESS_TARGET.test(segments[index + 1].slice(1).join(" "))) return true;
 			}
+		}
+		// `sh -c '<payload>'`, `bash -lc '<payload>'`, `eval '<payload>'`: the
+		// protected operation lives inside the payload token, so re-run the detector on it.
+		for (const payload of shellPayloads(executable, args)) {
+			if (targetsSessionInfrastructure(payload, depth + 1)) return true;
 		}
 		if (executable === "rm" && args.some(arg => SESSION_RUNTIME_TARGET.test(arg))) return true;
 		if (
