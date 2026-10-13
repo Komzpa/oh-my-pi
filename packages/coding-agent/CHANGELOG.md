@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `provider/model` selectors silently resolving to a different model revision (`anthropic/claude-haiku-5` selecting `claude-haiku-4-5`); a version number you name must match, otherwise the selector resolves to nothing and fallback lists move to the next entry
+
 ## [18.10.4] - 2026-10-13
 
 ### Added

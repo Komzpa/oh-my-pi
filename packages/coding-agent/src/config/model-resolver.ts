@@ -702,6 +702,30 @@ function isProviderLockedCrossMatch(pattern: string, matchedModel: Model<Api>): 
 	return getBundledModels(provider as GeneratedProvider).some(m => revisionSpellingKey(m.id) === modelId);
 }
 
+const MODEL_ID_TOKENS = /\d+|[^\d./:@-]+/g;
+
+/**
+ * True when `candidateId` contains every token of `requestedId` in order and no
+ * requested number skips past a different number of the candidate. Text
+ * shorthand may skip candidate tokens (`haiku` -> `claude-haiku-4-5`), but a
+ * named revision may not: `haiku-5` must not resolve to `claude-haiku-4-5`.
+ */
+function preservesRevisionTokens(requestedId: string, candidateId: string): boolean {
+	const requested = requestedId.toLowerCase().match(MODEL_ID_TOKENS) ?? [];
+	const candidate = candidateId.toLowerCase().match(MODEL_ID_TOKENS) ?? [];
+	let cursor = 0;
+	for (const token of requested) {
+		const isNumber = /^\d+$/.test(token);
+		while (cursor < candidate.length && candidate[cursor] !== token) {
+			if (isNumber && /^\d+$/.test(candidate[cursor]!)) return false;
+			cursor++;
+		}
+		if (cursor === candidate.length) return false;
+		cursor++;
+	}
+	return true;
+}
+
 /**
  * Find an exact explicit provider/model match.
  */
@@ -810,6 +834,7 @@ function matchModel(
 				return undefined;
 			}
 			const scored = providerModels
+				.filter(model => preservesRevisionTokens(modelId, model.id))
 				.map(model => ({ model, match: fuzzyMatch(modelId, model.id) }))
 				.filter(entry => entry.match.matches);
 			if (scored.length === 0) {

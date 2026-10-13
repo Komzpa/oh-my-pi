@@ -599,6 +599,7 @@ not an allowlist of model transports.
 
 `--provider` is legacy; `--model` is preferred. An exact `provider/modelId` is unambiguous; bare ids
 and fuzzy patterns are resolved against the available concrete models.
+In a provider-qualified fuzzy match, a version number you write must line up with the model's own: `anthropic/claude-haiku-5` does not select `claude-haiku-4-5`. It resolves to nothing, so a fallback list moves on to its next entry.
 
 Resolution precedence for exact selectors:
 
