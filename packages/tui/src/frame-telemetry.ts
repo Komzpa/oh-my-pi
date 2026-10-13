@@ -49,7 +49,14 @@ export class FrameTelemetry {
 	#thresholdMs: number;
 	#loggerWarn: (message: string, context?: Record<string, unknown>) => void;
 	#samples: FrameSample[] = [];
-	#lastFrameAtMs: number | undefined;
+	/** Earliest input or render request not yet painted; the frame-gap clock. Idle time never counts. */
+	#pendingSinceMs: number | undefined;
+	/** A render was requested by something other than the meter's own listener refresh. */
+	#externalPending = false;
+	/** A render was requested from inside a status-text listener (the meter repainting itself). */
+	#selfPending = false;
+	#notifying = false;
+	#refreshTimer: ReturnType<typeof setInterval> | undefined;
 	#lastFrameStartedAtMs: number | undefined;
 	#lastInputAtMs: number | undefined;
 	#pendingInputAtMs: number | undefined;
@@ -93,14 +100,52 @@ export class FrameTelemetry {
 
 	onStatusTextChange(listener: (text: string) => void): () => void {
 		this.#listeners.add(listener);
+		this.#startRefreshTimer();
 		return () => {
 			this.#listeners.delete(listener);
+			if (this.#listeners.size === 0) this.#stopRefreshTimer();
 		};
+	}
+
+	/**
+	 * Re-evaluate the snapshot against the rolling window without a frame. Called by the
+	 * listener timer so the meter decays to 0fps once rendering stops. Listeners fire only
+	 * when the text changed, and renders they request are not sampled (see recordRenderRequest),
+	 * so an idle meter settles instead of keeping itself alive.
+	 */
+	refresh(): void {
+		this.#refreshStatus(this.#now(), true);
+	}
+
+	/** Note that a render was requested; starts the frame-gap clock if nothing is pending. */
+	recordRenderRequest(): void {
+		if (this.#notifying) {
+			if (this.#pendingSinceMs === undefined) this.#selfPending = true;
+			return;
+		}
+		this.#externalPending = true;
+		this.#selfPending = false;
+		this.#pendingSinceMs ??= this.#now();
+	}
+
+	#startRefreshTimer(): void {
+		if (this.#refreshTimer !== undefined) return;
+		this.#refreshTimer = setInterval(() => this.refresh(), STATUS_UPDATE_MS);
+		this.#refreshTimer.unref?.();
+	}
+
+	#stopRefreshTimer(): void {
+		if (this.#refreshTimer === undefined) return;
+		clearInterval(this.#refreshTimer);
+		this.#refreshTimer = undefined;
 	}
 
 	recordInput(label = "key"): void {
 		this.#lastInputAtMs = this.#dateNow();
 		if (this.#pendingInputAtMs === undefined) this.#pendingInputAtMs = this.#now();
+		this.#externalPending = true;
+		this.#selfPending = false;
+		this.#pendingSinceMs ??= this.#pendingInputAtMs;
 		this.#handling = label;
 	}
 
@@ -121,12 +166,19 @@ export class FrameTelemetry {
 		if (!rendered) return;
 
 		const renderMs = Math.max(0, now - startedAt);
-		const gapMs = this.#lastFrameAtMs === undefined ? 0 : Math.max(0, now - this.#lastFrameAtMs);
+		// Gap = wait from the earliest unpainted input/render request to this paint. Time since
+		// the previous frame is idle when nothing was pending, so it is not a drop.
+		const gapMs = this.#pendingSinceMs === undefined ? 0 : Math.max(0, now - this.#pendingSinceMs);
+		const meterOnly = this.#selfPending && !this.#externalPending;
+		this.#pendingSinceMs = undefined;
+		this.#externalPending = false;
+		this.#selfPending = false;
 		const pendingInputAtMs = this.#pendingInputAtMs;
 		this.#pendingInputAtMs = undefined;
 		const lagMs = pendingInputAtMs === undefined ? 0 : Math.max(0, now - pendingInputAtMs);
-		this.#lastFrameAtMs = now;
-		this.#samples.push({ atMs: now, renderMs, lagMs });
+		// A frame painted only because the meter text changed is not UI activity; sampling it
+		// would make the meter feed itself.
+		if (!meterOnly) this.#samples.push({ atMs: now, renderMs, lagMs });
 		this.#trim(now);
 		if (gapMs > this.#thresholdMs) {
 			this.logDrop({
@@ -198,14 +250,19 @@ export class FrameTelemetry {
 		while (this.#samples[0] && this.#samples[0].atMs < minAt) this.#samples.shift();
 	}
 
-	#refreshStatus(now: number): void {
-		if (now - this.#lastStatusUpdateMs < STATUS_UPDATE_MS) return;
+	#refreshStatus(now: number, force = false): void {
+		if (!force && now - this.#lastStatusUpdateMs < STATUS_UPDATE_MS) return;
 		this.#lastStatusUpdateMs = now;
 		const snapshot = this.#buildSnapshot(now);
 		if (snapshot.text === this.#lastStatusText) return;
 		this.#lastStatusText = snapshot.text;
 		this.#snapshot = snapshot;
-		for (const listener of this.#listeners) listener(snapshot.text);
+		this.#notifying = true;
+		try {
+			for (const listener of this.#listeners) listener(snapshot.text);
+		} finally {
+			this.#notifying = false;
+		}
 	}
 
 	#buildSnapshot(now: number): FrameTelemetrySnapshot {

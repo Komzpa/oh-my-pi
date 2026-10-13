@@ -474,6 +474,8 @@
 - Removed `JobsPanel`, the `/jobs` transcript block; `/jobs` now opens `JobsSheet` natively ([#14138](https://github.com/can1357/oh-my-pi/pull/14138) by [@H4vC](https://github.com/H4vC)).
 ### Fixed
 
+- Fixed the FPS meter logging the first frame after an idle period as a `frame-gap` drop. The gap is now measured from the earliest pending input or render request to the paint, so idle time no longer counts.
+- Fixed the status-line FPS text staying frozen after rendering stopped. It now decays to `0fps` on a listener-scoped timer, and frames repainted only to update the meter are not sampled, so an idle meter does not keep itself alive.
 - Fixed the status-line FPS meter `lag` value measuring the idle gap between frames instead of input-to-paint latency. `lag` now reports the delay from the earliest unpainted keystroke to the frame that paints it, and stays at 0 when idle.
 
 ## [18.4.12] - 2026-10-02

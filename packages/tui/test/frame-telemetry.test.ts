@@ -96,6 +96,8 @@ describe("FrameTelemetry", () => {
 		telemetry.endRender("provider", true);
 
 		dateNow += 500;
+		now = 20;
+		telemetry.recordRenderRequest();
 		now = 400;
 		telemetry.beginRender("provider");
 		now = 420;
@@ -105,7 +107,7 @@ describe("FrameTelemetry", () => {
 		expect(logged[0]?.message).toBe("ui.frame-drop");
 		expect(logged[0]?.context).toMatchObject({
 			kind: "frame-gap",
-			durationMs: 410,
+			durationMs: 400,
 			phase: "render:provider",
 			lastInputAt: "2026-09-25T16:30:00.000Z",
 			msSinceLastInput: 500,
@@ -113,6 +115,76 @@ describe("FrameTelemetry", () => {
 			handling: "key",
 			stack: "render:provider",
 		});
+	});
+});
+
+describe("FrameTelemetry idle handling", () => {
+	test("first frame after an idle period is not a frame drop", () => {
+		let now = 0;
+		const logged: string[] = [];
+		const telemetry = new FrameTelemetry({ now: () => now, thresholdMs: 250, loggerWarn: m => logged.push(m) });
+		telemetry.beginRender("provider");
+		now = 10;
+		telemetry.endRender("provider", true);
+		now = 60_000;
+		telemetry.recordInput("key");
+		telemetry.beginRender("provider");
+		now = 60_020;
+		telemetry.endRender("provider", true);
+		expect(logged).toEqual([]);
+	});
+
+	test("a render request that waits past the threshold is a frame drop", () => {
+		let now = 0;
+		const logged: Array<Record<string, unknown> | undefined> = [];
+		const telemetry = new FrameTelemetry({ now: () => now, thresholdMs: 250, loggerWarn: (_m, c) => logged.push(c) });
+		telemetry.recordRenderRequest();
+		now = 300;
+		telemetry.beginRender("provider");
+		now = 310;
+		telemetry.endRender("provider", true);
+		expect(logged).toHaveLength(1);
+		expect(logged[0]).toMatchObject({ kind: "frame-gap", durationMs: 310 });
+	});
+
+	test("status decays to 0fps after rendering stops and the meter does not sustain itself", () => {
+		let now = 0;
+		const updates: string[] = [];
+		const telemetry = new FrameTelemetry({ now: () => now, thresholdMs: 10_000, loggerWarn: () => {} });
+		const render = (ms: number) => {
+			telemetry.beginRender("provider");
+			now += ms;
+			telemetry.endRender("provider", true);
+		};
+		// Mimic the interactive-mode listener: a text change requests a render.
+		const off = telemetry.onStatusTextChange(text => {
+			updates.push(text);
+			telemetry.recordRenderRequest();
+		});
+		telemetry.recordRenderRequest();
+		render(10);
+		expect(telemetry.snapshot.p50Ms).toBe(10);
+
+		now += 6_000;
+		telemetry.refresh();
+		expect(telemetry.statusText).toBe("0fps p50 0ms p95 0ms max 0ms lag 0ms");
+		const count = updates.length;
+		// The listener-requested repaint is the meter's own; it must not become a sample.
+		render(3);
+		now += 6_000;
+		telemetry.refresh();
+		telemetry.refresh();
+		expect(telemetry.snapshot.fps).toBe(0);
+		expect(telemetry.statusText).toBe("0fps p50 0ms p95 0ms max 0ms lag 0ms");
+		expect(updates.length).toBe(count);
+		off();
+	});
+
+	test("refresh timer stops when the last listener unsubscribes", () => {
+		const telemetry = new FrameTelemetry({ loggerWarn: () => {} });
+		const off = telemetry.onStatusTextChange(() => {});
+		off();
+		expect(() => telemetry.refresh()).not.toThrow();
 	});
 });
 
