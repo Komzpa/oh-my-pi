@@ -52,6 +52,7 @@ export const taskItemSchema = type({
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
+	"resources?": "string[]",
 	"tools?": "string[]",
 	"+": "delete",
 });
@@ -62,6 +63,7 @@ const taskItemSchemaIsolated = type({
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
+	"resources?": "string[]",
 	"tools?": "string[]",
 	"isolated?": "boolean",
 	"+": "delete",
@@ -74,8 +76,8 @@ export const taskSchema = type({
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
+	"resources?": "string[]",
 	"tools?": "string[]",
-	"isolated?": "boolean",
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
@@ -85,8 +87,8 @@ const taskSchemaNoIsolation = type({
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
+	"resources?": "string[]",
 	"tools?": "string[]",
-	"+": "delete",
 });
 function guardBatchAgent(schema: BaseType): BaseType {
 	// Inspect the input before undeclared-key deletion can erase the requested agent.
@@ -164,6 +166,7 @@ function createTaskSchema(options: {
 				...schemaFields,
 				...toolsField,
 				...seanceFields,
+				"resources?": "string[]",
 				"isolated?": "boolean",
 				"+": "delete",
 			});
@@ -184,6 +187,7 @@ function createTaskSchema(options: {
 			...schemaFields,
 			...toolsField,
 			...seanceFields,
+			"resources?": "string[]",
 			"+": "delete",
 		});
 		return guardBatchAgent(
@@ -204,6 +208,7 @@ function createTaskSchema(options: {
 			...schemaFields,
 			...toolsField,
 			...seanceFields,
+			"resources?": "string[]",
 			"isolated?": "boolean",
 			"+": "delete",
 		});
@@ -217,6 +222,7 @@ function createTaskSchema(options: {
 		...schemaFields,
 		...toolsField,
 		...seanceFields,
+		"resources?": "string[]",
 		"+": "delete",
 	});
 }
