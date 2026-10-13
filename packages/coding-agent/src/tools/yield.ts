@@ -19,6 +19,11 @@ import {
 	tryEnforceStrictSchema,
 } from "@oh-my-pi/pi-ai/utils/schema";
 import { prompt } from "@oh-my-pi/pi-utils";
+import { TERMINAL_STATES } from "@oh-my-pi/pi-tui/apps/ps-data";
+import { formatDuration } from "@oh-my-pi/pi-tui/render/render-utils";
+import type { AbandonedJob } from "@oh-my-pi/pi-tui/tools/task";
+import { daemonClientForProject } from "../launch/client";
+import { hasLiveOwnedService, listServicesTolerant } from "../launch/services";
 import yieldDescription from "../prompts/tools/yield.md" with { type: "text" };
 import yieldDataErrorConflictMessage from "../prompts/tools/yield-data-error-conflict.md" with { type: "text" };
 import { subprocessToolRegistry } from "../task/subprocess-tool-registry";
@@ -82,6 +87,7 @@ export interface YieldDetails {
 	 * subagent's acceptance and the parent's view of the result in lockstep.
 	 */
 	schemaOverridden?: boolean;
+	abandonedJobs?: AbandonedJob[];
 }
 
 function formatSchema(schema: unknown): string {
@@ -376,6 +382,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	readonly #parameters: TSchema;
 	#workPoolBatchKey = "";
 	readonly #submittedWorkPoolItems = new Set<string>();
+	readonly #warnedRunningJobs = new Set<string>();
 
 	get strict(): boolean {
 		return this.#workPoolItems().length === 0 && this.#schemaStrict;
@@ -495,6 +502,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		this.#hasIncrementalSections = false;
 		this.#schemaValidationFailures = 0;
 		this.#emptyResultFailures = 0;
+		this.#warnedRunningJobs.clear();
 	}
 
 	/**
@@ -504,13 +512,69 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	 * never cleared in resetTurnState() so a woken parked worker cannot overwrite
 	 * the stored result on a follow-up turn.
 	 */
-	#claimTerminalResult(): void {
+	async #claimTerminalResult(signal?: AbortSignal): Promise<AbandonedJob[] | undefined> {
 		if (this.#terminalResultSubmitted) {
 			throw new Error(
 				"The result was already submitted and accepted; it cannot be replaced. Stop now — do not call yield again.",
 			);
 		}
+		const abandonedJobs = await this.#checkRunningJobs(signal);
 		this.#terminalResultSubmitted = true;
+		return abandonedJobs;
+	}
+
+	async #checkRunningJobs(signal?: AbortSignal): Promise<AbandonedJob[] | undefined> {
+		if (!this.#session.requireYieldTool) return;
+		const jobs: AbandonedJob[] = [];
+		const ownerId = this.#session.getAgentId?.() ?? undefined;
+		if (hasLiveOwnedService(this.#session)) {
+			const owner = this.#session.getSessionId?.() ?? ownerId;
+			const client = await daemonClientForProject(this.#session.cwd);
+			const { services } = await listServicesTolerant(this.#session, signal);
+			for (const service of services) {
+				if (service.owner !== owner || service.persist || service.detached || TERMINAL_STATES[service.state]) continue;
+				let daemon = service;
+				let command: string | undefined;
+				try {
+					const described = await client.request({ op: "describe", name: service.name }, signal);
+					if (described.op !== "describe") throw new Error("Unexpected daemon describe response");
+					if (described.daemon.owner !== owner || described.daemon.persist || described.daemon.detached || TERMINAL_STATES[described.daemon.state]) continue;
+					daemon = described.daemon;
+					command = described.spec.args.at(-1) ?? described.spec.application;
+				} catch {
+					continue;
+				}
+				jobs.push({
+					id: daemon.name,
+					type: "service",
+					command: (command ?? daemon.name).replace(/\s+/g, " ").slice(0, 120),
+					startedAt: daemon.startedAt,
+					elapsedMs: Math.max(0, Date.now() - daemon.startedAt),
+				});
+			}
+		}
+		// Teardown reaps every owner job including foreground-backed and
+		// delivery-suppressed rows; the guard enumerates that same set.
+		for (const job of this.#session.asyncJobManager?.getRunningOwnerJobs(ownerId) ?? []) {
+			if (job.type !== "bash") continue;
+			jobs.push({
+				id: job.id,
+				type: "bash",
+				command: (job.process?.command ?? job.label).replace(/\s+/g, " ").slice(0, 120),
+				startedAt: job.startTime,
+				elapsedMs: Math.max(0, Date.now() - job.startTime),
+			});
+		}
+		if (jobs.length === 0) return;
+		const key = (job: AbandonedJob): string => `${job.type}:${job.id}:${job.startedAt}`;
+		if (jobs.some(job => !this.#warnedRunningJobs.has(key(job)))) {
+			for (const job of jobs) this.#warnedRunningJobs.add(key(job));
+			const running = jobs.map(job => `${job.id}: ${job.command} (elapsed ${formatDuration(job.elapsedMs)})`).join("\n");
+			throw new Error(
+				`Terminal yield refused: this worker still owns running processes:\n${running}\nWait for them to finish, or explicitly kill them with proc://<id>/kill or mark a service persist/detached with proc://<id>/mode, then yield again. A second terminal yield with the same processes still running is accepted with abandonedJobs; unfinished bash jobs are cancelled by task cleanup.`,
+			);
+		}
+		return jobs;
 	}
 
 	#workPoolItems(): readonly WorkPoolYieldItem[] {
@@ -574,7 +638,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				const attemptCount = this.#emptyResultFailures;
 				this.#emptyResultFailures = 0;
 				const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
-				if (workPoolItems.length === 0 && !isIncremental) this.#claimTerminalResult();
+				const abandonedJobs = workPoolItems.length === 0 && !isIncremental ? await this.#claimTerminalResult(_signal) : undefined;
 				return {
 					content: [{ type: "text", text: `Task aborted: ${error}` }],
 					details: {
@@ -582,6 +646,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 						status: "aborted",
 						error,
 						type: yieldType,
+						abandonedJobs,
 					},
 				};
 			}
@@ -629,7 +694,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					const attemptCount = this.#emptyResultFailures;
 					this.#emptyResultFailures = 0;
 					const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
-					this.#claimTerminalResult();
+					const abandonedJobs = await this.#claimTerminalResult(_signal);
 					return {
 						content: [{ type: "text", text: `Task aborted: ${error}` }],
 						details: {
@@ -637,6 +702,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 							status: "aborted",
 							error,
 							type: yieldType,
+							abandonedJobs,
 						},
 					};
 				}
@@ -739,7 +805,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					const attemptCount = this.#emptyResultFailures;
 					this.#emptyResultFailures = 0;
 					const error = `yield resolved to an empty last-turn result after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
-					if (workPoolItems.length === 0 && !isIncremental) this.#claimTerminalResult();
+					const abandonedJobs = workPoolItems.length === 0 && !isIncremental ? await this.#claimTerminalResult(_signal) : undefined;
 					return {
 						content: [{ type: "text", text: `Task aborted: ${error}` }],
 						details: {
@@ -747,6 +813,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 							status: "aborted",
 							error,
 							type: yieldType,
+							abandonedJobs,
 						},
 					};
 				}
@@ -824,11 +891,15 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			}
 		}
 
+		// Check before either terminal latch or the last workpool item is committed.
+		const completesWorkPool = workPoolItemId !== undefined && workPoolItems.every(item => item.id === workPoolItemId || this.#submittedWorkPoolItems.has(item.id));
+		const abandonedJobs = workPoolItems.length === 0 && !isIncremental
+			? await this.#claimTerminalResult(_signal)
+			: status === "aborted" || completesWorkPool
+				? await this.#checkRunningJobs(_signal)
+				: undefined;
 		this.#emptyResultFailures = 0;
 		if (status === "success" && isIncremental) this.#hasIncrementalSections = true;
-		// Accept point: latch the one-shot terminal guard. Deliberately not cleared
-		// in resetTurnState() — see #claimTerminalResult.
-		if (workPoolItems.length === 0 && !isIncremental) this.#claimTerminalResult();
 		let workPoolComplete = false;
 		let submittedWorkPoolItem: WorkPoolYieldItem | undefined;
 		let remainingWorkPoolItems: readonly WorkPoolYieldItem[] = [];
@@ -858,6 +929,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				useLastTurn: useLastTurn || undefined,
 				complete: workPoolComplete || undefined,
 				schemaOverridden: schemaValidationOverridden || undefined,
+				abandonedJobs,
 			},
 		};
 	}
@@ -927,6 +999,7 @@ subprocessToolRegistry.register<YieldDetails>("yield", {
 			useLastTurn: record.useLastTurn === true ? true : undefined,
 			complete: record.complete === true ? true : undefined,
 			schemaOverridden: record.schemaOverridden === true ? true : undefined,
+			abandonedJobs: Array.isArray(record.abandonedJobs) ? record.abandonedJobs as AbandonedJob[] : undefined,
 		};
 	},
 	shouldTerminate: event => {

@@ -338,7 +338,7 @@ const bashSchemaWithAsync = type({
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
 	"pty?": "boolean",
-	"async?": "boolean",
+	"async?": type("boolean").describe("run in background; this worker still owns the running command"),
 });
 
 const bashSchemaWithService = type({
@@ -360,7 +360,7 @@ const bashSchemaWithAsyncAndService = type({
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
 	"pty?": "boolean",
-	"async?": "boolean",
+	"async?": type("boolean").describe("run in background; this worker still owns the running command"),
 	"name?": "string <= 48",
 	"ready?": type({
 		"log?": "string",
@@ -807,6 +807,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			lines.push(...options.notices, "");
 		}
 		lines.push(formatBackgroundNotice(jobId, timeoutSec));
+		const owner = this.session.requireYieldTool ? "this worker" : "this session";
+		lines.push(`Command is still running and owned by ${owner}. Wait for its result before submitting a final yield.`);
 		return {
 			content: [{ type: "text", text: lines.join("\n") }],
 			details,

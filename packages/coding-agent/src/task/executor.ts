@@ -1161,8 +1161,8 @@ export function createSubagentSettings(
 		"tier.google": subagentTiers.google ?? "none",
 		// Async jobs and bash/eval auto-backgrounding are inherited from the parent:
 		// background jobs are owner-routed to the subagent's own session, and
-		// the run driver's quiescence barrier + teardown reap guarantee no
-		// owner job outlives the run, so worktree capture/cleanup stays
+		// terminal yield warns before abandonment and teardown reaps unfinished
+		// owner jobs, so worktree capture/cleanup stays
 		// race-free (previously both were force-disabled here).
 
 		// Subagents run headless — there is no UI to confirm prompts against, so
@@ -1874,8 +1874,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						}) === true;
 					const forcedFinalYield = event.toolName === "yield" && finalYieldForced && yieldCalled;
 					if (wantsTerminate || forcedFinalYield) {
-						// Acceptance ends the worker even with owner jobs pending;
-						// teardown reaps them rather than reopening submission.
+						// The yield tool warned before accepting abandoned processes;
+						// teardown reaps them without reopening submission.
 						requestAbort("terminate");
 					}
 				}
@@ -2472,8 +2472,8 @@ async function driveSessionToResult(
 		};
 
 		// Before acceptance, settle owner work before spending yield reminders.
-		// After terminal acceptance, the monitor ends the run and teardown reaps
-		// remaining jobs; late async deliveries cannot reopen submission.
+		// The yield tool refuses the first terminal submission with live processes;
+		// a warned repeat records abandonment before teardown reaps owner jobs.
 		while (!abortSignal.aborted) {
 			if (!monitor.yieldCalled()) {
 				await runYieldLadder();
@@ -2636,6 +2636,11 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	}
 	const lastYield = yieldItems?.[yieldItems.length - 1];
 	const yieldAbortReason = lastYield?.status === "aborted" ? lastYield.error || "Subagent aborted task" : undefined;
+	const abandonedJobs = lastYield?.abandonedJobs;
+	if (abandonedJobs?.length) {
+		const warning = `Terminal yield abandoned running processes: ${abandonedJobs.map(job => job.id).join(", ")}. Task cleanup cancels unfinished bash jobs.`;
+		stderr = stderr ? `${stderr}\n${warning}` : warning;
+	}
 	const { abortedViaYield, hasYield } = finalized;
 	const { content: truncatedOutput, truncated } = truncateTail(rawOutput, {
 		maxBytes: MAX_OUTPUT_BYTES,
@@ -2775,6 +2780,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		stderr,
 		truncated: Boolean(truncated),
 		...(finalized.structuredOutput ? { structuredOutput: finalized.structuredOutput } : {}),
+		...(abandonedJobs?.length ? { abandonedJobs } : {}),
 		durationMs: Date.now() - args.startTime,
 		tokens: progress.tokens,
 		requests: progress.requests,
@@ -3542,7 +3548,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		} catch {
 			// Ignore abort cleanup timeouts; the session stays adopted either way.
 		}
-		const jobManager = AsyncJobManager.instance();
+		const jobManager = session.asyncJobManager;
 		if (monitor.yieldCalled() && jobManager) {
 			const reap = await jobManager.cancelAndReapOwnerJobs(id, cleanupDeadlineAt);
 			if (!reap.settled) {

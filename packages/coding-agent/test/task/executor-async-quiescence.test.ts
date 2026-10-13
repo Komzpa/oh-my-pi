@@ -55,6 +55,7 @@ interface AsyncQuiescenceHarness {
 interface AsyncSessionOptions {
 	abort?: () => Promise<void>;
 	dispose?: () => Promise<void>;
+	asyncJobManager?: AsyncJobManager;
 }
 
 /** Mock owner work completes during settlement, injecting an async result. */
@@ -130,6 +131,7 @@ function createAsyncSession(
 		state,
 		agent: { state: { systemPrompt: ["test"] } },
 		model: undefined,
+		asyncJobManager: options.asyncJobManager,
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {} },
 		getActiveToolNames: () => ["read", "yield"],
@@ -181,7 +183,6 @@ describe("runSubprocess async work and terminal acceptance", () => {
 	it("cancels and reaps pending owner jobs when a follow-up accepts terminal yield", async () => {
 		const id = "follow-up-owner-cleanup";
 		const manager = new AsyncJobManager({});
-		AsyncJobManager.setInstance(manager);
 		const ownerStopped = Promise.withResolvers<void>();
 		const otherStopped = Promise.withResolvers<void>();
 		const ownerJobId = manager.register(
@@ -204,10 +205,13 @@ describe("runSubprocess async work and terminal acceptance", () => {
 			},
 			{ ownerId: "another-owner" },
 		);
-		const harness = createAsyncSession(({ harness: h }) => {
-			expect(manager.getJob(ownerJobId)?.status).toBe("running");
-			h.emitTerminalYield({ report: "FIRST" });
-		});
+		const harness = createAsyncSession(
+			({ harness: h }) => {
+				expect(manager.getJob(ownerJobId)?.status).toBe("running");
+				h.emitTerminalYield({ report: "FIRST" });
+			},
+			{ asyncJobManager: manager },
+		);
 		harness.session.setWorkPoolYieldItems = async () => {};
 		vi.spyOn(AgentLifecycleManager.global(), "ensureLive").mockResolvedValue(harness.session);
 
@@ -503,7 +507,6 @@ describe("real executor terminal yield with worker-owned bash", () => {
 		}
 		const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)}`;
 		const manager = new AsyncJobManager({});
-		AsyncJobManager.setInstance(manager);
 		const auth = createInMemoryAuthStorage();
 		auth.keys.setRuntime("mock", "test-key");
 		const modelRegistry = new ModelRegistry(auth);
@@ -618,6 +621,7 @@ describe("real executor terminal yield with worker-owned bash", () => {
 			modelRegistry,
 			model: mock,
 			sessionManager: SessionManager.inMemory(root.path()),
+			asyncJobManager: manager,
 			settings: Settings.isolated({
 				"compaction.enabled": false,
 				"retry.enabled": false,
