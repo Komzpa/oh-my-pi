@@ -10,7 +10,7 @@ import {
 	type ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
 import type { ComputerSafetyCheck, ImageContent, Static, TextContent, TSchema } from "@oh-my-pi/pi-ai";
-import { prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
+import { prompt, sanitizeText, untilAborted, withLoopPhase } from "@oh-my-pi/pi-utils";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import nativeDelegationTemplate from "../../prompts/tools/native-delegation.md" with { type: "text" };
 import {
@@ -293,18 +293,20 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		};
 		if (!loopEmittedToolCall && this.runner.hasHandlers("tool_call")) {
 			try {
-				const callResult = (await this.runner.emitToolCall(
-					{
-						type: "tool_call",
-						toolName: this.tool.name,
-						toolCallId,
-						input: normalizeToolEventInput(
-							this.tool.name,
-							resolveToolEventInput(this.tool, toolEventArgs(params, context)),
-						),
-					},
-					signal,
-					this.#agent,
+				const callResult = (await withLoopPhase(`extension.tool_call:${this.tool.name}`, () =>
+					this.runner.emitToolCall(
+						{
+							type: "tool_call",
+							toolName: this.tool.name,
+							toolCallId,
+							input: normalizeToolEventInput(
+								this.tool.name,
+								resolveToolEventInput(this.tool, toolEventArgs(params, context)),
+							),
+						},
+						signal,
+						this.#agent,
+					),
 				)) as ToolCallEventResult | undefined;
 
 				if (callResult?.block) {
@@ -519,20 +521,22 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 
 		// Emit tool_result event - extensions can modify the result and error status
 		if (this.runner.hasHandlers("tool_result")) {
-			const resultResult = await this.runner.emitToolResult(
-				{
-					type: "tool_result",
-					toolName: this.tool.name,
-					toolCallId,
-					input: normalizeToolEventInput(
-						this.tool.name,
-						resolveToolEventInput(this.tool, toolEventArgs(effectiveParams, context)),
-					),
-					content: result.content,
-					details: result.details,
-					isError: !!executionError || result.isError === true,
-				},
-				this.#agent,
+			const resultResult = await withLoopPhase(`extension.tool_result:${this.tool.name}`, () =>
+				this.runner.emitToolResult(
+					{
+						type: "tool_result",
+						toolName: this.tool.name,
+						toolCallId,
+						input: normalizeToolEventInput(
+							this.tool.name,
+							resolveToolEventInput(this.tool, toolEventArgs(effectiveParams, context)),
+						),
+						content: result.content,
+						details: result.details,
+						isError: !!executionError || result.isError === true,
+					},
+					this.#agent,
+				),
 			);
 
 			// Handler context reports into this call's sink like tool-authored

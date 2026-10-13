@@ -53,7 +53,7 @@ import {
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import { isDsmlLeakRecoveryTarget, removeDsmlToolMarkupLeak } from "@oh-my-pi/pi-ai/utils/dsml-leak";
-import { cloneJsonTree, logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
+import { cloneJsonTree, logger, withLoopPhase, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { LiveSteeringChannel } from "./live-steering";
 import { agentPauseGate } from "./pause";
@@ -3652,22 +3652,24 @@ async function executeToolCalls(
 						// nothing may await or call host code after this final check.
 						if (abortBeforeToolExecution()) return;
 						executionStarted = true;
-						rawResult = await tool.execute(
-							toolCall.id,
-							executionArgs,
-							record.signal,
-							partialResult => {
-								const event: Extract<AgentEvent, { type: "tool_execution_update" }> = {
-									type: "tool_execution_update",
-									toolCallId: toolCall.id,
-									toolName: toolCall.name,
-									args: executionArgs,
-									partialResult: coerceToolResult(partialResult).result,
-								};
-								if (stream.done) config.onDetachedToolUpdate?.(event);
-								else stream.push(event);
-							},
-							toolContext,
+						rawResult = await withLoopPhase(`tool.${toolCall.name}.execute`, () =>
+							tool.execute(
+								toolCall.id,
+								executionArgs,
+								record.signal,
+								partialResult => {
+									const event: Extract<AgentEvent, { type: "tool_execution_update" }> = {
+										type: "tool_execution_update",
+										toolCallId: toolCall.id,
+										toolName: toolCall.name,
+										args: executionArgs,
+										partialResult: coerceToolResult(partialResult).result,
+									};
+									if (stream.done) config.onDetachedToolUpdate?.(event);
+									else stream.push(event);
+								},
+								toolContext,
+							),
 						);
 					} finally {
 						await streamSession?.discard("outer tool completed without committing stream speculation");

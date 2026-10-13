@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
+import { frameTelemetry } from "@oh-my-pi/pi-tui/frame-telemetry";
 import { type LogEvent, registerLogSink } from "@oh-my-pi/pi-utils/logger";
 import { card, md, node } from "@oh-my-pi/pi-tui/native/describe";
 import type { NativeNode, NativeUiEvent } from "@oh-my-pi/pi-tui/native/node";
@@ -35,6 +36,29 @@ afterEach(() => {
 const opsOf = (h: TspHarness, from: number): TspOp[] => h.frames.slice(from).flatMap(frame => frame.ops);
 
 describe("native backend", () => {
+	it("reports native paints, unchanged frames and credit holds separately", async () => {
+		const probe = new Probe(md("first"));
+		harness = await TspHarness.start(tui => tui.addChild(probe), { credits: 1, autoAck: false });
+		const calls: Array<[string, boolean | undefined, boolean | undefined]> = [];
+		const spy = vi.spyOn(frameTelemetry, "endRender").mockImplementation((target, painted, settled) => {
+			calls.push([target, painted, settled]);
+		});
+		try {
+			probe.current = md("second");
+			await harness.render();
+			expect(calls.at(-1)).toEqual(["native", false, false]);
+			harness.terminal.ackAll();
+			harness.flush();
+			expect(calls.at(-1)).toEqual(["native", true, true]);
+			harness.terminal.ackAll();
+			harness.flush();
+			await harness.render();
+			expect(calls.at(-1)).toEqual(["native", false, true]);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
 	it("keeps at most `credits` frames unacknowledged and coalesces changes made while blocked", async () => {
 		const stream = new Probe(md("", { stream: true }));
 		harness = await TspHarness.start(tui => tui.addChild(stream), { credits: 2, autoAck: false });

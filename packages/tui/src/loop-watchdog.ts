@@ -14,6 +14,8 @@ export interface LoopWatchdogOptions {
 	cpuNow?: () => number;
 	/** Timer source; injectable for tests. Default `setTimeout`. */
 	schedule?: (cb: () => void, ms: number) => LoopWatchdogTimer;
+	/** Called when a real loop block is reported. */
+	onBlocked?: (event: { blockedMs: number; cpuMs: number; phase: string }) => void;
 }
 
 /**
@@ -62,6 +64,7 @@ export class LoopWatchdog {
 	#now: () => number;
 	#cpuNow: () => number;
 	#schedule: (cb: () => void, ms: number) => LoopWatchdogTimer;
+	#onBlocked: ((event: { blockedMs: number; cpuMs: number; phase: string }) => void) | undefined;
 	#expected = 0;
 	#expectedCpu = 0;
 	#wasBlocked = false;
@@ -91,6 +94,7 @@ export class LoopWatchdog {
 				const timer = setTimeout(cb, ms);
 				return { unref: () => timer.unref?.(), cancel: () => clearTimeout(timer) };
 			});
+		this.#onBlocked = options.onBlocked;
 	}
 
 	start(): void {
@@ -158,12 +162,14 @@ export class LoopWatchdog {
 				this.#stallEndedAt = now;
 				if (!this.#wasBlocked) {
 					this.#wasBlocked = true;
+					const resolvedPhase = phase?.label ?? "unknown";
 					logger.warn("ui.loop-blocked", {
 						blockedMs: Math.round(blockedMs),
 						cpuMs: Math.round(cpuMs),
 						phase: phase?.label ?? "unknown",
 						...(phase ? { phaseMs: Math.round(phase.ms) } : {}),
 					});
+					this.#onBlocked?.({ blockedMs, cpuMs, phase: resolvedPhase });
 				}
 			}
 		} else {
