@@ -482,8 +482,12 @@ describe("restart queue controller", () => {
 			.find(entry => entry.type === "custom" && entry.customType === "subagent_restart_handoff");
 		expect(handoff?.type).toBe("custom");
 		if (!handoff || handoff.type !== "custom") throw new Error("Expected durable restart handoff");
-		const children = (handoff.data as { children: Array<{ id: string; sessionFile: string; status: string }> })
-			.children;
+		// Persisted JSON shape: demand-loaded entries may be mutation-tracking proxies.
+		const children = (
+			JSON.parse(JSON.stringify(handoff.data)) as {
+				children: Array<{ id: string; sessionFile: string; status: string }>;
+			}
+		).children;
 		expect(children).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ id: hangingId, sessionFile: path.resolve(hangingFile), status: "running" }),
