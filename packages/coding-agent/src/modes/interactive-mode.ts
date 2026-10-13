@@ -389,11 +389,8 @@ import {
 	cfgCompactionIdleTimeoutSeconds,
 	cfgCompactionMethodOrder,
 } from "../session/context-settings";
-import {
-	countRequirements,
-	getLatestRequirements,
-	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
-} from "../tools/requirements-ledger";
+import { REQUIREMENTS_LEDGER_CUSTOM_TYPE } from "../tools/requirements-ledger";
+import { getRequirementHudCounts } from "./utils/requirement-hud-counts";
 
 /**
  * Settings with live interactive-UI side effects, keyed by id. One coalesced listener applies
@@ -1268,12 +1265,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * focus attach.
 	 */
 	#todoPhasesOwner?: AgentSession;
-	#requirementHudCountsCache?: {
-		sessionManager: SessionManager;
-		leafId: string | null;
-		entryCount: number;
-		counts: { total: number; passed: number; open: number; failed: number };
-	};
 	#todoHudHidden = false;
 	hideThinkingBlock = false;
 	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
@@ -8281,22 +8272,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * native terminals see requirement counts even when checklist rows are
 	 * absent (`todoHudNative` is `undefined` with no phases).
 	 */
-	#getRequirementHudCounts(): { total: number; passed: number; open: number; failed: number } {
-		const sessionManager = (this.#todoPhasesOwner ?? this.session).sessionManager;
-		const leafId = sessionManager.getLeafId();
-		const entryCount = sessionManager.getEntryCount();
-		const cached = this.#requirementHudCountsCache;
-		if (cached?.sessionManager === sessionManager && cached.leafId === leafId && cached.entryCount === entryCount) {
-			return cached.counts;
-		}
-
-		const counts = countRequirements(getLatestRequirements(sessionManager.getBranch()));
-		this.#requirementHudCountsCache = { sessionManager, leafId, entryCount, counts };
-		return counts;
-	}
-
 	describeRequirementHudSummary(): NativeNode | undefined {
-		const counts = this.#getRequirementHudCounts();
+		const counts = getRequirementHudCounts((this.#todoPhasesOwner ?? this.session).sessionManager);
 		if (counts.total === 0) return undefined;
 		return text([
 			span("TODO", "accent strong"),
@@ -8305,7 +8282,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	renderRequirementHudSegment(renderBase: (width: number) => readonly string[], width: number): readonly string[] {
-		const counts = this.#getRequirementHudCounts();
+		const counts = getRequirementHudCounts((this.#todoPhasesOwner ?? this.session).sessionManager);
 		const wasHidden = this.#todoHudHidden;
 		const compact = this.isCompactTodoMode();
 		const hasOutstandingRequirements = counts.open > 0 || counts.failed > 0;

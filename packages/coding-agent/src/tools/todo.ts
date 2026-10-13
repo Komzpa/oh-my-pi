@@ -13,6 +13,7 @@ import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
+import todoRequirementsDescription from "../prompts/tools/todo-requirements.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
 
@@ -1132,7 +1133,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 
 	readonly loadMode = "discoverable";
 	constructor(private readonly session: ToolSession) {
-		this.description = `${prompt.render(todoDescription)}\n\nClassify requirement candidates with op="classify": id is the Rn, classification is linked (needs rows with exact todo row contents), not-a-requirement (needs reason), or merged (needs mergeInto with another Rn). Example: op="classify", id="R1", classification="linked", rows=["<exact todo row>"].`;
+		this.description = `${prompt.render(todoDescription)}\n\n${prompt.render(todoRequirementsDescription)}`;
 	}
 
 	async execute(
