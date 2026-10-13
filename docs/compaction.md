@@ -131,7 +131,7 @@ The automatic paths are intentionally different:
    - Context promotion is tried first; if a configured larger model is available, the agent switches model and retries without compacting.
    - If promotion is unavailable and compaction is enabled, automatic maintenance walks `compaction.methodOrder` with `reason: "overflow"` and `willRetry: true`; handoff is skipped because its request would reuse the overflowing input.
    - On success, `agent.continue()` is scheduled to retry the turn.
-   - If the retried request overflows again, completed tool history across the active context is shrunk at send time for one final retry; another overflow stops automatic recovery and surfaces the error.
+   - If the retried request overflows again, completed tool history across the active context is shrunk at send time for one final retry and stays shrunk for the remaining requests of that prompt; another overflow of that retry stops automatic recovery and surfaces the error.
 
 - **Incomplete-output recovery**
    - Trigger: same-model assistant message ends with `stopReason === "length"` and the message is not older than the latest compaction.

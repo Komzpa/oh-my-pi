@@ -348,7 +348,7 @@ export class TurnRecovery {
 	#requestBodyReadTimeoutRecoveryPromptSequence: number | undefined;
 	#oversizedHistoryRecovery:
 		| {
-				phase: "compacted" | "shrunk" | "terminal";
+				phase: "compacted" | "shrunk" | "settled" | "terminal";
 				promptSequence: number;
 				generation: number;
 				lastFailure: AssistantMessage;
@@ -511,11 +511,16 @@ export class TurnRecovery {
 		this.#oversizedHistoryRecovery = undefined;
 	}
 
-	/** Whole-context shrinking is confined to the one post-compaction retry. */
+	/**
+	 * Whole-context shrinking covers the post-compaction retry and, once that retry
+	 * produced output ("settled"), the rest of the prompt: the oversized current-turn
+	 * result stays in active history, so later tool-loop requests must keep shrinking it.
+	 * `resetForNewPrompt` clears the state.
+	 */
 	get shrinkWholeToolHistory(): boolean {
 		const recovery = this.#oversizedHistoryRecovery;
 		return (
-			recovery?.phase === "shrunk" &&
+			(recovery?.phase === "shrunk" || recovery?.phase === "settled") &&
 			recovery.promptSequence === this.#host.promptSequence() &&
 			recovery.generation === this.#host.promptGeneration()
 		);
@@ -533,6 +538,8 @@ export class TurnRecovery {
 		) {
 			return "recover";
 		}
+		// A settled shrink retry already succeeded; a later overflow is a fresh incident.
+		if (recovery.phase === "settled") return "recover";
 		if (recovery.phase === "terminal") return "terminal";
 		if (this.#isSameAssistantMessage(recovery.lastFailure, message)) return "already-handled";
 		recovery.lastFailure = message;
@@ -578,7 +585,13 @@ export class TurnRecovery {
 		// shake-and-retry. Back-to-back timeouts never reach this point, so the
 		// one-shot bound on an unchanged-request loop is unaffected.
 		this.#requestBodyReadTimeoutRecoveryPromptSequence = undefined;
-		this.#oversizedHistoryRecovery = undefined;
+		const recovery = this.#oversizedHistoryRecovery;
+		if (recovery?.phase === "shrunk") {
+			// Keep shrinking for the rest of this prompt; only a new prompt clears it.
+			recovery.phase = "settled";
+		} else {
+			this.#oversizedHistoryRecovery = undefined;
+		}
 		const model = this.#host.model();
 		if (model) {
 			const level = this.#host.thinkingLevel();

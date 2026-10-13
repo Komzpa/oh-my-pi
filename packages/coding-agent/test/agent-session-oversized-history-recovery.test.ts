@@ -245,7 +245,7 @@ describe("AgentSession oversized-history overflow recovery", () => {
 		expect(result.session.getLastAssistantMessage()?.errorMessage).toBe(OVERFLOW);
 	});
 
-	it("restores normal current-turn handling after the shrunk retry succeeds", async () => {
+	it("keeps whole-context shrinking for later tool-loop requests after the shrunk retry succeeds", async () => {
 		const overflow: MockHandler = { throw: OVERFLOW };
 		const result = await run([
 			hugeToolCall("call-huge", HUGE),
@@ -263,9 +263,11 @@ describe("AgentSession oversized-history overflow recovery", () => {
 		const shrunkRetry = result.sent[3];
 		expect(toolCallData(shrunkRetry.messages, "call-huge")).toBe(omissionMarker(HUGE));
 
-		// Follow-on request after success: no forced result shrink; completed arguments stay shrunk.
+		// Follow-on request after success: the oversized result is still in history, so it stays shrunk.
 		const followOn = result.sent[4];
-		expect(resultText(followOn.messages, "call-huge")).toBe(RESULT);
+		expect(resultText(followOn.messages, "call-huge")).toMatch(
+			/^R{8192}\n\[omitted \d+ bytes, sha256=[0-9a-f]{12}; full value kept in the session file\]\nR{8192}$/,
+		);
 		expect(toolCallData(followOn.messages, "call-huge")).toBe(omissionMarker(HUGE));
 		expect(toolCallData(followOn.messages, "call-huge-2")).toBe(omissionMarker(HUGE_AFTER_RESET));
 		expect(pairedResult(followOn.messages, "call-huge-2")).toBe(true);
