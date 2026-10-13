@@ -270,7 +270,9 @@ describe("canonical todo row metadata", () => {
 			const done = await tool.execute("done", { op: "done", task: "Build artifact" });
 			expect(done.isError).toBeUndefined();
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
-			await tool.execute("next-plan", { op: "init", items: ["New plan"] });
+			const replacement = await tool.execute("next-plan", { op: "init", items: ["New plan"] });
+			expect(replacement.isError).toBeUndefined();
+			expect(phases.flatMap(phase => phase.tasks.map(task => task.content))).toEqual(["New plan"]);
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 			const archived = await getRequirementRowArtifact({ cwd, sessionManager: manager }, "Build artifact", phases);
 			expect(getRequirementVerdictStaleness(requirement, [{ row: "Build artifact", ...archived }])).toBeNull();

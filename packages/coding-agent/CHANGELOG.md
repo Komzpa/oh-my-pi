@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed TODO completion overwriting concurrent plan edits during artifact checks; changed plans now require a retry without losing rows or bindings ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
+- Fixed completed, freshly audited requirement-linked TODO rows blocking plan replacement or removal; their artifact history remains available and stale receipts still prevent removal ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed `R<n>`-prefixed audit receipts losing Git path coverage, file hashes, or deployment probes; malformed typed receipts remain rejected ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed `qa-auditor` numeric bounds being compared as text: a claim with `>=`, `<=`, `>`, `<`, `≥`, `≤`, `at least`, or `at most` now compares its figure numerically against the measured figure in comparable stated units (a bare measured figure measures the claimed unit), inclusive bounds are satisfied at equality and strict bounds are not, and only a genuine numeric miss records `fail` ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed requirement receipts with escaped pipes, named columns, and unrelated extra rows: intake now selects the exact IDs linked to the assigned TODO row without rejecting foreign parent rows. The auditor and intake share one canonical receipt header; a fresh same-artifact verdict replaces the prior row verdict, including fail → pass.

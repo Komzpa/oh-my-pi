@@ -1487,18 +1487,51 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				requirement.rows.filter(row => removedRows.has(row)).map(row => ({ requirement, row })),
 			);
 			if (targetErrors.length === 0 && blocked.length > 0) {
-				const { requirement, row } = blocked[0]!;
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Blocked: cannot remove requirement-linked TODO row ${JSON.stringify(row)} (${requirement.id}). Call todo with op="classify", id="${requirement.id}", classification="not-a-requirement", reason="<why this is no longer a requirement>". Then retry`,
-						},
-					],
-					details: { op: entry.op, phases: previousPhases, storage },
-					isError: true,
-				};
+				const unfinished = blocked.find(
+					({ row }) => findTaskByContent(previousPhases, row)?.task.status !== "completed",
+				);
+				if (unfinished) {
+					const { requirement, row } = unfinished;
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Blocked: cannot remove unfinished requirement-linked TODO row ${JSON.stringify(row)} (${requirement.id}). Obtain a fresh qa-auditor pass and mark the row done before removing it, or relink the requirement with relink=true and a reason to its replacement row.`,
+							},
+						],
+						details: { op: entry.op, phases: previousPhases, storage },
+						isError: true,
+					};
+				}
+				// Completed rows may leave the active plan only while their saved QA
+				// evidence is still fresh. Canonical snapshots retain their artifact history.
+				const gate = await this.#doneGate(
+					{ items: [...new Set(blocked.map(({ row }) => row))] },
+					previousPhases,
+					storage,
+					_signal,
+				);
+				if (gate) {
+					if (gate.details) gate.details.op = entry.op;
+					return gate;
+				}
 			}
+		}
+		// Slash commands and worker completion can edit the plan during an artifact
+		// probe even though native todo calls are exclusive. Never publish that stale
+		// snapshot: retry must select and audit the current rows and bindings.
+		const currentPhases = this.session.getTodoPhases?.() ?? [];
+		if (JSON.stringify(currentPhases) !== JSON.stringify(previousPhases)) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: "Blocked: TODO state changed during the artifact check. Retry against the current plan; no changes were applied.",
+					},
+				],
+				details: { op: entry.op, phases: clonePhases(currentPhases), storage },
+				isError: true,
+			};
 		}
 		const op = entry.op;
 		// Pure-view calls are reads: no normalization, no state write.
