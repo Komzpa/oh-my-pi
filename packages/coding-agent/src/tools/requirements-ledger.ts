@@ -829,7 +829,7 @@ export interface RequirementAuditAssignment {
 	rows?: string[];
 }
 /** Unclassified candidates gate mutating tools from the moment their user message is captured, in the same turn. */
-export function getOverdueRequirementCandidates(entries: readonly SessionEntry[]): RequirementLedgerItem[] {
+export function getUnclassifiedRequirementCandidates(entries: readonly SessionEntry[]): RequirementLedgerItem[] {
 	return getLatestRequirements(entries).filter(requirement => requirement.classification === "candidate");
 }
 function requirementTableCells(line: string): string[] | null {
@@ -1178,15 +1178,15 @@ export function formatClassifyCall(
 }
 
 /** Gate refusal naming the blocked tool, the reason, and the exact call that unblocks it. */
-export function formatOverdueClassifyRefusal(
+export function formatUnclassifiedCandidateRefusal(
 	toolName: string,
-	overdue: readonly RequirementLedgerItem[],
+	candidates: readonly RequirementLedgerItem[],
 	rows: readonly string[],
 ): string {
 	// No canonical candidate-to-row binding exists on the ledger item or the
 	// capture path (user raw text only), so available rows are appended once as
 	// a separate list and never as a runnable rows selection.
-	const parts = overdue.map(
+	const parts = candidates.map(
 		requirement =>
 			`requirement ${requirement.id} (${JSON.stringify(requirement.rawText)}) is an unclassified candidate. Call ${formatClassifyCall(requirement, rows)}`,
 	);

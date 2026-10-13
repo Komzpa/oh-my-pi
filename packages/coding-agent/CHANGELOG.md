@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed requirement candidates captured from a new user message gating mutating tools in that same turn, while preserving the bare-approval reply exemption ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed stale `qa-auditor` receipts being accepted after a clean row advances: receipt intake and TODO completion now require the current row HEAD, not its dispatch-time HEAD ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed generic requirement freshness refusals: receipt intake, TODO completion, and publication notices now surface the precise failing reason, with raw-source/image-prefix differences reported before artifact identity without quoting private text ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed TODO completion after a non-isolated worker finishes and leaves the agent registry: the worker's actual effective cwd is bound on its assigned rows before execution and survives registry cleanup, so a fresh `qa-auditor` pass at the current HEAD still completes the row ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
@@ -1615,4 +1616,5 @@
 - Restored mouse clicks, hover, and wheel scrolling in Plan Review.
 
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@9564980a39cb](https://github.com/can1357/oh-my-pi/blob/9564980a39cb785a32bdca76de97e0b0cc58f20c/packages/coding-agent/CHANGELOG.md).
+
 - Fixed unclassified-candidate gate refusals suggesting unrelated open TODO rows as a runnable `rows=[...]` classify selection. The `rows` parameter now carries available rows only: the refusal keeps the non-executable `rows=["<exact todo row>"]` placeholder with the exact requirement ID and raw text, and appends the available rows once as a separate list; blocking and read-only behavior are unchanged.

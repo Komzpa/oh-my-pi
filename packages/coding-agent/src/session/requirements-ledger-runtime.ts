@@ -11,11 +11,11 @@ import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
 	formatRequirementGateArtifact,
-	formatOverdueClassifyRefusal,
+	formatUnclassifiedCandidateRefusal,
 	formatRequirementGateNotice,
 	formatRequirementPublicationStatus,
 	getLatestRequirements,
-	getOverdueRequirementCandidates,
+	getUnclassifiedRequirementCandidates,
 	getPersistedRequirementAuditorAssignments,
 	getPersistedRequirementAuditRejections,
 	getRequirementAuditSources,
@@ -168,19 +168,19 @@ export class RequirementsLedgerRuntime {
 		this.syncPublicationGate();
 	}
 
-	refuseOverdueCandidate(toolName: string): BeforeToolCallResult | undefined {
+	refuseUnclassifiedCandidate(toolName: string): BeforeToolCallResult | undefined {
 		if (this.#host.agentKind() !== "main" || toolName === "todo") return undefined;
-		// The overdue-classify gate never blocks read-only tools: observation must
+		// The unclassified-candidate gate never blocks read-only tools: observation must
 		// stay possible while a candidate awaits classification. `peers` is the
 		// live-roster list (not in READ_ONLY_TOOL_NAMES); `ask` is already there.
 		if (toolName === "peers" || READ_ONLY_TOOL_NAMES.has(toolName)) return undefined;
 		const branch = this.#host.sessionManager.getBranch();
-		const overdue = getOverdueRequirementCandidates(branch);
-		if (overdue.length === 0) return undefined;
+		const candidates = getUnclassifiedRequirementCandidates(branch);
+		if (candidates.length === 0) return undefined;
 		const rows = openTodoRowContents(branch);
 		return {
 			block: true,
-			reason: formatOverdueClassifyRefusal(toolName, overdue, rows),
+			reason: formatUnclassifiedCandidateRefusal(toolName, candidates, rows),
 		};
 	}
 

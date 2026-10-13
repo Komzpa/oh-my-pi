@@ -25,6 +25,9 @@ import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getLatestRequirements } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
+
+import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const UNSAFE = "Everything is complete, including unaudited R7.";
@@ -208,7 +211,7 @@ describe("assistant publication bridge", () => {
 		}
 	});
 
-	it("records exact user text and blocks non-todo calls after a candidate becomes overdue", async () => {
+	it("records exact user text and blocks non-todo calls in the same turn", async () => {
 		const parameters = Type.Object({});
 		let probeCalls = 0;
 		const probe: AgentTool<typeof parameters> = {
@@ -222,12 +225,24 @@ describe("assistant publication bridge", () => {
 			},
 		};
 		const rawText = "  preserve these exact words\n";
+		let todoPhases: TodoPhase[] = [];
+		const todoTool = new TodoTool({
+			cwd: tempDir.path(),
+			hasUI: false,
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
+			settings: Settings.isolated({ "todo.enabled": true }),
+			getTodoPhases: () => todoPhases,
+			setTodoPhases: phases => {
+				todoPhases = phases;
+			},
+		});
 		const { session, agent, manager } = harness({
-			tools: [probe],
+			todos: true,
+			tools: [todoTool as unknown as AgentTool, probe],
 			responses: [
-				{ content: ["First turn complete"] },
-				{ content: [{ type: "toolCall", id: "probe-overdue", name: "probe", arguments: {} }] },
-				{ content: ["Classify the older request with todo"] },
+				{ content: [{ type: "toolCall", id: "probe-candidate", name: "probe", arguments: {} }] },
+				{ content: ["Classify the new request with todo"] },
 			],
 		});
 		await session.prompt(rawText);
@@ -236,11 +251,8 @@ describe("assistant publication bridge", () => {
 			{ id: "R1", classification: "candidate", rawText },
 		]);
 
-		await session.prompt("Try the blocked tool");
-		await session.waitForIdle();
-		expect(probeCalls).toBe(0);
 		const result = agent.state.messages.find(
-			message => message.role === "toolResult" && message.toolCallId === "probe-overdue",
+			message => message.role === "toolResult" && message.toolCallId === "probe-candidate",
 		);
 		const parts =
 			result && typeof result === "object" && "content" in result && Array.isArray(result.content)

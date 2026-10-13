@@ -633,7 +633,7 @@ describe("receipt recording across delivery channels and worker renames", () => 
 });
 
 describe("overdue-classify gate read-only exemption and open-row remedies", () => {
-	function overdueFixture(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>) {
+	function candidateFixture(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>) {
 		const cwd = mkdtempSync(join(tmpdir(), "omp-ledger-gate-"));
 		git(cwd, "init", "--initial-branch=main");
 		git(cwd, "config", "user.email", "tester@example.invalid");
@@ -667,7 +667,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 	}
 
 	it("allows read-only tools and points the remedy at todo append when every row is completed", async () => {
-		const { cwd, runtime, gate } = overdueFixture([
+		const { cwd, runtime, gate } = candidateFixture([
 			{
 				name: "Old goal",
 				tasks: [
@@ -677,12 +677,12 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 			},
 		]);
 		try {
-			expect(runtime.refuseOverdueCandidate("read")).toBeUndefined();
-			expect(runtime.refuseOverdueCandidate("grep")).toBeUndefined();
-			expect(runtime.refuseOverdueCandidate("peers")).toBeUndefined();
-			expect(runtime.refuseOverdueCandidate("ask")).toBeUndefined();
-			expect(runtime.refuseOverdueCandidate("todo")).toBeUndefined();
-			const refusal = runtime.refuseOverdueCandidate("bash");
+			expect(runtime.refuseUnclassifiedCandidate("read")).toBeUndefined();
+			expect(runtime.refuseUnclassifiedCandidate("grep")).toBeUndefined();
+			expect(runtime.refuseUnclassifiedCandidate("peers")).toBeUndefined();
+			expect(runtime.refuseUnclassifiedCandidate("ask")).toBeUndefined();
+			expect(runtime.refuseUnclassifiedCandidate("todo")).toBeUndefined();
+			const refusal = runtime.refuseUnclassifiedCandidate("bash");
 			expect(refusal?.block).toBe(true);
 			expect(refusal?.reason).toContain('op="append"');
 			expect(refusal?.reason).not.toContain("Finished row alpha");
@@ -701,7 +701,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 	});
 
 	it("lists only the open row in the remedy when one row is still open", () => {
-		const { cwd, runtime } = overdueFixture([
+		const { cwd, runtime } = candidateFixture([
 			{
 				name: "Mixed",
 				tasks: [
@@ -711,7 +711,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 			},
 		]);
 		try {
-			const refusal = runtime.refuseOverdueCandidate("bash");
+			const refusal = runtime.refuseUnclassifiedCandidate("bash");
 			expect(refusal?.block).toBe(true);
 			expect(refusal?.reason).toContain("Live row gamma");
 			expect(refusal?.reason).not.toContain("Finished row alpha");
@@ -721,7 +721,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 	});
 
 	it("keeps message text with tool calls unchanged while requirements stay open", async () => {
-		const { cwd, gate } = overdueFixture([
+		const { cwd, gate } = candidateFixture([
 			{ name: "Work", tasks: [{ content: "Live row gamma", status: "pending" }] },
 		]);
 		try {
@@ -764,7 +764,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 			content: [{ type: "text", text: "Understood." }],
 			stopReason: "stop",
 		} as never);
-		expect(runtime.refuseOverdueCandidate("bash")).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("bash")).toBeUndefined();
 	});
 
 	it("keeps approval-prefixed instructions verbatim and allocates no ID for ignored approvals", () => {
@@ -804,7 +804,9 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 
 		const [requirement] = getLatestRequirements(manager.getBranch());
 		expect(requirement?.rawText).toBe("ok [Image #1, 4x4]");
-		expect(requirement?.images?.[0]?.sha256).toBe(createHash("sha256").update(Buffer.from(data, "base64")).digest("hex"));
+		expect(requirement?.images?.[0]?.sha256).toBe(
+			createHash("sha256").update(Buffer.from(data, "base64")).digest("hex"),
+		);
 	});
 
 	it("gates a same-turn candidate against mutating tools until it is classified", () => {
@@ -819,17 +821,20 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 		});
 
 		runtime.captureCandidate("write probe.txt into the repo");
-		expect(runtime.refuseOverdueCandidate("write")?.block).toBe(true);
-		expect(runtime.refuseOverdueCandidate("bash")?.block).toBe(true);
-		expect(runtime.refuseOverdueCandidate("read")).toBeUndefined();
-		expect(runtime.refuseOverdueCandidate("todo")).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("write")?.block).toBe(true);
+		expect(runtime.refuseUnclassifiedCandidate("bash")?.block).toBe(true);
+		expect(runtime.refuseUnclassifiedCandidate("read")).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("todo")).toBeUndefined();
 
 		const classified = classifyRequirement(getLatestRequirements(manager.getBranch()), "R1", "linked", {
 			rows: ["Write probe"],
 		});
 		if ("error" in classified) throw new Error(classified.error);
-		appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, classified.requirements);
-		expect(runtime.refuseOverdueCandidate("write")).toBeUndefined();
+		appendRequirementsSnapshot(
+			{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
+			classified.requirements,
+		);
+		expect(runtime.refuseUnclassifiedCandidate("write")).toBeUndefined();
 	});
 
 	it("does not gate a user message that produces no candidate", () => {
@@ -845,7 +850,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 
 		runtime.captureCandidate("go");
 		expect(getLatestRequirements(manager.getBranch())).toEqual([]);
-		expect(runtime.refuseOverdueCandidate("write")).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("write")).toBeUndefined();
 	});
 });
 

@@ -35,7 +35,7 @@ function assistantStop(): Parameters<SessionManager["appendMessage"]>[0] {
 		timestamp: 1,
 	} as unknown as Parameters<SessionManager["appendMessage"]>[0];
 }
-function setupOverdueSession(): { manager: SessionManager; runtime: RequirementsLedgerRuntime; phases: TodoPhase[] } {
+function setupCandidateSession(): { manager: SessionManager; runtime: RequirementsLedgerRuntime; phases: TodoPhase[] } {
 	const manager = SessionManager.inMemory();
 	manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
 		version: 1,
@@ -73,9 +73,9 @@ function todoSession(manager: SessionManager, initial: TodoPhase[]): ToolSession
 
 describe("gate refusal names the exact unblocking call", () => {
 	it("copied placeholder hint cannot link; an explicit relevant row unblocks", async () => {
-		const { manager, runtime, phases } = setupOverdueSession();
+		const { manager, runtime, phases } = setupCandidateSession();
 
-		const refusal = runtime.refuseOverdueCandidate("bash");
+		const refusal = runtime.refuseUnclassifiedCandidate("bash");
 		expect(refusal?.block).toBe(true);
 		const reason = refusal && typeof refusal === "object" && "reason" in refusal ? String(refusal.reason) : "";
 		// The refusal names the exact candidate but never a guessed runnable row.
@@ -103,7 +103,7 @@ describe("gate refusal names the exact unblocking call", () => {
 		} as never);
 		expect(refused.isError).toBe(true);
 		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("candidate");
-		expect(runtime.refuseOverdueCandidate("bash")?.block).toBe(true);
+		expect(runtime.refuseUnclassifiedCandidate("bash")?.block).toBe(true);
 
 		// Explicitly selecting the relevant row succeeds and unblocks bash.
 		const result = await tool.execute("call-2", {
@@ -115,6 +115,6 @@ describe("gate refusal names the exact unblocking call", () => {
 		expect(result.isError).toBeFalsy();
 		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("linked");
 
-		expect(runtime.refuseOverdueCandidate("bash")).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("bash")).toBeUndefined();
 	});
 });
