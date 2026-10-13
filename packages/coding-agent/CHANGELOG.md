@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `R<n>`-prefixed audit receipts losing Git path coverage, file hashes, or deployment probes; malformed typed receipts remain rejected ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed `qa-auditor` numeric bounds being compared as text: a claim with `>=`, `<=`, `>`, `<`, `≥`, `≤`, `at least`, or `at most` now compares its figure numerically against the measured figure in comparable stated units (a bare measured figure measures the claimed unit), inclusive bounds are satisfied at equality and strict bounds are not, and only a genuine numeric miss records `fail` ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed requirement receipts with escaped pipes, named columns, and unrelated extra rows: intake now selects the exact IDs linked to the assigned TODO row without rejecting foreign parent rows. The auditor and intake share one canonical receipt header; a fresh same-artifact verdict replaces the prior row verdict, including fail → pass.
 - Fixed the canonical file artifact formatter and parser disagreeing with the documented `file:<absolute-path>@sha256=<sha256>` receipt grammar. Captured and audited file identities now use that exact labeled format; unlabeled, malformed, and short digests remain rejected.

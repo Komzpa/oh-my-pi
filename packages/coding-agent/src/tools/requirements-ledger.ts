@@ -560,6 +560,8 @@ export function isRequirementLinkedToRow(requirements: readonly RequirementLedge
 	return requirements.some(requirement => requirement.classification === "linked" && requirement.rows.includes(row));
 }
 
+const REQUIREMENT_QUOTED_ROW_PREFIX = /^\s*(?:(?:TODO|R[1-9]\d*)\s+)?row\s+"((?:[^"\\]|\\.)*)"\s*@/i;
+
 /**
  * Explicit row label of one artifact segment: quoted `row "Row" @ …` (optionally
  * prefixed with `TODO` or an `R<n>` requirement id, e.g. `R6 row "Row" @ …`,
@@ -571,7 +573,7 @@ export function getRequirementReceiptArtifactRowLabel(
 	segment: string,
 	knownRows: ReadonlySet<string>,
 ): string | undefined {
-	const quoted = /^\s*(?:(?:TODO|R[1-9]\d*)\s+)?row\s+"((?:[^"\\]|\\.)*)"\s*@/i.exec(segment);
+	const quoted = REQUIREMENT_QUOTED_ROW_PREFIX.exec(segment);
 	if (quoted) return quoted[1]!.replace(/\\(.)/g, "$1");
 	const at = segment.indexOf(" @ ");
 	if (at < 0) return undefined;
@@ -647,12 +649,12 @@ export function getRequirementRowVerdict(
 	return artifact === undefined ? undefined : { ...verdict, artifact };
 }
 
-/** Parse typed segments once; a typed syntax error is never a legacy SHA receipt. */
+/** Row scoping and typed parsing share one prefix grammar; malformed typed receipts never become legacy SHAs. */
 export function parseRequirementReceiptIdentities(
 	artifact: string,
 ): { identities: RequirementIdentity[] } | { error: string } | { legacy: true; commits: string[] } {
 	const segments = splitRequirementIdentitySegments(artifact).map(segment =>
-		segment.replace(/^\s*(?:TODO\s+)?row\s+"(?:[^"\\]|\\.)*"\s*@\s*/i, "").trim(),
+		segment.replace(REQUIREMENT_QUOTED_ROW_PREFIX, "").trim(),
 	);
 	if (!segments.some(segment => /^(?:git|file|deploy):/i.test(segment)))
 		return {

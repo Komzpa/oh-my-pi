@@ -29,6 +29,7 @@ import {
 	getRequirementRowArtifactIdentity,
 	getRequirementVerdictStaleness,
 	parseRequirementReceipt,
+	parseRequirementReceiptIdentities,
 	parseRequirementsLedger,
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 	type RequirementLedgerItem,
@@ -513,6 +514,30 @@ describe("canonical todo row metadata", () => {
 		expect(
 			getRequirementRowArtifactIdentity(`R6 row "${foreign}" @ ${sha}`, assigned, [assigned, foreign], knownRows),
 		).toBeUndefined();
+	});
+	it("retains Rn-prefixed Git path coverage, file hashes, and deployment probes", () => {
+		const row = 'Build; "artifact"';
+		const prefix = `R6 row ${JSON.stringify(row)} @ `;
+		const commit = "a".repeat(40);
+		const sha256 = "b".repeat(64);
+		const artifact = [
+			`${prefix}git:/tmp/artifact@${commit} paths=["src/a.ts"]`,
+			`${prefix}file:/tmp/output@sha256=${sha256}`,
+			`${prefix}deploy:https://example.test/version@v1 field=version`,
+		].join("; ");
+		const scoped = getRequirementRowArtifactIdentity(artifact, row, [row]);
+		expect(scoped).toBeDefined();
+		expect(parseRequirementReceiptIdentities(scoped!)).toEqual({
+			identities: [
+				{ kind: "git", repo: "/tmp/artifact", commit, paths: ["src/a.ts"] },
+				{ kind: "file", path: "/tmp/output", sha256 },
+				{ kind: "deploy", target: "https://example.test/version", value: "v1", field: "version" },
+			],
+		});
+	});
+	it("rejects malformed Rn-prefixed typed receipts instead of accepting a legacy SHA", () => {
+		const artifact = `R6 row "Build artifact" @ file:/tmp/output@sha256=${"a".repeat(40)}`;
+		expect(parseRequirementReceiptIdentities(artifact)).toHaveProperty("error", expect.stringContaining("sha256"));
 	});
 });
 
