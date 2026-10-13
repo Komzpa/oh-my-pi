@@ -113,10 +113,17 @@ function textEntry(text: string, timestamp: number): SessionMessageEntry {
 }
 
 function prunedPath(entries: SessionEntry[], result: PruneResult): SessionEntry[] {
-	return projectToolResultPrunes([...entries, {
-		type: "tool_result_prune", id: nextId(), parentId: entries.at(-1)?.id ?? null,
-		timestamp: new Date(result.prunedAt).toISOString(), prunedAt: result.prunedAt, targets: result.targets,
-	}]);
+	return projectToolResultPrunes([
+		...entries,
+		{
+			type: "tool_result_prune",
+			id: nextId(),
+			parentId: entries.at(-1)?.id ?? null,
+			timestamp: new Date(result.prunedAt).toISOString(),
+			prunedAt: result.prunedAt,
+			targets: result.targets,
+		},
+	]);
 }
 
 function resultText(entry: SessionEntry, result?: PruneResult): string {
