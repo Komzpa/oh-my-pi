@@ -2759,6 +2759,7 @@ export class TUI extends Container {
 	}
 
 	requestRender(force = false, options?: RenderRequestOptions): void {
+		frameTelemetry.recordRenderRequest();
 		if (force) {
 			this.#prepareForcedRender(options?.clearScrollback === true);
 			this.#renderRequested = true;
@@ -2806,6 +2807,7 @@ export class TUI extends Container {
 
 	/** Ordinary (non-forced) render scheduling. */
 	#requestOrdinaryRender(): void {
+		frameTelemetry.recordRenderRequest();
 		if (this.#renderRequested) return;
 		this.#renderRequested = true;
 		this.#renderScheduler.scheduleImmediate(() => this.#scheduleRender());
