@@ -1,9 +1,21 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	chmodSync,
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	readSync,
+	realpathSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { randomInt } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import type { ModelUsageHealth, ModelUsageHealthState } from "@oh-my-pi/pi-ai";
@@ -52,11 +64,46 @@ function isBlacklistedModel(spec: string, blacklist = readModelBlacklist()): boo
 	return blacklist.includes(spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, ""));
 }
 
-export function brrrrModeFile(ctx: ExtensionContext): string {
+function brrrrModeFileForSession(id: string | undefined): string {
 	return join(
 		process.env.OMP_AGENT_ROUTER_MODE_DIR ?? join(homedir(), ".local/state/omp-agent-router/modes"),
-		`${encodeURIComponent(sessionId(ctx) ?? "unsaved")}.json`,
+		`${encodeURIComponent(id ?? "unsaved")}.json`,
 	);
+}
+
+export function brrrrModeFile(ctx: ExtensionContext): string {
+	return brrrrModeFileForSession(sessionId(ctx));
+}
+
+/** Bytes read from the head of a transcript to find its session header. */
+export const SESSION_HEADER_PEEK_BYTES = 64 * 1024;
+
+/**
+ * Session id from a transcript's header line, read from a bounded prefix.
+ * A child only needs its parent's id to find the parent's mode file; parsing the
+ * whole parent transcript costs memory proportional to its size for every child.
+ */
+export function readSessionHeaderId(file: string): string | undefined {
+	let fd: number | undefined;
+	try {
+		fd = openSync(file, "r");
+		const buffer = Buffer.alloc(SESSION_HEADER_PEEK_BYTES);
+		const length = readSync(fd, buffer, 0, buffer.length, 0);
+		const lines = buffer.subarray(0, length).toString("utf8").split("\n");
+		// The last line of a full buffer may be cut mid-record; only whole lines are parsed.
+		if (length === buffer.length) lines.pop();
+		for (const line of lines) {
+			if (!line.trim()) continue;
+			const record = JSON.parse(line);
+			if (record?.type === "title") continue;
+			return record?.type === "session" && typeof record.id === "string" ? record.id : undefined;
+		}
+		return undefined;
+	} catch {
+		return undefined;
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
 }
 
 export function readBrrrrMode(ctx: ExtensionContext, file = brrrrModeFile(ctx)): boolean {
@@ -1171,10 +1218,8 @@ export default function agentRouter(pi: ExtensionAPI) {
 			const entry = entries.findLast(item => item.type === "custom" && item.customType === BRRRR_ENTRY);
 			const parentFile = ctx.sessionManager.getHeader()?.parentSession;
 			if (!entry && parentFile && existsSync(parentFile)) {
-				const parent = await SessionManager.open(parentFile, undefined, undefined, { suppressBreadcrumb: true, throwIfMissing: true });
-				const parentCtx = { ...ctx, sessionManager: parent };
-				persistBrrrrMode(ctx, readBrrrrMode(parentCtx));
-				await parent.close();
+				const parentId = readSessionHeaderId(parentFile);
+				persistBrrrrMode(ctx, parentId !== undefined && readBrrrrMode(ctx, brrrrModeFileForSession(parentId)));
 			} else {
 				persistBrrrrMode(ctx, entry?.data?.enabled === true);
 			}
