@@ -3293,12 +3293,16 @@ export class AgentSession implements SettingsScope {
 	#recordSessionExit(reason: postmortem.Reason | "dispose"): void {
 		if (this.#exitRecorded) return;
 		this.#exitRecorded = true;
-		const pendingToolCalls = collectPendingToolCalls(this.sessionManager.getBranch());
-		if (
-			pendingToolCalls.length === 0 &&
-			!this.sessionManager.getEntries().some(entry => entry.type === "message" && entry.message.role === "assistant")
-		) {
-			return;
+		const pendingToolCalls = collectPendingToolCalls(this.sessionManager.iterateBranch());
+		if (pendingToolCalls.length === 0) {
+			let hasAssistant = false;
+			for (const entry of this.sessionManager.iterateBranch("message")) {
+				if (entry.type === "message" && entry.message.role === "assistant") {
+					hasAssistant = true;
+					break;
+				}
+			}
+			if (!hasAssistant) return;
 		}
 		const kind: SessionExitData["kind"] =
 			reason === "dispose" || reason === postmortem.Reason.MANUAL
@@ -3597,7 +3601,7 @@ export class AgentSession implements SettingsScope {
 
 	#buildPersistedMessageKeySet(): Set<string> {
 		const keys = new Set<string>();
-		for (const entry of this.sessionManager.getBranchView()) {
+		for (const entry of this.sessionManager.iterateBranch("message")) {
 			if (entry.type !== "message") continue;
 			const key = sessionMessagePersistenceKey(entry.message);
 			if (key !== undefined) keys.add(key);
@@ -3626,9 +3630,7 @@ export class AgentSession implements SettingsScope {
 		if (key === undefined) return false;
 		const keys = this.#ensurePersistedMessageKeys();
 		if (!keys.has(key)) return false;
-		const branch = this.sessionManager.getBranchView();
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const entry = branch[index];
+		for (const entry of this.sessionManager.iterateBranch("message")) {
 			if (entry.type !== "message") continue;
 			if (sessionMessagePersistenceKey(entry.message) !== key) continue;
 			if (!sameMessageContent(entry.message, message)) continue;
@@ -4223,14 +4225,9 @@ export class AgentSession implements SettingsScope {
 					// checkpoint; locate the toolResult's own entry by identity since the
 					// transient reminder entry follows it (last-entry would branch-cut the
 					// reminder instead of leaving it on the active path).
-					const entries = this.sessionManager.getEntries();
 					let checkpointEntryId: string | null = null;
-					for (let i = entries.length - 1; i >= 0; i--) {
-						const entry = entries[i];
-						if (entry.type === "message" && entry.message === event.message) {
-							checkpointEntryId = entry.id;
-							break;
-						}
+					for (const entry of this.sessionManager.iterateEntries("message")) {
+						if (entry.type === "message" && entry.message === event.message) checkpointEntryId = entry.id;
 					}
 					if (this.#checkpointState) {
 						this.#checkpointState.checkpointEntryId = checkpointEntryId;
@@ -6282,7 +6279,14 @@ export class AgentSession implements SettingsScope {
 		const sessionFile = this.sessionManager.getSessionFile();
 		let cached = this.#sessionInit;
 		if (!cached || cached.sessionFile !== sessionFile) {
-			cached = { sessionFile, init: extractSessionInit(this.sessionManager.getEntries()) };
+			cached = {
+				sessionFile,
+				init: extractSessionInit(
+					this.sessionManager.getBranchMatching(
+						metadata => metadata.type === "custom" && metadata.customType === "session_init",
+					),
+				),
+			};
 			this.#sessionInit = cached;
 		}
 		const { init } = cached;
@@ -6657,17 +6661,20 @@ export class AgentSession implements SettingsScope {
 	#buildEvalStateContextMessage(): CustomMessage | undefined {
 		const session = this.#evalToolSession;
 		if (!session) return undefined;
-		const historyHasEval = this.sessionManager.getBranch().some(entry => {
-			if (entry.type !== "message") return false;
+		let historyHasEval = false;
+		for (const entry of this.sessionManager.iterateBranch("message")) {
+			if (entry.type !== "message") continue;
 			const message = entry.message;
-			if (message.role === "pythonExecution" || (message.role === "toolResult" && message.toolName === "eval")) {
-				return true;
+			if (
+				message.role === "pythonExecution" ||
+				(message.role === "toolResult" && message.toolName === "eval") ||
+				(message.role === "assistant" &&
+					message.content.some(block => block.type === "toolCall" && block.name === "eval"))
+			) {
+				historyHasEval = true;
+				break;
 			}
-			return (
-				message.role === "assistant" &&
-				message.content.some(block => block.type === "toolCall" && block.name === "eval")
-			);
-		});
+		}
 		const content = formatEvalStateContext(session, { historyHasEval });
 		if (!content) return undefined;
 		return {
@@ -6932,7 +6939,7 @@ export class AgentSession implements SettingsScope {
 		let completed: CompletedRewindState | undefined;
 		let pending: { entryId: string; startedAt: string; messageCount: number } | undefined;
 		let messageCount = 0;
-		for (const entry of this.sessionManager.getBranch()) {
+		for (const entry of this.sessionManager.iterateBranch()) {
 			if (entry.type === "message") messageCount++;
 			if (isSuccessfulCheckpointEntry(entry)) {
 				completed = undefined;
@@ -11017,7 +11024,7 @@ export class AgentSession implements SettingsScope {
 	 * a model, or with nothing left unfinished.
 	 */
 	async restoreInterruptedTurn(): Promise<boolean> {
-		const branch = this.sessionManager.getBranch();
+		const branch = this.sessionManager.getContextBranch();
 		if (this.isStreaming || !hasRestorableTurn(branch)) return false;
 		const model = this.model;
 		if (!model) return false;
@@ -11687,7 +11694,7 @@ export class AgentSession implements SettingsScope {
 
 			const model = this.model;
 			if (model) {
-				const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.getBranch(), {
+				const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.iterateBranch(), {
 					api: model.api,
 					provider: model.provider,
 					model: model.id,
@@ -11699,10 +11706,8 @@ export class AgentSession implements SettingsScope {
 				}
 			}
 
-			const hasThinkingEntry = this.sessionManager.getBranch().some(entry => entry.type === "thinking_level_change");
-			const hasServiceTierEntry = this.sessionManager
-				.getBranch()
-				.some(entry => entry.type === "service_tier_change");
+			const hasThinkingEntry = [...this.sessionManager.iterateBranch("thinking_level_change")].length > 0;
+			const hasServiceTierEntry = [...this.sessionManager.iterateBranch("service_tier_change")].length > 0;
 			const defaultThinkingLevel = parseConfiguredThinkingLevel(cfgDefaultThinkingLevel.get(this.settings));
 			const configuredServiceTierByFamily = buildServiceTierByFamily(
 				cfgTierOpenai.get(this.settings),
@@ -12595,10 +12600,9 @@ export class AgentSession implements SettingsScope {
 	 * Get all user messages from session for branch selector.
 	 */
 	getUserMessagesForBranching(): Array<{ entryId: string; text: string }> {
-		const entries = this.sessionManager.getEntries();
 		const result: Array<{ entryId: string; text: string }> = [];
 
-		for (const entry of entries) {
+		for (const entry of this.sessionManager.iterateEntries("message")) {
 			if (entry.type !== "message") continue;
 			if (entry.message.role !== "user") continue;
 
