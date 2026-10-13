@@ -68,7 +68,7 @@ function seedLinkedRequirement(manager: SessionManager, cwd: string): void {
 		phases: [
 			{
 				name: "Work",
-				tasks: [{ content: "Build artifact", status: "pending", schedule: { owner: "main", resources: [cwd] } }],
+				tasks: [{ content: "Build artifact", status: "pending", schedule: { owner: "AuditInput", resources: [cwd] } }],
 			},
 		],
 	});
@@ -198,7 +198,7 @@ describe("ledger audit input reaches the auditor task call", () => {
 
 	it("no extension handlers: qa-auditor task carries raw R1 source and the exact typed row identity", async () => {
 		const { captured, repo } = await dispatchTask({
-			toolArgs: { agent: "qa-auditor", task: "Audit R1 at the current clean row HEAD" },
+			toolArgs: { name: "AuditInput", agent: "qa-auditor", task: "Audit R1 at the current clean row HEAD" },
 		});
 		try {
 			expect(captured).toHaveLength(1);
@@ -215,7 +215,7 @@ describe("ledger audit input reaches the auditor task call", () => {
 
 	it("extension handler without revision: qa-auditor task retains raw R1 source and the exact typed row identity", async () => {
 		const { captured, repo } = await dispatchTask({
-			toolArgs: { agent: "qa-auditor", task: "Audit R1 at the current clean row HEAD" },
+			toolArgs: { name: "AuditInput", agent: "qa-auditor", task: "Audit R1 at the current clean row HEAD" },
 			extensionRunner: passthroughRunner(),
 		});
 		try {
