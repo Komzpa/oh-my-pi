@@ -1,6 +1,6 @@
 import type { LineRange } from "@oh-my-pi/pi-tui/tools/line-ranges";
 import { parseTailCount } from "./path-utils";
-import { parseLineRanges } from "@oh-my-pi/pi-tui/tools/line-ranges";
+import { parseLineRanges, parseRawLineRanges } from "@oh-my-pi/pi-tui/tools/line-ranges";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 /** Parsed representation of a path-embedded selector. */
 export type ParsedSelector =
@@ -61,14 +61,8 @@ function invalidSelector(sel: string): ToolError {
 
 /** Parse a bare (non-compound) chunk as a line-range list or a tail count. */
 function parseRangeOrTail(chunk: string, raw: boolean): ParsedSelector | null {
-	const ranges = parseLineRanges(chunk);
-	if (ranges) {
-		const selectedRanges =
-			raw && /^\d+$/.test(chunk) ? [{ startLine: ranges[0].startLine, endLine: ranges[0].startLine }] : ranges;
-		return raw
-			? { kind: "lines", ranges: selectedRanges as [LineRange, ...LineRange[]], raw }
-			: { kind: "lines", ranges };
-	}
+	const ranges = raw ? parseRawLineRanges(chunk) : parseLineRanges(chunk);
+	if (ranges) return raw ? { kind: "lines", ranges, raw } : { kind: "lines", ranges };
 	const count = parseTailCount(chunk);
 	if (count !== null) return raw ? { kind: "tail", count, raw } : { kind: "tail", count };
 	return null;

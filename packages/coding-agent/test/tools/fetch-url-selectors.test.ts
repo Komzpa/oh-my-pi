@@ -36,6 +36,23 @@ describe("parseReadUrlTarget", () => {
 		});
 	});
 
+	it("pins a lone bare line to one line when combined with :raw", () => {
+		const single: ParsedReadUrlTarget["sel"] = { kind: "lines", ranges: [{ startLine: 31, endLine: 31 }], raw: true };
+		for (const url of [
+			"https://example.com/data.jsonl:31:raw",
+			"https://example.com/data.jsonl:L31:raw",
+			"https://example.com/data.jsonl:raw:31",
+		]) {
+			expect(parseReadUrlTarget(url)).toEqual({ path: "https://example.com/data.jsonl", sel: single });
+		}
+		// Negative control: without raw, a bare line still reads onward.
+		expect(parseReadUrlTarget("https://example.com/data.jsonl:31")?.sel).toEqual({
+			kind: "lines",
+			ranges: [{ startLine: 31, endLine: undefined }],
+			raw: false,
+		});
+	});
+
 	it("peels a tail selector, alone or with :raw", () => {
 		expect(parseReadUrlTarget("https://example.com/foo:-60")).toEqual({
 			path: "https://example.com/foo",
