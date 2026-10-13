@@ -25,9 +25,58 @@ describe("FrameTelemetry", () => {
 		expect(telemetry.snapshot.p50Ms).toBe(10);
 		expect(telemetry.snapshot.p95Ms).toBe(30);
 		expect(telemetry.snapshot.maxMs).toBe(30);
-		expect(telemetry.snapshot.lagMs).toBe(990);
-		expect(telemetry.statusText).toBe("0fps p50 10ms p95 30ms max 30ms lag 990ms");
-		expect(updates).toEqual(["0fps p50 10ms p95 10ms max 10ms lag 0ms", "0fps p50 10ms p95 30ms max 30ms lag 990ms"]);
+		expect(telemetry.snapshot.lagMs).toBe(0);
+		expect(telemetry.statusText).toBe("0fps p50 10ms p95 30ms max 30ms lag 0ms");
+		expect(updates).toEqual(["0fps p50 10ms p95 10ms max 10ms lag 0ms", "0fps p50 10ms p95 30ms max 30ms lag 0ms"]);
+	});
+	test("idle gap without input reports zero lag", () => {
+		let now = 0;
+		const telemetry = new FrameTelemetry({
+			now: () => now,
+			thresholdMs: 10_000,
+			loggerWarn: () => {},
+		});
+		telemetry.beginRender("provider");
+		now = 10;
+		telemetry.endRender("provider", true);
+		now = 8_010;
+		telemetry.beginRender("provider");
+		now = 8_020;
+		telemetry.endRender("provider", true);
+		expect(telemetry.snapshot.lagMs).toBe(0);
+		expect(telemetry.statusText).toContain("lag 0ms");
+	});
+
+	test("lag measures input-to-paint latency", () => {
+		let now = 0;
+		const telemetry = new FrameTelemetry({
+			now: () => now,
+			thresholdMs: 10_000,
+			loggerWarn: () => {},
+		});
+		now = 1_000;
+		telemetry.recordInput("key");
+		telemetry.beginRender("provider");
+		now = 1_120;
+		telemetry.endRender("provider", true);
+		expect(telemetry.snapshot.lagMs).toBe(120);
+	});
+
+	test("lag is measured from the earliest unpainted input", () => {
+		let now = 0;
+		const telemetry = new FrameTelemetry({
+			now: () => now,
+			thresholdMs: 10_000,
+			loggerWarn: () => {},
+		});
+		now = 1_000;
+		telemetry.recordInput("key");
+		now = 1_050;
+		telemetry.recordInput("key");
+		telemetry.beginRender("provider");
+		now = 1_200;
+		telemetry.endRender("provider", true);
+		expect(telemetry.snapshot.lagMs).toBe(200);
 	});
 
 	test("logs a structured frame gap with last-input context", () => {
