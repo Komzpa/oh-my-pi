@@ -159,7 +159,8 @@ export async function probeExhaustedProvider(
 /** Billing and long-lived quota failures ban a provider; transient rate limits retain short retries. */
 export function isProviderExhaustionError(status: number | undefined, message: string | undefined): boolean {
 	const detail = message ?? "";
-	if (status === 429) {
+	// A 429 carried only inside the message (no structured status) counts too.
+	if (status === 429 || (status === undefined && /\b429\b/u.test(detail))) {
 		return (
 			/per[\s_-]+day|daily|quota/iu.test(detail) || (extractRetryHint(undefined, detail) ?? 0) >= 10 * 60 * 1_000
 		);

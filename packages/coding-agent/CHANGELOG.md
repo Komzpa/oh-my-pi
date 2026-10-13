@@ -936,6 +936,7 @@
 - Fixed reading a SQLite database (local or by URL) and closing prompt history leaving the database file locked on Windows
 - Fixed RPC mode on Windows freezing when the client stopped reading stdout: the worker blocked on the full stdout pipe and stopped reading stdin, so a client writing a batch of commands before reading replies deadlocked. Output now goes through a non-blocking stdout stream that spools to disk under backpressure, as on Linux and macOS
 - Cool down providers after daily-quota or long-window (at least ten minutes) 429 errors until their retry-after expires, falling back to six hours when timing is absent; short transient 429s remain eligible.
+- Cooled down the provider that produced the failed turn (not the model active after a mid-recovery switch) and recognized a daily-quota 429 present only in the error message.
 - Persisted billing and quota provider cooldowns across sessions for six hours, with original-error exclusion reasons and a cheap authenticated models-list probe to restore availability early; ordinary permission errors and transient rate limits do not create billing bans.
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))

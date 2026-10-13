@@ -7849,7 +7849,7 @@ describe("AgentSession retry fallback", () => {
 		if (!primaryModel || !nextModel || !laterModel) throw new Error("Expected bundled test models to exist");
 
 		const requestedModels: string[] = [];
-		const mock = createMockModel();
+		const mock = createMockModel({ provider: primaryModel.provider });
 		const agent = new Agent({
 			getApiKey: model => `${model.provider}-test-key`,
 			initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },

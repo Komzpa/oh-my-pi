@@ -117,6 +117,14 @@ describe("persisted provider billing cooldown", () => {
 		});
 	});
 
+	it("classifies a daily-quota 429 present only in the message", () => {
+		const message = "429 Rate limit exceeded: free-models-per-day-high-balance. retry-after-ms=17354298";
+		return runProcess(
+			stateDir.path(),
+			`return { embedded: exhaustion.isProviderExhaustionError(undefined, ${JSON.stringify(message)}), plain: exhaustion.isProviderExhaustionError(undefined, "429 rate_limit_error") };`,
+		).then(result => expect(result).toEqual({ embedded: true, plain: false }));
+	});
+
 	it("cools daily-quota 429 until retry-after and skips it in the next process", async () => {
 		const message = "429 Rate limit exceeded: free-models-per-day-high-balance. retry-after-ms=17354298";
 		const recorded = (await runProcess(
@@ -124,11 +132,11 @@ describe("persisted provider billing cooldown", () => {
 			`const now = Date.now();
 			logProviderTurnError({ stopReason: "error", provider: "openrouter", model: "dots-studio/dots-3-note-preview:free", errorStatus: 429, errorMessage: ${JSON.stringify(message)} });
 			return { now, classified: exhaustion.isProviderExhaustionError(429, ${JSON.stringify(message)}), record: exhaustion.providerExhaustionRecord("openrouter") };`,
-		)) as { now: number; classified: boolean; record?: { until: number } };
+		)) as { now: number; classified: boolean; record?: { until: number; recordedAt: number } };
 		expect(recorded.classified).toBe(true);
 		expect(recorded.record).toBeDefined();
-		expect(recorded.record!.until - recorded.now).toBeGreaterThanOrEqual(17_354_298);
-		expect(recorded.record!.until - recorded.now).toBeLessThan(17_354_398);
+		// Measure from recordedAt so slow logging/persistence cannot flake the bound.
+		expect(recorded.record!.until - recorded.record!.recordedAt).toBe(17_354_298);
 		const picked = await runProcess(
 			stateDir.path(),
 			`context.chains.default = ["openrouter/dots-studio/dots-3-note-preview:free", "codex-lb/gpt-5.5"]; return pick();`,

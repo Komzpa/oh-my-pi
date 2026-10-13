@@ -2201,7 +2201,8 @@ export class TurnRecovery {
 		},
 	): Promise<boolean> {
 		if (isProviderExhaustionError(failedMessage.errorStatus, failedMessage.errorMessage)) {
-			coolDownExhaustedProvider(this.#host.model()?.provider ?? failedMessage.provider, {
+			// Cool the provider that failed, not the active model: /switch may have changed it.
+			coolDownExhaustedProvider(failedMessage.provider, {
 				reason: `${failedMessage.errorStatus ?? ""} ${failedMessage.errorMessage ?? "provider exhausted"}`.trim(),
 			});
 		}
