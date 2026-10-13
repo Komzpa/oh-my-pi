@@ -480,6 +480,14 @@ function parsePeerSnapshot(raw: unknown): PeerSessionSnapshot | null {
 	};
 }
 
+/**
+ * Sender labels are rendered into the recipient prompt. Replace every control character and the Unicode
+ * line/paragraph separators (U+2028/U+2029) with a space so a label can never start a new prompt line.
+ */
+function cleanWireLabel(value: string): string {
+	return value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").trim();
+}
+
 function boundField(value: string): string {
 	return value.length > MAX_SNAPSHOT_FIELD_CHARS ? value.slice(0, MAX_SNAPSHOT_FIELD_CHARS) : value;
 }
@@ -586,14 +594,13 @@ function handleConnection(
 				fail("invalid_agent");
 				return;
 			}
+			const fromName = typeof fields.fromName === "string" ? boundField(cleanWireLabel(fields.fromName)) : "";
 			source
 				.deliver({
 					from,
 					text: fields.text,
 					...(typeof fields.agent === "string" ? { agent: fields.agent } : {}),
-					...(typeof fields.fromName === "string" && fields.fromName.length > 0
-						? { fromName: boundField(fields.fromName) }
-						: {}),
+					...(fromName ? { fromName } : {}),
 				})
 				.then(receipt => respond({ ok: true, v: COLLAB_REGISTRY_VERSION, receipt }))
 				.catch(error => fail(error instanceof PeerSessionError ? error.code : "unavailable"));

@@ -18,6 +18,8 @@ export class MCPReloadBusyError extends Error {
 /** Shared preflight for reload and TUI mutations; performs no connection or config changes. */
 export function assertMCPReloadAllowed(session: AgentSession, manager?: MCPManager): void {
 	if (session.isDisposed) throw new Error("Cannot reload MCP on a disposed session");
+	// The busy check lives here on purpose: TUI mutations call this preflight BEFORE saving config, so a
+	// refused reload never leaves a saved-but-unloaded server (see MCPCommandController).
 	if (session.isStreaming || session.isBashRunning || session.isEvalRunning) throw new MCPReloadBusyError();
 	const pending = manager ? pendingReloads.get(manager) : undefined;
 	if (pending && pending.session !== session) throw new Error("MCP reload is owned by another session");
