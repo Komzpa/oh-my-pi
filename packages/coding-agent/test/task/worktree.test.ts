@@ -313,7 +313,7 @@ describe("worktree isolation helpers", () => {
 			await fs.writeFile(path.join(repo, "merged.txt"), "parent dirty tracked change\n");
 			await fs.writeFile(parentOnly, "parent-only untracked\n");
 			await runGit(repo, ["add", "merged.txt"]);
-			vi.spyOn(natives, "isoResolve").mockReturnValue({
+			vi.spyOn(natives, "isoResolve").mockResolvedValue({
 				kind: natives.IsoBackendKind.Rcopy,
 				candidates: [natives.IsoBackendKind.Rcopy],
 				fellBack: false,

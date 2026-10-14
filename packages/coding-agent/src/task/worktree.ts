@@ -649,7 +649,7 @@ export async function ensureIsolation(
 			const sourceCommonDir = vcs.requireGit(sourceDir).info().commonDir;
 			await natives.isoStart(candidate, sourceDir, mergedDir);
 			// Sever the isolation's git metadata from the source checkout. Copy
-// backends duplicate the clean source's `.git` verbatim — a linked-worktree
+			// backends duplicate the clean source's `.git` verbatim — a linked-worktree
 			// pointer file (or the rcopy `git worktree add` registration) leaves
 			// the isolation sharing the source's HEAD/index/ref namespace, so a
 			// task's git operations would mutate the parent checkout and stack
