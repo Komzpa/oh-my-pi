@@ -305,7 +305,13 @@ export class UiHelpers {
 						const requestId = details?.requestId;
 						const label =
 							typeof requestId === "string"
-								? restartNoticeText(this.ctx.viewSession.sessionManager.getBranch(), requestId)
+								? restartNoticeText(
+										this.ctx.viewSession.sessionManager.getBranchMatching(
+											metadata =>
+												metadata.type === "custom" && metadata.customType === "restart_request_transition",
+										),
+										requestId,
+									)
 								: "Restart queued";
 						const component = new CustomMessageComponent({
 							...message,

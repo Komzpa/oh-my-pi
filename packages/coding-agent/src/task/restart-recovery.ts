@@ -12,6 +12,7 @@ import type { AgentSession } from "../session/agent-session";
 import {
 	collectPendingToolCalls,
 	summarizeToolArguments,
+	TOOL_EXECUTION_START_CUSTOM_TYPE,
 	type PendingToolCallDiagnostic,
 } from "../session/exit-diagnostics";
 import { SessionManager, hasConversationalHistory } from "../session/session-manager";
@@ -155,13 +156,23 @@ async function isTombstoned(sessionFile: string): Promise<boolean> {
 }
 
 async function readBranchEntries(sessionFile: string, liveSession?: AgentSession | null): Promise<SessionEntry[]> {
-	if (liveSession) return liveSession.sessionManager.getBranch();
+	if (liveSession) {
+		return liveSession.sessionManager.getBranchMatching(
+			metadata =>
+				metadata.type === "message" ||
+				(metadata.type === "custom" && metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE),
+		);
+	}
 	const manager = await SessionManager.open(sessionFile, undefined, undefined, {
 		suppressBreadcrumb: true,
 		throwIfMissing: true,
 	});
 	try {
-		return manager.getBranch();
+		return manager.getBranchMatching(
+			metadata =>
+				metadata.type === "message" ||
+				(metadata.type === "custom" && metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE),
+		);
 	} finally {
 		await manager.close();
 	}
@@ -174,7 +185,11 @@ async function closeInterruptedToolCalls(sessionFile: string): Promise<number> {
 		throwIfMissing: true,
 	});
 	try {
-		const entries = manager.getBranch();
+		const entries = manager.getBranchMatching(
+			metadata =>
+				metadata.type === "message" ||
+				(metadata.type === "custom" && metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE),
+		);
 		const pending = collectPendingToolCalls(entries);
 		if (pending.length === 0) return 0;
 		const calls = new Map<string, { name: string; arguments: unknown }>();
@@ -498,7 +513,13 @@ export async function sendRootContinuationOnce(
 		session.emitNotice("warning", reason, "restart-recovery");
 		return { state: "blocked", reason };
 	}
-	const priorReceipt = latestRootContinuationReceipt(session.sessionManager.getBranch(), rootSessionId, requestId);
+	const priorReceipt = latestRootContinuationReceipt(
+		session.sessionManager.getBranchMatching(
+			entry => entry.type === "custom" && entry.customType === RESTART_ROOT_RECEIPT_TYPE,
+		),
+		rootSessionId,
+		requestId,
+	);
 	if (priorReceipt?.outcome === "continuation-delivered") return { state: "already-delivered" };
 	if (priorReceipt) {
 		const reason =
@@ -713,7 +734,9 @@ export async function restoreSubagentsAfterRestart(
 		rootSessionId: rootSession.sessionManager.getSessionId(),
 		rootSessionFile: path.resolve(rootSessionFile),
 	};
-	const rootEntries = rootSession.sessionManager.getBranch();
+	const rootEntries = rootSession.sessionManager.getBranchMatching(
+		entry => entry.type === "custom" && entry.customType === RESTART_HANDOFF_TYPE,
+	);
 	const saved = latestHandoff(rootEntries, identity, options?.requestId);
 	if (!saved) return report;
 	const { handoff, entryId } = saved;
@@ -729,7 +752,13 @@ export async function restoreSubagentsAfterRestart(
 		emitReportNotice(rootSession, report);
 		return report;
 	}
-	const receipts = receiptMap(rootSession.sessionManager.getBranch(), identity.rootSessionId, entryId);
+	const receipts = receiptMap(
+		rootSession.sessionManager.getBranchMatching(
+			entry => entry.type === "custom" && entry.customType === RESTART_RECEIPT_TYPE,
+		),
+		identity.rootSessionId,
+		entryId,
+	);
 	const rootRef = registry.list().find(ref => ref.kind === "main" && ref.session === rootSession);
 	const childrenToRestore = handoff.children
 		.filter(child => child.status !== "parked")
