@@ -118,7 +118,9 @@ export async function selectSessionTextReviewSource(
 	ctx: CustomCommandContext,
 	options?: { autoSelect?: "latest-assistant" },
 ): Promise<TextReviewSource | undefined> {
-	const branch = ctx.sessionManager.getBranch();
+	const branch = ctx.sessionManager.getBranchMatching(
+		metadata => metadata.type === "message" || metadata.type === "custom_message",
+	);
 	if (options?.autoSelect === "latest-assistant") {
 		const source = latestAssistantTextReviewSource(branch, ctx.sessionManager.getSessionId());
 		if (!source) ctx.ui.notify("No non-empty assistant reply is available on the active session branch.", "warning");
