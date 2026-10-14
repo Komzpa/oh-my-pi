@@ -176,7 +176,6 @@ import { StreamRedactor } from "../stream/redactor";
 import {
 	FEED_MODEL_BADGE_WIDTH,
 	formatFeedModelBadge,
-	formatMoreItems,
 	isFeedModelBadgeEnabled,
 	previewLine,
 	replaceTabs,
@@ -203,7 +202,6 @@ import {
 	formatPhaseDisplayName,
 	isClosedTodo,
 	orderTodoTasksForDisplay,
-	selectCollapsedTodos,
 	setActiveTodoDescriptionsProvider,
 	todoMatchesAnyDescription,
 } from "@oh-my-pi/pi-tui/tools/todo";
@@ -726,6 +724,7 @@ class TodoHudContainer extends AnchoredLiveContainer {
 		if (this.mode.isCompactTodoMode()) {
 			return [];
 		}
+		this.mode.refreshTodoHud(width);
 		return super.render(width);
 	}
 }
@@ -1395,6 +1394,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		  }
 		| undefined;
 	#todoHudHidden = false;
+	#todoHudGeometryKey = "";
 	hideThinkingBlock = false;
 	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
 	/** Whether the visible session has produced thinking content the user can reveal. */
@@ -4293,7 +4293,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	#syncTodoHudState(owner: AgentSession): void {
 		this.#cancelTodoAutoClearTimer();
 		const phases = this.todoPhases;
-		const persisted = getTodoHudVisibility(owner.sessionManager.getBranch(), phases);
+		const persisted = getTodoHudVisibility(
+			selectBranchEntries(owner.sessionManager, isTodoStateEntryMetadata),
+			phases,
+		);
 		this.#todoHudHidden = persisted === "dismissed";
 		if (persisted || phases.length === 0) return;
 		const tasks = phases.flatMap(phase => phase.tasks);
@@ -4314,7 +4317,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#todoAutoClearTimer = undefined;
 			await owner.settleInFlightMessagePersistence();
 			if (!isCurrent()) return;
-			const data = createTodoHudStateData(owner.sessionManager.getBranch(), this.todoPhases, "dismissed");
+			const data = createTodoHudStateData(
+				selectBranchEntries(owner.sessionManager, isTodoStateEntryMetadata),
+				this.todoPhases,
+				"dismissed",
+			);
 			if (!data) return;
 			owner.sessionManager.appendCustomEntry(TODO_HUD_STATE_CUSTOM_TYPE, data);
 			await owner.sessionManager.flush();
@@ -4406,7 +4413,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#cancelSubagentPreviewTick();
 	}
 
-	#renderTodoList(): void {
+	#todoPanelRows(): number {
+		const capability = this as InteractiveMode & { getTodoHudPanelRows?: () => number };
+		return Math.max(
+			0,
+			Math.floor(capability.getTodoHudPanelRows?.() ?? Math.max(3, this.ui.terminal.rows - EDITOR_RESERVED_ROWS)),
+		);
+	}
+
+	refreshTodoHud(width: number): void {
+		const key = `${width}:${this.ui.terminal.rows}:${this.#todoPanelRows()}`;
+		if (key !== this.#todoHudGeometryKey) this.#renderTodoList(width);
+	}
+
+	#renderTodoList(width = this.ui.terminal.columns): void {
+		const panelRows = this.#todoPanelRows();
+		this.#todoHudGeometryKey = `${width}:${this.ui.terminal.rows}:${panelRows}`;
 		this.todoContainer.clear();
 		this.#todoHudNative = undefined;
 		const running =
@@ -4491,61 +4513,44 @@ export class InteractiveMode implements InteractiveModeContext {
 		const multiPhase = phases.length > 1;
 		const activePhase = this.#getActivePhase(phases) ?? phases[0];
 		const activeIdx = activePhase ? phases.indexOf(activePhase) : -1;
-		const activeTaskCap = computeTodoHudTaskRows(this.ui.terminal.rows);
-
 		const isMatched = (todo: TodoItem): boolean => workers.byTask.has(todo);
 		const orderedTasks = orderTodoTasksForDisplay(phases, this.#todoForecast?.rows);
-		const visible = new Set<(typeof orderedTasks)[number]>();
-		if (expanded) {
-			for (const entry of orderedTasks) visible.add(entry);
-		} else {
-			// Owned work survives collapse: a stage that has at least one
-			// worker-owned in-progress row contributes only those rows to the
-			// collapsed window; its remaining queued rows stay hidden until the
-			// HUD is expanded.
-			const ownedPhaseIndexes = new Set(
-				orderedTasks
-					.filter(entry => entry.task.status === "in_progress" && isMatched(entry.task))
-					.map(entry => entry.phaseIndex),
-			);
-			const suppressed = new Set(
-				orderedTasks.filter(
-					entry =>
-						!isClosedTodo(entry.task) &&
-						entry.task.status === "pending" &&
-						!isMatched(entry.task) &&
-						ownedPhaseIndexes.has(entry.phaseIndex),
-				),
-			);
-			const considered = orderedTasks.filter(entry => !suppressed.has(entry));
-			const open = considered.filter(entry => !isClosedTodo(entry.task));
-			for (const entry of open.slice(0, activeTaskCap)) visible.add(entry);
-			for (const entry of considered) {
-				if (entry.task.status === "in_progress" || isMatched(entry.task)) visible.add(entry);
-			}
-			const currentTask = nextActionableTask(phases);
-			const current = considered.find(entry => entry.task === currentTask);
-			if (current) visible.add(current);
-			const closedContext = considered.filter(entry => isClosedTodo(entry.task)).slice(-1);
-			for (const entry of closedContext) visible.add(entry);
-			const hidden = considered.filter(entry => !visible.has(entry) && !isClosedTodo(entry.task));
-			if (hidden.length === 1) visible.add(hidden[0]!);
+		type Segment = { phase: TodoPhase; phaseIndex: number; tasks: TodoItem[] };
+		let segments: Segment[] = [];
+		const selection =
+			expanded || orderedTasks.every(entry => isClosedTodo(entry.task))
+				? orderedTasks
+				: [0, 1, 2].flatMap(priority =>
+						orderedTasks.filter(
+							entry =>
+								!isClosedTodo(entry.task) &&
+								(entry.task.status === "in_progress" ? 0 : entry.task.status === "blocked" ? 1 : 2) ===
+									priority,
+						),
+					);
+		for (const entry of selection) {
+			const previous = segments.at(-1);
+			if (previous?.phaseIndex === entry.phaseIndex) previous.tasks.push(entry.task);
+			else segments.push({ phase: entry.phase, phaseIndex: entry.phaseIndex, tasks: [entry.task] });
 		}
-		const visibleTasks = orderedTasks.filter(entry => visible.has(entry));
-		const hiddenTasks = orderedTasks.filter(entry => !visible.has(entry) && !isClosedTodo(entry.task)).length;
-		// One block per phase, in the order its first row comes due; rows keep their time order inside
-		// it. Interleaved phases used to repeat their label on every row ("VII. …: " four times).
-		const segments: Array<{ phase: TodoPhase; phaseIndex: number; tasks: TodoItem[] }> = [];
-		const segmentByPhase = new Map<number, (typeof segments)[number]>();
-		for (const entry of visibleTasks) {
-			let segment = segmentByPhase.get(entry.phaseIndex);
-			if (!segment) {
-				segment = { phase: entry.phase, phaseIndex: entry.phaseIndex, tasks: [] };
-				segmentByPhase.set(entry.phaseIndex, segment);
-				segments.push(segment);
+		const totalOpen = selection.filter(entry => !isClosedTodo(entry.task)).length;
+		const workerRows = workers.unassigned.length ? workers.unassigned.length + 1 : 0;
+		const contentBudget = panelRows - 1 - (this.#todoForecast ? 1 : 0) - workerRows;
+		let hiddenTasks = 0;
+		if (!expanded && segments.length + totalOpen > contentBudget) {
+			const all = segments;
+			segments = [];
+			let room = contentBudget - 1; // retain the exact overflow count
+			for (const group of all) {
+				if (room < 2) break;
+				const shown = Math.min(group.tasks.length, room - 1);
+				segments.push({ ...group, tasks: group.tasks.slice(0, shown) });
+				room -= shown + 1;
+				if (shown < group.tasks.length) break;
 			}
-			segment.tasks.push(entry.task);
+			hiddenTasks = totalOpen - segments.reduce((n, group) => n + group.tasks.length, 0);
 		}
+		const overflowRow = hiddenTasks > 0 ? `+${hiddenTasks} more open (/todo expand …)` : undefined;
 
 		const spineGlyphs: string[] = [];
 		const contentLines: string[] = [];
@@ -4588,7 +4593,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 			pushBlock([header, ...tasks], [undefined, ...segment.tasks.map(task => workers.byTask.get(task)?.id)]);
 		}
-		if (!expanded && hiddenTasks > 0) pushBlock(theme.fg("muted", formatMoreItems(hiddenTasks, "todo")));
+		if (!expanded && overflowRow) pushBlock(theme.fg("muted", overflowRow));
 		if (workers.unassigned.length > 0) {
 			pushBlock(
 				[
@@ -4609,13 +4614,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		// the entire path until the configured auto-clear removes the HUD.
 		const totalTasks = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
 		const closedTasks = phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
-		const pathLen = contentLines.length + tailLen;
+		const withChrome = expanded || contentLines.length + 3 + (this.#todoForecast ? 1 : 0) <= panelRows;
+		const pathLen = contentLines.length + (withChrome ? tailLen : 0);
 		let filled = Math.round((closedTasks / totalTasks) * pathLen);
 		if (closedTasks > 0) filled = Math.max(filled, 1);
 		if (closedTasks < totalTasks) filled = Math.min(filled, pathLen - 1);
 
-		const lines = ["", theme.bold(theme.fg("accent", "TODO"))];
-		const lineOwners: (string | undefined)[] = [undefined, undefined];
+		const done = phases.reduce((n, phase) => n + phase.tasks.filter(t => t.status === "completed").length, 0);
+		const dropped = phases.reduce((n, phase) => n + phase.tasks.filter(t => t.status === "abandoned").length, 0);
+		const counts =
+			!expanded && (done || dropped || segments.length > 1)
+				? ` ${done} ✓ · ${totalOpen} open${dropped ? ` · ${dropped} ×` : ""}`
+				: "";
+		const lines = [...(withChrome ? [""] : []), theme.bold(theme.fg("accent", "TODO")) + theme.fg("dim", counts)];
+		const lineOwners: (string | undefined)[] = lines.map(() => undefined);
 		if (this.#todoForecast) {
 			const summary = sanitizeStatusText(formatPlanForecastDisplay(this.#todoForecast, this.#todoForecast.now));
 			lines.push(` ${theme.fg("dim", `${summary}${deadline?.paused ? " · goal paused" : ""}`)}`);
@@ -4626,9 +4638,20 @@ export class InteractiveMode implements InteractiveModeContext {
 			lineOwners.push(contentOwners[i]);
 		}
 		const tailFilled = Math.max(0, Math.min(filled - contentLines.length, tail.length));
-		lines.push(` ${theme.fg("accent", tail.slice(0, tailFilled))}${theme.fg("dim", tail.slice(tailFilled))}`);
-		lineOwners.push(undefined);
-		this.todoContainer.addChild(new SubagentHudComponent(lines, [], undefined, lineOwners));
+		if (withChrome) {
+			lines.push(` ${theme.fg("accent", tail.slice(0, tailFilled))}${theme.fg("dim", tail.slice(tailFilled))}`);
+			lineOwners.push(undefined);
+		}
+		const painted = expanded
+			? lines
+			: panelRows < 2
+				? panelRows > 0 && overflowRow
+					? [truncateToWidth(overflowRow, Math.max(0, width - 2), "")]
+					: []
+				: lines.map(line => truncateToWidth(line, Math.max(0, width - 2), ""));
+		this.todoContainer.addChild(
+			new SubagentHudComponent(painted, [], undefined, panelRows < 2 && !expanded ? [undefined] : lineOwners),
+		);
 
 		// Native: the same stage window as a tree, overall progress as a bar.
 		const describeTask = (todo: TodoItem, id: string): TspTreeNode => {
@@ -4648,34 +4671,21 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (notes > 0) label.push(span(` +${notes}`, "dim em"));
 			return { id, label, icon: done ? "check" : "circle" };
 		};
-		const describeTasks = (phase: TodoPhase, phaseIndex: number): TspTreeNode[] => {
-			const index = (todo: TodoItem): string => `${phaseIndex}.${phase.tasks.indexOf(todo)}`;
-			if (expanded) return phase.tasks.map(todo => describeTask(todo, index(todo)));
-			const selection = selectCollapsedTodos(phase.tasks, isMatched, activeTaskCap);
-			const nodes = selection.items.map(todo => describeTask(todo, index(todo)));
-			if (selection.summary) nodes.push({ id: `${phaseIndex}.more`, label: [span(selection.summary, "muted")] });
-			return nodes;
-		};
-		const subsequentStageCap = 4; // stages shown after the active one (a trailing summary row covers the rest)
-		const baseIdx = expanded ? 0 : activeIdx;
-		const phaseSlice = expanded ? phases.slice(baseIdx) : phases.slice(baseIdx, baseIdx + 1 + subsequentStageCap);
-		const hiddenStages = phases.length - baseIdx - phaseSlice.length;
-		const phaseNodes: TspTreeNode[] = phaseSlice.map((phase, offset) => {
-			const phaseIndex = baseIdx + offset;
-			const isActive = phaseIndex === activeIdx;
-			const name = multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name;
-			const done = phase.tasks.filter(isClosedTodo).length;
-			const open = isActive || expanded;
-			return {
-				id: `${phaseIndex}`,
-				label: [span(name, isActive ? "accent strong" : "muted"), span(` · ${done}/${phase.tasks.length}`, "dim")],
-				open,
-				children: open ? describeTasks(phase, phaseIndex) : undefined,
-			};
-		});
-		if (hiddenStages > 0) {
-			phaseNodes.push({ id: "more", label: [span(formatMoreItems(hiddenStages, "stage"), "muted")] });
-		}
+		const phaseNodes: TspTreeNode[] = segments.map((segment, groupIndex) => ({
+			id: `phase:${segment.phaseIndex}:${groupIndex}`,
+			label: [
+				span(
+					multiPhase ? formatPhaseDisplayName(segment.phase.name, segment.phaseIndex + 1) : segment.phase.name,
+					segment.phaseIndex === activeIdx ? "accent strong" : "muted",
+				),
+			],
+			open: true,
+			children: segment.tasks.map(todo =>
+				describeTask(todo, `${segment.phaseIndex}.${segment.phase.tasks.indexOf(todo)}`),
+			),
+		}));
+		if (overflowRow) phaseNodes.push({ id: "more", label: [span(overflowRow, "muted")] });
+
 		const fallback = node(
 			"col",
 			{ role: "omp.hud.todo" },
@@ -8834,7 +8844,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			const appendReveal = (data: TodoHudStateEntryData): void => {
 				owner.sessionManager.appendCustomEntry(TODO_HUD_STATE_CUSTOM_TYPE, data);
 			};
-			const data = createTodoHudStateData(owner.sessionManager.getBranch(), this.todoPhases, "revealed");
+			const data = createTodoHudStateData(
+				selectBranchEntries(owner.sessionManager, isTodoStateEntryMetadata),
+				this.todoPhases,
+				"revealed",
+			);
 			if (data) {
 				try {
 					appendReveal(data);
@@ -8858,7 +8872,7 @@ export class InteractiveMode implements InteractiveModeContext {
 						)
 							return;
 						const settledData = createTodoHudStateData(
-							owner.sessionManager.getBranch(),
+							selectBranchEntries(owner.sessionManager, isTodoStateEntryMetadata),
 							this.todoPhases,
 							"revealed",
 						);

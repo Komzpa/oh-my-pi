@@ -775,7 +775,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		// The title remains a compact anchor; overall progress colors the tree
 		// spine and tail, not the title text.
 		const root = lines.find(line => line.includes("TODO"));
-		expect(root?.trim()).toBe("TODO");
+		expect(root).toContain("1 ✓ · 3 open");
 		// Active stage: highlighted header with its own task progress, expanded as a
 		// connector tree; the just-completed task stays as the lead row so progress
 		// is visible while the stage still has open work.
@@ -785,7 +785,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		expect(secondLine).toContain(theme.checkbox.unchecked);
 		expect(lines.some(line => line.includes("third task"))).toBe(true);
 		const firstLine = lines.find(line => line.includes("first task"));
-		expect(firstLine).toContain(theme.checkbox.checked);
+		expect(firstLine).toBeUndefined();
 		expect(lines.some(line => line.includes("II. Verification") && line.includes("0/1"))).toBe(true);
 		// No overflow rows — the header/progress counts imply what is hidden.
 		expect(lines.some(line => line.includes("more"))).toBe(false);
@@ -845,12 +845,12 @@ describe("InteractiveMode todo HUD anchor", () => {
 			.flatMap(line => line.split("\n"))
 			.map(line => Bun.stripANSI(line));
 		expect(lines.some(line => line.includes("II. Two"))).toBe(true);
-		expect(lines.some(line => line.includes("IX. Nine"))).toBe(true);
+		expect(lines.some(line => line.includes("IX. Nine"))).toBe(false);
 		expect(lines.some(line => line.includes("Ten"))).toBe(false);
-		expect(lines.some(line => line.includes("3 more todos"))).toBe(true);
-		// Hidden stages do not change the compact title.
+		expect(lines.some(line => line.includes("+10 more open"))).toBe(true);
+		// The header accounts for every open row, including overflow.
 		const root = lines.find(line => line.includes("TODO"));
-		expect(root?.trim()).toBe("TODO");
+		expect(root).toContain("12 open");
 	});
 
 	it("sizes the collapsed todo window from the viewport instead of a fixed five", () => {
@@ -883,13 +883,13 @@ describe("InteractiveMode todo HUD anchor", () => {
 			},
 		]);
 		const short = renderTodos(mode);
-		expect(short).toContain("Crowded task 9");
-		expect(short).not.toContain("Crowded task 10");
-		expect(short).toContain("11 more todos");
+		expect(short).toContain("Crowded task 3");
+		expect(short).not.toContain("Crowded task 4");
+		expect(short).toContain("+17 more open");
 		expect(mode.todoContainer.render(120).length).toBeLessThanOrEqual(18);
 	});
 
-	it("renders one hidden task instead of a same-row overflow summary", () => {
+	it("accounts for every hidden task within the allocated panel", () => {
 		// 18 rows leaves nine task rows, so a tenth row still fits (revealed in
 		// place of its own summary) and an eleventh keeps the overflow summary.
 		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
@@ -902,8 +902,8 @@ describe("InteractiveMode todo HUD anchor", () => {
 				})),
 			},
 		]);
-		expect(renderTodos(mode)).toContain("Task 10");
-		expect(renderTodos(mode)).not.toContain("more todo");
+		expect(renderTodos(mode)).not.toContain("Task 10");
+		expect(renderTodos(mode)).toContain("+7 more open");
 
 		mode.setTodos([
 			{
@@ -915,10 +915,11 @@ describe("InteractiveMode todo HUD anchor", () => {
 			},
 		]);
 		expect(renderTodos(mode)).not.toContain("Task 11");
-		expect(renderTodos(mode)).toContain("2 more todos");
+		expect(renderTodos(mode)).toContain("+8 more open");
 	});
 
-	it("uses one hidden task's original phase and task instead of a summary", () => {
+	it("shows every phase when its open rows fit the viewport", () => {
+		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 40, configurable: true });
 		const stage = (name: string): TodoPhase => ({ name, tasks: [{ content: `${name} task`, status: "pending" }] });
 		mode.setTodos([stage("One"), stage("Two"), stage("Three"), stage("Four"), stage("Five"), stage("Six")]);
 		const oneHidden = renderTodos(mode);
@@ -948,7 +949,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		await mode.handleTodoCommand("collapse");
 
 		expect(renderTodos(mode)).not.toContain("Task 12");
-		expect(renderTodos(mode)).toContain("3 more todos");
+		expect(renderTodos(mode)).toContain("+9 more open");
 	});
 
 	it("marks the matching in-progress todo row when its worker has no recent commit", async () => {
@@ -1102,7 +1103,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 			const rendered = renderTodos(mode);
 			expect(rendered).toContain(id);
 			expect(rendered).toContain(content);
-			expect(rendered).not.toContain("Unowned queued follow-up");
+			expect(rendered).toContain("Unowned queued follow-up");
 		} finally {
 			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
 				id,
