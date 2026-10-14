@@ -711,6 +711,21 @@ class TodoHudContainer extends AnchoredLiveContainer {
 		this.mode.refreshTodoHud(width);
 		return super.render(width);
 	}
+
+	/**
+	 * The plan built with the ANSI rows: a HUD `checklist` where the terminal
+	 * has one, else the phase tree. The short-terminal fold is ANSI layout only.
+	 */
+	override describe(cx: DescribeContext): NativeNode {
+		this.mode.refreshTodoHudNative(cx.cols);
+		const hud = this.mode.todoHudNative;
+		if (!hud) return EMPTY_HUD;
+		return cx.supports("checklist") ? hud.checklist : hud.fallback;
+	}
+	override invalidate(): void {
+		this.mode.invalidateTodoHudCache();
+		super.invalidate();
+	}
 }
 
 /**
@@ -1392,12 +1407,27 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * terminal with `checklist` gets the whole plan as a HUD checklist, others
 	 * the same stage window as a tree; both keyed `todo` in the activity line.
 	 */
-	todoHudNative: { checklist: NativeNode; fallback: NativeNode } | undefined;
+	#todoHudNative: { checklist: NativeNode; fallback: NativeNode } | undefined;
+	get todoHudNative(): { checklist: NativeNode; fallback: NativeNode } | undefined {
+		return this.#todoHudNative;
+	}
 	#hudPillsNative: { children: readonly NativeChild[]; node: NativeNode } | undefined;
 	#agentsSegment: RunningSegment | undefined;
 	#jobsSegment: RunningSegment | undefined;
 	/** Gen tok/s for the native composer bar, one decimal (a steadier `rate` target): live while running, else the last reading. */
 	#todoHudAllocation: { terminalRows: number; panelRows: number } | undefined;
+	/** Last HUD build inputs; an unchanged repaint reuses the last build instead of scanning/formatting every task. Width is included: collapsed rows flatten to the consumer width. */
+	#todoHudCache:
+		| {
+				phases: TodoPhase[];
+				expanded: boolean;
+				hidden: boolean;
+				width: number;
+				terminalRows: number;
+				panelRows: number;
+				activeKey: string;
+		  }
+		| undefined;
 	#nativeTokenRate(): number | undefined {
 		if (!cfgComposerTokenRate.get(settings)) return undefined;
 		const rate = this.tokenRate.rate();
@@ -4312,9 +4342,45 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#cancelSubagentPreviewTick();
 	}
 
-	/** Rebuild at the consumer's width, including frames with only editor/geometry changes. */
+	/** Current HUD geometry: live rows plus the Composer's actual panel budget. */
+	#todoHudGeometry(): { terminalRows: number; panelRows: number } {
+		const terminalRows = this.ui.terminal.rows;
+		const panelRows =
+			this.#todoHudAllocation?.terminalRows === terminalRows
+				? this.#todoHudAllocation.panelRows
+				: todoHudPanelRows(terminalRows);
+		return { terminalRows, panelRows };
+	}
+	/** Active-subagent style key; a change relights matched rows. NUL-joined so ["ab","c"] and ["a","bc"] differ. */
+	#todoHudActiveKey(): string {
+		return this.#getActiveSubagentDescriptions().join(String.fromCharCode(0));
+	}
+	/** Rebuild at the consumer's width; an unchanged repaint reuses the last build. */
 	refreshTodoHud(width: number): void {
+		const { terminalRows, panelRows } = this.#todoHudGeometry();
+		const activeKey = this.#todoHudActiveKey();
+		const cached = this.#todoHudCache;
+		if (
+			cached &&
+			cached.phases === this.todoPhases &&
+			cached.expanded === this.todoExpanded &&
+			cached.hidden === this.#todoHudHidden &&
+			cached.width === width &&
+			cached.terminalRows === terminalRows &&
+			cached.panelRows === panelRows &&
+			cached.activeKey === activeKey
+		) {
+			return;
+		}
 		this.#renderTodoList(width);
+	}
+	/** Reproject the native fallback at the current geometry without a caller ANSI pass. Same inputs key: width flattens collapsed rows, so it invalidates like height. */
+	refreshTodoHudNative(cols: number): void {
+		this.refreshTodoHud(cols);
+	}
+	/** Drop the cached HUD build inputs. Called only from explicit invalidation (theme/appearance changes via `TodoHudContainer.invalidate`); never from the per-frame render path. */
+	invalidateTodoHudCache(): void {
+		this.#todoHudCache = undefined;
 	}
 
 	#renderTodoList(width = this.ui.terminal.columns): void {
@@ -4322,9 +4388,28 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#todoHudNative = undefined;
 		const activeDescs = this.#getActiveSubagentDescriptions();
 		this.#todoHudSubagentKey = activeDescs.join("\n");
-		if (this.#todoHudHidden) return;
+		const geometry = this.#todoHudGeometry();
+		const activeKey = this.#todoHudActiveKey();
+		const rememberEmpty = (): void => {
+			this.#todoHudCache = {
+				phases: this.todoPhases,
+				expanded: this.todoExpanded,
+				hidden: this.#todoHudHidden,
+				width,
+				terminalRows: geometry.terminalRows,
+				panelRows: geometry.panelRows,
+				activeKey,
+			};
+		};
+		if (this.#todoHudHidden) {
+			rememberEmpty();
+			return;
+		}
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
-		if (phases.length === 0) return;
+		if (phases.length === 0) {
+			rememberEmpty();
+			return;
+		}
 		const expanded = this.todoExpanded;
 		const multiPhase = phases.length > 1;
 		const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
@@ -4595,6 +4680,15 @@ export class InteractiveMode implements InteractiveModeContext {
 				"todo",
 			),
 			fallback,
+		};
+		this.#todoHudCache = {
+			phases: this.todoPhases,
+			expanded: this.todoExpanded,
+			hidden: this.#todoHudHidden,
+			width,
+			terminalRows: geometry.terminalRows,
+			panelRows: geometry.panelRows,
+			activeKey,
 		};
 	}
 

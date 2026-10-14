@@ -517,4 +517,40 @@ describe("InteractiveMode collapsed TODO open panel", () => {
 		await mode.handleTodoCommand("expand");
 		expect(renderPanel(mode)).toEqual(expandedBefore);
 	});
+	it("reprojects the native-only fallback across height changes without ANSI", () => {
+		setTerminalRows(mode, 18);
+		mode.setTodos(openPanelPhases);
+		const context = { cols: 120, reduceMotion: true, dark: true, supports: () => false, feature: () => false };
+		function snapshot(): { taskIds: string[]; headings: string[]; hidden: number } {
+			const fallback = mode.todoContainer.describe(context);
+			const tree = fallback?.c?.find(child => "k" in child && child.k === "tree");
+			if (!tree || !("k" in tree) || tree.k !== "tree") throw new Error("Expected consumer TODO fallback tree");
+			const nodes = tree.p?.nodes ?? [];
+			const headed = nodes.filter(node => node.id !== "more");
+			const more = nodes.find(node => node.id === "more");
+			const hidden = Number(JSON.stringify(more?.label ?? "").match(/\+(\d+) more open/)?.[1] ?? 0);
+			return {
+				headings: headed.map(node => String(node.id)),
+				taskIds: headed.flatMap(node => (node.children ?? []).map(task => String(task.id))),
+				hidden,
+			};
+		}
+		let seen = snapshot();
+		expect(seen.taskIds).toEqual(["2.0", "2.1", "2.2"]);
+		expect(seen.headings).toEqual(["2"]);
+		expect(seen.hidden).toBe(8);
+		expect(seen.taskIds.length + seen.hidden).toBe(11);
+		setTerminalRows(mode, 27);
+		seen = snapshot();
+		expect(seen.hidden).toBe(0);
+		expect(seen.headings).toEqual(["2", "1", "0"]);
+		expect(seen.taskIds).toEqual(["2.0", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "1.0", "1.1", "1.2", "0.0"]);
+		setTerminalRows(mode, 18);
+		seen = snapshot();
+		expect(seen.taskIds).toEqual(["2.0", "2.1", "2.2"]);
+		expect(seen.headings).toEqual(["2"]);
+		expect(seen.hidden).toBe(8);
+		expect(seen.taskIds.length + seen.hidden).toBe(11);
+		for (const id of seen.taskIds) expect(seen.headings).not.toContain(id);
+	});
 });
