@@ -244,6 +244,8 @@ async function runDirenv(
 	return { exitCode, stdout, stderr };
 }
 
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
+
 function applyExportDiff(env: Record<string, string>, diff: DirenvExportDiff): Record<string, string> {
 	const loaded = { ...env, ...diff.set };
 	for (const name of diff.unset) delete loaded[name];
