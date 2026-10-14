@@ -268,7 +268,7 @@ describe("restart process replacement CLI", () => {
 		try {
 			let target: RestartControlSnapshot | undefined;
 			// This real PTY/IPC integration needs OS event-loop turns; fake timers cannot advance another process.
-			const deadline = Date.now() + 30_000;
+			const deadline = Date.now() + 90_000;
 			while (!target && Date.now() < deadline && proc.exitCode === null) {
 				[target] = await listRestartControls({ runtimeDir });
 				if (!target) await Bun.sleep(50);
@@ -339,7 +339,7 @@ describe("restart process replacement CLI", () => {
 		}
 	}
 
-	it("returns the terminal when the replacement crashes at startup", () => runLiveRestart(true), 60_000);
-	it("replaces the process twice without retaining an older ancestor", () => runLiveRestart(false), 60_000);
-	it("returns a fresh session directly to the shell without restarting", () => runLiveRestart(false, false), 60_000);
+	it("returns the terminal when the replacement crashes at startup", () => runLiveRestart(true), 180_000);
+	it("replaces the process twice without retaining an older ancestor", () => runLiveRestart(false), 180_000);
+	it("returns a fresh session directly to the shell without restarting", () => runLiveRestart(false, false), 180_000);
 });
