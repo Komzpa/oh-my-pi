@@ -2880,6 +2880,27 @@ impl SubagentStatus {
 	}
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoItem {
+	pub content: String,
+	pub status: TodoStatus,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub schedule: Option<TodoSchedule>,
+	/// What a `blocked` task is waiting on.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub blocker: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub details: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub notes: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoPhase {
+	pub name: String,
+	pub tasks: Vec<TodoItem>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TodoConfidence {
 	#[serde(rename = "low")]
@@ -3026,27 +3047,6 @@ pub struct TodoSchedule {
 	pub attempt_history: Option<Vec<TodoReworkAttempt>>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub executor: Option<TodoScheduleExecutor>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TodoItem {
-	pub content: String,
-	pub status: TodoStatus,
-	/// What a `blocked` task is waiting on.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub blocker: Option<String>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub details: Option<String>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub schedule: Option<TodoSchedule>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub notes: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TodoPhase {
-	pub name: String,
-	pub tasks: Vec<TodoItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

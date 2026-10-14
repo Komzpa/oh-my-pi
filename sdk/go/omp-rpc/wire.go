@@ -2132,6 +2132,57 @@ func (v *SubagentStatus) UnmarshalJSON(data []byte) error {
 	return unknownValue("SubagentStatus", s)
 }
 
+type TodoItem struct {
+	Content  string        `json:"content"`
+	Status   TodoStatus    `json:"status"`
+	Schedule *TodoSchedule `json:"schedule,omitempty"`
+	// What a `blocked` task is waiting on.
+	Blocker *string  `json:"blocker,omitempty"`
+	Details *string  `json:"details,omitempty"`
+	Notes   []string `json:"notes,omitempty"`
+}
+
+func (v *TodoItem) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoItem", v.decodeFrom)
+}
+
+func (v *TodoItem) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoItem
+	d := fieldDecoder{raw: raw, owner: "TodoItem"}
+	d.required("content", &out.Content)
+	d.required("status", &out.Status)
+	d.optional("schedule", &out.Schedule)
+	d.optional("blocker", &out.Blocker)
+	d.optional("details", &out.Details)
+	d.optional("notes", &out.Notes)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type TodoPhase struct {
+	Name  string     `json:"name"`
+	Tasks []TodoItem `json:"tasks"`
+}
+
+func (v *TodoPhase) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoPhase", v.decodeFrom)
+}
+
+func (v *TodoPhase) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoPhase
+	d := fieldDecoder{raw: raw, owner: "TodoPhase"}
+	d.required("name", &out.Name)
+	d.required("tasks", &out.Tasks)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type TodoConfidence string
 
 const (
@@ -2343,57 +2394,6 @@ func (v *TodoSchedule) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("finishedAt", &out.FinishedAt)
 	d.optional("attemptHistory", &out.AttemptHistory)
 	d.optional("executor", &out.Executor)
-	if d.err != nil {
-		return d.err
-	}
-	*v = out
-	return nil
-}
-
-type TodoItem struct {
-	Content string     `json:"content"`
-	Status  TodoStatus `json:"status"`
-	// What a `blocked` task is waiting on.
-	Blocker  *string       `json:"blocker,omitempty"`
-	Details  *string       `json:"details,omitempty"`
-	Schedule *TodoSchedule `json:"schedule,omitempty"`
-	Notes    []string      `json:"notes,omitempty"`
-}
-
-func (v *TodoItem) UnmarshalJSON(data []byte) error {
-	return decodeWith(data, "TodoItem", v.decodeFrom)
-}
-
-func (v *TodoItem) decodeFrom(raw map[string]json.RawMessage) error {
-	var out TodoItem
-	d := fieldDecoder{raw: raw, owner: "TodoItem"}
-	d.required("content", &out.Content)
-	d.required("status", &out.Status)
-	d.optional("blocker", &out.Blocker)
-	d.optional("details", &out.Details)
-	d.optional("schedule", &out.Schedule)
-	d.optional("notes", &out.Notes)
-	if d.err != nil {
-		return d.err
-	}
-	*v = out
-	return nil
-}
-
-type TodoPhase struct {
-	Name  string     `json:"name"`
-	Tasks []TodoItem `json:"tasks"`
-}
-
-func (v *TodoPhase) UnmarshalJSON(data []byte) error {
-	return decodeWith(data, "TodoPhase", v.decodeFrom)
-}
-
-func (v *TodoPhase) decodeFrom(raw map[string]json.RawMessage) error {
-	var out TodoPhase
-	d := fieldDecoder{raw: raw, owner: "TodoPhase"}
-	d.required("name", &out.Name)
-	d.required("tasks", &out.Tasks)
 	if d.err != nil {
 		return d.err
 	}
