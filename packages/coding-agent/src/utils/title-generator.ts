@@ -792,13 +792,16 @@ export function nerdGlyphsActive(): boolean {
  */
 export function setTerminalTitleTaskNow(task: string | undefined): void {
 	terminalTitleRuntime.taskNow = sanitizeTerminalTitlePart(task);
+	// Initial TODO loading precedes the shell-title push. Keep the task pending
+	// until ownership is claimed and the session supplies its project/cwd.
+	if (!terminalTitleRuntime.titleClaimed) return;
 	terminalTitleRuntime.label = buildSessionTerminalLabel(
 		terminalTitleRuntime.sessionName,
 		terminalTitleRuntime.cwd,
 		terminalTitleRuntime.taskNow,
 		terminalTitleRuntime.remoteCwd,
 	);
-	if (terminalTitleRuntime.titleClaimed) emitTerminalTitle();
+	emitTerminalTitle();
 }
 
 /** The OSC 1337 user variable Tern reads the session file from. */
@@ -1166,6 +1169,7 @@ export function disposeTerminalTitleState(): void {
 	sessionSource = undefined;
 	reportTernSession();
 	terminalTitleRuntime.disposed = true;
+	terminalTitleRuntime.titleClaimed = false;
 	terminalTitleRuntime.unwatchNative?.();
 	terminalTitleRuntime.unwatchNative = undefined;
 	// `popTerminalTitle()` hands the terminal back to the shell, so the runtime no

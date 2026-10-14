@@ -320,6 +320,21 @@ describe("label tracks what the session is doing now", () => {
 		expect(lastTitle()).toBe(`${BRAND} > demo-repo · Topic A`);
 	});
 
+	it("keeps startup todos pending until the terminal is claimed and the project is supplied", () => {
+		const project = makeProject("startup-repo");
+		setSessionTerminalTitle(undefined);
+		disposeTerminalTitleState();
+		writes = [];
+		setTerminalTitleTaskNow("Initial title task");
+		expect(lastTitle()).toBeUndefined();
+		initTerminalTitleState();
+		setTerminalTitleState("idle");
+		expect(lastTitle()?.includes("Initial title task") ?? false).toBe(false);
+		setSessionTerminalTitle("Session card", project);
+		expect(lastTitle()).toBe(`${BRAND} > startup-repo · Initial title task`);
+		setTerminalTitleTaskNow(undefined);
+	});
+
 	it("keeps the project in the OSC title when the session is renamed", () => {
 		const project = makeProject("demo-repo");
 		setSessionTerminalTitle("Topic A", project);
