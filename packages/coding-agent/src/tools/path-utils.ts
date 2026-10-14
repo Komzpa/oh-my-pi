@@ -1,4 +1,4 @@
-import { extractUriScheme } from "../internal-urls/parse";
+import { extractUriScheme, parseInternalUrl } from "../internal-urls/parse";
 import { type LineRange } from "@oh-my-pi/pi-tui/tools/line-ranges";
 import { splitPathAndSel, isReadableUrlPath } from "@oh-my-pi/pi-tui/tools/read";
 import * as fs from "node:fs";
@@ -687,19 +687,25 @@ async function tryDelimitedPathSplit(
  * Whether an internal-URL list has a URL with its own path segments followed by
  * an unanchored local part. A local part is anchored when
  * {@link isFilesystemSourcePath} (POSIX absolute, Windows drive, UNC) or an
- * explicit `./`, `../`, `~` prefix makes it unambiguously its own target; only
- * such anchored tails fan out after a URL with path segments.
+ * explicit `./`, `../` (either separator), `~` prefix makes it its own target.
+ * A delimiter following a query or fragment remains part of that URL.
  */
-function hasAmbiguousRelativeTail(parts: readonly string[]): boolean {
+function hasAmbiguousInternalUrlTail(parts: readonly string[]): boolean {
 	let urlHasPath = false;
-	for (const part of parts) {
+	for (const [index, part] of parts.entries()) {
 		if (isInternalUrlPath(part)) {
-			const afterScheme = part.slice(part.indexOf("://") + 3);
-			urlHasPath = urlHasPath || afterScheme.includes("/");
+			const url = parseInternalUrl(InternalUrlRouter.instance().normalize(expandPath(part)));
+			// Any following delimiter is inside this URL’s query or fragment.
+			if (index < parts.length - 1 && (url.search || url.hash)) return true;
+			urlHasPath = urlHasPath || (url.pathname !== "" && url.pathname !== "/");
 			continue;
 		}
+		const localPart = normalizePosixPath(part);
 		const anchored =
-			isFilesystemSourcePath(part) || part.startsWith("./") || part.startsWith("../") || part.startsWith("~");
+			isFilesystemSourcePath(part) ||
+			localPart.startsWith("./") ||
+			localPart.startsWith("../") ||
+			localPart.startsWith("~");
 		if (urlHasPath && !anchored) return true;
 	}
 	return false;
@@ -727,7 +733,12 @@ export async function splitDelimitedPathEntry(
 		const parts = await tryDelimitedPathSplit(normalizedEntry, cwd, splitter, "semicolon", "none");
 		// One nonempty target is not a list: `skill://demo/a;` must keep its
 		// literal trailing `;`, not fan out to the truncated `skill://demo/a`.
-		return parts && parts.length >= 2 && parts.every(options.routedUrlPredicate) ? parts : null;
+		return parts &&
+			parts.length >= 2 &&
+			parts.every(options.routedUrlPredicate) &&
+			!hasAmbiguousInternalUrlTail(parts)
+			? parts
+			: null;
 	}
 	// An internal URL that still carries a top-level `;` is a flattened list
 	// (`history://A;history://B`, `skill://x;/abs/path`): fan it out the same way
@@ -738,10 +749,7 @@ export async function splitDelimitedPathEntry(
 	// ambiguous with a literal `;` in the resource name, so only anchored tails
 	// (absolute, `./`, `../`, `~`) fan out and the URL keeps literal precedence.
 	if (isInternalUrlPath(normalizedEntry)) {
-		const parts = await splitMixedUrlPathList(normalizedEntry, cwd, isInternalUrlPath, options.context);
-		if (!parts) return null;
-
-		return hasAmbiguousRelativeTail(parts) ? null : parts;
+		return splitMixedUrlPathList(normalizedEntry, cwd, isInternalUrlPath, options.context);
 	}
 	// A real POSIX file may contain a delimiter and a selector-shaped tail
 	// (`a;b:1-2`, `a b:1-2`). Preserve the raw entry whenever the full literal
@@ -809,7 +817,7 @@ export async function splitMixedUrlPathList(
 		const partPath = splitPathAndSel(part).path;
 		if (hasGlobPathChars(partPath) || (await probeLiteralPathExists(partPath, cwd)) !== "exists") return null;
 	}
-	return parts;
+	return hasAmbiguousInternalUrlTail(parts) ? null : parts;
 }
 
 /** Expand delimited entries in-place while preserving unsplit entries. */
