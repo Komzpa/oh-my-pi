@@ -32,7 +32,6 @@ import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
-import type { SessionContextEntryMetadata } from "../session/session-context";
 import type { SessionEntry } from "../session/session-entries";
 import { cfgTaskMaxConcurrency } from "../task/settings";
 
@@ -290,16 +289,6 @@ export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
 
 export const TODO_HUD_STATE_CUSTOM_TYPE = "todo_hud_state";
 
-/** Metadata carrying todo replay state and HUD choices. */
-export function isTodoStateEntryMetadata(metadata: SessionContextEntryMetadata): boolean {
-	if (metadata.type === "custom")
-		return metadata.customType === USER_TODO_EDIT_CUSTOM_TYPE || metadata.customType === TODO_HUD_STATE_CUSTOM_TYPE;
-	return metadata.type === "message" && metadata.messageRole === "toolResult" && metadata.toolName === "todo";
-}
-
-function getTodoBranchEntries(manager: ToolSession["sessionManager"]): SessionEntry[] {
-	return manager?.getBranchMatching(isTodoStateEntryMetadata) ?? [];
-}
 
 export type TodoHudVisibility = "dismissed" | "revealed";
 
@@ -1729,6 +1718,11 @@ function attachLiveTodoDetails(
 // =============================================================================
 // Tool Class
 // =============================================================================
+
+function getTodoBranchEntries(manager: ToolSession["sessionManager"]): SessionEntry[] {
+	return manager?.getBranchMatching(isTodoStateEntryMetadata) ?? [];
+}
+
 
 export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	readonly name = "todo";
