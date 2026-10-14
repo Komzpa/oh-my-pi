@@ -3990,13 +3990,13 @@ export class SessionManager {
 		}
 	}
 
-	/** Current-branch entries, in path order, whose payload-free metadata matches; others are never read. */
+	/** Matching payloads only; a journal extension may project its append-only overlays. */
 	getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
-		const entries: SessionEntry[] = [];
+		const selected = new Set<string>();
 		for (const metadata of this.#index.metadataPath()) {
-			if (predicate(metadata)) entries.push(this.#index.get(metadata.id, false)!);
+			if (predicate(metadata)) selected.add(metadata.id);
 		}
-		return entries;
+		return [...this.iterateBranchMatchingNewestFirst(metadata => selected.has(metadata.id))].reverse();
 	}
 
 	/** Matching entries newest first; excluded payloads are never read. */
@@ -4004,9 +4004,17 @@ export class SessionManager {
 		predicate: (metadata: SessionContextEntryMetadata) => boolean,
 	): IterableIterator<SessionEntry> {
 		const path = this.#index.metadataPath();
+		const extension = this as SessionManager & {
+			createBranchSelectionProjector?: (
+				path: readonly SessionContextEntryMetadata[],
+			) => (entry: SessionEntry, index: number) => SessionEntry;
+		};
+		const project = extension.createBranchSelectionProjector?.(path);
 		for (let i = path.length - 1; i >= 0; i--) {
 			const metadata = path[i]!;
-			if (predicate(metadata)) yield this.#index.get(metadata.id, false)!;
+			if (!predicate(metadata)) continue;
+			const entry = this.#index.get(metadata.id, false)!;
+			yield project ? project(entry, i) : entry;
 		}
 	}
 
