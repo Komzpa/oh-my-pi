@@ -387,7 +387,7 @@ test("shows a non-default service tier's own speed aggregate", () => {
 		},
 		registry(MODELS),
 		MODELS.map(entry => ({ model: entry })),
-		{ onAssign: () => {}, onUnassign: () => {}, onCancel: () => {} },
+		{ onSelectForSession: () => {}, onAssign: () => {}, onUnassign: () => {}, onCancel: () => {} },
 		{ currentSelector: "demo/demo" },
 	);
 	hubs.push(hub);
