@@ -396,7 +396,7 @@ describe("assistant publication bridge", () => {
 		expect(settledTexts[0]).toBe(ASSISTANT_GATE_REFUSAL);
 		expect(settledTexts).toHaveLength(2);
 		expect(settledTexts[1]).toBe(STATUS);
-		expect(assistantTexts(manager.buildSessionContext().messages)).toEqual(settledTexts);
+		expect(assistantTexts(manager.buildSessionContext().messages)).toEqual([STATUS]);
 		expect(settledTexts).not.toContain("FORBIDDEN");
 		expect(settledTexts).not.toContain("Ordinary raw status");
 		expect(

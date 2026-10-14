@@ -554,7 +554,7 @@ describe("typed identity: stale receipts block done with expected and observed v
 		await fx.prepare(ROW);
 		const binaryEvidence = artifactCell(ROW, [head, `installed SHA-256 ${"a".repeat(64)}`]);
 		expect(await fx.receive(binaryEvidence)).toBeUndefined();
-		expect(verdictOf(fx, ROW)?.artifact).toBe(artifactCell(ROW, [head]));
+		expect(verdictOf(fx, ROW)?.artifact).toBe(binaryEvidence);
 		const authenticatedVerdict = verdictOf(fx, ROW);
 		for (const artifact of [
 			artifactCell(ROW, ["f".repeat(40)]),
