@@ -188,6 +188,10 @@
 - Fixed isolated tasks failing on linked worktrees with initialized recursive submodules and leaving updated submodule pins unreachable after cleanup ([#15457](https://github.com/can1357/oh-my-pi/issues/15457))
 - Fixed `/tan` missing the parent's prompt cache by advertising `xd://` tools top-level and omitting `ask` ([#15578](https://github.com/can1357/oh-my-pi/issues/15578)).
 
+### Fixed
+
+- Fixed oversized tool-call arguments of completed calls, including in the current turn, and oversized historical tool results, keeping sessions stuck in context overflow after compaction while preserving full values in session storage. ([#121](https://github.com/Komzpa/oh-my-pi/pull/121) by [@Komzpa](https://github.com/Komzpa))
+
 ## [18.10.4] - 2026-10-13
 
 ### Added
@@ -933,9 +937,6 @@
 - Fixed the `command` image-URL uploader stripping backslashes from Windows paths in its command template (`C:\tools\upload.exe {file}` ran `C:toolsupload.exe`)
 - Fixed reading a SQLite database (local or by URL) and closing prompt history leaving the database file locked on Windows
 - Fixed RPC mode on Windows freezing when the client stopped reading stdout: the worker blocked on the full stdout pipe and stopped reading stdin, so a client writing a batch of commands before reading replies deadlocked. Output now goes through a non-blocking stdout stream that spools to disk under backpressure, as on Linux and macOS
-- Fixed oversized historical tool arguments and results keeping sessions stuck in context overflow after compaction, while preserving full values in session storage.
-- Fixed oversized historical tool arguments and results keeping sessions stuck in context overflow after compaction, while preserving full values in session storage. ([#121](https://github.com/Komzpa/oh-my-pi/pull/121) by [@Komzpa](https://github.com/Komzpa))
-- Fixed oversized tool-call arguments of completed calls, including in the current turn, and oversized historical tool results, keeping sessions stuck in context overflow after compaction while preserving full values in session storage. ([#121](https://github.com/Komzpa/oh-my-pi/pull/121) by [@Komzpa](https://github.com/Komzpa))
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 - Fixed resuming a session through a symlink or hard link to a file another omp process is writing: the resumed session no longer mixes its turns into that file and continues in a new file next to it ([#14095](https://github.com/can1357/oh-my-pi/pull/14095) by [@andrebrait](https://github.com/andrebrait))
 - Fixed moving a session to another directory replacing a session file there that another omp process is writing, or moving a session another process is writing; the move now stops with an error and leaves both files untouched ([#14095](https://github.com/can1357/oh-my-pi/pull/14095) by [@andrebrait](https://github.com/andrebrait))
