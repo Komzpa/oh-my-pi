@@ -106,6 +106,11 @@ function resolveTargetServer(mcpManager: MCPManager, uri: string, exact: boolean
 	return bestTemplateMatch?.serverName;
 }
 
+/** Whether a connected MCP catalog advertises this exact URI (without reading it). */
+export function hasExactMcpResource(mcpManager: MCPManager, url: InternalUrl): boolean {
+	return resolveTargetServer(mcpManager, extractResourceUri(url), true) !== undefined;
+}
+
 function formatAvailableResources(mcpManager: MCPManager): string {
 	const available = mcpManager
 		.getConnectedServers()
