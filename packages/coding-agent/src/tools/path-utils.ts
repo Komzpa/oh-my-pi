@@ -736,9 +736,8 @@ export async function splitDelimitedPathEntry(
 	// (absolute, `./`, `../`, `~`) fan out and the URL keeps literal precedence.
 	if (isInternalUrlPath(normalizedEntry)) {
 		const parts = await splitMixedUrlPathList(normalizedEntry, cwd, isInternalUrlPath);
-		// One nonempty target is not a list: `skill://demo/a;` keeps its literal
-		// trailing `;` instead of fanning out to the truncated `skill://demo/a`.
-		if (!parts || parts.length < 2) return null;
+		if (!parts) return null;
+
 		return hasAmbiguousRelativeTail(parts) ? null : parts;
 	}
 	// A real POSIX file may contain a delimiter and a selector-shaped tail
@@ -788,7 +787,7 @@ export async function splitMixedUrlPathList(
 		}
 	}
 	const parts = await tryDelimitedPathSplit(normalizedEntry, cwd, parseSearchPath, "semicolon", "none");
-	if (!parts) return null;
+	if (!parts || parts.length < 2) return null;
 	for (const part of parts) {
 		if (isUrl(part)) continue;
 		const partPath = splitPathAndSel(part).path;
