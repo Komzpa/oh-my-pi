@@ -62,33 +62,32 @@ export function projectToolResultPrunes<T extends SessionEntry>(path: readonly T
 	return path.map(pathEntry => {
 		const entry: SessionEntry = pathEntry;
 		const overlay = overlays.get(entry.id);
-		if (
-			!overlay ||
-			entry.type !== "message" ||
-			entry.message.role !== "toolResult" ||
-			entry.message.prunedAt !== undefined
-		) {
-			return pathEntry;
-		}
-		let cache = pruneProjectionCache.get(overlay.entry);
-		if (!cache) {
-			cache = new WeakMap();
-			pruneProjectionCache.set(overlay.entry, cache);
-		}
-		let projected = cache.get(entry);
-		if (!projected) {
-			projected = {
-				...entry,
-				message: {
-					...entry.message,
-					content: [{ type: "text", text: overlay.notice }],
-					prunedAt: overlay.entry.prunedAt,
-				},
-			};
-			cache.set(entry, projected);
-		}
-		return projected as unknown as T;
+		if (!overlay || entry.type !== "message") return pathEntry;
+		return projectToolResultPrune(entry, overlay.entry, overlay.notice) as unknown as T;
 	});
+}
+
+/** Project one resolved branch-local target while sharing the bulk projector's stable identity cache. */
+export function projectToolResultPrune(entry: SessionMessageEntry, overlay: ToolResultPruneEntry, notice: string) {
+	if (entry.message.role !== "toolResult" || entry.message.prunedAt !== undefined) return entry;
+	let cache = pruneProjectionCache.get(overlay);
+	if (!cache) {
+		cache = new WeakMap();
+		pruneProjectionCache.set(overlay, cache);
+	}
+	let projected = cache.get(entry);
+	if (!projected) {
+		projected = {
+			...entry,
+			message: {
+				...entry.message,
+				content: [{ type: "text", text: notice }],
+				prunedAt: overlay.prunedAt,
+			},
+		};
+		cache.set(entry, projected);
+	}
+	return projected;
 }
 
 export interface PruneConfig extends CacheLookbackConfig {
