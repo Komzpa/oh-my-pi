@@ -3858,7 +3858,7 @@ async function executeToolCalls(
 				// result: runTool must derive execution args from the revised call.
 				record.executionArgs = undefined;
 				try {
-					const revised = validateToolArguments(tool, { ...toolCall, arguments: gateResult.args });
+					const revised = validateAgentToolArguments(tool, { ...toolCall, arguments: gateResult.args });
 					toolCall.arguments = gateResult.args;
 					record.args = revised;
 				} catch (validationError) {
