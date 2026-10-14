@@ -73,6 +73,7 @@ const registryStub: ModelHubRegistry = {
 
 function createHub(): ModelHubComponent {
 	const callbacks: ModelHubCallbacks = {
+		onSelectForSession: () => {},
 		onAssign: () => true,
 		onUnassign: () => {},
 		onCancel: () => {},

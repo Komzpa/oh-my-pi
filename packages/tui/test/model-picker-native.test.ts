@@ -314,6 +314,7 @@ test("the Roles view picker names the active preset and ctrl+←/→ switches it
 		registry(MODELS),
 		MODELS.map(entry => ({ model: entry })),
 		{
+			onSelectForSession: () => {},
 			onAssign: () => {},
 			onUnassign: () => {},
 			onCancel: () => {},
