@@ -743,9 +743,9 @@ function writeTerminalTitle(title: string, recomposeStaticOnFailure = false): vo
 }
 
 /**
- * Set the session's base terminal title: the session name, which a generated
- * title carries in the card form `<icon> <CODE>: <name>` that Tern indexes
- * parked panes by, else the cwd.
+ * Set the project-first terminal label, using the current task or session name.
+ * Generated session names retain the `<icon> <CODE>: <name>` card form that
+ * Tern indexes parked panes by; the cwd supplies the project prefix.
  */
 export function setSessionTerminalTitle(
 	sessionName: string | undefined,
