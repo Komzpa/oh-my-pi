@@ -23,7 +23,7 @@ use napi_derive::napi;
 use parking_lot::Mutex;
 use pi_shell::output_decode::OutputDecoder;
 use pi_vcs::process_limit::{ScopeEnvironment, ToolProcessLimit};
-use portable_pty::{Child, CommandBuilder, ExitStatus, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, ExitStatus, PtySize, native_pty_system};
 
 use crate::{
 	js::into_string,
