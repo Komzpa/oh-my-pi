@@ -11,6 +11,7 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { GlobTool } from "../../src/tools/glob";
 import { GrepTool } from "../../src/tools/grep";
+import { ReadTool } from "../../src/tools/read";
 import { expandDelimitedPathEntries, resolveReadPath, splitDelimitedPathEntry } from "../../src/tools/path-utils";
 
 function getResultText(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -142,7 +143,10 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 
 		for (const [target, diagnosis] of [
 			["skill://demo;*.md", "Cannot search skill://: skill:// URL requires a skill name: skill://<name>"],
-			["skill://demo;missing.md", "Cannot search skill://demo;missing.md: Unknown skill: demo;missing.md\nAvailable: demo"],
+			[
+				"skill://demo;missing.md",
+				"Cannot search skill://demo;missing.md: Unknown skill: demo;missing.md\nAvailable: demo",
+			],
 			["skill://demo;nope", "Cannot search skill://demo;nope: Unknown skill: demo;nope\nAvailable: demo"],
 		] as const) {
 			// Glob parsing changes the base after recovery; assert the exact
@@ -174,10 +178,8 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 			// Supply only native UNC existence on Linux; keep the real parser
 			// and anchor classifier, and forward every other filesystem probe.
 			const resolvedUnc = resolveReadPath(tail, tmpDir);
-			const literalProbe = spyOn(nodeFs.promises, "lstat").mockImplementation(
-				(async (target: nodeFs.PathLike) =>
-					target === resolvedUnc ? uncStat : realLstat(target)) as typeof nodeFs.promises.lstat,
-			);
+			const literalProbe = spyOn(nodeFs.promises, "lstat").mockImplementation((async (target: nodeFs.PathLike) =>
+				target === resolvedUnc ? uncStat : realLstat(target)) as typeof nodeFs.promises.lstat);
 			try {
 				expect(await expandDelimitedPathEntries([`${url};${tail}`], tmpDir)).toEqual([url, tail]);
 			} finally {
@@ -200,6 +202,10 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 		expect(text).not.toContain("wrong resource needle");
 		const found = await new GlobTool(createSession()).execute("trailing-semicolon-find", { path: target });
 		expect(found.details?.files).toEqual([target]);
+		const readResult = await new ReadTool(createSession()).execute("trailing-semicolon-read", { path: target });
+		const readText = getResultText(readResult);
+		expect(readText).toContain("trailing semicolon needle");
+		expect(readText).not.toContain("wrong resource needle");
 	});
 
 	it("keeps a trailing semicolon when read supplies a routed URL predicate, but still splits two URLs", async () => {
