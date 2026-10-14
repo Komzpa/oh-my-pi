@@ -210,7 +210,11 @@ export function createPersistedSubagentReviverFactory(
 					init.resolvedModel && isImplementationWorkerAgent(init.agent ?? "")
 						? resolveModelOverride([init.resolvedModel], ctx.modelRegistry, ctx.settings).model
 						: undefined;
-				const revivedEffortCeiling = capImplementationWorkerEffortCeiling(init.agent ?? "", revivedModel, undefined);
+				const revivedEffortCeiling = capImplementationWorkerEffortCeiling(
+					init.agent ?? "",
+					revivedModel,
+					undefined,
+				);
 				({ session } = await createAgentSession({
 					cwd: ctx.session.sessionManager.getCwd(),
 					authStorage: ctx.authStorage,
