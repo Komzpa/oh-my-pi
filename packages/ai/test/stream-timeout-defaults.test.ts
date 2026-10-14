@@ -160,12 +160,60 @@ async function drainMicrotasksUntil(predicate: () => boolean, errorMessage: stri
 
 describe("iterateWithIdleTimeout", () => {
 	it.each([
-		{ name: "known heartbeat after progress", created: true, activity: true, type: "codex.keepalive", error: undefined, duration: 180_000, expectedElapsed: 180_000 },
-		{ name: "heartbeat before first progress", created: false, activity: true, type: "codex.keepalive", error: "first progress timeout", duration: 180_000, expectedElapsed: 90_000 },
-		{ name: "silent stream after progress", created: true, activity: true, type: undefined, error: "idle timeout", duration: 180_000, expectedElapsed: 60_000 },
-		{ name: "unrecognized heartbeat", created: true, activity: true, type: "keepalive", error: "idle timeout", duration: 180_000, expectedElapsed: 60_000 },
-		{ name: "predicate omitted", created: true, activity: false, type: "codex.keepalive", error: "idle timeout", duration: 180_000, expectedElapsed: 60_000 },
-		{ name: "known heartbeats cannot mask a hung producer", created: true, activity: true, type: "codex.keepalive", error: "idle timeout", duration: 7_200_000, expectedElapsed: 300_000 },
+		{
+			name: "known heartbeat after progress",
+			created: true,
+			activity: true,
+			type: "codex.keepalive",
+			error: undefined,
+			duration: 180_000,
+			expectedElapsed: 180_000,
+		},
+		{
+			name: "heartbeat before first progress",
+			created: false,
+			activity: true,
+			type: "codex.keepalive",
+			error: "first progress timeout",
+			duration: 180_000,
+			expectedElapsed: 90_000,
+		},
+		{
+			name: "silent stream after progress",
+			created: true,
+			activity: true,
+			type: undefined,
+			error: "idle timeout",
+			duration: 180_000,
+			expectedElapsed: 60_000,
+		},
+		{
+			name: "unrecognized heartbeat",
+			created: true,
+			activity: true,
+			type: "keepalive",
+			error: "idle timeout",
+			duration: 180_000,
+			expectedElapsed: 60_000,
+		},
+		{
+			name: "predicate omitted",
+			created: true,
+			activity: false,
+			type: "codex.keepalive",
+			error: "idle timeout",
+			duration: 180_000,
+			expectedElapsed: 60_000,
+		},
+		{
+			name: "known heartbeats cannot mask a hung producer",
+			created: true,
+			activity: true,
+			type: "codex.keepalive",
+			error: "idle timeout",
+			duration: 7_200_000,
+			expectedElapsed: 300_000,
+		},
 	])("preserves watchdog deadlines: $name", async ({ created, activity, type, error, duration, expectedElapsed }) => {
 		vi.useFakeTimers();
 		const startedAt = Date.now();
@@ -173,7 +221,10 @@ describe("iterateWithIdleTimeout", () => {
 		let pulls = 0;
 		const source: AsyncIterable<{ type: string }> = {
 			[Symbol.asyncIterator]: () => ({
-				next: () => { pulls++; return pull.promise; },
+				next: () => {
+					pulls++;
+					return pull.promise;
+				},
 				return: async () => ({ done: true, value: undefined }),
 			}),
 		};
@@ -189,9 +240,17 @@ describe("iterateWithIdleTimeout", () => {
 					errorMessage: "idle timeout",
 					firstItemErrorMessage: "first progress timeout",
 					isProgressItem: isOpenAIResponsesProgressEvent,
-					...(activity ? { isIdleActivityItem: (item: unknown) => !!item && typeof item === "object" && "type" in item && item.type === "codex.keepalive" } : {}),
-				})) received++;
-			} catch (error) { failure = error; }
+					...(activity
+						? {
+								isIdleActivityItem: (item: unknown) =>
+									!!item && typeof item === "object" && "type" in item && item.type === "codex.keepalive",
+							}
+						: {}),
+				}))
+					received++;
+			} catch (error) {
+				failure = error;
+			}
 			settled = true;
 		})();
 		await drainMicrotasksUntil(() => pulls === 1, "first pull missing");
@@ -213,7 +272,10 @@ describe("iterateWithIdleTimeout", () => {
 		await run;
 		expect(Date.now() - startedAt).toBe(expectedElapsed);
 		if (error) expect(failure).toMatchObject({ message: error });
-		else { expect(failure).toBeUndefined(); expect(received).toBe(19); }
+		else {
+			expect(failure).toBeUndefined();
+			expect(received).toBe(19);
+		}
 	});
 	it("does not reset the first-progress deadline for no-progress items", async () => {
 		const abortController = new AbortController();
