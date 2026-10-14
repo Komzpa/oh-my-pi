@@ -611,7 +611,7 @@ pub struct WalkOptions {
 	/// Use the shared scan cache when collecting owned entries.
 	pub cache:               bool,
 	/// Optional limits propagated into directory readers by bounded collection.
-	pub scan_limits:       Option<(usize, usize)>,
+	pub scan_limits:         Option<(usize, usize)>,
 }
 
 impl WalkOptions {
@@ -652,7 +652,7 @@ impl Default for WalkOptions {
 			directory_errors:    DirectoryErrorMode::Visit,
 			same_file_system:    false,
 			cache:               false,
-			scan_limits:       None,
+			scan_limits:         None,
 		}
 	}
 }
@@ -5204,7 +5204,7 @@ mod tests {
 			directory_errors:    DirectoryErrorMode::SkipSkippable,
 			same_file_system:    false,
 			cache:               false,
-			scan_limits:       None,
+			scan_limits:         None,
 		}
 	}
 
