@@ -4184,7 +4184,7 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 		} finally {
 			capture.spec.prompt.reviving = false;
 		}
-
+		enforceSubagentRequestPolicy(revived, capture.spec);
 		AgentRegistry.global().syncSessionStatus(id, revived);
 		attachIrcWakeTurnMonitor(revived, capture.wake);
 		return revived;
