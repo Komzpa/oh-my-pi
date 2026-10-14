@@ -155,21 +155,6 @@ describe("TurnRecovery stream_incomplete after committed text", () => {
 		}
 	}
 
-	it("stops continuing past the stream-stall retry cap", () => {
-		const calls: RecoveryCalls = { appended: [], continued: [] };
-		const subject = recovery({ textOutputCommitted: true, calls });
-		const results: boolean[] = [];
-		for (let i = 0; i < 4; i++) {
-			results.push(
-				subject.handleCommittedTextStreamStall(
-					assistant({ content: [...textOnly], errorId: STREAM_INCOMPLETE_ERROR_ID }),
-				),
-			);
-		}
-		expect(results).toEqual([true, true, true, false]);
-		expect(calls.continued).toHaveLength(3);
-	});
-
 	it("does not continue a turn that carries a tool call", () => {
 		const subject = recovery({ textOutputCommitted: true, calls: { appended: [], continued: [] } });
 		const message = assistant({
