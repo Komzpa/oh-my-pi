@@ -724,7 +724,6 @@ class TodoHudContainer extends AnchoredLiveContainer {
 		if (this.mode.isCompactTodoMode()) {
 			return [];
 		}
-		this.mode.refreshTodoHud(width);
 		return super.render(width);
 	}
 }
@@ -1991,6 +1990,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#eventBusUnsubscribers.push(onDownloadActivity(activity => this.#downloadActivityHud.update(activity)));
 		this.statusContainer = new StatusHudContainer(this);
 		this.todoContainer = new TodoHudContainer(this);
+		const renderTodoHud = this.todoContainer.render.bind(this.todoContainer);
+		this.todoContainer.render = width => {
+			this.refreshTodoHud(width);
+			return renderTodoHud(width);
+		};
 		this.subagentContainer = new AnchoredLiveContainer();
 		this.btwContainer = new AnchoredLiveContainer();
 		this.omfgContainer = new AnchoredLiveContainer();
