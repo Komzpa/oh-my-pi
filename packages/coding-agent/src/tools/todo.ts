@@ -289,7 +289,6 @@ export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
 
 export const TODO_HUD_STATE_CUSTOM_TYPE = "todo_hud_state";
 
-
 export type TodoHudVisibility = "dismissed" | "revealed";
 
 export interface TodoSnapshotIdentity {
