@@ -246,9 +246,14 @@ describe("terminal yield through the eval bridge", () => {
 		let bridgeValue: unknown;
 		const bridgeAccepted = Promise.withResolvers<void>();
 		harness.runBridgedYield = async args => {
-			bridgeValue = await bridgeYield(harness.toolSession, args);
-			bridgeAccepted.resolve();
-			return bridgeValue;
+			try {
+				bridgeValue = await bridgeYield(harness.toolSession, args);
+				bridgeAccepted.resolve();
+				return bridgeValue;
+			} catch (error) {
+				bridgeAccepted.reject(error);
+				throw error;
+			}
 		};
 		try {
 			const jobId = manager.register(
@@ -270,13 +275,19 @@ describe("terminal yield through the eval bridge", () => {
 				{ ownerId: PARENT_ID },
 			);
 
-			// Precondition (passes on baseline): the real tool accepted the
-			// bridged terminal submission — "Result submitted." + details.
-			await bridgeAccepted.promise;
-			expect(JSON.stringify(bridgeValue)).toContain("Result submitted.");
-
 			const job = manager.getJob(jobId);
 			expect(job).toBeDefined();
+			// Precondition (passes on baseline): the real tool accepted the
+			// bridged terminal submission — "Result submitted." + details. Surface
+			// actual bridge or earlier job failures instead of leaving this pending.
+			await Promise.race([
+				bridgeAccepted.promise,
+				job!.promise.then(() => {
+					throw new Error(job!.errorText ?? "Task settled before the bridged yield was accepted");
+				}),
+			]);
+			expect(JSON.stringify(bridgeValue)).toContain("Result submitted.");
+
 			await job!.promise;
 			await manager.waitForAll();
 			await manager.drainDeliveries({ timeoutMs: 1000 });
@@ -377,8 +388,11 @@ describe("terminal yield through the eval bridge", () => {
 			try {
 				const first = observer([wakeMessage("stale-a", "old assignment", "Other")]);
 				const lateYield = bridgeYield(harness.toolSession, { data: { report: "old" } });
-				const oldRefusal = expect(lateYield).rejects.toThrow(
-					scenario === "owner-job" ? "job-1" : "broker unavailable",
+				// Bun's rejection matcher waits synchronously, so observe the real
+				// refusal now and assert it only after releasing the held service IO.
+				const oldRefusal = lateYield.then(
+					() => undefined,
+					(error: unknown) => error,
 				);
 				await serviceCheckStarted.promise;
 				await first?.(undefined);
@@ -392,7 +406,9 @@ describe("terminal yield through the eval bridge", () => {
 					services: [],
 					error: scenario === "owner-job" ? undefined : "broker unavailable",
 				});
-				await oldRefusal;
+				expect(await oldRefusal).toMatchObject({
+					message: expect.stringContaining(scenario === "owner-job" ? "job-1" : "broker unavailable"),
+				});
 
 				if (scenario === "accepted") {
 					// The old refusal must not clear the successor's accepted latch.
