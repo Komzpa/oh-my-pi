@@ -50,6 +50,9 @@
 - Fixed streamed Markdown tables jumping around as each row arrives: the terminal UI fills the row being written in under the existing column widths, and native (TSP) terminals receive each row once its line is complete ([#15856](https://github.com/can1357/oh-my-pi/pull/15856) by [@H4vC](https://github.com/H4vC)).
 - Fixed streamed links and inline math showing raw `[text](url` or LaTeX and then rewrapping the paragraph when they close, in the terminal UI and native (TSP) terminals: they now render in their closed form while they stream ([#15864](https://github.com/can1357/oh-my-pi/pull/15864) by [@H4vC](https://github.com/H4vC)).
 - Paint-only overlays no longer swallow typing intended for the focused input beneath them ([#15793](https://github.com/can1357/oh-my-pi/issues/15793)).
+### Added
+
+- Added optional runtime HUD/input allocation against rendered sibling rows in normal and resize Composer frames ([#128](https://github.com/Komzpa/oh-my-pi/pull/128) by [@Komzpa](https://github.com/Komzpa)).
 
 ## [18.11.0] - 2026-10-14
 
@@ -472,9 +475,6 @@
 ### Removed
 
 - Removed `JobsPanel`, the `/jobs` transcript block; `/jobs` now opens `JobsSheet` natively ([#14138](https://github.com/can1357/oh-my-pi/pull/14138) by [@H4vC](https://github.com/H4vC)).
-### Added
-
-- Added optional runtime HUD/input allocation against rendered sibling rows in normal and resize Composer frames.
 
 ## [18.4.12] - 2026-10-02
 

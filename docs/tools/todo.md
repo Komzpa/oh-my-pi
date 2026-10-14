@@ -123,8 +123,7 @@ The same file also exposes non-tool helpers used by `/todo`:
   - Transcript block is rendered by `todoToolRenderer` and merged with the call line.
   - `event-controller` updates the visible todo panel from successful results.
   - On error, `event-controller` shows `Todo update failed...`; the visible panel may stay stale until a later successful call.
-  - `/todo expand` shows every phase and task in the sticky HUD and always keeps the legacy progress path (blank lead-in + closing tail); `/todo collapse` restores the bounded open-row preview. Both are display-only and leave todo state unchanged.
-  - The collapsed sticky HUD shows open tasks in global in-progress → blocked → pending order, grouped under phase headings; adjacent groups of the same phase share a heading. Every row that fits is shown and the rest are counted in one exact `+K more open (/todo expand …)` row. Closed tasks contribute only counts and phase progress; one open phase with nothing closed keeps the legacy `TODO` header. Collapsed task and phase previews flatten whitespace to one physical row without changing stored or expanded multiline text. Repeated native phase headings use IDs disjoint from task IDs, preserving canonical task identity. Width fitting uses the actual consumer width, and tight budgets omit the blank lead-in and progress tail.
+  - `/todo expand` shows every phase and task in the sticky HUD; `/todo collapse` restores its bounded preview. Both are display-only and leave todo state unchanged.
 - Background work / cancellation
   - When every task is `completed` or `abandoned`, the TUI hides the HUD after `tasks.todoClearDelay`. Canonical phases are not removed. The dismissal is persisted as a `todo_hud_state` custom entry tied to the exact canonical snapshot (`packages/coding-agent/src/modes/interactive-mode.ts`).
 
@@ -132,8 +131,7 @@ The same file also exposes non-tool helpers used by `/todo`:
 - `init.list`: applies to a single op (`todoSchema`). The params object carries exactly one op.
 - `init.list[*].items`: schema-level `minItems: 1`.
 - Flat `init.items` and `append.items`: the shared schema allows any array length, but op-specific execution rejects missing/empty lists.
-- Renderer collapsed preview: `PREVIEW_LIMITS.COLLAPSED_ITEMS = 8` (`packages/tui/src/render/render-utils.ts`). This cap applies to collapsed transcript tool-result previews only — it is distinct from the sticky HUD, which has no fixed item cap and selects open rows against its live physical-row budget instead.
-- Sticky HUD allocation: the preferred whole-panel share is terminal rows minus 12 (minimum 6), clamped against the Composer's actually rendered sibling chrome and input. The optional `setRuntimeChildren(..., { allocation })` callback shares those rendered rows with normal and resize frames, caps the editor without losing its draft/cursor floor, then selects HUD rows. At 120×27 with a 40-line draft, all 11 fixture tasks remain visible; at 120×18 and 40×18, visible tasks plus the exact `+K` count equal 11 and `/todo expand` remains usable. Height/width changes and live edits must recompute without a todo update: no selected task may be silently clipped. Other Composer consumers and expanded rendering are unchanged.
+- Renderer collapsed preview: `PREVIEW_LIMITS.COLLAPSED_ITEMS = 8` (`packages/tui/src/render/render-utils.ts`).
 - Execution-time repair: an omitted `op` is inferred only for the unambiguous payloads described above; the schema itself still requires `op`.
 - HUD auto-hide delay: `tasks.todoClearDelay` default `60` seconds; `< 0` disables hiding, `0` hides immediately. Applies only when all tasks are closed; blocked or pending work keeps the HUD visible. Canonical state survives the display change and session resume.
 - Tool execution mode: `concurrency = "exclusive"`, `strict = true`, `loadMode = "discoverable"`.

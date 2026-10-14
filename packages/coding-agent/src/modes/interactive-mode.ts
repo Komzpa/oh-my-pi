@@ -173,6 +173,7 @@ import { StreamRedactor } from "../stream/redactor";
 import {
 	FEED_MODEL_BADGE_WIDTH,
 	formatFeedModelBadge,
+	formatMoreItems,
 	isFeedModelBadgeEnabled,
 	previewLine,
 	replaceTabs,
@@ -195,6 +196,7 @@ import {
 import {
 	formatPhaseDisplayName,
 	isClosedTodo,
+	selectCollapsedTodos,
 	setActiveTodoDescriptionsProvider,
 	todoMatchesAnyDescription,
 } from "@oh-my-pi/pi-tui/tools/todo";
@@ -643,36 +645,6 @@ export interface InteractiveModeOptions {
 
 export const TODO_COMPACT_TERMINAL_ROWS_THRESHOLD = 18;
 
-/** Smallest whole-panel budget for the collapsed TODO HUD: header + one phase
- *  heading + a couple of open rows + the overflow row. Matches the compact
- *  fold boundary (18 terminal rows − {@link EDITOR_RESERVED_ROWS}). */
-const TODO_HUD_MIN_PANEL_ROWS = 6;
-
-/** Legacy chrome rows the collapsed panel keeps around its content when they
- *  fit: the leading gap and the closing progress tail. A tight budget drops
- *  both so open rows win over chrome. */
-const TODO_HUD_CHROME_ROWS = 3;
-
-/**
- * Expand affordance named by the collapsed HUD's `+K more open (… …)` overflow
- * row: `/todo expand`, the command that expands the plan today (`ctrl+t` stays
- * bound to `app.thinking.toggle`).
- */
-const TODO_HUD_EXPAND_HINT = "/todo expand";
-
-/** Preferred collapsed panel share; the Composer allocator clamps it to real
- * sibling chrome and input rows before any HUD row is painted. */
-function todoHudPanelRows(terminalRows: number): number {
-	const rows = Number.isFinite(terminalRows) && terminalRows > 0 ? terminalRows : EDITOR_FALLBACK_ROWS;
-	return Math.max(TODO_HUD_MIN_PANEL_ROWS, rows - EDITOR_RESERVED_ROWS);
-}
-
-/** Collapsed-HUD row priority: in_progress first, then blocked / needs-unblock,
- *  then pending. Closed rows never rank (they never render collapsed). */
-function todoOpenPriority(todo: TodoItem): number {
-	return todo.status === "in_progress" ? 0 : todo.status === "blocked" ? 1 : 2;
-}
-
 /** Holds mutable HUD and editor-adjacent chrome outside transcript history. */
 class AnchoredLiveContainer extends Container {}
 
@@ -708,23 +680,7 @@ class TodoHudContainer extends AnchoredLiveContainer {
 		if (this.mode.isCompactTodoMode()) {
 			return [];
 		}
-		this.mode.refreshTodoHud(width);
 		return super.render(width);
-	}
-
-	/**
-	 * The plan built with the ANSI rows: a HUD `checklist` where the terminal
-	 * has one, else the phase tree. The short-terminal fold is ANSI layout only.
-	 */
-	override describe(cx: DescribeContext): NativeNode {
-		this.mode.refreshTodoHudNative(cx.cols);
-		const hud = this.mode.todoHudNative;
-		if (!hud) return EMPTY_HUD;
-		return cx.supports("checklist") ? hud.checklist : hud.fallback;
-	}
-	override invalidate(): void {
-		this.mode.invalidateTodoHudCache();
-		super.invalidate();
 	}
 }
 
@@ -1227,6 +1183,21 @@ const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
 const JOBS_SHEET_REFRESH_MS = 250;
 
 export class InteractiveMode implements InteractiveModeContext {
+	#todoHudAllocation: { terminalRows: number; panelRows: number } | undefined;
+
+	#preferredTodoHudPanelRows(terminalRows: number): number {
+		const rows = Number.isFinite(terminalRows) && terminalRows > 0 ? terminalRows : EDITOR_FALLBACK_ROWS;
+		return Math.max(TODO_COMPACT_TERMINAL_ROWS_THRESHOLD - EDITOR_RESERVED_ROWS, rows - EDITOR_RESERVED_ROWS);
+	}
+
+	/** Current Composer allocation; renderer topics can use this without owning editor geometry. */
+	getTodoHudPanelRows(): number {
+		const rows = this.ui.terminal.rows;
+		return this.#todoHudAllocation?.terminalRows === rows
+			? this.#todoHudAllocation.panelRows
+			: this.#preferredTodoHudPanelRows(rows);
+	}
+
 	#ownsStartedUi: boolean;
 	session: AgentSession;
 	sessionManager: SessionManager;
@@ -1408,26 +1379,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * the same stage window as a tree; both keyed `todo` in the activity line.
 	 */
 	#todoHudNative: { checklist: NativeNode; fallback: NativeNode } | undefined;
-	get todoHudNative(): { checklist: NativeNode; fallback: NativeNode } | undefined {
-		return this.#todoHudNative;
-	}
 	#hudPillsNative: { children: readonly NativeChild[]; node: NativeNode } | undefined;
 	#agentsSegment: RunningSegment | undefined;
 	#jobsSegment: RunningSegment | undefined;
 	/** Gen tok/s for the native composer bar, one decimal (a steadier `rate` target): live while running, else the last reading. */
-	#todoHudAllocation: { terminalRows: number; panelRows: number } | undefined;
-	/** Last HUD build inputs; an unchanged repaint reuses the last build instead of scanning/formatting every task. Width is included: collapsed rows flatten to the consumer width. */
-	#todoHudCache:
-		| {
-				phases: TodoPhase[];
-				expanded: boolean;
-				hidden: boolean;
-				width: number;
-				terminalRows: number;
-				panelRows: number;
-				activeKey: string;
-		  }
-		| undefined;
 	#nativeTokenRate(): number | undefined {
 		if (!cfgComposerTokenRate.get(settings)) return undefined;
 		const rate = this.tokenRate.rate();
@@ -2274,7 +2229,12 @@ export class InteractiveMode implements InteractiveModeContext {
 					this.cleanseContainer,
 					this.errorBannerContainer,
 				],
-				selfClearingChrome: [this.todoContainer, this.subagentContainer, this.modelCycleContainer, this.progressHudContainer],
+				selfClearingChrome: [
+					this.todoContainer,
+					this.subagentContainer,
+					this.modelCycleContainer,
+					this.progressHudContainer,
+				],
 				allocation: {
 					hud: this.todoContainer,
 					input: this.editorContainer,
@@ -2285,7 +2245,13 @@ export class InteractiveMode implements InteractiveModeContext {
 							!this.isCompactTodoMode() &&
 							this.todoPhases.some(phase => phase.tasks.some(task => !isClosedTodo(task)));
 						const preferred = active
-							? Math.max(0, Math.min(todoHudPanelRows(viewport.rows), viewport.rows - chromeRows - EDITOR_MIN_RENDERED_ROWS))
+							? Math.max(
+									0,
+									Math.min(
+										this.#preferredTodoHudPanelRows(viewport.rows),
+										viewport.rows - chromeRows - EDITOR_MIN_RENDERED_ROWS,
+									),
+								)
 							: 0;
 						this.editor.setMaxHeight(
 							active
@@ -2298,8 +2264,17 @@ export class InteractiveMode implements InteractiveModeContext {
 						const inputRows = renderInput();
 						this.#todoHudAllocation = {
 							terminalRows: viewport.rows,
-							panelRows: Math.max(0, Math.min(todoHudPanelRows(viewport.rows), viewport.rows - chromeRows - inputRows)),
+							panelRows: Math.max(
+								0,
+								Math.min(
+									this.#preferredTodoHudPanelRows(viewport.rows),
+									viewport.rows - chromeRows - inputRows,
+								),
+							),
 						};
+						// Renderer topics may consume the fresh allocation before the HUD is measured.
+						const renderer = this as InteractiveMode & { refreshTodoHud?: (width: number) => void };
+						renderer.refreshTodoHud?.(viewport.columns);
 					},
 				},
 				// Natively the HUD pills lead the dock, queued messages sit between
@@ -4342,150 +4317,76 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#cancelSubagentPreviewTick();
 	}
 
-	/** Current HUD geometry: live rows plus the Composer's actual panel budget. */
-	#todoHudGeometry(): { terminalRows: number; panelRows: number } {
-		const terminalRows = this.ui.terminal.rows;
-		const panelRows =
-			this.#todoHudAllocation?.terminalRows === terminalRows
-				? this.#todoHudAllocation.panelRows
-				: todoHudPanelRows(terminalRows);
-		return { terminalRows, panelRows };
-	}
-	/** Active-subagent style key; a change relights matched rows. NUL-joined so ["ab","c"] and ["a","bc"] differ. */
-	#todoHudActiveKey(): string {
-		return this.#getActiveSubagentDescriptions().join(String.fromCharCode(0));
-	}
-	/** Rebuild at the consumer's width; an unchanged repaint reuses the last build. */
-	refreshTodoHud(width: number): void {
-		const { terminalRows, panelRows } = this.#todoHudGeometry();
-		const activeKey = this.#todoHudActiveKey();
-		const cached = this.#todoHudCache;
-		if (
-			cached &&
-			cached.phases === this.todoPhases &&
-			cached.expanded === this.todoExpanded &&
-			cached.hidden === this.#todoHudHidden &&
-			cached.width === width &&
-			cached.terminalRows === terminalRows &&
-			cached.panelRows === panelRows &&
-			cached.activeKey === activeKey
-		) {
-			return;
-		}
-		this.#renderTodoList(width);
-	}
-	/** Reproject the native fallback at the current geometry without a caller ANSI pass. Same inputs key: width flattens collapsed rows, so it invalidates like height. */
-	refreshTodoHudNative(cols: number): void {
-		this.refreshTodoHud(cols);
-	}
-	/** Drop the cached HUD build inputs. Called only from explicit invalidation (theme/appearance changes via `TodoHudContainer.invalidate`); never from the per-frame render path. */
-	invalidateTodoHudCache(): void {
-		this.#todoHudCache = undefined;
-	}
-
-	#renderTodoList(width = this.ui.terminal.columns): void {
+	#renderTodoList(): void {
 		this.todoContainer.clear();
 		this.#todoHudNative = undefined;
 		const activeDescs = this.#getActiveSubagentDescriptions();
 		this.#todoHudSubagentKey = activeDescs.join("\n");
-		const geometry = this.#todoHudGeometry();
-		const activeKey = this.#todoHudActiveKey();
-		const rememberEmpty = (): void => {
-			this.#todoHudCache = {
-				phases: this.todoPhases,
-				expanded: this.todoExpanded,
-				hidden: this.#todoHudHidden,
-				width,
-				terminalRows: geometry.terminalRows,
-				panelRows: geometry.panelRows,
-				activeKey,
-			};
-		};
-		if (this.#todoHudHidden) {
-			rememberEmpty();
-			return;
-		}
+		if (this.#todoHudHidden) return;
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
-		if (phases.length === 0) {
-			rememberEmpty();
-			return;
-		}
+		if (phases.length === 0) return;
 		const expanded = this.todoExpanded;
 		const multiPhase = phases.length > 1;
 		const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
+		// Fixed budgets keep the HUD bounded regardless of plan size / progress.
+		const subsequentStageCap = 4; // stages shown after the active one (a trailing summary row covers the rest)
+		const activeTaskCap = 5; // open tasks previewed for the active stage
 
 		// A pending todo "lights up" (accent) when an in-flight subagent is doing
 		// its work, matched by normalized content overlap.
 		const isMatched = (todo: TodoItem): boolean =>
 			activeDescs.length > 0 && todoMatchesAnyDescription(todo.content, activeDescs);
 
-		// Task subtree for one block. Expanded lists every row of a phase. The
-		// collapsed HUD sizes its groups itself (below), so `trailingSummary: ""`
-		// tells `renderTreeList` to paint exactly these rows and skip its own cap.
-		const renderTasks = (tasks: TodoItem[], all: boolean): string[] =>
-			renderTreeList(
-				all
-					? { items: tasks, expanded: true, renderItem: todo => this.#formatTodoLine(todo, "", isMatched(todo)) }
-					: {
-							items: tasks,
-							itemType: "task",
-							trailingSummary: "",
-							renderItem: todo => previewLine(this.#formatTodoLine(todo, "", isMatched(todo)), width),
-						},
+		// Task subtree for a phase. Collapsed runs the shared walking-viewport
+		// policy (completed/abandoned omitted, active work pulled to the head,
+		// then following pending tasks) so the HUD and the transient tool result
+		// can never disagree about the current work (#5873). Expanded lists all.
+		const renderTasks = (phase: TodoPhase): string[] => {
+			if (expanded) {
+				return renderTreeList(
+					{
+						items: phase.tasks,
+						expanded: true,
+						renderItem: todo => this.#formatTodoLine(todo, "", isMatched(todo)),
+					},
+					theme,
+				);
+			}
+			const selection = selectCollapsedTodos(phase.tasks, isMatched, activeTaskCap);
+			return renderTreeList(
+				{
+					items: selection.items,
+					itemType: "task",
+					trailingSummary: selection.summary,
+					renderItem: todo => this.#formatTodoLine(todo, "", isMatched(todo)),
+				},
 				theme,
-			);
-
-		// One phase heading. The active stage is highlighted with normal-brightness
-		// task progress; other stages render their whole row (name + progress) in
-		// the brighter muted gray. Overall progress lives in the tree spine (below).
-		const phaseHeader = (phase: TodoPhase, oneBased: number, isActive: boolean): string => {
-			const name = multiPhase ? formatPhaseDisplayName(phase.name, oneBased) : phase.name;
-			const label = expanded ? name : previewLine(name, width);
-			// Closed, not just completed: the collapsed HUD hides abandoned tasks
-			// too, so counting only completions leaves the phase reading stuck.
-			const done = phase.tasks.filter(isClosedTodo).length;
-			const progress = ` · ${done}/${phase.tasks.length}`;
-			return (
-				(isActive ? theme.bold(theme.fg("accent", label)) : theme.fg("muted", label)) + theme.fg("dim", progress)
 			);
 		};
 
-		// Walk priority bands globally, then phase order. Adjacent bands belonging
-		// to the same phase share one heading (the current-only legacy shape).
-		type OpenGroup = { phase: TodoPhase; phaseIndex: number; tasks: TodoItem[] };
-		const openGroups: OpenGroup[] = [];
-		for (let priority = 0; priority < 3; priority++) {
-			for (let phaseIndex = 0; phaseIndex < phases.length; phaseIndex++) {
-				const phase = phases[phaseIndex]!;
-				const tasks = phase.tasks.filter(task => !isClosedTodo(task) && todoOpenPriority(task) === priority);
-				if (tasks.length === 0) continue;
-				const previous = openGroups.at(-1);
-				if (previous?.phaseIndex === phaseIndex) previous.tasks.push(...tasks);
-				else openGroups.push({ phase, phaseIndex, tasks });
+		// One phase node. The active stage is highlighted with normal-brightness task
+		// progress; other stages render their whole row (name + progress) in the
+		// brighter muted gray. Overall progress lives in the tree spine (below).
+		const renderPhase = (phase: TodoPhase, oneBased: number, isActive: boolean): string | string[] => {
+			const label = multiPhase ? formatPhaseDisplayName(phase.name, oneBased) : phase.name;
+			// Closed, not just completed: the collapsed task window hides abandoned
+			// tasks too, so counting only completions leaves the phase reading stuck.
+			const done = phase.tasks.filter(isClosedTodo).length;
+			const progress = ` · ${done}/${phase.tasks.length}`;
+			if (!isActive) {
+				const header = theme.fg("muted", label) + theme.fg("dim", progress);
+				return expanded ? [header, ...renderTasks(phase)] : header;
 			}
-		}
-		const totalOpen = openGroups.reduce((sum, group) => sum + group.tasks.length, 0);
-		const terminalRows = this.ui.terminal.rows;
-		const panelRows =
-			this.#todoHudAllocation?.terminalRows === terminalRows
-				? this.#todoHudAllocation.panelRows
-				: todoHudPanelRows(terminalRows);
-		const contentBudget = panelRows - 1; // header, headings and overflow all count
-		let visible: OpenGroup[] = openGroups;
-		let hiddenOpen = 0;
-		if (openGroups.length + totalOpen > contentBudget) {
-			visible = [];
-			let room = contentBudget - 1;
-			for (const group of openGroups) {
-				if (room < 2) break;
-				const shown = Math.min(group.tasks.length, room - 1);
-				visible.push({ ...group, tasks: group.tasks.slice(0, shown) });
-				room -= 1 + shown;
-				if (shown < group.tasks.length) break; // a strict global priority prefix
-			}
-			hiddenOpen = totalOpen - visible.reduce((sum, group) => sum + group.tasks.length, 0);
-		}
-		const overflowRow = hiddenOpen > 0 ? `+${hiddenOpen} more open (${TODO_HUD_EXPAND_HINT} …)` : undefined;
+			const header = theme.bold(theme.fg("accent", label)) + theme.fg("dim", progress);
+			return [header, ...renderTasks(phase)];
+		};
+
+		// Collapsed: active stage + a bounded number of following stages, with a
+		// "… n more stages" row for anything past the cap. Expanded: every stage
+		// from the top. Roman numerals stay tied to the real phase index.
+		const baseIdx = expanded ? 0 : activeIdx;
+		const phaseSlice = expanded ? phases.slice(baseIdx) : phases.slice(baseIdx, baseIdx + 1 + subsequentStageCap);
+		const hiddenStages = phases.length - baseIdx - phaseSlice.length;
 
 		// Flatten the stage tree into content rows plus a per-row top-level spine
 		// glyph (`├─` for stage rows, `│` for continuations). The spine never
@@ -4503,28 +4404,17 @@ export class InteractiveMode implements InteractiveModeContext {
 				contentLines.push(replaceTabs(rows[i]!));
 			}
 		};
-		if (expanded) {
-			for (let i = 0; i < phases.length; i++) {
-				pushBlock([phaseHeader(phases[i], i + 1, i === activeIdx), ...renderTasks(phases[i].tasks, true)]);
-			}
-		} else {
-			for (const group of visible) {
-				pushBlock([
-					phaseHeader(group.phase, group.phaseIndex + 1, group.phaseIndex === activeIdx),
-					...renderTasks(group.tasks, false),
-				]);
-			}
-			if (overflowRow) pushBlock(theme.fg("muted", overflowRow));
+		for (let i = 0; i < phaseSlice.length; i++) {
+			pushBlock(renderPhase(phaseSlice[i], baseIdx + i + 1, baseIdx + i === activeIdx));
+		}
+		if (hiddenStages > 0) {
+			pushBlock(theme.fg("muted", formatMoreItems(hiddenStages, "stage")));
 		}
 
 		// Closing tail: hook + a few horizontals. Every tail cell is 1 column in
 		// both glyph sets, so string slicing below splits it by visible cells.
 		const tailLen = 6;
 		const tail = theme.tree.hook + theme.tree.horizontal.repeat(Math.max(0, tailLen - visibleWidth(theme.tree.hook)));
-		// A tight collapsed budget drops the leading gap and the tail so open rows
-		// win over chrome; expanded and a roomy collapsed budget keep the legacy
-		// shape byte-for-byte (blank lead-in + tail, `pathLen` below includes it).
-		const withChrome = expanded || contentLines.length + TODO_HUD_CHROME_ROWS <= panelRows;
 
 		// Overall progress (summed across every stage) fills the path in reading
 		// order: down the spine, around the bend, out along the tail.
@@ -4532,49 +4422,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		// the entire path until the configured auto-clear removes the HUD.
 		const totalTasks = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
 		const closedTasks = phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
-		const pathLen = contentLines.length + (withChrome ? tailLen : 0);
+		const pathLen = contentLines.length + tailLen;
 		let filled = Math.round((closedTasks / totalTasks) * pathLen);
 		if (closedTasks > 0) filled = Math.max(filled, 1);
 		if (closedTasks < totalTasks) filled = Math.min(filled, pathLen - 1);
 
-		const lines: string[] = [];
-		if (withChrome) lines.push("");
-		if (expanded) {
-			lines.push(theme.bold(theme.fg("accent", "TODO")));
-		} else {
-			// Collapsed hides closed rows, so the header carries their count — but a
-			// current-only plan with nothing closed keeps the legacy plain `TODO`
-			// header instead of "0 ✓" noise.
-			const done = phases.reduce((sum, phase) => sum + phase.tasks.filter(t => t.status === "completed").length, 0);
-			const dropped = phases.reduce(
-				(sum, phase) => sum + phase.tasks.filter(t => t.status === "abandoned").length,
-				0,
-			);
-			if (openGroups.length === 1 && done === 0 && dropped === 0) {
-				lines.push(theme.bold(theme.fg("accent", "TODO")));
-			} else {
-				const counts = `${done} ✓ · ${totalOpen} open${dropped > 0 ? ` · ${dropped} ×` : ""}`;
-				lines.push(`${theme.bold(theme.fg("accent", "TODO"))} ${theme.fg("dim", counts)}`);
-			}
-		}
+		const lines = ["", theme.bold(theme.fg("accent", "TODO"))];
 		for (let i = 0; i < contentLines.length; i++) {
 			lines.push(` ${theme.fg(i < filled ? "accent" : "dim", spineGlyphs[i]!)}${contentLines[i]}`);
 		}
-		if (withChrome) {
-			const tailFilled = Math.max(0, Math.min(filled - contentLines.length, tail.length));
-			lines.push(` ${theme.fg("accent", tail.slice(0, tailFilled))}${theme.fg("dim", tail.slice(tailFilled))}`);
-		}
-		// Consumer width, not cached terminal columns: Text must never wrap a
-		// selected task or cut the practical-width overflow command offscreen.
-		const contentColumns = Math.max(0, width - getPaddingX(1) * 2);
-		const painted = expanded
-			? lines
-			: panelRows < 2
-				? panelRows > 0 && overflowRow
-					? [truncateToWidth(overflowRow, contentColumns, "")]
-					: []
-				: lines.map(line => truncateToWidth(line, contentColumns, ""));
-		if (painted.length > 0) this.todoContainer.addChild(new Text(painted.join("\n"), 1, 0));
+		const tailFilled = Math.max(0, Math.min(filled - contentLines.length, tail.length));
+		lines.push(` ${theme.fg("accent", tail.slice(0, tailFilled))}${theme.fg("dim", tail.slice(tailFilled))}`);
+		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
 
 		// Native: the same stage window as a tree, overall progress as a bar.
 		const describeTask = (todo: TodoItem, id: string): TspTreeNode => {
@@ -4594,44 +4453,29 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (notes > 0) label.push(span(` +${notes}`, "dim em"));
 			return { id, label, icon: done ? "check" : "circle" };
 		};
-		// Native mirror of the ANSI selection above: same phase/task segments and
-		// the same exact hidden-open count row.
-		const describeTasks = (tasks: TodoItem[], phaseIndex: number): TspTreeNode[] =>
-			tasks.map(todo => describeTask(todo, `${phaseIndex}.${phases[phaseIndex]!.tasks.indexOf(todo)}`));
-		const phaseNodes: TspTreeNode[] = [];
-		if (expanded) {
-			for (let i = 0; i < phases.length; i++) {
-				const name = multiPhase ? formatPhaseDisplayName(phases[i]!.name, i + 1) : phases[i]!.name;
-				const done = phases[i]!.tasks.filter(isClosedTodo).length;
-				phaseNodes.push({
-					id: `${i}`,
-					label: [
-						span(name, i === activeIdx ? "accent strong" : "muted"),
-						span(` · ${done}/${phases[i]!.tasks.length}`, "dim"),
-					],
-					open: true,
-					children: describeTasks(phases[i]!.tasks, i),
-				});
-			}
-		} else {
-			const describedPhases = new Set<number>();
-			for (const [groupIndex, group] of visible.entries()) {
-				const name = multiPhase ? formatPhaseDisplayName(group.phase.name, group.phaseIndex + 1) : group.phase.name;
-				const done = group.phase.tasks.filter(isClosedTodo).length;
-				phaseNodes.push({
-					id: describedPhases.has(group.phaseIndex)
-						? `phase:${group.phaseIndex}:${groupIndex}`
-						: `${group.phaseIndex}`,
-					label: [
-						span(name, group.phaseIndex === activeIdx ? "accent strong" : "muted"),
-						span(` · ${done}/${group.phase.tasks.length}`, "dim"),
-					],
-					open: true,
-					children: describeTasks(group.tasks, group.phaseIndex),
-				});
-				describedPhases.add(group.phaseIndex);
-			}
-			if (overflowRow) phaseNodes.push({ id: "more", label: [span(overflowRow, "muted")] });
+		const describeTasks = (phase: TodoPhase, phaseIndex: number): TspTreeNode[] => {
+			const index = (todo: TodoItem): string => `${phaseIndex}.${phase.tasks.indexOf(todo)}`;
+			if (expanded) return phase.tasks.map(todo => describeTask(todo, index(todo)));
+			const selection = selectCollapsedTodos(phase.tasks, isMatched, activeTaskCap);
+			const nodes = selection.items.map(todo => describeTask(todo, index(todo)));
+			if (selection.summary) nodes.push({ id: `${phaseIndex}.more`, label: [span(selection.summary, "muted")] });
+			return nodes;
+		};
+		const phaseNodes: TspTreeNode[] = phaseSlice.map((phase, offset) => {
+			const phaseIndex = baseIdx + offset;
+			const isActive = phaseIndex === activeIdx;
+			const name = multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name;
+			const done = phase.tasks.filter(isClosedTodo).length;
+			const open = isActive || expanded;
+			return {
+				id: `${phaseIndex}`,
+				label: [span(name, isActive ? "accent strong" : "muted"), span(` · ${done}/${phase.tasks.length}`, "dim")],
+				open,
+				children: open ? describeTasks(phase, phaseIndex) : undefined,
+			};
+		});
+		if (hiddenStages > 0) {
+			phaseNodes.push({ id: "more", label: [span(formatMoreItems(hiddenStages, "stage"), "muted")] });
 		}
 		const fallback = node(
 			"col",
@@ -4680,15 +4524,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				"todo",
 			),
 			fallback,
-		};
-		this.#todoHudCache = {
-			phases: this.todoPhases,
-			expanded: this.todoExpanded,
-			hidden: this.#todoHudHidden,
-			width,
-			terminalRows: geometry.terminalRows,
-			panelRows: geometry.panelRows,
-			activeKey,
 		};
 	}
 
