@@ -1,4 +1,3 @@
-import type { SessionContextEntryMetadata as PruneSelectionMetadata } from "./session-context";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -9,7 +8,6 @@ import type {
 	TextContent,
 	Usage,
 } from "@oh-my-pi/pi-ai";
-import { projectToolResultPrunes, type ToolResultPruneTarget } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import {
 	projectToolResultPrune,
 	projectToolResultPrunes,
@@ -4008,7 +4006,7 @@ export class SessionManager {
 	 */
 	/** Project selected entries backwards, reading each required overlay at most once. */
 	createBranchSelectionProjector(
-		path: readonly PruneSelectionMetadata[],
+		path: readonly Pick<SessionEntry, "id" | "type">[],
 		readEntry: (id: string) => SessionEntry | undefined = id => this.getEntry(id),
 	) {
 		let nextOverlayIndex = path.length - 1;
