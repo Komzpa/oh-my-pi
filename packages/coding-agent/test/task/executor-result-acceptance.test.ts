@@ -146,6 +146,7 @@ function createHarness(options?: { hangPrompt?: boolean; asyncJobManager?: Async
 		settleAsyncWork: async () => {},
 		abort: async () => {},
 		dispose: async () => {},
+		releaseTaskResources: async () => {},
 		setIrcWakeTurnObserver: (
 			observer: ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined) | undefined,
 		) => {

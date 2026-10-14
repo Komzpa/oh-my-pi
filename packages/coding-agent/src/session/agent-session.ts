@@ -171,6 +171,7 @@ import type { HindsightSessionState } from "../hindsight/state";
 import { InternalUrlRouter, type LocalProtocolOptions } from "../internal-urls";
 import { type ChainJudge, hasNativeJudge, journalJudgmentUsage, resolveJudge, sharedJudgmentCache } from "../judgment";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
+import { releaseDaemonClientsForSession } from "../launch/client";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { MEMORY_RECALL_CHANGES_MESSAGE_TYPE } from "../memory-backend/recall-entry";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
@@ -260,6 +261,7 @@ import type { EditMode } from "@oh-my-pi/pi-tui/tools/edit";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { normalizeModelContextImages } from "../utils/image-loading";
+import { trackLateCleanup } from "../utils/late-cleanup";
 import { TokenRateMeter } from "../utils/token-rate";
 import { resumeCommand } from "../utils/resume-command";
 import {
@@ -5523,9 +5525,9 @@ export class AgentSession implements SettingsScope {
 	 */
 	#syncAgentSessionId(sessionId?: string, notifyChange = true): void {
 		const currentSessionId = this.sessionManager.getSessionId();
-		// A session switch (/new, /resume, fork) must not kill processes the user started in
-		// the previous transcript: older lifecycles stop sampling but keep ownership, and are
-		// stopped only on dispose/shutdown. Switching back resumes the existing lifecycle.
+		// Non-broker tool processes retain their slice ownership until dispose.
+		// Switching pauses old slice sampling; committed transitions release the
+		// previous transcript's broker daemons independently.
 		for (const [id, lifecycle] of this.#sessionSlices) {
 			if (id === currentSessionId) lifecycle.resume();
 			else lifecycle.release();
@@ -5691,6 +5693,24 @@ export class AgentSession implements SettingsScope {
 		return this.#disposeCall;
 	}
 
+	/** Release a subagent lane's daemon resources after a bounded drain, without disposing its reusable session. */
+	async releaseTaskResources(): Promise<void> {
+		const sessionId = this.sessionManager.getSessionId();
+		const drain = (async () => {
+			await this.#cancelPostPromptTasks();
+			await this.agent.waitForIdle();
+		})();
+		try {
+			await withTimeout(drain, POST_PROMPT_DRAIN_TIMEOUT_MS, "Timed out draining subagent task resources");
+		} catch (error) {
+			// The timeout does not cancel the turn. Keep its drain owned while the
+			// broker fences the old sockets and stops already-admitted launches.
+			trackLateCleanup(drain, { sessionId, resource: "subagent-task-drain" });
+			logger.warn("Subagent task still draining at resource-release deadline", { sessionId, error: String(error) });
+		}
+		await this.#releaseOwnedDaemonClients(sessionId);
+	}
+
 	async #disposeOwnedAsyncJobs(): Promise<void> {
 		// Unregister before cancelling: a job completing during teardown must
 		// dead-letter rather than enqueue a follow-up into a disposing session.
@@ -5791,6 +5811,11 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
+	async #releaseOwnedDaemonClients(sessionId: string | undefined): Promise<void> {
+		if (!sessionId) return;
+		await releaseDaemonClientsForSession(sessionId);
+	}
+
 	async #disconnectOwnedMcp(): Promise<void> {
 		if (!this.#disconnectOwnedMcpManager) return;
 		try {
@@ -5853,6 +5878,7 @@ export class AgentSession implements SettingsScope {
 		} catch (error) {
 			logger.warn("Post-prompt tasks still draining at dispose deadline", { error: String(error) });
 		}
+		await this.agent.waitForIdle();
 		await this.#drainAutolearnCapture();
 		await this.#memory.transition;
 
@@ -5868,12 +5894,16 @@ export class AgentSession implements SettingsScope {
 		}
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		releaseShellSessions(this.sessionManager.getSessionId());
+		const daemonClientsReleased = this.#releaseOwnedDaemonClients(this.sessionManager.getSessionId());
 		const results = await Promise.allSettled([
-			...Array.from(this.#sessionSlices.values(), lifecycle => lifecycle.stop()),
+			...Array.from(this.#sessionSlices.values(), lifecycle =>
+				daemonClientsReleased.finally(() => lifecycle.stop()),
+			),
 			this.#disposeOwnedAsyncJobs(),
 			this.#eval.disposeKernels(),
 			this.#releaseOwnedBrowserTabs(this.sessionManager.getSessionId()),
 			this.#releaseOwnedComputerSessions(this.#eval.getKernelOwnerId()),
+			daemonClientsReleased,
 			this.#disconnectOwnedMcp(),
 			advisorRecorderClosed,
 			hindsightState?.flushRetainQueue() ?? Promise.resolve(),
@@ -5972,6 +6002,9 @@ export class AgentSession implements SettingsScope {
 				this.#accountPoolScope?.release();
 			})().catch(error => logger.warn("Deferred dispose finalization failed", { error: String(error) }));
 		}
+		// Parallel cleanup and socket closure always finish, but a failed broker
+		// release must not turn disposal into a successful completion receipt.
+		await daemonClientsReleased;
 	}
 
 	/** Drop the in-memory conversation state after the terminal dispose flush. */
@@ -9979,6 +10012,7 @@ export class AgentSession implements SettingsScope {
 		using _transition = this.#beginSessionTransition();
 		this.#assertVibeSessionTransitionAllowed("start a new session");
 		const previousSessionFile = this.sessionFile;
+		const previousDaemonSessionId = this.sessionManager.getSessionId();
 
 		// Emit session_before_switch event with reason "new" (can be cancelled)
 		if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
@@ -10092,9 +10126,15 @@ export class AgentSession implements SettingsScope {
 
 			return true;
 		} finally {
-			if (advisorRecordersDetached) {
-				if (sessionTransitioned) this.#advisors.resetSessionState();
-				else this.#advisors.reattachRecorderFeeds();
+			try {
+				if (previousDaemonSessionId && previousDaemonSessionId !== this.sessionManager.getSessionId()) {
+					await this.#releaseOwnedDaemonClients(previousDaemonSessionId);
+				}
+			} finally {
+				if (advisorRecordersDetached) {
+					if (sessionTransitioned) this.#advisors.resetSessionState();
+					else this.#advisors.reattachRecorderFeeds();
+				}
 			}
 		}
 	}
@@ -11687,6 +11727,7 @@ export class AgentSession implements SettingsScope {
 		this.#usagePreflightReadyModel = undefined;
 
 		let cwdChangeTarget: string | undefined;
+		let sessionSwitchCommitted = false;
 		try {
 			if (switchingToDifferentSession) {
 				// Stop and settle in-flight advisors while the old-session feeds can
@@ -11888,6 +11929,7 @@ export class AgentSession implements SettingsScope {
 			if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {
 				this.#notifySessionChangeCallbacks();
 			}
+			sessionSwitchCommitted = true;
 			generationSettled.resolve();
 			this.#sessionGenerationSettled = previousSessionGenerationSettled;
 			if (modelFallbackWarning) {
@@ -11976,6 +12018,12 @@ export class AgentSession implements SettingsScope {
 			this.#bash.finishSessionTransition(bashTransition, false);
 			if (error === SESSION_CWD_CHANGE_REJECTED) return false;
 			throw error;
+		} finally {
+			// Cleanup failure is surfaced after commit, never caught as a reason
+			// to restore an outgoing transcript whose clients have already closed.
+			if (sessionSwitchCommitted && switchingToDifferentSession && previousSessionState.sessionId) {
+				await this.#releaseOwnedDaemonClients(previousSessionState.sessionId);
+			}
 		}
 	}
 

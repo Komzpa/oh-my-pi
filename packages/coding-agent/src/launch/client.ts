@@ -7,6 +7,7 @@ import { getGlobalDaemonRuntimeDir, isEexist, isEnoent, logger, postmortem } fro
 import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { resolveWorkerSpawnCmd, workerEnvFromParent } from "../subprocess/worker-client";
 import { canonicalProjectDir, daemonBrokerEndpoint, daemonRuntimeDir } from "./paths";
+import { readLiveDaemonBrokerPid } from "./presence";
 import {
 	DAEMON_BROKER_WORKER_ARG,
 	DAEMON_IDLE_GRACE_ENV,
@@ -22,6 +23,13 @@ import {
 
 const CONNECT_TIMEOUT_MS = 10_000;
 const CONNECT_RETRY_MS = 50;
+/**
+ * Delay before a connect poll may conclude the spawned broker died without
+ * binding and spawn a replacement (grievance #976). Short enough to stay
+ * inside the connect budget, long enough that a normally starting broker has
+ * written its pid lease by the time the first liveness probe runs.
+ */
+const CONNECT_RESPAWN_GRACE_MS = 1_000;
 const TOKEN_FILE = "broker.token";
 /**
  * The broker must outlive whichever omp process happened to spawn it: other
@@ -63,6 +71,8 @@ export interface DaemonBrokerClient {
 	/** Canonical project directory or synthetic directory identifying a global scope. */
 	readonly projectDir: string;
 	readonly runtimeDir: string;
+	/** True once close() has run; closed clients reject new requests. */
+	readonly closed: boolean;
 	request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult>;
 	close(): void;
 }
@@ -110,6 +120,8 @@ function requestTimeoutMs(operation: DaemonOperation): number {
 		case "logs":
 		case "stop":
 			return operation.timeoutMs + 5_000;
+		case "release":
+			return operation.timeoutMs * 2 + 30_000;
 		default:
 			return 30_000;
 	}
@@ -133,6 +145,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	#socket: IpcConnection | undefined;
 	#connectPromise: Promise<void> | undefined;
 	#closed = false;
+	#hasConnected = false;
 	#completionReconnectTimer: NodeJS.Timeout | undefined;
 
 	constructor(projectDir: string, runtimeDir: string, token: string, options: DaemonBrokerClientOptions) {
@@ -148,10 +161,19 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		return this.#runtimeDir;
 	}
 
+	get closed(): boolean {
+		return this.#closed;
+	}
+
 	async request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult> {
 		if (this.#closed) throw new Error("Daemon broker client is closed");
 		if (signal?.aborted) throw new Error("Daemon broker request aborted");
+		// A failed acquisition has no admitted operations to drain. In-flight
+		// connects still settle before release; previously connected scopes may
+		// need recovery after a disconnect, including their detached daemons.
+		if (operation.op === "release" && !this.#connectPromise && !this.#hasConnected) return { op: "release" };
 		await this.#connect();
+		if (this.#closed) throw new Error("Daemon broker client is closed");
 		const socket = this.#socket;
 		if (!socket || socket.closed) throw new Error("Daemon broker socket is unavailable");
 
@@ -294,15 +316,35 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			// process-owned lease selects one winner before any candidate touches
 			// the socket.
 		}
+		if (this.#closed) throw new Error("Daemon broker client is closed");
 		await this.#spawnBroker();
-		const deadline = Date.now() + CONNECT_TIMEOUT_MS;
+		let lastSpawnAt = Date.now();
+		const deadline = lastSpawnAt + CONNECT_TIMEOUT_MS;
 		let lastError: Error | undefined;
+		let respawned = false;
 		while (Date.now() < deadline) {
+			if (this.#closed) throw new Error("Daemon broker client is closed");
 			try {
 				this.#bindSocket(await IpcConnection.connect(this.#endpoint, { framing: "lines", timeoutMs: 250 }));
 				return;
 			} catch (error) {
 				lastError = error instanceof Error ? error : new Error(String(error));
+				// A missing endpoint with no live broker pid means the spawn died
+				// without binding (crash, or a lease winner that then died): nobody
+				// is coming, so spawn one bounded replacement instead of waiting out
+				// the budget on a dead scope. A live pid means a broker owns the
+				// scope and may still bind, so keep waiting for it.
+				if (!respawned && Date.now() - lastSpawnAt >= CONNECT_RESPAWN_GRACE_MS) {
+					if ((await readLiveDaemonBrokerPid(this.#runtimeDir)) === undefined) {
+						respawned = true;
+						lastSpawnAt = Date.now();
+						try {
+							await this.#spawnBroker();
+						} catch (spawnError) {
+							lastError = spawnError instanceof Error ? spawnError : new Error(String(spawnError));
+						}
+					}
+				}
 				await Bun.sleep(CONNECT_RETRY_MS);
 			}
 		}
@@ -321,8 +363,13 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		};
 		if (this.#idleGraceMs !== undefined) overlay[DAEMON_IDLE_GRACE_ENV] = String(this.#idleGraceMs);
 		const env = await toolSessionEnvironment(this.#sessionId, workerEnvFromParent(overlay));
+		if (this.#closed) throw new Error("Daemon broker client is closed");
 		const scope = this.#sessionId ? new ToolResourceScope() : undefined;
 		const command = scope ? await scope.wrapCommandAsync(spawn.cmd, env) : spawn.cmd;
+		if (this.#closed) {
+			scope?.close();
+			throw new Error("Daemon broker client is closed");
+		}
 		const child = spawnBackground(command, {
 			cwd: spawn.cwd,
 			env,
@@ -337,6 +384,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 
 	#bindSocket(socket: IpcConnection): void {
 		this.#socket = socket;
+		this.#hasConnected = true;
 		socket.start(
 			line => this.#onLine(line),
 			() => {
@@ -451,19 +499,73 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	}
 }
 
-const sharedClients = new Map<string, Promise<DaemonBrokerClient>>();
+type SharedClientKind = "project" | "global";
+interface SharedClientEntry {
+	promise: Promise<DaemonBrokerClient>;
+	kind: SharedClientKind;
+	/** Exact owning transcript session id for project clients; undefined for main/global. */
+	sessionId?: string;
+	release?: Promise<void>;
+}
+const sharedClients = new Map<string, SharedClientEntry>();
+interface SessionClientActivity {
+	generation: number;
+	lookups: number;
+	releases: Set<Promise<void>>;
+}
+/** Entries exist only while lookups or release work are in flight, never as tombstones. */
+const sessionClientActivities = new Map<string, SessionClientActivity>();
+
+function sessionClientActivity(sessionId: string): SessionClientActivity {
+	let activity = sessionClientActivities.get(sessionId);
+	if (!activity) {
+		activity = { generation: 0, lookups: 0, releases: new Set() };
+		sessionClientActivities.set(sessionId, activity);
+	}
+	return activity;
+}
+
+function forgetIdleSessionClientActivity(sessionId: string, activity: SessionClientActivity): void {
+	if (activity.lookups === 0 && activity.releases.size === 0 && sessionClientActivities.get(sessionId) === activity) {
+		sessionClientActivities.delete(sessionId);
+	}
+}
+
+function withSessionClientRelease(sessionId: string, release: () => Promise<void>): Promise<void> {
+	const activity = sessionClientActivity(sessionId);
+	activity.generation++;
+	const completion = Promise.resolve()
+		.then(release)
+		.finally(() => {
+			activity.releases.delete(completion);
+			forgetIdleSessionClientActivity(sessionId, activity);
+		});
+	activity.releases.add(completion);
+	return completion;
+}
 let cancelExitCleanup: (() => void) | undefined;
 
-function sharedDaemonClient(key: string, create: () => Promise<DaemonBrokerClient>): Promise<DaemonBrokerClient> {
-	let pending = sharedClients.get(key);
-	if (!pending) {
-		pending = create();
-		sharedClients.set(key, pending);
+const DAEMON_STOP_TIMEOUT_MS = 5_000;
+
+async function stopAllDaemons(client: DaemonBrokerClient): Promise<void> {
+	await client.request({ op: "release", timeoutMs: DAEMON_STOP_TIMEOUT_MS });
+}
+
+function sharedDaemonClient(
+	key: string,
+	entry: Omit<SharedClientEntry, "promise">,
+	create: () => Promise<DaemonBrokerClient>,
+): Promise<DaemonBrokerClient> {
+	let existing = sharedClients.get(key);
+	if (existing?.release) throw new Error("Daemon broker client is being released");
+	if (!existing) {
+		existing = { promise: create(), kind: entry.kind, sessionId: entry.sessionId };
+		sharedClients.set(key, existing);
 		if (!cancelExitCleanup) {
 			cancelExitCleanup = postmortem.register("daemon-broker-clients", () => closeDaemonClients());
 		}
 	}
-	return pending;
+	return existing.promise;
 }
 
 /** Create an independent socket connection to one daemon broker scope. */
@@ -482,11 +584,91 @@ export async function createDaemonBrokerClient(
 }
 
 /** Get the process-shared daemon broker client for one canonical project directory. */
-export async function daemonClientForProject(projectDir: string, sessionId?: string): Promise<DaemonBrokerClient> {
+export async function daemonClientForProject(
+	projectDir: string,
+	sessionId?: string,
+	options?: Pick<DaemonBrokerClientOptions, "idleGraceMs">,
+): Promise<DaemonBrokerClient> {
+	const normalizedSessionId = sessionId && sessionId.length > 0 ? sessionId : undefined;
+	const activity = normalizedSessionId ? sessionClientActivity(normalizedSessionId) : undefined;
+	const generation = activity?.generation;
+	if (activity) activity.lookups++;
+	try {
+		if (activity && activity.releases.size > 0) {
+			throw new Error("Daemon broker session lookup was superseded by release");
+		}
+		const canonical = await canonicalProjectDir(projectDir);
+		if (activity && (activity.generation !== generation || activity.releases.size > 0)) {
+			throw new Error("Daemon broker session lookup was superseded by release");
+		}
+		return await sharedDaemonClient(
+			`project:${canonical}:${normalizedSessionId ?? ""}`,
+			{ kind: "project", sessionId: normalizedSessionId },
+			() => createDaemonBrokerClient(canonical, { sessionId, idleGraceMs: options?.idleGraceMs }),
+		);
+	} finally {
+		if (activity && normalizedSessionId) {
+			activity.lookups--;
+			forgetIdleSessionClientActivity(normalizedSessionId, activity);
+		}
+	}
+}
+
+function releaseSharedDaemonClient(key: string, entry: SharedClientEntry): Promise<void> {
+	if (entry.release) return entry.release;
+	entry.release = entry.promise
+		.then(async client => {
+			try {
+				await stopAllDaemons(client);
+			} finally {
+				client.close();
+			}
+		})
+		.finally(() => {
+			if (sharedClients.get(key) === entry) sharedClients.delete(key);
+			if (sharedClients.size === 0) {
+				cancelExitCleanup?.();
+				cancelExitCleanup = undefined;
+			}
+		});
+	return entry.release;
+}
+
+/** Non-creating cache oracle for tests: true while a project client for the exact session is cached. */
+export async function hasCachedDaemonClientForSession(projectDir: string, sessionId: string): Promise<boolean> {
+	if (sessionId.length === 0) return false;
 	const canonical = await canonicalProjectDir(projectDir);
-	return sharedDaemonClient(`project:${canonical}:${sessionId ?? ""}`, () =>
-		createDaemonBrokerClient(canonical, { sessionId }),
-	);
+	const entry = sharedClients.get(`project:${canonical}:${sessionId}`);
+	return entry?.kind === "project" && entry.sessionId === sessionId;
+}
+
+/** Stop and close one session-owned project client without touching other scopes. */
+export async function releaseDaemonClientForSession(projectDir: string, sessionId: string): Promise<void> {
+	if (sessionId.length === 0) return;
+	await withSessionClientRelease(sessionId, async () => {
+		const canonical = await canonicalProjectDir(projectDir);
+		const key = `project:${canonical}:${sessionId}`;
+		const entry = sharedClients.get(key);
+		if (!entry || entry.kind !== "project" || entry.sessionId !== sessionId) return;
+		await releaseSharedDaemonClient(key, entry);
+	});
+}
+
+/** Quiesce accepted broker starts, stop daemons, and close this session's exact project clients. */
+export async function releaseDaemonClientsForSession(sessionId: string): Promise<void> {
+	if (sessionId.length === 0) return;
+	await withSessionClientRelease(sessionId, async () => {
+		const releases: Promise<void>[] = [];
+		for (const [key, entry] of sharedClients) {
+			if (entry.kind === "project" && entry.sessionId === sessionId) {
+				releases.push(releaseSharedDaemonClient(key, entry));
+			}
+		}
+		const results = await Promise.allSettled(releases);
+		const failures = results.flatMap(result => (result.status === "rejected" ? [result.reason] : []));
+		if (failures.length > 0)
+			throw new AggregateError(failures, `Failed to release daemon clients for session ${sessionId}`);
+	});
 }
 
 /** Get the process-shared client that leases one profile-independent, machine-global daemon broker. */
@@ -496,7 +678,7 @@ export async function daemonClientForGlobal(service: string): Promise<DaemonBrok
 	// derive the same Windows pipe key even when an ancestor is a symlink.
 	await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
 	const canonical = await fs.realpath(runtimeDir);
-	return sharedDaemonClient(`global:${canonical}`, () =>
+	return sharedDaemonClient(`global:${canonical}`, { kind: "global" }, () =>
 		createDaemonBrokerClient(canonical, {
 			runtimeDir: canonical,
 		}),
@@ -505,9 +687,11 @@ export async function daemonClientForGlobal(service: string): Promise<DaemonBrok
 
 /** Close every project and machine-global broker connection held by this omp process. */
 export async function closeDaemonClients(): Promise<void> {
-	const pending = [...sharedClients.values()];
+	const entries = [...sharedClients.values()];
 	sharedClients.clear();
-	for (const client of await Promise.all(pending)) client.close();
+	for (const entry of await Promise.allSettled(entries.map(item => item.promise))) {
+		if (entry.status === "fulfilled") entry.value.close();
+	}
 	cancelExitCleanup?.();
 	cancelExitCleanup = undefined;
 }

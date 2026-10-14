@@ -203,7 +203,9 @@
 - Tool approval prompts now replace the composer like `ask`, show one row per detail, and approve with `Ctrl+Enter` (or `Ctrl+Q`) instead of `Enter` ([#15548](https://github.com/can1357/oh-my-pi/pull/15548) by [@H4vC](https://github.com/H4vC))
 
 ### Fixed
-- Shared automation Chromium stays in its transcript's Linux session slice: Chrome's own `org.freedesktop.systemd1.Manager.StartTransientUnit` call moves the main process into `app.slice/app-<name>-<pid>.scope` when the session bus is reachable, so the browser child alone loses `DBUS_SESSION_BUS_ADDRESS`/`DBUS_STARTER_ADDRESS` (an empty value is not enough — the client falls back to `$XDG_RUNTIME_DIR/bus`). Other daemon children keep their bus.
+
+- Switching, starting a new session, disposing, and settling subagent tasks (including keep-alive completion, failure, and task abort) await session-owned daemon release. The broker drains accepted launches before stopping all records, late lookups cannot recreate evicted clients, and cleanup errors remain failures even though sockets always close. Resumed agents can acquire fresh clients; ordinary root turn aborts and parent/sibling sessions retain their resources.
+- Broker connect spawns one bounded replacement when the endpoint is still missing past a short grace with no live broker pid, instead of failing blind with ENOENT after 10 s; a live pid keeps waiting for its owner to bind. Releasing a session whose broker acquisition failed no longer starts a fresh broker just for teardown.
 - Process-local Puppeteer fallback Chromium also drops the two user-bus addresses from its own launch environment, preserving its inherited session slice without changing unrelated children.
 
 - Fixed late completion probes rewinding resumed conversations and stale history scans lowering parked subagent costs ([#15594](https://github.com/can1357/oh-my-pi/pull/15594) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
