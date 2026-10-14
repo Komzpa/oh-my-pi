@@ -312,6 +312,127 @@ describe("canonical todo row metadata", () => {
 		}
 	});
 
+	it.each(["in_progress", "abandoned", "pending"] as const)(
+		"resolves an omitted %s row's declared artifact without completing it",
+		async status => {
+			const root = mkdtempSync(join(tmpdir(), "omp-ledger-historical-declaration-"));
+			try {
+				const cwd = join(root, "tasks-loop");
+				const resource = join(root, "omp-fix41-gate-20261004");
+				mkdirSync(cwd);
+				mkdirSync(resource);
+				execFileSync("git", ["init", "--initial-branch=main"], { cwd: resource });
+				writeFileSync(join(resource, "artifact.txt"), "classify gate artifact\n");
+				execFileSync("git", ["add", "artifact.txt"], { cwd: resource });
+				execFileSync(
+					"git",
+					["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "artifact"],
+					{ cwd: resource },
+				);
+				const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: resource, encoding: "utf8" }).trim();
+				const row = "Fix R1 classify gate blocking read-only tools";
+				const historical = [
+					{
+						name: "Sunbim scheduler churn",
+						tasks: [
+							{
+								content: row,
+								status,
+								artifactCwd: cwd,
+								artifactOwner: "main",
+								schedule: { owner: "ExemptReadOnlyFromClassifyGate", resources: [resource], dependencies: [] },
+							},
+						],
+					},
+				] as unknown as TodoPhase[];
+				const manager = SessionManager.inMemory();
+				// Original Main tool-result snapshots de77a2cb/74a7e859, 2026-10-04;
+				// retain the row's declaration shape, replacing only filesystem locations.
+				manager.appendMessage({
+					role: "toolResult",
+					toolCallId: "classify-r3",
+					toolName: "todo",
+					content: [{ type: "text", text: "Classified R3 as linked." }],
+					details: { op: "classify", phases: historical },
+					isError: false,
+					timestamp: 1791106532358,
+				});
+				const phases: TodoPhase[] = [{ name: "Next", tasks: [{ content: "Different row", status: "pending" }] }];
+				manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				const before = JSON.stringify(manager.getBranch());
+				const ctx = { cwd, sessionManager: manager };
+				const artifact = await getRequirementRowArtifact(ctx, row, phases);
+				expect(artifact).toEqual({
+					cwd: resource,
+					head: null,
+					dirty: false,
+					identities: [{ kind: "git", repo: resource, commit }],
+				});
+				const receipt = formatRequirementIdentity(artifact.identities![0]!);
+				expect(await getRequirementRowArtifact({ ...ctx, receipt }, row, phases)).toMatchObject({
+					identityCheck: { artifact: receipt },
+				});
+				expect(JSON.stringify(manager.getBranch())).toBe(before);
+				expect(historical[0]!.tasks[0]!.status).toBe(status);
+				expect(getLatestTodoPhasesFromEntries(manager.getBranch())).toEqual(phases);
+				const requirement: RequirementLedgerItem = {
+					...createRequirementCandidates([], ["fix the classify gate"], AT)[0]!,
+					classification: "linked",
+					rows: [row],
+				};
+				expect(getRequirementVerdictStaleness(requirement, [{ row, ...artifact }])).not.toBeNull();
+				writeFileSync(join(resource, "artifact.txt"), "dirty classify gate artifact\n");
+				const dirty = await getRequirementRowArtifact({ ...ctx, receipt }, row, phases);
+				expect(dirty.identityCheck?.reason).toContain("unverifiable git");
+				expect(execFileSync("git", ["status", "--porcelain"], { cwd: resource, encoding: "utf8" })).toContain(
+					"artifact.txt",
+				);
+				rmSync(resource, { recursive: true, force: true });
+				const missing = await getRequirementRowArtifact(ctx, row, phases);
+				expect(missing.identities).toBeUndefined();
+				expect(missing.reason).toContain("current identity unavailable");
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it("rejects duplicate historical rows while preferring an unambiguous current row", async () => {
+		const manager = SessionManager.inMemory();
+		const row = "Fix R1 classify gate blocking read-only tools";
+		const task = {
+			content: row,
+			status: "in_progress" as const,
+			schedule: {
+				owner: "ExemptReadOnlyFromClassifyGate",
+				resources: ["/tmp/absent-historical-artifact"],
+				dependencies: [],
+			},
+		};
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: [{ name: "Plan", tasks: [task] }] });
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: [{ name: "Plan", tasks: [task, task] }] });
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: [] });
+		const ctx = { cwd: "/tmp", sessionManager: manager };
+		expect(await getRequirementRowArtifact(ctx, row, [])).toMatchObject({
+			head: null,
+			dirty: true,
+			cwd: `duplicate historical TODO row ${JSON.stringify(row)}`,
+		});
+		const root = mkdtempSync(join(tmpdir(), "omp-ledger-current-declaration-"));
+		try {
+			const path = join(root, "artifact.txt");
+			writeFileSync(path, "current artifact\n");
+			const current = [{ name: "Current", tasks: [{ ...task, schedule: { resources: [path] } }] }];
+			const artifact = await getRequirementRowArtifact(ctx, row, current);
+			expect(artifact.cwd).toBe(path);
+			expect(artifact.identities).toEqual([
+				{ kind: "file", path, sha256: createHash("sha256").update("current artifact\n").digest("hex") },
+			]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps the audited worker checkout after its registry entry disappears", async () => {
 		const root = mkdtempSync(join(tmpdir(), "omp-ledger-worker-owner-"));
 		const owner = `worker-${root.slice(root.lastIndexOf("/") + 1)}`;

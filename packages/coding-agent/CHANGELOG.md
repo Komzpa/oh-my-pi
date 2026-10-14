@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed requirement audits losing declared artifacts when pending, in-progress, or abandoned TODO rows leave the active plan; historical lookup preserves status and still rejects ambiguous declarations, missing artifacts, and dirty or stale receipts.
 - Fixed requirement candidates blocking ordinary work and worker cancellation; go-ahead replies are recorded as non-requirements, while new workers and completion still require classification ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed multi-line requirement briefs breaking auditor verdict tables; auditors reference captured source by ID and verified SHA-256 instead of re-quoting it ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed `outputSchema: false` rejecting all subagent output instead of disabling the wrapper, including inherited and strict task/eval schemas ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
