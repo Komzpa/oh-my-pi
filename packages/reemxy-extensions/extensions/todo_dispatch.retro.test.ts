@@ -379,6 +379,38 @@ test.each([
   } finally { setSystemTime(); }
 });
 
+test("an updater job settled before its async-result still opens the rejection retro exactly once", async () => {
+  // Live wave4b 2026-10-14: the job snapshot settled InstallWave4bReplayD first (async dispatch,
+  // no result yet); the {"install_exit":1} payload arrived later as an async-result, and the
+  // seen-id skip dropped it, so no retro ever opened.
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], [], liveNow + 24 * 60 * 60_000);
+    // First pass: the completed job snapshot carries no result and settles on its own.
+    f.setJobs([{ id: "InstallWave4bReplayD", type: "task", status: "completed", label: "InstallWave4bReplayD", startTime: liveNow - 3000, agentId: "InstallWave4bReplayD" }]);
+    expect(await f.check()).not.toContain("retrospective due");
+    // Second pass: the branch gains the async-result carrying the rejection payload.
+    f.branch.push({ type: "custom_message", customType: "async-result", content: '<system-notice>\nBackground job InstallWave4bReplayD has completed.\n<task-result id="InstallWave4bReplayD" agent="task" status="completed" duration="6.7s"><meta lines="4" size="53B" />\n<output>\n{\n  "install_exit": 1,\n  "note": "synthetic replay"\n}\n</output>\n</task-result>' });
+    expect(await f.check()).toContain("retrospective due (updater rejection)");
+    // Third pass: once the retro completes, the same settled job must not re-fire it.
+    await f.dispatch("SprintRetro");
+    await f.finish();
+    expect(await f.check()).not.toContain("retrospective due");
+  } finally { setSystemTime(); }
+});
+
+test("a late async-result that exits zero opens no retro", async () => {
+  // Negative control for the ordering replay: the same two-pass sequence with install_exit 0.
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], [], liveNow + 24 * 60 * 60_000);
+    f.setJobs([{ id: "InstallWave4bReplayD", type: "task", status: "completed", label: "InstallWave4bReplayD", startTime: liveNow - 3000, agentId: "InstallWave4bReplayD" }]);
+    expect(await f.check()).not.toContain("retrospective due");
+    f.branch.push({ type: "custom_message", customType: "async-result", content: '<system-notice>\nBackground job InstallWave4bReplayD has completed.\n<task-result id="InstallWave4bReplayD" agent="task" status="completed" duration="6.7s"><meta lines="4" size="53B" />\n<output>\n{\n  "install_exit": 0,\n  "note": "synthetic replay"\n}\n</output>\n</task-result>' });
+    expect(await f.check()).not.toContain("retrospective due");
+  } finally { setSystemTime(); }
+});
+
 test("a completed non-install job whose result looks like a rejection opens no updater rejection", async () => {
   setSystemTime(new Date(liveNow));
   try {

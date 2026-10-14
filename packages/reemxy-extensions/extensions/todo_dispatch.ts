@@ -816,9 +816,12 @@ const UPDATER_JOB_LABEL = /updat|deploy|install|publish|rollback|release|cutover
 // A completed install/updater job can still carry a rejection in its structured result: a
 // non-zero install/updater/deploy exit or non-empty blocked/remaining gaps. The result records
 // the same fact the receipt does, so derive the incident from it here, once.
+function jobResultPayload(job: unknown): unknown {
+  if (typeof job !== "object" || job === null) return undefined;
+  return "result" in job ? job.result : "data" in job ? job.data : undefined;
+}
 function structuredInstallRejection(job: unknown): boolean {
-  if (typeof job !== "object" || job === null) return false;
-  const result = "result" in job ? job.result : "data" in job ? job.data : undefined;
+  const result = jobResultPayload(job);
   if (typeof result !== "object" || result === null) return false;
   // Unchecked cast to a named const: job results are untyped at this extension boundary.
   const record = result as Record<string, unknown>;
@@ -1771,19 +1774,27 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     for (const job of jobs) {
       if (job.type !== "task" || !["completed", "failed"].includes(job.status)) continue;
       if (sprintState.seenJobIds.includes(job.id)) continue;
+      const label = typeof job.label === "string" ? job.label : "";
+      // Async dispatch settles the job snapshot before its structured result lands on the
+      // branch. An updater-labelled completion with no result yet is not final: marking it seen
+      // here would drop the rejection the later async-result carries (wave4b 2026-10-14). It
+      // finalises when a result for the same id is evaluated; a failed job finalises immediately.
+      const payload = jobResultPayload(job);
+      const awaitingResult = job.status === "completed" && UPDATER_JOB_LABEL.test(label) &&
+        (payload === undefined || payload === null);
       const id = job.agentId ?? job.id;
       const at = typeof job.startTime === "number" ? job.startTime : now;
       const facilitator = [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name));
       if (facilitator && job.status === "completed") facilitatorSettled = true;
-      if (UPDATER_JOB_LABEL.test(typeof job.label === "string" ? job.label : "") &&
+      if (UPDATER_JOB_LABEL.test(label) &&
         (job.status === "failed" || structuredInstallRejection(job))) updaterRejected = true;
       // Failed workers are usually provider refusals, not retro participants.
       sprintState = {
         ...sprintState,
-        seenJobIds: [...sprintState.seenJobIds, job.id],
-        ...(job.status !== "completed" || facilitator
+        ...(awaitingResult ? {} : { seenJobIds: [...sprintState.seenJobIds, job.id] }),
+        ...(job.status !== "completed" || facilitator || sprintState.workerFinishes.some((finish) => finish.jobId === job.id)
           ? {}
-          : { workerFinishes: [...sprintState.workerFinishes, { jobId: job.id, id, at, row: typeof job.label === "string" ? job.label : "" }] }),
+          : { workerFinishes: [...sprintState.workerFinishes, { jobId: job.id, id, at, row: label }] }),
       };
     }
     return { facilitatorSettled, updaterRejected };
