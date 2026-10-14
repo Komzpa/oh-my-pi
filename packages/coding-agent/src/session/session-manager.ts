@@ -9,6 +9,7 @@ import type {
 	TextContent,
 	Usage,
 } from "@oh-my-pi/pi-ai";
+import { projectToolResultPrunes, type ToolResultPruneTarget } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import {
 	projectToolResultPrune,
 	projectToolResultPrunes,
