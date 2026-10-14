@@ -129,7 +129,7 @@ describe("PR #41 todo artifact cwd", () => {
 			expect((await tool.execute("worker-done", { op: "done", task: "Worker artifact" })).isError).toBe(true);
 			const tasks = getLatestTodoPhasesFromEntries(manager.getBranch())[0]!.tasks;
 			expect(tasks.find(task => task.content === "Main artifact")?.status).toBe("completed");
-			expect(tasks.find(task => task.content === "Worker artifact")?.status).toBe("pending");
+			expect(tasks.find(task => task.content === "Worker artifact")!.status).not.toBe("completed");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

@@ -283,7 +283,7 @@ describe("canonical todo row metadata", () => {
 						{
 							content: "legacy row",
 							status: "completed",
-							schedule: { resources: [] },
+							schedule: { owner: "UnknownWorker", resources: [] },
 						} as TodoPhase["tasks"][number],
 					],
 				},
