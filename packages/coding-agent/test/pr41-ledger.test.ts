@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test";
+import {
+	RequirementsLedgerRuntime,
+	type RequirementPublicationGate,
+} from "@oh-my-pi/pi-coding-agent/session/requirements-ledger-runtime";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 
 import {
+	createRequirementCandidates,
 	getRequirementVerdictStaleness,
 	parseRequirementReceipt,
 	type RequirementLedgerItem,
@@ -149,5 +155,60 @@ describe("persisted verdict freshness", () => {
 		expect(stale).toContain(SHA_A);
 		expect(stale).toContain(SHA_B);
 		expect(stale).toContain("Review artifact");
+	});
+});
+
+describe("requirement publication visibility", () => {
+	function publicationFixture() {
+		const manager = SessionManager.inMemory();
+		let gate: RequirementPublicationGate | undefined;
+		const runtime = new RequirementsLedgerRuntime({
+			agent: {} as never,
+			agentKind: () => "main",
+			cwd: () => process.cwd(),
+			sessionManager: manager,
+			onSettledAssistantMessage: () => {},
+			setPublicationGate: value => {
+				gate = value;
+			},
+		});
+		runtime.captureCandidate("Fix the login bug");
+		return { gate: () => gate };
+	}
+
+	it("keeps the real final answer visible above the unverified status", async () => {
+		const fx = publicationFixture();
+		const message = {
+			content: [{ type: "text", text: "Login repair is committed; deployment is pending." }],
+			stopReason: "stop",
+		};
+		const result = await fx.gate()?.(message as never, new AbortController().signal);
+		expect(result?.replacementText).toBe(
+			"Login repair is committed; deployment is pending.\n\nNot audit-verified: R1 (1 of 1)",
+		);
+	});
+
+	it("shows provider failure text without applying requirement decoration", async () => {
+		const fx = publicationFixture();
+		const message = {
+			content: [{ type: "text", text: "Provider stream failed: connection reset" }],
+			stopReason: "error",
+			errorMessage: "connection reset",
+		};
+		const result = await fx.gate()?.(message as never, new AbortController().signal);
+		expect(result).toBeUndefined();
+		expect(message.content).toEqual([{ type: "text", text: "Provider stream failed: connection reset" }]);
+		expect(message.errorMessage).toBe("connection reset");
+	});
+
+	it("records lead steer references as controls while keeping ordinary file asks eligible", () => {
+		const controls = createRequirementCandidates([], ["@/tmp/session/scratchpad/steer_qa_shipnow.md"], AT);
+		expect(controls[0]?.classification).toBe("not-a-requirement");
+		const asks = createRequirementCandidates(
+			[],
+			["@/tmp/requirements.md", "Implement @/tmp/session/steer_feature.md"],
+			AT,
+		);
+		expect(asks.map(item => item.classification)).toEqual(["candidate", "candidate"]);
 	});
 });

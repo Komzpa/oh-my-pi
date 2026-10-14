@@ -26,7 +26,8 @@ import {
 	evaluateRequirementDoneGate,
 	type RequirementVerdict,
 	parseRequirementReceipt,
-	requirementAuditSnapshot,	requirementSourceDigest,
+	requirementAuditSnapshot,
+	requirementSourceDigest,
 	requirementRowDeclarationSnapshot,
 	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
 	type RequirementAuditAssignment,
@@ -482,28 +483,28 @@ export class RequirementsLedgerRuntime {
 		if (this.#host.agentKind() !== "main") {
 			return;
 		}
-		const failed = message.stopReason === "error" || message.stopReason === "aborted";
-		const freshnessSignal = failed ? undefined : signal;
+		// Provider failures and aborts must retain their actual text and error metadata.
+		if (message.stopReason === "error" || message.stopReason === "aborted") return;
 		let generation = this.#getPublicationGeneration();
-		let freshness = await this.#refreshRequirementFreshness(freshnessSignal);
+		let freshness = await this.#refreshRequirementFreshness(signal);
 		if (this.#getPublicationGeneration() !== generation) {
 			generation = this.#getPublicationGeneration();
-			freshness = await this.#refreshRequirementFreshness(freshnessSignal);
+			freshness = await this.#refreshRequirementFreshness(signal);
 			// Never erase the assistant's own text on a generation race: publish unchanged.
-			if (this.#getPublicationGeneration() !== generation) return failed ? { replacementText: "" } : undefined;
+			if (this.#getPublicationGeneration() !== generation) return;
 		}
 		const decisionGeneration = this.#getPublicationGeneration();
 		const { requirements, staleById, awaitingUserIssues } = freshness;
 		const open = this.#openRequirements(requirements, staleById);
 		this.syncPublicationGate();
 		// Never erase the assistant's own text on a generation race: publish unchanged.
-		if (this.#getPublicationGeneration() !== decisionGeneration) return failed ? { replacementText: "" } : undefined;
+		if (this.#getPublicationGeneration() !== decisionGeneration) return;
 		if (open.length === 0) {
 			this.#noticeState = "";
 			return;
 		}
 		// With tool calls the text stays as it is: the gate only appends to final text.
-		if (message.content.some(block => block.type === "toolCall")) return failed ? { replacementText: "" } : undefined;
+		if (message.content.some(block => block.type === "toolCall")) return;
 		const noticeState = JSON.stringify(open.map(item => [item.requirement.id, item.issues]));
 		if (noticeState !== this.#noticeState) {
 			await this.#host.queueModelNotice?.(
@@ -543,7 +544,7 @@ export class RequirementsLedgerRuntime {
 				? [{ ...item, issues, awaitingUser: issues.every(issue => awaitingUserIssues.has(issue)) }]
 				: [];
 		});
-		if (visible.length === 0) return failed ? { replacementText: "" } : undefined;
+		if (visible.length === 0) return;
 		if (newKeys.length)
 			this.#host.sessionManager.appendCustomEntry("requirements_awaiting_user_notice", { keys: newKeys });
 		const total = requirements.filter(
@@ -556,7 +557,7 @@ export class RequirementsLedgerRuntime {
 			.map(block => block.text)
 			.join("");
 		return {
-			replacementText: !failed && original ? `${original}\n\n${notice}` : notice,
+			replacementText: original ? `${original}\n\n${notice}` : notice,
 			settled: true,
 		};
 	}

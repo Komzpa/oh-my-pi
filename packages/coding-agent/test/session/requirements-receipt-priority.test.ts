@@ -12,6 +12,7 @@ import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
 	getLatestRequirements,
+	requirementSourceDigest,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import {
 	getLatestTodoPhasesFromEntries,
@@ -123,7 +124,7 @@ function setup(extra: "unlinked" | "different row" | "same row" = "unlinked") {
 }
 
 function receipt(identity: string, status = "pass", extra = "", raw = RAW42, row = ROW): string {
-	return `| ${header.trim()} |\n| --- | --- | --- | --- | --- |\n| R42 | ${raw} | ${status} | inspected regex a\\|b | row "${row}" @ ${identity} |${extra ? `\n${extra}` : ""}`;
+	return `| ${header.trim()} |\n| --- | --- | --- | --- | --- |\n| R42 | ${requirementSourceDigest(raw)} | ${status} | inspected regex a\\|b | row "${row}" @ ${identity} |${extra ? `\n${extra}` : ""}`;
 }
 
 function refusalText(result: unknown): string {
@@ -158,7 +159,7 @@ describe("receipt priority #924: real runtime intake", () => {
 				if (!columns) throw new Error("Rendered receipt header missing");
 				const fields: Record<string, string> = {
 					id: "R42",
-					"raw words": RAW42,
+					"source sha256": requirementSourceDigest(RAW42),
 					verdict: "pass",
 					evidence: "exercised current file",
 					"artifact identity": `row "${ROW}" @ ${fx.identity()}`,
@@ -248,7 +249,8 @@ describe("receipt priority #924: real runtime intake", () => {
 			if (defect === "wrong row") output = receipt(artifact, "pass", "", RAW42, OTHER_ROW);
 			if (defect === "changed identity") writeFileSync(fx.file, "changed artifact\n");
 			if (defect === "malformed verdict") output = receipt(artifact, "approved");
-			if (defect === "suffix") output += `\n| R42a | ${RAW42} | pass | inspected | row "${ROW}" @ ${artifact} |`;
+			if (defect === "suffix")
+				output += `\n| R42a | ${requirementSourceDigest(RAW42)} | pass | inspected | row "${ROW}" @ ${artifact} |`;
 			const result = await fx.receive(output);
 			expect(refusalText(result)).toContain("Blocked");
 			expect(fx.verdict()).toEqual(prior);

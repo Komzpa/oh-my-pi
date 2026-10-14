@@ -203,13 +203,13 @@ describe("TodoCommandController linked-requirement gate", () => {
 		expect(persisted[0]!.tasks[0]!.status).toBe("completed");
 	});
 
-	it("completes /todo done when no requirement links the row", async () => {
+	it("completes /todo done when no requirement is unclassified or links the row", async () => {
 		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-gate-unlinked-"));
 		const manager = SessionManager.inMemory(tempRoot);
 		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
 			phases: [{ name: "Plan", tasks: [{ content: "Gate artifact", status: "pending" }] }],
 		});
-		appendLedger(manager, createRequirementCandidates([], ["unclassified ask"], LEDGER_AT));
+		appendLedger(manager, []);
 		const ctx = createLedgerContext(manager);
 		const controller = new TodoCommandController(ctx);
 
@@ -218,5 +218,19 @@ describe("TodoCommandController linked-requirement gate", () => {
 		expect(ctx.showError).not.toHaveBeenCalled();
 		const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
 		expect(persisted[0]!.tasks[0]!.status).toBe("completed");
+	});
+
+	it("blocks /todo done for an unclassified ask even when the row is unlinked", async () => {
+		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-gate-candidate-"));
+		const manager = SessionManager.inMemory(tempRoot);
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			phases: [{ name: "Plan", tasks: [{ content: "Gate artifact", status: "pending" }] }],
+		});
+		appendLedger(manager, createRequirementCandidates([], ["unclassified ask"], LEDGER_AT));
+		const ctx = createLedgerContext(manager);
+		await new TodoCommandController(ctx).handleTodoCommand("done Gate artifact");
+		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining("R1"));
+		expect(ctx.setTodos).not.toHaveBeenCalled();
+		expect(getLatestTodoPhasesFromEntries(manager.getBranch())[0]!.tasks[0]!.status).toBe("pending");
 	});
 });

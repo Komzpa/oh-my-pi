@@ -117,6 +117,8 @@ const ACKNOWLEDGEMENT_REACTIONS = new Set([
  * unknown word or a concrete `test` request stays available for classification.
  */
 export function isAcknowledgementOnlyInput(message: string): boolean {
+	// A lead's standalone steering reference controls existing work; it is not a new deliverable.
+	if (/^@\/(?:[^\r\n/]+\/)*steer_[^\r\n/]+\.md$/u.test(message.trim())) return true;
 	const tokens = message.toLowerCase().match(TITLE_WORD);
 	if (!tokens) return true;
 	return tokens.every(

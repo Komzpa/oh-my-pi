@@ -1809,18 +1809,18 @@ describe("PR41 review boundaries", () => {
 		}
 	});
 	for (const stopReason of ["error", "aborted"] as const) {
-		it(`suppresses unverified final narrative after ${stopReason}`, async () => {
+		it(`preserves provider text and error metadata without audit decoration after ${stopReason}`, async () => {
 			const { cwd, runtime, gate } = fixture();
 			try {
 				runtime.syncPublicationGate();
 				const message = {
-					content: [{ type: "text", text: "Everything is verified complete" }],
+					content: [{ type: "text", text: "Provider stream failed: connection reset" }],
 					stopReason,
 					errorMessage: "provider failed",
 				};
 				const result = await gate()?.(message as never, new AbortController().signal);
-				expect(result?.replacementText).toBeDefined();
-				expect(result?.replacementText).not.toContain("Everything is verified complete");
+				expect(result).toBeUndefined();
+				expect(message.content).toEqual([{ type: "text", text: "Provider stream failed: connection reset" }]);
 				expect(message.stopReason).toBe(stopReason);
 				expect(message.errorMessage).toBe("provider failed");
 			} finally {
