@@ -1,4 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+const APPROVED_PAID_OPENROUTER = new Set(["openrouter/x-ai/grok-4.5", "openrouter/x-ai/grok-4.6", "openrouter/x-ai/grok-4.7", "openrouter/x-ai/grok-build-0.1"]);
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -715,7 +716,7 @@ describe("agent router", () => {
 				);
 				expect(result?.model).toContain(candidate);
 				expect(
-					result?.model.filter(model => model.startsWith("openrouter/")).every(model => model.endsWith(":free")),
+					result?.model.filter(model => model.startsWith("openrouter/")).every(model => model.endsWith(":free") || APPROVED_PAID_OPENROUTER.has(model)),
 				).toBe(true);
 			}
 		} finally {
@@ -723,13 +724,13 @@ describe("agent router", () => {
 		}
 	});
 
-	test("every openrouter entry ends with :free and judgment roles use no openrouter entry", () => {
+	test("OpenRouter chains allow approved Grok models and keep free models out of judgment roles", () => {
 		const judgmentRoles: Record<string, true> = { reviewer: true, adversary: true, "qa-auditor": true };
 		for (const [agent, config] of Object.entries(AGENT_POOLS)) {
 			for (const model of [...config.pool, ...config.fallbacks]) {
 				if (!model.startsWith("openrouter/")) continue;
-				expect(model.endsWith(":free"), `${agent}: ${model}`).toBe(true);
-				expect(judgmentRoles[agent] === true || agent.endsWith("-strong"), agent).toBe(false);
+				expect(model.endsWith(":free") || APPROVED_PAID_OPENROUTER.has(model), `${agent}: ${model}`).toBe(true);
+				if (model.endsWith(":free")) expect(judgmentRoles[agent] === true || agent.endsWith("-strong"), agent).toBe(false);
 			}
 		}
 	});
@@ -2237,7 +2238,9 @@ describe("agent router", () => {
 			});
 		// Non-free pool members shuffle; the hard-fail free model stays last.
 		const TASK_ORDER = [
+			"openrouter/x-ai/grok-4.6",
 			"muse-code/muse-spark-1.3-contributor",
+			"openrouter/x-ai/grok-4.5",
 			"xiaomi/mimo-v2.6-pro",
 			"kimi-code/k3:high",
 			"deepseek/deepseek-v4-pro:high",
@@ -2272,7 +2275,8 @@ describe("agent router", () => {
 			try {
 				const result = await spawnTask("long-1", priorityCtx(), file);
 				expect(result?.model).toEqual(TASK_ORDER);
-				expect(result?.model?.[0]).toBe("muse-code/muse-spark-1.3-contributor");
+				expect(result?.model?.[0]).toBe(TASK_ORDER[0]);
+				expect(result?.model?.at(-1)).toBe("openrouter/dots-studio/dots-3-note-preview:free");
 				expect(result?.note).not.toContain("critical row");
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
