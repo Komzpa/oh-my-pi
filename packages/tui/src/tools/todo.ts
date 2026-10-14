@@ -820,7 +820,7 @@ export const todoToolRenderer = {
 			matchByContent.clear();
 		};
 
-		return framedToolCard(uiTheme, () => {
+		return framedToolCard(uiTheme, ({ contentWidth }) => {
 			const { spinnerFrame } = options;
 			// The pinned HUD owns the always-visible TODO tree. Keep mutation results
 			// concise even when their tool card is expanded; explicit `todo view` is
