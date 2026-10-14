@@ -1044,6 +1044,9 @@ describe("YieldTool", () => {
 				},
 			}),
 		);
+		await expect(
+			tool.execute("call-required-null", { data: { status: null, steps: [{ name: "completed" }] } }),
+		).rejects.toThrow(/status: expected string, received null/);
 		const result = await tool.execute("call-nested-optionals", {
 			data: {
 				status: "done",
@@ -1057,9 +1060,6 @@ describe("YieldTool", () => {
 			status: "done",
 			steps: [{ name: "completed", blocker_details: null }],
 		});
-		await expect(
-			tool.execute("call-required-null", { data: { status: null, steps: [{ name: "completed" }] } }),
-		).rejects.toThrow(/status: expected string, received null/);
 	});
 
 	it("omits optional nulls in strict prefixItems and trailing items without changing required fields", async () => {
@@ -1094,6 +1094,9 @@ describe("YieldTool", () => {
 			}),
 		);
 		expect(tool.strict).toBe(true);
+		await expect(
+			tool.execute("call-tuple-required", { data: { tuple: [{ id: null }, { label: "next" }] } }),
+		).rejects.toThrow(/tuple\/0\/id: expected string, received null/);
 		const result = await tool.execute("call-tuple", {
 			data: {
 				tuple: [
@@ -1103,9 +1106,6 @@ describe("YieldTool", () => {
 			},
 		});
 		expect(result.details?.data).toEqual({ tuple: [{ id: "done" }, { label: "next" }] });
-		await expect(
-			tool.execute("call-tuple-required", { data: { tuple: [{ id: null }, { label: "next" }] } }),
-		).rejects.toThrow(/tuple\/0\/id: expected string, received null/);
 	});
 
 	it("normalizes optional nulls inside JTD discriminator variants", async () => {
