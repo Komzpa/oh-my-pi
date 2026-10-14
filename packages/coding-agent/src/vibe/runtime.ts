@@ -99,6 +99,7 @@ export interface VibeParentSession {
 	getSessionId?: () => string | null;
 	getSessionFile: () => string | null;
 	sessionManager?: ToolSession["sessionManager"] &
+		Pick<SessionManager, "getBranchMatching" | "getLatestBranchMatching"> &
 		Partial<
 			Pick<SessionManager, "appendModeChange" | "appendEntriesAtomically" | "recoverPersistenceFromCurrentState">
 		>;
