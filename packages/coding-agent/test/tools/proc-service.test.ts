@@ -1,20 +1,28 @@
 import { describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { setProcessName, TempDir } from "@oh-my-pi/pi-utils";
+import { procmgr, setProcessName, TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../src/config/settings";
 import { AsyncJobManager } from "../../src/async/job-manager";
 import { ProcProtocolHandler } from "../../src/internal-urls/proc-protocol";
 import { parseInternalUrl } from "../../src/internal-urls/parse";
 import { AgentRegistry } from "../../src/registry/agent-registry";
 import { startDaemonBrokerFromEnvironment } from "../../src/launch/broker";
-import { createDaemonBrokerClient } from "../../src/launch/client";
+import { createDaemonBrokerClient, type DaemonBrokerClient } from "../../src/launch/client";
 import * as daemonClient from "../../src/launch/client";
-import { DAEMON_IDLE_GRACE_ENV, DAEMON_PROJECT_DIR_ENV, DAEMON_RUNTIME_DIR_ENV } from "../../src/launch/protocol";
+import {
+	DAEMON_IDLE_GRACE_ENV,
+	DAEMON_PROJECT_DIR_ENV,
+	DAEMON_RUNTIME_DIR_ENV,
+	type DaemonOperation,
+	type DaemonRpcResult,
+} from "../../src/launch/protocol";
 import * as bashExecutor from "../../src/exec/bash-executor";
 import { BashTool } from "../../src/tools/bash";
 import { WriteTool } from "../../src/tools/write";
+import { sharedBrowserDaemonName } from "../../src/tools/browser/shared-daemon";
 import type { ToolSession } from "../../src/tools";
+import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/daemon";
 
 function startBroker(projectDir: string, runtimeDir: string): Promise<void> {
 	const previous = [
@@ -33,6 +41,24 @@ function startBroker(projectDir: string, runtimeDir: string): Promise<void> {
 	return broker;
 }
 
+// Services really spawn the configured shell with POSIX command lines. Windows
+// has no `/bin/sh`, so use the product's own Git Bash discovery there.
+const SERVICE_SHELL = process.platform === "win32" ? procmgr.resolveWindowsShell() : "/bin/sh";
+
+/**
+ * Settles a broker-backed call with a plain `await`. On Windows, Bun's
+ * `expect(promise).rejects` waits on the promise without servicing the
+ * in-process broker's named-pipe I/O, so the request stalls until its timeout.
+ */
+async function rejectionMessage(promise: Promise<unknown>): Promise<string> {
+	try {
+		await promise;
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+	throw new Error("Expected the promise to reject");
+}
+
 function toolSession(cwd: string, manager?: AsyncJobManager, options: { launch?: boolean } = {}): ToolSession {
 	return {
 		cwd,
@@ -48,7 +74,7 @@ function toolSession(cwd: string, manager?: AsyncJobManager, options: { launch?:
 			"bash.autoBackground.thresholdMs": 60_000,
 			"bashInterceptor.enabled": false,
 			"worktree.clone": false,
-			shellPath: "/bin/sh",
+			shellPath: SERVICE_SHELL,
 		}),
 	} as unknown as ToolSession;
 }
@@ -148,6 +174,44 @@ describe("proc:// background jobs", () => {
 			await expect(
 				write.execute("missing-stdin", write.parameters.assert({ path: `proc://${id}` })),
 			).rejects.toThrow("content is required");
+			expect(manager.getJob(id)?.status).toBe("running");
+			const result = await write.execute("kill", write.parameters.assert({ path: `proc://${id}/kill` }));
+			await manager.getJob(id)?.promise;
+			expect(result.details?.proc).toMatchObject({ op: "cancel", cancelled: [{ id, status: "cancelled" }] });
+			expect(manager.getJob(id)?.status).toBe("cancelled");
+		} finally {
+			await manager.dispose();
+		}
+	});
+
+	it.each([
+		{ label: "plan mode", deviceOnlyWrite: false },
+		{ label: "plan mode with device-only write", deviceOnlyWrite: true },
+	])("kills owned jobs under $label while stdin stays guarded (issue #13803)", async ({ deviceOnlyWrite }) => {
+		const manager = new AsyncJobManager({});
+		const pending = Promise.withResolvers<string>();
+		const id = manager.register(
+			"task",
+			"exploring the wrong track",
+			async ({ signal }) => {
+				signal.addEventListener("abort", () => pending.resolve("cancelled"), { once: true });
+				return pending.promise;
+			},
+			{ ownerId: "Main" },
+		);
+		const session = toolSession(process.cwd(), manager, { launch: false });
+		session.getPlanModeState = () => ({
+			enabled: true,
+			planFilePath: "local://PLAN.md",
+			workflow: "parallel",
+			reentry: false,
+		});
+		session.deviceOnlyWrite = deviceOnlyWrite || undefined;
+		const write = new WriteTool(session);
+		try {
+			await expect(write.execute("stdin", { path: `proc://${id}`, content: "go" })).rejects.toThrow(
+				deviceOnlyWrite ? "limited to the xd:// device transport" : "Plan mode",
+			);
 			expect(manager.getJob(id)?.status).toBe("running");
 			const result = await write.execute("kill", write.parameters.assert({ path: `proc://${id}/kill` }));
 			await manager.getJob(id)?.promise;
@@ -348,12 +412,12 @@ describe("bash services via proc://", () => {
 				{ id: "echo-service", ownerId: "Main" },
 			);
 			expect(collisionId).toBe("echo-service");
-			await expect(proc.resolve(parseInternalUrl("proc://echo-service"), { session })).rejects.toThrow(
+			expect(await rejectionMessage(proc.resolve(parseInternalUrl("proc://echo-service"), { session }))).toContain(
 				"both job echo-service and service echo-service",
 			);
-			await expect(proc.write(parseInternalUrl("proc://echo-service/kill"), "", { session })).rejects.toThrow(
-				"both job echo-service and service echo-service",
-			);
+			expect(
+				await rejectionMessage(proc.write(parseInternalUrl("proc://echo-service/kill"), "", { session })),
+			).toContain("both job echo-service and service echo-service");
 			manager.cancel(collisionId, { ownerId: "Main" });
 			await manager.getJob(collisionId)?.promise;
 			await manager.dispose({ timeoutMs: 1_000 });
@@ -427,9 +491,11 @@ describe("bash services via proc://", () => {
 				path.join(runtimeDir, "daemons", "detach-candidate", "spec.json"),
 			).json();
 			expect(detachedSpec).toMatchObject({ detached: true, persist: true, pty: false });
-			await expect(
-				proc.write(parseInternalUrl("proc://detach-candidate/mode"), "session", { session }),
-			).rejects.toThrow("must remain persistent");
+			expect(
+				await rejectionMessage(
+					proc.write(parseInternalUrl("proc://detach-candidate/mode"), "session", { session }),
+				),
+			).toContain("must remain persistent");
 			await proc.write(parseInternalUrl("proc://detach-candidate/kill"), "", { session });
 			await expect(bash.execute("invalid", { command: "true", name: "bad", async: true })).rejects.toThrow(
 				"does not accept async or timeout",
@@ -493,6 +559,47 @@ describe("bash services via proc://", () => {
 			expect(textOf(blank)).not.toContain("Ignored");
 
 			expect(commands).toEqual(["printf 'PLAIN\\n'", "printf 'BLANK\\n'"]);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("refuses to detach the project-shared browser, which the broker would relaunch on an unprepared profile", async () => {
+		const name = sharedBrowserDaemonName(true);
+		const now = Date.now();
+		const daemon: DaemonSnapshot = {
+			name,
+			id: "shared",
+			state: "ready",
+			createdAt: now,
+			startedAt: now,
+			readyAt: now,
+			restartCount: 0,
+			outputBytes: 0,
+			persist: false,
+			detached: false,
+		};
+		const operations: DaemonOperation["op"][] = [];
+		const client = {
+			projectDir: process.cwd(),
+			onCompletion: () => () => {},
+			close() {},
+			async request(operation: DaemonOperation): Promise<DaemonRpcResult> {
+				operations.push(operation.op);
+				if (operation.op === "list") return { op: "list", daemons: [daemon] };
+				// The real broker answers by relaunching the browser as a detached process.
+				if (operation.op === "mode") return { op: "mode", daemon: { ...daemon, detached: true } };
+				throw new Error(`Unexpected broker op ${operation.op}`);
+			},
+		} as unknown as DaemonBrokerClient;
+		const spy = vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
+		try {
+			await rejectionMessage(
+				new ProcProtocolHandler().write(parseInternalUrl(`proc://${name}/mode`), "detached", {
+					session: toolSession(process.cwd()),
+				}),
+			);
+			expect(operations).not.toContain("mode");
 		} finally {
 			spy.mockRestore();
 		}
