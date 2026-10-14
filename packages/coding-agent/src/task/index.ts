@@ -1372,14 +1372,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const text = [merged.contentParts.join("\n\n"), spawnedSummary]
 			.filter(section => section.trim().length > 0)
 			.join("\n\n");
-	return appendTaskNotices(
-		withAdvisory({
-			content: [{ type: "text", text: text.length > 0 ? text : "No results." }],
-			...(merged.isError ? { isError: true } : {}),
-			details: buildAsyncDetails(),
-		}),
-		toolNotices,
-	);
+		return appendTaskNotices(
+			withAdvisory({
+				content: [{ type: "text", text: text.length > 0 ? text : "No results." }],
+				...(merged.isError ? { isError: true } : {}),
+				details: buildAsyncDetails(),
+			}),
+			toolNotices,
+		);
 	}
 
 	/**
