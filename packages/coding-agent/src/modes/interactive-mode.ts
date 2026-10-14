@@ -211,7 +211,6 @@ import {
 	type TodoPlanForecast,
 	type TodoTaskForecast,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { isTodoStateEntryMetadata } from "../tools/todo";
 import { readGoalDeadlineFromManager } from "../goals/deadlines";
 import { vocalizer } from "../tts/vocalizer";
 import { applyHyperlinkSetting, fileHyperlink } from "@oh-my-pi/pi-tui/render/hyperlink";
