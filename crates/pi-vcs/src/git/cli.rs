@@ -365,7 +365,6 @@ fn run_sync_impl(
 	write: Option<&SyncWrite<'_>>,
 ) -> Result<CliOutput> {
 	let argv = hardened_args(args, write.is_none());
-	let argv = hardened_args(args, write.is_none());
 	let command = crate::process_limit::shared().wrap_scope_command(
 		&[std::ffi::OsString::from("git")],
 		&crate::process_limit::ScopeEnvironment::inherited(),
