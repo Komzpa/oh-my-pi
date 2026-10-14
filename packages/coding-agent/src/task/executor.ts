@@ -4,7 +4,6 @@
  * Runs each subagent on the main thread and forwards AgentEvents for progress tracking.
  */
 
-import { findFallbackEntryForEvent } from "./fallback-attribution";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
@@ -106,6 +105,7 @@ import { resolveAgentPrewalkDefault } from "./prewalk";
 import { isReadOnlyAgent } from "./read-only-policy";
 import { formatTaskResultSummary } from "./result-summary";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
+import { findFallbackEntryForEvent } from "./fallback-attribution";
 import type { WorkPoolYieldItem } from "./workpool-yield";
 import {
 	type AgentDefinition,
