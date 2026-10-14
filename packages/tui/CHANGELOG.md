@@ -156,6 +156,10 @@
 - Fixed streamed assistant text or thinking containing a tab stopping all later rows of the reply from retiring into native scrollback until the turn ended ([#15693](https://github.com/can1357/oh-my-pi/issues/15693))
 - Fixed wrapped lines in Write, Read, Edit, Todo, Ask and LSP tool cards losing their alignment under line numbers, tree connectors, and option or code rails ([#15677](https://github.com/can1357/oh-my-pi/issues/15677))
 - Fixed SIXEL images leaving their previous raster on screen, drawn again over itself, when the transcript moves them within the viewport ([#15657](https://github.com/can1357/oh-my-pi/issues/15657))
+- Fixed the status-line FPS meter showing `lag 0ms` while the UI froze for seconds or minutes. Event-loop blocks and long frame gaps now feed `lag`, and the worst one stays visible for 60s after it ends instead of vanishing with the 5s sample window.
+- Fixed the FPS meter logging the first frame after an idle period as a `frame-gap` drop. The gap is now measured from the earliest pending input or render request to the paint, so idle time no longer counts.
+- Fixed the status-line FPS text staying frozen after rendering stopped. It now decays to `0fps` on a listener-scoped timer, and frames repainted only to update the meter are not sampled, so an idle meter does not keep itself alive.
+- Fixed the status-line FPS meter `lag` value measuring the idle gap between frames instead of input-to-paint latency. `lag` now reports the delay from the earliest unpainted keystroke to the frame that paints it, and stays at 0 when idle.
 
 ## [18.10.4] - 2026-10-13
 
@@ -557,12 +561,6 @@
 ### Removed
 
 - Removed `JobsPanel`, the `/jobs` transcript block; `/jobs` now opens `JobsSheet` natively ([#14138](https://github.com/can1357/oh-my-pi/pull/14138) by [@H4vC](https://github.com/H4vC)).
-### Fixed
-
-- Fixed the status-line FPS meter showing `lag 0ms` while the UI froze for seconds or minutes. Event-loop blocks and long frame gaps now feed `lag`, and the worst one stays visible for 60s after it ends instead of vanishing with the 5s sample window.
-- Fixed the FPS meter logging the first frame after an idle period as a `frame-gap` drop. The gap is now measured from the earliest pending input or render request to the paint, so idle time no longer counts.
-- Fixed the status-line FPS text staying frozen after rendering stopped. It now decays to `0fps` on a listener-scoped timer, and frames repainted only to update the meter are not sampled, so an idle meter does not keep itself alive.
-- Fixed the status-line FPS meter `lag` value measuring the idle gap between frames instead of input-to-paint latency. `lag` now reports the delay from the earliest unpainted keystroke to the frame that paints it, and stays at 0 when idle.
 
 ## [18.4.12] - 2026-10-02
 
