@@ -472,6 +472,9 @@
 ### Removed
 
 - Removed `JobsPanel`, the `/jobs` transcript block; `/jobs` now opens `JobsSheet` natively ([#14138](https://github.com/can1357/oh-my-pi/pull/14138) by [@H4vC](https://github.com/H4vC)).
+### Added
+
+- Added optional runtime HUD/input allocation against rendered sibling rows in normal and resize Composer frames.
 
 ## [18.4.12] - 2026-10-02
 

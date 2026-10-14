@@ -101,6 +101,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		await session.sessionManager.flush();
 		expect(renderTodos(mode)).not.toContain("done task");
 		expect(renderTodos(mode)).not.toContain("abandoned task");
+		expect(renderTodos(mode)).toBe("");
 		expect(session.getTodoPhases()).toEqual(phases);
 	});
 
@@ -146,12 +147,18 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(rendered).toContain("current task");
 	});
 
-	it("leaves closed todos visible when auto-clear is disabled", () => {
+	it("keeps closed todo counts visible when auto-clear is disabled", () => {
 		setTodoClearDelay(-1);
 
-		mode.setTodos([{ name: "Implementation", tasks: [{ content: "done task", status: "completed" }] }]);
+		const phases: TodoPhase[] = [{ name: "Implementation", tasks: [{ content: "done task", status: "completed" }] }];
+		session.setTodoPhases(phases);
+		mode.setTodos(session.getTodoPhases());
 
-		expect(renderTodos(mode)).toContain("done task");
+		const rendered = renderTodos(mode);
+		expect(rendered).not.toContain("done task");
+		expect(rendered).toContain("1 ✓");
+		expect(rendered).toContain("0 open");
+		expect(session.getTodoPhases()).toEqual(phases);
 	});
 
 	it("reloads the visible HUD from the explicitly attached session", async () => {
@@ -201,16 +208,23 @@ describe("InteractiveMode todo HUD persistence", () => {
 		session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
 		session.setTodoPhases(phases);
 		mode.setTodos(session.getTodoPhases());
-		expect(renderTodos(mode)).toContain("done task");
+		expect(renderTodos(mode)).not.toContain("done task");
+		expect(renderTodos(mode)).toContain("1 ✓");
+		expect(renderTodos(mode)).toContain("0 open");
+		expect(session.getTodoPhases()).toEqual(phases);
 
 		vi.advanceTimersByTime(999);
-		expect(renderTodos(mode)).toContain("done task");
-		expect(renderTodos(mode)).toContain("TODO");
+		expect(renderTodos(mode)).not.toContain("done task");
+		expect(renderTodos(mode)).toContain("1 ✓");
+		expect(renderTodos(mode)).toContain("0 open");
+		expect(session.getTodoPhases()).toEqual(phases);
 
 		vi.advanceTimersByTime(1);
 		await session.settleInFlightMessagePersistence();
 		await session.sessionManager.flush();
 		expect(renderTodos(mode)).not.toContain("done task");
+		expect(renderTodos(mode)).toBe("");
+		expect(session.getTodoPhases()).toEqual(phases);
 	});
 
 	it("marks reconciled todos complete and auto-dismisses the durable plan", async () => {
@@ -361,7 +375,9 @@ describe("InteractiveMode todo HUD persistence", () => {
 
 			expect(workerSession.getTodoPhases()[0]?.tasks[0]?.status).toBe("completed");
 			expect(session.getTodoPhases()).toEqual(mainPhases);
-			expect(renderTodos(mode)).toContain("1/1");
+			expect(renderTodos(mode)).not.toContain("run the delegated fix");
+			expect(renderTodos(mode)).toContain("1 ✓");
+			expect(renderTodos(mode)).toContain("0 open");
 		} finally {
 			vi.useRealTimers();
 			await workerSession.dispose();
@@ -484,7 +500,10 @@ describe("InteractiveMode todo HUD persistence", () => {
 		session.setTodoPhases(phases);
 		mode.setTodos(phases);
 		expect(newSourceEntryId).not.toBe(oldSourceEntryId);
-		expect(renderTodos(mode)).toContain("same task");
+		expect(renderTodos(mode)).not.toContain("same task");
+		expect(renderTodos(mode)).toContain("1 ✓");
+		expect(renderTodos(mode)).toContain("0 open");
+		expect(session.getTodoPhases()).toEqual(phases);
 
 		vi.advanceTimersByTime(1000);
 		await session.settleInFlightMessagePersistence();
@@ -518,13 +537,18 @@ describe("InteractiveMode todo HUD persistence", () => {
 		session.setTodoPhases(phases);
 		mode.setTodos(phases);
 		expect(newSessionId).not.toBe(oldSessionId);
-		expect(renderTodos(mode)).toContain("same task");
+		expect(renderTodos(mode)).not.toContain("same task");
+		expect(renderTodos(mode)).toContain("1 ✓");
+		expect(renderTodos(mode)).toContain("0 open");
+		expect(session.getTodoPhases()).toEqual(phases);
 
 		settle.resolve();
 		await Promise.resolve();
 		await session.sessionManager.flush();
 		await Promise.resolve();
-		expect(renderTodos(mode)).toContain("same task");
+		expect(renderTodos(mode)).not.toContain("same task");
+		expect(renderTodos(mode)).toContain("1 ✓");
+		expect(renderTodos(mode)).toContain("0 open");
 		expect(session.getTodoPhases()).toEqual(phases);
 		expect(
 			session.sessionManager.getBranch().map(entry => ({
@@ -575,6 +599,10 @@ describe("InteractiveMode todo HUD persistence", () => {
 		await session.sessionManager.flush();
 		await replaceMode(await SessionManager.open(file));
 		await mode.reloadTodos();
+		expect(renderTodos(mode)).not.toContain("ship");
+		expect(renderTodos(mode)).toContain("1 ✓");
+		expect(renderTodos(mode)).toContain("0 open");
+		await mode.handleTodoCommand("expand");
 		expect(renderTodos(mode)).toContain("ship");
 		expect(session.getTodoPhases()).toEqual(phases);
 	});
@@ -680,14 +708,12 @@ describe("InteractiveMode todo HUD anchor", () => {
 			.map(line => Bun.stripANSI(line));
 		// One stage retains its task progress and omits its numeral.
 		const root = lines.find(line => line.includes("TODO"));
-		expect(root).toContain("TODO");
-		expect(root).toContain("2 open");
+		expect(root?.trim()).toBe("TODO");
 		// The stage keeps its task progress; no roman numeral for a lone stage.
 		expect(lines.some(line => line.includes("Tasks") && line.includes("0/2"))).toBe(true);
 		expect(lines.some(line => line.includes("I. Tasks"))).toBe(false);
 		expect(lines.some(line => line.includes("alpha"))).toBe(true);
 	});
-
 
 	it("expands and collapses the complete todo HUD through /todo", async () => {
 		mode.setTodos([
@@ -704,11 +730,15 @@ describe("InteractiveMode todo HUD anchor", () => {
 		await mode.handleTodoCommand("expand");
 
 		expect(renderTodos(mode)).toContain("Task 8");
-		expect(renderTodos(mode)).not.toContain("more todo");
+		expect(renderTodos(mode)).not.toContain("more open");
 
 		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
+		await mode.handleTodoCommand("collapse");
 		expect(renderTodos(mode)).not.toContain("Task 8");
-		expect(renderTodos(mode)).toContain("+5 more open");
+		const overflow = renderTodos(mode)
+			.split("\n")
+			.find(line => /\+\d+ more open/i.test(line));
+		expect(overflow?.trimEnd()).toMatch(/(?:^|\s)\+5 more open \(.+ …\)$/);
 	});
 
 	describe("compact todo for small terminal height (< 18 rows)", () => {
