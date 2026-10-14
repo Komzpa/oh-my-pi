@@ -9,6 +9,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
+import type { DescribeContext } from "@oh-my-pi/pi-tui/native/node";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -99,7 +100,15 @@ describe("pr41-hud", () => {
 		});
 		mode.setTodos([]);
 		await mode.init();
-		expect(mode.todoHudNative).toBeUndefined();
+		const cx: DescribeContext = {
+			cols: 100,
+			reduceMotion: false,
+			dark: true,
+			supports: () => true,
+			feature: () => true,
+		};
+		expect(mode.describeTodoHud(cx)).toBeUndefined();
+		expect(mode.describeTodoHud({ ...cx, supports: () => false })).toBeUndefined();
 		const summary = mode.describeRequirementHudSummary();
 		expect(summary).toBeDefined();
 		expect(JSON.stringify(summary)).toContain("req 1");
