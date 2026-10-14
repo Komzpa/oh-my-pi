@@ -53,7 +53,7 @@ pub struct GitRepoInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitTreeEntry {
 	/// Full object ID in the repository's object format.
-	pub oid: String,
+	pub oid:  String,
 	/// Raw Git tree mode (e.g. 0o100644), not filesystem permissions.
 	pub mode: u32,
 }

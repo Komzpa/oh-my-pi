@@ -101,13 +101,14 @@ impl GitRepo {
 		}
 	}
 
-	/// Read one exact literal path in a full immutable commit, including its mode.
-	/// No pathspec widening and no decoding of blob bytes is involved.
+	/// Read one exact literal path in a full immutable commit, including its
+	/// mode. No pathspec widening and no decoding of blob bytes is involved.
 	pub fn tree_entry(&self, commit: &str, path: &str) -> Result<Option<GitTreeEntry>> {
 		if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
 			return Err(Error::backend("git tree-entry", "expected a full commit object ID"));
 		}
-		if path.is_empty() || path.len() > 4096
+		if path.is_empty()
+			|| path.len() > 4096
 			|| path.bytes().any(|b| b < 0x20 || b == 0x7f || b == b'\\')
 			|| path.split('/').any(|part| matches!(part, "" | "." | ".."))
 		{
@@ -137,15 +138,20 @@ impl GitRepo {
 			let wanted = quote_path(path);
 			let mut found = None;
 			for row in raw.lines() {
-				let (header, name) = row.split_once('\t')
+				let (header, name) = row
+					.split_once('\t')
 					.ok_or_else(|| Error::backend("git tree-entry", "invalid tree metadata"))?;
-				if name != wanted { continue; }
+				if name != wanted {
+					continue;
+				}
 				let mut fields = header.split(' ');
 				let mode_text = fields.next().unwrap_or_default();
 				let _kind = fields.next().unwrap_or_default();
 				let oid = fields.next().unwrap_or_default();
-				if fields.next().is_some() || oid.len() != commit.len()
-					|| !oid.bytes().all(|b| b.is_ascii_hexdigit()) || found.is_some()
+				if fields.next().is_some()
+					|| oid.len() != commit.len()
+					|| !oid.bytes().all(|b| b.is_ascii_hexdigit())
+					|| found.is_some()
 				{
 					return Err(Error::backend("git tree-entry", "invalid exact tree entry"));
 				}
@@ -156,14 +162,23 @@ impl GitRepo {
 			return Ok(found);
 		}
 		let repo = self.gix()?;
-		let commit_object = repo.rev_parse_single(commit)
+		let commit_object = repo
+			.rev_parse_single(commit)
 			.map_err(|err| Error::backend("git tree-entry", err))?
-			.object().map_err(|err| Error::backend("git tree-entry", err))?
-			.try_into_commit().map_err(|err| Error::backend("git tree-entry", err))?;
-		let tree = commit_object.tree().map_err(|err| Error::backend("git tree-entry", err))?;
-		Ok(tree.lookup_entry_by_path(path)
+			.object()
 			.map_err(|err| Error::backend("git tree-entry", err))?
-			.map(|entry| GitTreeEntry { oid: entry.id().detach().to_string(), mode: u32::from(entry.mode().value()) }))
+			.try_into_commit()
+			.map_err(|err| Error::backend("git tree-entry", err))?;
+		let tree = commit_object
+			.tree()
+			.map_err(|err| Error::backend("git tree-entry", err))?;
+		Ok(tree
+			.lookup_entry_by_path(path)
+			.map_err(|err| Error::backend("git tree-entry", err))?
+			.map(|entry| GitTreeEntry {
+				oid:  entry.id().detach().to_string(),
+				mode: u32::from(entry.mode().value()),
+			}))
 	}
 
 	/// Abbreviate the object `rev` names to its shortest unambiguous id

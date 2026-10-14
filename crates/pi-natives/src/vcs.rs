@@ -97,7 +97,7 @@ pub struct VcsGitRepoInfo {
 /// One exact immutable Git tree entry, without blob content.
 #[napi(object)]
 pub struct VcsGitTreeEntry {
-	pub oid: String,
+	pub oid:  String,
 	pub mode: u32,
 }
 /// Git status counts.
@@ -794,9 +794,15 @@ impl VcsGitRepo {
 
 	/// Exact literal entry in a full immutable commit tree.
 	#[napi]
-	pub fn tree_entry(&self, commit: String, path: String, signal: Option<Unknown>) -> Promise<Option<VcsGitTreeEntry>> {
+	pub fn tree_entry(
+		&self,
+		commit: String,
+		path: String,
+		signal: Option<Unknown>,
+	) -> Promise<Option<VcsGitTreeEntry>> {
 		blocking("vcs.treeEntry", self.inner.clone(), signal, move |r| {
-			r.tree_entry(&commit, &path).map(|entry| entry.map(|entry| VcsGitTreeEntry { oid: entry.oid, mode: entry.mode }))
+			r.tree_entry(&commit, &path)
+				.map(|entry| entry.map(|entry| VcsGitTreeEntry { oid: entry.oid, mode: entry.mode }))
 		})
 	}
 
