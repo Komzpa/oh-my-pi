@@ -1,4 +1,3 @@
-import { selectLatestRestartBranchEntry } from "../task/restart-branch-selection";
 /**
  * AgentSession - Core abstraction for agent lifecycle and session management.
  *
@@ -457,6 +456,7 @@ import {
 	type PersistedSessionInit,
 	type SessionManager,
 } from "./session-manager";
+import { selectLatestRestartBranchEntry } from "../task/restart-branch-selection";
 import { SessionMemory, type SessionMemoryHost } from "./session-memory";
 import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
