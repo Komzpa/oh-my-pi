@@ -1890,8 +1890,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						if (data !== undefined) {
 							// The accepted hook may already have recorded this same
 							// call: first claim wins, incrementals only once.
-							const firstClaim =
-								event.toolName !== "yield" || claimYieldAcceptance(event.toolCallId);
+							const firstClaim = event.toolName !== "yield" || claimYieldAcceptance(event.toolCallId);
 							if (firstClaim) recordExtractedToolData(event.toolName, data);
 						}
 					}
@@ -2150,10 +2149,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		// monitor directly. Per-attach lifetime: detach drops the subscription,
 		// and the tool's generation fence plus call-id dedupe keep a stale
 		// execution from marking a new run.
-		const unsubscribeYield = subscribeYieldAcceptedResult(
-			session.getToolByName?.("yield"),
-			recordHookYield,
-		);
+		const unsubscribeYield = subscribeYieldAcceptedResult(session.getToolByName?.("yield"), recordHookYield);
 		const unsubscribeEvents = session.subscribe(event => {
 			emitSubagentEvent(event);
 			publishAdvisorState(session);

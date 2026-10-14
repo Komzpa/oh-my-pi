@@ -85,10 +85,7 @@ interface Harness {
 		| undefined;
 }
 
-function createHarness(options?: {
-	asyncJobManager?: AsyncJobManager;
-	toolSession?: Partial<ToolSession>;
-}): Harness {
+function createHarness(options?: { asyncJobManager?: AsyncJobManager; toolSession?: Partial<ToolSession> }): Harness {
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
 	const messages: AssistantMessage[] = [];
 	const prompts: string[] = [];

@@ -1099,10 +1099,7 @@ function canSubscribeAcceptedResult(tool: AgentTool): tool is AgentTool & Accept
  * an `ExtensionToolWrapper` proxy (bound-method forwarding). Missing or dynamic
  * replacement tools without this producer have no subscription.
  */
-export function subscribeYieldAcceptedResult(
-	tool: AgentTool | undefined,
-	listener: YieldAcceptedListener,
-): () => void {
+export function subscribeYieldAcceptedResult(tool: AgentTool | undefined, listener: YieldAcceptedListener): () => void {
 	if (tool && canSubscribeAcceptedResult(tool)) return tool.subscribeAcceptedResult(listener);
 	return () => {};
 }
