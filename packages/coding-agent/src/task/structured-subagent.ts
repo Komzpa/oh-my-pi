@@ -224,13 +224,19 @@ function sanitizeAgentId(value: string | undefined): string | undefined {
 
 function resolveSchema(request: StructuredSubagentRequest, agent: AgentDefinition): StructuredSubagentSchemaResolution {
 	const mode = request.schemaMode ?? request.session.outputSchemaMode ?? "permissive";
+	// `false` is the task API's explicit no-wrapper override, not a rejecting
+	// JSON Schema. Keep the override so the child cannot re-inherit agent output.
+	const noWrapper = { schema: undefined, source: "none" as const, mode, outputSchemaOverridesAgent: true };
 	if (Object.hasOwn(request, "outputSchema")) {
+		if (request.outputSchema === false) return noWrapper;
 		return { schema: request.outputSchema, source: "caller", mode, outputSchemaOverridesAgent: true };
 	}
 	if (agent.output !== undefined) {
+		if (agent.output === false) return noWrapper;
 		return { schema: agent.output, source: "agent", mode, outputSchemaOverridesAgent: false };
 	}
 	if (request.session.outputSchema !== undefined) {
+		if (request.session.outputSchema === false) return noWrapper;
 		return { schema: request.session.outputSchema, source: "session", mode, outputSchemaOverridesAgent: false };
 	}
 	return { schema: undefined, source: "none", mode, outputSchemaOverridesAgent: false };
@@ -519,7 +525,9 @@ function buildExecutorOptions(
 		effort: request.effort,
 		solutionSpace: request.solutionSpace?.trim() || undefined,
 		...(policy.schema.source === "none"
-			? {}
+			? policy.schema.outputSchemaOverridesAgent
+				? { outputSchema: undefined, outputSchemaOverridesAgent: true }
+				: {}
 			: {
 					outputSchemaSource: policy.schema.source,
 					outputSchema: policy.schema.schema,
