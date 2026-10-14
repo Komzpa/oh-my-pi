@@ -2882,7 +2882,7 @@ export class AgentSession implements SettingsScope {
 	}
 
 	get taskDepth(): number {
-		return this.#evalToolSession?.taskDepth ?? this.#extensionRunner?.agent.depth ?? 0;
+		return this.#evalToolSession?.taskDepth ?? 0;
 	}
 
 	getSessionFile(): string | undefined {

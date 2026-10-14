@@ -515,7 +515,10 @@ function formatTodoLine(
 		default:
 			// A pending todo lit by a live subagent match renders accent, matching
 			// the sticky HUD's convention (#5873).
-			return uiTheme.fg(overdue ? "error" : matched ? "accent" : "dim", `${prefix}${checkbox.unchecked} ${label.text}`);
+			return uiTheme.fg(
+				overdue ? "error" : matched ? "accent" : "dim",
+				`${prefix}${checkbox.unchecked} ${label.text}`,
+			);
 	}
 }
 
@@ -531,7 +534,17 @@ function formatTodoLineWithForecast(
 	matched = false,
 ): string {
 	const isOverdueOpenTask = row?.overdue && (item.status === "pending" || item.status === "in_progress");
-	const line = formatTodoLine(item, { text: forDisplay(item.content) }, uiTheme, prefix, completionKeys, frame, expanded, matched, isOverdueOpenTask);
+	const line = formatTodoLine(
+		item,
+		{ text: forDisplay(item.content) },
+		uiTheme,
+		prefix,
+		completionKeys,
+		frame,
+		expanded,
+		matched,
+		isOverdueOpenTask,
+	);
 	if (!row) return line;
 	const forecast = forDisplay(formatTaskForecastDisplay(row, now, expanded)).replace(/[\r\n]+/g, " ");
 	if (!forecast) return line;
@@ -924,7 +937,15 @@ export const todoToolRenderer = {
 						]
 							.filter(Boolean)
 							.map(value => forDisplay(String(value)).replace(/[\r\n]+/g, " "));
-						const line = formatTodoLine(task, { text: forDisplay(task.content) }, uiTheme, "  ", EMPTY_COMPLETION_KEYS, undefined, true);
+						const line = formatTodoLine(
+							task,
+							{ text: forDisplay(task.content) },
+							uiTheme,
+							"  ",
+							EMPTY_COMPLETION_KEYS,
+							undefined,
+							true,
+						);
 						bodyLines.push(
 							evidence.length > 0 ? `${line} ${uiTheme.fg("dim", `· ${evidence.join(" · ")}`)}` : line,
 						);

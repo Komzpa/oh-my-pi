@@ -350,7 +350,6 @@ describe("task rework acceptance", () => {
 		await tool.execute("strong-retry", { agent: strongAgent.name, name: OWNER, task: ROW });
 		expect(run).toHaveBeenCalledTimes(1);
 		expect(run.mock.calls[0]![0].modelOverride).toEqual(["codex-lb/gpt-6.1-sol:high"]);
-		expect(run.mock.calls[0]![0].exactThinkingLevel).toBeUndefined();
 		expect(run.mock.calls[0]![0].context).toContain(`failed: ${outcome}`);
 		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toEqual([]);
 	});

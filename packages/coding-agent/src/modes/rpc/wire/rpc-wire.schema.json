@@ -2260,6 +2260,218 @@
 			],
 			"type": "string"
 		},
+		"TodoConfidence": {
+			"enum": [
+				"low",
+				"medium",
+				"high"
+			],
+			"type": "string"
+		},
+		"TodoWorkerOutcome": {
+			"enum": [
+				"completed",
+				"failed",
+				"aborted"
+			],
+			"type": "string"
+		},
+		"TodoEstimate": {
+			"type": "object",
+			"properties": {
+				"optimisticSeconds": {
+					"type": "number"
+				},
+				"likelySeconds": {
+					"type": "number"
+				},
+				"pessimisticSeconds": {
+					"type": "number"
+				},
+				"confidence": {
+					"$ref": "#/$defs/TodoConfidence"
+				},
+				"basis": {
+					"type": "string"
+				},
+				"updatedAt": {
+					"type": "number"
+				}
+			},
+			"required": [
+				"optimisticSeconds",
+				"likelySeconds",
+				"pessimisticSeconds",
+				"confidence",
+				"basis",
+				"updatedAt"
+			],
+			"description": "User-maintained duration estimate in seconds; `updatedAt` is Unix milliseconds."
+		},
+		"TodoScheduleProgress": {
+			"type": "object",
+			"properties": {
+				"at": {
+					"type": "number"
+				},
+				"evidence": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"at",
+				"evidence"
+			]
+		},
+		"TodoScheduleExecutor": {
+			"type": "object",
+			"properties": {
+				"workerId": {
+					"type": "string"
+				},
+				"startedAt": {
+					"type": "number"
+				},
+				"agentProfile": {
+					"type": "string"
+				},
+				"resolvedModel": {
+					"type": "string"
+				},
+				"thinkingLevel": {
+					"type": "string"
+				},
+				"finishedAt": {
+					"type": "number"
+				},
+				"outcome": {
+					"$ref": "#/$defs/TodoWorkerOutcome"
+				}
+			},
+			"required": [
+				"workerId",
+				"startedAt"
+			],
+			"description": "Observed Task worker that executed this row, independent of forecast ownership; timestamps are Unix milliseconds."
+		},
+		"TodoReworkAttempt": {
+			"type": "object",
+			"properties": {
+				"attemptId": {
+					"type": "string"
+				},
+				"workerName": {
+					"type": "string"
+				},
+				"resolvedModel": {
+					"type": "string"
+				},
+				"effort": {
+					"type": "string"
+				},
+				"startedAt": {
+					"type": "number"
+				},
+				"finishedAt": {
+					"type": "number"
+				},
+				"durationMs": {
+					"type": "number"
+				},
+				"terminalStatus": {
+					"$ref": "#/$defs/TodoWorkerOutcome"
+				},
+				"deliverablePaths": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"rejectionReason": {
+					"type": "string"
+				},
+				"reflectionAnswer": {
+					"type": "string"
+				},
+				"noAnswerReason": {
+					"type": "string"
+				},
+				"finalReportParagraph": {
+					"type": "string"
+				},
+				"infraFailureLine": {
+					"type": "string"
+				},
+				"infraFailureError": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"attemptId",
+				"workerName",
+				"resolvedModel",
+				"effort",
+				"startedAt",
+				"finishedAt",
+				"durationMs",
+				"terminalStatus",
+				"deliverablePaths"
+			],
+			"description": "Immutable terminal worker attempt attached to its exact todo row; timestamps and duration are milliseconds."
+		},
+		"TodoSchedule": {
+			"type": "object",
+			"properties": {
+				"dependencies": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Exact task-content references; absent means unknown, while an empty array explicitly means independent."
+				},
+				"owner": {
+					"type": "string",
+					"description": "Exclusive forecast owner while this task is running."
+				},
+				"resources": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Exclusive resource identifiers while running; absent means undeclared."
+				},
+				"estimate": {
+					"$ref": "#/$defs/TodoEstimate"
+				},
+				"estimateRevision": {
+					"type": "number",
+					"description": "Server-owned revision: the first estimate is revision 1."
+				},
+				"reestimateCount": {
+					"type": "number"
+				},
+				"progress": {
+					"$ref": "#/$defs/TodoScheduleProgress"
+				},
+				"startedAt": {
+					"type": "number"
+				},
+				"finishedAt": {
+					"type": "number"
+				},
+				"attemptHistory": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/TodoReworkAttempt"
+					},
+					"description": "Append-only durable attempts for this exact row."
+				},
+				"executor": {
+					"$ref": "#/$defs/TodoScheduleExecutor"
+				}
+			},
+			"description": "Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds."
+		},
 		"TodoItem": {
 			"type": "object",
 			"properties": {
@@ -2275,6 +2487,9 @@
 				},
 				"details": {
 					"type": "string"
+				},
+				"schedule": {
+					"$ref": "#/$defs/TodoSchedule"
 				},
 				"notes": {
 					"type": "array",
@@ -4462,7 +4677,20 @@
 				"index": {
 					"type": "integer"
 				},
+				"at": {
+					"type": "number",
+					"description": "Wall clock of the emitted lifecycle transition, in Unix milliseconds."
+				},
+				"resolvedModelIdentity": {
+					"type": "string"
+				},
+				"resolvedThinkingLevel": {
+					"type": "string"
+				},
 				"description": {
+					"type": "string"
+				},
+				"taskText": {
 					"type": "string"
 				},
 				"sessionFile": {

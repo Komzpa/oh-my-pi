@@ -252,14 +252,37 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		expect(continueSpy).not.toHaveBeenCalled();
 	});
 
-	it.each(["**What should I do next?**", "*What should I do next?*", "***What should I do next?***"])("does not remind when the assistant emphasizes its own question: %s", async text => {
-		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-		emitTextOnlyStop(text);
-		await session.waitForIdle();
-		expect(reminderAttempts).toEqual([]);
-		expect(todoReminderTranscriptEntry()).toBeUndefined();
-		expect(continueSpy).not.toHaveBeenCalled();
-	});
+	it.each(["**What should I do next?**", "*What should I do next?*", "***What should I do next?***"])(
+		"does not remind on an emphasized question when the plan is complete: %s",
+		async text => {
+			const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+			session.setTodoPhases([
+				{
+					name: "Pending review",
+					tasks: ["Slice 81", "Slice 82"].map(content => ({
+						content,
+						status: "pending" as const,
+						schedule: {
+							dependencies: [],
+							estimate: {
+								optimisticSeconds: 60,
+								likelySeconds: 120,
+								pessimisticSeconds: 300,
+								confidence: "medium" as const,
+								basis: "Synthetic bounded task",
+								updatedAt: Date.now(),
+							},
+						},
+					})),
+				},
+			]);
+			emitTextOnlyStop(text);
+			await session.waitForIdle();
+			expect(reminderAttempts).toEqual([]);
+			expect(todoReminderTranscriptEntry()).toBeUndefined();
+			expect(continueSpy).not.toHaveBeenCalled();
+		},
+	);
 	it("still reminds when the assistant strikes through its own question", async () => {
 		vi.spyOn(session.agent, "continue").mockResolvedValue();
 		emitTextOnlyStop("~~What should I do next?~~");
@@ -298,8 +321,32 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		expect(continueSpy).not.toHaveBeenCalled();
 	});
 
-	it.each(["Go with A?", "Next question, which decides the sandbox: **do your prototypes need network access?**\n\n1. **Fully offline.** Inline CSS and JS only.\n2. **Read-only CDN access.** Load scripts, styles, fonts and images over HTTPS.\n3. **Unrestricted.** Anything the page asks for.\n\nI'd recommend 2. Offline mode would break mocks that use CDN assets.", "Which approach?\n1. MCP tool\n2. Markdown fence\n\nI recommend the MCP tool."])("does not resume an unanswered choice prompt: %s", async text => {
+	it.each([
+		"Go with A?",
+		"Next question, which decides the sandbox: **do your prototypes need network access?**\n\n1. **Fully offline.** Inline CSS and JS only.\n2. **Read-only CDN access.** Load scripts, styles, fonts and images over HTTPS.\n3. **Unrestricted.** Anything the page asks for.\n\nI'd recommend 2. Offline mode would break mocks that use CDN assets.",
+		"Which approach?\n1. MCP tool\n2. Markdown fence\n\nI recommend the MCP tool.",
+	])("does not resume an unanswered choice when the plan is complete: %s", async text => {
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		session.setTodoPhases([
+			{
+				name: "Pending review",
+				tasks: ["Slice 81", "Slice 82"].map(content => ({
+					content,
+					status: "pending" as const,
+					schedule: {
+						dependencies: [],
+						estimate: {
+							optimisticSeconds: 60,
+							likelySeconds: 120,
+							pessimisticSeconds: 300,
+							confidence: "medium" as const,
+							basis: "Synthetic bounded task",
+							updatedAt: Date.now(),
+						},
+					},
+				})),
+			},
+		]);
 		emitTextOnlyStop(text);
 		await session.waitForIdle();
 		expect(reminderAttempts).toEqual([]);
