@@ -26,14 +26,14 @@ import { daemonClientForProject } from "../launch/client";
 import { hasLiveOwnedService, listServicesTolerant } from "../launch/services";
 import yieldDescription from "../prompts/tools/yield.md" with { type: "text" };
 import yieldDataErrorConflictMessage from "../prompts/tools/yield-data-error-conflict.md" with { type: "text" };
-import yieldAlreadySubmittedMessage from "../prompts/tools/yield-already-submitted.md" with { type: "text" };
-import yieldResultNeedsDataTemplate from "../prompts/tools/yield-result-needs-data.md" with { type: "text" };
-import yieldRunningProcessesTemplate from "../prompts/tools/yield-running-processes.md" with { type: "text" };
-import yieldServicesUnverifiedTemplate from "../prompts/tools/yield-services-unverified.md" with { type: "text" };
 import { subprocessToolRegistry } from "../task/subprocess-tool-registry";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { ToolSession } from ".";
 import { buildOutputValidator, formatAllValidationIssues } from "./output-schema-validator";
+import yieldAlreadySubmittedMessage from "../prompts/tools/yield-already-submitted.md" with { type: "text" };
+import yieldResultNeedsDataTemplate from "../prompts/tools/yield-result-needs-data.md" with { type: "text" };
+import yieldRunningProcessesTemplate from "../prompts/tools/yield-running-processes.md" with { type: "text" };
+import yieldServicesUnverifiedTemplate from "../prompts/tools/yield-services-unverified.md" with { type: "text" };
 
 /** Display-cell cap for a running command shown in the refusal message. */
 const RUNNING_COMMAND_PREVIEW_WIDTH = 120;
@@ -179,20 +179,6 @@ function parseJsonEncodedValue(value: string): { parsed: true; value: unknown } 
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/**
- * True when a terminal `type: "result"` payload carries no answer: missing
- * (`undefined`; strict-mode `null` is already normalized to it), blank text,
- * or an empty container (`[]`, `{}`). Genuine scalars (`0`, `false`) count as
- * content — only provably answer-less payloads are rejected.
- */
-function isEmptyResultData(value: unknown): boolean {
-	if (value === undefined) return true;
-	if (typeof value === "string") return value.trim().length === 0;
-	if (Array.isArray(value)) return value.length === 0;
-	if (isPlainRecord(value)) return Object.keys(value).length === 0;
-	return false;
 }
 
 /**
@@ -350,6 +336,20 @@ function buildYieldParameters(dataSchema: Record<string, unknown>): Record<strin
 		},
 		required: [],
 	};
+}
+
+/**
+ * True when a terminal `type: "result"` payload carries no answer: missing
+ * (`undefined`; strict-mode `null` is already normalized to it), blank text,
+ * or an empty container (`[]`, `{}`). Genuine scalars (`0`, `false`) count as
+ * content — only provably answer-less payloads are rejected.
+ */
+function isEmptyResultData(value: unknown): boolean {
+	if (value === undefined) return true;
+	if (typeof value === "string") return value.trim().length === 0;
+	if (Array.isArray(value)) return value.length === 0;
+	if (isPlainRecord(value)) return Object.keys(value).length === 0;
+	return false;
 }
 
 /**
