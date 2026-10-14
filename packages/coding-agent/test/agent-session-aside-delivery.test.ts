@@ -894,6 +894,8 @@ describe("AgentSession aside delivery", () => {
 			sessionManager: manager,
 			isDisposed: () => false,
 			isStreaming: () => false,
+			isRestartDraining: () => false,
+			queueForRestart: async () => {},
 			planModeEnabled: () => planMode,
 			emitSessionEvent: async () => {},
 			wakeForIrc: records => wakeRecords.push(...records),

@@ -47,7 +47,7 @@ async function createTranscript(
 	const manager = SessionManager.create(cwd, directory);
 	if (options.includeInit !== false) {
 		manager.appendSessionInit({
-			systemPrompt: "Persisted subagent prompt",
+			systemPrompt: ["Persisted subagent prompt"],
 			task: options.task,
 			tools: ["read", "yield"],
 			isolated: options.isolated,

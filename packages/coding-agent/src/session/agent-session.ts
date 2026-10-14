@@ -117,7 +117,6 @@ import { formatUsageResetWindow } from "@oh-my-pi/pi-tui/overlays/usage-display"
 import { loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
 import { classifyAutoPrewalk } from "../auto-prewalk/classifier";
-import { AgentRegistry } from "../registry/agent-registry";
 import { runningAgentsFromRegistryOutsideJobs } from "../async/job-control";
 import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
