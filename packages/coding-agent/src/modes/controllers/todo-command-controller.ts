@@ -1,5 +1,5 @@
 import { selectBranchEntries } from "../../session/branch-selection";
-import { isTodoStateEntryMetadata } from "../../tools/todo";
+import { isTodoSelectionEntryMetadata } from "../../tools/todo";
 import * as fs from "node:fs/promises";
 import {
 	applyOpsToPhases,
@@ -148,7 +148,7 @@ export class TodoCommandController {
 	 * back to cached session state.
 	 */
 	#currentPhases(): TodoPhase[] {
-		const entries = selectBranchEntries(this.ctx.sessionManager, isTodoStateEntryMetadata);
+		const entries = selectBranchEntries(this.ctx.sessionManager, isTodoSelectionEntryMetadata);
 		if (getLatestTodoSnapshotIdentity(entries) !== undefined) return getLatestTodoPhasesFromEntries(entries);
 		return this.ctx.session.getTodoPhases();
 	}

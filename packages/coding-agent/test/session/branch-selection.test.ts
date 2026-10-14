@@ -6,7 +6,7 @@ import {
 	sessionContextEntryMetadata,
 } from "../../src/session/branch-selection";
 import type { SessionEntry } from "../../src/session/session-entries";
-import { getLatestTodoPhasesFromEntries, isTodoStateEntryMetadata } from "../../src/tools/todo";
+import { getLatestTodoPhasesFromEntries, isTodoSelectionEntryMetadata } from "../../src/tools/todo";
 
 const entry = (id: string, type: string, data: unknown) =>
 	({ id, type: "custom", customType: type, data }) as SessionEntry;
@@ -31,16 +31,16 @@ test("indexed selection avoids historical payloads and keeps canonical TODO deci
 				return [e];
 			}),
 	};
-	const selected = selectBranchEntries(indexed, isTodoStateEntryMetadata);
+	const selected = selectBranchEntries(indexed, isTodoSelectionEntryMetadata);
 	expect(reads).toEqual(["first", "last"]);
 	expect(getLatestTodoPhasesFromEntries(selected)).toEqual(getLatestTodoPhasesFromEntries(branch));
 	expect(getLatestTodoPhasesFromEntries(selected)[0]?.tasks[0]?.status).toBe("completed");
 });
 test("legacy capability preserves chronological selection and newest-first lookup", () => {
 	const legacy = { getBranch: () => branch };
-	expect(selectBranchEntries(legacy, isTodoStateEntryMetadata)).toEqual([first, last]);
-	expect([...selectBranchNewestFirst(legacy, isTodoStateEntryMetadata)]).toEqual([last, first]);
-	expect(selectLatestBranchEntry(legacy, isTodoStateEntryMetadata)).toBe(last);
+	expect(selectBranchEntries(legacy, isTodoSelectionEntryMetadata)).toEqual([first, last]);
+	expect([...selectBranchNewestFirst(legacy, isTodoSelectionEntryMetadata)]).toEqual([last, first]);
+	expect(selectLatestBranchEntry(legacy, isTodoSelectionEntryMetadata)).toBe(last);
 	expect(selectLatestBranchEntry(legacy, () => false)).toBeUndefined();
 });
 test("newest-first indexed iterator stops without loading older matches", () => {
@@ -56,6 +56,6 @@ test("newest-first indexed iterator stops without loading older matches", () => 
 			yield first;
 		},
 	};
-	expect(selectLatestBranchEntry(indexed, isTodoStateEntryMetadata)).toBe(last);
+	expect(selectLatestBranchEntry(indexed, isTodoSelectionEntryMetadata)).toBe(last);
 	expect(reads).toEqual(["last"]);
 });

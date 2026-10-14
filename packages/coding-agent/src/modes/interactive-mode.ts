@@ -1,4 +1,4 @@
-import { isTodoStateEntryMetadata } from "../tools/todo";
+import { isTodoSelectionEntryMetadata } from "../tools/todo";
 import { selectBranchEntries } from "../session/branch-selection";
 /**
  * Interactive mode for the coding agent.
@@ -4294,7 +4294,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#cancelTodoAutoClearTimer();
 		const phases = this.todoPhases;
 		const persisted = getTodoHudVisibility(
-			selectBranchEntries(owner.sessionManager, isTodoStateEntryMetadata),
+			selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
 			phases,
 		);
 		this.#todoHudHidden = persisted === "dismissed";
@@ -4318,7 +4318,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			await owner.settleInFlightMessagePersistence();
 			if (!isCurrent()) return;
 			const data = createTodoHudStateData(
-				selectBranchEntries(owner.sessionManager, isTodoStateEntryMetadata),
+				selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
 				this.todoPhases,
 				"dismissed",
 			);
@@ -4479,7 +4479,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// summary joins the cache key so an archival (or an init that clears it)
 			// never serves a stale forecast resurrecting pre-archive plan data.
 			const archiveSummary = getTodoArchiveSummaryFromEntries(
-				selectBranchEntries(owner.sessionManager, isTodoStateEntryMetadata),
+				selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
 			);
 			const cache = this.#todoForecastCacheKey;
 			const cacheHit =
@@ -4492,7 +4492,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				cache.archiveToAt === (archiveSummary?.toAt ?? 0);
 			if (!cacheHit) {
 				const archived = getLatestTodoArchiveFromEntries(
-					selectBranchEntries(owner.sessionManager, isTodoStateEntryMetadata),
+					selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
 				);
 				this.#todoForecast = forecastTodoLivePlan(phases, archived, { now, capacity, deadlineAt });
 				this.#todoForecastCacheKey = {
@@ -8845,7 +8845,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				owner.sessionManager.appendCustomEntry(TODO_HUD_STATE_CUSTOM_TYPE, data);
 			};
 			const data = createTodoHudStateData(
-				selectBranchEntries(owner.sessionManager, isTodoStateEntryMetadata),
+				selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
 				this.todoPhases,
 				"revealed",
 			);
@@ -8872,7 +8872,7 @@ export class InteractiveMode implements InteractiveModeContext {
 						)
 							return;
 						const settledData = createTodoHudStateData(
-							selectBranchEntries(owner.sessionManager, isTodoStateEntryMetadata),
+							selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
 							this.todoPhases,
 							"revealed",
 						);

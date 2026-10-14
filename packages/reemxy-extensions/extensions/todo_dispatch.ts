@@ -1,9 +1,9 @@
+// @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { selectBranchEntries, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
-// @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { isTodoStateEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
@@ -22,13 +22,13 @@ import { derivePresence, isDeadlineStateEntryMetadata, isGoalLifecycleEntryMetad
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
 function todoStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
-  const branch = selectBranchEntries(ctx.sessionManager, isTodoStateEntryMetadata);
+  const branch = selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata);
   return pending.length ? [...branch, ...pending] : branch;
 }
 
 function dispatchStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
   const branch = selectBranchEntries(ctx.sessionManager, (metadata) =>
-    isTodoStateEntryMetadata(metadata) || isDeadlineStateEntryMetadata(metadata) || isGoalLifecycleEntryMetadata(metadata) ||
+    isTodoSelectionEntryMetadata(metadata) || isDeadlineStateEntryMetadata(metadata) || isGoalLifecycleEntryMetadata(metadata) ||
     (metadata.type === "message" && metadata.messageRole === "user"),
   );
   return pending.length ? [...branch, ...pending] : branch;

@@ -1,5 +1,5 @@
-import { selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import {
 	appendFileSync,
 	chmodSync,
@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
-import { isTodoStateEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import type { ModelUsageHealth, ModelUsageHealthState } from "@oh-my-pi/pi-ai";
 import { resolveXiaomiRequestBaseUrl } from "@oh-my-pi/pi-ai/registry/oauth/xiaomi";
@@ -702,7 +702,7 @@ export function cwdRepoLabel(ctx: ExtensionContext): string {
 function memoLatestTodo(getter: LatestTodoGetter | undefined, ctx: ExtensionContext): (() => TodoScheduleInput) | undefined {
 	if (!getter || !ctx.sessionManager?.getBranchMatching) return undefined;
 	let cached: TodoScheduleInput | undefined;
-	return () => cached ??= getter(ctx.sessionManager.getBranchMatching(isTodoStateEntryMetadata));
+	return () => cached ??= getter(ctx.sessionManager.getBranchMatching(isTodoSelectionEntryMetadata));
 }
 
 /** True when the spawning task item owns a plan row the forecast marks critical. */
