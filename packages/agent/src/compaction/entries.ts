@@ -6,6 +6,22 @@ export interface SessionEntryBase {
 	id: string;
 	parentId: string | null;
 	timestamp: string;
+	/** Build identity recorded by coding-agent when it writes the entry. */
+	runtime?: RuntimeIdentity;
+}
+
+/** Build identity stamped on entries written by an omp process. */
+export interface RuntimeIdentity {
+	/** omp package version. */
+	version: string;
+	/** Source checkout commit; absent for installed builds. */
+	commit?: string;
+	/** Source checkout branch; absent on a detached HEAD. */
+	branch?: string;
+	/** Hash of the checkout's uncommitted tracked changes. */
+	diff?: string;
+	/** Free-form build label. */
+	label?: string;
 }
 
 export interface SessionMessageEntry extends SessionEntryBase {
