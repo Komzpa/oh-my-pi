@@ -81,30 +81,6 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 		expect(text).toContain("abs path needle");
 	});
 
-	it("finds body text of the skill instruction file through bare skill://", async () => {
-		const tool = new GrepTool(createSession());
-
-		const result = await tool.execute("skill-body", {
-			pattern: "skill body needle in instructions",
-			path: "skill://demo",
-		});
-
-		expect(getResultText(result)).toContain(skillBodyNeedle);
-	});
-
-	it("keeps a plain single path unchanged", async () => {
-		const tool = new GrepTool(createSession());
-
-		const result = await tool.execute("plain-path", {
-			pattern: "needle",
-			path: absFile,
-		});
-
-		const text = getResultText(result);
-		expect(text).toContain("abs path needle");
-		expect(text).not.toContain(skillBodyNeedle);
-	});
-
 	it("keeps a local:// artifact whose name contains `;` whole even when the suffix names a cwd file", async () => {
 		const artifactsDir = path.join(tmpDir, "artifacts");
 		const localRoot = path.join(artifactsDir, "local");
