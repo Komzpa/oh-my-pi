@@ -726,18 +726,21 @@ export function parseRequirementReceiptIdentities(
 	if (!segments.some(segment => /^(?:git|file|deploy):/i.test(segment))) {
 		// A row's explicit `@ <commit>` is its Git identity. Hashes in trailing
 		// installed-binary or other evidence are not competing checkout commits.
+		let hasRowCommit = false;
 		const rowCommits = splitRequirementIdentitySegments(artifact).flatMap(segment => {
 			const prefix = REQUIREMENT_QUOTED_ROW_PREFIX.exec(segment);
-			if (!prefix) return [];
-			const commit = segment
-				.slice(prefix[0].length)
-				.trim()
-				.match(/^([a-f0-9]{40}(?:[a-f0-9]{24})?)(?=$|[^a-f0-9])/i);
+			const identity = (prefix ? segment.slice(prefix[0].length) : segment).trim();
+			// Bare continuation commits retain row scope. Explicitly described
+			// installed-binary hashes remain a separate evidence domain.
+			const commit = identity.match(
+				prefix ? /^([a-f0-9]{40}(?:[a-f0-9]{24})?)(?=$|[^a-f0-9])/i : /^([a-f0-9]{40}(?:[a-f0-9]{24})?)$/i,
+			);
+			if (prefix && commit) hasRowCommit = true;
 			return commit ? [commit[1]!.toLowerCase()] : [];
 		});
 		return {
 			legacy: true,
-			commits: rowCommits.length
+			commits: hasRowCommit
 				? rowCommits
 				: [...segments.join("; ").matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!.toLowerCase()),
 		};

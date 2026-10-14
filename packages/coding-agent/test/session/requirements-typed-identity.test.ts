@@ -551,13 +551,20 @@ describe("typed identity: stale receipts block done with expected and observed v
 		await fx.prepare(ROW);
 		expect(await fx.receive(artifactCell(ROW, [head]))).toBeUndefined();
 		expect(verdictOf(fx, ROW)?.artifact).toBe(artifactCell(ROW, [head]));
+		await fx.prepare(ROW);
+		const binaryEvidence = artifactCell(ROW, [head, `installed SHA-256 ${"a".repeat(64)}`]);
+		expect(await fx.receive(binaryEvidence)).toBeUndefined();
+		expect(verdictOf(fx, ROW)?.artifact).toBe(artifactCell(ROW, [head]));
+		const authenticatedVerdict = verdictOf(fx, ROW);
 		for (const artifact of [
 			artifactCell(ROW, ["f".repeat(40)]),
 			artifactCell(ROW_B, [head]),
 			artifactCell(ROW, [head, "f".repeat(40)]),
+			artifactCell(ROW, [head, head]),
 		]) {
 			await fx.prepare(ROW);
 			expect(textOf(await fx.receive(artifact))).toContain("Blocked");
+			expect(verdictOf(fx, ROW)).toEqual(authenticatedVerdict);
 		}
 		fs.writeFileSync(path.join(repo, "artifact.txt"), "dirty\n");
 		await fx.prepare(ROW);
