@@ -97,7 +97,8 @@ const UNEXPECTED_STOP_MAX_RETRIES = 3;
 const UNEXPECTED_STOP_TIMEOUT_MS = 15_000;
 const EMPTY_STOP_MAX_RETRIES = 3;
 const MALFORMED_FUNCTION_CALL_MAX_RETRIES = 3;
-const STREAM_STALL_CONTINUE_MAX_RETRIES = 3;
+const STREAM_STALL_CONTINUE_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000] as const;
+const STREAM_STALL_CONTINUE_MAX_RETRIES = STREAM_STALL_CONTINUE_DELAYS_MS.length;
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
 const NON_WHITESPACE_RE = /\S/;
 const USAGE_PREFLIGHT_BLOCKED_PREFIX = "Usage preflight blocked:";
@@ -722,6 +723,7 @@ export class TurnRecovery {
 		});
 		this.#host.scheduleAgentContinue({
 			source: "stream-stall-continue",
+			delayMs: STREAM_STALL_CONTINUE_DELAYS_MS[this.#streamStallContinueCount - 1],
 			generation: this.#host.promptGeneration(),
 		});
 		return true;
