@@ -37,6 +37,12 @@ import {
 import { formatRequirementIdentity } from "@oh-my-pi/pi-coding-agent/utils/requirement-artifact";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
+// Runtime todo rows may carry scheduling metadata even though the shared TUI
+// type intentionally describes only the native task fields.
+type ScheduledTodoPhase = Omit<TodoPhase, "tasks"> & {
+	tasks: Array<TodoPhase["tasks"][number] & { schedule?: { resources?: string[] } }>;
+};
+
 const AT = "2026-09-28T12:00:00.000Z";
 
 describe("canonical todo row metadata", () => {
@@ -924,11 +930,11 @@ describe("todo requirement classification", () => {
 	// cast-only, exactly as the implementation does.
 	function harness(
 		cwd = "/tmp",
-		initialPhases?: TodoPhase[],
+		initialPhases?: ScheduledTodoPhase[],
 		rawTexts = ["  preserve the ask  ", "second ask", "third ask"],
 	) {
 		const manager = SessionManager.inMemory();
-		let phases: TodoPhase[] = initialPhases ?? [
+		let phases: ScheduledTodoPhase[] = initialPhases ?? [
 			{ name: "Work", tasks: [{ content: "Build artifact", status: "pending" }] },
 		];
 		manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
