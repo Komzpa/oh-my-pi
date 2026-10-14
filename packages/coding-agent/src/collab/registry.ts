@@ -174,7 +174,6 @@ export interface PeerSessionPublishOptions extends CollabRegistryOptions {
 	mainAgentId?: string;
 	registry: AgentRegistry;
 	irc: IrcBus;
-	socketFallbackBase?: string;
 	isBusy?: () => boolean | null;
 }
 
@@ -902,11 +901,7 @@ export async function publishPeerSession(options: PeerSessionPublishOptions): Pr
 			}
 		},
 	};
-	const pub = await publishRegistrySource(
-		source,
-		{ dir: options.dir, socketFallbackBase: options.socketFallbackBase, instanceId },
-		peerSessionsRuntimeDir(),
-	);
+	const pub = await publishRegistrySource(source, { dir: options.dir, instanceId }, peerSessionsRuntimeDir());
 	return {
 		endpoint: pub.endpoint,
 		instanceId,

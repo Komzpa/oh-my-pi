@@ -297,6 +297,7 @@ describe("peer sessions", () => {
 		process.env.OMP_PEER_SESSIONS_DIR = dir;
 		const authStorage = await AuthStorage.create(":memory:");
 		authStorages.push(authStorage);
+		authStorage.keys.setRuntime("openai", "peer-session-fixture-key");
 		const sessionManager = SessionManager.create(dir, path.join(dir, "sessions"));
 		await sessionManager.ensureOnDisk();
 		const originalId = sessionManager.getSessionId();
