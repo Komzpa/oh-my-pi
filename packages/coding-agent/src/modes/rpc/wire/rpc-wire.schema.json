@@ -2256,6 +2256,55 @@
 			],
 			"type": "string"
 		},
+		"TodoItem": {
+			"type": "object",
+			"properties": {
+				"content": {
+					"type": "string"
+				},
+				"status": {
+					"$ref": "#/$defs/TodoStatus"
+				},
+				"schedule": {
+					"$ref": "#/$defs/TodoSchedule"
+				},
+				"blocker": {
+					"type": "string",
+					"description": "What a `blocked` task is waiting on."
+				},
+				"details": {
+					"type": "string"
+				},
+				"notes": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			},
+			"required": [
+				"content",
+				"status"
+			]
+		},
+		"TodoPhase": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"tasks": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/TodoItem"
+					}
+				}
+			},
+			"required": [
+				"name",
+				"tasks"
+			]
+		},
 		"TodoConfidence": {
 			"enum": [
 				"low",
@@ -2467,55 +2516,6 @@
 				}
 			},
 			"description": "Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds."
-		},
-		"TodoItem": {
-			"type": "object",
-			"properties": {
-				"content": {
-					"type": "string"
-				},
-				"status": {
-					"$ref": "#/$defs/TodoStatus"
-				},
-				"blocker": {
-					"type": "string",
-					"description": "What a `blocked` task is waiting on."
-				},
-				"details": {
-					"type": "string"
-				},
-				"schedule": {
-					"$ref": "#/$defs/TodoSchedule"
-				},
-				"notes": {
-					"type": "array",
-					"items": {
-						"type": "string"
-					}
-				}
-			},
-			"required": [
-				"content",
-				"status"
-			]
-		},
-		"TodoPhase": {
-			"type": "object",
-			"properties": {
-				"name": {
-					"type": "string"
-				},
-				"tasks": {
-					"type": "array",
-					"items": {
-						"$ref": "#/$defs/TodoItem"
-					}
-				}
-			},
-			"required": [
-				"name",
-				"tasks"
-			]
 		},
 		"ContextUsage": {
 			"type": "object",

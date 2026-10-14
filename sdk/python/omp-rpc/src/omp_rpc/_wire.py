@@ -557,6 +557,23 @@ class ModelInfo:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class TodoItem:
+    content: str
+    status: TodoStatus
+    schedule: TodoSchedule | None = None
+    blocker: str | None = None
+    """What a `blocked` task is waiting on."""
+    details: str | None = None
+    notes: tuple[str, ...] | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TodoPhase:
+    name: str
+    tasks: tuple[TodoItem, ...]
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class TodoEstimate:
     """User-maintained duration estimate in seconds; `updatedAt` is Unix milliseconds."""
     optimistic_seconds: float
@@ -624,23 +641,6 @@ class TodoSchedule:
     attempt_history: tuple[TodoReworkAttempt, ...] | None = None
     """Append-only durable attempts for this exact row."""
     executor: TodoScheduleExecutor | None = None
-
-
-@dataclass(slots=True, frozen=True, kw_only=True)
-class TodoItem:
-    content: str
-    status: TodoStatus
-    blocker: str | None = None
-    """What a `blocked` task is waiting on."""
-    details: str | None = None
-    schedule: TodoSchedule | None = None
-    notes: tuple[str, ...] | None = None
-
-
-@dataclass(slots=True, frozen=True, kw_only=True)
-class TodoPhase:
-    name: str
-    tasks: tuple[TodoItem, ...]
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1906,6 +1906,26 @@ def parse_model_info(value: object, path: str = "ModelInfo") -> ModelInfo:
     )
 
 
+def parse_todo_item(value: object, path: str = "TodoItem") -> TodoItem:
+    payload = expect_object(value, path)
+    return TodoItem(
+        content=required(payload, "content", decode_str, path),
+        status=required(payload, "status", _decode_todo_status, path),
+        schedule=optional(payload, "schedule", parse_todo_schedule, path),
+        blocker=optional(payload, "blocker", decode_str, path),
+        details=optional(payload, "details", decode_str, path),
+        notes=optional(payload, "notes", array(decode_str), path),
+    )
+
+
+def parse_todo_phase(value: object, path: str = "TodoPhase") -> TodoPhase:
+    payload = expect_object(value, path)
+    return TodoPhase(
+        name=required(payload, "name", decode_str, path),
+        tasks=required(payload, "tasks", array(parse_todo_item), path),
+    )
+
+
 def parse_todo_estimate(value: object, path: str = "TodoEstimate") -> TodoEstimate:
     payload = expect_object(value, path)
     return TodoEstimate(
@@ -1974,26 +1994,6 @@ def parse_todo_schedule(value: object, path: str = "TodoSchedule") -> TodoSchedu
         finished_at=optional(payload, "finishedAt", decode_float, path),
         attempt_history=optional(payload, "attemptHistory", array(parse_todo_rework_attempt), path),
         executor=optional(payload, "executor", parse_todo_schedule_executor, path),
-    )
-
-
-def parse_todo_item(value: object, path: str = "TodoItem") -> TodoItem:
-    payload = expect_object(value, path)
-    return TodoItem(
-        content=required(payload, "content", decode_str, path),
-        status=required(payload, "status", _decode_todo_status, path),
-        blocker=optional(payload, "blocker", decode_str, path),
-        details=optional(payload, "details", decode_str, path),
-        schedule=optional(payload, "schedule", parse_todo_schedule, path),
-        notes=optional(payload, "notes", array(decode_str), path),
-    )
-
-
-def parse_todo_phase(value: object, path: str = "TodoPhase") -> TodoPhase:
-    payload = expect_object(value, path)
-    return TodoPhase(
-        name=required(payload, "name", decode_str, path),
-        tasks=required(payload, "tasks", array(parse_todo_item), path),
     )
 
 

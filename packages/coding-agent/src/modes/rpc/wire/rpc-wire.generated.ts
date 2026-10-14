@@ -394,6 +394,21 @@ export type AgentSource = "bundled" | "user" | "project";
 
 export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "aborted";
 
+export interface TodoItem {
+	content: string;
+	status: TodoStatus;
+	schedule?: TodoSchedule;
+	/** What a `blocked` task is waiting on. */
+	blocker?: string;
+	details?: string;
+	notes?: string[];
+}
+
+export interface TodoPhase {
+	name: string;
+	tasks: TodoItem[];
+}
+
 export type TodoConfidence = "low" | "medium" | "high";
 
 export type TodoWorkerOutcome = "completed" | "failed" | "aborted";
@@ -461,21 +476,6 @@ export interface TodoSchedule {
 	/** Append-only durable attempts for this exact row. */
 	attemptHistory?: TodoReworkAttempt[];
 	executor?: TodoScheduleExecutor;
-}
-
-export interface TodoItem {
-	content: string;
-	status: TodoStatus;
-	/** What a `blocked` task is waiting on. */
-	blocker?: string;
-	details?: string;
-	schedule?: TodoSchedule;
-	notes?: string[];
-}
-
-export interface TodoPhase {
-	name: string;
-	tasks: TodoItem[];
 }
 
 export interface ContextUsage {

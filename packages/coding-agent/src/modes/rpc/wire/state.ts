@@ -29,6 +29,16 @@ export const stateDefs = {
 	),
 	AgentSource: "'bundled' | 'user' | 'project'",
 	SubagentStatus: "'pending' | 'running' | 'completed' | 'failed' | 'aborted'",
+
+	TodoItem: {
+		"schedule?": "TodoSchedule",
+		content: "string",
+		status: "TodoStatus",
+		"blocker?": doc("string", "What a `blocked` task is waiting on."),
+		"details?": "string",
+		"notes?": "string[]",
+	},
+	TodoPhase: { name: "string", tasks: "TodoItem[]" },
 	TodoConfidence: "'low' | 'medium' | 'high'",
 	TodoWorkerOutcome: "'completed' | 'failed' | 'aborted'",
 	TodoEstimate: doc(
@@ -94,16 +104,6 @@ export const stateDefs = {
 		},
 		"Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds.",
 	),
-
-	TodoItem: {
-		content: "string",
-		status: "TodoStatus",
-		"blocker?": doc("string", "What a `blocked` task is waiting on."),
-		"details?": "string",
-		"schedule?": "TodoSchedule",
-		"notes?": "string[]",
-	},
-	TodoPhase: { name: "string", tasks: "TodoItem[]" },
 	ContextUsage: { tokens: "number.integer", contextWindow: "number.integer", percent: "number" },
 	QueuedMessagesState: doc(
 		{
