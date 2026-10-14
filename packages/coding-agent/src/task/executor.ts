@@ -4373,14 +4373,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// Precedence: caller `effort` > explicit `:level` suffix on the resolved
 			// model pattern > agent-definition default (e.g. task's `auto`) >
 			// pattern-derived level.
-			// The implementation-worker Claude cap applies before the prewalk
-			// no-op comparison below, so prewalk sees the level the session
-			// actually starts at.
-			const effectiveThinkingLevel = capImplementationWorkerThinkingLevel(
-				agent.name,
-				model,
-				effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : (thinkingLevel ?? resolvedThinkingLevel)),
-			);
+			const effectiveThinkingLevel =
+				effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : (thinkingLevel ?? resolvedThinkingLevel));
 			resolvedAt = performance.now();
 			const effectiveCwd = worktree ?? cwd;
 			const sessionManagerPromise = sessionFile
@@ -4414,7 +4408,14 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						pattern: prewalkPattern,
 						warning: resolvedPrewalk.warning,
 					});
-				} else if (prewalkWouldBeNoop(model, effectiveThinkingLevel, target, resolvedPrewalk.thinkingLevel)) {
+				} else if (
+					prewalkWouldBeNoop(
+						model,
+						capImplementationWorkerThinkingLevel(agent.name, model, effectiveThinkingLevel),
+						target,
+						resolvedPrewalk.thinkingLevel,
+					)
+				) {
 					// Same model AND same effective thinking level: switching would only
 					// inject the plan/checklist nudges for no gain — skip. An effort-only
 					// delta on the same model still arms (it is a real cheapening hand-off).
@@ -4491,7 +4492,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						model || modelOverride === undefined ? undefined : subagentRetryFallbackRole(id),
 					modelPatternDefaultFallbackChain:
 						model || modelOverride === undefined ? undefined : inheritedRetryFallbackChain,
-					thinkingLevel: effectiveThinkingLevel,
+					thinkingLevel: capImplementationWorkerThinkingLevel(agent.name, model, effectiveThinkingLevel),
 					thinkingLevelCeiling: capImplementationWorkerEffortCeiling(agent.name, model, spawnEffortCeiling),
 					// Subagents are short-lived; never schedule background warm requests.
 					cacheWarming: false,
