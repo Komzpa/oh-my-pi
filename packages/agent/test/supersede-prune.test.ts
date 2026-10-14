@@ -285,7 +285,7 @@ describe("pruneSupersededToolResults — tail case", () => {
 		);
 
 		expect(result.prunedCount).toBe(1);
-		expect(resultText(result1)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(result1, result)).toBe(SUPERSEDED_NOTICE);
 		expect(resultText(result2)).toBe(FILE_CONTENT);
 	});
 });
@@ -374,7 +374,7 @@ for (const mode of ["stale", "overflow"] as const) {
 			const result = pruneWith(mode, entries, T0 + 1_000);
 
 			expect(result.prunedCount).toBe(pruned);
-			expect(resultText(result1)).toBe(pruned ? SUPERSEDED_NOTICE : FILE_CONTENT);
+			expect(resultText(result1, result)).toBe(pruned ? SUPERSEDED_NOTICE : FILE_CONTENT);
 			expect(resultText(result2)).toBe(FILE_CONTENT);
 		});
 
@@ -388,7 +388,7 @@ for (const mode of ["stale", "overflow"] as const) {
 
 			expect(result.prunedCount).toBe(1);
 			expect(resultText(result1)).toBe(FILE_CONTENT);
-			expect(resultText(result2)).toBe(SUPERSEDED_NOTICE);
+			expect(resultText(result2, result)).toBe(SUPERSEDED_NOTICE);
 			expect(resultText(result3)).toBe(FILE_CONTENT);
 		});
 
@@ -404,7 +404,7 @@ for (const mode of ["stale", "overflow"] as const) {
 
 			expect(result.prunedCount).toBe(1);
 			expect(resultText(result1)).toBe(FILE_CONTENT);
-			expect(resultText(result2)).toBe(SUPERSEDED_NOTICE);
+			expect(resultText(result2, result)).toBe(SUPERSEDED_NOTICE);
 		});
 
 		test("an earlier failed range read is replaced by a later incomplete bare read", () => {
@@ -416,7 +416,7 @@ for (const mode of ["stale", "overflow"] as const) {
 			const result = pruneWith(mode, entries, T0 + 1_000);
 
 			expect(result.prunedCount).toBe(1);
-			expect(resultText(result1)).toBe(SUPERSEDED_NOTICE);
+			expect(resultText(result1, result)).toBe(SUPERSEDED_NOTICE);
 		});
 	});
 }
@@ -891,15 +891,15 @@ describe("warm-cache guard — prompt-cache lookback window", () => {
 		);
 
 		expect(result.prunedCount).toBe(1);
-		expect(resultText(stale)).toBe(SUPERSEDED_NOTICE);
+		expect(resultText(stale, result)).toBe(SUPERSEDED_NOTICE);
 	});
 
 	test("a model without a known lookback bound prunes past the Anthropic window", () => {
 		for (const pass of passes({})) {
 			const { stale, entries } = staleReadAround([], smallTurns(12, T0 + 1_000));
-
-			expect(pass(entries).prunedCount).toBe(1);
-			expect(resultText(stale)).toBe(SUPERSEDED_NOTICE);
+			const r = pass(entries);
+			expect(r.prunedCount).toBe(1);
+			expect(resultText(stale, r)).toBe(SUPERSEDED_NOTICE);
 		}
 	});
 
@@ -1036,8 +1036,9 @@ describe("warm-cache guard — prompt-cache lookback window", () => {
 		for (const pass of guardedPasses) {
 			const inReach = staleReadAround([text], smallTurns(4, T0 + 1_000));
 			expect(wirePositions(inReach.entries)).toBe(13);
-			expect(pass(inReach.entries).prunedCount).toBe(1);
-			expect(resultText(inReach.stale)).toBe(SUPERSEDED_NOTICE);
+			const inResult = pass(inReach.entries);
+			expect(inResult.prunedCount).toBe(1);
+			expect(resultText(inReach.stale, inResult)).toBe(SUPERSEDED_NOTICE);
 
 			const outOfReach = staleReadAround([text], [...smallTurns(4, T0 + 1_000), userEntry()]);
 			expect(wirePositions(outOfReach.entries)).toBe(14);
@@ -1080,8 +1081,9 @@ describe("warm-cache guard — prompt-cache lookback window", () => {
 			const { stale, entries } = staleReadAround(dropped, smallTurns(4, T0 + 1_000));
 			expect(wirePositions(entries)).toBe(12);
 
-			expect(pass(entries).prunedCount).toBe(1);
-			expect(resultText(stale)).toBe(SUPERSEDED_NOTICE);
+			const r = pass(entries);
+			expect(r.prunedCount).toBe(1);
+			expect(resultText(stale, r)).toBe(SUPERSEDED_NOTICE);
 		}
 	});
 
@@ -1111,8 +1113,9 @@ describe("warm-cache guard — prompt-cache lookback window", () => {
 			const { stale, entries } = staleReadAround([], batch);
 			expect(wirePositions(entries)).toBe(7);
 
-			expect(pass(entries).prunedCount).toBe(1);
-			expect(resultText(stale)).toBe(SUPERSEDED_NOTICE);
+			const r = pass(entries);
+			expect(r.prunedCount).toBe(1);
+			expect(resultText(stale, r)).toBe(SUPERSEDED_NOTICE);
 		}
 	});
 });
