@@ -1,9 +1,10 @@
+import { selectBranchEntries, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import type { SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import { isTodoStateEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { SettingsManager } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
 import type { ActiveGoalRef, DeadlineState, QuotaSnapshot } from "./deadlines";
@@ -23,12 +24,12 @@ export function isGoalLifecycleEntryMetadata(metadata: SessionContextEntryMetada
 }
 
 export function latestDeadlineStateEntries(ctx: ExtensionContext) {
-	const entry = ctx.sessionManager.getLatestBranchMatching(isDeadlineStateEntryMetadata);
+	const entry = selectLatestBranchEntry(ctx.sessionManager, isDeadlineStateEntryMetadata);
 	return entry ? [entry] : [];
 }
 
 function userEntries(ctx: ExtensionContext) {
-	return ctx.sessionManager.getBranchMatching(metadata => metadata.type === "message" && metadata.messageRole === "user");
+	return selectBranchEntries(ctx.sessionManager, metadata => metadata.type === "message" && metadata.messageRole === "user");
 }
 
 const PRESENCE_DEFAULTS = {
@@ -345,7 +346,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 	const goalCore = pi as unknown as { _goalCore?: { state?: { goal?: unknown } } };
 	const currentGoal = (): ActiveGoalRef | null => sdk.goalRef(goalCore._goalCore?.state?.goal);
 	const focusedGoal = (ctx: ExtensionContext): ActiveGoalRef | null => {
-		const lifecycle = sdk.readFocusedGoal(ctx.sessionManager.getBranchMatching(isGoalLifecycleEntryMetadata), ctx.cwd);
+		const lifecycle = sdk.readFocusedGoal(selectBranchEntries(ctx.sessionManager, isGoalLifecycleEntryMetadata), ctx.cwd);
 		return lifecycle === undefined ? currentGoal() : lifecycle;
 	};
 
@@ -361,7 +362,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		const host = pi.pi as unknown as { getLatestTodoPhasesFromEntries?: TodoCompletionReducer } | undefined;
 		const phases =
 			typeof host?.getLatestTodoPhasesFromEntries === "function"
-				? host.getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranchMatching(isTodoStateEntryMetadata))
+				? host.getLatestTodoPhasesFromEntries(selectBranchEntries(ctx.sessionManager, isTodoStateEntryMetadata))
 				: [];
 		const todoShowsDue = (phases ?? []).some(phase =>
 			phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
@@ -412,7 +413,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		const isPluginCompletion = event.toolName === "update_goal" && event.input.status === "complete";
 		if (!isNativeCompletion && !isPluginCompletion) return;
 
-		const branch = ctx.sessionManager.getBranchMatching(isTodoStateEntryMetadata);
+		const branch = selectBranchEntries(ctx.sessionManager, isTodoStateEntryMetadata);
 		const host = pi.pi as unknown as { getLatestTodoPhasesFromEntries?: TodoCompletionReducer } | undefined;
 		if (typeof host?.getLatestTodoPhasesFromEntries !== "function") {
 			return { block: true, reason: "Cannot verify TODO closure: the host TODO reducer is unavailable." };

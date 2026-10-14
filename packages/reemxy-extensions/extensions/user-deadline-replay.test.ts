@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
 import { readGoalDeadline as nativeReadGoalDeadline } from "@oh-my-pi/pi-coding-agent/goals/deadlines";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
-import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { forecastTodoPlan, formatPlanForecast, formatTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import goalDeadlines from "./goal_deadlines";

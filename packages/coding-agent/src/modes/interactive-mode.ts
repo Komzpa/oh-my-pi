@@ -1,3 +1,5 @@
+import { isTodoStateEntryMetadata } from "../tools/todo";
+import { selectBranchEntries } from "../session/branch-selection";
 /**
  * Interactive mode for the coding agent.
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
@@ -4579,7 +4581,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// summary joins the cache key so an archival (or an init that clears it)
 			// never serves a stale forecast resurrecting pre-archive plan data.
 			const archiveSummary = getTodoArchiveSummaryFromEntries(
-				owner.sessionManager.getBranchMatching(isTodoStateEntryMetadata),
+				selectBranchEntries(owner.sessionManager, isTodoStateEntryMetadata),
 			);
 			const cache = this.#todoForecastCacheKey;
 			const cacheHit =
@@ -4592,7 +4594,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				cache.archiveToAt === (archiveSummary?.toAt ?? 0);
 			if (!cacheHit) {
 				const archived = getLatestTodoArchiveFromEntries(
-					owner.sessionManager.getBranchMatching(isTodoStateEntryMetadata),
+					selectBranchEntries(owner.sessionManager, isTodoStateEntryMetadata),
 				);
 				this.#todoForecast = forecastTodoLivePlan(phases, archived, { now, capacity, deadlineAt });
 				this.#todoForecastCacheKey = {

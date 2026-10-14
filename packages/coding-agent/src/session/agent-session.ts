@@ -1,3 +1,4 @@
+import { selectBranchEntries } from "./branch-selection";
 /**
  * AgentSession - Core abstraction for agent lifecycle and session management.
  *
@@ -7626,7 +7627,9 @@ export class AgentSession implements SettingsScope {
 		const canCallTodoTool = this.getActiveToolNames().includes("todo");
 		if (!canCallTodoTool) return undefined;
 		const phases = this.getTodoPhases().filter(phase => phase.tasks.length > 0);
-		const archiveSummary = getTodoArchiveSummaryFromEntries(this.sessionManager.getBranchMatching(isTodoStateEntryMetadata));
+		const archiveSummary = getTodoArchiveSummaryFromEntries(
+			selectBranchEntries(this.sessionManager, isTodoStateEntryMetadata),
+		);
 		if (phases.length === 0 && !archiveSummary) return undefined;
 
 		let total = 0;

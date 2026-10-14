@@ -9,7 +9,7 @@ import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	sessionContextEntryMetadata,
 	type SessionContextEntryMetadata,
-} from "@oh-my-pi/pi-coding-agent/session/session-context";
+} from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 

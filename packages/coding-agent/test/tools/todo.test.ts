@@ -21,7 +21,7 @@ import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-ent
 import {
 	sessionContextEntryMetadata,
 	type SessionContextEntryMetadata,
-} from "@oh-my-pi/pi-coding-agent/session/session-context";
+} from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import {
 	selectCollapsedTodos,
 	type TodoItem,
