@@ -1919,9 +1919,7 @@ async function openCodexWebSocketTransport(
 					requestSetup.requestSignal,
 					onSseEvent,
 				),
-				requestBodyForState: cloneJsonTree(
-					splitCodexTransientTail(requestContext.transformedBody).comparable,
-				),
+				requestBodyForState: cloneJsonTree(splitCodexTransientTail(requestContext.transformedBody).comparable),
 				transport: "websocket",
 			};
 		}
