@@ -528,8 +528,6 @@ interface IndexedSessionEntry extends Omit<PositionedSessionEntry, "offset" | "l
 
 // A caller retaining a context payload also retains its plain owning entry;
 // historical reads and branch arrays themselves are only weakly memoized.
-const contextEntryOwners = new WeakMap<object, SessionEntry>();
-
 const readerRegistry = new FinalizationRegistry<number>(fd => {
 	try {
 		fs.closeSync(fd);
@@ -808,11 +806,20 @@ class SessionEntryIndex {
 			this.#generation++;
 			this.#branchCache = undefined;
 		}
+		const wasLabel = indexed.type === "label";
 		indexed.entry = entry;
 		indexed.revision = (indexed.revision ?? 0) + 1;
 		Object.assign(indexed, sessionContextEntryMetadata(entry));
-		if (entry.type === "compaction") indexed.firstKeptEntryId = entry.firstKeptEntryId;
+		indexed.firstKeptEntryId = entry.type === "compaction" ? entry.firstKeptEntryId : undefined;
 		if (this.#active.has(entry.id)) this.#active.set(entry.id, entry);
+		if (wasLabel || entry.type === "label") {
+			this.#labels.clear();
+			for (const label of this.entriesOfType("label")) {
+				if (label.type !== "label") continue;
+				if (label.label) this.#labels.set(label.targetId, label.label);
+				else this.#labels.delete(label.targetId);
+			}
+		}
 	}
 	revision(id: string): number {
 		return this.#entriesById.get(id)?.revision ?? 0;
@@ -2404,12 +2411,9 @@ export class SessionManager {
 			needsRewrite: this.#rewriteRequired,
 			draftOnlySessionCleanupArmed: this.#draftOnlySessionCleanupArmed,
 			fallbackRuntimeOnly: this.#fallbackRuntimeOnly,
-			// Entries are snapshotted by reference (switch/reload replaces the
-			// array wholesale). The header is cloned: moveTo mutates it in place
-			// (cwd, additionalDirectories), so a by-reference capture would let
-			// a rollback observe the move it is undoing.
+			// Snapshots own mutable records independently of this manager and restores.
 			header: structuredClone(this.#header),
-			entries: this.getEntries(),
+			entries: structuredClone(this.getEntries()),
 		};
 	}
 
@@ -2448,8 +2452,8 @@ export class SessionManager {
 		this.#forceFileCreation = snapshot.onDisk;
 		this.#draftOnlySessionCleanupArmed = snapshot.draftOnlySessionCleanupArmed;
 		this.#fallbackRuntimeOnly = snapshot.fallbackRuntimeOnly;
-		this.#applyEntries(snapshot.header, [...snapshot.entries]);
-		this.#additionalDirectories = snapshot.header.additionalDirectories ?? [];
+		this.#applyEntries(structuredClone(snapshot.header), structuredClone(snapshot.entries));
+		this.#additionalDirectories = [...(snapshot.header.additionalDirectories ?? [])];
 		this.#sessionName = snapshot.sessionName;
 
 		this.#titleSource = snapshot.titleSource;
@@ -3792,7 +3796,15 @@ export class SessionManager {
 
 	/** Announce a producer's in-place edit before yielding; retain it until its revision is durable. */
 	updateEntry(entry: SessionEntry): void {
+		if (this.#released) return;
+		const previous = this.#index.retainedEntry(entry.id);
 		this.#index.update(entry);
+		if (previous && previous !== entry) {
+			const selectedIndex = this.#entries.findIndex(selected => selected.id === entry.id);
+			if (selectedIndex >= 0) this.#entries[selectedIndex] = entry;
+		}
+		this.#rewriteRequired = true;
+		this.#fileIsCurrent = false;
 		this.#bodyRevision++;
 		if (this.#atomicRewriteFenceEpoch !== null) this.#atomicRewriteDirty = true;
 	}
@@ -4000,26 +4012,6 @@ export class SessionManager {
 	 */
 	buildSessionContext(options?: BuildSessionContextOptions): SessionContext {
 		const entries = this.#index.contextLeafPath(options);
-		for (const entry of entries) {
-			const payload =
-				entry.type === "message" ? entry.message : entry.type === "custom_message" ? entry.content : undefined;
-			if (payload === null || typeof payload !== "object") continue;
-			const pending: object[] = [payload];
-			const seen = new Set<object>();
-			while (pending.length > 0) {
-				const value = pending.pop()!;
-				if (seen.has(value)) continue;
-				seen.add(value);
-				// A caller may keep only a nested block, array, or tool argument.
-				// Weak keys retain its owner only while that plain payload is live.
-				contextEntryOwners.set(value, entry);
-				for (const key in value) {
-					if (!Object.hasOwn(value, key)) continue;
-					const child = (value as Record<string, unknown>)[key];
-					if (child !== null && typeof child === "object") pending.push(child);
-				}
-			}
-		}
 		return buildSessionContextFromLeafPath(entries, {
 			resolveFrameData: data => lazyImageDataSync(this.#blobs, data),
 			...options,

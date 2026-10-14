@@ -498,7 +498,7 @@ describe("bounded resume memory", () => {
 		}
 	});
 
-	it("persists a nested historical mutation after the caller frame returns, awaits and garbage collection", async () => {
+	it("persists a registered historical update after the caller frame returns, awaits and garbage collection", async () => {
 		using dir = TempDir.createSync("@resume-weak-mutation-");
 		const entries = threeCompactions();
 		const rootIndex = entries.findIndex(entry => entry.id === "root");
@@ -576,6 +576,44 @@ describe("bounded resume memory", () => {
 			});
 		} finally {
 			await reopened.close();
+		}
+	});
+
+	it("keeps captured, cloned and restored historical payloads independent of later store updates", async () => {
+		using dir = TempDir.createSync("@resume-snapshot-isolation-");
+		const entries = threeCompactions();
+		const file = await writeJournal(dir.path(), entries);
+		const session = await SessionManager.open(file, dir.path(), undefined, { suppressBreadcrumb: true });
+		const snapshot = session.captureState();
+		const clone = session.cloneCurrentSession({ persist: false });
+		const restored = SessionManager.inMemory();
+		restored.restoreState(snapshot);
+		function replaceHistorical(manager: SessionManager, text: string): void {
+			const entry = manager.getEntry("old-large");
+			if (entry?.type !== "message" || entry.message.role !== "toolResult")
+				throw new Error("Expected historical tool result");
+			entry.message.content = [{ type: "text", text }];
+			manager.updateEntry(entry);
+		}
+		try {
+			const original = entries.find(entry => entry.id === "old-large");
+			replaceHistorical(session, "source-only update");
+			expect(clone.getEntry("old-large")).toEqual(original);
+			expect(restored.getEntry("old-large")).toEqual(original);
+			expect(snapshot.entries.find(entry => entry.id === "old-large")).toEqual(original);
+			replaceHistorical(clone, "clone-only update");
+			replaceHistorical(restored, "restore-only update");
+			expect(session.getEntry("old-large")).toMatchObject({
+				message: { content: [{ type: "text", text: "source-only update" }] },
+			});
+			expect(clone.getEntry("old-large")).toMatchObject({
+				message: { content: [{ type: "text", text: "clone-only update" }] },
+			});
+			expect(snapshot.entries.find(entry => entry.id === "old-large")).toEqual(original);
+		} finally {
+			await restored.close();
+			await clone.close();
+			await session.close();
 		}
 	});
 
@@ -683,7 +721,19 @@ describe("bounded resume memory", () => {
 				const message = session.buildSessionContext().messages.find(candidate => candidate.role === "assistant");
 				if (message?.role !== "assistant" || message.content[0].type !== "text")
 					throw new Error("Expected shared context assistant");
-				message.content[0].text = "raw context edit during published rewrite 🐈";
+				const entry = session
+					.getContextBranch()
+					.find(candidate => candidate.type === "message" && candidate.message === message);
+				if (entry?.type !== "message" || entry.message.role !== "assistant")
+					throw new Error("Expected context owner");
+				// The setter is authoritative by id, even while the serialized object stays live.
+				session.updateEntry({
+					...entry,
+					message: {
+						...entry.message,
+						content: [{ type: "text", text: "raw context edit during published rewrite 🐈" }],
+					},
+				});
 			}
 			editSharedContextPayload();
 			storage.release.resolve();
@@ -724,7 +774,7 @@ describe("bounded resume memory", () => {
 		}
 	});
 
-	it("persists a raw nested historical context edit when only the block survives publication and GC", async () => {
+	it("persists an explicit historical update through publication and GC", async () => {
 		using dir = TempDir.createSync("@resume-nested-context-rewrite-");
 		const file = await writeJournal(dir.path(), threeCompactions());
 		const storage = new PublishedRewriteStorage();
@@ -733,9 +783,11 @@ describe("bounded resume memory", () => {
 		try {
 			expect(session.getContextBranch().some(entry => entry.id === "old-large")).toBe(false);
 			function historicalTextBlock(): TextContent {
-				const message = session.buildSessionContext({ transcript: true }).messages.find(
-					candidate => candidate.role === "toolResult" && candidate.toolCallId === "call-old-large",
-				);
+				const message = session
+					.buildSessionContext({ transcript: true })
+					.messages.find(
+						candidate => candidate.role === "toolResult" && candidate.toolCallId === "call-old-large",
+					);
 				if (message?.role !== "toolResult" || message.content[0].type !== "text")
 					throw new Error("Expected historical context text block");
 				return message.content[0];
@@ -747,6 +799,11 @@ describe("bounded resume memory", () => {
 			rewrite = session.rewriteEntries();
 			await storage.published.promise;
 			block.text = "nested historical edit during published rewrite 🐈";
+			const owner = session.getEntry("old-large");
+			if (owner?.type !== "message" || owner.message.role !== "toolResult")
+				throw new Error("Expected historical context owner");
+			owner.message.content = [block];
+			session.updateEntry(owner);
 			await setImmediate();
 			Bun.gc(true);
 			await setImmediate();
