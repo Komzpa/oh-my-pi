@@ -286,9 +286,9 @@ describe("AgentSession per-turn prune persistence", () => {
 					candidate.message.role === "toolResult" &&
 					candidate.message.toolCallId === BIG_CALL_ID,
 			);
-		expect(scoped?.type === "message" ? scoped.message : undefined).toMatchObject({
-			content: [{ type: "text", text: "match line\n".repeat(20000) }],
-		});
+		expect(
+			scoped?.type === "message" && scoped.message.role === "toolResult" ? scoped.message.content : undefined,
+		).toEqual([{ type: "text", text: "match line\n".repeat(20000) }]);
 		expect(
 			scoped?.type === "message" && scoped.message.role === "toolResult" ? scoped.message.prunedAt : undefined,
 		).toBeUndefined();
@@ -383,9 +383,9 @@ describe("AgentSession per-turn prune persistence", () => {
 			const raw = sessionManager
 				.getEntries()
 				.find(candidate => candidate.type === "message" && candidate.message.role === "toolResult");
-			expect(raw?.type === "message" ? raw.message : undefined).toMatchObject({
-				content: [{ type: "text", text: "match line\n".repeat(20000) }],
-			});
+			expect(raw?.type === "message" && raw.message.role === "toolResult" ? raw.message.content : undefined).toEqual(
+				[{ type: "text", text: "match line\n".repeat(20000) }],
+			);
 			expect(
 				raw?.type === "message" && raw.message.role === "toolResult" ? raw.message.prunedAt : undefined,
 			).toBeUndefined();
