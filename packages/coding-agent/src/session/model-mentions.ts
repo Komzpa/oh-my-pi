@@ -64,7 +64,11 @@ export class ModelMentionRegistry {
 
 	/** Rebuild pseudonyms after resume, rewind, or a session switch. */
 	syncFromBranch(): void {
-		this.#mentions = readModelMentions(this.#host.sessionManager.iterateBranch("custom"));
+		this.#mentions = readModelMentions(
+			this.#host.sessionManager.getBranchMatching(
+				metadata => metadata.type === "custom" && metadata.customType === MODEL_MENTION_ENTRY_TYPE,
+			),
+		);
 		this.#bySelector.clear();
 		this.#agents.clear();
 		for (const agent of this.#inheritedAgents) {

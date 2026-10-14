@@ -36,6 +36,8 @@ export interface CacheLookbackConfig {
 }
 
 export interface PruneConfig extends CacheLookbackConfig {
+	/** Final selected entries, populated only for a successful prune pass. */
+	selectedEntries?: SessionMessageEntry[];
 	/** Keep the most recent tool output tokens intact. */
 	protectTokens: number;
 	/** Only prune if total savings meets this threshold. */
@@ -138,6 +140,8 @@ export type SupersedeKeyFn = (toolName: string, args: Record<string, unknown>) =
 export type SupersedeCompleteFn = (message: ToolResultMessage) => boolean;
 
 export interface SupersedePruneConfig extends CacheLookbackConfig {
+	/** Final selected entries, populated only for a successful prune pass. */
+	selectedEntries?: SessionMessageEntry[];
 	/** Supersede key function; a newer successful result with the same key supersedes older ones (see {@link SupersedeKeyFn}). */
 	supersedeKey?: SupersedeKeyFn;
 	/**
@@ -525,6 +529,7 @@ export function pruneSupersededToolResults(
 		toPrune.reverse();
 	}
 	if (toPrune.length === 0) return NOTHING_PRUNED;
+	for (const candidate of toPrune) config.selectedEntries?.push(candidate.entry);
 
 	let tokensSaved = 0;
 	for (const candidate of toPrune) tokensSaved += estimatePrunedSavings(candidate.tokens, candidate.notice);
@@ -651,6 +656,8 @@ export function pruneToolOutputs(
 	if (tokensSaved < config.minimumSavings || candidates.length === 0) {
 		return NOTHING_PRUNED;
 	}
+
+	for (const candidate of candidates) config.selectedEntries?.push(candidate.entry);
 
 	const prunedAt = Date.now();
 	const steps = candidates.map(candidate => {

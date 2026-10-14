@@ -48,7 +48,11 @@ export const createAutoresearchExtension: ExtensionFactory = api => {
 
 	const rehydrate = async (ctx: ExtensionContext): Promise<void> => {
 		const runtime = getRuntime(ctx);
-		const control = reconstructControlState(ctx.sessionManager.getBranch());
+		const control = reconstructControlState(
+			ctx.sessionManager.getBranchMatching(
+				metadata => metadata.type === "custom" && metadata.customType === "autoresearch-control",
+			),
+		);
 		runtime.goal = control.goal;
 		runtime.autoResumeArmed = false;
 		runtime.lastAutoResumePendingRunNumber = null;
