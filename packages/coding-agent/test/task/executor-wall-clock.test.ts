@@ -153,6 +153,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		const result = await runSubprocess({
 			...baseOptions,
 			id: "quota-worker",
+			asyncJobManager: manager,
 		});
 
 		expect(result.exitCode).toBe(1);
