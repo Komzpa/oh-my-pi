@@ -326,7 +326,9 @@ const TASK_POOL: PoolConfig = {
 		"deepseek/deepseek-v4-pro:high",
 		"kimi-code/k3:high",
 		"xiaomi/mimo-v2.6-pro",
+		"openrouter/x-ai/grok-4.5",
 		"muse-code/muse-spark-1.3-contributor",
+		"openrouter/x-ai/grok-4.6",
 	],
 	fallbacks: ["codex-lb/gpt-6.1-sol:medium", "codex-lb/Qwen3.8-27B", "cerebras/qwen-3.8-27b"],
 };
