@@ -2134,6 +2134,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	};
 
 	const attach = (session: AgentSession): (() => void) => {
+		const attributedFallbackEntries = new Set<string>();
 		// The session owns attribution: it knows which model produced its output
 		// and withholds an armed-but-unproven fallback. Re-deriving that here from
 		// the event stream got it wrong twice over — the stream also carries
@@ -2165,7 +2166,6 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			progress.contextWindow = contextWindow;
 			scheduleProgress(true);
 		};
-		const attributedFallbackEntries = new Set<string>();
 		return session.subscribe(event => {
 			emitSubagentEvent(event);
 			publishAdvisorState(session);
