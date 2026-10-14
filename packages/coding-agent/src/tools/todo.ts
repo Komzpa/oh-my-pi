@@ -115,33 +115,6 @@ type TodoSchema = typeof todoSchema.infer;
 /** A single todo op entry (the params object itself). */
 type TodoOpEntryValue = TodoParams;
 
-// =============================================================================
-// State helpers
-// =============================================================================
-
-function findTaskByContent(phases: TodoPhase[], content: string): { task: TodoItem; phase: TodoPhase } | undefined {
-	for (const phase of phases) {
-		const task = phase.tasks.find(t => t.content === content);
-		if (task) return { task, phase };
-	}
-	return undefined;
-}
-
-function findPhaseByName(phases: TodoPhase[], name: string): TodoPhase | undefined {
-	return phases.find(phase => phase.name === name);
-}
-
-function cloneTask(task: TodoItem): TodoItem {
-	return structuredClone(task);
-}
-
-function clonePhases(phases: TodoPhase[]): TodoPhase[] {
-	return phases.map(phase => {
-		const { tasks, ...metadata } = phase;
-		return { ...structuredClone(metadata), tasks: tasks.map(cloneTask) };
-	});
-}
-
 // Session checkout for rows created by the current `TodoTool.execute()` call.
 // Set at the top of execute() (a region #92 leaves alone) and read by
 // initPhases/appendItems, so #41 never touches #92's applyEntry/applyParams
@@ -411,6 +384,7 @@ async function resolveRequirementRowArtifact(
 	const schedule = (task as TodoItem & { schedule?: unknown }).schedule;
 	const metadata = isRecord(schedule) ? schedule : undefined;
 	const owner = typeof metadata?.owner === "string" ? metadata.owner : undefined;
+	const mainOwner = owner === undefined || owner.toLowerCase() === "main";
 	const resources = Array.isArray(metadata?.resources) ? metadata.resources : [];
 	const paths: string[] = [];
 	const branchNames: string[] = [];
@@ -462,7 +436,7 @@ async function resolveRequirementRowArtifact(
 		(JSON.stringify(latestSchedule) === JSON.stringify(schedule) ? latestTask?.deployment : undefined);
 	if (declaredDeployment) return unknownRequirementArtifact(`unresolved deployment ${declaredDeployment}`);
 	const finishedCheckout =
-		owner !== undefined && owner !== "main" && ctx.executionCheckout?.owner === owner
+		!mainOwner && owner !== undefined && ctx.executionCheckout?.owner === owner
 			? ctx.executionCheckout.cwd
 			: undefined;
 
@@ -489,24 +463,21 @@ async function resolveRequirementRowArtifact(
 			);
 		}
 	}
-	// Only a row that declares no resource set at all is a pre-scheduling legacy
-	// row: it falls back to the main checkout (c7a645a9c1). A row that declares
-	// `resources` explicitly is bound to that set alone and must stay unknown
-	// when it is empty, so a bare schedule edit can never silently rebind it.
-	const declaredResources = Array.isArray(metadata?.resources);
-	const ownerCwd =
-		effectiveOwner === "main"
-			? archived || paths.length || persistedCwd || declaredResources
-				? undefined
-				: ctx.cwd
-			: resources.length > 0 || persistedCwd
-				? undefined
-				: (finishedCheckout ?? agent?.session?.sessionManager.getCwd());
+	// Main owns the session checkout by default, including an explicit empty
+	// resource list. Named resources and persisted bindings still take precedence;
+	// an unmapped worker must never inherit Main's checkout.
+	const ownerCwd = mainOwner
+		? archived || paths.length || persistedCwd
+			? undefined
+			: ctx.cwd
+		: resources.length > 0 || persistedCwd
+			? undefined
+			: (finishedCheckout ?? agent?.session?.sessionManager.getCwd());
 	// A reassigned worker whose checkout is not known must not inherit the row's initial main checkout.
 	if (
 		!archived &&
 		owner &&
-		owner !== "main" &&
+		!mainOwner &&
 		!ownerCwd &&
 		!persistedCwd &&
 		paths.length === 0 &&
@@ -731,6 +702,33 @@ export function getCompletionTargets(phases: TodoPhase[], entry: TodoCompletionS
 		return selectCompletionBatchTargets(phases, { op: "done", task: entry.task, items: entry.items }, errors);
 	}
 	return getTaskTargets(phases, { op: "done", task: entry.task, phase: entry.phase }, errors);
+}
+
+// =============================================================================
+// State helpers
+// =============================================================================
+
+function findTaskByContent(phases: TodoPhase[], content: string): { task: TodoItem; phase: TodoPhase } | undefined {
+	for (const phase of phases) {
+		const task = phase.tasks.find(t => t.content === content);
+		if (task) return { task, phase };
+	}
+	return undefined;
+}
+
+function findPhaseByName(phases: TodoPhase[], name: string): TodoPhase | undefined {
+	return phases.find(phase => phase.name === name);
+}
+
+function cloneTask(task: TodoItem): TodoItem {
+	return structuredClone(task);
+}
+
+function clonePhases(phases: TodoPhase[]): TodoPhase[] {
+	return phases.map(phase => {
+		const { tasks, ...metadata } = phase;
+		return { ...structuredClone(metadata), tasks: tasks.map(cloneTask) };
+	});
 }
 
 function todoTransitionKey(phase: string, content: string): string {
