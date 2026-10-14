@@ -486,6 +486,11 @@ function replayTodoEdit(
 	return { phases: applied.phases, mutable: true };
 }
 
+function getTodoBranchEntries(manager: ToolSession["sessionManager"]): SessionEntry[] {
+	return manager?.getBranchMatching(isTodoStateEntryMetadata) ?? [];
+}
+
+
 export function shouldPersistTodoFullSnapshotCheckpoint(entriesNewestFirst: Iterable<SessionEntry>): boolean {
 	let compactEditsSinceSnapshot = 0;
 	for (const entry of entriesNewestFirst) {
@@ -1719,9 +1724,6 @@ function attachLiveTodoDetails(
 // Tool Class
 // =============================================================================
 
-function getTodoBranchEntries(manager: ToolSession["sessionManager"]): SessionEntry[] {
-	return manager?.getBranchMatching(isTodoStateEntryMetadata) ?? [];
-}
 
 
 export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
