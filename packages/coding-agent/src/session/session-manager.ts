@@ -1053,10 +1053,6 @@ export class ForkSourceNotFoundError extends Error {
  * A trailing atomic rewrite still rewrites the header cwd after the path is
  * repointed.
  */
-export interface SessionManager {
-	getEntryCount(): number;
-}
-
 export class SessionManager {
 	#cwd: string;
 	/** Additional workspace directories beyond cwd (multi-root). Normalized absolute, deduped, excludes cwd. */
@@ -1185,7 +1181,6 @@ export class SessionManager {
 	#pendingArtifactCopy: { sessionFile: string; done: Promise<void> } | undefined;
 
 	private constructor(cwd: string, sessionDir: string, persist: boolean, storage: SessionStorage) {
-		this.getEntryCount = () => this.#index.count();
 		this.#cwd = cwd;
 		// Absolute, so session files (and `PI_SESSION_FILE` in bash and eval) stay
 		// valid after a command changes directory: `--session-dir` may be relative.
@@ -3985,6 +3980,11 @@ export class SessionManager {
 	/** Materialize only the current model/collapsed-display dependency closure. */
 	getContextBranch(): SessionEntry[] {
 		return this.#index.contextLeafPath({ transcript: true, collapseCompactedHistory: true }).reverse();
+	}
+
+	/** Count the complete journal without materializing historical payloads. */
+	getEntryCount(): number {
+		return this.#index.count();
 	}
 
 	hasEntryType(type: SessionEntry["type"]): boolean {
