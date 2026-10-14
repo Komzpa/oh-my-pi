@@ -1053,6 +1053,10 @@ export class ForkSourceNotFoundError extends Error {
  * A trailing atomic rewrite still rewrites the header cwd after the path is
  * repointed.
  */
+export interface SessionManager {
+	getEntryCount(): number;
+}
+
 export class SessionManager {
 	#cwd: string;
 	/** Additional workspace directories beyond cwd (multi-root). Normalized absolute, deduped, excludes cwd. */
@@ -1181,6 +1185,7 @@ export class SessionManager {
 	#pendingArtifactCopy: { sessionFile: string; done: Promise<void> } | undefined;
 
 	private constructor(cwd: string, sessionDir: string, persist: boolean, storage: SessionStorage) {
+		this.getEntryCount = () => this.#index.count();
 		this.#cwd = cwd;
 		// Absolute, so session files (and `PI_SESSION_FILE` in bash and eval) stay
 		// valid after a command changes directory: `--session-dir` may be relative.
@@ -3982,10 +3987,6 @@ export class SessionManager {
 		return this.#index.contextLeafPath({ transcript: true, collapseCompactedHistory: true }).reverse();
 	}
 
-	getEntryCount(): number {
-		return this.#index.count();
-	}
-
 	hasEntryType(type: SessionEntry["type"]): boolean {
 		return this.#index.hasType(type);
 	}
@@ -4017,9 +4018,10 @@ export class SessionManager {
 		const extension = this as SessionManager & {
 			createBranchSelectionProjector?: (
 				path: readonly SessionContextEntryMetadata[],
+				readEntry: (id: string) => SessionEntry | undefined,
 			) => (entry: SessionEntry, index: number) => SessionEntry;
 		};
-		const project = extension.createBranchSelectionProjector?.(path);
+		const project = extension.createBranchSelectionProjector?.(path, id => this.#index.get(id, false));
 		for (let i = path.length - 1; i >= 0; i--) {
 			const metadata = path[i]!;
 			if (!predicate(metadata)) continue;
