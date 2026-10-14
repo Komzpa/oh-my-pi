@@ -903,7 +903,7 @@ export const todoToolRenderer = {
 					uiTheme,
 				);
 				for (const line of treeLines) {
-					bodyLines.push(...(wrapTreeLine(`${indent}${line}`, contentWidth, uiTheme) ?? [`${indent}${line}`]));
+					bodyLines.push(...(wrapTreeLine(line, contentWidth, uiTheme) ?? [line]));
 				}
 			}
 			if (archivedPhases) {
