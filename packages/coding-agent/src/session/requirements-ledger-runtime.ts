@@ -85,6 +85,7 @@ import {
 	getLatestTodoPhasesFromEntries,
 	getRequirementRowArtifact,
 	getTodoRowChanges,
+	isTodoStateEntryMetadata,
 	type RequirementRowArtifact,
 } from "../tools/todo";
 import { BUNDLED_QA_AUDITOR_TEMPLATE } from "../task/agents";
@@ -163,7 +164,11 @@ export class RequirementsLedgerRuntime {
 
 	captureCandidate(rawText: string, images?: readonly ImageContent[]): void {
 		if (this.#host.agentKind() !== "main" || !rawText.trim() || rawText.trimStart().startsWith("/")) return;
-		const requirements = getLatestRequirements(this.#host.sessionManager.getBranch());
+		const requirements = getLatestRequirements(
+			this.#host.sessionManager.getBranchMatching(
+				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+			),
+		);
 		const referenced = extractRequirementImages(rawText, images);
 		appendRequirementsSnapshot(
 			this.#appender(),
@@ -185,7 +190,9 @@ export class RequirementsLedgerRuntime {
 		) {
 			return undefined;
 		}
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getBranchMatching(
+		metadata => metadata.type === "custom" || metadata.type === "message",
+	);
 		const candidates = getUnclassifiedRequirementCandidates(branch);
 		if (candidates.length === 0) return undefined;
 		const rows = openTodoRowContents(branch);
@@ -206,7 +213,11 @@ export class RequirementsLedgerRuntime {
 		const sessionId = this.#sessionId();
 		if (!sessionId) return undefined;
 
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getBranchMatching(
+			metadata =>
+				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+				isTodoStateEntryMetadata(metadata),
+		);
 		const requirements = getLatestRequirements(branch);
 		const phases = getLatestTodoPhasesFromEntries(branch);
 		const multiple = Array.isArray(input.tasks);
@@ -519,7 +530,11 @@ export class RequirementsLedgerRuntime {
 			);
 			this.#noticeState = noticeState;
 		}
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getBranchMatching(
+			metadata =>
+				(metadata.type === "message" && metadata.messageRole === "user") ||
+				(metadata.type === "custom" && metadata.customType === "requirements_awaiting_user_notice"),
+		);
 		const userMessage = branch.findLast(entry => entry.type === "message" && entry.message.role === "user");
 		const announced = new Set<string>();
 		for (const entry of branch) {
@@ -569,7 +584,12 @@ export class RequirementsLedgerRuntime {
 		staleById: Map<string, string[]>;
 		awaitingUserIssues: Set<string>;
 	}> {
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getBranchMatching(
+			metadata =>
+				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+				(metadata.type === "custom" && metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE) ||
+				isTodoStateEntryMetadata(metadata),
+		);
 		const requirements = getLatestRequirements(branch);
 		const phases = getLatestTodoPhasesFromEntries(branch);
 		const changes = getTodoRowChanges(branch);
@@ -631,7 +651,11 @@ export class RequirementsLedgerRuntime {
 		) {
 			return `${expectedIds.join(", ")}: auditor assignment session or worker identity did not match`;
 		}
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getBranchMatching(
+			metadata =>
+				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+				isTodoStateEntryMetadata(metadata),
+		);
 		const requirements = getLatestRequirements(branch);
 		const expected = expectedIds.map(id => requirements.find(requirement => requirement.id === id));
 		if (expected.some(requirement => !requirement || requirement.classification !== "linked")) {
@@ -719,7 +743,7 @@ export class RequirementsLedgerRuntime {
 					this.#appender(),
 					checkoutCache,
 				);
-				const lastChange = getTodoRowChanges(this.#host.sessionManager.getBranch()).get(row);
+				const lastChange = changes.get(row);
 				const receivedAt = new Date().toISOString();
 				if (identity === undefined)
 					return `${receipt.id}: artifact identity did not identify ${JSON.stringify(row)}; resolved checkout: ${formatRequirementGateArtifact(artifact)}`;
@@ -751,7 +775,11 @@ export class RequirementsLedgerRuntime {
 			}
 			updates.set(receipt.id, rowVerdicts);
 		}
-		const currentRequirements = getLatestRequirements(this.#host.sessionManager.getBranch());
+		const currentRequirements = getLatestRequirements(
+			this.#host.sessionManager.getBranchMatching(
+				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+			),
+		);
 		if (
 			expectedIds.some(
 				id => currentRequirements.find(requirement => requirement.id === id)?.classification !== "linked",
@@ -853,10 +881,15 @@ export class RequirementsLedgerRuntime {
 	}
 
 	#restorePendingAuditors(): void {
+		const branch = this.#host.sessionManager.getBranchMatching(
+			metadata =>
+				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+				(metadata.type === "custom" && metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE),
+		);
 		const restored = getPersistedRequirementAuditorAssignments(
-			this.#host.sessionManager.getBranch(),
+			branch,
 			this.#sessionId(),
-			getLatestRequirements(this.#host.sessionManager.getBranch()),
+			getLatestRequirements(branch),
 		);
 		this.#pendingAuditors.clear();
 		for (const [workerId, assignment] of restored) this.#pendingAuditors.set(workerId, assignment);
@@ -868,7 +901,13 @@ export class RequirementsLedgerRuntime {
 	): void {
 		const sessionId = this.#sessionId();
 		if (!sessionId) return;
-		const rejections = getPersistedRequirementAuditRejections(this.#host.sessionManager.getBranch(), sessionId);
+		const rejections = getPersistedRequirementAuditRejections(
+			this.#host.sessionManager.getBranchMatching(
+				metadata =>
+					metadata.type === "custom" && metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
+			),
+			sessionId,
+		);
 		for (const id of acceptedIds) rejections.delete(id);
 		if (rejected) {
 			for (const id of rejected.ids) rejections.set(id, rejected.reason);
@@ -908,7 +947,11 @@ export class RequirementsLedgerRuntime {
 	}
 
 	#getPublicationGeneration(): number {
-		const branch = this.#host.sessionManager.getBranch();
+		const branch = this.#host.sessionManager.getBranchMatching(
+			metadata =>
+				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+				isTodoStateEntryMetadata(metadata),
+		);
 		const state = JSON.stringify([getLatestRequirements(branch), getLatestTodoPhasesFromEntries(branch)]);
 		if (state !== this.#publicationState) {
 			this.#publicationState = state;
@@ -917,7 +960,11 @@ export class RequirementsLedgerRuntime {
 		return this.#publicationGeneration;
 	}
 	syncPublicationGate(): void {
-		const requirements = getLatestRequirements(this.#host.sessionManager.getBranch());
+		const requirements = getLatestRequirements(
+			this.#host.sessionManager.getBranchMatching(
+				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+			),
+		);
 		const active =
 			this.#host.agentKind() === "main" &&
 			requirements.some(
