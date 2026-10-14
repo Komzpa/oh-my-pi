@@ -3,7 +3,6 @@ import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
-import { streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -340,7 +339,6 @@ describe("AgentSession text-only stream stall", () => {
 			const agent = new Agent({
 				getApiKey: () => "local-test-key",
 				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
-				streamFn: streamOpenAIResponses,
 			});
 			session = new AgentSession({
 				agent,
