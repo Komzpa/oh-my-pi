@@ -222,7 +222,8 @@ import {
 	type TodoPlanForecast,
 	type TodoTaskForecast,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { readGoalDeadline } from "../goals/deadlines";
+import { isTodoStateEntryMetadata } from "../tools/todo";
+import { readGoalDeadlineFromManager } from "../goals/deadlines";
 import { vocalizer } from "../tts/vocalizer";
 import { applyHyperlinkSetting, fileHyperlink } from "@oh-my-pi/pi-tui/render/hyperlink";
 import { renderTreeList } from "@oh-my-pi/pi-tui/render/tree-list";
@@ -4562,7 +4563,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		const now = Date.now();
 		const owner = this.#todoPhasesOwner ?? this.viewSession;
-		const deadline = readGoalDeadline(owner.sessionManager.getBranch(), owner.sessionManager.getCwd(), {
+		const deadline = readGoalDeadlineFromManager(owner.sessionManager, owner.sessionManager.getCwd(), {
 			includePaused: true,
 		});
 		const deadlineAt = deadline?.deadlineAt;
@@ -4578,7 +4579,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			// completed row that archival moved out of the live phases. The archive
 			// summary joins the cache key so an archival (or an init that clears it)
 			// never serves a stale forecast resurrecting pre-archive plan data.
-			const archiveSummary = getTodoArchiveSummaryFromEntries(owner.sessionManager.getBranch());
+			const archiveSummary = getTodoArchiveSummaryFromEntries(
+				owner.sessionManager.getBranchMatching(isTodoStateEntryMetadata),
+			);
 			const cache = this.#todoForecastCacheKey;
 			const cacheHit =
 				cache?.phases === sourcePhases &&
@@ -4589,7 +4592,9 @@ export class InteractiveMode implements InteractiveModeContext {
 				cache.archiveFromAt === (archiveSummary?.fromAt ?? 0) &&
 				cache.archiveToAt === (archiveSummary?.toAt ?? 0);
 			if (!cacheHit) {
-				const archived = getLatestTodoArchiveFromEntries(owner.sessionManager.getBranch());
+				const archived = getLatestTodoArchiveFromEntries(
+					owner.sessionManager.getBranchMatching(isTodoStateEntryMetadata),
+				);
 				this.#todoForecast = forecastTodoLivePlan(phases, archived, { now, capacity, deadlineAt });
 				this.#todoForecastCacheKey = {
 					phases: sourcePhases,

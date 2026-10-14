@@ -19,6 +19,10 @@ import { forecastTodoPlan } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import {
+	sessionContextEntryMetadata,
+	type SessionContextEntryMetadata,
+} from "@oh-my-pi/pi-coding-agent/session/session-context";
+import {
 	selectCollapsedTodos,
 	type TodoItem,
 	type TodoPhase,
@@ -172,7 +176,14 @@ describe("todo archive policy", () => {
 			const session = createSession(closedArchiveFixture(now));
 			const writes = vi.spyOn(session, "setTodoPhases");
 			const entries: SessionEntry[] = [];
-			Object.assign(session, { sessionManager: { getBranch: () => entries } });
+			Object.assign(session, {
+				sessionManager: {
+					getBranch: () => entries,
+					getBranchMatching: (predicate: (metadata: SessionContextEntryMetadata) => boolean) =>
+						entries.filter(entry => predicate(sessionContextEntryMetadata(entry))),
+					getLeafId: () => entries.at(-1)?.id ?? null,
+				},
+			});
 			const tool = new TodoTool(session);
 			const defaultView = await tool.execute("view-before", { op: "view" });
 			expect(writes).not.toHaveBeenCalled();

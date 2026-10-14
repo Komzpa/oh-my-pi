@@ -1310,7 +1310,9 @@ export class SelectorController {
 	}
 
 	showUserMessageSelector(): void {
-		const entries = this.ctx.sessionManager.getBranch().filter(isTranscriptEntry);
+		const entries = this.ctx.sessionManager
+			.getBranchMatching(metadata => metadata.type === "message" || metadata.type === "custom_message")
+			.filter(isTranscriptEntry);
 		if (entries.length === 0) {
 			this.ctx.showStatus("No messages to branch from");
 			return;
@@ -1442,7 +1444,9 @@ export class SelectorController {
 	}
 
 	showCopySelector(): void {
-		const entries = this.ctx.sessionManager.getBranch().filter(isTranscriptEntry);
+		const entries = this.ctx.sessionManager
+			.getBranchMatching(metadata => metadata.type === "message" || metadata.type === "custom_message")
+			.filter(isTranscriptEntry);
 		if (entries.length === 0) {
 			this.ctx.showStatus("Nothing to copy yet.");
 			return;

@@ -1,7 +1,7 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import { isTodoStateEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
@@ -16,8 +16,21 @@ import { isAbsolute, join } from "node:path";
 import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState } from "./deadlines";
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
-import { derivePresence, type Presence } from "./goal_deadlines";
+import { derivePresence, isDeadlineStateEntryMetadata, isGoalLifecycleEntryMetadata, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
+
+function todoStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
+  const branch = ctx.sessionManager.getBranchMatching(isTodoStateEntryMetadata);
+  return pending.length ? [...branch, ...pending] : branch;
+}
+
+function dispatchStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
+  const branch = ctx.sessionManager.getBranchMatching((metadata) =>
+    isTodoStateEntryMetadata(metadata) || isDeadlineStateEntryMetadata(metadata) || isGoalLifecycleEntryMetadata(metadata) ||
+    (metadata.type === "message" && metadata.messageRole === "user"),
+  );
+  return pending.length ? [...branch, ...pending] : branch;
+}
 
 type DispatchForecastApi = Pick<
   ExtensionAPI["pi"],
@@ -106,12 +119,11 @@ function dedupeLatestWinsCompactionMessages(messages: AgentMessage[]): AgentMess
     return lastIndexByType[message.customType] === index;
   });
 }
-// Canonical surviving model context for the compact guard: project the branch through the shared
-// buildSessionContext producer and check whether that customType still reaches the model. Never
-// re-derive retained ranges or compaction boundaries here. Canonical builder errors must surface.
+// Canonical surviving model context for the compact guard: use the shared
+// SessionManager.buildSessionContext producer and check whether that customType still reaches the model.
+// Never re-derive retained ranges or compaction boundaries here. Canonical builder errors must surface.
 function survivingCompactionCustomType(ctx: ExtensionContext, customType: string): boolean {
-  const branch = ctx.sessionManager.getBranch();
-  const context = buildSessionContext(branch);
+  const context = ctx.sessionManager.buildSessionContext();
   return context.messages.some((message) => message.role === "custom" && message.customType === customType);
 }
 // A merge whose conflicts are all resolved is one `git commit` away. Seen live: a planner kept a
@@ -879,7 +891,7 @@ function retroFacilitatorResultId(event: unknown): string | undefined {
 // re-clears demand. A receipt older than the window that was never processed keeps the old
 // behavior (demand persists until the next retro) instead of breaking the cap.
 const RETRO_RECEIPT_SCAN_ENTRIES = 500;
-function branchRetroReceiptIds(branch: unknown): string[] {
+function branchRetroReceiptIds(ctx: ExtensionContext): string[] {
   const found: string[] = [];
   const scan = (text: string) => {
     for (const tag of text.match(/<task-result\b[^>]*>/g) ?? []) {
@@ -888,7 +900,17 @@ function branchRetroReceiptIds(branch: unknown): string[] {
       if (id !== undefined && !found.includes(id)) found.push(id);
     }
   };
-  const entries = Array.isArray(branch) ? branch.slice(-RETRO_RECEIPT_SCAN_ENTRIES) : [];
+  let branchEntryCount = 0;
+  ctx.sessionManager.getBranchMatching(() => {
+    branchEntryCount += 1;
+    return false;
+  });
+  let branchIndex = 0;
+  // Keep the original last-500-branch-entry window, not the last 500 matching messages.
+  const entries = ctx.sessionManager.getBranchMatching((metadata) => {
+    const inWindow = branchIndex++ >= branchEntryCount - RETRO_RECEIPT_SCAN_ENTRIES;
+    return inWindow && (metadata.type === "message" || metadata.type === "custom_message");
+  });
   for (const entry of entries) {
     if (typeof entry !== "object" || entry === null || !("type" in entry)) continue;
     const content = entry.type === "message"
@@ -1819,7 +1841,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     const { facilitatorSettled, updaterRejected } = settleSprintJobs([...branchAsyncTaskResults(ctx.sessionManager.getBranch()), ...(jobs?.recent ?? [])], now);
     // One persist per loop: a burst of background receipts used to persist a full snapshot per receipt.
-    const freshReceipts = branchRetroReceiptIds(ctx.sessionManager.getBranch()).filter((receipt) => !sprintState.retroReceiptIds.includes(receipt));
+    const freshReceipts = branchRetroReceiptIds(ctx).filter((receipt) => !sprintState.retroReceiptIds.includes(receipt));
     if (facilitatorSettled || freshReceipts.length > 0) finishRetro(freshReceipts.length > 0 ? freshReceipts : undefined, false);
     if (open.length > 0 && sprintState.goalWorkStartedAt === null) {
       // Only finishes since the last retro start the next goal-work window; older ones were covered.
@@ -1991,8 +2013,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const load = (ctx: ExtensionContext) => {
     flushSprintState();
     reset();
-    persistedChildren = readPersistedChildren(ctx.sessionManager.getBranch());
-    sprintState = readPersistedSprintState(ctx.sessionManager.getBranch());
+    const roster = ctx.sessionManager.getLatestBranchMatching((metadata) => metadata.type === "custom" && metadata.customType === ROSTER_ENTRY_TYPE);
+    const sprint = ctx.sessionManager.getLatestBranchMatching((metadata) => metadata.type === "custom" && metadata.customType === SPRINT_STATE_ENTRY_TYPE);
+    persistedChildren = readPersistedChildren(roster ? [roster] : []);
+    sprintState = readPersistedSprintState(sprint ? [sprint] : []);
     retroFacilitatorJobs.clear();
     for (const name of sprintState.retroFacilitatorJobs) retroFacilitatorJobs.add(name);
     persistedSprintStateJson = JSON.stringify(sprintState);
@@ -2043,7 +2067,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
 
   const currentDecision = (ctx: ExtensionContext, now = Date.now(), pending: unknown[] = [], refreshSnapshot = false, forceRefresh = false) => {
     // `pending`: entries not yet on the branch, such as the todo result a tool_result hook is amending.
-    const branch = pending.length ? [...ctx.sessionManager.getBranch(), ...pending] : ctx.sessionManager.getBranch();
+    const branch = dispatchStateEntries(ctx, pending);
     const header = ctx.sessionManager.getHeader();
     const presence = header !== null && !header.parentSession ? presenceOf(branch, now) : undefined;
     const goalPaused = lifecycleGoal(branch, [])?.status === "paused";
@@ -2156,7 +2180,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     });
   };
   const blockIdleWait = (ctx: ExtensionContext) => {
-    if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()))) return;
+    if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return;
     if (pauseGate?.paused) return;
     // Grievance 547: a todo override naming idle-wait answers this refusal; let
     // the wait through for the same few-turn window instead of deadlocking.
@@ -2241,7 +2265,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const byContent = new Map(rows.map((row) => [row.content, row]));
     const schedule = new Map<string, { dependencies: string[]; resources: string[] }>();
     try {
-      for (const phase of sdk.getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch()))
+      for (const phase of sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx)))
         for (const task of phase.tasks)
           schedule.set(task.content, { dependencies: task.schedule?.dependencies ?? [], resources: task.schedule?.resources ?? [] });
     } catch {}
@@ -2314,7 +2338,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const rows = decision.forecast.rows ?? [];
     const open = rows.filter((row) => row.status === "pending" || row.status === "in_progress");
     const currentFinish = recordFinishSample(ctx, open, now);
-    const phaseRows = sdk.getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch())
+    const phaseRows = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx))
       .flatMap((phase) => phase.tasks.map((task) => [task.content, task] as const));
     const taskByContent = new Map(phaseRows);
     const runByContent = new Map((decision.ownerRunStates ?? []).map((row) => [row.content, row]));
@@ -2651,7 +2675,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return;
     }
     if (survivingCompactionCustomType(ctx, WORKER_BRIEF_ENTRY_TYPE)) return;
-    const init = ctx.sessionManager.getBranch().find((entry) => entry.type === "session_init");
+    const init = ctx.sessionManager.getBranchMatching((metadata) => metadata.type === "session_init")[0];
     const brief = init && "task" in init && typeof init.task === "string" ? init.task : undefined;
     if (brief) {
       pi.sendMessage(
@@ -2684,7 +2708,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       (job.id === addressed || job.agentId === addressed)
     );
     if (!settled) return;
-    const phases = sdk.getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch());
+    const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx));
     const row = phases
       .flatMap((phase) => phase.tasks)
       .find((task) =>
@@ -2706,7 +2730,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   let lastTaskDispatchRefused = false;
   const blockWorkerWork = (event: { toolName: string; input?: unknown }, ctx: ExtensionContext) => {
-    if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()))) return;
+    if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return;
     if (pauseGate?.paused || !isMain(ctx) || !pi.getActiveTools().includes("task")) return;
     const input = (event.input ?? {}) as { command?: unknown; path?: unknown };
     if (!isWorkerWork(event.toolName, event.input)) return;
@@ -2737,7 +2761,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   const completedPlanRows = (ctx: ExtensionContext): Array<{ content: string; schedule?: { owner?: unknown } }> => {
     try {
-      return sdk.getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch())
+      return sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx))
         .flatMap((phase) => phase.tasks)
         .filter((task) => task.status === "completed" || task.status === "abandoned");
     } catch {
@@ -2763,7 +2787,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   const isExistingOwnerName = (ctx: ExtensionContext, name: string) => {
     try {
-      return sdk.getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch())
+      return sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx))
         .some((phase) => phase.tasks.some((task) => task.schedule?.owner === name));
     } catch {
       return false;
@@ -2788,7 +2812,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (event.toolName !== "task" || !isMain(ctx)) return;
     const gitItems = taskItems(event.input).filter(isGitPrOwnerItem);
     if (!gitItems.length) return;
-    const phases = sdk.getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch());
+    const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx));
     const taskByOwner = new Map<string, TaskRow>();
     for (const phase of phases)
       for (const task of phase.tasks)
@@ -2841,7 +2865,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     } catch {}
   };
   const replanRequirement = (ctx: ExtensionContext, decision: ReturnType<typeof currentDecision>, now: number) => {
-    if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()), now / 1_000)) return;
+    if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)), now / 1_000)) return;
     if (!decision.key || !decision.forecast) return gateTrace(ctx, "no-plan");
     if (!decision.staffingSnapshotComplete) return gateTrace(ctx, "staffing-snapshot-incomplete");
     if (decision.goalPaused) return gateTrace(ctx, "goal-paused");
@@ -2943,7 +2967,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (event.source !== "extension") {
       userInputs += 1;
       if (!singleWriterLane) {
-        const branch = ctx.sessionManager.getBranch();
+        const branch = dispatchStateEntries(ctx);
         const wasAway = lastPresence === "away" || derivePresence(branch, rehydrateDeadlineState(branch), Date.now()) === "away";
         if (wasAway) {
           lastPresence = "away";
@@ -3306,7 +3330,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // The skipped-call text omp shows the model says only "the pending action"; the reminder
     // reaches just the forced request. Keep the live demand in every request's context instead.
     const demandProvider = (ctx: ExtensionContext) => {
-      if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()))) return;
+      if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return;
       if (gateSwitchedOff(ctx)) return gateTrace(ctx, "switched-off");
       dispatchGateBaseline = null;
       pendingIdleResumeOwner = null;
@@ -3576,7 +3600,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // Grievance 590: a demand the todo override names stays suppressed for the same
     // few-turn window, so it must not escalate while the override is active.
     const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) => isDemandEscalated(id) && !isOverrideSuppressed(id));
-    if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused && !isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()))) {
+    if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) {
       const remedyTask = (call: GateCall): boolean =>
         call.name === "task" && taskItems(call.arguments ?? {}).some((item) => item["agent"] === "retro-facilitator" || item["agent"] === "plan-doctor");
       const gates: ActiveGate[] = escalatedIds.map((id) => ({
@@ -3655,7 +3679,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     pendingSizingNoticeIds = [];
     const now = Date.now();
     const decision = currentDecision(ctx, now, pending);
-    const phasesNow = sdk.getLatestTodoPhasesFromEntries([...ctx.sessionManager.getBranch(), ...pending] as never);
+    const phasesNow = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending) as never);
     touchSprintState(ctx, phasesNow, ctx.getAsyncJobSnapshot(), now, decision.deadline, decision.alarms);
     const retroAdvice = () => {
       if (!sprintState.retroDueReason) return "";
@@ -3845,7 +3869,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const settled = (ctx.getAsyncJobSnapshot()?.recent ?? []).filter((job) => job.type === "task" && job.status === "completed");
     const ownerOf = new Map<string, string>();
     try {
-      for (const phase of sdk.getLatestTodoPhasesFromEntries([...ctx.sessionManager.getBranch(), ...pending] as never))
+      for (const phase of sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending) as never))
         for (const task of phase.tasks) if (typeof task.schedule?.owner === "string") ownerOf.set(task.content, task.schedule.owner);
     } catch {}
     const unread = open.filter((row) => {
@@ -3908,7 +3932,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     pendingSizingNoticeIds = [];
   };
   const planTick = async (ctx: ExtensionContext) => {
-    if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()))) return;
+    if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return;
     if (singleWriterLane || pauseGate?.paused || !isMain(ctx) || !pi.getActiveTools().includes("task") || ctx.hasPendingMessages()) return;
     await refreshLiveWorkerModels(ctx);
     const check = planCheck(ctx);
@@ -4014,14 +4038,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     await refreshLiveWorkerModels(ctx);
     if (singleWriterLane) return passThrough;
     const now = Date.now();
-    if (isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch()), now / 1_000)) return passThrough;
+    if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)), now / 1_000)) return passThrough;
     const decision = currentDecision(ctx, now);
     const chief = isMain(ctx) && pi.getActiveTools().includes("task");
     if (!decision.prompt && !chief) return passThrough;
     const attemptedIdleOwners = decision.readyCandidates
       .filter((row) => row.ownership === "idle-live-owner" && row.owner && idleResumeAttempts.has(row.owner))
       .map((row) => row.owner!);
-    const phases = sdk.getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch() as never);
+    const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never);
     const retroDue = sprintState.retroDueReason && !retroRowStaffed(phases) ? buildRetroLine(now, decision.deadline?.timezone) : "";
     if (retroDue) {
       sprintState = { ...sprintState, retroDueNotifiedKey: retroNotifyKey() };
@@ -4048,7 +4072,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     clearIdleTimer();
     if (
       singleWriterLane ||
-      isUserDeadlineMissed(rehydrateDeadlineState(ctx.sessionManager.getBranch())) ||
+      isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx))) ||
       !pauseGate ||
       pauseGate.paused ||
       !decision.key ||

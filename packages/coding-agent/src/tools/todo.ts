@@ -32,11 +32,12 @@ import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
+import type { SessionContextEntryMetadata } from "../session/session-context";
 import type { SessionEntry } from "../session/session-entries";
 import { cfgTaskMaxConcurrency } from "../task/settings";
 
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
-import { readGoalDeadline } from "../goals/deadlines";
+import { readGoalDeadline, readGoalDeadlineFromManager } from "../goals/deadlines";
 import { applyTodoExecutorObservation, appendTodoReworkAttempt, type TodoExecutorObservation } from "./todo-executor";
 
 /** Whether an unknown value is a persisted todo phase. */
@@ -289,6 +290,17 @@ export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
 
 export const TODO_HUD_STATE_CUSTOM_TYPE = "todo_hud_state";
 
+/** Metadata carrying todo replay state and HUD choices. */
+export function isTodoStateEntryMetadata(metadata: SessionContextEntryMetadata): boolean {
+	if (metadata.type === "custom")
+		return metadata.customType === USER_TODO_EDIT_CUSTOM_TYPE || metadata.customType === TODO_HUD_STATE_CUSTOM_TYPE;
+	return metadata.type === "message" && metadata.messageRole === "toolResult" && metadata.toolName === "todo";
+}
+
+function getTodoBranchEntries(manager: ToolSession["sessionManager"]): SessionEntry[] {
+	return manager?.getBranchMatching(isTodoStateEntryMetadata) ?? [];
+}
+
 export type TodoHudVisibility = "dismissed" | "revealed";
 
 export interface TodoSnapshotIdentity {
@@ -485,12 +497,13 @@ function replayTodoEdit(
 	return { phases: applied.phases, mutable: true };
 }
 
-export function shouldPersistTodoFullSnapshotCheckpoint(entries: SessionEntry[]): boolean {
+export function shouldPersistTodoFullSnapshotCheckpoint(entriesNewestFirst: Iterable<SessionEntry>): boolean {
 	let compactEditsSinceSnapshot = 0;
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const entry = entries[i]!;
+	for (const entry of entriesNewestFirst) {
 		if (canonicalTodoPhases(entry)) return compactEditsSinceSnapshot >= TODO_FULL_SNAPSHOT_CHECKPOINT_INTERVAL;
-		if (compactTodoEditFromEntry(entry)) compactEditsSinceSnapshot++;
+		// Once the interval is reached the answer is `true` whether or not a snapshot is found, so stop reading.
+		if (compactTodoEditFromEntry(entry) && ++compactEditsSinceSnapshot >= TODO_FULL_SNAPSHOT_CHECKPOINT_INTERVAL)
+			return true;
 	}
 	return true;
 }
@@ -1755,8 +1768,11 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const entry = resolved;
 		const op = entry.op;
 		const now = Date.now();
-		const entries = this.session.sessionManager?.getBranch() ?? [];
-		const deadline = readGoalDeadline(entries, this.session.cwd, { includePaused: true });
+		const todoEntries = getTodoBranchEntries(this.session.sessionManager);
+		const manager = this.session.sessionManager;
+		const deadline = manager
+			? readGoalDeadlineFromManager(manager, this.session.cwd, { includePaused: true })
+			: readGoalDeadline(todoEntries, this.session.cwd, { includePaused: true });
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
@@ -1765,7 +1781,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const failed = errors.length > 0;
 		const archived = !readOnly && !failed ? archiveTodoPhases(updated, now) : undefined;
 		const effective = archived?.phases ?? (failed ? previousPhases : updated);
-		const archivedPhases = op === "init" && !failed ? [] : getLatestTodoArchiveFromEntries(entries);
+		const archivedPhases = op === "init" && !failed ? [] : getLatestTodoArchiveFromEntries(todoEntries);
 		const newArchive = archived?.archivedPhases ?? [];
 		// A schedule rename changes titles, not statuses: content-keyed completion
 		// diffing must not report renamed closed rows as newly completed.
@@ -1793,7 +1809,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const archiveSummary =
 			op === "init" && !failed
 				? getTodoArchiveSummaryFromEntries([], archiveEdit)
-				: getTodoArchiveSummaryFromEntries(entries, archiveEdit);
+				: getTodoArchiveSummaryFromEntries(todoEntries, archiveEdit);
 		if (archiveSummary) details.archiveSummary = archiveSummary;
 		if (readOnly && entry.archive) details.archivedPhases = archivedPhases;
 		if (deadline) details.deadlineAt = deadline.deadlineAt;

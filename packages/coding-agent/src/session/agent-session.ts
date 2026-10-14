@@ -255,7 +255,7 @@ import {
 } from "../tools/resolve";
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";
 import { supportsExternalThinking } from "../tools/think";
-import { getTodoArchiveSummaryFromEntries } from "../tools/todo";
+import { getTodoArchiveSummaryFromEntries, isTodoStateEntryMetadata } from "../tools/todo";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
@@ -7626,7 +7626,7 @@ export class AgentSession implements SettingsScope {
 		const canCallTodoTool = this.getActiveToolNames().includes("todo");
 		if (!canCallTodoTool) return undefined;
 		const phases = this.getTodoPhases().filter(phase => phase.tasks.length > 0);
-		const archiveSummary = getTodoArchiveSummaryFromEntries(this.sessionManager.getBranch());
+		const archiveSummary = getTodoArchiveSummaryFromEntries(this.sessionManager.getBranchMatching(isTodoStateEntryMetadata));
 		if (phases.length === 0 && !archiveSummary) return undefined;
 
 		let total = 0;

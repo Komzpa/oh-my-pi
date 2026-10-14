@@ -16,6 +16,8 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { readGoalDeadline } from "./deadlines";
 import { getLatestTodoPhasesFromEntries, TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
 import {
   formatPlanForecast,
@@ -25,6 +27,14 @@ import {
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import todoDispatch, { decideGateCall, decideTodoDispatch, parseTodoOverride, SPRINT_STATE_ENTRY_TYPE } from "./todo_dispatch";
 import * as dispatchModule from "./todo_dispatch";
+
+function branchMock(getBranch: () => unknown[]) {
+  return {
+    getBranch,
+    getBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().filter(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+    getLatestBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().findLast(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+  };
+}
 
 type Jobs = Pick<AsyncJobSnapshot, "running" | "recent" | "nonJobAgents">;
 type Call = { name: string; arguments: Record<string, unknown> };
@@ -166,7 +176,7 @@ async function outcome(state: State, cwd: string, call: Call | null, strictDeman
   await todoDispatch(api);
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: sessionId }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: sessionId }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => jobs,
     getTaskMaxConcurrency: () => 20,
     isIdle: () => false,
@@ -578,7 +588,7 @@ test("task calls refuse planning-failure worker names but allow verb-first neigh
   });
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-name-refusal" }), getBranch: () => branchWithAccepted, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "gates-name-refusal" }), ...branchMock(() => branchWithAccepted), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 20,
     isIdle: () => false,
@@ -662,7 +672,7 @@ test("task calls allow re-staffing a legacy row whose owner already has the bloc
   await todoDispatch(api);
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-name-legacy" }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "gates-name-legacy" }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 20,
     isIdle: () => false,
@@ -697,7 +707,7 @@ test("a refused task dispatch opens bounded chief work without weakening the sta
   await todoDispatch(api);
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-chief-refusal" }), getBranch: () => plan("ready", now), getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "gates-chief-refusal" }), ...branchMock(() => plan("ready", now)), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 20,
     isIdle: () => false,
@@ -782,7 +792,7 @@ test("every todo result in the main session ends with the plan's problems", asyn
   const branch = plan("ready", now);
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-check" }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "gates-check" }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({ running: [{ id: "stray", type: "task", status: "running", label: "x", startTime: now } as never], recent: [], nonJobAgents: [] }),
     isIdle: () => false,
     hasPendingMessages: () => false,
@@ -878,7 +888,7 @@ test("just-finished rows are closed, not re-staffed; dep-waiting rows are chain,
     const branch = [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } }];
     const ctx = {
       cwd,
-      sessionManager: { getHeader: () => ({ id: "gates-finished" }), getBranch: () => branch, getSessionFile: () => undefined },
+      sessionManager: { getHeader: () => ({ id: "gates-finished" }), ...branchMock(() => branch), getSessionFile: () => undefined },
       getAsyncJobSnapshot: () => jobs,
       getTaskMaxConcurrency: () => 18,
       isIdle: () => false,
@@ -953,7 +963,7 @@ test("PLAN CHECK excludes forecast rows closed in the current TODO phases", asyn
   await todoDispatch(api);
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "plancheck-closed" }), getBranch: () => plan("ready", now) },
+    sessionManager: { getHeader: () => ({ id: "plancheck-closed" }), ...branchMock(() => plan("ready", now)) },
     getAsyncJobSnapshot: () => ({ running: [], recent: [{ id: "worker-a", type: "task", status: "completed", label: "Row A", startTime: now }], nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 6,
   } as unknown as ExtensionContext;
@@ -998,7 +1008,7 @@ test("main-session plan snapshots feed plan-doctor from dispatcher-owned state f
   const branch = plan("chained", now);
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: sessionId }), getBranch: () => branch, getSessionFile: () => sessionFile },
+    sessionManager: { getHeader: () => ({ id: sessionId }), ...branchMock(() => branch), getSessionFile: () => sessionFile },
     getAsyncJobSnapshot: () => ({
       running: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: now } as never],
       recent: [{ id: "worker-done", agentId: "worker-done", type: "task", status: "completed", label: "Cut 2", startTime: now - 60_000 } as never],
@@ -1062,7 +1072,7 @@ test("a plan with problems is reported once per problem list, and again after te
   let interval = 0;
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-ticker" }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "gates-ticker" }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({ running, recent: [], nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 20,
     isIdle: () => idle,
@@ -1148,7 +1158,7 @@ test("PLAN CHECK names a worker whose session file went quiet, and only that one
   let tick: (() => void) | undefined;
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-activity" }), getBranch: () => branch, getSessionFile: () => sessionFile },
+    sessionManager: { getHeader: () => ({ id: "gates-activity" }), ...branchMock(() => branch), getSessionFile: () => sessionFile },
     getAsyncJobSnapshot: () => ({
       running: [
         { id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: now - 30 * 60_000 },
@@ -1224,7 +1234,7 @@ test("PLAN CHECK reports a compacted running worker once with a done/left split 
     cwd,
     sessionManager: {
       getHeader: () => ({ id: "gates-compacted-worker" }),
-      getBranch: () => branch,
+      ...branchMock(() => branch),
       getSessionFile: () => sessionFile,
     },
     getAsyncJobSnapshot: () => ({
@@ -1307,7 +1317,7 @@ test("PLAN CHECK asks only workers running longer than fifteen minutes for a don
     cwd,
     sessionManager: {
       getHeader: () => ({ id: "gates-worker-runtime" }),
-      getBranch: () => branch,
+      ...branchMock(() => branch),
       getSessionFile: () => sessionFile,
     },
     getAsyncJobSnapshot: () => ({
@@ -1394,7 +1404,7 @@ test("PLAN CHECK has the harness ask an overdue worker once instead of telling c
   let tick: (() => void) | undefined;
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-overdue-worker" }), getBranch: () => branch, getSessionFile: () => sessionFile },
+    sessionManager: { getHeader: () => ({ id: "gates-overdue-worker" }), ...branchMock(() => branch), getSessionFile: () => sessionFile },
     getAsyncJobSnapshot: () => ({
       running: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: liveNow - 30 * 60_000 }],
       recent: [],
@@ -1459,7 +1469,7 @@ test("PLAN CHECK falls back when worker message delivery returns false", async (
   let tick: (() => void) | undefined;
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-overdue-worker-false" }), getBranch: () => branch, getSessionFile: () => sessionFile },
+    sessionManager: { getHeader: () => ({ id: "gates-overdue-worker-false" }), ...branchMock(() => branch), getSessionFile: () => sessionFile },
     getAsyncJobSnapshot: () => ({
       running: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: liveNow - 30 * 60_000 }],
       recent: [],
@@ -1518,7 +1528,7 @@ test("PLAN CHECK keeps the manual fallback when worker messaging is absent", asy
   let tick: (() => void) | undefined;
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-overdue-worker-absent" }), getBranch: () => branch, getSessionFile: () => sessionFile },
+    sessionManager: { getHeader: () => ({ id: "gates-overdue-worker-absent" }), ...branchMock(() => branch), getSessionFile: () => sessionFile },
     getAsyncJobSnapshot: () => ({
       running: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: liveNow - 30 * 60_000 }],
       recent: [],
@@ -1569,7 +1579,7 @@ test("PLAN CHECK does not ask a worker before its own P95", async () => {
   let tick: (() => void) | undefined;
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-not-overdue-worker" }), getBranch: () => branch, getSessionFile: () => sessionFile },
+    sessionManager: { getHeader: () => ({ id: "gates-not-overdue-worker" }), ...branchMock(() => branch), getSessionFile: () => sessionFile },
     getAsyncJobSnapshot: () => ({
       running: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: liveNow }],
       recent: [],
@@ -1649,7 +1659,7 @@ test("PLAN CHECK includes compact running-worker status from session tool events
   let tick: (() => void) | undefined;
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-worker-digest" }), getBranch: () => branch, getSessionFile: () => sessionFile },
+    sessionManager: { getHeader: () => ({ id: "gates-worker-digest" }), ...branchMock(() => branch), getSessionFile: () => sessionFile },
     getAsyncJobSnapshot: () => ({
       running: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: liveNow - 5 * 60_000 }],
       recent: [{ id: "settled-worker", type: "task", status: "completed", label: "Settled", startTime: liveNow - 10 * 60_000 }],
@@ -1719,7 +1729,7 @@ test("PLAN CHECK warns both live workers and chief once when worker writes overl
   let tick: (() => void) | undefined;
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-worker-overlap" }), getBranch: () => branch, getSessionFile: () => sessionFile },
+    sessionManager: { getHeader: () => ({ id: "gates-worker-overlap" }), ...branchMock(() => branch), getSessionFile: () => sessionFile },
     getAsyncJobSnapshot: () => ({
       running: [
         { id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: liveNow - 5 * 60_000 },
@@ -1776,7 +1786,7 @@ test("write to a settled worker names and redirects to the row's current live ow
   await todoDispatch(api);
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-current-owner" }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "gates-current-owner" }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({
       running: [{ id: "worker-new", agentId: "worker-new", type: "task", status: "running", label: "Row A", startTime: liveNow }],
       recent: [{ id: "worker-old", agentId: "worker-old", type: "task", status: "completed", label: "Row A", startTime: liveNow - 60_000 }],
@@ -1854,7 +1864,7 @@ test("refuses a second git-pr-owner on the same checkout while allowing another 
   await todoDispatch(api);
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-git-pr-owner-lock" }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "gates-git-pr-owner-lock" }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({
       running: [{
         id: "LandV3CaptionMirror",
@@ -1913,7 +1923,7 @@ test("GIT FACTS names commits since previous chief turn and running git jobs", a
   const branch = plan("ready", liveNow);
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-git-facts" }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "gates-git-facts" }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 20,
     isIdle: () => false,
@@ -1964,7 +1974,7 @@ test("PLAN CHECK says when the finish recedes with the clock, not before 45 minu
   let tick: (() => void) | undefined;
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: sessionId }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: sessionId }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 20,
     isIdle: () => true,
@@ -2112,7 +2122,7 @@ test("the waiting list is the chain that sets the ETA and names a shared resourc
   let tick: (() => void) | undefined;
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-chain" }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "gates-chain" }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({ running: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Build" }], recent: [], nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 20,
     isIdle: () => true,
@@ -2193,11 +2203,11 @@ test("escalated demands refuse non-remedy calls until a todo override names them
     appendEntry: () => undefined,
     sendMessage: () => undefined,
   } as unknown as ExtensionAPI;
-  const branch = [...plan("ready", now), { customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "missed-eta": 3 } } }];
+  const branch = [...plan("ready", now), { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "missed-eta": 3 } } }];
   await todoDispatch(api);
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-union" }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "gates-union" }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 20,
     isIdle: () => false,
@@ -2234,11 +2244,11 @@ test("grievance 590: override naming todo-plan-doctor lets task dispatch through
     appendEntry: () => undefined,
     sendMessage: () => undefined,
   } as unknown as ExtensionAPI;
-  const branch = [...plan("ready", now), { customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "todo-plan-doctor": 3 } } }];
+  const branch = [...plan("ready", now), { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "todo-plan-doctor": 3 } } }];
   await todoDispatch(api);
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-plan-doctor" }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "gates-plan-doctor" }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 20,
     isIdle: () => false,
@@ -2320,7 +2330,7 @@ async function slipCall(tasks: unknown[], jobs: Jobs, call: Call) {
   const cwd = mkdtempSync(join(tmpdir(), "slip-"));
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "slip-root" }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "slip-root" }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => jobs,
     getTaskMaxConcurrency: () => 20,
     isIdle: () => false,
@@ -2461,7 +2471,7 @@ test("a resumed live non-task worker staffs its row and allows wait", async () =
   const branch = plan("ready", now);
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-resumed-nontask-owner" }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: "gates-resumed-nontask-owner" }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => ({
       running: [{ id: "worker-a", agentId: "worker-a", type: "bash", status: "running", label: "resumed worker", startTime: now }],
       recent: [],
@@ -2529,7 +2539,7 @@ async function externalWaitFixture(owner: string | undefined, probe: (wait: { ki
   await todoDispatch(api, { externalOwnerProbe: probe });
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => ({ id: `gates-external-${process.pid}-${owner ?? "unowned"}` }), getBranch: () => branch, getSessionFile: () => undefined },
+    sessionManager: { getHeader: () => ({ id: `gates-external-${process.pid}-${owner ?? "unowned"}` }), ...branchMock(() => branch), getSessionFile: () => undefined },
     getAsyncJobSnapshot: () => jobs,
     getTaskMaxConcurrency: () => 20,
     isIdle: () => true,

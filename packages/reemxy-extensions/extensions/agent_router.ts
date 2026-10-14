@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
+import { isTodoStateEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import type { ModelUsageHealth, ModelUsageHealthState } from "@oh-my-pi/pi-ai";
 import { resolveXiaomiRequestBaseUrl } from "@oh-my-pi/pi-ai/registry/oauth/xiaomi";
@@ -219,13 +220,13 @@ function lanePathsFromText(text: string): string[] {
 function ownedCheckoutScopes(
 	event: BeforeSubagentSpawnEvent,
 	ctx: ExtensionContext,
-	latestTodo?: LatestTodoGetter,
+	latestTodo?: () => TodoScheduleInput,
 ): string[] | undefined {
 	const fallback = sessionCwdScopes(ctx);
 	const readPhases = (): TodoScheduleInput | undefined => {
-		if (!latestTodo || !ctx.sessionManager?.getBranch) return undefined;
+		if (!latestTodo) return undefined;
 		try {
-			return latestTodo(ctx.sessionManager.getBranch());
+			return latestTodo();
 		} catch {
 			return undefined;
 		}
@@ -697,26 +698,22 @@ export function cwdRepoLabel(ctx: ExtensionContext): string {
 }
 
 /** One latestTodo read per spawn: checkout scopes and criticality share it. */
-function memoLatestTodo(getter: LatestTodoGetter | undefined): LatestTodoGetter | undefined {
-	if (!getter) return undefined;
-	let cached: { entries: unknown[]; phases: TodoScheduleInput } | undefined;
-	return (entries: unknown[]) => {
-		if (!cached || cached.entries !== entries) cached = { entries, phases: getter(entries) };
-		return cached.phases;
-	};
+function memoLatestTodo(getter: LatestTodoGetter | undefined, ctx: ExtensionContext): (() => TodoScheduleInput) | undefined {
+	if (!getter || !ctx.sessionManager?.getBranchMatching) return undefined;
+	let cached: TodoScheduleInput | undefined;
+	return () => cached ??= getter(ctx.sessionManager.getBranchMatching(isTodoStateEntryMetadata));
 }
 
 /** True when the spawning task item owns a plan row the forecast marks critical. */
 function spawnIsCriticalRow(
 	event: BeforeSubagentSpawnEvent,
-	ctx: ExtensionContext,
-	latestTodo: LatestTodoGetter | undefined,
+	latestTodo: (() => TodoScheduleInput) | undefined,
 	nowMs: number,
 ): boolean {
 	const owner = stringValue(event.spawnKey);
-	if (!owner || !latestTodo || !ctx.sessionManager?.getBranch) return false;
+	if (!owner || !latestTodo) return false;
 	try {
-		const phases = latestTodo(ctx.sessionManager.getBranch());
+		const phases = latestTodo();
 		return forecastTodoPlan(phases, { now: nowMs }).rows.some(row => row.owner === owner && row.critical);
 	} catch {
 		return false;
@@ -766,7 +763,7 @@ export async function routeSubagentSpawn(
 	const demotions = new Set(sanctions.filter((entry): entry is ModelDemotion => typeof entry !== "string" && entry.roles.includes(agent)).map(entry => modelSelectorBase(entry.model)));
 	const config = getAgentPool(agent, options.profileDir) ?? (brrrr || demotions.size > 0 ? { pool: (event.patterns as string[]) ?? [], fallbacks: [] } : undefined);
 	if (!config) return undefined;
-	const latestTodo = memoLatestTodo(options.latestTodo);
+	const latestTodo = memoLatestTodo(options.latestTodo, ctx);
 	const checkoutScopes =
 		WRITE_CAPABLE_WORKERS.has(agent) && event.isolated !== true
 			? ownedCheckoutScopes(event, ctx, latestTodo)
@@ -828,7 +825,7 @@ export async function routeSubagentSpawn(
 	let criticalFirst = false;
 	if (
 		!brrrr &&
-		spawnIsCriticalRow(event, ctx, latestTodo, nowMs) &&
+		spawnIsCriticalRow(event, latestTodo, nowMs) &&
 		!order[0]?.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "").endsWith(":free")
 	) {
 		const priorityIndex = firstPriorityCapableIndex(order, ctx);
@@ -1216,8 +1213,7 @@ export default function agentRouter(pi: ExtensionAPI) {
 	};
 	const load = async (ctx: ExtensionContext) => {
 		if (!existsSync(brrrrModeFile(ctx))) {
-			const entries = ctx.sessionManager.getBranch();
-			const entry = entries.findLast(item => item.type === "custom" && item.customType === BRRRR_ENTRY);
+			const entry = ctx.sessionManager.getLatestBranchMatching(item => item.type === "custom" && item.customType === BRRRR_ENTRY);
 			const parentFile = ctx.sessionManager.getHeader()?.parentSession;
 			if (!entry && parentFile && existsSync(parentFile)) {
 				const parentId = readSessionHeaderId(parentFile);
