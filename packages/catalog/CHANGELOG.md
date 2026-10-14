@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+
+- Added Claude Haiku 5.5 (`anthropic/claude-haiku-5-5`) to the direct Anthropic route with adaptive thinking (low–max efforts, medium default), no forced tool choice, 1M context and 128K max output. The pre-5 Haiku budget-thinking rule is now upper-bounded so it no longer ties with the adaptive rule.
 
 ## [18.4.11] - 2026-10-02
 
