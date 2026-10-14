@@ -332,15 +332,12 @@ impl EditStore {
 	pub fn has_hash(&self, path: &Path, hash: &str) -> bool {
 		let mut state = self.inner.lock();
 		touch(&mut state, path);
-		state
-			.histories
-			.get(path)
-			.is_some_and(|history| {
-				history
-					.versions
-					.iter()
-					.any(|v| v.snapshot.hash.eq_ignore_ascii_case(hash))
-			})
+		state.histories.get(path).is_some_and(|history| {
+			history
+				.versions
+				.iter()
+				.any(|v| v.snapshot.hash.eq_ignore_ascii_case(hash))
+		})
 	}
 
 	/// Return the version with exactly equal text and refresh path recency.
