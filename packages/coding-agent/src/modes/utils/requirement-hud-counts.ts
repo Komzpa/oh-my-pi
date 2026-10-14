@@ -1,5 +1,11 @@
+import type { SessionEntry } from "../../session/session-entries";
 import type { SessionManager } from "../../session/session-manager";
-import { countRequirements, getLatestRequirements, type RequirementCounts } from "../../tools/requirements-ledger";
+import {
+	countRequirements,
+	getLatestRequirements,
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+	type RequirementCounts,
+} from "../../tools/requirements-ledger";
 
 const requirementHudCountsCache = new WeakMap<
 	SessionManager,
@@ -14,7 +20,15 @@ export function getRequirementHudCounts(sessionManager: SessionManager): Require
 	const cached = requirementHudCountsCache.get(sessionManager);
 	if (cached?.leafId === leafId && cached.entryCount === entryCount) return cached.counts;
 
-	const counts = countRequirements(getLatestRequirements(sessionManager.getBranch()));
+	const selective = sessionManager as SessionManager & {
+		getBranchMatching?: (predicate: (entry: { type: string; customType?: string }) => boolean) => SessionEntry[];
+	};
+	const entries = selective.getBranchMatching
+		? selective.getBranchMatching(
+				entry => entry.type === "custom" && entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+			)
+		: sessionManager.getBranch();
+	const counts = countRequirements(getLatestRequirements(entries));
 	requirementHudCountsCache.set(sessionManager, { leafId, entryCount, counts });
 	return counts;
 }

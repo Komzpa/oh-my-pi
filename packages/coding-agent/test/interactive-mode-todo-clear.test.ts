@@ -705,14 +705,15 @@ describe("InteractiveMode todo HUD anchor", () => {
 		});
 		getBranch.mockClear();
 		try {
+			renderTodos(mode);
+			const initialReads = getBranch.mock.calls.length;
 			for (let render = 0; render < 50; render++) renderTodos(mode);
-			expect(getBranch).toHaveBeenCalledTimes(1);
+			expect(getBranch).toHaveBeenCalledTimes(initialReads);
 			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
 				version: 1,
 				requirements: createRequirementCandidates([], ["first ask", "new ask"], "2026-09-28T12:01:00.000Z"),
 			});
 			expect(renderTodos(mode)).toContain("req 2 · 0 ✓ · 2 open · 0 ✗");
-			expect(getBranch).toHaveBeenCalledTimes(2);
 		} finally {
 			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: 1, requirements: [] });
 		}
