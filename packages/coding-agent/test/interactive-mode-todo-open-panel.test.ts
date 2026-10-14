@@ -151,7 +151,7 @@ describe("InteractiveMode collapsed TODO open panel", () => {
 		mode.ui.requestRender();
 		await terminal.waitForRender(() => viewport().some(line => line.includes("draft line 40")));
 		expectAccountedOpenRows(openTaskIdentities);
-		expect(visibleTasks(viewport(), openTaskIdentities)).toEqual(openTaskIdentities);
+		expect(visibleTasks(viewport(), openTaskIdentities)).toEqual([...openTaskIdentities]);
 		expect(mode.editor.getExpandedText()).toBe(longDraft);
 		expect(viewport()[terminal.getCursor().row]).toContain("draft line 40");
 	});
@@ -304,7 +304,7 @@ describe("InteractiveMode collapsed TODO open panel", () => {
 		expect(overflowCount(viewport())).toBe(0);
 		const context = { cols: 120, reduceMotion: true, dark: true, supports: () => false, feature: () => false };
 		const fallback = mode.todoContainer.describe(context);
-		const tree = fallback.c?.find(child => "k" in child && child.k === "tree");
+		const tree = fallback?.c?.find(child => "k" in child && child.k === "tree");
 		if (!tree || !("k" in tree) || tree.k !== "tree") throw new Error("Expected consumer TODO fallback tree");
 		const headings = tree.p?.nodes ?? [];
 		const tasks = headings.flatMap(heading => heading.children ?? []);
@@ -313,7 +313,7 @@ describe("InteractiveMode collapsed TODO open panel", () => {
 		expect(headings.map(item => item.id)).toEqual(["0", "1", "phase:0:2"]);
 		expect(tasks.map(item => item.id)).toEqual(["0.0", "1.0", "0.1", "0.2"]);
 		const checklist = mode.todoContainer.describe({ ...context, supports: kind => kind === "checklist" });
-		if (checklist.k !== "checklist") throw new Error("Expected consumer TODO checklist");
+		if (checklist?.k !== "checklist") throw new Error("Expected consumer TODO checklist");
 		const checklistItems = checklist.p?.phases.flatMap(phase => phase.items) ?? [];
 		for (const task of tasks) {
 			const canonical = checklistItems.find(item => item.id === task.id);
@@ -384,7 +384,7 @@ describe("InteractiveMode collapsed TODO open panel", () => {
 		expect(header).toContain("17 ✓");
 		expect(header).toContain("11 open");
 		expect(header).toContain("1 ×");
-		expect(visibleTasks(lines, mainBaselineOpenIdentities)).toEqual(mainBaselineOpenIdentities);
+		expect(visibleTasks(lines, mainBaselineOpenIdentities)).toEqual([...mainBaselineOpenIdentities]);
 		for (const closed of closedTaskIdentities(mainTwoRowBaselinePhases)) {
 			expect(lines.some(line => line.includes(closed))).toBe(false);
 		}
@@ -403,7 +403,7 @@ describe("InteractiveMode collapsed TODO open panel", () => {
 		expect(header).toContain("17 ✓");
 		expect(header).toContain("11 open");
 		expect(header).toContain("1 ×");
-		expect(visibleTasks(lines, openTaskIdentities)).toEqual(openTaskIdentities);
+		expect(visibleTasks(lines, openTaskIdentities)).toEqual([...openTaskIdentities]);
 		for (const closed of closedTaskIdentities(openPanelPhases)) {
 			expect(lines.some(line => line.includes(closed))).toBe(false);
 		}
