@@ -1,3 +1,4 @@
+import { isTodoStateEntryMetadata } from "../../tools/todo";
 import * as fs from "node:fs/promises";
 import {
 	applyOpsToPhases,
@@ -9,7 +10,6 @@ import {
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
 	USER_TODO_EDIT_CUSTOM_TYPE,
-	isTodoStateEntryMetadata,
 } from "../../tools/todo";
 import { type TodoItem, type TodoPersistedEdit, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { cfgTaskMaxConcurrency } from "../../task/settings";
@@ -480,7 +480,6 @@ export class TodoCommandController {
 		this.ctx.session.setTodoPhases(nextPhases);
 		this.ctx.sessionManager.appendCustomEntry(
 			USER_TODO_EDIT_CUSTOM_TYPE,
-	isTodoStateEntryMetadata,
 			opts?.edit ? { edit: opts.edit } : { phases: nextPhases },
 		);
 		this.ctx.setTodos(nextPhases);
