@@ -790,7 +790,8 @@ describe("pi-natives", () => {
 				// Spawn env seeds native OS inheritance without mutating the test runner.
 				// Bun.env writes only its JS map; Bun also hides IPC keys at startup.
 				const fdKey = process.platform === "win32" ? "Node_Channel_Fd" : "NODE_CHANNEL_FD";
-				const modeKey = process.platform === "win32" ? "Node_Channel_Serialization_Mode" : "NODE_CHANNEL_SERIALIZATION_MODE";
+				const modeKey =
+					process.platform === "win32" ? "Node_Channel_Serialization_Mode" : "NODE_CHANNEL_SERIALIZATION_MODE";
 				const hostScript = `
 					import * as path from "node:path";
 					import { PtySession } from ${JSON.stringify(addonUrl)};
@@ -850,7 +851,12 @@ describe("pi-natives", () => {
 					overlay: "explicit-value",
 					posixAlias: process.platform === "win32" ? null : "ordinary-posix-alias",
 				};
-				expect(stdout.trim().split("\n").map(line => JSON.parse(line))).toEqual([
+				expect(
+					stdout
+						.trim()
+						.split("\n")
+						.map(line => JSON.parse(line)),
+				).toEqual([
 					{ backend: "shell", observed, inheritedMarkers: [], hostFd: "3", hostMode: "advanced" },
 					{ backend: "argv", observed, inheritedMarkers: [], hostFd: "3", hostMode: "advanced" },
 				]);
