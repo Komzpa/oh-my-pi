@@ -827,7 +827,9 @@ export class RequirementsLedgerRuntime {
 			requirementAuditSnapshot(currentRequirements, expectedIds) !== assignment.snapshot ||
 			(assignment.rowDeclarations !== undefined &&
 				requirementRowDeclarationSnapshot(
-					getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch()),
+					getLatestTodoPhasesFromEntries(
+						matchingRequirementBranch(this.#host.sessionManager, isTodoStateEntryMetadata),
+					),
 					assignment.rows ?? [],
 				) !== assignment.rowDeclarations)
 		) {
