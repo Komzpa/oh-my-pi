@@ -441,7 +441,8 @@ export function classifyRequirement(
 			};
 		}
 	}
-	if (options.relink && !superseding) return relinkRequirement(requirements, sourceIndex, classification, options);
+	if (options.relink && source.classification !== "candidate" && !superseding)
+		return relinkRequirement(requirements, sourceIndex, classification, options);
 	const restatementTarget = requirements.find(requirement => requirement.id === options.mergeInto);
 	const resolvesImage =
 		source.imageState === "needs-user-restatement" &&
@@ -722,11 +723,22 @@ export function parseRequirementReceiptIdentities(
 	const segments = splitRequirementIdentitySegments(artifact).map(segment =>
 		segment.replace(REQUIREMENT_QUOTED_ROW_PREFIX, "").trim(),
 	);
-	if (!segments.some(segment => /^(?:git|file|deploy):/i.test(segment)))
+	if (!segments.some(segment => /^(?:git|file|deploy):/i.test(segment))) {
+		// A row's explicit `@ <commit>` is its Git identity. Hashes in trailing
+		// installed-binary or other evidence are not competing checkout commits.
+		const rowCommits = splitRequirementIdentitySegments(artifact).flatMap(segment => {
+			const prefix = REQUIREMENT_QUOTED_ROW_PREFIX.exec(segment);
+			if (!prefix) return [];
+			const commit = segment.slice(prefix[0].length).trim().match(/^([a-f0-9]{40}(?:[a-f0-9]{24})?)(?=$|[^a-f0-9])/i);
+			return commit ? [commit[1]!.toLowerCase()] : [];
+		});
 		return {
 			legacy: true,
-			commits: [...segments.join("; ").matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!.toLowerCase()),
+			commits: rowCommits.length
+				? rowCommits
+				: [...segments.join("; ").matchAll(COMMIT_IDS_IN_ARTIFACT)].map(match => match[1]!.toLowerCase()),
 		};
+	}
 	const identities: RequirementIdentity[] = [];
 	for (const segment of segments) {
 		const parsed = parseRequirementIdentity(segment);
@@ -1051,74 +1063,6 @@ const [idHeader, sourceDigestHeader, statusHeader, evidenceHeader, artifactHeade
 	.split("|")
 	.map(cell => cell.toLowerCase().replace(/[^a-z]/g, ""));
 
-type RequirementNumericOperator = "gt" | "gte" | "lt" | "lte";
-
-interface RequirementNumericBound {
-	operator: RequirementNumericOperator;
-	value: number;
-	unit: string;
-}
-
-const REQUIREMENT_NUMERIC_BOUND = /^(>=|<=|≥|≤|>|<|at\s+least|at\s+most)\s*(\d+(?:\.\d+)?)\s*(.*)$/i;
-const REQUIREMENT_NUMERIC_MEASURE = /^\s*(\d+(?:\.\d+)?)\s*(.*)$/;
-
-function requirementNumericOperator(token: string): RequirementNumericOperator {
-	switch (token.toLowerCase()) {
-		case ">":
-			return "gt";
-		case "<":
-			return "lt";
-		case "<=":
-		case "≤":
-		case "at most":
-			return "lte";
-		default:
-			return "gte";
-	}
-}
-
-/** A bounded claim like `>=4 complete cards`; unbounded cells keep the digit path. */
-function parseRequirementNumericBound(cell: string): RequirementNumericBound | undefined {
-	const normalized = cell.replace(/(?<=\d)[,_\s](?=\d)/g, "");
-	if ((normalized.match(/\d+(?:\.\d+)?/g) ?? []).length !== 1) return undefined;
-	const match = REQUIREMENT_NUMERIC_BOUND.exec(normalized.trim());
-	if (!match) return undefined;
-	return {
-		operator: requirementNumericOperator(match[1]!),
-		value: Number(match[2]),
-		unit: match[3]!.trim(),
-	};
-}
-
-/** The measured side is one plain figure; anything else keeps the digit path. */
-function parseRequirementNumericMeasure(cell: string): { value: number; unit: string } | undefined {
-	const normalized = cell.replace(/(?<=\d)[,_\s](?=\d)/g, "");
-	if ((normalized.match(/\d+(?:\.\d+)?/g) ?? []).length !== 1) return undefined;
-	const match = REQUIREMENT_NUMERIC_MEASURE.exec(normalized);
-	if (!match) return undefined;
-	return { value: Number(match[1]), unit: match[2]!.trim() };
-}
-
-/** A bare measured figure measures the claimed metric; otherwise the stated units must match. */
-function requirementNumericUnitsComparable(claimedUnit: string, measuredUnit: string): boolean {
-	if (!measuredUnit) return true;
-	if (!claimedUnit) return false;
-	return claimedUnit.toLowerCase().replace(/\s+/g, " ") === measuredUnit.toLowerCase().replace(/\s+/g, " ");
-}
-
-function requirementNumericBoundSatisfied(bound: RequirementNumericBound, measured: number): boolean {
-	switch (bound.operator) {
-		case "gt":
-			return measured > bound.value;
-		case "gte":
-			return measured >= bound.value;
-		case "lt":
-			return measured < bound.value;
-		case "lte":
-			return measured <= bound.value;
-	}
-}
-
 /** Parse one complete receipt; supplied source words are authoritative after assignment authentication. */
 export function parseRequirementReceipt(
 	output: string,
@@ -1332,40 +1276,10 @@ export function parseRequirementReceipt(
 		) {
 			return null;
 		}
-		let finalStatus = status;
-		let finalEvidence = evidence;
-		if (
-			status === "pass" &&
-			claimed.trim() &&
-			measured.trim() &&
-			claimed.trim().toLowerCase() !== "n/a" &&
-			measured.trim().toLowerCase() !== "n/a"
-		) {
-			const bound = parseRequirementNumericBound(claimed);
-			const measure = bound ? parseRequirementNumericMeasure(measured) : undefined;
-			if (bound && measure && requirementNumericUnitsComparable(bound.unit, measure.unit)) {
-				// A stated bound compares as quantities (strict `>`/`<` exclude equality); only a
-				// genuine numeric miss downgrades PASS.
-				if (!requirementNumericBoundSatisfied(bound, measure.value)) {
-					finalStatus = "fail";
-					finalEvidence = `claimed ${claimed} ≠ measured ${measured}: ${evidence}`;
-				}
-			} else {
-				// Digit-group separators (`,` `_` spaces) are stripped so figures compare by value.
-				const [claimedNums, measuredNums] = [claimed, measured].map(cell =>
-					(cell.replace(/(?<=\d)[,_\s](?=\d)/g, "").match(/\d+/g) ?? []).map(value =>
-						value.replace(/^0+(?=\d)/, ""),
-					),
-				);
-				if (
-					claimedNums.length !== measuredNums.length ||
-					claimedNums.some((value, index) => value !== measuredNums[index])
-				) {
-					finalStatus = "fail";
-					finalEvidence = `claimed ${claimed} ≠ measured ${measured}: ${evidence}`;
-				}
-			}
-		}
+		// The authenticated auditor owns semantic measurement judgments. Free-text
+		// claimed/measured evidence must not become a second, lossy verdict veto.
+		const finalStatus = status;
+		const finalEvidence = claimed || measured ? `${evidence}\nclaimed: ${claimed}\nmeasured: ${measured}` : evidence;
 		const prior = rows.find(row => row.id === parentId);
 		const clauseEvidence = split ? `${id}: ${finalEvidence}` : finalEvidence;
 		if (prior) {

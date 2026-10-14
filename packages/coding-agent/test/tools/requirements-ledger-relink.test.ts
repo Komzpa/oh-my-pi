@@ -216,7 +216,7 @@ describe("reasoned requirement relink", () => {
 		expect(r3Of(manager).amendments).toBeUndefined();
 	});
 
-	it("keeps ordinary classify write-once and allows relink only on a linked requirement", async () => {
+	it("keeps ordinary classification write-once for a linked requirement", async () => {
 		const { manager, tool } = harness();
 		seedMislinked(manager);
 		// Negative control: without relink, a linked requirement stays write-once.
@@ -228,17 +228,6 @@ describe("reasoned requirement relink", () => {
 		});
 		expect(ordinary.isError).toBe(true);
 		expect(textOf(ordinary)).toContain("already been classified");
-		// relink=true is only for linked -> linked.
-		const onCandidate = await tool.execute("relink-candidate", {
-			op: "classify",
-			id: "R2",
-			classification: "linked",
-			rows: [ROW_A],
-			reason: REASON,
-			relink: true,
-		});
-		expect(onCandidate.isError).toBe(true);
-		expect(textOf(onCandidate)).toContain("relink");
 		expect(r3Of(manager).rows).toEqual([ROW_A, ROW_B]);
 	});
 

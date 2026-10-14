@@ -461,7 +461,9 @@ export class RequirementsLedgerRuntime {
 			const key = this.#resolvePendingAuditorKey(workerId);
 			const assignment = key ? this.#pendingAuditors.get(key) : undefined;
 			if (!key || !assignment) continue;
-			const outcome = await this.#consumeTaskResultEnvelope(workerId, content);
+			// Display text escapes harness tags; machine intake uses the original per-job envelope.
+			const result = typeof job.result === "string" ? job.result : content;
+			const outcome = await this.#consumeTaskResultEnvelope(workerId, result);
 			const rejection =
 				outcome.status === "accepted"
 					? undefined
