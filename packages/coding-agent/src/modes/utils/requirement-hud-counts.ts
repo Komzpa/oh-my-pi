@@ -9,7 +9,8 @@ const requirementHudCountsCache = new WeakMap<
 /** Reuse counts until the session branch or entry count changes, without copying entries. */
 export function getRequirementHudCounts(sessionManager: SessionManager): RequirementCounts {
 	const leafId = sessionManager.getLeafId();
-	const entryCount = sessionManager.getEntryCount();
+	const counter = sessionManager as SessionManager & { getEntryCount?: () => number };
+	const entryCount = counter.getEntryCount?.() ?? sessionManager.getEntries().length;
 	const cached = requirementHudCountsCache.get(sessionManager);
 	if (cached?.leafId === leafId && cached.entryCount === entryCount) return cached.counts;
 

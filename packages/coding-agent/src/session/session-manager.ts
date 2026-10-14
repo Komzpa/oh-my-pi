@@ -3698,9 +3698,6 @@ export class SessionManager {
 	getLeafId(): string | null {
 		return this.#index.leafId();
 	}
-	getEntryCount(): number {
-		return this.#entries.length;
-	}
 
 	getLeafEntry(): SessionEntry | undefined {
 		return this.#index.leafEntry();
