@@ -38,3 +38,16 @@ export function selectLatestBranchEntry(source: BranchSource, predicate: Predica
 	if (source.getLatestBranchMatching) return source.getLatestBranchMatching(predicate);
 	return selectBranchNewestFirst(source, predicate).next().value;
 }
+
+export function isTodoSelectionEntryMetadata(metadata: {
+	type: SessionEntry["type"];
+	customType?: string;
+	messageRole?: string;
+	toolName?: string;
+}): boolean {
+	return (
+		(metadata.type === "custom" &&
+			(metadata.customType === "user_todo_edit" || metadata.customType === "todo_hud_state")) ||
+		(metadata.type === "message" && metadata.messageRole === "toolResult" && metadata.toolName === "todo")
+	);
+}

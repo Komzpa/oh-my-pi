@@ -1,11 +1,11 @@
-import { selectBranchEntries, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { selectBranchEntries, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
-import { isTodoStateEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { SettingsManager } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
 import type { ActiveGoalRef, DeadlineState, QuotaSnapshot } from "./deadlines";
 import * as deadlineSdk from "./deadlines";
@@ -362,7 +362,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		const host = pi.pi as unknown as { getLatestTodoPhasesFromEntries?: TodoCompletionReducer } | undefined;
 		const phases =
 			typeof host?.getLatestTodoPhasesFromEntries === "function"
-				? host.getLatestTodoPhasesFromEntries(selectBranchEntries(ctx.sessionManager, isTodoStateEntryMetadata))
+				? host.getLatestTodoPhasesFromEntries(selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata))
 				: [];
 		const todoShowsDue = (phases ?? []).some(phase =>
 			phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
@@ -413,7 +413,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		const isPluginCompletion = event.toolName === "update_goal" && event.input.status === "complete";
 		if (!isNativeCompletion && !isPluginCompletion) return;
 
-		const branch = selectBranchEntries(ctx.sessionManager, isTodoStateEntryMetadata);
+		const branch = selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata);
 		const host = pi.pi as unknown as { getLatestTodoPhasesFromEntries?: TodoCompletionReducer } | undefined;
 		if (typeof host?.getLatestTodoPhasesFromEntries !== "function") {
 			return { block: true, reason: "Cannot verify TODO closure: the host TODO reducer is unavailable." };

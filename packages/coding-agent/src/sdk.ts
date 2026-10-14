@@ -310,7 +310,7 @@ import { isFilesystemSourcePath } from "./tools/path-utils";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
 import { queueResolveHandler } from "./tools/resolve";
 import {
-	isTodoStateEntryMetadata,
+	isTodoSelectionEntryMetadata,
 	shouldPersistTodoFullSnapshotCheckpoint,
 	USER_TODO_EDIT_CUSTOM_TYPE,
 } from "./tools/todo";
@@ -2499,7 +2499,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
 				} else if (
 					shouldPersistTodoFullSnapshotCheckpoint(
-						selectBranchNewestFirst(sessionManager, isTodoStateEntryMetadata),
+						selectBranchNewestFirst(sessionManager, isTodoSelectionEntryMetadata),
 					)
 				) {
 					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
@@ -3922,7 +3922,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
 				} else if (
 					shouldPersistTodoFullSnapshotCheckpoint(
-						selectBranchNewestFirst(sessionManager, isTodoStateEntryMetadata),
+						selectBranchNewestFirst(sessionManager, isTodoSelectionEntryMetadata),
 					)
 				) {
 					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });

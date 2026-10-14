@@ -1,4 +1,4 @@
-import { selectBranchEntries } from "../session/branch-selection";
+import { selectBranchEntries, isTodoSelectionEntryMetadata } from "../session/branch-selection";
 import type {
 	TodoArchivePersistedEdit,
 	TodoArchiveSummary,
@@ -486,21 +486,10 @@ function replayTodoEdit(
 	return { phases: applied.phases, mutable: true };
 }
 
-export function isTodoStateEntryMetadata(metadata: {
-	type: SessionEntry["type"];
-	customType?: string;
-	messageRole?: string;
-	toolName?: string;
-}): boolean {
-	return (
-		(metadata.type === "custom" &&
-			(metadata.customType === USER_TODO_EDIT_CUSTOM_TYPE || metadata.customType === TODO_HUD_STATE_CUSTOM_TYPE)) ||
-		(metadata.type === "message" && metadata.messageRole === "toolResult" && metadata.toolName === "todo")
-	);
-}
+export { isTodoSelectionEntryMetadata } from "../session/branch-selection";
 
 function getTodoBranchEntries(manager: ToolSession["sessionManager"]): SessionEntry[] {
-	return manager ? selectBranchEntries(manager, isTodoStateEntryMetadata) : [];
+	return manager ? selectBranchEntries(manager, isTodoSelectionEntryMetadata) : [];
 }
 
 export function shouldPersistTodoFullSnapshotCheckpoint(entriesNewestFirst: Iterable<SessionEntry>): boolean {
