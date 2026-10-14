@@ -1,3 +1,4 @@
+import { selectRestartBranchEntries } from "../../task/restart-branch-selection";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
@@ -311,7 +312,8 @@ export class UiHelpers {
 						const label =
 							typeof requestId === "string"
 								? restartNoticeText(
-										this.ctx.viewSession.sessionManager.getBranchMatching(
+										selectRestartBranchEntries(
+											this.ctx.viewSession.sessionManager,
 											metadata =>
 												metadata.type === "custom" && metadata.customType === "restart_request_transition",
 										),
