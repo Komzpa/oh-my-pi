@@ -180,4 +180,3 @@ No shared infrastructure is silently labelled kept. Part B introduces no
 parallel systemd launcher and does not move or stop any existing unit. A
 persisted daemon with a missing/reused PID or mismatched birth tick is pruned
 by `readStoredDaemonRecord`; exited history without a PID is retained.
-
