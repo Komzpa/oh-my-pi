@@ -38,6 +38,7 @@
 - Fixed `/mcp reauth` failing with `Could not discover OAuth endpoints` when a server's 401 challenge is a bare `Bearer resource_metadata="…"`; the advertised protected-resource metadata URL is now used ([#15690](https://github.com/can1357/oh-my-pi/issues/15690))
 - Fixed extension `agent_end` events reporting a background-job wait as a scheduled continuation; they now carry `awaitingAsyncWork: true` alongside `willContinue` ([#15348](https://github.com/can1357/oh-my-pi/issues/15348))
 - Preserved optional `text` in the model-facing `context_notes` schema so reading saved notes does not require supplying an empty string, which explicitly clears the notebook.
+- Preserved optional `text` in the model-facing `context_notes` schema so reading saved notes does not require supplying an empty string, which explicitly clears the notebook. ([#15748](https://github.com/can1357/oh-my-pi/pull/15748) by [@Komzpa](https://github.com/Komzpa))
 
 ## [18.10.4] - 2026-10-13
 
