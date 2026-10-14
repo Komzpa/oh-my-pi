@@ -91,7 +91,7 @@ import { DEFAULT_PEER_ROSTER_LIMIT } from "@oh-my-pi/pi-tui/tools/irc";
 import { normalizeSchema } from "../tools/jtd-to-json-schema";
 import { buildOutputValidator, summarizeValidationFailure } from "../tools/output-schema-validator";
 import { ToolAbortError } from "../tools/tool-errors";
-import { resetYieldTurnState } from "../tools/yield";
+import { resetYieldTurnState, subscribeYieldAcceptedResult } from "../tools/yield";
 import { type EventBus, emitSubagentFrame } from "../utils/event-bus";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { buildNamedToolChoice } from "../utils/tool-choice";
@@ -1662,6 +1662,48 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		emitSubagentFrame(args.eventBus, args.subagentEventBus, TASK_SUBAGENT_EVENT_CHANNEL, payload);
 	};
 
+	// Direct event + accepted-hook dedupe: both observe the same accepted call
+	// (the hook fires at YieldTool.execute return, the session event follows),
+	// so the first claim wins and incremental sections accumulate exactly once.
+	const seenYieldAcceptances = new Set<string>();
+	const claimYieldAcceptance = (toolCallId: string): boolean => {
+		if (seenYieldAcceptances.has(toolCallId)) return false;
+		seenYieldAcceptances.add(toolCallId);
+		return true;
+	};
+	// Accepted-yield producer notification for paths that never emit a session
+	// tool_execution_end (eval JS/Python bridge). Runs the same extraction and
+	// termination policy as the event path from the real accepted record.
+	const recordHookYield = (toolCallId: string, details: unknown): void => {
+		// Detach/finish drops the subscription; a settled run ignores late calls
+		// even if a stale execution kept its snapshot past detach.
+		if (resolved) return;
+		if (!claimYieldAcceptance(toolCallId)) return;
+		recordExtractedToolData("yield", details);
+		yieldCallPending = false;
+		if (budgetCheckDeferred) {
+			budgetCheckDeferred = false;
+			// The yield validated without ending the run: the turn that
+			// submitted it still counts against the budget.
+			if (!yieldCalled) evaluateSoftRequestBudget();
+		}
+		const handler = subprocessToolRegistry.getHandler("yield");
+		const wantsTerminate =
+			handler?.shouldTerminate?.({
+				toolName: "yield",
+				toolCallId,
+				args: {},
+				result: { content: [], details },
+				isError: false,
+			}) === true;
+		const forcedFinalYield = finalYieldForced && yieldCalled;
+		if (wantsTerminate || forcedFinalYield) {
+			// The yield tool warned before accepting abandoned processes;
+			// teardown reaps them without reopening submission.
+			requestAbort("terminate");
+		}
+	};
+
 	const recordExtractedToolData = (toolName: string, data: unknown): void => {
 		// Terminal acceptance is a one-way boundary. Ignore late extraction from
 		// already-running calls, but keep their tool events/errors visible.
@@ -1846,7 +1888,11 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 							isError: event.isError,
 						});
 						if (data !== undefined) {
-							recordExtractedToolData(event.toolName, data);
+							// The accepted hook may already have recorded this same
+							// call: first claim wins, incrementals only once.
+							const firstClaim =
+								event.toolName !== "yield" || claimYieldAcceptance(event.toolCallId);
+							if (firstClaim) recordExtractedToolData(event.toolName, data);
 						}
 					}
 
@@ -2099,7 +2145,16 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			progress.contextWindow = contextWindow;
 			scheduleProgress(true);
 		};
-		return session.subscribe(event => {
+		// The eval bridge executes the real YieldTool with no session
+		// tool_execution_end, so the accepted-yield producer notifies this
+		// monitor directly. Per-attach lifetime: detach drops the subscription,
+		// and the tool's generation fence plus call-id dedupe keep a stale
+		// execution from marking a new run.
+		const unsubscribeYield = subscribeYieldAcceptedResult(
+			session.getToolByName?.("yield"),
+			recordHookYield,
+		);
+		const unsubscribeEvents = session.subscribe(event => {
 			emitSubagentEvent(event);
 			publishAdvisorState(session);
 			publishServingModel();
@@ -2143,6 +2198,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				}
 			}
 		});
+		return () => {
+			unsubscribeYield();
+			unsubscribeEvents();
+		};
 	};
 
 	const captureSalvage = (session: AgentSession): void => {
