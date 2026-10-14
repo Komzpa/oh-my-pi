@@ -1990,11 +1990,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#eventBusUnsubscribers.push(onDownloadActivity(activity => this.#downloadActivityHud.update(activity)));
 		this.statusContainer = new StatusHudContainer(this);
 		this.todoContainer = new TodoHudContainer(this);
-		const renderTodoHud = this.todoContainer.render.bind(this.todoContainer);
-		this.todoContainer.render = width => {
-			this.refreshTodoHud(width);
-			return renderTodoHud(width);
-		};
 		this.subagentContainer = new AnchoredLiveContainer();
 		this.btwContainer = new AnchoredLiveContainer();
 		this.omfgContainer = new AnchoredLiveContainer();
@@ -2002,6 +1997,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.errorBannerContainer = new AnchoredLiveContainer();
 		this.modelCycleContainer = new AnchoredLiveContainer();
 		this.deferredCommandContainer = new AnchoredLiveContainer();
+		const renderTodoHud = this.todoContainer.render.bind(this.todoContainer);
+		this.todoContainer.render = width => {
+			this.refreshTodoHud(width);
+			return renderTodoHud(width);
+		};
 		this.reportContainer = new AnchoredLiveContainer();
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
