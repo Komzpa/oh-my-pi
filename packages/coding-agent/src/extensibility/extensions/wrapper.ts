@@ -464,18 +464,21 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		if (this.runner.hasHandlers("tool_result")) {
 			pushLoopPhase(`extension.tool_result:${this.tool.name}`);
 			try {
-				const resultResult = await this.runner.emitToolResult({
-					type: "tool_result",
-					toolName: this.tool.name,
-					toolCallId,
-					input: normalizeToolEventInput(
-						this.tool.name,
-						resolveToolEventInput(this.tool, toolEventArgs(effectiveParams, context)),
-					),
-					content: result.content,
-					details: result.details,
-					isError: !!executionError || result.isError === true,
-				}, this.#agent);
+				const resultResult = await this.runner.emitToolResult(
+					{
+						type: "tool_result",
+						toolName: this.tool.name,
+						toolCallId,
+						input: normalizeToolEventInput(
+							this.tool.name,
+							resolveToolEventInput(this.tool, toolEventArgs(effectiveParams, context)),
+						),
+						content: result.content,
+						details: result.details,
+						isError: !!executionError || result.isError === true,
+					},
+					this.#agent,
+				);
 
 				// Handler context reports into this call's sink like tool-authored
 				// context: it is delivered even for a failed call (the handler saw
