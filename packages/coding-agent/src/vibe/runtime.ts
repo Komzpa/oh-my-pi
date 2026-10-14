@@ -99,7 +99,7 @@ export interface VibeParentSession {
 	getSessionId?: () => string | null;
 	getSessionFile: () => string | null;
 	sessionManager?: ToolSession["sessionManager"] &
-		Pick<SessionManager, "getBranchMatching" | "getLatestBranchMatching"> &
+		Partial<Pick<SessionManager, "getBranchMatching" | "getLatestBranchMatching">> &
 		Partial<
 			Pick<SessionManager, "appendModeChange" | "appendEntriesAtomically" | "recoverPersistenceFromCurrentState">
 		>;
@@ -706,9 +706,12 @@ export class VibeSessionRegistry {
 		}
 
 		const candidates = new Map<string, VibeRestoreCandidate>();
-		for (const entry of sessionManager.getBranchMatching(
-			metadata => metadata.type === "custom" && metadata.customType === VIBE_LIFECYCLE_CUSTOM_TYPE,
-		)) {
+		const lifecycleEntries = sessionManager.getBranchMatching
+			? sessionManager.getBranchMatching(
+					metadata => metadata.type === "custom" && metadata.customType === VIBE_LIFECYCLE_CUSTOM_TYPE,
+				)
+			: sessionManager.getBranch();
+		for (const entry of lifecycleEntries) {
 			if (entry.type !== "custom" || entry.customType !== VIBE_LIFECYCLE_CUSTOM_TYPE) continue;
 			const event = parseLifecycleEvent(entry.data);
 			if (!event || event.ownerId !== scope.ownerId || event.parentSessionId !== scope.parentSessionId) continue;
@@ -1111,9 +1114,10 @@ export class VibeSessionRegistry {
 			record => matchesScope(record, scope) && !(record.state === "dead" && record.terminalPersisted),
 		);
 		if (records.length === 0) {
-			const latestModeChange = session.sessionManager?.getLatestBranchMatching(
-				metadata => metadata.type === "mode_change",
-			);
+			const sessionManager = session.sessionManager;
+			const latestModeChange = sessionManager?.getLatestBranchMatching
+				? sessionManager.getLatestBranchMatching(metadata => metadata.type === "mode_change")
+				: sessionManager?.getBranch().findLast(entry => entry.type === "mode_change");
 			if (latestModeChange?.type === "mode_change" && latestModeChange.mode === "none") return 0;
 		}
 		try {
