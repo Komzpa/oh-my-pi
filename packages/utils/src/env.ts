@@ -107,6 +107,33 @@ export function stripGitRepoLocationEnv(
 	}
 }
 
+const NODE_IPC_CHANNEL_ENV_NAMES: Record<string, true> = {
+	NODE_CHANNEL_FD: true,
+	NODE_CHANNEL_SERIALIZATION_MODE: true,
+};
+
+/**
+ * Drop Node's IPC channel pointers from a copied environment. Windows resolves
+ * env names case-insensitively, so `node_channel_fd` binds there exactly like
+ * `NODE_CHANNEL_FD`; match case-insensitively on win32 and exactly elsewhere.
+ */
+export function stripNodeIpcChannelEnv(
+	env: Record<string, string>,
+	platform: NodeJS.Platform = process.platform,
+): void {
+	if (platform !== "win32") {
+		for (const name in NODE_IPC_CHANNEL_ENV_NAMES) {
+			delete env[name];
+		}
+		return;
+	}
+	for (const key of Object.keys(env)) {
+		if (Object.hasOwn(NODE_IPC_CHANNEL_ENV_NAMES, key.toUpperCase())) {
+			delete env[key];
+		}
+	}
+}
+
 // Bun autoloads the project's dotenv files into `process.env` before user code
 // runs — including inside `bun build --compile` binaries — so a snapshot of
 // `Bun.env` is only pre-dotenv when autoloading was explicitly disabled. Linux
@@ -163,8 +190,7 @@ function filterChildShellEnvInternal(
 	// tool call then dies with `EBADF: Bad file descriptor (posix_spawn())`.
 	// The IPC worker spawn that needs its channel sets these itself, so child
 	// shells must never carry them.
-	delete result.NODE_CHANNEL_FD;
-	delete result.NODE_CHANNEL_SERIALIZATION_MODE;
+	stripNodeIpcChannelEnv(result);
 	const projectEnv = parseEnvFile(path.join(cwd, ".env"));
 	const launchNodeEnv = runtimeLaunchEnvValues ? runtimeLaunchEnvValues.get("NODE_ENV") : env.NODE_ENV;
 	const nodeEnvName = `.env.${launchNodeEnv || "development"}`;

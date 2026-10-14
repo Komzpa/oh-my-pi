@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Stripped `NODE_CHANNEL_FD` and `NODE_CHANNEL_SERIALIZATION_MODE` from child shell environments so tool-call children no longer inherit the agent's IPC worker channel (which made `bun run` inside a bash tool call fail with `EBADF: Bad file descriptor`).
+- Fixed `bun run` failing with `EBADF: Bad file descriptor` in bash tool calls ([#15632](https://github.com/can1357/oh-my-pi/pull/15632) by [@Komzpa](https://github.com/Komzpa))
 
 ## [18.4.12] - 2026-10-02
 

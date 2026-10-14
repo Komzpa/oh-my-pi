@@ -1842,7 +1842,7 @@ fn should_skip_env_var(key: &str) -> bool {
 	if key.starts_with("BASH_FUNC_") && key.ends_with("%%") {
 		return true;
 	}
-	if is_macos_malloc_stack_logging_var(key) {
+	if is_macos_malloc_stack_logging_var(key) || is_node_ipc_channel_var(key) {
 		return true;
 	}
 
@@ -1896,13 +1896,23 @@ fn should_skip_env_var(key: &str) -> bool {
 			| "EUID"
 			| "HOSTNAME"
 			| "HOSTTYPE"
-			// Node's IPC channel pointers describe the agent's own worker
-			// channel. A tool-call child that inherits them misinterprets fd 3
-			// as its control channel — `bun run` inside a bash tool call then
-			// dies with `EBADF: Bad file descriptor (posix_spawn())`.
-			| "NODE_CHANNEL_FD"
-			| "NODE_CHANNEL_SERIALIZATION_MODE"
 	)
+}
+
+/// Node's IPC channel pointers describe the agent's own worker channel. A
+/// tool-call child that inherits them misinterprets fd 3 as its control
+/// channel — `bun run` inside a bash tool call then dies with
+/// `EBADF: Bad file descriptor (posix_spawn())`. Windows env names are
+/// case-insensitive, so `node_channel_fd` binds there like `NODE_CHANNEL_FD`.
+#[cfg(windows)]
+pub fn is_node_ipc_channel_var(key: &str) -> bool {
+	key.eq_ignore_ascii_case("NODE_CHANNEL_FD")
+		|| key.eq_ignore_ascii_case("NODE_CHANNEL_SERIALIZATION_MODE")
+}
+
+#[cfg(not(windows))]
+pub fn is_node_ipc_channel_var(key: &str) -> bool {
+	matches!(key, "NODE_CHANNEL_FD" | "NODE_CHANNEL_SERIALIZATION_MODE")
 }
 
 fn ensure_trailing_newline_for_heredoc(command: &mut String) {
@@ -2728,6 +2738,16 @@ mod tests {
 			"NODE_CHANNEL_SERIALIZATION_MODE must not reach child commands"
 		);
 		assert_eq!(value("OMP_CHANNEL_PROBE").as_deref(), Some("kept"), "unrelated vars are kept");
+	}
+
+	/// Exact names are always skipped; case variants only where the platform's
+	/// env names are case-insensitive (Windows).
+	#[test]
+	fn node_ipc_channel_vars_match_platform_case_rules() {
+		assert!(is_node_ipc_channel_var("NODE_CHANNEL_FD"));
+		assert!(is_node_ipc_channel_var("NODE_CHANNEL_SERIALIZATION_MODE"));
+		assert!(!is_node_ipc_channel_var("NODE_CHANNEL_OTHER"));
+		assert_eq!(is_node_ipc_channel_var("node_channel_fd"), cfg!(windows));
 	}
 
 	/// The per-session env overlay is built from the same host environment, so

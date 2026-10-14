@@ -159,6 +159,8 @@ At each call, the executor loads settings shell config (`shell`, `env`, optional
 
 Unless `bash.direnv` is `"off"`, preflight attempts to load the cwd's direnv/devenv changes within `bash.direnvLoadTimeoutMs`, additionally bounded by a positive command timeout. Direnv-provided variables are merged below explicit caller `env`; safe variables removed by direnv are prepended as `unset -v ...`. ACP-terminal and PTY routes run the same preflight before their backend; the non-PTY executor runs it internally.
 
+The host's `NODE_CHANNEL_FD` and `NODE_CHANNEL_SERIALIZATION_MODE` describe its own IPC worker channel and must not be inherited by tool-call children. The child-shell environment, embedded shell host import, PTY command builder, and direnv preflight baseline strip these markers without changing the host environment or removing unrelated variables. Matching is case-insensitive on Windows and exact on POSIX. PTY caller-supplied environment values are still applied after inherited markers are removed.
+
 If the selected shell includes `bash`, it attempts `getOrCreateSnapshot()`:
 
 - snapshot captures aliases/functions/options from user rc,
