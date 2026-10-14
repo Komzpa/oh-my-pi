@@ -1,3 +1,4 @@
+import { selectLatestRestartBranchEntry } from "../task/restart-branch-selection";
 /**
  * AgentSession - Core abstraction for agent lifecycle and session management.
  *
@@ -6931,7 +6932,8 @@ export class AgentSession implements SettingsScope {
 	}
 
 	#restorePendingRestartMessages(): void {
-		const latest = this.sessionManager.getLatestBranchMatching(
+		const latest = selectLatestRestartBranchEntry(
+			this.sessionManager,
 			metadata => metadata.type === "custom" && metadata.customType === RESTART_PENDING_QUEUES_CUSTOM_TYPE,
 		);
 		const branch = latest ? [latest] : [];

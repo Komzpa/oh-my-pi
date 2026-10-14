@@ -1,3 +1,4 @@
+import { selectRestartBranchEntries } from "./restart-branch-selection";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { IrcBus } from "../irc/bus";
@@ -157,7 +158,8 @@ async function isTombstoned(sessionFile: string): Promise<boolean> {
 
 async function readBranchEntries(sessionFile: string, liveSession?: AgentSession | null): Promise<SessionEntry[]> {
 	if (liveSession) {
-		return liveSession.sessionManager.getBranchMatching(
+		return selectRestartBranchEntries(
+			liveSession.sessionManager,
 			metadata =>
 				metadata.type === "message" ||
 				(metadata.type === "custom" && metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE),
@@ -168,7 +170,8 @@ async function readBranchEntries(sessionFile: string, liveSession?: AgentSession
 		throwIfMissing: true,
 	});
 	try {
-		return manager.getBranchMatching(
+		return selectRestartBranchEntries(
+			manager,
 			metadata =>
 				metadata.type === "message" ||
 				(metadata.type === "custom" && metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE),
@@ -185,7 +188,8 @@ async function closeInterruptedToolCalls(sessionFile: string): Promise<number> {
 		throwIfMissing: true,
 	});
 	try {
-		const entries = manager.getBranchMatching(
+		const entries = selectRestartBranchEntries(
+			manager,
 			metadata =>
 				metadata.type === "message" ||
 				(metadata.type === "custom" && metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE),
@@ -514,7 +518,8 @@ export async function sendRootContinuationOnce(
 		return { state: "blocked", reason };
 	}
 	const priorReceipt = latestRootContinuationReceipt(
-		session.sessionManager.getBranchMatching(
+		selectRestartBranchEntries(
+			session.sessionManager,
 			entry => entry.type === "custom" && entry.customType === RESTART_ROOT_RECEIPT_TYPE,
 		),
 		rootSessionId,
@@ -734,7 +739,8 @@ export async function restoreSubagentsAfterRestart(
 		rootSessionId: rootSession.sessionManager.getSessionId(),
 		rootSessionFile: path.resolve(rootSessionFile),
 	};
-	const rootEntries = rootSession.sessionManager.getBranchMatching(
+	const rootEntries = selectRestartBranchEntries(
+		rootSession.sessionManager,
 		entry => entry.type === "custom" && entry.customType === RESTART_HANDOFF_TYPE,
 	);
 	const saved = latestHandoff(rootEntries, identity, options?.requestId);
@@ -753,7 +759,8 @@ export async function restoreSubagentsAfterRestart(
 		return report;
 	}
 	const receipts = receiptMap(
-		rootSession.sessionManager.getBranchMatching(
+		selectRestartBranchEntries(
+			rootSession.sessionManager,
 			entry => entry.type === "custom" && entry.customType === RESTART_RECEIPT_TYPE,
 		),
 		identity.rootSessionId,

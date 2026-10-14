@@ -794,7 +794,7 @@ describe("restart queue controller", () => {
 		expect(texts[0]).not.toMatch(/do not start another model turn/i);
 		controller.dispose();
 	});
-	it("queues the terminal notice before waking the root with its continuation", async () => {
+	it.each([true, false])("queues completion before continuation (queued notice: %s)", async hasQueuedNotice => {
 		const cwd = makeTempDir();
 		const { manager } = await createRoot(cwd);
 		const oldIdentity = identityFor(manager, "instance-X", 1);
@@ -811,12 +811,13 @@ describe("restart queue controller", () => {
 				rootWasRunning: true,
 			});
 		}
-		manager.appendCustomMessageEntry(
-			"restart-queued",
-			`Restart ${requestId} is queued. Do not start another model turn until it completes.`,
-			true,
-			{ requestId, state: "queued" },
-		);
+		if (hasQueuedNotice)
+			manager.appendCustomMessageEntry(
+				"restart-queued",
+				`Restart ${requestId} is queued. Do not start another model turn until it completes.`,
+				true,
+				{ requestId, state: "queued" },
+			);
 		await manager.flush();
 		const order: string[] = [];
 		const harness = makeSession(manager, {

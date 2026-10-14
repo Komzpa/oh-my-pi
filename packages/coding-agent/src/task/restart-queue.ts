@@ -1,3 +1,4 @@
+import { selectRestartBranchEntries } from "./restart-branch-selection";
 import { formatDuration, logger } from "@oh-my-pi/pi-utils";
 import restartQueuedPrompt from "../prompts/restart-queued.md" with { type: "text" };
 import type { RestartDrainLease } from "../session/agent-session-types";
@@ -499,7 +500,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			}
 			if (record && (record.state === "completed" || record.state === "cancelled" || record.state === "failed")) {
 				const notices = this.#restartNoticesFor(record.requestId);
-				if (notices.length > 0 && notices.some(notice => notice.terminal) === false) {
+				if (notices.some(notice => notice.terminal) === false) {
 					await this.#session.sendCustomMessage(
 						{
 							customType: RESTART_QUEUED_NOTICE_TYPE,
@@ -939,7 +940,8 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		const byId = new Map<string, StoredRestartRequest>();
 		let latest: StoredRestartRequest | undefined;
 		let active: StoredRestartRequest | undefined;
-		const entries = this.#session.sessionManager.getBranchMatching(
+		const entries = selectRestartBranchEntries(
+			this.#session.sessionManager,
 			metadata => metadata.type === "custom" && metadata.customType === RESTART_REQUEST_TRANSITION_TYPE,
 		);
 		for (let index = 0; index < entries.length; index++) {
@@ -958,7 +960,8 @@ class RestartQueueControllerImpl implements RestartQueueController {
 
 	#restartNoticesFor(requestId: string): Array<{ terminal: boolean }> {
 		const notices: Array<{ terminal: boolean }> = [];
-		for (const entry of this.#session.sessionManager.getBranchMatching(
+		for (const entry of selectRestartBranchEntries(
+			this.#session.sessionManager,
 			metadata => metadata.type === "custom_message",
 		)) {
 			if (entry.type !== "custom_message" || entry.customType !== RESTART_QUEUED_NOTICE_TYPE) continue;
