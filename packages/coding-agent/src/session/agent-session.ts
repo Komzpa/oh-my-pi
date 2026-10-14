@@ -5867,6 +5867,11 @@ export class AgentSession implements SettingsScope {
 		this.#fallbackExtensionTimers?.clearAll();
 		this.abortRetry();
 		this.abortCompaction();
+		this.agent.setProviderResponseInterceptor(undefined);
+		this.agent.setRawSseEventInterceptor(undefined);
+		// All turn-drain checkpoints share one hard budget. Teardown must not
+		// start another full wait after the pre-release drain already timed out.
+		const drainDeadlineAt = Date.now() + POST_PROMPT_DRAIN_TIMEOUT_MS;
 		const postPromptDrain = this.#cancelPostPromptTasks();
 		this.agent.abort();
 		try {
@@ -5878,9 +5883,28 @@ export class AgentSession implements SettingsScope {
 		} catch (error) {
 			logger.warn("Post-prompt tasks still draining at dispose deadline", { error: String(error) });
 		}
-		await this.agent.waitForIdle();
-		await this.#drainAutolearnCapture();
-		await this.#memory.transition;
+		// An uncooperative provider acquisition can hold waitForIdle past broker
+		// release. Spend only the remaining drain budget, then retain this same
+		// work in the terminal deferred finalization below.
+		const preReleaseDrain = (async () => {
+			await this.agent.waitForIdle();
+			await this.#drainAutolearnCapture();
+			await this.#memory.transition;
+		})();
+		const preReleaseTimeoutMs = drainDeadlineAt - Date.now();
+		if (preReleaseTimeoutMs > 0) {
+			try {
+				await withTimeout(
+					preReleaseDrain,
+					preReleaseTimeoutMs,
+					"Timed out waiting for the active agent run to settle before broker release during dispose",
+				);
+			} catch (error) {
+				logger.warn("Active agent run still settling before broker release at dispose deadline", {
+					error: String(error),
+				});
+			}
+		}
 
 		const hindsightState = this.getHindsightSessionState();
 		const mnemopiState = setMnemopiSessionState(this, undefined);
@@ -5935,27 +5959,34 @@ export class AgentSession implements SettingsScope {
 		// A dispose triggered mid-turn (Ctrl-C / timeout / hard-killed subagent)
 		// only *signals* the agent loop via the earlier abort(); the loop and the
 		// session's fire-and-forget event handlers still unwind asynchronously.
-		// Detach the response/SSE interceptors so a late frame cannot re-record
-		// into rawSseDebugBuffer, then wait (bounded) for both the core run AND
-		// the in-flight event/persistence handlers to settle — the latter can
-		// still append the finished message/entries after agent.waitForIdle()
+		// The response/SSE interceptors are already detached; now wait (bounded)
+		// for both the core run AND the in-flight event/persistence handlers to
+		// settle — the latter can still append the finished message/entries after
+		// agent.waitForIdle()
 		// alone. Without this the release races the unwind and a disposed session
 		// is repopulated with exactly the state we are trying to drop.
-		this.agent.setProviderResponseInterceptor(undefined);
-		this.agent.setRawSseEventInterceptor(undefined);
+		const terminalDrain = (async () => {
+			await postPromptDrain;
+			await preReleaseDrain;
+			await this.agent.waitForIdle();
+			await this.#drainInFlightEventHandlers();
+		})();
 		let drained = false;
-		try {
-			await withTimeout(
-				(async () => {
-					await this.agent.waitForIdle();
-					await this.#drainInFlightEventHandlers();
-				})(),
-				options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS,
-				"Timed out waiting for the active agent run to settle during dispose",
-			);
-			drained = true;
-		} catch (error) {
-			logger.warn("Active agent run still settling at dispose deadline", { error: String(error) });
+		const terminalDrainTimeoutMs = Math.min(
+			options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS,
+			drainDeadlineAt - Date.now(),
+		);
+		if (terminalDrainTimeoutMs > 0) {
+			try {
+				await withTimeout(
+					terminalDrain,
+					terminalDrainTimeoutMs,
+					"Timed out waiting for the active agent run to settle during dispose",
+				);
+				drained = true;
+			} catch (error) {
+				logger.warn("Active agent run still settling at dispose deadline", { error: String(error) });
+			}
 		}
 
 		// Event handlers can reopen the append writer while they persist their
@@ -5991,16 +6022,16 @@ export class AgentSession implements SettingsScope {
 		// SEALED the session manager (a revival may reopen the same JSONL
 		// through a new manager the moment dispose returns, and this manager
 		// must never race that writer) — so re-run only the in-memory reset,
-		// and lift the account pools, once the pipeline genuinely settles. The
-		// extension runner bounds hook runtime, so this deferred pass is not
-		// unbounded.
+		// and lift the account pools, once the pipeline genuinely settles. Keep
+		// the original drain reachable: a reset or revival is not its completion.
 		if (!drained) {
-			void (async () => {
-				await this.agent.waitForIdle();
-				await this.#drainInFlightEventHandlers();
-				this.#releaseRetainedSessionMemory();
-				this.#accountPoolScope?.release();
-			})().catch(error => logger.warn("Deferred dispose finalization failed", { error: String(error) }));
+			trackLateCleanup(
+				terminalDrain.then(() => {
+					this.#releaseRetainedSessionMemory();
+					this.#accountPoolScope?.release();
+				}),
+				{ sessionId: this.sessionManager.getSessionId(), resource: "dispose-finalization" },
+			);
 		}
 		// Parallel cleanup and socket closure always finish, but a failed broker
 		// release must not turn disposal into a successful completion receipt.

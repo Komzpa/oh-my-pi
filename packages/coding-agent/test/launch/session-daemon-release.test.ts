@@ -666,6 +666,98 @@ describe("per-session daemon client release", () => {
 			}
 		}, 30_000);
 	}
+	it("direct dispose bounds uncooperative provider acquisition before broker release", async () => {
+		using tempDir = TempDir.createSync("@omp-direct-dispose-drain-");
+		const authStorage = createInMemoryAuthStorage();
+		const gate = Promise.withResolvers<void>();
+		const entered = Promise.withResolvers<void>();
+		let workSettled = false;
+		const blockedWork = gate.promise.then(() => {
+			workSettled = true;
+		});
+		const mock = createMockModel({ responses: [{ content: ["drained"] }] });
+		const agent = new Agent({
+			initialState: { model: mock, systemPrompt: ["Test"], tools: [], messages: [] },
+			getApiKey: () => "test-key",
+			// Same held-acquisition fixture as the lane drain test: waitForIdle
+			// genuinely owns this uncooperative provider work.
+			streamFn: async (model, context, options) => {
+				entered.resolve();
+				await blockedWork;
+				return mock.stream(model, context, options);
+			},
+		});
+		const manager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), "sessions"));
+		const session = new AgentSession({
+			agent,
+			sessionManager: manager,
+			settings: Settings.isolated({ "compaction.enabled": false, "todo.enabled": false }),
+			modelRegistry: new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml")),
+		});
+		const sessionId = manager.getSessionId();
+		const parentId = crypto.randomUUID();
+		const client = await daemonClientForProject(tempDir.path(), sessionId, { idleGraceMs: IDLE_GRACE_MS });
+		const parent = await daemonClientForProject(tempDir.path(), parentId, { idleGraceMs: IDLE_GRACE_MS });
+		let running: Promise<void> | undefined;
+		let runSettled = false;
+		const finalized = Promise.withResolvers<void>();
+		let finalizationSettled = false;
+		const finalization = finalized.promise.then(() => {
+			finalizationSettled = true;
+		});
+		let memoryReleases = 0;
+		const releaseEntries = manager.releaseRetainedEntries.bind(manager);
+		const memoryRelease = spyOn(manager, "releaseRetainedEntries").mockImplementation(() => {
+			releaseEntries();
+			if (++memoryReleases === 2) finalized.resolve();
+		});
+		try {
+			const daemon = await startFixtureDaemon(client, "direct-dispose-service");
+			const parentDaemon = await startFixtureDaemon(parent, "parent-direct-control");
+			running = agent.prompt("start blocked provider work").finally(() => {
+				runSettled = true;
+			});
+			await withTimeout(entered.promise, 2_000, "Agent run never started");
+			agent.abort();
+			expect(runSettled).toBe(false);
+			const disposing = session.dispose();
+			await withTimeout(disposing, 8_000, "Direct dispose hung on uncooperative provider acquisition");
+			// Dispose settled bounded while the held acquisition is still pending.
+			expect(workSettled).toBe(false);
+			expect(runSettled).toBe(false);
+			expect(session.isDisposed).toBe(true);
+			expect(session.messages).toHaveLength(0);
+			expect(manager.getEntries()).toHaveLength(0);
+			expect(finalizationSettled).toBe(false);
+			// Actual broker release, not a streaming-flag receipt.
+			expect(daemon.status()).toBe(ProcessStatus.Exited);
+			expect(client.closed).toBe(true);
+			expect(await hasCachedDaemonClientForSession(tempDir.path(), sessionId)).toBe(false);
+			await waitForBrokerExit(client.runtimeDir);
+			// Negative control: a live parent on a different broker stays usable.
+			expect(parentDaemon.status()).toBe(ProcessStatus.Running);
+			expect((await parent.request({ op: "ping" })).op).toBe("ping");
+			gate.resolve();
+			await withTimeout(
+				Promise.all([blockedWork, running, finalization]),
+				SHUTDOWN_OBSERVE_TIMEOUT_MS,
+				"Held provider acquisition did not settle after opening the gate",
+			);
+			expect(workSettled).toBe(true);
+			expect(runSettled).toBe(true);
+			expect(finalizationSettled).toBe(true);
+			expect(session.messages).toHaveLength(0);
+			expect(manager.getEntries()).toHaveLength(0);
+		} finally {
+			gate.resolve();
+			await running;
+			await session.dispose().catch(() => {});
+			memoryRelease.mockRestore();
+			for (const id of [sessionId, parentId]) await releaseDaemonClientsForSession(id);
+			await Promise.all([client, parent].map(control => waitForBrokerExit(control.runtimeDir)));
+			authStorage.close();
+		}
+	}, 30_000);
 
 	for (const [keepAlive, yieldStatus] of [
 		[false, "success"],
@@ -701,6 +793,7 @@ describe("per-session daemon client release", () => {
 			settings.setModelRole("task", `${model.provider}/${model.id}`);
 			const laneId = `failed-release-lane-${crypto.randomUUID()}`;
 			const mcpDisconnected = Promise.withResolvers<void>();
+			const jobs = new AsyncJobManager({});
 			const session = new AgentSession({
 				agent: new Agent({
 					initialState: { model, systemPrompt: ["Test"], tools: [yieldTool], messages: [] },
@@ -712,6 +805,7 @@ describe("per-session daemon client release", () => {
 				sessionManager: manager,
 				settings,
 				modelRegistry,
+				asyncJobManager: jobs,
 				toolRegistry: new Map([["yield", yieldTool]]),
 				disconnectOwnedMcpManager: async () => {
 					mcpDisconnected.resolve();
@@ -734,9 +828,6 @@ describe("per-session daemon client release", () => {
 				eventBus: new EventBus(),
 			});
 			const failed = spyOn(client, "request").mockRejectedValueOnce(new Error("release transport failed"));
-			const previousJobs = AsyncJobManager.instance();
-			const jobs = new AsyncJobManager({});
-			AsyncJobManager.setInstance(jobs);
 			const jobGate = Promise.withResolvers<void>();
 			const jobAborted = Promise.withResolvers<void>();
 			let shutdownJobId: string | undefined;
@@ -751,6 +842,7 @@ describe("per-session daemon client release", () => {
 						id: laneId,
 						settings,
 						modelRegistry,
+						asyncJobManager: jobs,
 						keepAlive,
 						enableIrc: false,
 						enableMCP: false,
@@ -828,7 +920,6 @@ describe("per-session daemon client release", () => {
 				await AgentLifecycleManager.global().release(laneId, ref);
 				await session.dispose();
 				await jobs.dispose({ timeoutMs: 2_000 });
-				AsyncJobManager.setInstance(previousJobs);
 				for (const id of [sessionId, parentId]) await releaseDaemonClientsForSession(id);
 				await Promise.all([client, parent].map(control => waitForBrokerExit(control.runtimeDir)));
 				authStorage.close();

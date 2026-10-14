@@ -549,9 +549,10 @@ impl Drop for ToolProcessLimit {
 				let _ = systemd_user_manager_command(&systemctl)
 					.args(["--user", "stop", &slice])
 					.status();
-				// `set-property --runtime` writes `<slice>.d/` under the manager's runtime
-				// directory, and `stop` does not remove it. Revert after stop so the
-				// drop-in does not outlive the call.
+				// `set-property --runtime` writes `<slice>.d/` under the manager's
+				// runtime directory, and `stop` does not remove it.
+				// Revert after stop so the drop-in does not outlive the
+				// call.
 				let _ = systemd_user_manager_command(&systemctl)
 					.args(["--user", "revert", &slice])
 					.output();
@@ -987,7 +988,8 @@ exec "$@"
 	#[test]
 	#[ignore = "requires a reachable systemd user manager; run explicitly on a live host"]
 	fn masked_worker_reaches_manager_without_leaking_desktop_env() {
-		// Probe availability only through systemd-run, never a separate bus client.
+		// Probe availability only through systemd-run, never a separate bus
+		// client.
 		let available = super::systemd_user_manager_command(super::systemd_run_bin())
 			.args(["--user", "--scope", "--quiet", "--"])
 			.arg(super::true_bin())
@@ -1098,8 +1100,9 @@ exec "$@"
 				.expect("read kernel pids.events")
 		);
 
-		// Explicit manager operations must opt back in; ordinary payloads stay masked.
-		// SAFETY: geteuid has no preconditions and does not access pointers.
+		// Explicit manager operations must opt back in; ordinary payloads stay
+		// masked. SAFETY: geteuid has no preconditions and does not access
+		// pointers.
 		let uid = unsafe { libc::geteuid() };
 		let (runtime, bus) = super::systemd_user_manager_env(None, uid);
 		let runtime = format!("XDG_RUNTIME_DIR={}", runtime.to_string_lossy());
@@ -1171,7 +1174,8 @@ exec "$@"
 			.expect("numeric worker pid");
 		drop(process_limit);
 		wait_for_exit(&mut child);
-		// systemd-run can exit before the manager finishes killing every descendant.
+		// systemd-run can exit before the manager finishes killing every
+		// descendant.
 		let deadline = Instant::now() + Duration::from_secs(3);
 		loop {
 			let state = std::fs::read_to_string(format!("/proc/{descendant_pid}/stat")).ok();

@@ -89,9 +89,13 @@ Generation state exists only while lookups or releases remain in flight, not
 as an accumulating session tombstone. A genuinely new lookup after release is
 allowed. Before the broker release, the subagent's post-prompt and active-turn
 drain has the existing hard 5-second post-prompt drain limit, independent of the
-executor's soft disposal deadline. A timeout still proceeds to broker release;
-the unfinished drain stays owned by deferred cleanup rather than blocking the
-task result. Broker release itself remains awaited outside the soft deadline.
+executor's soft disposal deadline. Direct dispose shares one hard 5-second
+budget across post-prompt work, pre-release active-run draining, and terminal
+event-handler draining; a timed-out checkpoint does not start another full
+wait later in teardown. A timeout still proceeds to broker release. The
+original unfinished work and terminal memory/account-pool finalization stay
+owned by deferred cleanup while disposal settles and seals its writer. Broker
+release itself remains awaited outside the soft deadline.
 Session disposal and lifecycle-manager release share the soft deadline and
 retain ownership of unfinished teardown through the existing deferred path.
 

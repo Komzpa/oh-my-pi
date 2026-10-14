@@ -19,9 +19,10 @@ pub fn background_child(command: &mut Command) {
 	{
 		use std::os::unix::process::CommandExt;
 
-		// SAFETY: pre_exec runs after fork in a potentially multithreaded process.
-		// It must only perform async-signal-safe operations: these direct syscalls
-		// and last_os_error do not allocate, lock, log, or touch shared state.
+		// SAFETY: pre_exec runs after fork in a potentially multithreaded
+		// process. It must only perform async-signal-safe operations: these
+		// direct syscalls and last_os_error do not allocate, lock, log, or
+		// touch shared state.
 		unsafe {
 			command.pre_exec(|| apply_priorities(real_ioprio_set));
 		}
@@ -57,7 +58,8 @@ mod tests {
 
 	#[test]
 	fn denied_ioprio_set_does_not_fail_child_setup() {
-		// Run in a forked-off child process so nice 19 never touches the test runner.
+		// Run in a forked-off child process so nice 19 never touches the test
+		// runner.
 		let mut command = std::process::Command::new("/bin/sh");
 		command.args(["-c", "exit 0"]);
 		unsafe {
