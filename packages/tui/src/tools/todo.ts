@@ -787,19 +787,8 @@ export const todoToolRenderer = {
 		}
 
 		// Everything below is fixed for this result; only the spinner frame and
-		// the live subagent description set vary per frame, so derive labels,
-		// touched phases and normalized match state once and reuse them.
-		const labels = new Map<TodoItem, TodoLabel>();
-		const labelFor = (task: TodoItem): TodoLabel => {
-			let label = labels.get(task);
-			if (!label) {
-				// Sanitize only for display: a mirrored Cursor snapshot carries
-				// provider text verbatim (ANSI/C0 would rewrite the terminal).
-				label = { text: forDisplay(task.content) };
-				labels.set(task, label);
-			}
-			return label;
-		};
+		// the live subagent description set vary per frame, so derive touched
+		// phases and normalized match state once and reuse them.
 		let touchedComputed = false;
 		let touchedPhases: Set<string> | null = null;
 		let lastDescs: readonly string[] | undefined;

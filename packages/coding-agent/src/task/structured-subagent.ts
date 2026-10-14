@@ -481,6 +481,7 @@ export async function resolveEffectiveSubagentPolicy(
 		modelOverride,
 		preparedSession: preparedSeance?.session,
 		modelRole,
+		structured,
 		serviceTierOverride,
 		compactionThresholdOverride,
 		oauthAccountPools,
