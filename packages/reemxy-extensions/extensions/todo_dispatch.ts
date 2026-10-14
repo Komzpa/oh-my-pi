@@ -1,3 +1,5 @@
+import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import { selectBranchEntries, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -20,12 +22,12 @@ import { derivePresence, isDeadlineStateEntryMetadata, isGoalLifecycleEntryMetad
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
 function todoStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
-  const branch = ctx.sessionManager.getBranchMatching(isTodoStateEntryMetadata);
+  const branch = selectBranchEntries(ctx.sessionManager, isTodoStateEntryMetadata);
   return pending.length ? [...branch, ...pending] : branch;
 }
 
 function dispatchStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
-  const branch = ctx.sessionManager.getBranchMatching((metadata) =>
+  const branch = selectBranchEntries(ctx.sessionManager, (metadata) =>
     isTodoStateEntryMetadata(metadata) || isDeadlineStateEntryMetadata(metadata) || isGoalLifecycleEntryMetadata(metadata) ||
     (metadata.type === "message" && metadata.messageRole === "user"),
   );
@@ -123,7 +125,7 @@ function dedupeLatestWinsCompactionMessages(messages: AgentMessage[]): AgentMess
 // SessionManager.buildSessionContext producer and check whether that customType still reaches the model.
 // Never re-derive retained ranges or compaction boundaries here. Canonical builder errors must surface.
 function survivingCompactionCustomType(ctx: ExtensionContext, customType: string): boolean {
-  const context = ctx.sessionManager.buildSessionContext();
+  const context = ctx.sessionManager.buildSessionContext?.() ?? buildSessionContext(ctx.sessionManager.getBranch());
   return context.messages.some((message) => message.role === "custom" && message.customType === customType);
 }
 // A merge whose conflicts are all resolved is one `git commit` away. Seen live: a planner kept a
@@ -891,7 +893,21 @@ function retroFacilitatorResultId(event: unknown): string | undefined {
 // re-clears demand. A receipt older than the window that was never processed keeps the old
 // behavior (demand persists until the next retro) instead of breaking the cap.
 const RETRO_RECEIPT_SCAN_ENTRIES = 500;
-function branchRetroReceiptIds(ctx: ExtensionContext): string[] {
+function recentBranchMessages(ctx: ExtensionContext) {
+  let branchEntryCount = 0;
+  selectBranchEntries(ctx.sessionManager, () => {
+    branchEntryCount += 1;
+    return false;
+  });
+  let branchIndex = 0;
+  // Keep the original last-500-branch-entry window, not the last 500 matching messages.
+  const entries = selectBranchEntries(ctx.sessionManager, (metadata) => {
+    const inWindow = branchIndex++ >= branchEntryCount - RETRO_RECEIPT_SCAN_ENTRIES;
+    return inWindow && (metadata.type === "message" || metadata.type === "custom_message");
+  });
+  return entries;
+}
+export function branchRetroReceiptIds(ctx: ExtensionContext): string[] {
   const found: string[] = [];
   const scan = (text: string) => {
     for (const tag of text.match(/<task-result\b[^>]*>/g) ?? []) {
@@ -900,17 +916,7 @@ function branchRetroReceiptIds(ctx: ExtensionContext): string[] {
       if (id !== undefined && !found.includes(id)) found.push(id);
     }
   };
-  let branchEntryCount = 0;
-  ctx.sessionManager.getBranchMatching(() => {
-    branchEntryCount += 1;
-    return false;
-  });
-  let branchIndex = 0;
-  // Keep the original last-500-branch-entry window, not the last 500 matching messages.
-  const entries = ctx.sessionManager.getBranchMatching((metadata) => {
-    const inWindow = branchIndex++ >= branchEntryCount - RETRO_RECEIPT_SCAN_ENTRIES;
-    return inWindow && (metadata.type === "message" || metadata.type === "custom_message");
-  });
+  const entries = recentBranchMessages(ctx);
   for (const entry of entries) {
     if (typeof entry !== "object" || entry === null || !("type" in entry)) continue;
     const content = entry.type === "message"
@@ -928,9 +934,9 @@ function branchRetroReceiptIds(ctx: ExtensionContext): string[] {
 // Async dispatch returns no inline results; the real worker completion arrives later as an
 // async-result `<task-result status="completed">…<output>…</output>…</task-result>` on the branch.
 // Reconcile those completed updater jobs here so settleSprintJobs sees their rejection payloads.
-function branchAsyncTaskResults(branch: unknown): (Jobs["recent"][number] & { result?: unknown })[] {
+export function branchAsyncTaskResults(ctx: ExtensionContext): (Jobs["recent"][number] & { result?: unknown })[] {
   const out: (Jobs["recent"][number] & { result?: unknown })[] = [];
-  const entries = Array.isArray(branch) ? branch.slice(-RETRO_RECEIPT_SCAN_ENTRIES) : [];
+  const entries = recentBranchMessages(ctx);
   const scan = (text: string) => {
     for (const match of text.matchAll(/<task-result\b[^>]*>([\s\S]*?)<\/task-result>/g)) {
       const block = match[0];
@@ -1839,7 +1845,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const taskJobs = [...(jobs?.running ?? []), ...(jobs?.recent ?? [])].filter((job) => job.type === "task");
       if (taskJobs.some((job) => typeof job.label === "string" && job.label.includes(task.content))) addSeenRow(task.content);
     }
-    const { facilitatorSettled, updaterRejected } = settleSprintJobs([...branchAsyncTaskResults(ctx.sessionManager.getBranch()), ...(jobs?.recent ?? [])], now);
+    const { facilitatorSettled, updaterRejected } = settleSprintJobs([...branchAsyncTaskResults(ctx), ...(jobs?.recent ?? [])], now);
     // One persist per loop: a burst of background receipts used to persist a full snapshot per receipt.
     const freshReceipts = branchRetroReceiptIds(ctx).filter((receipt) => !sprintState.retroReceiptIds.includes(receipt));
     if (facilitatorSettled || freshReceipts.length > 0) finishRetro(freshReceipts.length > 0 ? freshReceipts : undefined, false);
@@ -2013,8 +2019,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const load = (ctx: ExtensionContext) => {
     flushSprintState();
     reset();
-    const roster = ctx.sessionManager.getLatestBranchMatching((metadata) => metadata.type === "custom" && metadata.customType === ROSTER_ENTRY_TYPE);
-    const sprint = ctx.sessionManager.getLatestBranchMatching((metadata) => metadata.type === "custom" && metadata.customType === SPRINT_STATE_ENTRY_TYPE);
+    const roster = selectLatestBranchEntry(ctx.sessionManager, (metadata) => metadata.type === "custom" && metadata.customType === ROSTER_ENTRY_TYPE);
+    const sprint = selectLatestBranchEntry(ctx.sessionManager, (metadata) => metadata.type === "custom" && metadata.customType === SPRINT_STATE_ENTRY_TYPE);
     persistedChildren = readPersistedChildren(roster ? [roster] : []);
     sprintState = readPersistedSprintState(sprint ? [sprint] : []);
     retroFacilitatorJobs.clear();
@@ -2675,7 +2681,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return;
     }
     if (survivingCompactionCustomType(ctx, WORKER_BRIEF_ENTRY_TYPE)) return;
-    const init = ctx.sessionManager.getBranchMatching((metadata) => metadata.type === "session_init")[0];
+    const init = selectBranchEntries(ctx.sessionManager, (metadata) => metadata.type === "session_init")[0];
     const brief = init && "task" in init && typeof init.task === "string" ? init.task : undefined;
     if (brief) {
       pi.sendMessage(

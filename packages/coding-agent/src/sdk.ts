@@ -1,3 +1,4 @@
+import { selectBranchNewestFirst } from "./session/branch-selection";
 import * as path from "node:path";
 import {
 	Agent,
@@ -2428,7 +2429,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
 				} else if (
 					shouldPersistTodoFullSnapshotCheckpoint(
-						sessionManager.iterateBranchMatchingNewestFirst(isTodoStateEntryMetadata),
+						selectBranchNewestFirst(sessionManager, isTodoStateEntryMetadata),
 					)
 				) {
 					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
@@ -3846,7 +3847,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
 				} else if (
 					shouldPersistTodoFullSnapshotCheckpoint(
-						sessionManager.iterateBranchMatchingNewestFirst(isTodoStateEntryMetadata),
+						selectBranchNewestFirst(sessionManager, isTodoStateEntryMetadata),
 					)
 				) {
 					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });

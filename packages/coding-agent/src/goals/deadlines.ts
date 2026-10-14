@@ -1,4 +1,5 @@
-import type { SessionContextEntryMetadata } from "../session/session-context";
+import { selectBranchEntries, type SessionContextEntryMetadata, type BranchSource } from "../session/branch-selection";
+
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -89,13 +90,11 @@ export function isGoalDeadlineEntryMetadata(metadata: SessionContextEntryMetadat
 	);
 }
 
-type GoalDeadlineBranchSource = {
-	getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): readonly unknown[];
-};
+type GoalDeadlineBranchSource = BranchSource;
 
 /** Read only entries that can resolve goal focus or deadline state, in branch order. */
 export function getGoalDeadlineBranchEntries(manager: GoalDeadlineBranchSource): readonly unknown[] {
-	return manager.getBranchMatching(isGoalDeadlineEntryMetadata);
+	return selectBranchEntries(manager, isGoalDeadlineEntryMetadata);
 }
 
 /** Resolve the deadline over the manager's selective goal/focus branch slice. */
