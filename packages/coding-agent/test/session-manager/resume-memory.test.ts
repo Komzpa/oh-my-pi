@@ -186,6 +186,29 @@ class PublishedRewriteStorage extends FileSessionStorage {
 }
 
 describe("bounded resume memory", () => {
+	it("counts every journal entry after lazy resume, branch selection and append without reading payloads", async () => {
+		using dir = TempDir.createSync("@resume-entry-count-");
+		const entries = threeCompactions();
+		const file = await writeJournal(dir.path(), entries);
+		const session = await SessionManager.open(file, dir.path(), undefined, { suppressBreadcrumb: true });
+		const read = spyOn(sessionLoader, "readPositionedSessionEntry");
+		try {
+			expect(session.getEntryCount()).toBe(entries.length);
+			expect(read).not.toHaveBeenCalled();
+			session.branch("sibling-tail");
+			read.mockClear();
+			expect(session.getEntryCount()).toBe(entries.length);
+			expect(read).not.toHaveBeenCalled();
+			session.appendCustomEntry("checkpoint", { revision: 1 });
+			read.mockClear();
+			expect(session.getEntryCount()).toBe(entries.length + 1);
+			expect(read).not.toHaveBeenCalled();
+		} finally {
+			read.mockRestore();
+			await session.close();
+		}
+	});
+
 	it("reopens three compactions with an exact kept tail across an older compaction and old replay state", async () => {
 		using dir = TempDir.createSync("@resume-three-compactions-");
 		const entries = threeCompactions();
