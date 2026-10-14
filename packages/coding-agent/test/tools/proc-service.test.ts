@@ -107,7 +107,7 @@ function steeringContext(steeringSignal: AbortSignal): AgentToolContext {
 }
 
 describe("proc:// background jobs", () => {
-	it("reads a delivered real bash job past 30 seconds until normal retention", async () => {
+	it("reads a delivered real bash job during consumed grace and expires it afterwards", async () => {
 		using temp = TempDir.createSync("@omp-proc-finished-");
 		const deliveries: string[] = [];
 		const manager = new AsyncJobManager({ retentionMs: 60_000 });
@@ -133,13 +133,13 @@ describe("proc:// background jobs", () => {
 			expect(manager.isJobResultConsumed(id)).toBeTrue();
 			expect(manager.getJob(id)?.status).toBe("completed");
 
-			vi.advanceTimersByTime(30_001);
+			vi.advanceTimersByTime(29_999);
 			const result = await proc.resolve(parseInternalUrl(`proc://${id}`), { session });
 			expect(result.content).toContain("finished-background-output");
 			expect(result.details?.proc?.job).toMatchObject({ id, status: "completed" });
 			expect(deliveries).toEqual([id]);
 			expect(manager.isJobResultConsumed(id)).toBeTrue();
-			vi.advanceTimersByTime(29_999);
+			vi.advanceTimersByTime(1);
 			await expect(proc.resolve(parseInternalUrl(`proc://${id}`), { session })).rejects.toThrow("not found");
 		} finally {
 			vi.useRealTimers();
