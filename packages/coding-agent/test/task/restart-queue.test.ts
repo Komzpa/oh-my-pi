@@ -754,7 +754,7 @@ describe("restart queue controller", () => {
 		second.dispose();
 	});
 
-	it("restore after completion emits the completed notice once", async () => {
+	it.each([true, false])("restore emits completion once (queued notice: %s)", async hasQueuedNotice => {
 		const cwd = makeTempDir();
 		const { manager } = await createRoot(cwd);
 		const oldIdentity = identityFor(manager, "old-instance", 1);
@@ -769,12 +769,13 @@ describe("restart queue controller", () => {
 			updatedAt: now,
 			rootWasRunning: false,
 		});
-		manager.appendCustomMessageEntry(
-			"restart-queued",
-			`Restart ${requestId} is queued. Do not start another model turn until it completes.`,
-			true,
-			{ requestId, state: "queued" },
-		);
+		if (hasQueuedNotice)
+			manager.appendCustomMessageEntry(
+				"restart-queued",
+				`Restart ${requestId} is queued. Do not start another model turn until it completes.`,
+				true,
+				{ requestId, state: "queued" },
+			);
 		await manager.flush();
 		const harness = makeSession(manager);
 		const controller = createRestartQueueController({
@@ -792,6 +793,22 @@ describe("restart queue controller", () => {
 		expect(texts[0]).toMatch(/complet/i);
 		expect(texts[0]).toMatch(/no longer applies|resume normal work/i);
 		expect(texts[0]).not.toMatch(/do not start another model turn/i);
+		controller.dispose();
+	});
+	it.each(["failed", "queued"] as const)("does not claim completion for a %s restart", async state => {
+		const { manager } = await createRoot(makeTempDir());
+		const oldIdentity = identityFor(manager, "old-instance", 1);
+		await appendQueueRecord(manager, oldIdentity, coldRecord(oldIdentity, state));
+		const harness = makeSession(manager);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identityFor(manager, "new-instance", 2),
+			restart: async () => {},
+		});
+		await controller.restore();
+		expect(controller.snapshot().request?.state).toBe("failed");
+		expect(harness.customMessages.map(message => message.details?.state)).toEqual(["failed"]);
+		expect(harness.deliveries).toEqual([]);
 		controller.dispose();
 	});
 	it.each([true, false])("queues completion before continuation (queued notice: %s)", async hasQueuedNotice => {
