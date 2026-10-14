@@ -316,7 +316,7 @@ describe("restart queue controller", () => {
 		const rootArtifactDir = rootFile.slice(0, -".jsonl".length);
 		const childManager = track(SessionManager.create(cwd, rootArtifactDir));
 		childManager.appendSessionInit({
-			systemPrompt: "Persisted child prompt",
+			systemPrompt: ["Persisted child prompt"],
 			task: "Continue the original child assignment",
 			tools: ["read", "yield"],
 		});
@@ -414,7 +414,7 @@ describe("restart queue controller", () => {
 		registerRoot(registry, rootHarness.session, rootFile);
 		const hangingManager = track(SessionManager.create(cwd, rootArtifactDir));
 		hangingManager.appendSessionInit({
-			systemPrompt: "Persisted child prompt",
+			systemPrompt: ["Persisted child prompt"],
 			task: "Continue the hung child assignment",
 			tools: ["read", "yield"],
 		});
@@ -426,7 +426,7 @@ describe("restart queue controller", () => {
 		const hangingId = hangingManager.getSessionId();
 		const writingManager = track(SessionManager.create(cwd, rootArtifactDir));
 		writingManager.appendSessionInit({
-			systemPrompt: "Persisted child prompt",
+			systemPrompt: ["Persisted child prompt"],
 			task: "Finish the short child write",
 			tools: ["read", "yield"],
 		});
@@ -503,7 +503,7 @@ describe("restart queue controller", () => {
 		const rootArtifactDir = rootFile.slice(0, -".jsonl".length);
 		const childManager = track(SessionManager.create(cwd, rootArtifactDir));
 		childManager.appendSessionInit({
-			systemPrompt: "Persisted child prompt",
+			systemPrompt: ["Persisted child prompt"],
 			task: "Continue the original child assignment",
 			tools: ["read", "yield"],
 		});
