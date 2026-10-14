@@ -691,9 +691,8 @@ class TodoHudContainer extends AnchoredLiveContainer {
 	 */
 	override describe(cx: DescribeContext): NativeNode {
 		const requirement = this.mode.describeRequirementHudSummary();
-		const hud = this.mode.todoHudNative;
-		if (!hud) return requirement ?? EMPTY_HUD;
-		const body = cx.supports("checklist") ? hud.checklist : hud.fallback;
+		const body = this.mode.describeTodoHud(cx);
+		if (!body) return requirement ?? EMPTY_HUD;
 		if (!requirement) return body;
 		return col([requirement, body], { role: "omp.hud.todo" });
 	}
@@ -1446,9 +1445,13 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * todo HUD, so the todo holds its place as the turn starts and ends.
 	 * Nothing to show describes the empty HUD.
 	 */
-	describeStatusHud(children: readonly Component[], cx: DescribeContext): NativeNode {
+	describeTodoHud(cx: DescribeContext): NativeNode | undefined {
 		const hud = this.#todoHudNative;
-		const todo = hud && (cx.supports("checklist") ? hud.checklist : hud.fallback);
+		return hud && (cx.supports("checklist") ? hud.checklist : hud.fallback);
+	}
+
+	describeStatusHud(children: readonly Component[], cx: DescribeContext): NativeNode {
+		const todo = this.describeTodoHud(cx);
 		const memo = this.#statusHudNative;
 		if (memo && memo.todo === todo && sameItems(memo.children, children)) return memo.node;
 		const parts: NativeChild[] = [];
