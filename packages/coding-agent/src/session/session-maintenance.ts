@@ -109,7 +109,7 @@ import {
 } from "./role-models";
 import type { SessionContext } from "./session-context";
 import { buildSessionContext, getLatestCompactionEntry, getOpenAiRemoteCompactionPayload } from "./session-context";
-import type { CompactionEntry, SessionEntry } from "./session-entries";
+import type { CompactionEntry, SessionEntry, SessionMessageEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { resolveSpeculationLeadTokens, SPECULATION_LEAD_MIN_TOKENS } from "./speculation-lead";
@@ -689,6 +689,20 @@ export class SessionMaintenance {
 	#emitLifecycleEvent(event: AgentSessionEvent, detach: boolean): Promise<void> {
 		return this.#host.emitSessionEvent(event, detach ? { detachExtensions: true } : undefined);
 	}
+	/** Register only the mutable producer's selected revisions and its rollback. */
+	#registerPruneUpdates(
+		result: { prunedCount: number; undo?: () => void },
+		selectedEntries: readonly SessionMessageEntry[],
+	): void {
+		if (result.prunedCount === 0 || !result.undo) return;
+		const undo = result.undo;
+		for (const entry of selectedEntries) this.#host.sessionManager.updateEntry(entry);
+		result.undo = () => {
+			undo();
+			for (const entry of selectedEntries) this.#host.sessionManager.updateEntry(entry);
+		};
+	}
+
 	/**
 	 * Append plan-read protection to a prune/shake config so the active plan
 	 * file survives compaction alongside skill reads (the config defaults
@@ -705,19 +719,11 @@ export class SessionMaintenance {
 	 * fails so live context never diverges from the history its derived state
 	 * (advisor prefix, todo phases, provider sessions) was built from.
 	 */
-	async #persistPrune(result: PruneResult, entries: readonly SessionEntry[]): Promise<void> {
-		for (const entry of entries) {
-			if (entry.type === "message" && entry.message.role === "toolResult")
-				this.#host.sessionManager.updateEntry(entry);
-		}
+	async #persistPrune(result: PruneResult): Promise<void> {
 		try {
 			await this.#host.sessionManager.rewriteEntries();
 		} catch (error) {
 			result.undo();
-			for (const entry of entries) {
-				if (entry.type === "message" && entry.message.role === "toolResult")
-					this.#host.sessionManager.updateEntry(entry);
-			}
 			throw error;
 		}
 	}
@@ -726,11 +732,13 @@ export class SessionMaintenance {
 		const branchEntries = this.#host.sessionManager.getContextBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
 		const model = this.#host.model();
+		const selectedEntries: SessionMessageEntry[] = [];
 		const result = pruneToolOutputs(
 			branchEntries,
 			this.#tokenizer,
 			this.#withPlanProtection({
 				...DEFAULT_PRUNE_CONFIG,
+				selectedEntries,
 				pruneUseless: this.#compactionSettings.dropUseless,
 				// Cache-stable boundary: never re-write the warm, already-sent prefix
 				// (deep stale/age victims) or summarized-away entries every turn.
@@ -741,11 +749,12 @@ export class SessionMaintenance {
 				convertToLlm,
 			}),
 		);
+		this.#registerPruneUpdates(result, selectedEntries);
 		if (result.prunedCount === 0) {
 			return undefined;
 		}
 
-		await this.#persistPrune(result, branchEntries);
+		await this.#persistPrune(result);
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
 		this.#host.rebaseAdvisorPrefix("prune-tool-outputs");
@@ -773,12 +782,14 @@ export class SessionMaintenance {
 		const branchEntries = this.#host.sessionManager.getContextBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
 		const model = this.#host.model();
+		const selectedEntries: SessionMessageEntry[] = [];
 		const result = pruneSupersededToolResults(
 			branchEntries,
 			this.#tokenizer,
 			this.#withPlanProtection({
 				supersedeKey: supersedeReads ? readToolSupersedeKey : undefined,
 				supersedeComplete: isCompleteReadResult,
+				selectedEntries,
 				pruneUseless: dropUseless,
 				protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools],
 				// Never re-write summarized-away entries; only flush the whole sent
@@ -791,11 +802,12 @@ export class SessionMaintenance {
 				convertToLlm,
 			}),
 		);
+		this.#registerPruneUpdates(result, selectedEntries);
 		if (result.prunedCount === 0) {
 			return undefined;
 		}
 
-		await this.#persistPrune(result, branchEntries);
+		await this.#persistPrune(result);
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
 		this.#host.rebaseAdvisorPrefix("prune-stale-tool-results");
@@ -806,7 +818,7 @@ export class SessionMaintenance {
 
 	/**
 	 * Strip image content blocks from every message on the current branch and
-	 * persist the rewrite. Iterates `SessionManager.iterateBranch()` in place — both
+	 * persist the rewrite. Iterates the demanded branch in place — both
 	 * `SessionMessageEntry.message` and `CustomMessageEntry.content` arrays
 	 * are mutated, then `rewriteEntries` durably commits the new shape. The
 	 * agent's runtime view is rebuilt from the freshly-mutated entries so any

@@ -4006,6 +4006,22 @@ export class SessionManager {
 		return entries;
 	}
 
+	/** Matching entries newest first; excluded payloads are never read. */
+	*iterateBranchMatchingNewestFirst(
+		predicate: (metadata: SessionContextEntryMetadata) => boolean,
+	): IterableIterator<SessionEntry> {
+		const path = this.#index.metadataPath();
+		for (let i = path.length - 1; i >= 0; i--) {
+			const metadata = path[i]!;
+			if (predicate(metadata)) yield this.#index.get(metadata.id, false)!;
+		}
+	}
+
+	/** Latest matching entry, without reading older payloads. */
+	getLatestBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry | undefined {
+		return this.iterateBranchMatchingNewestFirst(predicate).next().value;
+	}
+
 	/**
 	 * The active-leaf branch (same entries as `getBranch()`) without the
 	 * defensive copy. The array is the manager's memo: never mutate it. It is

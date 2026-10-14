@@ -705,7 +705,9 @@ export class VibeSessionRegistry {
 		}
 
 		const candidates = new Map<string, VibeRestoreCandidate>();
-		for (const entry of sessionManager.getBranch()) {
+		for (const entry of sessionManager.getBranchMatching(
+			metadata => metadata.type === "custom" && metadata.customType === VIBE_LIFECYCLE_CUSTOM_TYPE,
+		)) {
 			if (entry.type !== "custom" || entry.customType !== VIBE_LIFECYCLE_CUSTOM_TYPE) continue;
 			const event = parseLifecycleEvent(entry.data);
 			if (!event || event.ownerId !== scope.ownerId || event.parentSessionId !== scope.parentSessionId) continue;
@@ -1108,13 +1110,10 @@ export class VibeSessionRegistry {
 			record => matchesScope(record, scope) && !(record.state === "dead" && record.terminalPersisted),
 		);
 		if (records.length === 0) {
-			const entries = session.sessionManager?.getBranch() ?? [];
-			for (let index = entries.length - 1; index >= 0; index--) {
-				const entry = entries[index];
-				if (entry.type !== "mode_change") continue;
-				if (entry.mode === "none") return 0;
-				break;
-			}
+			const latestModeChange = session.sessionManager?.getLatestBranchMatching(
+				metadata => metadata.type === "mode_change",
+			);
+			if (latestModeChange?.type === "mode_change" && latestModeChange.mode === "none") return 0;
 		}
 		try {
 			await this.#persistModeExit(session, scope, records);
