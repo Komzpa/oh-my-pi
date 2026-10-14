@@ -1674,7 +1674,8 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		const requirements = getLatestRequirements(sessionManager.getBranch());
 		// A candidate has no prior requirement binding to relink; its first
 		// classification may atomically replace the row's provisional artifact.
-		const initialClassification = requirements.find(requirement => requirement.id === id)?.classification === "candidate";
+		const initialClassification =
+			requirements.find(requirement => requirement.id === id)?.classification === "candidate";
 		const resourcesSupplied = params.resources !== undefined;
 		const resources = Array.isArray(params.resources)
 			? params.resources.filter((resource): resource is string => typeof resource === "string")

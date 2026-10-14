@@ -729,7 +729,10 @@ export function parseRequirementReceiptIdentities(
 		const rowCommits = splitRequirementIdentitySegments(artifact).flatMap(segment => {
 			const prefix = REQUIREMENT_QUOTED_ROW_PREFIX.exec(segment);
 			if (!prefix) return [];
-			const commit = segment.slice(prefix[0].length).trim().match(/^([a-f0-9]{40}(?:[a-f0-9]{24})?)(?=$|[^a-f0-9])/i);
+			const commit = segment
+				.slice(prefix[0].length)
+				.trim()
+				.match(/^([a-f0-9]{40}(?:[a-f0-9]{24})?)(?=$|[^a-f0-9])/i);
 			return commit ? [commit[1]!.toLowerCase()] : [];
 		});
 		return {

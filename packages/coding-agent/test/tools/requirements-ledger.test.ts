@@ -725,10 +725,13 @@ describe("canonical requirements ledger", () => {
 	it("does not treat installed binary hashes as competing row-bound Git commits", () => {
 		const commit = "d944615c51337beb482a9a7c34ad1b25e48d21b9";
 		const binary = "735156d208bec0dc3c015f1fd2a2555146a53ac6cba35fd84722633fef06f4cc";
-		expect(parseRequirementReceiptIdentities(`row "Installed repair" @ ${commit}; installed SHA-256 ${binary}`))
-			.toEqual({ legacy: true, commits: [commit] });
-		expect(parseRequirementReceiptIdentities(`${commit}; ${binary}`))
-			.toEqual({ legacy: true, commits: [commit, binary] });
+		expect(
+			parseRequirementReceiptIdentities(`row "Installed repair" @ ${commit}; installed SHA-256 ${binary}`),
+		).toEqual({ legacy: true, commits: [commit] });
+		expect(parseRequirementReceiptIdentities(`${commit}; ${binary}`)).toEqual({
+			legacy: true,
+			commits: [commit, binary],
+		});
 	});
 
 	it("still parses old receipts without claimed and measured columns", () => {
@@ -954,21 +957,33 @@ describe("todo requirement classification", () => {
 
 	it("atomically classifies a candidate over existing row resources without a relink cycle", async () => {
 		for (const relink of [false, true]) {
-			const { manager, tool, getPhases } = harness("/tmp", [{
-				name: "Work",
-				tasks: [{ content: "Build artifact", status: "pending", schedule: { resources: ["/tmp/old-artifact"] } }],
-			}]);
+			const { manager, tool, getPhases } = harness("/tmp", [
+				{
+					name: "Work",
+					tasks: [
+						{ content: "Build artifact", status: "pending", schedule: { resources: ["/tmp/old-artifact"] } },
+					],
+				},
+			]);
 			const result = await tool.execute("first-binding", {
-				op: "classify", id: "R1", classification: "linked", rows: ["Build artifact"],
-				resources: ["/tmp/new-artifact"], relink,
+				op: "classify",
+				id: "R1",
+				classification: "linked",
+				rows: ["Build artifact"],
+				resources: ["/tmp/new-artifact"],
+				relink,
 			});
 			expect(result.isError).toBeUndefined();
 			expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("linked");
 			expect(getPhases()[0]?.tasks[0]?.schedule?.resources).toEqual(["/tmp/new-artifact"]);
 			const before = getLatestRequirements(manager.getBranch());
 			const refused = await tool.execute("linked-binding-without-reason", {
-				op: "classify", id: "R1", classification: "linked", rows: ["Build artifact"],
-				resources: ["/tmp/third-artifact"], relink: true,
+				op: "classify",
+				id: "R1",
+				classification: "linked",
+				rows: ["Build artifact"],
+				resources: ["/tmp/third-artifact"],
+				relink: true,
 			});
 			expect(refused.isError).toBe(true);
 			expect(getLatestRequirements(manager.getBranch())).toEqual(before);
@@ -977,18 +992,41 @@ describe("todo requirement classification", () => {
 	});
 
 	it("invalidates affected shared-row receipts during first binding while retaining untouched receipts", async () => {
-		const { manager, tool } = harness("/tmp", [{ name: "Work", tasks: [
-			{ content: "Build artifact", status: "pending", schedule: { resources: ["/tmp/old-artifact"] } },
-			{ content: "Untouched artifact", status: "pending" },
-		] }]);
+		const { manager, tool } = harness("/tmp", [
+			{
+				name: "Work",
+				tasks: [
+					{ content: "Build artifact", status: "pending", schedule: { resources: ["/tmp/old-artifact"] } },
+					{ content: "Untouched artifact", status: "pending" },
+				],
+			},
+		]);
 		const saved = getLatestRequirements(manager.getBranch());
-		const receipt = { status: "pass" as const, auditor: "qa-auditor" as const,
-			workerId: "PreviousAudit", evidence: "prior audited artifact", artifact: "a".repeat(40), receivedAt: AT };
-		saved[1] = { ...saved[1]!, classification: "linked", rows: ["Build artifact", "Untouched artifact"],
-			rowVerdicts: { "Build artifact": receipt, "Untouched artifact": receipt } };
-		appendRequirementsSnapshot({ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) }, saved);
-		const result = await tool.execute("shared-first-binding", { op: "classify", id: "R1",
-			classification: "linked", rows: ["Build artifact"], resources: ["/tmp/new-artifact"] });
+		const receipt = {
+			status: "pass" as const,
+			auditor: "qa-auditor" as const,
+			workerId: "PreviousAudit",
+			evidence: "prior audited artifact",
+			artifact: "a".repeat(40),
+			receivedAt: AT,
+		};
+		saved[1] = {
+			...saved[1]!,
+			classification: "linked",
+			rows: ["Build artifact", "Untouched artifact"],
+			rowVerdicts: { "Build artifact": receipt, "Untouched artifact": receipt },
+		};
+		appendRequirementsSnapshot(
+			{ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) },
+			saved,
+		);
+		const result = await tool.execute("shared-first-binding", {
+			op: "classify",
+			id: "R1",
+			classification: "linked",
+			rows: ["Build artifact"],
+			resources: ["/tmp/new-artifact"],
+		});
 		expect(result.isError).toBeUndefined();
 		const other = getLatestRequirements(manager.getBranch()).find(requirement => requirement.id === "R2")!;
 		expect(other.rowVerdicts?.["Build artifact"]).toBeUndefined();
