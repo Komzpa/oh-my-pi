@@ -798,7 +798,7 @@ export function setTerminalTitleTaskNow(task: string | undefined): void {
 		terminalTitleRuntime.taskNow,
 		terminalTitleRuntime.remoteCwd,
 	);
-	emitTerminalTitle();
+	if (terminalTitleRuntime.titleClaimed) emitTerminalTitle();
 }
 
 /** The OSC 1337 user variable Tern reads the session file from. */
@@ -955,6 +955,7 @@ const terminalTitleRuntime: {
 	 *  reintroduce the write-loop CPU cost the static separator exists to avoid.
 	 *  While latched the working separator stays `:` and no interval is
 	 *  scheduled. */
+	titleClaimed: boolean;
 	nativeTitleFailed: boolean;
 } = {
 	label: undefined,
@@ -971,6 +972,7 @@ const terminalTitleRuntime: {
 	timer: undefined,
 	extensionOverride: undefined,
 	disposed: false,
+	titleClaimed: false,
 	nativeTitleFailed: false,
 };
 
@@ -1129,6 +1131,7 @@ export function setTerminalTitleSpinnerStyle(style: string | undefined): void {
  */
 export function initTerminalTitleState(): void {
 	terminalTitleRuntime.disposed = false;
+	terminalTitleRuntime.titleClaimed = true;
 	// The native-failure latch is claim-scoped like the spinner timer: a fresh
 	// owner gets a re-probed native path, so a transient SetConsoleTitleW
 	// failure in one session must not pin every later session static. The next
