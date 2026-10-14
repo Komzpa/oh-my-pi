@@ -25,6 +25,7 @@ import {
 	evaluateRequirementDoneGate,
 	getPersistedRequirementAuditRejections,
 	getPersistedRequirementAuditorAssignments,
+	requirementSourceDigest,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import { formatRequirementIdentity } from "@oh-my-pi/pi-coding-agent/utils/requirement-artifact";
 import {
@@ -132,6 +133,71 @@ async function auditFixtureArtifact(
 }
 
 describe("requirements ledger auditor binding", () => {
+	it("accepts a multiline lane brief by authenticated digest and rejects a changed digest", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			const rawText = "# Target\r\nFix the login bug | preserve receipts\n# Acceptance\nLogin succeeds";
+			const requirements = getLatestRequirements(manager.getBranch());
+			requirements[0]!.rawText = rawText;
+			appendRequirementsSnapshot(
+				{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
+				requirements,
+			);
+			const artifact = gitIdentity(cwd, git(cwd, "rev-parse", "HEAD"));
+			const digest = requirementSourceDigest(rawText);
+			for (const [workerId, sourceDigest, accepted] of [
+				["wrong", "0".repeat(64), false],
+				["fresh", digest, true],
+			] as const) {
+				await runtime.prepareAuditorTaskCall("task", workerId, {
+					name: "main",
+					agent: "qa-auditor",
+					task: "Audit R1",
+					context: "",
+				});
+				const outcome = await runtime.afterToolCall({
+					toolCall: { id: workerId, name: "task" },
+					result: {
+						content: [],
+						details: {
+							results: [
+								{
+									index: 0,
+									agent: "qa-auditor",
+									id: workerId,
+									exitCode: 0,
+									output: `| id | source sha256 | verdict | evidence | artifact identity |\n| --- | --- | --- | --- | --- |\n| R1 | ${sourceDigest} | pass | login exercised | ${artifact} |`,
+								},
+							],
+						},
+					},
+					isError: false,
+				} as never);
+				expect(outcome === undefined).toBe(accepted);
+			}
+			const requirement = getLatestRequirements(manager.getBranch())[0]!;
+			expect(requirement.rowVerdicts?.["Build artifact"]?.rawWords ?? requirement.verdict?.rawWords).toBe(rawText);
+			let phases = getLatestTodoPhasesFromEntries(manager.getBranch());
+			const tool = new TodoTool({
+				cwd,
+				hasUI: false,
+				settings: Settings.isolated(),
+				sessionManager: manager,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				getTodoPhases: () => phases,
+				setTodoPhases: next => {
+					phases = next;
+				},
+			});
+			const done = await tool.execute("complete-multiline", { op: "done", task: "Build artifact" });
+			expect(done.isError).toBeFalsy();
+			expect(phases[0]!.tasks[0]!.status).toBe("completed");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("uses only structured row ownership when a packet quotes unrelated R6 examples", async () => {
 		const { cwd, manager, runtime } = fixture();
 		try {
@@ -922,7 +988,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 			expect(runtime.refuseUnclassifiedCandidate("peers")).toBeUndefined();
 			expect(runtime.refuseUnclassifiedCandidate("ask")).toBeUndefined();
 			expect(runtime.refuseUnclassifiedCandidate("todo")).toBeUndefined();
-			const refusal = runtime.refuseUnclassifiedCandidate("bash");
+			const refusal = runtime.refuseUnclassifiedCandidate("task");
 			expect(refusal?.block).toBe(true);
 			expect(refusal?.reason).toContain('op="append"');
 			expect(refusal?.reason).not.toContain("Finished row alpha");
@@ -951,7 +1017,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 			},
 		]);
 		try {
-			const refusal = runtime.refuseUnclassifiedCandidate("bash");
+			const refusal = runtime.refuseUnclassifiedCandidate("task");
 			expect(refusal?.block).toBe(true);
 			expect(refusal?.reason).toContain("Live row gamma");
 			expect(refusal?.reason).not.toContain("Finished row alpha");
@@ -982,7 +1048,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
-	it("does not capture bare approval replies or block after the next assistant stop", () => {
+	it("records acknowledgements as non-requirements without blocking later work", () => {
 		const manager = SessionManager.inMemory();
 		const runtime = new RequirementsLedgerRuntime({
 			agent: {} as never,
@@ -992,13 +1058,17 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 			onSettledAssistantMessage: () => {},
 			setPublicationGate: () => {},
 		});
-		const before = getLatestRequirements(manager.getBranch());
 
-		for (const approval of ["go", "  OK! ", "да,", " ПРОДОЛЖАЙ. "]) {
+		for (const approval of ["go", "  OK! ", "да,", " ПРОДОЛЖАЙ. ", "го го го", "👍", "блять!"]) {
 			runtime.captureCandidate(approval);
 		}
 
-		expect(getLatestRequirements(manager.getBranch())).toEqual(before);
+		expect(
+			getLatestRequirements(manager.getBranch()).every(item => item.classification === "not-a-requirement"),
+		).toBe(true);
+		expect(
+			getLatestRequirements(manager.getBranch()).find(item => item.rawText === "го го го")?.reason,
+		).toBeDefined();
 		manager.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "Understood." }],
@@ -1007,7 +1077,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 		expect(runtime.refuseUnclassifiedCandidate("bash")).toBeUndefined();
 	});
 
-	it("keeps approval-prefixed instructions verbatim and allocates no ID for ignored approvals", () => {
+	it("keeps obligations after acknowledgement words as candidates with stable source IDs", () => {
 		const manager = SessionManager.inMemory();
 		const runtime = new RequirementsLedgerRuntime({
 			agent: {} as never,
@@ -1022,9 +1092,16 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 		runtime.captureCandidate("go fix the login bug");
 		runtime.captureCandidate("ok, also preserve the old receipts");
 
-		expect(getLatestRequirements(manager.getBranch()).map(({ id, rawText }) => [id, rawText])).toEqual([
-			["R1", "go fix the login bug"],
-			["R2", "ok, also preserve the old receipts"],
+		expect(
+			getLatestRequirements(manager.getBranch()).map(({ id, rawText, classification }) => [
+				id,
+				rawText,
+				classification,
+			]),
+		).toEqual([
+			["R1", "go", "not-a-requirement"],
+			["R2", "go fix the login bug", "candidate"],
+			["R3", "ok, also preserve the old receipts", "candidate"],
 		]);
 	});
 
@@ -1049,7 +1126,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 		);
 	});
 
-	it("gates a same-turn candidate against mutating tools until it is classified", () => {
+	it("blocks new spawns but permits ordinary work while a same-turn candidate awaits classification", () => {
 		const manager = SessionManager.inMemory();
 		const runtime = new RequirementsLedgerRuntime({
 			agent: {} as never,
@@ -1061,8 +1138,9 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 		});
 
 		runtime.captureCandidate("write probe.txt into the repo");
-		expect(runtime.refuseUnclassifiedCandidate("write")?.block).toBe(true);
-		expect(runtime.refuseUnclassifiedCandidate("bash")?.block).toBe(true);
+		expect(runtime.refuseUnclassifiedCandidate("write")).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("bash")).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("task")?.block).toBe(true);
 		expect(runtime.refuseUnclassifiedCandidate("read")).toBeUndefined();
 		expect(runtime.refuseUnclassifiedCandidate("todo")).toBeUndefined();
 
@@ -1074,10 +1152,10 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 			{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
 			classified.requirements,
 		);
-		expect(runtime.refuseUnclassifiedCandidate("write")).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("task")).toBeUndefined();
 	});
 
-	it("does not gate a user message that produces no candidate", () => {
+	it("does not gate a user acknowledgement recorded as a non-requirement", () => {
 		const manager = SessionManager.inMemory();
 		const runtime = new RequirementsLedgerRuntime({
 			agent: {} as never,
@@ -1089,7 +1167,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 		});
 
 		runtime.captureCandidate("go");
-		expect(getLatestRequirements(manager.getBranch())).toEqual([]);
+		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("not-a-requirement");
 		expect(runtime.refuseUnclassifiedCandidate("write")).toBeUndefined();
 	});
 });

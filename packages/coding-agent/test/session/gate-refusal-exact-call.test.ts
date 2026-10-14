@@ -72,10 +72,64 @@ function todoSession(manager: SessionManager, initial: TodoPhase[]): ToolSession
 }
 
 describe("gate refusal names the exact unblocking call", () => {
+	it("allows worker stop controls without classifying while keeping new work blocked", () => {
+		const { manager, runtime } = setupCandidateSession();
+		expect(
+			runtime.refuseUnclassifiedCandidate("write", { path: "agent://PhoneWorker", content: "stop" }),
+		).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("write", { path: "agent://all", content: "stop" })).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("write", { path: "proc://PhoneWorker/kill" })).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("task", { action: "abort", id: "PhoneWorker" })).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("task", { action: "cancel", id: "PhoneWorker" })).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("task", { tasks: [{ task: "tap the phone" }] })?.block).toBe(true);
+		expect(runtime.refuseUnclassifiedCandidate("task", { action: "cancel", task: "tap the phone" })?.block).toBe(
+			true,
+		);
+		expect(runtime.refuseUnclassifiedCandidate("write", { path: "probe.txt", content: "new work" })).toBeUndefined();
+		expect(
+			runtime.refuseUnclassifiedCandidate("write", { path: "proc://PhoneWorker/mode", content: "persist" }),
+		).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("bash", { command: "touch probe.txt" })).toBeUndefined();
+		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("candidate");
+	});
+
+	it("keeps closure blocked until a genuine candidate is classified", async () => {
+		const { manager, runtime, phases } = setupCandidateSession();
+		const result = await new TodoTool(todoSession(manager, phases)).execute("close", { op: "done", task: ROW });
+		expect(result.isError).toBe(true);
+		expect(result.content).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ text: expect.stringContaining("R1 awaits todo classify") }),
+			]),
+		);
+		expect(phases[0]!.tasks[0]!.status).toBe("pending");
+		expect(
+			runtime.refuseUnclassifiedCandidate("write", { path: "agent://PhoneWorker", content: "stop" }),
+		).toBeUndefined();
+	});
+
+	it("records R51-shaped go-ahead as non-requirement but preserves following obligations", () => {
+		const { manager, runtime } = setupCandidateSession();
+		appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, []);
+		runtime.captureCandidate("го го го");
+		runtime.captureCandidate("👍");
+		runtime.captureCandidate("блять");
+		expect(getLatestRequirements(manager.getBranch()).map(item => item.classification)).toEqual([
+			"not-a-requirement",
+			"not-a-requirement",
+			"not-a-requirement",
+		]);
+		expect(runtime.refuseUnclassifiedCandidate("task", { task: "continue existing plan" })).toBeUndefined();
+		runtime.captureCandidate("го почини login");
+		expect(getLatestRequirements(manager.getBranch()).at(-1)?.classification).toBe("candidate");
+		expect(runtime.refuseUnclassifiedCandidate("task", { task: "fix login" })?.block).toBe(true);
+		expect(runtime.refuseUnclassifiedCandidate("bash", { command: "touch probe.txt" })).toBeUndefined();
+	});
+
 	it("copied placeholder hint cannot link; an explicit relevant row unblocks", async () => {
 		const { manager, runtime, phases } = setupCandidateSession();
 
-		const refusal = runtime.refuseUnclassifiedCandidate("bash");
+		const refusal = runtime.refuseUnclassifiedCandidate("task", { task: "fix the login bug" });
 		expect(refusal?.block).toBe(true);
 		const reason = refusal && typeof refusal === "object" && "reason" in refusal ? String(refusal.reason) : "";
 		// The refusal names the exact candidate but never a guessed runnable row.
@@ -103,7 +157,7 @@ describe("gate refusal names the exact unblocking call", () => {
 		} as never);
 		expect(refused.isError).toBe(true);
 		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("candidate");
-		expect(runtime.refuseUnclassifiedCandidate("bash")?.block).toBe(true);
+		expect(runtime.refuseUnclassifiedCandidate("task", { task: "fix the login bug" })?.block).toBe(true);
 
 		// Explicitly selecting the relevant row succeeds and unblocks bash.
 		const result = await tool.execute("call-2", {
@@ -115,6 +169,6 @@ describe("gate refusal names the exact unblocking call", () => {
 		expect(result.isError).toBeFalsy();
 		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("linked");
 
-		expect(runtime.refuseUnclassifiedCandidate("bash")).toBeUndefined();
+		expect(runtime.refuseUnclassifiedCandidate("task", { task: "fix the login bug" })).toBeUndefined();
 	});
 });

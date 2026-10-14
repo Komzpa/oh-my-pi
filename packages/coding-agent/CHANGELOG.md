@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed requirement candidates blocking ordinary work and worker cancellation; go-ahead replies are recorded as non-requirements, while new workers and completion still require classification ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
+- Fixed multi-line requirement briefs breaking auditor verdict tables; auditors reference captured source by ID and verified SHA-256 instead of re-quoting it ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed test runs launched from worker lanes silently disabling chief-gate checks; the test harness now removes inherited single-writer lane mode ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed production-data completion requiring a checkout when the authenticated audit declares a file or readback receipt; changed receipt files still block completion as stale ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))
 - Fixed cancelled requirements permanently blocking publication: classification can now change with an explicit newer owner requirement and a reason, preserving append-only history and refusing ownerless changes ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa))

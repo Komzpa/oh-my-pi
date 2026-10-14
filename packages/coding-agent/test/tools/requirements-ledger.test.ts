@@ -801,14 +801,18 @@ describe("todo requirement classification", () => {
 	// The classify op stays outside TodoOperation on purpose (converged with
 	// runtime-core's "schedule" rewrite; see tools/todo.ts) and reaches the tool
 	// cast-only, exactly as the implementation does.
-	function harness(cwd = "/tmp", initialPhases?: TodoPhase[]) {
+	function harness(
+		cwd = "/tmp",
+		initialPhases?: TodoPhase[],
+		rawTexts = ["  preserve the ask  ", "second ask", "third ask"],
+	) {
 		const manager = SessionManager.inMemory();
 		let phases: TodoPhase[] = initialPhases ?? [
 			{ name: "Work", tasks: [{ content: "Build artifact", status: "pending" }] },
 		];
 		manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
 			version: 1,
-			requirements: createRequirementCandidates([], ["  preserve the ask  ", "second ask", "third ask"], AT),
+			requirements: createRequirementCandidates([], rawTexts, AT),
 		});
 		const session: ToolSession = {
 			cwd,
@@ -934,7 +938,7 @@ describe("todo requirement classification", () => {
 					tasks: [{ content: "Build artifact", status: "pending", schedule: { owner: "main", resources: [cwd] } }],
 				},
 			] as unknown as TodoPhase[];
-			const { manager, tool, getPhases } = harness(cwd, phases);
+			const { manager, tool, getPhases } = harness(cwd, phases, ["preserve the ask"]);
 			const linked = getLatestRequirements(manager.getBranch());
 			linked[0] = { ...linked[0]!, classification: "linked", rows: ["Build artifact"] };
 			appendRequirementsSnapshot(
@@ -984,7 +988,7 @@ describe("todo requirement classification", () => {
 	});
 
 	it("does not gate todo done when no linked requirement applies", async () => {
-		const { tool, getPhases } = harness();
+		const { tool, getPhases } = harness("/tmp", undefined, []);
 		const done = await tool.execute("done-unlinked", { op: "done", task: "Build artifact" });
 		expect(done.isError).toBeUndefined();
 		expect(getPhases()[0]?.tasks[0]?.status).toBe("completed");
@@ -1001,7 +1005,7 @@ describe("todo requirement classification", () => {
 				],
 			},
 		];
-		const { manager, tool, getPhases } = harness("/tmp", phases);
+		const { manager, tool, getPhases } = harness("/tmp", phases, ["preserve the ask"]);
 		const requirements = getLatestRequirements(manager.getBranch());
 		requirements[0] = { ...requirements[0]!, classification: "linked", rows: ["Row A"] };
 		appendRequirementsSnapshot(

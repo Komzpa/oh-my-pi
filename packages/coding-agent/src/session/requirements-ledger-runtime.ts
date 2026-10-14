@@ -26,7 +26,7 @@ import {
 	evaluateRequirementDoneGate,
 	type RequirementVerdict,
 	parseRequirementReceipt,
-	requirementAuditSnapshot,
+	requirementAuditSnapshot,	requirementSourceDigest,
 	requirementRowDeclarationSnapshot,
 	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
 	type RequirementAuditAssignment,
@@ -86,7 +86,6 @@ import {
 	getTodoRowChanges,
 	type RequirementRowArtifact,
 } from "../tools/todo";
-import { READ_ONLY_TOOL_NAMES } from "../task/read-only-policy";
 import { BUNDLED_QA_AUDITOR_TEMPLATE } from "../task/agents";
 import type { AgentDefinition } from "../task/types";
 import { artifactsDirsFromRegistry } from "../internal-urls/registry-helpers";
@@ -163,7 +162,6 @@ export class RequirementsLedgerRuntime {
 
 	captureCandidate(rawText: string, images?: readonly ImageContent[]): void {
 		if (this.#host.agentKind() !== "main" || !rawText.trim() || rawText.trimStart().startsWith("/")) return;
-		if (!images?.length && /^(go|ok|да|продолжай)$/i.test(rawText.trim().replace(/[\s.!?,]+$/u, ""))) return;
 		const requirements = getLatestRequirements(this.#host.sessionManager.getBranch());
 		const referenced = extractRequirementImages(rawText, images);
 		appendRequirementsSnapshot(
@@ -173,12 +171,19 @@ export class RequirementsLedgerRuntime {
 		this.syncPublicationGate();
 	}
 
-	refuseUnclassifiedCandidate(toolName: string): BeforeToolCallResult | undefined {
-		if (this.#host.agentKind() !== "main" || toolName === "todo") return undefined;
-		// The unclassified-candidate gate never blocks read-only tools: observation must
-		// stay possible while a candidate awaits classification. `peers` is the
-		// live-roster list (not in READ_ONLY_TOOL_NAMES); `ask` is already there.
-		if (toolName === "peers" || READ_ONLY_TOOL_NAMES.has(toolName)) return undefined;
+	refuseUnclassifiedCandidate(toolName: string, input?: unknown): BeforeToolCallResult | undefined {
+		// Classification gates new workers, never observation, ordinary work, or
+		// messages/cancellation needed to stop an existing worker immediately.
+		// TODO closure has its own completion gate.
+		if (this.#host.agentKind() !== "main" || toolName !== "task") return undefined;
+		if (
+			isRecord(input) &&
+			(input.action === "abort" || input.action === "cancel") &&
+			!("task" in input) &&
+			!("tasks" in input)
+		) {
+			return undefined;
+		}
 		const branch = this.#host.sessionManager.getBranch();
 		const candidates = getUnclassifiedRequirementCandidates(branch);
 		if (candidates.length === 0) return undefined;
@@ -311,7 +316,10 @@ export class RequirementsLedgerRuntime {
 			}
 
 			const protocol = prompt.render(auditInputTemplate, {
-				sources: sources.map(source => `${source.id} (said at ${source.at}): ${source.rawText}`),
+				sources: sources.map(
+					source =>
+						`${source.id} (said at ${source.at}, source sha256=${requirementSourceDigest(source.rawText)}): ${source.rawText}`,
+				),
 				imageLines,
 				rowHeads,
 				receiptHeader: receiptHeader.trim(),

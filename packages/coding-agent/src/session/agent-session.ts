@@ -4673,7 +4673,7 @@ export class AgentSession implements SettingsScope {
 		const runner = this.#extensionRunner;
 		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 		if (this.#agentKind === "main" && this.getActiveToolNames().includes("todo") && ctx.tool.name !== "todo") {
-			const refusal = this.#requirementsLedger.refuseUnclassifiedCandidate(ctx.tool.name);
+			const refusal = this.#requirementsLedger.refuseUnclassifiedCandidate(ctx.tool.name, ctx.args);
 			if (refusal) {
 				runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 				return refusal;

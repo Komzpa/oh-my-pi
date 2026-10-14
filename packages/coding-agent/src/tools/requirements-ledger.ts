@@ -4,6 +4,7 @@ import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 import type { SessionEntry } from "../session/session-entries";
 import receiptHeader from "../prompts/session/requirements-ledger-receipt-header.md" with { type: "text" };
+import { isAcknowledgementOnlyInput } from "../tiny/text";
 import {
 	formatRequirementIdentity,
 	parseRequirementIdentity,
@@ -371,6 +372,7 @@ export function createRequirementCandidates(
 			throw new TypeError("Requirement rawText must be a non-empty string");
 		}
 		const images = imagesByCandidate[position];
+		const acknowledgementOnly = !images?.length && isAcknowledgementOnlyInput(rawText);
 		// An image with no backing bytes and no source path cannot be shown to
 		// qa-auditor later; mark it once so the done-gate asks the user instead
 		// of demanding an impossible audit every round.
@@ -379,7 +381,8 @@ export function createRequirementCandidates(
 			id: `R${++highestId}`,
 			at,
 			rawText,
-			classification: "candidate" as const,
+			classification: acknowledgementOnly ? ("not-a-requirement" as const) : ("candidate" as const),
+			...(acknowledgementOnly ? { reason: "Acknowledgement or reaction without a deliverable" } : {}),
 			rows: [],
 			...(images?.length ? { images: [...structuredClone(images)] } : {}),
 			...(unresolvable ? { imageState: "needs-user-restatement" as const } : {}),
@@ -885,6 +888,15 @@ export async function evaluateRequirementDoneGate(
 	const artifacts = new Map<string, Promise<RequirementGateArtifact>>();
 	const open: RequirementDoneGateIssue[] = [];
 	for (const requirement of requirements) {
+		if (requirement.classification === "candidate" && targets.size > 0) {
+			open.push({
+				requirement,
+				issues: [`${requirement.id} awaits todo classify`],
+				awaitingUserIssues: [],
+				auditRows: [],
+			});
+			continue;
+		}
 		if (requirement.classification !== "linked") continue;
 		const issues: string[] = [];
 		const awaitingUserIssues: string[] = [];
@@ -1029,7 +1041,12 @@ function requirementTableCells(line: string): string[] | null {
 		return text.startsWith("`") && text.endsWith("`") ? text.slice(1, -1).trim() : text;
 	});
 }
-const [idHeader, rawWordsHeader, statusHeader, evidenceHeader, artifactHeader] = receiptHeader
+/** Digest the exact captured source bytes, including newlines and image tags. */
+export function requirementSourceDigest(rawText: string): string {
+	return new Bun.CryptoHasher("sha256").update(rawText).digest("hex");
+}
+
+const [idHeader, sourceDigestHeader, statusHeader, evidenceHeader, artifactHeader] = receiptHeader
 	.trim()
 	.split("|")
 	.map(cell => cell.toLowerCase().replace(/[^a-z]/g, ""));
@@ -1179,6 +1196,11 @@ export function parseRequirementReceipt(
 				if (typeof row[key] !== "string") return null;
 				cells.push((row[key] as string).trim());
 			}
+			const digestKeys = ["source_sha256", "sourceSha256"].filter(key => Object.hasOwn(row, key));
+			if (digestKeys.length > 1) return null;
+			const digest = digestKeys.length === 1 ? row[digestKeys[0]!] : "";
+			if (typeof digest !== "string" || (digestKeys.length === 1 && !digest)) return null;
+			cells.push(digest);
 			rowCells.push(cells);
 		}
 	} else {
@@ -1188,6 +1210,7 @@ export function parseRequirementReceipt(
 			line: number;
 			id: number;
 			rawWords: number;
+			sourceDigest: number;
 			status: number;
 			evidence: number;
 			artifact: number;
@@ -1211,7 +1234,9 @@ export function parseRequirementReceipt(
 				return matches.length === 1 ? matches[0]! : -1;
 			};
 			const id = find([idHeader!]);
-			const rawWords = find([rawWordsHeader!, "rawtext"]);
+			const rawWords = find(["rawwords", "rawtext"]);
+			const sourceDigest = find([sourceDigestHeader!]);
+			if (sourceDigest < 0 && normalized.some(name => name === sourceDigestHeader)) return null;
 			if (rawWords < 0 && normalized.some(name => name === "rawwords" || name === "rawtext")) return null;
 			const status = find(["status", statusHeader!]);
 			const evidence = find([evidenceHeader!]);
@@ -1221,7 +1246,18 @@ export function parseRequirementReceipt(
 			const measured = find(["measured"]);
 			if (measured < 0 && normalized.some(name => name === "measured")) return null;
 			if (id >= 0 && status >= 0 && evidence >= 0 && artifact >= 0) {
-				headers.push({ line, id, rawWords, status, evidence, artifact, claimed, measured, width: cells.length });
+				headers.push({
+					line,
+					id,
+					rawWords,
+					sourceDigest,
+					status,
+					evidence,
+					artifact,
+					claimed,
+					measured,
+					width: cells.length,
+				});
 			}
 		}
 		if (headers.length !== 1) return null;
@@ -1232,6 +1268,7 @@ export function parseRequirementReceipt(
 			if (!cells) break;
 			if (isUnrelatedId(cells[header.id])) continue;
 			if (cells.length !== header.width) return null;
+			if (header.sourceDigest >= 0 && !cells[header.sourceDigest]) return null;
 			rowCells.push([
 				cells[header.id]!,
 				header.rawWords >= 0
@@ -1242,6 +1279,7 @@ export function parseRequirementReceipt(
 				cells[header.artifact]!,
 				header.claimed >= 0 ? cells[header.claimed]! : "",
 				header.measured >= 0 ? cells[header.measured]! : "",
+				header.sourceDigest >= 0 ? cells[header.sourceDigest]! : "",
 			]);
 		}
 	}
@@ -1255,7 +1293,8 @@ export function parseRequirementReceipt(
 	const receivedIds = new Set<string>();
 	const parentRows = new Map<string, boolean>();
 	for (const cells of rowCells) {
-		const [id, rawWords, verdict, evidence, artifact, claimed, measured] = cells as [
+		const [id, rawWords, verdict, evidence, artifact, claimed, measured, sourceDigest] = cells as [
+			string,
 			string,
 			string,
 			string,
@@ -1266,6 +1305,10 @@ export function parseRequirementReceipt(
 		];
 		const status = verdict.toLowerCase();
 		const parentId = parentOf(id);
+		if (sourceDigest) {
+			const source = rawWordsById?.get(parentId);
+			if (source === undefined || sourceDigest !== requirementSourceDigest(source)) return null;
+		}
 		const split = parentId !== id;
 		// Sub-rows are clause evidence, not new requirements. Only the authenticated
 		// assignment may bind them to a canonical parent; duplicate/mixed forms fail closed.
