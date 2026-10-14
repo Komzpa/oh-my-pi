@@ -27,6 +27,7 @@ import {
 	type RequirementVerdict,
 	parseRequirementReceipt,
 	requirementAuditSnapshot,
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 	requirementSourceDigest,
 	requirementRowDeclarationSnapshot,
 	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
@@ -680,6 +681,7 @@ export class RequirementsLedgerRuntime {
 			return `${expectedIds.join(", ")}: malformed or partial verdict table (expected id, verdict, evidence, artifact)${missing.length > 0 ? `; missing rows for ${missing.join(", ")}` : ""}`;
 		}
 		const phases = getLatestTodoPhasesFromEntries(branch);
+		const changes = getTodoRowChanges(branch);
 		// Declared targets must still match dispatch before any typed probe can reach a newly declared URL or unit.
 		if (
 			assignment.rowDeclarations !== undefined &&
