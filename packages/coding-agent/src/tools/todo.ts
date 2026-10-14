@@ -374,7 +374,7 @@ async function resolveRequirementRowArtifact(
 			}
 		});
 		if (ambiguous) return unknownRequirementArtifact(`duplicate historical TODO row ${JSON.stringify(row)}`);
-		if (historical?.status === "completed") task = historical;
+		task = historical;
 	}
 	if (!task) return unknownRequirementArtifact("unknown row");
 	// Typed declarations resolve by receipt kind before owner/registry/checkout lookup.
