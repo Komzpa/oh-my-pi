@@ -1,4 +1,4 @@
-import type { SessionContextEntryMetadata } from "./session-context";
+import type { SessionContextEntryMetadata as PruneSelectionMetadata } from "./session-context";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -3996,7 +3996,10 @@ export class SessionManager {
 	 * entry types, with tool-result prune overlays applied; raw getEntries() is unchanged.
 	 */
 	/** Project selected entries backwards, reading each required overlay at most once. */
-	createBranchSelectionProjector(path: readonly SessionContextEntryMetadata[]) {
+	createBranchSelectionProjector(
+		path: readonly PruneSelectionMetadata[],
+		readEntry: (id: string) => SessionEntry | undefined = id => this.getEntry(id),
+	) {
 		let nextOverlayIndex = path.length - 1;
 		const overlaysByTarget = new Map<string, { entry: ToolResultPruneEntry; notice: string }>();
 		const selectedOverlays = new Map<string, ToolResultPruneEntry>();
@@ -4007,7 +4010,7 @@ export class SessionManager {
 			for (; nextOverlayIndex > index; nextOverlayIndex--) {
 				const metadata = path[nextOverlayIndex]!;
 				if (metadata.type !== "tool_result_prune") continue;
-				const overlay = selectedOverlays.get(metadata.id) ?? (this.getEntry(metadata.id)! as ToolResultPruneEntry);
+				const overlay = selectedOverlays.get(metadata.id) ?? (readEntry(metadata.id)! as ToolResultPruneEntry);
 				for (let i = overlay.targets.length - 1; i >= 0; i--) {
 					const target = overlay.targets[i]!;
 					overlaysByTarget.set(target.entryId, { entry: overlay, notice: target.notice });
