@@ -1724,8 +1724,6 @@ function attachLiveTodoDetails(
 // Tool Class
 // =============================================================================
 
-
-
 export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	readonly name = "todo";
 	readonly approval = "read" as const;
