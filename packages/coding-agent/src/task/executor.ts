@@ -4015,14 +4015,6 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 			throw error;
 		}
 		mcpFollower?.bind(revived);
-		const { session: revived } = await createAgentSession(
-			buildSubagentSessionOptions(
-				capture.spec,
-				restoreSubagentSettings(capture.settings),
-				reopened,
-				expectedAgentRef,
-			),
-		);
 		enforceSubagentRequestPolicy(revived, capture.spec);
 		trackSubagentSettings(revived, capture);
 		// Re-run the executor's extension wiring on the rebuilt session. Skipping it leaves the
