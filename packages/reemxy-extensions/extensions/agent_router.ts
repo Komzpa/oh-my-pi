@@ -1,3 +1,4 @@
+import { selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import {
 	appendFileSync,
@@ -1213,7 +1214,7 @@ export default function agentRouter(pi: ExtensionAPI) {
 	};
 	const load = async (ctx: ExtensionContext) => {
 		if (!existsSync(brrrrModeFile(ctx))) {
-			const entry = ctx.sessionManager.getLatestBranchMatching(item => item.type === "custom" && item.customType === BRRRR_ENTRY);
+			const entry = selectLatestBranchEntry(ctx.sessionManager, item => item.type === "custom" && item.customType === BRRRR_ENTRY);
 			const parentFile = ctx.sessionManager.getHeader()?.parentSession;
 			if (!entry && parentFile && existsSync(parentFile)) {
 				const parentId = readSessionHeaderId(parentFile);

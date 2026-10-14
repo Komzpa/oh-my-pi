@@ -12,7 +12,7 @@ function extensionProfiles() {
 }
 
 describe("Reemxy extension agent model chains", () => {
-	test("every openrouter entry ends with :free and appears only in light worker roles", () => {
+	test("OpenRouter entries are free light-worker models or approved Grok models", () => {
 		const lightRoles: Record<string, true> = {
 			coder: true,
 			"ui-coder": true,
@@ -27,8 +27,8 @@ describe("Reemxy extension agent model chains", () => {
 		for (const profile of extensionProfiles()) {
 			for (const model of profile.model ?? []) {
 				if (!model.startsWith("openrouter/")) continue;
-				expect(model.endsWith(":free"), `${profile.name}: ${model}`).toBe(true);
-				expect(lightRoles[profile.name] === true, profile.name).toBe(true);
+				expect(model.endsWith(":free") || ["openrouter/x-ai/grok-4.5", "openrouter/x-ai/grok-4.6", "openrouter/x-ai/grok-4.7", "openrouter/x-ai/grok-build-0.1"].includes(model), `${profile.name}: ${model}`).toBe(true);
+				if (model.endsWith(":free")) expect(lightRoles[profile.name] === true, profile.name).toBe(true);
 			}
 		}
 		for (const profile of extensionProfiles()) {
