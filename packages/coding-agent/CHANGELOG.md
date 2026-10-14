@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
+- Fixed `yield` rejecting a valid `data` result when a non-strict provider also sent an empty or placeholder `error` (`""`, `unused`, `n/a`); a real error alongside `data` is still rejected, now with exact resend instructions ([#15633](https://github.com/can1357/oh-my-pi/pull/15633) by [@Komzpa](https://github.com/Komzpa))
 
 ## [18.4.12] - 2026-10-02
 
