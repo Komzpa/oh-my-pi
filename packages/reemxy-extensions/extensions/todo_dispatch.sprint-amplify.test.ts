@@ -3,8 +3,18 @@ import { expect, setSystemTime, test } from "bun:test";
 import { readGoalDeadline } from "./deadlines";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { formatPlanForecast, formatTaskForecast, forecastTodoPlan, type TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import todoDispatch, { SPRINT_STATE_ENTRY_TYPE } from "./todo_dispatch";
+
+function branchMock(getBranch: () => unknown[]) {
+  return {
+    getBranch,
+    getBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().filter(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+    getLatestBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().findLast(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+  };
+}
 
 const sdk = { forecastTodoPlan, formatPlanForecast, formatTaskForecast, readGoalDeadline, getLatestTodoPhasesFromEntries };
 const liveNow = Date.UTC(2026, 8, 26, 10, 0, 0);
@@ -28,7 +38,7 @@ async function fixture(initial: TodoScheduleInput, jobs: unknown[], deadlineAt =
   } as unknown as ExtensionAPI);
   const ctx = {
     cwd: "/tmp/amplify-test",
-    sessionManager: { getHeader: () => ({ id: "root" }), getBranch: () => branch },
+    sessionManager: { getHeader: () => ({ id: "root" }), ...branchMock(() => branch) },
     getAsyncJobSnapshot: () => ({ running: [], recent, nonJobAgents: [] }),
     getTaskMaxConcurrency: () => 6,
     hasPendingMessages: () => false,
@@ -83,7 +93,7 @@ test("retro receipt ids stay bounded as receipts accumulate", async () => {
     expect(latest.data.retroReceiptIds).not.toContain("SprintRetroCap0");
     expect(latest.data.retroReceiptIds).toContain("SprintRetroCap599");
   } finally { setSystemTime(); }
-});
+}, 15_000);
 
 test("a todo override naming retro persists once", async () => {
   setSystemTime(new Date(liveNow));

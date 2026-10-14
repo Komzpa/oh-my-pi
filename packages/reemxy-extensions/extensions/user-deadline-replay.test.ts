@@ -5,11 +5,21 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
 import { readGoalDeadline as nativeReadGoalDeadline } from "@oh-my-pi/pi-coding-agent/goals/deadlines";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { forecastTodoPlan, formatPlanForecast, formatTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import goalDeadlines from "./goal_deadlines";
 import todoDispatch from "./todo_dispatch";
 import * as deadlines from "./deadlines";
 import replay from "./fixtures/user-deadline-replay.json";
+
+function branchMock(getBranch: () => unknown[]) {
+  return {
+    getBranch,
+    getBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().filter(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+    getLatestBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().findLast(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+  };
+}
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -27,7 +37,7 @@ function deadlineHarness(withDeadlineInput = true) {
 		registerTool: value => { tool = value; },
 	} as unknown as ExtensionAPI;
 	goalDeadlines(api);
-	const ctx = { cwd: import.meta.dir, hasUI: false, sessionManager: { getBranch: () => branch } } as unknown as ExtensionContext;
+	const ctx = { cwd: import.meta.dir, hasUI: false, sessionManager: branchMock(() => branch) } as unknown as ExtensionContext;
 	handlers.get("session_start")!({}, ctx);
 	return {
 		branch, handlers, ctx,
@@ -158,7 +168,7 @@ test("real staffing consumer yields its demands and worker gate to missed-deadli
 			appendEntry: () => {},
 			sendMessage: () => {},
 		} as unknown as ExtensionAPI);
-		const ctx = { ...h.ctx, getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }), hasPendingMessages: () => false, getTaskMaxConcurrency: () => 20, sessionManager: { getHeader: () => ({ id: "deadline-replay" }), getBranch: () => h.branch, getSessionFile: () => undefined } } as unknown as ExtensionContext;
+		const ctx = { ...h.ctx, getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }), hasPendingMessages: () => false, getTaskMaxConcurrency: () => 20, sessionManager: { getHeader: () => ({ id: "deadline-replay" }), ...branchMock(() => h.branch), getSessionFile: () => undefined } } as unknown as ExtensionContext;
 		expect(provider.demand(ctx)).toBeUndefined();
 		expect(await handlers.get("context")!({ messages: [] }, ctx)).toBeUndefined();
 		expect(await handlers.get("tool_call")!({ toolName: "bash", input: { command: "git status" } }, ctx)).toBeUndefined();

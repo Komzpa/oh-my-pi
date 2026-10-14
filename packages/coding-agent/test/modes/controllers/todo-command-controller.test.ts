@@ -6,9 +6,15 @@ import { TodoCommandController } from "@oh-my-pi/pi-coding-agent/modes/controlle
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools";
+import {
+	sessionContextEntryMetadata,
+	type SessionContextEntryMetadata,
+} from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 function createContext(cwd: string, phases: TodoPhase[]): InteractiveModeContext {
+	const branch: SessionEntry[] = [];
 	return {
 		agent: {
 			appendMessage: vi.fn(),
@@ -20,7 +26,10 @@ function createContext(cwd: string, phases: TodoPhase[]): InteractiveModeContext
 		sessionManager: {
 			appendCustomEntry: vi.fn(),
 			appendMessage: vi.fn(),
-			getBranch: () => [],
+			getBranch: () => branch,
+			getBranchMatching: (predicate: (metadata: SessionContextEntryMetadata) => boolean) =>
+				branch.filter(entry => predicate(sessionContextEntryMetadata(entry))),
+			getLeafId: () => branch.at(-1)?.id ?? null,
 			getCwd: () => cwd,
 		},
 		setTodos: vi.fn(),

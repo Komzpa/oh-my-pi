@@ -22,7 +22,7 @@ describe("sprint state stays bounded", () => {
 		);
 		expect(JSON.stringify(lastNotices).length).toBeGreaterThan(1_000_000);
 		const state = readPersistedSprintState([
-			{ customType: "todo-dispatch-sprint-state", data: { version: 1, lastNotices } },
+			{ type: "custom", customType: "todo-dispatch-sprint-state", data: { version: 1, lastNotices } },
 		]);
 		expect(Object.keys(state.lastNotices)).toHaveLength(MAX_NOTICE_KEYS);
 		expect(JSON.stringify(state).length).toBeLessThan(64 * 1024);
@@ -57,7 +57,7 @@ describe("sprint state prune keeps sessions bounded", () => {
 		const pruned = pruneSprintState(state, new Set(live), now);
 		expect(JSON.stringify(pruned).length).toBeLessThan(20 * 1024);
 		expect([...pruned.seenRows].sort()).toEqual([...live].sort());
-		const branch = [{ customType: SPRINT_STATE_ENTRY_TYPE, data: pruned }];
+		const branch = [{ type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: pruned }];
 		const rehydrated = readPersistedSprintState(branch);
 		expect(rehydrated.seenRows).toEqual(pruned.seenRows);
 		expect(rehydrated.rowStatuses).toEqual(pruned.rowStatuses);
@@ -118,7 +118,7 @@ describe("sprint state prune keeps sessions bounded", () => {
 			const json = JSON.stringify(state);
 			if (json === persistedJson) return;
 			persistedJson = json;
-			branch.push({ customType: SPRINT_STATE_ENTRY_TYPE, data: state });
+			branch.push({ type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: state });
 		};
 		const persist = () => {
 			if (scheduled) return;
