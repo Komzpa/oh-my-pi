@@ -7042,7 +7042,10 @@ export class AgentSession implements SettingsScope {
 	}
 
 	#restorePendingRestartMessages(): void {
-		const branch = this.sessionManager.getBranch();
+		const latest = this.sessionManager.getLatestBranchMatching(
+			metadata => metadata.type === "custom" && metadata.customType === RESTART_PENDING_QUEUES_CUSTOM_TYPE,
+		);
+		const branch = latest ? [latest] : [];
 		for (let index = branch.length - 1; index >= 0; index--) {
 			const entry = branch[index];
 			if (entry?.type !== "custom" || entry.customType !== RESTART_PENDING_QUEUES_CUSTOM_TYPE) continue;

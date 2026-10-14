@@ -939,7 +939,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		const byId = new Map<string, StoredRestartRequest>();
 		let latest: StoredRestartRequest | undefined;
 		let active: StoredRestartRequest | undefined;
-		const entries = this.#session.sessionManager.getBranch();
+		const entries = this.#session.sessionManager.getBranchMatching(
+			metadata => metadata.type === "custom" && metadata.customType === RESTART_REQUEST_TRANSITION_TYPE,
+		);
 		for (let index = 0; index < entries.length; index++) {
 			const entry = entries[index];
 			if (!entry) continue;
@@ -956,7 +958,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 
 	#restartNoticesFor(requestId: string): Array<{ terminal: boolean }> {
 		const notices: Array<{ terminal: boolean }> = [];
-		for (const entry of this.#session.sessionManager.getBranch()) {
+		for (const entry of this.#session.sessionManager.getBranchMatching(
+			metadata => metadata.type === "custom_message",
+		)) {
 			if (entry.type !== "custom_message" || entry.customType !== RESTART_QUEUED_NOTICE_TYPE) continue;
 			const details: unknown = entry.details;
 			const detailedId = isObject(details) && typeof details.requestId === "string" ? details.requestId : undefined;
