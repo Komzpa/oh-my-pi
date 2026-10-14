@@ -85,7 +85,9 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		}
 		const serviceRunning = hasLiveOwnedService(this.session);
 		if (jobs.length === 0 && !serviceRunning) {
-			throw new ToolError("Nothing to wait for: no background job or service you started is running. Other agents' results and messages arrive on their own.");
+			throw new ToolError(
+				"Nothing to wait for: no background job or service you started is running. Other agents' results and messages arrive on their own.",
+			);
 		}
 		return this.#blockUntilWake({ jobs, manager, messaging, serviceRunning, signal, onUpdate, todoTracksTasks });
 	}

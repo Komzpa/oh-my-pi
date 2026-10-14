@@ -1501,7 +1501,7 @@ describe("selectCollapsedTodos walking viewport (#5873)", () => {
 		expect(contents(sel).some(c => ["Task 8", "Task 9", "Task 10"].includes(c))).toBe(false);
 	});
 
- it("keeps a summary when actives exactly fill the cap but pending remains", () => {
+	it("keeps a summary when actives exactly fill the cap but pending remains", () => {
 		const tasks = mk(7, []);
 		const matched = (t: TodoItem) => ["Task 1", "Task 2", "Task 3", "Task 4", "Task 5"].includes(t.content);
 		const sel = selectCollapsedTodos(tasks, matched, 5);
