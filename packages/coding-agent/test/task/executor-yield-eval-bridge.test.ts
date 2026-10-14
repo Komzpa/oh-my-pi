@@ -14,6 +14,8 @@ import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { callSessionTool } from "@oh-my-pi/pi-coding-agent/eval/js/tool-bridge";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import * as daemonClients from "@oh-my-pi/pi-coding-agent/launch/client";
+import * as ownedServices from "@oh-my-pi/pi-coding-agent/launch/services";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -83,7 +85,10 @@ interface Harness {
 		| undefined;
 }
 
-function createHarness(options?: { asyncJobManager?: AsyncJobManager }): Harness {
+function createHarness(options?: {
+	asyncJobManager?: AsyncJobManager;
+	toolSession?: Partial<ToolSession>;
+}): Harness {
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
 	const messages: AssistantMessage[] = [];
 	const prompts: string[] = [];
@@ -99,6 +104,7 @@ function createHarness(options?: { asyncJobManager?: AsyncJobManager }): Harness
 		getSessionFile: () => null,
 		getSessionSpawns: () => null,
 		settings: Settings.isolated(),
+		...options?.toolSession,
 		getToolByName: (name: string) => registry[name],
 	} as unknown as ToolSession;
 	const yieldTool = new YieldTool(toolSession);
@@ -186,10 +192,6 @@ function registerRunning(session: AgentSession) {
 		session,
 		status: "running",
 	});
-}
-
-async function flushMicrotasks(): Promise<void> {
-	for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
 }
 
 function mockCreateAgentSession(session: AgentSession) {
@@ -329,6 +331,97 @@ describe("terminal yield through the eval bridge", () => {
 			await manager.dispose({ timeoutMs: 1000 });
 		}
 	});
+
+	it.each(["accepted", "unverified", "owner-job"] as const)(
+		"a late old-run refusal cannot reopen or spend the %s successor's result slot",
+		async scenario => {
+			const manager = new AsyncJobManager({});
+			const jobs: Array<{ id: string; type: "eval"; startTime: number; label: string }> = [];
+			const harness = createHarness({
+				asyncJobManager: manager,
+				toolSession: {
+					requireYieldTool: true,
+					getAgentId: () => AGENT_ID,
+					asyncJobManager: { getRunningOwnerJobs: () => jobs } as never,
+				},
+			});
+			AgentRegistry.global().register({
+				id: AGENT_ID,
+				displayName: AGENT_ID,
+				kind: "sub",
+				parentId: PARENT_ID,
+				session: harness.session,
+				status: "idle",
+			});
+			const delivered: string[] = [];
+			manager.registerDeliverySink(PARENT_ID, (_jobId, text) => {
+				delivered.push(text);
+			});
+			const serviceCheckStarted = Promise.withResolvers<void>();
+			const oldServices = Promise.withResolvers<{ services: []; error?: string }>();
+			vi.spyOn(ownedServices, "hasLiveOwnedService").mockReturnValue(true);
+			// The empty/error rosters never describe a service; only service IO is
+			// held here. Yield acceptance, monitors and parent delivery remain real.
+			vi.spyOn(daemonClients, "daemonClientForProject").mockResolvedValue({} as never);
+			const listServices = vi
+				.spyOn(ownedServices, "listServicesTolerant")
+				.mockImplementationOnce(() => {
+					serviceCheckStarted.resolve();
+					return oldServices.promise;
+				})
+				.mockResolvedValue({ services: [] });
+			attachIrcWakeTurnMonitor(harness.session, { id: AGENT_ID, agent: baseAgent });
+			const observer = harness.wakeObserver();
+			if (!observer) throw new Error("wake-turn observer was not registered");
+
+			try {
+				const first = observer([wakeMessage("stale-a", "old assignment", "Other")]);
+				const lateYield = bridgeYield(harness.toolSession, { data: { report: "old" } });
+				const oldRefusal = expect(lateYield).rejects.toThrow(
+					scenario === "owner-job" ? "job-1" : "broker unavailable",
+				);
+				await serviceCheckStarted.promise;
+				await first?.(undefined);
+				const second = observer([wakeMessage("stale-b", "new assignment")]);
+				if (scenario === "accepted") {
+					await bridgeYield(harness.toolSession, { data: { report: "current" } });
+				} else if (scenario === "owner-job") {
+					jobs.push({ id: "job-1", type: "eval", startTime: Date.now(), label: "cell" });
+				}
+				oldServices.resolve({
+					services: [],
+					error: scenario === "owner-job" ? undefined : "broker unavailable",
+				});
+				await oldRefusal;
+
+				if (scenario === "accepted") {
+					// The old refusal must not clear the successor's accepted latch.
+					await expect(bridgeYield(harness.toolSession, { data: { report: "replacement" } })).rejects.toThrow(
+						"already submitted",
+					);
+				} else {
+					// Nor may it spend either kind of first-refusal warning for B.
+					if (scenario === "unverified") {
+						listServices.mockResolvedValue({ services: [], error: "broker unavailable" });
+					}
+					await expect(bridgeYield(harness.toolSession, { data: { report: "current" } })).rejects.toThrow(
+						scenario === "owner-job" ? "job-1" : "broker unavailable",
+					);
+					listServices.mockResolvedValue({ services: [] });
+					await bridgeYield(harness.toolSession, { data: { report: "current" } });
+				}
+				await second?.(undefined);
+				await manager.waitForAll();
+				await manager.drainDeliveries({ timeoutMs: 1000 });
+				expect(delivered).toHaveLength(1);
+				expect(delivered[0]).toContain('"report": "current"');
+				expect(delivered[0]).not.toContain('"report": "old"');
+			} finally {
+				oldServices.resolve({ services: [], error: "broker unavailable" });
+				await manager.dispose({ timeoutMs: 1000 });
+			}
+		},
+	);
 
 	it("R11: a parent continuation gets a fresh result slot; a same-run duplicate is rejected", async () => {
 		const manager = new AsyncJobManager({});

@@ -100,8 +100,7 @@ export interface YieldDetails {
 	schemaOverridden?: boolean;
 	abandonedJobs?: AbandonedJob[];
 }
-export type YieldAcceptedListener = (toolCallId: string, details: unknown) => void;
-
+export type YieldAcceptedListener = (toolCallId: string, details: YieldDetails) => void;
 
 function formatSchema(schema: unknown): string {
 	if (schema === undefined) return "No schema provided.";
@@ -514,7 +513,6 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	 * the run post-mortem. Workpool submission state resets separately via the
 	 * batch key in {@link #workPoolItems}.
 	 */
-
 	resetTurnState(): void {
 		this.#hasIncrementalSections = false;
 		this.#schemaValidationFailures = 0;
@@ -551,20 +549,21 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	 * concurrently cannot both be accepted; a refusal rolls the reservation back.
 	 * Only resetTurnState() (a new monitored run) clears it.
 	 */
-	async #claimTerminalResult(signal?: AbortSignal): Promise<AbandonedJob[] | undefined> {
+	async #claimTerminalResult(runGeneration: number, signal?: AbortSignal): Promise<AbandonedJob[] | undefined> {
 		if (this.#terminalResultSubmitted) {
 			throw new Error(yieldAlreadySubmittedMessage.trim());
 		}
 		this.#terminalResultSubmitted = true;
 		try {
-			return await this.#checkRunningJobs(signal);
+			return await this.#checkRunningJobs(runGeneration, signal);
 		} catch (error) {
-			this.#terminalResultSubmitted = false;
+			// A refusal releases only this run's reservation, never a successor's.
+			if (runGeneration === this.#turnStateGeneration) this.#terminalResultSubmitted = false;
 			throw error;
 		}
 	}
 
-	async #checkRunningJobs(signal?: AbortSignal): Promise<AbandonedJob[] | undefined> {
+	async #checkRunningJobs(runGeneration: number, signal?: AbortSignal): Promise<AbandonedJob[] | undefined> {
 		if (!this.#session.requireYieldTool) return;
 		const jobs: AbandonedJob[] = [];
 		const ownerId = this.#session.getAgentId?.() ?? undefined;
@@ -575,7 +574,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			// Fail closed: an empty roster from a failed broker request is not
 			// evidence that no owned service is running.
 			if (listError !== undefined && !this.#warnedRunningJobs.has("service-list-unverified")) {
-				this.#warnedRunningJobs.add("service-list-unverified");
+				if (runGeneration === this.#turnStateGeneration) this.#warnedRunningJobs.add("service-list-unverified");
 				throw new Error(prompt.render(yieldServicesUnverifiedTemplate, { error: sanitizeText(listError) }).trim());
 			}
 			for (const service of services) {
@@ -621,7 +620,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		if (jobs.length === 0) return;
 		const key = (job: AbandonedJob): string => `${job.type}:${job.id}:${job.startedAt}`;
 		if (jobs.some(job => !this.#warnedRunningJobs.has(key(job)))) {
-			for (const job of jobs) this.#warnedRunningJobs.add(key(job));
+			// Service checks may outlive their run; keep the next run's first refusal intact.
+			if (runGeneration === this.#turnStateGeneration) {
+				for (const job of jobs) this.#warnedRunningJobs.add(key(job));
+			}
 			throw new Error(
 				prompt
 					.render(yieldRunningProcessesTemplate, {
@@ -654,26 +656,6 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		return items;
 	}
 
-	#notifyAcceptedResult(
-		toolCallId: string,
-		details: YieldDetails,
-		listeners: readonly YieldAcceptedListener[],
-	): void {
-		// Notify only listeners subscribed at invocation start that are still
-		// subscribed now: a detached run's monitor unsubscribes on detach, and a
-		// new run's monitor subscribed after the snapshot is never included, so
-		// a stale execution can neither echo into a dead monitor nor poison the
-		// next run. Monitor callbacks must never break yield acceptance.
-		for (const listener of listeners) {
-			if (!this.#acceptedResultListeners.has(listener)) continue;
-			try {
-				listener(toolCallId, details);
-			} catch {
-				// Ignore: acceptance already happened; the monitor stays usable.
-			}
-		}
-	}
-
 	async execute(
 		toolCallId: string,
 		params: unknown,
@@ -687,9 +669,27 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		// mutate the new run's accumulators nor notify its listeners on return.
 		const runGeneration = this.#turnStateGeneration;
 		const acceptedListeners = [...this.#acceptedResultListeners];
+		const result = await this.#execute(toolCallId, params, runGeneration, _signal);
+		if (runGeneration === this.#turnStateGeneration && result.details !== undefined) {
+			// Only still-active listeners from this invocation can observe acceptance.
+			// Propagate canonical monitor failures instead of silently losing completion.
+			for (const listener of acceptedListeners) {
+				if (this.#acceptedResultListeners.has(listener)) listener(toolCallId, result.details);
+			}
+		}
+		return result;
+	}
+
+	async #execute(
+		toolCallId: string,
+		params: unknown,
+		runGeneration: number,
+		_signal?: AbortSignal,
+	): Promise<AgentToolResult<YieldDetails>> {
 		if (this.#terminalResultSubmitted) {
 			throw new Error(yieldAlreadySubmittedMessage.trim());
 		}
+		if (!isPlainRecord(params)) throw new Error("yield arguments must be an object");
 		const raw = params;
 		const workPoolItems = this.#workPoolItems();
 		let workPoolItemId: string | undefined;
@@ -729,20 +729,18 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				this.#emptyResultFailures = 0;
 				const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
 				const abandonedJobs =
-					workPoolItems.length === 0 && !isIncremental ? await this.#claimTerminalResult(_signal) : undefined;
-				const abortedDetails: YieldDetails = {
-					data: undefined,
-					status: "aborted",
-					error,
-					type: yieldType,
-					abandonedJobs,
-				};
-				if (runGeneration === this.#turnStateGeneration) {
-					this.#notifyAcceptedResult(toolCallId, abortedDetails, acceptedListeners);
-				}
+					workPoolItems.length === 0 && !isIncremental
+						? await this.#claimTerminalResult(runGeneration, _signal)
+						: undefined;
 				return {
 					content: [{ type: "text", text: `Task aborted: ${error}` }],
-					details: abortedDetails,
+					details: {
+						data: undefined,
+						status: "aborted",
+						error,
+						type: yieldType,
+						abandonedJobs,
+					},
 				};
 			}
 			const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
@@ -789,20 +787,16 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					const attemptCount = this.#emptyResultFailures;
 					this.#emptyResultFailures = 0;
 					const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
-					const abandonedJobs = await this.#claimTerminalResult(_signal);
-					const abortedDetails: YieldDetails = {
-						data: undefined,
-						status: "aborted",
-						error,
-						type: yieldType,
-						abandonedJobs,
-					};
-					if (runGeneration === this.#turnStateGeneration) {
-						this.#notifyAcceptedResult(toolCallId, abortedDetails, acceptedListeners);
-					}
+					const abandonedJobs = await this.#claimTerminalResult(runGeneration, _signal);
 					return {
 						content: [{ type: "text", text: `Task aborted: ${error}` }],
-						details: abortedDetails,
+						details: {
+							data: undefined,
+							status: "aborted",
+							error,
+							type: yieldType,
+							abandonedJobs,
+						},
 					};
 				}
 				const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
@@ -835,20 +829,16 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					const attemptCount = this.#emptyResultFailures;
 					this.#emptyResultFailures = 0;
 					const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
-					const abandonedJobs = await this.#claimTerminalResult(_signal);
-					const abortedDetails: YieldDetails = {
-						data: undefined,
-						status: "aborted",
-						error,
-						type: yieldType,
-						abandonedJobs,
-					};
-					if (runGeneration === this.#turnStateGeneration) {
-						this.#notifyAcceptedResult(toolCallId, abortedDetails, acceptedListeners);
-					}
+					const abandonedJobs = await this.#claimTerminalResult(runGeneration, _signal);
 					return {
 						content: [{ type: "text", text: `Task aborted: ${error}` }],
-						details: abortedDetails,
+						details: {
+							data: undefined,
+							status: "aborted",
+							error,
+							type: yieldType,
+							abandonedJobs,
+						},
 					};
 				}
 				const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
@@ -910,20 +900,18 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					this.#emptyResultFailures = 0;
 					const error = `yield resolved to an empty last-turn result after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
 					const abandonedJobs =
-						workPoolItems.length === 0 && !isIncremental ? await this.#claimTerminalResult(_signal) : undefined;
-					const abortedDetails: YieldDetails = {
-						data: undefined,
-						status: "aborted",
-						error,
-						type: yieldType,
-						abandonedJobs,
-					};
-					if (runGeneration === this.#turnStateGeneration) {
-						this.#notifyAcceptedResult(toolCallId, abortedDetails, acceptedListeners);
-					}
+						workPoolItems.length === 0 && !isIncremental
+							? await this.#claimTerminalResult(runGeneration, _signal)
+							: undefined;
 					return {
 						content: [{ type: "text", text: `Task aborted: ${error}` }],
-						details: abortedDetails,
+						details: {
+							data: undefined,
+							status: "aborted",
+							error,
+							type: yieldType,
+							abandonedJobs,
+						},
 					};
 				}
 				const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
@@ -1006,9 +994,9 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			workPoolItems.every(item => item.id === workPoolItemId || this.#submittedWorkPoolItems.has(item.id));
 		const abandonedJobs =
 			workPoolItems.length === 0 && !isIncremental
-				? await this.#claimTerminalResult(_signal)
+				? await this.#claimTerminalResult(runGeneration, _signal)
 				: status === "aborted" || completesWorkPool
-					? await this.#checkRunningJobs(_signal)
+					? await this.#checkRunningJobs(runGeneration, _signal)
 					: undefined;
 		// A stale execution from a detached run must not mutate the new run's
 		// accumulators: skip them when the generation moved during the awaits above.
@@ -1034,20 +1022,18 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					: schemaValidationOverridden
 						? `Result submitted (schema validation overridden after ${schemaValidationFailureCount} failed attempt(s)).`
 						: "Result submitted.";
-		const acceptedDetails: YieldDetails = {
-			data,
-			status,
-			error: errorMessage,
-			type: yieldType,
-			useLastTurn: useLastTurn || undefined,
-			complete: workPoolComplete || undefined,
-			schemaOverridden: schemaValidationOverridden || undefined,
-			abandonedJobs,
-		};
-		if (!staleAcceptedResult) this.#notifyAcceptedResult(toolCallId, acceptedDetails, acceptedListeners);
 		return {
 			content: [{ type: "text", text: responseText }],
-			details: acceptedDetails,
+			details: {
+				data,
+				status,
+				error: errorMessage,
+				type: yieldType,
+				useLastTurn: useLastTurn || undefined,
+				complete: workPoolComplete || undefined,
+				schemaOverridden: schemaValidationOverridden || undefined,
+				abandonedJobs,
+			},
 		};
 	}
 
@@ -1110,8 +1096,8 @@ function canSubscribeAcceptedResult(tool: AgentTool): tool is AgentTool & Accept
 
 /**
  * Subscribe to a yield tool's accepted results through either a native tool or
- * an `ExtensionToolWrapper` proxy (bound-method forwarding). Noop when the tool
- * is missing or predates the subscription API.
+ * an `ExtensionToolWrapper` proxy (bound-method forwarding). Missing or dynamic
+ * replacement tools without this producer have no subscription.
  */
 export function subscribeYieldAcceptedResult(
 	tool: AgentTool | undefined,
