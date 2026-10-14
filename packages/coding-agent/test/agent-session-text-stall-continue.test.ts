@@ -256,7 +256,9 @@ describe("AgentSession text-only stream stall", () => {
 			});
 			let settled = false;
 			const promptDone = created.prompt("explain it");
-			promptDone.then(() => { settled = true; });
+			promptDone.then(() => {
+				settled = true;
+			});
 			await pumpUntil(() => callTimes.length === 4 && settled, "alternating recovery settlement");
 			expect(genericRetries).toBe(1);
 			expect(callTimes[1]! - callTimes[0]!).toBeGreaterThanOrEqual(2_000 - PUMP_STEP_MS);
@@ -280,14 +282,40 @@ describe("AgentSession text-only stream stall", () => {
 				const first = requests.length === 1;
 				const events = [
 					{ type: "response.created", response: { id: `resp_${requests.length}`, status: "in_progress" } },
-					{ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_local", role: "assistant", status: "in_progress", content: [] } },
-					{ type: "response.output_text.delta", output_index: 0, item_id: "msg_local", delta: first ? "Partial answer" : "Completed answer" },
+					{
+						type: "response.output_item.added",
+						output_index: 0,
+						item: { type: "message", id: "msg_local", role: "assistant", status: "in_progress", content: [] },
+					},
+					{
+						type: "response.output_text.delta",
+						output_index: 0,
+						item_id: "msg_local",
+						delta: first ? "Partial answer" : "Completed answer",
+					},
 					...(first
 						? [{ type: "error", code: "stream_incomplete", message: "Upstream connection ended" }]
 						: [
-							{ type: "response.output_item.done", output_index: 0, item: { type: "message", id: "msg_local", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Completed answer" }] } },
-							{ type: "response.completed", response: { id: "resp_2", status: "completed", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
-						]),
+								{
+									type: "response.output_item.done",
+									output_index: 0,
+									item: {
+										type: "message",
+										id: "msg_local",
+										role: "assistant",
+										status: "completed",
+										content: [{ type: "output_text", text: "Completed answer" }],
+									},
+								},
+								{
+									type: "response.completed",
+									response: {
+										id: "resp_2",
+										status: "completed",
+										usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+									},
+								},
+							]),
 				];
 				return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), {
 					headers: { "content-type": "text/event-stream" },
@@ -298,26 +326,41 @@ describe("AgentSession text-only stream stall", () => {
 		try {
 			authStorage.keys.setRuntime("openai", "local-test-key");
 			const model = buildModel({
-				api: "openai-responses", provider: "openai", id: "local-responses-test", name: "Local Responses Test",
-				baseUrl: `http://127.0.0.1:${server.port}/v1`, contextWindow: 200_000, maxTokens: 8192,
-				input: ["text"], reasoning: false, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				api: "openai-responses",
+				provider: "openai",
+				id: "local-responses-test",
+				name: "Local Responses Test",
+				baseUrl: `http://127.0.0.1:${server.port}/v1`,
+				contextWindow: 200_000,
+				maxTokens: 8192,
+				input: ["text"],
+				reasoning: false,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			});
 			const agent = new Agent({
 				getApiKey: () => "local-test-key",
 				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 				streamFn: streamOpenAIResponses,
 			});
-			session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(),
-				settings: Settings.isolated({ "compaction.enabled": false, "retry.enabled": true }), modelRegistry });
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated({ "compaction.enabled": false, "retry.enabled": true }),
+				modelRegistry,
+			});
 			let settled = false;
 			const promptDone = session.prompt("explain it");
-			promptDone.then(() => { settled = true; });
+			promptDone.then(() => {
+				settled = true;
+			});
 			await pumpUntil(() => settled, "local SSE recovery");
 			await promptDone;
 			expect(requests).toHaveLength(2);
 			expect(requestTimes[1]! - requestTimes[0]!).toBeGreaterThanOrEqual(2_000 - PUMP_STEP_MS);
 			const assistants = agent.state.messages.filter(message => message.role === "assistant") as AssistantMessage[];
-			expect(assistants[0]?.content).toContainEqual(expect.objectContaining({ type: "text", text: "Partial answer" }));
+			expect(assistants[0]?.content).toContainEqual(
+				expect.objectContaining({ type: "text", text: "Partial answer" }),
+			);
 			expect(AIError.retriable(AIError.classifyMessage(assistants[0]!))).toBe(true);
 			expect(assistants.at(-1)?.stopReason).toBe("stop");
 			expect(requests[1]).toContain("Partial answer");
