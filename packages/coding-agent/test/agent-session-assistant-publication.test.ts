@@ -3,7 +3,6 @@ import * as path from "node:path";
 import { Type } from "@oh-my-pi/omptype/typebox";
 import { Agent, type AgentEvent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { ASSISTANT_GATE_REFUSAL } from "@oh-my-pi/pi-agent-core/assistant-publication";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -211,7 +210,7 @@ describe("assistant publication bridge", () => {
 		}
 	});
 
-	it("records exact user text and blocks non-todo calls in the same turn", async () => {
+	it("admits ordinary calls while preserving the exact same-turn candidate", async () => {
 		const parameters = Type.Object({});
 		let probeCalls = 0;
 		const probe: AgentTool<typeof parameters> = {
@@ -258,17 +257,15 @@ describe("assistant publication bridge", () => {
 			result && typeof result === "object" && "content" in result && Array.isArray(result.content)
 				? result.content
 				: [];
-		const refusalText = parts
+		const probeText = parts
 			.map(part =>
 				part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part
 					? String(part.text)
 					: "",
 			)
 			.join("\n");
-		expect(refusalText).toContain("Blocked:");
-		expect(refusalText).toContain('op="classify"');
-		expect(refusalText).toContain('id="R1"');
-		expect(refusalText).toContain("Then retry");
+		expect(probeCalls).toBe(1);
+		expect(probeText).toBe("probe ran");
 	});
 
 	it("isolates handler draft mutations and does not let a later permissive handler release the original", async () => {
@@ -380,7 +377,7 @@ describe("assistant publication bridge", () => {
 			scope: ["text"],
 			_source: { provider: "test", providerName: "test", path: "raw-stream-rule.md", level: "project" },
 		});
-		const { session, mock, agent } = harness({
+		const { session, mock, agent, manager } = harness({
 			ttsr,
 			handlers: [() => ({ replacementText: STATUS, settled: true })],
 			responses: [{ content: ["FORBIDDEN"] }, { content: ["Ordinary raw status"] }],
@@ -398,8 +395,10 @@ describe("assistant publication bridge", () => {
 		const settledTexts = assistantTexts(agent.state.messages);
 		expect(settledTexts[0]).toBe(ASSISTANT_GATE_REFUSAL);
 		expect(settledTexts).toHaveLength(2);
-		expect(settledTexts[1]).toContain('op="classify"');
-		expect(settledTexts[1]).toContain("Then retry");
+		expect(settledTexts[1]).toBe(STATUS);
+		expect(assistantTexts(manager.buildSessionContext().messages)).toEqual(settledTexts);
+		expect(settledTexts).not.toContain("FORBIDDEN");
+		expect(settledTexts).not.toContain("Ordinary raw status");
 		expect(
 			publicEvents
 				.filter(event => isAssistantMessageEvent(event))
