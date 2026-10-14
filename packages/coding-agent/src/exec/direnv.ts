@@ -2,7 +2,6 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { inflateSync } from "node:zlib";
 import { $which, isEnoent, logger } from "@oh-my-pi/pi-utils";
-import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 
 /** Default cap on a single `direnv` invocation. The first export for a devenv
  *  `.envrc` can build a shell; callers may raise this via `bash.direnvLoadTimeoutMs`. */
