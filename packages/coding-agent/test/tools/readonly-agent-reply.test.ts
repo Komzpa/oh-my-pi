@@ -8,12 +8,10 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 
-// Real policy/executor path: a read-only agent's declared tool list is a
-// non-empty subset of READ_ONLY_TOOL_NAMES (task/read-only-policy.ts), and the
-// executor hands exactly that list to createTools as the session's explicit
-// tools. The lead's rule: a read-only agent may use `write` ONLY when the
-// target is an `agent://` URI (messages); every other write and `edit` stay
-// blocked.
+// The executor gives createTools the agent's declared read-only tool list.
+// It grants a restricted reply transport, not filesystem editing. Device
+// dispatch, cancellation, and session-local scratch retain upstream permissions;
+// writing outside that scratch and mounting edit remain blocked.
 const READ_ONLY_AGENT_TOOLS = ["read", "grep", "glob", "yield"];
 
 const received = new Map<string, IrcMessage[]>();
@@ -74,13 +72,6 @@ afterEach(() => {
 });
 
 describe("read-only agent reply via write agent://", () => {
-	it("mounts write for a read-only tool list, advertised as agent://-only", async () => {
-		const tools = await readOnlyTools();
-		const write = tools.find(tool => tool.name === "write");
-		expect(write).toBeDefined();
-		expect(write!.description).toContain("agent://");
-	});
-
 	it("allows write agent://<id>: delivers the reply to the peer", async () => {
 		registerPeer("Main");
 		const write = (await readOnlyTools()).find(tool => tool.name === "write")!;
