@@ -407,8 +407,16 @@ describe("bounded resume memory", () => {
 				}
 				session.branch("reply");
 				expect(session.buildSessionContext()).toEqual(buildSessionContext(entries, "reply"));
-				expect(session.buildSessionContext({ transcript: true, keepDanglingToolCalls: true })).toEqual(
-					buildSessionContext(entries, "reply", undefined, { transcript: true, keepDanglingToolCalls: true }),
+				expect(
+					session.buildSessionContext({
+						transcript: true,
+						inFlightToolCallIds: new Set(["call-result", "dangling"]),
+					}),
+				).toEqual(
+					buildSessionContext(entries, "reply", undefined, {
+						transcript: true,
+						inFlightToolCallIds: new Set(["call-result", "dangling"]),
+					}),
 				);
 			} finally {
 				await session.close();
