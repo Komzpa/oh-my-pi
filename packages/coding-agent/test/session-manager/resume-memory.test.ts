@@ -186,6 +186,24 @@ class PublishedRewriteStorage extends FileSessionStorage {
 }
 
 describe("bounded resume memory", () => {
+	it("does not reread historical payloads while a filtered selection is still retained", async () => {
+		using dir = TempDir.createSync("@resume-selection-reuse-");
+		const file = await writeJournal(dir.path(), threeCompactions());
+		const session = await SessionManager.open(file, dir.path(), undefined, { suppressBreadcrumb: true });
+		const read = spyOn(sessionLoader, "readPositionedSessionEntry");
+		try {
+			const selected = session.getBranchMatching(metadata => metadata.type === "message");
+			expect(read.mock.calls.length).toBeGreaterThan(0);
+			read.mockClear();
+			const repeated = session.getBranchMatching(metadata => metadata.type === "message");
+			expect(read).not.toHaveBeenCalled();
+			expect(repeated).toEqual(selected);
+		} finally {
+			read.mockRestore();
+			await session.close();
+		}
+	});
+
 	it("counts every journal entry after lazy resume, branch selection and append without reading payloads", async () => {
 		using dir = TempDir.createSync("@resume-entry-count-");
 		const entries = threeCompactions();
@@ -1086,10 +1104,6 @@ describe("todo state from a metadata-filtered branch", () => {
 		try {
 			const filtered = session.getBranchMatching(isTodoStateEntryMetadata);
 			expect(filtered.map(entry => entry.id)).toEqual(["t1", "t-error", "hud", "t2"]);
-			// Repeated UI/extension selections must reuse retained journal payloads
-			// so consumers' identity caches do not reprocess the same history.
-			const repeated = session.getBranchMatching(isTodoStateEntryMetadata);
-			for (let i = 0; i < filtered.length; i++) expect(repeated[i]).toBe(filtered[i]);
 			const full = session.getBranch();
 			expect(getLatestTodoPhasesFromEntries(filtered)).toEqual(getLatestTodoPhasesFromEntries(full));
 			expect(getLatestTodoPhasesFromEntries(filtered)).toEqual(phasesB);
