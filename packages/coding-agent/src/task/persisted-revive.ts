@@ -34,6 +34,7 @@ import { cfgTaskAgentAccountPools } from "./settings";
 import { type RestoredSeanceSession, restoreSeanceSession } from "./seance";
 import { seanceIsolationOptions } from "./seance-policy";
 import type { AgentDefinition } from "./types";
+import type { SubagentDiscoveryOptions } from "../sdk";
 
 /**
  * Ambient context the reviver needs at revive time. The top-level session is
@@ -43,6 +44,7 @@ import type { AgentDefinition } from "./types";
  */
 export interface PersistedSubagentReviveContext {
 	session: AgentSession;
+	getSubagentDiscoveryOptions?: (restrictToolNames: boolean) => SubagentDiscoveryOptions;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
 	settings: Settings;
@@ -267,9 +269,13 @@ export function createPersistedSubagentReviverFactory(
 					restrictToolNames: restrictToolNames || undefined,
 					requireYieldTool: structured,
 					systemPrompt: () => [...init.systemPrompt],
-					// Inherit current owner policy, never extension authority from a transcript.
-					extensionRoots: () => ctx.session.effectiveExtensionRoots,
-					preloadedPreparedExtensions: ctx.session.preparedExtensions,
+					...(ctx.getSubagentDiscoveryOptions
+						? ctx.getSubagentDiscoveryOptions(restrictToolNames)
+						: {
+								extensionRoots: () => ctx.session.effectiveExtensionRoots,
+								preloadedPreparedExtensions: ctx.session.preparedExtensions,
+							}),
+					cacheWarming: false,
 					// Old files predate persisted spawns: deny re-spawning rather than let
 					// createAgentSession default to wildcard ("*").
 					spawns: init.spawns ?? "",

@@ -567,6 +567,31 @@ async function refreshSkillsForAutoload(session: ToolSession, agent: AgentDefini
 	await session.refreshSkills();
 }
 
+/** Discovery inputs shared by ordinary spawn and same-process cold revival. */
+export function getSubagentDiscoveryOptions(
+	session: ToolSession,
+	restrictToolNames: boolean,
+	discoveryCwd = session.workspaceTree?.rootPath ?? session.cwd,
+) {
+	const sameWorkspace = discoveryCwd === session.cwd;
+	return {
+		contextFiles: sameWorkspace
+			? session.contextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md")
+			: undefined,
+		skills: sameWorkspace && session.skills ? [...session.skills] : undefined,
+		workspaceTree: sameWorkspace ? session.workspaceTree : undefined,
+		promptTemplates: sameWorkspace ? session.promptTemplates : undefined,
+		rules: sameWorkspace ? session.rules : undefined,
+		extensionRoots: session.effectiveExtensionRoots?.bind(session),
+		preloadedExtensionPaths: restrictToolNames ? [] : sameWorkspace ? session.extensionPaths : undefined,
+		preloadedPreparedExtensions: sameWorkspace ? session.preparedExtensions : undefined,
+		preloadedCustomToolPaths: restrictToolNames ? [] : sameWorkspace ? session.customToolPaths : undefined,
+		inheritedSessionAgents: session.getSessionAgents?.(),
+		parentHindsightSessionState: session.getHindsightSessionState?.(),
+		parentMnemopiSessionState: session.getMnemopiSessionState?.(),
+	};
+}
+
 function resolveAutoloadSkills(session: ToolSession, agent: AgentDefinition) {
 	const skills = [...(session.skills ?? [])];
 	const autoloadSkills = agent.autoloadSkills?.length
@@ -643,29 +668,16 @@ function buildExecutorOptions(
 		modelRegistry: session.modelRegistry,
 		settings: session.settings,
 		asyncJobManager: session.asyncJobManager,
-		inheritedSessionAgents: session.getSessionAgents?.(),
 		mcpManager: enableMCP ? (session.mcpManager ?? MCPManager.instance()) : undefined,
 		enableMCP,
 		customTools: request.customTools,
 		workPoolYieldItems: request.workPoolYieldItems,
-		contextFiles: session.contextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md"),
+		...getSubagentDiscoveryOptions(session, restrictToolNames),
 		skills,
 		// Autoload runs after session start, outside the seance isolation options.
 		autoloadSkills: preparedSession ? undefined : autoloadSkills,
-		workspaceTree: session.workspaceTree,
-		promptTemplates: session.promptTemplates,
-		rules: session.rules,
-		// Root policy and module paths have separate jobs: the live policy drives
-		// recursive sub-discovery; preloaded paths only avoid re-scanning/reusing
-		// parent-bound extension instances while constructing the child.
-		extensionRoots: session.effectiveExtensionRoots?.bind(session),
-		preloadedExtensionPaths: restrictToolNames ? [] : session.extensionPaths,
-		preloadedPreparedExtensions: session.preparedExtensions,
-		preloadedCustomToolPaths: restrictToolNames ? [] : session.customToolPaths,
 		localProtocolOptions,
 		parentArtifactManager: preparedSession ? undefined : (session.getArtifactManager?.() ?? undefined),
-		parentHindsightSessionState: session.getHindsightSessionState?.(),
-		parentMnemopiSessionState: session.getMnemopiSessionState?.(),
 		onRelease:
 			preparedSession !== undefined && lease.temporary
 				? async () => {

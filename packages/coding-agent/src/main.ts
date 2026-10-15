@@ -2472,6 +2472,7 @@ export async function runRootCommand(
 				lspServers,
 				mcpManager,
 				startBackgroundModelDiscovery,
+				getSubagentDiscoveryOptions,
 			} = await createSession({
 				...sessionOptions,
 				eventBus,
@@ -2511,6 +2512,7 @@ export async function runRootCommand(
 					authStorage,
 					modelRegistry,
 					settings: settingsInstance,
+					getSubagentDiscoveryOptions,
 					enableLsp: sessionOptions.enableLsp ?? true,
 					eventBus,
 					subagentEventBus,

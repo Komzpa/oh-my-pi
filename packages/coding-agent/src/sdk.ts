@@ -1,3 +1,4 @@
+import { getSubagentDiscoveryOptions } from "./task/structured-subagent";
 import * as path from "node:path";
 import {
 	Agent,
@@ -926,7 +927,25 @@ export interface CreateAgentSessionOptions {
 }
 
 /** Result from createAgentSession */
+export type SubagentDiscoveryOptions = Pick<
+	CreateAgentSessionOptions,
+	| "contextFiles"
+	| "skills"
+	| "workspaceTree"
+	| "promptTemplates"
+	| "rules"
+	| "extensionRoots"
+	| "preloadedExtensionPaths"
+	| "preloadedPreparedExtensions"
+	| "preloadedCustomToolPaths"
+	| "inheritedSessionAgents"
+	| "parentHindsightSessionState"
+	| "parentMnemopiSessionState"
+>;
+
 export interface CreateAgentSessionResult {
+	/** Read current owner discovery inputs without rescanning the workspace. */
+	getSubagentDiscoveryOptions?: (restrictToolNames: boolean) => SubagentDiscoveryOptions;
 	/** The created session */
 	session: AgentSession;
 	/** Extensions result (loaded extensions + runtime) */
@@ -5489,6 +5508,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		return {
 			session,
 			extensionsResult,
+			getSubagentDiscoveryOptions: restrict => getSubagentDiscoveryOptions(toolSession, restrict, cwd),
 			setToolUIContext,
 			mcpManager,
 			modelFallbackMessage,
