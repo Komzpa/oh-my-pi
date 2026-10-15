@@ -365,3 +365,53 @@ describe("authenticated parent verdicts from auditor sub-rows", () => {
 		});
 	}
 });
+
+describe("gate refusals on QA dispatch are not audit failures", () => {
+	it("passes a pre-dispatch gate refusal through unchanged", async () => {
+		const { cwd, rows, runtime } = await multiRowFixture();
+		try {
+			const row = rows[0]!;
+			await runtime.prepareAuditorTaskCall("task", "gate-refused-audit", {
+				name: "main",
+				agent: "qa-auditor",
+				task: `Audit R24 for ${row.content}`,
+			});
+			const refusal = "Blocked: todo done is blocked until every linked requirement has a fresh qa-auditor pass";
+			const result = await runtime.afterToolCall({
+				toolCall: { id: "gate-refused-audit", name: "task" },
+				result: { content: [{ type: "text", text: refusal }], details: {} },
+				isError: true,
+			} as never);
+			expect(result).toBeUndefined();
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("still reports a launched qa-auditor that fails as failed", async () => {
+		const { cwd, rows, runtime } = await multiRowFixture();
+		try {
+			const row = rows[0]!;
+			await runtime.prepareAuditorTaskCall("task", "launched-failed-audit", {
+				name: "main",
+				agent: "qa-auditor",
+				task: `Audit R24 for ${row.content}`,
+			});
+			const result = await runtime.afterToolCall({
+				toolCall: { id: "launched-failed-audit", name: "task" },
+				result: {
+					content: [],
+					details: {
+						results: [{ index: 0, agent: "qa-auditor", id: "qa-failed", exitCode: 1, output: "crashed" }],
+					},
+				},
+				isError: true,
+			} as never);
+			const diagnostic = JSON.stringify(result?.content) ?? "";
+			expect(diagnostic).toContain("qa-auditor task failed");
+			expect(diagnostic).toContain("requirements receipt rejected");
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+});

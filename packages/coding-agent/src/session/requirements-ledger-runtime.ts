@@ -453,7 +453,11 @@ export class RequirementsLedgerRuntime {
 		let pendingChanged = false;
 		for (const assignment of assignments) {
 			if (context.isError) {
-				rejected.push(`${assignment.ids.join(", ")}: qa-auditor task failed`);
+				// A pre-dispatch gate refusal launches no worker: keep the gate's own text, no audit-failure record.
+				const launched =
+					results.some(value => isRecord(value) && value.index === assignment.index) ||
+					progress.some(value => isRecord(value) && value.index === assignment.index);
+				if (launched) rejected.push(`${assignment.ids.join(", ")}: qa-auditor task failed`);
 				continue;
 			}
 			const result = results.find(value => isRecord(value) && value.index === assignment.index);
