@@ -69,6 +69,7 @@ function makeSession(manager: SessionManager, options: SessionHarnessOptions = {
 	let releaseCount = 0;
 	const session = {
 		sessionManager: manager,
+		reconcileRestartNotices: async () => {},
 		agent: {
 			getPendingModelNewsCount: () => options.queuedInputCount ?? 0,
 		},

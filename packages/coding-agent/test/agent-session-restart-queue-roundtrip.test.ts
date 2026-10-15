@@ -6,6 +6,7 @@ import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -47,7 +48,11 @@ describe("AgentSession restart queue round trip", () => {
 		return sessionManager;
 	}
 
-	function createSession(manager: SessionManager, responses: MockResponse[] = []): AgentSession {
+	function createSession(
+		manager: SessionManager,
+		responses: MockResponse[] = [],
+		modelInputs?: string[],
+	): AgentSession {
 		const mock = createMockModel({ responses });
 		const agent = new Agent({
 			getApiKey: () => "test-key",
@@ -57,7 +62,11 @@ describe("AgentSession restart queue round trip", () => {
 				tools: [],
 				messages: manager.buildSessionContext().messages,
 			},
-			streamFn: mock.stream,
+			convertToLlm,
+			streamFn: (model, context, options) => {
+				modelInputs?.push(JSON.stringify(context.messages));
+				return mock.stream(model, context, options);
+			},
 		});
 		return new AgentSession({
 			agent,
@@ -120,12 +129,16 @@ describe("AgentSession restart queue round trip", () => {
 			.map(entry => JSON.parse(JSON.stringify(entry)) as typeof entry);
 	}
 
-	async function reopenSession(sessionFile: string, responses: MockResponse[] = []): Promise<AgentSession> {
+	async function reopenSession(
+		sessionFile: string,
+		responses: MockResponse[] = [],
+		modelInputs?: string[],
+	): Promise<AgentSession> {
 		sessionManager = await SessionManager.open(sessionFile, tempDir.path(), undefined, {
 			initialCwd: tempDir.path(),
 			suppressBreadcrumb: true,
 		});
-		session = createSession(sessionManager, responses);
+		session = createSession(sessionManager, responses, modelInputs);
 		return session;
 	}
 
@@ -176,6 +189,104 @@ describe("AgentSession restart queue round trip", () => {
 		expect(checkpoint?.type === "custom" ? checkpoint.data : undefined).toMatchObject({ pendingNextTurn: [active] });
 		lease.release();
 	});
+
+	it.each(["checkpointed", "queued"] as const)(
+		"reconciles loaded %s restart notices at the production provider boundary",
+		async state => {
+			const manager = currentManager();
+			appendPriorAssistant(manager);
+			const sessionId = manager.getSessionId();
+			const requestId = "loaded-notice";
+			const restriction = `Restart ${requestId} is queued. Do not start another model turn until it completes.`;
+			const stale = {
+				role: "custom" as const,
+				customType: "restart-queued",
+				content: restriction,
+				display: true,
+				details: { requestId, state: "queued" },
+				timestamp: Date.now(),
+			};
+			manager.appendCustomMessageEntry(stale.customType, stale.content, true, stale.details);
+			const originalNotice = JSON.stringify(manager.getBranch().at(-1));
+			manager.appendCustomEntry("omp:restart-pending-queues", {
+				steering: [stale, { role: "user", content: "finish unfinished assignment", timestamp: Date.now() }],
+				followUp: [stale],
+				pendingNextTurn: [stale],
+			});
+			manager.appendCustomEntry("restart_request_transition", {
+				version: 1,
+				identity: { instanceId: "before", sessionId, generation: 1 },
+				record: {
+					version: 1,
+					requestId,
+					sessionId,
+					state,
+					requestedAt: Date.now(),
+					updatedAt: Date.now(),
+					rootWasRunning: false,
+				},
+			});
+			await manager.ensureOnDisk();
+			const file = manager.getSessionFile()!;
+			await manager.close();
+			sessionManager = undefined;
+			const modelInputs: string[] = [];
+			const restored = await reopenSession(file, [{ content: ["finished"], stopReason: "stop" }], modelInputs);
+			AgentRegistry.resetGlobalForTests();
+			IrcBus.resetGlobalForTests();
+			AgentRegistry.global().register({
+				id: MAIN_AGENT_ID,
+				displayName: "Root",
+				kind: "main",
+				session: restored,
+				sessionFile: file,
+				status: "idle",
+			});
+			const controller = createRestartQueueController({
+				session: restored,
+				identity: () => ({ instanceId: "after", sessionId, generation: 2 }),
+				restart: async () => {},
+			});
+			try {
+				if (state === "checkpointed") {
+					await controller.restore();
+					await restored.waitForIrcReplies();
+				} else {
+					// A still-active request must retain its restriction on an ordinary next turn.
+					await restored.prompt("inspect pending restart");
+				}
+				await restored.waitForIdle();
+				const input = modelInputs.join("\n");
+				if (state === "checkpointed") {
+					expect(input).toContain(`Restart ${requestId} completed; the earlier restriction no longer applies`);
+					expect(input).not.toContain(restriction);
+					expect(input).toContain("OMP restarted after a graceful checkpoint");
+					expect(
+						restored.agent.state.messages.filter(
+							message => message.role === "user" && message.content === "finish unfinished assignment",
+						),
+					).toHaveLength(1);
+					const calls = modelInputs.length;
+					expect(calls).toBeGreaterThan(0);
+					await controller.restore();
+					expect(modelInputs).toHaveLength(calls);
+				} else expect(input).toContain(restriction);
+				// Reconciliation affects model context; the append-only transcript retains the notice.
+				expect(manager.getSessionId()).toBe(restored.sessionId);
+				expect(
+					JSON.stringify(
+						restored.sessionManager
+							.getEntries()
+							.find(entry => entry.type === "custom_message" && entry.content === restriction),
+					),
+				).toBe(originalNotice);
+			} finally {
+				controller.dispose();
+				AgentRegistry.resetGlobalForTests();
+				IrcBus.resetGlobalForTests();
+			}
+		},
+	);
 
 	it.each(["steering", "followUp", "nextTurn"] as const)(
 		"resumes idle checkpointed %s work without another input",
