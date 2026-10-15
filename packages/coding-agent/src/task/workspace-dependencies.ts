@@ -113,7 +113,18 @@ async function rebindWorkspaceBins(
 		await linkPath(path.join(source, entry), path.join(destination, entry));
 	}
 	for (const [name, target] of bins) {
-		await linkPath(target, path.join(destination, name));
+		const launcher = path.join(destination, name);
+		if (process.platform === "win32") {
+			const relativeTarget = path.relative(destination, target).split(path.sep).join("\\");
+			const windowsTarget = relativeTarget.startsWith(".") ? relativeTarget : `.\\${relativeTarget}`;
+			await Bun.write(`${launcher}.cmd`, `@"${process.execPath}" "%~dp0${windowsTarget}" %*\r\n`);
+			await Bun.write(
+				`${launcher}.ps1`,
+				`& "${process.execPath}" "$PSScriptRoot\\${relativeTarget}" @args\nexit $LASTEXITCODE\n`,
+			);
+			continue;
+		}
+		await linkPath(target, launcher);
 	}
 }
 

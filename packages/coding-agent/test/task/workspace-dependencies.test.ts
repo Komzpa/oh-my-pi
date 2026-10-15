@@ -43,7 +43,7 @@ async function makeCheckout(root: string, source: string): Promise<void> {
 	await fs.mkdir(path.join(root, "packages", "ai", "bin"), { recursive: true });
 	await fs.writeFile(
 		path.join(root, "packages", "ai", "bin", "cli.mjs"),
-		`#!/usr/bin/env bun\nconsole.log(${JSON.stringify(source)});\n`,
+		`#!/usr/bin/env bun\nconsole.log(JSON.stringify({ source: ${JSON.stringify(source)}, args: process.argv.slice(2) }));\n`,
 	);
 	await fs.writeFile(
 		path.join(root, "packages", "app", "resolve.mjs"),
@@ -51,8 +51,12 @@ async function makeCheckout(root: string, source: string): Promise<void> {
 	);
 }
 
-async function readWorkerCommand(workerRoot: string, command: string): Promise<string> {
-	const child = Bun.spawn([process.execPath, "run", path.join(workerRoot, "node_modules", ".bin", command)], {
+async function readWorkerEntry(
+	workerRoot: string,
+	entry: string,
+	...args: string[]
+): Promise<{ source: string; args: string[] }> {
+	const child = Bun.spawn([process.execPath, "run", entry, ...args], {
 		cwd: workerRoot,
 		stdout: "pipe",
 		stderr: "pipe",
@@ -60,7 +64,11 @@ async function readWorkerCommand(workerRoot: string, command: string): Promise<s
 	const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
 	const exitCode = await child.exited;
 	if (exitCode !== 0) throw new Error(`worker command failed (${exitCode}): ${stderr}`);
-	return stdout.trim();
+	return JSON.parse(stdout.trim()) as { source: string; args: string[] };
+}
+
+async function readWorkerCommand(workerRoot: string, command: string): Promise<{ source: string; args: string[] }> {
+	return readWorkerEntry(workerRoot, path.join(workerRoot, "node_modules", ".bin", command));
 }
 
 describe("borrowed workspace dependencies", () => {
@@ -124,7 +132,7 @@ describe("borrowed workspace dependencies", () => {
 		expect(await fs.realpath(path.join(workerCheckout, "node_modules", ".bin", "pi-ai"))).toBe(
 			path.join(workerCheckout, "packages", "ai", "bin", "cli.mjs"),
 		);
-		expect(await readWorkerCommand(workerCheckout, "pi-ai")).toBe("checkout-current");
+		expect(await readWorkerCommand(workerCheckout, "pi-ai")).toEqual({ source: "checkout-current", args: [] });
 		expect(await fs.realpath(path.join(workerCheckout, "node_modules", ".bin", "safe-command"))).toBe(
 			path.join(oldNodeModules, "safe-cache", "cli.mjs"),
 		);
@@ -185,5 +193,22 @@ describe("borrowed workspace dependencies", () => {
 		expect(await fs.realpath(path.join(workerCheckout, "node_modules", "@oh-my-pi", "pi-ai"))).toBe(
 			path.join(workerCheckout, "packages", "ai"),
 		);
+		const cmdPath = path.join(workerCheckout, "node_modules", ".bin", "pi-ai.cmd");
+		const ps1Path = path.join(workerCheckout, "node_modules", ".bin", "pi-ai.ps1");
+		expect(await fs.lstat(cmdPath).then(stat => stat.isSymbolicLink())).toBe(false);
+		expect(await Bun.file(cmdPath).text()).toBe(
+			`@"${process.execPath}" "%~dp0..\\..\\packages\\ai\\bin\\cli.mjs" %*\r\n`,
+		);
+		expect(await Bun.file(ps1Path).text()).toContain(
+			`"${process.execPath}" "$PSScriptRoot\\..\\..\\packages\\ai\\bin\\cli.mjs" @args`,
+		);
+		expect(
+			await readWorkerEntry(
+				workerCheckout,
+				path.join(workerCheckout, "packages", "ai", "bin", "cli.mjs"),
+				"arg with spaces",
+				"--next",
+			),
+		).toEqual({ source: "checkout-current", args: ["arg with spaces", "--next"] });
 	});
 });
