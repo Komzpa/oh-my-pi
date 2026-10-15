@@ -126,13 +126,13 @@ export async function handleSystemOne(
 		return json(200, body, gatewayResponseHeaders(model, { requestId, costUsd: result.usage.cost.total, startedAt }));
 	} catch (error) {
 		if (controller.signal.aborted) return aborted();
-		observeGatewayProviderFailure(bootOpts.storage, model, error);
 		const message = error instanceof Error ? error.message : String(error);
 		const classified =
 			error instanceof AIError.ValidationError
 				? { status: 422, type: "invalid_request_error", message }
 				: classifyGatewayError(error);
 		logger.warn("auth-gateway judgment failed", { format: "systemone", error: classified.message, peer });
+		observeGatewayProviderFailure(bootOpts.storage, model, error);
 		return systemOne.formatError(classified.status, classified.type, classified.message);
 	}
 }
