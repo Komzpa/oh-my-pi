@@ -567,6 +567,14 @@ async function refreshSkillsForAutoload(session: ToolSession, agent: AgentDefini
 	await session.refreshSkills();
 }
 
+function resolveAutoloadSkills(session: ToolSession, agent: AgentDefinition) {
+	const skills = [...(session.skills ?? [])];
+	const autoloadSkills = agent.autoloadSkills?.length
+		? agent.autoloadSkills.map(name => skills.find(skill => skill.name === name)).filter(skill => skill !== undefined)
+		: [];
+	return { skills, autoloadSkills };
+}
+
 /** Discovery inputs shared by ordinary spawn and same-process cold revival. */
 export function getSubagentDiscoveryOptions(
 	session: ToolSession,
@@ -590,14 +598,6 @@ export function getSubagentDiscoveryOptions(
 		parentHindsightSessionState: session.getHindsightSessionState?.(),
 		parentMnemopiSessionState: session.getMnemopiSessionState?.(),
 	};
-}
-
-function resolveAutoloadSkills(session: ToolSession, agent: AgentDefinition) {
-	const skills = [...(session.skills ?? [])];
-	const autoloadSkills = agent.autoloadSkills?.length
-		? agent.autoloadSkills.map(name => skills.find(skill => skill.name === name)).filter(skill => skill !== undefined)
-		: [];
-	return { skills, autoloadSkills };
 }
 
 function buildExecutorOptions(
