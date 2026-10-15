@@ -221,7 +221,7 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 				restored =
 					recovery === "resume"
 						? await reopened.session.restorePendingAsk(ui)
-						: await reopened.session.restoreInterruptedTurn(ui);
+						: (await reopened.session.restorePendingAsk(ui)) || (await reopened.session.restoreInterruptedTurn());
 			}
 			expect(restored).toBe(true);
 			await reopened.session.waitForIdle();
