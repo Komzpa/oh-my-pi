@@ -221,7 +221,7 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		},
 	);
 
-	it("does not remind or continue when the assistant yields with a user-facing question and the plan is complete", async () => {
+	it("does not remind or continue when the assistant yields with a user-facing question", async () => {
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		session.setTodoPhases([
 			{
