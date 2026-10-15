@@ -270,7 +270,7 @@ export async function visitEntriesFromFileStream(
 		const skipMalformed = (from: number, to: number): void => {
 			for (let index = from; index < to; index++) {
 				const byte = view[index];
-				if (byte !== 0x09 && byte !== 0x0d && byte !== 0x20) {
+				if (byte !== 0x09 && byte !== 0x0a && byte !== 0x0d && byte !== 0x20) {
 					options.onMalformedRecord?.();
 					break;
 				}
