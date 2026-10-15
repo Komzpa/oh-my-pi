@@ -3164,6 +3164,11 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			if (activeSession) turnMonitor.captureSalvage(activeSession);
 			const lastAssistant = session.getLastAssistantMessage();
 			const yielded = turnMonitor.yieldCalled();
+			if (yielded && session.asyncJobManager) {
+				const reap = await session.asyncJobManager.cancelAndReapOwnerJobs(id, Date.now() + 5000);
+				if (!reap.settled) trackLateCleanup(reap.completion, { id, resource: "IRC wake turn" });
+			}
+
 			const runtimeLimitExceeded = turnMonitor.runtimeLimitExceeded();
 			const aborted = runtimeLimitExceeded || (lastAssistant?.stopReason === "aborted" && !yielded);
 			// Two error lanes. `error` carries full diagnostics (a thrown turn

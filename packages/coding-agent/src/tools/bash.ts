@@ -24,6 +24,7 @@ import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash
 import { InternalUrlRouter } from "../internal-urls";
 import { sessionResolveContext } from "../internal-urls/context";
 import { InternalUrlFilesystem, UrlFsError } from "../internal-urls/url-filesystem";
+import bashBackgroundOwnershipTemplate from "../prompts/tools/bash-background-ownership.md" with { type: "text" };
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
 import type {
 	ClientBridgeTerminalExitStatus,
@@ -808,9 +809,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		}
 		lines.push(formatBackgroundNotice(jobId, timeoutSec));
 		const owner = this.session.requireYieldTool ? "this worker" : "this session";
-		lines.push(
-			`Command is still running and owned by ${owner}. Wait for its result before submitting a final yield.`,
-		);
+		lines.push(prompt.render(bashBackgroundOwnershipTemplate, { owner }).trim());
 		return {
 			content: [{ type: "text", text: lines.join("\n") }],
 			details,

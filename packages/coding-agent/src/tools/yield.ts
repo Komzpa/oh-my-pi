@@ -23,7 +23,9 @@ import { TERMINAL_STATES } from "@oh-my-pi/pi-tui/apps/ps-data";
 import { formatDuration, previewLine } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { AbandonedJob } from "@oh-my-pi/pi-tui/tools/task";
 import { daemonClientForProject } from "../launch/client";
-import { hasLiveOwnedService, listServicesTolerant } from "../launch/services";
+import { hasLiveOwnedService, listServicesTolerant, stopService } from "../launch/services";
+import yieldWrongKeyTemplate from "../prompts/tools/yield-wrong-key.md" with { type: "text" };
+import yieldSiblingCallsMessage from "../prompts/tools/yield-sibling-calls.md" with { type: "text" };
 import yieldDescription from "../prompts/tools/yield.md" with { type: "text" };
 import yieldDataErrorConflictMessage from "../prompts/tools/yield-data-error-conflict.md" with { type: "text" };
 import { subprocessToolRegistry } from "../task/subprocess-tool-registry";
@@ -573,8 +575,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			const { services, error: listError } = await listServicesTolerant(this.#session, signal);
 			// Fail closed: an empty roster from a failed broker request is not
 			// evidence that no owned service is running.
-			if (listError !== undefined && !this.#warnedRunningJobs.has("service-list-unverified")) {
-				if (runGeneration === this.#turnStateGeneration) this.#warnedRunningJobs.add("service-list-unverified");
+			if (listError !== undefined) {
 				throw new Error(prompt.render(yieldServicesUnverifiedTemplate, { error: sanitizeText(listError) }).trim());
 			}
 			for (const service of services) {
@@ -595,7 +596,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					daemon = described.daemon;
 					command = described.spec.args.at(-1) ?? described.spec.application;
 				} catch {
-					continue;
+					// The list already established ownership and liveness.
 				}
 				jobs.push({
 					id: daemon.name,
@@ -631,6 +632,9 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					})
 					.trim(),
 			);
+		}
+		for (const job of jobs) {
+			if (job.type === "service") await stopService(this.#session, job.id, signal);
 		}
 		return jobs;
 	}
@@ -669,7 +673,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		// mutate the new run's accumulators nor notify its listeners on return.
 		const runGeneration = this.#turnStateGeneration;
 		const acceptedListeners = [...this.#acceptedResultListeners];
-		const result = await this.#execute(toolCallId, params, runGeneration, _signal);
+		const result = await this.#execute(toolCallId, params, runGeneration, _signal, _context);
 		if (runGeneration === this.#turnStateGeneration && result.details !== undefined) {
 			// Only still-active listeners from this invocation can observe acceptance.
 			// Propagate canonical monitor failures instead of silently losing completion.
@@ -685,6 +689,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		params: unknown,
 		runGeneration: number,
 		_signal?: AbortSignal,
+		context?: AgentToolContext,
 	): Promise<AgentToolResult<YieldDetails>> {
 		if (this.#terminalResultSubmitted) {
 			throw new Error(yieldAlreadySubmittedMessage.trim());
@@ -842,12 +847,8 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					};
 				}
 				const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
-				const problem =
-					strayKey !== undefined
-						? `yield has no \`data\`: put your full answer in data, not in \`${strayKey}\``
-						: "yield data is empty: put your full answer in `data`";
 				throw new Error(
-					`${problem}. ${YIELD_FORMAT_HINT} Empty result retries remaining before abort: ${remaining}.`,
+					prompt.render(yieldWrongKeyTemplate, { strayKey, formatHint: YIELD_FORMAT_HINT, remaining }).trim(),
 				);
 			}
 		}
@@ -988,16 +989,36 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			}
 		}
 
-		// Check before either terminal latch or the last workpool item is committed.
+		// Reserve the workpool key before an awaited job check, just like the
+		// terminal latch. A refused check releases only this batch's reservation.
+		const batchKey = this.#workPoolBatchKey;
+		if (status === "success" && workPoolItemId !== undefined) this.#submittedWorkPoolItems.add(workPoolItemId);
 		const completesWorkPool =
-			workPoolItemId !== undefined &&
-			workPoolItems.every(item => item.id === workPoolItemId || this.#submittedWorkPoolItems.has(item.id));
-		const abandonedJobs =
-			workPoolItems.length === 0 && !isIncremental
-				? await this.#claimTerminalResult(runGeneration, _signal)
-				: status === "aborted" || completesWorkPool
-					? await this.#checkRunningJobs(runGeneration, _signal)
-					: undefined;
+			workPoolItemId !== undefined && workPoolItems.every(item => this.#submittedWorkPoolItems.has(item.id));
+		let abandonedJobs: AbandonedJob[] | undefined;
+		try {
+			if (
+				(!isIncremental || completesWorkPool || status === "aborted") &&
+				context?.toolCall?.toolCalls.some(call => call.id !== toolCallId && call.name !== "yield")
+			) {
+				throw new Error(yieldSiblingCallsMessage.trim());
+			}
+			abandonedJobs =
+				workPoolItems.length === 0 && !isIncremental
+					? await this.#claimTerminalResult(runGeneration, _signal)
+					: status === "aborted" || completesWorkPool
+						? await this.#checkRunningJobs(runGeneration, _signal)
+						: undefined;
+		} catch (error) {
+			if (
+				runGeneration === this.#turnStateGeneration &&
+				batchKey === this.#workPoolBatchKey &&
+				workPoolItemId !== undefined
+			) {
+				this.#submittedWorkPoolItems.delete(workPoolItemId);
+			}
+			throw error;
+		}
 		// A stale execution from a detached run must not mutate the new run's
 		// accumulators: skip them when the generation moved during the awaits above.
 		const staleAcceptedResult = runGeneration !== this.#turnStateGeneration;

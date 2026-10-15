@@ -71,7 +71,7 @@ export function formatTaskResultSummary(
 		? `Terminal yield abandoned running processes: ${result.abandonedJobs.map(job => job.id).join(", ")}. Task cleanup cancels unfinished owner jobs.`
 		: undefined;
 	return prompt.render(taskSummaryTemplate, {
-		abandonedWarning,
+		abandonedWarning: abandonedWarning === undefined ? undefined : escapeHarnessTags(abandonedWarning),
 		agentName: result.agent,
 		id: result.id,
 		status,

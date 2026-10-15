@@ -1,7 +1,12 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { resetYieldTurnState, YieldTool } from "@oh-my-pi/pi-coding-agent/tools/yield";
+
+import * as launchServices from "../../src/launch/services";
+import * as launchClient from "../../src/launch/client";
+
+afterEach(() => vi.restoreAllMocks());
 
 function createSession(overrides: Partial<ToolSession> = {}): ToolSession {
 	return {
@@ -44,6 +49,87 @@ describe("YieldTool terminal result latch", () => {
 		]);
 		expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
 		expect(results.filter(r => r.status === "rejected")).toHaveLength(1);
+	});
+
+	it("refuses terminal acceptance alongside other tool calls, then allows a separate retry", async () => {
+		const tool = new YieldTool(createSession());
+		await expect(
+			tool.execute("finish", { data: "done" }, undefined, undefined, {
+				toolCall: {
+					batchId: "batch",
+					index: 0,
+					total: 2,
+					toolCalls: [
+						{ id: "finish", name: "yield" },
+						{ id: "start", name: "bash" },
+					],
+				},
+			} as never),
+		).rejects.toThrow("separate response");
+		const retry = await tool.execute("retry", { data: "finished after tools" });
+		expect(retry.details).toMatchObject({ status: "success", data: "finished after tools" });
+	});
+
+	it("retains a listed service after describe failure and stops it before abandonment", async () => {
+		const service = {
+			name: "owned",
+			owner: "worker",
+			persist: false,
+			detached: false,
+			state: "running",
+			startedAt: 1,
+		};
+		spyOn(launchServices, "hasLiveOwnedService").mockReturnValue(true);
+		spyOn(launchServices, "listServicesTolerant").mockResolvedValue({ services: [service] } as never);
+		spyOn(launchClient, "daemonClientForProject").mockResolvedValue({
+			request: async () => {
+				throw new Error("describe unavailable");
+			},
+		} as never);
+		const stop = spyOn(launchServices, "stopService").mockResolvedValue({ ...service, state: "exited" } as never);
+		const tool = new YieldTool(createSession({ requireYieldTool: true, getAgentId: () => "worker" }));
+		await expect(tool.execute("first", { data: "done" })).rejects.toThrow("owned");
+		expect(stop).not.toHaveBeenCalled();
+		const accepted = await tool.execute("retry", { data: "done" });
+		expect(stop).toHaveBeenCalledTimes(1);
+		expect(accepted.details?.abandonedJobs).toMatchObject([{ id: "owned", type: "service", command: "owned" }]);
+	});
+
+	it("keeps refusing when owned-service discovery repeatedly fails", async () => {
+		spyOn(launchServices, "hasLiveOwnedService").mockReturnValue(true);
+		spyOn(launchServices, "listServicesTolerant").mockResolvedValue({ services: [], error: "broker unavailable" });
+		spyOn(launchClient, "daemonClientForProject").mockResolvedValue({} as never);
+		const tool = new YieldTool(createSession({ requireYieldTool: true }));
+		await expect(tool.execute("first", { data: "done" })).rejects.toThrow("broker unavailable");
+		await expect(tool.execute("retry", { data: "done" })).rejects.toThrow("broker unavailable");
+	});
+
+	it("reserves the final workpool key across sibling calls and releases refused claims", async () => {
+		let running = true;
+		const tool = new YieldTool(
+			createSession({
+				requireYieldTool: true,
+				getWorkPoolYieldItems: () => [{ id: "review#1", index: 1 }],
+				asyncJobManager: {
+					getRunningOwnerJobs: () =>
+						running ? [{ id: "job-1", type: "bash", status: "running", startTime: 1, label: "build" }] : [],
+				} as never,
+			}),
+		);
+		const refused = await Promise.allSettled([
+			tool.execute("first", { key: 1, data: "first" }),
+			tool.execute("sibling", { key: 1, data: "sibling" }),
+		]);
+		expect(refused.every(result => result.status === "rejected")).toBe(true);
+		running = false;
+		const accepted = await Promise.allSettled([
+			tool.execute("retry", { key: 1, data: "retry" }),
+			tool.execute("retry-sibling", { key: 1, data: "retry sibling" }),
+		]);
+		expect(accepted.filter(result => result.status === "fulfilled")).toHaveLength(1);
+		expect(accepted.filter(result => result.status === "rejected")).toHaveLength(1);
+		const result = accepted.find(result => result.status === "fulfilled");
+		expect(result?.status === "fulfilled" && result.value.details).toMatchObject({ data: "retry", complete: true });
 	});
 
 	it("rejects empty data for any terminal type and accepts schema-valid empty values", async () => {
