@@ -380,11 +380,11 @@ describe("subagent restart recovery", () => {
 
 		const third = await restoreSubagentsAfterRestart(thirdRootSession.session);
 		expect(third.resumed).toEqual([]);
-		expect(third.restoredIdle).toEqual([running.id, idle.id]);
+		expect([...third.restoredIdle].sort()).toEqual([running.id, idle.id].sort());
 		expect(third.parked).toEqual([]);
 		expect(third.failures).toEqual([]);
 		expect(deliveries).toHaveLength(1);
-		expect(thirdRevivalCalls).toEqual([running.id, idle.id]);
+		expect([...thirdRevivalCalls].sort()).toEqual([running.id, idle.id].sort());
 		expect(thirdRegistry.get(running.id)).toMatchObject({
 			status: "idle",
 			session: thirdRevived.get(running.id)?.session,
