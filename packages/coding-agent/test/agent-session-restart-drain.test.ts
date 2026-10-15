@@ -267,6 +267,99 @@ describe("AgentSession restart drain", () => {
 		},
 	);
 
+	it.each([false, true])("completes restart after child disposal (quiescence started: %s)", async started => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const rootManager = SessionManager.create(fixtureDir, fixtureDir);
+		await rootManager.ensureOnDisk();
+		const rootFile = rootManager.getSessionFile()!;
+		const childManager = await SessionManager.open(path.join(rootFile.slice(0, -6), "IdleChild.jsonl"));
+		const createSession = (manager: SessionManager) =>
+			new AgentSession({
+				agent: new Agent({
+					initialState: { model, systemPrompt: ["Test"], tools: [] },
+					streamFn: createMockModel({ responses: [] }).stream,
+					convertToLlm,
+				}),
+				sessionManager: manager,
+				settings: Settings.isolated(),
+				modelRegistry,
+			});
+		session = createSession(rootManager);
+		neighbor = createSession(childManager);
+		const registry = AgentRegistry.global();
+		registry.register({ id: "Main", displayName: "Main", kind: "main", session, sessionFile: rootFile });
+		registry.register({
+			id: "IdleChild",
+			displayName: "IdleChild",
+			kind: "sub",
+			parentId: "Main",
+			session: neighbor,
+			sessionFile: childManager.getSessionFile(),
+			status: "idle",
+		});
+		const admitted = Promise.withResolvers<void>();
+		vi.spyOn(session, "waitForAdmittedSubmissions").mockImplementation(() => admitted.promise);
+		const childAdmitted = Promise.withResolvers<void>();
+		vi.spyOn(neighbor, "waitForAdmittedSubmissions").mockImplementation(() => childAdmitted.promise);
+		const waitingOnChild = Promise.withResolvers<void>();
+		const beginChildDrain = neighbor.beginRestartDrain.bind(neighbor);
+		vi.spyOn(neighbor, "beginRestartDrain").mockImplementation(() => {
+			const lease = beginChildDrain();
+			return {
+				...lease,
+				waitForQuiescence: () => {
+					waitingOnChild.resolve();
+					return lease.waitForQuiescence();
+				},
+			};
+		});
+		const close = childManager.close.bind(childManager);
+		const closeEntered = Promise.withResolvers<void>();
+		const finishClose = Promise.withResolvers<void>();
+		vi.spyOn(childManager, "close").mockImplementation(async () => {
+			closeEntered.resolve();
+			await finishClose.promise;
+			await close();
+		});
+		const terminal = Promise.withResolvers<string>();
+		let restarts = 0;
+		const identity = { instanceId: "dispose-incident", sessionId: rootManager.getSessionId(), generation: 0 };
+		const controller = createRestartQueueController({
+			session,
+			identity: () => identity,
+			restart: async () => {
+				restarts++;
+			},
+			onStateChange: record => {
+				if (record.state === "completed" || record.state === "failed") terminal.resolve(record.state);
+			},
+		});
+		try {
+			await controller.handle({ identity, op: "request", requestId: "idle-child-disposed" });
+			if (started) {
+				admitted.resolve();
+				await waitingOnChild.promise;
+			}
+			const disposed = neighbor.dispose();
+			await closeEntered.promise;
+			admitted.resolve();
+			childAdmitted.resolve();
+			await waitingOnChild.promise;
+			expect(restarts).toBe(0);
+			finishClose.resolve();
+			await disposed;
+			await expect(terminal.promise).resolves.toBe("completed");
+			expect(restarts).toBe(1);
+		} finally {
+			finishClose.resolve();
+			admitted.resolve();
+			childAdmitted.resolve();
+			controller.dispose();
+			registry.unregister("IdleChild");
+			registry.unregister("Main");
+		}
+	});
+
 	it("refuses to drain queued work when a persistent checkpoint is not resumable", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const sessionManager = SessionManager.create(fixtureDir, fixtureDir);
