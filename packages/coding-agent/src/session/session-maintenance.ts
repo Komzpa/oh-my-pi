@@ -264,19 +264,6 @@ function findUsageAnchorIndex(branchEntries: readonly SessionEntry[], compaction
 	return -1;
 }
 
-/**
- * User-facing notice for a compaction dead end: maintenance freed too little
- * to retry safely. `remedies` names the recovery actions left on the emitting
- * path — by the time the post-pass dead end fires, the tiered rescue has
- * already attempted both elide and image-drop automatically.
- */
-function compactionDeadEndWarning(remedies: string): string {
-	return (
-		"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. " +
-		`The most recent turn alone is too large to reduce further; ${remedies} or switch to a larger-context model.`
-	);
-}
-
 /** A terminal payload rejection may be byte-sized history or irreducible media, not necessarily token overflow. */
 function payloadRejectionNotice(storedTokens: number, contextWindow: number): string {
 	const remedies =
@@ -294,6 +281,19 @@ function usageOverflowDeadEndNotice(reportedInputTokens: number, contextWindow: 
 	return (
 		`The provider reports ~${reportedInputTokens.toLocaleString("en-US")} input tokens against a ${windowLabel}-token context window — this IS a token-context problem, but automatic compaction is unavailable to shrink it. ` +
 		"Enable a compaction method (compaction.enabled with a configured methodOrder), reduce the conversation's token usage, or switch to a larger-context model."
+	);
+}
+
+/**
+ * User-facing notice for a compaction dead end: maintenance freed too little
+ * to retry safely. `remedies` names the recovery actions left on the emitting
+ * path — by the time the post-pass dead end fires, the tiered rescue has
+ * already attempted both elide and image-drop automatically.
+ */
+function compactionDeadEndWarning(remedies: string): string {
+	return (
+		"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. " +
+		`The most recent turn alone is too large to reduce further; ${remedies} or switch to a larger-context model.`
 	);
 }
 
