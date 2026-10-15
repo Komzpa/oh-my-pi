@@ -672,7 +672,12 @@ class DaemonBroker {
 		}
 	}
 
-	async #dispatch(operation: DaemonOperation, socket: IpcConnection, signal?: AbortSignal, launchFinished?: () => void): Promise<DaemonRpcResult> {
+	async #dispatch(
+		operation: DaemonOperation,
+		socket: IpcConnection,
+		signal?: AbortSignal,
+		launchFinished?: () => void,
+	): Promise<DaemonRpcResult> {
 		switch (operation.op) {
 			case "ping":
 				return { op: "ping", projectDir: this.#projectDir };
