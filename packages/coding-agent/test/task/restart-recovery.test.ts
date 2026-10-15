@@ -283,6 +283,8 @@ describe("subagent restart recovery", () => {
 		});
 		const deliveries: IrcMessage[] = [];
 		const revivalCalls: string[] = [];
+		const firstRevivalRelease = Promise.withResolvers<void>();
+		const secondRevivalStarted = Promise.withResolvers<void>();
 		const revived = new Map<string, TestSession>();
 		const installReviver = (targetRegistry: AgentRegistry, calls: string[], sessions: Map<string, TestSession>) => {
 			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
@@ -290,6 +292,8 @@ describe("subagent restart recovery", () => {
 					if (!ref.sessionFile) return undefined;
 					return async () => {
 						calls.push(ref.id);
+						if (calls === revivalCalls && calls.length === 1) await firstRevivalRelease.promise;
+						else if (calls === revivalCalls && calls.length === 2) secondRevivalStarted.resolve();
 						const manager = track(await SessionManager.open(ref.sessionFile!));
 						const fake = makeTestSession(manager, {
 							onDelivery: message => {
@@ -306,7 +310,18 @@ describe("subagent restart recovery", () => {
 		};
 		installReviver(freshRegistry, revivalCalls, revived);
 
-		const first = await restoreSubagentsAfterRestart(freshRootSession.session);
+		const restoring = restoreSubagentsAfterRestart(freshRootSession.session);
+		let overlapped = false;
+		try {
+			overlapped = await Promise.race([
+				secondRevivalStarted.promise.then(() => true),
+				Bun.sleep(500).then(() => false),
+			]);
+		} finally {
+			firstRevivalRelease.resolve();
+		}
+		const first = await restoring;
+		expect(overlapped).toBe(true);
 		expect(first.resumed).toEqual([running.id]);
 		expect(first.restoredIdle).toEqual([idle.id]);
 		expect(first.parked).toEqual([]);
@@ -314,7 +329,7 @@ describe("subagent restart recovery", () => {
 		expect(deliveries).toHaveLength(1);
 		expect(deliveries[0]).toMatchObject({ from: MAIN_AGENT_ID, to: running.id });
 		expect(deliveries[0]?.body).toContain("persisted session_init and conversation history");
-		expect(revivalCalls).toEqual([running.id, idle.id]);
+		expect([...revivalCalls].sort()).toEqual([running.id, idle.id].sort());
 		expect(freshRegistry.get(running.id)).toMatchObject({
 			id: running.id,
 			displayName: "Runner label",
@@ -344,7 +359,7 @@ describe("subagent restart recovery", () => {
 		expect(second.restoredIdle).toEqual([idle.id]);
 		expect(second.parked).toEqual([]);
 		expect(deliveries).toHaveLength(1);
-		expect(revivalCalls).toEqual([running.id, idle.id]);
+		expect([...revivalCalls].sort()).toEqual([running.id, idle.id].sort());
 
 		await Promise.all([
 			...Array.from(revived.values(), item => item.session.sessionManager.close()),

@@ -455,6 +455,7 @@
 - Fixed startup without an explicit model picking an unrelated authenticated provider instead of the first available model in the configured default fallback chain ([#15781](https://github.com/can1357/oh-my-pi/pull/15781) by [@mvid](https://github.com/mvid))
 ### Fixed
 
+- Restore child sessions concurrently during restart instead of waiting for each child in turn.
 - Restored unanswered interactive questions after restarting or resuming a session.
 
 ## [18.11.0] - 2026-10-14
