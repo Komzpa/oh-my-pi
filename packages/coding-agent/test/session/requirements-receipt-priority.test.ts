@@ -91,10 +91,11 @@ function setup(extra: "unlinked" | "different row" | "same row" = "unlinked") {
 		identity,
 		verdict: (id = "R42", row = ROW) =>
 			getLatestRequirements(manager.getBranch()).find(requirement => requirement.id === id)?.rowVerdicts?.[row],
-		async receive(output: string | ((auditInput: string) => string)) {
+		async receive(output: string | ((auditInput: string) => string), requirementIds?: string[]) {
 			const callId = `priority-${++call}`;
 			const prepared = await runtime.prepareAuditorTaskCall("task", callId, {
-				name: "main",
+				name: requirementIds ? `RetryAudit${call}` : "main",
+				...(requirementIds ? { requirementIds } : {}),
 				agent: "qa-auditor",
 				task: `Audit R42 for ${JSON.stringify(ROW)}`,
 				context: "",
@@ -132,6 +133,32 @@ function refusalText(result: unknown): string {
 }
 
 describe("receipt priority #924: real runtime intake", () => {
+	it("accepts a corrected explicitly scoped retry under a new worker name", async () => {
+		const fx = setup();
+		await fx.receive(receipt("invalid typed identity"));
+		expect((await fx.tool.execute("old-receipt", { op: "done", task: ROW })).isError).toBe(true);
+		await fx.receive(receipt(fx.identity()), ["R42"]);
+		expect(fx.verdict()?.status).toBe("pass");
+		expect(fx.verdict("R43")).toBeUndefined();
+		expect((await fx.tool.execute("corrected-receipt", { op: "done", task: ROW })).isError).not.toBe(true);
+	});
+
+	it("rejects explicit unknown or unlinked scope before running an auditor", async () => {
+		const fx = setup();
+		for (const ids of [["R999"], ["R43"], []]) {
+			await expect(fx.receive(receipt(fx.identity()), ids)).rejects.toThrow();
+		}
+		expect(fx.verdict()).toBeUndefined();
+	});
+
+	it("keeps artifact freshness checks for explicitly scoped retries", async () => {
+		const fx = setup();
+		const oldIdentity = fx.identity();
+		writeFileSync(fx.file, "changed artifact\n");
+		await fx.receive(receipt(oldIdentity), ["R42"]);
+		expect(fx.verdict()?.status).not.toBe("pass");
+		expect((await fx.tool.execute("stale-retry", { op: "done", task: ROW })).isError).toBe(true);
+	});
 	for (const extra of ["unlinked", "different row"] as const) {
 		it(`records a newer same-artifact pass over an older fail and ignores ${extra} R43`, async () => {
 			const fx = setup(extra);

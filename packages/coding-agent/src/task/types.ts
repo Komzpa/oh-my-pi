@@ -75,6 +75,7 @@ const taskImagesRule = taskImageSchema.array();
 export const taskItemSchema = type({
 	"images?": taskImagesRule,
 	"name?": "string",
+	"requirementIds?": "string[]",
 	agent: "string = 'task'",
 	task: "string",
 	solutionSpace: "string",
@@ -85,6 +86,7 @@ export const taskItemSchema = type({
 });
 const taskItemSchemaIsolated = type({
 	"name?": "string",
+	"requirementIds?": "string[]",
 	agent: "string = 'task'",
 	task: "string",
 	solutionSpace: "string",
@@ -98,6 +100,7 @@ const taskItemSchemaIsolated = type({
 
 export const taskSchema = type({
 	"name?": "string",
+	"requirementIds?": "string[]",
 	agent: "string = 'task'",
 	task: "string",
 	solutionSpace: "string",
@@ -111,6 +114,7 @@ export const taskSchema = type({
 const taskSchemaNoIsolation = type({
 	"images?": taskImagesRule,
 	"name?": "string",
+	"requirementIds?": "string[]",
 	agent: "string = 'task'",
 	task: "string",
 	solutionSpace: "string",
@@ -165,6 +169,7 @@ function createTaskSchema(options: {
 		if (options.isolationEnabled) {
 			const item = type.raw({
 				"name?": "string",
+				"requirementIds?": "string[]",
 				agent,
 				task: "string",
 				solutionSpace: "string",
@@ -183,6 +188,7 @@ function createTaskSchema(options: {
 		}
 		const item = type.raw({
 			"name?": "string",
+			"requirementIds?": "string[]",
 			agent,
 			task: "string",
 			solutionSpace: "string",
@@ -201,6 +207,7 @@ function createTaskSchema(options: {
 	if (options.isolationEnabled) {
 		return type.raw({
 			"name?": "string",
+			"requirementIds?": "string[]",
 			agent,
 			task: "string",
 			solutionSpace: "string",
@@ -214,6 +221,7 @@ function createTaskSchema(options: {
 	}
 	return type.raw({
 		"name?": "string",
+		"requirementIds?": "string[]",
 		agent,
 		task: "string",
 		solutionSpace: "string",

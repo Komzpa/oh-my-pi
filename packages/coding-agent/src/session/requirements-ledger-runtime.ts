@@ -263,7 +263,30 @@ export class RequirementsLedgerRuntime {
 		let imagesChanged = false;
 
 		const scopes = items.map(item => {
-			if (!isRecord(item) || item.agent !== "qa-auditor" || typeof item.name !== "string") return [];
+			if (!isRecord(item) || item.agent !== "qa-auditor") return [];
+			if (item.requirementIds !== undefined) {
+				if (!Array.isArray(item.requirementIds) || item.requirementIds.length === 0)
+					throw new Error("QA requirementIds must be a nonempty array of linked requirement IDs");
+				const rows = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
+				return [
+					...new Set(
+						item.requirementIds.flatMap(id => {
+							const requirement = requirements.find(requirement => requirement.id === id);
+							if (
+								!requirement ||
+								requirement.classification !== "linked" ||
+								requirement.rows.length === 0 ||
+								requirement.rows.some(row => !rows.has(row))
+							)
+								throw new Error(
+									`QA requirement scope ${String(id)} must reference a linked requirement with existing Todo rows`,
+								);
+							return requirement.rows;
+						}),
+					),
+				];
+			}
+			if (typeof item.name !== "string") return [];
 			return phases
 				.flatMap(phase => phase.tasks)
 				.flatMap(task => {

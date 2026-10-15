@@ -13,6 +13,22 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 // test/task/task-batch.test.ts).
 
 describe("task schema (single-spawn)", () => {
+	it("retains explicit QA scope in single and batch requests with either isolation setting", () => {
+		for (const isolationEnabled of [false, true]) {
+			for (const batchEnabled of [false, true]) {
+				const schema = getTaskSchema({ isolationEnabled, batchEnabled });
+				const item = {
+					agent: "qa-auditor",
+					name: "Retry",
+					task: "Verify artifact",
+					solutionSpace: "c",
+					requirementIds: ["R42"],
+				};
+				const input = batchEnabled ? { context: "", tasks: [item] } : item;
+				expect(schema(input)).toEqual(input);
+			}
+		}
+	});
 	it("requires task", () => {
 		const parsed = taskSchema({ agent: "scout", solutionSpace: "c" });
 		expect(parsed instanceof type.errors).toBe(true);
