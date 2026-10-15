@@ -12405,7 +12405,11 @@ export class AgentSession implements SettingsScope {
 	}
 
 	/** Reopen unanswered questions using the same dialog and call identity after resume. */
-	async restorePendingAsk(uiContext: ExtensionUIContext): Promise<boolean> {
+	async restorePendingAsk(
+		uiContext: ExtensionUIContext,
+		onAnswered: () => void = () => this.resumeAfterAskReanswer(),
+		onPending: () => void = () => {},
+	): Promise<boolean> {
 		if (this.isStreaming || this.#restoringPendingAsk) return false;
 		const branch = this.sessionManager.getBranchView();
 		if (!hasRestorableTurn(branch)) return false;
@@ -12440,6 +12444,7 @@ export class AgentSession implements SettingsScope {
 		});
 		if (pending.length === 0) return false;
 		this.#restoringPendingAsk = true;
+		onPending();
 		try {
 			const tool = new AskTool({
 				cwd: this.sessionManager.getCwd(),
@@ -12486,7 +12491,7 @@ export class AgentSession implements SettingsScope {
 			))
 				this.sessionManager.appendMessage(result);
 			this.agent.replaceMessages(this.buildDisplaySessionContext().messages);
-			if (!cancelled) this.resumeAfterAskReanswer();
+			if (!cancelled) onAnswered();
 			return true;
 		} finally {
 			this.#restoringPendingAsk = false;

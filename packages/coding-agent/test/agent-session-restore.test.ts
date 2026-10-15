@@ -14,6 +14,7 @@ import {
 	createInterruptedTurnAbortMessage,
 } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { createRestartQueueController } from "@oh-my-pi/pi-coding-agent/task/restart-queue";
 import type { ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -238,7 +239,7 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 		}
 		session = undefined;
 	});
-	for (const recovery of ["resume", "restore"] as const) {
+	for (const recovery of ["resume", "restore", "rolling"] as const) {
 		it(`reopens an unanswered ask on ${recovery}, preserving completed siblings and one answer across restart`, async () => {
 			const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 			const questions = [
