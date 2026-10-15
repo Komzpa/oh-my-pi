@@ -1,4 +1,3 @@
-import { customMessageEntryMessage } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 /** Context maintenance for an active coding-agent session. */
 
 import { scheduler } from "node:timers/promises";
@@ -77,6 +76,7 @@ import type { CompactOptions, ContextUsage } from "../extensibility/extensions/t
 import type { GoalModeState } from "../goals/state";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
 import type { MemoryBackendOperationContext } from "../memory-backend/types";
+import { customMessageEntryMessage } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { computeNonMessageTokens, type NonMessageTokenSource } from "@oh-my-pi/pi-tui/status-line/context-usage";
 import { createPlanReadMatcher } from "../plan-mode/plan-protection";
 import { isCompleteReadResult } from "../tools/read-supersede";
@@ -803,8 +803,7 @@ export class SessionMaintenance {
 	 * skips the disk rewrite.
 	 */
 	async dropImages(): Promise<{ removed: number; tokensFreed: number }> {
-		// Raw entries retain images hidden by append-only prune projections.
-		const branchEntries = this.#host.sessionManager.getRawBranch();
+		const branchEntries = this.#host.sessionManager.getBranch();
 		const countOptions = { excludeEncryptedReasoning: true } as const;
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
@@ -813,7 +812,8 @@ export class SessionMaintenance {
 		let removed = 0;
 		let tokensFreed = 0;
 		let anchoredTokensRemoved = 0;
-		for (const [index, entry] of branchEntries.entries()) {
+		// Raw entries retain images hidden by append-only prune projections.
+		for (const [index, entry] of this.#host.sessionManager.getRawBranch().entries()) {
 			// Only entries the anchor's provider-reported prompt already carried may
 			// be subtracted from it, and a remote compaction's replacement history
 			// hides everything before its cutoff from the wire.
