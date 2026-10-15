@@ -24,6 +24,7 @@ import liveTable from "../fixtures/qa-pipe-924-bare-table.txt" with { type: "tex
 
 const ROW = "Fix audit receipt rejecting foreign cited Rn in #41";
 const OTHER_ROW = "Rebuild unrelated artifact";
+const PUBLISH_ROW = "Publish the DCE evidence and standup intake PR";
 const RAW42 = "[Image #1, 1568x1185] some red shit";
 const RAW43 = "[Image #1, 1568x728] some more red shit again";
 const LIVE_ARTIFACT = `row "${ROW}" @ cfd747275215622b5d3a7b9c488f82ef9028da77`;
@@ -32,7 +33,7 @@ afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function setup(extra: "unlinked" | "different row" | "same row" = "unlinked") {
+function setup(extra: "unlinked" | "different row" | "same row" | "shared publish" = "unlinked") {
 	const root = mkdtempSync(join(tmpdir(), "omp-receipt-priority-"));
 	roots.push(root);
 	const file = join(root, "artifact.txt");
@@ -50,7 +51,14 @@ function setup(extra: "unlinked" | "different row" | "same row" = "unlinked") {
 			...requirement,
 			id: index === 0 ? "R42" : "R43",
 			classification: index === 0 || extra !== "unlinked" ? ("linked" as const) : ("not-a-requirement" as const),
-			rows: index === 0 || extra === "same row" ? [ROW] : extra === "different row" ? [OTHER_ROW] : [],
+			rows:
+				extra === "shared publish"
+					? [index === 0 ? ROW : OTHER_ROW, PUBLISH_ROW]
+					: index === 0 || extra === "same row"
+						? [ROW]
+						: extra === "different row"
+							? [OTHER_ROW]
+							: [],
 			...(index === 1 && extra === "unlinked" ? { reason: "No assigned deliverable" } : {}),
 		})),
 	);
@@ -58,11 +66,11 @@ function setup(extra: "unlinked" | "different row" | "same row" = "unlinked") {
 		phases: [
 			{
 				name: "Work",
-				tasks: [ROW, OTHER_ROW].map(content => ({
+				tasks: (extra === "shared publish" ? [ROW, OTHER_ROW, PUBLISH_ROW] : [ROW, OTHER_ROW]).map(content => ({
 					content,
 					status: "pending",
 					resources: [file],
-					schedule: { owner: content === ROW ? "main" : "OtherAudit", resources: [file] },
+					schedule: { owner: content === OTHER_ROW ? "OtherAudit" : "main", resources: [file] },
 				})),
 			},
 		],
@@ -142,6 +150,36 @@ describe("receipt priority #924: real runtime intake", () => {
 		expect(fx.verdict("R43")).toBeUndefined();
 		expect((await fx.tool.execute("corrected-receipt", { op: "done", task: ROW })).isError).not.toBe(true);
 	});
+
+	for (const ids of [["R42"], ["R43"], ["R42", "R43"], undefined]) {
+		it(`keeps ${ids?.join(",") ?? "implicit"} audit scope across a shared publish row`, async () => {
+			const fx = setup("shared publish");
+			const expectedIds = ids ?? ["R42", "R43"];
+			const receiptRow = (id: string) => (id === "R42" ? ROW : ids ? OTHER_ROW : PUBLISH_ROW);
+			expect(
+				await fx.receive(auditInput => {
+					for (const id of ["R42", "R43"]) {
+						const assertion = expect(auditInput);
+						if (expectedIds.includes(id)) assertion.toContain(`${id} (said at`);
+						else assertion.not.toContain(`${id} (said at`);
+					}
+					return `| ${header.trim()} |\n| --- | --- | --- | --- | --- |\n${expectedIds
+						.map(id => {
+							const row = receiptRow(id);
+							const raw = id === "R42" ? RAW42 : RAW43;
+							return `| ${id} | ${requirementSourceDigest(raw)} | pass | inspected current file | row "${row}" @ ${fx.identity()} |`;
+						})
+						.join("\n")}`;
+				}, ids),
+			).toBeUndefined();
+			for (const id of ["R42", "R43"]) {
+				expect(fx.verdict(id, receiptRow(id))?.status).toBe(expectedIds.includes(id) ? "pass" : undefined);
+				if (ids || id === "R42") expect(fx.verdict(id, PUBLISH_ROW)).toBeUndefined();
+			}
+			// Receipt scope does not remove the independent publication gate.
+			expect((await fx.tool.execute("publish-without-audit", { op: "done", task: PUBLISH_ROW })).isError).toBe(true);
+		});
+	}
 
 	it("rejects explicit unknown or unlinked scope before running an auditor", async () => {
 		const fx = setup();

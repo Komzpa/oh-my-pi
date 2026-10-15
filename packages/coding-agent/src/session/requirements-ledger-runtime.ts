@@ -294,18 +294,28 @@ export class RequirementsLedgerRuntime {
 					return schedule?.owner === item.name ? [task.content] : [];
 				});
 		});
+		// Explicit requirement IDs are authoritative. Shared Todo rows must not
+		// pull neighbouring requirements into an explicitly scoped audit.
+		const requirementScopes = scopes.map((assignedRows, index) => {
+			const item = items[index];
+			if (!isRecord(item) || item.agent !== "qa-auditor") return [];
+			const explicitIds = Array.isArray(item.requirementIds) ? item.requirementIds : undefined;
+			return requirements
+				.filter(
+					requirement =>
+						requirement.classification === "linked" &&
+						(explicitIds
+							? explicitIds.includes(requirement.id)
+							: requirement.rows.some(row => assignedRows.includes(row))),
+				)
+				.map(requirement => requirement.id);
+		});
 		const hasAuditorTask = items.some(item => isRecord(item) && item.agent === "qa-auditor");
 		const resolvedAuditor = hasAuditorTask
 			? getAgent((await discoverAgents(this.#host.cwd())).agents, "qa-auditor")
 			: undefined;
 		if (hasAuditorTask && !(await isBundledQaAuditor(resolvedAuditor))) {
-			const assignedRows = new Set(scopes.flat());
-			const ids = requirements
-				.filter(
-					requirement =>
-						requirement.classification === "linked" && requirement.rows.some(row => assignedRows.has(row)),
-				)
-				.map(requirement => requirement.id);
+			const ids = [...new Set(requirementScopes.flat())];
 			if (ids.length > 0)
 				this.#auditorRefusals.set(toolCallId, { ids, source: resolvedAuditor?.source ?? "unavailable" });
 			// The audit input stays on the task even for a non-bundled profile: a
@@ -316,12 +326,7 @@ export class RequirementsLedgerRuntime {
 			const item = items[index];
 			if (!isRecord(item) || item.agent !== "qa-auditor" || typeof item.task !== "string") continue;
 			const assignedRows = scopes[index]!;
-			const ids = requirements
-				.filter(
-					requirement =>
-						requirement.classification === "linked" && requirement.rows.some(row => assignedRows.includes(row)),
-				)
-				.map(requirement => requirement.id);
+			const ids = requirementScopes[index]!;
 			if (ids.length === 0) continue;
 
 			const sources = [
