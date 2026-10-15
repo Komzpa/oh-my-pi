@@ -29,16 +29,38 @@ async function makeCheckout(root: string, source: string): Promise<void> {
 	await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ workspaces: ["packages/*"] }));
 	await fs.writeFile(
 		path.join(root, "packages", "ai", "package.json"),
-		JSON.stringify({ name: "@oh-my-pi/pi-ai", type: "module", exports: "./index.js" }),
+		JSON.stringify({
+			name: "@oh-my-pi/pi-ai",
+			type: "module",
+			exports: "./index.js",
+			bin: { "pi-ai": "./bin/cli.mjs" },
+		}),
 	);
 	await fs.writeFile(
 		path.join(root, "packages", "ai", "index.js"),
 		`export const source = ${JSON.stringify(source)};\n`,
 	);
+	await fs.mkdir(path.join(root, "packages", "ai", "bin"), { recursive: true });
+	await fs.writeFile(
+		path.join(root, "packages", "ai", "bin", "cli.mjs"),
+		`#!/usr/bin/env bun\nconsole.log(${JSON.stringify(source)});\n`,
+	);
 	await fs.writeFile(
 		path.join(root, "packages", "app", "resolve.mjs"),
 		'import { source as local } from "@oh-my-pi/pi-ai";\nimport { source as external } from "safe-cache";\nconsole.log(JSON.stringify({ local, external }));\n',
 	);
+}
+
+async function readWorkerCommand(workerRoot: string, command: string): Promise<string> {
+	const child = Bun.spawn([process.execPath, "run", path.join(workerRoot, "node_modules", ".bin", command)], {
+		cwd: workerRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+	const exitCode = await child.exited;
+	if (exitCode !== 0) throw new Error(`worker command failed (${exitCode}): ${stderr}`);
+	return stdout.trim();
 }
 
 describe("borrowed workspace dependencies", () => {
@@ -67,8 +89,22 @@ describe("borrowed workspace dependencies", () => {
 			path.join(oldNodeModules, "safe-cache", "index.js"),
 			'export const source = "external-cache";\n',
 		);
+		await fs.writeFile(path.join(oldNodeModules, "safe-cache", "cli.mjs"), 'console.log("external-bin");\n');
+		await fs.mkdir(path.join(oldNodeModules, ".bin"));
+		await fs.symlink("../safe-cache/cli.mjs", path.join(oldNodeModules, ".bin", "safe-command"));
+		await fs.symlink("../@oh-my-pi/pi-ai/bin/cli.mjs", path.join(oldNodeModules, ".bin", "pi-ai"));
+		await fs.symlink("../missing-package", path.join(oldNodeModules, "dangling-package"), "dir");
 		await fs.symlink(oldNodeModules, path.join(currentCheckout, "node_modules"), "dir");
 		await fs.cp(currentCheckout, workerCheckout, { recursive: true });
+		await fs.mkdir(path.join(workerCheckout, "packages", "new-package"), { recursive: true });
+		await fs.writeFile(
+			path.join(workerCheckout, "packages", "new-package", "package.json"),
+			JSON.stringify({ name: "@oh-my-pi/new-package", type: "module", exports: "./index.js" }),
+		);
+		await fs.writeFile(
+			path.join(workerCheckout, "packages", "new-package", "index.js"),
+			'export const source = "new-workspace-package";\n',
+		);
 
 		const baseline = await readWorkerImports(workerCheckout);
 		expect(baseline).toEqual({ local: "checkout-old", external: "external-cache" });
@@ -82,9 +118,72 @@ describe("borrowed workspace dependencies", () => {
 		expect(await fs.realpath(path.join(workerCheckout, "node_modules", "safe-cache"))).toBe(
 			path.join(oldNodeModules, "safe-cache"),
 		);
+		expect(await fs.realpath(path.join(workerCheckout, "node_modules", "@oh-my-pi", "new-package"))).toBe(
+			path.join(workerCheckout, "packages", "new-package"),
+		);
+		expect(await fs.realpath(path.join(workerCheckout, "node_modules", ".bin", "pi-ai"))).toBe(
+			path.join(workerCheckout, "packages", "ai", "bin", "cli.mjs"),
+		);
+		expect(await readWorkerCommand(workerCheckout, "pi-ai")).toBe("checkout-current");
+		expect(await fs.realpath(path.join(workerCheckout, "node_modules", ".bin", "safe-command"))).toBe(
+			path.join(oldNodeModules, "safe-cache", "cli.mjs"),
+		);
+		expect(
+			await fs
+				.lstat(path.join(workerCheckout, "node_modules", "dangling-package"))
+				.then(stat => stat.isSymbolicLink()),
+		).toBe(true);
 		expect(await readWorkerImports(workerCheckout)).toEqual({
 			local: "checkout-current",
 			external: "external-cache",
 		});
+	});
+
+	it("discovers pnpm workspace members declared only in pnpm-workspace.yaml", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-pnpm-workspace-"));
+		roots.push(root);
+		const oldCheckout = path.join(root, "checkout-old");
+		const workerCheckout = path.join(root, "worker-current");
+		await fs.mkdir(path.join(oldCheckout, "node_modules"), { recursive: true });
+		await fs.mkdir(path.join(workerCheckout, "packages", "local"), { recursive: true });
+		await fs.writeFile(path.join(workerCheckout, "package.json"), JSON.stringify({ name: "pnpm-root" }));
+		await fs.writeFile(path.join(workerCheckout, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+		await fs.writeFile(
+			path.join(workerCheckout, "packages", "local", "package.json"),
+			JSON.stringify({ name: "@example/local" }),
+		);
+		await fs.symlink(path.join(oldCheckout, "node_modules"), path.join(workerCheckout, "node_modules"), "dir");
+
+		await repairBorrowedWorkspaceNodeModules(workerCheckout);
+
+		expect(await fs.realpath(path.join(workerCheckout, "node_modules", "@example", "local"))).toBe(
+			path.join(workerCheckout, "packages", "local"),
+		);
+	});
+
+	it("uses Windows junction semantics when rebuilding directory links", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-windows-junction-"));
+		roots.push(root);
+		const oldCheckout = path.join(root, "checkout-old");
+		const workerCheckout = path.join(root, "worker-current");
+		await makeCheckout(oldCheckout, "checkout-old");
+		await fs.mkdir(path.join(oldCheckout, "node_modules", "@oh-my-pi"), { recursive: true });
+		await fs.symlink(
+			path.join(oldCheckout, "packages", "ai"),
+			path.join(oldCheckout, "node_modules", "@oh-my-pi", "pi-ai"),
+			"dir",
+		);
+		await makeCheckout(workerCheckout, "checkout-current");
+		await fs.symlink(path.join(oldCheckout, "node_modules"), path.join(workerCheckout, "node_modules"), "dir");
+		const platform = process.platform;
+		try {
+			Object.defineProperty(process, "platform", { value: "win32" });
+			await repairBorrowedWorkspaceNodeModules(workerCheckout);
+		} finally {
+			Object.defineProperty(process, "platform", { value: platform });
+		}
+		expect(await fs.realpath(path.join(workerCheckout, "node_modules", "@oh-my-pi", "pi-ai"))).toBe(
+			path.join(workerCheckout, "packages", "ai"),
+		);
 	});
 });
