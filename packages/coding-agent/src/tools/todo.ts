@@ -322,11 +322,11 @@ function copyTodoData<T>(value: T): T {
 	return copy as T;
 }
 
-// Borrow persisted snapshots while scanning; copy only before mutation or returning restored data.
-function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
+// Consumers receive detached snapshots unless an owned read-only scan explicitly borrows them.
+function canonicalTodoPhases(entry: SessionEntry, copy = true): TodoPhase[] | undefined {
 	if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
 		const phases = (entry.data as { phases?: unknown } | undefined)?.phases;
-		return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
+		return Array.isArray(phases) ? (copy ? copyTodoData(phases as TodoPhase[]) : (phases as TodoPhase[])) : undefined;
 	}
 	if (entry.type !== "message") return undefined;
 	const message = entry.message as {
@@ -338,7 +338,7 @@ function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
 	if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) return undefined;
 	if (message.details?.op === "view") return undefined;
 	const phases = message.details?.phases;
-	return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
+	return Array.isArray(phases) ? (copy ? copyTodoData(phases as TodoPhase[]) : (phases as TodoPhase[])) : undefined;
 }
 
 function isTodoReworkAttempt(value: unknown): value is TodoReworkAttempt {
@@ -572,68 +572,68 @@ export function createTodoHudStateData(
 }
 
 export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPhase[] {
+	// A full snapshot supersedes every earlier replay operation. Only its compact tail can change the live plan.
 	let latest: TodoPhase[] | undefined;
+	let snapshotIndex = -1;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const phases = canonicalTodoPhases(entries[index]!, false);
+		if (!phases) continue;
+		latest = phases;
+		snapshotIndex = index;
+		break;
+	}
 	let mutable = false;
-	const completionTimes = new Map<string, number>();
-	for (const entry of entries) {
-		const phases = canonicalTodoPhases(entry);
-		const edit = phases ? undefined : compactTodoEditFromEntry(entry);
-		const replayed: TodoReplayResult | undefined = phases
-			? { phases, mutable: false }
-			: edit
-				? replayTodoEdit(latest, edit, { mutable })
-				: undefined;
+	for (let index = snapshotIndex + 1; index < entries.length; index++) {
+		const edit = compactTodoEditFromEntry(entries[index]!);
+		const replayed = edit ? replayTodoEdit(latest, edit, { mutable }) : undefined;
 		if (!replayed) continue;
 		latest = replayed.phases;
 		mutable = replayed.mutable;
-		if (!phases) continue;
-		latest = phases;
-		mutable = false;
-		if (completionTimes.size > 0) {
-			const completedTasks = new Set<string>();
-			for (const phase of phases) {
-				for (const task of phase.tasks) {
-					if (task.status === "completed") completedTasks.add(todoTransitionKey(phase.name, task.content));
-				}
-			}
-			for (const key of completionTimes.keys()) if (!completedTasks.has(key)) completionTimes.delete(key);
+	}
+	if (!latest) return [];
+	const restored = copyTodoData(latest);
+	const missingTimes = new Map<string, TodoItem[]>();
+	for (const phase of restored) {
+		for (const task of phase.tasks) {
+			if (task.status !== "completed" || Number.isFinite(task.schedule?.finishedAt)) continue;
+			const key = todoTransitionKey(phase.name, task.content);
+			const matches = missingTimes.get(key) ?? [];
+			matches.push(task);
+			missingTimes.set(key, matches);
 		}
+	}
+	// Old snapshots omitted finishedAt. Recover only timestamps still needed by the final rows, newest first.
+	// A snapshot that removes/reopens a row cuts off older timestamps. Compact edits never supplied legacy
+	// completionTimes; their transition timestamps are already in the replayed schedules.
+	for (let index = snapshotIndex; index >= 0 && missingTimes.size > 0; index--) {
+		const entry = entries[index]!;
+		const phases = canonicalTodoPhases(entry, false);
+		if (!phases) continue;
+		const matches = new Map<string, { count: number; completed: boolean }>();
+		for (const phase of phases) {
+			for (const task of phase.tasks) {
+				const key = todoTransitionKey(phase.name, task.content);
+				if (!missingTimes.has(key)) continue;
+				const match = matches.get(key) ?? { count: 0, completed: false };
+				match.count++;
+				match.completed ||= task.status === "completed";
+				matches.set(key, match);
+			}
+		}
+		for (const key of missingTimes.keys()) if (!matches.get(key)?.completed) missingTimes.delete(key);
 		if (entry.type !== "message") continue;
-		const message = entry.message as {
-			role?: string;
-			toolName?: string;
-			isError?: boolean;
-			details?: { completedTasks?: unknown };
-		};
-		if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) continue;
+		const message = entry.message as { details?: { completedTasks?: unknown } };
 		if (!Array.isArray(message.details?.completedTasks)) continue;
 		const timestamp = Date.parse(entry.timestamp);
 		if (!Number.isFinite(timestamp)) continue;
 		for (const transition of message.details.completedTasks) {
 			if (!isRecord(transition) || typeof transition.phase !== "string" || typeof transition.content !== "string")
 				continue;
-			let matches = 0;
-			let completed = false;
-			for (const phase of phases) {
-				if (phase.name !== transition.phase) continue;
-				for (const task of phase.tasks) {
-					if (task.content !== transition.content) continue;
-					matches++;
-					completed = task.status === "completed";
-				}
-			}
-			if (matches === 1 && completed) {
-				completionTimes.set(todoTransitionKey(transition.phase, transition.content), timestamp);
-			}
-		}
-	}
-	if (!latest) return [];
-	const restored = copyTodoData(latest);
-	for (const phase of restored) {
-		for (const task of phase.tasks) {
-			if (task.status !== "completed" || Number.isFinite(task.schedule?.finishedAt)) continue;
-			const finishedAt = completionTimes.get(todoTransitionKey(phase.name, task.content));
-			if (finishedAt !== undefined) task.schedule = { ...task.schedule, finishedAt };
+			const key = todoTransitionKey(transition.phase, transition.content);
+			const tasks = missingTimes.get(key);
+			if (!tasks || matches.get(key)?.count !== 1) continue;
+			for (const task of tasks) task.schedule = { ...task.schedule, finishedAt: timestamp };
+			missingTimes.delete(key);
 		}
 	}
 	return restored;
