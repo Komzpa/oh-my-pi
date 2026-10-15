@@ -177,6 +177,45 @@ describe("exact todo restoration", () => {
 		expect(() => structuredClone(replayed)).not.toThrow();
 	});
 
+	it("legacy completion times survive snapshots but stop at a reopen or removal", () => {
+		const at = 1_791_200_000_000;
+		const completed: TodoPhase[] = [{ name: "Work", tasks: [{ content: "Legacy", status: "completed" }] }];
+		const snapshot = (rows: TodoPhase[], time: number, transition = false): SessionEntry =>
+			({
+				type: "message",
+				id: String(time),
+				parentId: null,
+				timestamp: new Date(time).toISOString(),
+				message: {
+					role: "toolResult",
+					toolName: "todo",
+					details: {
+						phases: rows,
+						...(transition ? { completedTasks: [{ phase: "Work", content: "Legacy" }] } : {}),
+					},
+				},
+			}) as unknown as SessionEntry;
+		const first = snapshot(completed, at, true);
+		const last = snapshot(completed, at + 3_000);
+		const finishedAt = (entries: SessionEntry[]) =>
+			getLatestTodoPhasesFromEntries(entries)[0]!.tasks[0]!.schedule?.finishedAt;
+		expect(finishedAt([first, last])).toBe(at);
+		expect(finishedAt([first, snapshot(completed, at + 1_000, true), last])).toBe(at + 1_000);
+		expect(finishedAt([first, snapshot([], at + 1_000), last])).toBeUndefined();
+		expect(
+			finishedAt([
+				first,
+				snapshot([{ name: "Work", tasks: [{ content: "Legacy", status: "pending" }] }], at + 1_000),
+				last,
+			]),
+		).toBeUndefined();
+		// Duplicate transition targets are ignored, but a duplicate snapshot with a completed row retains the older time.
+		const duplicate: TodoPhase[] = [
+			{ name: "Work", tasks: [completed[0]!.tasks[0]!, { content: "Legacy", status: "pending" }] },
+		];
+		expect(finishedAt([first, snapshot(duplicate, at + 1_000, true), last])).toBe(at);
+	});
+
 	it("restored values and compact replay cannot mutate a persisted branch", () => {
 		const original = structuredClone(phases);
 		const snapshot = {
