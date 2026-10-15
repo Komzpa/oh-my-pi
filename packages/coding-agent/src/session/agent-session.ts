@@ -7055,6 +7055,32 @@ export class AgentSession implements SettingsScope {
 		await this.sessionManager.flush();
 	}
 
+	/** Reconcile already-loaded model state after the restart journal reaches a terminal state. */
+	async reconcileRestartNotices(): Promise<void> {
+		const keepRestartNotice = createRestartNoticeFilter(
+			selectRestartBranchEntries(
+				this.sessionManager,
+				metadata => metadata.type === "custom" && metadata.customType === "restart_request_transition",
+			),
+		);
+		const keepMessage = (message: AgentMessage): boolean => message.role !== "custom" || keepRestartNotice(message);
+		const history = this.agent.state.messages;
+		const retainedHistory = history.filter(keepMessage);
+		if (retainedHistory.length !== history.length) this.agent.replaceMessages(retainedHistory);
+		const steering = this.agent.peekSteeringQueue();
+		const followUp = this.agent.peekFollowUpQueue();
+		const retainedSteering = steering.filter(keepMessage);
+		const retainedFollowUp = followUp.filter(keepMessage);
+		const pending = this.#pendingNextTurnMessages;
+		this.#pendingNextTurnMessages = pending.filter(keepRestartNotice);
+		const queuesChanged = retainedSteering.length !== steering.length || retainedFollowUp.length !== followUp.length;
+		if (queuesChanged) this.agent.replaceQueues(retainedSteering, retainedFollowUp);
+		if (queuesChanged || this.#pendingNextTurnMessages.length !== pending.length) {
+			this.#supersedeRestartCheckpoint();
+			await this.sessionManager.flush();
+		}
+	}
+
 	#restorePendingRestartMessages(): void {
 		const latest = selectLatestRestartBranchEntry(
 			this.sessionManager,

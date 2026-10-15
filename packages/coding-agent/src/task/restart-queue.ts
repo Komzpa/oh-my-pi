@@ -510,6 +510,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				this.#notice("error", record.error ?? "Restart request did not reach a safe checkpoint.");
 			}
 
+			// The queues were loaded before the journal transition above. Drop stale
+			// drain restrictions before any child or root continuation can run.
+			await this.#session.reconcileRestartNotices();
+
 			if (!stored || record?.state === "completed") {
 				await restoreSubagentsAfterRestart(this.#session, record ? { requestId: record.requestId } : undefined);
 			}
