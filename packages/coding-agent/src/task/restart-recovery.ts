@@ -783,13 +783,13 @@ export async function restoreSubagentsAfterRestart(
 			});
 		}
 	}
-	for (const child of childrenToRestore) {
+	const restoreChild = async (child: RestartChildSnapshot): Promise<void> => {
 		const priorReceipt = receipts.get(child.id);
 		try {
 			if (await isTombstoned(child.sessionFile)) {
 				if (priorReceipt?.outcome !== "tombstoned")
 					await recordReceipt(rootSession, identity, entryId, child, "tombstoned");
-				continue;
+				return;
 			}
 			const ref = registry.get(child.id);
 			if (
@@ -803,18 +803,18 @@ export async function restoreSubagentsAfterRestart(
 					id: child.id,
 					reason: "persisted child identity no longer matches the captured root/session file",
 				});
-				continue;
+				return;
 			}
 			if (ref.status === "aborted") {
 				if (priorReceipt?.outcome !== "tombstoned")
 					await recordReceipt(rootSession, identity, entryId, child, "tombstoned");
-				continue;
+				return;
 			}
 			if (!registry.restoreIdentity(child.id, ref, { displayName: child.displayName, parentId: child.parentId })) {
 				report.failures.push({ id: child.id, reason: "child identity changed during restart restoration" });
-				continue;
+				return;
 			}
-			if (priorReceipt?.outcome === "tombstoned") continue;
+			if (priorReceipt?.outcome === "tombstoned") return;
 			let entries = await readBranchEntries(child.sessionFile, ref.session);
 			const pending = collectPendingToolCalls(entries);
 			if (pending.length > 0) {
@@ -861,13 +861,13 @@ export async function restoreSubagentsAfterRestart(
 					else if (ref.status === "running") report.resumed.push(child.id);
 					else if (ref.status === "idle") report.restoredIdle.push(child.id);
 				}
-				continue;
+				return;
 			}
 			const completedDuringRestart = child.status === "running" && latestTurnHasTerminalYield(entries);
 			if (child.status === "parked" && pending.length === 0) {
 				await recordReceipt(rootSession, identity, entryId, child, "parked-preserved");
 				report.parked.push(child.id);
-				continue;
+				return;
 			}
 			const lifecycle = AgentLifecycleManager.global();
 			try {
@@ -876,19 +876,19 @@ export async function restoreSubagentsAfterRestart(
 				const reason = error instanceof Error ? error.message : String(error);
 				await recordReceipt(rootSession, identity, entryId, child, "revival-failed", { reason });
 				report.failures.push({ id: child.id, reason });
-				continue;
+				return;
 			}
 			if ((child.status === "idle" || child.settled || completedDuringRestart) && pending.length === 0) {
 				const outcome = completedDuringRestart || child.settled ? "settled-during-restart" : "idle-restored";
 				await recordReceipt(rootSession, identity, entryId, child, outcome);
 				report.restoredIdle.push(child.id);
-				continue;
+				return;
 			}
 			if (!rootRef) {
 				const reason = "root session is not registered, so the continuation cannot be attributed safely";
 				await recordReceipt(rootSession, identity, entryId, child, "revival-failed", { reason });
 				report.failures.push({ id: child.id, reason });
-				continue;
+				return;
 			}
 			// Claim and flush before sending. A crash between claim and send is
 			// surfaced as unresolved on the next restore; it is never blindly retried.
@@ -903,7 +903,7 @@ export async function restoreSubagentsAfterRestart(
 			} catch (error) {
 				const reason = `continuation send failed after its durable claim: ${error instanceof Error ? error.message : String(error)}`;
 				report.failures.push({ id: child.id, reason });
-				continue;
+				return;
 			}
 			if (receipt.outcome === "failed") {
 				const reason = receipt.error ?? "IRC continuation was not delivered";
@@ -912,7 +912,7 @@ export async function restoreSubagentsAfterRestart(
 					reason,
 				});
 				report.failures.push({ id: child.id, reason });
-				continue;
+				return;
 			}
 			try {
 				await recordReceipt(rootSession, identity, entryId, child, "continuation-delivered", {
@@ -928,7 +928,13 @@ export async function restoreSubagentsAfterRestart(
 		} catch (error) {
 			report.failures.push({ id: child.id, reason: error instanceof Error ? error.message : String(error) });
 		}
+	};
+	// Child session I/O is independent; bound concurrent revival to avoid a
+	// startup memory spike while preventing one slow child from serializing all others.
+	for (let offset = 0; offset < childrenToRestore.length; offset += 4) {
+		await Promise.all(childrenToRestore.slice(offset, offset + 4).map(restoreChild));
 	}
+
 	emitReportNotice(rootSession, report);
 	return report;
 }
