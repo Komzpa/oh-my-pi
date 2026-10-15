@@ -435,8 +435,17 @@ import {
 	SessionAdvisors,
 	type SessionAdvisorsHost,
 } from "./session-advisors";
-import type { SessionContext, TranscriptSessionContextOptions } from "./session-context";
-import { buildSessionContext, getRestorableSessionModels, isTranscriptEntry } from "./session-context";
+import type {
+	BuildSessionContextOptions,
+	SessionContext,
+	TranscriptSessionContextOptions,
+} from "./session-context";
+import {
+	buildSessionContext,
+	createRestartNoticeFilter,
+	getRestorableSessionModels,
+	isTranscriptEntry,
+} from "./session-context";
 import type { CacheWarmer, CacheWarmingMode, CacheWarmingStatus, PromptCacheEntry } from "./cache-warmer";
 import { isUserRequestEntry, transcriptEntryMessage, userTurnDraft } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { anonymizeSessionTranscripts } from "./session-anonymizer";
@@ -462,7 +471,7 @@ import {
 	type PersistedSessionInit,
 	type SessionManager,
 } from "./session-manager";
-import { selectLatestRestartBranchEntry } from "../task/restart-branch-selection";
+import { selectLatestRestartBranchEntry, selectRestartBranchEntries } from "../task/restart-branch-selection";
 import { SessionMemory, type SessionMemoryHost } from "./session-memory";
 import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
@@ -7056,8 +7065,16 @@ export class AgentSession implements SettingsScope {
 			const entry = branch[index];
 			if (entry?.type !== "custom" || entry.customType !== RESTART_PENDING_QUEUES_CUSTOM_TYPE) continue;
 			if (!isRestartPendingQueues(entry.data)) return;
-			this.agent.replaceQueues(entry.data.steering, entry.data.followUp);
-			this.#pendingNextTurnMessages = entry.data.pendingNextTurn;
+			const keepRestartNotice = createRestartNoticeFilter(
+				selectRestartBranchEntries(
+					this.sessionManager,
+					metadata => metadata.type === "custom" && metadata.customType === "restart_request_transition",
+				),
+			);
+			const keepMessage = (message: AgentMessage): boolean =>
+				message.role !== "custom" || keepRestartNotice(message);
+			this.agent.replaceQueues(entry.data.steering.filter(keepMessage), entry.data.followUp.filter(keepMessage));
+			this.#pendingNextTurnMessages = entry.data.pendingNextTurn.filter(keepRestartNotice);
 			this.#restartPendingQueuesCheckpointActive = true;
 			return;
 		}

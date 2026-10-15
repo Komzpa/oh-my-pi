@@ -53,7 +53,7 @@ function restartNoticeTextContent(content: CustomMessageEntry["content"]): strin
 	return text;
 }
 
-function restartNoticeRequestId(entry: CustomMessageEntry): string | undefined {
+function restartNoticeRequestId(entry: Pick<CustomMessageEntry, "details" | "content">): string | undefined {
 	const details = entry.details;
 	if (details && typeof details === "object" && "requestId" in details) {
 		const requestId = details.requestId;
@@ -65,7 +65,7 @@ function restartNoticeRequestId(entry: CustomMessageEntry): string | undefined {
 	return /Restart ([A-Za-z0-9_.:-]+)/.exec(text)?.[1];
 }
 
-function restartNoticeDetailState(entry: CustomMessageEntry): string | undefined {
+function restartNoticeDetailState(entry: Pick<CustomMessageEntry, "details">): string | undefined {
 	const details = entry.details;
 	if (details && typeof details === "object" && "state" in details) {
 		const state = details.state;
@@ -86,6 +86,42 @@ function restartTransitionRecord(entry: SessionEntry): { requestId: string; stat
 	const state = record.state;
 	if (typeof requestId !== "string" || typeof state !== "string") return undefined;
 	return { requestId, state };
+}
+
+/** Reconcile transcript and pending-queue notices against the same restart journal. */
+export function createRestartNoticeFilter(
+	entries: readonly SessionEntry[],
+): (notice: Pick<CustomMessageEntry, "customType" | "content" | "details">) => boolean {
+	const restartLatestStateById = new Map<string, string>();
+	const restartLastIndexById = new Map<string, number>();
+	for (let index = 0; index < entries.length; index++) {
+		const entry = entries[index];
+		if (!entry) continue;
+		const record = restartTransitionRecord(entry);
+		if (!record) continue;
+		restartLatestStateById.set(record.requestId, record.state);
+		restartLastIndexById.set(record.requestId, index);
+	}
+	let latestRestartRequestId: string | undefined;
+	let latestRestartIndex = -1;
+	for (const requestId of restartLastIndexById.keys()) {
+		const index = restartLastIndexById.get(requestId) ?? -1;
+		if (index > latestRestartIndex) {
+			latestRestartIndex = index;
+			latestRestartRequestId = requestId;
+		}
+	}
+
+	return entry => {
+		if (entry.customType !== RESTART_QUEUED_NOTICE_TYPE) return true;
+		const detailState = restartNoticeDetailState(entry);
+		if (detailState !== undefined && RESTART_TERMINAL_STATE[detailState] === true) return true;
+		const requestId = restartNoticeRequestId(entry);
+		if (requestId === undefined) return true;
+		const latestState = restartLatestStateById.get(requestId);
+		if (latestState !== undefined && RESTART_TERMINAL_STATE[latestState] === true) return false;
+		return latestRestartRequestId === undefined || requestId === latestRestartRequestId;
+	};
 }
 
 function isRolloverRequestEntry(entry: SessionEntry): boolean {
@@ -359,29 +395,7 @@ export function buildSessionContext(
 	// with the wrong model id, which previously clobbered the user's pick on
 	// resume (issue #849).
 	let hasExplicitDefaultModel = false;
-	// Restart-queue journal over the resolved path: latest state per requestId
-	// plus which request restarted last. A queued notice is stale when its own
-	// request reached a terminal transition, or when a later restart superseded
-	// it — including notices written by older binaries with no terminal follow-up.
-	const restartLatestStateById = new Map<string, string>();
-	const restartLastIndexById = new Map<string, number>();
-	for (let index = 0; index < path.length; index++) {
-		const entry = path[index];
-		if (!entry) continue;
-		const record = restartTransitionRecord(entry);
-		if (!record) continue;
-		restartLatestStateById.set(record.requestId, record.state);
-		restartLastIndexById.set(record.requestId, index);
-	}
-	let latestRestartRequestId: string | undefined;
-	let latestRestartIndex = -1;
-	for (const requestId of restartLastIndexById.keys()) {
-		const index = restartLastIndexById.get(requestId) ?? -1;
-		if (index > latestRestartIndex) {
-			latestRestartIndex = index;
-			latestRestartRequestId = requestId;
-		}
-	}
+	const keepRestartNotice = createRestartNoticeFilter(path);
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
@@ -487,23 +501,7 @@ export function buildSessionContext(
 			) {
 				return;
 			}
-			if (!options?.transcript && entry.customType === RESTART_QUEUED_NOTICE_TYPE) {
-				// Terminal detection uses only the structured details.state: every
-				// queued notice's human-readable text also describes the terminal
-				// states ("resume normal work"), so content matching misfires on
-				// active notices. Notices without a structured state stay visible
-				// unless the journal resolves their requestId below.
-				const detailState = restartNoticeDetailState(entry);
-				const ownTerminal = detailState !== undefined && RESTART_TERMINAL_STATE[detailState] === true;
-				if (!ownTerminal) {
-					const requestId = restartNoticeRequestId(entry);
-					if (requestId !== undefined) {
-						const latestState = restartLatestStateById.get(requestId);
-						if (latestState !== undefined && RESTART_TERMINAL_STATE[latestState] === true) return;
-						if (latestRestartRequestId !== undefined && requestId !== latestRestartRequestId) return;
-					}
-				}
-			}
+			if (!options?.transcript && !keepRestartNotice(entry)) return;
 			const message = customMessageEntryMessage(entry);
 			if (message) pushMessage(message);
 		} else if (entry.type === "branch_summary" && entry.summary) {
