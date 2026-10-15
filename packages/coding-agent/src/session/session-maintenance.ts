@@ -1,3 +1,4 @@
+import { customMessageEntryMessage } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 /** Context maintenance for an active coding-agent session. */
 
 import { scheduler } from "node:timers/promises";
