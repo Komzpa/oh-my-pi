@@ -160,11 +160,20 @@ export class AgentProtocolHandler implements ProtocolHandler {
 	 * `read`, which would skip the previous-run banner {@link resolve} adds.
 	 */
 	async locate(url: InternalUrl, context?: ResolveContext): Promise<string | null> {
+		// A bounded restored roster may omit this worker; retain it before either
+		// output lookup or progress lookup, without changing the shared lookup path.
+		if (context?.sessionFile) {
+			await ensurePersistedRoster(
+				context.agentRegistry ?? AgentRegistry.global(),
+				context.sessionFile,
+				url.rawHost || url.hostname,
+			);
+		}
 		const outputId = url.rawHost || url.hostname;
 		if (!outputId) throw new Error("agent:// URL requires an output ID: agent://<id>");
 		if (outputId === "all" || hasPathExtraction(url)) return null;
 		if (isSuperseded(context?.agentRegistry ?? AgentRegistry.global(), outputId)) return null;
-		const dirs = await this.#outputDirs(context, outputId);
+		const dirs = await this.#outputDirs(context);
 		if (dirs.length === 0) return null;
 		return (await this.#findOutput(dirs, outputId)).foundPath ?? null;
 	}
@@ -205,6 +214,15 @@ export class AgentProtocolHandler implements ProtocolHandler {
 	}
 
 	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
+		// A bounded restored roster may omit this worker; retain it before either
+		// output lookup or progress lookup, without changing the shared lookup path.
+		if (context?.sessionFile) {
+			await ensurePersistedRoster(
+				context.agentRegistry ?? AgentRegistry.global(),
+				context.sessionFile,
+				url.rawHost || url.hostname,
+			);
+		}
 		const outputId = url.rawHost || url.hostname;
 		if (outputId === "all") throw new Error("agent://all is write-only; use it to broadcast a message.");
 		if (!outputId) {
@@ -213,7 +231,7 @@ export class AgentProtocolHandler implements ProtocolHandler {
 
 		const extraction = hasPathExtraction(url);
 
-		const dirs = await this.#outputDirs(context, outputId);
+		const dirs = await this.#outputDirs(context);
 		const scan = dirs.length > 0 ? await this.#findOutput(dirs, outputId) : undefined;
 		const registry = context?.agentRegistry ?? AgentRegistry.global();
 		if (!scan?.foundPath) {
@@ -358,16 +376,12 @@ export class AgentProtocolHandler implements ProtocolHandler {
 	 * the first-hit id map for a shared id. No caller session file: keep the
 	 * pre-existing global scan untouched.
 	 */
-	async #outputDirs(context: ResolveContext | undefined, requestedAgentId: string): Promise<string[]> {
+	async #outputDirs(context: ResolveContext | undefined): Promise<string[]> {
 		// A seance reads the consulted source's agent outputs in place, nothing else.
 		const seanceDir = context?.session?.seanceSourceArtifactsDir;
 		if (seanceDir) return [seanceDir];
 		const rootSessionFile = context?.sessionFile
-			? await ensurePersistedRoster(
-					context.agentRegistry ?? AgentRegistry.global(),
-					context.sessionFile,
-					requestedAgentId,
-				)
+			? await ensurePersistedRoster(AgentRegistry.global(), context.sessionFile)
 			: undefined;
 		return artifactsDirsFromRegistry(rootSessionFile ? { preferredDir: rootSessionFile.slice(0, -6) } : undefined);
 	}
