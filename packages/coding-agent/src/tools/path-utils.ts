@@ -8,6 +8,7 @@ import * as url from "node:url";
 import { glob } from "@oh-my-pi/pi-natives";
 import {
 	hasFsCode,
+	withTimeout,
 	isEnoent,
 	isEnotdir,
 	isWsl,
@@ -15,7 +16,11 @@ import {
 	windowsPathToWslMount,
 } from "@oh-my-pi/pi-utils";
 import { InternalUrlRouter } from "../internal-urls";
-import { hasExactMcpResource } from "../internal-urls/mcp-protocol";
+import {
+	hasExactMcpResource,
+	MCP_RESOURCE_DISCOVERY_TIMEOUT,
+	MCP_RESOURCE_DISCOVERY_WAIT_MS,
+} from "../internal-urls/mcp-protocol";
 import { MCPManager } from "../mcp/manager";
 import type { ResolveContext } from "../internal-urls/types";
 import { type InternalUrlFilesystem, joinUrlPath, UrlFsError } from "../internal-urls/url-filesystem";
@@ -790,15 +795,16 @@ async function internalUrlLocatesExisting(entry: string, cwd: string, context?: 
 
 async function internalUrlIsExactMcpResource(entry: string, signal?: AbortSignal): Promise<boolean> {
 	if (!MCPManager.available()) return false;
-	try {
-		const manager = await MCPManager.load();
-		return manager
-			? await hasExactMcpResource(manager, parseInternalUrl(InternalUrlRouter.instance().normalize(entry)), signal)
-			: false;
-	} catch (error) {
-		if (signal?.aborted) throw error;
-		return false;
-	}
+	const deadline = Date.now() + MCP_RESOURCE_DISCOVERY_WAIT_MS;
+	const manager = await withTimeout(
+		MCPManager.load(),
+		MCP_RESOURCE_DISCOVERY_WAIT_MS,
+		MCP_RESOURCE_DISCOVERY_TIMEOUT,
+		signal,
+	);
+	if (!manager) return false;
+	const { path } = InternalUrlRouter.instance().split(entry);
+	return hasExactMcpResource(manager, parseInternalUrl(path), signal, Math.max(0, deadline - Date.now()));
 }
 
 /**
