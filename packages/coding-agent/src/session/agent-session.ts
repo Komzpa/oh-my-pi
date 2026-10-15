@@ -10145,9 +10145,8 @@ export class AgentSession implements SettingsScope {
 	 * Handles three cases:
 	 * - Streaming: queue as steer/follow-up, aside (next step boundary), or store for next turn
 	 * - Not streaming + triggerTurn: appends to state/session, starts new turn unless the client cannot own it
-	 * - Not streaming + no trigger: appends to state/session, no turn; with the default delivery
-	 *   (no deliverAs) a display:true message also paints to the interactive transcript
-	 *   immediately (message_start/message_end, no turn)
+	 * - Not streaming + no trigger: appends to state/session, no turn; a display:true message
+	 *   also paints to the interactive transcript immediately (message_start/message_end, no turn)
 	 *
 	 * @returns true iff this call synchronously started a new turn (awaited
 	 * `agent.prompt`); false when the message was queued/appended without a turn
@@ -10272,15 +10271,8 @@ export class AgentSession implements SettingsScope {
 				});
 				return outcome.sessionClaimed;
 			}
-			this.agent.appendMessage(normalizedAppMessage);
-			this.sessionManager.appendCustomMessageEntry(
-				normalizedAppMessage.customType,
-				normalizedAppMessage.content,
-				normalizedAppMessage.display,
-				normalizedAppMessage.details,
-				normalizedAppMessage.attribution,
-			);
-			return false;
+			// An idle non-triggering nextTurn message is already being appended now.
+			// Use the shared append path below so display:true also paints immediately.
 		}
 
 		if (options?.deliverAs === "aside") {
