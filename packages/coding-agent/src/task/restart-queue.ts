@@ -282,11 +282,7 @@ function parseTransition(entry: SessionEntry, entryIndex: number): StoredRestart
 }
 
 /** Label the notice itself; legacy notices without a state use the persisted journal. */
-export function restartNoticeText(
-	entries: readonly SessionEntry[],
-	requestId: string,
-	noticeState?: RestartRequestState,
-): string {
+export function restartNoticeText(entries: readonly SessionEntry[], requestId: string, noticeState?: unknown): string {
 	let latest: RestartRequestRecord | undefined;
 	for (let index = 0; index < entries.length; index++) {
 		const entry = entries[index];
