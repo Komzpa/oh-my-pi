@@ -16,6 +16,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { getBundledAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { resolveModelOverrideWithAuthFallback } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import type { AgentCompactionThresholdOverride } from "@oh-my-pi/pi-coding-agent/config/compaction-threshold";
@@ -37,6 +38,7 @@ import * as isolationRunner from "@oh-my-pi/pi-coding-agent/task/isolation-runne
 import {
 	buildStructuredSubagentRecoveryHint,
 	resolveEffectiveSubagentPolicy,
+	resolveRouterChosenEffort,
 	runStructuredSubagent,
 	StructuredSubagentError,
 	type StructuredSubagentRequest,
@@ -49,6 +51,16 @@ import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 
 import { cfgRetryModelFallback } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { cfgTaskAgentModelOverrides, cfgTaskEnableEffort } from "@oh-my-pi/pi-coding-agent/task/settings";
+
+describe("router-chosen effort", () => {
+	it("uses only a recognized effort from the first router choice", () => {
+		expect(resolveRouterChosenEffort(["openai/model:high", "other/model:low"])).toBe(Effort.High);
+		expect(resolveRouterChosenEffort([" openai/model:HIGH "])).toBe(Effort.High);
+		expect(resolveRouterChosenEffort(["openai/model:unknown", "other/model:high"])).toBeUndefined();
+		expect(resolveRouterChosenEffort(["provider:region/model"])).toBeUndefined();
+		expect(resolveRouterChosenEffort(undefined)).toBeUndefined();
+	});
+});
 
 const AGENT: AgentDefinition = {
 	name: "worker",
