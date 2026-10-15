@@ -803,7 +803,7 @@ export class SessionMaintenance {
 	 * skips the disk rewrite.
 	 */
 	async dropImages(): Promise<{ removed: number; tokensFreed: number }> {
-		const branchEntries = this.#host.sessionManager.getRawBranch();
+		const branchEntries = this.#host.sessionManager.getBranch();
 		const countOptions = { excludeEncryptedReasoning: true } as const;
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
@@ -855,6 +855,18 @@ export class SessionMaintenance {
 			removed += dropped;
 			tokensFreed += saved;
 			if (anchored) anchoredTokensRemoved += saved;
+		}
+		// Prune projections hide images without deleting their raw payloads.
+		// Strip those payloads too, but charge only the visible projection above.
+		for (const entry of this.#host.sessionManager.getRawBranch()) {
+			if (entry.type === "message") {
+				removed += stripImagesFromMessage(entry.message);
+			} else if (entry.type === "custom_message" && typeof entry.content !== "string") {
+				const kept = entry.content.filter(part => part.type !== "image");
+				if (kept.length === entry.content.length) continue;
+				removed += entry.content.length - kept.length;
+				entry.content = kept.length > 0 ? kept : [{ type: "text", text: "[image removed]" }];
+			}
 		}
 		if (removed === 0) {
 			return { removed: 0, tokensFreed: 0 };
