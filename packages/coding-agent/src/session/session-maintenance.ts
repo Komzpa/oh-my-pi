@@ -803,7 +803,7 @@ export class SessionMaintenance {
 	 * skips the disk rewrite.
 	 */
 	async dropImages(): Promise<{ removed: number; tokensFreed: number }> {
-		const branchEntries = this.#host.sessionManager.getBranch();
+		const branchEntries = this.#host.sessionManager.getRawBranch();
 		const countOptions = { excludeEncryptedReasoning: true } as const;
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
@@ -812,8 +812,7 @@ export class SessionMaintenance {
 		let removed = 0;
 		let tokensFreed = 0;
 		let anchoredTokensRemoved = 0;
-		// Raw entries retain images hidden by append-only prune projections.
-		for (const [index, entry] of this.#host.sessionManager.getRawBranch().entries()) {
+		for (const [index, entry] of branchEntries.entries()) {
 			// Only entries the anchor's provider-reported prompt already carried may
 			// be subtracted from it, and a remote compaction's replacement history
 			// hides everything before its cutoff from the wire.
