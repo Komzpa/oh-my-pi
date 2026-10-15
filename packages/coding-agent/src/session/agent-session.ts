@@ -408,6 +408,7 @@ import {
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
 import { ModelControls, type ModelControlsHost } from "./model-controls";
+import { createRestartNoticeFilter } from "./session-context";
 import {
 	isPrewalkPlanNudge,
 	PrewalkCoordinator,
@@ -439,7 +440,6 @@ import type {
 } from "./session-context";
 import {
 	buildSessionContext,
-	createRestartNoticeFilter,
 	getRestorableSessionModels,
 	isTranscriptEntry,
 } from "./session-context";
