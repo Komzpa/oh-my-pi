@@ -821,7 +821,7 @@ export class SessionMaintenance {
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
 		const hasRemoteReplacementHistory = getOpenAiRemoteCompactionPayload(latestCompaction) !== undefined;
 		const anchorIndex = findUsageAnchorIndex(branchEntries, compactionIndex);
-		let removed = this.#dropHiddenPrunedImages(branchEntries);
+		let removed = 0;
 		let tokensFreed = 0;
 		let anchoredTokensRemoved = 0;
 		for (const [index, entry] of branchEntries.entries()) {
@@ -868,6 +868,8 @@ export class SessionMaintenance {
 			tokensFreed += saved;
 			if (anchored) anchoredTokensRemoved += saved;
 		}
+		// Detached prune projections hide raw images from token accounting.
+		removed += this.#dropHiddenPrunedImages(branchEntries);
 		if (removed === 0) {
 			return { removed: 0, tokensFreed: 0 };
 		}
