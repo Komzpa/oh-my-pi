@@ -49,6 +49,7 @@ import {
 	cfgTuiMaxInlineImages,
 	cfgTuiResizeScrollback,
 } from "@oh-my-pi/pi-coding-agent/modes/settings";
+import { assistantMsg } from "./utilities";
 
 class CountingTerminal extends VirtualTerminal {
 	starts = 0;
