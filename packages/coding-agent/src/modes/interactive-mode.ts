@@ -2481,7 +2481,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		});
 		const restartResumePending = isRestartResumePending(
-			this.sessionManager.getBranch(),
+			this.sessionManager,
 			this.sessionManager.getSessionId(),
 			this.#restartInstanceId,
 		);

@@ -337,10 +337,14 @@ export function formatRestartRequestStatus(record: RestartRequestRecord | null, 
 
 /** Only a checkpoint from the previous process licenses active-goal recovery. */
 export function isRestartResumePending(
-	entries: readonly SessionEntry[],
+	source: Parameters<typeof selectRestartBranchEntries>[0],
 	sessionId: string,
 	instanceId: string,
 ): boolean {
+	const entries = selectRestartBranchEntries(
+		source,
+		metadata => metadata.type === "custom" && metadata.customType === RESTART_REQUEST_TRANSITION_TYPE,
+	);
 	let latest: StoredRestartRequest | undefined;
 	for (let index = 0; index < entries.length; index++) {
 		const entry = entries[index];
