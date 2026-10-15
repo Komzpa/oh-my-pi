@@ -322,10 +322,11 @@ function copyTodoData<T>(value: T): T {
 	return copy as T;
 }
 
+// Borrow persisted snapshots while scanning; copy only before mutation or returning restored data.
 function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
 	if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
 		const phases = (entry.data as { phases?: unknown } | undefined)?.phases;
-		return Array.isArray(phases) ? copyTodoData(phases as TodoPhase[]) : undefined;
+		return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
 	}
 	if (entry.type !== "message") return undefined;
 	const message = entry.message as {
@@ -337,7 +338,7 @@ function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
 	if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) return undefined;
 	if (message.details?.op === "view") return undefined;
 	const phases = message.details?.phases;
-	return Array.isArray(phases) ? copyTodoData(phases as TodoPhase[]) : undefined;
+	return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
 }
 
 function isTodoReworkAttempt(value: unknown): value is TodoReworkAttempt {
@@ -438,7 +439,7 @@ function replayTodoEdit(
 		!(edit.kind === "archive" && edit.operation?.op === "init")
 	)
 		return undefined;
-	const current = phases ? (options.mutable ? phases : clonePhases(phases)) : [];
+	const current = phases ? (options.mutable ? phases : copyTodoData(phases)) : [];
 	if (edit.kind === "executor") {
 		const updated = applyTodoExecutorObservation(current, {
 			...edit.observation,
@@ -588,13 +589,15 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 		if (!phases) continue;
 		latest = phases;
 		mutable = false;
-		const completedTasks = new Set<string>();
-		for (const phase of phases) {
-			for (const task of phase.tasks) {
-				if (task.status === "completed") completedTasks.add(todoTransitionKey(phase.name, task.content));
+		if (completionTimes.size > 0) {
+			const completedTasks = new Set<string>();
+			for (const phase of phases) {
+				for (const task of phase.tasks) {
+					if (task.status === "completed") completedTasks.add(todoTransitionKey(phase.name, task.content));
+				}
 			}
+			for (const key of completionTimes.keys()) if (!completedTasks.has(key)) completionTimes.delete(key);
 		}
-		for (const key of completionTimes.keys()) if (!completedTasks.has(key)) completionTimes.delete(key);
 		if (entry.type !== "message") continue;
 		const message = entry.message as {
 			role?: string;
@@ -625,7 +628,7 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 		}
 	}
 	if (!latest) return [];
-	const restored = clonePhases(latest);
+	const restored = copyTodoData(latest);
 	for (const phase of restored) {
 		for (const task of phase.tasks) {
 			if (task.status !== "completed" || Number.isFinite(task.schedule?.finishedAt)) continue;

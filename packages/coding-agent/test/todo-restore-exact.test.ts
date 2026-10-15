@@ -177,6 +177,41 @@ describe("exact todo restoration", () => {
 		expect(() => structuredClone(replayed)).not.toThrow();
 	});
 
+	it("restored values and compact replay cannot mutate a persisted branch", () => {
+		const original = structuredClone(phases);
+		const snapshot = {
+			type: "custom",
+			id: "snapshot",
+			parentId: null,
+			customType: USER_TODO_EDIT_CUSTOM_TYPE,
+			data: { phases: original },
+		} as unknown as SessionEntry;
+		const edit = {
+			type: "custom",
+			id: "edit",
+			parentId: "snapshot",
+			customType: USER_TODO_EDIT_CUSTOM_TYPE,
+			data: {
+				edit: {
+					v: 1,
+					kind: "op",
+					at: 1_791_200_000_000,
+					op: "done",
+					params: { op: "done", task: "Implement" },
+				},
+			},
+		} as unknown as SessionEntry;
+		const restored = getLatestTodoPhasesFromEntries([snapshot, edit]);
+		expect(restored[0]!.tasks[0]!.status).toBe("completed");
+		restored[0]!.tasks[0]!.schedule!.resources!.push("mutated");
+		restored[0]!.tasks[0]!.notes!.push("mutated");
+		expect(original).toEqual(phases);
+		expect(getLatestTodoPhasesFromEntries([snapshot])).toEqual(phases);
+		const repeated = getLatestTodoPhasesFromEntries([snapshot, edit]);
+		expect(repeated[0]!.tasks[0]!.schedule!.resources).toEqual(["cpu", "reviewer"]);
+		expect(repeated[0]!.tasks[0]!.status).toBe("completed");
+	});
+
 	it("restores committed compact edits, renames and archives after a restart checkpoint", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "omp-todo-restart-"));
 		directories.push(directory);
