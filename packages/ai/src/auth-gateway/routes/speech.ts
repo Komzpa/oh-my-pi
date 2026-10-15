@@ -1,3 +1,4 @@
+import { ValidationError } from "../../error/validation";
 import { logger } from "@oh-my-pi/pi-utils";
 import { classifyGatewayError } from "../../error/gateway";
 import { ValidationError } from "../../error/validation";
@@ -92,6 +93,11 @@ export async function handleSpeech(bootOpts: AuthGatewayRouteOptions, req: Reque
 		return response;
 	} catch (error) {
 		if (controller.signal.aborted) return aborted();
+		// Adapter validation is a client error: the wire schema admits values the
+		// adapter cannot serve, and the classifier would bill them as a 502.
+		if (error instanceof ValidationError) {
+			return speechWire.formatError(400, "invalid_request_error", error.message);
+		}
 		observeGatewayProviderFailure(bootOpts.storage, model, error);
 		// Adapter validation is a client error: the wire schema admits values the
 		// adapter cannot serve, and the classifier would bill them as a 502.

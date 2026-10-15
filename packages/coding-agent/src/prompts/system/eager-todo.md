@@ -3,7 +3,7 @@
 Before substantive work, create the entire phased plan, not only the next action.
 
 You MUST call `{{toolRefs.todo}}` first in this turn. This forced call is the one exception to `{{toolRefs.todo}}` never taking a turn of its own; later updates go beside real tool calls.
-You MUST initialize the todo list with a single `init` op; preserve all user-stated requirements and separate independently executable work.
+Initialize every requested work item in one `init` operation; preserve all user-stated requirements and separate independently executable work.
 You MUST cover the entire request from investigation through implementation and verification — not just the next immediate step.
 Task descriptions MUST be concise, specific 5-10 word labels.
 The `init` op accepts phases and task-label strings only. Then use `schedule` to establish estimates and dependencies for EVERY unfinished task, including blocked future work, before continuing affected implementation.
