@@ -34,7 +34,6 @@ import {
 	isTranscriptUsageAnchor,
 	NativeCompactionError,
 	prepareCompaction,
-	promptBudgetTokens,
 	RESCUE_SHAKE_CONFIG,
 	remotePreserveReusable,
 	resolveBudgetReserveTokens,
@@ -108,7 +107,7 @@ import {
 } from "./role-models";
 import type { SessionContext } from "./session-context";
 import { buildSessionContext, getLatestCompactionEntry, getOpenAiRemoteCompactionPayload } from "./session-context";
-import type { CompactionEntry, SessionEntry, SessionMessageEntry } from "./session-entries";
+import type { CompactionEntry, SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { resolveSpeculationLeadTokens, SPECULATION_LEAD_MIN_TOKENS } from "./speculation-lead";
@@ -252,6 +251,19 @@ function hasExplicitMediaRejectionEvidence(errorMessage: string | undefined): bo
 }
 
 /**
+ * User-facing notice for a compaction dead end: maintenance freed too little
+ * to retry safely. `remedies` names the recovery actions left on the emitting
+ * path — by the time the post-pass dead end fires, the tiered rescue has
+ * already attempted both elide and image-drop automatically.
+ */
+function compactionDeadEndWarning(remedies: string): string {
+	return (
+		"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. " +
+		`The most recent turn alone is too large to reduce further; ${remedies} or switch to a larger-context model.`
+	);
+}
+
+/**
  * Newest usage-anchor entry strictly after `compactionIndex`, or -1 when the
  * branch carries none. Shared by the image, thinking and tool-result shake
  * passes so all three subtract pre-anchor savings on the same basis.
@@ -381,12 +393,6 @@ function mergeLlmCompactionPreserveData(
 ): Record<string, unknown> | undefined {
 	const preserveData = { ...hookPreserveData, ...resultPreserveData };
 	return snapcompact.stripPreservedArchive(Object.keys(preserveData).length > 0 ? preserveData : undefined);
-}
-
-/** Demand only the latest compaction payload. */
-function latestBranchCompactionEntry(sessionManager: SessionManager): CompactionEntry | null {
-	const entry = sessionManager.getLatestBranchMatching(metadata => metadata.type === "compaction");
-	return entry?.type === "compaction" ? entry : null;
 }
 
 /** Wrap a handoff document as a compaction summary: append the cumulative file-operations tag and derive entry details. */
@@ -644,7 +650,7 @@ export class SessionMaintenance {
 		const thresholdTokens = resolveThresholdTokens(contextWindow, settings);
 		if (contextTokens >= thresholdTokens) return;
 		if (thresholdTokens - contextTokens > resolveSpeculationLeadTokens(thresholdTokens)) return;
-		const branch = this.#host.sessionManager.getContextBranch();
+		const branch = this.#host.sessionManager.getBranch();
 		const boundaryId =
 			branch.findLast(entry => entry.type === "compaction" || entry.type === "reset_boundary")?.id ??
 			branch[0]?.id ??
@@ -705,20 +711,6 @@ export class SessionMaintenance {
 	#emitLifecycleEvent(event: AgentSessionEvent, detach: boolean): Promise<void> {
 		return this.#host.emitSessionEvent(event, detach ? { detachExtensions: true } : undefined);
 	}
-	/** Register only the mutable producer's selected revisions and its rollback. */
-	#registerPruneUpdates(
-		result: { prunedCount: number; undo?: () => void },
-		selectedEntries: readonly SessionMessageEntry[],
-	): void {
-		if (result.prunedCount === 0 || !result.undo) return;
-		const undo = result.undo;
-		for (const entry of selectedEntries) this.#host.sessionManager.updateEntry(entry);
-		result.undo = () => {
-			undo();
-			for (const entry of selectedEntries) this.#host.sessionManager.updateEntry(entry);
-		};
-	}
-
 	/**
 	 * Append plan-read protection to a prune/shake config so the active plan
 	 * file survives compaction alongside skill reads (the config defaults
@@ -746,16 +738,14 @@ export class SessionMaintenance {
 	}
 
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
-		const branchEntries = this.#host.sessionManager.getContextBranch();
+		const branchEntries = this.#host.sessionManager.getBranchView();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
 		const model = this.#host.model();
-		const selectedEntries: SessionMessageEntry[] = [];
 		const result = pruneToolOutputs(
 			branchEntries,
 			this.#tokenizer,
 			this.#withPlanProtection({
 				...DEFAULT_PRUNE_CONFIG,
-				selectedEntries,
 				pruneUseless: this.#compactionSettings.dropUseless,
 				// Cache-stable boundary: never re-write the warm, already-sent prefix
 				// (deep stale/age victims) or summarized-away entries every turn.
@@ -766,7 +756,6 @@ export class SessionMaintenance {
 				convertToLlm,
 			}),
 		);
-		this.#registerPruneUpdates(result, selectedEntries);
 		if (result.prunedCount === 0) {
 			return undefined;
 		}
@@ -789,17 +778,15 @@ export class SessionMaintenance {
 	async #pruneStaleToolResults(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const { supersedeReads, dropUseless } = this.#compactionSettings;
 		if (!supersedeReads && !dropUseless) return undefined;
-		const branchEntries = this.#host.sessionManager.getContextBranch();
+		const branchEntries = this.#host.sessionManager.getBranchView();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
 		const model = this.#host.model();
-		const selectedEntries: SessionMessageEntry[] = [];
 		const result = pruneSupersededToolResults(
 			branchEntries,
 			this.#tokenizer,
 			this.#withPlanProtection({
 				supersedeKey: supersedeReads ? readToolSupersedeKey : undefined,
 				supersedeComplete: isCompleteReadResult,
-				selectedEntries,
 				pruneUseless: dropUseless,
 				protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools],
 				// Never re-write summarized-away entries; only flush the whole sent
@@ -812,7 +799,6 @@ export class SessionMaintenance {
 				convertToLlm,
 			}),
 		);
-		this.#registerPruneUpdates(result, selectedEntries);
 		if (result.prunedCount === 0) {
 			return undefined;
 		}
@@ -823,21 +809,15 @@ export class SessionMaintenance {
 
 	/**
 	 * Strip image content blocks from every message on the current branch and
-	 * persist the rewrite. Iterates the demanded branch in place — both
+	 * persist the rewrite. Walks `SessionManager.getBranch()` in place — both
 	 * `SessionMessageEntry.message` and `CustomMessageEntry.content` arrays
 	 * are mutated, then `rewriteEntries` durably commits the new shape. The
 	 * agent's runtime view is rebuilt from the freshly-mutated entries so any
 	 * provider sessions caching message identity (Codex Responses) are torn
 	 * down to force a clean replay on the next turn.
 	 *
-	 * Every stripped block is measured with the active tokenizer so callers can
-	 * report real savings, and the share of those savings that predates the
-	 * transcript usage anchor is recorded against it. Without that correction
-	 * the anchor keeps charging the provider-reported prompt for images that are
-	 * gone and the context meter reads stale-high until the next response.
-	 *
-	 * No-op when the branch carries no images; returns `{ removed: 0, tokensFreed: 0 }`
-	 * and skips the disk rewrite.
+	 * No-op when the branch carries no images; returns `{ removed: 0 }` and
+	 * skips the disk rewrite.
 	 */
 	async dropImages(): Promise<{ removed: number; tokensFreed: number }> {
 		const branchEntries = this.#host.sessionManager.getBranch();
@@ -937,26 +917,22 @@ export class SessionMaintenance {
 		}
 
 		if (mode === "thinking") {
-			const latestCompaction = latestBranchCompactionEntry(this.#host.sessionManager);
-			let compactionIndex = -1;
+			const branchEntries = this.#host.sessionManager.getBranch();
+			const latestCompaction = getLatestCompactionEntry(branchEntries);
+			const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
 			const hasRemoteReplacementHistory = getOpenAiRemoteCompactionPayload(latestCompaction) !== undefined;
 			let anchorIndex = -1;
-			let index = 0;
-			for (const entry of this.#host.sessionManager.iterateBranch()) {
-				if (entry.id === latestCompaction?.id) {
-					compactionIndex = index;
-					anchorIndex = -1;
-				}
-				if (entry.type === "message" && isTranscriptUsageAnchor(entry.message)) anchorIndex = index;
-				index++;
+			for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
+				const entry = branchEntries[index];
+				if (entry.type !== "message" || !isTranscriptUsageAnchor(entry.message)) continue;
+				anchorIndex = index;
+				break;
 			}
 			let removed = 0;
 			let tokensFreed = 0;
 			let anchoredTokensRemoved = 0;
 			const countOptions = { excludeEncryptedReasoning: true } as const;
-			index = -1;
-			for (const entry of this.#host.sessionManager.iterateBranch()) {
-				index++;
+			for (const [index, entry] of branchEntries.entries()) {
 				if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 				const message = entry.message;
 				const kept = message.content.filter(
@@ -969,7 +945,6 @@ export class SessionMaintenance {
 				const before = this.#tokenizer.countMessage(message, countOptions);
 				// Provider serializers omit empty assistant turns, so don't invent model-authored text.
 				message.content = kept;
-				this.#host.sessionManager.updateEntry(entry);
 				invalidateMessageCache(message);
 				const saved = Math.max(0, before - this.#tokenizer.countMessage(message, countOptions));
 				tokensFreed += saved;
@@ -994,7 +969,7 @@ export class SessionMaintenance {
 			if (opts.signal?.aborted || opts.isCurrent?.() === false) throw new CompactionCancelledError();
 		};
 		assertCurrent();
-		const branchEntries = this.#host.sessionManager.getContextBranch();
+		const branchEntries = this.#host.sessionManager.getBranch();
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const config = this.#withPlanProtection({
 			...(opts.config ?? AGGRESSIVE_SHAKE_CONFIG),
@@ -1056,7 +1031,13 @@ export class SessionMaintenance {
 		assertCurrent();
 		const hasRemoteReplacementHistory = getOpenAiRemoteCompactionPayload(latestCompaction) !== undefined;
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
-		const anchorIndex = findUsageAnchorIndex(branchEntries, compactionIndex);
+		let anchorIndex = -1;
+		for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
+			const entry = branchEntries[index];
+			if (entry.type !== "message" || !isTranscriptUsageAnchor(entry.message)) continue;
+			anchorIndex = index;
+			break;
+		}
 		const entryIndexes = new Map(branchEntries.map((entry, index) => [entry, index]));
 
 		let toolResultsDropped = 0;
@@ -1090,15 +1071,11 @@ export class SessionMaintenance {
 		if (anchorEntry && !entrySnapshots.has(anchorEntry))
 			entrySnapshots.set(anchorEntry, structuredClone(anchorEntry));
 		applyShakeRegions(items);
-		for (const entry of entrySnapshots.keys()) this.#host.sessionManager.updateEntry(entry);
 		try {
 			this.#host.recordAnchoredHistoryRewrite(anchoredTokensRemoved);
 			await this.#host.sessionManager.rewriteEntries();
 		} catch (error) {
-			for (const [entry, snapshot] of entrySnapshots) {
-				Object.assign(entry, snapshot);
-				this.#host.sessionManager.updateEntry(entry);
-			}
+			for (const [entry, snapshot] of entrySnapshots) Object.assign(entry, snapshot);
 			const sessionContext = this.#host.buildDisplaySessionContext();
 			this.#host.agent.replaceMessages(sessionContext.messages);
 			throw error;
@@ -1337,7 +1314,7 @@ export class SessionMaintenance {
 					markCommitted,
 				);
 			}
-			const pathEntries = this.#host.sessionManager.getContextBranch();
+			const pathEntries = this.#host.sessionManager.getBranch();
 			const preparation = prepareCompaction(pathEntries, effectiveSettings, activeModel, this.#tokenizer);
 			if (!preparation) {
 				// Check why we can't compact
@@ -1688,7 +1665,7 @@ export class SessionMaintenance {
 		signalController: AbortController,
 		onCommitted: () => void,
 	): Promise<CompactionResult> {
-		const entries = this.#host.sessionManager.getContextBranch();
+		const entries = this.#host.sessionManager.getBranch();
 		const settings = this.#compactionSettings;
 		const preparation = prepareCompaction(entries, settings, model, this.#tokenizer);
 		if (!preparation)
@@ -1717,7 +1694,7 @@ export class SessionMaintenance {
 			signalController.signal.aborted ||
 			!this.#usesExperimentalContextManagement() ||
 			this.#host.sessionId() !== sourceSessionId ||
-			this.#host.sessionManager.getLeafId() !== sourceLeafId ||
+			this.#host.sessionManager.getBranch().at(-1)?.id !== sourceLeafId ||
 			(this.#model && `${this.#model.provider}/${this.#model.id}` !== sourceModel)
 		) {
 			throw new CompactionCancelledError(undefined, { cause: signalController.signal.reason });
@@ -1729,7 +1706,7 @@ export class SessionMaintenance {
 			signalController.signal.aborted ||
 			!this.#usesExperimentalContextManagement() ||
 			this.#host.sessionId() !== sourceSessionId ||
-			this.#host.sessionManager.getLeafId() !== sourceLeafId ||
+			this.#host.sessionManager.getBranch().at(-1)?.id !== sourceLeafId ||
 			(this.#model && `${this.#model.provider}/${this.#model.id}` !== sourceModel)
 		) {
 			throw new CompactionCancelledError(undefined, { cause: signalController.signal.reason });
@@ -1794,7 +1771,7 @@ export class SessionMaintenance {
 		const model = this.#model;
 		if (!model || this.isCompacting) return COMPACTION_CHECK_NONE;
 		const settings = this.#compactionSettings;
-		const branch = this.#host.sessionManager.getContextBranch();
+		const branch = this.#host.sessionManager.getBranch();
 		const preparation = prepareCompaction(branch, settings, model, this.#tokenizer);
 		if (!preparation) return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
 		const sourceLeafId = branch.at(-1)?.id;
@@ -1834,7 +1811,7 @@ export class SessionMaintenance {
 				const hookResult = (await this.#host.extensionRunner.emit({
 					type: "session_before_compact",
 					preparation,
-					branchEntries: this.#host.sessionManager.getContextBranch(),
+					branchEntries: this.#host.sessionManager.getBranch(),
 					customInstructions: undefined,
 					signal: controller.signal,
 				})) as SessionBeforeCompactResult | undefined;
@@ -1878,7 +1855,7 @@ export class SessionMaintenance {
 				controller.signal.aborted ||
 				!this.#usesExperimentalContextManagement() ||
 				this.#host.sessionId() !== sourceSessionId ||
-				this.#host.sessionManager.getLeafId() !== sourceLeafId ||
+				this.#host.sessionManager.getBranch().at(-1)?.id !== sourceLeafId ||
 				(this.#model && `${this.#model.provider}/${this.#model.id}` !== sourceModel)
 			) {
 				await this.#emitLifecycleEvent(
@@ -1945,11 +1922,10 @@ export class SessionMaintenance {
 				detachPostCommit,
 			);
 			if (!safeToContinue) {
-				const warning = this.#compactionDeadEndWarning("clear large tool output");
-				const entry = latestBranchCompactionEntry(this.#host.sessionManager);
+				const warning = compactionDeadEndWarning("clear large tool output");
+				const entry = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
 				if (entry) {
 					entry.warning = warning;
-					this.#host.sessionManager.updateEntry(entry);
 					await this.#host.sessionManager.rewriteEntries();
 				}
 				this.#host.emitNotice("warning", warning, "compaction");
@@ -2130,7 +2106,7 @@ export class SessionMaintenance {
 		this.cancelSpeculation();
 		const model = this.#model;
 		if (!model) throw new Error("No model selected for handoff");
-		const entries = this.#host.sessionManager.getContextBranch();
+		const entries = this.#host.sessionManager.getBranch();
 		const messageCount = entries.filter(e => e.type === "message").length;
 		if (messageCount < 2) throw new Error("Nothing to hand off (no messages yet)");
 		const compactionSettings = this.#compactionSettings;
@@ -2322,7 +2298,7 @@ export class SessionMaintenance {
 		if (!model) return clear();
 		const settings = this.#compactionSettings;
 		const effectiveSettings = resolveMethodSettings(settings, method);
-		const branch = this.#host.sessionManager.getContextBranch();
+		const branch = this.#host.sessionManager.getBranch();
 		const snapshotLeafId = branch[branch.length - 1]?.id;
 		if (!snapshotLeafId) return clear();
 		const preparation = prepareCompaction(branch, effectiveSettings, model, this.#tokenizer);
@@ -2428,24 +2404,17 @@ export class SessionMaintenance {
 		) {
 			return false;
 		}
-		let snapshotFound = false;
-		let hasLaterEntries = false;
-		let keptFound = false;
-		let hasLaterBoundary = false;
-		this.#host.sessionManager.getBranchMatching(metadata => {
-			if (metadata.id === armed.result.firstKeptEntryId) keptFound = true;
-			if (snapshotFound) {
-				hasLaterEntries = true;
-				if (metadata.type === "compaction" || metadata.type === "reset_boundary") hasLaterBoundary = true;
-			}
-			if (metadata.id === armed.snapshotLeafId) snapshotFound = true;
-			return false;
-		});
-		if (hasLaterBoundary) return false;
-		if (!snapshotFound) return false;
-		if (hasLaterEntries) {
+		const branch = this.#host.sessionManager.getBranch();
+		const leafIdx = branch.findIndex(entry => entry.id === armed.snapshotLeafId);
+		if (leafIdx < 0) return false;
+		for (let i = leafIdx + 1; i < branch.length; i++) {
+			const type = branch[i].type;
+			if (type === "compaction" || type === "reset_boundary") return false;
+		}
+		if (leafIdx < branch.length - 1) {
+			const keptIdx = branch.findIndex(entry => entry.id === armed.result.firstKeptEntryId);
 			const nativeAnthropic = isRecord(armed.result.preserveData?.anthropicCompaction);
-			if (!keptFound && !(nativeAnthropic && armed.result.firstKeptEntryId === "")) return false;
+			if (keptIdx < 0 && !(nativeAnthropic && armed.result.firstKeptEntryId === "")) return false;
 			// The signed Anthropic block replaces exactly its snapshot prefix.
 			// Extra turns are outside the block, so growth alone cannot stale it.
 			if (nativeAnthropic) return true;
@@ -2552,6 +2521,7 @@ export class SessionMaintenance {
 		this.#host.persistEvalStateContext();
 		// A committed compaction starts a new cycle; native compaction gets a fresh try.
 		this.#failedNativeSpeculation = undefined;
+		const newEntries = this.#host.sessionManager.getEntries();
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
 		this.#host.rebaseAfterCompaction();
@@ -2566,8 +2536,9 @@ export class SessionMaintenance {
 		} else {
 			this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		}
-		const savedEntry = this.#host.sessionManager.getEntry(entryId);
-		const savedCompactionEntry = savedEntry?.type === "compaction" ? savedEntry : undefined;
+		const savedCompactionEntry = newEntries.find(e => e.type === "compaction" && e.id === entryId) as
+			| CompactionEntry
+			| undefined;
 		if (this.#host.extensionRunner && savedCompactionEntry) {
 			const compactEmit = this.#host.extensionRunner.emit({
 				type: "session_compact",
@@ -2675,7 +2646,7 @@ export class SessionMaintenance {
 		}
 		if (
 			pendingMidTurnDeadEnd &&
-			prepareCompaction(this.#host.sessionManager.getContextBranch(), compactionSettings, model, this.#tokenizer) ===
+			prepareCompaction(this.#host.sessionManager.getBranch(), compactionSettings, model, this.#tokenizer) ===
 				undefined
 		) {
 			// The prior tool loop already attempted the rescue and warned for this
@@ -2829,12 +2800,8 @@ export class SessionMaintenance {
 			// soon as one appears.
 			if (
 				!model ||
-				prepareCompaction(
-					this.#host.sessionManager.getContextBranch(),
-					compactionSettings,
-					model,
-					this.#tokenizer,
-				) === undefined
+				prepareCompaction(this.#host.sessionManager.getBranch(), compactionSettings, model, this.#tokenizer) ===
+					undefined
 			) {
 				return;
 			}
@@ -2931,7 +2898,7 @@ export class SessionMaintenance {
 		// The error shouldn't trigger another compaction since we already compacted.
 		// Example: opus fails -> switch to codex -> compact -> switch back to opus -> opus error
 		// is still in context but shouldn't trigger compaction again.
-		const compactionEntry = latestBranchCompactionEntry(this.#host.sessionManager);
+		const compactionEntry = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
 		const errorIsFromBeforeCompaction =
 			compactionEntry !== null && assistantMessage.timestamp < new Date(compactionEntry.timestamp).getTime();
 		const payloadRejection =
@@ -3136,10 +3103,7 @@ export class SessionMaintenance {
 					});
 					return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
 				}
-				// No retry replaces the failed turn, so it stays the run's outcome for
-				// post-settle readers (print mode, task executor) instead of whatever
-				// assistant message preceded it.
-				if (!compactionResult.continuationScheduled) {
+				if (payloadRejection && !compactionResult.continuationScheduled) {
 					this.#host.retainTerminalFailure(assistantMessage);
 				}
 				return compactionResult;
@@ -3162,7 +3126,6 @@ export class SessionMaintenance {
 				});
 				return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
 			}
-			this.#host.retainTerminalFailure(assistantMessage);
 			return COMPACTION_CHECK_NONE;
 		}
 		// A context promotion can land while the failing call is already in
@@ -3222,27 +3185,17 @@ export class SessionMaintenance {
 		if (sameModel && !errorIsFromBeforeCompaction && assistantMessage.stopReason === "length") {
 			const incompleteCompactionSettings = this.#compactionSettings;
 			const incompleteContextTokens = calculateContextTokens(assistantMessage.usage);
-			// The cut output is dropped before the next request, so only the prompt
-			// counts against the configured trigger (#15870). Subtract the output from
-			// occupancy rather than reading prompt buckets: an authoritative
-			// `usage.contextTokens` (Cursor checkpoints) already includes this turn's
-			// output. Prompt + output still marks the window itself as what ran out
-			// (e.g. Anthropic `model_context_window_exceeded`), measured against the
-			// window's own prompt budget rather than a trigger the user may have set
-			// far lower.
-			const incompletePromptTokens = Math.max(0, incompleteContextTokens - assistantMessage.usage.output);
 			// Unknown windows keep compacting: there is no evidence the window had room.
 			const windowExhausted =
 				contextWindow <= 0 ||
-				incompletePromptTokens > resolveThresholdTokens(contextWindow, incompleteCompactionSettings) ||
-				incompleteContextTokens > promptBudgetTokens(contextWindow, incompleteCompactionSettings);
+				incompleteContextTokens > resolveThresholdTokens(contextWindow, incompleteCompactionSettings);
 			if (!windowExhausted && assistantTurnDelivered(assistantMessage)) {
 				// The output cap truncated a real deliverable with the window still open:
 				// neither a larger window nor compaction buys output room, and a retry
 				// would regenerate the same truncation. Keep it and let the user steer.
 				logger.warn("response.incomplete: output cap reached below compaction threshold; keeping truncated turn", {
 					model: `${assistantMessage.provider}/${assistantMessage.model}`,
-					promptTokens: incompletePromptTokens,
+					contextTokens: incompleteContextTokens,
 					outputTokens: assistantMessage.usage.output,
 				});
 				this.#host.emitNotice(
@@ -3332,7 +3285,7 @@ export class SessionMaintenance {
 					}
 					logger.debug("Retrying response.incomplete without compaction (below threshold)", {
 						model: `${assistantMessage.provider}/${assistantMessage.model}`,
-						promptTokens: incompletePromptTokens,
+						contextTokens: incompleteContextTokens,
 						attempt: this.#incompleteRecoveryAttempts,
 					});
 					this.#host.scheduleAgentContinue({ source: "incomplete-retry", delayMs: 100, generation });
@@ -4006,7 +3959,7 @@ export class SessionMaintenance {
 			this.#tokenizer,
 			this.#host.settings.revision,
 		);
-		const branch = this.#host.sessionManager.getContextBranch();
+		const branch = this.#host.sessionManager.getBranch();
 		const leaf = branch.at(-1);
 		const archive = snapcompact.getPreservedArchive(args.preserveData);
 		const blocks = archive
@@ -4091,31 +4044,6 @@ export class SessionMaintenance {
 			...args,
 			details: { kind: "experimental-context-rollover", version: 1 },
 		});
-	}
-
-	#compactionDeadEndWarning(remedies: string): string {
-		const contextWindow = this.#model?.contextWindow ?? 0;
-		if (contextWindow > 0) {
-			const recoveryBand = Math.floor(
-				resolveThresholdTokens(contextWindow, this.#compactionSettings) * COMPACTION_RECOVERY_BAND,
-			);
-			const overhead = computeNonMessageTokens(
-				this.#host.nonMessageTokenSource(),
-				this.#tokenizer,
-				this.#host.settings.revision,
-			);
-			if (overhead > recoveryBand) {
-				return (
-					"Compaction cannot create headroom — pausing automatic maintenance. " +
-					"The system prompt and always-sent tool schemas alone exceed the recovery band; " +
-					"reduce fixed context or adjust compaction.modelThresholds."
-				);
-			}
-		}
-		return (
-			"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. " +
-			`The most recent turn alone is too large to reduce further; ${remedies} or switch to a larger-context model.`
-		);
 	}
 
 	/**
@@ -4267,7 +4195,7 @@ export class SessionMaintenance {
 		// elide/image tiers below can never shrink it): rebuild the archive at
 		// a threshold-derived frame budget.
 		const frameRescue = await this.#rescueSnapcompactFrameOverflow(
-			this.#host.sessionManager.getContextBranch(),
+			this.#host.sessionManager.getBranch(),
 			resolveMethodSettings(this.#compactionSettings, "snapcompact"),
 			signal,
 		);
@@ -4486,8 +4414,9 @@ export class SessionMaintenance {
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		// Extensions must see the entry that is now active, not (only) the one
 		// this rebuild just superseded — mirror the regular append path's hook.
-		const savedRebuiltEntry = this.#host.sessionManager.getEntry(rebuiltEntryId);
-		const rebuiltEntry = savedRebuiltEntry?.type === "compaction" ? savedRebuiltEntry : undefined;
+		const rebuiltEntry = this.#host.sessionManager.getEntries().find(e => e.id === rebuiltEntryId) as
+			| CompactionEntry
+			| undefined;
 		if (this.#host.extensionRunner && rebuiltEntry) {
 			await this.#host.extensionRunner.emit({
 				type: "session_compact",
@@ -4710,12 +4639,10 @@ export class SessionMaintenance {
 			...preserveData,
 			[snapcompact.PRESERVE_KEY]: { ...(isRecord(slot) ? slot : {}), withoutThinking: view },
 		};
-		this.#host.sessionManager.updateEntry(entry);
 		try {
 			await this.#host.sessionManager.rewriteEntries();
 		} catch (error) {
 			entry.preserveData = preserveData;
-			this.#host.sessionManager.updateEntry(entry);
 			logger.warn("Persisting the snapcompact archive without reasoning failed", {
 				error: error instanceof Error ? error.message : String(error),
 			});
@@ -4917,7 +4844,7 @@ export class SessionMaintenance {
 						armedSpec.result.providerReplayThroughEntryId ??
 						(armedSpec.result.preserveData?.openaiRemoteCompaction ||
 						(armedSpec.result.preserveData?.anthropicCompaction &&
-							this.#host.sessionManager.getLeafId() !== armedSpec.snapshotLeafId)
+							this.#host.sessionManager.getBranch().at(-1)?.id !== armedSpec.snapshotLeafId)
 							? armedSpec.snapshotLeafId
 							: undefined),
 					action,
@@ -4967,7 +4894,7 @@ export class SessionMaintenance {
 				return COMPACTION_CHECK_NONE;
 			}
 
-			const pathEntries = this.#host.sessionManager.getContextBranch();
+			const pathEntries = this.#host.sessionManager.getBranch();
 
 			let pathEntriesForCompaction = pathEntries;
 			let preparation = prepareCompaction(pathEntriesForCompaction, effectiveSettings, this.#model, this.#tokenizer);
@@ -5009,7 +4936,7 @@ export class SessionMaintenance {
 					);
 					if (frameRescueResult) {
 						rescueRewroteHistory = true;
-						pathEntriesForCompaction = this.#host.sessionManager.getContextBranch();
+						pathEntriesForCompaction = this.#host.sessionManager.getBranch();
 						frameRescueCreatedHeadroom = this.#compactionCreatedHeadroom();
 					}
 					if (!frameRescueCreatedHeadroom) {
@@ -5019,7 +4946,7 @@ export class SessionMaintenance {
 								// Only reached when a tier actually freed something, so the
 								// branch has been rewritten either way.
 								rescueRewroteHistory = true;
-								pathEntriesForCompaction = this.#host.sessionManager.getContextBranch();
+								pathEntriesForCompaction = this.#host.sessionManager.getBranch();
 								preparation = prepareCompaction(
 									pathEntriesForCompaction,
 									effectiveSettings,
@@ -5038,7 +4965,7 @@ export class SessionMaintenance {
 							? (snapcompact.getPreservedArchive(frameRescueResult.preserveData)?.frames.length ?? 0)
 							: 0;
 					const deadEndWarning = noProgressDeadEnd
-						? this.#compactionDeadEndWarning(
+						? compactionDeadEndWarning(
 								this.#deadEndRemedies("shrink it (e.g. clear large tool output)", implicatedFrames),
 							)
 						: undefined;
@@ -5051,10 +4978,9 @@ export class SessionMaintenance {
 					// immediately, so a later stamp would not appear until some
 					// unrelated rebuild.
 					if (deadEndWarning && frameRescueResult) {
-						const stampEntry = latestBranchCompactionEntry(this.#host.sessionManager);
+						const stampEntry = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
 						if (stampEntry) {
 							stampEntry.warning = deadEndWarning;
-							this.#host.sessionManager.updateEntry(stampEntry);
 							await this.#host.sessionManager.rewriteEntries();
 						}
 					}
@@ -5535,19 +5461,9 @@ export class SessionMaintenance {
 							// last candidate waits within the user's provider-wait cap
 							// (`retry.maxDelayMs`, 0 = uncapped); past it, the outer method
 							// cascade can still recover or report the failure (#15311).
-							// `retry.waitForUsageReset` opts into sleeping through a provider-
-							// stated usage-limit reset, as turn recovery does: only on the last
-							// candidate, only with the provider's own retry hint, and never
-							// longer than that hint.
-							const waitForUsageReset =
-								!hasMoreCandidates &&
-								retrySettings.waitForUsageReset === true &&
-								AIError.is(id, AIError.Flag.UsageLimit) &&
-								retryAfterMs !== undefined &&
-								delayMs <= retryAfterMs;
 							const maxAcceptableDelayMs = hasMoreCandidates
 								? 30_000
-								: retrySettings.maxDelayMs > 0 && !waitForUsageReset
+								: retrySettings.maxDelayMs > 0
 									? retrySettings.maxDelayMs
 									: Number.POSITIVE_INFINITY;
 							if (delayMs > maxAcceptableDelayMs) {
@@ -5834,7 +5750,7 @@ export class SessionMaintenance {
 			}
 		}
 
-		const deadEndWarning = noProgressDeadEnd ? this.#compactionDeadEndWarning("clear large tool output") : undefined;
+		const deadEndWarning = noProgressDeadEnd ? compactionDeadEndWarning("clear large tool output") : undefined;
 		if (deadEndWarning) {
 			// Stamp the divider: the compaction bar badges the dead-end and
 			// carries the full warning in its ctrl+o detail, so the pause
@@ -5842,10 +5758,9 @@ export class SessionMaintenance {
 			// the branch's LATEST compaction entry — a frame rescue may have
 			// superseded `savedCompactionEntry` with a rebuilt one, and the
 			// collapsed transcript badges only the active entry.
-			const stampEntry = latestBranchCompactionEntry(this.#host.sessionManager) ?? savedCompactionEntry;
+			const stampEntry = getLatestCompactionEntry(this.#host.sessionManager.getBranch()) ?? savedCompactionEntry;
 			if (stampEntry) {
 				stampEntry.warning = deadEndWarning;
-				this.#host.sessionManager.updateEntry(stampEntry);
 				await this.#host.sessionManager.rewriteEntries();
 			}
 		}
