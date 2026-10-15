@@ -263,6 +263,11 @@ function compactionDeadEndWarning(remedies: string): string {
 	);
 }
 
+/**
+ * Newest usage-anchor entry strictly after `compactionIndex`, or -1 when the
+ * branch carries none. Shared by the image, thinking and tool-result shake
+ * passes so all three subtract pre-anchor savings on the same basis.
+ */
 function findUsageAnchorIndex(branchEntries: readonly SessionEntry[], compactionIndex: number): number {
 	for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
 		const entry = branchEntries[index];
