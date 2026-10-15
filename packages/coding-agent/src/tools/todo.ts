@@ -585,7 +585,7 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 	let mutable = false;
 	for (let index = snapshotIndex + 1; index < entries.length; index++) {
 		const edit = compactTodoEditFromEntry(entries[index]!);
-		const replayed = edit ? replayTodoEdit(latest, edit, { mutable }) : undefined;
+		const replayed: TodoReplayResult | undefined = edit ? replayTodoEdit(latest, edit, { mutable }) : undefined;
 		if (!replayed) continue;
 		latest = replayed.phases;
 		mutable = replayed.mutable;
