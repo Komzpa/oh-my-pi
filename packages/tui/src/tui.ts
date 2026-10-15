@@ -3011,26 +3011,25 @@ export class TUI extends Container {
 				}
 			}
 
-		// Ctrl+C/Esc use app-level double-press windows. Give those gestures one
-		// frame to drain queued input before an ordinary repaint; delaying every
-		// key would make idle navigation pay a full frame of latency.
-		if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
-			this.#inputRenderGraceUntilMs = this.#renderScheduler.now() + TUI.#INPUT_RENDER_GRACE_MS;
-		}
+			// Ctrl+C/Esc use app-level double-press windows. Give those gestures one
+			// frame to drain queued input before an ordinary repaint; delaying every
+			// key would make idle navigation pay a full frame of latency.
+			if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
+				this.#inputRenderGraceUntilMs = this.#renderScheduler.now() + TUI.#INPUT_RENDER_GRACE_MS;
+			}
 
-		// The effective input owner can reserve its gesture before TUI-wide listeners
-		// and debug shortcuts see the key, then handle the raw event exactly once.
-		const focusedForCapture = this.#inputTarget();
-		if (
-			focusedForCapture?.handleInput &&
-			(!isKeyRelease(data) || focusedForCapture.wantsKeyRelease) &&
-			focusedForCapture.capturesInput?.(data)
-		) {
-			focusedForCapture.handleInput(data);
-			this.requestRender();
-			return;
-		}
-
+			// The effective input owner can reserve its gesture before TUI-wide listeners
+			// and debug shortcuts see the key, then handle the raw event exactly once.
+			const focusedForCapture = this.#inputTarget();
+			if (
+				focusedForCapture?.handleInput &&
+				(!isKeyRelease(data) || focusedForCapture.wantsKeyRelease) &&
+				focusedForCapture.capturesInput?.(data)
+			) {
+				focusedForCapture.handleInput(data);
+				this.requestRender();
+				return;
+			}
 
 			if (this.#inputListeners.size > 0) {
 				let current = data;
@@ -3055,7 +3054,6 @@ export class TUI extends Container {
 				this.onDebug();
 				return;
 			}
-
 
 			const target = this.#inputTarget();
 			if (target?.handleInput) {
