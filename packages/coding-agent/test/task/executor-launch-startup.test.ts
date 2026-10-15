@@ -180,7 +180,8 @@ it("applies async subagent provider transforms after SDK date/cwd shaping", asyn
 		expect(providerContexts).toHaveLength(1);
 		expect(providerContexts[0]!.messages.at(-1)).toMatchObject({
 			role: "developer",
-			content: "elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
+			content:
+				"elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
 			synthetic: true,
 		});
 		const userContent = providerContexts[0]!.messages[0]!.content;

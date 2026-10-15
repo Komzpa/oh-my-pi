@@ -512,7 +512,8 @@ describe("persisted subagent revival", () => {
 			const transformed = await capturedOptions?.transformProviderContext?.(context, {} as never);
 			expect(transformed?.messages.at(-1)).toMatchObject({
 				role: "developer",
-				content: "elapsed 20s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
+				content:
+					"elapsed 20s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
 				synthetic: true,
 			});
 		} finally {

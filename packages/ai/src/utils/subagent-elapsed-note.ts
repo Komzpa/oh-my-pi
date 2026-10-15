@@ -1,6 +1,7 @@
 import type { Message } from "../types";
 
-const SUBAGENT_ELAPSED_NOTE = /^elapsed \d+s\. Informational only: no deadline or time budget\. Continue until the assigned work is done\.$/;
+const SUBAGENT_ELAPSED_NOTE =
+	/^elapsed \d+s\. Informational only: no deadline or time budget\. Continue until the assigned work is done\.$/;
 
 /**
  * True for the provider-only advisory developer message the task executor
