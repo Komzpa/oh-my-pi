@@ -777,6 +777,18 @@ describe("restart queue controller", () => {
 		second.dispose();
 	});
 
+	it("keeps queued and completed notices distinct for the same completed request", async () => {
+		const { manager } = await createRoot(makeTempDir());
+		const identity = identityFor(manager, "notice-instance", 1);
+		const record = coldRecord(identity, "completed");
+		await appendQueueRecord(manager, identity, record);
+		expect(restartNoticeText(manager.getBranch(), record.requestId, "queued")).toBe("Restart queued");
+		expect(restartNoticeText(manager.getBranch(), record.requestId, "draining")).toBe("Restart draining");
+		expect(restartNoticeText(manager.getBranch(), record.requestId, "completed")).toBe("Restarted");
+		// Older notices did not store their own state and still resolve from the journal.
+		expect(restartNoticeText(manager.getBranch(), record.requestId)).toBe("Restarted");
+	});
+
 	it.each([true, false])("restore emits completion once (queued notice: %s)", async hasQueuedNotice => {
 		const cwd = makeTempDir();
 		const { manager } = await createRoot(cwd);

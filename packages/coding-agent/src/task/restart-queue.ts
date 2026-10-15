@@ -280,8 +280,12 @@ function parseTransition(entry: SessionEntry, entryIndex: number): StoredRestart
 	return { identity, record, entryIndex };
 }
 
-/** Human-facing state for a persisted restart notice; the model prompt remains unchanged. */
-export function restartNoticeText(entries: readonly SessionEntry[], requestId: string): string {
+/** Label the notice itself; legacy notices without a state use the persisted journal. */
+export function restartNoticeText(
+	entries: readonly SessionEntry[],
+	requestId: string,
+	noticeState?: RestartRequestState,
+): string {
 	let latest: RestartRequestRecord | undefined;
 	for (let index = 0; index < entries.length; index++) {
 		const entry = entries[index];
@@ -289,7 +293,7 @@ export function restartNoticeText(entries: readonly SessionEntry[], requestId: s
 		const transition = parseTransition(entry, index);
 		if (transition?.record.requestId === requestId) latest = transition.record;
 	}
-	switch (latest?.state) {
+	switch (noticeState ?? latest?.state) {
 		case "completed":
 			return "Restarted";
 		case "cancelled":
