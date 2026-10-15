@@ -132,6 +132,35 @@ describe("YieldTool terminal result latch", () => {
 		expect(result?.status === "fulfilled" && result.value.details).toMatchObject({ data: "retry", complete: true });
 	});
 
+	it("submits a workpool item error without aborting the batch and fences final acceptance behind running jobs", async () => {
+		let running = true;
+		const tool = new YieldTool(
+			createSession({
+				requireYieldTool: true,
+				getWorkPoolYieldItems: () => [
+					{ id: "review#1", index: 1 },
+					{ id: "review#2", index: 2 },
+				],
+				asyncJobManager: {
+					getRunningOwnerJobs: () =>
+						running ? [{ id: "build", type: "bash", status: "running", startTime: 1, label: "build" }] : [],
+				} as never,
+			}),
+		);
+		const failedItem = await tool.execute("item-error", { key: 1, error: "item unavailable" });
+		expect(failedItem.details).toMatchObject({
+			status: "success",
+			data: { error: "item unavailable" },
+			type: ["review#1"],
+		});
+		expect(failedItem.details?.complete).not.toBe(true);
+		await expect(tool.execute("duplicate-item", { key: 1, data: "duplicate" })).rejects.toThrow("already submitted");
+		await expect(tool.execute("blocked-last", { key: 2, data: "done" })).rejects.toThrow("build");
+		running = false;
+		const final = await tool.execute("last-item-error", { key: 2, error: "second unavailable" });
+		expect(final.details).toMatchObject({ status: "success", data: { error: "second unavailable" }, complete: true });
+	});
+
 	it("rejects empty data for any terminal type and accepts schema-valid empty values", async () => {
 		const typed = new YieldTool(createSession());
 		await expect(typed.execute("call-summary-empty", { type: "summary", data: "" } as never)).rejects.toThrow(
