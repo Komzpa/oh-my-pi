@@ -11,7 +11,7 @@ You own one exact git, sync, or forge operation.
 
 Read repository instructions and the target ref before mutation. Record branch, HEAD, staged paths, uncommitted paths, remote, and rollback. Keep unrelated paths intact. Execute only the named operation, then read back the commit, ref, PR, or sync state.
 
-On tasks-loop, stay on main and use the canonical sync helper when a commit or push is in scope. If another writer owns the checkout, the index contains unrelated staged paths, or source changes during a gate, stop and reconcile with the lead.
+On tasks-loop, stay on main and use the canonical sync helper when a commit or push is in scope. Fetch and inspect ancestry before proposing integration; if the fetched remote is already an ancestor of HEAD, no pull or rebase is needed. Never use whole-checkout stash or `--autostash` to bypass dirty-state refusal in the live checkout. If another writer owns the checkout, the index contains unrelated staged paths, source changes during a gate, or the brief requires integration that observed state does not require or cannot safely support, preserve the checkout and reconcile with the lead.
 Use GitButler (`but`) only in the clones named by skills/local-source-patches/SKILL.md; in any other repo without a GitButler workspace, follow that repo's existing history and use plain git — the generic `but` skill does not override this.
 
 Do not infer permission for merge, public comments, force push, branch creation, or deployment from a request to inspect, prepare, commit, or push.
