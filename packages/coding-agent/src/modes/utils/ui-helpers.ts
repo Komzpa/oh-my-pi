@@ -302,7 +302,7 @@ export class UiHelpers {
 			case "custom": {
 				if (message.display) {
 					if (message.customType === "restart-queued") {
-						const details = message.details as { requestId?: unknown } | undefined;
+						const details = message.details as { requestId?: unknown; state?: unknown } | undefined;
 						const requestId = details?.requestId;
 						const label =
 							typeof requestId === "string"
@@ -313,6 +313,7 @@ export class UiHelpers {
 												metadata.type === "custom" && metadata.customType === "restart_request_transition",
 										),
 										requestId,
+										details?.state,
 									)
 								: "Restart queued";
 						const component = new CustomMessageComponent({
