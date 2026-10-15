@@ -537,11 +537,18 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				}
 			}
 			// Last: the continuation wakes the model without awaiting its turn, so the terminal notice that
-			// lifts the restart restriction must already be queued ahead of it.
+			// lifts the restart restriction must already be queued ahead of it. A root
+			// can be idle while admitted input is checkpointed in its model queues;
+			// passive next-turn context alone must not wake it.
 			restoreComplete = true;
 			if (askAnswered) {
 				await this.#resumeAfterRestoredAsk(record);
-			} else if (!pendingAsk && restartCompleted && record?.rootWasRunning) {
+			} else if (
+				!pendingAsk &&
+				restartCompleted &&
+				record &&
+				(record.rootWasRunning || this.#session.agent.getPendingModelNewsCount() > 0)
+			) {
 				await sendRootContinuationOnce(this.#session, record.requestId);
 			}
 		});

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -10,6 +10,8 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { createRestartQueueController } from "@oh-my-pi/pi-coding-agent/task/restart-queue";
 
 describe("AgentSession restart queue round trip", () => {
 	let tempDir: TempDir;
@@ -174,6 +176,88 @@ describe("AgentSession restart queue round trip", () => {
 		expect(checkpoint?.type === "custom" ? checkpoint.data : undefined).toMatchObject({ pendingNextTurn: [active] });
 		lease.release();
 	});
+
+	it.each(["steering", "followUp", "nextTurn"] as const)(
+		"resumes idle checkpointed %s work without another input",
+		async queue => {
+			const manager = currentManager();
+			appendPriorAssistant(manager);
+			session = createSession(manager);
+			const lease = session.beginRestartDrain();
+			const text = "finish the newly submitted assignment";
+			if (queue === "steering") session.agent.steer({ role: "user", content: text, timestamp: Date.now() });
+			else if (queue === "followUp") session.agent.followUp({ role: "user", content: text, timestamp: Date.now() });
+			else session.queueDeferredMessage(hiddenNextTurnMessage("passive context for the next user turn"));
+			const sessionId = manager.getSessionId();
+			manager.appendCustomEntry("restart_request_transition", {
+				version: 1,
+				identity: { instanceId: "before", sessionId, generation: 1 },
+				record: {
+					version: 1,
+					requestId: "idle-queued",
+					sessionId,
+					state: "checkpointed",
+					requestedAt: Date.now(),
+					updatedAt: Date.now(),
+					rootWasRunning: false,
+				},
+			});
+			await lease.waitForQuiescence();
+			const file = manager.getSessionFile()!;
+			await session.dispose();
+			session = undefined;
+			sessionManager = undefined;
+			const restored = await reopenSession(file, [
+				...(queue === "followUp" ? [{ content: ["resuming queued work"], stopReason: "stop" as const }] : []),
+				{ content: ["assignment completed"], stopReason: "stop" },
+			]);
+			AgentRegistry.resetGlobalForTests();
+			IrcBus.resetGlobalForTests();
+			AgentRegistry.global().register({
+				id: MAIN_AGENT_ID,
+				displayName: "Root",
+				kind: "main",
+				session: restored,
+				sessionFile: file,
+				status: "idle",
+			});
+			const finished = Promise.withResolvers<void>();
+			const detach = restored.subscribe(event => {
+				if (event.type === "agent_end") finished.resolve();
+			});
+			const controller = createRestartQueueController({
+				session: restored,
+				identity: () => ({ instanceId: "after", sessionId, generation: 2 }),
+				restart: async () => {},
+			});
+			try {
+				await controller.restore();
+				const ran = await Promise.race([finished.promise.then(() => true), Bun.sleep(250).then(() => false)]);
+				expect(ran).toBe(queue !== "nextTurn");
+				if (queue !== "nextTurn") {
+					await restored.waitForIrcReplies();
+					await restored.waitForIdle();
+					expect(
+						restored.agent.state.messages.filter(message => message.role === "user" && message.content === text),
+					).toHaveLength(1);
+					expect(JSON.stringify(restored.getLastAssistantMessage())).toContain("assignment completed");
+					expect(restored.agent.getPendingModelNewsCount()).toBe(0);
+				}
+				await controller.restore();
+				expect(
+					restored.agent.state.messages.filter(
+						message =>
+							message.role === "assistant" && JSON.stringify(message.content).includes("assignment completed"),
+					),
+				).toHaveLength(queue === "nextTurn" ? 0 : 1);
+			} finally {
+				controller.dispose();
+				detach();
+				AgentRegistry.resetGlobalForTests();
+				IrcBus.resetGlobalForTests();
+			}
+		},
+	);
 
 	it("restores typed steering and follow-up positions once without adding them to transcript history", async () => {
 		if (!sessionManager) throw new Error("Expected a session manager");

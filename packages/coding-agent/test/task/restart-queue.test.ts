@@ -333,7 +333,7 @@ describe("restart queue controller", () => {
 		controller.dispose();
 	});
 
-	it("restores the same child and root identities from a cold checkpoint exactly once", async () => {
+	it.each([true, false])("restores the same child once when rootWasRunning=%s", async rootWasRunning => {
 		const cwd = makeTempDir();
 		const { manager: oldRootManager, file: rootFile } = await createRoot(cwd);
 		const rootArtifactDir = rootFile.slice(0, -".jsonl".length);
@@ -362,7 +362,7 @@ describe("restart queue controller", () => {
 			status: "running",
 		});
 		const oldIdentity = identityFor(oldRootManager, "old-instance", 4);
-		const completedRequest = coldRecord(oldIdentity, "checkpointed");
+		const completedRequest = { ...coldRecord(oldIdentity, "checkpointed"), rootWasRunning };
 		await captureSubagentsForRestart(oldRoot.session, { requestId: completedRequest.requestId });
 		await appendQueueRecord(oldRootManager, oldIdentity, completedRequest);
 		await Promise.all([oldRootManager.close(), childManager.close()]);
@@ -421,8 +421,8 @@ describe("restart queue controller", () => {
 		expect(registry.get(childId)).toMatchObject({ id: childId, status: "running", sessionFile: childFile });
 		expect(childDeliveries).toHaveLength(1);
 		expect(childDeliveries[0]).toMatchObject({ from: MAIN_AGENT_ID, to: childId });
-		expect(rootDeliveries).toHaveLength(1);
-		expect(rootDeliveries[0]).toMatchObject({ from: MAIN_AGENT_ID, to: MAIN_AGENT_ID });
+		expect(rootDeliveries).toHaveLength(rootWasRunning ? 1 : 0);
+		if (rootWasRunning) expect(rootDeliveries[0]).toMatchObject({ from: MAIN_AGENT_ID, to: MAIN_AGENT_ID });
 		expect(controller.snapshot().request?.state).toBe("completed");
 		expect(restartNoticeText(rootManager.getBranch(), "cold-restart-request")).toBe("Restarted");
 		controller.dispose();
