@@ -1,4 +1,3 @@
-import { getSubagentDiscoveryOptions } from "./task/structured-subagent";
 import * as path from "node:path";
 import {
 	Agent,
@@ -241,6 +240,7 @@ import {
 	loadProjectContextFiles as loadContextFilesInternal,
 	projectSystemPromptToolMetadata,
 } from "./system-prompt";
+import { getSubagentDiscoveryOptions } from "./task/structured-subagent";
 import type { AgentDefinition } from "./task/types";
 import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";

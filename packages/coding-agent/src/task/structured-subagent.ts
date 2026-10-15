@@ -668,11 +668,12 @@ function buildExecutorOptions(
 		modelRegistry: session.modelRegistry,
 		settings: session.settings,
 		asyncJobManager: session.asyncJobManager,
+		...getSubagentDiscoveryOptions(session, restrictToolNames),
 		mcpManager: enableMCP ? (session.mcpManager ?? MCPManager.instance()) : undefined,
 		enableMCP,
 		customTools: request.customTools,
 		workPoolYieldItems: request.workPoolYieldItems,
-		...getSubagentDiscoveryOptions(session, restrictToolNames),
+		contextFiles: session.contextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md"),
 		skills,
 		// Autoload runs after session start, outside the seance isolation options.
 		autoloadSkills: preparedSession ? undefined : autoloadSkills,
