@@ -602,6 +602,18 @@ export class SessionMaintenance {
 		return resolveModelCompactionSettings(this.#host.settings, this.#model);
 	}
 
+	/** Remove raw images hidden by prune overlays without charging visible token savings. */
+	#dropHiddenPrunedImages(projectedEntries: readonly SessionEntry[]): number {
+		const projected = new Map(projectedEntries.map(entry => [entry.id, entry]));
+		let removed = 0;
+		for (const entry of this.#host.sessionManager.getRawBranch()) {
+			const visible = projected.get(entry.id);
+			if (entry.type !== "message" || visible?.type !== "message" || entry.message === visible.message) continue;
+			removed += stripImagesFromMessage(entry.message);
+		}
+		return removed;
+	}
+
 	get #tokenizer() {
 		return this.#host.agent.tokenizer;
 	}
@@ -836,7 +848,7 @@ export class SessionMaintenance {
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
 		const hasRemoteReplacementHistory = getOpenAiRemoteCompactionPayload(latestCompaction) !== undefined;
 		const anchorIndex = findUsageAnchorIndex(branchEntries, compactionIndex);
-		let removed = 0;
+		let removed = this.#dropHiddenPrunedImages(branchEntries);
 		let tokensFreed = 0;
 		let anchoredTokensRemoved = 0;
 		for (const [index, entry] of branchEntries.entries()) {
@@ -882,18 +894,6 @@ export class SessionMaintenance {
 			removed += dropped;
 			tokensFreed += saved;
 			if (anchored) anchoredTokensRemoved += saved;
-		}
-		// Prune projections hide images without deleting their raw payloads.
-		// Strip those payloads too, but charge only the visible projection above.
-		for (const entry of this.#host.sessionManager.getRawBranch()) {
-			if (entry.type === "message") {
-				removed += stripImagesFromMessage(entry.message);
-			} else if (entry.type === "custom_message" && typeof entry.content !== "string") {
-				const kept = entry.content.filter(part => part.type !== "image");
-				if (kept.length === entry.content.length) continue;
-				removed += entry.content.length - kept.length;
-				entry.content = kept.length > 0 ? kept : [{ type: "text", text: "[image removed]" }];
-			}
 		}
 		if (removed === 0) {
 			return { removed: 0, tokensFreed: 0 };
