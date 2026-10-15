@@ -195,12 +195,35 @@ describe("restart queue controller", () => {
 		const oldIdentity = identityFor(manager, "old-instance", 1);
 		const nextIdentity = identityFor(manager, "next-instance", 1);
 		await appendQueueRecord(manager, oldIdentity, coldRecord(oldIdentity, "draining"));
-		expect(isRestartResumePending(manager.getBranch(), manager.getSessionId(), nextIdentity.instanceId)).toBe(false);
+		expect(isRestartResumePending(manager, manager.getSessionId(), nextIdentity.instanceId)).toBe(false);
 		await appendQueueRecord(manager, oldIdentity, coldRecord(oldIdentity, "restarting"));
-		expect(isRestartResumePending(manager.getBranch(), manager.getSessionId(), nextIdentity.instanceId)).toBe(true);
-		expect(isRestartResumePending(manager.getBranch(), manager.getSessionId(), oldIdentity.instanceId)).toBe(false);
+		expect(isRestartResumePending(manager, manager.getSessionId(), nextIdentity.instanceId)).toBe(true);
+		expect(isRestartResumePending(manager, manager.getSessionId(), oldIdentity.instanceId)).toBe(false);
 		await appendQueueRecord(manager, nextIdentity, coldRecord(nextIdentity, "failed"));
-		expect(isRestartResumePending(manager.getBranch(), manager.getSessionId(), "third-instance")).toBe(false);
+		expect(isRestartResumePending(manager, manager.getSessionId(), "third-instance")).toBe(false);
+	});
+	it("recovers a restart through the metadata index when historical message payloads cannot be loaded", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const identity = identityFor(manager, "old-instance", 1);
+		await appendQueueRecord(manager, identity, coldRecord(identity, "restarting"));
+		const source = {
+			getBranch(): SessionEntry[] {
+				throw new Error("Historical message payloads must remain unloaded during restart detection");
+			},
+			getBranchMatching(predicate: (metadata: { type: SessionEntry["type"]; customType?: string }) => boolean) {
+				expect(predicate({ type: "message" })).toBe(false);
+				return manager.getBranch().filter(entry =>
+					predicate({
+						type: entry.type,
+						customType: entry.type === "custom" ? entry.customType : undefined,
+					}),
+				);
+			},
+		};
+		expect(isRestartResumePending(source, manager.getSessionId(), "new-instance")).toBe(true);
+		await appendQueueRecord(manager, identity, coldRecord(identity, "completed"));
+		expect(isRestartResumePending(source, manager.getSessionId(), "new-instance")).toBe(false);
 	});
 	it("rejects stale identities, deduplicates, and retries cancellation delivery before releasing a held drain", async () => {
 		const cwd = makeTempDir();
