@@ -278,7 +278,7 @@ describe("Anthropic controls derived from the transcript", () => {
 			user("start"),
 			{
 				role: "developer",
-				content: "elapsed 5s / 900s",
+			content: "elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
 				synthetic: true,
 				timestamp: clock++,
 			},

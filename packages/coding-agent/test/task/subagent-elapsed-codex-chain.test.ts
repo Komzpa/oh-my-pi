@@ -298,15 +298,15 @@ describe("subagent elapsed note keeps Codex chaining", () => {
 		const delta = inputItems(noted.sent[1] as Record<string, unknown>);
 		const deltaJson = JSON.stringify(delta);
 		expect(deltaJson).toContain("Second question");
-		expect(deltaJson).toContain("elapsed 12s / 900s");
+	expect(deltaJson).toContain("elapsed 12s. Informational only: no deadline or time budget. Continue until the assigned work is done.");
 		expect(deltaJson).not.toContain("First question");
 		expect(deltaJson).not.toContain("First answer");
 		expect(deltaJson).not.toContain("elapsed 5s");
 
-		// The note text is elapsed seconds against the budget only: no estimate.
+	// The note states elapsed seconds as informational only: no deadline, no estimate.
 		const noteItem = delta.find(item => item.role === "developer" && /elapsed \d+s/.test(JSON.stringify(item)));
 		const noteParts = (noteItem?.content ?? []) as Array<{ text?: string }>;
-		expect(noteParts.map(part => part.text ?? "").join("")).toBe("elapsed 12s / 900s");
+	expect(noteParts.map(part => part.text ?? "").join("")).toBe("elapsed 12s. Informational only: no deadline or time budget. Continue until the assigned work is done.");
 
 		// Delta-only input matches the no-note delta plus the fresh note.
 		expect(delta).toHaveLength(plainDelta.length + 1);
@@ -329,7 +329,7 @@ describe("subagent elapsed note keeps Codex chaining", () => {
 		const input = inputItems(sent[1] as Record<string, unknown>);
 		const inputJson = JSON.stringify(input);
 		expect(inputJson).toContain("Start a fresh run.");
-		expect(inputJson).toContain("elapsed 12s / 900s");
+	expect(inputJson).toContain("elapsed 12s. Informational only: no deadline or time budget. Continue until the assigned work is done.");
 		expect(inputJson).not.toContain("First question");
 	});
 
@@ -426,7 +426,7 @@ describe("subagent elapsed note keeps Codex chaining", () => {
 		expect(delta).toHaveLength(plainDelta.length + 1);
 		const deltaJson = JSON.stringify(delta);
 		expect(deltaJson).toContain("call_1");
-		expect(deltaJson).toContain("elapsed 6s / 900s");
+	expect(deltaJson).toContain("elapsed 6s. Informational only: no deadline or time budget. Continue until the assigned work is done.");
 		expect(deltaJson).not.toContain("Run lookup");
 		expect(deltaJson).not.toContain("elapsed 5s");
 		expect(turnIdOf(noted[1])).toBe(turnIdOf(noted[0]));

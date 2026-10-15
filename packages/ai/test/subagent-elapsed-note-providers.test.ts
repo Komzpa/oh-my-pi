@@ -1,4 +1,4 @@
-// The subagent elapsed note (`elapsed Ns / 900s`) is provider-only scaffolding.
+// The subagent elapsed note (elapsed seconds, informational only: no deadline) is provider-only scaffolding.
 // Providers with an active-turn wire (Cursor) must not promote it to the active
 // user action, and chained Responses requests must keep it out of the baseline.
 import { describe, expect, it } from "bun:test";
@@ -16,7 +16,7 @@ const cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 function elapsedNote(seconds: number): Message {
 	const note: Message = {
 		role: "developer",
-		content: `elapsed ${seconds}s / 900s`,
+	content: `elapsed ${seconds}s. Informational only: no deadline or time budget. Continue until the assigned work is done.`,
 		synthetic: true,
 		timestamp: 3,
 	};
@@ -27,11 +27,11 @@ function elapsedNote(seconds: number): Message {
 describe("isSubagentElapsedNote", () => {
 	it("matches only the synthetic elapsed developer note", () => {
 		expect(isSubagentElapsedNote(elapsedNote(5))).toBe(true);
-		expect(isSubagentElapsedNote({ role: "developer", content: "elapsed 5s / 900s", timestamp: 0 })).toBe(false);
+	expect(isSubagentElapsedNote({ role: "developer", content: "elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.", timestamp: 0 })).toBe(false);
 		expect(isSubagentElapsedNote({ role: "developer", content: "continue", synthetic: true, timestamp: 0 })).toBe(
 			false,
 		);
-		expect(isSubagentElapsedNote({ role: "user", content: "elapsed 5s / 900s", timestamp: 0 })).toBe(false);
+	expect(isSubagentElapsedNote({ role: "user", content: "elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.", timestamp: 0 })).toBe(false);
 	});
 });
 
@@ -111,7 +111,7 @@ describe("OpenAI Responses with the elapsed note", () => {
 		const { params, trailingScaffoldingItems } = buildParams(model, context, undefined, undefined);
 		expect(trailingScaffoldingItems).toBe(1);
 		const input = params.input as Array<{ content?: unknown }>;
-		expect(JSON.stringify(input.at(-1))).toContain("elapsed 7s / 900s");
+	expect(JSON.stringify(input.at(-1))).toContain("elapsed 7s. Informational only: no deadline or time budget. Continue until the assigned work is done.");
 		expect(JSON.stringify(input.slice(0, -1))).not.toContain("elapsed");
 	});
 

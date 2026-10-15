@@ -7,8 +7,15 @@ it("appends one per-call-marked note and replaces a previous one", () => {
 	const second = withSubagentElapsedSignal(first, 9);
 	expect(second.messages).toHaveLength(2);
 	const note = second.messages.at(-1)!;
-	expect(note).toMatchObject({ role: "developer", content: "elapsed 9s / 900s", synthetic: true });
+	expect(note).toMatchObject({ role: "developer", content: "elapsed 9s. Informational only: no deadline or time budget. Continue until the assigned work is done.", synthetic: true });
 	// Provider cache logic must not spend a breakpoint on the per-request note.
 	expect(isPerCallContextMessage(note)).toBe(true);
 	expect(isPerCallContextMessage(second.messages[0])).toBe(false);
+});
+
+it("states the note is informational with no deadline denominator", () => {
+	const context = withSubagentElapsedSignal({ messages: [{ role: "user", content: "go", timestamp: 0 }] }, 42);
+	const content = String(context.messages.at(-1)!.content);
+	expect(content).not.toContain("/ 900s");
+	expect(content).toContain("Informational only");
 });
