@@ -774,12 +774,6 @@ async function runInteractiveMode(
 		}
 	}
 
-	// Restore interactive questions on ordinary resume as well as --restore, once UI exists.
-	if (resuming || startupRestore) {
-		const uiContext = mode.getToolUIContext();
-		if (uiContext) await session.restorePendingAsk(uiContext);
-	}
-
 	if (startupRestore) {
 		try {
 			using _keepalive = new EventLoopKeepalive();

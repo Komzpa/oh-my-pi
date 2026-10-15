@@ -11,6 +11,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { createRestartQueueController } from "@oh-my-pi/pi-coding-agent/task/restart-queue";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import {
 	createInterruptedToolResults,
@@ -128,7 +129,7 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 		expect(last?.role === "assistant" && last.content).toContainEqual({ type: "text", text: "done after restore" });
 	});
 
-	for (const recovery of ["resume", "restore"] as const) {
+	for (const recovery of ["resume", "restore", "rolling"] as const) {
 		it(`reopens an unanswered ask on ${recovery}, preserving completed siblings and one answer across restart`, async () => {
 			const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 			const questions = [
@@ -162,17 +163,66 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 				createInterruptedTurnAbortMessage(branch, undefined, { assumeExit: true })!,
 			);
 			const shown: unknown[] = [];
+			const answer = Promise.withResolvers<string>();
 			const ui = {
 				select: async (question: string, options: unknown[]) => {
 					expect(await reopened.session.restorePendingAsk(ui)).toBe(false);
 					shown.push({ question, options });
-					return "There";
+					return recovery === "rolling" ? answer.promise : "There";
 				},
 			} as unknown as ExtensionUIContext;
-			const restored =
-				recovery === "resume"
-					? await reopened.session.restorePendingAsk(ui)
-					: await reopened.session.restoreInterruptedTurn(ui);
+			let restored: boolean;
+			if (recovery === "rolling") {
+				const sessionId = reopened.session.sessionId;
+				let restoredGoals = 0;
+				const record = {
+					goalModeBefore: { goalId: "waiting-ask-goal" },
+					version: 1,
+					requestId: "rolling-ask",
+					sessionId,
+					state: "checkpointed",
+					requestedAt: Date.now(),
+					updatedAt: Date.now(),
+					rootWasRunning: true,
+				};
+				reopened.session.sessionManager.appendCustomEntry("restart_request_transition", {
+					version: 1,
+					identity: { instanceId: "old", sessionId, generation: 1 },
+					record,
+				});
+				let recoveryPromise: Promise<boolean> | undefined;
+				const controller = createRestartQueueController({
+					session: reopened.session,
+					identity: () => ({ instanceId: "new", sessionId, generation: 2 }),
+					restart: async () => {},
+					restoreGoalMode: async () => {
+						restoredGoals++;
+					},
+					restorePendingAsk: onAnswered => {
+						let pending = false;
+						recoveryPromise = reopened.session.restorePendingAsk(ui, onAnswered, () => {
+							pending = true;
+						});
+						return pending;
+					},
+				});
+				await controller.restore();
+				expect(controller.snapshot().request?.state).toBe("completed");
+				expect(shown).toHaveLength(1);
+				expect(reopened.mock.calls).toHaveLength(0);
+				expect(restoredGoals).toBe(0);
+				expect(reopened.session.isStreaming).toBe(false);
+				answer.resolve("There");
+				restored = await recoveryPromise!;
+				await controller.restore();
+				expect(restoredGoals).toBe(1);
+				controller.dispose();
+			} else {
+				restored =
+					recovery === "resume"
+						? await reopened.session.restorePendingAsk(ui)
+						: await reopened.session.restoreInterruptedTurn(ui);
+			}
 			expect(restored).toBe(true);
 			await reopened.session.waitForIdle();
 			expect(reopened.mock.calls).toHaveLength(1);

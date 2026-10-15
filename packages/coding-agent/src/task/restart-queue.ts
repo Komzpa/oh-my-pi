@@ -108,6 +108,7 @@ export interface RestartQueueControllerOptions {
 	restart: () => Promise<void>;
 	onStateChange?: (record: RestartRequestRecord) => void;
 	captureGoalMode?: () => { goalId: string } | undefined;
+	restorePendingAsk?: (onAnswered: () => void) => boolean;
 	restoreGoalMode?: (snapshot: { goalId: string }) => Promise<void>;
 	restartWorkerGraceMs?: number;
 }
@@ -406,6 +407,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	readonly #restart: () => Promise<void>;
 	readonly #onStateChange: ((record: RestartRequestRecord) => void) | undefined;
 	readonly #captureGoalMode: (() => { goalId: string } | undefined) | undefined;
+	readonly #restorePendingAsk: RestartQueueControllerOptions["restorePendingAsk"];
 	readonly #restoreGoalMode: ((snapshot: { goalId: string }) => Promise<void>) | undefined;
 	readonly #restartWorkerGraceMs: number;
 	#serial: Promise<void> = Promise.resolve();
@@ -420,6 +422,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		this.#onStateChange = options.onStateChange;
 		this.#captureGoalMode = options.captureGoalMode;
 		this.#restoreGoalMode = options.restoreGoalMode;
+		this.#restorePendingAsk = options.restorePendingAsk;
 		this.#restartWorkerGraceMs =
 			options.restartWorkerGraceMs !== undefined && Number.isFinite(options.restartWorkerGraceMs)
 				? Math.max(0, Math.floor(options.restartWorkerGraceMs))
@@ -453,6 +456,17 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		if (this.#restorePromise) return this.#restorePromise;
 		const identity = this.#currentIdentity();
 		this.#restorePromise = this.#serialize(async () => {
+			// The interactive question owns the root until answered or cancelled.
+			let restoreComplete = false;
+			let askAnswered = false;
+			const pendingAsk = this.#restorePendingAsk?.(() => {
+				askAnswered = true;
+				if (restoreComplete && !this.#disposed) {
+					void this.#resumeAfterRestoredAsk(record).catch(error =>
+						this.#notice("error", `Could not resume answered question: ${this.#errorText(error)}`),
+					);
+				}
+			});
 			const stored = this.#readJournal(identity.sessionId).latest;
 			let record = stored?.record;
 			let restartCompleted = record?.state === "completed";
@@ -503,7 +517,11 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			if (!stored || record?.state === "completed") {
 				await restoreSubagentsAfterRestart(this.#session, record ? { requestId: record.requestId } : undefined);
 			}
-			if (record && (record.state === "completed" || record.state === "cancelled" || record.state === "failed")) {
+			if (
+				!pendingAsk &&
+				record &&
+				(record.state === "completed" || record.state === "cancelled" || record.state === "failed")
+			) {
 				await this.#restoreGoalModeFor(record);
 			}
 			if (record && (record.state === "completed" || record.state === "cancelled" || record.state === "failed")) {
@@ -524,7 +542,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			}
 			// Last: the continuation wakes the model without awaiting its turn, so the terminal notice that
 			// lifts the restart restriction must already be queued ahead of it.
-			if (restartCompleted && record?.rootWasRunning) {
+			restoreComplete = true;
+			if (askAnswered) {
+				await this.#resumeAfterRestoredAsk(record);
+			} else if (!pendingAsk && restartCompleted && record?.rootWasRunning) {
 				await sendRootContinuationOnce(this.#session, record.requestId);
 			}
 		});
@@ -1066,6 +1087,11 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				`Only restart requests may include a reason of at most ${MAX_RESTART_REASON_LENGTH} characters`,
 			);
 		}
+	}
+
+	async #resumeAfterRestoredAsk(record: RestartRequestRecord | undefined): Promise<void> {
+		if (record) await this.#restoreGoalModeFor(record);
+		if (!this.#disposed) this.#session.resumeAfterAskReanswer();
 	}
 
 	async #restoreGoalModeFor(record: RestartRequestRecord): Promise<void> {

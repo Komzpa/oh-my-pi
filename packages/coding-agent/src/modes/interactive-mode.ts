@@ -7363,6 +7363,17 @@ export class InteractiveMode implements InteractiveModeContext {
 							const state = this.session.getGoalModeState();
 							return state?.enabled && state.goal.status === "active" ? { goalId: state.goal.id } : undefined;
 						},
+						restorePendingAsk: onAnswered => {
+							const ui = this.getToolUIContext();
+							if (!ui) return false;
+							let pending = false;
+							void this.session
+								.restorePendingAsk(ui, onAnswered, () => {
+									pending = true;
+								})
+								.catch(error => this.showError(error instanceof Error ? error.message : String(error)));
+							return pending;
+						},
 						restoreGoalMode: async ({ goalId }) => {
 							if (this.#getPausedGoalState()?.goal.id !== goalId) return;
 							await this.#enterGoalMode({ resume: true, silent: true });
