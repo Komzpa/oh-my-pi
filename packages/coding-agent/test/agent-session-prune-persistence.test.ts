@@ -361,6 +361,14 @@ describe("AgentSession per-turn prune persistence", () => {
 			expect(removed).toBe(visibleImage ? 2 : 1);
 			expect(tokensFreed).toBe(expectedSaving);
 			expect(JSON.stringify(sessionManager.getEntry(imageResultId))).not.toContain("image/png");
+			const file = sessionManager.getSessionFile();
+			if (!file) throw new Error("Expected persisted session file");
+			const reopened = await SessionManager.open(file, tempDir.path());
+			try {
+				expect(JSON.stringify(reopened.getEntry(imageResultId))).not.toContain("image/png");
+			} finally {
+				await reopened.close();
+			}
 		},
 	);
 
