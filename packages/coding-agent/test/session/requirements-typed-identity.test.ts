@@ -392,6 +392,26 @@ describe("typed identity: accepted receipts", () => {
 	}, 30_000);
 });
 
+describe("typed identity: artifact cell holds only the row-qualified identity", () => {
+	it("rejects trailing prose after paths= but accepts the same cell with only the identity", async () => {
+		const { root: repo, head } = await initRepo({
+			"src/a.ts": "export const a = 1;\n",
+		});
+		const identity = `git:${repo}@${head} paths=["src/a.ts"]`;
+		const fx = await harness([ROW], { resources: [repo] });
+		expect(fx.classifyResult.isError).not.toBe(true);
+		await fx.prepare(ROW);
+		// 21:18 defect shape: prose appended after the typed identity makes the
+		// `paths=` JSON suffix unparseable, so an otherwise passing audit is rejected.
+		const proseCell = `${artifactCell(ROW, [identity])}. Repo HEAD is now ${head}; src/a.ts is unchanged.`;
+		await fx.receive(proseCell);
+		expect(verdictOf(fx, ROW)).toBeUndefined();
+		await fx.prepare(ROW);
+		expect(await fx.receive(artifactCell(ROW, [identity]))).toBeUndefined();
+		expect(verdictOf(fx, ROW)?.status).toBe("pass");
+	}, 30_000);
+});
+
 describe("typed identity: stale receipts block done with expected and observed values", () => {
 	it("N1 blocks done after a listed git path changes and names the expected and observed Git blob IDs", async () => {
 		const { root: repo, head } = await initRepo({
