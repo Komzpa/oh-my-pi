@@ -114,14 +114,15 @@ export interface AsyncJobTree {
 	rootId?: string;
 	/** Subagents owning listed jobs, with the ancestors linking them to the root. */
 	agents: { id: string; parentId?: string }[];
+}
+
+export type { ShakeMode, ShakeResult } from "./shake-types";
 /** Stops this session at the next safe model boundary until released. */
 export interface RestartDrainLease {
 	wasRunning: boolean;
 	waitForQuiescence(): Promise<void>;
 	release(): void;
 }
-
-export type { ShakeMode, ShakeResult } from "./shake-types";
 
 /**
  * Prewalk switches an active session one-way from its starting model to a
