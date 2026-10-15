@@ -23,7 +23,7 @@ import {
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import type { RequirementLedgerItem, RequirementVerdict } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
-import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { TodoTool, observeLatestTodoPhases } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { classifyTodoSchema } from "../../src/tools/todo-classify-schema";
 
@@ -531,3 +531,85 @@ describe("owner-backed requirement supersession", () => {
 		expect((await tool.execute("no-old-pass", { op: "done", task: foldRow })).isError).toBe(true);
 	});
 });
+
+it("relinks a requirement to an archived completed row without reviving it", async () => {
+	const { manager, tool } = harness();
+	seedMislinked(manager);
+	const archivedRow = "Previously verified implementation";
+	manager.appendCustomEntry("user_todo_edit", {
+		edit: {
+			v: 1,
+			kind: "archive",
+			at: Date.now(),
+			archivedPhases: [{ name: "Previous", tasks: [{ content: archivedRow, status: "completed" }] }],
+		},
+	});
+	const result = await tool.execute("relink-archived", {
+		op: "classify",
+		id: "R3",
+		classification: "linked",
+		rows: [archivedRow],
+		relink: true,
+		reason: "Correct stale linkage to the archived implementation",
+	});
+	expect(result.isError, textOf(result)).toBeUndefined();
+	expect(r3Of(manager).rows).toEqual([archivedRow]);
+	expect(getRequirementRowVerdict(r3Of(manager), archivedRow)).toBeUndefined();
+	const view = await tool.execute("view-live", { op: "view" });
+	expect(
+		(view as { details: { phases: TodoPhase[] } }).details.phases.flatMap(p => p.tasks).map(t => t.content),
+	).not.toContain(archivedRow);
+});
+
+for (const binding of [
+	{ resources: ["/tmp/new-artifact"] },
+	{ deployment: "deploy:https://example.test/version@v2 field=version" },
+]) {
+	it(`persists archived binding replacement: ${Object.keys(binding)[0]}`, async () => {
+		const { manager, tool } = harness();
+		seedMislinked(manager);
+		const archivedRow = "Archived implementation with artifact";
+		manager.appendCustomEntry("user_todo_edit", {
+			edit: {
+				v: 1,
+				kind: "archive",
+				at: Date.now(),
+				archivedPhases: [
+					{
+						name: "Previous",
+						tasks: [
+							{ content: archivedRow, status: "completed", schedule: { resources: ["/tmp/old-artifact"] } },
+						],
+					},
+				],
+			},
+		});
+		const result = await tool.execute("relink-binding", {
+			op: "classify",
+			id: "R3",
+			classification: "linked",
+			rows: [archivedRow],
+			relink: true,
+			reason: "Bind the corrected artifact",
+			...binding,
+		});
+		expect(result.isError, textOf(result)).toBeUndefined();
+		let archived: (TodoPhase["tasks"][number] & { schedule?: { resources?: string[] } }) | undefined;
+		observeLatestTodoPhases(manager.getBranch(), phases => {
+			for (const phase of phases) for (const task of phase.tasks) if (task.content === archivedRow) archived = task;
+		});
+		if (!archived) throw new Error("archived binding missing");
+		if (binding.resources) {
+			expect(archived.schedule?.resources).toEqual(binding.resources);
+			expect(archived.deployment).toBeUndefined();
+		} else {
+			expect(archived.deployment).toBe(binding.deployment);
+			expect(archived.schedule?.resources).toBeUndefined();
+		}
+		expect(archived.status).toBe("completed");
+		const view = await tool.execute("view-live", { op: "view" });
+		expect(
+			(view as { details: { phases: TodoPhase[] } }).details.phases.flatMap(p => p.tasks).map(t => t.content),
+		).not.toContain(archivedRow);
+	});
+}

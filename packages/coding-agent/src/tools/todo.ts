@@ -919,9 +919,30 @@ export function observeLatestTodoPhases(
 	let latest: TodoPhase[] | undefined;
 	for (const entry of entries) {
 		const phases = canonicalTodoPhases(entry);
-		if (!phases) continue;
-		onSnapshot(phases);
-		latest = phases;
+		if (phases) {
+			onSnapshot(phases);
+			latest = phases;
+		}
+		// Archive edits retain row identity and artifact bindings after the live
+		// plan drops them. Observe them without making them the active snapshot.
+		const data =
+			entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE
+				? entry.data
+				: entry.type === "message" &&
+					  entry.message.role === "toolResult" &&
+					  entry.message.toolName === "todo" &&
+					  !entry.message.isError
+					? entry.message.details
+					: undefined;
+		const edit = isRecord(data) ? data.edit : undefined;
+		if (
+			isRecord(edit) &&
+			edit.v === 1 &&
+			edit.kind === "archive" &&
+			Array.isArray(edit.archivedPhases) &&
+			edit.archivedPhases.every(isTodoPhase)
+		)
+			onSnapshot(edit.archivedPhases);
 	}
 	return latest ? clonePhases(latest) : [];
 }
@@ -1655,8 +1676,22 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				isError: true,
 			};
 		}
+		let archivedTargets: TodoPhase[] = [];
 		if (classification === "linked") {
-			const unknownRows = (rows ?? []).filter(row => !findTaskByContent(previousPhases, row));
+			const missingActiveRows = (rows ?? []).filter(row => !findTaskByContent(previousPhases, row));
+			if (missingActiveRows.length > 0) {
+				const historical = new Map<string, TodoPhase>();
+				observeLatestTodoPhases(sessionManager.getBranch(), snapshot => {
+					for (const phase of snapshot) {
+						for (const task of phase.tasks) {
+							if (missingActiveRows.includes(task.content))
+								historical.set(task.content, { name: phase.name, tasks: [cloneTask(task)] });
+						}
+					}
+				});
+				archivedTargets = [...historical.values()];
+			}
+			const unknownRows = missingActiveRows.filter(row => !findTaskByContent(archivedTargets, row));
 			if (unknownRows.length > 0) {
 				const available = previousPhases.flatMap(phase => phase.tasks.map(task => JSON.stringify(task.content)));
 				return {
@@ -1729,7 +1764,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		}
 		const affectedRows = new Set<string>();
 		let replacingBinding = false;
-		for (const task of previousPhases.flatMap(phase => phase.tasks)) {
+		for (const task of [...previousPhases, ...archivedTargets].flatMap(phase => phase.tasks)) {
 			if (!rows?.includes(task.content)) continue;
 			const schedule = "schedule" in task && isRecord(task.schedule) ? task.schedule : undefined;
 			const hasResources = Array.isArray(schedule?.resources) && schedule.resources.length > 0;
@@ -1779,7 +1814,8 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 			// Omitted bindings remain untouched; an explicit cutover stores exactly
 			// one primary artifact descriptor on each selected row.
 			const phases = clonePhases(previousPhases);
-			for (const task of phases.flatMap(phase => phase.tasks)) {
+			const archivedPhases = clonePhases(archivedTargets);
+			for (const task of [...phases, ...archivedPhases].flatMap(phase => phase.tasks)) {
 				if (!rows?.includes(task.content)) continue;
 				const schedule = "schedule" in task && isRecord(task.schedule) ? task.schedule : {};
 				if (deployment) {
@@ -1794,7 +1830,14 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 					Object.assign(task, { schedule: { ...schedule, resources: [...resources] } });
 				}
 			}
-			sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+				phases,
+				...(archivedPhases.length > 0
+					? {
+							edit: { v: 1, kind: "archive", at: Date.now(), archivedPhases },
+						}
+					: {}),
+			});
 			this.session.setTodoPhases?.(phases);
 			details.phases = phases;
 		}
