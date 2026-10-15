@@ -12512,8 +12512,7 @@ export class AgentSession implements SettingsScope {
 	 * @returns whether a continuation was scheduled; false while a turn runs, without
 	 * a model, or with nothing left unfinished.
 	 */
-	async restoreInterruptedTurn(uiContext?: ExtensionUIContext): Promise<boolean> {
-		if (uiContext && (await this.restorePendingAsk(uiContext))) return true;
+	async restoreInterruptedTurn(): Promise<boolean> {
 		const branch = this.sessionManager.getBranch();
 		if (this.isStreaming || !hasRestorableTurn(branch)) return false;
 		const model = this.model;

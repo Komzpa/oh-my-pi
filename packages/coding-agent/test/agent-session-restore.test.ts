@@ -283,7 +283,7 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 			const restored =
 				recovery === "resume"
 					? await reopened.session.restorePendingAsk(ui)
-					: await reopened.session.restoreInterruptedTurn(ui);
+					: (await reopened.session.restorePendingAsk(ui)) || (await reopened.session.restoreInterruptedTurn());
 			expect(restored).toBe(true);
 			await reopened.session.waitForIdle();
 			expect(reopened.mock.calls).toHaveLength(1);
