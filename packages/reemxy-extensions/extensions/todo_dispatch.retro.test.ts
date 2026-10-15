@@ -552,8 +552,8 @@ test.each([
     const notice = await f.check();
     if (due) {
       expect(notice).toContain(`retrospective due (${kind})`);
-      expect(notice).toContain("which instruction line (skill or prompt) missed it");
-      expect(notice).toContain("mechanism row that edits that instruction");
+      expect(notice).toContain("lead's tool results, plan history and available receipts");
+      expect(notice).toContain("only when the evidence identifies an actual instruction defect");
     } else expect(notice).not.toContain("retrospective due");
   } finally { setSystemTime(); }
 });
@@ -566,7 +566,43 @@ test.each([["past ETA", liveNow - 200_000, true], ["on-time row", liveNow - 1000
     const notice = await f.check();
     if (due) {
       expect(notice).toContain("retrospective due (missed ETA)");
-      expect(notice).toContain("mechanism row that edits that instruction");
+      expect(notice).toContain("only when the evidence identifies an actual instruction defect");
     } else expect(notice).not.toContain("retrospective due");
+  } finally { setSystemTime(); }
+});
+
+
+test("a zero-worker deadline incident requests lead evidence rather than nonexistent reports", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], []);
+    const notice = await f.check();
+    expect(notice).toContain("retrospective due (deadline passed)");
+    expect(notice).toContain("no new eligible worker reports");
+    expect(notice).toContain("lead's tool results, plan history and available receipts");
+    expect(notice).toContain("only when the evidence identifies an actual instruction defect");
+    expect(notice).not.toContain("read the Retro block");
+    await f.finish();
+    expect(await f.check()).not.toContain("retrospective due");
+  } finally { setSystemTime(); }
+});
+
+test("a new incident after covered reports uses lead evidence without relisting those workers", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const workers = [{ id: "covered-job", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "covered-worker" }];
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], workers);
+    const first = await f.check();
+    expect(first).toContain("read the Retro block in the final answer of the 1 workers");
+    expect(first).toContain("covered-worker");
+    await f.finish();
+    expect(await f.check()).not.toContain("retrospective due");
+    await f.handlers.get("input")!({ type: "input", text: "не то, переделай", source: "interactive" }, f.ctx);
+    const next = await f.check();
+    expect(next).toContain("retrospective due (user correction)");
+    expect(next).toContain("no new eligible worker reports");
+    expect(next).not.toContain("covered-worker");
+    await f.finish();
+    expect(await f.check()).not.toContain("retrospective due");
   } finally { setSystemTime(); }
 });

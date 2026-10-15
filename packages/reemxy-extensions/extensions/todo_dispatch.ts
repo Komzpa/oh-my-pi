@@ -3679,6 +3679,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (!sprintState.retroDueReason) return "";
     const since = sprintState.lastRetroAt ?? sprintState.goalWorkStartedAt ?? now;
     const workerIds = retroWorkerIds();
+    if (workerIds.length === 0) return `retrospective due (${sprintState.retroDueReason}): no new eligible worker reports. Review the triggering incident using the lead's tool results, plan history and available receipts; do not fabricate worker reports or skip the incident review. Then retro-facilitator (skill://chief-of-staff Retrospective) uses that evidence to identify what happened and the next corrective action. Create a mechanism row editing a skill or prompt only when the evidence identifies an actual instruction defect; otherwise record that no instruction change is warranted.`;
     return `retrospective due (${sprintState.retroDueReason}): read the Retro block in the final answer of the ${workerIds.length} workers who finished since ${safeTimestamp(since, timeZone)} from agent://<id> (do not write to them; a missing block is recorded as missing), then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}; for each red item, identify which instruction line (skill or prompt) missed it and output a mechanism row that edits that instruction.`;
   };
   const planCheck = (ctx: ExtensionContext, pending: unknown[] = []): string | null => {

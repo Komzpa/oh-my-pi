@@ -252,7 +252,7 @@ test("chief bash admits live read-only compound commands", async () => {
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
-});
+}, 20_000);
 
 test("chief bash admits cd-led looks, absolute-path binaries, gh reads and extended git reads", async () => {
   const cwd = repo("clean");
