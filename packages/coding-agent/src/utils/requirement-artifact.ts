@@ -126,7 +126,14 @@ export function parseRequirementIdentity(text: string): { identity: RequirementI
 			let paths: string[] | undefined;
 			if (suffix) {
 				if (!suffix.startsWith("paths=")) fail("git identity accepts only paths=<JSON file array>");
-				const decoded: unknown = JSON.parse(suffix.slice(6));
+				let decoded: unknown;
+				try {
+					decoded = JSON.parse(suffix.slice(6));
+				} catch {
+					fail(
+						'git paths requires a JSON array of quoted relative paths, for example paths=["src/file.ts","test/file.test.ts"]',
+					);
+				}
 				if (
 					!Array.isArray(decoded) ||
 					decoded.length === 0 ||
