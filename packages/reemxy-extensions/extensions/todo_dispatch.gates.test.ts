@@ -5,8 +5,9 @@
 // estimate). Live 2026-09-25 each rule passed its own tests while together they left the model no
 // legal move: the gate demanded task, then git commit, and skipped the todo call that admission
 // needed first. Every reachable state below must leave the demanded action executable.
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { execFileSync, spawn } from "node:child_process";
+import * as childProcess from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { tmpdir } from "node:os";
@@ -423,6 +424,19 @@ const demandsSeen = new Map<string, number>();
 async function violations(strictDemand: boolean) {
   const repos = { clean: repo("clean"), conflicted: repo("conflicted"), resolvedStale: repo("resolvedStale") };
   const found: string[] = [];
+  // These three repositories are immutable during the sweep. Probe each Git command once,
+  // while retaining a fresh extension for every call so gate bookkeeping never leaks.
+  const spawnSync = childProcess.spawnSync;
+  const gitReads = new Map<string, childProcess.SpawnSyncReturns<string | Buffer<ArrayBuffer>>>();
+  const gitProbe = spyOn(childProcess, "spawnSync").mockImplementation((command, args, options) => {
+    if (command !== "git" || typeof options?.cwd !== "string" || options.encoding !== "utf8" || !Object.values(repos).includes(options.cwd)) return spawnSync(command, args, options);
+    const key = JSON.stringify([options.cwd, args]);
+    const cached = gitReads.get(key);
+    if (cached) return cached;
+    const result = spawnSync(command, args, options);
+    gitReads.set(key, result);
+    return result;
+  });
   const wasPaused = agentPauseGate.paused;
   if (wasPaused) agentPauseGate.resume();
   try {
@@ -472,6 +486,7 @@ async function violations(strictDemand: boolean) {
       //    test; here only: a merge worker is never the only thing the model may do.
     }
   } finally {
+    gitProbe.mockRestore();
     for (const cwd of Object.values(repos)) rmSync(cwd, { recursive: true, force: true });
   }
   return found;
