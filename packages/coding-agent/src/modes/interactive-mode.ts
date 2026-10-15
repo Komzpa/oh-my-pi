@@ -3952,10 +3952,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#agentRegistryUnsubscribe?.();
 			this.#agentRegistrySubscriptionTarget = registry;
 			this.#agentRegistryUnsubscribe = registry.onChange(() => {
-				this.syncRunningSubagentBadge({ requestRender: false });
-				this.#renderTodoList();
-				this.#renderSubagentList();
-				this.ui.requestRender();
+				// Restoring a roster emits one event per agent. Rebuild the UI once
+				// for the batch, through the same scheduler as session observations.
+				this.#scheduleObserverUiSync("lifecycle");
 			});
 		}
 		const agentIds = getRunningSubagentBadgeAgentIds(registry);
