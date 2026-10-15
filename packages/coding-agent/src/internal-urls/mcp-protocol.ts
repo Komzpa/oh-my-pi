@@ -106,30 +106,16 @@ function resolveTargetServer(mcpManager: MCPManager, uri: string, exact: boolean
 	return bestTemplateMatch?.serverName;
 }
 
-/** Resolve against settled catalogs; cancellation leaves manager-owned work in flight. */
-async function resolveReadyTargetServer(
-	mcpManager: MCPManager,
-	uri: string,
-	exact: boolean,
-	signal?: AbortSignal,
-): Promise<string | undefined> {
-	const targetServer = resolveTargetServer(mcpManager, uri, exact);
-	if (targetServer) return targetServer;
-	await untilAborted(signal, mcpManager.waitForPendingConnections());
-	await untilAborted(
-		signal,
-		Promise.allSettled(mcpManager.getConnectedServers().map(name => mcpManager.ensureServerResources(name))),
-	);
-	return resolveTargetServer(mcpManager, uri, exact);
-}
-
 /** Whether a settled MCP catalog advertises this exact URI, without reading it. */
 export async function hasExactMcpResource(
 	mcpManager: MCPManager,
 	url: InternalUrl,
 	signal?: AbortSignal,
 ): Promise<boolean> {
-	return (await resolveReadyTargetServer(mcpManager, extractResourceUri(url), true, signal)) !== undefined;
+	const uri = extractResourceUri(url);
+	if (resolveTargetServer(mcpManager, uri, true)) return true;
+	await untilAborted(signal, settleCatalogs(mcpManager, uri, true));
+	return resolveTargetServer(mcpManager, uri, true) !== undefined;
 }
 
 function formatAvailableResources(mcpManager: MCPManager): string {
