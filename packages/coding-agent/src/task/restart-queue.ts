@@ -857,7 +857,15 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			const settledSessions = new Set<AgentSession>();
 			const wait = Promise.all(
 				childLeases.map(async item => {
-					await item.lease.waitForQuiescence();
+					try {
+						await item.lease.waitForQuiescence();
+					} catch (error) {
+						if (!item.session.isDisposed) throw error;
+						// Idle-TTL parking can dispose a captured child while the root
+						// drains. Disposal invalidates its lease but owns the final
+						// transcript flush; join it before treating the child as settled.
+						await item.session.dispose();
+					}
 					settledSessions.add(item.session);
 				}),
 			).then(() => true);
