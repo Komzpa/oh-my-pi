@@ -2629,6 +2629,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			onTerminalAppearanceChange(mode, appearanceRefreshWasRequested ? {} : undefined);
 		});
 
+		// Paint saved history after event handlers are installed, before recovery can
+		// start a root turn or wait for slow child revival.
+		await logger.time("InteractiveMode.renderInitialMessages", () =>
+			this.renderInitialMessages({ preserveExistingChat: true }),
+		);
+
 		// Restore child sessions and the root continuation through the controller
 		// before opening local or external restart admission. Its journal restore
 		// owns the child same-ID recovery order.
@@ -2640,14 +2646,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#restartControlInitializing = false;
 
-		// Keys pressed while a Tern startup loaded were held until hooks ran, the
-		// session mode settled, the draft was restored and every subscription
-		// above was installed. They replay into the restored draft, never over
-		// it, a startup shortcut (Alt+P, Ctrl+G, extension shortcuts) acts on the
-		// final mode, editor contents and observed session, and a held Enter
-		// still meets the bootstrap submit gate lifted just below.
-		this.ui.releaseHeldInput();
-
 		// Everything is wired: subscriptions observe agent events, the session
 		// mode is reconciled, and the submit handler is installed. Lift the
 		// composer's bootstrap submit gate (`disableSubmit = true` since
@@ -2658,6 +2656,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// `streamingBehavior: "steer"`, so whichever lands second queues into the
 		// other's turn instead of dying.
 		this.editor.disableSubmit = false;
+		// Replay startup keys into the restored draft only once Enter can dispatch.
+		// An active dialog retains focus and receives its own keys.
+		this.ui.releaseHeldInput();
 		// Publish native send readiness even when no user input triggers another frame.
 		this.ui.requestRender();
 		if (process.env.OMP_RESTART_SESSION_ID) {
