@@ -17,6 +17,7 @@ import {
 	PREWALK_PLAN_MESSAGE_TYPE,
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
+import { isInterruptedToolResult } from "./exit-diagnostics";
 import { CONTEXT_NOTES_ENTRY_TYPE, getContextNotes, renderContextNotes } from "./context-notes";
 import {
 	type CompactionEntry,
@@ -758,6 +759,20 @@ export function buildSessionContext(
 					createCustomMessage(CONTEXT_NOTES_ENTRY_TYPE, renderedNotes, false, undefined, sourceEntry.timestamp),
 				);
 			}
+		}
+	}
+
+	// Ask recovery appends the real answer without rewriting the journal or moving
+	// its branch. Superseded process-exit placeholders are not answers to display
+	// or send to the provider; real results (including cancellation) stay intact.
+	const answeredAskIds = new Set<string>();
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message?.role !== "toolResult" || message.toolName !== "ask") continue;
+		if (isInterruptedToolResult(message)) {
+			if (answeredAskIds.has(message.toolCallId)) messages.splice(index, 1);
+		} else {
+			answeredAskIds.add(message.toolCallId);
 		}
 	}
 

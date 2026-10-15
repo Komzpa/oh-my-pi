@@ -247,6 +247,19 @@ export function sessionExitFollowsLastMessage(entries: readonly SessionEntry[]):
 	return false;
 }
 
+const INTERRUPTED_TOOL_RESULT_TEXT = "Previous OMP process exited before this tool returned; its outcome is unknown.";
+
+/** A process-exit placeholder, rather than an answer or an explicit cancellation. */
+export function isInterruptedToolResult(message: AgentMessage): boolean {
+	return (
+		message.role === "toolResult" &&
+		message.isError === true &&
+		message.content.length === 1 &&
+		message.content[0]?.type === "text" &&
+		message.content[0].text === INTERRUPTED_TOOL_RESULT_TEXT
+	);
+}
+
 /** Pairs unresolved calls at the end of an interrupted turn with result messages. */
 export function createInterruptedToolResults(
 	entries: readonly SessionEntry[],
@@ -288,7 +301,7 @@ export function createInterruptedToolResults(
 					text:
 						context === "fork"
 							? "The parent session may still be running this tool; its outcome is unknown."
-							: "Previous OMP process exited before this tool returned; its outcome is unknown.",
+							: INTERRUPTED_TOOL_RESULT_TEXT,
 				},
 			],
 			isError: true,
