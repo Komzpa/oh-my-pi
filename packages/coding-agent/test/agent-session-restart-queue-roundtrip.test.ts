@@ -127,6 +127,54 @@ describe("AgentSession restart queue round trip", () => {
 		return session;
 	}
 
+	it.each(["completed", "failed", "cancelled"])("does not replay queued notices after a %s restart", async state => {
+		const manager = currentManager();
+		appendPriorAssistant(manager);
+		const notice = (requestId: string, noticeState: string) => ({
+			role: "custom" as const,
+			customType: "restart-queued",
+			content: `Restart ${requestId} is ${noticeState}.`,
+			display: true,
+			details: { requestId, state: noticeState },
+			timestamp: Date.now(),
+		});
+		const stale = notice("old-request", "queued");
+		const active = notice("live-request", "queued");
+		const input: AgentMessage = { role: "user", content: "preserve actual input", timestamp: Date.now() };
+		manager.appendCustomEntry("omp:restart-pending-queues", {
+			steering: [stale, input],
+			followUp: [stale, input],
+			pendingNextTurn: [stale],
+		});
+		manager.appendCustomEntry("restart_request_transition", { record: { requestId: "old-request", state } });
+		manager.appendCustomMessageEntry("restart-queued", notice("old-request", state).content, true, {
+			requestId: "old-request",
+			state,
+		});
+		// The most recent snapshot can itself still contain obsolete notices.
+		manager.appendCustomEntry("omp:restart-pending-queues", {
+			steering: [stale, input],
+			followUp: [stale, input, active],
+			pendingNextTurn: [stale, active],
+		});
+		manager.appendCustomEntry("restart_request_transition", {
+			record: { requestId: "live-request", state: "queued" },
+		});
+		await manager.ensureOnDisk();
+		const file = manager.getSessionFile()!;
+		await manager.close();
+		sessionManager = undefined;
+		const restored = await reopenSession(file);
+		expect(restored.agent.peekSteeringQueue()).toEqual([input]);
+		expect(restored.agent.peekFollowUpQueue()).toEqual([input, active]);
+		// Recheckpoint inspects the private next-turn queue through its durable owner.
+		const lease = restored.beginRestartDrain();
+		await lease.waitForQuiescence();
+		const checkpoint = restartQueueCheckpoints(currentManager()).at(-1);
+		expect(checkpoint?.type === "custom" ? checkpoint.data : undefined).toMatchObject({ pendingNextTurn: [active] });
+		lease.release();
+	});
+
 	it("restores typed steering and follow-up positions once without adding them to transcript history", async () => {
 		if (!sessionManager) throw new Error("Expected a session manager");
 		const priorMessage: AgentMessage = { role: "user", content: "already in transcript", timestamp: Date.now() };
