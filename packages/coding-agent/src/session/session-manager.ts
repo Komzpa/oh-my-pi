@@ -4007,12 +4007,15 @@ export class SessionManager {
 		for (const metadata of this.#index.metadataPath()) {
 			if (predicate(metadata)) selected.add(metadata.id);
 		}
-		return [...this.iterateBranchMatchingNewestFirst(metadata => selected.has(metadata.id))].reverse();
+		// The returned array already retains these entries; reuse them on subsequent
+		// selections while callers still hold them instead of decoding them again.
+		return [...this.iterateBranchMatchingNewestFirst(metadata => selected.has(metadata.id), true)].reverse();
 	}
 
 	/** Matching entries newest first; excluded payloads are never read. */
 	*iterateBranchMatchingNewestFirst(
 		predicate: (metadata: SessionContextEntryMetadata) => boolean,
+		retainIdentity = false,
 	): IterableIterator<SessionEntry> {
 		const path = this.#index.metadataPath();
 		const extension = this as SessionManager & {
@@ -4025,7 +4028,7 @@ export class SessionManager {
 		for (let i = path.length - 1; i >= 0; i--) {
 			const metadata = path[i]!;
 			if (!predicate(metadata)) continue;
-			const entry = this.#index.get(metadata.id, false)!;
+			const entry = this.#index.get(metadata.id, retainIdentity)!;
 			yield project ? project(entry, i) : entry;
 		}
 	}
