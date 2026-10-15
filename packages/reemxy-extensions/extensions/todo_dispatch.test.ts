@@ -458,6 +458,35 @@ describe("todo dispatch supervisor", () => {
       }).readyCandidates[0]?.ownership,
     ).toBe("unverified");
   });
+  test("resumed in-progress owner with zero live jobs is lost and unstaffed", () => {
+    const content = "Surface dropped fact";
+    const owner = "SurfaceDroppedFact";
+    const plan = scheduledPlan(content);
+    plan[0].tasks[0].status = "in_progress";
+    plan[0].tasks[0].schedule!.owner = owner;
+    const persistedChildren = [{ id: owner, owner: "task-surface-dropped-fact", live: true }];
+    const input = { phases: plan, persistedChildren, deadline: due, now: now + 5.4 * 60 * 60_000 };
+    const live = decide({ ...input, jobs: { running: [{ id: "task-surface-dropped-fact", agentId: owner, type: "task", status: "running", label: content, startTime: now }], recent: [] } });
+    expect(live.readyCandidates[0]?.ownership).toBe("live-owned");
+    expect(live.ownerRunStates).toEqual([{ content, owner, running: true }]);
+    expect(live.alarms.some((alarm) => alarm.startsWith("missed-eta:"))).toBe(false);
+
+    const resumed = decide({
+      ...input,
+      jobs: emptyJobs,
+      restoredChildren: [],
+      cachedStatic: { key: live.key!, text: live.staticPrompt! },
+    });
+    expect(resumed.readyCandidates[0]?.ownership).toBe("unverified");
+    expect(resumed.ownerRunStates).toEqual([{ content, owner, running: false }]);
+    expect(resumed.activeTaskCount).toBe(0);
+    expect(resumed.dispatchableReady?.map((row) => row.content)).toEqual([content]);
+    expect(resumed.prompt).not.toContain("Every dependency-ready row has an exact running owner");
+    expect(resumed.prompt).toContain(`Lost/unstaffed in-progress owners (1): ${JSON.stringify(content)} [owner=${JSON.stringify(owner)}; not running]`);
+    expect(resumed.alarms.some((alarm) => alarm.startsWith("missed-eta:") && alarm.includes(JSON.stringify(content)))).toBe(true);
+    expect(resumed.prompt).toContain("MISSED ETA:");
+  });
+
   test("missed-eta stays silent for a live-owned row and exhausted rows ask for receipt plus split", () => {
     const overdueEstimate = {
       optimisticSeconds: 60,

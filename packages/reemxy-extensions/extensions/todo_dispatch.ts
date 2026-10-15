@@ -655,6 +655,16 @@ function mergePersistedChildren(
     : [...merged.filter((child) => child.live), ...settled.slice(-MAX_SETTLED_CHILDREN)];
 }
 
+/** IDs the current omp process knows: its task jobs plus explicitly live registry agents.
+ * A persisted roster ID outside this set belongs to a process that no longer exists
+ * (omp --resume brings no worker back), so it never proves staffing. */
+function currentProcessChildIds(jobs: Jobs): Set<string> {
+  return new Set([
+    ...[...jobs.running, ...jobs.recent].flatMap((job) => job.agentId ? [job.id, job.agentId] : [job.id]),
+    ...(jobs.nonJobAgents ?? []).filter((agent) => agent.live).map((agent) => agent.id),
+  ]);
+}
+
 function restoredChildren(
   previous: PersistedChild[],
   jobs: Jobs | null,
@@ -671,10 +681,7 @@ function restoredChildren(
       .flatMap((job) => job.agentId ? [job.id, job.agentId] : [job.id]),
   );
   // Only current-process jobs or explicitly live registry entries prove resumability.
-  const knownIds = new Set([
-    ...[...jobs.running, ...jobs.recent].flatMap((job) => job.agentId ? [job.id, job.agentId] : [job.id]),
-    ...(jobs.nonJobAgents ?? []).filter((agent) => agent.live).map((agent) => agent.id),
-  ]);
+  const knownIds = currentProcessChildIds(jobs);
   return previous.filter((child) =>
     (knownIds.has(child.id) || (child.owner !== null && knownIds.has(child.owner))) &&
     !activeIds.has(child.id) && !(child.owner && activeIds.has(child.owner)) &&
@@ -748,6 +755,8 @@ export interface DispatchDecision {
   dispatchableReady?: Array<DispatchDecision["readyCandidates"][number]>;
   todoOwnerIds?: string[];
   ownerRunStates?: Array<{ content: string; owner: string | null; running: boolean }>;
+  /** In-progress rows whose recorded owner matches no live task job, parked child or external wait. */
+  lostOwners?: Array<{ content: string; owner: string }>;
   externallyStaffedCount?: number;
   deadline?: DispatchInput["deadline"];
   capacity?: number;
@@ -1210,7 +1219,13 @@ export function decideTodoDispatch(
   const openContent = new Set(open.map(({ task }) => task.content));
   const activeTaskJobs =
     jobs?.running.filter((job) => job.type === "task" && job.status === "running") ?? [];
-  const persistedTaskChildren = input.persistedChildren ?? [];
+  // A roster entry persisted before a restart is staffing proof only while the current process
+  // still knows that child; otherwise its row is lost/unstaffed, not exactly running (live
+  // 2026-10-15: SurfaceDroppedFact reported staffed for ~5.4h with 0 running jobs).
+  const knownChildIds = jobs === null ? null : currentProcessChildIds(jobs);
+  const persistedTaskChildren = (input.persistedChildren ?? []).filter((child) =>
+    knownChildIds === null || knownChildIds.has(child.id) || (child.owner !== null && knownChildIds.has(child.owner))
+  );
   const livePersistedChildForOwner = (owner: string | null) => {
     if (owner === null) return undefined;
     const child = persistedTaskChildren.find((candidate) =>
@@ -1267,6 +1282,14 @@ export function decideTodoDispatch(
       })
       .map(({ task }) => task.content),
   );
+  const lostOwners = jobs !== null
+    ? open.flatMap(({ task }) => {
+        const owner = task.schedule?.owner;
+        return task.status === "in_progress" && typeof owner === "string" && !ownerHasActiveTask(owner)
+          ? [{ content: task.content, owner }]
+          : [];
+      })
+    : [];
   const openTasksByContent = new Map(open.map(({ task }) => [task.content, task]));
   const liveResourceHolders = open
     .filter(({ task }) => {
@@ -1535,6 +1558,9 @@ export function decideTodoDispatch(
     ...(forecastLines.length ? forecastLines : ["- none"]),
     `Missing estimates (${missing.length}): ${missing.length ? missing.map((content) => JSON.stringify(content)).join(", ") : "none"}; stale (${stale.length}): ${stale.length ? stale.map((content) => JSON.stringify(content)).join(", ") : "none"}`,
     `Ready rows needing distinct live workers (${ownerlessReady.length}/${readyCandidates.length}): ${ownerlessReady.length ? ownerlessReady.map((row) => `${JSON.stringify(row.content)} [${row.ownership}; owner=${JSON.stringify(row.owner)}]`).join(", ") : "none"}`,
+    ...(lostOwners.length
+      ? [`Lost/unstaffed in-progress owners (${lostOwners.length}): ${lostOwners.map((row) => `${JSON.stringify(row.content)} [owner=${JSON.stringify(row.owner)}; not running]`).join(", ")}. No live task job or parked child matches these owners after resume; re-staff each row under its owner name or a new owner.`]
+      : []),
     `Dependency-waiting rows (${dependencyUnready.length}; do not dispatch): ${dependencyUnready.length ? dependencyUnready.map((row) => `${JSON.stringify(row.content)}${row.awaitingPrerequisite ? ` [awaiting ${JSON.stringify(row.awaitingPrerequisite)}]` : ""}`).join(", ") : "none"}`,
     `Dispatch: ${dispatchDirective}`,
     ...(userWaits.length
@@ -1572,6 +1598,7 @@ export function decideTodoDispatch(
       phase.tasks.flatMap((task) => typeof task.schedule?.owner === "string" ? [task.schedule.owner] : []),
     ),
     ownerRunStates,
+    lostOwners,
     externallyStaffedCount,
     openStructure: phases.flatMap((phase) =>
       phase.tasks
