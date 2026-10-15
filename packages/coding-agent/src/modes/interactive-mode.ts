@@ -7490,6 +7490,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			throw new Error("Restart requires a durable session; the current process was kept alive");
 		// Resume the exact checkpoint, not a possibly stale session-index lookup or a fresh session.
 		const cmd = [...resolveCliEntryCmd(), ...restartArgv(process.argv.slice(2), sessionFile)];
+		// Snapshot the unsent composer before closing input and disposing UI controllers.
+		// Shared teardown reuses this save instead of overwriting it with a cleared editor.
+		if (this.#signalTeardown) await this.#signalTeardown.saveDraft();
+		else await this.sessionManager.saveDraft(this.#inputController.getDraftText());
 		// Release the writer claim before replacing the runtime with the exact checkpoint.
 		await this.sessionManager.close();
 		this.ui.stop();

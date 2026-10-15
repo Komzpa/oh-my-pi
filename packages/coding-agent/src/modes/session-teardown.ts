@@ -41,7 +41,11 @@ export interface SessionTeardownDeps {
  * teardown (`sigterm`, `sighup`, `uncaught_exception`, …); only the FIRST
  * call's reason is used — later callers await the same settled promise.
  */
-export type SessionTeardown = (reason?: postmortem.Reason) => Promise<void>;
+export interface SessionTeardown {
+	(reason?: postmortem.Reason): Promise<void>;
+	/** Persist the current draft before automatic restart closes its session writer. */
+	saveDraft(): Promise<void>;
+}
 
 /**
  * Build a promise-memoized teardown function. The first call snapshots the
@@ -65,18 +69,35 @@ export type SessionTeardown = (reason?: postmortem.Reason) => Promise<void>;
  */
 export function createSessionTeardown(deps: SessionTeardownDeps): SessionTeardown {
 	let pending: Promise<void> | undefined;
+	let draftSave: Promise<void> | undefined;
+	let draftText: string | undefined;
+	const snapshotDraft = (): string => (draftText ??= deps.getDraftText());
+	const saveDraft = (): Promise<void> => {
+		if (!draftSave) {
+			draftSave = deps.saveDraft(snapshotDraft()).catch(error => {
+				// A failed restart leaves the editor active; retry its latest text.
+				draftSave = undefined;
+				draftText = undefined;
+				throw error;
+			});
+		}
+		return draftSave;
+	};
 	const run = async (reason?: postmortem.Reason): Promise<void> => {
-		const draftText = deps.getDraftText();
+		snapshotDraft();
 		deps.beginDispose();
 		try {
-			await deps.saveDraft(draftText);
+			await saveDraft();
 		} catch (err) {
 			logger.warn("Failed to save session draft during teardown", { error: String(err) });
 		}
 		await deps.disposeSession(reason);
 	};
-	return (reason?: postmortem.Reason) => {
-		if (!pending) pending = run(reason);
-		return pending;
-	};
+	return Object.assign(
+		(reason?: postmortem.Reason) => {
+			if (!pending) pending = run(reason);
+			return pending;
+		},
+		{ saveDraft },
+	);
 }
