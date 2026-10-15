@@ -229,7 +229,7 @@ import { isAttachmentOnlyTitleInput, isLowSignalTitleInput } from "../tiny/text"
 import type { ImageAttachmentEntry, ToolSession } from "../tools";
 import { resolveApproval } from "../tools/approval";
 import { type AskToolDetails } from "@oh-my-pi/pi-tui/tools/ask";
-import { type AskToolInput, recoverAskQuestions } from "../tools/ask";
+import { AskTool, type AskToolInput, recoverAskQuestions } from "../tools/ask";
 import {
 	armIdleCloseForOwner,
 	cancelIdleCloseForOwner,
@@ -246,6 +246,7 @@ import {
 	resumeComputerUseForOwner,
 	revokeComputerControlForOwner,
 } from "../tools/computer/supervisor";
+import { ToolAbortError } from "../tools/tool-errors";
 import { isAutoQaEnabled } from "../tools/report-tool-issue";
 import {
 	buildResolveReminderMessage,
@@ -365,6 +366,8 @@ import {
 	createInterruptedToolResults,
 	createInterruptedTurnAbortMessage,
 	hasRestorableTurn,
+	isInterruptedTurnAbort,
+	isInterruptedToolResult,
 	SESSION_EXIT_CUSTOM_TYPE,
 	type SessionExitData,
 	summarizeToolArguments,
@@ -977,6 +980,7 @@ export class AgentSession implements SettingsScope {
 	#cancelExitRecorder?: () => void;
 	#cancelFatalRecoveryHint?: () => void;
 	#exitRecorded = false;
+	#restoringPendingAsk = false;
 	/** Last observed `workspace.additionalDirectories`, diffed on change to add/remove only settings-seeded roots. */
 	#settingsWorkspaceDirectories: readonly string[] = [];
 	/** Last observed auto-QA gate; the system prompt advertises `xd://report_issue` only while it holds. */
@@ -12400,6 +12404,95 @@ export class AgentSession implements SettingsScope {
 		return didRetry;
 	}
 
+	/** Reopen unanswered questions using the same dialog and call identity after resume. */
+	async restorePendingAsk(uiContext: ExtensionUIContext): Promise<boolean> {
+		if (this.isStreaming || this.#restoringPendingAsk) return false;
+		const branch = this.sessionManager.getBranchView();
+		if (!hasRestorableTurn(branch)) return false;
+		const tail = branch.findLast(entry => entry.type === "message");
+		const recovered = tail?.type === "message" && isInterruptedTurnAbort(tail.message);
+		const anchorIndex = branch.findLastIndex(
+			entry =>
+				entry.type === "message" &&
+				entry.message.role === "assistant" &&
+				entry.message.content.some(block => block.type === "toolCall"),
+		);
+		if (anchorIndex < 0) return false;
+		const anchor = branch[anchorIndex]!;
+		if (anchor.type !== "message" || anchor.message.role !== "assistant") return false;
+		if (anchor.message.stopReason !== "toolUse" && anchor.message.stopReason !== "stop") return false;
+		const results = branch
+			.slice(anchorIndex + 1)
+			.flatMap(entry => (entry.type === "message" && entry.message.role === "toolResult" ? [entry.message] : []));
+		const completed = results.filter(result => !(recovered && isInterruptedToolResult(result)));
+		const pending = anchor.message.content.flatMap(block => {
+			if (
+				block.type !== "toolCall" ||
+				block.name !== "ask" ||
+				completed.some(result => result.toolCallId === block.id)
+			)
+				return [];
+			const args = this.#obfuscator?.hasSecrets()
+				? deobfuscateToolArguments(this.#obfuscator, block.arguments)
+				: block.arguments;
+			const questions = recoverAskQuestions(args);
+			return questions ? [{ toolCallId: block.id, questions }] : [];
+		});
+		if (pending.length === 0) return false;
+		this.#restoringPendingAsk = true;
+		try {
+			const tool = new AskTool({
+				cwd: this.sessionManager.getCwd(),
+				hasUI: true,
+				settings: this.settings,
+				getSessionFile: () => this.sessionManager.getSessionFile() ?? null,
+				getSessionSpawns: () => null,
+				getPlanModeState: () => this.getPlanModeState(),
+			});
+			let cancelled = false;
+			for (const call of pending) {
+				let result: AgentToolResult<AskToolDetails>;
+				try {
+					result = await tool.execute(
+						call.toolCallId,
+						{ questions: call.questions },
+						undefined,
+						undefined,
+						this.buildAskReanswerContext(uiContext),
+					);
+				} catch (error) {
+					if (!(error instanceof ToolAbortError)) throw error;
+					cancelled = true;
+					result = { content: [{ type: "text", text: error.message }], details: {}, isError: true };
+				}
+				this.sessionManager.appendMessage({
+					role: "toolResult",
+					toolCallId: call.toolCallId,
+					toolName: "ask",
+					content: result.content,
+					details: result.details,
+					isError: result.isError === true,
+					timestamp: Date.now(),
+				});
+			}
+			// Close other unknown calls without re-executing their possible side effects.
+			for (const result of createInterruptedToolResults(
+				this.sessionManager
+					.getBranchView()
+					.slice(anchorIndex)
+					.filter(
+						entry => entry.id === anchor.id || entry.type !== "message" || entry.message.role !== "assistant",
+					),
+			))
+				this.sessionManager.appendMessage(result);
+			this.agent.replaceMessages(this.buildDisplaySessionContext().messages);
+			if (!cancelled) this.resumeAfterAskReanswer();
+			return true;
+		} finally {
+			this.#restoringPendingAsk = false;
+		}
+	}
+
 	/**
 	 * Go on with the turn the previous process was in when it ended (`omp --restore`).
 	 *
@@ -12414,7 +12507,8 @@ export class AgentSession implements SettingsScope {
 	 * @returns whether a continuation was scheduled; false while a turn runs, without
 	 * a model, or with nothing left unfinished.
 	 */
-	async restoreInterruptedTurn(): Promise<boolean> {
+	async restoreInterruptedTurn(uiContext?: ExtensionUIContext): Promise<boolean> {
+		if (uiContext && (await this.restorePendingAsk(uiContext))) return true;
 		const branch = this.sessionManager.getBranch();
 		if (this.isStreaming || !hasRestorableTurn(branch)) return false;
 		const model = this.model;
