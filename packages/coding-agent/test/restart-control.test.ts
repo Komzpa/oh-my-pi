@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	getRestartControl,
 	listRestartControls,
 	publishRestartControl,
 	RESTART_CONTROL_PROTOCOL_VERSION,
@@ -40,6 +41,26 @@ function fixture(identity: RestartControlIdentity): { source: RestartControlSour
 }
 
 describe("restart-control local IPC", () => {
+	it("discovers an exact target without probing an unrelated endpoint", async () => {
+		const runtimeDir = await setupDir();
+		const identity = { instanceId: "instance-target-1234", sessionId: "target", generation: 1 };
+		publications.push(await publishRestartControl(fixture(identity).source, { runtimeDir }));
+		let neighborProbes = 0;
+		const neighbor = fixture({ instanceId: "instance-neighbor-1234", sessionId: "neighbor", generation: 1 });
+		const snapshot = neighbor.source.snapshot;
+		neighbor.source.snapshot = () => {
+			neighborProbes++;
+			return snapshot();
+		};
+		publications.push(await publishRestartControl(neighbor.source, { runtimeDir }));
+		neighborProbes = 0;
+		expect((await getRestartControl(identity.instanceId, { runtimeDir })).identity).toEqual(identity);
+		expect(neighborProbes).toBe(0);
+		await expect(getRestartControl("instance-missing-1234", { runtimeDir })).rejects.toMatchObject({
+			code: "target_not_found",
+		});
+	});
+
 	it("discovers a busy session after 1.5 seconds while probing its neighbor concurrently", async () => {
 		const runtimeDir = await setupDir();
 		const servers: net.Server[] = [];

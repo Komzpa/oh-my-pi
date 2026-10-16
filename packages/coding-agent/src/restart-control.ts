@@ -431,6 +431,16 @@ export async function publishRestartControl(
 	};
 }
 
+export async function getRestartControl(
+	instanceId: string,
+	options?: RestartControlOptions,
+): Promise<RestartControlSnapshot> {
+	const meta = await readMetadata(options?.runtimeDir ?? runtimeDirectory(), instanceId);
+	const snapshot = parseSnapshot(await query(meta, { op: "discover" }));
+	if (!snapshot || snapshot.identity.instanceId !== instanceId) throw new RestartControlError("malformed_response");
+	return snapshot;
+}
+
 export async function listRestartControls(options?: RestartControlOptions): Promise<RestartControlSnapshot[]> {
 	const dir = options?.runtimeDir ?? runtimeDirectory();
 	let names: string[];
@@ -452,9 +462,7 @@ export async function listRestartControls(options?: RestartControlOptions): Prom
 			.map(async name => {
 				const filenameId = name.slice(0, -5);
 				try {
-					const meta = await readMetadata(dir, filenameId);
-					const snapshot = parseSnapshot(await query(meta, { op: "discover" }));
-					return snapshot?.identity.instanceId === meta.instanceId ? snapshot : null;
+					return await getRestartControl(filenameId, { ...options, runtimeDir: dir });
 				} catch {
 					// Probe independently so one busy session does not delay every other endpoint.
 					return null;

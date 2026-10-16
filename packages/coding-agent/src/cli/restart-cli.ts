@@ -1,4 +1,10 @@
-import { listRestartControls, RestartControlError, sendRestartControl, waitForRestartResult } from "../restart-control";
+import {
+	getRestartControl,
+	listRestartControls,
+	RestartControlError,
+	sendRestartControl,
+	waitForRestartResult,
+} from "../restart-control";
 import {
 	formatRestartRequestStatus,
 	type RestartControlRequest,
@@ -56,19 +62,10 @@ function printSnapshot(action: RestartAction, snapshot: RestartControlSnapshot):
 	);
 }
 
-function findUniqueTarget(snapshots: RestartControlSnapshot[], instanceId: string): RestartControlSnapshot {
-	const matches = snapshots.filter(snapshot => snapshot.identity.instanceId === instanceId);
-	if (matches.length === 0)
-		throw new RestartControlError("target_not_found", `No live restart target matches ${instanceId}`);
-	if (matches.length > 1)
-		throw new RestartControlError("invalid_request", `Restart target ${instanceId} is ambiguous`);
-	return matches[0]!;
-}
-
 export async function runRestartCommand(command: RestartCommandArgs): Promise<void> {
 	try {
-		const snapshots = await listRestartControls();
 		if (command.action === "list") {
+			const snapshots = await listRestartControls();
 			if (command.json) process.stdout.write(`${JSON.stringify(snapshots, null, 2)}\n`);
 			else printList(snapshots);
 			return;
@@ -76,7 +73,7 @@ export async function runRestartCommand(command: RestartCommandArgs): Promise<vo
 
 		const instanceId = command.instanceId;
 		if (!instanceId) throw new RestartControlError("target_not_found", "An exact --instance target is required");
-		const target = findUniqueTarget(snapshots, instanceId);
+		const target = await getRestartControl(instanceId);
 		const request: RestartControlRequest = {
 			identity: target.identity,
 			op: command.action,
