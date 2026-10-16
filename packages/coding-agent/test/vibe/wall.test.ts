@@ -119,10 +119,15 @@ describe("vibe optional journal capabilities", () => {
 					appendCustomEntry: journal.appendCustomEntry.bind(journal),
 					ensureOnDisk: journal.ensureOnDisk.bind(journal),
 					flush: journal.flush.bind(journal),
-					getEntries: journal.getEntries.bind(journal),
+					getEntries: selective
+						? () => {
+								throw new Error("full journal read");
+							}
+						: journal.getEntries.bind(journal),
 					getBranch: journal.getBranch.bind(journal),
 					...(selective
 						? {
+								iterateEntries: journal.iterateEntries.bind(journal),
 								getBranchMatching: journal.getBranchMatching.bind(journal),
 								getLatestBranchMatching: journal.getLatestBranchMatching.bind(journal),
 							}
