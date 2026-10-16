@@ -319,6 +319,28 @@ fn translate_regex_flavor(bytes: &[u8]) -> String {
 	String::from_utf8(result).expect("produces ASCII bytes")
 }
 
+/// Read a single tac input into an owned buffer.
+///
+/// The whole file is read up front: a memory map would raise SIGBUS in this
+/// process if another process truncates the file while we scan it.
+fn load_input(host: &mut Host, filename: &OsString) -> Result<Vec<u8>, TacError> {
+	if filename == "-" {
+		let mut contents = Vec::new();
+		host.stdin
+			.read_to_end(&mut contents)
+			.map(|_| contents)
+			.map_err(|error| TacError::Read(OsString::from("stdin"), error))
+	} else {
+		let path = host.resolve(filename);
+		let mut file =
+			host.fs().open(path).map_err(|error| TacError::Open(filename.clone(), error))?;
+		let mut contents = Vec::new();
+		file.read_to_end(&mut contents)
+			.map(|_| contents)
+			.map_err(|error| TacError::Read(filename.clone(), error))
+	}
+}
+
 fn tac(
 	filenames: &[OsString],
 	before: bool,
@@ -343,27 +365,21 @@ fn tac(
 		}
 		// Never map the input: a concurrent truncation would SIGBUS the whole
 		// host process through the mapping (and on Windows the mapping makes the
-		// writer's SetEndOfFile fail).
-		let mut data = Vec::new();
-		if filename == "-" {
-			if let Err(error) = host.stdin.read_to_end(&mut data) {
-				show(host, &TacError::Read(OsString::from("stdin"), error));
-				continue;
-			}
-		} else {
+		// writer's SetEndOfFile fail). Inputs are read into owned buffers.
+		//
+		// A regular host file larger than a block is read backwards instead
+		// of whole. Smaller files include pseudo-files (procfs, sysfs) whose
+		// reported size is not their content's.
+		if maybe_pattern.is_none() && filename != "-" {
 			let path = host.resolve(filename);
-			let mut file = match host.fs().open(path) {
+			let file = match host.fs().open(path) {
 				Ok(file) => file,
 				Err(error) => {
 					show(host, &TacError::Open(filename.clone(), error));
 					continue;
 				},
 			};
-			// A regular host file larger than a block is read backwards instead
-			// of whole. Smaller files include pseudo-files (procfs, sysfs) whose
-			// reported size is not their content's.
-			if maybe_pattern.is_none()
-				&& let Some(mut native) = file.native()
+			if let Some(mut native) = file.native()
 				&& let Some(len) = native
 					.metadata()
 					.ok()
@@ -390,11 +406,14 @@ fn tac(
 				}
 				continue;
 			}
-			if let Err(error) = file.read_to_end(&mut data) {
-				show(host, &TacError::Read(filename.clone(), error));
-				continue;
-			}
 		}
+		let data = match load_input(host, filename) {
+			Ok(data) => data,
+			Err(error) => {
+				show(host, &error);
+				continue;
+			},
+		};
 
 		match &maybe_pattern {
 			Some(pattern) => buffer_tac_regex(&data, pattern, before, host).map_err(TacError::Write)?,
@@ -404,6 +423,7 @@ fn tac(
 	}
 	Ok(())
 }
+
 
 /// Creates the `tac` builtin registration.
 pub(crate) fn tac_builtin<SE: ShellExtensions>() -> Registration<SE> {
@@ -572,5 +592,52 @@ mod tests {
 			assert_eq!(from_file.0, 0, "{args:?}");
 			assert!(from_file == from_stdin, "{args:?}: file and stdin output differ");
 		}
+	}
+	#[test]
+	fn tac_input_truncation_does_not_kill_process() {
+		use std::{process::Command, thread, time::Duration};
+
+		use super::load_input;
+
+		const INPUT: &str = "OMP_TAC_TRUNCATION_INPUT";
+		const READY: &str = "OMP_TAC_TRUNCATION_READY";
+		const RELEASE: &str = "OMP_TAC_TRUNCATION_RELEASE";
+		if let (Some(input), Some(ready), Some(release)) = (
+			std::env::var_os(INPUT), std::env::var_os(READY), std::env::var_os(RELEASE),
+		) {
+			let input = PathBuf::from(input);
+			let name = OsString::from(input.file_name().expect("input file name"));
+			let (mut host, _) =
+				Host::for_test("tac", Vec::new(), input.parent().expect("input parent"));
+			let bytes = load_input(&mut host, &name).expect("open tac input");
+			fs::write(ready, b"ready").unwrap();
+			let release = PathBuf::from(release);
+			while !release.exists() {
+				thread::sleep(Duration::from_millis(1));
+			}
+			std::hint::black_box(bytes[1024 * 1024 - 1]);
+			return;
+		}
+
+		let dir = tempfile::tempdir().unwrap();
+		let input = dir.path().join("input.txt");
+		let ready = dir.path().join("ready");
+		let release = dir.path().join("release");
+		fs::write(&input, vec![b' '; 1024 * 1024]).unwrap();
+		let mut child = Command::new(std::env::current_exe().unwrap())
+			.args(["--exact", "tac::tests::tac_input_truncation_does_not_kill_process", "--nocapture"])
+			.env(INPUT, &input)
+			.env(READY, &ready)
+			.env(RELEASE, &release)
+			.spawn()
+			.unwrap();
+		while !ready.exists() {
+			assert!(child.try_wait().unwrap().is_none(), "child exited before reading");
+			thread::sleep(Duration::from_millis(1));
+		}
+		fs::write(&input, b"a\n").unwrap();
+		fs::write(&release, b"go").unwrap();
+		let status = child.wait().unwrap();
+		assert!(status.success(), "child terminated by input truncation: {status}");
 	}
 }

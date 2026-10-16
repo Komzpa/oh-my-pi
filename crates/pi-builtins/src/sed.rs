@@ -5424,6 +5424,13 @@ impl<'a> LineReader<'a> {
 		// against the shell working directory.
 		let file = host.fs().open(host.resolve(path))?;
 
+		// Non-regular inputs (FIFOs, devices, sockets) must stream: reading them to
+		// EOF up front would block `sed -n '1p;1q' fifo` while the writer stays open.
+		#[cfg(unix)]
+		if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+			return line_reader_read_input(file);
+		}
+
 		// Regular host files are read whole, never memory-mapped: sed runs in
 		// the host process, where truncating a mapped file under it raises
 		// SIGBUS and kills the host. Provider files and non-regular host files
@@ -6208,6 +6215,80 @@ mod tests {
 		}
 		assert_eq!(lines, 4);
 		Ok(())
+	}
+	#[test]
+	#[cfg(unix)]
+	fn sed_input_truncation_does_not_kill_process() {
+		use std::{path::PathBuf, process::Command, thread, time::Duration};
+
+		const INPUT: &str = "OMP_SED_TRUNCATION_INPUT";
+		const READY: &str = "OMP_SED_TRUNCATION_READY";
+		const RELEASE: &str = "OMP_SED_TRUNCATION_RELEASE";
+		if let (Some(input), Some(ready), Some(release)) = (
+			std::env::var_os(INPUT), std::env::var_os(READY), std::env::var_os(RELEASE),
+		) {
+			let input = PathBuf::from(input);
+			let mut reader = LineReader::open(&input).expect("open sed input");
+			fs::write(ready, b"ready").unwrap();
+			let release = PathBuf::from(release);
+			while !release.exists() {
+				thread::sleep(Duration::from_millis(1));
+			}
+			let mut total = 0usize;
+			while let Some(chunk) = reader.get_line().expect("read sed input") {
+				total += chunk.as_bytes().len();
+			}
+			std::hint::black_box(total);
+			return;
+		}
+
+		let dir = tempfile::tempdir().unwrap();
+		let input = dir.path().join("input.txt");
+		let ready = dir.path().join("ready");
+		let release = dir.path().join("release");
+		let mut body = vec![b'a'; 1024 * 1024 - 1];
+		body.push(b'\n');
+		fs::write(&input, &body).unwrap();
+		let mut child = Command::new(std::env::current_exe().unwrap())
+			.args(["--exact", "sed::fast_io::tests::sed_input_truncation_does_not_kill_process", "--nocapture"])
+			.env(INPUT, &input)
+			.env(READY, &ready)
+			.env(RELEASE, &release)
+			.spawn()
+			.unwrap();
+		while !ready.exists() {
+			assert!(child.try_wait().unwrap().is_none(), "child exited before reading");
+			thread::sleep(Duration::from_millis(1));
+		}
+		fs::write(&input, b"y\n").unwrap();
+		fs::write(&release, b"go").unwrap();
+		let status = child.wait().unwrap();
+		assert!(status.success(), "child terminated by input truncation: {status}");
+	}
+
+	#[test]
+	#[cfg(unix)]
+	fn sed_fifo_input_streams_without_waiting_for_eof() {
+		use std::{io::Write, sync::mpsc, thread, time::Duration};
+
+		let dir = tempfile::tempdir().unwrap();
+		let fifo = dir.path().join("fifo");
+		nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+		// Read+write keeps a writer open for the whole test, so EOF never arrives.
+		let mut writer = fs::OpenOptions::new().read(true).write(true).open(&fifo).unwrap();
+		writer.write_all(b"one\n").unwrap();
+		let (tx, rx) = mpsc::channel();
+		let path = fifo.clone();
+		thread::spawn(move || {
+			let mut reader = LineReader::open(&path).expect("open fifo");
+			let line = reader.get_line().expect("read fifo").map(|chunk| chunk.as_bytes().to_vec());
+			let _ = tx.send(line);
+		});
+		let line = rx
+			.recv_timeout(Duration::from_secs(10))
+			.expect("fifo input must be streamed, not read to EOF");
+		assert_eq!(line.as_deref(), Some(&b"one"[..]));
+		drop(writer);
 	}
 
 	// is_newline_terminated, is_empty

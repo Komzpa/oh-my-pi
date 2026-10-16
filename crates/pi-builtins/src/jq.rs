@@ -1802,12 +1802,13 @@ pub(crate) fn jq_builtin<SE: ShellExtensions>() -> Registration<SE> {
 
 #[cfg(test)]
 mod tests {
-	use std::{collections::HashMap, io, io::Write, path::PathBuf};
+use std::{collections::HashMap, fs, io, io::Write, path::PathBuf, process::Command, thread, time::Duration};
 
 	use clap::Parser as _;
 
-	use super::Jq;
+	use super::{read, Jq};
 	use crate::host::{Host, Utility, run_util};
+
 
 	fn run_jq_in(
 		cwd: PathBuf,
@@ -1865,6 +1866,47 @@ mod tests {
 		let argv = std::iter::once("jq").chain(args.iter().copied());
 		let cli = Jq::try_parse_from(argv).expect("valid arguments").cli;
 		super::real_main(&cli, &mut host, out, false).unwrap_or_else(|error| error.report())
+	}
+
+	#[test]
+	fn jq_input_truncation_does_not_kill_process() {
+		const INPUT: &str = "OMP_JQ_TRUNCATION_INPUT";
+		const READY: &str = "OMP_JQ_TRUNCATION_READY";
+		const RELEASE: &str = "OMP_JQ_TRUNCATION_RELEASE";
+		if let (Some(input), Some(ready), Some(release)) = (
+			std::env::var_os(INPUT), std::env::var_os(READY), std::env::var_os(RELEASE),
+		) {
+			let bytes = read::load_file(&pi_vfs::BlockingFs::native(), PathBuf::from(input).as_path())
+				.expect("open jq input");
+			fs::write(ready, b"ready").unwrap();
+			let release = PathBuf::from(release);
+			while !release.exists() {
+				thread::sleep(Duration::from_millis(1));
+			}
+			std::hint::black_box(bytes[1024 * 1024 - 1]);
+			return;
+		}
+
+		let dir = tempfile::tempdir().unwrap();
+		let input = dir.path().join("input.json");
+		let ready = dir.path().join("ready");
+		let release = dir.path().join("release");
+		fs::write(&input, vec![b' '; 1024 * 1024]).unwrap();
+		let mut child = Command::new(std::env::current_exe().unwrap())
+			.args(["--exact", "jq::tests::jq_input_truncation_does_not_kill_process", "--nocapture"])
+			.env(INPUT, &input)
+			.env(READY, &ready)
+			.env(RELEASE, &release)
+			.spawn()
+			.unwrap();
+		while !ready.exists() {
+			assert!(child.try_wait().unwrap().is_none(), "child exited before mapping");
+			thread::sleep(Duration::from_millis(1));
+		}
+		fs::write(&input, b"{}").unwrap();
+		fs::write(&release, b"go").unwrap();
+		let status = child.wait().unwrap();
+		assert!(status.success(), "child terminated by input truncation: {status}");
 	}
 
 	#[test]
