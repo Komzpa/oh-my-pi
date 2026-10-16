@@ -173,6 +173,30 @@ test("collects all package type checks independently from the tool checks", asyn
 	expect(jobs[0]?.name).toBe("tool lint (oxlint)");
 	expect(jobs.slice(2).every(job => job.command.at(-1) === "check:types")).toBe(true);
 });
+test("records a process-start error as a failure and still prints the summary", async () => {
+	const dir = await fixtureDir();
+	const jobs = [
+		{ name: "broken launcher", command: ["bun", "-e", "process.exit(0)"], cwd: dir },
+		{ name: "passing neighboring check", command: ["bun", "-e", "process.exit(0)"], cwd: dir },
+	];
+	const lines: string[] = [];
+
+	const exitCode = await runCheckJobs(jobs, {
+		concurrency: 2,
+		emit: line => lines.push(line),
+		spawn: (command, options) => {
+			if (jobs[0]?.command === command) throw new Error("spawn ENOENT");
+			return Bun.spawn(command, options);
+		},
+	});
+	const report = lines.join("\n");
+
+	expect(exitCode).toBe(1);
+	expect(report).toContain("broken launcher");
+	expect(report).toContain("failed to start");
+	expect(report).toContain("passing neighboring check");
+	expect(report).toContain("1/2 checks passed; 1 failed");
+});
 
 test("cleans up fixture directories", async () => {
 	await Promise.all(tempDirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));

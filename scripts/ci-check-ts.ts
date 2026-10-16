@@ -77,18 +77,30 @@ export async function runCheckJobs(
 			if (index >= jobs.length) return;
 			const job = jobs[index]!;
 			const startedAt = performance.now();
-			const child = spawn(job.command, { cwd: job.cwd, stdout: "pipe", stderr: "pipe" });
-			const [exitCode, stdout, stderr] = await Promise.all([
-				child.exited,
-				new Response(child.stdout).text(),
-				new Response(child.stderr).text(),
-			]);
-			results[index] = {
-				...job,
-				exitCode,
-				output: [stdout, stderr].filter(Boolean).join("\n").trimEnd(),
-				seconds: (performance.now() - startedAt) / 1000,
-			};
+			try {
+				const child = spawn(job.command, { cwd: job.cwd, stdout: "pipe", stderr: "pipe" });
+				const [exitCode, stdout, stderr] = await Promise.all([
+					child.exited,
+					new Response(child.stdout).text(),
+					new Response(child.stderr).text(),
+				]);
+				results[index] = {
+					...job,
+					exitCode,
+					output: [stdout, stderr].filter(Boolean).join("\n").trimEnd(),
+					seconds: (performance.now() - startedAt) / 1000,
+				};
+			} catch (error) {
+				// Process creation itself failed: record it like any other
+				// failure so the remaining workers finish and the summary
+				// still prints instead of Promise.all rejecting outright.
+				results[index] = {
+					...job,
+					exitCode: -1,
+					output: `failed to start: ${error instanceof Error ? error.message : String(error)}`,
+					seconds: (performance.now() - startedAt) / 1000,
+				};
+			}
 		}
 	}
 
