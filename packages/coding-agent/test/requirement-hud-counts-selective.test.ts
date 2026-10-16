@@ -41,3 +41,29 @@ it("reads only ledger entries, caches unchanged history, and refreshes on append
 	expect(getRequirementHudCounts(manager)).not.toEqual(first);
 	expect(reads).toBe(2);
 });
+
+it("skips malformed newest ledgers and stops before decoding superseded snapshots", () => {
+	let reads = 0;
+	const manager = {
+		getLeafId: () => "latest",
+		getEntryCount: () => 3,
+		getBranch: () => {
+			throw new Error("must not load full history");
+		},
+		*iterateBranchMatchingNewestFirst() {
+			reads++;
+			yield { type: "custom", customType: REQUIREMENTS_LEDGER_CUSTOM_TYPE, data: { version: -1 } };
+			reads++;
+			yield {
+				type: "custom",
+				customType: REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+				data: { version: 1, requirements: createRequirementCandidates([], ["latest ask"], "2026-10-15T00:00:00Z") },
+			};
+			throw new Error("superseded ledger must not be decoded");
+		},
+	} as unknown as SessionManager;
+	const counts = getRequirementHudCounts(manager);
+	expect(counts).toEqual({ total: 1, passed: 0, failed: 0, open: 1 });
+	expect(counts).toEqual(getRequirementHudCounts(manager));
+	expect(reads).toBe(2);
+});

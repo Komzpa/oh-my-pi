@@ -24,3 +24,21 @@ export function matchingRequirementBranch(
 		}),
 	);
 }
+
+/** Stop decoding once the caller has found its newest valid snapshot. */
+export function* matchingRequirementBranchNewestFirst(
+	manager: Pick<SessionManager, "getBranch">,
+	predicate: (entry: RequirementEntryMetadata) => boolean,
+): IterableIterator<SessionEntry> {
+	const selective = manager as Pick<SessionManager, "getBranch"> & {
+		iterateBranchMatchingNewestFirst?: (
+			predicate: (entry: RequirementEntryMetadata) => boolean,
+		) => Iterable<SessionEntry>;
+	};
+	if (selective.iterateBranchMatchingNewestFirst) {
+		yield* selective.iterateBranchMatchingNewestFirst(predicate);
+		return;
+	}
+	const entries = matchingRequirementBranch(manager, predicate);
+	for (let index = entries.length - 1; index >= 0; index--) yield entries[index]!;
+}

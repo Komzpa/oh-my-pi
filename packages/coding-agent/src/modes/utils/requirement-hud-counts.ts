@@ -1,8 +1,8 @@
-import type { SessionEntry } from "../../session/session-entries";
+import { matchingRequirementBranchNewestFirst } from "../../session/requirements-branch-selection";
 import type { SessionManager } from "../../session/session-manager";
 import {
 	countRequirements,
-	getLatestRequirements,
+	parseRequirementsLedger,
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 	type RequirementCounts,
 } from "../../tools/requirements-ledger";
@@ -20,15 +20,17 @@ export function getRequirementHudCounts(sessionManager: SessionManager): Require
 	const cached = requirementHudCountsCache.get(sessionManager);
 	if (cached?.leafId === leafId && cached.entryCount === entryCount) return cached.counts;
 
-	const selective = sessionManager as SessionManager & {
-		getBranchMatching?: (predicate: (entry: { type: string; customType?: string }) => boolean) => SessionEntry[];
-	};
-	const entries = selective.getBranchMatching
-		? selective.getBranchMatching(
-				entry => entry.type === "custom" && entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
-			)
-		: sessionManager.getBranch();
-	const counts = countRequirements(getLatestRequirements(entries));
+	let counts = countRequirements([]);
+	for (const entry of matchingRequirementBranchNewestFirst(
+		sessionManager,
+		metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+	)) {
+		if (entry.type !== "custom") continue;
+		const ledger = parseRequirementsLedger(entry.data);
+		if (!ledger) continue;
+		counts = countRequirements(ledger.requirements);
+		break;
+	}
 	requirementHudCountsCache.set(sessionManager, { leafId, entryCount, counts });
 	return counts;
 }
