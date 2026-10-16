@@ -3996,21 +3996,28 @@ export class SessionManager {
 
 	/** Matching payloads only; a journal extension may project its append-only overlays. */
 	getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
+		const path = this.#index.metadataPath();
 		const selected = new Set<string>();
-		for (const metadata of this.#index.metadataPath()) {
+		for (const metadata of path) {
 			if (predicate(metadata)) selected.add(metadata.id);
 		}
 		// The returned array already retains these entries; reuse them on subsequent
 		// selections while callers still hold them instead of decoding them again.
-		return [...this.iterateBranchMatchingNewestFirst(metadata => selected.has(metadata.id), true)].reverse();
+		return [...this.#iterateSelectedBranch(path, metadata => selected.has(metadata.id), true)].reverse();
 	}
 
 	/** Matching entries newest first; excluded payloads are never read. */
 	*iterateBranchMatchingNewestFirst(
 		predicate: (metadata: SessionContextEntryMetadata) => boolean,
-		retainIdentity = false,
 	): IterableIterator<SessionEntry> {
-		const path = this.#index.metadataPath();
+		yield* this.#iterateSelectedBranch(this.#index.metadataPath(), predicate, false);
+	}
+
+	*#iterateSelectedBranch(
+		path: readonly SessionContextEntryMetadata[],
+		predicate: (metadata: SessionContextEntryMetadata) => boolean,
+		retainIdentity: boolean,
+	): IterableIterator<SessionEntry> {
 		const extension = this as SessionManager & {
 			createBranchSelectionProjector?: (
 				path: readonly SessionContextEntryMetadata[],
