@@ -4,6 +4,7 @@
  * This file handles CLI argument parsing and translates them into
  * createAgentSession() options. The SDK does the heavy lifting.
  */
+import { waitForRestartAdmission } from "./restart-admission";
 import * as fsSync from "node:fs";
 import * as os from "node:os";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
@@ -1771,6 +1772,8 @@ export async function runRootCommand(
 	rawArgs: string[],
 	deps: RunRootCommandDependencies = DEFAULT_RUN_ROOT_DEPENDENCIES,
 ): Promise<void> {
+	// A preloaded successor must not open the active writer or run startup hooks before commit.
+	await waitForRestartAdmission(parsed.resume);
 	logger.startTiming();
 	startStartupWatchdog();
 	try {
