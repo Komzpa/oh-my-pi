@@ -431,7 +431,7 @@ type TodoReplayResult = { phases: TodoPhase[]; mutable: boolean };
 function replayTodoEdit(
 	phases: TodoPhase[] | undefined,
 	edit: TodoPersistedEdit,
-	options: { mutable?: boolean } = {},
+	options: { mutable?: boolean; archived?: TodoPhase[] } = {},
 ): TodoReplayResult | undefined {
 	if (
 		!phases &&
@@ -454,7 +454,7 @@ function replayTodoEdit(
 	if (edit.kind === "archive") {
 		let updated = current;
 		if (edit.operation) {
-			const replayed = replayTodoEdit(updated, edit.operation, { mutable: true });
+			const replayed = replayTodoEdit(updated, edit.operation, { ...options, mutable: true });
 			// The committed archive is authoritative even when an operation target is already absent.
 			if (replayed) updated = replayed.phases;
 		}
@@ -478,7 +478,7 @@ function replayTodoEdit(
 	}
 	if (resolved.op === "schedule") {
 		const errors: string[] = [];
-		const next = applyEntry(current, resolved, errors, edit.at);
+		const next = applyEntry(current, resolved, errors, edit.at, options.archived);
 		if (errors.length > 0) return undefined;
 		return { phases: next, mutable: true };
 	}
@@ -509,13 +509,14 @@ export function getLatestTodoSnapshotIdentity(entries: SessionEntry[]): TodoSnap
 	let latest: TodoPhase[] | undefined;
 	let mutable = false;
 	let sourceEntryId: string | undefined;
+	const archived = getLatestTodoArchiveFromEntries(entries);
 	for (const entry of entries) {
 		const phases = canonicalTodoPhases(entry);
 		const edit = phases ? undefined : compactTodoEditFromEntry(entry);
 		const replayed: TodoReplayResult | undefined = phases
 			? { phases, mutable: false }
 			: edit
-				? replayTodoEdit(latest, edit, { mutable })
+				? replayTodoEdit(latest, edit, { mutable, archived })
 				: undefined;
 		if (!replayed) continue;
 		latest = replayed.phases;
@@ -583,9 +584,12 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 		break;
 	}
 	let mutable = false;
+	const archived = getLatestTodoArchiveFromEntries(entries);
 	for (let index = snapshotIndex + 1; index < entries.length; index++) {
 		const edit = compactTodoEditFromEntry(entries[index]!);
-		const replayed: TodoReplayResult | undefined = edit ? replayTodoEdit(latest, edit, { mutable }) : undefined;
+		const replayed: TodoReplayResult | undefined = edit
+			? replayTodoEdit(latest, edit, { mutable, archived })
+			: undefined;
 		if (!replayed) continue;
 		latest = replayed.phases;
 		mutable = replayed.mutable;
@@ -687,11 +691,7 @@ export function getTodoArchiveSummaryFromEntries(
 }
 
 /** Archived completions remain dependency evidence, not live forecast rows. */
-export function forecastTodoLivePlan(
-	phases: TodoPhase[],
-	archived: TodoPhase[],
-	options: { now: number; capacity?: number; deadlineAt?: number },
-): TodoPlanForecast {
+function withArchivedPrerequisites(phases: TodoPhase[], archived: TodoPhase[]): TodoPhase[] {
 	const liveContents = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
 	const dependencies = new Set(
 		phases.flatMap(phase => phase.tasks.flatMap(task => task.schedule?.dependencies ?? [])),
@@ -702,8 +702,17 @@ export function forecastTodoLivePlan(
 		);
 		return tasks.length > 0 ? [{ name: phase.name, tasks }] : [];
 	});
-	const forecast = forecastTodoPlan(evidence.length > 0 ? [...phases, ...evidence] : phases, options);
-	if (evidence.length > 0) forecast.rows = forecast.rows.filter(row => liveContents.has(row.content));
+	return evidence.length > 0 ? [...phases, ...evidence] : phases;
+}
+
+export function forecastTodoLivePlan(
+	phases: TodoPhase[],
+	archived: TodoPhase[],
+	options: { now: number; capacity?: number; deadlineAt?: number },
+): TodoPlanForecast {
+	const liveContents = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
+	const forecast = forecastTodoPlan(withArchivedPrerequisites(phases, archived), options);
+	forecast.rows = forecast.rows.filter(row => liveContents.has(row.content));
 	return forecast;
 }
 
@@ -904,6 +913,7 @@ function validateScheduleDependencyGraph(
 	scheduleOverrides: Map<TodoItem, TodoSchedule>,
 	renamedTasks: Map<TodoItem, string>,
 	errors: string[],
+	archived: TodoPhase[],
 ): void {
 	const candidatePhases = phases.map(phase => ({
 		name: phase.name,
@@ -917,7 +927,7 @@ function validateScheduleDependencyGraph(
 			};
 		}),
 	}));
-	for (const issue of validateTodoDependencies(candidatePhases)) {
+	for (const issue of validateTodoDependencies(withArchivedPrerequisites(candidatePhases, archived))) {
 		if (
 			issue.code === "dependencies-unknown" ||
 			issue.code === "unresolved-prerequisite" ||
@@ -954,6 +964,7 @@ function applyScheduleUpdates(
 	entry: TodoOpEntryValue,
 	errors: string[],
 	now: number,
+	archived: TodoPhase[],
 ): TodoPhase[] {
 	const updates = entry.updates;
 	if (!updates || updates.length === 0) {
@@ -1067,14 +1078,20 @@ function applyScheduleUpdates(
 			}
 		}
 	}
-	validateScheduleDependencyGraph(phases, candidates, renamedTasks, errors);
+	validateScheduleDependencyGraph(phases, candidates, renamedTasks, errors, archived);
 	if (errors.length > initialErrorCount) return phases;
 	for (const [task, schedule] of candidates) task.schedule = schedule;
 	for (const [task, content] of renamedTasks) task.content = content;
 	return phases;
 }
 
-function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[], now = Date.now()): TodoPhase[] {
+function applyEntry(
+	phases: TodoPhase[],
+	entry: TodoOpEntryValue,
+	errors: string[],
+	now = Date.now(),
+	archived: TodoPhase[] = [],
+): TodoPhase[] {
 	switch (entry.op) {
 		case "init":
 			return initPhases(entry, errors);
@@ -1154,7 +1171,7 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 		case "append":
 			return appendItems(phases, entry, errors);
 		case "schedule":
-			return applyScheduleUpdates(phases, entry, errors, now);
+			return applyScheduleUpdates(phases, entry, errors, now, archived);
 		case "view":
 			return phases;
 	}
@@ -1203,10 +1220,11 @@ function applyParams(
 	phases: TodoPhase[],
 	params: TodoOpEntryValue,
 	now = Date.now(),
+	archived: TodoPhase[] = [],
 ): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
 	const previous = clonePhases(phases);
-	const next = applyEntry(phases, params, errors, now);
+	const next = applyEntry(phases, params, errors, now, archived);
 	// A schedule rename keeps status, owner and history attached: it is not a
 	// status transition, so content-keyed transition stamping must not see it.
 	if (params.op !== "schedule") {
@@ -1774,7 +1792,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
-			: applyParams(clonePhases(previousPhases), entry, now);
+			: applyParams(clonePhases(previousPhases), entry, now, getLatestTodoArchiveFromEntries(todoEntries));
 		// An unsuccessful batch must neither commit an operation nor age out existing rows.
 		const failed = errors.length > 0;
 		const archived = !readOnly && !failed ? archiveTodoPhases(updated, now) : undefined;

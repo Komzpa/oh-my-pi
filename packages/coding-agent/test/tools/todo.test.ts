@@ -175,7 +175,16 @@ describe("todo archive policy", () => {
 		try {
 			const session = createSession(closedArchiveFixture(now));
 			const writes = vi.spyOn(session, "setTodoPhases");
-			const entries: SessionEntry[] = [];
+			const entries: SessionEntry[] = [
+				{
+					type: "custom",
+					customType: "user_todo_edit",
+					data: { phases: closedArchiveFixture(now) },
+					id: "initial",
+					parentId: null,
+					timestamp: new Date(now).toISOString(),
+				} as SessionEntry,
+			];
 			Object.assign(session, {
 				sessionManager: {
 					getBranch: () => entries,
@@ -210,6 +219,33 @@ describe("todo archive policy", () => {
 				parentId: null,
 				timestamp: new Date(now).toISOString(),
 			} as SessionEntry);
+			const scheduled = await tool.execute("schedule-archived-prerequisite", {
+				op: "schedule",
+				updates: [{ task: "Closed task 400", dependencies: ["Closed task 001"], owner: "resumed-owner" }],
+			});
+			expect(scheduled.isError).not.toBe(true);
+			entries.push({
+				type: "custom",
+				customType: "user_todo_edit",
+				data: { edit: scheduled.details?.edit },
+				id: "scheduled",
+				parentId: "archived",
+				timestamp: new Date(now).toISOString(),
+			} as SessionEntry);
+			const restored = getLatestTodoPhasesFromEntries(entries).flatMap(phase => phase.tasks);
+			expect(restored.find(task => task.content === "Closed task 400")?.schedule?.owner).toBe("resumed-owner");
+			expect(restored.find(task => task.content === "Closed task 400")?.schedule?.dependencies).toEqual([
+				"Closed task 001",
+			]);
+			expect(restored.some(task => task.content === "Closed task 001")).toBe(false);
+			expect(
+				scheduled.details?.phases.flatMap(phase => phase.tasks).some(task => task.content === "Closed task 001"),
+			).toBe(false);
+			const missing = await tool.execute("schedule-missing-prerequisite", {
+				op: "schedule",
+				updates: [{ task: "Closed task 400", dependencies: ["Never existed"] }],
+			});
+			expect(missing.isError).toBe(true);
 			const ordinary = await tool.execute("ordinary", { op: "view" });
 			expect(ordinary.details?.archiveSummary?.count).toBe(389);
 			expect(ordinary.details?.archivedPhases).toBeUndefined();
@@ -219,7 +255,7 @@ describe("todo archive policy", () => {
 				type: "text",
 				text: expect.stringContaining("Closed task 001"),
 			});
-			expect(writes).toHaveBeenCalledTimes(1);
+			expect(writes).toHaveBeenCalledTimes(2);
 		} finally {
 			setSystemTime();
 			vi.restoreAllMocks();
