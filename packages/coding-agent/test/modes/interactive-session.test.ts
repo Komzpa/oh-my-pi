@@ -12,7 +12,14 @@ it("reattaches a view without restarting its outstanding turn or replaying input
 	let prompts = 0;
 	let aborts = 0;
 	const state = { isStreaming: false, isCompacting: false, hasPostPromptWork: false };
-	const runtime: InteractiveSessionConnection = {
+	const runtime: Omit<InteractiveSessionConnection, "waitForSettled"> & {
+		waitForIdle(): Promise<void>;
+		settleAsyncWork(): Promise<void>;
+	} = {
+		queuedMessageCount: 0,
+		hasPendingAsyncWork: () => false,
+		waitForIdle: async () => {},
+		settleAsyncWork: async () => {},
 		get isStreaming() {
 			return state.isStreaming;
 		},

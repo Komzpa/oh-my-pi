@@ -82,6 +82,9 @@ describe("EventController message_update coalescing", () => {
 			isStreaming: true,
 			isCompacting: false,
 			hasPostPromptWork: false,
+			queuedMessageCount: 0,
+			hasPendingAsyncWork: () => false,
+			waitForSettled: async () => {},
 		};
 		const ctx = createInteractiveModeContext({ session: { subscribe: localSubscribe } });
 		const controller = new EventController(ctx, connection);
@@ -111,6 +114,9 @@ describe("EventController message_update coalescing", () => {
 				isStreaming: true,
 				isCompacting: false,
 				hasPostPromptWork: false,
+				queuedMessageCount: 0,
+				hasPendingAsyncWork: () => false,
+				waitForSettled: async () => {},
 			};
 			const controller = new EventController(ctx, connection);
 			await controller.handleEvent({ type: "agent_end", messages: [] });

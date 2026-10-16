@@ -1,3 +1,4 @@
+import { untilAborted } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 
 /**
@@ -7,17 +8,43 @@ import type { AgentSession } from "../session/agent-session";
  */
 export interface InteractiveSessionConnection extends Pick<
 	AgentSession,
-	"prompt" | "abort" | "subscribe" | "isStreaming" | "isCompacting" | "hasPostPromptWork"
-> {}
+	| "prompt"
+	| "abort"
+	| "subscribe"
+	| "isStreaming"
+	| "isCompacting"
+	| "hasPostPromptWork"
+	| "queuedMessageCount"
+	| "hasPendingAsyncWork"
+> {
+	/** Observe owner quiescence without cancelling its work when the view goes away. */
+	waitForSettled(signal?: AbortSignal): Promise<void>;
+}
 
 /** Bind calls to their runtime owner and read state live, never from a snapshot. */
 export function createLocalInteractiveSessionConnection(
-	session: InteractiveSessionConnection,
+	session: Omit<InteractiveSessionConnection, "waitForSettled"> &
+		Pick<AgentSession, "waitForIdle" | "settleAsyncWork">,
 ): InteractiveSessionConnection {
 	return {
 		prompt: (...args) => session.prompt(...args),
 		abort: (...args) => session.abort(...args),
 		subscribe: (...args) => session.subscribe(...args),
+		async waitForSettled(signal) {
+			await untilAborted(signal, async () => {
+				while (true) {
+					await session.waitForIdle();
+					signal?.throwIfAborted();
+					if (!session.hasPendingAsyncWork()) return;
+					await session.settleAsyncWork();
+					signal?.throwIfAborted();
+				}
+			});
+		},
+		hasPendingAsyncWork: () => session.hasPendingAsyncWork(),
+		get queuedMessageCount() {
+			return session.queuedMessageCount;
+		},
 		get isStreaming() {
 			return session.isStreaming;
 		},
