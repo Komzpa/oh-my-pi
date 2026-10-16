@@ -5,6 +5,7 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { ensurePersistedRoster } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { collectPendingToolCalls, SESSION_EXIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import {
@@ -408,6 +409,9 @@ describe("subagent restart recovery", () => {
 			status: "idle",
 		});
 		expect(revived.get(idle.id)?.session.sessionManager.getSessionId()).toBe(originalIdleSessionId);
+		// Historical peers remain discoverable, but must not delay live-child recovery.
+		expect(freshRegistry.get(parked.id)).toBeUndefined();
+		await ensurePersistedRoster(freshRegistry, freshRootManager.getSessionFile());
 		expect(freshRegistry.get(parked.id)).toMatchObject({
 			status: "parked",
 			session: null,
@@ -452,6 +456,8 @@ describe("subagent restart recovery", () => {
 			session: thirdRevived.get(running.id)?.session,
 		});
 		expect(thirdRegistry.get(idle.id)).toMatchObject({ status: "idle", session: thirdRevived.get(idle.id)?.session });
+		expect(thirdRegistry.get(parked.id)).toBeUndefined();
+		await ensurePersistedRoster(thirdRegistry, rootFile);
 		expect(thirdRegistry.get(parked.id)).toMatchObject({ status: "parked", session: null });
 	});
 

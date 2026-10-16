@@ -752,7 +752,12 @@ export async function restoreSubagentsAfterRestart(
 	for (const omitted of handoff.omittedChildren ?? []) report.failures.push(omitted);
 	const registry = AgentRegistry.global();
 	try {
-		const scannedRoot = await ensurePersistedRoster(registry, identity.rootSessionFile);
+		const scannedRoot = await ensurePersistedRoster(
+			registry,
+			identity.rootSessionFile,
+			undefined,
+			handoff.children.filter(child => child.status !== "parked").map(child => child.sessionFile),
+		);
 		if (!scannedRoot || path.resolve(scannedRoot) !== identity.rootSessionFile) {
 			throw new Error("persisted subagent transcript scan could not resolve this root session");
 		}
