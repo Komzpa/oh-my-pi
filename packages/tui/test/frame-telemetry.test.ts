@@ -275,3 +275,36 @@ describe("parseFrameDropLogLine", () => {
 		expect(parseFrameDropLogLine("not json")).toBeNull();
 	});
 });
+
+describe("unchanged frame completion", () => {
+	test("unchanged frame ends pending work without counting a painted frame", () => {
+		let now = 0;
+		const events: unknown[] = [];
+		const t = new FrameTelemetry({ now: () => now, thresholdMs: 250, loggerWarn: (_m, c) => events.push(c) });
+		t.recordRenderRequest();
+		t.beginRender("alt");
+		now = 10;
+		t.endRender("alt", false, true);
+		expect(t.snapshot.fps).toBe(0);
+		now = 30000;
+		t.recordRenderRequest();
+		t.beginRender("alt");
+		now = 30010;
+		t.endRender("alt", true);
+		expect(events).toEqual([]);
+	});
+	test("deferred frames retain the pending delay", () => {
+		let now = 0;
+		const events: unknown[] = [];
+		const t = new FrameTelemetry({ now: () => now, thresholdMs: 250, loggerWarn: (_m, c) => events.push(c) });
+		t.recordRenderRequest();
+		t.beginRender("provider");
+		now = 10;
+		t.endRender("provider", false);
+		now = 30000;
+		t.beginRender("provider");
+		now = 30010;
+		t.endRender("provider", true);
+		expect(events).toEqual([expect.objectContaining({ kind: "frame-gap", durationMs: 30010 })]);
+	});
+});

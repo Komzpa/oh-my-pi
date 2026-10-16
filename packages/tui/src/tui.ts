@@ -1039,6 +1039,7 @@ export class TUI extends Container {
 	// budget is genuinely starved. Armed in start(), disarmed in stop().
 	#watchdog: LoopWatchdog;
 	#telemetryFrameRendered = false;
+	#telemetryFrameSettled = false;
 
 	// Transient alternate-screen state for a fullscreen overlay. While active, the
 	// engine paints only the modal on the alt buffer and leaves every
@@ -2905,12 +2906,13 @@ export class TUI extends Container {
 		const target = this.#telemetryRenderTarget();
 		this.#lastRenderAt = start;
 		this.#telemetryFrameRendered = false;
+		this.#telemetryFrameSettled = false;
 		frameTelemetry.beginRender(target);
 		try {
 			this.#doRender();
 		} finally {
 			this.#lastFrameCostMs = this.#renderScheduler.now() - start;
-			frameTelemetry.endRender(target, this.#telemetryFrameRendered);
+			frameTelemetry.endRender(target, this.#telemetryFrameRendered, this.#telemetryFrameSettled);
 		}
 	}
 
@@ -2925,6 +2927,7 @@ export class TUI extends Container {
 
 	#markTelemetryFrameRendered(): void {
 		this.#telemetryFrameRendered = true;
+		this.#telemetryFrameSettled = true;
 	}
 	/**
 	 * True when the frame was deferred because the terminal's output backlog
@@ -4603,6 +4606,7 @@ export class TUI extends Container {
 		const placeCursor = target !== null && (rowsBuffer !== "" || cursorChanged);
 		const hideCursor = target === null && previousCursor?.visible === true;
 		if (rowsBuffer === "" && !placeCursor && !hideCursor) {
+			this.#telemetryFrameSettled = true;
 			if (prelude !== "") this.terminal.write(prelude);
 			return;
 		}
