@@ -549,6 +549,7 @@ class SessionEntryIndex {
 	// leaf appends to the issued view in O(1); a leaf change or rebuild starts
 	// a fresh array. Weak ownership lets dropped historical views be collected.
 	#generation = 0;
+	#metadataCache: { generation: number; leaf: string | null | undefined; path: IndexedSessionEntry[] } | undefined;
 	#branchCache: { leaf: string | null; generation: number; branch: WeakRef<SessionEntry[]> } | undefined;
 	#read?: (entry: IndexedSessionEntry) => SessionEntry;
 	#readerFd?: number;
@@ -556,6 +557,7 @@ class SessionEntryIndex {
 	#active = new Map<string, SessionEntry>();
 
 	clear(closeReader = true): void {
+		this.#metadataCache = undefined;
 		this.#entriesById.clear();
 		this.#ordered = [];
 		this.#children.clear();
@@ -754,6 +756,21 @@ class SessionEntryIndex {
 	}
 
 	#metadataLeafPath(id: string | null | undefined = this.#leaf): IndexedSessionEntry[] {
+		const cache = this.#metadataCache;
+		if (cache?.generation === this.#generation && cache.leaf === id) {
+			let valid = true;
+			for (let i = 0; i < cache.path.length; i++) {
+				const current = cache.path[i]!;
+				const retained = this.retainedEntry(current.id);
+				if (retained) {
+					Object.assign(current, sessionContextEntryMetadata(retained));
+					if (retained.type === "compaction") current.firstKeptEntryId = retained.firstKeptEntryId;
+				}
+				if (i + 1 < cache.path.length && current.parentId !== cache.path[i + 1]!.id) valid = false;
+				if (i + 1 === cache.path.length && current.parentId !== null) valid = false;
+			}
+			if (valid) return cache.path.slice();
+		}
 		const path: IndexedSessionEntry[] = [];
 		// A corrupt cyclic parent chain stops at the FIRST repeated id, even
 		// when unrelated entries inflate the index beyond that cycle's length.
@@ -769,6 +786,7 @@ class SessionEntryIndex {
 			path.push(current);
 			current = current.parentId ? this.#entriesById.get(current.parentId) : undefined;
 		}
+		this.#metadataCache = { generation: this.#generation, leaf: id, path: path.slice() };
 		return path;
 	}
 	metadataPath(id: string | null | undefined = this.#leaf): IndexedSessionEntry[] {
