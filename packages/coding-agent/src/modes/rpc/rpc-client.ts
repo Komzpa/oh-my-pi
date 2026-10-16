@@ -14,7 +14,7 @@ import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { FileSink } from "bun";
 import type { BashResult } from "../../exec/bash-executor";
 import type { AgentSession, AgentSessionEvent, SessionStats } from "../../session/agent-session";
-import type { PromptOptions } from "../../session/agent-session-types";
+import type { AgentSessionDisposeOptions, PromptOptions } from "../../session/agent-session-types";
 import type { BtwHistoryRecord } from "../../session/btw-history";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
 import type { SessionEntry, SessionTreeNode } from "../../session/session-entries";
@@ -828,6 +828,18 @@ export class RpcClient {
 	async newSession(parentSession?: string): Promise<{ cancelled: boolean }> {
 		const response = await this.#send({ type: "new_session", parentSession });
 		return this.#getData(response);
+	}
+
+	async beginDispose(): Promise<void> {
+		this.#getData<void>(await this.#send({ type: "begin_dispose" }));
+	}
+
+	async disposeSession(options?: AgentSessionDisposeOptions): Promise<void> {
+		this.#getData<void>(await this.#send({ type: "dispose_session", options }));
+	}
+
+	async checkpointSession(): Promise<void> {
+		this.#getData<void>(await this.#send({ type: "checkpoint_session" }));
 	}
 
 	/** Persist a draft using the runtime owner, propagating storage failures. */

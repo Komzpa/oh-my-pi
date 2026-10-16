@@ -438,6 +438,12 @@ export interface SessionPromptOptions {
 	solutionSpace?: string;
 }
 
+export interface SessionDisposeOptions {
+	mnemopiConsolidateTimeoutMs?: number;
+	drainTimeoutMs?: number;
+	reason?: "pre_exit" | "exit" | "sigint" | "sigterm" | "sighup" | "uncaught_exception" | "unhandled_rejection" | "manual";
+}
+
 export interface SessionAbortOptions {
 	goalReason?: "interrupted" | "internal";
 	reason?: string;
@@ -1532,6 +1538,10 @@ export interface OpenSessionParams {
 	modelId?: string;
 }
 
+export interface DisposeSessionParams {
+	options?: SessionDisposeOptions;
+}
+
 export interface SaveDraftParams {
 	text: string;
 }
@@ -1835,6 +1845,9 @@ export interface RpcWireCommands {
 	abort_and_restore_queue: { params: undefined; result: AbortAndRestoreQueueResult };
 	new_session: { params: NewSessionParams; result: CancellationResult };
 	open_session: { params: OpenSessionParams; result: OpenSessionResult };
+	begin_dispose: { params: undefined; result: undefined };
+	dispose_session: { params: DisposeSessionParams; result: undefined };
+	checkpoint_session: { params: undefined; result: undefined };
 	save_draft: { params: SaveDraftParams; result: undefined };
 	consume_draft: { params: undefined; result: ConsumeDraftResult };
 	get_state: { params: undefined; result: SessionState };

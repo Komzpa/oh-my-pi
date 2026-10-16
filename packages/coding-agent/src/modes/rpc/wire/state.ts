@@ -66,6 +66,12 @@ export const stateDefs = {
 		"skipCompactionCheck?": "boolean",
 		"solutionSpace?": "string",
 	},
+	SessionDisposeOptions: {
+		"mnemopiConsolidateTimeoutMs?": "number",
+		"drainTimeoutMs?": "number",
+		"reason?":
+			"'pre_exit' | 'exit' | 'sigint' | 'sigterm' | 'sighup' | 'uncaught_exception' | 'unhandled_rejection' | 'manual'",
+	},
 	SessionAbortOptions: {
 		"goalReason?": "'interrupted' | 'internal'",
 		"reason?": "string",

@@ -51,7 +51,7 @@ import { requestTextPrediction, textPredictionBackend } from "../../predict/clie
 import { type AgentSession, SessionBusyError } from "../../session/agent-session";
 import type { MCPManager } from "../../mcp/manager";
 import { reconnectMcpManagerServer } from "../../mcp/oauth-reauth";
-import type { RestoredQueuedMessage } from "../../session/agent-session-types";
+import type { AgentSessionDisposeOptions, RestoredQueuedMessage } from "../../session/agent-session-types";
 import { CACHE_WARMING_MODES } from "../../session/cache-warmer";
 import { findMostRecentNonEmptySession } from "../../session/session-listing";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
@@ -1691,6 +1691,18 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		},
 	);
 
+	const disposeOwner = async (options?: AgentSessionDisposeOptions): Promise<void> => {
+		// Report an unsaved side answer without skipping owner resource disposal.
+		await btw.close().catch(btwError => {
+			const message = toError(btwError).message;
+			logger.error(message);
+			output({ type: "notice", level: "error", message, source: "btw-history" });
+		});
+		// Close the realtime call (microphone, socket) before the session it delegates into.
+		await liveBridge.stop();
+		await session.dispose(options);
+	};
+
 	/**
 	 * Dispose the session, then end the process. A store failure still latched
 	 * at dispose makes `dispose()` reject, and the `notice` frame it emits is
@@ -1701,15 +1713,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	 */
 	const disposeAndExit = async (): Promise<never> => {
 		try {
-			// The process ends regardless; report an unsaved side answer instead of skipping dispose.
-			await btw.close().catch(btwError => {
-				const message = toError(btwError).message;
-				logger.error(message);
-				output({ type: "notice", level: "error", message, source: "btw-history" });
-			});
-			// Close the realtime call (microphone, socket) before the session it delegates into.
-			await liveBridge.stop();
-			await session.dispose();
+			await disposeOwner();
 		} catch (error) {
 			if (!persistenceFailure || error !== persistenceFailure) throw error;
 			// The notice frame this failure queued must reach the client before the
@@ -2063,6 +2067,20 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			// =================================================================
 			// State
 			// =================================================================
+
+			case "begin_dispose":
+				session.beginDispose();
+				return success(id, "begin_dispose");
+			case "dispose_session":
+				promptResults.abortOpen(true);
+				session.beginDispose();
+				pendingExtensionRequests.rejectAll("Session owner shut down before extension UI response completed");
+				await disposeOwner(command.options);
+				return success(id, "dispose_session");
+			case "checkpoint_session":
+				await session.sessionManager.close();
+				session.sessionManager.seal();
+				return success(id, "checkpoint_session");
 
 			case "save_draft":
 				await session.sessionManager.saveDraft(command.text);

@@ -12,12 +12,29 @@ it("reattaches a view without restarting its outstanding turn or replaying input
 	let prompts = 0;
 	let aborts = 0;
 	const state = { isStreaming: false, isCompacting: false, hasPostPromptWork: false };
-	const runtime: Omit<InteractiveSessionConnection, "waitForSettled" | "saveDraft" | "consumeDraft"> & {
-		sessionManager: { saveDraft(text: string): Promise<void>; consumeDraft(): Promise<string | null> };
+	const runtime: Omit<
+		InteractiveSessionConnection,
+		"waitForSettled" | "saveDraft" | "consumeDraft" | "disposeSession" | "checkpoint" | "beginDispose"
+	> & {
+		sessionManager: {
+			saveDraft(text: string): Promise<void>;
+			consumeDraft(): Promise<string | null>;
+			close(): Promise<void>;
+			seal(): void;
+		};
+		beginDispose(): void;
+		dispose(): Promise<void>;
 		waitForIdle(): Promise<void>;
 		settleAsyncWork(): Promise<void>;
 	} = {
-		sessionManager: { saveDraft: async () => {}, consumeDraft: async () => null },
+		sessionManager: {
+			saveDraft: async () => {},
+			consumeDraft: async () => null,
+			close: async () => {},
+			seal: () => {},
+		},
+		beginDispose: () => {},
+		dispose: async () => {},
 		queuedMessageCount: 0,
 		hasPendingAsyncWork: () => false,
 		waitForIdle: async () => {},

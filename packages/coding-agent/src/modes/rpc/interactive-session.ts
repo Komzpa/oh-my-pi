@@ -117,6 +117,18 @@ export async function createRpcInteractiveSessionConnection(
 		throw error;
 	}
 	return {
+		beginDispose() {
+			assertConnected();
+			return client.beginDispose();
+		},
+		disposeSession(options) {
+			assertConnected();
+			return client.disposeSession(options);
+		},
+		checkpoint() {
+			assertConnected();
+			return client.checkpointSession();
+		},
 		saveDraft(text) {
 			assertConnected();
 			return client.saveDraft(text);

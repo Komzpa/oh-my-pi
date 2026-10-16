@@ -1,10 +1,11 @@
 import { untilAborted } from "@oh-my-pi/pi-utils";
 import type { SessionManager } from "../session/session-manager";
+import type { AgentSessionDisposeOptions } from "../session/agent-session-types";
 import type { AgentSession } from "../session/agent-session";
 
 /**
  * Turn control and events used by the interactive session owner. This boundary
- * can outlive a terminal view; it does not own or dispose the underlying runtime.
+ * can outlive a terminal view; explicit owner disposal is separate from view detachment.
  * Other UI controllers still use the concrete local session until migrated.
  */
 export interface InteractiveSessionConnection extends Pick<
@@ -23,15 +24,29 @@ export interface InteractiveSessionConnection extends Pick<
 	/** Draft sidecar belongs to the runtime writer, even when the terminal is remote. */
 	saveDraft(text: string): Promise<void>;
 	consumeDraft(): Promise<string | null>;
+	/** Explicit owner termination; never called merely to release a view lease. */
+	beginDispose(): void | Promise<void>;
+	disposeSession(options?: AgentSessionDisposeOptions): Promise<void>;
+	/** Release and seal the owner journal after restart admission and draft persistence. */
+	checkpoint(): Promise<void>;
 }
 
 /** Bind calls to their runtime owner and read state live, never from a snapshot. */
 export function createLocalInteractiveSessionConnection(
-	session: Omit<InteractiveSessionConnection, "waitForSettled" | "saveDraft" | "consumeDraft"> & {
-		sessionManager: Pick<SessionManager, "saveDraft" | "consumeDraft">;
-	} & Pick<AgentSession, "waitForIdle" | "settleAsyncWork">,
+	session: Omit<
+		InteractiveSessionConnection,
+		"waitForSettled" | "saveDraft" | "consumeDraft" | "beginDispose" | "disposeSession" | "checkpoint"
+	> & {
+		sessionManager: Pick<SessionManager, "saveDraft" | "consumeDraft" | "close" | "seal">;
+	} & Pick<AgentSession, "waitForIdle" | "settleAsyncWork" | "beginDispose" | "dispose">,
 ): InteractiveSessionConnection {
 	return {
+		beginDispose: () => session.beginDispose(),
+		disposeSession: options => session.dispose(options),
+		async checkpoint() {
+			await session.sessionManager.close();
+			session.sessionManager.seal();
+		},
 		saveDraft: text => session.sessionManager.saveDraft(text),
 		consumeDraft: () => session.sessionManager.consumeDraft(),
 		prompt: (...args) => session.prompt(...args),

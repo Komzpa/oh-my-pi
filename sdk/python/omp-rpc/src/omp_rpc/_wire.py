@@ -596,6 +596,13 @@ class SessionPromptOptions:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class SessionDisposeOptions:
+    mnemopi_consolidate_timeout_ms: float | None = None
+    drain_timeout_ms: float | None = None
+    reason: Literal["pre_exit", "exit", "sigint", "sigterm", "sighup", "uncaught_exception", "unhandled_rejection", "manual"] | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class SessionAbortOptions:
     goal_reason: Literal["interrupted", "internal"] | None = None
     reason: str | None = None
@@ -1896,6 +1903,15 @@ def parse_session_prompt_options(value: object, path: str = "SessionPromptOption
         attribution=optional(payload, "attribution", cast('Decoder[Literal["user", "agent"]]', literal(frozenset({"user", "agent"}))), path),
         skip_compaction_check=optional(payload, "skipCompactionCheck", decode_bool, path),
         solution_space=optional(payload, "solutionSpace", decode_str, path),
+    )
+
+
+def parse_session_dispose_options(value: object, path: str = "SessionDisposeOptions") -> SessionDisposeOptions:
+    payload = expect_object(value, path)
+    return SessionDisposeOptions(
+        mnemopi_consolidate_timeout_ms=optional(payload, "mnemopiConsolidateTimeoutMs", decode_float, path),
+        drain_timeout_ms=optional(payload, "drainTimeoutMs", decode_float, path),
+        reason=optional(payload, "reason", cast('Decoder[Literal["pre_exit", "exit", "sigint", "sigterm", "sighup", "uncaught_exception", "unhandled_rejection", "manual"]]', literal(frozenset({"pre_exit", "exit", "sigint", "sigterm", "sighup", "uncaught_exception", "unhandled_rejection", "manual"}))), path),
     )
 
 
@@ -3230,6 +3246,21 @@ class WireClient:
             params["modelId"] = model_id
         return parse_open_session_result(self._command("open_session", params), "open_session")
 
+    def begin_dispose(self) -> None:
+        """Stop admitting new owner work before explicit shutdown."""
+        params: dict[str, object] = {}
+        self._command("begin_dispose", params)
+
+    def dispose_session(self) -> None:
+        """Dispose the runtime owner; view detachment does not call this."""
+        params: dict[str, object] = {}
+        self._command("dispose_session", params)
+
+    def checkpoint_session(self) -> None:
+        """Close and seal the owner journal after restart admission."""
+        params: dict[str, object] = {}
+        self._command("checkpoint_session", params)
+
     def save_draft(self, text: str) -> None:
         """Persist unsent editor text with the runtime session writer."""
         params: dict[str, object] = {}
@@ -3912,6 +3943,7 @@ __all__ = [
     "SelectUiRequest",
     "SessionAbortOptions",
     "SessionCredits",
+    "SessionDisposeOptions",
     "SessionEntries",
     "SessionInfoUpdateEvent",
     "SessionPromptOptions",
@@ -4084,6 +4116,7 @@ __all__ = [
     "parse_select_ui_request",
     "parse_session_abort_options",
     "parse_session_credits",
+    "parse_session_dispose_options",
     "parse_session_entries",
     "parse_session_info_update_event",
     "parse_session_prompt_options",
