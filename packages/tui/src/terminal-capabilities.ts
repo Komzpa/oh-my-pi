@@ -1102,6 +1102,19 @@ export function encodeKittyDeletePlacement(imageId: number, placementId: number)
 	return wrapTmuxPassthroughIfNeeded(`\x1b_Ga=d,d=i,i=${imageId},p=${placementId},q=2\x1b\\`);
 }
 
+/**
+ * Delete every graphics placement whose rectangle contains the cell
+ * `(column, row)` (0-based), via the Kitty delete-by-cell APC (`a=d,d=p`).
+ * Konsole 26.04 stores SIXEL as placements and does not remove them on
+ * CSI EL/ED/ECH or character overwrite; its Kitty `a=d` handler calls the
+ * same `Screen::delPlacements` path with no source filter, so this is the
+ * surgical way to clear a SIXEL raster without wiping text or sibling
+ * images that do not contain the cell. `q=2` suppresses the reply.
+ */
+export function encodeKittyDeleteAtCell(column: number, row: number): string {
+	return wrapTmuxPassthroughIfNeeded(`\x1b_Ga=d,d=p,x=${column},y=${row},q=2\x1b\\`);
+}
+
 export function encodeITerm2(
 	base64Data: string,
 	options: {

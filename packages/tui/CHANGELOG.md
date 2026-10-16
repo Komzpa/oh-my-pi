@@ -45,6 +45,8 @@
 - Fixed the status-line footer total leaving out task subagent spend; it now reads the session's cumulative usage, the same source the interactive status line uses ([#14393](https://github.com/can1357/oh-my-pi/pull/14393) by [@F0Rextasy](https://github.com/F0Rextasy))
 - Fixed transcript rows disappearing from scrollback or reappearing out of order when bottom chrome stays taller after a turn, self-clearing HUDs close, or the composer shape changes ([#15820](https://github.com/can1357/oh-my-pi/pull/15820) by [@emmahyde](https://github.com/emmahyde))
 - Fixed SIXEL images straddling the top of the viewport painting the whole image from the top row over the rows below; only the visible bottom slice is drawn now
+- Fixed SIXEL images stacking ghost copies when the transcript moved them inside the viewport on Konsole: CSI EL does not drop Konsole graphics placements, so the previous origin is cleared with a Kitty cell-delete (`a=d,d=p`) before the block is drawn again
+
 
 ## [18.11.1] - 2026-10-15
 

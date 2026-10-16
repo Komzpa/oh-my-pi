@@ -34,6 +34,7 @@ import {
 	clipSixelDirectPlacementLine,
 	directPlacementLift,
 	encodeKittyDeleteAllImages,
+	encodeKittyDeleteAtCell,
 	encodeKittyDeleteImage,
 	encodeKittyDeletePlacement,
 	encodeKittyPlacementLine,
@@ -651,6 +652,12 @@ interface LiveImagePlacement {
 	imageId: number;
 	placementId: number;
 	line: string;
+	/**
+	 * SIXEL direct placement: 0-based screen row of the block's top cell.
+	 * Konsole keeps the raster until a Kitty `a=d` cell delete hits this
+	 * rectangle; EL/spaces do not. Absent for Kitty id-keyed placements.
+	 */
+	originRow?: number;
 }
 
 interface PreparedLine {
@@ -3259,6 +3266,8 @@ export class TUI extends Container {
 	/**
 	 * Remove placements before their viewport cells are replaced. History uses
 	 * separate placement ids, so deleting a live copy cannot erase scrollback.
+	 * SIXEL entries carry `originRow` and are cleared with a Kitty cell delete
+	 * (Konsole's only surgical SIXEL erase); Kitty entries use `d=i`.
 	 */
 	#retireImagePlacements(
 		placements: Map<number, LiveImagePlacement>,
@@ -3269,7 +3278,11 @@ export class TUI extends Container {
 		let output = "";
 		for (const [row, placement] of placements) {
 			if (!repaint && lines[row - top] === placement.line) continue;
-			output += encodeKittyDeletePlacement(placement.imageId, placement.placementId);
+			if (placement.originRow !== undefined) {
+				output += encodeKittyDeleteAtCell(0, placement.originRow);
+			} else {
+				output += encodeKittyDeletePlacement(placement.imageId, placement.placementId);
+			}
 			placements.delete(row);
 		}
 		return output;
@@ -3277,9 +3290,10 @@ export class TUI extends Container {
 
 	/**
 	 * Clip a Kitty direct placement and record its live owner; history
-	 * placements have no mutable owner. Other direct placements (SIXEL,
-	 * iTerm2) have no delete command and composite over whatever pixels they
-	 * land on, so the rows they paint above `screenRow` are erased first.
+	 * placements have no mutable owner. SIXEL direct placements are erased
+	 * with a Kitty cell-delete at the block origin before they are drawn
+	 * again (Konsole 26.04 ignores CSI EL on graphics placements). iTerm2
+	 * keeps the lift + ERASE_LINE path only.
 	 */
 	#imageLineSequence(
 		line: string,
@@ -3294,7 +3308,22 @@ export class TUI extends Container {
 			// first, so its cursor move matches the rows lifted above it.
 			const drawn = clipSixelDirectPlacementLine(line, screenRow, getCellDimensions().heightPx);
 			const lift = Math.min(directPlacementLift(drawn), screenRow);
-			return lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}${drawn}` : drawn;
+			const liftErase = lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}` : "";
+			if (TERMINAL.imageProtocol !== ImageProtocol.Sixel) {
+				return liftErase ? liftErase + drawn : drawn;
+			}
+			// Konsole: delete the previous origin if the block moved, then the
+			// origin we are about to paint, so a same-position repaint cannot
+			// stack a second placement on the first.
+			const originRow = screenRow - lift;
+			const previous = placements?.get(placementRow);
+			let erase = "";
+			if (previous?.originRow !== undefined && previous.originRow !== originRow) {
+				erase += encodeKittyDeleteAtCell(0, previous.originRow);
+			}
+			erase += encodeKittyDeleteAtCell(0, originRow);
+			placements?.set(placementRow, { imageId: 0, placementId: 0, line, originRow });
+			return erase + (liftErase ? liftErase + drawn : drawn);
 		}
 		const previous = placements?.get(placementRow);
 		const placementId = previous?.placementId ?? this.#nextImagePlacementId++;
