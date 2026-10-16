@@ -4945,6 +4945,15 @@ export class AgentSession implements SettingsScope {
 				}
 			}
 
+			// Drain owns continuation until restart completes or its lease is released.
+			// Retrying an interrupted provider here waits on a run that drain forbids.
+			if (this.isRestartDraining && msg.stopReason === "aborted") {
+				this.#restartDrainNeedsResume = true;
+				this.#recovery.resolveRetry();
+				await emitAgentEndNotification();
+				return;
+			}
+
 			if (await this.#recovery.handleUnexpectedAssistantStop(msg)) {
 				maintenanceRoute("unexpected-stop-handled");
 				await emitAgentEndNotification({ willContinue: true });
