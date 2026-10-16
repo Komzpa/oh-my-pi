@@ -1,5 +1,6 @@
 import { expect, it, vi } from "bun:test";
 import * as path from "node:path";
+import { mkdir, rmdir } from "node:fs/promises";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createRpcInteractiveSessionConnection } from "../../src/modes/rpc/interactive-session";
 import { RpcClient, type RpcAgentProcess, type RpcAskDialogRequest } from "../../src/modes/rpc/rpc-client";
@@ -317,5 +318,38 @@ it("cancels settlement observations and releases listeners without aborting the 
 	} finally {
 		await client.stop();
 		vi.restoreAllMocks();
+	}
+}, 20_000);
+
+it("persists and consumes the owner draft across view leases without submitting input", async () => {
+	using directory = TempDir.createSync("@pi-rpc-owner-draft-");
+	const client = new RpcClient({ cliPath: fixture, env: { RPC_OWNER_TEST_DIR: directory.path() } });
+	await client.start();
+	try {
+		const first = await createRpcInteractiveSessionConnection(client);
+		await first.saveDraft("недописанная строка 🐈\nещё");
+		first.disconnect();
+		expect(() => first.saveDraft("stale view")).toThrow("disconnected");
+		const second = await createRpcInteractiveSessionConnection(client);
+		expect(await Promise.all([second.consumeDraft(), second.consumeDraft()])).toEqual([
+			"недописанная строка 🐈\nещё",
+			null,
+		]);
+		await second.saveDraft("discard this");
+		await second.saveDraft("");
+		expect(await second.consumeDraft()).toBeNull();
+		const sessionFile = await Bun.file(directory.join("session-file")).text();
+		const draftPath = path.join(sessionFile.slice(0, -".jsonl".length), "draft.txt");
+		await mkdir(draftPath);
+		await expect(second.saveDraft("failed write")).rejects.toThrow();
+		await rmdir(draftPath);
+		await second.saveDraft("retry after storage failure");
+		expect(await second.consumeDraft()).toBe("retry after storage failure");
+		expect((await client.getState()).queuedMessageCount).toBe(0);
+		expect(await Bun.file(directory.join("started.json")).exists()).toBe(false);
+		expect(await Bun.file(directory.join("effect.json")).exists()).toBe(false);
+		second.disconnect();
+	} finally {
+		await client.stop();
 	}
 }, 20_000);

@@ -491,6 +491,8 @@ describe("EventController owner settlement connection", () => {
 			hasPostPromptWork: false,
 			queuedMessageCount: 0,
 			hasPendingAsyncWork: () => false,
+			saveDraft: async () => {},
+			consumeDraft: async () => null,
 			waitForSettled: wait,
 		};
 		const end = vi.spyOn(ctx.statusLine, "markActivityEnd");
@@ -517,6 +519,8 @@ describe("EventController owner settlement connection", () => {
 				hasPostPromptWork: work === "post-prompt",
 				queuedMessageCount: work === "queue" ? 1 : 0,
 				hasPendingAsyncWork: () => work === "background",
+				saveDraft: async () => {},
+				consumeDraft: async () => null,
 				waitForSettled: async () => {},
 			};
 			const end = vi.spyOn(ctx.statusLine, "markActivityEnd");

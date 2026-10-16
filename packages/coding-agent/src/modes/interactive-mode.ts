@@ -2142,7 +2142,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.session.beginDispose();
 				this.statusLine.dispose();
 			},
-			saveDraft: text => this.sessionManager.saveDraft(text),
+			saveDraft: text => this.#sessionConnection.saveDraft(text),
 			disposeSession: async reason => {
 				await this.#btwController.dispose();
 				await this.session.dispose({
@@ -2512,7 +2512,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// One-shot: consumeDraft removes the sidecar after read so the next
 		// resume does not re-restore the same text.
 		try {
-			const draft = await logger.time("InteractiveMode.init:draft", () => this.sessionManager.consumeDraft());
+			const draft = await logger.time("InteractiveMode.init:draft", () => this.#sessionConnection.consumeDraft());
 			if (draft && !this.editor.getText()) {
 				this.editor.setText(draft);
 				this.updateEditorBorderColor();
@@ -7510,7 +7510,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Snapshot the unsent composer before closing input and disposing UI controllers.
 		// Shared teardown reuses this save instead of overwriting it with a cleared editor.
 		if (this.#signalTeardown) await this.#signalTeardown.saveDraft();
-		else await this.sessionManager.saveDraft(this.#inputController.getDraftText());
+		else await this.#sessionConnection.saveDraft(this.#inputController.getDraftText());
 		// Release the writer claim before replacing the runtime with the exact checkpoint.
 		await this.sessionManager.close();
 		this.ui.stop();

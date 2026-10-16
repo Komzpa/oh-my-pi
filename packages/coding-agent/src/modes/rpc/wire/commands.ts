@@ -95,6 +95,17 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		result: "OpenSessionResult",
 	},
 
+	{
+		name: "save_draft",
+		doc: "Persist unsent editor text with the runtime session writer.",
+		params: { text: "string" },
+	},
+	{
+		name: "consume_draft",
+		doc: "Restore and remove the unsent editor draft once.",
+		result: { text: "string | null" },
+		unwrap: "text",
+	},
 	{ name: "get_state", doc: "Snapshot the session state.", result: "SessionState" },
 	{
 		name: "set_fast_mode",

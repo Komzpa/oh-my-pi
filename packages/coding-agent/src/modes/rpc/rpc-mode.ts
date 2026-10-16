@@ -2025,6 +2025,14 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			// State
 			// =================================================================
 
+			case "save_draft":
+				await session.sessionManager.saveDraft(command.text);
+				return success(id, "save_draft");
+			case "consume_draft": {
+				const text = await session.sessionManager.consumeDraft();
+				return success(id, "consume_draft", { text });
+			}
+
 			case "get_state": {
 				// A goal exit triggered by the last turn restores tools asynchronously; report after it.
 				await goalController.settled();

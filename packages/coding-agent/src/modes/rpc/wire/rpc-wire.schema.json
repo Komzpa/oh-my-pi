@@ -135,6 +135,28 @@
 				"clientOmit": []
 			},
 			{
+				"name": "save_draft",
+				"doc": "Persist unsent editor text with the runtime session writer.",
+				"params": "SaveDraftParams",
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "consume_draft",
+				"doc": "Restore and remove the unsent editor draft once.",
+				"params": null,
+				"result": "ConsumeDraftResult",
+				"nullable": false,
+				"unwrap": "text",
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "get_state",
 				"doc": "Snapshot the session state.",
 				"params": null,
@@ -6018,6 +6040,35 @@
 			},
 			"required": [
 				"sessionDir"
+			]
+		},
+		"SaveDraftParams": {
+			"type": "object",
+			"properties": {
+				"text": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"text"
+			]
+		},
+		"ConsumeDraftResult": {
+			"type": "object",
+			"properties": {
+				"text": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": [
+				"text"
 			]
 		},
 		"SetFastModeParams": {

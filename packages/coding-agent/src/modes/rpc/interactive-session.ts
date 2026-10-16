@@ -117,6 +117,14 @@ export async function createRpcInteractiveSessionConnection(
 		throw error;
 	}
 	return {
+		saveDraft(text) {
+			assertConnected();
+			return client.saveDraft(text);
+		},
+		consumeDraft() {
+			assertConnected();
+			return client.consumeDraft();
+		},
 		refresh,
 		disconnect,
 		attachAskDialogView(listener) {

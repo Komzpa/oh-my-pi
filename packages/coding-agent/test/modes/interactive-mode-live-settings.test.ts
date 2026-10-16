@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { createLocalInteractiveSessionConnection } from "@oh-my-pi/pi-coding-agent/modes/interactive-session";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -61,6 +62,31 @@ describe("InteractiveMode live settings", () => {
 		resetSettingsForTest();
 		await theme.setSymbolPreset("unicode");
 		vi.restoreAllMocks();
+	});
+
+	it("restores the supplied runtime draft instead of the frontend writer's draft", async () => {
+		mode.stop();
+		const localRead = vi
+			.spyOn(session.sessionManager, "consumeDraft")
+			.mockRejectedValue(new Error("frontend writer"));
+		const consumeDraft = vi.fn(async () => "Черновик владельца 🐈");
+		const connection = { ...createLocalInteractiveSessionConnection(session), consumeDraft };
+		mode = new InteractiveMode(
+			session,
+			"test",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			connection,
+		);
+		await mode.init({ suppressWelcomeIntro: true });
+		expect(mode.editor.getText()).toBe("Черновик владельца 🐈");
+		expect(consumeDraft).toHaveBeenCalledTimes(1);
+		expect(localRead).not.toHaveBeenCalled();
 	});
 
 	it("applies status-line and thinking-visibility changes made outside the settings panel", async () => {

@@ -12,10 +12,12 @@ it("reattaches a view without restarting its outstanding turn or replaying input
 	let prompts = 0;
 	let aborts = 0;
 	const state = { isStreaming: false, isCompacting: false, hasPostPromptWork: false };
-	const runtime: Omit<InteractiveSessionConnection, "waitForSettled"> & {
+	const runtime: Omit<InteractiveSessionConnection, "waitForSettled" | "saveDraft" | "consumeDraft"> & {
+		sessionManager: { saveDraft(text: string): Promise<void>; consumeDraft(): Promise<string | null> };
 		waitForIdle(): Promise<void>;
 		settleAsyncWork(): Promise<void>;
 	} = {
+		sessionManager: { saveDraft: async () => {}, consumeDraft: async () => null },
 		queuedMessageCount: 0,
 		hasPendingAsyncWork: () => false,
 		waitForIdle: async () => {},

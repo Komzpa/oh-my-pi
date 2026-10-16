@@ -3228,6 +3228,17 @@ class WireClient:
             params["modelId"] = model_id
         return parse_open_session_result(self._command("open_session", params), "open_session")
 
+    def save_draft(self, text: str) -> None:
+        """Persist unsent editor text with the runtime session writer."""
+        params: dict[str, object] = {}
+        params["text"] = text
+        self._command("save_draft", params)
+
+    def consume_draft(self) -> str | None:
+        """Restore and remove the unsent editor draft once."""
+        params: dict[str, object] = {}
+        return required(expect_object(self._command("consume_draft", params), "consume_draft"), "text", nullable(decode_str), "consume_draft")
+
     def get_state(self) -> SessionState:
         """Snapshot the session state."""
         params: dict[str, object] = {}
