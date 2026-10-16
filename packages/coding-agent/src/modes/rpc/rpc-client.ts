@@ -12,7 +12,8 @@ import { isRecord, ptree, readJsonl } from "@oh-my-pi/pi-utils";
 import type { LogoutAccount } from "@oh-my-pi/pi-tui/overlays/logout-account-selector";
 import type { FileSink } from "bun";
 import type { BashResult } from "../../exec/bash-executor";
-import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { AgentSession, AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { PromptOptions } from "../../session/agent-session-types";
 import type { BtwHistoryRecord } from "../../session/btw-history";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
 import type { SessionEntry, SessionTreeNode } from "../../session/session-entries";
@@ -413,6 +414,7 @@ export class RpcClient {
 			this.#abortController.abort(error);
 			const pendingRequests = Array.from(this.#pendingRequests.values());
 			this.#pendingRequests.clear();
+			this.#rejectPromptWaiters(error);
 			for (const pendingCall of this.#pendingHostToolCalls.values()) pendingCall.controller.abort(error);
 			this.#pendingHostToolCalls.clear();
 
@@ -549,6 +551,7 @@ export class RpcClient {
 		this.#process = null;
 		for (const request of this.#pendingRequests.values()) request.reject(error);
 		this.#pendingRequests.clear();
+		this.#rejectPromptWaiters(error);
 		for (const pendingCall of this.#pendingHostToolCalls.values()) {
 			pendingCall.controller.abort(error);
 		}
@@ -702,6 +705,33 @@ export class RpcClient {
 		return response.id ?? "";
 	}
 
+	/** Session prompt completion over the existing keyed prompt_result channel.
+	 * The owner, rather than an attached view, retains this waiter. No completion
+	 * timeout: tools and questions can legitimately remain active indefinitely.
+	 */
+	async promptWithResult(message: string, options: PromptOptions = {}): Promise<boolean> {
+		const id = `req_${++this.#requestId}`;
+		const result = Promise.withResolvers<boolean>();
+		// An output failure may reject while admission is still pending.
+		void result.promise.catch(() => {});
+		this.#promptResultWaiters.set(id, frame => {
+			if (frame.status === "error") result.reject(new Error(frame.error?.message ?? "Prompt failed"));
+			else result.resolve(frame.agentInvoked);
+		});
+		this.#promptErrorWaiters.set(id, result.reject);
+		try {
+			const { onPromptAdmitted, ...serializable } = options;
+			const response = await this.#send({ type: "prompt", message, options: serializable }, 30_000, id);
+			const data = this.#getData<{ agentInvoked?: boolean } | undefined>(response);
+			onPromptAdmitted?.();
+			if (data?.agentInvoked === false) return false;
+			return await result.promise;
+		} finally {
+			this.#promptResultWaiters.delete(id);
+			this.#promptErrorWaiters.delete(id);
+		}
+	}
+
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
 	 */
@@ -737,8 +767,8 @@ export class RpcClient {
 	/**
 	 * Abort current operation.
 	 */
-	async abort(): Promise<void> {
-		await this.#send({ type: "abort" });
+	async abort(options?: Parameters<AgentSession["abort"]>[0]): Promise<void> {
+		await this.#send({ type: "abort", options });
 	}
 
 	/**
@@ -795,6 +825,7 @@ export class RpcClient {
 		const state = this.#getData<RpcSessionState>(response);
 		return {
 			...state,
+			hasPostPromptWork: state.hasPostPromptWork === true,
 			fastModeEnabled: state.fastModeEnabled === true,
 			fastModeActive: state.fastModeActive === true,
 			slowModeSupported: state.slowModeSupported === true,
@@ -1431,6 +1462,12 @@ export class RpcClient {
 	// Internal
 	// =========================================================================
 
+	#rejectPromptWaiters(error: Error): void {
+		for (const reject of this.#promptErrorWaiters.values()) reject(error);
+		this.#promptErrorWaiters.clear();
+		this.#promptResultWaiters.clear();
+	}
+
 	#handleLine(data: unknown): void {
 		// Check if it's a response to a pending request
 		if (isRpcResponse(data)) {
@@ -1530,7 +1567,8 @@ export class RpcClient {
 
 		if (!isAgentSessionEvent(data)) return;
 
-		for (const listener of this.#sessionEventListeners) {
+		// A view may detach during dispatch; preserve delivery to the other views.
+		for (const listener of this.#sessionEventListeners.slice()) {
 			listener(data);
 		}
 

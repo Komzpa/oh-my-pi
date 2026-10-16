@@ -1766,7 +1766,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				inputGate.isCurrent(command) && !shutdownState.requested && session.sessionId === sessionId;
 			if (!isCurrent()) return "cancelled";
 			let text = command.message;
-			let images = command.images;
+			let images = command.images ?? (command.type === "prompt" ? command.options?.images : undefined);
 			const runner = session.extensionRunner;
 			if (runner?.hasHandlers("input")) {
 				const result = await runner.emitInput(text, images, "rpc");
@@ -1785,7 +1785,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				await session.followUp(text, images);
 				return "admitted";
 			}
-			if (command.type === "prompt") {
+			if (command.type === "prompt" && command.options?.runCommands !== false) {
 				if (!ticket) return "cancelled";
 				const skillResult = await dispatchRpcSkillPrompt({
 					ticket,
@@ -1840,8 +1840,11 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				ticket,
 				startPrompt: onPromptAdmitted =>
 					session.prompt(text, {
+						...(command.type === "prompt" ? command.options : {}),
 						images,
-						...(command.type === "prompt" ? { streamingBehavior: command.streamingBehavior } : {}),
+						...(command.type === "prompt" && command.streamingBehavior
+							? { streamingBehavior: command.streamingBehavior }
+							: {}),
 						onPromptAdmitted,
 					}),
 				results: promptResults,
@@ -1919,7 +1922,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 
 			case "abort": {
 				goalController.stopForHostAbort();
-				await session.abort({ reason: USER_INTERRUPT_LABEL });
+				await session.abort(command.options ?? { reason: USER_INTERRUPT_LABEL });
 				return success(id, "abort");
 			}
 
@@ -2031,6 +2034,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					thinkingLevel: session.thinkingLevel,
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
+					hasPostPromptWork: session.hasPostPromptWork,
 					steeringMode: session.steeringMode,
 					followUpMode: session.followUpMode,
 					interruptMode: session.interruptMode,

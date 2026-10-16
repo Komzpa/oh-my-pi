@@ -1,0 +1,125 @@
+import type { AgentSessionEvent } from "../../session/agent-session";
+import type { PromptOptions } from "../../session/agent-session-types";
+import type { InteractiveSessionConnection } from "../interactive-session";
+import type { RpcClient } from "./rpc-client";
+import type { RpcSessionState } from "./rpc-types";
+
+/** A view lease on an RPC owner. Disconnecting a view never stops its runtime. */
+export interface RpcInteractiveSessionConnection extends InteractiveSessionConnection {
+	refresh(): Promise<void>;
+	disconnect(): void;
+}
+
+/** The caller owns the started RpcClient and its process lifetime. */
+export async function createRpcInteractiveSessionConnection(
+	client: RpcClient,
+): Promise<RpcInteractiveSessionConnection> {
+	let state: Pick<RpcSessionState, "isStreaming" | "isCompacting" | "hasPostPromptWork"> = {
+		isStreaming: false,
+		isCompacting: false,
+		hasPostPromptWork: false,
+	};
+	let disconnected = false;
+	let revision = 0;
+	let refreshing: Promise<void> | undefined;
+	const listeners = new Set<(event: AgentSessionEvent) => void>();
+	const assertConnected = (): void => {
+		if (disconnected) throw new Error("Interactive session view is disconnected");
+	};
+	let refreshAgain = false;
+	const refresh = (): Promise<void> => {
+		assertConnected();
+		if (refreshing) {
+			refreshAgain = true;
+			return refreshing;
+		}
+		const observed = revision;
+		refreshing = client
+			.getState()
+			.then(snapshot => {
+				// Lifecycle events newer than the request win over its old snapshot.
+				if (!disconnected && observed === revision) state = snapshot;
+			})
+			.finally(() => {
+				refreshing = undefined;
+				if (refreshAgain && !disconnected) {
+					refreshAgain = false;
+					void refresh().catch(() => disconnect());
+				}
+			});
+		return refreshing;
+	};
+	const unsubscribe = client.onSessionEvent(event => {
+		let activityChanged = true;
+		switch (event.type) {
+			case "agent_start":
+				state.isStreaming = true;
+				break;
+			case "agent_end":
+				if (event.isTerminal !== false) state.isStreaming = false;
+				break;
+			case "auto_compaction_start":
+				state.isCompacting = true;
+				break;
+			case "auto_compaction_end":
+				state.isCompacting = false;
+				break;
+			default:
+				activityChanged = false;
+		}
+		if (activityChanged) {
+			revision++;
+			void refresh().catch(() => disconnect());
+		}
+		// Never put a state round trip between a token and its frontend.
+		for (const listener of listeners) listener(event);
+	});
+	const unsubscribeResult = client.onPromptResult(() => {
+		void refresh().catch(() => disconnect());
+	});
+	const unsubscribeSettled = client.onSessionSettled(() => {
+		void refresh().catch(() => disconnect());
+	});
+	const disconnect = (): void => {
+		if (disconnected) return;
+		disconnected = true;
+		listeners.clear();
+		unsubscribe();
+		unsubscribeResult();
+		unsubscribeSettled();
+	};
+	try {
+		await refresh();
+	} catch (error) {
+		disconnect();
+		throw error;
+	}
+	return {
+		refresh,
+		disconnect,
+		get isStreaming() {
+			return state.isStreaming;
+		},
+		get isCompacting() {
+			return state.isCompacting;
+		},
+		get hasPostPromptWork() {
+			return state.hasPostPromptWork === true;
+		},
+		prompt(text: string, options?: PromptOptions) {
+			assertConnected();
+			return client.promptWithResult(text, options);
+		},
+		abort(options) {
+			assertConnected();
+			return client.abort(options);
+		},
+		subscribe(listener) {
+			assertConnected();
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
+	};
+}

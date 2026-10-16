@@ -2502,6 +2502,7 @@ type SessionState struct {
 	ThinkingLevel         *ThinkingLevel `json:"thinkingLevel,omitempty"`
 	IsStreaming           bool           `json:"isStreaming"`
 	IsCompacting          bool           `json:"isCompacting"`
+	HasPostPromptWork     bool           `json:"hasPostPromptWork"`
 	SteeringMode          QueueMode      `json:"steeringMode"`
 	FollowUpMode          QueueMode      `json:"followUpMode"`
 	InterruptMode         InterruptMode  `json:"interruptMode"`
@@ -2547,6 +2548,7 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("thinkingLevel", &out.ThinkingLevel)
 	d.defaulted("isStreaming", &out.IsStreaming, `false`)
 	d.defaulted("isCompacting", &out.IsCompacting, `false`)
+	d.defaulted("hasPostPromptWork", &out.HasPostPromptWork, `false`)
 	d.defaulted("steeringMode", &out.SteeringMode, `"one-at-a-time"`)
 	d.defaulted("followUpMode", &out.FollowUpMode, `"one-at-a-time"`)
 	d.defaulted("interruptMode", &out.InterruptMode, `"immediate"`)
