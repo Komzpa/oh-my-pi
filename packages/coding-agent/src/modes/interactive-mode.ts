@@ -618,11 +618,11 @@ function readPersistedToolNames(value: unknown): string[] | undefined {
 }
 
 export function shouldEnterPlanModeOnStartup(
-	sessionManager: Pick<SessionManager, "buildSessionContext" | "getEntries">,
+	sessionManager: Pick<SessionManager, "buildSessionContext" | "hasEntryType">,
 	sessionSettings: Settings,
 ): boolean {
 	const hasConversationContext = sessionManager.buildSessionContext().messages.length > 0;
-	const hasExplicitMode = sessionManager.getEntries().some(entry => entry.type === "mode_change");
+	const hasExplicitMode = sessionManager.hasEntryType("mode_change");
 	return (
 		!hasConversationContext &&
 		!hasExplicitMode &&
