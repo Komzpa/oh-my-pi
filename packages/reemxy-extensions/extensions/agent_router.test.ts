@@ -1,5 +1,4 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
-const APPROVED_PAID_OPENROUTER = new Set(["openrouter/x-ai/grok-4.5", "openrouter/x-ai/grok-4.6", "openrouter/x-ai/grok-4.7", "openrouter/x-ai/grok-build-0.1"]);
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -716,7 +715,7 @@ describe("agent router", () => {
 				);
 				expect(result?.model).toContain(candidate);
 				expect(
-					result?.model.filter(model => model.startsWith("openrouter/")).every(model => model.endsWith(":free") || APPROVED_PAID_OPENROUTER.has(model)),
+					result?.model.filter(model => model.startsWith("openrouter/")).every(model => model.endsWith(":free")),
 				).toBe(true);
 			}
 		} finally {
@@ -724,14 +723,55 @@ describe("agent router", () => {
 		}
 	});
 
-	test("OpenRouter chains allow approved Grok models and keep free models out of judgment roles", () => {
+	test("OpenRouter chains contain only free routes and keep them out of judgment roles", () => {
 		const judgmentRoles: Record<string, true> = { reviewer: true, adversary: true, "qa-auditor": true };
 		for (const [agent, config] of Object.entries(AGENT_POOLS)) {
 			for (const model of [...config.pool, ...config.fallbacks]) {
 				if (!model.startsWith("openrouter/")) continue;
-				expect(model.endsWith(":free") || APPROVED_PAID_OPENROUTER.has(model), `${agent}: ${model}`).toBe(true);
+				expect(model.endsWith(":free"), `${agent}: ${model}`).toBe(true);
 				if (model.endsWith(":free")) expect(judgmentRoles[agent] === true || agent.endsWith("-strong"), agent).toBe(false);
 			}
+		}
+	});
+
+	test("spawn routing rejects paid OpenRouter pool and fallback routes while retaining free and Grok-account routes", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const profileDir = join(dir, "agents");
+			mkdirSync(profileDir);
+			const free = "openrouter/dots-studio/dots-3-note-preview:free";
+			const directGrok = "xai-oauth/grok-4.5";
+			const paid = ["openrouter/x-ai/grok-4.5", "openrouter/auto", "openrouter/acme/paid-model", "openrouter/x-ai/grok-4.7"];
+			const fallback = "codex-lb/gpt-6-luna";
+			const specs = [free, ...paid.slice(0, 2), directGrok, paid[2]!, paid[3]!, fallback];
+			const profile = readFileSync(new URL("./agents/scout.md", import.meta.url), "utf8").replace(/^model:.*$/m, `model: ${specs.join(", ")}`);
+			writeFileSync(join(profileDir, "scout.md"), profile);
+			const models = specs.map(spec => {
+				const base = spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
+				const slash = base.indexOf("/");
+				return { provider: base.slice(0, slash), id: base.slice(slash + 1) };
+			});
+			const context = ctx({
+				models: {
+					list: () => models,
+					resolve: (spec: string) => models.find(model => `${model.provider}/${model.id}` === spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "")),
+				},
+			} as Partial<ExtensionContext>);
+			const result = await routeSubagentSpawn({ agent: "scout", spawnKey: "openrouter-guard" }, context, createRouterState(), {
+				stateFile: file,
+				profileDir,
+				shuffle: items => [...items],
+			});
+			expect(result && "model" in result ? result.model : []).toEqual([free, directGrok, fallback]);
+			const noRegistry = ctx({ models: undefined });
+			const withoutRegistry = await routeSubagentSpawn({ agent: "scout", spawnKey: "openrouter-guard-no-registry" }, noRegistry, createRouterState(), {
+				stateFile: file,
+				profileDir,
+				shuffle: items => [...items],
+			});
+			expect(withoutRegistry && "model" in withoutRegistry ? withoutRegistry.model : []).toEqual([free, directGrok, fallback]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
@@ -1463,6 +1503,7 @@ describe("agent router", () => {
 						"xiaomi",
 						"muse-code",
 						"cerebras",
+						"xai-oauth",
 					].map(provider => [provider, { state: "depleted", accounts: [] }]),
 				),
 			);
@@ -1523,7 +1564,7 @@ describe("agent router", () => {
 					true,
 				);
 			expect(
-				["openrouter/", "kimi-code/", "claude-bridge/", "xiaomi/", "muse-code/", "anthropic/"].some(provider =>
+				["openrouter/", "kimi-code/", "claude-bridge/", "xiaomi/", "muse-code/", "anthropic/", "xai-oauth/"].some(provider =>
 					result?.model[0]?.startsWith(provider),
 				),
 			).toBe(true);
@@ -2238,9 +2279,9 @@ describe("agent router", () => {
 			});
 		// Non-free pool members shuffle; the hard-fail free model stays last.
 		const TASK_ORDER = [
-			"openrouter/x-ai/grok-4.6",
+			"xai-oauth/grok-4.6",
 			"muse-code/muse-spark-1.3-contributor",
-			"openrouter/x-ai/grok-4.5",
+			"xai-oauth/grok-4.5",
 			"xiaomi/mimo-v2.6-pro",
 			"kimi-code/k3:high",
 			"deepseek/deepseek-v4-pro:high",

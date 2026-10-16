@@ -328,9 +328,9 @@ const TASK_POOL: PoolConfig = {
 		"deepseek/deepseek-v4-pro:high",
 		"kimi-code/k3:high",
 		"xiaomi/mimo-v2.6-pro",
-		"openrouter/x-ai/grok-4.5",
+		"xai-oauth/grok-4.5",
 		"muse-code/muse-spark-1.3-contributor",
-		"openrouter/x-ai/grok-4.6",
+		"xai-oauth/grok-4.6",
 	],
 	fallbacks: ["codex-lb/gpt-6.1-sol:medium", "codex-lb/Qwen3.8-27B", "cerebras/qwen-3.8-27b"],
 };
@@ -628,11 +628,14 @@ async function availablePoolMembers(
 	now?: () => Date,
 ): Promise<{ available: string[]; skipped: SkippedModelRecord[] }> {
 	const nowMs = (now ?? (() => new Date()))().getTime();
-	if (!ctx.models?.resolve || !ctx.models?.list) return { available: [...pool], skipped: [] };
+	const allowed = pool.filter(isAllowedOpenRouterModel);
+	const skipped: SkippedModelRecord[] = pool
+		.filter(spec => !isAllowedOpenRouterModel(spec))
+		.map(model => ({ model, reason: "paid_openrouter_disabled" }));
+	if (!ctx.models?.resolve || !ctx.models?.list) return { available: allowed, skipped };
 	const authenticated = new Set(ctx.models.list().map(model => `${model.provider}/${model.id}`));
 	const available: string[] = [];
-	const skipped: SkippedModelRecord[] = [];
-	for (const spec of pool) {
+	for (const spec of allowed) {
 		const model = ctx.models.resolve(spec);
 		if (model === undefined || !authenticated.has(`${model.provider}/${model.id}`)) continue;
 		// Child recovery shares this registry with its parent; respect its existing
@@ -905,6 +908,11 @@ function modelSelectorBase(spec: string): string {
 	const separator = spec.lastIndexOf(":");
 	if (separator <= spec.indexOf("/")) return spec;
 	return spec.slice(0, separator);
+}
+
+function isAllowedOpenRouterModel(spec: string): boolean {
+	const selector = spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
+	return !selector.startsWith("openrouter/") || selector.endsWith(":free");
 }
 
 const THINKING_EFFORT_SUFFIXES = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
