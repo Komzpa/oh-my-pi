@@ -2633,6 +2633,7 @@ export class SessionManager {
 
 			// The loader sanitizes replay metadata while indexing; positioned reads do the same.
 			// Re-reading every payload here defeats selective loading of large sessions.
+			if (!loaded.index && this.sanitizeLoadedOpenAIResponsesReplayMetadata()) this.#rewriteRequired = true;
 		} catch (error) {
 			loaded.index?.clear();
 			throw error;
