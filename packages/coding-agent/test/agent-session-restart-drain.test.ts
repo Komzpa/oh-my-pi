@@ -47,7 +47,7 @@ describe("AgentSession restart drain", () => {
 		removeSyncWithRetries(fixtureDir);
 	});
 
-	it("settles an interrupted provider during drain and preserves queued input on cancel", async () => {
+	it("interrupts only the provider during drain and preserves queued input on cancel", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const started = Promise.withResolvers<void>();
 		const mock = createMockModel({
@@ -74,7 +74,6 @@ describe("AgentSession restart drain", () => {
 		const run = session.prompt("Continue the task after restarting");
 		await started.promise;
 		const lease = session.beginRestartDrain();
-		agent.abort();
 		await lease.waitForQuiescence();
 		await run;
 		expect(mock.calls).toHaveLength(1);
