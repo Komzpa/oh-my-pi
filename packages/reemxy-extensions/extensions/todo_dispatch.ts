@@ -2054,9 +2054,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     persistedSprintStateJson = JSON.stringify(sprintState);
     if (!singleWriterLane) armPlanTicker(ctx);
   };
-  const loadAndRefresh = async (_event: unknown, ctx: ExtensionContext) => {
+  const loadAndRefresh = (_event: unknown, ctx: ExtensionContext) => {
 	load(ctx);
-	await refreshLiveWorkerModels(ctx);
+	// Quota discovery may wait on providers; restoring the session must not.
+	// The refresh already coalesces requests and handles failures internally.
+	void refreshLiveWorkerModels(ctx);
   };
   pi.on("session_start", loadAndRefresh);
   pi.on("session_switch", loadAndRefresh);
