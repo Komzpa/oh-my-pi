@@ -949,6 +949,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		const sessions = [this.#session, ...run.children.values()];
 		await Promise.all(
 			sessions.map(async session => {
+				// The worker grace deadline may expire while idle parking is still
+				// closing its journal. That terminal flush must finish before relaunch.
+				if (session.isDisposed) await session.dispose();
 				await session.sessionManager.ensureOnDisk();
 				await session.sessionManager.flush();
 			}),
