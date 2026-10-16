@@ -6,7 +6,9 @@ try {
 	await waitForRestartAdmission(file);
 	process.send?.({ type: "admitted" });
 	const manager = await SessionManager.open(file);
-	process.send?.({ type: "draft", text: await manager.consumeDraft(), entries: manager.getEntries() });
+	const result = { type: "draft", text: await manager.consumeDraft(), entries: manager.getEntries() };
+	process.send?.(result);
+	if (process.argv[3]) await Bun.write(process.argv[3], JSON.stringify(result));
 	await manager.close();
 	process.disconnect?.();
 } catch (error) {

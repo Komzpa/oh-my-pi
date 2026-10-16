@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { fork, type ChildProcess } from "node:child_process";
 import * as path from "node:path";
+import * as fs from "node:fs/promises";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { SessionManager } from "../src/session/session-manager";
-import { RESTART_PREPARE_ENV } from "../src/restart-admission";
+import { RESTART_PREPARE_ENV, prepareRestartSuccessor } from "../src/restart-admission";
 
 interface Frame {
 	type: string;
@@ -48,6 +49,82 @@ function launch(file: string, sessionId: string) {
 }
 
 describe("prepared restart admission", () => {
+	it("parent commits only after the final writer closes and repeat commit cannot replay startup", async () => {
+		using temp = TempDir.createSync("@pi-restart-parent-");
+		const manager = SessionManager.create(temp.path(), temp.path());
+		manager.appendMessage({ role: "user", content: "active work", timestamp: 1 });
+		await manager.ensureOnDisk();
+		await manager.saveDraft("не отправлено\n🐈  ");
+		const file = manager.getSessionFile()!;
+		const report = path.join(temp.path(), "successor.json");
+		const prepared = await prepareRestartSuccessor(
+			[process.execPath, path.join(import.meta.dir, "fixtures/restart-admission-child.ts"), file, report],
+			{ requestId: "parent-handoff", sessionId: manager.getSessionId(), sessionFile: file, requestedAt: Date.now() },
+		);
+		const release = Promise.withResolvers<void>();
+		let closes = 0;
+		const committed = prepared.commit(async () => {
+			closes++;
+			await release.promise;
+			await manager.close();
+		});
+		const repeated = prepared.commit(async () => {
+			throw new Error("duplicate commit");
+		});
+		try {
+			await Bun.sleep(30);
+			expect(
+				await fs.stat(report).then(
+					() => true,
+					() => false,
+				),
+			).toBe(false);
+			manager.appendMessage({ role: "user", content: "final admitted input", timestamp: 2 });
+			await manager.flush();
+			const entries = manager.getEntries();
+			release.resolve();
+			expect(await committed).toBe(0);
+			expect(await repeated).toBe(0);
+			expect(closes).toBe(1);
+			const result = await Bun.file(report).json();
+			expect(result.text).toBe("не отправлено\n🐈  ");
+			expect(result.entries).toEqual(entries);
+		} finally {
+			release.resolve();
+			await committed;
+			await manager.close();
+		}
+	});
+
+	it("failed parent checkpoint aborts only its prepared candidate and retains the active draft", async () => {
+		using temp = TempDir.createSync("@pi-restart-parent-failure-");
+		const manager = SessionManager.create(temp.path(), temp.path());
+		manager.appendMessage({ role: "user", content: "active work", timestamp: 1 });
+		await manager.ensureOnDisk();
+		await manager.saveDraft("keep this draft");
+		const file = manager.getSessionFile()!;
+		const candidate = await prepareRestartSuccessor(
+			[process.execPath, path.join(import.meta.dir, "fixtures/restart-admission-child.ts"), file],
+			{
+				requestId: "failed-checkpoint",
+				sessionId: manager.getSessionId(),
+				sessionFile: file,
+				requestedAt: Date.now(),
+			},
+		);
+		try {
+			await expect(
+				candidate.commit(async () => {
+					throw new Error("checkpoint failed");
+				}),
+			).rejects.toThrow("checkpoint failed");
+			expect(await manager.consumeDraft()).toBe("keep this draft");
+		} finally {
+			await candidate.abort();
+			await manager.close();
+		}
+	});
+
 	it("leaves the active writer and Unicode draft untouched until exact commit, then reads the final checkpoint", async () => {
 		using temp = TempDir.createSync("@pi-restart-admission-");
 		const manager = SessionManager.create(temp.path(), temp.path());

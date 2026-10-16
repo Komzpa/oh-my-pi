@@ -1,5 +1,6 @@
 /** Admission barrier for a preloaded successor, before session writers or runtime hooks exist. */
 import * as path from "node:path";
+import { spawn } from "node:child_process";
 
 export const RESTART_PREPARE_ENV = "OMP_RESTART_PREPARE";
 
@@ -65,4 +66,85 @@ export async function waitForRestartAdmission(resume: string | true | undefined)
 		process.off("message", onMessage);
 		process.off("disconnect", onDisconnect);
 	}
+}
+
+export interface PreparedRestartSuccessor {
+	readonly pid: number;
+	/** Release the final checkpoint's writer, then admit the successor once. */
+	commit(releaseWriter: () => Promise<void>): Promise<number>;
+	/** Only an uncommitted candidate can be aborted; the active runtime stays untouched. */
+	abort(): Promise<void>;
+}
+
+/**
+ * Launch a candidate behind the admission barrier using the existing process IPC.
+ * The caller remains the terminal/worker owner until it explicitly commits.
+ * This does not preload session state or transfer existing worker ownership.
+ */
+export async function prepareRestartSuccessor(
+	command: string[],
+	preparation: RestartPreparation,
+): Promise<PreparedRestartSuccessor> {
+	if (!command[0]) throw new Error("Restart successor command is empty");
+	const ready = Promise.withResolvers<void>();
+	const exit = Promise.withResolvers<number>();
+	const child = spawn(command[0], command.slice(1), {
+		stdio: ["inherit", "inherit", "inherit", "ipc"],
+		env: { ...process.env, [RESTART_PREPARE_ENV]: JSON.stringify(preparation) },
+	});
+	child.once("error", error => {
+		ready.reject(error);
+		exit.resolve(1);
+	});
+	child.once("exit", code => {
+		exit.resolve(code ?? 1);
+		ready.reject(new Error(`Restart candidate exited before preparation (exit ${code})`));
+	});
+	child.on("message", message => {
+		if (typeof message !== "object" || message === null) return;
+		const frame = message as Partial<RestartPreparation> & { type?: unknown };
+		if (
+			frame.type === "restart-prepared" &&
+			frame.requestId === preparation.requestId &&
+			frame.sessionId === preparation.sessionId &&
+			frame.sessionFile === preparation.sessionFile
+		)
+			ready.resolve();
+	});
+	await ready.promise;
+	let state: "ready" | "committing" | "committed" | "aborted" = "ready";
+	let commit: Promise<number> | undefined;
+	const abort = async (): Promise<void> => {
+		if (state === "committing" || state === "committed") throw new Error("Cannot abort a committed restart handoff");
+		if (state !== "aborted") {
+			state = "aborted";
+			if (child.connected) child.send({ ...preparation, type: "restart-abort" });
+		}
+		await exit.promise;
+	};
+	return {
+		pid: child.pid!,
+		abort,
+		commit: releaseWriter => {
+			if (commit) return commit;
+			if (state !== "ready") return Promise.reject(new Error("Restart candidate was aborted"));
+			if (!child.connected || child.exitCode !== null || child.signalCode !== null)
+				return Promise.reject(new Error("Restart candidate exited before writer release"));
+			state = "committing";
+			commit = (async () => {
+				try {
+					await releaseWriter();
+				} catch (error) {
+					state = "ready";
+					await abort();
+					throw error;
+				}
+				state = "committed";
+				if (!child.connected) return 1;
+				child.send({ ...preparation, type: "restart-commit" });
+				return exit.promise;
+			})();
+			return commit;
+		},
+	};
 }
