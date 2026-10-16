@@ -3903,7 +3903,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const settled = (ctx.getAsyncJobSnapshot()?.recent ?? []).filter((job) => job.type === "task" && job.status === "completed");
     const ownerOf = new Map<string, string>();
     try {
-      for (const phase of sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending) as never))
+      for (const phase of phasesNow)
         for (const task of phase.tasks) if (typeof task.schedule?.owner === "string") ownerOf.set(task.content, task.schedule.owner);
     } catch {}
     const unread = open.filter((row) => {
