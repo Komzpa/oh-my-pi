@@ -28,6 +28,15 @@ import { AgentSession } from "../session/agent-session";
 import { AuthStorage, SqliteAuthCredentialStore } from "../session/auth-storage";
 import { resolveSessionFileArg } from "./session-arg";
 import { SessionManager } from "../session/session-manager";
+import { FileSessionStorage } from "../session/session-storage";
+
+/** The render command exclusively owns its temporary copy, even though its
+ * header preserves the original session ID for faithful lifecycle replay. */
+class RenderSessionStorage extends FileSessionStorage {
+	override claimSession(): () => void {
+		return () => {};
+	}
+}
 
 export interface RenderCommandArgs {
 	/** Session file path or id prefix; default: most recent session for cwd. */
@@ -159,7 +168,7 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 	try {
 		await fs.copyFile(sourcePath, workingCopy);
 		const openStart = performance.now();
-		const sessionManager = await SessionManager.open(workingCopy, undefined, undefined, {
+		const sessionManager = await SessionManager.open(workingCopy, undefined, new RenderSessionStorage(), {
 			suppressBreadcrumb: true,
 		});
 		const openMs = performance.now() - openStart;
