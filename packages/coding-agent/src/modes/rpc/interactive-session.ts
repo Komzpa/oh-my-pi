@@ -1,12 +1,13 @@
 import type { AgentSessionEvent } from "../../session/agent-session";
 import type { PromptOptions } from "../../session/agent-session-types";
 import type { InteractiveSessionConnection } from "../interactive-session";
-import type { RpcClient } from "./rpc-client";
+import type { RpcAskDialogRequest, RpcAskDialogView, RpcClient } from "./rpc-client";
 import type { RpcSessionState } from "./rpc-types";
 
 /** A view lease on an RPC owner. Disconnecting a view never stops its runtime. */
 export interface RpcInteractiveSessionConnection extends InteractiveSessionConnection {
 	refresh(): Promise<void>;
+	attachAskDialogView(listener: (request: RpcAskDialogRequest) => void): RpcAskDialogView;
 	disconnect(): void;
 }
 
@@ -22,6 +23,7 @@ export async function createRpcInteractiveSessionConnection(
 	let disconnected = false;
 	let revision = 0;
 	let refreshing: Promise<void> | undefined;
+	const askViews = new Set<RpcAskDialogView>();
 	const listeners = new Set<(event: AgentSessionEvent) => void>();
 	const assertConnected = (): void => {
 		if (disconnected) throw new Error("Interactive session view is disconnected");
@@ -84,6 +86,8 @@ export async function createRpcInteractiveSessionConnection(
 		if (disconnected) return;
 		disconnected = true;
 		listeners.clear();
+		for (const view of askViews) view.disconnect();
+		askViews.clear();
 		unsubscribe();
 		unsubscribeResult();
 		unsubscribeSettled();
@@ -97,6 +101,19 @@ export async function createRpcInteractiveSessionConnection(
 	return {
 		refresh,
 		disconnect,
+		attachAskDialogView(listener) {
+			assertConnected();
+			const lease = client.attachAskDialogView(listener);
+			const view: RpcAskDialogView = {
+				respond: response => lease.respond(response),
+				disconnect: () => {
+					lease.disconnect();
+					askViews.delete(view);
+				},
+			};
+			askViews.add(view);
+			return view;
+		},
 		get isStreaming() {
 			return state.isStreaming;
 		},
