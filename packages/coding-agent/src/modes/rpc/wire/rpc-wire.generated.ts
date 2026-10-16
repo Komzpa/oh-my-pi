@@ -372,26 +372,6 @@ export type InterruptMode = "immediate" | "wait";
 
 export type StreamingBehavior = "steer" | "followUp";
 
-export interface SessionPromptOptions {
-	expandPromptTemplates?: boolean;
-	runCommands?: boolean;
-	throwOnDrop?: boolean;
-	images?: ImageContent[];
-	streamingBehavior?: "steer" | "followUp" | "aside";
-	toolChoice?: unknown;
-	synthetic?: boolean;
-	userInitiated?: boolean;
-	attribution?: "user" | "agent";
-	skipCompactionCheck?: boolean;
-	solutionSpace?: string;
-}
-
-export interface SessionAbortOptions {
-	goalReason?: "interrupted" | "internal";
-	reason?: string;
-	preserveCompaction?: boolean;
-}
-
 export type QueuedMessageQueue = "steering" | "followUp";
 
 export type CacheWarmingMode = "off" | "streaming" | "idle";
@@ -440,6 +420,26 @@ export interface QueuedMessagesState {
 	followUp: string[];
 	/** Leading `steering` entries are live steering already sent into the streaming response; `remove_queued_message` cannot reach them. */
 	liveSteered?: number;
+}
+
+export interface SessionPromptOptions {
+	expandPromptTemplates?: boolean;
+	runCommands?: boolean;
+	throwOnDrop?: boolean;
+	images?: ImageContent[];
+	streamingBehavior?: "steer" | "followUp" | "aside";
+	toolChoice?: unknown;
+	synthetic?: boolean;
+	userInitiated?: boolean;
+	attribution?: "user" | "agent";
+	skipCompactionCheck?: boolean;
+	solutionSpace?: string;
+}
+
+export interface SessionAbortOptions {
+	goalReason?: "interrupted" | "internal";
+	reason?: string;
+	preserveCompaction?: boolean;
 }
 
 export interface ToolDescriptor {

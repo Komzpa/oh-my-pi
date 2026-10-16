@@ -2634,42 +2634,6 @@ impl StreamingBehavior {
 	}
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SessionPromptOptions {
-	#[serde(rename = "expandPromptTemplates", default, skip_serializing_if = "Option::is_none")]
-	pub expand_prompt_templates: Option<bool>,
-	#[serde(rename = "runCommands", default, skip_serializing_if = "Option::is_none")]
-	pub run_commands: Option<bool>,
-	#[serde(rename = "throwOnDrop", default, skip_serializing_if = "Option::is_none")]
-	pub throw_on_drop: Option<bool>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub images: Option<Vec<ImageContent>>,
-	#[serde(rename = "streamingBehavior", default, skip_serializing_if = "Option::is_none")]
-	pub streaming_behavior: Option<SessionPromptOptionsStreamingBehavior>,
-	#[serde(rename = "toolChoice", default, skip_serializing_if = "Option::is_none")]
-	pub tool_choice: Option<Value>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub synthetic: Option<bool>,
-	#[serde(rename = "userInitiated", default, skip_serializing_if = "Option::is_none")]
-	pub user_initiated: Option<bool>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub attribution: Option<SessionPromptOptionsAttribution>,
-	#[serde(rename = "skipCompactionCheck", default, skip_serializing_if = "Option::is_none")]
-	pub skip_compaction_check: Option<bool>,
-	#[serde(rename = "solutionSpace", default, skip_serializing_if = "Option::is_none")]
-	pub solution_space: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SessionAbortOptions {
-	#[serde(rename = "goalReason", default, skip_serializing_if = "Option::is_none")]
-	pub goal_reason: Option<SessionAbortOptionsGoalReason>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub reason: Option<String>,
-	#[serde(rename = "preserveCompaction", default, skip_serializing_if = "Option::is_none")]
-	pub preserve_compaction: Option<bool>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum QueuedMessageQueue {
 	#[serde(rename = "steering")]
@@ -2945,6 +2909,42 @@ pub struct QueuedMessagesState {
 	/// Leading `steering` entries are live steering already sent into the streaming response; `remove_queued_message` cannot reach them.
 	#[serde(rename = "liveSteered", default = "default_queued_messages_state_live_steered")]
 	pub live_steered: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionPromptOptions {
+	#[serde(rename = "expandPromptTemplates", default, skip_serializing_if = "Option::is_none")]
+	pub expand_prompt_templates: Option<bool>,
+	#[serde(rename = "runCommands", default, skip_serializing_if = "Option::is_none")]
+	pub run_commands: Option<bool>,
+	#[serde(rename = "throwOnDrop", default, skip_serializing_if = "Option::is_none")]
+	pub throw_on_drop: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub images: Option<Vec<ImageContent>>,
+	#[serde(rename = "streamingBehavior", default, skip_serializing_if = "Option::is_none")]
+	pub streaming_behavior: Option<SessionPromptOptionsStreamingBehavior>,
+	#[serde(rename = "toolChoice", default, skip_serializing_if = "Option::is_none")]
+	pub tool_choice: Option<Value>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub synthetic: Option<bool>,
+	#[serde(rename = "userInitiated", default, skip_serializing_if = "Option::is_none")]
+	pub user_initiated: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub attribution: Option<SessionPromptOptionsAttribution>,
+	#[serde(rename = "skipCompactionCheck", default, skip_serializing_if = "Option::is_none")]
+	pub skip_compaction_check: Option<bool>,
+	#[serde(rename = "solutionSpace", default, skip_serializing_if = "Option::is_none")]
+	pub solution_space: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionAbortOptions {
+	#[serde(rename = "goalReason", default, skip_serializing_if = "Option::is_none")]
+	pub goal_reason: Option<SessionAbortOptionsGoalReason>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<String>,
+	#[serde(rename = "preserveCompaction", default, skip_serializing_if = "Option::is_none")]
+	pub preserve_compaction: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

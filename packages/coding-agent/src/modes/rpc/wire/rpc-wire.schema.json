@@ -2169,72 +2169,6 @@
 			],
 			"type": "string"
 		},
-		"SessionPromptOptions": {
-			"type": "object",
-			"properties": {
-				"expandPromptTemplates": {
-					"type": "boolean"
-				},
-				"runCommands": {
-					"type": "boolean"
-				},
-				"throwOnDrop": {
-					"type": "boolean"
-				},
-				"images": {
-					"type": "array",
-					"items": {
-						"$ref": "#/$defs/ImageContent"
-					}
-				},
-				"streamingBehavior": {
-					"enum": [
-						"steer",
-						"followUp",
-						"aside"
-					],
-					"type": "string"
-				},
-				"toolChoice": {},
-				"synthetic": {
-					"type": "boolean"
-				},
-				"userInitiated": {
-					"type": "boolean"
-				},
-				"attribution": {
-					"enum": [
-						"user",
-						"agent"
-					],
-					"type": "string"
-				},
-				"skipCompactionCheck": {
-					"type": "boolean"
-				},
-				"solutionSpace": {
-					"type": "string"
-				}
-			}
-		},
-		"SessionAbortOptions": {
-			"type": "object",
-			"properties": {
-				"goalReason": {
-					"enum": [
-						"interrupted",
-						"internal"
-					],
-					"type": "string"
-				},
-				"reason": {
-					"type": "string"
-				},
-				"preserveCompaction": {
-					"type": "boolean"
-				}
-			}
-		},
 		"QueuedMessageQueue": {
 			"enum": [
 				"steering",
@@ -2417,6 +2351,72 @@
 				"followUp"
 			],
 			"description": "Displayable queue-chip text for pending user-authored messages; accepted verbatim by `remove_queued_message`."
+		},
+		"SessionPromptOptions": {
+			"type": "object",
+			"properties": {
+				"expandPromptTemplates": {
+					"type": "boolean"
+				},
+				"runCommands": {
+					"type": "boolean"
+				},
+				"throwOnDrop": {
+					"type": "boolean"
+				},
+				"images": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/ImageContent"
+					}
+				},
+				"streamingBehavior": {
+					"enum": [
+						"steer",
+						"followUp",
+						"aside"
+					],
+					"type": "string"
+				},
+				"toolChoice": {},
+				"synthetic": {
+					"type": "boolean"
+				},
+				"userInitiated": {
+					"type": "boolean"
+				},
+				"attribution": {
+					"enum": [
+						"user",
+						"agent"
+					],
+					"type": "string"
+				},
+				"skipCompactionCheck": {
+					"type": "boolean"
+				},
+				"solutionSpace": {
+					"type": "string"
+				}
+			}
+		},
+		"SessionAbortOptions": {
+			"type": "object",
+			"properties": {
+				"goalReason": {
+					"enum": [
+						"interrupted",
+						"internal"
+					],
+					"type": "string"
+				},
+				"reason": {
+					"type": "string"
+				},
+				"preserveCompaction": {
+					"type": "boolean"
+				}
+			}
 		},
 		"ToolDescriptor": {
 			"type": "object",
