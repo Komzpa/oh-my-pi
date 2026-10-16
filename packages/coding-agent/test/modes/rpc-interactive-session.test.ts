@@ -15,9 +15,9 @@ it("rejects an outstanding turn when its owner explicitly stops the child", asyn
 		const admitted = Promise.withResolvers<void>();
 		const pending = view.prompt("hold until stopped", { onPromptAdmitted: admitted.resolve });
 		await admitted.promise;
-		const rejected = expect(pending).rejects.toThrow("Client stopped");
+		const rejected = pending.catch((error: Error) => error);
 		await client.stop();
-		await rejected;
+		expect(await rejected).toMatchObject({ message: "Client stopped" });
 		view.disconnect();
 	} finally {
 		await client.stop();
