@@ -5154,6 +5154,17 @@ pub struct OpenSessionParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SaveDraftParams {
+	pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConsumeDraftResult {
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SetFastModeParams {
 	pub enabled: bool,
 }
@@ -6186,6 +6197,37 @@ impl Command for OpenSessionCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<OpenSessionResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Persist unsent editor text with the runtime session writer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SaveDraftCommand {
+	pub text: String,
+}
+
+impl Command for SaveDraftCommand {
+	const NAME: &'static str = "save_draft";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
+	}
+}
+
+/// Restore and remove the unsent editor draft once.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ConsumeDraftCommand {}
+
+impl Command for ConsumeDraftCommand {
+	const NAME: &'static str = "consume_draft";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = Option<String>;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<ConsumeDraftResult>(data.unwrap_or_else(|| Value::Object(Map::new()))).map(|result| result.text)
 	}
 }
 

@@ -6833,6 +6833,25 @@ func (v *NegotiateProtocolResult) decodeFrom(raw map[string]json.RawMessage) err
 	return nil
 }
 
+type ConsumeDraftResult struct {
+	Text *string `json:"text"`
+}
+
+func (v *ConsumeDraftResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ConsumeDraftResult", v.decodeFrom)
+}
+
+func (v *ConsumeDraftResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ConsumeDraftResult
+	d := fieldDecoder{raw: raw, owner: "ConsumeDraftResult"}
+	d.nullable("text", &out.Text)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SetSlowModeResult struct {
 	Enabled bool `json:"enabled"`
 }
@@ -7474,6 +7493,23 @@ func (c Commands) OpenSession(ctx context.Context, p OpenSessionCommand) (OpenSe
 	var out OpenSessionResult
 	err := c.call(ctx, "open_session", p, 0, &out)
 	return out, err
+}
+
+// SaveDraftCommand holds the parameters of "save_draft".
+type SaveDraftCommand struct {
+	Text string `json:"text"`
+}
+
+// SaveDraft sends "save_draft": Persist unsent editor text with the runtime session writer.
+func (c Commands) SaveDraft(ctx context.Context, p SaveDraftCommand) error {
+	return c.call(ctx, "save_draft", p, 0, nil)
+}
+
+// ConsumeDraft sends "consume_draft": Restore and remove the unsent editor draft once.
+func (c Commands) ConsumeDraft(ctx context.Context) (*string, error) {
+	var out ConsumeDraftResult
+	err := c.call(ctx, "consume_draft", nil, 0, &out)
+	return out.Text, err
 }
 
 // GetState sends "get_state": Snapshot the session state.

@@ -149,6 +149,8 @@ describe("interactive native input ingress", () => {
 			hasPostPromptWork: false,
 			queuedMessageCount: 0,
 			hasPendingAsyncWork: () => false,
+			saveDraft: async () => {},
+			consumeDraft: async () => null,
 			waitForSettled: async () => {},
 		};
 		const h = await createHarness(() => {}, connection);

@@ -830,9 +830,17 @@ export class RpcClient {
 		return this.#getData(response);
 	}
 
-	/**
-	 * Get current session state.
-	 */
+	/** Persist a draft using the runtime owner, propagating storage failures. */
+	async saveDraft(text: string): Promise<void> {
+		this.#getData<void>(await this.#send({ type: "save_draft", text }));
+	}
+
+	async consumeDraft(): Promise<string | null> {
+		const response = await this.#send({ type: "consume_draft" });
+		return this.#getData<{ text: string | null }>(response).text;
+	}
+
+	/** Get current session state. */
 	async getState(): Promise<RpcSessionState> {
 		const response = await this.#send({ type: "get_state" });
 		const state = this.#getData<RpcSessionState>(response);

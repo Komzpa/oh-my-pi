@@ -84,6 +84,8 @@ describe("EventController message_update coalescing", () => {
 			hasPostPromptWork: false,
 			queuedMessageCount: 0,
 			hasPendingAsyncWork: () => false,
+			saveDraft: async () => {},
+			consumeDraft: async () => null,
 			waitForSettled: async () => {},
 		};
 		const ctx = createInteractiveModeContext({ session: { subscribe: localSubscribe } });
@@ -116,6 +118,8 @@ describe("EventController message_update coalescing", () => {
 				hasPostPromptWork: false,
 				queuedMessageCount: 0,
 				hasPendingAsyncWork: () => false,
+				saveDraft: async () => {},
+				consumeDraft: async () => null,
 				waitForSettled: async () => {},
 			};
 			const controller = new EventController(ctx, connection);
