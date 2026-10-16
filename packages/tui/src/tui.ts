@@ -3273,6 +3273,7 @@ export class TUI extends Container {
 
 	/** Delete only cells exclusively owned by the live rectangles being retired. */
 	#retireSixelPlacements(physical: SixelPlacement[], retiring: ReadonlySet<SixelPlacement>): string {
+		if (isInsideTerminalMultiplexer()) return "";
 		let output = "";
 		for (const placement of retiring) {
 			if (placement.history || placement.row < 0 || !physical.includes(placement)) continue;
@@ -3367,7 +3368,12 @@ export class TUI extends Container {
 			const lift = Math.min(directPlacementLift(drawn), clipRow);
 			const liftErase = lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}` : "";
 			const sixel = parseSixelDirectPlacementLine(drawn);
-			if (TERMINAL.imageProtocol !== ImageProtocol.Sixel || !Bun.env.KONSOLE_VERSION || !sixel) {
+			if (
+				TERMINAL.imageProtocol !== ImageProtocol.Sixel ||
+				!Bun.env.KONSOLE_VERSION ||
+				isInsideTerminalMultiplexer() ||
+				!sixel
+			) {
 				return liftErase + drawn;
 			}
 			const previous = placements?.get(placementRow)?.sixel;

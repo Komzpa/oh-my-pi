@@ -1042,8 +1042,8 @@ function cropSixelBody(body: string, hiddenPx: number): string {
 	if (drop <= 0) return body;
 	const kept = bands.slice(drop);
 	const dropped = bands.slice(0, drop).join("-");
-	const raster = /^"(\d+;\d+;\d+);\d+/.exec(bands[0] ?? "");
-	const head = raster ? `"${raster[1]};${6 * kept.length}` : "";
+	const raster = /^"(\d+;\d+;\d+);(\d+)/.exec(bands[0] ?? "");
+	const head = raster ? `"${raster[1]};${Number(raster[2]) - 6 * drop}` : "";
 	const palettes = dropped.match(SIXEL_PALETTE_DEFINITION)?.join("") ?? "";
 	const colour = [...dropped.matchAll(SIXEL_COLOUR_SELECTION)].at(-1)?.[0] ?? "";
 	return `${head}${palettes}${colour}${kept.join("-")}-`;
@@ -1136,9 +1136,11 @@ export function encodeKittyDeletePlacement(imageId: number, placementId: number)
  * Konsole-only SIXEL workaround: its Kitty handler uses zero-based cells and
  * removes every containing graphics rectangle, including SIXEL and history.
  * The caller must prove the cell belongs only to placements it is retiring.
+ * Pane-local cells cannot target the outer terminal through a multiplexer.
  */
 export function encodeKonsoleDeleteAtCell(column: number, row: number): string {
-	return wrapTmuxPassthroughIfNeeded(`\x1b_Ga=d,d=p,x=${column},y=${row},q=2\x1b\\`);
+	if (isInsideTerminalMultiplexer()) return "";
+	return `\x1b_Ga=d,d=p,x=${column},y=${row},q=2\x1b\\`;
 }
 
 export function encodeITerm2(

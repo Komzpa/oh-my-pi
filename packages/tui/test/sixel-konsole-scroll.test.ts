@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { encodeSixel } from "@oh-my-pi/pi-natives";
 import { type HistoryBatch, TUI } from "@oh-my-pi/pi-tui";
 import { Box } from "@oh-my-pi/pi-tui/components/box";
 import {
 	type CellDimensions,
+	encodeKonsoleDeleteAtCell,
 	getCellDimensions,
 	ImageProtocol,
 	setCellDimensions,
@@ -65,6 +67,38 @@ describe("Konsole SIXEL scrolling and ownership", () => {
 				{ col: 2, count: 1 },
 			]);
 			expect(term.getViewport()[3]?.trim()).toBe("below");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("keeps a straddling 80px raster within its visible 20px text cells", async () => {
+		const cell = { widthPx: 10, heightPx: 20 };
+		setCellDimensions(cell);
+		const png = Buffer.from(
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==",
+			"base64",
+		);
+		const image = sixelImageRows(encodeSixel(png, 40, 80));
+		const term = new KonsoleSixelTerminal(cell);
+		const scheduler = new VirtualRenderScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider({
+			renderFrame: () => ({ viewport: [...image.slice(2), "below"] }),
+			acknowledgeHistory() {},
+		});
+		try {
+			tui.start();
+			await scheduler.settle(term);
+			const clipped = term.placements[0]!;
+			expect(term.covers(clipped, 2, clipped.col)).toBe(false);
+			expect(clipped.pixels).toHaveLength(80 - 7 * 6);
+			expect({ row: clipped.row, rows: clipped.rows }).toEqual({ row: 0, rows: 2 });
+			expect(term.getViewport()[2]?.trim()).toBe("below");
+			tui.requestRender(true);
+			await scheduler.settle(term);
+			expect(term.placements).toHaveLength(1);
+			expect(term.covers(term.placements[0]!, 2, 0)).toBe(false);
 		} finally {
 			tui.stop();
 		}
@@ -197,4 +231,38 @@ describe("Konsole SIXEL scrolling and ownership", () => {
 			tui.stop();
 		}
 	});
+
+	for (const [key, value] of [
+		["TMUX", "/tmp/sixel-test,1,0"],
+		["TERM", "screen-256color"],
+	] as const) {
+		it(`retains portable clipping and erase without positional deletes inside ${key}`, async () => {
+			Bun.env[key] = value;
+			const term = new KonsoleSixelTerminal(CELL);
+			const scheduler = new VirtualRenderScheduler();
+			const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+			let visible = true;
+			tui.setFrameProvider({
+				renderFrame: () => ({
+					viewport: visible ? [...IMAGE.slice(1), "below"] : ["replacement", "", "", "below"],
+				}),
+				acknowledgeHistory() {},
+			});
+			try {
+				tui.start();
+				await scheduler.settle(term);
+				tui.requestRender(true);
+				await scheduler.settle(term);
+				visible = false;
+				tui.requestRender();
+				await scheduler.settle(term);
+				expect(term.writes.join("")).not.toContain("_Ga=d,d=p,");
+				expect(term.bands(term.paints.at(-1)!)).toEqual([1, 2, 3]);
+				expect(term.writes.some(write => write.includes("\x1b[2A\x1b[2K\x1b[B"))).toBe(true);
+				expect(encodeKonsoleDeleteAtCell(2, 0)).toBe("");
+			} finally {
+				tui.stop();
+			}
+		});
+	}
 });
