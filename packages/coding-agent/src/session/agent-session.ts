@@ -453,7 +453,7 @@ import {
 	type SessionDumpLiveState,
 } from "./session-dump-format";
 import { collectSubSessions, type SubSession } from "./sub-sessions";
-import type { BranchSummaryEntry, NewSessionOptions } from "./session-entries";
+import type { BranchSummaryEntry, NewSessionOptions, SessionEntry } from "./session-entries";
 import { SessionHandoff, type SessionHandoffHost } from "./session-handoff";
 import {
 	COMPACTION_CHECK_NONE,
@@ -3522,7 +3522,16 @@ export class AgentSession implements SettingsScope {
 	#recordSessionExit(reason: postmortem.Reason | "dispose"): void {
 		if (this.#exitRecorded) return;
 		this.#exitRecorded = true;
-		const pendingToolCalls = collectPendingToolCalls(this.sessionManager.iterateBranch());
+		// Each assistant message replaces the pending-call set. Earlier history
+		// cannot affect the exit diagnostic, including compacted tool payloads.
+		const pendingEntries: SessionEntry[] = [];
+		for (const entry of this.sessionManager.iterateBranchMatchingNewestFirst(
+			metadata => metadata.type === "message" || metadata.customType === "tool_execution_start",
+		)) {
+			pendingEntries.push(entry);
+			if (entry.type === "message" && entry.message.role === "assistant") break;
+		}
+		const pendingToolCalls = collectPendingToolCalls(pendingEntries.reverse());
 		if (pendingToolCalls.length === 0) {
 			let hasAssistant = false;
 			for (const entry of this.sessionManager.iterateBranch("message")) {
