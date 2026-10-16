@@ -7221,9 +7221,7 @@ export class AgentSession implements SettingsScope {
 			cached = {
 				sessionFile,
 				init: extractSessionInit(
-					this.sessionManager.getBranchMatching(
-						metadata => metadata.type === "session_init",
-					),
+					this.sessionManager.getBranchMatching(metadata => metadata.type === "session_init"),
 				),
 			};
 			this.#sessionInit = cached;

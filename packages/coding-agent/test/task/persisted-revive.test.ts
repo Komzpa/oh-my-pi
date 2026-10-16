@@ -1787,13 +1787,13 @@ describe("buildWakeRelayBody", () => {
 			// of reviving stale history. Single-shot: only the snapshot read
 			// mutates, so the publish-time re-read observes the deletion.
 			const originalVisit = sessionLoader.visitSessionFileForResume;
-			const snapshotSpy = vi.spyOn(sessionLoader, "visitSessionFileForResume").mockImplementationOnce(
-				async (filePath, visit, options) => {
+			const snapshotSpy = vi
+				.spyOn(sessionLoader, "visitSessionFileForResume")
+				.mockImplementationOnce(async (filePath, visit, options) => {
 					const snapshot = await originalVisit(filePath, visit, options);
 					await fs.promises.rm(filePath);
 					return snapshot;
-				},
-			);
+				});
 			try {
 				await expect(reviver(ref)).rejects.toThrow(/ENOENT/);
 				// Fail closed without minting: the missing path stays missing.
