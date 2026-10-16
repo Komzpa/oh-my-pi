@@ -200,9 +200,9 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 		const paintMs = performance.now() - paintStart;
 		const paintBytes = terminal.bytes - bytesBeforePaint;
 
-		const entries = sessionManager.getEntries();
+		const entryCount = sessionManager.getEntryCount();
 		let messageCount = 0;
-		for (const entry of entries) if (entry.type === "message") messageCount++;
+		for (const _entry of sessionManager.iterateEntries("message")) messageCount++;
 
 		const repaints: { ms: number; bytes: number }[] = [];
 		for (let i = 0; i < (args.repaint ?? 0); i++) {
@@ -221,10 +221,13 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 		}
 
 		if (args.timing || args.repaint) {
+			const entryCount = sessionManager.getEntryCount();
+			let messageCount = 0;
+			for (const _entry of sessionManager.iterateEntries("message")) messageCount++;
 			const rows = mode.chatContainer.render(width).length;
 			const report = [
 				`session  ${sourcePath}`,
-				`         ${formatBytes(sourceSize)}, ${entries.length} entries, ${messageCount} messages, ${rows} transcript rows @ ${width}x${height}`,
+				`         ${formatBytes(sourceSize)}, ${entryCount} entries, ${messageCount} messages, ${rows} transcript rows @ ${width}x${height}`,
 				`open     ${formatMs(openMs)}`,
 				`replay   ${formatMs(replayMs)}  (transcript build + component construction)`,
 				`paint    ${formatMs(paintMs)}  (full frame compose + emit: ${formatBytes(paintBytes)}, ${terminal.writes} writes)`,
