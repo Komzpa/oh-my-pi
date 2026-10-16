@@ -12,7 +12,7 @@
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -82,6 +82,8 @@ function makeCtx(): RenderInitialMessagesTestContext {
 		initialChatRendered: true,
 		session: { buildTranscriptSessionContext: transcriptSpy },
 		viewSession: {
+			agent: new Agent(),
+			isStreaming: false,
 			buildTranscriptSessionContext: transcriptSpy,
 			hasBuiltInTool: () => true,
 			sessionManager: {
@@ -190,6 +192,8 @@ function makeRenderCtx(
 		focusedAgentId: undefined,
 		editor: { addToHistory: vi.fn() },
 		viewSession: {
+			agent: new Agent(),
+			isStreaming: false,
 			getQueuedMessages: () => ({ steering: [], followUp: [] }),
 			buildTranscriptSessionContext: () => transcript,
 			getToolByName: () => undefined,
@@ -240,7 +244,7 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 
 		await new UiHelpers(ctx).renderInitialMessages();
 
-		expect(transcriptSpy).toHaveBeenCalledWith({ collapseCompactedHistory: true });
+		expect(transcriptSpy).toHaveBeenCalledWith({ collapseCompactedHistory: true, keepInFlightToolCalls: false });
 		expect(llmContextSpy).not.toHaveBeenCalled();
 		expect(renderSessionContextSpy).toHaveBeenCalledWith(transcript, {
 			updateFooter: true,

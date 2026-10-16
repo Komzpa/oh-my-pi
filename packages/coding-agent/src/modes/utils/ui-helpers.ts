@@ -1150,6 +1150,8 @@ export class UiHelpers {
 				const observed = this.viewSource.revision?.();
 				const revision = observed instanceof Promise ? await observed : observed;
 				if (revision === replayEntryCount) break;
+				// No further replay is allowed at the cap; avoid rebuilding a snapshot we cannot display.
+				if (replayAttempts + 1 >= TRANSCRIPT_REPLAY_MAX_ATTEMPTS && revision !== undefined) break;
 				const captured = capture();
 				const latest = captured instanceof Promise ? await captured : captured;
 				if (latest.entryCount === replayEntryCount) {
