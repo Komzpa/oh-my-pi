@@ -193,7 +193,7 @@ import {
 	formatCredentialDisabledNotice,
 } from "./session/credential-disabled-notice";
 import { DateCwdReminderInjector } from "./session/date-cwd-reminder";
-import { createInterruptedToolResults, createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
+import { createInterruptedToolResults, createSessionInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
 import { recoverInlineSloppyEdit } from "./session/inline-edit-recovery";
 import {
 	type CustomMessage,
@@ -1992,7 +1992,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	// evidence that the old process can no longer finish that turn. Preserve the
 	// partial transcript and append one terminal aborted assistant record before
 	// rebuilding runtime context. The helper is idempotent once that record exists.
-	const interruptedTurnAbort = createInterruptedTurnAbortMessage(sessionManager.iterateBranch());
+	const interruptedTurnAbort = createSessionInterruptedTurnAbortMessage(sessionManager);
 	if (interruptedTurnAbort) {
 		for (const result of createInterruptedToolResults(sessionManager.iterateBranch()))
 			sessionManager.appendMessage(result);
@@ -3398,7 +3398,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// has selected its final model, use that model to terminate the
 		// interrupted turn before the live agent consumes the restored context.
 		if (model) {
-			const selectedModelAbort = createInterruptedTurnAbortMessage(sessionManager.iterateBranch(), {
+			const selectedModelAbort = createSessionInterruptedTurnAbortMessage(sessionManager, {
 				api: model.api,
 				provider: model.provider,
 				model: model.id,

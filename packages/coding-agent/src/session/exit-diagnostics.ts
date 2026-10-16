@@ -1,6 +1,7 @@
 import { createSyntheticToolResultMessage, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type { SessionEntry } from "./session-entries";
+import type { SessionManager } from "./session-manager";
 
 export const TOOL_EXECUTION_START_CUSTOM_TYPE = "tool_execution_start";
 export const SESSION_EXIT_CUSTOM_TYPE = "session_exit";
@@ -224,6 +225,32 @@ export function createInterruptedTurnAbortMessage(
 		errorMessage: INTERRUPTED_TURN_ERROR,
 		timestamp: Number.isFinite(recordedAt) ? recordedAt : Date.now(),
 	};
+}
+
+/** Read only the tail, its assistant metadata and a subsequent valid exit. */
+export function createSessionInterruptedTurnAbortMessage(
+	session: Pick<SessionManager, "iterateBranchMatchingNewestFirst">,
+	fallbackModel?: AssistantModelMetadata,
+	options?: InterruptedTurnOptions,
+): AssistantMessage | undefined {
+	const entries: SessionEntry[] = [];
+	let haveTail = false;
+	let haveExit = false;
+	for (const entry of session.iterateBranchMatchingNewestFirst(metadata =>
+		metadata.type === "message"
+			? !haveTail || metadata.messageRole === "assistant"
+			: !haveTail && !haveExit && metadata.type === "custom" && metadata.customType === SESSION_EXIT_CUSTOM_TYPE,
+	)) {
+		if (entry.type === "message") {
+			entries.push(entry);
+			haveTail = true;
+			if (entry.message.role === "assistant") break;
+		} else if (readSessionExit(entry)) {
+			entries.push(entry);
+			haveExit = true;
+		}
+	}
+	return createInterruptedTurnAbortMessage(entries.reverse(), fallbackModel, options);
 }
 
 /** Whether a persisted process exit follows the branch's last message. */
