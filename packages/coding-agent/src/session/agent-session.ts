@@ -7222,7 +7222,7 @@ export class AgentSession implements SettingsScope {
 				sessionFile,
 				init: extractSessionInit(
 					this.sessionManager.getBranchMatching(
-						metadata => metadata.type === "custom" && metadata.customType === "session_init",
+						metadata => metadata.type === "session_init",
 					),
 				),
 			};
