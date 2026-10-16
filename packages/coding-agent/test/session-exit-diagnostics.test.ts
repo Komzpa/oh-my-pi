@@ -13,6 +13,7 @@ import {
 	collectPendingToolCalls,
 	createInterruptedToolResults,
 	createInterruptedTurnAbortMessage,
+	createSessionInterruptedTurnAbortMessage,
 	describePendingToolCalls,
 	hasRestorableTurn,
 	SESSION_EXIT_CUSTOM_TYPE,
@@ -561,4 +562,41 @@ describe("session exit diagnostics", () => {
 		expect(createInterruptedTurnAbortMessage(completedTurn.getBranch())).toBeUndefined();
 		expect(createInterruptedTurnAbortMessage(supersededExit.getBranch())).toBeUndefined();
 	});
+});
+
+describe("selective interrupted-turn recovery", () => {
+	it.each(["pending", "normal", "stale", "malformed", "aborted", "first-user", "terminal"])(
+		"preserves full-history recovery for %s tails",
+		kind => {
+			const manager = SessionManager.inMemory();
+			if (kind !== "first-user") {
+				manager.appendMessage({
+					...pendingAssistant,
+					...(kind === "aborted" ? { stopReason: "aborted" as const } : {}),
+					...(kind === "terminal" ? { content: [], stopReason: "stop" as const } : {}),
+				});
+			}
+			if (kind === "first-user") manager.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+			if (kind === "aborted")
+				manager.appendMessage({
+					role: "toolResult",
+					toolCallId: "toolu_repro",
+					toolName: "bash",
+					content: [{ type: "text", text: "interrupted" }],
+					isError: true,
+					timestamp: 2,
+				});
+			manager.appendCustomEntry(SESSION_EXIT_CUSTOM_TYPE, {
+				reason: "test",
+				kind: kind === "normal" ? "normal" : "process_exit",
+				recordedAt: "2026-07-11T02:20:08.800Z",
+			});
+			if (kind === "stale") manager.appendMessage({ role: "user", content: "new turn", timestamp: 3 });
+			if (kind === "malformed") manager.appendCustomEntry(SESSION_EXIT_CUSTOM_TYPE, { kind: "invalid" });
+			manager.appendCustomEntry("unrelated", { payload: "ignored" });
+			expect(createSessionInterruptedTurnAbortMessage(manager, pendingAssistant)).toEqual(
+				createInterruptedTurnAbortMessage(manager.getBranch(), pendingAssistant),
+			);
+		},
+	);
 });
