@@ -1,3 +1,4 @@
+import { assertInteractiveOwnerCanCheckpoint, createLocalInteractiveViewSource } from "../interactive-view";
 /**
  * RPC mode: Headless operation with JSON stdin/stdout protocol.
  *
@@ -2067,7 +2068,9 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				await disposeOwner(command.options);
 				return success(id, "dispose_session");
 			case "checkpoint_session":
+				assertInteractiveOwnerCanCheckpoint(session);
 				await session.sessionManager.close();
+				assertInteractiveOwnerCanCheckpoint(session);
 				session.sessionManager.seal();
 				return success(id, "checkpoint_session");
 
@@ -2124,6 +2127,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					contextUsage: session.getContextUsage(),
 					goal: session.getGoalModeState() ?? null,
 				};
+				if (command.view) state.view = await createLocalInteractiveViewSource(session).capture(command.view);
 				return success(id, "get_state", state);
 			}
 

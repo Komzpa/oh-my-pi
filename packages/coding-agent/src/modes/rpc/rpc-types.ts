@@ -1,3 +1,4 @@
+import type { InteractiveViewSnapshot } from "../interactive-view";
 /**
  * RPC protocol types for headless operation.
  *
@@ -71,7 +72,7 @@ export type RpcCommand =
 	| { id?: string; type: "checkpoint_session" }
 	| { id?: string; type: "save_draft"; text: string }
 	| { id?: string; type: "consume_draft" }
-	| { id?: string; type: "get_state" }
+	| { id?: string; type: "get_state"; view?: { collapseCompactedHistory?: boolean } }
 	| { id?: string; type: "set_fast_mode"; enabled: boolean }
 	| { id?: string; type: "set_slow_mode"; enabled: boolean }
 	| {
@@ -171,6 +172,8 @@ export type RpcCommand =
 // ============================================================================
 
 export interface RpcSessionState {
+	/** Present only when requested, so streaming state refreshes stay small. */
+	view?: InteractiveViewSnapshot;
 	model?: Model;
 	thinkingLevel: ThinkingLevel | undefined;
 	isStreaming: boolean;

@@ -2,7 +2,10 @@ import { expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { mkdir, rmdir } from "node:fs/promises";
 import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
-import { createRpcInteractiveSessionConnection } from "../../src/modes/rpc/interactive-session";
+import {
+	createRpcInteractiveSessionConnection,
+	createRpcInteractiveViewSource,
+} from "../../src/modes/rpc/interactive-session";
 import { RpcClient, type RpcAgentProcess, type RpcAskDialogRequest } from "../../src/modes/rpc/rpc-client";
 
 import type { RpcExtensionUIResponse } from "../../src/modes/rpc/rpc-types";
@@ -459,6 +462,41 @@ it("keeps a custom launcher submission attributed and single across a view reatt
 			display: false,
 		});
 		second.disconnect();
+	} finally {
+		await client.stop();
+	}
+}, 20_000);
+
+it("captures an active owner for another view without taking its journal or dropping its final result", async () => {
+	using directory = TempDir.createSync("@pi-rpc-view-snapshot-");
+	const client = new RpcClient({ cliPath: fixture, env: { RPC_OWNER_TEST_DIR: directory.path() } });
+	await client.start();
+	try {
+		const view = await createRpcInteractiveSessionConnection(client);
+		const admitted = Promise.withResolvers<void>();
+		const turn = view.prompt("keep my admitted work", { onPromptAdmitted: admitted.resolve });
+		await admitted.promise;
+		const source = createRpcInteractiveViewSource(client);
+		const snapshot = await source.capture();
+		expect(snapshot.isStreaming).toBe(true);
+		expect(snapshot.context.messages.some(message => message.role === "user")).toBe(true);
+		await expect(view.checkpoint()).rejects.toThrow("still owned by active work");
+		view.disconnect();
+		const reattached = await createRpcInteractiveSessionConnection(client);
+		expect((await source.capture()).sessionId).toBe(snapshot.sessionId);
+		expect(await reattached.consumeDraft()).toBe("unsent черновик 🐈");
+		await Bun.write(directory.join("release"), "release original owner");
+		expect(await turn).toBe(true);
+		await reattached.waitForSettled();
+		const finished = await source.capture();
+		expect(finished.isStreaming).toBe(false);
+		expect(finished.entryCount).toBeGreaterThan(snapshot.entryCount);
+		expect(finished.context.messages.filter(message => message.role === "assistant")).toHaveLength(1);
+		await reattached.checkpoint();
+		const journal = await Bun.file(snapshot.sessionFile!).text();
+		expect(journal.match(/completed once/g)).toHaveLength(1);
+		expect(await Bun.file(directory.join("effect.json")).json()).toMatchObject({ calls: 1 });
+		reattached.disconnect();
 	} finally {
 		await client.stop();
 	}

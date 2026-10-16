@@ -1,3 +1,4 @@
+import { createLocalInteractiveViewSource } from "./modes/interactive-view";
 /**
  * Main entry point for the coding agent CLI.
  *
@@ -657,6 +658,7 @@ export async function runInteractiveMode(
 			startupLease?.composer,
 			subagentEventBus,
 			sessionConnection,
+			createLocalInteractiveViewSource(session),
 		);
 		startupLease?.adopt();
 	} catch (error) {

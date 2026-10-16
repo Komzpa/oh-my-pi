@@ -121,7 +121,12 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		result: { text: "string | null" },
 		unwrap: "text",
 	},
-	{ name: "get_state", doc: "Snapshot the session state.", result: "SessionState" },
+	{
+		name: "get_state",
+		doc: "Snapshot the session state, optionally including presentation without opening a view writer.",
+		params: { "view?": "InteractiveViewOptions" },
+		result: "SessionState",
+	},
 	{
 		name: "set_fast_mode",
 		doc: "Enable or disable fast mode for the session.",

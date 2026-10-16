@@ -1,3 +1,4 @@
+import type { InteractiveViewSource } from "../interactive-view";
 import { untilAborted } from "@oh-my-pi/pi-utils";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import type { PromptOptions } from "../../session/agent-session-types";
@@ -192,6 +193,17 @@ export async function createRpcInteractiveSessionConnection(
 			return () => {
 				listeners.delete(listener);
 			};
+		},
+	};
+}
+
+/** Snapshot reader for a terminal view; the runtime remains the only journal owner. */
+export function createRpcInteractiveViewSource(client: RpcClient): InteractiveViewSource {
+	return {
+		async capture(options = {}) {
+			const state = await client.getState(options);
+			if (!state.view) throw new Error("Runtime does not support interactive view snapshots");
+			return state.view;
 		},
 	};
 }

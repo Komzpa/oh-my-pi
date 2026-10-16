@@ -501,6 +501,10 @@ class CustomPromptMessage(TypedDict):
     attribution: NotRequired[Literal["user", "agent"]]
 
 
+class InteractiveViewOptions(TypedDict):
+    collapseCompactedHistory: NotRequired[bool]
+
+
 class SelectOptionDetail(TypedDict):
     """Presentation metadata aligned positionally with `options`."""
     description: NotRequired[str]
@@ -681,8 +685,21 @@ class UsageLimitWrapUp:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class InteractiveViewSnapshot:
+    session_id: str
+    context: JsonObject
+    stream_message: AgentMessage | None
+    pending_tool_call_ids: tuple[str, ...]
+    is_streaming: bool
+    entry_count: float
+    compaction_count: float
+    session_file: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class SessionState:
     session_id: str
+    view: InteractiveViewSnapshot | None = None
     model: ModelInfo | None = None
     thinking_level: ThinkingLevel | None = None
     is_streaming: bool = False
@@ -1801,6 +1818,10 @@ parse_custom_prompt_message = cast("Decoder[CustomPromptMessage]", open_record(N
 """Decodes a `CustomPromptMessage` open record: checks the discriminator and keeps every key."""
 
 
+parse_interactive_view_options = cast("Decoder[InteractiveViewOptions]", open_record(None, None))
+"""Decodes a `InteractiveViewOptions` open record: checks the discriminator and keeps every key."""
+
+
 parse_select_option_detail = cast("Decoder[SelectOptionDetail]", open_record(None, None))
 """Decodes a `SelectOptionDetail` open record: checks the discriminator and keeps every key."""
 
@@ -2012,10 +2033,25 @@ def parse_usage_limit_wrap_up(value: object, path: str = "UsageLimitWrapUp") -> 
     )
 
 
+def parse_interactive_view_snapshot(value: object, path: str = "InteractiveViewSnapshot") -> InteractiveViewSnapshot:
+    payload = expect_object(value, path)
+    return InteractiveViewSnapshot(
+        session_id=required(payload, "sessionId", decode_str, path),
+        context=required(payload, "context", decode_json_object, path),
+        stream_message=required(payload, "streamMessage", nullable(parse_agent_message), path),
+        pending_tool_call_ids=required(payload, "pendingToolCallIds", array(decode_str), path),
+        is_streaming=required(payload, "isStreaming", decode_bool, path),
+        entry_count=required(payload, "entryCount", decode_float, path),
+        compaction_count=required(payload, "compactionCount", decode_float, path),
+        session_file=optional(payload, "sessionFile", decode_str, path),
+    )
+
+
 def parse_session_state(value: object, path: str = "SessionState") -> SessionState:
     payload = expect_object(value, path)
     return SessionState(
         session_id=required(payload, "sessionId", decode_str, path),
+        view=optional(payload, "view", parse_interactive_view_snapshot, path),
         model=optional(payload, "model", parse_model_info, path),
         thinking_level=optional(payload, "thinkingLevel", _decode_thinking_level, path),
         is_streaming=defaulted(payload, "isStreaming", decode_bool, path, False),
@@ -3306,9 +3342,11 @@ class WireClient:
         params: dict[str, object] = {}
         return required(expect_object(self._command("consume_draft", params), "consume_draft"), "text", nullable(decode_str), "consume_draft")
 
-    def get_state(self) -> SessionState:
-        """Snapshot the session state."""
+    def get_state(self, view: InteractiveViewOptions | None = None) -> SessionState:
+        """Snapshot the session state, optionally including presentation without opening a view writer."""
         params: dict[str, object] = {}
+        if view is not None:
+            params["view"] = view
         return parse_session_state(self._command("get_state", params), "get_state")
 
     def set_fast_mode(self, enabled: bool) -> FastModeResult:
@@ -3929,6 +3967,8 @@ __all__ = [
     "HostUriSchemeDefinition",
     "ImageContent",
     "InputUiRequest",
+    "InteractiveViewOptions",
+    "InteractiveViewSnapshot",
     "InterruptMode",
     "IrcMessageEvent",
     "LiveEndEvent",
@@ -4113,6 +4153,8 @@ __all__ = [
     "parse_host_uri_scheme_definition",
     "parse_image_content",
     "parse_input_ui_request",
+    "parse_interactive_view_options",
+    "parse_interactive_view_snapshot",
     "parse_irc_message_event",
     "parse_live_end_event",
     "parse_live_levels_event",
