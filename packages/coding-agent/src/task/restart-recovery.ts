@@ -650,6 +650,9 @@ export async function captureSubagentsForRestart(
 		// Parked children have a durable transcript and are restored lazily by
 		// persisted-agents. They do not need a restart handoff slot.
 		if (!ref.session || (ref.status !== "running" && ref.status !== "idle")) continue;
+		// Accepted idle children have no work to resume. Their transcripts remain
+		// available through lazy revival, just like already parked children.
+		if (ref.status === "idle" && ref.lifecycle?.acceptedAt !== undefined && !ref.session.isStreaming) continue;
 		if (!ref.sessionFile)
 			throw new Error(`Cannot restart safely: root-owned subagent ${ref.id} has no durable session file.`);
 		if (await isTombstoned(ref.sessionFile)) continue;

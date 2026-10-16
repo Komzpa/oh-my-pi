@@ -478,6 +478,19 @@ describe("subagent restart recovery", () => {
 		}
 		const live: Transcript[] = [];
 		const childManagers: SessionManager[] = [];
+		const settled = await createTranscript(cwd, rootArtifactDir, { task: "already accepted result" });
+		const settledManager = track(await SessionManager.open(settled.sessionFile));
+		childManagers.push(settledManager);
+		registry.register({
+			id: settled.id,
+			displayName: settled.id,
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: makeTestSession(settledManager).session,
+			sessionFile: settled.sessionFile,
+			status: "idle",
+			lifecycle: { acceptedAt: completedAt, terminalAt: completedAt },
+		});
 		for (const task of ["first live worker", "second live worker"]) {
 			const transcript = await createTranscript(cwd, rootArtifactDir, { task });
 			const manager = track(await SessionManager.open(transcript.sessionFile));
