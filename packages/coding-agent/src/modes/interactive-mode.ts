@@ -1,4 +1,8 @@
-import { createLocalInteractiveViewSource, type InteractiveViewSource } from "./interactive-view";
+import {
+	createInteractiveViewSourceRouter,
+	createLocalInteractiveViewSource,
+	type InteractiveViewSource,
+} from "./interactive-view";
 /**
  * Interactive mode for the coding agent.
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
@@ -2007,17 +2011,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Store pending commands for init() where file commands are loaded async
 		this.#pendingSlashCommands = this.#buildPendingSlashCommands();
 
-		this.#uiHelpers = new UiHelpers(this, {
-			revision: () =>
-				this.viewSession === this.session
-					? viewSource.revision?.()
-					: this.viewSession.sessionManager.getEntries().length,
-			capture: options =>
-				(this.viewSession === this.session
-					? viewSource
-					: createLocalInteractiveViewSource(this.viewSession)
-				).capture(options),
-		});
+		this.#uiHelpers = new UiHelpers(
+			this,
+			createInteractiveViewSourceRouter(() => this.viewSession, [this.session, viewSource]),
+		);
 		this.#btwController = new BtwController(this);
 		this.#tanCommandController = new TanCommandController(this);
 		this.#omfgController = new OmfgController(this);

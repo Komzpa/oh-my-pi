@@ -1,4 +1,4 @@
-import { createLocalInteractiveViewSource, type InteractiveViewSource } from "../interactive-view";
+import { createInteractiveViewSourceRouter, type InteractiveViewSource } from "../interactive-view";
 import { selectRestartBranchEntries } from "../../task/restart-branch-selection";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -245,10 +245,7 @@ export class UiHelpers {
 
 	constructor(
 		private ctx: InteractiveModeContext,
-		private viewSource: InteractiveViewSource = {
-			capture: options => createLocalInteractiveViewSource(ctx.viewSession).capture(options),
-			revision: () => ctx.viewSession.sessionManager.getEntries().length,
-		},
+		private viewSource: InteractiveViewSource = createInteractiveViewSourceRouter(() => ctx.viewSession),
 	) {}
 
 	/**
