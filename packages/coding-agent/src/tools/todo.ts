@@ -1,4 +1,3 @@
-import { matchingRequirementBranch } from "../session/requirements-branch-selection";
 import {
 	type TodoStatus,
 	type TodoDeploymentBinding,
@@ -34,6 +33,7 @@ import {
 	resolveResourceArtifact,
 	sameIdentity,
 } from "../utils/requirement-artifact";
+import { matchingRequirementBranch } from "../session/requirements-branch-selection";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 
