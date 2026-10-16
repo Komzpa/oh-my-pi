@@ -2628,7 +2628,8 @@ export class SessionManager {
 			this.#artifactManager = null;
 			this.#artifactManagerSessionFile = null;
 
-			if (this.sanitizeLoadedOpenAIResponsesReplayMetadata()) this.#rewriteRequired = true;
+			// The loader sanitizes replay metadata while indexing; positioned reads do the same.
+			// Re-reading every payload here defeats selective loading of large sessions.
 		} catch (error) {
 			loaded.index?.clear();
 			throw error;
