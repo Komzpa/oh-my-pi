@@ -464,6 +464,7 @@ export class Agent {
 	#listeners = new Set<(e: AgentEvent) => void>();
 	#queueListeners = new Set<() => void>();
 	#abortController?: AbortController;
+	#providerRequestAbortController?: AbortController;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 	#transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
@@ -1698,6 +1699,14 @@ export class Agent {
 		this.#abortController?.abort(reason);
 	}
 
+	/** Stop generation without cancelling the agent loop or its running tools. */
+	abortProviderRequest(): boolean {
+		const controller = this.#providerRequestAbortController;
+		if (!controller) return false;
+		controller.abort();
+		return true;
+	}
+
 	waitForIdle(): Promise<void> {
 		return this.#runningPrompt ?? Promise.resolve();
 	}
@@ -2152,10 +2161,28 @@ export class Agent {
 		const completedToolCallIds = new Set<string>();
 		let turnOpen = false;
 
+		const streamProvider: StreamFn = async (model, providerContext, options) => {
+			const controller = new AbortController();
+			this.#providerRequestAbortController = controller;
+			const clear = (): void => {
+				if (this.#providerRequestAbortController === controller) this.#providerRequestAbortController = undefined;
+			};
+			try {
+				const response = await this.streamFn(model, providerContext, {
+					...options,
+					signal: options?.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal,
+				});
+				void response.result().then(clear, clear);
+				return response;
+			} catch (error) {
+				clear();
+				throw error;
+			}
+		};
 		try {
 			const stream = messages
-				? agentLoop(messages, context, config, loopSignal, this.streamFn)
-				: agentLoopContinue(context, config, loopSignal, this.streamFn);
+				? agentLoop(messages, context, config, loopSignal, streamProvider)
+				: agentLoopContinue(context, config, loopSignal, streamProvider);
 
 			for await (let event of stream) {
 				if (this.#abortController !== loopAbortController) return;

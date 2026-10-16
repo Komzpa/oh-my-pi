@@ -6895,6 +6895,7 @@ export class AgentSession implements SettingsScope {
 		const generation = this.#restartDrainGeneration;
 		const wasRunning = this.isStreaming;
 		this.#restartDrainLeaseCount++;
+		if (this.agent.abortProviderRequest()) this.#restartDrainStoppedRun = true;
 		let released = false;
 		return {
 			wasRunning,
