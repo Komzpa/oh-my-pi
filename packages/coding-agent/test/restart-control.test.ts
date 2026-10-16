@@ -40,6 +40,39 @@ function fixture(identity: RestartControlIdentity): { source: RestartControlSour
 }
 
 describe("restart-control local IPC", () => {
+	it("discovers a busy session after 1.5 seconds while probing its neighbor concurrently", async () => {
+		const runtimeDir = await setupDir();
+		const servers: net.Server[] = [];
+		let received = 0;
+		const bothReceived = Promise.withResolvers<void>();
+		try {
+			for (const suffix of ["slow", "neighbor"]) {
+				const instanceId = `instance-${suffix}-1234`;
+				const endpoint = path.join(runtimeDir, `${suffix}.sock`);
+				const server = net.createServer(socket => {
+					socket.once("data", async () => {
+						if (++received === 2) bothReceived.resolve();
+						await bothReceived.promise;
+						if (suffix === "slow") await Bun.sleep(1700);
+						socket.end(`${JSON.stringify({ ok: true, v: 1, snapshot: {
+							identity: { instanceId, sessionId: suffix, generation: 0 },
+							pid: process.pid, cwd: "/workspace", request: null,
+						} })}\n`);
+					});
+				});
+				servers.push(server);
+				await new Promise<void>(resolve => server.listen(endpoint, resolve));
+				await fs.writeFile(path.join(runtimeDir, `${instanceId}.json`), JSON.stringify({
+					version: 1, instanceId, endpoint, pid: process.pid, token: "a".repeat(64),
+				}), { mode: 0o600 });
+			}
+			const snapshots = await listRestartControls({ runtimeDir });
+			expect(snapshots.map(item => item.identity.sessionId).sort()).toEqual(["neighbor", "slow"]);
+		} finally {
+			for (const server of servers) server.close();
+		}
+	});
+
 	it("routes valid cancellation only to its endpoint and rejects a neighboring stale generation", async () => {
 		const runtimeDir = await setupDir();
 		const firstIdentity: RestartControlIdentity = {

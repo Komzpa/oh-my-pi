@@ -10,7 +10,7 @@ import type { RestartControlIdentity, RestartControlRequest, RestartControlSnaps
 export const RESTART_CONTROL_PROTOCOL_VERSION = 1;
 const MAX_REQUEST_BYTES = 4 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
-const REQUEST_TIMEOUT_MS = 1_500;
+const REQUEST_TIMEOUT_MS = 10_000;
 const ID_PATTERN = /^[a-z0-9-]{8,64}$/;
 const SUN_PATH_LIMIT = process.platform === "darwin" ? 104 : 108;
 
@@ -445,23 +445,18 @@ export async function listRestartControls(options?: RestartControlOptions): Prom
 		if (isEnoent(error)) return [];
 		throw error;
 	}
-	const snapshots: RestartControlSnapshot[] = [];
-	for (const name of names.filter(entry => entry.endsWith(".json")).sort()) {
+	const snapshots = await Promise.all(names.filter(entry => entry.endsWith(".json")).sort().map(async name => {
 		const filenameId = name.slice(0, -5);
-		let meta: Metadata;
 		try {
-			meta = await readMetadata(dir, filenameId);
-		} catch {
-			continue;
-		}
-		try {
+			const meta = await readMetadata(dir, filenameId);
 			const snapshot = parseSnapshot(await query(meta, { op: "discover" }));
-			if (snapshot?.identity.instanceId === meta.instanceId) snapshots.push(snapshot);
+			return snapshot?.identity.instanceId === meta.instanceId ? snapshot : null;
 		} catch {
-			// Discovery omits unavailable/malformed endpoints; an explicit operation reports its error.
+			// Probe independently so one busy session does not delay every other endpoint.
+			return null;
 		}
-	}
-	return snapshots;
+	}));
+	return snapshots.filter((snapshot): snapshot is RestartControlSnapshot => snapshot !== null);
 }
 
 export async function sendRestartControl(
