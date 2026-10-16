@@ -99,7 +99,7 @@ export interface VibeParentSession {
 	getSessionId?: () => string | null;
 	getSessionFile: () => string | null;
 	sessionManager?: ToolSession["sessionManager"] &
-		Partial<Pick<SessionManager, "getBranchMatching" | "getLatestBranchMatching">> &
+		Partial<Pick<SessionManager, "getBranchMatching" | "getLatestBranchMatching" | "iterateEntries">> &
 		Partial<
 			Pick<SessionManager, "appendModeChange" | "appendEntriesAtomically" | "recoverPersistenceFromCurrentState">
 		>;
@@ -421,7 +421,9 @@ export class VibeSessionRegistry {
 
 	#hasInMemoryTombstone(session: VibeParentSession, record: VibeRecord): boolean {
 		let terminalReason: VibeTombstoneReason | undefined;
-		for (const entry of session.sessionManager?.getEntries() ?? []) {
+		for (const entry of session.sessionManager?.iterateEntries?.("custom") ??
+			session.sessionManager?.getEntries() ??
+			[]) {
 			if (entry.type !== "custom" || entry.customType !== VIBE_LIFECYCLE_CUSTOM_TYPE) continue;
 			const event = parseLifecycleEvent(entry.data);
 			if (
@@ -577,7 +579,9 @@ export class VibeSessionRegistry {
 
 	#persistedIds(session: VibeParentSession, scope: VibeOwnerScope): Set<string> {
 		const ids = new Set<string>();
-		for (const entry of session.sessionManager?.getEntries() ?? []) {
+		for (const entry of session.sessionManager?.iterateEntries?.("custom") ??
+			session.sessionManager?.getEntries() ??
+			[]) {
 			if (entry.type !== "custom" || entry.customType !== VIBE_LIFECYCLE_CUSTOM_TYPE) continue;
 			const event = parseLifecycleEvent(entry.data);
 			if (event?.ownerId === scope.ownerId && event.parentSessionId === scope.parentSessionId) ids.add(event.id);
@@ -694,7 +698,7 @@ export class VibeSessionRegistry {
 		const scope = this.ownerScope(session);
 		const allSpawns = new Map<string, VibeSpawnLifecycleEvent>();
 		const terminalIntents = new Map<string, VibeTombstoneReason>();
-		for (const entry of sessionManager.getEntries()) {
+		for (const entry of sessionManager.iterateEntries?.("custom") ?? sessionManager.getEntries()) {
 			if (entry.type !== "custom" || entry.customType !== VIBE_LIFECYCLE_CUSTOM_TYPE) continue;
 			const event = parseLifecycleEvent(entry.data);
 			if (!event || event.ownerId !== scope.ownerId || event.parentSessionId !== scope.parentSessionId) continue;
