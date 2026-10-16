@@ -1,8 +1,3 @@
-import {
-	createInteractiveViewSourceRouter,
-	createLocalInteractiveViewSource,
-	type InteractiveViewSource,
-} from "./interactive-view";
 /**
  * Interactive mode for the coding agent.
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
@@ -73,6 +68,11 @@ import {
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { pickTableChart } from "../auto-graph/planner";
 import { restartArgv } from "../cli/flag-tables";
+import {
+	createInteractiveViewSourceRouter,
+	createLocalInteractiveViewSource,
+	type InteractiveViewSource,
+} from "./interactive-view";
 import type { CollabGuestLink } from "../collab/guest";
 import { CollabController } from "../collab/controller";
 import type { CollabHost } from "../collab/host";
