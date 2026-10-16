@@ -19,7 +19,7 @@ import {
 } from "./terminal-multiplexer";
 import { resolveTmuxClientTerminalNames, wrapTmuxPassthroughIfNeeded } from "./tmux";
 import { detectTerminalBackground } from "./theme/theme";
-import type { HangulCompatibilityJamoWidth } from "./utils";
+import { type HangulCompatibilityJamoWidth, visibleWidth } from "./utils";
 
 export * from "./terminal-multiplexer";
 export { wrapTmuxPassthrough } from "./tmux";
@@ -977,7 +977,7 @@ export function parseKittyDirectPlacementLine(line: string): ParsedKittyPlacemen
 }
 
 /** `ESC 7` + `CUU(n)` lead-in of an {@link Image} direct-placement line. */
-const DIRECT_PLACEMENT_LIFT = /^\x1b7\x1b\[(\d+)A/;
+const DIRECT_PLACEMENT_LIFT = /\x1b7\x1b\[(\d+)A/;
 
 /**
  * Rows above its own line that an {@link Image} direct-placement line paints
@@ -991,8 +991,38 @@ export function directPlacementLift(line: string): number {
 	return m ? Number(m[1]) : 0;
 }
 
-/** SIXEL {@link Image} direct placement: `ESC 7`, `CUU(n)`, DCS introducer and body, `ESC 8`. */
-const SIXEL_DIRECT_PLACEMENT_LINE = /^\x1b7\x1b\[(\d+)A(\x1bP[0-9;]*q)([\s\S]*)\x1b\\\x1b8$/;
+/** The placement may be surrounded by Box padding, borders, or SGR styling. */
+const SIXEL_DIRECT_PLACEMENT_LINE = /(?:\x1b7(?:\x1b\[(\d+)A)?)?(\x1bP[0-9;]*q)([\s\S]*?)\x1b\\(?:\x1b8)?/;
+
+export interface ParsedSixelPlacementLine {
+	prefix: string;
+	suffix: string;
+	lift: number;
+	column: number;
+	introducer: string;
+	body: string;
+	widthPx: number;
+	heightPx: number;
+}
+
+/** Locate Image's SIXEL block without dropping the enclosing row's decorations. */
+export function parseSixelDirectPlacementLine(line: string): ParsedSixelPlacementLine | null {
+	const match = SIXEL_DIRECT_PLACEMENT_LINE.exec(line);
+	if (!match) return null;
+	const prefix = line.slice(0, match.index);
+	const body = match[3] ?? "";
+	const raster = /"\d+;\d+;(\d+);(\d+)/.exec(body);
+	return {
+		prefix,
+		suffix: line.slice(match.index + match[0].length),
+		lift: Number(match[1] ?? 0),
+		column: visibleWidth(prefix),
+		introducer: match[2]!,
+		body,
+		widthPx: Number(raster?.[1] ?? 0),
+		heightPx: Number(raster?.[2] ?? 0),
+	};
+}
 /** A palette definition `#Pc;2;Pr;Pg;Pb`: global SIXEL state, not pixel data. */
 const SIXEL_PALETTE_DEFINITION = /#\d+;\d+;\d+;\d+;\d+/g;
 /** A colour selection `#Pc`; the lookahead keeps palette definitions out. */
@@ -1028,13 +1058,13 @@ function cropSixelBody(body: string, hiddenPx: number): string {
  * not straddle the top are returned unchanged.
  */
 export function clipSixelDirectPlacementLine(line: string, screenRow: number, cellHeightPx: number): string {
-	const m = SIXEL_DIRECT_PLACEMENT_LINE.exec(line);
-	if (!m) return line;
-	const hiddenRows = Number(m[1]) - screenRow;
+	const parsed = parseSixelDirectPlacementLine(line);
+	if (!parsed) return line;
+	const hiddenRows = parsed.lift - screenRow;
 	if (hiddenRows <= 0 || cellHeightPx <= 0) return line;
-	const body = cropSixelBody(m[3] ?? "", hiddenRows * cellHeightPx);
+	const body = cropSixelBody(parsed.body, hiddenRows * cellHeightPx);
 	const moveUp = screenRow > 0 ? `\x1b[${screenRow}A` : "";
-	return `\x1b7${moveUp}${m[2]}${body}\x1b\\\x1b8`;
+	return `${parsed.prefix}\x1b7${moveUp}${parsed.introducer}${body}\x1b\\\x1b8${parsed.suffix}`;
 }
 
 /**
@@ -1103,15 +1133,11 @@ export function encodeKittyDeletePlacement(imageId: number, placementId: number)
 }
 
 /**
- * Delete every graphics placement whose rectangle contains the cell
- * `(column, row)` (0-based), via the Kitty delete-by-cell APC (`a=d,d=p`).
- * Konsole 26.04 stores SIXEL as placements and does not remove them on
- * CSI EL/ED/ECH or character overwrite; its Kitty `a=d` handler calls the
- * same `Screen::delPlacements` path with no source filter, so this is the
- * surgical way to clear a SIXEL raster without wiping text or sibling
- * images that do not contain the cell. `q=2` suppresses the reply.
+ * Konsole-only SIXEL workaround: its Kitty handler uses zero-based cells and
+ * removes every containing graphics rectangle, including SIXEL and history.
+ * The caller must prove the cell belongs only to placements it is retiring.
  */
-export function encodeKittyDeleteAtCell(column: number, row: number): string {
+export function encodeKonsoleDeleteAtCell(column: number, row: number): string {
 	return wrapTmuxPassthroughIfNeeded(`\x1b_Ga=d,d=p,x=${column},y=${row},q=2\x1b\\`);
 }
 

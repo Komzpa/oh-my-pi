@@ -34,16 +34,17 @@ import {
 	clipSixelDirectPlacementLine,
 	directPlacementLift,
 	encodeKittyDeleteAllImages,
-	encodeKittyDeleteAtCell,
 	encodeKittyDeleteImage,
 	encodeKittyDeletePlacement,
 	encodeKittyPlacementLine,
 	getTerminalBackgroundColor,
+	encodeKonsoleDeleteAtCell,
 	getCellDimensions,
 	ImageProtocol,
 	isImageProtocolForced,
 	isInsideTerminalMultiplexer,
 	parseKittyDirectPlacementLine,
+	parseSixelDirectPlacementLine,
 	setCellDimensions,
 	setTerminalImageProtocol,
 	shouldEnableSynchronizedOutputByDefault,
@@ -652,12 +653,17 @@ interface LiveImagePlacement {
 	imageId: number;
 	placementId: number;
 	line: string;
-	/**
-	 * SIXEL direct placement: 0-based screen row of the block's top cell.
-	 * Konsole keeps the raster until a Kitty `a=d` cell delete hits this
-	 * rectangle; EL/spaces do not. Absent for Kitty id-keyed placements.
-	 */
-	originRow?: number;
+	/** Absent for Kitty's id-keyed placements. Shares the physical scroll tracker. */
+	sixel?: SixelPlacement;
+}
+
+/** A physical Konsole rectangle; history is tracked but never a mutable owner. */
+interface SixelPlacement {
+	row: number;
+	col: number;
+	rows: number;
+	columns: number;
+	history: boolean;
 }
 
 interface PreparedLine {
@@ -1007,6 +1013,8 @@ export class TUI extends Container {
 	#imageBudget = new ImageBudget(DEFAULT_MAX_INLINE_IMAGES, () => this.requestRender());
 	#screenImagePlacements = new Map<number, LiveImagePlacement>();
 	#altImagePlacements = new Map<number, LiveImagePlacement>();
+	#screenSixelPlacements: SixelPlacement[] = [];
+	#altSixelPlacements: SixelPlacement[] = [];
 	#nextImagePlacementId = 1;
 	#ghosttyInitialImageDelayDone = false;
 	#ghosttyInitialImageDelayTimer: RenderTimer | undefined;
@@ -3263,67 +3271,119 @@ export class TUI extends Container {
 		return result;
 	}
 
-	/**
-	 * Remove placements before their viewport cells are replaced. History uses
-	 * separate placement ids, so deleting a live copy cannot erase scrollback.
-	 * SIXEL entries carry `originRow` and are cleared with a Kitty cell delete
-	 * (Konsole's only surgical SIXEL erase); Kitty entries use `d=i`.
-	 */
+	/** Delete only cells exclusively owned by the live rectangles being retired. */
+	#retireSixelPlacements(physical: SixelPlacement[], retiring: ReadonlySet<SixelPlacement>): string {
+		let output = "";
+		for (const placement of retiring) {
+			if (placement.history || placement.row < 0 || !physical.includes(placement)) continue;
+			let cell: { row: number; col: number } | undefined;
+			for (let row = placement.row; row < Math.min(this.terminal.rows, placement.row + placement.rows); row++) {
+				for (
+					let col = placement.col;
+					col < Math.min(this.terminal.columns, placement.col + placement.columns);
+					col++
+				) {
+					if (
+						physical.some(
+							other =>
+								!retiring.has(other) &&
+								row >= other.row &&
+								row < other.row + other.rows &&
+								col >= other.col &&
+								col < other.col + other.columns,
+						)
+					) {
+						continue;
+					}
+					cell = { row, col };
+					break;
+				}
+				if (cell) break;
+			}
+			if (!cell) continue;
+			output += encodeKonsoleDeleteAtCell(cell.col, cell.row);
+			for (let index = physical.length - 1; index >= 0; index--) {
+				const other = physical[index]!;
+				if (
+					cell.row >= other.row &&
+					cell.row < other.row + other.rows &&
+					cell.col >= other.col &&
+					cell.col < other.col + other.columns
+				) {
+					physical.splice(index, 1);
+				}
+			}
+		}
+		return output;
+	}
+
+	/** Every LF at the screen bottom moves Konsole rectangles, even history. */
+	#scrollSixelPlacements(physical: SixelPlacement[]): void {
+		for (let index = physical.length - 1; index >= 0; index--) {
+			const placement = physical[index]!;
+			placement.row--;
+			// Fully archived rectangles cannot be hit by a nonnegative cell delete.
+			if (placement.row + placement.rows <= 0) physical.splice(index, 1);
+		}
+	}
+
+	/** Kitty ids isolate history; Konsole cell deletes require physical ownership. */
 	#retireImagePlacements(
 		placements: Map<number, LiveImagePlacement>,
+		physical: SixelPlacement[],
 		lines: readonly string[],
 		top: number,
 		repaint: boolean,
 	): string {
 		let output = "";
+		const retiring = new Set<SixelPlacement>();
 		for (const [row, placement] of placements) {
 			if (!repaint && lines[row - top] === placement.line) continue;
-			if (placement.originRow !== undefined) {
-				output += encodeKittyDeleteAtCell(0, placement.originRow);
-			} else {
-				output += encodeKittyDeletePlacement(placement.imageId, placement.placementId);
-			}
+			if (placement.sixel) retiring.add(placement.sixel);
+			else output += encodeKittyDeletePlacement(placement.imageId, placement.placementId);
 			placements.delete(row);
 		}
+		if (Bun.env.KONSOLE_VERSION) output += this.#retireSixelPlacements(physical, retiring);
 		return output;
 	}
 
-	/**
-	 * Clip a Kitty direct placement and record its live owner; history
-	 * placements have no mutable owner. SIXEL direct placements are erased
-	 * with a Kitty cell-delete at the block origin before they are drawn
-	 * again (Konsole 26.04 ignores CSI EL on graphics placements). iTerm2
-	 * keeps the lift + ERASE_LINE path only.
-	 */
+	/** Clip direct placements and record live ownership separately from history. */
 	#imageLineSequence(
 		line: string,
 		screenRow: number,
 		placements: Map<number, LiveImagePlacement> | undefined,
 		placementRow: number,
+		physical: SixelPlacement[],
 	): string {
 		if (screenRow < 0) return line;
 		const parsed = parseKittyDirectPlacementLine(line);
 		if (!parsed) {
-			// A SIXEL block straddling the top is cut to its visible bottom rows
-			// first, so its cursor move matches the rows lifted above it.
-			const drawn = clipSixelDirectPlacementLine(line, screenRow, getCellDimensions().heightPx);
-			const lift = Math.min(directPlacementLift(drawn), screenRow);
+			// During a history write, later newlines can still scroll this live
+			// image. Clip against its FINAL viewport row, then paint at the current
+			// physical row; the scroll tracker moves the origin on each emitted LF.
+			const clipRow = placements ? Math.min(screenRow, placementRow) : screenRow;
+			const cell = getCellDimensions();
+			const drawn = clipSixelDirectPlacementLine(line, clipRow, cell.heightPx);
+			const lift = Math.min(directPlacementLift(drawn), clipRow);
 			const liftErase = lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}` : "";
-			if (TERMINAL.imageProtocol !== ImageProtocol.Sixel) {
-				return liftErase ? liftErase + drawn : drawn;
+			const sixel = parseSixelDirectPlacementLine(drawn);
+			if (TERMINAL.imageProtocol !== ImageProtocol.Sixel || !Bun.env.KONSOLE_VERSION || !sixel) {
+				return liftErase + drawn;
 			}
-			// Konsole: delete the previous origin if the block moved, then the
-			// origin we are about to paint, so a same-position repaint cannot
-			// stack a second placement on the first.
-			const originRow = screenRow - lift;
-			const previous = placements?.get(placementRow);
-			let erase = "";
-			if (previous?.originRow !== undefined && previous.originRow !== originRow) {
-				erase += encodeKittyDeleteAtCell(0, previous.originRow);
-			}
-			erase += encodeKittyDeleteAtCell(0, originRow);
-			placements?.set(placementRow, { imageId: 0, placementId: 0, line, originRow });
-			return erase + (liftErase ? liftErase + drawn : drawn);
+			const previous = placements?.get(placementRow)?.sixel;
+			const erase = previous ? this.#retireSixelPlacements(physical, new Set([previous])) : "";
+			const placement: SixelPlacement = {
+				row: screenRow - lift,
+				col: sixel.column,
+				rows: Math.ceil(sixel.heightPx / cell.heightPx),
+				columns: Math.ceil(sixel.widthPx / cell.widthPx),
+				history: placements === undefined,
+			};
+			physical.push(placement);
+			placements?.set(placementRow, { imageId: 0, placementId: 0, line, sixel: placement });
+			// Cell deletion removes the raster, not the text. EL on the lifted
+			// rows would instead destroy the Box borders/padding just painted there.
+			return erase + drawn;
 		}
 		const previous = placements?.get(placementRow);
 		const placementId = previous?.placementId ?? this.#nextImagePlacementId++;
@@ -3644,7 +3704,13 @@ export class TUI extends Container {
 			!this.#forceViewportRepaintOnNextRender &&
 			!destructiveReset &&
 			this.#providerWindow.length > 0;
-		buffer += this.#retireImagePlacements(this.#screenImagePlacements, prepared.lines, newTop, !diffable);
+		buffer += this.#retireImagePlacements(
+			this.#screenImagePlacements,
+			this.#screenSixelPlacements,
+			prepared.lines,
+			newTop,
+			!diffable,
+		);
 		for (const sequence of this.#imageBudget.takeTransmits()) append(sequence);
 		if (diffable) {
 			for (let index = 0; index < rows; index++) {
@@ -3684,7 +3750,10 @@ export class TUI extends Container {
 			buffer += `\x1b[${startTop + 1};1H`;
 			let screenRow = startTop;
 			for (let index = 0; index < preparedHistory.lines.length; index++) {
-				if (screenRow > startTop) buffer += "\n";
+				if (screenRow > startTop) {
+					buffer += "\n";
+					if (screenRow >= height) this.#scrollSixelPlacements(this.#screenSixelPlacements);
+				}
 				append(
 					this.#lineRewriteSequence(
 						preparedHistory.rows[index]!,
@@ -3697,7 +3766,10 @@ export class TUI extends Container {
 				screenRow++;
 			}
 			for (let index = 0; index < rows; index++) {
-				if (screenRow > startTop) buffer += "\n";
+				if (screenRow > startTop) {
+					buffer += "\n";
+					if (screenRow >= height) this.#scrollSixelPlacements(this.#screenSixelPlacements);
+				}
 				append(
 					this.#lineRewriteSequence(
 						prepared.rows[index]!,
@@ -4330,7 +4402,12 @@ export class TUI extends Container {
 		width: number,
 		screenRow = -1,
 		spacerGlyphWidth = -1,
-		options?: { blankRow?: boolean; imagePlacements?: Map<number, LiveImagePlacement>; imageRow?: number },
+		options?: {
+			blankRow?: boolean;
+			imagePlacements?: Map<number, LiveImagePlacement>;
+			imageRow?: number;
+			sixelPlacements?: SixelPlacement[];
+		},
 	): string {
 		// End every rewrite at column zero. ConPTY can materialize a pending
 		// wrap before a following cursor-addressing sequence even while DECAWM is
@@ -4349,7 +4426,13 @@ export class TUI extends Container {
 		} else if (line.isImage) {
 			rewrite =
 				ERASE_LINE +
-				this.#imageLineSequence(line.line, screenRow, options?.imagePlacements, options?.imageRow ?? screenRow);
+				this.#imageLineSequence(
+					line.line,
+					screenRow,
+					options?.imagePlacements,
+					options?.imageRow ?? screenRow,
+					options?.sixelPlacements ?? this.#screenSixelPlacements,
+				);
 		} else {
 			const terminalLine = this.#terminalLine(line);
 			if (options?.blankRow) {
@@ -4497,7 +4580,13 @@ export class TUI extends Container {
 				prepared.rows.some((_row, r) =>
 					this.#rowNeedsRewrite(this.#altPreviousLines, this.#altPreparedRows, prepared.lines, prepared.rows, r),
 				));
-		prelude += this.#retireImagePlacements(this.#altImagePlacements, prepared.lines, 0, full);
+		prelude += this.#retireImagePlacements(
+			this.#altImagePlacements,
+			this.#altSixelPlacements,
+			prepared.lines,
+			0,
+			full,
+		);
 		let rowsBuffer = "";
 		for (let r = 0; r < height; r++) {
 			if (full) {
@@ -4514,7 +4603,7 @@ export class TUI extends Container {
 				width,
 				r,
 				this.#osc66SpacerGlyphWidth(prepared.lines, r),
-				{ imagePlacements: this.#altImagePlacements },
+				{ imagePlacements: this.#altImagePlacements, sixelPlacements: this.#altSixelPlacements },
 			);
 		}
 		this.#altPreviousLines = prepared.lines;
