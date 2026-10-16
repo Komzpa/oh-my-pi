@@ -374,6 +374,26 @@ export type InterruptMode = "immediate" | "wait";
 
 export type StreamingBehavior = "steer" | "followUp";
 
+export interface SessionPromptOptions {
+	expandPromptTemplates?: boolean;
+	runCommands?: boolean;
+	throwOnDrop?: boolean;
+	images?: ImageContent[];
+	streamingBehavior?: "steer" | "followUp" | "aside";
+	toolChoice?: unknown;
+	synthetic?: boolean;
+	userInitiated?: boolean;
+	attribution?: "user" | "agent";
+	skipCompactionCheck?: boolean;
+	solutionSpace?: string;
+}
+
+export interface SessionAbortOptions {
+	goalReason?: "interrupted" | "internal";
+	reason?: string;
+	preserveCompaction?: boolean;
+}
+
 export type QueuedMessageQueue = "steering" | "followUp";
 
 export type CacheWarmingMode = "off" | "streaming" | "idle";
@@ -487,6 +507,7 @@ export interface SessionState {
 	thinkingLevel?: ThinkingLevel;
 	isStreaming?: boolean;
 	isCompacting?: boolean;
+	hasPostPromptWork?: boolean;
 	steeringMode?: QueueMode;
 	followUpMode?: QueueMode;
 	interruptMode?: InterruptMode;
@@ -1467,6 +1488,7 @@ export interface PromptParams {
 	/** Images attached to the message. */
 	images?: ImageContent[];
 	streamingBehavior?: StreamingBehavior;
+	options?: SessionPromptOptions;
 }
 
 export interface SteerParams {
@@ -1488,6 +1510,10 @@ export interface RemoveQueuedMessageParams {
 
 export interface PromoteQueuedMessageParams {
 	message: string;
+}
+
+export interface AbortParams {
+	options?: SessionAbortOptions;
 }
 
 export interface AbortAndPromptParams {
@@ -1796,7 +1822,7 @@ export interface RpcWireCommands {
 	follow_up: { params: FollowUpParams; result: undefined };
 	remove_queued_message: { params: RemoveQueuedMessageParams; result: RemoveQueuedMessageResult };
 	promote_queued_message: { params: PromoteQueuedMessageParams; result: PromoteQueuedMessageResult };
-	abort: { params: undefined; result: undefined };
+	abort: { params: AbortParams; result: undefined };
 	abort_and_prompt: { params: AbortAndPromptParams; result: undefined };
 	abort_and_restore_queue: { params: undefined; result: AbortAndRestoreQueueResult };
 	new_session: { params: NewSessionParams; result: CancellationResult };

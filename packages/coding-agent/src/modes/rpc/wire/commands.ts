@@ -41,8 +41,14 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 	{
 		name: "prompt",
 		doc: "Submit a prompt; acknowledged once admitted, completed by its `prompt_result`.",
-		params: { message: "string", "images?": IMAGES, "streamingBehavior?": "StreamingBehavior" },
+		params: {
+			message: "string",
+			"images?": IMAGES,
+			"streamingBehavior?": "StreamingBehavior",
+			"options?": "SessionPromptOptions",
+		},
 		result: "PromptAck",
+		clientOmit: ["options"],
 		completion: "prompt_result",
 	},
 	{ name: "steer", doc: "Queue a steering message.", params: { message: "string", "images?": IMAGES } },
@@ -59,7 +65,12 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		params: { message: "string" },
 		result: "PromoteQueuedMessageResult",
 	},
-	{ name: "abort", doc: "Abort the current run." },
+	{
+		name: "abort",
+		doc: "Abort the current run.",
+		params: { "options?": "SessionAbortOptions" },
+		clientOmit: ["options"],
+	},
 	{
 		name: "abort_and_prompt",
 		doc: "Abort the current run and submit a prompt; completed by its `prompt_result`.",

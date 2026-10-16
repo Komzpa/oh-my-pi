@@ -549,6 +549,28 @@ class ModelInfo:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class SessionPromptOptions:
+    expand_prompt_templates: bool | None = None
+    run_commands: bool | None = None
+    throw_on_drop: bool | None = None
+    images: tuple[ImageContent, ...] | None = None
+    streaming_behavior: Literal["steer", "followUp", "aside"] | None = None
+    tool_choice: JsonValue | None = None
+    synthetic: bool | None = None
+    user_initiated: bool | None = None
+    attribution: Literal["user", "agent"] | None = None
+    skip_compaction_check: bool | None = None
+    solution_space: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionAbortOptions:
+    goal_reason: Literal["interrupted", "internal"] | None = None
+    reason: str | None = None
+    preserve_compaction: bool | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class TodoItem:
     content: str
     status: TodoStatus
@@ -644,6 +666,7 @@ class SessionState:
     thinking_level: ThinkingLevel | None = None
     is_streaming: bool = False
     is_compacting: bool = False
+    has_post_prompt_work: bool = False
     steering_mode: QueueMode = "one-at-a-time"
     follow_up_mode: QueueMode = "one-at-a-time"
     interrupt_mode: InterruptMode = "immediate"
@@ -1822,6 +1845,32 @@ def parse_model_info(value: object, path: str = "ModelInfo") -> ModelInfo:
     )
 
 
+def parse_session_prompt_options(value: object, path: str = "SessionPromptOptions") -> SessionPromptOptions:
+    payload = expect_object(value, path)
+    return SessionPromptOptions(
+        expand_prompt_templates=optional(payload, "expandPromptTemplates", decode_bool, path),
+        run_commands=optional(payload, "runCommands", decode_bool, path),
+        throw_on_drop=optional(payload, "throwOnDrop", decode_bool, path),
+        images=optional(payload, "images", array(parse_image_content), path),
+        streaming_behavior=optional(payload, "streamingBehavior", cast('Decoder[Literal["steer", "followUp", "aside"]]', literal(frozenset({"steer", "followUp", "aside"}))), path),
+        tool_choice=optional(payload, "toolChoice", decode_json, path),
+        synthetic=optional(payload, "synthetic", decode_bool, path),
+        user_initiated=optional(payload, "userInitiated", decode_bool, path),
+        attribution=optional(payload, "attribution", cast('Decoder[Literal["user", "agent"]]', literal(frozenset({"user", "agent"}))), path),
+        skip_compaction_check=optional(payload, "skipCompactionCheck", decode_bool, path),
+        solution_space=optional(payload, "solutionSpace", decode_str, path),
+    )
+
+
+def parse_session_abort_options(value: object, path: str = "SessionAbortOptions") -> SessionAbortOptions:
+    payload = expect_object(value, path)
+    return SessionAbortOptions(
+        goal_reason=optional(payload, "goalReason", cast('Decoder[Literal["interrupted", "internal"]]', literal(frozenset({"interrupted", "internal"}))), path),
+        reason=optional(payload, "reason", decode_str, path),
+        preserve_compaction=optional(payload, "preserveCompaction", decode_bool, path),
+    )
+
+
 def parse_todo_item(value: object, path: str = "TodoItem") -> TodoItem:
     payload = expect_object(value, path)
     return TodoItem(
@@ -1927,6 +1976,7 @@ def parse_session_state(value: object, path: str = "SessionState") -> SessionSta
         thinking_level=optional(payload, "thinkingLevel", _decode_thinking_level, path),
         is_streaming=defaulted(payload, "isStreaming", decode_bool, path, False),
         is_compacting=defaulted(payload, "isCompacting", decode_bool, path, False),
+        has_post_prompt_work=defaulted(payload, "hasPostPromptWork", decode_bool, path, False),
         steering_mode=defaulted(payload, "steeringMode", _decode_queue_mode, path, "one-at-a-time"),
         follow_up_mode=defaulted(payload, "followUpMode", _decode_queue_mode, path, "one-at-a-time"),
         interrupt_mode=defaulted(payload, "interruptMode", _decode_interrupt_mode, path, "immediate"),
@@ -3849,9 +3899,11 @@ __all__ = [
     "RpcNotification",
     "SelectOptionDetail",
     "SelectUiRequest",
+    "SessionAbortOptions",
     "SessionCredits",
     "SessionEntries",
     "SessionInfoUpdateEvent",
+    "SessionPromptOptions",
     "SessionSettledEvent",
     "SessionState",
     "SessionStats",
@@ -4019,9 +4071,11 @@ __all__ = [
     "parse_rpc_frame_error_event",
     "parse_select_option_detail",
     "parse_select_ui_request",
+    "parse_session_abort_options",
     "parse_session_credits",
     "parse_session_entries",
     "parse_session_info_update_event",
+    "parse_session_prompt_options",
     "parse_session_settled_event",
     "parse_session_state",
     "parse_session_stats",

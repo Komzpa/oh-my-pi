@@ -9,8 +9,8 @@ import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessageEvent, Effort, ImageContent, Model, ToolExample } from "@oh-my-pi/pi-ai";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
-import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
-import type { RestoredQueuedMessage } from "../../session/agent-session-types";
+import type { AgentSession, AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { PromptOptions, RestoredQueuedMessage } from "../../session/agent-session-types";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
 import type { FileEntry, SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { UsageLimitState } from "../../session/usage-limit";
@@ -37,12 +37,19 @@ export type RpcCommand =
 	| { id?: string; type: "negotiate_protocol"; protocolVersion: number }
 
 	// Prompting
-	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
+	| {
+			id?: string;
+			type: "prompt";
+			message: string;
+			images?: ImageContent[];
+			streamingBehavior?: "steer" | "followUp";
+			options?: Omit<PromptOptions, "onPromptAdmitted">;
+	  }
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "remove_queued_message"; message: string; queue: "steering" | "followUp" }
 	| { id?: string; type: "promote_queued_message"; message: string }
-	| { id?: string; type: "abort" }
+	| { id?: string; type: "abort"; options?: Parameters<AgentSession["abort"]>[0] }
 	| { id?: string; type: "abort_and_prompt"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort_and_restore_queue" }
 	| { id?: string; type: "new_session"; parentSession?: string }
@@ -153,6 +160,8 @@ export interface RpcSessionState {
 	thinkingLevel: ThinkingLevel | undefined;
 	isStreaming: boolean;
 	isCompacting: boolean;
+	/** Exact root turn cleanup predicate, distinct from background async jobs. */
+	hasPostPromptWork?: boolean;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
 	interruptMode: "immediate" | "wait";

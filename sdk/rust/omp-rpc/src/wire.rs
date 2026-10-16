@@ -2641,6 +2641,42 @@ impl StreamingBehavior {
 	}
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionPromptOptions {
+	#[serde(rename = "expandPromptTemplates", default, skip_serializing_if = "Option::is_none")]
+	pub expand_prompt_templates: Option<bool>,
+	#[serde(rename = "runCommands", default, skip_serializing_if = "Option::is_none")]
+	pub run_commands: Option<bool>,
+	#[serde(rename = "throwOnDrop", default, skip_serializing_if = "Option::is_none")]
+	pub throw_on_drop: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub images: Option<Vec<ImageContent>>,
+	#[serde(rename = "streamingBehavior", default, skip_serializing_if = "Option::is_none")]
+	pub streaming_behavior: Option<SessionPromptOptionsStreamingBehavior>,
+	#[serde(rename = "toolChoice", default, skip_serializing_if = "Option::is_none")]
+	pub tool_choice: Option<Value>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub synthetic: Option<bool>,
+	#[serde(rename = "userInitiated", default, skip_serializing_if = "Option::is_none")]
+	pub user_initiated: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub attribution: Option<SessionPromptOptionsAttribution>,
+	#[serde(rename = "skipCompactionCheck", default, skip_serializing_if = "Option::is_none")]
+	pub skip_compaction_check: Option<bool>,
+	#[serde(rename = "solutionSpace", default, skip_serializing_if = "Option::is_none")]
+	pub solution_space: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionAbortOptions {
+	#[serde(rename = "goalReason", default, skip_serializing_if = "Option::is_none")]
+	pub goal_reason: Option<SessionAbortOptionsGoalReason>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<String>,
+	#[serde(rename = "preserveCompaction", default, skip_serializing_if = "Option::is_none")]
+	pub preserve_compaction: Option<bool>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum QueuedMessageQueue {
 	#[serde(rename = "steering")]
@@ -3056,6 +3092,8 @@ pub struct SessionState {
 	pub is_streaming: bool,
 	#[serde(rename = "isCompacting", default = "default_session_state_is_compacting")]
 	pub is_compacting: bool,
+	#[serde(rename = "hasPostPromptWork", default = "default_session_state_has_post_prompt_work")]
+	pub has_post_prompt_work: bool,
 	#[serde(rename = "steeringMode", default = "default_session_state_steering_mode")]
 	pub steering_mode: QueueMode,
 	#[serde(rename = "followUpMode", default = "default_session_state_follow_up_mode")]
@@ -5054,6 +5092,8 @@ pub struct PromptParams {
 	pub images: Option<Vec<ImageContent>>,
 	#[serde(rename = "streamingBehavior", default, skip_serializing_if = "Option::is_none")]
 	pub streaming_behavior: Option<StreamingBehavior>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub options: Option<SessionPromptOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5081,6 +5121,12 @@ pub struct RemoveQueuedMessageParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PromoteQueuedMessageParams {
 	pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AbortParams {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub options: Option<SessionAbortOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5680,6 +5726,63 @@ impl AssistantErrorEventReason {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionPromptOptionsStreamingBehavior {
+	#[serde(rename = "steer")]
+	Steer,
+	#[serde(rename = "followUp")]
+	FollowUp,
+	#[serde(rename = "aside")]
+	Aside,
+}
+
+impl SessionPromptOptionsStreamingBehavior {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Steer => "steer",
+			Self::FollowUp => "followUp",
+			Self::Aside => "aside",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionPromptOptionsAttribution {
+	#[serde(rename = "user")]
+	User,
+	#[serde(rename = "agent")]
+	Agent,
+}
+
+impl SessionPromptOptionsAttribution {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::Agent => "agent",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionAbortOptionsGoalReason {
+	#[serde(rename = "interrupted")]
+	Interrupted,
+	#[serde(rename = "internal")]
+	Internal,
+}
+
+impl SessionAbortOptionsGoalReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Interrupted => "interrupted",
+			Self::Internal => "internal",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GoalModeStateMode {
 	#[serde(rename = "active")]
 	Active,
@@ -5787,6 +5890,10 @@ fn default_session_state_is_streaming() -> bool {
 }
 
 fn default_session_state_is_compacting() -> bool {
+	serde_json::from_str("false").expect("valid wire default")
+}
+
+fn default_session_state_has_post_prompt_work() -> bool {
 	serde_json::from_str("false").expect("valid wire default")
 }
 
