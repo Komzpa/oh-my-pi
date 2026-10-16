@@ -1,3 +1,4 @@
+import { untilAborted } from "@oh-my-pi/pi-utils";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import type { PromptOptions } from "../../session/agent-session-types";
 import type { InteractiveSessionConnection } from "../interactive-session";
@@ -15,12 +16,18 @@ export interface RpcInteractiveSessionConnection extends InteractiveSessionConne
 export async function createRpcInteractiveSessionConnection(
 	client: RpcClient,
 ): Promise<RpcInteractiveSessionConnection> {
-	let state: Pick<RpcSessionState, "isStreaming" | "isCompacting" | "hasPostPromptWork"> = {
+	let state: Pick<
+		RpcSessionState,
+		"isStreaming" | "isCompacting" | "hasPostPromptWork" | "queuedMessageCount" | "hasPendingAsyncWork"
+	> = {
 		isStreaming: false,
 		isCompacting: false,
 		hasPostPromptWork: false,
+		queuedMessageCount: 0,
+		hasPendingAsyncWork: false,
 	};
 	let disconnected = false;
+	const lifetime = new AbortController();
 	let revision = 0;
 	let refreshing: Promise<void> | undefined;
 	const askViews = new Set<RpcAskDialogView>();
@@ -58,7 +65,9 @@ export async function createRpcInteractiveSessionConnection(
 				state.isStreaming = true;
 				break;
 			case "agent_end":
-				if (event.isTerminal !== false) state.isStreaming = false;
+				state.isStreaming = false;
+				break;
+			case "queue_update":
 				break;
 			case "auto_compaction_start":
 				state.isCompacting = true;
@@ -80,11 +89,20 @@ export async function createRpcInteractiveSessionConnection(
 		void refresh().catch(() => disconnect());
 	});
 	const unsubscribeSettled = client.onSessionSettled(() => {
+		revision++;
+		state = {
+			...state,
+			isStreaming: false,
+			hasPendingAsyncWork: false,
+			hasPostPromptWork: false,
+			queuedMessageCount: 0,
+		};
 		void refresh().catch(() => disconnect());
 	});
 	const disconnect = (): void => {
 		if (disconnected) return;
 		disconnected = true;
+		lifetime.abort(new Error("Interactive session view is disconnected"));
 		listeners.clear();
 		for (const view of askViews) view.disconnect();
 		askViews.clear();
@@ -119,6 +137,19 @@ export async function createRpcInteractiveSessionConnection(
 		},
 		get isCompacting() {
 			return state.isCompacting;
+		},
+		get queuedMessageCount() {
+			return state.queuedMessageCount ?? 0;
+		},
+		hasPendingAsyncWork() {
+			return state.hasPendingAsyncWork === true;
+		},
+		async waitForSettled(signal) {
+			assertConnected();
+			const cancellation = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
+			await client.waitForSettled(0, cancellation);
+			cancellation.throwIfAborted();
+			await untilAborted(cancellation, refresh);
 		},
 		get hasPostPromptWork() {
 			return state.hasPostPromptWork === true;

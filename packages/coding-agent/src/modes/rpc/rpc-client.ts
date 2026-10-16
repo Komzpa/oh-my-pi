@@ -341,6 +341,7 @@ export class RpcClient {
 	#btwDeltaListeners = new Set<(frame: RpcBtwDeltaFrame) => void>();
 	#btwRecordListeners = new Set<(record: BtwHistoryRecord) => void>();
 	#promptResultListeners = new Set<RpcPromptResultListener>();
+	#settleWaiters = new Set<(error: Error) => void>();
 	#sessionSettledListeners = new Set<RpcSessionSettledListener>();
 	#liveListeners = new Set<RpcLiveListener>();
 	/** `promptAndWait` completions keyed by request id; registered before the prompt is sent. */
@@ -1453,19 +1454,26 @@ export class RpcClient {
 	 * `get_state` reports it settled, otherwise at the next `session_settled`.
 	 * Use after {@link promptAndWait} when background jobs may still wake the agent.
 	 */
-	async waitForSettled(timeout = 60000): Promise<void> {
+	async waitForSettled(timeout = 60000, signal?: AbortSignal): Promise<void> {
+		signal?.throwIfAborted();
 		const { promise, resolve, reject } = Promise.withResolvers<void>();
 		const unsubscribe = this.onSessionSettled(resolve);
+		const onAbort = () => reject(signal?.reason ?? new Error("Settlement wait cancelled"));
+		signal?.addEventListener("abort", onAbort, { once: true });
+		this.#settleWaiters.add(reject);
 		let timeoutId: NodeJS.Timeout | undefined;
 		try {
-			// Subscribed before asking, so a settle between the two cannot be missed.
-			if ((await this.getState()).isSettled) return;
-			timeoutId = this.#startTimeout(timeout, () => {
-				reject(new Error(`Timeout waiting for session_settled. Stderr: ${this.#process?.peekStderr() ?? ""}`));
-			});
-			await promise;
+			// Race the query too: a detached view must not retain its listener behind a stalled RPC.
+			if (timeout > 0)
+				timeoutId = this.#startTimeout(timeout, () =>
+					reject(new Error(`Timeout waiting for session_settled. Stderr: ${this.#process?.peekStderr() ?? ""}`)),
+				);
+			const snapshot = this.getState();
+			await Promise.race([promise, snapshot.then(state => (state.isSettled ? undefined : promise))]);
 		} finally {
 			unsubscribe();
+			this.#settleWaiters.delete(reject);
+			signal?.removeEventListener("abort", onAbort);
 			clearTimeout(timeoutId);
 		}
 	}
@@ -1510,6 +1518,8 @@ export class RpcClient {
 	// =========================================================================
 
 	#rejectPromptWaiters(error: Error): void {
+		for (const reject of this.#settleWaiters) reject(error);
+		this.#settleWaiters.clear();
 		this.#pendingAskDialogs.clear();
 		this.#askDialogView = undefined;
 		for (const reject of this.#promptErrorWaiters.values()) reject(error);

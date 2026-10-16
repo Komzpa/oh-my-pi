@@ -1,4 +1,4 @@
-import { expect, it } from "bun:test";
+import { expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createRpcInteractiveSessionConnection } from "../../src/modes/rpc/interactive-session";
@@ -18,7 +18,9 @@ it("rejects an outstanding turn when its owner explicitly stops the child", asyn
 		const pending = view.prompt("hold until stopped", { onPromptAdmitted: admitted.resolve });
 		await admitted.promise;
 		const rejected = pending.catch((error: Error) => error);
+		const settlement = view.waitForSettled().catch((error: Error) => error);
 		await client.stop();
+		expect(await settlement).toMatchObject({ message: "Client stopped" });
 		expect(await rejected).toMatchObject({ message: "Client stopped" });
 		view.disconnect();
 	} finally {
@@ -271,5 +273,49 @@ it("does not resurrect an ask cancelled by the owner while its view is detached"
 		second.disconnect();
 	} finally {
 		await client.stop();
+	}
+}, 20_000);
+
+it("cancels settlement observations and releases listeners without aborting the owner's turn", async () => {
+	using directory = TempDir.createSync("@pi-rpc-owner-settle-cancel-");
+	const client = new RpcClient({ cliPath: fixture, env: { RPC_OWNER_TEST_DIR: directory.path() } });
+	await client.start();
+	try {
+		const subscribe = client.onSessionSettled.bind(client);
+		const detached = vi.fn();
+		vi.spyOn(client, "onSessionSettled").mockImplementation(listener => {
+			const unsubscribe = subscribe(listener);
+			return () => {
+				detached();
+				unsubscribe();
+			};
+		});
+		const view = await createRpcInteractiveSessionConnection(client);
+		const admitted = Promise.withResolvers<void>();
+		const turn = view.prompt("keep working", { onPromptAdmitted: admitted.resolve });
+		await admitted.promise;
+		const cancel = new AbortController();
+		const cancelled = view.waitForSettled(cancel.signal).catch((error: Error) => error);
+		cancel.abort(new Error("only stop observing"));
+		expect(await cancelled).toMatchObject({ message: "only stop observing" });
+		expect(detached).toHaveBeenCalledTimes(1);
+		expect((await client.getState()).isStreaming).toBe(true);
+		const disconnected = view.waitForSettled().catch((error: Error) => error);
+		view.disconnect();
+		expect(await disconnected).toMatchObject({ message: "Interactive session view is disconnected" });
+		expect(detached).toHaveBeenCalledTimes(3);
+		const successor = await createRpcInteractiveSessionConnection(client);
+		const settled = successor.waitForSettled();
+		await Bun.write(directory.join("release"), "continue");
+		expect(await turn).toBe(true);
+		await settled;
+		expect(successor.isStreaming).toBe(false);
+		expect(successor.hasPendingAsyncWork()).toBe(false);
+		expect(successor.queuedMessageCount).toBe(0);
+		expect(await Bun.file(directory.join("effect.json")).json()).toMatchObject({ calls: 1 });
+		successor.disconnect();
+	} finally {
+		await client.stop();
+		vi.restoreAllMocks();
 	}
 }, 20_000);

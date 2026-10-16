@@ -147,6 +147,9 @@ describe("interactive native input ingress", () => {
 			isStreaming: true,
 			isCompacting: false,
 			hasPostPromptWork: false,
+			queuedMessageCount: 0,
+			hasPendingAsyncWork: () => false,
+			waitForSettled: async () => {},
 		};
 		const h = await createHarness(() => {}, connection);
 		h.editor.setText("Продолжай 🐈");
