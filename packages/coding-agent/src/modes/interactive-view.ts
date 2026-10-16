@@ -50,10 +50,16 @@ export function createLocalInteractiveViewSource(
 export function assertInteractiveOwnerCanCheckpoint(
 	session: Pick<
 		AgentSession,
-		"isStreaming" | "isCompacting" | "hasPostPromptWork" | "queuedMessageCount" | "hasPendingAsyncWork"
+		| "isStreaming"
+		| "isCompacting"
+		| "hasPostPromptWork"
+		| "queuedMessageCount"
+		| "hasPendingAsyncWork"
+		| "hasAdmittedSubmission"
 	>,
 ): void {
 	if (
+		session.hasAdmittedSubmission ||
 		session.isStreaming ||
 		session.isCompacting ||
 		session.hasPostPromptWork ||
