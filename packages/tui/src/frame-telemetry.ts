@@ -165,7 +165,7 @@ export class FrameTelemetry {
 		this.pushPhase(`render:${target}`);
 	}
 
-	endRender(target: string, rendered: boolean): void {
+	endRender(target: string, rendered: boolean, settled = rendered): void {
 		const now = this.#now();
 		const startedAt = this.#lastFrameStartedAtMs ?? now;
 		const phase = this.currentPhase();
@@ -173,7 +173,7 @@ export class FrameTelemetry {
 		this.popPhase();
 		this.#lastFrameStartedAtMs = undefined;
 		this.#renderTarget = undefined;
-		if (!rendered) return;
+		if (!settled) return;
 
 		const renderMs = Math.max(0, now - startedAt);
 		// Gap = wait from the earliest unpainted input/render request to this paint. Time since
@@ -188,7 +188,7 @@ export class FrameTelemetry {
 		const lagMs = pendingInputAtMs === undefined ? 0 : Math.max(0, now - pendingInputAtMs);
 		// A frame painted only because the meter text changed is not UI activity; sampling it
 		// would make the meter feed itself.
-		if (!meterOnly) this.#samples.push({ atMs: now, renderMs, lagMs });
+		if (rendered && !meterOnly) this.#samples.push({ atMs: now, renderMs, lagMs });
 		this.#trim(now);
 		if (gapMs > this.#thresholdMs) {
 			this.#recordStall(now, gapMs);
