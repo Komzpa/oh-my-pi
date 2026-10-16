@@ -50,9 +50,10 @@ describe("AgentSession restart drain", () => {
 	it("interrupts only the provider during drain and preserves queued input on cancel", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const started = Promise.withResolvers<void>();
+		let providerSignal: AbortSignal | undefined;
 		const mock = createMockModel({
 			responses: [
-				{ content: ["interrupted provider"], delayMs: 2000 },
+				{ content: ["interrupted provider"], delayMs: 60_000 },
 				{ content: ["continued after cancelled restart"] },
 			],
 		});
@@ -60,6 +61,7 @@ describe("AgentSession restart drain", () => {
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: ["Test"], tools: [] },
 			streamFn: (...args) => {
+				providerSignal = args[2]?.signal;
 				started.resolve();
 				return mock.stream(...args);
 			},
@@ -74,6 +76,8 @@ describe("AgentSession restart drain", () => {
 		const run = session.prompt("Continue the task after restarting");
 		await started.promise;
 		const lease = session.beginRestartDrain();
+		// Assert synchronous cancellation independently of fixture I/O and host load.
+		expect(providerSignal?.aborted).toBe(true);
 		await lease.waitForQuiescence();
 		await run;
 		expect(mock.calls).toHaveLength(1);
@@ -90,7 +94,7 @@ describe("AgentSession restart drain", () => {
 					),
 			),
 		).toBe(true);
-	}, 1500);
+	}, 30_000);
 
 	it("releases native wait on drain without cancelling or consuming its child job", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
