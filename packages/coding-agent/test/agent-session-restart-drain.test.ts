@@ -372,6 +372,7 @@ describe("AgentSession restart drain", () => {
 		const identity = { instanceId: "dispose-incident", sessionId: rootManager.getSessionId(), generation: 0 };
 		const controller = createRestartQueueController({
 			session,
+			restartWorkerGraceMs: 0,
 			identity: () => identity,
 			restart: async () => {
 				restarts++;
@@ -391,6 +392,7 @@ describe("AgentSession restart drain", () => {
 			admitted.resolve();
 			childAdmitted.resolve();
 			await waitingOnChild.promise;
+			await Bun.sleep(20);
 			expect(restarts).toBe(0);
 			finishClose.resolve();
 			await disposed;
