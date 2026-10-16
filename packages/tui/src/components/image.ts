@@ -846,8 +846,9 @@ export class Image implements Component {
 				// saves the final-row cursor, moves up to the image origin, emits the
 				// image sequence, then restores the final-row cursor. When the block
 				// straddles the viewport top, the renderer rewrites this line to the
-				// visible slice (encodeKittyPlacementLine) from the geometry
-				// registered below.
+				// visible slice from the geometry registered below (Kitty:
+				// encodeKittyPlacementLine; SIXEL: clipSixelDirectPlacementLine).
+				// Each registration below supplies those inputs.
 				if (this.#imageId != null && this.#budget !== undefined) {
 					this.#budget.registerPlacementGeometry(
 						this.#imageId,

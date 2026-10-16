@@ -31,12 +31,14 @@ import type { DescribeContext, NativeNode, NativeScreen, NativeSurfaceProvider, 
 import { STDOUT_BACKLOG_CLEAR_BYTES, setAltScreenActive, type Terminal } from "./terminal";
 import { classifyTerminalMultiplexerModule, terminalMultiplexerSessions } from "./terminal-multiplexer";
 import {
+	clipSixelDirectPlacementLine,
 	directPlacementLift,
 	encodeKittyDeleteAllImages,
 	encodeKittyDeleteImage,
 	encodeKittyDeletePlacement,
 	encodeKittyPlacementLine,
 	getTerminalBackgroundColor,
+	getCellDimensions,
 	ImageProtocol,
 	isImageProtocolForced,
 	isInsideTerminalMultiplexer,
@@ -3288,8 +3290,11 @@ export class TUI extends Container {
 		if (screenRow < 0) return line;
 		const parsed = parseKittyDirectPlacementLine(line);
 		if (!parsed) {
-			const lift = Math.min(directPlacementLift(line), screenRow);
-			return lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}${line}` : line;
+			// A SIXEL block straddling the top is cut to its visible bottom rows
+			// first, so its cursor move matches the rows lifted above it.
+			const drawn = clipSixelDirectPlacementLine(line, screenRow, getCellDimensions().heightPx);
+			const lift = Math.min(directPlacementLift(drawn), screenRow);
+			return lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}${drawn}` : drawn;
 		}
 		const previous = placements?.get(placementRow);
 		const placementId = previous?.placementId ?? this.#nextImagePlacementId++;
