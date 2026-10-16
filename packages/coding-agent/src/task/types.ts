@@ -7,7 +7,7 @@ export type {
 	SubagentProgressPayload,
 	SubagentLifecyclePayload,
 } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
-import { type BaseType, type } from "@oh-my-pi/omptype";
+import { type BaseType, type FluentType, type } from "@oh-my-pi/omptype";
 import { $env } from "@oh-my-pi/pi-utils";
 
 import type { AgentSessionEvent } from "../session/agent-session";
@@ -120,6 +120,11 @@ function taskAgentSchemaRule(defaultAgent: string): string {
 	return "string";
 }
 
+type SeanceTaskSchemaFields = {
+	"sourceSession?"?: FluentType<string>;
+	"model?"?: FluentType<string | string[]>;
+};
+
 function createTaskSchema(options: {
 	isolationEnabled: boolean;
 	batchEnabled: boolean;
@@ -127,6 +132,7 @@ function createTaskSchema(options: {
 	effortEnabled: boolean;
 	evalToolsEnabled: boolean;
 	structured: boolean;
+	seanceFields: SeanceTaskSchemaFields;
 }): BaseType {
 	const agent = taskAgentSchemaRule(options.defaultAgent);
 	const effortField = options.effortEnabled ? { "effort?": effortRule } : {};
@@ -134,6 +140,7 @@ function createTaskSchema(options: {
 		? { "outputSchema?": outputSchemaInputSchema, "schemaMode?": '"permissive" | "strict"' }
 		: {};
 	const toolsField = options.evalToolsEnabled ? { "tools?": "string[]" } : {};
+	const seanceFields = options.seanceFields;
 	if (options.batchEnabled) {
 		if (options.isolationEnabled) {
 			const item = type.raw({
@@ -145,6 +152,7 @@ function createTaskSchema(options: {
 				...schemaFields,
 				...toolsField,
 				"resources?": "string[]",
+				...seanceFields,
 				"isolated?": "boolean",
 				"+": "delete",
 			});
@@ -163,6 +171,7 @@ function createTaskSchema(options: {
 			...effortField,
 			...schemaFields,
 			...toolsField,
+			...seanceFields,
 			"+": "delete",
 		});
 		return type.raw({
@@ -181,6 +190,7 @@ function createTaskSchema(options: {
 			...schemaFields,
 			...toolsField,
 			"resources?": "string[]",
+			...seanceFields,
 			"isolated?": "boolean",
 			"+": "delete",
 		});
@@ -194,6 +204,7 @@ function createTaskSchema(options: {
 		...effortField,
 		...schemaFields,
 		...toolsField,
+		...seanceFields,
 		"+": "delete",
 	});
 }
@@ -208,19 +219,29 @@ export function getTaskSchema(options: {
 	/** Advertise `outputSchema`/`schemaMode` (`task.structured`); default on. */
 	structured?: boolean;
 	defaultAgent?: string;
+	/** Advertise historical source/model fields for the bundled seance agent. */
+	seanceFields?: SeanceTaskSchemaFields;
 }): TaskToolSchemaInstance {
 	const defaultAgent = options.defaultAgent ?? "task";
 	const effortEnabled = options.effortEnabled ?? false;
 	const evalToolsEnabled = options.evalToolsEnabled ?? true;
 	const structured = options.structured ?? true;
-	if (defaultAgent === "task" && !effortEnabled && evalToolsEnabled && structured) {
+	const seanceFields = options.seanceFields ?? {};
+	if (defaultAgent === "task" && !effortEnabled && evalToolsEnabled && structured && !options.seanceFields) {
 		if (options.batchEnabled) return options.isolationEnabled ? taskSchemaBatch : taskSchemaBatchNoIsolation;
 		return options.isolationEnabled ? taskSchema : taskSchemaNoIsolation;
 	}
-	const key = `${options.isolationEnabled ? "iso" : "flat"}:${options.batchEnabled ? "batch" : "single"}:${effortEnabled ? "effort" : "default"}:${evalToolsEnabled ? "tools" : "notools"}:${structured ? "structured" : "prose"}:${defaultAgent}`;
+	const key = `${options.isolationEnabled ? "iso" : "flat"}:${options.batchEnabled ? "batch" : "single"}:${effortEnabled ? "effort" : "default"}:${evalToolsEnabled ? "tools" : "notools"}:${structured ? "structured" : "prose"}:${options.seanceFields ? "seance" : "plain"}:${defaultAgent}`;
 	const cached = taskSchemaCache.get(key);
 	if (cached) return cached;
-	const schema = createTaskSchema({ ...options, effortEnabled, evalToolsEnabled, structured, defaultAgent });
+	const schema = createTaskSchema({
+		...options,
+		effortEnabled,
+		evalToolsEnabled,
+		structured,
+		defaultAgent,
+		seanceFields,
+	});
 	taskSchemaCache.set(key, schema);
 	return schema;
 }
