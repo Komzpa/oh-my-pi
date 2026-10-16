@@ -212,10 +212,12 @@ describe("bounded resume memory", () => {
 		const read = spyOn(sessionLoader, "readPositionedSessionEntry");
 		try {
 			expect(session.getEntryCount()).toBe(entries.length);
+			expect(session.getEntryCount("message")).toBe(entries.filter(entry => entry.type === "message").length);
 			expect(read).not.toHaveBeenCalled();
 			session.branch("sibling-tail");
 			read.mockClear();
 			expect(session.getEntryCount()).toBe(entries.length);
+			expect(session.getEntryCount("message")).toBe(entries.filter(entry => entry.type === "message").length);
 			expect(read).not.toHaveBeenCalled();
 			session.appendCustomEntry("checkpoint", { revision: 1 });
 			read.mockClear();

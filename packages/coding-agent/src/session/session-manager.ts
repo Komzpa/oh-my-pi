@@ -690,7 +690,12 @@ class SessionEntryIndex {
 		return entry;
 	}
 
-	count(): number {
+	count(type?: SessionEntry["type"]): number {
+		if (type) {
+			let count = 0;
+			for (const entry of this.#ordered) if (entry.type === type) count++;
+			return count;
+		}
 		return this.#ordered.length;
 	}
 	*entries(retainIdentity = false): IterableIterator<SessionEntry> {
@@ -4056,8 +4061,8 @@ export class SessionManager {
 	}
 
 	/** Count the complete journal without materializing historical payloads. */
-	getEntryCount(): number {
-		return this.#index.count();
+	getEntryCount(type?: SessionEntry["type"]): number {
+		return this.#index.count(type);
 	}
 
 	hasEntryType(type: SessionEntry["type"]): boolean {

@@ -227,8 +227,7 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 
 		if (args.timing || args.repaint) {
 			const entryCount = sessionManager.getEntryCount();
-			let messageCount = 0;
-			for (const _entry of sessionManager.iterateEntries("message")) messageCount++;
+			const messageCount = sessionManager.getEntryCount("message");
 			const rows = mode.chatContainer.render(width).length;
 			const report = [
 				`session  ${sourcePath}`,
