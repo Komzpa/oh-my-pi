@@ -34,6 +34,19 @@
 				]
 			},
 			{
+				"name": "prompt_custom",
+				"doc": "Submit an attributed custom message through the owner admission pipeline.",
+				"params": "PromptCustomParams",
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": "prompt_result",
+				"clientOmit": [
+					"options"
+				]
+			},
+			{
 				"name": "steer",
 				"doc": "Queue a steering message.",
 				"params": "SteerParams",
@@ -2408,6 +2421,54 @@
 				"followUp"
 			],
 			"description": "Displayable queue-chip text for pending user-authored messages; accepted verbatim by `remove_queued_message`."
+		},
+		"CustomPromptMessage": {
+			"type": "object",
+			"properties": {
+				"customType": {
+					"type": "string"
+				},
+				"content": {
+					"$ref": "#/$defs/MessageContent"
+				},
+				"display": {
+					"type": "boolean"
+				},
+				"details": {},
+				"attribution": {
+					"enum": [
+						"user",
+						"agent"
+					],
+					"type": "string"
+				}
+			},
+			"required": [
+				"customType",
+				"content",
+				"display"
+			],
+			"x-open": true
+		},
+		"CustomPromptOptions": {
+			"type": "object",
+			"properties": {
+				"streamingBehavior": {
+					"enum": [
+						"steer",
+						"followUp",
+						"aside"
+					],
+					"type": "string"
+				},
+				"toolChoice": {},
+				"queueChipText": {
+					"type": "string"
+				},
+				"queueOnly": {
+					"type": "boolean"
+				}
+			}
 		},
 		"SessionPromptOptions": {
 			"type": "object",
@@ -5982,6 +6043,20 @@
 				},
 				"options": {
 					"$ref": "#/$defs/SessionPromptOptions"
+				}
+			},
+			"required": [
+				"message"
+			]
+		},
+		"PromptCustomParams": {
+			"type": "object",
+			"properties": {
+				"message": {
+					"$ref": "#/$defs/CustomPromptMessage"
+				},
+				"options": {
+					"$ref": "#/$defs/CustomPromptOptions"
 				}
 			},
 			"required": [

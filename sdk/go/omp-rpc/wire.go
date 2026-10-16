@@ -2226,6 +2226,62 @@ func (v *QueuedMessagesState) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type CustomPromptMessage struct {
+	CustomType  string                          `json:"customType"`
+	Content     MessageContent                  `json:"content"`
+	Display     bool                            `json:"display"`
+	Details     json.RawMessage                 `json:"details,omitempty"`
+	Attribution *CustomPromptMessageAttribution `json:"attribution,omitempty"`
+	// Extra holds undeclared keys and declared keys whose value did not decode (that field stays zero).
+	// Encoding writes them back, over a declared field with the same key.
+	Extra map[string]json.RawMessage `json:"-"`
+}
+
+func (v *CustomPromptMessage) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "CustomPromptMessage", v.decodeFrom)
+}
+
+func (v *CustomPromptMessage) decodeFrom(raw map[string]json.RawMessage) error {
+	var out CustomPromptMessage
+	d := fieldDecoder{raw: raw, owner: "CustomPromptMessage", open: true}
+	d.required("customType", &out.CustomType)
+	d.required("content", &out.Content)
+	d.required("display", &out.Display)
+	d.optional("details", &out.Details)
+	d.optional("attribution", &out.Attribution)
+	out.Extra = d.rest()
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v CustomPromptMessage) MarshalJSON() ([]byte, error) {
+	type plain CustomPromptMessage
+	return encodeObject(plain(v), "", v.Extra)
+}
+
+type CustomPromptMessageAttribution string
+
+const (
+	CustomPromptMessageAttributionUser  CustomPromptMessageAttribution = "user"
+	CustomPromptMessageAttributionAgent CustomPromptMessageAttribution = "agent"
+)
+
+func (v *CustomPromptMessageAttribution) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "CustomPromptMessageAttribution")
+	if err != nil {
+		return err
+	}
+	switch value := CustomPromptMessageAttribution(s); value {
+	case CustomPromptMessageAttributionUser, CustomPromptMessageAttributionAgent:
+		*v = value
+		return nil
+	}
+	return unknownValue("CustomPromptMessageAttribution", s)
+}
+
 type ToolDescriptor struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
@@ -7390,6 +7446,17 @@ func (c Commands) Prompt(ctx context.Context, p PromptCommand) (PromptAck, error
 	var out PromptAck
 	err := c.call(ctx, "prompt", p, 0, &out)
 	return out, err
+}
+
+// PromptCustomCommand holds the parameters of "prompt_custom".
+type PromptCustomCommand struct {
+	Message CustomPromptMessage `json:"message"`
+}
+
+// PromptCustom sends "prompt_custom": Submit an attributed custom message through the owner admission pipeline.
+// Its work completes later with a prompt_result frame carrying the request id (see WithRequestID).
+func (c Commands) PromptCustom(ctx context.Context, p PromptCustomCommand) error {
+	return c.call(ctx, "prompt_custom", p, 0, nil)
 }
 
 // SteerCommand holds the parameters of "steer".

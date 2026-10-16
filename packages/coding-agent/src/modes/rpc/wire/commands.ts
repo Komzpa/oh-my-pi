@@ -51,6 +51,13 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		clientOmit: ["options"],
 		completion: "prompt_result",
 	},
+	{
+		name: "prompt_custom",
+		doc: "Submit an attributed custom message through the owner admission pipeline.",
+		params: { message: "CustomPromptMessage", "options?": "CustomPromptOptions" },
+		clientOmit: ["options"],
+		completion: "prompt_result",
+	},
 	{ name: "steer", doc: "Queue a steering message.", params: { message: "string", "images?": IMAGES } },
 	{ name: "follow_up", doc: "Queue a follow-up message.", params: { message: "string", "images?": IMAGES } },
 	{

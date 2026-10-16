@@ -10,6 +10,7 @@ import type { AgentSession } from "../session/agent-session";
  */
 export interface InteractiveSessionConnection extends Pick<
 	AgentSession,
+	| "promptCustomMessage"
 	| "prompt"
 	| "abort"
 	| "subscribe"
@@ -49,6 +50,7 @@ export function createLocalInteractiveSessionConnection(
 		},
 		saveDraft: text => session.sessionManager.saveDraft(text),
 		consumeDraft: () => session.sessionManager.consumeDraft(),
+		promptCustomMessage: (...args) => session.promptCustomMessage(...args),
 		prompt: (...args) => session.prompt(...args),
 		abort: (...args) => session.abort(...args),
 		subscribe: (...args) => session.subscribe(...args),

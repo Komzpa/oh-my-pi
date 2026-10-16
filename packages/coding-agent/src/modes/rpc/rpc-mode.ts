@@ -471,6 +471,7 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 	if (
 		BACKGROUND_COMMANDS.has(command.type) ||
 		command.type === "prompt" ||
+		command.type === "prompt_custom" ||
 		command.type === "steer" ||
 		command.type === "follow_up" ||
 		command.type === "steer_subagent"
@@ -494,6 +495,7 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 
 const USER_INPUT_TYPES: Record<string, true> = {
 	prompt: true,
+	prompt_custom: true,
 	steer: true,
 	follow_up: true,
 	abort_and_prompt: true,
@@ -1758,7 +1760,10 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	await emitAvailableCommandsUpdate();
 
 	const inputGate = new RpcUserInputGate();
-	type OrderedUserInput = Extract<RpcCommand, { type: "prompt" | "steer" | "follow_up" | "abort_and_prompt" }>;
+	type OrderedUserInput = Extract<
+		RpcCommand,
+		{ type: "prompt" | "prompt_custom" | "steer" | "follow_up" | "abort_and_prompt" }
+	>;
 	type OrderedInputOutcome = "local" | "cancelled" | "admitted" | "builtin-agent";
 	const dispatchOrderedUserInput = (
 		command: OrderedUserInput,
@@ -1769,6 +1774,18 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			const isCurrent = () =>
 				inputGate.isCurrent(command) && !shutdownState.requested && session.sessionId === sessionId;
 			if (!isCurrent()) return "cancelled";
+			if (command.type === "prompt_custom") {
+				if (!ticket) return "cancelled";
+				await watchAndReportPromptResult({
+					ticket,
+					startPrompt: onPromptAdmitted =>
+						session.promptCustomMessage(command.message, { ...command.options, onPromptAdmitted }),
+					results: promptResults,
+					onError: onPromptError(command.id, "prompt_custom"),
+					extensionUserMessageTracker,
+				});
+				return "admitted";
+			}
 			let text = command.message;
 			let images = command.images ?? (command.type === "prompt" ? command.options?.images : undefined);
 			const runner = session.extensionRunner;
@@ -1891,6 +1908,17 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 						return success(id, "prompt");
 					}
 					return success(id, "prompt");
+				} catch (promptSetupError) {
+					promptResults.discard(ticket);
+					throw promptSetupError;
+				}
+			}
+
+			case "prompt_custom": {
+				const ticket = promptResults.begin(id);
+				try {
+					if ((await dispatchOrderedUserInput(command, ticket)) === "cancelled") promptResults.settle(ticket);
+					return success(id, "prompt_custom");
 				} catch (promptSetupError) {
 					promptResults.discard(ticket);
 					throw promptSetupError;

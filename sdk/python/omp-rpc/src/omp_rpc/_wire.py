@@ -493,6 +493,14 @@ class AssistantErrorEvent(TypedDict):
     error: AssistantMessage
 
 
+class CustomPromptMessage(TypedDict):
+    customType: str
+    content: MessageContent
+    display: bool
+    details: NotRequired[JsonValue]
+    attribution: NotRequired[Literal["user", "agent"]]
+
+
 class SelectOptionDetail(TypedDict):
     """Presentation metadata aligned positionally with `options`."""
     description: NotRequired[str]
@@ -576,6 +584,14 @@ class QueuedMessagesState:
     follow_up: tuple[str, ...]
     live_steered: int = 0
     """Leading `steering` entries are live steering already sent into the streaming response; `remove_queued_message` cannot reach them."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class CustomPromptOptions:
+    streaming_behavior: Literal["steer", "followUp", "aside"] | None = None
+    tool_choice: JsonValue | None = None
+    queue_chip_text: str | None = None
+    queue_only: bool | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1781,6 +1797,10 @@ parse_assistant_error_event = cast("Decoder[AssistantErrorEvent]", open_record("
 """Decodes a `AssistantErrorEvent` open record: checks the discriminator and keeps every key."""
 
 
+parse_custom_prompt_message = cast("Decoder[CustomPromptMessage]", open_record(None, None))
+"""Decodes a `CustomPromptMessage` open record: checks the discriminator and keeps every key."""
+
+
 parse_select_option_detail = cast("Decoder[SelectOptionDetail]", open_record(None, None))
 """Decodes a `SelectOptionDetail` open record: checks the discriminator and keeps every key."""
 
@@ -1884,6 +1904,16 @@ def parse_queued_messages_state(value: object, path: str = "QueuedMessagesState"
         steering=required(payload, "steering", array(decode_str), path),
         follow_up=required(payload, "followUp", array(decode_str), path),
         live_steered=defaulted(payload, "liveSteered", decode_int, path, 0),
+    )
+
+
+def parse_custom_prompt_options(value: object, path: str = "CustomPromptOptions") -> CustomPromptOptions:
+    payload = expect_object(value, path)
+    return CustomPromptOptions(
+        streaming_behavior=optional(payload, "streamingBehavior", cast('Decoder[Literal["steer", "followUp", "aside"]]', literal(frozenset({"steer", "followUp", "aside"}))), path),
+        tool_choice=optional(payload, "toolChoice", decode_json, path),
+        queue_chip_text=optional(payload, "queueChipText", decode_str, path),
+        queue_only=optional(payload, "queueOnly", decode_bool, path),
     )
 
 
@@ -3188,6 +3218,12 @@ class WireClient:
     def _listen(self, frame_type: str, listener: Callable[..., None]) -> Callable[[], None]:
         raise NotImplementedError
 
+    def prompt_custom(self, message: CustomPromptMessage) -> None:
+        """Submit an attributed custom message through the owner admission pipeline."""
+        params: dict[str, object] = {}
+        params["message"] = message
+        self._command("prompt_custom", params)
+
     def steer(self, message: str, *, images: Sequence[ImageContent] | None = None) -> None:
         """Queue a steering message."""
         params: dict[str, object] = {}
@@ -3869,6 +3905,8 @@ __all__ = [
     "ConfirmUiRequest",
     "ContextUsage",
     "CustomMessage",
+    "CustomPromptMessage",
+    "CustomPromptOptions",
     "DeveloperMessage",
     "EditorUiRequest",
     "Effort",
@@ -4055,6 +4093,8 @@ __all__ = [
     "parse_confirm_ui_request",
     "parse_context_usage",
     "parse_custom_message",
+    "parse_custom_prompt_message",
+    "parse_custom_prompt_options",
     "parse_developer_message",
     "parse_editor_ui_request",
     "parse_extension_error",
