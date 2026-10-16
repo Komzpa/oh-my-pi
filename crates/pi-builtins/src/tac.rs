@@ -365,27 +365,21 @@ fn tac(
 		}
 		// Never map the input: a concurrent truncation would SIGBUS the whole
 		// host process through the mapping (and on Windows the mapping makes the
-		// writer's SetEndOfFile fail).
-		let mut data = Vec::new();
-		if filename == "-" {
-			if let Err(error) = host.stdin.read_to_end(&mut data) {
-				show(host, &TacError::Read(OsString::from("stdin"), error));
-				continue;
-			}
-		} else {
+		// writer's SetEndOfFile fail). Inputs are read into owned buffers.
+		//
+		// A regular host file larger than a block is read backwards instead
+		// of whole. Smaller files include pseudo-files (procfs, sysfs) whose
+		// reported size is not their content's.
+		if maybe_pattern.is_none() && filename != "-" {
 			let path = host.resolve(filename);
-			let mut file = match host.fs().open(path) {
+			let file = match host.fs().open(path) {
 				Ok(file) => file,
 				Err(error) => {
 					show(host, &TacError::Open(filename.clone(), error));
 					continue;
 				},
 			};
-			// A regular host file larger than a block is read backwards instead
-			// of whole. Smaller files include pseudo-files (procfs, sysfs) whose
-			// reported size is not their content's.
-			if maybe_pattern.is_none()
-				&& let Some(mut native) = file.native()
+			if let Some(mut native) = file.native()
 				&& let Some(len) = native
 					.metadata()
 					.ok()
@@ -412,11 +406,14 @@ fn tac(
 				}
 				continue;
 			}
-			if let Err(error) = file.read_to_end(&mut data) {
-				show(host, &TacError::Read(filename.clone(), error));
-				continue;
-			}
 		}
+		let data = match load_input(host, filename) {
+			Ok(data) => data,
+			Err(error) => {
+				show(host, &error);
+				continue;
+			},
+		};
 
 		match &maybe_pattern {
 			Some(pattern) => buffer_tac_regex(&data, pattern, before, host).map_err(TacError::Write)?,
@@ -595,6 +592,7 @@ mod tests {
 			assert_eq!(from_file.0, 0, "{args:?}");
 			assert!(from_file == from_stdin, "{args:?}: file and stdin output differ");
 		}
+	}
 	#[test]
 	fn tac_input_truncation_does_not_kill_process() {
 		use std::{process::Command, thread, time::Duration};

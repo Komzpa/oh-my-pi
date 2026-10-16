@@ -5424,22 +5424,22 @@ impl<'a> LineReader<'a> {
 		// against the shell working directory.
 		let file = host.fs().open(host.resolve(path))?;
 
-	// Non-regular inputs (FIFOs, devices, sockets) must stream: reading them to
-	// EOF up front would block `sed -n '1p;1q' fifo` while the writer stays open.
-	#[cfg(unix)]
-	if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
-		return line_reader_read_input(file);
-	}
+		// Non-regular inputs (FIFOs, devices, sockets) must stream: reading them to
+		// EOF up front would block `sed -n '1p;1q' fifo` while the writer stays open.
+		#[cfg(unix)]
+		if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+			return line_reader_read_input(file);
+		}
 
-	// Regular host files are read whole, never memory-mapped: sed runs in
-	// the host process, where truncating a mapped file under it raises
-	// SIGBUS and kills the host. Provider files and non-regular host files
-	// (pipes, process substitution) stream.
+		// Regular host files are read whole, never memory-mapped: sed runs in
+		// the host process, where truncating a mapped file under it raises
+		// SIGBUS and kills the host. Provider files and non-regular host files
+		// (pipes, process substitution) stream.
 		#[cfg(unix)]
 		if file.native().is_some() && file.metadata().is_ok_and(|meta| meta.is_file()) {
 			return line_reader_slice_input(file);
 		}
-		#[cfg(not(unix))]
+
 		line_reader_read_input(file)
 	}
 
@@ -6215,6 +6215,7 @@ mod tests {
 		}
 		assert_eq!(lines, 4);
 		Ok(())
+	}
 	#[test]
 	#[cfg(unix)]
 	fn sed_input_truncation_does_not_kill_process() {
