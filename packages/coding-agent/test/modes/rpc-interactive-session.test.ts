@@ -2,7 +2,9 @@ import { expect, it } from "bun:test";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createRpcInteractiveSessionConnection } from "../../src/modes/rpc/interactive-session";
-import { RpcClient, type RpcAgentProcess } from "../../src/modes/rpc/rpc-client";
+import { RpcClient, type RpcAgentProcess, type RpcAskDialogRequest } from "../../src/modes/rpc/rpc-client";
+
+import type { RpcExtensionUIResponse } from "../../src/modes/rpc/rpc-types";
 
 const fixture = path.join(import.meta.dir, "../fixtures/rpc-interactive-session-owner.ts");
 
@@ -141,6 +143,132 @@ it("keeps a child turn alive across view disconnect and reconnects with fresh st
 			),
 		).toHaveLength(1);
 		third.disconnect();
+	} finally {
+		await client.stop();
+	}
+}, 20_000);
+
+it("reattaches the original pending ask and consumes its answer once without replaying the tool", async () => {
+	using directory = TempDir.createSync("@pi-rpc-ask-reattach-");
+	const client = new RpcClient({
+		cliPath: fixture,
+		env: { RPC_OWNER_TEST_DIR: directory.path(), RPC_OWNER_TEST_ASK: "1" },
+	});
+	await client.start();
+	try {
+		await client.setAskDialog(true);
+		const first = await createRpcInteractiveSessionConnection(client);
+		const asked = Promise.withResolvers<RpcAskDialogRequest>();
+		const oldLease = first.attachAskDialogView(asked.resolve);
+		const turn = first.prompt("ask once");
+		const request = await asked.promise;
+		expect(request.method).toBe("ask");
+		first.disconnect();
+		const second = await createRpcInteractiveSessionConnection(client);
+		const replayed = Promise.withResolvers<RpcAskDialogRequest>();
+		const newLease = second.attachAskDialogView(replayed.resolve);
+		expect(
+			await Promise.race([
+				replayed.promise,
+				Bun.sleep(500).then(() => {
+					throw new Error("Pending ask was not replayed on reattach");
+				}),
+			]),
+		).toEqual(request);
+		expect(await Bun.file(directory.join("answer.json")).exists()).toBe(false);
+		expect(await Bun.file(directory.join("question-error")).exists()).toBe(false);
+		const response: RpcExtensionUIResponse = {
+			type: "extension_ui_response",
+			id: request.id,
+			answers: [{ id: "choice-🐈", selectedOptions: ["Дальше"], customInput: "" }],
+		};
+		expect(oldLease.respond(response)).toBe(false);
+		expect(newLease.respond(response)).toBe(true);
+		expect(newLease.respond(response)).toBe(false);
+		expect(await turn).toBe(true);
+		expect(await Bun.file(directory.join("answer.json")).json()).toMatchObject({
+			kind: "submit",
+			results: [{ id: "choice-🐈", selectedOptions: ["Дальше"] }],
+		});
+		expect(await Bun.file(directory.join("effect.json")).json()).toMatchObject({ calls: 2 });
+		second.disconnect();
+		const third = await createRpcInteractiveSessionConnection(client);
+		const stale: RpcAskDialogRequest[] = [];
+		third.attachAskDialogView(request => stale.push(request));
+		await Promise.resolve();
+		expect(stale).toEqual([]);
+		third.disconnect();
+	} finally {
+		await client.stop();
+	}
+}, 20_000);
+
+it("owner transport EOF still rejects a pending ask rather than treating termination as view detach", async () => {
+	using directory = TempDir.createSync("@pi-rpc-ask-owner-eof-");
+	const child = Bun.spawn([process.execPath, fixture], {
+		stdin: "pipe",
+		stdout: "pipe",
+		stderr: "pipe",
+		env: { ...process.env, RPC_OWNER_TEST_DIR: directory.path(), RPC_OWNER_TEST_ASK: "1" },
+	});
+	const stderr = new Response(child.stderr).text();
+	const client = new RpcClient({
+		spawn: () => ({
+			stdin: child.stdin,
+			stdout: child.stdout,
+			exited: child.exited,
+			peekStderr: () => "",
+			kill: () => {
+				child.kill();
+			},
+		}),
+	});
+	await client.start();
+	try {
+		await client.setAskDialog(true);
+		const view = await createRpcInteractiveSessionConnection(client);
+		const asked = Promise.withResolvers<void>();
+		const lease = view.attachAskDialogView(() => asked.resolve());
+		const rejected = view.prompt("ask until owner closes").catch((error: Error) => error);
+		await asked.promise;
+		child.stdin.end();
+		await child.exited;
+		expect(await Bun.file(directory.join("question-error")).text()).toContain(
+			"RPC client disconnected before extension UI response completed",
+		);
+		expect(await rejected).toBeInstanceOf(Error);
+		expect(lease.respond({ type: "extension_ui_response", id: "gone", cancelled: true })).toBe(false);
+		view.disconnect();
+	} finally {
+		await client.stop();
+		await stderr;
+	}
+}, 20_000);
+
+it("does not resurrect an ask cancelled by the owner while its view is detached", async () => {
+	using directory = TempDir.createSync("@pi-rpc-ask-cancel-detached-");
+	const client = new RpcClient({
+		cliPath: fixture,
+		env: { RPC_OWNER_TEST_DIR: directory.path(), RPC_OWNER_TEST_ASK: "1" },
+	});
+	await client.start();
+	try {
+		await client.setAskDialog(true);
+		const first = await createRpcInteractiveSessionConnection(client);
+		const asked = Promise.withResolvers<RpcAskDialogRequest>();
+		const lease = first.attachAskDialogView(asked.resolve);
+		const turn = first.prompt("cancel waiting question");
+		const request = await asked.promise;
+		first.disconnect();
+		await client.abort();
+		await turn;
+		const second = await createRpcInteractiveSessionConnection(client);
+		const requests: RpcAskDialogRequest[] = [];
+		second.attachAskDialogView(request => requests.push(request));
+		await Promise.resolve();
+		expect(requests).toEqual([]);
+		expect(lease.respond({ type: "extension_ui_response", id: request.id, cancelled: true })).toBe(false);
+		second.disconnect();
 	} finally {
 		await client.stop();
 	}

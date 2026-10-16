@@ -107,6 +107,14 @@ export interface RpcClientOptions {
 
 export type ModelInfo = Pick<Model, "provider" | "id" | "contextWindow" | "reasoning" | "thinking">;
 
+/** A presentation lease; releasing it leaves the owner's pending ask promise intact. */
+export interface RpcAskDialogView {
+	respond(response: RpcExtensionUIResponse): boolean;
+	disconnect(): void;
+}
+
+export type RpcAskDialogRequest = Extract<RpcExtensionUIRequest, { method: "ask" | "cancel" }>;
+
 export type RpcEventListener = (event: AgentEvent) => void;
 export type RpcSessionEventListener = (event: AgentSessionEvent) => void;
 export type RpcSubagentLifecycleListener = (payload: RpcSubagentLifecycleFrame["payload"]) => void;
@@ -346,6 +354,9 @@ export class RpcClient {
 	#requestId = 0;
 	#protocolVersion: RpcProtocolVersion = 1;
 	#extensionUiListeners: Set<(req: RpcExtensionUIRequest) => void> = new Set();
+	#pendingAskDialogs = new Map<string, Extract<RpcExtensionUIRequest, { method: "ask" }>>();
+	#askDialogView: { listener: (request: RpcAskDialogRequest) => void } | undefined;
+
 	#abortController = new AbortController();
 
 	constructor(private options: RpcClientOptions = {}) {
@@ -1256,6 +1267,42 @@ export class RpcClient {
 		}>(response).providers;
 	}
 
+	/** Opt in to the canonical multi-question ask frames. */
+	async setAskDialog(enabled: boolean): Promise<boolean> {
+		const response = await this.#send({ type: "set_ask_dialog", enabled });
+		return this.#getData<{ enabled: boolean }>(response).enabled;
+	}
+
+	/**
+	 * Attach the sole ask presentation to this live transport. A successor reuses
+	 * the original request IDs and promises; it never re-executes the tool.
+	 */
+	attachAskDialogView(listener: (request: RpcAskDialogRequest) => void): RpcAskDialogView {
+		if (!this.#process) throw new Error("Client not started");
+		const view = { listener };
+		this.#askDialogView = view;
+		const pending = [...this.#pendingAskDialogs.values()];
+		// Let the caller retain its lease before a replay callback can answer.
+		queueMicrotask(() => {
+			for (const request of pending) {
+				if (this.#askDialogView !== view) break;
+				if (this.#pendingAskDialogs.get(request.id) === request) listener(request);
+			}
+		});
+		return {
+			disconnect: () => {
+				if (this.#askDialogView === view) this.#askDialogView = undefined;
+			},
+			respond: response => {
+				if (this.#askDialogView !== view || !this.#pendingAskDialogs.has(response.id)) return false;
+				// Consume before writing: a duplicate or a detached view cannot answer twice.
+				this.#pendingAskDialogs.delete(response.id);
+				this.#writeFrame(response);
+				return true;
+			},
+		};
+	}
+
 	/**
 	 * Trigger OAuth login for the given provider.
 	 * The server will emit an `open_url` extension_ui_request for the auth URL.
@@ -1463,6 +1510,8 @@ export class RpcClient {
 	// =========================================================================
 
 	#rejectPromptWaiters(error: Error): void {
+		this.#pendingAskDialogs.clear();
+		this.#askDialogView = undefined;
 		for (const reject of this.#promptErrorWaiters.values()) reject(error);
 		this.#promptErrorWaiters.clear();
 		this.#promptResultWaiters.clear();
@@ -1494,6 +1543,12 @@ export class RpcClient {
 		}
 
 		if (isRpcExtensionUiRequest(data)) {
+			if (data.method === "ask") {
+				this.#pendingAskDialogs.set(data.id, data);
+				this.#askDialogView?.listener(data);
+			} else if (data.method === "cancel" && this.#pendingAskDialogs.delete(data.targetId)) {
+				this.#askDialogView?.listener(data);
+			}
 			for (const listener of this.#extensionUiListeners) {
 				listener(data);
 			}
