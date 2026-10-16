@@ -20,7 +20,7 @@ export interface SessionTeardownDeps {
 	 * work. This closes the async gap where deferred jobs could otherwise start
 	 * after a signal requested shutdown but before `disposeSession()` begins.
 	 */
-	beginDispose: () => void;
+	beginDispose: () => void | Promise<void>;
 	/**
 	 * Persist the snapshotted draft. Called even for an empty string so a
 	 * previously-persisted draft sidecar is cleared on a clean exit.
@@ -85,7 +85,8 @@ export function createSessionTeardown(deps: SessionTeardownDeps): SessionTeardow
 	};
 	const run = async (reason?: postmortem.Reason): Promise<void> => {
 		snapshotDraft();
-		deps.beginDispose();
+		const beginning = deps.beginDispose();
+		if (beginning) await beginning;
 		try {
 			await saveDraft();
 		} catch (err) {

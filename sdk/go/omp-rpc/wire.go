@@ -7492,6 +7492,21 @@ func (c Commands) OpenSession(ctx context.Context, p OpenSessionCommand) (OpenSe
 	return out, err
 }
 
+// BeginDispose sends "begin_dispose": Stop admitting new owner work before explicit shutdown.
+func (c Commands) BeginDispose(ctx context.Context) error {
+	return c.call(ctx, "begin_dispose", nil, 0, nil)
+}
+
+// DisposeSession sends "dispose_session": Dispose the runtime owner; view detachment does not call this.
+func (c Commands) DisposeSession(ctx context.Context) error {
+	return c.call(ctx, "dispose_session", nil, 0, nil)
+}
+
+// CheckpointSession sends "checkpoint_session": Close and seal the owner journal after restart admission.
+func (c Commands) CheckpointSession(ctx context.Context) error {
+	return c.call(ctx, "checkpoint_session", nil, 0, nil)
+}
+
 // SaveDraftCommand holds the parameters of "save_draft".
 type SaveDraftCommand struct {
 	Text string `json:"text"`

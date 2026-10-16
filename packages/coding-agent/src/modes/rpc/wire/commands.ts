@@ -95,6 +95,14 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		result: "OpenSessionResult",
 	},
 
+	{ name: "begin_dispose", doc: "Stop admitting new owner work before explicit shutdown." },
+	{
+		name: "dispose_session",
+		doc: "Dispose the runtime owner; view detachment does not call this.",
+		params: { "options?": "SessionDisposeOptions" },
+		clientOmit: ["options"],
+	},
+	{ name: "checkpoint_session", doc: "Close and seal the owner journal after restart admission." },
 	{
 		name: "save_draft",
 		doc: "Persist unsent editor text with the runtime session writer.",

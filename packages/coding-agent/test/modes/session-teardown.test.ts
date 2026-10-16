@@ -51,6 +51,29 @@ describe("createSessionTeardown", () => {
 		},
 	);
 
+	it("waits for the remote admission barrier before saving or disposing", async () => {
+		const admitted = Promise.withResolvers<void>();
+		const events: string[] = [];
+		const teardown = createSessionTeardown({
+			getDraftText: () => "typed 🐈",
+			beginDispose: () => {
+				events.push("begin");
+				return admitted.promise;
+			},
+			saveDraft: async text => {
+				events.push(text);
+			},
+			disposeSession: async () => {
+				events.push("dispose");
+			},
+		});
+		const pending = teardown();
+		expect(events).toEqual(["begin"]);
+		admitted.resolve();
+		await pending;
+		expect(events).toEqual(["begin", "typed 🐈", "dispose"]);
+	});
+
 	it("keeps a failed restart draft save retryable without disposing the active editor", async () => {
 		let editorText = "partial";
 		let attempts = 0;

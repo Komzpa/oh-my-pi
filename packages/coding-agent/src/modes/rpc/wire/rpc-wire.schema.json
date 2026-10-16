@@ -135,6 +135,41 @@
 				"clientOmit": []
 			},
 			{
+				"name": "begin_dispose",
+				"doc": "Stop admitting new owner work before explicit shutdown.",
+				"params": null,
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "dispose_session",
+				"doc": "Dispose the runtime owner; view detachment does not call this.",
+				"params": "DisposeSessionParams",
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": [
+					"options"
+				]
+			},
+			{
+				"name": "checkpoint_session",
+				"doc": "Close and seal the owner journal after restart admission.",
+				"params": null,
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "save_draft",
 				"doc": "Persist unsent editor text with the runtime session writer.",
 				"params": "SaveDraftParams",
@@ -2418,6 +2453,30 @@
 					"type": "boolean"
 				},
 				"solutionSpace": {
+					"type": "string"
+				}
+			}
+		},
+		"SessionDisposeOptions": {
+			"type": "object",
+			"properties": {
+				"mnemopiConsolidateTimeoutMs": {
+					"type": "number"
+				},
+				"drainTimeoutMs": {
+					"type": "number"
+				},
+				"reason": {
+					"enum": [
+						"pre_exit",
+						"exit",
+						"sigint",
+						"sigterm",
+						"sighup",
+						"uncaught_exception",
+						"unhandled_rejection",
+						"manual"
+					],
 					"type": "string"
 				}
 			}
@@ -6041,6 +6100,14 @@
 			"required": [
 				"sessionDir"
 			]
+		},
+		"DisposeSessionParams": {
+			"type": "object",
+			"properties": {
+				"options": {
+					"$ref": "#/$defs/SessionDisposeOptions"
+				}
+			}
 		},
 		"SaveDraftParams": {
 			"type": "object",

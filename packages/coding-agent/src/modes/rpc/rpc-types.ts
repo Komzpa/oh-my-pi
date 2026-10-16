@@ -10,7 +10,11 @@ import type { AssistantMessageEvent, Effort, ImageContent, Model, ToolExample } 
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
 import type { AgentSession, AgentSessionEvent, SessionStats } from "../../session/agent-session";
-import type { PromptOptions, RestoredQueuedMessage } from "../../session/agent-session-types";
+import type {
+	AgentSessionDisposeOptions,
+	PromptOptions,
+	RestoredQueuedMessage,
+} from "../../session/agent-session-types";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
 import type { FileEntry, SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { UsageLimitState } from "../../session/usage-limit";
@@ -56,6 +60,9 @@ export type RpcCommand =
 	| { id?: string; type: "open_session"; sessionDir: string; provider?: string; modelId?: string }
 
 	// State
+	| { id?: string; type: "begin_dispose" }
+	| { id?: string; type: "dispose_session"; options?: AgentSessionDisposeOptions }
+	| { id?: string; type: "checkpoint_session" }
 	| { id?: string; type: "save_draft"; text: string }
 	| { id?: string; type: "consume_draft" }
 	| { id?: string; type: "get_state" }
@@ -414,6 +421,9 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "open_session"; success: true; data: RpcOpenSessionResult }
 
 	// State
+	| { id?: string; type: "response"; command: "begin_dispose"; success: true }
+	| { id?: string; type: "response"; command: "dispose_session"; success: true }
+	| { id?: string; type: "response"; command: "checkpoint_session"; success: true }
 	| { id?: string; type: "response"; command: "save_draft"; success: true }
 	| { id?: string; type: "response"; command: "consume_draft"; success: true; data: { text: string | null } }
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }

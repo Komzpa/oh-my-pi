@@ -2938,6 +2938,16 @@ pub struct SessionPromptOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionDisposeOptions {
+	#[serde(rename = "mnemopiConsolidateTimeoutMs", default, skip_serializing_if = "Option::is_none")]
+	pub mnemopi_consolidate_timeout_ms: Option<f64>,
+	#[serde(rename = "drainTimeoutMs", default, skip_serializing_if = "Option::is_none")]
+	pub drain_timeout_ms: Option<f64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<SessionDisposeOptionsReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionAbortOptions {
 	#[serde(rename = "goalReason", default, skip_serializing_if = "Option::is_none")]
 	pub goal_reason: Option<SessionAbortOptionsGoalReason>,
@@ -5147,6 +5157,12 @@ pub struct OpenSessionParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DisposeSessionParams {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub options: Option<SessionDisposeOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SaveDraftParams {
 	pub text: String,
 }
@@ -5769,6 +5785,42 @@ impl SessionPromptOptionsAttribution {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionDisposeOptionsReason {
+	#[serde(rename = "pre_exit")]
+	PreExit,
+	#[serde(rename = "exit")]
+	Exit,
+	#[serde(rename = "sigint")]
+	Sigint,
+	#[serde(rename = "sigterm")]
+	Sigterm,
+	#[serde(rename = "sighup")]
+	Sighup,
+	#[serde(rename = "uncaught_exception")]
+	UncaughtException,
+	#[serde(rename = "unhandled_rejection")]
+	UnhandledRejection,
+	#[serde(rename = "manual")]
+	Manual,
+}
+
+impl SessionDisposeOptionsReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::PreExit => "pre_exit",
+			Self::Exit => "exit",
+			Self::Sigint => "sigint",
+			Self::Sigterm => "sigterm",
+			Self::Sighup => "sighup",
+			Self::UncaughtException => "uncaught_exception",
+			Self::UnhandledRejection => "unhandled_rejection",
+			Self::Manual => "manual",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SessionAbortOptionsGoalReason {
 	#[serde(rename = "interrupted")]
 	Interrupted,
@@ -6190,6 +6242,51 @@ impl Command for OpenSessionCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<OpenSessionResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Stop admitting new owner work before explicit shutdown.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct BeginDisposeCommand {}
+
+impl Command for BeginDisposeCommand {
+	const NAME: &'static str = "begin_dispose";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
+	}
+}
+
+/// Dispose the runtime owner; view detachment does not call this.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct DisposeSessionCommand {}
+
+impl Command for DisposeSessionCommand {
+	const NAME: &'static str = "dispose_session";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
+	}
+}
+
+/// Close and seal the owner journal after restart admission.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct CheckpointSessionCommand {}
+
+impl Command for CheckpointSessionCommand {
+	const NAME: &'static str = "checkpoint_session";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
 	}
 }
 

@@ -2139,13 +2139,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#signalTeardown = createSessionTeardown({
 			getDraftText: () => this.#inputController.getDraftText(),
 			beginDispose: () => {
-				this.session.beginDispose();
+				void this.#sessionConnection.beginDispose();
 				this.statusLine.dispose();
 			},
 			saveDraft: text => this.#sessionConnection.saveDraft(text),
 			disposeSession: async reason => {
 				await this.#btwController.dispose();
-				await this.session.dispose({
+				await this.#sessionConnection.disposeSession({
 					mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 					reason,
 				});
@@ -7512,10 +7512,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.#signalTeardown) await this.#signalTeardown.saveDraft();
 		else await this.#sessionConnection.saveDraft(this.#inputController.getDraftText());
 		// Release the writer claim before replacing the runtime with the exact checkpoint.
-		await this.sessionManager.close();
+		await this.#sessionConnection.checkpoint();
 		this.ui.stop();
-		// The checkpoint is final: teardown must not append to or fork the journal.
-		this.sessionManager.seal();
 		this.#beginClose();
 		try {
 			await this.#teardown();
@@ -7595,7 +7593,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (this.#signalTeardown) {
 				await this.#signalTeardown();
 			} else {
-				await this.session.dispose({
+				await this.#sessionConnection.disposeSession({
 					mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 				});
 			}

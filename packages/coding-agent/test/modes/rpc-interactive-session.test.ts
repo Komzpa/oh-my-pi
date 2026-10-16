@@ -1,7 +1,7 @@
 import { expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { mkdir, rmdir } from "node:fs/promises";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
 import { createRpcInteractiveSessionConnection } from "../../src/modes/rpc/interactive-session";
 import { RpcClient, type RpcAgentProcess, type RpcAskDialogRequest } from "../../src/modes/rpc/rpc-client";
 
@@ -349,6 +349,71 @@ it("persists and consumes the owner draft across view leases without submitting 
 		expect(await Bun.file(directory.join("started.json")).exists()).toBe(false);
 		expect(await Bun.file(directory.join("effect.json")).exists()).toBe(false);
 		second.disconnect();
+	} finally {
+		await client.stop();
+	}
+}, 20_000);
+
+it("explicit owner disposal cancels a pending ask after a view-only detach kept it alive", async () => {
+	using directory = TempDir.createSync("@pi-rpc-owner-dispose-");
+	const client = new RpcClient({
+		cliPath: fixture,
+		env: { RPC_OWNER_TEST_DIR: directory.path(), RPC_OWNER_TEST_ASK: "1" },
+	});
+	await client.start();
+	try {
+		await client.setAskDialog(true);
+		const first = await createRpcInteractiveSessionConnection(client);
+		const asked = Promise.withResolvers<RpcAskDialogRequest>();
+		first.attachAskDialogView(asked.resolve);
+		const turn = first.prompt("ask until explicitly shut down").catch((error: Error) => error);
+		const request = await asked.promise;
+		first.disconnect();
+		expect(await Bun.file(directory.join("question-error")).exists()).toBe(false);
+		const second = await createRpcInteractiveSessionConnection(client);
+		const replayed = Promise.withResolvers<RpcAskDialogRequest>();
+		second.attachAskDialogView(replayed.resolve);
+		expect(await replayed.promise).toEqual(request);
+		await second.beginDispose();
+		await second.saveDraft("сохранить перед выходом 🐈");
+		await second.disposeSession({
+			reason: postmortem.Reason.MANUAL,
+			drainTimeoutMs: 100,
+			mnemopiConsolidateTimeoutMs: 0,
+		});
+		await turn;
+		expect(await Bun.file(directory.join("question-error")).text()).toContain("Session owner shut down");
+		expect(await Bun.file(directory.join("answer.json")).exists()).toBe(false);
+		const sessionFile = await Bun.file(directory.join("session-file")).text();
+		expect(await Bun.file(path.join(sessionFile.slice(0, -".jsonl".length), "draft.txt")).text()).toBe(
+			"сохранить перед выходом 🐈",
+		);
+		second.disconnect();
+		const stale: RpcAskDialogRequest[] = [];
+		const lease = client.attachAskDialogView(request => stale.push(request));
+		await Promise.resolve();
+		expect(stale).toEqual([]);
+		lease.disconnect();
+	} finally {
+		await client.stop();
+	}
+}, 20_000);
+
+it("checkpoints the owner journal without losing its draft or rewriting its history", async () => {
+	using directory = TempDir.createSync("@pi-rpc-owner-checkpoint-");
+	const client = new RpcClient({ cliPath: fixture, env: { RPC_OWNER_TEST_DIR: directory.path() } });
+	await client.start();
+	try {
+		const view = await createRpcInteractiveSessionConnection(client);
+		const sessionFile = await Bun.file(directory.join("session-file")).text();
+		const before = await Bun.file(sessionFile).text();
+		await view.saveDraft("checkpoint 🐈");
+		await view.checkpoint();
+		expect(await Bun.file(sessionFile).text()).toBe(before);
+		expect(await Bun.file(path.join(sessionFile.slice(0, -".jsonl".length), "draft.txt")).text()).toBe(
+			"checkpoint 🐈",
+		);
+		view.disconnect();
 	} finally {
 		await client.stop();
 	}
