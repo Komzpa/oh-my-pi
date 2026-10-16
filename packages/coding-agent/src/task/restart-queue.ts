@@ -515,7 +515,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			await this.#session.reconcileRestartNotices();
 
 			if (!stored || record?.state === "completed") {
-				await restoreSubagentsAfterRestart(this.#session, record ? { requestId: record.requestId } : undefined);
+				await this.#measureStage(record, "restore_children", () =>
+					restoreSubagentsAfterRestart(this.#session, record ? { requestId: record.requestId } : undefined),
+				);
 			}
 			if (
 				!pendingAsk &&
@@ -782,17 +784,19 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			run.record = await this.#transition(run, "draining");
 			const safe = await this.#settleAndFlush(run);
 			if (!safe || run.cancelled || this.#disposed) return;
-			await captureSubagentsForRestart(this.#session, {
-				runningAgentIds: run.runningAgentIds,
-				requestId: run.record.requestId,
-			});
+			await this.#measureStage(run.record, "capture_children", () =>
+				captureSubagentsForRestart(this.#session, {
+					runningAgentIds: run.runningAgentIds,
+					requestId: run.record.requestId,
+				}),
+			);
 			if (run.cancelled || this.#disposed) return;
 			run.record = await this.#transition(run, "checkpointed");
 			if (run.cancelled || this.#disposed) return;
 			run.irreversible = true;
 			run.record = await this.#transition(run, "restarting");
 			run.callbackStarted = true;
-			await this.#restart();
+			await this.#measureStage(run.record, "replace_runtime", () => this.#restart());
 			if (!this.#disposed) run.record = await this.#transition(run, "completed");
 			if (!this.#disposed && run.record.state === "completed") {
 				this.#notifySession(run, this.#session);
@@ -822,16 +826,18 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			if (run.cancelled || this.#disposed) return false;
 			const notifications = run.notifications.splice(0);
 			await Promise.all(notifications);
-			const settled = await Promise.race([
-				this.#rootLease(run)
-					.waitForQuiescence()
-					.then(() => true),
-				run.cancelSignal.then(() => false),
-			]);
+			const settled = await this.#measureStage(run.record, "root_quiescence", () =>
+				Promise.race([
+					this.#rootLease(run)
+						.waitForQuiescence()
+						.then(() => true),
+					run.cancelSignal.then(() => false),
+				]),
+			);
 			if (!settled || run.cancelled || this.#disposed) return false;
-			await this.#waitForWorkerGrace(run);
+			await this.#measureStage(run.record, "worker_grace", () => this.#waitForWorkerGrace(run));
 			if (run.cancelled || this.#disposed) return false;
-			await this.#flushSessions(run);
+			await this.#measureStage(run.record, "flush_sessions", () => this.#flushSessions(run));
 			let added = false;
 			for (const child of getLiveSubagentsForRestart(this.#session)) {
 				if (run.children.has(child.id)) continue;
@@ -839,6 +845,36 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				added = true;
 			}
 			if (!added) return true;
+		}
+	}
+
+	async #measureStage<T>(
+		record: RestartRequestRecord | undefined,
+		stage: string,
+		operation: () => Promise<T>,
+	): Promise<T> {
+		const started = performance.now();
+		const context = {
+			requestId: record?.requestId,
+			sessionId: this.#session.sessionManager.getSessionId(),
+			stage,
+		};
+		logger.info("Restart stage started", {
+			...context,
+			requestElapsedMs: record ? Math.max(0, Date.now() - record.requestedAt) : undefined,
+		});
+		let outcome = "failed";
+		try {
+			const result = await operation();
+			outcome = "settled";
+			return result;
+		} finally {
+			logger.info("Restart stage finished", {
+				...context,
+				outcome,
+				durationMs: performance.now() - started,
+				requestElapsedMs: record ? Math.max(0, Date.now() - record.requestedAt) : undefined,
+			});
 		}
 	}
 

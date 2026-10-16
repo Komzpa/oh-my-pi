@@ -186,6 +186,68 @@ afterEach(async () => {
 });
 
 describe("subagent restart recovery", () => {
+	it("revives the next child as soon as a slot frees while another child is stalled", async () => {
+		const cwd = makeTempDir("@pi-restart-recovery-slots-");
+		const { manager, file } = await createRootSession(cwd, path.join(cwd, "sessions"));
+		const root = makeTestSession(manager).session;
+		registerRoot(AgentRegistry.global(), root, file);
+		const children: Transcript[] = [];
+		for (let index = 0; index < 5; index++) {
+			const child = await createTranscript(cwd, file.slice(0, -6), { task: `assignment ${index}` });
+			children.push(child);
+			const childManager = track(await SessionManager.open(child.sessionFile));
+			AgentRegistry.global().register({
+				id: child.id,
+				displayName: child.id,
+				kind: "sub",
+				parentId: MAIN_AGENT_ID,
+				session: makeTestSession(childManager).session,
+				sessionFile: child.sessionFile,
+				status: "idle",
+			});
+		}
+		await captureSubagentsForRestart(root);
+		await Promise.all([...managers].map(value => value.close()));
+		AgentLifecycleManager.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
+		IrcBus.resetGlobalForTests();
+		const reopened = track(await SessionManager.open(file));
+		const successor = makeTestSession(reopened).session;
+		registerRoot(AgentRegistry.global(), successor, file);
+		const release = Promise.withResolvers<void>();
+		const fifthStarted = Promise.withResolvers<void>();
+		const started: string[] = [];
+		let active = 0;
+		let peak = 0;
+		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+			async ref => async () => {
+				started.push(ref.id);
+				peak = Math.max(peak, ++active);
+				try {
+					if (started.length === 1) await release.promise;
+					if (started.length === 5) fifthStarted.resolve();
+					return makeTestSession(track(await SessionManager.open(ref.sessionFile!))).session;
+				} finally {
+					active--;
+				}
+			},
+			() => 0,
+		);
+		const restoring = restoreSubagentsAfterRestart(successor);
+		let filledVacancy = false;
+		try {
+			filledVacancy = await Promise.race([fifthStarted.promise.then(() => true), Bun.sleep(500).then(() => false)]);
+		} finally {
+			release.resolve();
+		}
+		const report = await restoring;
+		expect(filledVacancy).toBe(true);
+		expect(peak).toBeLessThanOrEqual(4);
+		expect(new Set(started).size).toBe(5);
+		expect(report.restoredIdle.sort()).toEqual(children.map(child => child.id).sort());
+		expect(report.failures).toEqual([]);
+	});
+
 	it("restores same identities across fresh registries and sends one continuation only", async () => {
 		const cwd = makeTempDir("@pi-restart-recovery-");
 		const { manager: rootManager, file: rootFile } = await createRootSession(cwd, path.join(cwd, "sessions"));

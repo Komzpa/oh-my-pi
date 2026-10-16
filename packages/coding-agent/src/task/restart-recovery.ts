@@ -929,11 +929,17 @@ export async function restoreSubagentsAfterRestart(
 			report.failures.push({ id: child.id, reason: error instanceof Error ? error.message : String(error) });
 		}
 	};
-	// Child session I/O is independent; bound concurrent revival to avoid a
-	// startup memory spike while preventing one slow child from serializing all others.
-	for (let offset = 0; offset < childrenToRestore.length; offset += 4) {
-		await Promise.all(childrenToRestore.slice(offset, offset + 4).map(restoreChild));
-	}
+	// Refill each free slot immediately: a slow child must not hold the next
+	// group behind a batch barrier. Keep the same four-session memory bound.
+	let nextChild = 0;
+	await Promise.all(
+		Array.from({ length: Math.min(4, childrenToRestore.length) }, async () => {
+			while (nextChild < childrenToRestore.length) {
+				const child = childrenToRestore[nextChild++]!;
+				await restoreChild(child);
+			}
+		}),
+	);
 
 	emitReportNotice(rootSession, report);
 	return report;
