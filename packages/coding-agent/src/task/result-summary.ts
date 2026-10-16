@@ -65,7 +65,13 @@ export function formatTaskResultSummary(
 	// "parked" status must not read as resumable.
 	const refStatus = AgentRegistry.global().get(result.id)?.status;
 	const resumable = result.aborted && !result.isolated && (refStatus === "idle" || refStatus === "parked");
+	// Abandonment must be visible on a successful run too: `stderr` is not
+	// shown for completed results, so it rides in the envelope itself.
+	const abandonedWarning = result.abandonedJobs?.length
+		? `Terminal yield abandoned running processes: ${result.abandonedJobs.map(job => job.id).join(", ")}. Task cleanup cancels unfinished owner jobs.`
+		: undefined;
 	return prompt.render(taskSummaryTemplate, {
+		abandonedWarning: abandonedWarning === undefined ? undefined : escapeHarnessTags(abandonedWarning),
 		agentName: result.agent,
 		id: result.id,
 		status,

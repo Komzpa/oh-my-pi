@@ -190,6 +190,12 @@
 - Fixed isolated tasks failing on linked worktrees with initialized recursive submodules and leaving updated submodule pins unreachable after cleanup ([#15457](https://github.com/can1357/oh-my-pi/issues/15457))
 - Fixed `/tan` missing the parent's prompt cache by advertising `xd://` tools top-level and omitting `ask` ([#15578](https://github.com/can1357/oh-my-pi/issues/15578)).
 
+### Fixed
+
+- Fixed a subagent's later terminal `yield` calls replacing the already-accepted result or looping on "Result submitted." forever; argument validation still runs before the first acceptance, and any later terminal yield in the same monitored run returns an explicit error telling the agent to stop, while a follow-up or IRC wake turn gets a fresh first acceptance; two concurrent sibling terminal yields accept only one ([#108](https://github.com/Komzpa/oh-my-pi/pull/108)).
+- Terminal `yield` now refuses once while a worker owns any running owner job (bash, eval, task) or nonpersistent service (and when service state cannot be verified), naming their commands and elapsed time. A repeated yield with the same live processes records `abandonedJobs` before normal owner-job cleanup, and the task result envelope carries a warning for it; auto-backgrounded bash results explicitly say the command is still running and worker-owned; typed non-`result` terminal yields with empty data are retried too, and schema-valid empty values are accepted ([#108](https://github.com/Komzpa/oh-my-pi/pull/108)).
+- Fixed an accepted terminal `yield` submitted through the eval bridge (JS/Python `callSessionTool`) never reaching the run monitor: the run now ends and the parent receives exactly one completion, the same as a direct tool call, with same-run duplicates still rejected and continuations getting a fresh result slot; late refusals from a previous run cannot reopen its successor's accepted result or spend its first live-process warning ([#108](https://github.com/Komzpa/oh-my-pi/pull/108)).
+
 ## [18.10.4] - 2026-10-13
 
 ### Added
@@ -1786,3 +1792,36 @@
 - Element handles returned by `tab.waitForSelector`, `tab.$`, and related selector helpers can now be passed as arguments to `tab.evaluate` inside `tab.run` instead of failing with "JSHandles can be evaluated only in the context they were created".
 
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@447469057c2b](https://github.com/can1357/oh-my-pi/blob/447469057c2bd6b4b6c6192c4737fa874e4b4bd6/packages/coding-agent/CHANGELOG.md).
+## [18.2.2] - 2026-09-16
+
+### Added
+
+- Expanded built-in secret obfuscation to detect credentials in connection URLs regardless of environment-variable name, including PostgreSQL, MongoDB, MySQL, Redis, AMQP, and other supported schemes.
+- Expanded built-in secret obfuscation to cover AWS access keys, Google API keys, Slack, npm, Stripe secret/restricted keys and webhook secrets, Hugging Face and SendGrid tokens, JWTs, Bearer tokens, and PEM private keys.
+- Added the `tui.titleSpinner` setting to choose the terminal-title working-state animation (`braille`, `dots`, `line`, or `pulse`), alongside the existing `tui.titleState` toggle.
+
+### Changed
+
+- Session-stop hooks that block with a reason now keep the session running until they allow it or the user interrupts; explicit aborts are no longer restarted by a stop hook.
+- Corrupt agent and prompt-history databases are now backed up before fresh stores are created, allowing startup to continue; credentials may need to be entered again.
+- Agent and history database startup errors now identify the affected database file.
+- Terminal-title spinner animations now work on native Windows; WSL retains the static separator to avoid unnecessary CPU usage.
+- Explicit model refreshes now re-evaluate command-backed API keys and headers, allowing rotated credentials to take effect without restarting.
+- Background job entries are removed shortly after their results are consumed or recovered, while unconsumed jobs remain available for inspection.
+
+### Fixed
+
+- Fixed the transcript collapsing into a compact no-spacing layout whenever the prompt, todo HUD, or other below-transcript chrome grew a few rows; the live tail now scrolls off the top instead.
+- Fixed transcript layout and rebuilding issues that could collapse blank rows, leave tool calls displayed on one line, or show stale fragments after navigation, display changes, or compaction ([#12177](https://github.com/can1357/oh-my-pi/pull/12177) by [@shivamklr](https://github.com/shivamklr)).
+- Fixed the `security-reviewer` agent so valid findings with anchors and remediation details are accepted.
+- Stopping a subagent from Agent Hub now settles and reports its parent background job instead of leaving `hub wait` blocked indefinitely.
+- Fixed prewalk handoff detection after edits or writes dispatched through Code Mode eval cells.
+- Reduced main-thread stalls while streaming large edits by deferring AST-based matching until the edit is complete.
+- Corrected the `/handoff` description so it accurately reflects that the command creates a handoff document and compacts the current session.
+- Deferred misleading cold-cache `retry.fallbackChains` warnings until provider discovery completes.
+- Fixed `--prewalk-into @default` so an explicitly selected startup model does not replace the configured default role, including ordered fallbacks and discovery-backed candidates.
+- A corrupted or externally modified session file no longer leaves the session impossible to close; a subsequent Ctrl+C exits without rewriting the session log.
+- Fixed silent MCP requests being terminated by an undeclared idle timeout; closing a legacy SSE connection now also cancels pending requests and notifications.
+- Fixed browser reuse for Chromium installed behind Linux wrapper scripts and prevented duplicate launches when a profile is locked ([#12236](https://github.com/can1357/oh-my-pi/pull/12236) by [@shivamklr](https://github.com/shivamklr)).
+
+Older entries are archived in [packages/coding-agent/CHANGELOG.md@1e3cc3ab94d0](https://github.com/can1357/oh-my-pi/blob/1e3cc3ab94d05617e79fb12d95711d58161747d3/packages/coding-agent/CHANGELOG.md).

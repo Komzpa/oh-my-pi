@@ -2293,6 +2293,15 @@ export interface ReviewData {
 	summary?: ReviewSummary;
 }
 
+/** Worker-owned processes still running when a warned terminal yield was accepted. */
+export interface AbandonedJob {
+	id: string;
+	type: "bash" | "task" | "eval" | "service";
+	command: string;
+	startedAt: number;
+	elapsedMs: number;
+}
+
 /** Details extracted from a subagent `yield` tool call for final-result assembly and task rendering. */
 export interface YieldItem {
 	data?: unknown;
@@ -2310,6 +2319,7 @@ export interface YieldItem {
 	 * during post-mortem validation.
 	 */
 	schemaOverridden?: boolean;
+	abandonedJobs?: AbandonedJob[];
 }
 
 /** Progress tracking for a single agent */
@@ -2428,6 +2438,8 @@ export interface SingleResult {
 	 * selected an output schema or strict schema mode.
 	 */
 	structuredOutput?: StructuredSubagentOutput;
+	/** Explicit abandonment at terminal acceptance; teardown still cancels owner jobs. */
+	abandonedJobs?: AbandonedJob[];
 	durationMs: number;
 	/** Cumulative input + output + cacheWrite tokens across all turns. Excludes cacheRead (re-reads cached context every turn, making cumulative sum misleading). */
 	tokens: number;
