@@ -3551,7 +3551,10 @@ func (v *NotifyType) UnmarshalJSON(data []byte) error {
 	return unknownValue("NotifyType", s)
 }
 
-type AgentStartEvent struct{}
+type AgentStartEvent struct {
+	// Calls of an unpaired assistant tail a continued run executes before its first model request.
+	ResumedToolCallIds []string `json:"resumedToolCallIds,omitempty"`
+}
 
 func (v *AgentStartEvent) UnmarshalJSON(data []byte) error {
 	return decodeWith(data, "AgentStartEvent", v.decodeFrom)
@@ -3561,6 +3564,7 @@ func (v *AgentStartEvent) decodeFrom(raw map[string]json.RawMessage) error {
 	var out AgentStartEvent
 	d := fieldDecoder{raw: raw, owner: "AgentStartEvent"}
 	d.constant("type", "agent_start")
+	d.optional("resumedToolCallIds", &out.ResumedToolCallIds)
 	if d.err != nil {
 		return d.err
 	}
