@@ -47,6 +47,52 @@ describe("AgentSession restart drain", () => {
 		removeSyncWithRetries(fixtureDir);
 	});
 
+	it("settles an interrupted provider during drain and preserves queued input on cancel", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const started = Promise.withResolvers<void>();
+		const mock = createMockModel({
+			responses: [
+				{ content: ["interrupted provider"], delayMs: 2000 },
+				{ content: ["continued after cancelled restart"] },
+			],
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			streamFn: (...args) => {
+				started.resolve();
+				return mock.stream(...args);
+			},
+			convertToLlm,
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.create(fixtureDir, fixtureDir),
+			settings: Settings.isolated({ "launch.enabled": false }),
+			modelRegistry,
+		});
+		const run = session.prompt("Continue the task after restarting");
+		await started.promise;
+		const lease = session.beginRestartDrain();
+		agent.abort();
+		await lease.waitForQuiescence();
+		await run;
+		expect(mock.calls).toHaveLength(1);
+		await session.prompt("Preserve this queued input");
+		lease.release();
+		await session.waitForIdle();
+		expect(mock.calls).toHaveLength(2);
+		expect(
+			session.messages.some(
+				message =>
+					message.role === "assistant" &&
+					message.content.some(
+						block => block.type === "text" && block.text === "continued after cancelled restart",
+					),
+			),
+		).toBe(true);
+	}, 1500);
+
 	it("releases native wait on drain without cancelling or consuming its child job", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const manager = new AsyncJobManager({});
