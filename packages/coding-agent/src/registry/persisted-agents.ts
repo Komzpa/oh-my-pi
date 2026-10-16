@@ -560,6 +560,7 @@ export async function ensurePersistedRoster(
 	registry: AgentRegistry,
 	sessionFileHint?: string | null,
 	requestedAgentId?: string,
+	capturedSessionFiles?: readonly string[],
 ): Promise<string | undefined> {
 	let root: string | undefined;
 	try {
@@ -573,6 +574,21 @@ export async function ensurePersistedRoster(
 	if (!root) return undefined;
 
 	const taggedRegistry = registry as RegistryWithPersistedRosterLatches;
+	if (capturedSessionFiles) {
+		const tail = taggedRegistry[kPersistedRosterScanTail] ?? Promise.resolve();
+		const scan = tail.then(() =>
+			registerPersistedSubagents(registry, root, {
+				hydrateHistory: false,
+				sessionFiles: capturedSessionFiles,
+			}),
+		);
+		taggedRegistry[kPersistedRosterScanTail] = scan.then(
+			() => {},
+			() => {},
+		);
+		await scan;
+		return root;
+	}
 	let latches = taggedRegistry[kPersistedRosterLatches];
 	if (!latches) {
 		latches = new Map();
@@ -672,6 +688,8 @@ export async function registerPersistedSubagents(
 		owned?: Map<string, string>;
 		/** Keep this requested parked ref resident for the current resume attempt. */
 		requestedAgentId?: string;
+		/** Restart handoff: inspect only captured transcripts and their ancestors. */
+		sessionFiles?: readonly string[];
 	} = {},
 ): Promise<void> {
 	if (!sessionFile?.endsWith(".jsonl")) return;
@@ -681,6 +699,22 @@ export async function registerPersistedSubagents(
 	const vibeOwnedIds = await readPersistedVibeChildIds(sessionFile, shouldContinue);
 	if (!shouldContinue()) return;
 	const root = sessionFile.slice(0, -6);
+	const selectedFiles = options.sessionFiles
+		? new Set(
+				options.sessionFiles
+					.filter(file => isAgentSessionFileInRootTree(file, sessionFile))
+					.map(file => path.resolve(file)),
+			)
+		: undefined;
+	if (selectedFiles) {
+		for (const file of [...selectedFiles]) {
+			let parent = `${path.dirname(file)}.jsonl`;
+			while (isAgentSessionFileInRootTree(parent, sessionFile)) {
+				selectedFiles.add(parent);
+				parent = `${path.dirname(parent)}.jsonl`;
+			}
+		}
+	}
 	const transcripts: PersistedTranscript[] = [];
 	await registerPersistedSubagentsFromDir(
 		registry,
@@ -691,8 +725,11 @@ export async function registerPersistedSubagents(
 		shouldContinue,
 		sessionFile,
 		options.owned,
+		selectedFiles,
 	);
 	if (!shouldContinue()) return;
+	// A partial scan must neither evict unrelated refs nor mark the full roster loaded.
+	if (selectedFiles) return;
 	const parked = registry
 		.list()
 		.filter(
@@ -748,6 +785,7 @@ async function registerPersistedSubagentsFromDir(
 	shouldContinue: () => boolean,
 	rootSessionFile: string,
 	owned?: Map<string, string>,
+	selectedFiles?: ReadonlySet<string>,
 ): Promise<void> {
 	if (!shouldContinue()) return;
 	let entries: fs.Dirent[];
@@ -773,6 +811,7 @@ async function registerPersistedSubagentsFromDir(
 		if (!shouldContinue()) return;
 		if (!entry.isFile() || !entry.name.endsWith(".jsonl") || entry.name.includes(".bak")) continue;
 		const sessionFile = path.join(dir, entry.name);
+		if (selectedFiles && !selectedFiles.has(path.resolve(sessionFile))) continue;
 		// The advisor transcript is observability-only: register it as a non-peer
 		// `advisor` kind under its owning session so the Hub can show its read-only
 		// transcript, but it never joins agent-facing rosters and is not revivable.
@@ -908,6 +947,7 @@ async function registerPersistedSubagentsFromDir(
 				shouldContinue,
 				rootSessionFile,
 				owned,
+				selectedFiles,
 			);
 		}
 	}
