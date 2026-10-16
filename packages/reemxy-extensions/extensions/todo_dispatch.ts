@@ -3709,7 +3709,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (workerIds.length === 0) return `retrospective due (${sprintState.retroDueReason}): no new eligible worker reports. Review the triggering incident using the lead's tool results, plan history and available receipts; do not fabricate worker reports or skip the incident review. Then retro-facilitator (skill://chief-of-staff Retrospective) uses that evidence to identify what happened and the next corrective action. Create a mechanism row editing a skill or prompt only when the evidence identifies an actual instruction defect; otherwise record that no instruction change is warranted.`;
     return `retrospective due (${sprintState.retroDueReason}): read the Retro block in the final answer of the ${workerIds.length} workers who finished since ${safeTimestamp(since, timeZone)} from agent://<id> (do not write to them; a missing block is recorded as missing), then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}; for each red item, identify which instruction line (skill or prompt) missed it and output a mechanism row that edits that instruction.`;
   };
-  const planCheck = (ctx: ExtensionContext, pending: unknown[] = []): string | null => {
+  const planCheck = (ctx: ExtensionContext, pending: unknown[] = [], problemsOnly = false): string | null => {
     pendingSizingNoticeIds = [];
     const now = Date.now();
     const decision = currentDecision(ctx, now, pending);
@@ -3941,6 +3941,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ...(unread.length ? ["unread-receipts"] : []),
       ...(overdue.length ? ["missed-eta"] : []),
     ], false);
+    // Background ticks must not wake the chief for healthy worker telemetry.
+    if (problemsOnly && problems.length === 0) return null;
     return problems.length
       ? `PLAN CHECK: ${problems.length} problem(s). ${problems.map((line, i) => `(${i + 1}) ${line}`).join(" ")}.${workerStatus ? ` ${workerStatus}` : ""} Fix them with the pass of skill://chief-of-staff.`
       : workerStatus
@@ -3969,7 +3971,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return;
     if (singleWriterLane || pauseGate?.paused || !isMain(ctx) || !pi.getActiveTools().includes("task") || ctx.hasPendingMessages()) return;
     await refreshLiveWorkerModels(ctx);
-    const check = planCheck(ctx);
+    const check = planCheck(ctx, [], true);
     if (!check || check === PLAN_CHECK_CLEAN) return;
     // Once per distinct problem list, and again after PLAN_REPEAT_MS while the same problems stand:
     // a per-minute repeat made the model restate its status every minute (22:08-22:11), while

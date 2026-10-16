@@ -110,7 +110,7 @@ function forecastTodoPlan(phases: WaitTestPhase[], { now }: { now: number }) {
 	};
 }
 
-async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initialJobs: unknown[] = []) {
+async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initialJobs: unknown[] = [], forecastLeadMs = 0) {
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	const notices: Array<{ customType: string; content: string }> = [];
 	const entries: Array<{ type: "custom"; customType: string; data?: unknown }> = [];
@@ -123,7 +123,7 @@ async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initia
 		appendEntry: (customType: string, data?: unknown) => entries.push({ type: "custom", customType, data }),
 		sendMessage: (message: { customType: string; content: string }) => notices.push(message),
 		pi: {
-			forecastTodoPlan,
+			forecastTodoPlan: (phases, options) => forecastTodoPlan(phases, { ...options, now: options.now + forecastLeadMs }),
 			formatPlanForecast,
 			formatTaskForecast,
 			getLatestTodoPhasesFromEntries: () => phases,
@@ -172,6 +172,31 @@ async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initia
 		shutdown: () => handlers.get("session_shutdown")?.({}, ctx),
 	};
 }
+
+test("healthy worker telemetry does not wake the chief on a plan tick", async () => {
+	const previousLane = process.env.OMP_LANE_UNIT;
+	delete process.env.OMP_LANE_UNIT;
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000, [], 60 * 60_000);
+	h.ctx.getAsyncJobSnapshot = () => ({
+		running: [{ id: "worker-a", type: "task", status: "running", label: "worker-a", startTime: now }],
+		recent: [], nonJobAgents: [],
+	});
+	try {
+		await h.tick();
+		await h.tick();
+		expect(h.notices).toEqual([]);
+		// A newly unstaffed ready row is still actionable and must wake the chief.
+		h.ctx.getAsyncJobSnapshot = () => ({ running: [], recent: [], nonJobAgents: [] });
+		await h.tick();
+		expect(h.notices.some(notice => notice.content.includes("problem(s)"))).toBe(true);
+	} finally {
+		h.shutdown();
+		if (previousLane === undefined) delete process.env.OMP_LANE_UNIT;
+		else process.env.OMP_LANE_UNIT = previousLane;
+	}
+});
 
 test("repeated retro and checkpoint notices do not send another chief turn", async () => {
 	const previousLane = process.env.OMP_LANE_UNIT;
