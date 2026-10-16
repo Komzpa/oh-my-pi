@@ -95,6 +95,31 @@ describe("EventController message_update coalescing", () => {
 		expect(unsubscribe).toHaveBeenCalledTimes(1);
 	});
 
+	it.each([false, true])(
+		"keeps focused-worker loader ownership when the connection streams and worker streaming is %s",
+		async workerStreaming => {
+			const stop = vi.fn();
+			const ctx = createInteractiveModeContext({
+				session: { isStreaming: false },
+				viewSession: { isStreaming: workerStreaming },
+				loadingAnimation: { stop },
+			});
+			const connection: InteractiveSessionConnection = {
+				prompt: async () => true,
+				abort: async () => {},
+				subscribe: () => () => {},
+				isStreaming: true,
+				isCompacting: false,
+				hasPostPromptWork: false,
+			};
+			const controller = new EventController(ctx, connection);
+			await controller.handleEvent({ type: "agent_end", messages: [] });
+			expect(stop).toHaveBeenCalledTimes(workerStreaming ? 0 : 1);
+			expect(ctx.loadingAnimation === undefined).toBe(!workerStreaming);
+			expect(ctx.composer.setRunActive).toHaveBeenLastCalledWith(workerStreaming);
+		},
+	);
+
 	beforeEach(async () => {
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true, overrides: { "display.smoothStreaming": false } });
