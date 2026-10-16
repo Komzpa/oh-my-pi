@@ -4591,6 +4591,10 @@ export class SessionManager {
 		storage: SessionStorage = new FileSessionStorage(),
 		options?: { initialCwd?: string; parentSession?: string; suppressBreadcrumb?: boolean; throwIfMissing?: boolean },
 	): Promise<SessionManager> {
+		const before =
+			options?.throwIfMissing && storage instanceof FileSessionStorage
+				? fs.statSync(filePath, { bigint: true })
+				: undefined;
 		const probed = await SessionManager.#loadForResume(filePath, storage, {
 			throwIfMissing: options?.throwIfMissing,
 		});
@@ -4614,15 +4618,22 @@ export class SessionManager {
 					: path.dirname(path.resolve(filePath)));
 			const manager = new SessionManager(cwd, dir, true, storage);
 			manager.#suppressBreadcrumb = options?.suppressBreadcrumb === true;
-			// Freshness gate for fail-closed callers (revive): the cwd probe above
-			// yields, so re-read after it and adopt only the fresh snapshot. A
-			// transcript deleted, truncated, or replaced mid-probe then fails
-			// closed here (ENOENT / holds-no-entries, without minting) instead of
-			// reviving stale history. Other callers keep the single probe read.
-			if (options?.throwIfMissing) probed.index?.clear();
-			loaded = options?.throwIfMissing
-				? await SessionManager.#loadForResume(filePath, storage, { throwIfMissing: true })
-				: probed;
+			// The cwd probe yields. Reuse the parsed index only while the source is
+			// unchanged; replacement, truncation, or append still requires a fresh load.
+			// Non-file storage retains its own read contract.
+			const after = before ? fs.statSync(filePath, { bigint: true }) : undefined;
+			const unchanged =
+				before &&
+				after &&
+				before.dev === after.dev &&
+				before.ino === after.ino &&
+				before.size === after.size &&
+				before.mtimeNs === after.mtimeNs &&
+				before.ctimeNs === after.ctimeNs;
+			if (options?.throwIfMissing && !unchanged) {
+				probed.index?.clear();
+				loaded = await SessionManager.#loadForResume(filePath, storage, { throwIfMissing: true });
+			}
 			await manager.#setSessionFile(filePath, loaded, {
 				throwIfMissing: options?.throwIfMissing,
 				newSession: { parentSession: options?.parentSession },
