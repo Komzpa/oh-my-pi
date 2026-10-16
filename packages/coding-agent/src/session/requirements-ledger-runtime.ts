@@ -304,7 +304,11 @@ export class RequirementsLedgerRuntime {
 			if (!isRecord(item) || item.agent !== "qa-auditor" || typeof item.task !== "string") continue;
 			const assignedRows = scopes[index]!;
 			const ids = requirementScopes[index]!;
-			if (ids.length === 0) continue;
+			if (ids.length === 0 && !requirements.some(requirement => requirement.classification === "linked")) continue;
+			if (ids.length === 0)
+				throw new Error(
+					`QA audit ${String(item.name ?? "(unnamed)")} has no linked requirement scope. Set requirementIds to the linked requirement IDs, or match name to the Todo row's schedule.owner before dispatch.`,
+				);
 
 			const sources = [
 				...new Map(

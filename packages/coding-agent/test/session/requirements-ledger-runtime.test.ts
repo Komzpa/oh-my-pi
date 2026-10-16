@@ -257,9 +257,9 @@ describe("requirements ledger auditor binding", () => {
 				classification: "linked",
 				rows: ["Unrelated manifest"],
 			});
-			expect(
-				await runtime.prepareAuditorTaskCall("task", "unassigned937", { agent: "qa-auditor", task: "Audit R6" }),
-			).toBeUndefined();
+			await expect(
+				runtime.prepareAuditorTaskCall("task", "unassigned937", { agent: "qa-auditor", task: "Audit R6" }),
+			).rejects.toThrow("Set requirementIds");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -306,13 +306,13 @@ describe("requirements ledger auditor binding", () => {
 					timestamp: Date.now(),
 				});
 				const head = git(cwd, "rev-parse", "HEAD");
-				expect(
-					await runtime.prepareAuditorTaskCall("task", "unmatched-r23", {
+				await expect(
+					runtime.prepareAuditorTaskCall("task", "unmatched-r23", {
 						name: "OtherAudit",
 						agent: "qa-auditor",
 						task: `Audit R23 for ${row}`,
 					}),
-				).toBeUndefined();
+				).rejects.toThrow("Set requirementIds");
 				await runtime.afterToolCall({
 					toolCall: { id: "unmatched-r23", name: "task" },
 					result: { content: [], details: { progress: [{ index: 0, agent: "qa-auditor", id: "OtherAudit" }] } },

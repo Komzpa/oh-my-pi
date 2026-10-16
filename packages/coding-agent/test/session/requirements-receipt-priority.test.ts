@@ -94,6 +94,7 @@ function setup(extra: "unlinked" | "different row" | "same row" | "shared publis
 	let call = 0;
 	return {
 		manager,
+		runtime,
 		tool,
 		file,
 		identity,
@@ -141,6 +142,20 @@ function refusalText(result: unknown): string {
 }
 
 describe("receipt priority #924: real runtime intake", () => {
+	it("rejects an unbound renamed auditor before dispatch and permits an explicitly bound retry", async () => {
+		const fx = setup();
+		await expect(
+			fx.runtime.prepareAuditorTaskCall("task", "unbound-retry", {
+				name: "main-2",
+				agent: "qa-auditor",
+				task: `Audit R42 for ${JSON.stringify(ROW)}`,
+			}),
+		).rejects.toThrow("Set requirementIds");
+		expect(fx.verdict()).toBeUndefined();
+		await fx.receive(receipt(fx.identity()), ["R42"]);
+		expect((await fx.tool.execute("bound-retry", { op: "done", task: ROW })).isError).not.toBe(true);
+	});
+
 	it("accepts a corrected explicitly scoped retry under a new worker name", async () => {
 		const fx = setup();
 		await fx.receive(receipt("invalid typed identity"));
