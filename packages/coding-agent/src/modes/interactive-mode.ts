@@ -209,7 +209,6 @@ import { type CfgApproval, type CfgChangeRequest, setCfgApprovalHost } from "../
 import {
 	createTodoHudStateData,
 	getTodoHudVisibility,
-	isTodoStateEntryMetadata,
 	nextActionableTask,
 	TODO_HUD_STATE_CUSTOM_TYPE,
 	USER_TODO_EDIT_CUSTOM_TYPE,
@@ -4231,7 +4230,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#syncTodoHudState(owner: AgentSession): void {
 		this.#cancelTodoAutoClearTimer();
 		const phases = this.todoPhases;
-		const persisted = getTodoHudVisibility(owner.sessionManager.getBranchMatching(isTodoStateEntryMetadata), phases);
+		const persisted = getTodoHudVisibility(owner.sessionManager.getBranch(), phases);
 		this.#todoHudHidden = persisted === "dismissed";
 		if (persisted || phases.length === 0) return;
 		const tasks = phases.flatMap(phase => phase.tasks);
@@ -4252,11 +4251,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#todoAutoClearTimer = undefined;
 			await owner.settleInFlightMessagePersistence();
 			if (!isCurrent()) return;
-			const data = createTodoHudStateData(
-				owner.sessionManager.getBranchMatching(isTodoStateEntryMetadata),
-				this.todoPhases,
-				"dismissed",
-			);
+			const data = createTodoHudStateData(owner.sessionManager.getBranch(), this.todoPhases, "dismissed");
 			if (!data) return;
 			owner.sessionManager.appendCustomEntry(TODO_HUD_STATE_CUSTOM_TYPE, data);
 			await owner.sessionManager.flush();
@@ -8869,11 +8864,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			const appendReveal = (data: TodoHudStateEntryData): void => {
 				owner.sessionManager.appendCustomEntry(TODO_HUD_STATE_CUSTOM_TYPE, data);
 			};
-			const data = createTodoHudStateData(
-				owner.sessionManager.getBranchMatching(isTodoStateEntryMetadata),
-				this.todoPhases,
-				"revealed",
-			);
+			const data = createTodoHudStateData(owner.sessionManager.getBranch(), this.todoPhases, "revealed");
 			if (data) {
 				try {
 					appendReveal(data);
@@ -8897,7 +8888,7 @@ export class InteractiveMode implements InteractiveModeContext {
 						)
 							return;
 						const settledData = createTodoHudStateData(
-							owner.sessionManager.getBranchMatching(isTodoStateEntryMetadata),
+							owner.sessionManager.getBranch(),
 							this.todoPhases,
 							"revealed",
 						);
