@@ -1,11 +1,12 @@
 import { expect, it } from "bun:test";
 import { assertInteractiveOwnerCanCheckpoint } from "../../src/modes/interactive-view";
 
-it.each(["streaming", "compacting", "postPrompt", "queued", "async"])(
+it.each(["streaming", "compacting", "postPrompt", "queued", "async", "admitted"])(
 	"keeps the journal with its owner while %s work remains",
 	kind => {
 		expect(() =>
 			assertInteractiveOwnerCanCheckpoint({
+				hasAdmittedSubmission: kind === "admitted",
 				isStreaming: kind === "streaming",
 				isCompacting: kind === "compacting",
 				hasPostPromptWork: kind === "postPrompt",
@@ -19,6 +20,7 @@ it.each(["streaming", "compacting", "postPrompt", "queued", "async"])(
 it("allows a settled owner to transfer the journal", () => {
 	expect(() =>
 		assertInteractiveOwnerCanCheckpoint({
+			hasAdmittedSubmission: false,
 			isStreaming: false,
 			isCompacting: false,
 			hasPostPromptWork: false,
