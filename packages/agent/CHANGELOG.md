@@ -4,6 +4,12 @@
 
 ### Added
 
+- `prepareQueuedMessages` receives which queue (`steering` or `followUp`) a batch came from ([#16026](https://github.com/can1357/oh-my-pi/pull/16026))
+
+## [18.11.2] - 2026-10-16
+
+### Added
+
 - `agent_start` carries `resumedToolCallIds` when a continued run first executes the calls of an unpaired assistant tail
 
 ### Fixed
