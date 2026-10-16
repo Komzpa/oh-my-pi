@@ -7754,14 +7754,23 @@ export class AgentSession implements SettingsScope {
 		let completed: CompletedRewindState | undefined;
 		let pending: { entryId: string; startedAt: string; messageCount: number } | undefined;
 		let messageCount = 0;
-		for (const entry of this.sessionManager.iterateBranch()) {
-			if (entry.type === "message") messageCount++;
+		const messageCounts = new Map<string, number>();
+		const checkpointEntries = this.sessionManager.getBranchMatching(metadata => {
+			if (metadata.type === "message") messageCount++;
+			const candidate =
+				metadata.type === "custom_message" ||
+				(metadata.messageRole === "toolResult" &&
+					(metadata.toolName === "write" || semanticToolResult(metadata.toolName, {}) !== undefined));
+			if (candidate) messageCounts.set(metadata.id, messageCount);
+			return candidate;
+		});
+		for (const entry of checkpointEntries) {
 			if (isSuccessfulCheckpointEntry(entry)) {
 				completed = undefined;
 				pending = {
 					entryId: entry.id,
 					startedAt: checkpointStartedAtFromEntry(entry) ?? entry.timestamp,
-					messageCount,
+					messageCount: messageCounts.get(entry.id)!,
 				};
 				continue;
 			}
