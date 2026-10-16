@@ -2010,7 +2010,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   let armPlanTicker: (ctx: ExtensionContext) => void = () => {};
   let disarmPlanTicker = () => {};
-  let writeCurrentPlanSnapshot: (ctx: ExtensionContext, decision: ReturnType<typeof decideTodoDispatch>, now: number) => void = () => {};
+  let writeCurrentPlanSnapshot: (ctx: ExtensionContext, decision: ReturnType<typeof decideTodoDispatch>, now: number, phases: TodoScheduleInput) => void = () => {};
   let liveWorkerModelCount = 0;
   let liveWorkerModelCheckedAt = 0;
   let liveWorkerModelSession = "";
@@ -2124,7 +2124,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // External processes can settle without changing TODOs or the async-job snapshot.
     const hasExternalOwner = phases.some((phase) => phase.tasks.some((task) => parseExternalWait(task.schedule?.owner) !== null));
     if (!hasExternalOwner && !forceRefresh && pending.length === 0 && cachedDecision?.key === key) {
-      if (refreshSnapshot) writeCurrentPlanSnapshot(ctx, cachedDecision.decision, now);
+      if (refreshSnapshot) writeCurrentPlanSnapshot(ctx, cachedDecision.decision, now, phases);
       return cachedDecision.decision;
     }
     const decision = decideTodoDispatch(
@@ -2151,7 +2151,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     );
     cachedStatic = decision.key && decision.staticPrompt ? { key: decision.key, text: decision.staticPrompt } : null;
     if (pending.length === 0 && decision.key) cachedDecision = { key, decision };
-    writeCurrentPlanSnapshot(ctx, decision, now);
+    writeCurrentPlanSnapshot(ctx, decision, now, phases);
     return decision;
   };
   // A worker whose row is on the critical path gets /fast; the harness sets it from the plan, not
@@ -2365,13 +2365,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const file = ctx.sessionManager.getSessionFile?.();
     return file ? join(file.replace(/\.jsonl$/, ""), `${id}.jsonl`) : "unknown";
   };
-  writeCurrentPlanSnapshot = (ctx, decision, now) => {
+  writeCurrentPlanSnapshot = (ctx, decision, now, phases) => {
     if (!decision.key || !decision.forecast || !isMain(ctx)) return;
     const rows = decision.forecast.rows ?? [];
     const open = rows.filter((row) => row.status === "pending" || row.status === "in_progress");
     const currentFinish = recordFinishSample(ctx, open, now);
-    const phaseRows = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx))
-      .flatMap((phase) => phase.tasks.map((task) => [task.content, task] as const));
+    const phaseRows = phases.flatMap((phase) => phase.tasks.map((task) => [task.content, task] as const));
     const taskByContent = new Map(phaseRows);
     const runByContent = new Map((decision.ownerRunStates ?? []).map((row) => [row.content, row]));
     const jobs = ctx.getAsyncJobSnapshot();
