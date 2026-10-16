@@ -916,7 +916,7 @@ function recentBranchMessages(ctx: ExtensionContext) {
   });
   return entries;
 }
-export function branchRetroReceiptIds(ctx: ExtensionContext): string[] {
+export function branchRetroReceiptIds(ctx: ExtensionContext, entries = recentBranchMessages(ctx)): string[] {
   const found: string[] = [];
   const scan = (text: string) => {
     for (const tag of text.match(/<task-result\b[^>]*>/g) ?? []) {
@@ -925,7 +925,6 @@ export function branchRetroReceiptIds(ctx: ExtensionContext): string[] {
       if (id !== undefined && !found.includes(id)) found.push(id);
     }
   };
-  const entries = recentBranchMessages(ctx);
   for (const entry of entries) {
     if (typeof entry !== "object" || entry === null || !("type" in entry)) continue;
     const content = entry.type === "message"
@@ -943,9 +942,8 @@ export function branchRetroReceiptIds(ctx: ExtensionContext): string[] {
 // Async dispatch returns no inline results; the real worker completion arrives later as an
 // async-result `<task-result status="completed">…<output>…</output>…</task-result>` on the branch.
 // Reconcile those completed updater jobs here so settleSprintJobs sees their rejection payloads.
-export function branchAsyncTaskResults(ctx: ExtensionContext): (Jobs["recent"][number] & { result?: unknown })[] {
+export function branchAsyncTaskResults(ctx: ExtensionContext, entries = recentBranchMessages(ctx)): (Jobs["recent"][number] & { result?: unknown })[] {
   const out: (Jobs["recent"][number] & { result?: unknown })[] = [];
-  const entries = recentBranchMessages(ctx);
   const scan = (text: string) => {
     for (const match of text.matchAll(/<task-result\b[^>]*>([\s\S]*?)<\/task-result>/g)) {
       const block = match[0];
@@ -1872,9 +1870,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const taskJobs = [...(jobs?.running ?? []), ...(jobs?.recent ?? [])].filter((job) => job.type === "task");
       if (taskJobs.some((job) => typeof job.label === "string" && job.label.includes(task.content))) addSeenRow(task.content);
     }
-    const { facilitatorSettled, updaterRejected } = settleSprintJobs([...branchAsyncTaskResults(ctx), ...(jobs?.recent ?? [])], now);
+    const recentMessages = recentBranchMessages(ctx);
+    const { facilitatorSettled, updaterRejected } = settleSprintJobs([...branchAsyncTaskResults(ctx, recentMessages), ...(jobs?.recent ?? [])], now);
     // One persist per loop: a burst of background receipts used to persist a full snapshot per receipt.
-    const freshReceipts = branchRetroReceiptIds(ctx).filter((receipt) => !sprintState.retroReceiptIds.includes(receipt));
+    const freshReceipts = branchRetroReceiptIds(ctx, recentMessages).filter((receipt) => !sprintState.retroReceiptIds.includes(receipt));
     if (facilitatorSettled || freshReceipts.length > 0) finishRetro(freshReceipts.length > 0 ? freshReceipts : undefined, false);
     if (open.length > 0 && sprintState.goalWorkStartedAt === null) {
       // Only finishes since the last retro start the next goal-work window; older ones were covered.
