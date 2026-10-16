@@ -2555,21 +2555,83 @@ func (v *UsageLimitState) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type InteractiveViewOptions struct {
+	CollapseCompactedHistory *bool `json:"collapseCompactedHistory,omitempty"`
+	// Extra holds undeclared keys and declared keys whose value did not decode (that field stays zero).
+	// Encoding writes them back, over a declared field with the same key.
+	Extra map[string]json.RawMessage `json:"-"`
+}
+
+func (v *InteractiveViewOptions) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "InteractiveViewOptions", v.decodeFrom)
+}
+
+func (v *InteractiveViewOptions) decodeFrom(raw map[string]json.RawMessage) error {
+	var out InteractiveViewOptions
+	d := fieldDecoder{raw: raw, owner: "InteractiveViewOptions", open: true}
+	d.optional("collapseCompactedHistory", &out.CollapseCompactedHistory)
+	out.Extra = d.rest()
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v InteractiveViewOptions) MarshalJSON() ([]byte, error) {
+	type plain InteractiveViewOptions
+	return encodeObject(plain(v), "", v.Extra)
+}
+
+type InteractiveViewSnapshot struct {
+	SessionID          string                     `json:"sessionId"`
+	Context            map[string]json.RawMessage `json:"context"`
+	StreamMessage      *AgentMessage              `json:"streamMessage"`
+	PendingToolCallIds []string                   `json:"pendingToolCallIds"`
+	IsStreaming        bool                       `json:"isStreaming"`
+	EntryCount         float64                    `json:"entryCount"`
+	CompactionCount    float64                    `json:"compactionCount"`
+	SessionFile        *string                    `json:"sessionFile,omitempty"`
+}
+
+func (v *InteractiveViewSnapshot) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "InteractiveViewSnapshot", v.decodeFrom)
+}
+
+func (v *InteractiveViewSnapshot) decodeFrom(raw map[string]json.RawMessage) error {
+	var out InteractiveViewSnapshot
+	d := fieldDecoder{raw: raw, owner: "InteractiveViewSnapshot"}
+	d.required("sessionId", &out.SessionID)
+	d.required("context", &out.Context)
+	d.nullable("streamMessage", &out.StreamMessage)
+	d.required("pendingToolCallIds", &out.PendingToolCallIds)
+	d.required("isStreaming", &out.IsStreaming)
+	d.required("entryCount", &out.EntryCount)
+	d.required("compactionCount", &out.CompactionCount)
+	d.optional("sessionFile", &out.SessionFile)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SessionState struct {
-	SessionID             string         `json:"sessionId"`
-	Model                 *ModelInfo     `json:"model,omitempty"`
-	ThinkingLevel         *ThinkingLevel `json:"thinkingLevel,omitempty"`
-	IsStreaming           bool           `json:"isStreaming"`
-	IsCompacting          bool           `json:"isCompacting"`
-	HasPostPromptWork     bool           `json:"hasPostPromptWork"`
-	SteeringMode          QueueMode      `json:"steeringMode"`
-	FollowUpMode          QueueMode      `json:"followUpMode"`
-	InterruptMode         InterruptMode  `json:"interruptMode"`
-	SessionFile           *string        `json:"sessionFile,omitempty"`
-	SessionName           *string        `json:"sessionName,omitempty"`
-	AutoCompactionEnabled bool           `json:"autoCompactionEnabled"`
-	FastModeEnabled       bool           `json:"fastModeEnabled"`
-	FastModeActive        bool           `json:"fastModeActive"`
+	SessionID             string                   `json:"sessionId"`
+	View                  *InteractiveViewSnapshot `json:"view,omitempty"`
+	Model                 *ModelInfo               `json:"model,omitempty"`
+	ThinkingLevel         *ThinkingLevel           `json:"thinkingLevel,omitempty"`
+	IsStreaming           bool                     `json:"isStreaming"`
+	IsCompacting          bool                     `json:"isCompacting"`
+	HasPostPromptWork     bool                     `json:"hasPostPromptWork"`
+	SteeringMode          QueueMode                `json:"steeringMode"`
+	FollowUpMode          QueueMode                `json:"followUpMode"`
+	InterruptMode         InterruptMode            `json:"interruptMode"`
+	SessionFile           *string                  `json:"sessionFile,omitempty"`
+	SessionName           *string                  `json:"sessionName,omitempty"`
+	AutoCompactionEnabled bool                     `json:"autoCompactionEnabled"`
+	FastModeEnabled       bool                     `json:"fastModeEnabled"`
+	FastModeActive        bool                     `json:"fastModeActive"`
 	// `/slow` applies to the active model.
 	SlowModeSupported bool `json:"slowModeSupported"`
 	// `/slow` is on for the active model; always `false` when `slowModeSupported` is `false`.
@@ -2603,6 +2665,7 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	var out SessionState
 	d := fieldDecoder{raw: raw, owner: "SessionState"}
 	d.required("sessionId", &out.SessionID)
+	d.optional("view", &out.View)
 	d.optional("model", &out.Model)
 	d.optional("thinkingLevel", &out.ThinkingLevel)
 	d.defaulted("isStreaming", &out.IsStreaming, `false`)
@@ -7594,10 +7657,15 @@ func (c Commands) ConsumeDraft(ctx context.Context) (*string, error) {
 	return out.Text, err
 }
 
-// GetState sends "get_state": Snapshot the session state.
-func (c Commands) GetState(ctx context.Context) (SessionState, error) {
+// GetStateCommand holds the parameters of "get_state".
+type GetStateCommand struct {
+	View *InteractiveViewOptions `json:"view,omitempty"`
+}
+
+// GetState sends "get_state": Snapshot the session state, optionally including presentation without opening a view writer.
+func (c Commands) GetState(ctx context.Context, p GetStateCommand) (SessionState, error) {
 	var out SessionState
-	err := c.call(ctx, "get_state", nil, 0, &out)
+	err := c.call(ctx, "get_state", p, 0, &out)
 	return out, err
 }
 

@@ -867,8 +867,8 @@ export class RpcClient {
 	}
 
 	/** Get current session state. */
-	async getState(): Promise<RpcSessionState> {
-		const response = await this.#send({ type: "get_state" });
+	async getState(view?: { collapseCompactedHistory?: boolean }): Promise<RpcSessionState> {
+		const response = await this.#send({ type: "get_state", ...(view ? { view } : {}) });
 		const state = this.#getData<RpcSessionState>(response);
 		return {
 			...state,

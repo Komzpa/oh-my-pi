@@ -522,8 +522,24 @@ export interface UsageLimitWrapUp {
 /** Provider-neutral state of an account past its usage limit, discriminated by `stage`. */
 export type UsageLimitState = UsageLimitLowPriority | UsageLimitWrapUp;
 
+export interface InteractiveViewOptions {
+	collapseCompactedHistory?: boolean;
+}
+
+export interface InteractiveViewSnapshot {
+	sessionId: string;
+	context: Record<string, unknown>;
+	streamMessage: AgentMessage | null;
+	pendingToolCallIds: string[];
+	isStreaming: boolean;
+	entryCount: number;
+	compactionCount: number;
+	sessionFile?: string;
+}
+
 export interface SessionState {
 	sessionId: string;
+	view?: InteractiveViewSnapshot;
 	model?: ModelInfo;
 	thinkingLevel?: ThinkingLevel;
 	isStreaming?: boolean;
@@ -1570,6 +1586,10 @@ export interface ConsumeDraftResult {
 	text: string | null;
 }
 
+export interface GetStateParams {
+	view?: InteractiveViewOptions;
+}
+
 export interface SetFastModeParams {
 	enabled: boolean;
 }
@@ -1871,7 +1891,7 @@ export interface RpcWireCommands {
 	checkpoint_session: { params: undefined; result: undefined };
 	save_draft: { params: SaveDraftParams; result: undefined };
 	consume_draft: { params: undefined; result: ConsumeDraftResult };
-	get_state: { params: undefined; result: SessionState };
+	get_state: { params: GetStateParams; result: SessionState };
 	set_fast_mode: { params: SetFastModeParams; result: FastModeResult };
 	set_slow_mode: { params: SetSlowModeParams; result: SetSlowModeResult };
 	goal: { params: GoalParams; result: GoalResult };

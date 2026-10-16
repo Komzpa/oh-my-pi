@@ -6,7 +6,7 @@
  * the replay, so the append is lost if the replay misses its entry and duplicated
  * if the preserved-chat replay also carries a live paint.
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -108,6 +108,32 @@ function createInteractiveTranscript(durable = false) {
 }
 
 describe("idle display custom message across the initial transcript render", () => {
+	it("renders a supplied runtime snapshot without opening or reconstructing a view journal", async () => {
+		const { ctx, session: current, copiesOf } = createInteractiveTranscript();
+		const context = current.buildTranscriptSessionContext();
+		context.messages = [{ role: "user", content: "REMOTE_OWNER_SCREEN_🐈", timestamp: 1 }];
+		const snapshot = {
+			sessionId: current.sessionId,
+			context,
+			streamMessage: null,
+			pendingToolCallIds: [],
+			isStreaming: false,
+			entryCount: 1,
+			compactionCount: 0,
+		};
+		const helpers = new UiHelpers(ctx, { capture: async () => structuredClone(snapshot) });
+		using rebuild = spyOn(current, "buildTranscriptSessionContext").mockImplementation(() => {
+			throw new Error("frontend reconstructed the runtime transcript");
+		});
+		using journal = spyOn(current.sessionManager, "getEntries").mockImplementation(() => {
+			throw new Error("frontend read its local journal instead of the owner snapshot");
+		});
+		await helpers.renderInitialMessages();
+		expect(copiesOf("REMOTE_OWNER_SCREEN_🐈")).toBe(1);
+		expect(rebuild).not.toHaveBeenCalled();
+		expect(journal).not.toHaveBeenCalled();
+	});
+
 	it("paints an external idle restart without input and preserves the partial draft for its successor", async () => {
 		const { ctx, session: current, copiesOf, streamCalls } = createInteractiveTranscript(true);
 		await ctx.renderInitialMessages({ preserveExistingChat: true });

@@ -1,3 +1,4 @@
+import { createLocalInteractiveViewSource, type InteractiveViewSource } from "../interactive-view";
 import { selectRestartBranchEntries } from "../../task/restart-branch-selection";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -242,7 +243,13 @@ export class UiHelpers {
 	/** `initialChatRendered` to restore when the latest replay ends without committing. */
 	#chatRenderedBeforeReplay = false;
 
-	constructor(private ctx: InteractiveModeContext) {}
+	constructor(
+		private ctx: InteractiveModeContext,
+		private viewSource: InteractiveViewSource = {
+			capture: options => createLocalInteractiveViewSource(ctx.viewSession).capture(options),
+			revision: () => ctx.viewSession.sessionManager.getEntries().length,
+		},
+	) {}
 
 	/**
 	 * Show a status message in the chat.
@@ -1097,11 +1104,12 @@ export class UiHelpers {
 	async #renderInitialMessages(options: RenderInitialMessagesOptions, generation: number): Promise<void> {
 		if (generation !== this.#replayGeneration) return;
 		// Collapsed replay keeps in-flight calls so pending tools remain routable during mid-turn rebuilds.
-		let context = this.ctx.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: cfgDisplayCollapseCompacted.get(settings),
-			keepInFlightToolCalls: this.ctx.viewSession.isStreaming,
-		});
-		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
+		const capture = () =>
+			this.viewSource.capture({ collapseCompactedHistory: cfgDisplayCollapseCompacted.get(settings) });
+		const initial = capture();
+		let snapshot = initial instanceof Promise ? await initial : initial;
+		let context = snapshot.context;
+		let replayEntryCount = snapshot.entryCount;
 
 		// Build against a detached container. Incremental construction still yields
 		// to terminal input, while paints keep using the complete visible transcript
@@ -1139,7 +1147,7 @@ export class UiHelpers {
 			this.ctx.pendingBashComponents = [];
 			this.ctx.pendingPythonComponents = [];
 			while (true) {
-				if (this.ctx.viewSession.isStreaming) {
+				if (snapshot.isStreaming) {
 					// Live events mutate the same component maps; keep their replay atomic so
 					// a delta cannot land halfway through rebuilding its pending tool block.
 					this.ctx.renderSessionContext(context, renderOptions);
@@ -1147,7 +1155,12 @@ export class UiHelpers {
 					await this.ctx.renderSessionContextIncrementally(context, renderOptions);
 				}
 				if (generation !== this.#replayGeneration) return;
-				if (this.ctx.viewSession.sessionManager.getEntries().length === replayEntryCount) {
+				const observed = this.viewSource.revision?.();
+				const revision = observed instanceof Promise ? await observed : observed;
+				if (revision === replayEntryCount) break;
+				const captured = capture();
+				const latest = captured instanceof Promise ? await captured : captured;
+				if (latest.entryCount === replayEntryCount) {
 					break;
 				}
 				replayAttempts++;
@@ -1158,7 +1171,7 @@ export class UiHelpers {
 					logger.warn("renderInitialMessages: transcript replay did not converge; accepting current replay", {
 						attempts: replayAttempts,
 						replayEntryCount,
-						currentEntryCount: this.ctx.viewSession.sessionManager.getEntries().length,
+						currentEntryCount: latest.entryCount,
 					});
 					break;
 				}
@@ -1166,11 +1179,9 @@ export class UiHelpers {
 				// yielded. The display callback stayed gated by initialChatRendered;
 				// discard the stale partial tree and replay the current session once
 				// more instead of letting a reentrant synchronous rebuild interleave.
-				context = this.ctx.viewSession.buildTranscriptSessionContext({
-					collapseCompactedHistory: cfgDisplayCollapseCompacted.get(settings),
-					keepInFlightToolCalls: this.ctx.viewSession.isStreaming,
-				});
-				replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
+				snapshot = latest;
+				context = snapshot.context;
+				replayEntryCount = snapshot.entryCount;
 				await refreshAssistantMessageLinkTargets(
 					this.ctx,
 					context.messages.filter((message): message is AssistantMessage => message.role === "assistant"),
@@ -1202,13 +1213,7 @@ export class UiHelpers {
 			committed = true;
 
 			// Show compaction info if session was compacted.
-			const allEntries = this.ctx.viewSession.sessionManager.getEntries();
-			let compactionCount = 0;
-			for (const entry of allEntries) {
-				if (entry.type === "compaction") {
-					compactionCount++;
-				}
-			}
+			const compactionCount = snapshot.compactionCount;
 			if (compactionCount > 0) {
 				const times = compactionCount === 1 ? "1 time" : `${compactionCount} times`;
 				this.ctx.showStatus(`Session compacted ${times}`);

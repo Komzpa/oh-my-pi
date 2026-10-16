@@ -206,8 +206,8 @@
 			},
 			{
 				"name": "get_state",
-				"doc": "Snapshot the session state.",
-				"params": null,
+				"doc": "Snapshot the session state, optionally including presentation without opening a view writer.",
+				"params": "GetStateParams",
 				"result": "SessionState",
 				"nullable": false,
 				"unwrap": null,
@@ -2741,11 +2741,73 @@
 			],
 			"description": "Provider-neutral state of an account past its usage limit, discriminated by `stage`."
 		},
+		"InteractiveViewOptions": {
+			"type": "object",
+			"properties": {
+				"collapseCompactedHistory": {
+					"type": "boolean"
+				}
+			},
+			"x-open": true
+		},
+		"InteractiveViewSnapshot": {
+			"type": "object",
+			"properties": {
+				"sessionId": {
+					"type": "string"
+				},
+				"context": {
+					"type": "object",
+					"properties": {},
+					"additionalProperties": {}
+				},
+				"streamMessage": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/AgentMessage"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"pendingToolCallIds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"isStreaming": {
+					"type": "boolean"
+				},
+				"entryCount": {
+					"type": "number"
+				},
+				"compactionCount": {
+					"type": "number"
+				},
+				"sessionFile": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"sessionId",
+				"context",
+				"streamMessage",
+				"pendingToolCallIds",
+				"isStreaming",
+				"entryCount",
+				"compactionCount"
+			]
+		},
 		"SessionState": {
 			"type": "object",
 			"properties": {
 				"sessionId": {
 					"type": "string"
+				},
+				"view": {
+					"$ref": "#/$defs/InteractiveViewSnapshot"
 				},
 				"model": {
 					"$ref": "#/$defs/ModelInfo"
@@ -6216,6 +6278,14 @@
 			"required": [
 				"text"
 			]
+		},
+		"GetStateParams": {
+			"type": "object",
+			"properties": {
+				"view": {
+					"$ref": "#/$defs/InteractiveViewOptions"
+				}
+			}
 		},
 		"SetFastModeParams": {
 			"type": "object",

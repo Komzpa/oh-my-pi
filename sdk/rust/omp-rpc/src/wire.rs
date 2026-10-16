@@ -3163,10 +3163,68 @@ impl<'de> Deserialize<'de> for UsageLimitState {
 	}
 }
 
+///
+/// Open record: declared fields are decoded leniently (a value that does not fit stays
+/// in `extra`) and every other key is kept in `extra`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct InteractiveViewOptions {
+	pub collapse_compacted_history: Option<bool>,
+	/// Every key not decoded into a declared field.
+	pub extra: Map<String, Value>,
+}
+
+impl Serialize for InteractiveViewOptions {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		let mut map = serializer.serialize_map(None)?;
+		if let Some(value) = &self.collapse_compacted_history {
+			map.serialize_entry("collapseCompactedHistory", value)?;
+		}
+		for (key, value) in &self.extra {
+			match key.as_str() {
+				"collapseCompactedHistory" if self.collapse_compacted_history.is_some() => continue,
+				_ => {}
+			}
+			map.serialize_entry(key, value)?;
+		}
+		map.end()
+	}
+}
+
+impl<'de> Deserialize<'de> for InteractiveViewOptions {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let mut extra = Map::<String, Value>::deserialize(deserializer)?;
+		Ok(Self {
+			collapse_compacted_history: take(&mut extra, "collapseCompactedHistory"),
+			extra,
+		})
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InteractiveViewSnapshot {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	pub context: Map<String, Value>,
+	#[serde(rename = "streamMessage", deserialize_with = "Deserialize::deserialize")]
+	pub stream_message: Option<AgentMessage>,
+	#[serde(rename = "pendingToolCallIds")]
+	pub pending_tool_call_ids: Vec<String>,
+	#[serde(rename = "isStreaming")]
+	pub is_streaming: bool,
+	#[serde(rename = "entryCount")]
+	pub entry_count: f64,
+	#[serde(rename = "compactionCount")]
+	pub compaction_count: f64,
+	#[serde(rename = "sessionFile", default, skip_serializing_if = "Option::is_none")]
+	pub session_file: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionState {
 	#[serde(rename = "sessionId")]
 	pub session_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub view: Option<InteractiveViewSnapshot>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub model: Option<ModelInfo>,
 	#[serde(rename = "thinkingLevel", default, skip_serializing_if = "Option::is_none")]
@@ -5261,6 +5319,12 @@ pub struct ConsumeDraftResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetStateParams {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub view: Option<InteractiveViewOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SetFastModeParams {
 	pub enabled: bool,
 }
@@ -6467,9 +6531,12 @@ impl Command for ConsumeDraftCommand {
 	}
 }
 
-/// Snapshot the session state.
+/// Snapshot the session state, optionally including presentation without opening a view writer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct GetStateCommand {}
+pub struct GetStateCommand {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub view: Option<InteractiveViewOptions>,
+}
 
 impl Command for GetStateCommand {
 	const NAME: &'static str = "get_state";

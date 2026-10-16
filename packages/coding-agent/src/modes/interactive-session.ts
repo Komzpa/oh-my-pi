@@ -1,3 +1,4 @@
+import { assertInteractiveOwnerCanCheckpoint } from "./interactive-view";
 import { untilAborted } from "@oh-my-pi/pi-utils";
 import type { SessionManager } from "../session/session-manager";
 import type { AgentSessionDisposeOptions } from "../session/agent-session-types";
@@ -45,7 +46,9 @@ export function createLocalInteractiveSessionConnection(
 		beginDispose: () => session.beginDispose(),
 		disposeSession: options => session.dispose(options),
 		async checkpoint() {
+			assertInteractiveOwnerCanCheckpoint(session);
 			await session.sessionManager.close();
+			assertInteractiveOwnerCanCheckpoint(session);
 			session.sessionManager.seal();
 		},
 		saveDraft: text => session.sessionManager.saveDraft(text),
