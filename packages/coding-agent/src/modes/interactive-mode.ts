@@ -144,6 +144,7 @@ import {
 	type ResolvedRoleModel,
 	SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 } from "../session/agent-session";
+import { createLocalInteractiveSessionConnection, type InteractiveSessionConnection } from "./interactive-session";
 import type { CompactMode } from "../session/compact-modes";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
 import { HistoryStorage } from "../session/history-storage";
@@ -1293,6 +1294,7 @@ const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
 const JOBS_SHEET_REFRESH_MS = 250;
 
 export class InteractiveMode implements InteractiveModeContext {
+	readonly #sessionConnection: InteractiveSessionConnection;
 	#ownsStartedUi: boolean;
 	session: AgentSession;
 	sessionManager: SessionManager;
@@ -1901,9 +1903,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		composer?: Composer,
 		subagentEventBus?: EventBus,
 		refreshScopedModelsAfterLogin?: () => Promise<void>,
+		sessionConnection: InteractiveSessionConnection = createLocalInteractiveSessionConnection(session),
 	) {
 		this.refreshScopedModelsAfterLogin = refreshScopedModelsAfterLogin;
 		this.session = session;
+		this.#sessionConnection = sessionConnection;
 		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
 		this.#initialComposerModel = session.model;
@@ -2644,7 +2648,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 
 		this.#eventBusUnsubscribers.push(
-			this.session.subscribe(event => {
+			this.#sessionConnection.subscribe(event => {
 				if (event.type === "model_changed") {
 					this.#scheduleComposerStatusPersist();
 					this.session.prewarmModelConnection();
@@ -3170,7 +3174,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#isAutoSubmitBlocked(): boolean {
-		return this.session.isStreaming || this.session.isCompacting || this.session.hasPostPromptWork;
+		return (
+			this.#sessionConnection.isStreaming ||
+			this.#sessionConnection.isCompacting ||
+			this.#sessionConnection.hasPostPromptWork
+		);
 	}
 
 	#submitLoopPromptWhenReady(prompt: string): void {
@@ -3650,7 +3658,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#pendingSubmissionPreservesDraft = false;
 		}
 
-		if (wasPendingSubmission && !this.session.isStreaming && !this.streamingComponent) {
+		if (wasPendingSubmission && !this.#sessionConnection.isStreaming && !this.streamingComponent) {
 			this.optimisticUserMessageSignature = undefined;
 			pendingSubmissionDispose?.();
 			this.#optimisticUserMessageComponents = [];
@@ -4061,7 +4069,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			thinking: thinkingLevelWord(this.viewSession),
 			thinkingInModel: cfgStatusLineCompactThinkingLevel.get(settings),
 			rate: this.#nativeTokenRate(),
-			running: this.loadingAnimation !== undefined || this.session.isStreaming,
+			running: this.loadingAnimation !== undefined || this.#sessionConnection.isStreaming,
 			dictation:
 				cfgSttEnabled.get(settings) || this.#dictationStarting || dictation !== "idle"
 					? this.#dictationStarting && dictation === "idle"
@@ -4982,7 +4990,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Apply (or defer) the model/thinking change implied by the resolved plan role. */
 	async #applyPlanModelTransition(currentModel: Model | undefined, resolved: ResolvedModelRoleValue): Promise<void> {
-		const transition = resolvePlanModelTransition(currentModel, resolved, this.session.isStreaming);
+		const transition = resolvePlanModelTransition(currentModel, resolved, this.#sessionConnection.isStreaming);
 		if (transition.kind !== "apply" || !transition.deferred) {
 			this.#clearPendingPlanModelSwitch();
 		}
@@ -5273,7 +5281,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			throw error;
 		}
 		this.session.setPlanProposalHandler?.(title => this.session.preparePlanForReview(title));
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			await this.session.sendPlanModeContext({ deliverAs: "steer" });
 		}
 		this.#planModeHasEntered = true;
@@ -5293,7 +5301,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// Same model — only thinking level may differ. Avoid setModelTemporary()
 			// which would reset provider-side sessions and break continuity.
 			this.session.setThinkingLevel(prev.thinkingLevel);
-		} else if (this.session.isStreaming) {
+		} else if (this.#sessionConnection.isStreaming) {
 			this.#pendingModelSwitch = {
 				model: prev.model,
 				thinkingLevel: prev.thinkingLevel,
@@ -5338,9 +5346,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// The plan-mode prompt instructs the model to keep planning until it
 		// writes to `xd://propose`, so the live turn must be aborted inside
 		// `runModeExitTeardown` to avoid restarting on the stale toolset.
-		if (options?.interruptActiveTurn && this.session.isStreaming) {
+		if (options?.interruptActiveTurn && this.#sessionConnection.isStreaming) {
 			await this.session.runModeExitTeardown(async () => {
-				await this.session.abort({ reason: USER_INTERRUPT_LABEL });
+				await this.#sessionConnection.abort({ reason: USER_INTERRUPT_LABEL });
 				await this.#tearDownPlanMode(options);
 			});
 			return;
@@ -5471,7 +5479,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.goalModeEnabled = true;
 		this.#resetGoalContinuationSuppression();
 		this.#updateGoalModeStatus();
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			await this.session.sendGoalModeContext({ deliverAs: "steer" });
 		}
 		if (!options.silent) {
@@ -6119,13 +6127,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		// execution directive behind it as a synthetic follow-up. If `isStreaming`
 		// flips true between the check and dispatch (the same fire-and-forget race
 		// noted below), catch `AgentBusyError` and fall back to the same queue.
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			await this.session.followUp(planModePrompt, undefined, {
 				synthetic: true,
 			});
 		} else {
 			try {
-				await this.session.prompt(planModePrompt, { synthetic: true });
+				await this.#sessionConnection.prompt(planModePrompt, { synthetic: true });
 			} catch (error) {
 				if (!(error instanceof AgentBusyError)) throw error;
 				await this.session.followUp(planModePrompt, undefined, {
@@ -6138,7 +6146,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	async #abortPlanApprovalTurnSilently(): Promise<void> {
 		this.session.markPlanInternalAbortPending();
 		try {
-			await this.session.abort();
+			await this.#sessionConnection.abort();
 		} finally {
 			this.session.clearPlanInternalAbortPending();
 		}
@@ -6194,12 +6202,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			});
 			return true;
 		}
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			const images = input?.images?.length ? input.images : undefined;
 			await this.withLocalSubmission(
 				initialPrompt,
 				() =>
-					this.session.prompt(initialPrompt, {
+					this.#sessionConnection.prompt(initialPrompt, {
 						streamingBehavior: "steer",
 						images,
 					}),
@@ -6263,7 +6271,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			await mine;
 			return true;
 		}
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			// Same ordering covenant as below: a skill prompt may be reserving
 			// ahead of us even though the session looks continuously busy.
 			await this.#waitForInFlightSubmission();
@@ -6271,7 +6279,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			await this.withLocalSubmission(
 				initialPrompt,
 				() =>
-					this.session.prompt(initialPrompt, {
+					this.#sessionConnection.prompt(initialPrompt, {
 						streamingBehavior: "steer",
 						images,
 					}),
@@ -6302,7 +6310,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.withLocalSubmission(
 			initialPrompt,
 			() =>
-				this.session.prompt(initialPrompt, {
+				this.#sessionConnection.prompt(initialPrompt, {
 					streamingBehavior: "steer",
 					images,
 				}),
@@ -6330,7 +6338,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			const pendingBlocked =
 				awaited !== undefined &&
 				!awaited.cancelled &&
-				!this.session.isStreaming &&
+				!this.#sessionConnection.isStreaming &&
 				this.session.queuedMessageCount === 0 &&
 				!this.onInputCallback;
 			if (!skillBlocked && !pendingBlocked) return;
@@ -6385,7 +6393,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// injected context, which predictably invalidates the cache.
 			this.lastAssistantUsage = undefined;
 			this.session.setVibeModeState({ enabled: true });
-			if (this.session.isStreaming) {
+			if (this.#sessionConnection.isStreaming) {
 				await this.session.sendVibeModeContext({ deliverAs: "steer" });
 			}
 			this.#updateVibeModeStatus();
@@ -6411,8 +6419,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		// still-live Vibe tools before this teardown removes them (issue #8326).
 		let killed = 0;
 		await this.session.runModeExitTeardown(async () => {
-			if (this.session.isStreaming) {
-				await this.session.abort();
+			if (this.#sessionConnection.isStreaming) {
+				await this.#sessionConnection.abort();
 			}
 			killed = await VibeSessionRegistry.global().killAll(this.#vibeParentSession(), this.#vibeModeOwnerScope);
 			await this.session.deactivateVibeTools(this.#vibeModePreviousTools ?? []);
@@ -6545,11 +6553,14 @@ export class InteractiveMode implements InteractiveModeContext {
 				initial: rest?.trim() || undefined,
 			});
 			const images = input?.images?.length ? input.images : undefined;
-			if (this.session.isStreaming) {
+			if (this.#sessionConnection.isStreaming) {
 				await this.session.followUp(kickoff, images, { synthetic: true });
 			} else {
 				try {
-					await this.session.prompt(kickoff, images ? { synthetic: true, images } : { synthetic: true });
+					await this.#sessionConnection.prompt(
+						kickoff,
+						images ? { synthetic: true, images } : { synthetic: true },
+					);
 				} catch (error) {
 					if (!(error instanceof AgentBusyError)) throw error;
 					await this.session.followUp(kickoff, images, { synthetic: true });
@@ -6701,7 +6712,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.goalModeEnabled) return;
 		this.#resetGoalContinuationSuppression();
 		using _keepalive = new EventLoopKeepalive();
-		await this.session.prompt(objective, { streamingBehavior: "steer" });
+		await this.#sessionConnection.prompt(objective, { streamingBehavior: "steer" });
 	}
 
 	async #startGoalFromObjective(
@@ -6710,12 +6721,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	): Promise<boolean> {
 		await this.#enterGoalMode({ objective, silent: true });
 		this.#resetGoalContinuationSuppression();
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			const images = input?.images?.length ? input.images : undefined;
 			await this.withLocalSubmission(
 				objective,
 				() =>
-					this.session.prompt(objective, {
+					this.#sessionConnection.prompt(objective, {
 						streamingBehavior: "steer",
 						images,
 					}),
@@ -6740,13 +6751,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.goalModePaused = false;
 		this.#resetGoalContinuationSuppression();
 		this.#updateGoalModeStatus();
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			await this.session.sendGoalModeContext({ deliverAs: "steer" });
 			const images = input?.images?.length ? input.images : undefined;
 			await this.withLocalSubmission(
 				objective,
 				() =>
-					this.session.prompt(objective, {
+					this.#sessionConnection.prompt(objective, {
 						streamingBehavior: "steer",
 						images,
 					}),
@@ -6805,7 +6816,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (fromExtension) {
 			if (this.#hasAnswerablePlanReview()) return true;
-			if (this.session.isStreaming || this.session.isCompacting) return false;
+			if (this.#sessionConnection.isStreaming || this.#sessionConnection.isCompacting) return false;
 		}
 		const noPlan = "No plan to review yet — write one to a local://<slug>-plan.md file first.";
 		const [planFilePath] = await this.#listLocalPlanFiles();
@@ -6882,7 +6893,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.planModeEnabled || this.sessionManager.getSessionId() !== originSessionId) return;
 		// Without the abort barrier, a turn or another review may have started while the
 		// plan was read; everything from here to the overlay is synchronous.
-		if (!abortTurn && (this.session.isStreaming || this.session.isCompacting || this.#hasAnswerablePlanReview())) {
+		if (
+			!abortTurn &&
+			(this.#sessionConnection.isStreaming ||
+				this.#sessionConnection.isCompacting ||
+				this.#hasAnswerablePlanReview())
+		) {
 			return;
 		}
 
@@ -7120,7 +7136,7 @@ export class InteractiveMode implements InteractiveModeContext {
 						this.#planReviewAnnotationStateBySubmission.set(input, annotationStateKey);
 						this.onInputCallback(input);
 					} else {
-						await this.session.prompt(refinement);
+						await this.#sessionConnection.prompt(refinement);
 						this.#planReviewAnnotationState.delete(annotationStateKey);
 					}
 				} else {
@@ -7594,7 +7610,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#abortLoopCondition();
 		this.#cancelLoopAutoSubmit();
 		try {
-			await this.session.abort();
+			await this.#sessionConnection.abort();
 			await this.#liveCommandController.stop();
 		} catch (err) {
 			this.showWarning(err instanceof Error ? err.message : String(err));
@@ -7761,7 +7777,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.isShuttingDown ||
 			this.hasPendingSubmission() ||
 			this.session.hasAdmittedSubmission ||
-			this.session.isStreaming ||
+			this.#sessionConnection.isStreaming ||
 			this.session.queuedMessageCount > 0 ||
 			this.session.hasPendingAsyncWork()
 		) {
@@ -7880,7 +7896,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * duplicate into, so there the panel mounts in the transcript at once.
 	 */
 	presentCommandOutput(content: Component | readonly Component[]): void {
-		if (!this.session.isStreaming || this.ui.nativeRendering) {
+		if (!this.#sessionConnection.isStreaming || this.ui.nativeRendering) {
 			this.present(content);
 			return;
 		}
