@@ -151,15 +151,14 @@ export function createPersistedSubagentReviverFactory(
 				suppressBreadcrumb: true,
 				throwIfMissing: true,
 			});
-			const entries = reopened.getEntries();
-			const init = extractSessionInit(entries);
+			const init = extractSessionInit([...reopened.iterateEntries("session_init")]);
 			if (!init) {
 				await reopened.close();
 				throw new Error(
 					`Cannot revive subagent "${ref.id}": session file "${sessionFile}" has no persisted session contract. The agent was not revived.`,
 				);
 			}
-			if (!hasConversationalHistory(entries)) {
+			if (!hasConversationalHistory(reopened.iterateEntries("message"))) {
 				await reopened.close();
 				throw new Error(
 					`Cannot revive subagent "${ref.id}": session file "${sessionFile}" has no message history (truncated to header/session_init). The agent was not revived.`,
