@@ -33,6 +33,7 @@ import { TtsrNotificationComponent } from "@oh-my-pi/pi-tui/chat/ttsr-notificati
 import { createUsageRowBlock, TurnUsageTally, turnElapsedMs } from "@oh-my-pi/pi-tui/overlays/usage-row";
 import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { getSymbolTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { createLocalInteractiveSessionConnection, type InteractiveSessionConnection } from "../interactive-session";
 import type { InteractiveModeContext } from "../../modes/types";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
@@ -336,7 +337,10 @@ export class EventController {
 	#vocalizedMessageUpdates = new WeakSet<object>();
 	static readonly #MESSAGE_UPDATE_COALESCE_MS = 33;
 
-	constructor(private ctx: InteractiveModeContext) {
+	constructor(
+		private ctx: InteractiveModeContext,
+		private sessionConnection: InteractiveSessionConnection = createLocalInteractiveSessionConnection(ctx.session),
+	) {
 		// Enhanced speech (`speech.enhanced`) rewrites blocks through the
 		// tiny/smol role with this session's registry and credentials; the
 		// vocalizer falls back to mechanical cleanup when unset. Tolerates
@@ -791,7 +795,7 @@ export class EventController {
 		// the listener's first await, preserving the timing the coalescing
 		// tests assert on. `message_update` enqueue is itself synchronous and
 		// needs no serialization.
-		this.ctx.unsubscribe = this.ctx.session.subscribe(event => this.dispatchSessionEvent(event));
+		this.ctx.unsubscribe = this.sessionConnection.subscribe(event => this.dispatchSessionEvent(event));
 	}
 
 	/**
@@ -2278,7 +2282,7 @@ export class EventController {
 		// leaving "Working…" gone while the agent keeps running. The live turn owns
 		// the loader and finalizes it at its own agent_end (isStreaming === false by
 		// then). Mirrors the collab guest's !isStreaming loader reconciler.
-		if (this.ctx.session.isStreaming) {
+		if (this.sessionConnection.isStreaming) {
 			// A focused worker can end while the main session streams; its run is
 			// over even though main's is not. Tear down only what the viewed worker
 			// owns (its loader); main-owned work waits for main's own settle.

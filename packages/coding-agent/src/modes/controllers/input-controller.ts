@@ -39,6 +39,7 @@ import { createModelMentionSource } from "@oh-my-pi/pi-tui/prompt/model-mention-
 import { createModelBrowserSource } from "../model-browser-source";
 import { parseQueueShorthand, splitQueuedMessages } from "@oh-my-pi/pi-tui/prompt/queue-input";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "../../modes/skill-command";
+import { createLocalInteractiveSessionConnection, type InteractiveSessionConnection } from "../interactive-session";
 import type { InteractiveModeContext, SubmittedUserInput } from "../../modes/types";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import { AgentRegistry } from "../../registry/agent-registry";
@@ -263,6 +264,7 @@ export class InputController {
 			readText: readTextFromClipboard,
 			readMacFileUrls: readMacFileUrlsFromClipboard,
 		},
+		private sessionConnection: InteractiveSessionConnection = createLocalInteractiveSessionConnection(ctx.session),
 	) {}
 
 	/** Resolve the current tiny role at use time so project/session reloads cannot leave a stale model. */
@@ -326,7 +328,7 @@ export class InputController {
 	};
 
 	#abortStreamingTurn(): void {
-		void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+		void this.sessionConnection.abort({ reason: USER_INTERRUPT_LABEL });
 	}
 
 	setupKeyHandlers(): void {
@@ -543,7 +545,7 @@ export class InputController {
 				// then drop the captured prompt so the 800ms auto-resubmit never
 				// fires. Loop stays enabled (paused) — the next manual prompt
 				// resumes with a new body.
-				if (this.ctx.session.isStreaming) {
+				if (this.sessionConnection.isStreaming) {
 					this.#abortStreamingTurn();
 				}
 				this.ctx.pauseLoop();
@@ -588,7 +590,7 @@ export class InputController {
 				this.ctx.editor.setText("");
 				this.ctx.isPythonMode = false;
 				this.ctx.updateEditorBorderColor();
-			} else if (this.ctx.session.isStreaming) {
+			} else if (this.sessionConnection.isStreaming) {
 				this.#abortStreamingTurn();
 			} else if (this.ctx.editor.getText().trim()) {
 				// Esc must not destroy an in-progress draft.
@@ -978,9 +980,9 @@ export class InputController {
 			// Empty submit while streaming with queued (or live-steered) messages:
 			// abort the active turn and let the post-unwind drain deliver the
 			// agent-core queue.
-			if (!text && !hasPendingImages && this.ctx.session.isStreaming) {
+			if (!text && !hasPendingImages && this.sessionConnection.isStreaming) {
 				if (this.ctx.session.hasInterruptibleInput) {
-					const aborting = this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+					const aborting = this.sessionConnection.abort({ reason: USER_INTERRUPT_LABEL });
 					await aborting;
 					this.ctx.updatePendingMessagesDisplay();
 					this.ctx.ui.requestRender();
@@ -1139,7 +1141,7 @@ export class InputController {
 				if (this.ctx.loopModeEnabled) {
 					this.ctx.setLoopPrompt(text);
 				}
-				if (this.ctx.session.isCompacting) {
+				if (this.sessionConnection.isCompacting) {
 					const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
 					this.ctx.queueCompactionMessage(text, "steer", images);
 					return;
@@ -1197,7 +1199,7 @@ export class InputController {
 			}
 
 			// Queue input during compaction
-			if (this.ctx.session.isCompacting) {
+			if (this.sessionConnection.isCompacting) {
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
 				this.ctx.queueCompactionMessage(text, "steer", images);
 				// An inline `/loop` body queued here arms the loop only when it is
@@ -1215,7 +1217,7 @@ export class InputController {
 			if (this.#isLocalExtensionCommand(text)) {
 				this.ctx.editor.clearDraft(text);
 				try {
-					await this.ctx.session.prompt(text, { images: inputImages });
+					await this.sessionConnection.prompt(text, { images: inputImages });
 				} catch (error) {
 					// Restore the snapshot only when nothing newer was attached
 					// while the command ran; otherwise the newer draft wins.
@@ -1234,7 +1236,7 @@ export class InputController {
 
 			// If streaming, use prompt() with steer behavior
 			// This handles extension commands (execute immediately), prompt template expansion, and queueing
-			if (this.ctx.session.isStreaming) {
+			if (this.sessionConnection.isStreaming) {
 				this.ctx.editor.addToHistory(text);
 				// Enter already cleared the editor synchronously. A later clear here
 				// can erase the tail of an unbracketed paste arriving after Enter.
@@ -1249,7 +1251,7 @@ export class InputController {
 				try {
 					const forwarded = await this.ctx.withLocalSubmission(
 						text,
-						() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
+						() => this.sessionConnection.prompt(text, { streamingBehavior: "steer", images }),
 						{ imageCount: images?.length ?? 0 },
 					);
 					// An inline `/loop` body arms the loop only after dispatch
@@ -1326,7 +1328,7 @@ export class InputController {
 				try {
 					const forwarded = await this.ctx.withLocalSubmission(
 						text,
-						() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
+						() => this.sessionConnection.prompt(text, { streamingBehavior: "steer", images }),
 						{
 							imageCount: images?.length ?? 0,
 						},
@@ -1386,7 +1388,7 @@ export class InputController {
 	): { command: string; confirm: boolean } | undefined {
 		if (text !== submittedText || hasImages || !text || text.startsWith("/") || /\s/.test(text)) return undefined;
 		const emptySession =
-			!this.ctx.session.isStreaming &&
+			!this.sessionConnection.isStreaming &&
 			this.ctx.locallySubmittedUserSignatures.size === 0 &&
 			this.ctx.session.messages.length === 0;
 		const folded = text.toLowerCase();
@@ -1708,7 +1710,7 @@ export class InputController {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 			return true;
 		} finally {
-			if (this.ctx.session.isStreaming) {
+			if (this.sessionConnection.isStreaming) {
 				this.ctx.updatePendingMessagesDisplay();
 				this.ctx.ui.requestRender();
 			}
@@ -1782,7 +1784,7 @@ export class InputController {
 				: undefined;
 		if (options.detachedText === undefined) this.ctx.editor.clearDraft(options.historyText);
 
-		if (this.ctx.session.isCompacting) {
+		if (this.sessionConnection.isCompacting) {
 			for (let index = 0; index < messages.length; index++) {
 				this.ctx.compactionQueuedMessages.push({
 					text: messages[index] ?? "",
@@ -1800,7 +1802,7 @@ export class InputController {
 			return;
 		}
 
-		const startImmediately = !this.ctx.session.isStreaming && this.ctx.session.queuedMessageCount === 0;
+		const startImmediately = !this.sessionConnection.isStreaming && this.ctx.session.queuedMessageCount === 0;
 		let queuedCount = 0;
 		try {
 			if (startImmediately && this.ctx.onInputCallback) {
@@ -1821,7 +1823,7 @@ export class InputController {
 					message,
 					async () => {
 						if (startImmediately && queuedCount === 0) {
-							await this.ctx.session.prompt(message, {
+							await this.sessionConnection.prompt(message, {
 								images: queuedImages,
 								streamingBehavior: "followUp",
 							});
@@ -1909,7 +1911,7 @@ export class InputController {
 		// skill typed during compaction is not lost or short-circuited through
 		// `promptCustomMessage`. The compaction-resume path re-parses the
 		// queued text into a user-attributed skill invocation before delivery.
-		if (this.ctx.session.isCompacting) {
+		if (this.sessionConnection.isCompacting) {
 			this.ctx.queueCompactionMessage(text, "followUp", images, { preserveDraft: true });
 			return;
 		}
@@ -1951,12 +1953,12 @@ export class InputController {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		};
 
-		if (this.ctx.session.isStreaming) {
+		if (this.sessionConnection.isStreaming) {
 			this.ctx.editor.addToHistory(text);
 			try {
 				await this.ctx.withLocalSubmission(
 					text,
-					() => this.ctx.session.prompt(text, { streamingBehavior: "followUp", images }),
+					() => this.sessionConnection.prompt(text, { streamingBehavior: "followUp", images }),
 					{ imageCount: images?.length ?? 0 },
 				);
 			} catch (error) {
@@ -1970,7 +1972,7 @@ export class InputController {
 		// Not streaming — just submit normally
 		this.ctx.editor.addToHistory(text);
 		try {
-			await this.ctx.withLocalSubmission(text, () => this.ctx.session.prompt(text, { images }), {
+			await this.ctx.withLocalSubmission(text, () => this.sessionConnection.prompt(text, { images }), {
 				imageCount: images?.length ?? 0,
 			});
 		} catch (error) {
@@ -1998,7 +2000,7 @@ export class InputController {
 		];
 		const restored = this.#restoreEntriesToEditor(allQueued, options?.currentText);
 		if (options?.abort) {
-			void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+			void this.sessionConnection.abort({ reason: USER_INTERRUPT_LABEL });
 		}
 		return restored;
 	}

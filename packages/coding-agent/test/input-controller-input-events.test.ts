@@ -11,6 +11,7 @@ import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import { getEditorTheme } from "@oh-my-pi/pi-tui/theme/tui-adapters";
+import type { InteractiveSessionConnection } from "@oh-my-pi/pi-coding-agent/modes/interactive-session";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import type { PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -25,7 +26,7 @@ const originalImage: ImageContent = { type: "image", mimeType: "image/png", data
 const newerImage: ImageContent = { type: "image", mimeType: "image/jpeg", data: "bmV3ZXI=" };
 const transformedImage: ImageContent = { type: "image", mimeType: "image/jpeg", data: "cmVwbGFjZW1lbnQ=" };
 
-async function createHarness(factory: ExtensionFactory) {
+async function createHarness(factory: ExtensionFactory, connection?: InteractiveSessionConnection) {
 	const runtime = new ExtensionRuntime();
 	const generatedMessages: Array<string | (TextContent | ImageContent)[]> = [];
 	runtime.sendUserMessage = (content?: string | (TextContent | ImageContent)[]) => {
@@ -104,7 +105,7 @@ async function createHarness(factory: ExtensionFactory) {
 	const helpers = new UiHelpers(ctx);
 	ctx.queueCompactionMessage = (text, mode, images, options) =>
 		helpers.queueCompactionMessage(text, mode, images, options);
-	const controller = new InputController(ctx);
+	const controller = new InputController(ctx, undefined, connection);
 	ctx.handleQueueCommand = (message, detached) => controller.handleQueueCommand(message, detached);
 	controller.setupKeyHandlers();
 	controller.setupEditorSubmitHandler();
@@ -137,6 +138,23 @@ async function createHarness(factory: ExtensionFactory) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("interactive native input ingress", () => {
+	it("submits editor input through the injected connection without invoking the local runtime", async () => {
+		const prompt = vi.fn(async (_text: string, _options?: PromptOptions) => true);
+		const connection: InteractiveSessionConnection = {
+			prompt,
+			abort: async () => {},
+			subscribe: () => () => {},
+			isStreaming: true,
+			isCompacting: false,
+			hasPostPromptWork: false,
+		};
+		const h = await createHarness(() => {}, connection);
+		h.editor.setText("Продолжай 🐈");
+		await h.pressSubmit(ENTER);
+		expect(prompt.mock.calls).toEqual([["Продолжай 🐈", { streamingBehavior: "steer", images: undefined }]]);
+		expect(h.prompt).not.toHaveBeenCalled();
+	});
+
 	it("Ctrl+Enter chains partial text/image transforms and restores materialized images after rejection", async () => {
 		const seen: InputEvent[] = [];
 		const h = await createHarness(pi => {
