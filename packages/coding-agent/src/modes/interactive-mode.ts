@@ -2011,13 +2011,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#omfgController = new OmfgController(this);
 		this.#cleanseController = new CleanseCommandController(this);
 		this.#extensionUiController = new ExtensionUiController(this);
-		this.#eventController = new EventController(this);
+		this.#eventController = new EventController(this, this.#sessionConnection);
 		this.#commandController = new CommandController(this);
 		this.#todoCommandController = new TodoCommandController(this);
 		this.#liveCommandController = new LiveCommandController(this);
 		this.#selectorController = new SelectorController(this);
 		this.#focusController = new SessionFocusController(this);
-		this.#inputController = new InputController(this);
+		this.#inputController = new InputController(this, undefined, this.#sessionConnection);
 		this.collabController = new CollabController(this);
 		this.session.setPromptDropped?.(prompt => this.#restoreDroppedPrompt(prompt));
 		this.#observerRegistry = new SessionObserverRegistry();

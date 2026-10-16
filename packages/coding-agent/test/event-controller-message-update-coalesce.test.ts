@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import type { InteractiveSessionConnection } from "@oh-my-pi/pi-coding-agent/modes/interactive-session";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -67,6 +68,33 @@ beforeAll(async () => {
 });
 
 describe("EventController message_update coalescing", () => {
+	it("subscribes and detaches through the injected connection", async () => {
+		const localSubscribe = vi.fn(() => () => {});
+		const listeners: Array<(event: AgentSessionEvent) => void> = [];
+		const unsubscribe = vi.fn();
+		const connection: InteractiveSessionConnection = {
+			prompt: async () => true,
+			abort: async () => {},
+			subscribe: listener => {
+				listeners.push(listener);
+				return unsubscribe;
+			},
+			isStreaming: true,
+			isCompacting: false,
+			hasPostPromptWork: false,
+		};
+		const ctx = createInteractiveModeContext({ session: { subscribe: localSubscribe } });
+		const controller = new EventController(ctx, connection);
+		const dispatch = vi.spyOn(controller, "dispatchSessionEvent").mockImplementation(async () => {});
+		controller.subscribeToAgent();
+		const event = messageUpdate("live remote token");
+		listeners[0](event);
+		expect(dispatch).toHaveBeenCalledWith(event);
+		expect(localSubscribe).not.toHaveBeenCalled();
+		ctx.unsubscribe?.();
+		expect(unsubscribe).toHaveBeenCalledTimes(1);
+	});
+
 	beforeEach(async () => {
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true, overrides: { "display.smoothStreaming": false } });
