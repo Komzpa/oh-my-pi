@@ -141,6 +141,7 @@ describe("interactive native input ingress", () => {
 	it("submits editor input through the injected connection without invoking the local runtime", async () => {
 		const prompt = vi.fn(async (_text: string, _options?: PromptOptions) => true);
 		const connection: InteractiveSessionConnection = {
+			promptCustomMessage: async () => true,
 			prompt,
 			abort: async () => {},
 			subscribe: () => () => {},

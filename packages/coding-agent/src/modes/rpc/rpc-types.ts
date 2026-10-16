@@ -49,6 +49,12 @@ export type RpcCommand =
 			streamingBehavior?: "steer" | "followUp";
 			options?: Omit<PromptOptions, "onPromptAdmitted">;
 	  }
+	| {
+			id?: string;
+			type: "prompt_custom";
+			message: Parameters<AgentSession["promptCustomMessage"]>[0];
+			options?: Omit<NonNullable<Parameters<AgentSession["promptCustomMessage"]>[1]>, "onPromptAdmitted">;
+	  }
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "remove_queued_message"; message: string; queue: "steering" | "followUp" }
@@ -398,6 +404,7 @@ export type RpcResponse =
 
 	// Prompting (async - events follow)
 	| { id?: string; type: "response"; command: "prompt"; success: true; data?: { agentInvoked: boolean } }
+	| { id?: string; type: "response"; command: "prompt_custom"; success: true }
 	| { id?: string; type: "response"; command: "steer"; success: true }
 	| { id?: string; type: "response"; command: "follow_up"; success: true }
 	| {

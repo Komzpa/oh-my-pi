@@ -35,6 +35,7 @@ it("reattaches a view without restarting its outstanding turn or replaying input
 		},
 		beginDispose: () => {},
 		dispose: async () => {},
+		promptCustomMessage: async () => true,
 		queuedMessageCount: 0,
 		hasPendingAsyncWork: () => false,
 		waitForIdle: async () => {},

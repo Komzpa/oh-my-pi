@@ -73,6 +73,7 @@ describe("EventController message_update coalescing", () => {
 		const listeners: Array<(event: AgentSessionEvent) => void> = [];
 		const unsubscribe = vi.fn();
 		const connection: InteractiveSessionConnection = {
+			promptCustomMessage: async () => true,
 			prompt: async () => true,
 			abort: async () => {},
 			subscribe: listener => {
@@ -113,6 +114,7 @@ describe("EventController message_update coalescing", () => {
 				loadingAnimation: { stop },
 			});
 			const connection: InteractiveSessionConnection = {
+				promptCustomMessage: async () => true,
 				prompt: async () => true,
 				abort: async () => {},
 				subscribe: () => () => {},

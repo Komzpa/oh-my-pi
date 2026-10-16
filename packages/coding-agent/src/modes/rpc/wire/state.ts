@@ -53,6 +53,19 @@ export const stateDefs = {
 		},
 		"Displayable queue-chip text for pending user-authored messages; accepted verbatim by `remove_queued_message`.",
 	),
+	CustomPromptMessage: {
+		customType: "string",
+		content: "MessageContent",
+		display: "boolean",
+		"details?": "unknown",
+		"attribution?": "'user' | 'agent'",
+	},
+	CustomPromptOptions: {
+		"streamingBehavior?": "'steer' | 'followUp' | 'aside'",
+		"toolChoice?": "unknown",
+		"queueChipText?": "string",
+		"queueOnly?": "boolean",
+	},
 	SessionPromptOptions: {
 		"expandPromptTemplates?": "boolean",
 		"runCommands?": "boolean",

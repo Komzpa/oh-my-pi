@@ -174,6 +174,10 @@ export async function createRpcInteractiveSessionConnection(
 		get hasPostPromptWork() {
 			return state.hasPostPromptWork === true;
 		},
+		promptCustomMessage(message, options) {
+			assertConnected();
+			return client.promptCustomMessage(message, options);
+		},
 		prompt(text: string, options?: PromptOptions) {
 			assertConnected();
 			return client.promptWithResult(text, options);

@@ -483,6 +483,7 @@ describe("EventController owner settlement connection", () => {
 		const settled = Promise.withResolvers<void>();
 		const wait = vi.fn(() => settled.promise);
 		const connection: InteractiveSessionConnection = {
+			promptCustomMessage: async () => true,
 			prompt: async () => true,
 			abort: async () => {},
 			subscribe: () => () => {},
@@ -514,6 +515,7 @@ describe("EventController owner settlement connection", () => {
 		async work => {
 			const ctx = createInteractiveModeContext();
 			const connection: InteractiveSessionConnection = {
+				promptCustomMessage: async () => true,
 				prompt: async () => true,
 				abort: async () => {},
 				subscribe: () => () => {},

@@ -418,3 +418,48 @@ it("checkpoints the owner journal without losing its draft or rewriting its hist
 		await client.stop();
 	}
 }, 20_000);
+
+it("keeps a custom launcher submission attributed and single across a view reattachment", async () => {
+	using directory = TempDir.createSync("@pi-rpc-launcher-custom-");
+	const client = new RpcClient({ cliPath: fixture, env: { RPC_OWNER_TEST_DIR: directory.path() } });
+	await client.start();
+	try {
+		const first = await createRpcInteractiveSessionConnection(client);
+		let admissions = 0;
+		const pending = first.promptCustomMessage(
+			{
+				customType: "launcher-note",
+				content: "не повторять 🐈",
+				display: false,
+				attribution: "agent",
+				details: { sequence: 1 },
+			},
+			{ onPromptAdmitted: () => admissions++ },
+		);
+		for (let i = 0; !(await Bun.file(directory.join("started.json")).exists()) && i < 500; i++) await Bun.sleep(10);
+		expect(await Bun.file(directory.join("started.json")).json()).toMatchObject({ calls: 1 });
+		first.disconnect();
+		const second = await createRpcInteractiveSessionConnection(client);
+		expect(second.isStreaming).toBe(true);
+		await Bun.write(directory.join("release"), "continue");
+		expect(await pending).toBe(true);
+		expect(admissions).toBe(1);
+		expect(await Bun.file(directory.join("effect.json")).json()).toMatchObject({ calls: 1 });
+		const sessionFile = await Bun.file(directory.join("session-file")).text();
+		const entries = (await Bun.file(sessionFile).text())
+			.trim()
+			.split("\n")
+			.map(line => JSON.parse(line));
+		const custom = entries.filter(entry => entry.type === "custom_message" && entry.customType === "launcher-note");
+		expect(custom).toHaveLength(1);
+		expect(custom[0]).toMatchObject({
+			content: "не повторять 🐈",
+			attribution: "agent",
+			details: { sequence: 1 },
+			display: false,
+		});
+		second.disconnect();
+	} finally {
+		await client.stop();
+	}
+}, 20_000);

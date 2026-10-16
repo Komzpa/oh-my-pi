@@ -424,6 +424,21 @@ export interface QueuedMessagesState {
 	liveSteered?: number;
 }
 
+export interface CustomPromptMessage {
+	customType: string;
+	content: MessageContent;
+	display: boolean;
+	details?: unknown;
+	attribution?: "user" | "agent";
+}
+
+export interface CustomPromptOptions {
+	streamingBehavior?: "steer" | "followUp" | "aside";
+	toolChoice?: unknown;
+	queueChipText?: string;
+	queueOnly?: boolean;
+}
+
 export interface SessionPromptOptions {
 	expandPromptTemplates?: boolean;
 	runCommands?: boolean;
@@ -1497,6 +1512,11 @@ export interface PromptParams {
 	options?: SessionPromptOptions;
 }
 
+export interface PromptCustomParams {
+	message: CustomPromptMessage;
+	options?: CustomPromptOptions;
+}
+
 export interface SteerParams {
 	message: string;
 	/** Images attached to the message. */
@@ -1836,6 +1856,7 @@ export interface GetBtwHistoryResult {
 export interface RpcWireCommands {
 	negotiate_protocol: { params: NegotiateProtocolParams; result: NegotiateProtocolResult };
 	prompt: { params: PromptParams; result: PromptAck };
+	prompt_custom: { params: PromptCustomParams; result: undefined };
 	steer: { params: SteerParams; result: undefined };
 	follow_up: { params: FollowUpParams; result: undefined };
 	remove_queued_message: { params: RemoveQueuedMessageParams; result: RemoveQueuedMessageResult };

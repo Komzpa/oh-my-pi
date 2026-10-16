@@ -723,9 +723,24 @@ export class RpcClient {
 	 * timeout: tools and questions can legitimately remain active indefinitely.
 	 */
 	async promptWithResult(message: string, options: PromptOptions = {}): Promise<boolean> {
+		const { onPromptAdmitted, ...serializable } = options;
+		return this.#promptWithCompletion({ type: "prompt", message, options: serializable }, onPromptAdmitted);
+	}
+
+	async promptCustomMessage(
+		message: Parameters<AgentSession["promptCustomMessage"]>[0],
+		options: NonNullable<Parameters<AgentSession["promptCustomMessage"]>[1]> = {},
+	): Promise<boolean> {
+		const { onPromptAdmitted, ...serializable } = options;
+		return this.#promptWithCompletion({ type: "prompt_custom", message, options: serializable }, onPromptAdmitted);
+	}
+
+	async #promptWithCompletion(
+		command: Extract<RpcCommandBody, { type: "prompt" | "prompt_custom" }>,
+		onPromptAdmitted?: () => void,
+	): Promise<boolean> {
 		const id = `req_${++this.#requestId}`;
 		const result = Promise.withResolvers<boolean>();
-		// An output failure may reject while admission is still pending.
 		void result.promise.catch(() => {});
 		this.#promptResultWaiters.set(id, frame => {
 			if (frame.status === "error") result.reject(new Error(frame.error?.message ?? "Prompt failed"));
@@ -733,8 +748,7 @@ export class RpcClient {
 		});
 		this.#promptErrorWaiters.set(id, result.reject);
 		try {
-			const { onPromptAdmitted, ...serializable } = options;
-			const response = await this.#send({ type: "prompt", message, options: serializable }, 30_000, id);
+			const response = await this.#send(command, 30_000, id);
 			const data = this.#getData<{ agentInvoked?: boolean } | undefined>(response);
 			onPromptAdmitted?.();
 			if (data?.agentInvoked === false) return false;

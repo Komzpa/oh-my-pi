@@ -2918,6 +2918,79 @@ pub struct QueuedMessagesState {
 	pub live_steered: i64,
 }
 
+///
+/// Open record: declared fields are decoded leniently (a value that does not fit stays
+/// in `extra`) and every other key is kept in `extra`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CustomPromptMessage {
+	pub custom_type: Option<String>,
+	pub content: Option<MessageContent>,
+	pub display: Option<bool>,
+	pub details: Option<Value>,
+	pub attribution: Option<CustomPromptMessageAttribution>,
+	/// Every key not decoded into a declared field.
+	pub extra: Map<String, Value>,
+}
+
+impl Serialize for CustomPromptMessage {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		let mut map = serializer.serialize_map(None)?;
+		if let Some(value) = &self.custom_type {
+			map.serialize_entry("customType", value)?;
+		}
+		if let Some(value) = &self.content {
+			map.serialize_entry("content", value)?;
+		}
+		if let Some(value) = &self.display {
+			map.serialize_entry("display", value)?;
+		}
+		if let Some(value) = &self.details {
+			map.serialize_entry("details", value)?;
+		}
+		if let Some(value) = &self.attribution {
+			map.serialize_entry("attribution", value)?;
+		}
+		for (key, value) in &self.extra {
+			match key.as_str() {
+				"customType" if self.custom_type.is_some() => continue,
+				"content" if self.content.is_some() => continue,
+				"display" if self.display.is_some() => continue,
+				"details" if self.details.is_some() => continue,
+				"attribution" if self.attribution.is_some() => continue,
+				_ => {}
+			}
+			map.serialize_entry(key, value)?;
+		}
+		map.end()
+	}
+}
+
+impl<'de> Deserialize<'de> for CustomPromptMessage {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let mut extra = Map::<String, Value>::deserialize(deserializer)?;
+		Ok(Self {
+			custom_type: take(&mut extra, "customType"),
+			content: take(&mut extra, "content"),
+			display: take(&mut extra, "display"),
+			details: take(&mut extra, "details"),
+			attribution: take(&mut extra, "attribution"),
+			extra,
+		})
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomPromptOptions {
+	#[serde(rename = "streamingBehavior", default, skip_serializing_if = "Option::is_none")]
+	pub streaming_behavior: Option<CustomPromptOptionsStreamingBehavior>,
+	#[serde(rename = "toolChoice", default, skip_serializing_if = "Option::is_none")]
+	pub tool_choice: Option<Value>,
+	#[serde(rename = "queueChipText", default, skip_serializing_if = "Option::is_none")]
+	pub queue_chip_text: Option<String>,
+	#[serde(rename = "queueOnly", default, skip_serializing_if = "Option::is_none")]
+	pub queue_only: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionPromptOptions {
 	#[serde(rename = "expandPromptTemplates", default, skip_serializing_if = "Option::is_none")]
@@ -5107,6 +5180,13 @@ pub struct PromptParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptCustomParams {
+	pub message: CustomPromptMessage,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub options: Option<CustomPromptOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SteerParams {
 	pub message: String,
 	/// Images attached to the message.
@@ -5753,6 +5833,45 @@ impl AssistantErrorEventReason {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CustomPromptMessageAttribution {
+	#[serde(rename = "user")]
+	User,
+	#[serde(rename = "agent")]
+	Agent,
+}
+
+impl CustomPromptMessageAttribution {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::Agent => "agent",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CustomPromptOptionsStreamingBehavior {
+	#[serde(rename = "steer")]
+	Steer,
+	#[serde(rename = "followUp")]
+	FollowUp,
+	#[serde(rename = "aside")]
+	Aside,
+}
+
+impl CustomPromptOptionsStreamingBehavior {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Steer => "steer",
+			Self::FollowUp => "followUp",
+			Self::Aside => "aside",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SessionPromptOptionsStreamingBehavior {
 	#[serde(rename = "steer")]
 	Steer,
@@ -6086,6 +6205,26 @@ impl Command for PromptCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<PromptAck>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Submit an attributed custom message through the owner admission pipeline.
+///
+/// The returned value is only the acknowledgement: the work completes with a
+/// `prompt_result` notification carrying this command's id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptCustomCommand {
+	pub message: CustomPromptMessage,
+}
+
+impl Command for PromptCustomCommand {
+	const NAME: &'static str = "prompt_custom";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
 	}
 }
 
