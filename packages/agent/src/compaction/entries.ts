@@ -6,6 +6,22 @@ export interface SessionEntryBase {
 	id: string;
 	parentId: string | null;
 	timestamp: string;
+	/** Build identity recorded by coding-agent when it writes the entry. */
+	runtime?: RuntimeIdentity;
+}
+
+/** Build identity stamped on entries written by an omp process. */
+export interface RuntimeIdentity {
+	/** omp package version. */
+	version: string;
+	/** Source checkout commit; absent for installed builds. */
+	commit?: string;
+	/** Source checkout branch; absent on a detached HEAD. */
+	branch?: string;
+	/** Hash of the checkout's uncommitted tracked changes. */
+	diff?: string;
+	/** Free-form build label. */
+	label?: string;
 }
 
 export interface SessionMessageEntry extends SessionEntryBase {
@@ -129,6 +145,26 @@ export interface ResetBoundaryEntry extends SessionEntryBase {
 	type: "reset_boundary";
 }
 
+/** Replacement notice for one tool-result message blanked by automatic pruning. */
+export interface ToolResultPruneTarget {
+	/** Id of the `message` entry whose result this notice replaces. */
+	entryId: string;
+	/** Exact placeholder text shown in place of the original result. */
+	notice: string;
+}
+
+/**
+ * Append-only overlay recorded by automatic tool-result pruning. Never rewrites
+ * or replaces the journal: raw message bytes stay intact and readers project the
+ * blanked result only on paths that contain this entry.
+ */
+export interface ToolResultPruneEntry extends SessionEntryBase {
+	type: "tool_result_prune";
+	/** Prune timestamp copied onto every projected target result. */
+	prunedAt: number;
+	targets: ToolResultPruneTarget[];
+}
+
 export interface CustomCompactionSessionEntries {}
 
 export type SessionEntry =
@@ -146,6 +182,7 @@ export type SessionEntry =
 	| SessionInitEntry
 	| ModeChangeEntry
 	| ResetBoundaryEntry
+	| ToolResultPruneEntry
 	| CustomCompactionSessionEntries[keyof CustomCompactionSessionEntries];
 
 export interface ReadonlySessionManager {
