@@ -521,6 +521,7 @@ export async function runCli(argv: string[]): Promise<void> {
 	let stopStartupComposer: (() => void) | undefined;
 	if (
 		!process.env.PI_TIMING &&
+		!process.env.OMP_RESTART_PREPARE &&
 		process.stdin.isTTY === true &&
 		process.stdout.isTTY === true &&
 		resolvedArgv.every(arg => PREPAINT_SAFE_FLAGS[arg] === true)
