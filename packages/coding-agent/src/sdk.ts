@@ -126,6 +126,7 @@ import {
 	type ToolDefinition,
 	wrapRegisteredTools,
 } from "./extensibility/extensions";
+import type { UserWaitTracker } from "./extensibility/extensions/user-wait";
 import {
 	createSkillDescriptionCompressor,
 	openSessionSkillDescriptionStore,
@@ -633,6 +634,8 @@ export interface CreateAgentSessionOptions {
 	deferredPrewalk?: { target: string; patterns: string[] };
 	/** Host-owned display sink for non-fatal startup prewalk warnings. */
 	onPrewalkWarning?: (warning: string) => void;
+	/** Keep `prewalk.auto` away from the startup session (`--no-prewalk`); `/new` lifts it. */
+	suppressAutoPrewalk?: boolean;
 	/** Force read-only plan mode at start, auto-approve on the model's first resolve call, then switch to execute. */
 	planYolo?: PlanYolo;
 
@@ -1416,6 +1419,7 @@ export function customToolToDefinition(tool: CustomTool, sourcePath?: string): T
 		strict: tool.strict,
 		mcpServerName: tool.mcpServerName,
 		mcpToolName: tool.mcpToolName,
+		mcpReadOnlyHint: tool.mcpReadOnlyHint,
 		// Forwarded so MCP tools renamed by the digit-keeping mint keep honoring
 		// legacy `deny`/`prompt` policies; RegisteredToolAdapter re-exposes it.
 		legacyName: tool.legacyName,
@@ -2319,6 +2323,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				);
 			},
 			restrictToolNames,
+			get seanceSourceArtifactsDir() {
+				return sessionManager.getSeanceSourceArtifactsDir() ?? undefined;
+			},
 			get hasEditTool() {
 				const requestedToolNames = options.toolNames ? normalizeToolNames(options.toolNames) : undefined;
 				return restrictToolNames
@@ -3423,6 +3430,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}),
 			createAnnotationsAPI,
 		);
+		// A dialog waits for the user, not the agent: the session lets the display sleep while one is open.
+		const trackUserWait: UserWaitTracker = dialog => (hasSession ? session.waitForUser(dialog) : dialog());
+		extensionRunner.setUserWaitTracker(trackUserWait);
 
 		credentialDisabledTarget = extensionRunner;
 		for (const event of startupCredentialDisabledEvents.splice(0)) {
@@ -3443,7 +3453,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			localProtocolOptions,
 			autoApprove: options.autoApprove ?? false,
 		});
-		const toolContextStore = new ToolContextStore(getSessionContext);
+		const toolContextStore = new ToolContextStore(getSessionContext, trackUserWait);
 		toolSession.getToolContext = () => toolContextStore.getContext();
 		const setSessionActiveToolNames = (names: Iterable<string>): void => {
 			const snapshot = Array.from(names);
@@ -4683,6 +4693,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			initialRetryFallback,
 			deferRetryFallbackValidation: options.deferRetryFallbackValidation,
 			prewalk,
+			suppressAutoPrewalk: options.suppressAutoPrewalk,
 			planYolo: options.planYolo,
 			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,

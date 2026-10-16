@@ -262,7 +262,7 @@ import {
 	piReadDisplayPath,
 	piReadPathHasRange,
 	piTimeout,
-	shellTimeoutSeconds,
+	shellDeadlineSeconds,
 } from "./cursor/exec-modern";
 import { handleInteractionQuery, protoUnknownFields } from "./cursor/interaction-query";
 
@@ -2682,7 +2682,7 @@ async function handleExecServerMessage(
 			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
 				command: args.command,
 				cwd: args.workingDirectory || undefined,
-				timeout: shellTimeoutSeconds(args.timeout),
+				timeout: shellDeadlineSeconds(args),
 			});
 			const { execResult } = await resolveExecHandler(
 				args,
@@ -2703,7 +2703,7 @@ async function handleExecServerMessage(
 			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
 				command: args.command,
 				cwd: args.workingDirectory || undefined,
-				timeout: shellTimeoutSeconds(args.timeout),
+				timeout: shellDeadlineSeconds(args),
 			});
 			await handleShellStreamArgs(args, execMsg, runTransport, execHandlers, onToolResult);
 			return;
@@ -3181,7 +3181,7 @@ async function handleExecServerMessage(
 			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
 				command: args.command,
 				cwd: args.workingDirectory || undefined,
-				timeout: shellTimeoutSeconds(args.timeout),
+				timeout: shellDeadlineSeconds(args),
 			});
 			const { execResult } = await resolveExecHandler(
 				normalizedArgs,
