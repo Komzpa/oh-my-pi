@@ -445,17 +445,22 @@ export async function listRestartControls(options?: RestartControlOptions): Prom
 		if (isEnoent(error)) return [];
 		throw error;
 	}
-	const snapshots = await Promise.all(names.filter(entry => entry.endsWith(".json")).sort().map(async name => {
-		const filenameId = name.slice(0, -5);
-		try {
-			const meta = await readMetadata(dir, filenameId);
-			const snapshot = parseSnapshot(await query(meta, { op: "discover" }));
-			return snapshot?.identity.instanceId === meta.instanceId ? snapshot : null;
-		} catch {
-			// Probe independently so one busy session does not delay every other endpoint.
-			return null;
-		}
-	}));
+	const snapshots = await Promise.all(
+		names
+			.filter(entry => entry.endsWith(".json"))
+			.sort()
+			.map(async name => {
+				const filenameId = name.slice(0, -5);
+				try {
+					const meta = await readMetadata(dir, filenameId);
+					const snapshot = parseSnapshot(await query(meta, { op: "discover" }));
+					return snapshot?.identity.instanceId === meta.instanceId ? snapshot : null;
+				} catch {
+					// Probe independently so one busy session does not delay every other endpoint.
+					return null;
+				}
+			}),
+	);
 	return snapshots.filter((snapshot): snapshot is RestartControlSnapshot => snapshot !== null);
 }
 

@@ -54,17 +54,33 @@ describe("restart-control local IPC", () => {
 						if (++received === 2) bothReceived.resolve();
 						await bothReceived.promise;
 						if (suffix === "slow") await Bun.sleep(1700);
-						socket.end(`${JSON.stringify({ ok: true, v: 1, snapshot: {
-							identity: { instanceId, sessionId: suffix, generation: 0 },
-							pid: process.pid, cwd: "/workspace", request: null,
-						} })}\n`);
+						socket.end(
+							`${JSON.stringify({
+								ok: true,
+								v: 1,
+								snapshot: {
+									identity: { instanceId, sessionId: suffix, generation: 0 },
+									pid: process.pid,
+									cwd: "/workspace",
+									request: null,
+								},
+							})}\n`,
+						);
 					});
 				});
 				servers.push(server);
 				await new Promise<void>(resolve => server.listen(endpoint, resolve));
-				await fs.writeFile(path.join(runtimeDir, `${instanceId}.json`), JSON.stringify({
-					version: 1, instanceId, endpoint, pid: process.pid, token: "a".repeat(64),
-				}), { mode: 0o600 });
+				await fs.writeFile(
+					path.join(runtimeDir, `${instanceId}.json`),
+					JSON.stringify({
+						version: 1,
+						instanceId,
+						endpoint,
+						pid: process.pid,
+						token: "a".repeat(64),
+					}),
+					{ mode: 0o600 },
+				);
 			}
 			const snapshots = await listRestartControls({ runtimeDir });
 			expect(snapshots.map(item => item.identity.sessionId).sort()).toEqual(["neighbor", "slow"]);
