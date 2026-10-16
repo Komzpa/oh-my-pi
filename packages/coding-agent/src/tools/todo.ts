@@ -1,3 +1,4 @@
+import { matchingRequirementBranch } from "../session/requirements-branch-selection";
 import {
 	type TodoStatus,
 	type TodoDeploymentBinding,
@@ -38,6 +39,8 @@ import * as fs from "node:fs";
 
 import * as nodePath from "node:path";
 import {
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
 	appendRequirementsSnapshot,
 	classifyRequirement,
 	formatDoneGateRefusal,
@@ -1598,7 +1601,16 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		const selectorErrors: string[] = [];
 		const targets = getCompletionTargets(previousPhases, { task, phase, items }, selectorErrors);
 		if (selectorErrors.length === 0) {
-			const branch = sessionManager.getBranch();
+			// Gate checks need persisted requirements and Todo state, not conversation bodies.
+			const branch = matchingRequirementBranch(
+				sessionManager,
+				entry =>
+					(entry.type === "custom" &&
+						(entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE ||
+							entry.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE ||
+							entry.customType === USER_TODO_EDIT_CUSTOM_TYPE)) ||
+					(entry.type === "message" && entry.messageRole === "toolResult" && entry.toolName === "todo"),
+			);
 			const changes = getTodoRowChanges(branch);
 			const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
 			const open = await evaluateRequirementDoneGate(

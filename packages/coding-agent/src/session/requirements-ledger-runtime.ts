@@ -1,3 +1,4 @@
+import { matchingRequirementBranch, type RequirementEntryMetadata } from "./requirements-branch-selection";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -79,7 +80,6 @@ export interface RequirementAuditImagePayload {
 }
 import { ASYNC_RESULT_MESSAGE_TYPE } from "./async-job-delivery";
 import type { SessionManager } from "./session-manager";
-import type { SessionEntry } from "./session-entries";
 import { isFailedTaskSingleResult } from "../task/result-summary";
 import { discoverAgents, getAgent } from "../task/discovery";
 import {
@@ -96,33 +96,10 @@ import { artifactsDirsFromRegistry } from "../internal-urls/registry-helpers";
 import auditInputTemplate from "../prompts/session/requirements-ledger-audit-input.md" with { type: "text" };
 import receiptHeader from "../prompts/session/requirements-ledger-receipt-header.md" with { type: "text" };
 
-type RequirementEntryMetadata = {
-	type: SessionEntry["type"];
-	customType?: string;
-	messageRole?: string;
-	toolName?: string;
-};
 function isTodoStateEntryMetadata(entry: RequirementEntryMetadata): boolean {
 	return (
 		(entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) ||
 		(entry.type === "message" && entry.messageRole === "toolResult" && entry.toolName === "todo")
-	);
-}
-function matchingRequirementBranch(
-	manager: SessionManager,
-	predicate: (entry: RequirementEntryMetadata) => boolean,
-): SessionEntry[] {
-	const selective = manager as SessionManager & {
-		getBranchMatching?: (predicate: (entry: RequirementEntryMetadata) => boolean) => SessionEntry[];
-	};
-	if (selective.getBranchMatching) return selective.getBranchMatching(predicate);
-	return manager.getBranch().filter(entry =>
-		predicate({
-			type: entry.type,
-			customType: entry.type === "custom" ? entry.customType : undefined,
-			messageRole: entry.type === "message" ? entry.message.role : undefined,
-			toolName: entry.type === "message" && entry.message.role === "toolResult" ? entry.message.toolName : undefined,
-		}),
 	);
 }
 
