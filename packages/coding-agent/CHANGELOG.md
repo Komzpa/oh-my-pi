@@ -270,6 +270,10 @@
 - Fixed isolated tasks failing on linked worktrees with initialized recursive submodules and leaving updated submodule pins unreachable after cleanup ([#15457](https://github.com/can1357/oh-my-pi/issues/15457))
 - Fixed `/tan` missing the parent's prompt cache by advertising `xd://` tools top-level and omitting `ask` ([#15578](https://github.com/can1357/oh-my-pi/issues/15578)).
 
+### Fixed
+
+- Fixed oversized tool-call arguments of completed calls, including in the current turn, and oversized historical tool results, keeping sessions stuck in context overflow after compaction while preserving full values in session storage. ([#121](https://github.com/Komzpa/oh-my-pi/pull/121) by [@Komzpa](https://github.com/Komzpa))
+
 ## [18.10.4] - 2026-10-13
 
 ### Added

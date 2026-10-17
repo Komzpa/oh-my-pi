@@ -460,6 +460,7 @@ import { SessionTools, type SessionToolsHost } from "./session-tools";
 import { resolveOpenAIWebsocketPreference } from "./settings-stream-fn";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { ToolChoiceQueue } from "./tool-choice-queue";
+import { shrinkOversizedToolHistory } from "./tool-history-shrink";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
 import { YieldQueue } from "./yield-queue";
@@ -2168,7 +2169,8 @@ export class AgentSession implements SettingsScope {
 			}
 			return thunks;
 		});
-		this.#convertToLlm = config.convertToLlm ?? convertToLlm;
+		const configuredConvertToLlm = config.convertToLlm ?? convertToLlm;
+		this.#convertToLlm = messages => configuredConvertToLlm(this.prepareToolHistoryForProvider(messages));
 		this.getXdevToolEntries = config.getXdevToolEntries ?? (() => []);
 		const sessionToolsHost: SessionToolsHost = {
 			agent: this.agent,
@@ -2536,6 +2538,7 @@ export class AgentSession implements SettingsScope {
 			removeAssistantMessageFromActiveContext: message =>
 				this.#recovery.removeAssistantMessageFromActiveContext(message),
 			dropPersistedAssistantTurn: message => this.#recovery.dropPersistedAssistantTurn(message),
+			routeOversizedHistoryOverflow: message => this.#recovery.routeOversizedHistoryOverflow(message),
 			retainTerminalFailure: message => {
 				this.#prunedTerminalFailure = message;
 			},
@@ -6917,6 +6920,11 @@ export class AgentSession implements SettingsScope {
 
 	#convertToLlmForSideRequest(messages: AgentMessage[]): Message[] {
 		return this.#providerBoundary.convertToLlmForSideRequest(messages);
+	}
+
+	/** Prepare a send-only copy; tool execution and persisted history retain the original arguments. */
+	prepareToolHistoryForProvider(messages: AgentMessage[]): AgentMessage[] {
+		return this.#recovery.shrinkWholeToolHistory ? shrinkOversizedToolHistory(messages, true) : messages;
 	}
 
 	/**
