@@ -11,7 +11,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
