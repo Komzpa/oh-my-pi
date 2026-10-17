@@ -66,6 +66,83 @@ export function filterProcessEnv(env: Record<string, string | undefined>): Recor
 	return result;
 }
 /**
+ * Desktop-session variables that bind a shell to the user's live graphical
+ * session. A task worker that inherits them can open windows or notifications
+ * on the user's screen (grievance 608), so subagent tool environments must not
+ * carry them. The main interactive session keeps its own values untouched.
+ */
+export const DESKTOP_SESSION_ENV_KEYS = [
+	"WAYLAND_DISPLAY",
+	"WAYLAND_SOCKET",
+	"DISPLAY",
+	"XAUTHORITY",
+	"ICEAUTHORITY",
+	"DBUS_SESSION_BUS_ADDRESS",
+	"DBUS_SESSION_BUS_PID",
+	"DBUS_SESSION_BUS_WINDOWID",
+	"DBUS_STARTER_ADDRESS",
+	"DBUS_STARTER_BUS_TYPE",
+	"SESSION_MANAGER",
+	"SWAYSOCK",
+	"I3SOCK",
+] as const;
+
+/**
+ * Copy `env` with the desktop-session bindings removed. `XDG_RUNTIME_DIR` is
+ * replaced with a per-worker private directory when `runtimeDir` is supplied;
+ * otherwise it is dropped as well so the worker cannot reach the user's
+ * `/run/user/<uid>` sockets (Wayland, bus) through it.
+ */
+export function stripDesktopSessionEnv(env: Record<string, string>, runtimeDir?: string): Record<string, string> {
+	const result = { ...env };
+	for (const key of DESKTOP_SESSION_ENV_KEYS) {
+		delete result[key];
+	}
+	if (runtimeDir !== undefined) {
+		result.XDG_RUNTIME_DIR = runtimeDir;
+	} else {
+		delete result.XDG_RUNTIME_DIR;
+	}
+	return result;
+}
+/**
+ * Per-worker private replacement for `XDG_RUNTIME_DIR` (grievance 608). Sibling
+ * workers get distinct directories so one worker's sockets never leak into
+ * another's view; the directory is created 0700 like the shell-snapshot dir.
+ */
+export function ensureSubagentRuntimeDir(token: string): string {
+	const safe = token.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64) || "subagent";
+	const dir = path.join(os.tmpdir(), `omp-worker-runtime-${safe}-${process.getuid?.() ?? "u"}`);
+	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	try {
+		fs.chmodSync(dir, 0o700);
+	} catch {
+		// best-effort: pre-existing dir owned by this uid is already private.
+	}
+	return dir;
+}
+/**
+ * Mask the desktop-session bindings in the live environment and return a
+ * restore function that must be called synchronously on every exit path (also
+ * on throw). Env snapshots taken between enter and restore (e.g.
+ * `workerEnvFromParent()`) cannot leak the user's graphical session into
+ * worker children.
+ */
+export function enterMaskedDesktopSessionEnv(runtimeDir: string): () => void {
+	const saved: Record<string, string | undefined> = {};
+	for (const key of DESKTOP_SESSION_ENV_KEYS) saved[key] = $env[key];
+	saved.XDG_RUNTIME_DIR = $env.XDG_RUNTIME_DIR;
+	for (const key of DESKTOP_SESSION_ENV_KEYS) delete $env[key];
+	$env.XDG_RUNTIME_DIR = runtimeDir;
+	return () => {
+		for (const key in saved) {
+			const value = saved[key];
+			if (value === undefined) delete $env[key];
+			else $env[key] = value;
+		}
+	};
+}
+/**
  * Git variables that pin a repository location. They describe the checkout the
  * agent process itself was launched from (git hooks, `git --git-dir` wrappers),
  * so forwarding them to a child shell makes `git` ignore the command's `cwd`

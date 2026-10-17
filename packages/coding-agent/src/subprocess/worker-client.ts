@@ -247,6 +247,7 @@ export function createWorkerSubprocess<Outbound>(options: {
 	spawnCommand: WorkerSpawnCommand;
 	env: Record<string, string>;
 	exitLabel: string;
+	resourceScope?: { wrapCommand(command: string[], env?: Record<string, string>): string[]; close(): void };
 	/** Start the child as a new process-group/session leader where Bun supports it. */
 	detached?: boolean;
 	/** Treat exit code 0 as unexpected; eval cells can call process.exit(0). */
@@ -269,39 +270,49 @@ export function createWorkerSubprocess<Outbound>(options: {
 		stderrDrainStarted = true;
 		void drainStderrCapture(stderrCapture, options.exitLabel, stderrTail).finally(() => stderrDrained.resolve());
 	};
-	const proc = Bun.spawn({
-		cmd: options.spawnCommand.cmd,
-		cwd: options.spawnCommand.cwd,
-		detached: options.detached,
-		env: options.env,
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: stderrCapture.target,
-		serialization: "advanced",
-		windowsHide: true,
-		ipc(message) {
-			for (const handler of inbound) handler(message as Outbound);
-		},
-		onExit(_proc, exitCode, signalCode) {
-			unregisterFault();
-			startStderrDrain();
-			if (exitCode === 0 && !options.reportCleanExit) return;
-			// Swallow only the expected SIGKILL from `terminate()`; every other
-			// signal exit (SIGSEGV from a native fault, OOM SIGKILL, operator
-			// `kill -9`) is a real worker death that must fault in-flight
-			// requests so callers don't await forever.
-			if (exitCode === null && intentionalExit.value) return;
-			const reason = exitCode !== null ? `code ${exitCode}` : `signal ${signalCode ?? "unknown"}`;
-			// The stderr target is drained only after exit so idle unref'd
-			// workers do not keep the parent alive; wait for that drain before
-			// surfacing the error so the tail is complete.
-			void stderrDrained.promise.finally(() => {
-				const suffix = stderrTail.suffix();
-				const err = new Error(`${options.exitLabel} exited with ${reason}${suffix}`);
-				for (const handler of errors) handler(err);
-			});
-		},
-	});
+	let proc: Subprocess<"ignore", "ignore", number | "ignore">;
+	try {
+		proc = Bun.spawn({
+			cmd: options.resourceScope
+				? options.resourceScope.wrapCommand(options.spawnCommand.cmd, options.env)
+				: options.spawnCommand.cmd,
+			cwd: options.spawnCommand.cwd,
+			detached: options.detached,
+			env: options.env,
+			stdin: "ignore",
+			stdout: "ignore",
+			stderr: stderrCapture.target,
+			serialization: "advanced",
+			windowsHide: true,
+			ipc(message) {
+				for (const handler of inbound) handler(message as Outbound);
+			},
+			onExit(_proc, exitCode, signalCode) {
+				options.resourceScope?.close();
+				unregisterFault();
+				startStderrDrain();
+				if (exitCode === 0 && !options.reportCleanExit) return;
+				// Swallow only the expected SIGKILL from `terminate()`; every other
+				// signal exit (SIGSEGV from a native fault, OOM SIGKILL, operator
+				// `kill -9`) is a real worker death that must fault in-flight
+				// requests so callers don't await forever.
+				if (exitCode === null && intentionalExit.value) return;
+				const reason = exitCode !== null ? `code ${exitCode}` : `signal ${signalCode ?? "unknown"}`;
+				// The stderr target is drained only after exit so idle unref'd
+				// workers do not keep the parent alive; wait for that drain before
+				// surfacing the error so the tail is complete.
+				void stderrDrained.promise.finally(() => {
+					const suffix = stderrTail.suffix();
+					const err = new Error(`${options.exitLabel} exited with ${reason}${suffix}`);
+					for (const handler of errors) handler(err);
+				});
+			},
+		});
+	} catch (error) {
+		options.resourceScope?.close();
+		cleanupStderrCapture(stderrCapture);
+		throw error;
+	}
 	// Bun raises a malformed advanced-serialization frame as a process-global
 	// uncaughtException with no channel attribution (oven-sh/bun#37287). Register
 	// a fault handler so that failure rejects this worker's in-flight requests and

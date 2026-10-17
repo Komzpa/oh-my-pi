@@ -142,6 +142,7 @@ import type { PythonResult } from "../eval/py/executor";
 import { formatEvalStateContext } from "../eval/state";
 import { WorkPoolRegistry } from "../task/workpool";
 import { type BashPtyOptions, type BashResult, releaseShellSessions } from "../exec/bash-executor";
+import { SessionSliceLifecycle } from "../exec/session-slice-lifecycle";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { CustomTool } from "../extensibility/custom-tools/types";
@@ -173,6 +174,7 @@ import type { HindsightSessionState } from "../hindsight/state";
 import { InternalUrlRouter, type LocalProtocolOptions } from "../internal-urls";
 import { type ChainJudge, hasNativeJudge, journalJudgmentUsage, resolveJudge, sharedJudgmentCache } from "../judgment";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
+import { releaseDaemonClientsForSession } from "../launch/client";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { MEMORY_RECALL_CHANGES_MESSAGE_TYPE } from "../memory-backend/recall-entry";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
@@ -262,6 +264,7 @@ import type { EditMode } from "@oh-my-pi/pi-tui/tools/edit";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { normalizeModelContextImages } from "../utils/image-loading";
+import { trackLateCleanup } from "../utils/late-cleanup";
 import { TokenRateMeter } from "../utils/token-rate";
 import { resumeCommand } from "../utils/resume-command";
 import {
@@ -1714,6 +1717,7 @@ export class AgentSession implements SettingsScope {
 
 	/** Live generation tok/s for the working row; fed by this session's own streamed deltas. */
 	readonly tokenRate: TokenRateMeter;
+	#sessionSlices = new Map<string, SessionSliceLifecycle>();
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -5558,6 +5562,33 @@ export class AgentSession implements SettingsScope {
 	 */
 	#syncAgentSessionId(sessionId?: string, notifyChange = true): void {
 		const currentSessionId = this.sessionManager.getSessionId();
+		// Non-broker tool processes retain their slice ownership until dispose.
+		// Switching pauses old slice sampling; committed transitions release the
+		// previous transcript's broker daemons independently.
+		for (const [id, lifecycle] of this.#sessionSlices) {
+			if (id === currentSessionId) lifecycle.resume();
+			else lifecycle.release();
+		}
+		if (!this.#isDisposed && !this.#sessionSlices.has(currentSessionId)) {
+			this.#sessionSlices.set(
+				currentSessionId,
+				new SessionSliceLifecycle({
+					sessionId: currentSessionId,
+					isIdleOrWaiting: () => !this.isStreaming || this.agent.state.pendingToolCalls.size > 0,
+					sendNotice: async content => {
+						if (this.#isDisposed || this.sessionManager.getSessionId() !== currentSessionId) return;
+						await this.sendCustomMessage(
+							{ customType: "session-owned-cpu", content, display: false, attribution: "agent" },
+							{ deliverAs: "nextTurn" },
+						);
+					},
+					sendUserLine: line => {
+						if (this.#isDisposed || this.sessionManager.getSessionId() !== currentSessionId) return;
+						this.emitNotice("warning", line, "session-slice");
+					},
+				}),
+			);
+		}
 		if (this.#observedSessionId === undefined) {
 			this.#observedSessionId = currentSessionId;
 		} else if (this.#observedSessionId !== currentSessionId) {
@@ -5699,6 +5730,24 @@ export class AgentSession implements SettingsScope {
 		return this.#disposeCall;
 	}
 
+	/** Release a subagent lane's daemon resources after a bounded drain, without disposing its reusable session. */
+	async releaseTaskResources(): Promise<void> {
+		const sessionId = this.sessionManager.getSessionId();
+		const drain = (async () => {
+			await this.#cancelPostPromptTasks();
+			await this.agent.waitForIdle();
+		})();
+		try {
+			await withTimeout(drain, POST_PROMPT_DRAIN_TIMEOUT_MS, "Timed out draining subagent task resources");
+		} catch (error) {
+			// The timeout does not cancel the turn. Keep its drain owned while the
+			// broker fences the old sockets and stops already-admitted launches.
+			trackLateCleanup(drain, { sessionId, resource: "subagent-task-drain" });
+			logger.warn("Subagent task still draining at resource-release deadline", { sessionId, error: String(error) });
+		}
+		await this.#releaseOwnedDaemonClients(sessionId);
+	}
+
 	async #disposeOwnedAsyncJobs(): Promise<void> {
 		// Unregister before cancelling: a job completing during teardown must
 		// dead-letter rather than enqueue a follow-up into a disposing session.
@@ -5799,6 +5848,11 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
+	async #releaseOwnedDaemonClients(sessionId: string | undefined, preserveServices = false): Promise<void> {
+		if (!sessionId) return;
+		await releaseDaemonClientsForSession(sessionId, preserveServices);
+	}
+
 	async #disconnectOwnedMcp(): Promise<void> {
 		if (!this.#disconnectOwnedMcpManager) return;
 		try {
@@ -5850,6 +5904,11 @@ export class AgentSession implements SettingsScope {
 		this.#fallbackExtensionTimers?.clearAll();
 		this.abortRetry();
 		this.abortCompaction();
+		this.agent.setProviderResponseInterceptor(undefined);
+		this.agent.setRawSseEventInterceptor(undefined);
+		// All turn-drain checkpoints share one hard budget. Teardown must not
+		// start another full wait after the pre-release drain already timed out.
+		const drainDeadlineAt = Date.now() + POST_PROMPT_DRAIN_TIMEOUT_MS;
 		const postPromptDrain = this.#cancelPostPromptTasks();
 		this.agent.abort();
 		try {
@@ -5861,8 +5920,28 @@ export class AgentSession implements SettingsScope {
 		} catch (error) {
 			logger.warn("Post-prompt tasks still draining at dispose deadline", { error: String(error) });
 		}
-		await this.#drainAutolearnCapture();
-		await this.#memory.transition;
+		// An uncooperative provider acquisition can hold waitForIdle past broker
+		// release. Spend only the remaining drain budget, then retain this same
+		// work in the terminal deferred finalization below.
+		const preReleaseDrain = (async () => {
+			await this.agent.waitForIdle();
+			await this.#drainAutolearnCapture();
+			await this.#memory.transition;
+		})();
+		const preReleaseTimeoutMs = drainDeadlineAt - Date.now();
+		if (preReleaseTimeoutMs > 0) {
+			try {
+				await withTimeout(
+					preReleaseDrain,
+					preReleaseTimeoutMs,
+					"Timed out waiting for the active agent run to settle before broker release during dispose",
+				);
+			} catch (error) {
+				logger.warn("Active agent run still settling before broker release at dispose deadline", {
+					error: String(error),
+				});
+			}
+		}
 
 		const hindsightState = this.getHindsightSessionState();
 		const mnemopiState = setMnemopiSessionState(this, undefined);
@@ -5876,11 +5955,19 @@ export class AgentSession implements SettingsScope {
 		}
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		releaseShellSessions(this.sessionManager.getSessionId());
+		const daemonClientsReleased = this.#releaseOwnedDaemonClients(
+			this.sessionManager.getSessionId(),
+			options.preserveServices,
+		);
 		const results = await Promise.allSettled([
+			...Array.from(this.#sessionSlices.values(), lifecycle =>
+				daemonClientsReleased.finally(() => (options.preserveServices ? lifecycle.detach() : lifecycle.stop())),
+			),
 			this.#disposeOwnedAsyncJobs(),
 			this.#eval.disposeKernels(),
 			this.#releaseOwnedBrowserTabs(this.sessionManager.getSessionId()),
 			this.#releaseOwnedComputerSessions(this.#eval.getKernelOwnerId()),
+			daemonClientsReleased,
 			this.#disconnectOwnedMcp(),
 			advisorRecorderClosed,
 			hindsightState?.flushRetainQueue() ?? Promise.resolve(),
@@ -5912,27 +5999,34 @@ export class AgentSession implements SettingsScope {
 		// A dispose triggered mid-turn (Ctrl-C / timeout / hard-killed subagent)
 		// only *signals* the agent loop via the earlier abort(); the loop and the
 		// session's fire-and-forget event handlers still unwind asynchronously.
-		// Detach the response/SSE interceptors so a late frame cannot re-record
-		// into rawSseDebugBuffer, then wait (bounded) for both the core run AND
-		// the in-flight event/persistence handlers to settle — the latter can
-		// still append the finished message/entries after agent.waitForIdle()
+		// The response/SSE interceptors are already detached; now wait (bounded)
+		// for both the core run AND the in-flight event/persistence handlers to
+		// settle — the latter can still append the finished message/entries after
+		// agent.waitForIdle()
 		// alone. Without this the release races the unwind and a disposed session
 		// is repopulated with exactly the state we are trying to drop.
-		this.agent.setProviderResponseInterceptor(undefined);
-		this.agent.setRawSseEventInterceptor(undefined);
+		const terminalDrain = (async () => {
+			await postPromptDrain;
+			await preReleaseDrain;
+			await this.agent.waitForIdle();
+			await this.#drainInFlightEventHandlers();
+		})();
 		let drained = false;
-		try {
-			await withTimeout(
-				(async () => {
-					await this.agent.waitForIdle();
-					await this.#drainInFlightEventHandlers();
-				})(),
-				options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS,
-				"Timed out waiting for the active agent run to settle during dispose",
-			);
-			drained = true;
-		} catch (error) {
-			logger.warn("Active agent run still settling at dispose deadline", { error: String(error) });
+		const terminalDrainTimeoutMs = Math.min(
+			options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS,
+			drainDeadlineAt - Date.now(),
+		);
+		if (terminalDrainTimeoutMs > 0) {
+			try {
+				await withTimeout(
+					terminalDrain,
+					terminalDrainTimeoutMs,
+					"Timed out waiting for the active agent run to settle during dispose",
+				);
+				drained = true;
+			} catch (error) {
+				logger.warn("Active agent run still settling at dispose deadline", { error: String(error) });
+			}
 		}
 
 		// Event handlers can reopen the append writer while they persist their
@@ -5968,17 +6062,20 @@ export class AgentSession implements SettingsScope {
 		// SEALED the session manager (a revival may reopen the same JSONL
 		// through a new manager the moment dispose returns, and this manager
 		// must never race that writer) — so re-run only the in-memory reset,
-		// and lift the account pools, once the pipeline genuinely settles. The
-		// extension runner bounds hook runtime, so this deferred pass is not
-		// unbounded.
+		// and lift the account pools, once the pipeline genuinely settles. Keep
+		// the original drain reachable: a reset or revival is not its completion.
 		if (!drained) {
-			void (async () => {
-				await this.agent.waitForIdle();
-				await this.#drainInFlightEventHandlers();
-				this.#releaseRetainedSessionMemory();
-				this.#accountPoolScope?.release();
-			})().catch(error => logger.warn("Deferred dispose finalization failed", { error: String(error) }));
+			trackLateCleanup(
+				terminalDrain.then(() => {
+					this.#releaseRetainedSessionMemory();
+					this.#accountPoolScope?.release();
+				}),
+				{ sessionId: this.sessionManager.getSessionId(), resource: "dispose-finalization" },
+			);
 		}
+		// Parallel cleanup and socket closure always finish, but a failed broker
+		// release must not turn disposal into a successful completion receipt.
+		await daemonClientsReleased;
 	}
 
 	/** Drop the in-memory conversation state after the terminal dispose flush. */
@@ -10052,6 +10149,7 @@ export class AgentSession implements SettingsScope {
 		using _transition = this.#beginSessionTransition();
 		this.#assertVibeSessionTransitionAllowed("start a new session");
 		const previousSessionFile = this.sessionFile;
+		const previousDaemonSessionId = this.sessionManager.getSessionId();
 
 		// Emit session_before_switch event with reason "new" (can be cancelled)
 		if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
@@ -10165,9 +10263,15 @@ export class AgentSession implements SettingsScope {
 
 			return true;
 		} finally {
-			if (advisorRecordersDetached) {
-				if (sessionTransitioned) this.#advisors.resetSessionState();
-				else this.#advisors.reattachRecorderFeeds();
+			try {
+				if (previousDaemonSessionId && previousDaemonSessionId !== this.sessionManager.getSessionId()) {
+					await this.#releaseOwnedDaemonClients(previousDaemonSessionId);
+				}
+			} finally {
+				if (advisorRecordersDetached) {
+					if (sessionTransitioned) this.#advisors.resetSessionState();
+					else this.#advisors.reattachRecorderFeeds();
+				}
 			}
 		}
 	}
@@ -11760,6 +11864,7 @@ export class AgentSession implements SettingsScope {
 		this.#usagePreflightReadyModel = undefined;
 
 		let cwdChangeTarget: string | undefined;
+		let sessionSwitchCommitted = false;
 		try {
 			if (switchingToDifferentSession) {
 				// Stop and settle in-flight advisors while the old-session feeds can
@@ -11961,6 +12066,7 @@ export class AgentSession implements SettingsScope {
 			if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {
 				this.#notifySessionChangeCallbacks();
 			}
+			sessionSwitchCommitted = true;
 			generationSettled.resolve();
 			this.#sessionGenerationSettled = previousSessionGenerationSettled;
 			if (modelFallbackWarning) {
@@ -12049,6 +12155,12 @@ export class AgentSession implements SettingsScope {
 			this.#bash.finishSessionTransition(bashTransition, false);
 			if (error === SESSION_CWD_CHANGE_REJECTED) return false;
 			throw error;
+		} finally {
+			// Cleanup failure is surfaced after commit, never caught as a reason
+			// to restore an outgoing transcript whose clients have already closed.
+			if (sessionSwitchCommitted && switchingToDifferentSession && previousSessionState.sessionId) {
+				await this.#releaseOwnedDaemonClients(previousSessionState.sessionId);
+			}
 		}
 	}
 
