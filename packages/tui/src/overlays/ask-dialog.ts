@@ -1076,13 +1076,17 @@ export class AskDialogComponent implements Component {
 		this.#requestRender();
 	}
 
-	/** `n`: a note on the highlighted row (questions only). */
+	/** `n`: edit the custom answer, or add a note to a predefined option. */
 	#pressNote(): void {
 		if (this.#isSubmitTab()) return;
 		this.#countdown?.reset();
 		const active = this.#activeQuestionState();
 		const rowItem = active ? this.#questionRows(active.question)[active.state.cursorIndex] : undefined;
 		if (!active || !rowItem) return;
+		if (rowItem.kind === "other") {
+			this.#commitRow(active.question, active.state, rowItem, true);
+			return;
+		}
 		void this.#promptForNote(active.question, active.state, rowItem);
 	}
 
@@ -1334,9 +1338,7 @@ export class AskDialogComponent implements Component {
 		const rowItem = rows[state.cursorIndex];
 		if (!rowItem) return;
 		if (keyData === "n" || keyData === "N") {
-			if (rowItem.kind === "option" || rowItem.kind === "other") {
-				void this.#promptForNote(question, state, rowItem);
-			}
+			this.#pressNote();
 			return;
 		}
 		const isEnter = matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n";

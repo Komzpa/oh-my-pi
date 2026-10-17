@@ -490,7 +490,7 @@ describe("AskDialogComponent", () => {
 		expect(submitted.noteImages).toBeUndefined();
 	});
 
-	it("drops note images with a note on Other when no custom answer was given", async () => {
+	it.each(["n", "N", ENTER])("%j on Other preserves the custom answer and images", async key => {
 		const image: ImageContent = { type: "image", data: "image-data", mimeType: "image/png" };
 		const onSubmit = vi.fn();
 		const component = new AskDialogComponent(
@@ -504,13 +504,14 @@ describe("AskDialogComponent", () => {
 		);
 
 		component.handleInput(DOWN); // Other
-		component.handleInput("n");
+		component.handleInput(key);
 		await Promise.resolve();
 		await Promise.resolve();
-		component.handleInput(TAB);
 		component.handleInput(ENTER);
 
 		const submitted = onSubmit.mock.calls[0][0].results[0];
+		expect(submitted.customInput).toBe("[Image #1]");
+		expect(submitted.customInputImages).toEqual([image]);
 		expect(submitted.note).toBeUndefined();
 		expect(submitted.noteImages).toBeUndefined();
 	});
