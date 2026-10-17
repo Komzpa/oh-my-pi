@@ -2222,6 +2222,8 @@ export interface TaskItem {
 	schemaMode?: "permissive" | "strict";
 	/** Eval-defined tool names exposed to this child. */
 	tools?: string[];
+	/** Declared exclusive checkout paths for this child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
 	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
 	isolated?: boolean;
 }
@@ -2253,6 +2255,8 @@ export interface TaskParams {
 	schemaMode?: "permissive" | "strict";
 	/** Eval-defined tool names exposed to the flat-form child. */
 	tools?: string[];
+	/** Declared exclusive checkout paths for the flat-form child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
 	/** Batch form (`task.batch`): one subagent per item. */
 	tasks?: TaskItem[];
 	/** Batch form: shared background prepended to every assignment; required by the batch schema. */
@@ -2511,6 +2515,19 @@ export interface SingleResult {
 		attempt: number;
 		errorMessage: string;
 	};
+	/**
+	 * Background jobs that still belonged to the worker when it failed or was
+	 * aborted. Preserved so the parent can see follow-on processes the worker
+	 * started before a terminal provider/runtime failure.
+	 */
+	retainedBackgroundJobs?: Array<{
+		id: string;
+		type: "bash" | "task" | "eval";
+		status: "running" | "completed" | "failed" | "cancelled";
+		label?: string;
+		agentId?: string;
+		pid?: number;
+	}>;
 	/** Output metadata for agent:// URL integration */
 	outputMeta?: { lineCount: number; charCount: number };
 }

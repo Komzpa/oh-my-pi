@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import * as themeModule from "@oh-my-pi/pi-tui/theme";
 import { ToolChoiceQueue } from "@oh-my-pi/pi-coding-agent/session/tool-choice-queue";
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -780,10 +781,16 @@ describe("xd:// and top-level calls share the canonical tool map", () => {
 });
 
 describe("device-only write transport for explicit lists omitting write", () => {
-	it("grants a device-only write so xd:// state is allocated, and rejects filesystem writes", async () => {
+	it("grants a device-only write so xd:// state is allocated, allows local notes, and rejects filesystem writes", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "write-xdev-device-only-"));
 		try {
-			const session = xdevSession(tempDir);
+			const getArtifactsDir = () => path.join(tempDir, "artifacts");
+			const getSessionId = () => "session-a";
+			const session = xdevSession(tempDir, {
+				getArtifactsDir,
+				getSessionId,
+				localProtocolOptions: { getArtifactsDir, getSessionId },
+			});
 			const tools = await createTools(session, ["read", "grep"]);
 
 			// The device-only grant: write joins the set purely as the xd://
@@ -792,6 +799,19 @@ describe("device-only write transport for explicit lists omitting write", () => 
 			expect(write).toBeDefined();
 			expect(session.deviceOnlyWrite).toBe(true);
 			expect(session.xdev).toBeDefined();
+
+			await write!.execute("write-device-only-local", {
+				path: "local://notes.md",
+				content: "handoff notes\n",
+			});
+			expect(
+				await Bun.file(
+					resolveLocalUrlToPath("local://notes.md", {
+						getArtifactsDir,
+						getSessionId,
+					}),
+				).text(),
+			).toBe("handoff notes\n");
 
 			// Filesystem writes are rejected before any handler or guard runs.
 			await expect(

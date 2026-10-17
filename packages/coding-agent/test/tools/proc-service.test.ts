@@ -24,6 +24,7 @@ import { WriteTool } from "../../src/tools/write";
 import { sharedBrowserDaemonName } from "../../src/tools/browser/shared-daemon";
 import type { ToolSession } from "../../src/tools";
 import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/daemon";
+import { cfgAsyncEnabled } from "../../src/tools/settings";
 
 function startBroker(projectDir: string, runtimeDir: string): Promise<void> {
 	const previous = [
@@ -60,8 +61,12 @@ async function rejectionMessage(promise: Promise<unknown>): Promise<string> {
 	throw new Error("Expected the promise to reject");
 }
 
-function toolSession(cwd: string, manager?: AsyncJobManager, options: { launch?: boolean } = {}): ToolSession {
-	return {
+function toolSession(
+	cwd: string,
+	manager?: AsyncJobManager,
+	options: { launch?: boolean; async?: boolean } = {},
+): ToolSession {
+	const session = {
 		cwd,
 		hasUI: false,
 		getAgentId: () => "Main",
@@ -78,6 +83,8 @@ function toolSession(cwd: string, manager?: AsyncJobManager, options: { launch?:
 			shellPath: SERVICE_SHELL,
 		}),
 	} as unknown as ToolSession;
+	cfgAsyncEnabled.override(session.settings, options.async ?? false);
+	return session;
 }
 
 function steeringContext(steeringSignal: AbortSignal): AgentToolContext {
@@ -100,6 +107,69 @@ function steeringContext(steeringSignal: AbortSignal): AgentToolContext {
 }
 
 describe("proc:// background jobs", () => {
+	it("reads a delivered real bash job during consumed grace and expires it afterwards", async () => {
+		using temp = TempDir.createSync("@omp-proc-finished-");
+		const deliveries: string[] = [];
+		const manager = new AsyncJobManager({ retentionMs: 60_000 });
+		manager.registerDeliverySink("Main", async (id, text) => {
+			deliveries.push(id);
+			expect(text).toContain("finished-background-output");
+		});
+		const session = toolSession(temp.path(), manager, { launch: false, async: true });
+		const proc = new ProcProtocolHandler();
+		try {
+			vi.useFakeTimers();
+			const started = await new BashTool(session).execute("finished-background", {
+				command: "printf 'finished-background-output\\n'",
+				async: true,
+				timeout: 0,
+			});
+			const id = started.details?.async?.jobId;
+			expect(id).toBeDefined();
+			if (!id) throw new Error("BashTool did not return a background job id");
+			await manager.getJob(id)?.promise;
+			expect(await manager.drainDeliveries({ timeoutMs: 2_000 })).toBeTrue();
+			expect(deliveries).toEqual([id]);
+			expect(manager.isJobResultConsumed(id)).toBeTrue();
+			expect(manager.getJob(id)?.status).toBe("completed");
+
+			vi.advanceTimersByTime(29_999);
+			const result = await proc.resolve(parseInternalUrl(`proc://${id}`), { session });
+			expect(result.content).toContain("finished-background-output");
+			expect(result.details?.proc?.job).toMatchObject({ id, status: "completed" });
+			expect(deliveries).toEqual([id]);
+			expect(manager.isJobResultConsumed(id)).toBeTrue();
+			vi.advanceTimersByTime(1);
+			await expect(proc.resolve(parseInternalUrl(`proc://${id}`), { session })).rejects.toThrow("not found");
+		} finally {
+			vi.useRealTimers();
+			await manager.dispose();
+		}
+	});
+
+	it("hides consumed jobs in listings and denies another owner's retained job", async () => {
+		const manager = new AsyncJobManager({});
+		manager.registerDeliverySink("Main", async () => {});
+		const id = manager.register("bash", "delivered result", async () => "private output", { ownerId: "Main" });
+		const session = toolSession(process.cwd(), manager, { launch: false });
+		const otherSession = toolSession(process.cwd(), manager, { launch: false });
+		otherSession.getAgentId = () => "Other";
+		const proc = new ProcProtocolHandler();
+		try {
+			await manager.getJob(id)?.promise;
+			expect(await manager.drainDeliveries({ timeoutMs: 2_000 })).toBeTrue();
+			expect(manager.isJobResultConsumed(id)).toBeTrue();
+			await expect(proc.resolve(parseInternalUrl(`proc://${id}`), { session: otherSession })).rejects.toThrow(
+				"not found",
+			);
+			const list = await proc.resolve(parseInternalUrl("proc://"), { session });
+			expect(list.content).not.toContain(id);
+			expect(list.details?.proc?.jobs).toEqual([]);
+		} finally {
+			await manager.dispose();
+		}
+	});
+
 	it("lists owned jobs, preserves delivery on read, and scopes kill to the owner", async () => {
 		const manager = new AsyncJobManager({});
 		const pending = Promise.withResolvers<string>();

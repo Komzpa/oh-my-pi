@@ -611,6 +611,9 @@ describe("AsyncJobManager", () => {
 		await manager.drainDeliveries({ timeoutMs: 2_000 });
 
 		expect(manager.isJobResultConsumed(jobId)).toBe(true);
+		expect(manager.getJob(jobId)?.resultText).toBe("done");
+		expect(manager.getAllJobs()).toEqual([]);
+		expect(manager.getRecentJobs()).toEqual([]);
 		await waitForJobEviction(manager, jobId);
 		expect(manager.getJob(jobId)).toBeUndefined();
 	});
