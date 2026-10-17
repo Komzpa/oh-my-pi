@@ -19,7 +19,7 @@ import {
 } from "./terminal-multiplexer";
 import { resolveTmuxClientTerminalNames, wrapTmuxPassthroughIfNeeded } from "./tmux";
 import { detectTerminalBackground } from "./theme/theme";
-import type { HangulCompatibilityJamoWidth } from "./utils";
+import { type HangulCompatibilityJamoWidth, visibleWidth } from "./utils";
 
 export * from "./terminal-multiplexer";
 export { wrapTmuxPassthrough } from "./tmux";
@@ -977,7 +977,7 @@ export function parseKittyDirectPlacementLine(line: string): ParsedKittyPlacemen
 }
 
 /** `ESC 7` + `CUU(n)` lead-in of an {@link Image} direct-placement line. */
-const DIRECT_PLACEMENT_LIFT = /^\x1b7\x1b\[(\d+)A/;
+const DIRECT_PLACEMENT_LIFT = /\x1b7\x1b\[(\d+)A/;
 
 /**
  * Rows above its own line that an {@link Image} direct-placement line paints
@@ -989,6 +989,82 @@ const DIRECT_PLACEMENT_LIFT = /^\x1b7\x1b\[(\d+)A/;
 export function directPlacementLift(line: string): number {
 	const m = DIRECT_PLACEMENT_LIFT.exec(line);
 	return m ? Number(m[1]) : 0;
+}
+
+/** The placement may be surrounded by Box padding, borders, or SGR styling. */
+const SIXEL_DIRECT_PLACEMENT_LINE = /(?:\x1b7(?:\x1b\[(\d+)A)?)?(\x1bP[0-9;]*q)([\s\S]*?)\x1b\\(?:\x1b8)?/;
+
+export interface ParsedSixelPlacementLine {
+	prefix: string;
+	suffix: string;
+	lift: number;
+	column: number;
+	introducer: string;
+	body: string;
+	widthPx: number;
+	heightPx: number;
+}
+
+/** Locate Image's SIXEL block without dropping the enclosing row's decorations. */
+export function parseSixelDirectPlacementLine(line: string): ParsedSixelPlacementLine | null {
+	const match = SIXEL_DIRECT_PLACEMENT_LINE.exec(line);
+	if (!match) return null;
+	const prefix = line.slice(0, match.index);
+	const body = match[3] ?? "";
+	const raster = /"\d+;\d+;(\d+);(\d+)/.exec(body);
+	return {
+		prefix,
+		suffix: line.slice(match.index + match[0].length),
+		lift: Number(match[1] ?? 0),
+		column: visibleWidth(prefix),
+		introducer: match[2]!,
+		body,
+		widthPx: Number(raster?.[1] ?? 0),
+		heightPx: Number(raster?.[2] ?? 0),
+	};
+}
+/** A palette definition `#Pc;2;Pr;Pg;Pb`: global SIXEL state, not pixel data. */
+const SIXEL_PALETTE_DEFINITION = /#\d+;\d+;\d+;\d+;\d+/g;
+/** A colour selection `#Pc`; the lookahead keeps palette definitions out. */
+const SIXEL_COLOUR_SELECTION = /#\d+(?![\d;])/g;
+
+/**
+ * Drop the top `hiddenPx` pixels of a SIXEL body. SIXEL paints six-pixel
+ * bands separated by `-`; whole bands are dropped, rounding up so the kept
+ * rows never exceed the visible ones. The raster attributes and palette
+ * definitions of the dropped bands, and the colour in effect at the cut, are
+ * re-established before the kept bands, and the raster height shrinks to the
+ * kept pixels.
+ */
+function cropSixelBody(body: string, hiddenPx: number): string {
+	const bands = (body.endsWith("-") ? body.slice(0, -1) : body).split("-");
+	const drop = Math.min(Math.ceil(hiddenPx / 6), bands.length - 1);
+	if (drop <= 0) return body;
+	const kept = bands.slice(drop);
+	const dropped = bands.slice(0, drop).join("-");
+	const raster = /^"(\d+;\d+;\d+);(\d+)/.exec(bands[0] ?? "");
+	const head = raster ? `"${raster[1]};${Number(raster[2]) - 6 * drop}` : "";
+	const palettes = dropped.match(SIXEL_PALETTE_DEFINITION)?.join("") ?? "";
+	const colour = [...dropped.matchAll(SIXEL_COLOUR_SELECTION)].at(-1)?.[0] ?? "";
+	return `${head}${palettes}${colour}${kept.join("-")}-`;
+}
+
+/**
+ * Rebuild a SIXEL {@link Image} direct-placement line for the viewport row it
+ * is written at. The component line anchors at `CUU(rows-1)` from its last
+ * row; once the block's leading rows have scrolled out that clamps at the
+ * viewport top and the full image paints from row 0 over the rows below.
+ * Re-anchor at row 0 with only the bottom slice still visible. Lines that do
+ * not straddle the top are returned unchanged.
+ */
+export function clipSixelDirectPlacementLine(line: string, screenRow: number, cellHeightPx: number): string {
+	const parsed = parseSixelDirectPlacementLine(line);
+	if (!parsed) return line;
+	const hiddenRows = parsed.lift - screenRow;
+	if (hiddenRows <= 0 || cellHeightPx <= 0) return line;
+	const body = cropSixelBody(parsed.body, hiddenRows * cellHeightPx);
+	const moveUp = screenRow > 0 ? `\x1b[${screenRow}A` : "";
+	return `${parsed.prefix}\x1b7${moveUp}${parsed.introducer}${body}\x1b\\\x1b8${parsed.suffix}`;
 }
 
 /**
@@ -1054,6 +1130,17 @@ export function encodeKittyDeleteAllImages(): string {
  */
 export function encodeKittyDeletePlacement(imageId: number, placementId: number): string {
 	return wrapTmuxPassthroughIfNeeded(`\x1b_Ga=d,d=i,i=${imageId},p=${placementId},q=2\x1b\\`);
+}
+
+/**
+ * Konsole-only SIXEL workaround: its Kitty handler uses zero-based cells and
+ * removes every containing graphics rectangle, including SIXEL and history.
+ * The caller must prove the cell belongs only to placements it is retiring.
+ * Pane-local cells cannot target the outer terminal through a multiplexer.
+ */
+export function encodeKonsoleDeleteAtCell(column: number, row: number): string {
+	if (isInsideTerminalMultiplexer()) return "";
+	return `\x1b_Ga=d,d=p,x=${column},y=${row},q=2\x1b\\`;
 }
 
 export function encodeITerm2(

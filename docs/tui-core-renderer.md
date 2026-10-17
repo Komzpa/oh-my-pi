@@ -263,6 +263,20 @@ Never retransmit full base64 image data on every frame. Kitty Unicode
 placeholders remain capability-gated and can be overridden with the existing
 image environment settings.
 
+SIXEL direct placements retain surrounding Box padding and styles when clipped
+at the viewport top. Mutable placements are clipped against their final viewport
+row, even while an earlier history batch is still scrolling the physical screen.
+Clipping subtracts discarded six-pixel bands from the original raster height,
+preserving partial final bands so the graphics rectangle cannot cover text below.
+On Konsole (`KONSOLE_VERSION`) outside grid-owning multiplexers, the renderer
+tracks graphics rectangles separately from text: each scrolling LF moves their
+origins, and cell deletion targets only
+cells owned by live placements being retired. Committed history rectangles,
+including those partly in scrollback, are never targets of live repaint deletion.
+Other SIXEL terminals and grid-owning multiplexers keep the portable
+lift/line-erase path without positional Kitty APC deletes: pane-local cells
+cannot safely address the outer terminal's graphics rectangles.
+
 ## 7. Core invariants
 
 1. Products decide finality and submit finalized or declared append-only stable
