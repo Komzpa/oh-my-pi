@@ -257,7 +257,6 @@ function trimToUndefined(value: string | undefined): string | undefined {
 	return trimmed || undefined;
 }
 
-
 function resolveSchema(
 	request: StructuredSubagentRequest,
 	agent: AgentDefinition,
