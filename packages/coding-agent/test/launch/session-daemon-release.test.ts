@@ -530,6 +530,51 @@ describe("per-session daemon client release", () => {
 		}
 	}, 30_000);
 
+	it.each([false, true])(
+		"adopted agent services survive only restart disposal (retain=%s)",
+		async preserveServices => {
+			using temp = TempDir.createSync("@omp-adopted-service-restart-");
+			const auth = createInMemoryAuthStorage();
+			const manager = SessionManager.inMemory(temp.path());
+			const session = new AgentSession({
+				agent: new Agent({ initialState: { systemPrompt: ["Test"], tools: [], messages: [] } }),
+				sessionManager: manager,
+				settings: Settings.isolated({ "compaction.enabled": false, "todo.enabled": false }),
+				modelRegistry: new ModelRegistry(auth, path.join(temp.path(), "models.yml")),
+			});
+			const id = crypto.randomUUID();
+			const registry = AgentRegistry.global();
+			const lifecycle = AgentLifecycleManager.global();
+			registry.register({
+				id,
+				displayName: "server owner",
+				kind: "sub",
+				session,
+				sessionFile: null,
+				status: "idle",
+			});
+			lifecycle.adopt(id, { idleTtlMs: 0 });
+			const client = await daemonClientForProject(temp.path(), manager.getSessionId(), {
+				idleGraceMs: IDLE_GRACE_MS,
+			});
+			const observer = await createDaemonBrokerClient(temp.path(), { runtimeDir: client.runtimeDir });
+			try {
+				const daemon = await startFixtureDaemon(client, "question-server");
+				await observer.request({ op: "ping" });
+				await lifecycle.dispose(undefined, preserveServices);
+				expect(daemon.status()).toBe(preserveServices ? ProcessStatus.Running : ProcessStatus.Exited);
+			} finally {
+				await observer.request({ op: "stop", name: "question-server", timeoutMs: 5_000 });
+				observer.close();
+				await session.dispose();
+				await releaseDaemonClientsForSession(manager.getSessionId());
+				await waitForBrokerExit(client.runtimeDir);
+				auth.close();
+			}
+		},
+		30_000,
+	);
+
 	it("AgentSession disposal rejects a failed broker release after closing and evicting its client", async () => {
 		using tempDir = TempDir.createSync("@omp-dispose-release-failure-");
 		const authStorage = createInMemoryAuthStorage();
