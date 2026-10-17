@@ -7225,9 +7225,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	 */
 	async restart(): Promise<void> {
 		if (this.#isShuttingDown) return;
-		this.#preserveServicesOnRestart = true;
 		this.#beginClose();
 		try {
+			this.#preserveServicesOnRestart = true;
 			await this.#teardown();
 		} catch (error) {
 			this.#handleTeardownError("restart", error);
