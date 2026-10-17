@@ -1015,6 +1015,10 @@
 - Fixed the `command` image-URL uploader stripping backslashes from Windows paths in its command template (`C:\tools\upload.exe {file}` ran `C:toolsupload.exe`)
 - Fixed reading a SQLite database (local or by URL) and closing prompt history leaving the database file locked on Windows
 - Fixed RPC mode on Windows freezing when the client stopped reading stdout: the worker blocked on the full stdout pipe and stopped reading stdin, so a client writing a batch of commands before reading replies deadlocked. Output now goes through a non-blocking stdout stream that spools to disk under backpressure, as on Linux and macOS
+- Cool down providers after daily-quota or long-window (at least ten minutes) 429 errors until their retry-after expires, falling back to six hours when timing is absent; short transient 429s remain eligible.
+- Cooled down the provider that produced the failed turn (not the model active after a mid-recovery switch) and recognized a daily-quota 429 present only in the error message.
+- Persisted billing and quota provider cooldowns across sessions for six hours, with original-error exclusion reasons and a cheap authenticated models-list probe to restore availability early; ordinary permission errors and transient rate limits do not create billing bans.
+
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 - Fixed resuming a session through a symlink or hard link to a file another omp process is writing: the resumed session no longer mixes its turns into that file and continues in a new file next to it ([#14095](https://github.com/can1357/oh-my-pi/pull/14095) by [@andrebrait](https://github.com/andrebrait))
 - Fixed moving a session to another directory replacing a session file there that another omp process is writing, or moving a session another process is writing; the move now stops with an error and leaves both files untouched ([#14095](https://github.com/can1357/oh-my-pi/pull/14095) by [@andrebrait](https://github.com/andrebrait))
@@ -1031,6 +1035,7 @@
 - Fixed `readlink` in the bash tool printing a provider-backed path (e.g. `local://file`) with a `\\?\` prefix on Windows
 - Fixed the daemon broker on Windows dying with the omp process that started it, which stopped the shared browser relay (and every other broker daemon) while other omp sessions were still using it
 - Fixed the `browser` tool's Tern backend being refused by any Tern newer than the protocol omp was built against; it now speaks Tern's JSON script protocol, which no Tern build ties it to, and a Tern from before it reports as unavailable (update Tern) so the Chromium fallback takes over.
+- Temporarily cool down providers after balance or monthly quota exhaustion so new subagents skip dead fallback-chain heads; transient rate limits and server failures retain their existing retries.
 
 ## [18.4.12] - 2026-10-02
 
