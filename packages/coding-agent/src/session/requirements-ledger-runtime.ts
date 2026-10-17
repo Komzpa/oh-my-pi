@@ -1,5 +1,6 @@
 import {
 	matchingRequirementBranch,
+	latestRequirementsFromSession,
 	matchingRequirementBranchNewestFirst,
 	type RequirementEntryMetadata,
 } from "./requirements-branch-selection";
@@ -1045,12 +1046,7 @@ export class RequirementsLedgerRuntime {
 		return this.#publicationGeneration;
 	}
 	syncPublicationGate(): void {
-		const requirements = getLatestRequirements(
-			matchingRequirementBranch(
-				this.#host.sessionManager,
-				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
-			),
-		);
+		const requirements = latestRequirementsFromSession(this.#host.sessionManager);
 		const active =
 			this.#host.agentKind() === "main" &&
 			requirements.some(

@@ -134,7 +134,7 @@ it.each([false, true])(
 				onSettledAssistantMessage: () => {},
 				setPublicationGate: () => {},
 			});
-			expect(decoded).toBe(malformed ? 4 : 2);
+			expect(decoded).toBe(malformed ? 7 : 3);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

@@ -1,3 +1,8 @@
+import {
+	parseRequirementsLedger,
+	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+	type RequirementLedgerItem,
+} from "../tools/requirements-ledger";
 import type { SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 
@@ -41,4 +46,17 @@ export function* matchingRequirementBranchNewestFirst(
 	}
 	const entries = matchingRequirementBranch(manager, predicate);
 	for (let index = entries.length - 1; index >= 0; index--) yield entries[index]!;
+}
+
+/** Read the newest valid ledger without hydrating superseded snapshots. */
+export function latestRequirementsFromSession(manager: Pick<SessionManager, "getBranch">): RequirementLedgerItem[] {
+	for (const entry of matchingRequirementBranchNewestFirst(
+		manager,
+		metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+	)) {
+		if (entry.type !== "custom") continue;
+		const ledger = parseRequirementsLedger(entry.data);
+		if (ledger) return ledger.requirements;
+	}
+	return [];
 }
