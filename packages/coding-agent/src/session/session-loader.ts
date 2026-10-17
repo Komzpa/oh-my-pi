@@ -372,7 +372,6 @@ export async function visitEntriesFromFileStream(
 			if (chunk.includes(0x0a)) await drain();
 			await yieldToMacrotask();
 		}
-
 	} catch (err) {
 		if (!options.throwIfMissing && isEnoent(err) && sourceBytes === 0) return undefined;
 		throw err;

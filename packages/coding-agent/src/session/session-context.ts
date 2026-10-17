@@ -520,7 +520,6 @@ export function buildSessionContextFromLeafPath(
 	// resume (issue #849).
 	let hasExplicitDefaultModel = false;
 
-
 	const projectedPath = projectToolResultPrunes(path);
 	const keepRestartNotice = createRestartNoticeFilter(projectedPath);
 	for (const entry of projectedPath) {
