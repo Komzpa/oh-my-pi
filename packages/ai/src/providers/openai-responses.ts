@@ -1087,6 +1087,10 @@ const streamOpenAIResponsesOnce = (
 					onIdle: () => requestAbortController.abort(),
 					abortSignal: options?.signal,
 					isProgressItem: isOpenAIResponsesProgressEvent,
+					isIdleActivityItem: event =>
+						!!event && typeof event === "object" && "type" in event && event.type === "codex.keepalive",
+					idleActivityMaxGapMs:
+						idleTimeoutMs !== undefined && idleTimeoutMs > 0 ? Math.max(idleTimeoutMs, 300_000) : undefined,
 				});
 				const observedOpenaiStream = (async function* (): AsyncGenerator<ResponseStreamEvent> {
 					for await (const event of timedOpenaiStream) {
