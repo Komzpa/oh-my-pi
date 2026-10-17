@@ -269,6 +269,7 @@
 - Fixed hashline edits silently dropping the tail of a line that `read` or `grep` had cut at the column limit; such an edit is now refused until a `:raw` read shows the full line ([#15649](https://github.com/can1357/oh-my-pi/issues/15649))
 - Fixed isolated tasks failing on linked worktrees with initialized recursive submodules and leaving updated submodule pins unreachable after cleanup ([#15457](https://github.com/can1357/oh-my-pi/issues/15457))
 - Fixed `/tan` missing the parent's prompt cache by advertising `xd://` tools top-level and omitting `ask` ([#15578](https://github.com/can1357/oh-my-pi/issues/15578)).
+- RPC clients now preserve todo schedules and subagent model-identity metadata when decoding and re-encoding snapshots and lifecycle events.
 
 ## [18.10.4] - 2026-10-13
 
@@ -1015,6 +1016,9 @@
 - Fixed the `command` image-URL uploader stripping backslashes from Windows paths in its command template (`C:\tools\upload.exe {file}` ran `C:toolsupload.exe`)
 - Fixed reading a SQLite database (local or by URL) and closing prompt history leaving the database file locked on Windows
 - Fixed RPC mode on Windows freezing when the client stopped reading stdout: the worker blocked on the full stdout pipe and stopped reading stdin, so a client writing a batch of commands before reading replies deadlocked. Output now goes through a non-blocking stdout stream that spools to disk under backpressure, as on Linux and macOS
+- Fixed restarted todo plans losing committed additions, content renames, and archive removals when older successful edits overlap rows already replayed from the session history.
+- Fixed the TODO HUD listing a live worker under "unassigned workers" when `todo schedule` recorded it as the owner of more than one open row: an explicitly owned worker is now shown on every row it owns, while an ambiguous description match stays unassigned.
+- Fixed todo restoration and copying dropping persisted task and phase metadata, including scheduling fields, after a restart.
 - Fixed HTML export hanging when a session's subagent directory held a transcript named `..jsonl`; discovery now only descends into real child directories ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 - Fixed resuming a session through a symlink or hard link to a file another omp process is writing: the resumed session no longer mixes its turns into that file and continues in a new file next to it ([#14095](https://github.com/can1357/oh-my-pi/pull/14095) by [@andrebrait](https://github.com/andrebrait))
 - Fixed moving a session to another directory replacing a session file there that another omp process is writing, or moving a session another process is writing; the move now stops with an error and leaves both files untouched ([#14095](https://github.com/can1357/oh-my-pi/pull/14095) by [@andrebrait](https://github.com/andrebrait))
@@ -1031,6 +1035,11 @@
 - Fixed `readlink` in the bash tool printing a provider-backed path (e.g. `local://file`) with a `\\?\` prefix on Windows
 - Fixed the daemon broker on Windows dying with the omp process that started it, which stopped the shared browser relay (and every other broker daemon) while other omp sessions were still using it
 - Fixed the `browser` tool's Tern backend being refused by any Tern newer than the protocol omp was built against; it now speaks Tern's JSON script protocol, which no Tern build ties it to, and a Tern from before it reports as unavailable (update Tern) so the Chromium fallback takes over.
+- Starting a TODO task now preserves other in-progress rows while still refusing starts when planning repairs remain.
+- Worker briefs now reach subagents as written, without a harness-added prefix or Retro instructions.
+- Fixed stale TODO finish-drift alerts crossing objective boundaries: a successful main-session `init` resets the prior objective's history, while ordinary TODO edits and rejected initialization preserve it.
+- Fixed coder checkout-lock false conflicts for same-batch spawns whose row owners are not recorded yet: the router now scopes unowned spawns from the spawn's own row title and lane path instead of falling back to the session cwd, and the refusal names the compared holder and spawn scopes.
+- Fixed overdue peer check-ins reporting messaging unavailable from an AgentSession command context by passing its private registry and identity to the shared delivery route.
 
 ## [18.4.12] - 2026-10-02
 

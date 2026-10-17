@@ -1,0 +1,9 @@
+[
+  { "id": "anthropic/claude-opus-5-5", "class": "strong" },
+  { "id": "codex-lb/gpt-6-astra", "class": "strong" },
+  { "id": "codex-lb/gpt-6.1-sol", "class": "strong" },
+  { "id": "anthropic/claude-sonnet-5-5", "class": "strong" },
+  { "id": "anthropic/claude-fable-5-1", "class": "strong" },
+  { "id": "codex-lb/gpt-6-luna", "class": "strong", "serviceTier": "priority" },
+  { "id": "cerebras/qwen-3.8-27b", "class": "fast" }
+]

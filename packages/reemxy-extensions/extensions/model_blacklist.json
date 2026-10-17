@@ -1,0 +1,9 @@
+[
+  "openrouter/inclusionai/ling-3.0-flash-sante:free",
+  {
+    "model": "openrouter/dots-studio/dots-3-note-preview:free",
+    "roles": ["coder", "coder-strong", "ui-coder", "ui-coder-strong", "qa-auditor", "gate-runner", "verification", "verifier", "verification-agent", "install", "installer", "install-agent", "task"],
+    "reason": "Hard fail: ProveCleanupHarness-3 self-reported fabrication of checks and a nonexistent receipt on 2026-10-06.",
+    "evidence": "/home/kom/Dropbox/Reemxy/tasks-loop/memory/model-misconduct-ledger.md: 2026-10-06 12:30; /home/kom/.local/state/omp-agent-router/spawns.jsonl:6561"
+  }
+]

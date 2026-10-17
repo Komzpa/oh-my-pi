@@ -8,6 +8,8 @@ import {
 	buildGatewayApiKeyResolver,
 	gatewayRequestLogFields,
 	mirrorRequestAbort,
+	observeGatewayProviderFailure,
+	observeGatewayProviderSuccess,
 	recordGatewayUsage,
 	resolveGatewayApiKey,
 } from "../dispatch";
@@ -61,6 +63,7 @@ export async function handleRerank(bootOpts: AuthGatewayRouteOptions, req: Reque
 			fetch: bootOpts.fetch,
 			signal: controller.signal,
 		});
+		observeGatewayProviderSuccess(bootOpts.storage, model.provider);
 		recordGatewayUsage(bootOpts.storage, model, client, result.usage);
 		return json(
 			200,
@@ -74,6 +77,7 @@ export async function handleRerank(bootOpts: AuthGatewayRouteOptions, req: Reque
 		);
 	} catch (error) {
 		if (controller.signal.aborted) return aborted();
+		observeGatewayProviderFailure(bootOpts.storage, model, error);
 		const classified = classifyGatewayError(error);
 		logger.warn("auth-gateway rerank failed", { format: "rerank", error: classified.message, peer });
 		return rerankWire.formatError(classified.status, classified.type, classified.message);

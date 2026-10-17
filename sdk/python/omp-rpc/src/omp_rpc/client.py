@@ -30,8 +30,13 @@ from ._wire import (
     SessionSettledEvent,
     StreamingBehavior,
     ThinkingLevel,
+    TodoEstimate,
     TodoItem,
     TodoPhase,
+    TodoReworkAttempt,
+    TodoSchedule,
+    TodoScheduleExecutor,
+    TodoScheduleProgress,
     TodoStatus,
     WireClient,
     parse_agent_message,
@@ -1753,18 +1758,119 @@ class RpcClient(WireClient):
         if len(todos) == 0:
             return []
 
+        def wire_schedule(schedule: TodoSchedule | Mapping[str, object]) -> JsonObject:
+            if isinstance(schedule, Mapping):
+                return dict(cast(Mapping[str, object], schedule))
+            out: JsonObject = {}
+            if schedule.dependencies is not None:
+                out["dependencies"] = list(schedule.dependencies)
+            if schedule.owner is not None:
+                out["owner"] = schedule.owner
+            if schedule.resources is not None:
+                out["resources"] = list(schedule.resources)
+            if schedule.estimate is not None:
+                estimate = schedule.estimate
+                if isinstance(estimate, Mapping):
+                    out["estimate"] = dict(cast(Mapping[str, object], estimate))
+                else:
+                    assert isinstance(estimate, TodoEstimate)
+                    out["estimate"] = {
+                        "optimisticSeconds": estimate.optimistic_seconds,
+                        "likelySeconds": estimate.likely_seconds,
+                        "pessimisticSeconds": estimate.pessimistic_seconds,
+                        "confidence": estimate.confidence,
+                        "basis": estimate.basis,
+                        "updatedAt": estimate.updated_at,
+                    }
+            if schedule.estimate_revision is not None:
+                out["estimateRevision"] = schedule.estimate_revision
+            if schedule.reestimate_count is not None:
+                out["reestimateCount"] = schedule.reestimate_count
+            if schedule.progress is not None:
+                progress = schedule.progress
+                if isinstance(progress, Mapping):
+                    out["progress"] = dict(cast(Mapping[str, object], progress))
+                else:
+                    assert isinstance(progress, TodoScheduleProgress)
+                    out["progress"] = {"at": progress.at, "evidence": progress.evidence}
+            if schedule.started_at is not None:
+                out["startedAt"] = schedule.started_at
+            if schedule.finished_at is not None:
+                out["finishedAt"] = schedule.finished_at
+            if schedule.attempt_history is not None:
+                attempts: list[JsonValue] = []
+                for attempt in schedule.attempt_history:
+                    if isinstance(attempt, Mapping):
+                        attempts.append(dict(cast(Mapping[str, object], attempt)))
+                        continue
+                    assert isinstance(attempt, TodoReworkAttempt)
+                    wire_attempt: JsonObject = {
+                        "attemptId": attempt.attempt_id,
+                        "workerName": attempt.worker_name,
+                        "resolvedModel": attempt.resolved_model,
+                        "effort": attempt.effort,
+                        "startedAt": attempt.started_at,
+                        "finishedAt": attempt.finished_at,
+                        "durationMs": attempt.duration_ms,
+                        "terminalStatus": attempt.terminal_status,
+                        "deliverablePaths": list(attempt.deliverable_paths),
+                    }
+                    if attempt.rejection_reason is not None:
+                        wire_attempt["rejectionReason"] = attempt.rejection_reason
+                    if attempt.reflection_answer is not None:
+                        wire_attempt["reflectionAnswer"] = attempt.reflection_answer
+                    if attempt.no_answer_reason is not None:
+                        wire_attempt["noAnswerReason"] = attempt.no_answer_reason
+                    if attempt.final_report_paragraph is not None:
+                        wire_attempt["finalReportParagraph"] = attempt.final_report_paragraph
+                    if attempt.infra_failure_line is not None:
+                        wire_attempt["infraFailureLine"] = attempt.infra_failure_line
+                    if attempt.infra_failure_error is not None:
+                        wire_attempt["infraFailureError"] = attempt.infra_failure_error
+                    attempts.append(wire_attempt)
+                out["attemptHistory"] = attempts
+            if schedule.executor is not None:
+                executor = schedule.executor
+                if isinstance(executor, Mapping):
+                    out["executor"] = dict(cast(Mapping[str, object], executor))
+                else:
+                    assert isinstance(executor, TodoScheduleExecutor)
+                    wire_executor: JsonObject = {
+                        "workerId": executor.worker_id,
+                        "startedAt": executor.started_at,
+                    }
+                    if executor.agent_profile is not None:
+                        wire_executor["agentProfile"] = executor.agent_profile
+                    if executor.resolved_model is not None:
+                        wire_executor["resolvedModel"] = executor.resolved_model
+                    if executor.thinking_level is not None:
+                        wire_executor["thinkingLevel"] = executor.thinking_level
+                    if executor.finished_at is not None:
+                        wire_executor["finishedAt"] = executor.finished_at
+                    if executor.outcome is not None:
+                        wire_executor["outcome"] = executor.outcome
+                    out["executor"] = wire_executor
+            return out
+
         def wire_item(
             content: str,
             status: TodoStatus,
             blocker: object,
             details: object,
             notes: object,
+            schedule: object = None,
         ) -> JsonObject:
             item: JsonObject = {"content": content, "status": status}
             if isinstance(blocker, str):
                 item["blocker"] = blocker
             if isinstance(details, str):
                 item["details"] = details
+            if isinstance(schedule, TodoSchedule):
+                item["schedule"] = wire_schedule(schedule)
+            elif isinstance(schedule, Mapping):
+                item["schedule"] = wire_schedule(cast(Mapping[str, object], schedule))
+            elif schedule is not None:
+                raise RpcError("Todo 'schedule' must be a TodoSchedule or a wire-shaped mapping")
             if isinstance(notes, str):
                 item["notes"] = [notes]
             elif isinstance(notes, (list, tuple)) and all(isinstance(n, str) for n in notes):
@@ -1778,7 +1884,9 @@ class RpcClient(WireClient):
             if isinstance(seed, TodoItem):
                 if seed.status not in _TODO_STATUS_VALUES:
                     raise RpcError(f"Unsupported todo status: {seed.status}")
-                return wire_item(seed.content, seed.status, seed.blocker, seed.details, seed.notes)
+                return wire_item(
+                    seed.content, seed.status, seed.blocker, seed.details, seed.notes, seed.schedule
+                )
 
             content = seed.get("content")
             if not isinstance(content, str) or not content.strip():
@@ -1792,7 +1900,12 @@ class RpcClient(WireClient):
             else:
                 status = "pending"
             return wire_item(
-                content, status, seed.get("blocker"), seed.get("details"), seed.get("notes")
+                content,
+                status,
+                seed.get("blocker"),
+                seed.get("details"),
+                seed.get("notes"),
+                seed.get("schedule"),
             )
 
         def is_phase_seed(seed: TodoSeed | TodoPhaseSeed) -> bool:
