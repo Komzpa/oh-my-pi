@@ -29,7 +29,7 @@ import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./collab/helpers/in-memory-relay";
 import { cfgTierOpenai } from "@oh-my-pi/pi-coding-agent/session/settings";
-import { assistantMsg, createTestSession } from "./utilities";
+import { createTestSession } from "./utilities";
 
 import {
 	cfgAutocompleteMaxVisible,
