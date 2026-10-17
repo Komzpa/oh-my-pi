@@ -7344,12 +7344,17 @@ export class InteractiveMode implements InteractiveModeContext {
 			throw new Error("Restart controls are still restoring for this session");
 		}
 		await this.#restartControlBind;
-		if (this.#isShuttingDown) throw new Error("Restart controls are shutting down");
 		if (this.session.isSessionTransitioning)
 			throw new Error("Restart controls are unavailable during a session switch");
 		const identity = this.#restartControlIdentity();
 		if (!this.#sameRestartControlIdentity(request.identity, identity)) {
 			throw new Error("Restart control identity is stale; no request was applied");
+		}
+		if (this.#isShuttingDown) {
+			// An accepted restart remains observable until its endpoint closes.
+			// Rejecting status here makes a successful handoff look like a failure.
+			if (request.op === "status") return this.#restartControlSnapshot();
+			throw new Error("Restart controls are shutting down");
 		}
 		const controller = this.#restartQueueController;
 		if (
