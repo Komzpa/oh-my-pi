@@ -87,6 +87,18 @@ export function parseLineRanges(sel: string): [LineRange, ...LineRange[]] | null
 }
 
 /**
+ * Parse a range list for a raw (`:raw`) read, where a lone bare `N` / `LN` means exactly that
+ * one line (the JSONL-style `:N:raw`) rather than "from `N` onward". Every other form is
+ * identical to {@link parseLineRanges}. Shared by local, internal-resource, and URL reads so
+ * `file:31:raw`, `file:L31:raw`, and `https://host/f:31:raw` agree.
+ */
+export function parseRawLineRanges(sel: string): [LineRange, ...LineRange[]] | null {
+	const ranges = parseLineRanges(sel);
+	if (ranges && /^L?\d+$/i.test(sel)) return [{ startLine: ranges[0].startLine, endLine: ranges[0].startLine }];
+	return ranges;
+}
+
+/**
  * Extract the line-range component from a read-tool selector that may also
  * carry a verbatim/index display mode (`raw`, `conflicts`) — alone or compounded
  * with a range (`raw:50-100`, `50-100:raw`). Returns the parsed ranges when the

@@ -28,7 +28,7 @@ import { type BinaryFetchResult, convertWithMarkit, fetchBinary } from "../web/s
 import { findCredential } from "../web/search/providers/utils";
 import { applyListLimit } from "@oh-my-pi/pi-tui/tools/list-limit";
 import { parseTailCount } from "./path-utils";
-import { type LineRange, parseLineRanges } from "@oh-my-pi/pi-tui/tools/line-ranges";
+import { type LineRange, parseLineRanges, parseRawLineRanges } from "@oh-my-pi/pi-tui/tools/line-ranges";
 import { isReadableUrlPath } from "@oh-my-pi/pi-tui/tools/read";
 import type { ParsedSelector } from "./read-selector";
 import { formatBytes } from "@oh-my-pi/pi-tui/render/render-utils";
@@ -156,6 +156,7 @@ export function parseReadUrlTarget(readPath: string): ParsedReadUrlTarget | null
 		return null;
 	}
 
+	const rawRequested = (embedded?.sels ?? []).some(token => token.toLowerCase() === "raw");
 	let raw = false;
 	let ranges: [LineRange, ...LineRange[]] | undefined;
 	let tail: number | undefined;
@@ -170,7 +171,8 @@ export function parseReadUrlTarget(readPath: string): ParsedReadUrlTarget | null
 				`URL selector has multiple range groups; combine them with commas (e.g. \`:5-10,20-30\`).`,
 			);
 		}
-		ranges = parseLineRanges(token) ?? undefined;
+		// With `raw`, a lone `N` is that single line, matching local reads.
+		ranges = (rawRequested ? parseRawLineRanges(token) : parseLineRanges(token)) ?? undefined;
 		if (ranges !== undefined) continue;
 		const count = parseTailCount(token);
 		if (count === null) {
