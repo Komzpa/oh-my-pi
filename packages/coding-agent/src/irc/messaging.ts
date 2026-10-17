@@ -90,9 +90,13 @@ export async function executeSend(
 		text =
 			receipt.outcome === "failed"
 				? `Failed: ${to} ${unavailable ? "is not running" : "could not receive the message"}. ${receipt.error ?? ""}`.trimEnd()
-				: receipt.outcome === "revived"
-					? `Queued for ${to} (was parked; revived).`
-					: `Delivered to ${to}.`;
+				: to.startsWith("shell:")
+					? `Delivered to ${to} (shell inbox).`
+					: to.startsWith("peer:")
+						? `Delivered to ${to} (peer session).`
+						: receipt.outcome === "revived"
+							? `Queued for ${to} (was parked; revived).`
+							: `Delivered to ${to}.`;
 	}
 	return {
 		content: [{ type: "text", text }],
