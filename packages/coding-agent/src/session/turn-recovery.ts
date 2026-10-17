@@ -97,7 +97,8 @@ const UNEXPECTED_STOP_MAX_RETRIES = 3;
 const UNEXPECTED_STOP_TIMEOUT_MS = 15_000;
 const EMPTY_STOP_MAX_RETRIES = 3;
 const MALFORMED_FUNCTION_CALL_MAX_RETRIES = 3;
-const STREAM_STALL_CONTINUE_MAX_RETRIES = 3;
+const STREAM_STALL_CONTINUE_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000] as const;
+const STREAM_STALL_CONTINUE_MAX_RETRIES = STREAM_STALL_CONTINUE_DELAYS_MS.length;
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
 const NON_WHITESPACE_RE = /\S/;
 const USAGE_PREFLIGHT_BLOCKED_PREFIX = "Usage preflight blocked:";
@@ -722,6 +723,7 @@ export class TurnRecovery {
 		});
 		this.#host.scheduleAgentContinue({
 			source: "stream-stall-continue",
+			delayMs: STREAM_STALL_CONTINUE_DELAYS_MS[this.#streamStallContinueCount - 1],
 			generation: this.#host.promptGeneration(),
 		});
 		return true;
@@ -1642,8 +1644,12 @@ export class TurnRecovery {
 	 * Mid-generation transport death: the local idle watchdog's stream stall, an
 	 * HTTP/2 stream reset, or a gateway close without the terminal event. A
 	 * premature close (no finish_reason/terminal event) is the same failure
-	 * class as a stall or reset. Resets and closes are ignored while a
-	 * deliberate abort, disposal, or streaming-edit abort owns the stream.
+	 * class as a stall or reset, and so is a transport drop the provider or a
+	 * proxy reports in its own words (for example a Responses `stream_incomplete`
+	 * error event for an upstream websocket that closed before
+	 * `response.completed`); `AIError.isTransientStreamDropError` owns that
+	 * wording. Resets and closes are ignored while a deliberate abort, disposal,
+	 * or streaming-edit abort owns the stream.
 	 */
 	#isMidStreamTransportFailure(message: AssistantMessage, id: number): boolean {
 		if (message.stopReason !== "error" || !AIError.retriable(id)) return false;
@@ -1656,7 +1662,11 @@ export class TurnRecovery {
 			HTTP2_STREAM_RESET_ERROR_RE.test(errorMessage) ||
 			AIError.PYTHON_HTTP2_STREAM_RESET_PATTERN.test(errorMessage) ||
 			AIError.PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(errorMessage) ||
-			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage)
+			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage) ||
+			// Providers such as Cursor keep the raw diagnostic in errorClassificationMessage and
+			// display-only text in errorMessage; retry classification reads both, so must this.
+			AIError.isTransientStreamDropError(errorMessage) ||
+			AIError.isTransientStreamDropError(message.errorClassificationMessage ?? "")
 		);
 	}
 	/**
