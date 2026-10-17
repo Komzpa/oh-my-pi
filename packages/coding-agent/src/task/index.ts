@@ -46,6 +46,7 @@ import { isBundledSeance, seanceTaskGuidance, seanceTaskSchemaFields, validateSe
 import { SEANCE_AGENT_NAME } from "./seance-policy";
 import { type AgentDefinition, canSpawnAtDepth, getTaskSchema, type TaskToolSchemaInstance } from "./types";
 import type { AgentProgress, SingleResult, TaskItem, TaskParams, TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
+import { isFailedTaskSingleResult } from "./result-summary";
 import { AsyncJobError, type AsyncJobManager } from "../async";
 import { hasResolvableTranscript } from "../internal-urls/registry-helpers";
 import { AgentRegistry } from "../registry/agent-registry";
@@ -306,6 +307,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 		return params.tasks;
 	}
 	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task };
+	if ("images" in params) item.images = params.images;
 	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
@@ -336,6 +338,11 @@ function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string
 	if ("schemaMode" in item) spawn.schemaMode = item.schemaMode;
 	if ("tools" in item) spawn.tools = item.tools;
 	if ("effort" in item) spawn.effort = item.effort;
+	// Per-item images win; the flat form's top-level `images` applies to the
+	// single spawn. Only materialized when present — image-less calls keep
+	// byte-identical args.
+	if (item.images !== undefined) spawn.images = item.images;
+	else if ("images" in params) spawn.images = params.images;
 	if ("sourceSession" in item) spawn.sourceSession = item.sourceSession;
 	if ("model" in item) spawn.model = item.model;
 	if (item.isolated !== undefined) {
@@ -1475,12 +1482,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					// recovery, which a "completed" job would hide. Mirrors the sync
 					// path's status derivation. `isError` marks a child that finished
 					// before a later step (isolation merge, nested patch apply) threw.
-					const resultFailed =
-						result.isError === true ||
-						!singleResult ||
-						(singleResult.aborted ?? false) ||
-						singleResult.exitCode !== 0 ||
-						singleResult.error !== undefined;
+					const resultFailed = isFailedTaskSingleResult(result, singleResult);
 					progress.status = singleResult?.aborted ? "aborted" : resultFailed ? "failed" : "completed";
 					progress.durationMs = singleResult?.durationMs ?? Math.max(0, Date.now() - startedAt);
 					progress.tokens = singleResult?.tokens ?? 0;
@@ -1710,6 +1712,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				assignment,
 				context,
 				agent: params.agent,
+				...(params.images?.length ? { images: params.images } : {}),
 				sourceSession: params.sourceSession,
 				model: params.model,
 				...this.#resultParams(params),

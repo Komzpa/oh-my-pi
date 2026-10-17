@@ -384,6 +384,8 @@ const SCRUBBED_ENV_NAMES = new Set([
 	"GOOGLE_APPLICATION_CREDENTIALS",
 	"ANTHROPIC_OAUTH_TOKEN",
 	"XAI_OAUTH_TOKEN",
+	// A lane's production single-writer bypass must not disable chief-gate tests.
+	"OMP_LANE_UNIT",
 ]);
 
 function isScrubbedEnvVar(key: string): boolean {
