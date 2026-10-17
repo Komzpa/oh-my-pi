@@ -246,6 +246,30 @@ export function subagentRetryFallbackRole(id: string): string {
 	return `subagent:${id}`;
 }
 
+/**
+ * Fail closed when explicit model patterns (task `model`, agent profile model,
+ * router `order`) resolve to no model: the spawn must error naming the request
+ * instead of silently running on the role chain's model. Empty patterns (no
+ * explicit model) keep the role chain resolution unchanged.
+ */
+function explicitModelResolutionError(
+	modelPatterns: string[],
+	modelRegistry: ModelRegistry,
+	settings: Settings,
+): Error | undefined {
+	if (modelPatterns.length === 0) return undefined;
+	const disabledProviders = new Set(cfgDisabledProviders.get(settings));
+	const reasons = modelPatterns.map(pattern => {
+		const match = resolveModelOverride([pattern], modelRegistry, settings).model;
+		if (!match) return `${pattern} (absent from catalog)`;
+		if (disabledProviders.has(match.provider)) return `${pattern} (provider disabled)`;
+		return `${pattern} (no auth)`;
+	});
+	return new Error(
+		`Subagent spawn model resolution failed: none of the requested models resolved to a usable model: ${reasons.join("; ")}`,
+	);
+}
+
 interface SubagentRetryFallbackCandidate {
 	model: Model<Api>;
 	selector: string;
@@ -4556,6 +4580,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				: undefined;
 			let session: AgentSession;
 			let sessionPromise: Promise<CreateAgentSessionResult> | undefined;
+			let modelPatternResolutionFailed: boolean | undefined;
 			try {
 				sessionPromise = createAgentSession(
 					buildSubagentSessionOptions(sessionSpec, subagentSettings, sessionManager, null, {
@@ -4569,7 +4594,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						},
 					}),
 				);
-				({ session } = await awaitAbortable(sessionPromise));
+				({ session, modelPatternResolutionFailed } = await awaitAbortable(sessionPromise));
 				if (preparedSession) untrackedSession = session;
 			} catch (err) {
 				mcpFollower?.dispose();
@@ -4600,6 +4625,15 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				formatModelStringWithRouting(session.model) === formatModelStringWithRouting(model)
 			) {
 				sessionManager.appendModelChange(formatModelStringWithRouting(model), retryFallbackRole);
+			}
+			// The SDK owns deferred resolution; a warning about a successful role-chain
+			// usage fallback is not a resolution failure.
+			if (modelPatternResolutionFailed) {
+				const explicitModelError = explicitModelResolutionError(modelPatterns, modelRegistry, settings);
+				if (explicitModelError) {
+					session.dispose().catch(() => {});
+					throw explicitModelError;
+				}
 			}
 			sessionCreatedAt = performance.now();
 
