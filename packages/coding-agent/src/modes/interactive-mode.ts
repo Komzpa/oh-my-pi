@@ -1736,6 +1736,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#runningSubagentCount = 0;
 	#agentRegistryUnsubscribe?: () => void;
 	#agentRegistrySubscriptionTarget?: AgentHubRegistry;
+	#subagentBadgeKey = "";
+	#subagentHudKey = "";
 	#subagentSessionCosts = new WeakMap<object, AgentCostSnapshot>();
 	#subagentCostHydratedRoot?: string;
 	#mcpStatusOrder: string[] = [];
@@ -3805,7 +3807,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * registry, and the cost segment's subagent-tree spend (local sessions only:
 	 * a collab guest's registry mirrors host transcripts outside this root).
 	 */
-	syncRunningSubagentBadge(options: { requestRender?: boolean } = {}): void {
+	syncRunningSubagentBadge(options: { requestRender?: boolean } = {}): boolean {
 		const registry = getRunningSubagentBadgeRegistry(this.collabGuest, AgentRegistry.global());
 		if (this.#agentRegistrySubscriptionTarget !== registry) {
 			this.#agentRegistryUnsubscribe?.();
@@ -3817,21 +3819,25 @@ export class InteractiveMode implements InteractiveModeContext {
 		const agentIds = getRunningSubagentBadgeAgentIds(registry);
 		this.#runningSubagentCount = agentIds.length;
 		this.statusLine.setRunningSubagents(agentIds);
+		let treeCost = 0;
 		if (this.collabGuest) {
 			this.statusLine.setSubagentTreeCost(0);
 		} else {
 			const rootSessionFile = this.sessionManager.getSessionFile() ?? undefined;
 			this.#hydratePersistedSubagentCosts(rootSessionFile);
-			this.statusLine.setSubagentTreeCost(
-				sumSubagentTreeCost({
-					refs: AgentRegistry.global().list(),
-					observers: this.#observerRegistry,
-					rootSessionFile,
-					sessionCosts: this.#subagentSessionCosts,
-				}),
-			);
+			treeCost = sumSubagentTreeCost({
+				refs: AgentRegistry.global().list(),
+				observers: this.#observerRegistry,
+				rootSessionFile,
+				sessionCosts: this.#subagentSessionCosts,
+			});
+			this.statusLine.setSubagentTreeCost(treeCost);
 		}
-		if (options.requestRender !== false) this.ui.requestRender();
+		const key = JSON.stringify([agentIds, treeCost]);
+		const changed = key !== this.#subagentBadgeKey;
+		this.#subagentBadgeKey = key;
+		if (changed && options.requestRender !== false) this.ui.requestRender();
+		return changed;
 	}
 
 	/**
@@ -4243,12 +4249,13 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#flushObserverUiSync(): void {
-		this.syncRunningSubagentBadge({ requestRender: false });
+		let changed = this.syncRunningSubagentBadge({ requestRender: false });
 		if (this.#observerUiSyncNeedsTodoReconcile) {
 			this.#observerUiSyncNeedsTodoReconcile = false;
 			this.#reconcileTodosWithSubagents();
 			this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
 			this.#renderTodoList();
+			changed = true;
 		} else if (this.#getActiveSubagentDescriptions().join("\n") !== this.#todoHudSubagentKey) {
 			// Progress-only ticks (10 Hz while subagents run) cannot change the
 			// todo phases or their persisted visibility — re-syncing would also
@@ -4256,9 +4263,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			// subagent highlight depends on them, so repaint just when the active
 			// descriptions change.
 			this.#renderTodoList();
+			changed = true;
 		}
-		this.#renderSubagentList();
-		this.ui.requestRender();
+		changed = this.#renderSubagentList() || changed;
+		if (changed) this.ui.requestRender();
 	}
 
 	#cancelObserverUiSyncTimer(): void {
@@ -4591,17 +4599,23 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * appear and advance, so a repaint is armed for when the marker first shows
 	 * and then once a second while a listed agent stays mid-call.
 	 */
-	#renderSubagentList(): void {
+	#renderSubagentList(): boolean {
 		this.#cancelSubagentPreviewTick();
 		const view = this.#buildSubagentHudView();
 		if (!view) {
-			this.subagentContainer.clear();
-			return;
+			const changed = this.subagentContainer.children.length > 0;
+			if (changed) this.subagentContainer.clear();
+			this.#subagentHudKey = "";
+			return changed;
 		}
+		this.#armSubagentPreviewTick(view.tickMs);
+		const key = JSON.stringify([view.lines, view.order, view.toggleRow]);
+		if (key === this.#subagentHudKey && this.subagentContainer.children.length > 0) return false;
+		this.#subagentHudKey = key;
 		const hud = this.subagentContainer.children[0];
 		if (hud instanceof SubagentHudComponent) hud.update(view.lines, view.order, view.toggleRow);
 		else this.subagentContainer.addChild(new SubagentHudComponent(view.lines, view.order, view.toggleRow));
-		this.#armSubagentPreviewTick(view.tickMs);
+		return true;
 	}
 
 	/** Inputs for one HUD paint; undefined when the HUD is off or nothing is running. */
