@@ -222,6 +222,11 @@
 - The composer stays usable while a tool approval is pending: sending a message denies the call and steers the turn with it, so the agent knows why it was denied ([#15642](https://github.com/can1357/oh-my-pi/pull/15642) by [@H4vC](https://github.com/H4vC))
 - Session entries record which omp build wrote them, so a transcript shows whether a fix was live even in a session left open across an upgrade: the version, plus commit, branch, and uncommitted-diff hash when run from a source checkout, and `OMP_BUILD_LABEL` when set. `/session` lists the builds that wrote the session ([#15680](https://github.com/can1357/oh-my-pi/pull/15680) by [@will-bogusz](https://github.com/will-bogusz))
 
+### Fixed: Model configuration recovery
+
+- Invalid model configuration retains validated last-good custom providers in memory and across restarts through a private sidecar. Commented JSONC snapshots retain their original parser, and CLI warnings report recovery only when a validated configuration was retained ([#116](https://github.com/Komzpa/oh-my-pi/pull/116)).
+- Invalid `models.yml` warnings report the offending YAML source line rather than JavaScript call-site lines or unrelated provider keys ([#116](https://github.com/Komzpa/oh-my-pi/pull/116)).
+
 ### Changed
 
 - The in-composer tool approval prompt summarizes the command, path, or content to one row so the composer keeps its room; `Ctrl+O` shows them in full ([#15642](https://github.com/can1357/oh-my-pi/pull/15642) by [@H4vC](https://github.com/H4vC))
