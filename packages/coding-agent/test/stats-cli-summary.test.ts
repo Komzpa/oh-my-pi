@@ -71,7 +71,14 @@ describe("omp stats --summary", () => {
 		});
 		const stderr = spyOn(process.stderr, "write").mockImplementation(() => true);
 		try {
-			await runStatsCommand({ port: 0, host: "127.0.0.1", json: false, summary: true });
+			await runStatsCommand({
+				port: 0,
+				host: "127.0.0.1",
+				json: false,
+				summary: true,
+				frameDrops: false,
+				minutes: 30,
+			});
 		} finally {
 			log.mockRestore();
 			stderr.mockRestore();

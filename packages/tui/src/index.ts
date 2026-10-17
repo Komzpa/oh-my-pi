@@ -44,6 +44,8 @@ export * from "./desktop-notify";
 export type * from "./editor-component";
 // Fuzzy matching
 export * from "./fuzzy";
+// Frame telemetry
+export * from "./frame-telemetry";
 // Keybindings
 export * from "./keybindings";
 // Kitty keyboard protocol helpers
