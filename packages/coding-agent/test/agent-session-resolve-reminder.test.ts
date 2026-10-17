@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Agent, isSoftToolRequirement } from "@oh-my-pi/pi-agent-core";
+import { type } from "@oh-my-pi/omptype";
+import { Agent, isSoftToolRequirement, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, type MockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -152,6 +153,55 @@ describe("AgentSession resolve reminder", () => {
 		await dispatchResolutionDevice(toolSession, "resolve", "looks correct");
 
 		expect(applyRuns).toBe(1);
+		expect(session.nextToolChoiceDirective()).toBeUndefined();
+	});
+
+	it("reads the pending skill in a throwaway session before resolving the staged write", async () => {
+		let readRuns = 0;
+		queueResolveHandler(toolSession, {
+			label: "Staged write",
+			sourceToolName: "write",
+			apply: async () => ({ content: [{ type: "text", text: "Applied" }] }),
+		});
+		const readSchema = type({ path: "string" });
+		const writeSchema = type({ path: "string" });
+		const readTool: AgentTool<typeof readSchema> = {
+			name: "read",
+			label: "Read",
+			description: "Read a skill",
+			parameters: readSchema,
+			approval: "read",
+			async execute() {
+				readRuns++;
+				return { content: [{ type: "text", text: "Bitbucket PR guidance." }] };
+			},
+		};
+		const writeTool: AgentTool<typeof writeSchema> = {
+			name: "write",
+			label: "Write",
+			description: "Resolve a staged write",
+			parameters: writeSchema,
+			approval: "exec",
+			async execute() {
+				return (await dispatchResolutionDevice(toolSession, "resolve", "looks correct")).result;
+			},
+		};
+		session.agent.setTools([readTool, writeTool]);
+		mock.push(() => ({
+			content: [{ type: "toolCall", id: "read-skill", name: "read", arguments: { path: "skill://bitbucket-prs" } }],
+		}));
+		mock.push(() => ({
+			content: [{ type: "toolCall", id: "resolve-write", name: "write", arguments: { path: "xd://resolve" } }],
+		}));
+		mock.push(() => ({ content: ["Done"] }));
+
+		await session.prompt("Read skill://bitbucket-prs");
+
+		expect(readRuns).toBe(1);
+		expect(mock.calls).toHaveLength(3);
+		expect(mock.calls[1]?.context.messages.some(message => message.role === "toolResult")).toBe(true);
+		expect(mock.calls[1]?.options?.toolChoice).toBeUndefined();
+		expect(session.peekPendingInvoker()).toBeUndefined();
 		expect(session.nextToolChoiceDirective()).toBeUndefined();
 	});
 

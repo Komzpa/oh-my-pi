@@ -981,7 +981,7 @@ export class ToolExecutionComponent extends Container {
 	 * mounted so toggling it is one prop change.
 	 */
 	override describe(cx?: DescribeContext): NativeNode {
-		if (this.#toolName === "wait" && this.#isBenignSkip()) return EMPTY_NODE;
+		if (this.#isHiddenWaitSkip()) return EMPTY_NODE;
 		const dataFirst = cx?.supports("tool") === true;
 		const media = cx?.supports("media") === true;
 		const key = [
@@ -1337,7 +1337,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): readonly string[] {
-		if (!this.#toolActivityVisible || this.#allocation === 0 || (this.#toolName === "wait" && this.#isBenignSkip())) {
+		if (!this.#toolActivityVisible || this.#allocation === 0 || this.#isHiddenWaitSkip()) {
 			return [];
 		}
 		let lines = super.render(width);
@@ -1429,7 +1429,7 @@ export class ToolExecutionComponent extends Container {
 		this.#renderState.spinnerFrame = this.#spinnerFrame;
 
 		// Interrupted waits carry only model-facing retry guidance, not user-facing output.
-		if (this.#toolName === "wait" && this.#isBenignSkip()) {
+		if (this.#isHiddenWaitSkip()) {
 			this.#contentBox.clear();
 			return;
 		}
@@ -1926,12 +1926,17 @@ export class ToolExecutionComponent extends Container {
 	 * #contentText fallback and the benign-skip path so both render identically.
 	 */
 	#renderDefaultCard(contentWidth: number): string {
+		const waitingFor = this.#softRequirementWaitTarget();
 		return formatDefaultToolExecution(
 			{
-				label: this.#toolLabel,
-				args: this.#args,
+				label: waitingFor ? `Skipped (waiting for ${waitingFor})` : this.#toolLabel,
+				args: waitingFor ? undefined : this.#args,
 				result: this.#result
-					? { output: this.#getTextOutput(), isError: this.#result.isError, skipped: this.#isBenignSkip() }
+					? {
+							output: waitingFor ? "" : this.#getTextOutput(),
+							isError: this.#result.isError,
+							skipped: this.#isBenignSkip(),
+						}
 					: undefined,
 				options: this.#renderState,
 			},
@@ -1951,8 +1956,24 @@ export class ToolExecutionComponent extends Container {
 		const details = this.#result.details as
 			| { __synthetic?: boolean; __interrupted?: boolean; source?: string; execution?: string }
 			| undefined;
+		if (details?.source === "soft_requirement_skipped") return details.__synthetic === true;
 		if (details?.source !== "interrupt_skipped") return false;
 		return details.__synthetic === true || (details.__interrupted === true && details.execution === "started");
+	}
+
+	/**
+	 * Interrupted `wait` calls are hidden (model-facing retry guidance only).
+	 * Soft-requirement skips of `wait` stay visible: they carry the user-facing
+	 * "waiting for <tool>" status. describe() and render() share this predicate.
+	 */
+	#isHiddenWaitSkip(): boolean {
+		return this.#toolName === "wait" && this.#isBenignSkip() && this.#softRequirementWaitTarget() === undefined;
+	}
+
+	#softRequirementWaitTarget(): string | undefined {
+		if (!this.#result) return undefined;
+		const details = this.#result.details as { source?: string; waitingFor?: string } | undefined;
+		return details?.source === "soft_requirement_skipped" ? details.waitingFor : undefined;
 	}
 
 	/**
