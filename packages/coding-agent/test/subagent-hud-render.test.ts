@@ -1048,6 +1048,27 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(hudText()).toContain("more — expand");
 	});
 
+	it("keeps the TODO tree stable for duration-only worker progress", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		vi.useFakeTimers();
+		const emit = async (description: string, durationMs: number) => {
+			const payload = makeProgressPayload("Background", 0, description, true);
+			payload.progress.durationMs = durationMs;
+			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, payload);
+			await Promise.resolve();
+			vi.runAllTimers();
+			await Promise.resolve();
+		};
+		await emit("Compile", 0);
+		const rebuild = vi.spyOn(mode.todoContainer, "clear");
+		for (let i = 1; i <= 20; i++) await emit("Compile", i * 100);
+		expect(rebuild).not.toHaveBeenCalled();
+		await emit("Link", 2100);
+		expect(rebuild).toHaveBeenCalledTimes(1);
+		expect(Bun.stripANSI(mode.todoContainer.render(mode.ui.terminal.columns).join("\n"))).toContain("Link");
+	});
+
 	it("coalesces a burst of worker changes into one TODO tree rebuild", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
 		const requestRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});

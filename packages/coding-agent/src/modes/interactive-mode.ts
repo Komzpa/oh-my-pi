@@ -1485,6 +1485,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		| undefined;
 	#todoHudHidden = false;
 	#todoHudGeometryKey = "";
+	#todoWorkerDisplayKey = "";
 	hideThinkingBlock = false;
 	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
 	/** Whether the visible session has produced thinking content the user can reveal. */
@@ -4553,7 +4554,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (key !== this.#todoHudGeometryKey) this.#renderTodoList(width);
 	}
 
+	#currentTodoWorkerDisplayKey(): string {
+		const running =
+			cfgDisplayPinnedAgents.get(settings) === "off"
+				? []
+				: this.#observerRegistry.getSessions().filter(isHudSubagent);
+		return JSON.stringify([
+			this.#todoHudHidden,
+			this.ui.terminal.columns,
+			this.ui.terminal.rows,
+			this.#todoPanelRows(),
+			running.map(worker => [worker.id, this.#formatInlineWorker(worker, false, true)]),
+		]);
+	}
+
 	#renderTodoList(width = this.ui.terminal.columns): void {
+		this.#todoWorkerDisplayKey = this.#currentTodoWorkerDisplayKey();
 		const panelRows = this.#todoPanelRows();
 		this.#todoHudGeometryKey = `${width}:${this.ui.terminal.rows}:${panelRows}`;
 		this.todoContainer.clear();
@@ -4993,7 +5009,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#renderSubagentList(): void {
 		this.#cancelSubagentPreviewTick();
-		this.#renderTodoList();
+		if (this.#currentTodoWorkerDisplayKey() !== this.#todoWorkerDisplayKey) this.#renderTodoList();
 		const view = this.#buildSubagentHudView();
 		if (!view) {
 			this.subagentContainer.clear();
