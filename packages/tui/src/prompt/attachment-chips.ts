@@ -3,6 +3,7 @@ import { encodeSixelAsync } from "@oh-my-pi/pi-natives";
 import {
 	type Component,
 	getCellDimensions,
+	getTerminalBackgroundColor,
 	getImageDimensions,
 	getKittyGraphics,
 	type ImageBudget,
@@ -259,7 +260,8 @@ export class AttachmentChipsBand implements Component {
 		const imageId = this.budget.acquireId(`chip:${image.mimeType}:${image.data.length}:${image.data.slice(0, 32)}`);
 		if (this.budget.observe(imageId)) return undefined;
 		const fit = sixelThumbFit(dims, getCellDimensions());
-		const key = `${fit.widthPx}x${fit.heightPx}`;
+		const backgroundRgb = getTerminalBackgroundColor();
+		const key = `${fit.widthPx}x${fit.heightPx}:${backgroundRgb}`;
 		const entry = kSixelThumbs.get(image);
 		if (entry === undefined || entry.key !== key) {
 			const pending: SixelThumb = {
@@ -269,7 +271,12 @@ export class AttachmentChipsBand implements Component {
 				rows: fit.rows,
 			};
 			kSixelThumbs.set(image, pending);
-			encodeSixelAsync(new Uint8Array(Buffer.from(image.data, "base64")), fit.widthPx, fit.heightPx).then(
+			encodeSixelAsync(
+				new Uint8Array(Buffer.from(image.data, "base64")),
+				fit.widthPx,
+				fit.heightPx,
+				backgroundRgb,
+			).then(
 				sequence => this.#settleSixel(image, pending, sequence),
 				() => this.#settleSixel(image, pending, null),
 			);

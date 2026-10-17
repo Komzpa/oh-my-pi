@@ -7,6 +7,7 @@ import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import {
 	type CellDimensions,
 	getCellDimensions,
+	getTerminalBackgroundColor,
 	ImageProtocol,
 	setCellDimensions,
 	TERMINAL,
@@ -68,6 +69,7 @@ describe("AttachmentChipsBand SIXEL thumbnail", () => {
 			const pending = band.render(80);
 			expect(pending.join("\n")).not.toContain(FAKE_SIXEL);
 			expect(encode).toHaveBeenCalledTimes(1);
+			expect(encode.mock.calls[0]?.[3]).toBe(getTerminalBackgroundColor());
 
 			// The band attaches its settle handler before returning; awaiting the same promise runs it first.
 			await encoding;
