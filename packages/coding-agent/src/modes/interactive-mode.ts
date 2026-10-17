@@ -2136,7 +2136,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		// signal arriving mid-Ctrl+C no-ops instead of racing a second dispose.
 		this.#signalTeardown = createSessionTeardown({
 			getDraftText: () => this.#inputController.getDraftText(),
-			beginDispose: () => this.session.beginDispose(),
+			beginDispose: () => {
+				this.session.beginDispose();
+				this.statusLine.dispose();
+			},
 			saveDraft: text => this.sessionManager.saveDraft(text),
 			disposeSession: async reason => {
 				await this.#btwController.dispose();
@@ -2450,6 +2453,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			// so that paint does not build it on the JS thread. Fresh sessions skip it
 			// and pay the cost lazily on the first highlight, if any.
 			if (this.session.messages.length > 0) void warmHighlighter();
+			// Open the model API connection while the user reads the first frame.
+			this.session.prewarmModelConnection();
 			if (!$env.PI_NO_TITLE && !this.sessionManager.getSessionName()) {
 				this.#inputController.prewarmTinyTitleModel();
 			}
@@ -2509,6 +2514,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.session.subscribe(event => {
 				if (event.type === "model_changed") {
 					this.#scheduleComposerStatusPersist();
+					this.session.prewarmModelConnection();
 				}
 				if (event.type === "config_warnings_changed") {
 					this.#syncConfigWarningHeader();
@@ -7258,7 +7264,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 
-		const cmd = [...resolveCliEntryCmd(), ...restartArgv(process.argv.slice(2), this.#resumableSessionId())];
+		const sessionFile = this.sessionManager.isSessionOnDisk() ? this.sessionManager.getSessionFile() : undefined;
+		const cmd = [
+			...resolveCliEntryCmd(),
+			...restartArgv(process.argv.slice(2), sessionFile ? path.resolve(sessionFile) : undefined),
+		];
 		await postmortem.cleanup();
 		await postmortem.drainStdout();
 		if (process.platform !== "win32") {

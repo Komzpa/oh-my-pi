@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `prewarmAnthropicConnection(model)`, which opens the official Anthropic API connection for a first-party `anthropic` model ahead of a request, using the same transport and TLS settings so the request reuses it instead of paying the connection handshake ([#16044](https://github.com/can1357/oh-my-pi/pull/16044) by [@H4vC](https://github.com/H4vC))
+- Added `keys.peek(provider, { includeExpired: true })` to name the stored account behind an expired OAuth token for reads that never send it, such as keying an offline model-cache lookup ([#16061](https://github.com/can1357/oh-my-pi/pull/16061) by [@gchai](https://github.com/gchai))
+
+### Changed
+
+- Anthropic requests to the official API now gzip the request body, so long conversations reach the model sooner on slow uplinks; set `PI_ANTHROPIC_GZIP=0` to disable it ([#16044](https://github.com/can1357/oh-my-pi/pull/16044) by [@H4vC](https://github.com/H4vC))
+
+### Fixed
+
+- Fixed Ollama and Ollama Cloud streaming errors being silently accepted as successful responses ([#16039](https://github.com/can1357/oh-my-pi/pull/16039) by [@mottopanikeiku](https://github.com/mottopanikeiku))
+- Fixed the hermes in-band scanner exposing a truncated tool name for streaming tool calls: `toolStart` now waits for the complete JSON name, so a stream that splits or stops mid-name never reports a partial tool name ([#16064](https://github.com/can1357/oh-my-pi/pull/16064) by [@adi-IL](https://github.com/adi-IL))
+- Fixed `keys.peek()` rotating through stored accounts on each call; it now returns the first account whose token has not expired, every time, so model discovery keeps reading one account's cached catalog ([#16061](https://github.com/can1357/oh-my-pi/pull/16061) by [@gchai](https://github.com/gchai))
+- Fixed local JSON Schema references with URI-percent-encoded, JSON Pointer-escaped, or empty definition names resolving incorrectly during dereferencing, strict conversion, and value validation ([#15926](https://github.com/can1357/oh-my-pi/pull/15926) by [@jchanghong023](https://github.com/jchanghong023)).
+- Fixed network failures showing a generic "Connection error."; offline, connection-refused, and TLS-verification failures now name the host and the cause ([#16036](https://github.com/can1357/oh-my-pi/pull/16036) by [@jorgoose](https://github.com/jorgoose))
+- Fixed Jev image limits rejecting inputs for unrelated native judges and redundant TypeSafe image judgments when only detail changes ([#16002](https://github.com/can1357/oh-my-pi/pull/16002) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
+- Fixed SIGTERM interrupting an in-flight OAuth token rotation before its replacement refresh token was saved ([#15845](https://github.com/can1357/oh-my-pi/issues/15845)).
+- Fixed sessions getting stuck on HTTP 400 after replaying tool names unsupported by the target provider, including invented `proc://*` calls and Google tool names sent to Bedrock ([#15839](https://github.com/can1357/oh-my-pi/issues/15839))
+
+## [18.11.3] - 2026-10-16
+
 ### Fixed
 
 - Fixed JSON Schema dereferencing rewriting literal values in `const`, `enum`, `default`, examples, and custom annotations, or treating property names as schema keywords ([#15927](https://github.com/can1357/oh-my-pi/pull/15927) by [@jchanghong023](https://github.com/jchanghong023)).
@@ -2366,24 +2388,4 @@
 - Fixed Ollama chat requests sending image payloads to text-only models. Image blocks are now omitted and replaced with the standard non-vision placeholder for models without vision support, while vision-capable Ollama models continue to receive images. ([#3009](https://github.com/can1357/oh-my-pi/pull/3009) by [@serverinspector](https://github.com/serverinspector))
 - Fixed `SqliteAuthCredentialStore.close()` leaking one-off prepared statements created by inline `this.#db.prepare()` calls in `#authCredentialsTableExists`, `#readAuthSchemaVersion`, `#inferAuthSchemaVersion`, `#migrateAuthSchemaV0ToV1`, `#backfillCredentialIdentityKeys`, and `updateAuthCredential`. Each statement is now wrapped in `try/finally` with `stmt.finalize()`, and the `close()` method finalizes `#insertUsageCostStmt` and `#listUsageCostsStmt` which were previously missed. This caused EBUSY on Windows when tests tried to delete temp dirs containing open SQLite handles.
 
-## [16.1.2] - 2026-06-19
-
-### Added
-
-- Added improved JSON repair capabilities for Anthropic tool arguments
-- Added authentication broker discovery to sync credentials between local SQLite and remote state
-
-### Fixed
-
-- Improved error feedback and transparency for malformed Anthropic tool call arguments
-- Added automatic fallback for unsupported OpenAI reasoning effort levels
-- Improved reliability when handling invalid reasoning parameter errors across OpenAI-compatible APIs
-- Fixed OpenAI-compatible Chat Completions, Responses, and Azure Responses requests to retry once with the nearest provider-supported reasoning effort when an endpoint rejects `xhigh`/`minimal`-style effort values.
-
-## [16.1.0] - 2026-06-19
-
-### Added
-
-- Added utility functions to strip schema descriptions for optimized LLM context usage
-
-Older entries are archived in [packages/ai/CHANGELOG.md@aa43b0057f82](https://github.com/can1357/oh-my-pi/blob/aa43b0057f82cb167459f8e6b41c5ec9f4e0f91d/packages/ai/CHANGELOG.md).
+Older entries are archived in [packages/ai/CHANGELOG.md@0595d346917d](https://github.com/can1357/oh-my-pi/blob/0595d346917d152ea2b710332817de599f749626/packages/ai/CHANGELOG.md).

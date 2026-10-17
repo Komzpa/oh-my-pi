@@ -83,7 +83,13 @@ import {
 	replaceAssistantNarrative,
 } from "./assistant-publication";
 import { validateAgentToolArguments } from "./tool-arguments";
-import { createAdditionalContextMessage, isNonBlankContext, joinAdditionalContext } from "./tool-context";
+import {
+	createAdditionalContextMessage,
+	isNonBlankContext,
+	joinAdditionalContext,
+	TOOL_RESULT_ADDITIONAL_CONTEXT,
+	type ToolResultWithAdditionalContext,
+} from "./tool-context";
 import dsmlToolCallLeakPrompt from "./prompts/dsml-tool-call-leak.md" with { type: "text" };
 import type {
 	AgentContext,
@@ -2099,6 +2105,50 @@ async function streamAssistantResponse(
 		return userOnResponse?.(response, modelInfo);
 	};
 
+	// Cursor executes its tools server-side during the stream and hands each
+	// result to `cursorOnToolResult`; the host persists them after the assistant
+	// message, so this loop never runs them and never sees them. A follow-up the
+	// loop picks up after this turn needs them in its own context, or the next
+	// request rebuilds this turn with every call unpaired. The host follows the
+	// results with one message carrying their passive context, so that is
+	// mirrored too. Entries are reserved synchronously so concurrent transforms
+	// keep their arrival order. When the server re-sends a call it already ran
+	// (issue #15749), the newer result replaces the earlier one, matching the
+	// single result the host persists.
+	const cursorToolResults: {
+		result: ToolResultMessage;
+		additionalContext: string | undefined;
+		/** The host transform, which the provider does not always await. */
+		pending: Promise<void>;
+	}[] = [];
+	const userCursorOnToolResult = config.cursorOnToolResult;
+	const collectCursorToolResult: AgentLoopConfig["cursorOnToolResult"] = userCursorOnToolResult
+		? async result => {
+				const superseded = cursorToolResults.findIndex(entry => entry.result.toolCallId === result.toolCallId);
+				if (superseded >= 0) cursorToolResults.splice(superseded, 1);
+				// Read before the transform, which may return a message without it.
+				const additionalContext = (result as ToolResultWithAdditionalContext)[TOOL_RESULT_ADDITIONAL_CONTEXT];
+				const { promise: pending, resolve: settle } = Promise.withResolvers<void>();
+				const entry = { result, additionalContext, pending };
+				cursorToolResults.push(entry);
+				try {
+					const settled = await userCursorOnToolResult(result);
+					if (settled) entry.result = settled;
+					return settled;
+				} finally {
+					settle();
+				}
+			}
+		: undefined;
+	// Like the host before it persists, wait for transforms still running so the
+	// next request carries the result the transcript stores.
+	const appendCursorToolResults = async (): Promise<void> => {
+		await Promise.all(cursorToolResults.map(entry => entry.pending));
+		for (const { result } of cursorToolResults) context.messages.push(result);
+		const additionalContext = joinAdditionalContext(cursorToolResults.map(entry => entry.additionalContext));
+		if (additionalContext !== undefined) context.messages.push(createAdditionalContextMessage(additionalContext));
+	};
+
 	const finishChat = async (message: AssistantMessage): Promise<void> => {
 		await finishChatSpan(telemetry, chatSpan, message, {
 			stepNumber: chatStepNumber,
@@ -2123,6 +2173,7 @@ async function streamAssistantResponse(
 				cwd: effectiveCwd,
 				signal: finalRequestSignal,
 				onResponse: captureOnResponse,
+				cursorOnToolResult: collectCursorToolResult,
 				liveSteering: providerCall.liveSteering,
 			});
 			if (promptToolWireTools && ownedDialect) {
@@ -2347,6 +2398,7 @@ async function streamAssistantResponse(
 						} else {
 							context.messages.push(finalMessage);
 						}
+						await appendCursorToolResults();
 						finalMessagePublished = true;
 						if (!addedPartial) {
 							stream.push({
@@ -2647,6 +2699,7 @@ async function streamAssistantResponse(
 						message: publicationGate ? trailing : snapshotAssistantMessage(trailing),
 					});
 				}
+				await appendCursorToolResults();
 				stream.push({
 					type: "message_end",
 					message: publicationGate ? trailing : snapshotAssistantMessage(trailing),
