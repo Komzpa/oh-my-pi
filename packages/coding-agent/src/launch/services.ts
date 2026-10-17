@@ -248,7 +248,9 @@ export async function startService(
 				}
 			: undefined,
 		restart: "no",
-		persist: false,
+		// Named services outlive their owning session's client connection, including
+		// a restart whose restoration takes longer than the broker idle grace.
+		persist: true,
 		detached: false,
 	};
 	const result = await request(
