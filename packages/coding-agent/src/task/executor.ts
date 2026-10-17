@@ -157,6 +157,7 @@ import {
 	cfgCompactionThresholdTokens,
 } from "../session/context-settings";
 
+import { Effort as CatalogEffort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 export type { YieldItem } from "@oh-my-pi/pi-tui/tools/task";
 
 const TASK_ABORT_CLEANUP_GRACE_MS = 10_000;
@@ -3980,6 +3981,66 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 }
 
 /**
+ * Implementation roles that must never run a Claude model above high effort
+ * (see the spawn-ceiling clamp in `runSubprocess`). `AgentDefinition` carries
+ * no role/category field, so this is an explicit allowlist: review/judgment
+ * roles (reviewer, qa-auditor, adversarial-review profiles, …) stay out and
+ * remain unclamped.
+ */
+const IMPL_WORKER_EFFORT_CAP_AGENTS: Record<string, true> = {
+	coder: true,
+	"ui-coder": true,
+	"coder-strong": true,
+	"ui-coder-strong": true,
+	task: true,
+	workhorse: true,
+	sonic: true,
+	deepseek: true,
+};
+
+export function isImplementationWorkerAgent(agentName: string): boolean {
+	return IMPL_WORKER_EFFORT_CAP_AGENTS[agentName] === true;
+}
+
+/** Claude by catalog identity, so hosted routes (bedrock, vertex, openrouter) count too. */
+function isClaudeModel(model: Model | undefined): boolean {
+	return model !== undefined && (model.identity?.class === "anthropic" || model.provider === "anthropic");
+}
+
+/**
+ * Effort ceiling for an active model. `ceiling` is the operator-opted-in
+ * spawn ceiling (`task.maxEffort`, set only when the caller supplied `effort`);
+ * it is never synthesized from the setting here, so `task.maxEffort` keeps its
+ * opt-in semantics. Implementation workers on Claude additionally get `high`.
+ * Re-evaluate this per active model (initial resolution and cold revival).
+ */
+export function capImplementationWorkerEffortCeiling(
+	agentName: string,
+	model: Model | undefined,
+	ceiling: (typeof THINKING_EFFORTS)[number] | undefined,
+): (typeof THINKING_EFFORTS)[number] | undefined {
+	if (IMPL_WORKER_EFFORT_CAP_AGENTS[agentName] !== true || !isClaudeModel(model)) return ceiling;
+	if (ceiling !== undefined && THINKING_EFFORTS.indexOf(ceiling) <= THINKING_EFFORTS.indexOf(CatalogEffort.High)) {
+		return ceiling;
+	}
+	return CatalogEffort.High;
+}
+
+function capImplementationWorkerThinkingLevel(
+	agentName: string,
+	model: Model | undefined,
+	level: ConfiguredThinkingLevel | undefined,
+): ConfiguredThinkingLevel | undefined {
+	if (IMPL_WORKER_EFFORT_CAP_AGENTS[agentName] !== true || !isClaudeModel(model) || level === undefined) {
+		return level;
+	}
+	const effort = THINKING_EFFORTS.find(candidate => candidate === level);
+	return effort !== undefined && THINKING_EFFORTS.indexOf(effort) > THINKING_EFFORTS.indexOf(CatalogEffort.High)
+		? CatalogEffort.High
+		: level;
+}
+
+/**
  * Run a single agent in-process.
  */
 export async function runSubprocess(options: ExecutorOptions): Promise<SingleResult> {
@@ -4399,7 +4460,14 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						pattern: prewalkPattern,
 						warning: resolvedPrewalk.warning,
 					});
-				} else if (prewalkWouldBeNoop(model, effectiveThinkingLevel, target, resolvedPrewalk.thinkingLevel)) {
+				} else if (
+					prewalkWouldBeNoop(
+						model,
+						capImplementationWorkerThinkingLevel(agent.name, model, effectiveThinkingLevel),
+						target,
+						resolvedPrewalk.thinkingLevel,
+					)
+				) {
 					// Same model AND same effective thinking level: switching would only
 					// inject the plan/checklist nudges for no gain — skip. An effort-only
 					// delta on the same model still arms (it is a real cheapening hand-off).
@@ -4475,8 +4543,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						model || modelOverride === undefined ? undefined : subagentRetryFallbackRole(id),
 					modelPatternDefaultFallbackChain:
 						model || modelOverride === undefined ? undefined : inheritedRetryFallbackChain,
-					thinkingLevel: effectiveThinkingLevel,
-					thinkingLevelCeiling: spawnEffortCeiling,
+					thinkingLevel: capImplementationWorkerThinkingLevel(agent.name, model, effectiveThinkingLevel),
+					thinkingLevelCeiling: capImplementationWorkerEffortCeiling(agent.name, model, spawnEffortCeiling),
 					// Subagents are short-lived; never schedule background warm requests.
 					cacheWarming: false,
 					toolNames,
