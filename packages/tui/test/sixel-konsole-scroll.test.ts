@@ -72,14 +72,18 @@ describe("Konsole SIXEL scrolling and ownership", () => {
 		}
 	});
 
-	it("keeps a straddling 80px raster within its visible 20px text cells", async () => {
+	it("keeps a straddling native raster within its visible 20px text cells", async () => {
 		const cell = { widthPx: 10, heightPx: 20 };
 		setCellDimensions(cell);
 		const png = Buffer.from(
 			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==",
 			"base64",
 		);
-		const image = sixelImageRows(encodeSixel(png, 40, 80, 0x000000));
+		const sixel = encodeSixel(png, 40, 80, 0x000000);
+		// Native encoding can round the requested height to complete SIXEL bands.
+		const rasterHeight = Number(/"\d+;\d+;\d+;(\d+)/.exec(sixel)?.[1]);
+		expect(rasterHeight).toBeGreaterThan(60);
+		const image = sixelImageRows(sixel);
 		const term = new KonsoleSixelTerminal(cell);
 		const scheduler = new VirtualRenderScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -92,7 +96,7 @@ describe("Konsole SIXEL scrolling and ownership", () => {
 			await scheduler.settle(term);
 			const clipped = term.placements[0]!;
 			expect(term.covers(clipped, 2, clipped.col)).toBe(false);
-			expect(clipped.pixels).toHaveLength(80 - 7 * 6);
+			expect(clipped.pixels).toHaveLength(rasterHeight - 7 * 6);
 			expect({ row: clipped.row, rows: clipped.rows }).toEqual({ row: 0, rows: 2 });
 			expect(term.getViewport()[2]?.trim()).toBe("below");
 			tui.requestRender(true);
