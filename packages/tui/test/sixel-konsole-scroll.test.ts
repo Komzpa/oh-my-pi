@@ -79,7 +79,7 @@ describe("Konsole SIXEL scrolling and ownership", () => {
 			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==",
 			"base64",
 		);
-		const image = sixelImageRows(encodeSixel(png, 40, 80));
+		const image = sixelImageRows(encodeSixel(png, 40, 80, 0x000000));
 		const term = new KonsoleSixelTerminal(cell);
 		const scheduler = new VirtualRenderScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
