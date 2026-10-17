@@ -11,6 +11,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import {
 	collectPendingToolCalls,
+	collectSessionPendingToolCalls,
 	createInterruptedToolResults,
 	createInterruptedTurnAbortMessage,
 	createSessionInterruptedTurnAbortMessage,
@@ -565,6 +566,36 @@ describe("session exit diagnostics", () => {
 });
 
 describe("selective interrupted-turn recovery", () => {
+	it.each(["pending", "completed", "superseded", "marker-only", "malformed", "branch"])(
+		"preserves pending-call diagnostics for %s tails",
+		kind => {
+			const manager = SessionManager.inMemory();
+			if (kind !== "marker-only") manager.appendMessage(pendingAssistant);
+			const assistantId = manager.getLeafId();
+			manager.appendCustomEntry(TOOL_EXECUTION_START_CUSTOM_TYPE, {
+				toolCallId: "toolu_repro",
+				toolName: "bash",
+				startedAt: "2026-10-16T00:00:00Z",
+				args: { command: "echo test" },
+				intent: "test",
+			});
+			if (kind === "completed" || kind === "branch")
+				manager.appendMessage({
+					role: "toolResult",
+					toolCallId: "toolu_repro",
+					toolName: "bash",
+					content: [{ type: "text", text: "ok" }],
+					isError: false,
+					timestamp: 2,
+				});
+			if (kind === "superseded") manager.appendMessage({ ...pendingAssistant, content: [], stopReason: "stop" });
+			if (kind === "malformed") manager.appendCustomEntry(TOOL_EXECUTION_START_CUSTOM_TYPE, { toolName: 3 });
+			if (kind === "branch" && assistantId) manager.branch(assistantId);
+			manager.appendMessage({ role: "user", content: "continue", timestamp: 3 });
+			manager.appendCustomEntry("unrelated", { payload: "ignored" });
+			expect(collectSessionPendingToolCalls(manager)).toEqual(collectPendingToolCalls(manager.getBranch()));
+		},
+	);
 	it.each(["pending", "normal", "stale", "malformed", "aborted", "first-user", "terminal"])(
 		"preserves full-history recovery for %s tails",
 		kind => {

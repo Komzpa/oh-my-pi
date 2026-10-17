@@ -112,7 +112,7 @@ import {
 import type { AgentSession } from "./session/agent-session";
 import { createAuthStorageSettingsSync, describeAuthBrokerStartupError } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
-import { describePendingToolCalls } from "./session/exit-diagnostics";
+import { describeSessionPendingToolCalls } from "./session/exit-diagnostics";
 import {
 	createForeignSessionStore,
 	foreignSessionInfoToSessionInfo,
@@ -2217,7 +2217,7 @@ export async function runRootCommand(
 		}
 
 		if (sessionManager && (parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || foreignSource)) {
-			const pendingToolWarning = describePendingToolCalls(sessionManager.iterateBranch());
+			const pendingToolWarning = describeSessionPendingToolCalls(sessionManager);
 			if (pendingToolWarning) {
 				logger.warn("Resumed session has pending tool calls", {
 					sessionId: sessionManager.getSessionId(),
