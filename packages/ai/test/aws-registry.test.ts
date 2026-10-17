@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
+import * as nodeFsSync from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getEnvApiKey } from "@oh-my-pi/pi-ai/env-api-key";
@@ -22,6 +23,35 @@ const EMPTY_AWS_ENV = {
 };
 
 describe("AWS provider availability", () => {
+	test("caches the DMI instance-role probe across repeated availability checks", async () => {
+		const readFileSyncSpy = vi.spyOn(nodeFsSync, "readFileSync");
+		try {
+			await withEnv(
+				{
+					...EMPTY_AWS_ENV,
+					AWS_SHARED_CREDENTIALS_FILE: "/missing/aws-credentials",
+					AWS_CONFIG_FILE: "/missing/aws-config",
+					AWS_EC2_METADATA_DISABLED: undefined,
+				},
+				async () => {
+					// Fresh module instance: the module-scoped probe cache is guaranteed cold,
+					// regardless of which earlier test or file already warmed the shared one.
+					const cold = (await import(
+						`../src/registry/aws.ts?cold-ec2-probe=${Bun.nanoseconds()}`
+					)) as typeof import("../src/registry/aws");
+					cold.hasAwsCredentialSource();
+					const afterFirst = readFileSyncSpy.mock.calls.filter(call => String(call[0]).includes("/sys/")).length;
+					expect(afterFirst).toBeGreaterThan(0);
+					cold.hasAwsCredentialSource();
+					cold.hasAwsCredentialSource();
+					const afterMore = readFileSyncSpy.mock.calls.filter(call => String(call[0]).includes("/sys/")).length;
+					expect(afterMore).toBe(afterFirst);
+				},
+			);
+		} finally {
+			readFileSyncSpy.mockRestore();
+		}
+	});
 	test("recognizes the Bedrock auth bypass without AWS credentials", async () => {
 		await withEnv(
 			{
