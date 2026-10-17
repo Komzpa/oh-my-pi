@@ -54,6 +54,8 @@ export const SHUTDOWN_CONSOLIDATE_BUDGET_MS = 1_500;
 
 /** Options controlling session disposal. */
 export interface AgentSessionDisposeOptions {
+	/** Replace the runtime while retaining session-owned services and their process slice. */
+	preserveServices?: boolean;
 	mnemopiConsolidateTimeoutMs?: number;
 	/**
 	 * Deadline for the settle/drain wait before the terminal memory release

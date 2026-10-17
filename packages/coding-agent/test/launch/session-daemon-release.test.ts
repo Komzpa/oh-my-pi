@@ -109,6 +109,27 @@ function startIsolatedBroker(client: DaemonBrokerClient): { listening: Promise<v
 	return { listening: listening.promise, finished };
 }
 describe("per-session daemon client release", () => {
+	it("retains a persistent server across runtime replacement and still stops it on final release", async () => {
+		using temp = TempDir.createSync("@omp-restart-daemon-");
+		const id = `restart-${crypto.randomUUID()}`;
+		const client = await daemonClientForProject(temp.path(), id, { idleGraceMs: IDLE_GRACE_MS });
+		try {
+			const daemon = await startFixtureDaemon(client, "review-server");
+			await releaseDaemonClientsForSession(id, true);
+			expect(client.closed).toBe(true);
+			const resumed = await daemonClientForProject(temp.path(), id, { idleGraceMs: IDLE_GRACE_MS });
+			const listed = await resumed.request({ op: "list" });
+			expect(listed.op).toBe("list");
+			if (listed.op !== "list") throw new Error("expected list");
+			expect(listed.daemons.some(record => record.name === "review-server")).toBe(true);
+			expect(daemon.status()).toBe(ProcessStatus.Running);
+			await releaseDaemonClientsForSession(id);
+			expect(daemon.status()).toBe(ProcessStatus.Exited);
+		} finally {
+			await releaseDaemonClientsForSession(id);
+		}
+	});
+
 	it("releases N sequential sessions: closed client, cache removal, broker exit; keeps parent/sibling alive", async () => {
 		using tempDir = TempDir.createSync("@omp-session-daemon-release-");
 		const root = tempDir.path();

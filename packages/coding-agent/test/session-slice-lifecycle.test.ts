@@ -329,13 +329,13 @@ it.skipIf(process.platform !== "linux")("release stops sampling without stopping
 	}
 });
 
-it.skipIf(!live)(
-	"a session switch (release) keeps a running slice process alive; dispose (stop) kills it",
-	async () => {
+it.skipIf(!live).each(["switch", "restart"] as const)(
+	"a session %s keeps its running slice process alive; final disposal kills it",
+	async transition => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
 		const sessionId = crypto.randomUUID();
 		const unit = `${prefix}switch.service`;
-		const lifecycle = new SessionSliceLifecycle(
+		let lifecycle = new SessionSliceLifecycle(
 			{ sessionId, isIdleOrWaiting: () => false, sendNotice: async () => {} },
 			root,
 		);
@@ -352,7 +352,14 @@ it.skipIf(!live)(
 			);
 			const pid = Number(run(["systemctl", "--user", "show", unit, "-p", "MainPID", "--value"]));
 			expect(pid).toBeGreaterThan(0);
-			lifecycle.release();
+			if (transition === "restart") {
+				await lifecycle.detach();
+				lifecycle = new SessionSliceLifecycle(
+					{ sessionId, isIdleOrWaiting: () => false, sendNotice: async () => {} },
+					root,
+				);
+				await lifecycle.ready;
+			} else lifecycle.release();
 			await Bun.sleep(300);
 			expect(await Bun.file(`/proc/${pid}/stat`).exists()).toBe(true);
 			await lifecycle.stop();

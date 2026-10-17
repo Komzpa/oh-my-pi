@@ -5847,9 +5847,9 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
-	async #releaseOwnedDaemonClients(sessionId: string | undefined): Promise<void> {
+	async #releaseOwnedDaemonClients(sessionId: string | undefined, preserveServices = false): Promise<void> {
 		if (!sessionId) return;
-		await releaseDaemonClientsForSession(sessionId);
+		await releaseDaemonClientsForSession(sessionId, preserveServices);
 	}
 
 	async #disconnectOwnedMcp(): Promise<void> {
@@ -5954,10 +5954,13 @@ export class AgentSession implements SettingsScope {
 		}
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		releaseShellSessions(this.sessionManager.getSessionId());
-		const daemonClientsReleased = this.#releaseOwnedDaemonClients(this.sessionManager.getSessionId());
+		const daemonClientsReleased = this.#releaseOwnedDaemonClients(
+			this.sessionManager.getSessionId(),
+			options.preserveServices,
+		);
 		const results = await Promise.allSettled([
 			...Array.from(this.#sessionSlices.values(), lifecycle =>
-				daemonClientsReleased.finally(() => lifecycle.stop()),
+				daemonClientsReleased.finally(() => (options.preserveServices ? lifecycle.detach() : lifecycle.stop())),
 			),
 			this.#disposeOwnedAsyncJobs(),
 			this.#eval.disposeKernels(),

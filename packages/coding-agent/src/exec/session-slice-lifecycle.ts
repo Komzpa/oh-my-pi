@@ -308,6 +308,15 @@ export class SessionSliceLifecycle {
 		}
 	}
 
+	/** Runtime replacement keeps the same session slice for its successor. */
+	async detach(): Promise<void> {
+		await this.ready.catch(() => {});
+		this.#stopped = true;
+		clearInterval(this.#timer);
+		this.#cancelExit?.();
+		process.off("exit", this.#exitSync);
+	}
+
 	stop(): Promise<void> {
 		if (!this.#stopCall) this.#stopCall = this.#stop();
 		return this.#stopCall;

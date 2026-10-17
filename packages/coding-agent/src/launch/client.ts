@@ -614,12 +614,12 @@ export async function daemonClientForProject(
 	}
 }
 
-function releaseSharedDaemonClient(key: string, entry: SharedClientEntry): Promise<void> {
+function releaseSharedDaemonClient(key: string, entry: SharedClientEntry, preserveDaemons = false): Promise<void> {
 	if (entry.release) return entry.release;
 	entry.release = entry.promise
 		.then(async client => {
 			try {
-				await stopAllDaemons(client);
+				if (!preserveDaemons) await stopAllDaemons(client);
 			} finally {
 				client.close();
 			}
@@ -655,13 +655,13 @@ export async function releaseDaemonClientForSession(projectDir: string, sessionI
 }
 
 /** Quiesce accepted broker starts, stop daemons, and close this session's exact project clients. */
-export async function releaseDaemonClientsForSession(sessionId: string): Promise<void> {
+export async function releaseDaemonClientsForSession(sessionId: string, preserveDaemons = false): Promise<void> {
 	if (sessionId.length === 0) return;
 	await withSessionClientRelease(sessionId, async () => {
 		const releases: Promise<void>[] = [];
 		for (const [key, entry] of sharedClients) {
 			if (entry.kind === "project" && entry.sessionId === sessionId) {
-				releases.push(releaseSharedDaemonClient(key, entry));
+				releases.push(releaseSharedDaemonClient(key, entry, preserveDaemons));
 			}
 		}
 		const results = await Promise.allSettled(releases);
