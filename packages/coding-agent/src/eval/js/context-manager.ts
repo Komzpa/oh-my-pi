@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { toolSessionEnvironment } from "../../exec/session-slice";
 import { ToolResourceScope } from "@oh-my-pi/pi-natives";
 import { logger, Snowflake, workerHostEntry } from "@oh-my-pi/pi-utils";
 import {
@@ -21,7 +22,6 @@ import { updateEvalState } from "../state";
 import type { EvalShadowCellSession } from "../speculation/cell-session";
 import { getActiveEvalShadowCell } from "../speculation/runtime-context";
 import type { ShadowPlan } from "../speculation/types";
-import { toolSessionEnvironment } from "../../exec/session-slice";
 import type { EvalToolDescriptor, EvalToolInvokeResult } from "../types";
 import { type ShadowSnapshot, shadowSnapshotDigest } from "./shared/runtime";
 import { projectJavaScriptShadowPlan } from "./speculation";
