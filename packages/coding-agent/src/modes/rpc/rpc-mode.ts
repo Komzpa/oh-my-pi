@@ -1,3 +1,4 @@
+import { assertInteractiveOwnerCanCheckpoint, createLocalInteractiveViewSource } from "../interactive-view";
 /**
  * RPC mode: Headless operation with JSON stdin/stdout protocol.
  *
@@ -49,7 +50,7 @@ import {
 } from "@oh-my-pi/pi-tui/prompt/word-completion";
 import { requestTextPrediction, textPredictionBackend } from "../../predict/client";
 import { type AgentSession, SessionBusyError } from "../../session/agent-session";
-import type { RestoredQueuedMessage } from "../../session/agent-session-types";
+import type { AgentSessionDisposeOptions, RestoredQueuedMessage } from "../../session/agent-session-types";
 import { CACHE_WARMING_MODES } from "../../session/cache-warmer";
 import { findMostRecentNonEmptySession } from "../../session/session-listing";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
@@ -471,6 +472,7 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 	if (
 		BACKGROUND_COMMANDS.has(command.type) ||
 		command.type === "prompt" ||
+		command.type === "prompt_custom" ||
 		command.type === "steer" ||
 		command.type === "follow_up" ||
 		command.type === "steer_subagent"
@@ -494,6 +496,7 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 
 const USER_INPUT_TYPES: Record<string, true> = {
 	prompt: true,
+	prompt_custom: true,
 	steer: true,
 	follow_up: true,
 	abort_and_prompt: true,
@@ -1686,6 +1689,18 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		},
 	);
 
+	const disposeOwner = async (options?: AgentSessionDisposeOptions): Promise<void> => {
+		// Report an unsaved side answer without skipping owner resource disposal.
+		await btw.close().catch(btwError => {
+			const message = toError(btwError).message;
+			logger.error(message);
+			output({ type: "notice", level: "error", message, source: "btw-history" });
+		});
+		// Close the realtime call (microphone, socket) before the session it delegates into.
+		await liveBridge.stop();
+		await session.dispose(options);
+	};
+
 	/**
 	 * Dispose the session, then end the process. A store failure still latched
 	 * at dispose makes `dispose()` reject, and the `notice` frame it emits is
@@ -1696,15 +1711,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	 */
 	const disposeAndExit = async (): Promise<never> => {
 		try {
-			// The process ends regardless; report an unsaved side answer instead of skipping dispose.
-			await btw.close().catch(btwError => {
-				const message = toError(btwError).message;
-				logger.error(message);
-				output({ type: "notice", level: "error", message, source: "btw-history" });
-			});
-			// Close the realtime call (microphone, socket) before the session it delegates into.
-			await liveBridge.stop();
-			await session.dispose();
+			await disposeOwner();
 		} catch (error) {
 			if (!persistenceFailure || error !== persistenceFailure) throw error;
 			// The notice frame this failure queued must reach the client before the
@@ -1754,7 +1761,10 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	await emitAvailableCommandsUpdate();
 
 	const inputGate = new RpcUserInputGate();
-	type OrderedUserInput = Extract<RpcCommand, { type: "prompt" | "steer" | "follow_up" | "abort_and_prompt" }>;
+	type OrderedUserInput = Extract<
+		RpcCommand,
+		{ type: "prompt" | "prompt_custom" | "steer" | "follow_up" | "abort_and_prompt" }
+	>;
 	type OrderedInputOutcome = "local" | "cancelled" | "admitted" | "builtin-agent";
 	const dispatchOrderedUserInput = (
 		command: OrderedUserInput,
@@ -1765,8 +1775,20 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			const isCurrent = () =>
 				inputGate.isCurrent(command) && !shutdownState.requested && session.sessionId === sessionId;
 			if (!isCurrent()) return "cancelled";
+			if (command.type === "prompt_custom") {
+				if (!ticket) return "cancelled";
+				await watchAndReportPromptResult({
+					ticket,
+					startPrompt: onPromptAdmitted =>
+						session.promptCustomMessage(command.message, { ...command.options, onPromptAdmitted }),
+					results: promptResults,
+					onError: onPromptError(command.id, "prompt_custom"),
+					extensionUserMessageTracker,
+				});
+				return "admitted";
+			}
 			let text = command.message;
-			let images = command.images;
+			let images = command.images ?? (command.type === "prompt" ? command.options?.images : undefined);
 			const runner = session.extensionRunner;
 			if (runner?.hasHandlers("input")) {
 				const result = await runner.emitInput(text, images, "rpc");
@@ -1785,7 +1807,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				await session.followUp(text, images);
 				return "admitted";
 			}
-			if (command.type === "prompt") {
+			if (command.type === "prompt" && command.options?.runCommands !== false) {
 				if (!ticket) return "cancelled";
 				const skillResult = await dispatchRpcSkillPrompt({
 					ticket,
@@ -1840,8 +1862,11 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				ticket,
 				startPrompt: onPromptAdmitted =>
 					session.prompt(text, {
+						...(command.type === "prompt" ? command.options : {}),
 						images,
-						...(command.type === "prompt" ? { streamingBehavior: command.streamingBehavior } : {}),
+						...(command.type === "prompt" && command.streamingBehavior
+							? { streamingBehavior: command.streamingBehavior }
+							: {}),
 						onPromptAdmitted,
 					}),
 				results: promptResults,
@@ -1890,6 +1915,17 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				}
 			}
 
+			case "prompt_custom": {
+				const ticket = promptResults.begin(id);
+				try {
+					if ((await dispatchOrderedUserInput(command, ticket)) === "cancelled") promptResults.settle(ticket);
+					return success(id, "prompt_custom");
+				} catch (promptSetupError) {
+					promptResults.discard(ticket);
+					throw promptSetupError;
+				}
+			}
+
 			case "steer":
 			case "follow_up": {
 				await dispatchOrderedUserInput(command, undefined);
@@ -1919,7 +1955,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 
 			case "abort": {
 				goalController.stopForHostAbort();
-				await session.abort({ reason: USER_INTERRUPT_LABEL });
+				await session.abort(command.options ?? { reason: USER_INTERRUPT_LABEL });
 				return success(id, "abort");
 			}
 
@@ -2022,6 +2058,30 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			// State
 			// =================================================================
 
+			case "begin_dispose":
+				session.beginDispose();
+				return success(id, "begin_dispose");
+			case "dispose_session":
+				promptResults.abortOpen(true);
+				session.beginDispose();
+				pendingExtensionRequests.rejectAll("Session owner shut down before extension UI response completed");
+				await disposeOwner(command.options);
+				return success(id, "dispose_session");
+			case "checkpoint_session":
+				assertInteractiveOwnerCanCheckpoint(session);
+				await session.sessionManager.close();
+				assertInteractiveOwnerCanCheckpoint(session);
+				session.sessionManager.seal();
+				return success(id, "checkpoint_session");
+
+			case "save_draft":
+				await session.sessionManager.saveDraft(command.text);
+				return success(id, "save_draft");
+			case "consume_draft": {
+				const text = await session.sessionManager.consumeDraft();
+				return success(id, "consume_draft", { text });
+			}
+
 			case "get_state": {
 				// A goal exit triggered by the last turn restores tools asynchronously; report after it.
 				await goalController.settled();
@@ -2031,6 +2091,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					thinkingLevel: session.thinkingLevel,
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
+					hasPostPromptWork: session.hasPostPromptWork,
 					steeringMode: session.steeringMode,
 					followUpMode: session.followUpMode,
 					interruptMode: session.interruptMode,
@@ -2066,6 +2127,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					contextUsage: session.getContextUsage(),
 					goal: session.getGoalModeState() ?? null,
 				};
+				if (command.view) state.view = await createLocalInteractiveViewSource(session).capture(command.view);
 				return success(id, "get_state", state);
 			}
 

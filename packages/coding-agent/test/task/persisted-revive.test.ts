@@ -1,3 +1,5 @@
+import { getSubagentDiscoveryOptions } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
@@ -34,7 +36,7 @@ import {
 	resolveRetryFallbackChainKey,
 } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { FileSessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
+import * as sessionLoader from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
 import { buildWakeRelayBody } from "@oh-my-pi/pi-coding-agent/task/executor";
@@ -201,6 +203,7 @@ async function createPersistedSession(
 }
 
 interface ReviveOwnerOptions {
+	discovery?: () => Partial<CreateAgentSessionOptions>;
 	extensionRoots?: () => EffectiveExtensionRoots;
 	preparedExtensions?: readonly PreparedExtension[];
 	authStorage?: AuthStorage;
@@ -237,6 +240,7 @@ function createFactory(cwd: string, eventBus?: EventBus, owner: ReviveOwnerOptio
 		modelRegistry: owner.modelRegistry ?? ({ authStorage: {} } as ModelRegistry),
 		settings: owner.settings ?? Settings.isolated(),
 		enableLsp: true,
+		getSubagentDiscoveryOptions: owner.discovery,
 		eventBus,
 	});
 }
@@ -531,6 +535,69 @@ describe("persisted subagent revival", () => {
 		expect(capturedOptions?.mcpManager).toBe(hostileMcp);
 		expect(capturedOptions?.mcpTools?.map(tool => tool.name)).toEqual(["mcp__server_read"]);
 		expect(capturedOptions?.customTools).toBeUndefined();
+	});
+
+	it("shares scoped discovery inputs and invalidates a tree after cwd changes", () => {
+		const tree = { rootPath: "/owner", rendered: "cached", totalLines: 1, truncated: false, agentsMdFiles: [] };
+		const context = { path: "/owner/CLAUDE.md", content: "owner context" };
+		const owner = {
+			cwd: "/owner",
+			workspaceTree: tree,
+			contextFiles: [{ path: "/owner/AGENTS.md", content: "main scope" }, context],
+			extensionPaths: ["/owner/extension.ts"],
+			customToolPaths: [{ path: "/owner/tool.ts", source: "project" }],
+		} as unknown as ToolSession;
+		expect(getSubagentDiscoveryOptions(owner, false).contextFiles).toEqual([context]);
+		expect(getSubagentDiscoveryOptions(owner, false).workspaceTree).toBe(tree);
+		expect(getSubagentDiscoveryOptions(owner, true).preloadedExtensionPaths).toEqual([]);
+		expect(getSubagentDiscoveryOptions(owner, true).preloadedCustomToolPaths).toEqual([]);
+		owner.cwd = "/other";
+		expect(getSubagentDiscoveryOptions(owner, false).workspaceTree).toBeUndefined();
+		expect(getSubagentDiscoveryOptions(owner, false).contextFiles).toBeUndefined();
+		expect(getSubagentDiscoveryOptions(owner, false).preloadedCustomToolPaths).toBeUndefined();
+	});
+
+	it.each([false, true])("inherits live discovery inputs during cold revival (restricted=%s)", async restricted => {
+		const cwd = makeTempDir("@pi-cached-revive-");
+		const sessionFile = await createPersistedSession(cwd, restricted);
+		const inherited: Partial<CreateAgentSessionOptions> = {
+			contextFiles: [{ path: path.join(cwd, "CLAUDE.md"), content: "owner context" }],
+			skills: [],
+			promptTemplates: [],
+			rules: [],
+			workspaceTree: { rootPath: cwd, rendered: "cached", totalLines: 1, truncated: false, agentsMdFiles: [] },
+			preloadedCustomToolPaths: [],
+			preloadedExtensionPaths: [],
+			inheritedSessionAgents: [],
+		};
+		let current: Partial<CreateAgentSessionOptions> = { ...inherited, contextFiles: [] };
+		let captured: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			captured = options;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+		const ref = createRef(sessionFile);
+		const reviver = await createFactory(cwd, undefined, { discovery: () => current })(ref);
+		if (!reviver) throw new Error("Expected persisted reviver");
+		current = inherited;
+		await reviver(ref);
+		for (const key of [
+			"contextFiles",
+			"skills",
+			"workspaceTree",
+			"promptTemplates",
+			"rules",
+			"inheritedSessionAgents",
+		] as const) {
+			expect(captured?.[key]).toBe(inherited[key]);
+		}
+		expect(captured?.cacheWarming).toBe(false);
+		if (restricted) {
+			expect(captured?.preloadedCustomToolPaths).toEqual([]);
+			expect(captured?.enableMCP).toBe(false);
+		} else expect(captured?.preloadedCustomToolPaths).toBe(inherited.preloadedCustomToolPaths);
+		const prompt = captured?.systemPrompt;
+		expect(typeof prompt === "function" ? await prompt([]) : prompt).toEqual(["persisted prompt"]);
 	});
 
 	it("leaves isolated sessions transcript-only even when the workspace still exists", async () => {
@@ -1608,21 +1675,20 @@ describe("buildWakeRelayBody", () => {
 			// yet, so the reviver must fail closed on the fresh state instead
 			// of reviving stale history. Single-shot: only the snapshot read
 			// mutates, so the publish-time re-read observes the deletion.
-			const originalReadText = FileSessionStorage.prototype.readText;
-			const readTextSpy = vi.spyOn(FileSessionStorage.prototype, "readText").mockImplementationOnce(async function (
-				this: FileSessionStorage,
-				p: string,
-			) {
-				const text = await originalReadText.call(this, p);
-				await fs.promises.rm(p);
-				return text;
-			});
+			const originalVisit = sessionLoader.visitSessionFileForResume;
+			const snapshotSpy = vi
+				.spyOn(sessionLoader, "visitSessionFileForResume")
+				.mockImplementationOnce(async (filePath, visit, options) => {
+					const snapshot = await originalVisit(filePath, visit, options);
+					await fs.promises.rm(filePath);
+					return snapshot;
+				});
 			try {
 				await expect(reviver(ref)).rejects.toThrow(/ENOENT/);
 				// Fail closed without minting: the missing path stays missing.
 				expect(await Bun.file(sessionFile).exists()).toBe(false);
 			} finally {
-				readTextSpy.mockRestore();
+				snapshotSpy.mockRestore();
 			}
 		});
 

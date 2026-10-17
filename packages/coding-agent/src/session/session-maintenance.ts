@@ -34,7 +34,6 @@ import {
 	isTranscriptUsageAnchor,
 	NativeCompactionError,
 	prepareCompaction,
-	promptBudgetTokens,
 	RESCUE_SHAKE_CONFIG,
 	remotePreserveReusable,
 	resolveBudgetReserveTokens,
@@ -282,6 +281,19 @@ function usageOverflowDeadEndNotice(reportedInputTokens: number, contextWindow: 
 	return (
 		`The provider reports ~${reportedInputTokens.toLocaleString("en-US")} input tokens against a ${windowLabel}-token context window — this IS a token-context problem, but automatic compaction is unavailable to shrink it. ` +
 		"Enable a compaction method (compaction.enabled with a configured methodOrder), reduce the conversation's token usage, or switch to a larger-context model."
+	);
+}
+
+/**
+ * User-facing notice for a compaction dead end: maintenance freed too little
+ * to retry safely. `remedies` names the recovery actions left on the emitting
+ * path — by the time the post-pass dead end fires, the tiered rescue has
+ * already attempted both elide and image-drop automatically.
+ */
+function compactionDeadEndWarning(remedies: string): string {
+	return (
+		"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. " +
+		`The most recent turn alone is too large to reduce further; ${remedies} or switch to a larger-context model.`
 	);
 }
 
@@ -594,6 +606,18 @@ export class SessionMaintenance {
 		return resolveModelCompactionSettings(this.#host.settings, this.#model);
 	}
 
+	/** Remove raw images hidden by prune overlays without charging visible token savings. */
+	#dropHiddenPrunedImages(projectedEntries: readonly SessionEntry[]): number {
+		const projected = new Map(projectedEntries.map(entry => [entry.id, entry]));
+		let removed = 0;
+		for (const entry of this.#host.sessionManager.getRawBranch()) {
+			const visible = projected.get(entry.id);
+			if (entry.type !== "message" || visible?.type !== "message" || entry.message === visible.message) continue;
+			removed += stripImagesFromMessage(entry.message);
+		}
+		return removed;
+	}
+
 	get #tokenizer() {
 		return this.#host.agent.tokenizer;
 	}
@@ -699,17 +723,18 @@ export class SessionMaintenance {
 	}
 
 	/**
-	 * Durably commit a prune pass, restoring the blanked results when the rewrite
-	 * fails so live context never diverges from the history its derived state
-	 * (advisor prefix, todo phases, provider sessions) was built from.
+	 * Append the branch-local prune decision, rebuild live state from that
+	 * projection, then await ordinary storage durability. A latched append failure
+	 * propagates without rollback; the in-memory overlay is what later recovery persists.
 	 */
-	async #persistPrune(result: PruneResult): Promise<void> {
-		try {
-			await this.#host.sessionManager.rewriteEntries();
-		} catch (error) {
-			result.undo();
-			throw error;
-		}
+	async #persistPrune(result: PruneResult, reason: string): Promise<void> {
+		this.#host.sessionManager.appendToolResultPrune(result.targets, result.prunedAt);
+		const sessionContext = this.#host.buildDisplaySessionContext();
+		this.#host.agent.replaceMessages(sessionContext.messages);
+		this.#host.rebaseAdvisorPrefix(reason);
+		this.#host.syncTodoPhasesFromBranch();
+		this.#host.closeCodexProviderSessionsForHistoryRewrite();
+		await this.#host.sessionManager.flush();
 	}
 
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
@@ -735,12 +760,7 @@ export class SessionMaintenance {
 			return undefined;
 		}
 
-		await this.#persistPrune(result);
-		const sessionContext = this.#host.buildDisplaySessionContext();
-		this.#host.agent.replaceMessages(sessionContext.messages);
-		this.#host.rebaseAdvisorPrefix("prune-tool-outputs");
-		this.#host.syncTodoPhasesFromBranch();
-		this.#host.closeCodexProviderSessionsForHistoryRewrite();
+		await this.#persistPrune(result, "prune-tool-outputs");
 		return result;
 	}
 
@@ -752,10 +772,8 @@ export class SessionMaintenance {
 	 * provider prompt cache is cold), so it is cheap to run every turn. Gated
 	 * on the `compaction.supersedeReads` and `compaction.dropUseless` settings.
 	 *
-	 * Persists via `rewriteEntries` like every other history rewrite — the
-	 * session file must match the live (pruned) context or file-based forks
-	 * (`/fork`, `/tan`) and resume rebuild a divergent prefix and cold-miss the
-	 * provider prompt cache.
+	 * Persists one append-only overlay so file-based forks and resume reconstruct
+	 * the same pruned prefix without replacing the journal or its original bytes.
 	 */
 	async #pruneStaleToolResults(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const { supersedeReads, dropUseless } = this.#compactionSettings;
@@ -785,12 +803,7 @@ export class SessionMaintenance {
 			return undefined;
 		}
 
-		await this.#persistPrune(result);
-		const sessionContext = this.#host.buildDisplaySessionContext();
-		this.#host.agent.replaceMessages(sessionContext.messages);
-		this.#host.rebaseAdvisorPrefix("prune-stale-tool-results");
-		this.#host.syncTodoPhasesFromBranch();
-		this.#host.closeCodexProviderSessionsForHistoryRewrite();
+		await this.#persistPrune(result, "prune-stale-tool-results");
 		return result;
 	}
 
@@ -803,14 +816,8 @@ export class SessionMaintenance {
 	 * provider sessions caching message identity (Codex Responses) are torn
 	 * down to force a clean replay on the next turn.
 	 *
-	 * Every stripped block is measured with the active tokenizer so callers can
-	 * report real savings, and the share of those savings that predates the
-	 * transcript usage anchor is recorded against it. Without that correction
-	 * the anchor keeps charging the provider-reported prompt for images that are
-	 * gone and the context meter reads stale-high until the next response.
-	 *
-	 * No-op when the branch carries no images; returns `{ removed: 0, tokensFreed: 0 }`
-	 * and skips the disk rewrite.
+	 * No-op when the branch carries no images; returns `{ removed: 0 }` and
+	 * skips the disk rewrite.
 	 */
 	async dropImages(): Promise<{ removed: number; tokensFreed: number }> {
 		const branchEntries = this.#host.sessionManager.getBranch();
@@ -866,6 +873,8 @@ export class SessionMaintenance {
 			tokensFreed += saved;
 			if (anchored) anchoredTokensRemoved += saved;
 		}
+		// Detached prune projections hide raw images from token accounting.
+		removed += this.#dropHiddenPrunedImages(branchEntries);
 		if (removed === 0) {
 			return { removed: 0, tokensFreed: 0 };
 		}
@@ -912,7 +921,13 @@ export class SessionMaintenance {
 			const latestCompaction = getLatestCompactionEntry(branchEntries);
 			const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
 			const hasRemoteReplacementHistory = getOpenAiRemoteCompactionPayload(latestCompaction) !== undefined;
-			const anchorIndex = findUsageAnchorIndex(branchEntries, compactionIndex);
+			let anchorIndex = -1;
+			for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
+				const entry = branchEntries[index];
+				if (entry.type !== "message" || !isTranscriptUsageAnchor(entry.message)) continue;
+				anchorIndex = index;
+				break;
+			}
 			let removed = 0;
 			let tokensFreed = 0;
 			let anchoredTokensRemoved = 0;
@@ -1016,7 +1031,13 @@ export class SessionMaintenance {
 		assertCurrent();
 		const hasRemoteReplacementHistory = getOpenAiRemoteCompactionPayload(latestCompaction) !== undefined;
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
-		const anchorIndex = findUsageAnchorIndex(branchEntries, compactionIndex);
+		let anchorIndex = -1;
+		for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
+			const entry = branchEntries[index];
+			if (entry.type !== "message" || !isTranscriptUsageAnchor(entry.message)) continue;
+			anchorIndex = index;
+			break;
+		}
 		const entryIndexes = new Map(branchEntries.map((entry, index) => [entry, index]));
 
 		let toolResultsDropped = 0;
@@ -1901,7 +1922,7 @@ export class SessionMaintenance {
 				detachPostCommit,
 			);
 			if (!safeToContinue) {
-				const warning = this.#compactionDeadEndWarning("clear large tool output");
+				const warning = compactionDeadEndWarning("clear large tool output");
 				const entry = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
 				if (entry) {
 					entry.warning = warning;
@@ -3082,10 +3103,7 @@ export class SessionMaintenance {
 					});
 					return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
 				}
-				// No retry replaces the failed turn, so it stays the run's outcome for
-				// post-settle readers (print mode, task executor) instead of whatever
-				// assistant message preceded it.
-				if (!compactionResult.continuationScheduled) {
+				if (payloadRejection && !compactionResult.continuationScheduled) {
 					this.#host.retainTerminalFailure(assistantMessage);
 				}
 				return compactionResult;
@@ -3108,7 +3126,6 @@ export class SessionMaintenance {
 				});
 				return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
 			}
-			this.#host.retainTerminalFailure(assistantMessage);
 			return COMPACTION_CHECK_NONE;
 		}
 		// A context promotion can land while the failing call is already in
@@ -3168,27 +3185,17 @@ export class SessionMaintenance {
 		if (sameModel && !errorIsFromBeforeCompaction && assistantMessage.stopReason === "length") {
 			const incompleteCompactionSettings = this.#compactionSettings;
 			const incompleteContextTokens = calculateContextTokens(assistantMessage.usage);
-			// The cut output is dropped before the next request, so only the prompt
-			// counts against the configured trigger (#15870). Subtract the output from
-			// occupancy rather than reading prompt buckets: an authoritative
-			// `usage.contextTokens` (Cursor checkpoints) already includes this turn's
-			// output. Prompt + output still marks the window itself as what ran out
-			// (e.g. Anthropic `model_context_window_exceeded`), measured against the
-			// window's own prompt budget rather than a trigger the user may have set
-			// far lower.
-			const incompletePromptTokens = Math.max(0, incompleteContextTokens - assistantMessage.usage.output);
 			// Unknown windows keep compacting: there is no evidence the window had room.
 			const windowExhausted =
 				contextWindow <= 0 ||
-				incompletePromptTokens > resolveThresholdTokens(contextWindow, incompleteCompactionSettings) ||
-				incompleteContextTokens > promptBudgetTokens(contextWindow, incompleteCompactionSettings);
+				incompleteContextTokens > resolveThresholdTokens(contextWindow, incompleteCompactionSettings);
 			if (!windowExhausted && assistantTurnDelivered(assistantMessage)) {
 				// The output cap truncated a real deliverable with the window still open:
 				// neither a larger window nor compaction buys output room, and a retry
 				// would regenerate the same truncation. Keep it and let the user steer.
 				logger.warn("response.incomplete: output cap reached below compaction threshold; keeping truncated turn", {
 					model: `${assistantMessage.provider}/${assistantMessage.model}`,
-					promptTokens: incompletePromptTokens,
+					contextTokens: incompleteContextTokens,
 					outputTokens: assistantMessage.usage.output,
 				});
 				this.#host.emitNotice(
@@ -3278,7 +3285,7 @@ export class SessionMaintenance {
 					}
 					logger.debug("Retrying response.incomplete without compaction (below threshold)", {
 						model: `${assistantMessage.provider}/${assistantMessage.model}`,
-						promptTokens: incompletePromptTokens,
+						contextTokens: incompleteContextTokens,
 						attempt: this.#incompleteRecoveryAttempts,
 					});
 					this.#host.scheduleAgentContinue({ source: "incomplete-retry", delayMs: 100, generation });
@@ -4037,31 +4044,6 @@ export class SessionMaintenance {
 			...args,
 			details: { kind: "experimental-context-rollover", version: 1 },
 		});
-	}
-
-	#compactionDeadEndWarning(remedies: string): string {
-		const contextWindow = this.#model?.contextWindow ?? 0;
-		if (contextWindow > 0) {
-			const recoveryBand = Math.floor(
-				resolveThresholdTokens(contextWindow, this.#compactionSettings) * COMPACTION_RECOVERY_BAND,
-			);
-			const overhead = computeNonMessageTokens(
-				this.#host.nonMessageTokenSource(),
-				this.#tokenizer,
-				this.#host.settings.revision,
-			);
-			if (overhead > recoveryBand) {
-				return (
-					"Compaction cannot create headroom — pausing automatic maintenance. " +
-					"The system prompt and always-sent tool schemas alone exceed the recovery band; " +
-					"reduce fixed context or adjust compaction.modelThresholds."
-				);
-			}
-		}
-		return (
-			"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. " +
-			`The most recent turn alone is too large to reduce further; ${remedies} or switch to a larger-context model.`
-		);
 	}
 
 	/**
@@ -4983,7 +4965,7 @@ export class SessionMaintenance {
 							? (snapcompact.getPreservedArchive(frameRescueResult.preserveData)?.frames.length ?? 0)
 							: 0;
 					const deadEndWarning = noProgressDeadEnd
-						? this.#compactionDeadEndWarning(
+						? compactionDeadEndWarning(
 								this.#deadEndRemedies("shrink it (e.g. clear large tool output)", implicatedFrames),
 							)
 						: undefined;
@@ -5479,19 +5461,9 @@ export class SessionMaintenance {
 							// last candidate waits within the user's provider-wait cap
 							// (`retry.maxDelayMs`, 0 = uncapped); past it, the outer method
 							// cascade can still recover or report the failure (#15311).
-							// `retry.waitForUsageReset` opts into sleeping through a provider-
-							// stated usage-limit reset, as turn recovery does: only on the last
-							// candidate, only with the provider's own retry hint, and never
-							// longer than that hint.
-							const waitForUsageReset =
-								!hasMoreCandidates &&
-								retrySettings.waitForUsageReset === true &&
-								AIError.is(id, AIError.Flag.UsageLimit) &&
-								retryAfterMs !== undefined &&
-								delayMs <= retryAfterMs;
 							const maxAcceptableDelayMs = hasMoreCandidates
 								? 30_000
-								: retrySettings.maxDelayMs > 0 && !waitForUsageReset
+								: retrySettings.maxDelayMs > 0
 									? retrySettings.maxDelayMs
 									: Number.POSITIVE_INFINITY;
 							if (delayMs > maxAcceptableDelayMs) {
@@ -5778,7 +5750,7 @@ export class SessionMaintenance {
 			}
 		}
 
-		const deadEndWarning = noProgressDeadEnd ? this.#compactionDeadEndWarning("clear large tool output") : undefined;
+		const deadEndWarning = noProgressDeadEnd ? compactionDeadEndWarning("clear large tool output") : undefined;
 		if (deadEndWarning) {
 			// Stamp the divider: the compaction bar badges the dead-end and
 			// carries the full warning in its ctrl+o detail, so the pause

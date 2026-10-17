@@ -116,6 +116,7 @@ All non-header entries include:
 `SessionEntry` is the union of:
 
 - `message`
+- `tool_result_prune`
 - `model_usage`
 - `thinking_level_change`
 - `model_change`
@@ -131,6 +132,10 @@ All non-header entries include:
 - `credential_pin`
 - `session_init`
 - `mode_change`
+
+### `tool_result_prune`
+
+Append-only overlay written by automatic tool-result pruning. `targets[]` names earlier `message` entry ids and their replacement `notice`. It applies only on paths that contain it; the first overlay on the path wins per target. Its numeric `prunedAt` is copied to the projected tool result. Raw journal bytes and original tool payloads are never modified.
 
 ### `message`
 
@@ -472,8 +477,12 @@ Applied when header `version < 3`:
 
 - Missing or genuinely empty files initialize a new session at that exact path and materialize its header immediately. `SessionManager.open(..., { throwIfMissing: true })` instead rejects missing/empty input.
 - Non-empty data without a valid leading session header is rejected without modifying the file. An array-only `loadEntriesFromFile()` result of `[]` therefore does not distinguish empty from corrupt input; the manager uses `loadSessionFile()` diagnostics.
-- Valid files are loaded, migrated if needed, blob refs resolved, then indexed. Migrations, skipped malformed records, and loaded OpenAI replay sanitization mark the next persistence operation for a full rewrite.
+- File-backed resume streams JSONL into a journal-wide payload-free id/parent/type/UTF-8-byte-range index, migrates records while scanning, and resolves blobs only for the selected model/collapsed-display dependency closure. Compaction kept ranges, provider snapshot arrivals, rollover requests, pre-boundary replay settings, and context notes remain exact. Migrations, skipped malformed records, and loaded OpenAI replay sanitization mark the next persistence operation for a full rewrite.
 - A recorded cwd is adopted only when it is enterable. Otherwise runtime cwd stays at the launch/current directory while the transcript remains in its original location; workspace-root edits stay runtime-only until relocation.
+- Historical `getEntry`, branch, tree, transcript/export, and history reads may materialize the requested payloads, but the manager must not retain a full-history payload cache afterward. Branch switches release the prior selected context. Historical edits registered through `updateEntry()` remain retained until persistence; publication compares serialized revisions with the current registered record, including replacements made while a rewrite is in flight. Borrowed-read mutations alone are not registered updates. Assistant credential replay metadata refreshes from live entries. Scanning and demand reads share the same open source inode from the start of loading through atomic publication and relocation; valid final records without a newline remain readable.
+- Resume memory scales with the lightweight index, largest JSONL record, and selected context, not discarded historical payload bytes. The long-session acceptance probe measures opening plus model-context construction at peak RSS below 1.5 GB; a compacted synthetic journal must release demanded historical payloads after caller references and garbage collection clear, while its uncompacted negative control still retains its full active context.
+- Normal metadata consumers use oldest-to-newest `iterateEntries(type?)` or `iterateBranch(type?)` without retaining historical payloads; active maintenance uses the canonical `getContextBranch()` dependency closure. `loadSessionMessagesReadOnly()` shares resume migrations and context selection, loads only the collapsed transcript closure, and never acquires a writer or changes the journal. Full transcript/tree/export demand remains available.
+- All public entries, nested payloads, branch views, trees, contexts, and exports are plain data compatible with direct `structuredClone()` and structural equality. Read-only demand uses weak retention; a producer changing an entry must call `SessionManager.updateEntry(entry)` synchronously before yielding, then `rewriteEntries()` to persist it. The canonical index retains announced dirty revisions through awaits and garbage collection and releases them only after the corresponding bytes are durably published. Snapshot copies use `structuredClone()` directly, without proxy-unwrapping aliases.
 
 ## Tree and Leaf Semantics
 
@@ -485,9 +494,9 @@ The underlying model is append-only tree + mutable leaf pointer:
 - `resetLeaf()` sets `leafId = null`; next append creates a new root entry (`parentId: null`).
 - `branchWithSummary()` sets leaf to branch target and appends a `branch_summary` entry.
 
-`getEntries()` returns all non-header entries in insertion order. There is no separate persisted leaf field: loading rebuilds the leaf from the last physical entry. Pointer-only `branch()`/`resetLeaf()` changes therefore need a subsequent append to survive reload. `discardEntryDurably()` appends a metadata branch marker and rewrites the journal to make a discarded path durable.
+`getEntries()` returns raw non-header entries in insertion order. `getBranch()` returns the selected root-to-leaf path with `tool_result_prune` overlays applied, leaving raw entries unchanged. There is no separate persisted leaf field: loading rebuilds the leaf from the last physical entry. Pointer-only `branch()`/`resetLeaf()` changes therefore need a subsequent append to survive reload. `discardEntryDurably()` re-attaches `service_tier_change` and `tool_result_prune` metadata children, appends a metadata branch marker, and rewrites the journal to make a discarded path durable.
 
-`createBranchedSession(leafId, { copyArtifacts? })` creates a new identity containing only the selected root-to-leaf path. It drops old label records and recreates the resolved labels for retained entries. Unlike a full fork, it does not inherit the provider prompt-cache key. With `copyArtifacts` (used by `AgentSession.fork(entryId)`), the artifacts directory is copied in the background and the new artifact manager waits for the copy before allocating ids or resolving `artifact://`, as for a move to a sibling file.
+`createBranchedSession(leafId, { copyArtifacts? })` creates a new identity containing only the selected raw root-to-leaf path, preserving entry ids and prune target references so replay applies the same overlays. It drops old label records and recreates the resolved labels for retained entries. Unlike a full fork, it does not inherit the provider prompt-cache key. With `copyArtifacts` (used by `AgentSession.fork(entryId)`), the artifacts directory is copied in the background and the new artifact manager waits for the copy before allocating ids or resolving `artifact://`, as for a move to a sibling file.
 
 ## Context Reconstruction (`buildSessionContext`)
 
@@ -510,7 +519,7 @@ Algorithm:
    - a later `reset_boundary` hides everything through that boundary from model context and collapsed live transcript
    - otherwise the latest compaction emits its summary plus kept/post-compaction messages (provider-native replacement history may supply the kept model context)
    - full transcript export retains pre-reset history and renders compactions chronologically
-5. Convert `message`, `custom_message`, and `branch_summary` entries into messages. Other entry types only affect replay state or metadata.
+5. Apply `tool_result_prune` overlays on the path, then convert `message`, `custom_message`, and `branch_summary` entries into messages. The overlay itself emits no message; other entry types only affect replay state or metadata.
 6. Remove dangling tool calls from replay (unless explicitly retained for a mid-turn transcript), neutralizing protected reasoning metadata on rewritten turns; drop unsafe aborted/error assistant turns and their paired tool results from model context.
 
 ## Persistence Guarantees and Failure Model
@@ -544,6 +553,7 @@ Ordinary completed appends update memory and local file storage synchronously on
 - On the file and memory backends, a `SessionWriteConflictError` on durable bytes during a full rewrite means a writer without the lease (an older omp, an external tool) changed the file. The manager reads it back, keeps the entries it lacks as a side branch (the active leaf stays its own), and retries against the size it read, up to three times per rewrite. If that writer changes the file inside every retry, the session leaves the file to it and moves to a sibling (`reason: "contested"`) rather than re-serializing the transcript on every later write. A deleted file is recreated; a file that no longer reads as this session is left untouched and the session moves to a sibling. Indexed backends keep reporting the conflict, since there it can be the manager racing its own unconfirmed publish.
 - `appendEntriesAtomically()` groups a synchronous callback's appends into one atomic publication. Failure rolls back staged entries and repairs retained concurrent work.
 - Rewrites serve renames, entry rewrites, migrations/sanitization, move/fork, and recovery. Session-title changes normally update the fixed-width title slot and append a `title_change` audit entry instead of rewriting the body.
+- Automatic tool-result pruning appends one `tool_result_prune` entry and awaits ordinary `flush()`. It never rewrites or replaces an already-materialized journal: original bytes remain identical, the inode is preserved, and ordinary turns write O(new entries) bytes. Rare recovery rewrites after a latched append failure retain the same overlay decision.
 
 ### Error behavior
 

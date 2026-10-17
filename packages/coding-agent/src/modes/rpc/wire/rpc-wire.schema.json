@@ -29,7 +29,22 @@
 				"unwrap": null,
 				"timeoutMs": null,
 				"completion": "prompt_result",
-				"clientOmit": []
+				"clientOmit": [
+					"options"
+				]
+			},
+			{
+				"name": "prompt_custom",
+				"doc": "Submit an attributed custom message through the owner admission pipeline.",
+				"params": "PromptCustomParams",
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": "prompt_result",
+				"clientOmit": [
+					"options"
+				]
 			},
 			{
 				"name": "steer",
@@ -78,13 +93,15 @@
 			{
 				"name": "abort",
 				"doc": "Abort the current run.",
-				"params": null,
+				"params": "AbortParams",
 				"result": null,
 				"nullable": false,
 				"unwrap": null,
 				"timeoutMs": null,
 				"completion": null,
-				"clientOmit": []
+				"clientOmit": [
+					"options"
+				]
 			},
 			{
 				"name": "abort_and_prompt",
@@ -131,9 +148,66 @@
 				"clientOmit": []
 			},
 			{
-				"name": "get_state",
-				"doc": "Snapshot the session state.",
+				"name": "begin_dispose",
+				"doc": "Stop admitting new owner work before explicit shutdown.",
 				"params": null,
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "dispose_session",
+				"doc": "Dispose the runtime owner; view detachment does not call this.",
+				"params": "DisposeSessionParams",
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": [
+					"options"
+				]
+			},
+			{
+				"name": "checkpoint_session",
+				"doc": "Close and seal the owner journal after restart admission.",
+				"params": null,
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "save_draft",
+				"doc": "Persist unsent editor text with the runtime session writer.",
+				"params": "SaveDraftParams",
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "consume_draft",
+				"doc": "Restore and remove the unsent editor draft once.",
+				"params": null,
+				"result": "ConsumeDraftResult",
+				"nullable": false,
+				"unwrap": "text",
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "get_state",
+				"doc": "Snapshot the session state, optionally including presentation without opening a view writer.",
+				"params": "GetStateParams",
 				"result": "SessionState",
 				"nullable": false,
 				"unwrap": null,
@@ -2348,6 +2422,144 @@
 			],
 			"description": "Displayable queue-chip text for pending user-authored messages; accepted verbatim by `remove_queued_message`."
 		},
+		"CustomPromptMessage": {
+			"type": "object",
+			"properties": {
+				"customType": {
+					"type": "string"
+				},
+				"content": {
+					"$ref": "#/$defs/MessageContent"
+				},
+				"display": {
+					"type": "boolean"
+				},
+				"details": {},
+				"attribution": {
+					"enum": [
+						"user",
+						"agent"
+					],
+					"type": "string"
+				}
+			},
+			"required": [
+				"customType",
+				"content",
+				"display"
+			],
+			"x-open": true
+		},
+		"CustomPromptOptions": {
+			"type": "object",
+			"properties": {
+				"streamingBehavior": {
+					"enum": [
+						"steer",
+						"followUp",
+						"aside"
+					],
+					"type": "string"
+				},
+				"toolChoice": {},
+				"queueChipText": {
+					"type": "string"
+				},
+				"queueOnly": {
+					"type": "boolean"
+				}
+			}
+		},
+		"SessionPromptOptions": {
+			"type": "object",
+			"properties": {
+				"expandPromptTemplates": {
+					"type": "boolean"
+				},
+				"runCommands": {
+					"type": "boolean"
+				},
+				"throwOnDrop": {
+					"type": "boolean"
+				},
+				"images": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/ImageContent"
+					}
+				},
+				"streamingBehavior": {
+					"enum": [
+						"steer",
+						"followUp",
+						"aside"
+					],
+					"type": "string"
+				},
+				"toolChoice": {},
+				"synthetic": {
+					"type": "boolean"
+				},
+				"userInitiated": {
+					"type": "boolean"
+				},
+				"attribution": {
+					"enum": [
+						"user",
+						"agent"
+					],
+					"type": "string"
+				},
+				"skipCompactionCheck": {
+					"type": "boolean"
+				},
+				"solutionSpace": {
+					"type": "string"
+				}
+			}
+		},
+		"SessionDisposeOptions": {
+			"type": "object",
+			"properties": {
+				"mnemopiConsolidateTimeoutMs": {
+					"type": "number"
+				},
+				"drainTimeoutMs": {
+					"type": "number"
+				},
+				"reason": {
+					"enum": [
+						"pre_exit",
+						"exit",
+						"sigint",
+						"sigterm",
+						"sighup",
+						"uncaught_exception",
+						"unhandled_rejection",
+						"manual"
+					],
+					"type": "string"
+				}
+			}
+		},
+		"SessionAbortOptions": {
+			"type": "object",
+			"properties": {
+				"goalReason": {
+					"enum": [
+						"interrupted",
+						"internal"
+					],
+					"type": "string"
+				},
+				"reason": {
+					"type": "string"
+				},
+				"preserveCompaction": {
+					"type": "boolean"
+				}
+			}
+		},
 		"ToolDescriptor": {
 			"type": "object",
 			"properties": {
@@ -2525,11 +2737,73 @@
 			],
 			"description": "Provider-neutral state of an account past its usage limit, discriminated by `stage`."
 		},
+		"InteractiveViewOptions": {
+			"type": "object",
+			"properties": {
+				"collapseCompactedHistory": {
+					"type": "boolean"
+				}
+			},
+			"x-open": true
+		},
+		"InteractiveViewSnapshot": {
+			"type": "object",
+			"properties": {
+				"sessionId": {
+					"type": "string"
+				},
+				"context": {
+					"type": "object",
+					"properties": {},
+					"additionalProperties": {}
+				},
+				"streamMessage": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/AgentMessage"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"pendingToolCallIds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"isStreaming": {
+					"type": "boolean"
+				},
+				"entryCount": {
+					"type": "number"
+				},
+				"compactionCount": {
+					"type": "number"
+				},
+				"sessionFile": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"sessionId",
+				"context",
+				"streamMessage",
+				"pendingToolCallIds",
+				"isStreaming",
+				"entryCount",
+				"compactionCount"
+			]
+		},
 		"SessionState": {
 			"type": "object",
 			"properties": {
 				"sessionId": {
 					"type": "string"
+				},
+				"view": {
+					"$ref": "#/$defs/InteractiveViewSnapshot"
 				},
 				"model": {
 					"$ref": "#/$defs/ModelInfo"
@@ -2542,6 +2816,10 @@
 					"default": false
 				},
 				"isCompacting": {
+					"type": "boolean",
+					"default": false
+				},
+				"hasPostPromptWork": {
 					"type": "boolean",
 					"default": false
 				},
@@ -5824,6 +6102,23 @@
 				},
 				"streamingBehavior": {
 					"$ref": "#/$defs/StreamingBehavior"
+				},
+				"options": {
+					"$ref": "#/$defs/SessionPromptOptions"
+				}
+			},
+			"required": [
+				"message"
+			]
+		},
+		"PromptCustomParams": {
+			"type": "object",
+			"properties": {
+				"message": {
+					"$ref": "#/$defs/CustomPromptMessage"
+				},
+				"options": {
+					"$ref": "#/$defs/CustomPromptOptions"
 				}
 			},
 			"required": [
@@ -5892,6 +6187,14 @@
 				"message"
 			]
 		},
+		"AbortParams": {
+			"type": "object",
+			"properties": {
+				"options": {
+					"$ref": "#/$defs/SessionAbortOptions"
+				}
+			}
+		},
 		"AbortAndPromptParams": {
 			"type": "object",
 			"properties": {
@@ -5934,6 +6237,51 @@
 			"required": [
 				"sessionDir"
 			]
+		},
+		"DisposeSessionParams": {
+			"type": "object",
+			"properties": {
+				"options": {
+					"$ref": "#/$defs/SessionDisposeOptions"
+				}
+			}
+		},
+		"SaveDraftParams": {
+			"type": "object",
+			"properties": {
+				"text": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"text"
+			]
+		},
+		"ConsumeDraftResult": {
+			"type": "object",
+			"properties": {
+				"text": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": [
+				"text"
+			]
+		},
+		"GetStateParams": {
+			"type": "object",
+			"properties": {
+				"view": {
+					"$ref": "#/$defs/InteractiveViewOptions"
+				}
+			}
 		},
 		"SetFastModeParams": {
 			"type": "object",

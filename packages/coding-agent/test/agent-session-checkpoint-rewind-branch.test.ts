@@ -881,6 +881,9 @@ describe("AgentSession checkpoint rewind branch context", () => {
 		expect(restored).toBeDefined();
 		expect(restored?.checkpointEntryId).toBe(checkpointEntry.id);
 		expect(restored?.startedAt).toBe(startedAt);
+		expect(restored?.checkpointMessageCount).toBe(
+			branch.slice(0, branch.indexOf(checkpointEntry) + 1).filter(entry => entry.type === "message").length,
+		);
 		expect(reloadedSession.getLastCompletedRewind()).toBeUndefined();
 
 		// The rewind tool must accept the request now that the active checkpoint

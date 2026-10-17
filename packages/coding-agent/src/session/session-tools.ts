@@ -336,12 +336,6 @@ export class SessionTools {
 	/** Base-prompt digest each primary reply with provider output was produced under. */
 	readonly #replyPromptDigests = new WeakMap<AgentMessage, string>();
 	/**
-	 * Newest digest found in a branch view and how much of it was scanned. The
-	 * session manager's memoized view only grows in place, so a later read of
-	 * the same array scans just the appended entries.
-	 */
-	#recordedDigestScan: { branch: readonly SessionEntry[]; scanned: number; digest: string | undefined } | undefined;
-	/**
 	 * Dynamic (`xd://`) devices the model has already been told are mounted.
 	 * Seeded lazily from persisted history on resume (see
 	 * {@link #ensureAnnouncedMountsSeeded}) and updated as notices are emitted, so
@@ -1276,26 +1270,10 @@ export class SessionTools {
 
 	/** Digest of the base prompt the current branch's newest reply with provider output was produced under. */
 	recordedPromptDigest(): string | undefined {
-		const branch = this.#host.sessionManager.getBranchView();
-		const scan = this.#recordedDigestScan;
-		if (scan?.branch === branch) {
-			for (let index = scan.scanned; index < branch.length; index++) {
-				const digest = promptDigestOfEntry(branch[index]);
-				if (digest !== null) scan.digest = digest;
-			}
-			scan.scanned = branch.length;
-			return scan.digest;
-		}
-		let digest: string | undefined;
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const found = promptDigestOfEntry(branch[index]);
-			if (found !== null) {
-				digest = found;
-				break;
-			}
-		}
-		this.#recordedDigestScan = { branch, scanned: branch.length, digest };
-		return digest;
+		const entry = this.#host.sessionManager.getLatestBranchMatching(
+			metadata => metadata.type === "custom" && metadata.customType === SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE,
+		);
+		return entry ? (promptDigestOfEntry(entry) ?? undefined) : undefined;
 	}
 
 	/**
@@ -1346,7 +1324,6 @@ export class SessionTools {
 	/** Drops retained transcript references when the session is disposed. */
 	releaseRestoredTranscript(): void {
 		this.#restoredTranscript = undefined;
-		this.#recordedDigestScan = undefined;
 	}
 
 	/**
