@@ -442,6 +442,22 @@ export function collectPendingToolCalls(entries: Iterable<SessionEntry>): Pendin
 	return [...pending.values()].map(({ key: _key, ...toolCall }) => toolCall);
 }
 
+/** Only the latest assistant and subsequent results/markers affect pending calls. */
+export function collectSessionPendingToolCalls(
+	session: Pick<SessionManager, "iterateBranchMatchingNewestFirst">,
+): PendingToolCallDiagnostic[] {
+	const entries: SessionEntry[] = [];
+	for (const entry of session.iterateBranchMatchingNewestFirst(metadata =>
+		metadata.type === "message"
+			? metadata.messageRole === "assistant" || metadata.messageRole === "toolResult"
+			: metadata.type === "custom" && metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE,
+	)) {
+		entries.push(entry);
+		if (entry.type === "message" && entry.message.role === "assistant") break;
+	}
+	return collectPendingToolCalls(entries.reverse());
+}
+
 function appendArgumentSummary(parts: string[], args: unknown): void {
 	if (!isObject(args)) return;
 	const command = args.command;
@@ -462,7 +478,16 @@ function formatPendingToolCall(call: PendingToolCallDiagnostic): string {
 
 /** Builds the resume warning shown when a prior branch ended mid-tool-call. */
 export function describePendingToolCalls(entries: Iterable<SessionEntry>): string | undefined {
-	const pending = collectPendingToolCalls(entries);
+	return formatPendingToolCalls(collectPendingToolCalls(entries));
+}
+
+export function describeSessionPendingToolCalls(
+	session: Pick<SessionManager, "iterateBranchMatchingNewestFirst">,
+): string | undefined {
+	return formatPendingToolCalls(collectSessionPendingToolCalls(session));
+}
+
+function formatPendingToolCalls(pending: PendingToolCallDiagnostic[]): string | undefined {
 	if (pending.length === 0) return undefined;
 	const formatted = pending.map(formatPendingToolCall).join(", ");
 	const noun = pending.length === 1 ? "tool call" : "tool calls";
