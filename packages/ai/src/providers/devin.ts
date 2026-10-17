@@ -53,6 +53,7 @@ import type {
 import { normalizeSystemPrompts } from "../utils";
 import { isDemotedThinking } from "../utils/block-symbols";
 import { deterministicUuid } from "../utils/deterministic-id";
+import { isSubagentElapsedNote } from "../utils/subagent-elapsed-note";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { normalizeSchemaForGoogle, toolWireSchema } from "../utils/schema";
 import {
@@ -245,8 +246,10 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 				// Foreign ids (cross-model calls and their results alike): Responses
 				// composites (`call_id|item_id`) keep their wire `call_id`; opaque ids
 				// from other APIs keep every segment. Both are then sanitized and capped.
+				// The subagent elapsed note is advisory scaffolding: left in the turn it would
+				// be routed on and replayed as the active user prompt.
 				messages: transformMessages(
-					context.messages,
+					context.messages.filter(message => !isSubagentElapsedNote(message)),
 					model,
 					(id, _target, source) =>
 						normalizeToolCallId(

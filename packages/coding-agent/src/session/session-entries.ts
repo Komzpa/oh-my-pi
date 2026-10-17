@@ -255,6 +255,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	systemPrompt: string[] | string;
 	/** Initial task/user message */
 	task: string;
+	/** Original assignment start time in epoch milliseconds; absent on legacy sessions. */
+	assignmentStartedAt?: number;
 	/** Tools available to the agent */
 	tools: string[];
 	/** Agent definition name (for example `scout` or `reviewer`). */
