@@ -11,8 +11,8 @@ import {
  * Layering:
  * - `matchModel` is the single matching engine. Order: exact `provider/id`
  *   reference (with variant-alias and OpenRouter routed/date fallbacks) →
- *   exact bare id → retired variant alias → provider-scoped fuzzy → substring
- *   with alias-vs-dated pick.
+ *   exact bare id → retired variant alias → provider-scoped token containment →
+ *   substring with alias-vs-dated pick for bare patterns.
  * - `parseModelPatternWithContext`/`parseModelPattern` layer the selector
  *   grammar on top: trailing `:level` thinking suffixes (`splitThinkingSuffix`)
  *   and `@upstream` provider routing (`splitUpstreamRouting`).
@@ -727,7 +727,7 @@ function findExactModelReferenceMatch(modelReference: string, availableModels: M
  *    fallbacks included),
  * 2. exact bare id (preference-ranked),
  * 3. retired effort-tier variant alias (collapsed catalog entries),
- * 4. provider-scoped fuzzy match,
+ * 4. provider-scoped fuzzy match that only adds model-id tokens,
  * 5. substring match with the alias-vs-dated pick.
  * Returns the matched model or undefined if no match found.
  *
@@ -784,56 +784,57 @@ function matchModel(
 		}
 	}
 
-	// Exact phases exhausted. Fuzzy/substring fallbacks (below) subsequence-match
-	// the whole pattern and would let a trailing `:<level>` thinking suffix bleed
-	// into a longer sibling id; callers that still hold an unstripped suffix ask
-	// for exact-only so the suffix is split off before any fuzzy attempt.
+	// Strip thinking suffixes before attempting any non-exact match.
 	if (options?.exactOnly) {
 		return undefined;
 	}
-	// Check for provider/modelId format — fuzzy match within provider only.
 	const slashIndex = modelPattern.indexOf("/");
 	if (slashIndex !== -1) {
-		const provider = modelPattern.substring(0, slashIndex);
-		const modelId = modelPattern.substring(slashIndex + 1);
-		const lowerProvider = provider.toLowerCase();
-		const providerModels = availableModels.filter(m => m.provider.toLowerCase() === lowerProvider);
-		if (providerModels.length === 0) {
-			// The prefix is not a known provider in this candidate set, so treat the
-			// slash as part of the raw model ID and continue with generic matching.
-		} else {
-			// Let the routing fallback apply `@upstream` before fuzzy matching can consume the
-			// slug — but only for aggregator providers (OpenRouter / Vercel Gateway). Other
-			// providers have ids that legitimately end in `@` (Vertex `claude-opus-4-8@default`),
-			// and the fallback never routes them, so they must keep fuzzy matching.
-			if (splitUpstreamRouting(modelId) && providerModels.some(supportsUpstreamRouting)) {
-				return undefined;
-			}
-			const scored = providerModels
-				.map(model => ({ model, match: fuzzyMatch(modelId, model.id) }))
-				.filter(entry => entry.match.matches);
-			if (scored.length === 0) {
-				return undefined;
-			}
-
-			scored.sort((a, b) => {
-				if (a.match.score !== b.match.score) return a.match.score - b.match.score;
-				const aKey = formatModelString(a.model);
-				const bKey = formatModelString(b.model);
-				const aUsage = context.modelUsageRank.get(aKey) ?? Number.POSITIVE_INFINITY;
-				const bUsage = context.modelUsageRank.get(bKey) ?? Number.POSITIVE_INFINITY;
-				if (aUsage !== bUsage) return aUsage - bUsage;
-
-				const aProviderUsage = context.providerUsageRank.get(a.model.provider) ?? Number.POSITIVE_INFINITY;
-				const bProviderUsage = context.providerUsageRank.get(b.model.provider) ?? Number.POSITIVE_INFINITY;
-				if (aProviderUsage !== bProviderUsage) return aProviderUsage - bProviderUsage;
-
-				const aOrder = context.modelOrder.get(aKey) ?? 0;
-				const bOrder = context.modelOrder.get(bKey) ?? 0;
-				return aOrder - bOrder;
-			});
-			return scored[0]?.model;
+		const provider = modelPattern.substring(0, slashIndex).trim().toLowerCase();
+		const modelId = modelPattern.substring(slashIndex + 1).trim();
+		const providerModels = availableModels.filter(m => m.provider.toLowerCase() === provider);
+		if (splitUpstreamRouting(modelId) && providerModels.some(supportsUpstreamRouting)) {
+			return undefined;
 		}
+		const requestedTokens = modelId.toLowerCase().match(/\d+|[^\d./:@-]+/g) ?? [];
+		if (requestedTokens.length === 0) return undefined;
+		const scored = providerModels
+			.filter(model => {
+				const candidateTokens = model.id.toLowerCase().match(/\d+|[^\d./:@-]+/g) ?? [];
+				let cursor = 0;
+				for (const requestedToken of requestedTokens) {
+					while (cursor < candidateTokens.length && candidateTokens[cursor] !== requestedToken) {
+						// Named revision digits cannot skip an earlier, different revision:
+						// haiku-5 must not select haiku-4-5. Text shorthand may skip digits.
+						if (/^\d+$/.test(requestedToken) && /^\d+$/.test(candidateTokens[cursor]!)) return false;
+						cursor++;
+					}
+					if (cursor === candidateTokens.length) return false;
+					cursor++;
+				}
+				return true;
+			})
+			.map(model => ({ model, match: fuzzyMatch(modelId, model.id) }))
+			.filter(entry => entry.match.matches);
+		if (scored.length === 0) return undefined;
+
+		scored.sort((a, b) => {
+			if (a.match.score !== b.match.score) return a.match.score - b.match.score;
+			const aKey = formatModelString(a.model);
+			const bKey = formatModelString(b.model);
+			const aUsage = context.modelUsageRank.get(aKey) ?? Number.POSITIVE_INFINITY;
+			const bUsage = context.modelUsageRank.get(bKey) ?? Number.POSITIVE_INFINITY;
+			if (aUsage !== bUsage) return aUsage - bUsage;
+
+			const aProviderUsage = context.providerUsageRank.get(a.model.provider) ?? Number.POSITIVE_INFINITY;
+			const bProviderUsage = context.providerUsageRank.get(b.model.provider) ?? Number.POSITIVE_INFINITY;
+			if (aProviderUsage !== bProviderUsage) return aProviderUsage - bProviderUsage;
+
+			const aOrder = context.modelOrder.get(aKey) ?? 0;
+			const bOrder = context.modelOrder.get(bKey) ?? 0;
+			return aOrder - bOrder;
+		});
+		return scored[0]?.model;
 	}
 
 	// No exact match - fall back to partial matching
