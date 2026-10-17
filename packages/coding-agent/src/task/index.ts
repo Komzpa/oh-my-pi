@@ -1406,6 +1406,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						progress.advisor = nextProgress.advisor ?? progress.advisor;
 						progress.completionPercent = nextProgress.completionPercent ?? progress.completionPercent;
 						progress.resolvedModelRoute = nextProgress.resolvedModelRoute ?? progress.resolvedModelRoute;
+						progress.firstTurnModel = nextProgress.firstTurnModel ?? progress.firstTurnModel;
+						progress.fallbacks = nextProgress.fallbacks ?? progress.fallbacks;
 						progress.tokens = nextProgress.tokens;
 						progress.requests = nextProgress.requests;
 						progress.contextTokens = nextProgress.contextTokens;
@@ -1494,6 +1496,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					progress.modelRole = singleResult?.modelRole ?? progress.modelRole;
 					progress.advisor = singleResult?.advisor ?? progress.advisor;
 					progress.resolvedModelRoute = singleResult?.resolvedModelRoute ?? progress.resolvedModelRoute;
+					progress.firstTurnModel = singleResult?.firstTurnModel;
+					progress.fallbacks = singleResult?.fallbacks;
 					if (singleResult?.resolvedModel) {
 						progress.resolvedModel = singleResult.resolvedModel;
 						progress.resolvedModelIdentity = singleResult.resolvedModelIdentity;
