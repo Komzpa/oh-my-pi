@@ -4656,8 +4656,8 @@ export class InteractiveMode implements InteractiveModeContext {
 						),
 					);
 		for (const entry of selection) {
-			const previous = segments.at(-1);
-			if (previous?.phaseIndex === entry.phaseIndex) previous.tasks.push(entry.task);
+			const previous = segments.find(segment => segment.phaseIndex === entry.phaseIndex);
+			if (previous) previous.tasks.push(entry.task);
 			else segments.push({ phase: entry.phase, phaseIndex: entry.phaseIndex, tasks: [entry.task] });
 		}
 		const totalOpen = selection.filter(entry => !isClosedTodo(entry.task)).length;
