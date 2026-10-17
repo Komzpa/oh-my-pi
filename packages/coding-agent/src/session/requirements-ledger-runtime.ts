@@ -1,4 +1,8 @@
-import { matchingRequirementBranch, type RequirementEntryMetadata } from "./requirements-branch-selection";
+import {
+	matchingRequirementBranch,
+	matchingRequirementBranchNewestFirst,
+	type RequirementEntryMetadata,
+} from "./requirements-branch-selection";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -27,6 +31,7 @@ import {
 	evaluateRequirementDoneGate,
 	type RequirementVerdict,
 	parseRequirementReceipt,
+	parseRequirementsLedger,
 	requirementAuditSnapshot,
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 	requirementSourceDigest,
@@ -936,16 +941,38 @@ export class RequirementsLedgerRuntime {
 	}
 
 	#restorePendingAuditors(): void {
-		const branch = matchingRequirementBranch(
+		const sessionId = this.#sessionId();
+		let requirements: RequirementLedgerItem[] = [];
+		let assignmentEntry: import("./session-entries").SessionEntry | undefined;
+		let foundLedger = false;
+		for (const entry of matchingRequirementBranchNewestFirst(
 			this.#host.sessionManager,
 			metadata =>
-				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
-				(metadata.type === "custom" && metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE),
-		);
+				metadata.type === "custom" &&
+				(metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE ||
+					metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE),
+		)) {
+			if (entry.type !== "custom") continue;
+			if (!foundLedger && entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) {
+				const ledger = parseRequirementsLedger(entry.data);
+				if (ledger) {
+					requirements = ledger.requirements;
+					foundLedger = true;
+				}
+			}
+			if (
+				!assignmentEntry &&
+				entry.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE &&
+				isRecord(entry.data) &&
+				entry.data.sessionId === sessionId
+			)
+				assignmentEntry = entry;
+			if (foundLedger && assignmentEntry) break;
+		}
 		const restored = getPersistedRequirementAuditorAssignments(
-			branch,
-			this.#sessionId(),
-			getLatestRequirements(branch),
+			assignmentEntry ? [assignmentEntry] : [],
+			sessionId,
+			requirements,
 		);
 		this.#pendingAuditors.clear();
 		for (const [workerId, assignment] of restored) this.#pendingAuditors.set(workerId, assignment);

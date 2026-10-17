@@ -97,6 +97,50 @@ function fixture(
 	return { cwd, manager, runtime, notices, gate: () => gate };
 }
 
+// A long session can contain thousands of obsolete snapshots. Restoring pending
+// work needs the newest valid ledger and the newest assignment for this session.
+it.each([false, true])(
+	"restores pending auditors without decoding obsolete snapshots (malformed tail: %s)",
+	malformed => {
+		const { cwd, manager } = fixture();
+		try {
+			manager.appendCustomEntry("requirements_auditor_assignments", {
+				version: 1,
+				sessionId: manager.getHeader()!.id,
+				jobs: [],
+			});
+			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: 1, requirements: [] });
+			const selected = manager.getBranch().slice(-2).reverse();
+			if (malformed) {
+				manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: -1 });
+				manager.appendCustomEntry("requirements_auditor_assignments", { version: 1, sessionId: "other", jobs: [] });
+				selected.unshift(...manager.getBranch().slice(-2).reverse());
+			}
+			let decoded = 0;
+			Object.defineProperty(manager, "iterateBranchMatchingNewestFirst", {
+				value: function* () {
+					for (const entry of selected) {
+						decoded++;
+						yield entry;
+					}
+					throw new Error("obsolete snapshots must not be decoded after current snapshots were found");
+				},
+			});
+			new RequirementsLedgerRuntime({
+				agent: {} as never,
+				agentKind: () => "main",
+				cwd: () => cwd,
+				sessionManager: manager,
+				onSettledAssistantMessage: () => {},
+				setPublicationGate: () => {},
+			});
+			expect(decoded).toBe(malformed ? 4 : 2);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	},
+);
+
 function receiptTable(head: string, evidence = "exercised the build"): string {
 	return [
 		"| id | raw words | verdict | evidence | artifact identity |",
