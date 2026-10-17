@@ -82,6 +82,9 @@
 - Removed the built-in `rs-parking-lot` rule; Rust edits using `std::sync::{Mutex, RwLock}` with `.lock().unwrap()` are no longer steered to `parking_lot`
 
 ## [18.11.2] - 2026-10-16
+### Fixed: read-only agent replies
+
+- Read-only agents can reply to lead and peer messages through active `write` (`agent://<id>` messages and `agent://all` broadcasts), with their own ID and peer roster in the prompt. Upstream device dispatch, cancellation, and session-local scratch permissions remain available; filesystem writes outside that scratch and `edit` remain blocked. Restricted (`restrictToolNames`) sessions receive no synthetic write, and a runtime full `write` grant lifts the restriction ([#110](https://github.com/Komzpa/oh-my-pi/pull/110)).
 
 ### Added
 
