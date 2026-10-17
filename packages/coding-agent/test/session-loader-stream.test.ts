@@ -393,6 +393,8 @@ describe("loadEntriesFromFileStream (Bun.JSONL parity)", () => {
 
 		expect(entryIds(visited)).toEqual(["s1"]);
 		expect(malformedRecords).toBe(1);
+	});
+
 	it("keeps only the first JSON value of a physical line that holds two values, then resumes on the next line", async () => {
 		const first = JSON.stringify(msg("p1", "s1", "first"));
 		const second = JSON.stringify(msg("p2", "p1", "second"));

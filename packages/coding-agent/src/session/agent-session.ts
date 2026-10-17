@@ -443,6 +443,7 @@ import type {
 } from "./session-context";
 import {
 	buildSessionContext,
+	createRestartNoticeFilter,
 	getRestorableSessionModels,
 	isTranscriptEntry,
 } from "./session-context";
