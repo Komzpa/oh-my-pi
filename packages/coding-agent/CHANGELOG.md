@@ -270,6 +270,13 @@
 - Fixed isolated tasks failing on linked worktrees with initialized recursive submodules and leaving updated submodule pins unreachable after cleanup ([#15457](https://github.com/can1357/oh-my-pi/issues/15457))
 - Fixed `/tan` missing the parent's prompt cache by advertising `xd://` tools top-level and omitting `ask` ([#15578](https://github.com/can1357/oh-my-pi/issues/15578)).
 
+### Fixed: hashline edit correctness
+
+- The hashline `edit` tool rejects malformed operation headers such as `PUT 351*=357` with a parse error naming the line instead of inserting them (and their bodies) verbatim as payload; body rows start with `+`. The rejection is deferred past a half-typed final streaming header, and the echoed row is length-bounded.
+- Fixed hashline `edit` rejecting a fresh snapshot tag when the tag reached the snapshot store in non-uppercase form; snapshot lookup and seen-line recording now compare tags case-insensitively.
+- Fixed `PUT N*`/`CUT N*` refusing multi-line openers in QML files (such as `Item {` in `qt/tests/*.qml`) as unsupported syntax: QML has no tree-sitter grammar, so its brace blocks are now resolved by brace matching, and `PUT >N*` lands as a sibling after the block.
+- Fixed `PUT >N`/`PUT >N*` anchored on a closing line sliding a shallower body past the enclosing closer (for example a `private:` block landing after the class closer, producing invalid C++): inserts anchored on structural closers now stay at the specified gap.
+
 ## [18.10.4] - 2026-10-13
 
 ### Added
