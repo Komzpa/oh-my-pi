@@ -1738,6 +1738,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#agentRegistrySubscriptionTarget?: AgentHubRegistry;
 	#subagentBadgeKey = "";
 	#subagentHudKey = "";
+	#observerPaintKey = "";
 	#subagentSessionCosts = new WeakMap<object, AgentCostSnapshot>();
 	#subagentCostHydratedRoot?: string;
 	#mcpStatusOrder: string[] = [];
@@ -4249,13 +4250,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#flushObserverUiSync(): void {
-		let changed = this.syncRunningSubagentBadge({ requestRender: false });
+		this.syncRunningSubagentBadge({ requestRender: false });
 		if (this.#observerUiSyncNeedsTodoReconcile) {
 			this.#observerUiSyncNeedsTodoReconcile = false;
 			this.#reconcileTodosWithSubagents();
 			this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
 			this.#renderTodoList();
-			changed = true;
 		} else if (this.#getActiveSubagentDescriptions().join("\n") !== this.#todoHudSubagentKey) {
 			// Progress-only ticks (10 Hz while subagents run) cannot change the
 			// todo phases or their persisted visibility — re-syncing would also
@@ -4263,10 +4263,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			// subagent highlight depends on them, so repaint just when the active
 			// descriptions change.
 			this.#renderTodoList();
-			changed = true;
 		}
-		changed = this.#renderSubagentList() || changed;
-		if (changed) this.ui.requestRender();
+		this.#renderSubagentList();
+		this.#requestObserverRenderIfChanged();
 	}
 
 	#cancelObserverUiSyncTimer(): void {
@@ -4599,23 +4598,22 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * appear and advance, so a repaint is armed for when the marker first shows
 	 * and then once a second while a listed agent stays mid-call.
 	 */
-	#renderSubagentList(): boolean {
+	#renderSubagentList(): void {
 		this.#cancelSubagentPreviewTick();
 		const view = this.#buildSubagentHudView();
 		if (!view) {
 			const changed = this.subagentContainer.children.length > 0;
 			if (changed) this.subagentContainer.clear();
 			this.#subagentHudKey = "";
-			return changed;
+			return;
 		}
 		this.#armSubagentPreviewTick(view.tickMs);
 		const key = JSON.stringify([view.lines, view.order, view.toggleRow]);
-		if (key === this.#subagentHudKey && this.subagentContainer.children.length > 0) return false;
+		if (key === this.#subagentHudKey && this.subagentContainer.children.length > 0) return;
 		this.#subagentHudKey = key;
 		const hud = this.subagentContainer.children[0];
 		if (hud instanceof SubagentHudComponent) hud.update(view.lines, view.order, view.toggleRow);
 		else this.subagentContainer.addChild(new SubagentHudComponent(view.lines, view.order, view.toggleRow));
-		return true;
 	}
 
 	/** Inputs for one HUD paint; undefined when the HUD is off or nothing is running. */
@@ -4651,6 +4649,19 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		}, tickMs);
 		this.#subagentPreviewTickTimer.unref?.();
+	}
+
+	#requestObserverRenderIfChanged(): void {
+		// Observe the bounded chrome, not background transcripts. Runtime extensions
+		// may rebuild TODO components without changing any visible row.
+		const key = JSON.stringify([
+			this.#subagentBadgeKey,
+			this.#subagentHudKey,
+			this.todoContainer.render(this.ui.terminal.columns),
+		]);
+		if (key === this.#observerPaintKey) return;
+		this.#observerPaintKey = key;
+		this.ui.requestRender();
 	}
 
 	#cancelSubagentPreviewTick(): void {
