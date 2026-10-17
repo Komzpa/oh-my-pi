@@ -1065,7 +1065,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		vi.runAllTimers();
 		await Promise.resolve();
 
-		const hud = Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
+		const hud = Bun.stripANSI(mode.todoContainer.render(mode.ui.terminal.columns).join("\n"));
 		expect(hud).toContain("TODO");
 		expect(hud).toContain("unassigned workers");
 		for (let index = 0; index < 6; index++) expect(hud).toContain(`BurstAgent${index}`);
