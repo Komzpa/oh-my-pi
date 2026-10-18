@@ -429,12 +429,14 @@ describe("restart queue controller", () => {
 		controller.dispose();
 	});
 
-	it("checkpoints running workers after grace without waiting for a hung worker to finish", async () => {
+	it.each([false, true])("checkpoints workers within their original grace window (slow root: %s)", async slowRoot => {
 		const cwd = makeTempDir();
 		const { manager: oldRootManager, file: rootFile } = await createRoot(cwd);
 		const rootArtifactDir = rootFile.slice(0, -".jsonl".length);
 		const registry = AgentRegistry.global();
-		const rootHarness = makeSession(oldRootManager);
+		const rootDrain = Promise.withResolvers<void>();
+		if (!slowRoot) rootDrain.resolve();
+		const rootHarness = makeSession(oldRootManager, { quiescence: rootDrain.promise });
 		registerRoot(registry, rootHarness.session, rootFile);
 		const hangingManager = track(SessionManager.create(cwd, rootArtifactDir));
 		hangingManager.appendSessionInit({
@@ -486,7 +488,11 @@ describe("restart queue controller", () => {
 		});
 		const identity = identityFor(oldRootManager, "restart-instance", 1);
 		const restartCalled = Promise.withResolvers<void>();
+		let graceDeadline: number | undefined;
 		const controller = createRestartQueueController({
+			onStateChange: record => {
+				graceDeadline ??= record.drainStatus?.workerGraceDeadlineAt;
+			},
 			session: rootHarness.session,
 			identity: () => identity,
 			restartWorkerGraceMs: 25,
@@ -497,6 +503,9 @@ describe("restart queue controller", () => {
 		});
 
 		await controller.handle({ identity, op: "request", requestId: "worker-grace" });
+		if (slowRoot) await Bun.sleep(50);
+		const rootReleasedAt = Date.now();
+		rootDrain.resolve();
 		await expect(
 			Promise.race([restartCalled.promise, Bun.sleep(250).then(() => "timed out" as const)]),
 		).resolves.toBe(undefined);
@@ -522,6 +531,10 @@ describe("restart queue controller", () => {
 				}),
 			]),
 		);
+		if (slowRoot) {
+			expect(graceDeadline).toBeNumber();
+			expect(graceDeadline!).toBeLessThanOrEqual(rootReleasedAt);
+		}
 		controller.dispose();
 	});
 

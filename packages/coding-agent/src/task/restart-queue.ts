@@ -826,6 +826,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			if (run.cancelled || this.#disposed) return false;
 			const notifications = run.notifications.splice(0);
 			await Promise.all(notifications);
+			// Child drain leases are already active. Count that time toward their grace
+			// instead of granting a second full window after the root finishes.
+			const workerGraceStartedAt = Date.now();
 			const settled = await this.#measureStage(run.record, "root_quiescence", () =>
 				Promise.race([
 					this.#rootLease(run)
@@ -835,7 +838,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				]),
 			);
 			if (!settled || run.cancelled || this.#disposed) return false;
-			await this.#measureStage(run.record, "worker_grace", () => this.#waitForWorkerGrace(run));
+			await this.#measureStage(run.record, "worker_grace", () =>
+				this.#waitForWorkerGrace(run, workerGraceStartedAt),
+			);
 			if (run.cancelled || this.#disposed) return false;
 			await this.#measureStage(run.record, "flush_sessions", () => this.#flushSessions(run));
 			let added = false;
@@ -884,13 +889,13 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		return lease;
 	}
 
-	async #waitForWorkerGrace(run: ActiveRestartDrain): Promise<void> {
+	async #waitForWorkerGrace(run: ActiveRestartDrain, startedAt: number): Promise<void> {
 		const childLeases = [...run.children.values()]
 			.map(session => ({ session, lease: run.leases.get(session) }))
 			.filter((item): item is { session: AgentSession; lease: RestartDrainLease } => item.lease !== undefined);
 		if (childLeases.length === 0) return;
-		const graceMs = this.#restartWorkerGraceMs;
-		run.workerGraceDeadlineAt = Date.now() + graceMs;
+		run.workerGraceDeadlineAt = startedAt + this.#restartWorkerGraceMs;
+		const graceMs = Math.max(0, run.workerGraceDeadlineAt - Date.now());
 		run.record = this.#withDrainStatus(run.record, run);
 		this.#onStateChange?.(run.record);
 		const progressTimer =
