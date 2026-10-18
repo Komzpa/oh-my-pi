@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { customMessageEntryMessage, isUserRequestEntry } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { getAnthropicCompactionPayload, isTurnStartEntry } from "@oh-my-pi/pi-agent-core/compaction";
+import { projectToolResultPrunes } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import {
 	coerceServiceTierByFamily,
 	type OpenAIResponsesHistoryPayload,
@@ -309,7 +310,8 @@ export function buildSessionContext(
 	// resume (issue #849).
 	let hasExplicitDefaultModel = false;
 
-	for (const entry of path) {
+	const projectedPath = projectToolResultPrunes(path);
+	for (const entry of projectedPath) {
 		if (entry.type === "thinking_level_change") {
 			thinkingLevel = entry.thinkingLevel ?? "off";
 			configuredThinkingLevel = entry.configured ?? entry.thinkingLevel ?? undefined;
@@ -352,7 +354,10 @@ export function buildSessionContext(
 	// collapsed live transcript and the model-context rebuild start emission
 	// after it (see the emission branch below); the full-history export path
 	// ignores it.
-	const resetBoundaryIdx = path.reduce((latest, entry, i) => (entry.type === "reset_boundary" ? i : latest), -1);
+	const resetBoundaryIdx = projectedPath.reduce(
+		(latest, entry, i) => (entry.type === "reset_boundary" ? i : latest),
+		-1,
+	);
 
 	// Build messages and collect corresponding entries
 	// When there's a compaction, we need to:
@@ -426,11 +431,11 @@ export function buildSessionContext(
 		// TUI) at the point it fired, with any snapcompact frames re-attached so
 		// the component can report them. An immediate frame-rescue replacement is
 		// the same compaction point and supersedes its source entry below.
-		for (let index = 0; index < path.length; index++) {
-			const entry = path[index];
+		for (let index = 0; index < projectedPath.length; index++) {
+			const entry = projectedPath[index];
 			handleEntryResetTracking(entry);
 			if (entry.type === "compaction") {
-				const replacement = path[index + 1];
+				const replacement = projectedPath[index + 1];
 				if (
 					replacement?.type === "compaction" &&
 					entry.method === "snapcompact" &&
@@ -463,7 +468,8 @@ export function buildSessionContext(
 		}
 	} else if (
 		resetBoundaryIdx >= 0 &&
-		resetBoundaryIdx > (compaction ? path.findIndex(e => e.type === "compaction" && e.id === compaction.id) : -1)
+		resetBoundaryIdx >
+			(compaction ? projectedPath.findIndex(e => e.type === "compaction" && e.id === compaction.id) : -1)
 	) {
 		// A `/clear` boundary durably starts emission after it — for BOTH the
 		// collapsed live transcript AND the model context (non-transcript) rebuild
@@ -478,8 +484,8 @@ export function buildSessionContext(
 		// (and its kept tail) too, so only genuinely post-reset entries emit; a
 		// boundary before the latest compaction is superseded by it (the
 		// `else if (compaction)` branch below handles that case via this guard).
-		for (let i = resetBoundaryIdx + 1; i < path.length; i++) {
-			appendMessage(path[i]);
+		for (let i = resetBoundaryIdx + 1; i < projectedPath.length; i++) {
+			appendMessage(projectedPath[i]);
 		}
 	} else if (compaction) {
 		const remotePayload = getOpenAiRemoteCompactionPayload(compaction);
@@ -490,7 +496,7 @@ export function buildSessionContext(
 		const providerPayload = remotePayload ?? anthropicPayload;
 
 		// Find compaction index in path
-		const compactionIdx = path.findIndex(e => e.type === "compaction" && e.id === compaction.id);
+		const compactionIdx = projectedPath.findIndex(e => e.type === "compaction" && e.id === compaction.id);
 
 		// A natively replayed summary must not invalidate the retained tail's
 		// bound thinking: the commit timestamp as historyRewriteAt would be newer
@@ -500,15 +506,15 @@ export function buildSessionContext(
 		// still retires the tail's pre-compaction usage reports.
 		let historyRewriteAt: number | undefined;
 		if (anthropicPayload !== undefined) {
-			const firstKeptIdx = path.findIndex(entry => entry.id === compaction.firstKeptEntryId);
+			const firstKeptIdx = projectedPath.findIndex(entry => entry.id === compaction.firstKeptEntryId);
 			const snapshotIdx =
 				compaction.firstKeptEntryId === "" && compaction.providerReplayThroughEntryId
-					? path.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId)
+					? projectedPath.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId)
 					: -1;
 			const firstRetained =
-				(firstKeptIdx >= 0 && firstKeptIdx < compactionIdx ? path[firstKeptIdx] : undefined) ??
-				(snapshotIdx >= 0 && snapshotIdx < compactionIdx - 1 ? path[snapshotIdx + 1] : undefined) ??
-				path[compactionIdx + 1];
+				(firstKeptIdx >= 0 && firstKeptIdx < compactionIdx ? projectedPath[firstKeptIdx] : undefined) ??
+				(snapshotIdx >= 0 && snapshotIdx < compactionIdx - 1 ? projectedPath[snapshotIdx + 1] : undefined) ??
+				projectedPath[compactionIdx + 1];
 			// The message's own time, not the entry's: an assistant message is
 			// stamped when its stream starts and saved after it ends, so a marker
 			// derived from the entry would postdate that turn and strip its thinking.
@@ -560,9 +566,9 @@ export function buildSessionContext(
 			isRecord(compaction.details) &&
 			compaction.details.kind === "experimental-context-rollover"
 		) {
-			const firstKeptIdx = path.findIndex(entry => entry.id === compaction.firstKeptEntryId);
+			const firstKeptIdx = projectedPath.findIndex(entry => entry.id === compaction.firstKeptEntryId);
 			for (let i = compactionIdx - 1; i > resetBoundaryIdx; i--) {
-				const entry = path[i];
+				const entry = projectedPath[i];
 				if (!isRolloverRequestEntry(entry)) continue;
 				if (i < firstKeptIdx) appendMessage(entry);
 				break;
@@ -576,12 +582,12 @@ export function buildSessionContext(
 		// turns visible instead of showing only the summary and post-compaction.
 		if (!remoteReplacementHistory || options?.transcript) {
 			// Emit kept messages (before compaction, starting from firstKeptEntryId).
-			const firstKeptIdx = path.findIndex(
+			const firstKeptIdx = projectedPath.findIndex(
 				(entry, index) => index < compactionIdx && entry.id === compaction.firstKeptEntryId,
 			);
 			const snapshotIdx =
 				anthropicPayload && compaction.firstKeptEntryId === "" && compaction.providerReplayThroughEntryId
-					? path.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId)
+					? projectedPath.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId)
 					: -1;
 			const retainedStart = firstKeptIdx >= 0 ? firstKeptIdx : snapshotIdx >= 0 ? snapshotIdx + 1 : -1;
 			if (retainedStart >= 0 && retainedStart < compactionIdx) {
@@ -594,7 +600,7 @@ export function buildSessionContext(
 					// suffix when there is no later boundary, because the summary
 					// does not include that kept content.
 					for (let i = retainedStart; i < compactionIdx; i++) {
-						const entry = path[i];
+						const entry = projectedPath[i];
 						if (isTurnStartEntry(entry) && (entry.type !== "custom_message" || isUserRequestEntry(entry))) {
 							displayStartIdx = i;
 							break;
@@ -602,7 +608,7 @@ export function buildSessionContext(
 					}
 				}
 				for (let i = retainedStart; i < compactionIdx; i++) {
-					const entry = path[i];
+					const entry = projectedPath[i];
 					if (i < displayStartIdx) {
 						// Hidden assistants still consume pending resets and update the
 						// previous-model state exactly as they do in the visible walk.
@@ -614,10 +620,12 @@ export function buildSessionContext(
 				}
 			}
 		} else if (compaction.providerReplayThroughEntryId) {
-			const replayThroughIdx = path.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId);
+			const replayThroughIdx = projectedPath.findIndex(
+				entry => entry.id === compaction.providerReplayThroughEntryId,
+			);
 			if (replayThroughIdx >= 0 && replayThroughIdx < compactionIdx) {
 				for (let i = replayThroughIdx + 1; i < compactionIdx; i++) {
-					appendMessage(path[i]);
+					appendMessage(projectedPath[i]);
 				}
 			}
 		}
@@ -633,22 +641,22 @@ export function buildSessionContext(
 		}
 
 		// Emit messages after compaction
-		for (let i = compactionIdx + 1; i < path.length; i++) {
-			const entry = path[i];
+		for (let i = compactionIdx + 1; i < projectedPath.length; i++) {
+			const entry = projectedPath[i];
 			appendMessage(entry);
 		}
 	} else {
 		// No compaction - emit all messages, handle branch summaries and custom messages
-		for (const entry of path) {
+		for (const entry of projectedPath) {
 			appendMessage(entry);
 		}
 	}
 
 	if (!options?.transcript) {
-		const notes = getContextNotes(path);
-		const renderedNotes = renderContextNotes(path);
+		const notes = getContextNotes(projectedPath);
+		const renderedNotes = renderContextNotes(projectedPath);
 		if (notes && renderedNotes.length > 0) {
-			const sourceEntry = path.find(entry => entry.id === notes.entryId);
+			const sourceEntry = projectedPath.find(entry => entry.id === notes.entryId);
 			if (sourceEntry) {
 				// A native Anthropic compaction block must open the request, and the
 				// provider folds it into a directly following retained assistant turn
