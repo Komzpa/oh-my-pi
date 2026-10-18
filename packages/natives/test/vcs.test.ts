@@ -49,7 +49,9 @@ describe("in-process VCS bindings", () => {
 		expect(await vcs.lastCommitTime(repo)).toBe(expected);
 		const bin = join(root, "bin");
 		await mkdir(bin);
-		await writeFile(join(bin, "git"), `#!${process.execPath}\nawait Bun.sleep(150);\nconsole.log('1700000000');\n`, { mode: 0o755 });
+		await writeFile(join(bin, "git"), `#!${process.execPath}\nawait Bun.sleep(150);\nconsole.log('1700000000');\n`, {
+			mode: 0o755,
+		});
 		const originalPath = process.env.PATH;
 		let ticks = 0;
 		const timer = setInterval(() => ticks++, 10);
