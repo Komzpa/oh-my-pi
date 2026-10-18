@@ -1,3 +1,4 @@
+import { hydrateHistoryOffThread } from "./persisted-history-client";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
@@ -37,7 +38,7 @@ interface PersistedAgentMetadata {
 	incomplete?: boolean;
 }
 
-interface PersistedTranscript {
+export interface PersistedTranscript {
 	id: string;
 	sessionFile: string;
 	createdAt?: number;
@@ -144,7 +145,7 @@ function isFilesystemError(error: unknown): boolean {
 	return typeof code === "string" && code !== "ENOENT";
 }
 
-async function readPersistedAgentHistory(
+export async function readPersistedAgentHistory(
 	transcript: PersistedTranscript,
 	shouldContinue: () => boolean,
 ): Promise<AgentHistorySummary> {
@@ -672,19 +673,9 @@ export async function registerPersistedSubagents(
 		options.owned,
 	);
 	if (!hydrateHistory || !shouldContinue()) return;
-	let nextTranscript = 0;
-	const workers = Array.from({ length: Math.min(4, transcripts.length) }, async () => {
-		for (;;) {
-			if (!shouldContinue()) return;
-			const index = nextTranscript++;
-			const transcript = transcripts[index];
-			if (!transcript) return;
-			const history = await readPersistedAgentHistory(transcript, shouldContinue);
-			if (!shouldContinue()) return;
-			registry.setHistory(transcript.id, history, transcript.sessionFile);
-		}
+	await hydrateHistoryOffThread(transcripts, shouldContinue, (transcript, history) => {
+		registry.setHistory(transcript.id, history, transcript.sessionFile);
 	});
-	await Promise.all(workers);
 }
 
 async function registerPersistedSubagentsFromDir(
