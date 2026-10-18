@@ -1338,7 +1338,6 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			expect(continues).toHaveLength(7);
 		});
 
-
 		it("leaves uncommitted text, tool turns, other errors, and disabled retry to the error path", () => {
 			const cases: Array<[AssistantMessage, boolean]> = [
 				[stalledTextTurn(), false],
