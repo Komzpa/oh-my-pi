@@ -5,11 +5,11 @@ import { readPersistedAgentHistory } from "../../src/registry/persisted-agents";
 
 it("returns the same usage and model attribution as the transcript reader", async () => {
 	using dir = TempDir.createSync("history-worker-");
-	const file = `${dir.path}/child.jsonl`;
+	const file = `${dir.path()}/child.jsonl`;
 	await Bun.write(
 		file,
 		[
-			{ type: "session", id: "child", version: 3, timestamp: "2026-10-01T00:00:00Z", cwd: dir.path },
+			{ type: "session", id: "child", version: 3, timestamp: "2026-10-01T00:00:00Z", cwd: dir.path() },
 			{
 				type: "message",
 				id: "reply",
