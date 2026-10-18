@@ -1,5 +1,9 @@
 # Reemxy extensions
 
+## Git commit identity
+
+Every commit consumer (`git-pr-owner`, `coder`, and `workhorse`) checks effective author and committer identities and their config provenance before a new commit, uses configured real identity without invented agent identity overrides, and reads back both identities after committing. Local identity takes precedence over global identity; missing or invalid identity fails without creating a commit; amend, cherry-pick, and rebase retain the existing genuine contributor author.
+
 ## Presence settings
 
 `goal_deadlines` derives the user’s timezone from persisted goal state (`state.timezone`), then falls back to the process `Intl` timezone.
