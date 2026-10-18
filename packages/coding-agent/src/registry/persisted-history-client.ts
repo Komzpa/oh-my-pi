@@ -1,3 +1,4 @@
+import { TempDir } from "@oh-my-pi/pi-utils";
 import { workerHostEntry } from "@oh-my-pi/pi-utils/worker-host";
 import { PERSISTED_HISTORY_WORKER_ARG } from "../cli/worker-selectors";
 import type { AgentHistorySummary } from "./agent-registry";
@@ -83,4 +84,28 @@ export async function readHistoryOffThread(
 		fail(error instanceof Error ? error : new Error(String(error)));
 	}
 	return promise;
+}
+
+/** Exercise the distribution's actual worker entrypoint, not an inline parser. */
+export async function smokeTestPersistedHistoryWorker(): Promise<void> {
+	using directory = TempDir.createSync("omp-history-smoke-");
+	const sessionFile = `${directory.path()}/worker.jsonl`;
+	await Bun.write(
+		sessionFile,
+		[
+			{ type: "session", id: "smoke", version: 3, cwd: directory.path(), timestamp: "2026-01-01T00:00:00Z" },
+			{
+				type: "model_usage",
+				id: "usage",
+				parentId: null,
+				timestamp: "2026-01-01T00:00:01Z",
+				usage: { cost: { total: 0.125 } },
+			},
+		]
+			.map(entry => JSON.stringify(entry))
+			.join("\n") + "\n",
+	);
+	const deadline = Date.now() + 10000;
+	const history = await readHistoryOffThread({ id: "smoke", sessionFile }, () => Date.now() < deadline);
+	if (history.directCost !== 0.125) throw new Error("Persisted history worker smoke failed: missing usage summary");
 }

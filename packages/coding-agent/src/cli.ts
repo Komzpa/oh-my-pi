@@ -153,6 +153,8 @@ async function runSmokeTest(): Promise<void> {
 	const { smokeTestTextPredictDaemon } = await import("./predict/client");
 	await smokeTestSyncWorker();
 	await smokeTestStatsActivityWorker();
+	const { smokeTestPersistedHistoryWorker } = await import("./registry/persisted-history-client");
+	await smokeTestPersistedHistoryWorker();
 
 	const statsServer = await startServer(0);
 	try {
