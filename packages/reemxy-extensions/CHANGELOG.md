@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- Keep the main event loop responsive during Git integration checks: await Git in context and merge admission, share in-flight probes, and keep the synchronous advice callback free of subprocesses.
+
 - `todo_dispatch`: the planning-failure worker-name refusal tells the chief to name the result its row produces, verb first (e.g. `AdmitChiefBashLooks`), matching the canonical chief-of-staff naming rule, instead of a semantic noun. Role names (`…Owner`, `…Oracle`) and reopen verbs stay refused; compliant result names and existing-owner resumption are unchanged.
 - `todo_dispatch`: after compaction the model sees only the newest copy of each of the three custom types when present: chief rules, worker brief, and todo-error reminder. Journals remain append-only; `session_compact` reinjects chief rules in main sessions or the original brief in worker sessions only when canonical compacted context dropped the respective type. Canonical builder errors surface, and retained copies no longer duplicate. The all-three-seeded, five-compaction oracle still requires exactly one copy of each type.
 - `todo_dispatch`: open instruction retrospectives for gate rejections, failed TODO updates, and missed ETAs; a completed retro covers unchanged row attempts so predictable workers do not reopen the demand.
