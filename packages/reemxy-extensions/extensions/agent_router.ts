@@ -703,9 +703,12 @@ export function cwdRepoLabel(ctx: ExtensionContext): string {
 
 /** One latestTodo read per spawn: checkout scopes and criticality share it. */
 function memoLatestTodo(getter: LatestTodoGetter | undefined, ctx: ExtensionContext): (() => TodoScheduleInput) | undefined {
-	if (!getter || !ctx.sessionManager?.getBranchMatching) return undefined;
+	if (!ctx.getTodoPhases && (!getter || !ctx.sessionManager?.getBranchMatching)) return undefined;
 	let cached: TodoScheduleInput | undefined;
-	return () => cached ??= getter(ctx.sessionManager.getBranchMatching(isTodoSelectionEntryMetadata));
+	return () => cached ??= ctx.getTodoPhases?.() ??
+		(getter && ctx.sessionManager?.getBranchMatching
+			? getter(ctx.sessionManager.getBranchMatching(isTodoSelectionEntryMetadata))
+			: []);
 }
 
 /** True when the spawning task item owns a plan row the forecast marks critical. */

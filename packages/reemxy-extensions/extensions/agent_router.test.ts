@@ -2311,6 +2311,22 @@ describe("agent router", () => {
 			}
 		});
 
+		test("live plan routing avoids historical payloads and observes the next spawn's plan", async () => {
+			const { dir, file } = tempStateFile();
+			try {
+				const models = TASK_ORDER.filter(spec => !spec.endsWith(":free")).map(spec => spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, ""));
+				const context = priorityCtx(models);
+				let live = PHASES;
+				context.getTodoPhases = () => live as ReturnType<NonNullable<ExtensionContext["getTodoPhases"]>>;
+				context.sessionManager.getBranchMatching = () => { throw new Error("historical plan decoded"); };
+				expect((await spawnTask("long-1", context, file))?.note).toContain("critical row");
+				live = [];
+				expect((await spawnTask("long-1", context, file))?.note).not.toContain("critical row");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
 		test("critical row does not restore a hard-fail free model to first", async () => {
 			const { dir, file } = tempStateFile();
 			try {
