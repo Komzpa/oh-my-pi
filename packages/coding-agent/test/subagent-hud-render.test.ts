@@ -26,6 +26,7 @@ import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import type { BranchSource } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import { type AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
 import {
 	type SubagentLifecyclePayload,
@@ -1003,6 +1004,22 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		setSystemTime();
 		vi.restoreAllMocks();
 		resetSettingsForTest();
+	});
+
+	it("updates worker lifecycle badges without replaying the parent's plan history", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		vi.useFakeTimers();
+		vi.advanceTimersByTime(100);
+		const source: BranchSource = session.sessionManager;
+		const history = vi.spyOn(source, source.getBranchMatching ? "getBranchMatching" : "getBranch");
+		for (let index = 0; index < 25; index++) {
+			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle(`Worker${index}`, index, `Job ${index}`, true));
+		}
+		await Promise.resolve();
+		vi.advanceTimersByTime(100);
+		expect(history).not.toHaveBeenCalled();
+		expect(mode.subagentContainer.children.length).toBeGreaterThan(0);
 	});
 
 	it("coalesces a burst of progress observer changes into one HUD rebuild and render request", async () => {

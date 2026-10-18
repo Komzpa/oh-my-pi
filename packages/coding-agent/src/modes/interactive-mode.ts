@@ -4513,7 +4513,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		return inProgress ?? pending ?? nonEmpty[nonEmpty.length - 1];
 	}
 	#scheduleObserverUiSync(kind: SessionObserverChangeKind): void {
-		if (kind !== "progress") this.#observerUiSyncNeedsTodoSync = true;
+		// Worker activity changes badges, not the parent journal or its persisted
+		// HUD choice. Plan edits refresh through #loadTodoList independently.
+		if (kind === "main" || kind === "reset") this.#observerUiSyncNeedsTodoSync = true;
 		if (this.#observerUiSyncTimer) return;
 		this.#observerUiSyncTimer = setTimeout(() => {
 			this.#observerUiSyncTimer = undefined;
