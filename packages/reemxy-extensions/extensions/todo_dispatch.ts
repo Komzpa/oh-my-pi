@@ -3223,21 +3223,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     } catch {}
     return { lastTool, wrote: wrote.slice(-4) };
   };
-  const workerCommitAt = (id: string): number | undefined => {
+  const workerCommitAt = async (id: string): Promise<number | undefined> => {
     const cwd = AgentRegistry.global().get(id)?.session?.sessionManager?.getCwd();
     if (!cwd) return undefined;
     try {
       const repo = vcs.git(cwd);
       if (!repo) return undefined;
-      if (!repo.headSync().commit) return 0;
-      const result = spawnSync("git", ["log", "-1", "--format=%ct"], {
-        cwd,
-        encoding: "utf8",
-        timeout: 5_000,
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      });
-      const seconds = Number(String(result.stdout ?? "").trim());
-      return result.status === 0 && Number.isFinite(seconds) ? seconds * 1000 : undefined;
+      return await vcs.lastCommitTime(repo);
     } catch {
       return undefined;
     }
@@ -3710,7 +3702,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (workerIds.length === 0) return `retrospective due (${sprintState.retroDueReason}): no new eligible worker reports. Review the triggering incident using the lead's tool results, plan history and available receipts; do not fabricate worker reports or skip the incident review. Then retro-facilitator (skill://chief-of-staff Retrospective) uses that evidence to identify what happened and the next corrective action. Create a mechanism row editing a skill or prompt only when the evidence identifies an actual instruction defect; otherwise record that no instruction change is warranted.`;
     return `retrospective due (${sprintState.retroDueReason}): read the Retro block in the final answer of the ${workerIds.length} workers who finished since ${safeTimestamp(since, timeZone)} from agent://<id> (do not write to them; a missing block is recorded as missing), then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}; for each red item, identify which instruction line (skill or prompt) missed it and output a mechanism row that edits that instruction.`;
   };
-  const planCheck = (ctx: ExtensionContext, pending: unknown[] = [], problemsOnly = false): string | null => {
+  const planCheck = async (ctx: ExtensionContext, pending: unknown[] = [], problemsOnly = false): Promise<string | null> => {
     pendingSizingNoticeIds = [];
     const now = Date.now();
     const decision = currentDecision(ctx, now, pending);
@@ -3796,11 +3788,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const age = activityByName.get(id)?.ageMs;
       return { id, row, label, trace, age, p95Text };
     });
-    const staleWorkers = workerInfos.flatMap(({ id, row, label, trace }) => {
+    // Git can wait on disk or hooks; never hold the interactive event loop while checking workers.
+    const commitTimes = await Promise.all(workerInfos.map(({ id }) => workerCommitAt(id)));
+    const staleWorkers = workerInfos.flatMap(({ id, row, label, trace }, index) => {
       const job = running.find(candidate => (candidate.agentId ?? candidate.id) === id);
       const startTime = job?.startTime;
       const elapsed = typeof startTime === "number" ? now - startTime : 0;
-      const commitAt = workerCommitAt(id);
+      const commitAt = commitTimes[index];
       const isStale = elapsed > SILENT_MS && commitAt !== undefined && now - commitAt > SILENT_MS;
       const minutesOld = Math.floor(elapsed / 60_000);
       const warning = isStale ? { minutes: minutesOld, lastLine: trace.lastTool, ...(row ? { row: row.content } : {}) } : undefined;
@@ -3972,7 +3966,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return;
     if (singleWriterLane || pauseGate?.paused || !isMain(ctx) || !pi.getActiveTools().includes("task") || ctx.hasPendingMessages()) return;
     await refreshLiveWorkerModels(ctx);
-    const check = planCheck(ctx, [], true);
+    const check = await planCheck(ctx, [], true);
     if (!check || check === PLAN_CHECK_CLEAN) return;
     // Once per distinct problem list, and again after PLAN_REPEAT_MS while the same problems stand:
     // a per-minute repeat made the model restate its status every minute (22:08-22:11), while
@@ -4015,7 +4009,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       // The hook runs before this result joins the branch: check the plan the call just produced
       // (live 21:32: an owner written by this very call was reported as missing).
       const details = (event as { details?: unknown }).details;
-      const check = planCheck(ctx, details ? [{ type: "message", message: { role: "toolResult", toolName: "todo", details } }] : []);
+      const check = await planCheck(ctx, details ? [{ type: "message", message: { role: "toolResult", toolName: "todo", details } }] : []);
       if (!check) return;
       markSizingNotices();
       return { content: [...event.content, { type: "text" as const, text: check }] };
