@@ -1950,6 +1950,8 @@ test("GIT FACTS names commits since previous chief turn and running git jobs", a
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
   let child: ReturnType<typeof spawn> | undefined;
+  const originalPath = process.env.PATH;
+  let ticker: ReturnType<typeof setInterval> | undefined;
   try {
     (await handlers.get("session_start")!({}, ctx));
     expect((await context())).not.toContain("commits since previous chief turn");
@@ -1958,12 +1960,26 @@ test("GIT FACTS names commits since previous chief turn and running git jobs", a
     git("commit", "-qm", "landed subject");
     const head = git("rev-parse", "--short=10", "HEAD").trim();
     child = spawn("bash", ["-lc", "exec -a git-hook-test sleep 20"], { cwd, stdio: "ignore" });
+    const realGit = Bun.which("git")!;
+    const bin = join(cwd, "slow-bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "git"), `#!/bin/sh
+case "$*" in *'--format=%h %s'*) sleep 0.2;; esac
+exec '${realGit}' "$@"
+`, { mode: 0o755 });
+    process.env.PATH = `${bin}:${originalPath}`;
+    let ticks = 0;
+    ticker = setInterval(() => ticks++, 10);
     const text = (await context());
+    clearInterval(ticker);
+    expect(ticks).toBeGreaterThan(0);
     expect(text).toContain("commits since previous chief turn");
     expect(text).toContain(`${head} landed subject`);
     expect(text).toContain("running git job");
     expect(text).toContain("git-hook-test");
   } finally {
+    process.env.PATH = originalPath;
+    if (ticker) clearInterval(ticker);
     child?.kill();
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });

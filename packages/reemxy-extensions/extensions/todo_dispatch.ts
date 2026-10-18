@@ -10,7 +10,8 @@ import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { availableParallelism } from "node:os";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
 import { parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -214,14 +215,19 @@ export function readGitIntegrationState(cwd: string, now: number): GitIntegratio
   return state;
 }
 
-function readGitLogSince(cwd: string, previousHead: string) {
-  const out = spawnSync("git", ["log", "--abbrev=10", "--format=%h %s", `${previousHead}..HEAD`], {
-    cwd,
-    encoding: "utf8",
-    timeout: 5_000,
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-  });
-  return out.status === 0 ? out.stdout.trim().split("\n").filter(Boolean) : [];
+const execFileAsync = promisify(execFile);
+async function readGitLogSince(cwd: string, previousHead: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync("git", ["log", "--abbrev=10", "--format=%h %s", `${previousHead}..HEAD`], {
+      cwd,
+      encoding: "utf8",
+      timeout: 5_000,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    });
+    return stdout.trim().split("\n").filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 function readRunningGitJobs(cwd: string) {
@@ -3307,7 +3313,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ? `Worker activity (their session files): ${activity.slice(0, 8).map((worker) => `${worker.name} ${minutes(worker.ageMs)} ago`).join(", ")}. Reading a worker's history is not this step: results arrive by themselves, and PLAN CHECK names a worker once it is silent for ${minutes(SILENT_MS)}.`
       : "";
   };
-  const integrationFacts = (ctx: ExtensionContext, now: number) => {
+  const integrationFacts = async (ctx: ExtensionContext, now: number) => {
     const state = gitState(ctx, now, true);
     const lines: string[] = [];
     const sessionId = ctx.sessionManager.getHeader?.()?.id ?? "unknown";
@@ -3315,7 +3321,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const previousHead = lastChiefHead.get(headKey);
     if (state?.head) {
       if (previousHead && previousHead !== state.head) {
-        const commits = readGitLogSince(ctx.cwd, previousHead);
+        const commits = await readGitLogSince(ctx.cwd, previousHead);
         if (commits.length)
           lines.push(`commits since previous chief turn (${commits.length}): ${commits.slice(0, 5).join(", ")}${commits.length > 5 ? `, … ${commits.length - 5} more` : ""}`);
       }
@@ -4087,7 +4093,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       sprintState = { ...sprintState, retroDueNotifiedKey: retroNotifyKey() };
       persistSprintState();
     }
-    const facts = chief ? integrationFacts(ctx, now) : "";
+    const facts = chief ? await integrationFacts(ctx, now) : "";
     const notice = isMain(ctx) ? returnNotice : null;
     if (notice) notice.shown = true;
     const content = [
