@@ -3115,6 +3115,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   // Read each child's appended session events once, including a preexisting compaction on first observation.
   const workerCompactionAt = (worker: { name: string; path?: string; size?: number }): number | undefined => {
+    const manager = AgentRegistry.global().get(worker.name)?.session?.sessionManager;
+    if (manager && worker.path && manager.getSessionFile() === worker.path) {
+      const entry = selectLatestBranchEntry(manager, metadata => metadata.type === "compaction");
+      const at = entry ? Date.parse(entry.timestamp) : undefined;
+      return at !== undefined && Number.isFinite(at) ? at : undefined;
+    }
     if (!worker.path || worker.size === undefined) return undefined;
     let cursor = workerCompactionCursors.get(worker.name);
     if (!cursor || cursor.path !== worker.path || cursor.offset > worker.size) {

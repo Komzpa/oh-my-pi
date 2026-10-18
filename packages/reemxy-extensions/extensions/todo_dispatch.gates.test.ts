@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { readGoalDeadline } from "./deadlines";
 import { getLatestTodoPhasesFromEntries, TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
@@ -1204,7 +1205,7 @@ test("PLAN CHECK names a worker whose session file went quiet, and only that one
   }
 }, 60_000);
 
-test("PLAN CHECK reports a compacted running worker once with a done/left split action", async () => {
+for (const live of [false, true]) test(`PLAN CHECK reports compaction from ${live ? "live session" : "disk"} once with a done/left split action`, async () => {
   const cwd = repo("clean");
   const sessions = mkdtempSync(join(tmpdir(), "gates-compacted-worker-"));
   const sessionFile = join(sessions, "main.jsonl");
@@ -1225,6 +1226,17 @@ test("PLAN CHECK reports a compacted running worker once with a done/left split 
       tokensBefore: 120_000,
     })}\n`,
   );
+  let registered;
+  if (live) {
+    const entries = [JSON.parse(readFileSync(workerFile, "utf8"))];
+    // The live session is ahead of the durable file; do not reparse stale disk history.
+    writeFileSync(workerFile, `${JSON.stringify({ type: "message", message: { role: "user", content: "compaction is only a word here" } })}\n`);
+    registered = AgentRegistry.global().register({
+      id: "worker-a", displayName: "worker-a", kind: "subagent",
+      sessionFile: workerFile,
+      session: { sessionManager: { ...branchMock(() => entries), getSessionFile: () => workerFile, getCwd: () => cwd } },
+    });
+  }
   const lastActivity = (liveNow - 60_000) / 1000;
   utimesSync(workerFile, lastActivity, lastActivity);
   const handlers: Record<string, (event: unknown, ctx: ExtensionContext) => unknown> = {};
@@ -1290,6 +1302,7 @@ test("PLAN CHECK reports a compacted running worker once with a done/left split 
     expect(sent.filter(text => text.includes(`compacted at ${compactedClock}`))).toHaveLength(1);
   } finally {
     handlers.session_shutdown?.({}, ctx);
+    if (registered) AgentRegistry.global().unregister("worker-a", registered);
     rmSync(cwd, { recursive: true, force: true });
     rmSync(sessions, { recursive: true, force: true });
   }
