@@ -175,7 +175,8 @@ fn background_priority_prefix() -> &'static [OsString; 5] {
 
 /// Parsed `systemctl --version` (`systemd 252 (...)` → `252`), probed once.
 /// Unknown (no manager, unparsable output) means "assume old": the
-/// `--expand-environment` flag is omitted and `$` is escaped instead.
+/// `--expand-environment` flag is omitted and the transient-service probe
+/// escapes its arguments instead.
 #[cfg(target_os = "linux")]
 fn systemd_version() -> Option<u32> {
 	static VERSION: std::sync::LazyLock<Option<u32>> = std::sync::LazyLock::new(|| {
@@ -201,7 +202,8 @@ fn systemd_version() -> Option<u32> {
 
 /// `--expand-environment=no` needs systemd 254+. Older managers reject it,
 /// so it is passed only when the probed version supports it; otherwise
-/// command arguments are escaped (see [`escape_manager_expansion`]).
+/// the transient-service probe escapes its arguments (see
+/// [`escape_manager_expansion`]).
 #[cfg(target_os = "linux")]
 fn expand_environment_flag() -> Option<&'static str> {
 	match systemd_version() {
@@ -210,9 +212,10 @@ fn expand_environment_flag() -> Option<&'static str> {
 	}
 }
 
-/// Escape `$` as `$$` (the manager's literal-`$` escape) for command
-/// arguments when [`expand_environment_flag`] is unavailable, so user
-/// commands containing `$` are passed through instead of expanded.
+/// Escape `$` as `$$` (the manager's literal-`$` escape) for the
+/// transient-service probe's arguments when [`expand_environment_flag`] is
+/// unavailable. Scope launches never have their arguments expanded, so
+/// their arguments — including `$` — pass through unchanged.
 #[cfg(target_os = "linux")]
 fn escape_manager_expansion(arg: &OsString) -> OsString {
 	use std::os::unix::ffi::OsStringExt;
@@ -296,8 +299,13 @@ fn build_scope_argv(
 	} else {
 		&background_priority_prefix()[..]
 	};
+	// Only the transient *service* probe has its arguments expanded by the
+	// manager (`ExecStart` parsing) before systemd 254; scope launches never
+	// expand (`--scope` predates `--expand-environment`, and 254+ receives
+	// `--expand-environment=no`), so scope arguments pass through unchanged.
+	let escape_probe_args = wait_service && expand_environment_flag().is_none();
 	args.extend(priority.iter().chain(command).map(|arg| {
-		if expand_environment_flag().is_none() {
+		if escape_probe_args {
 			escape_manager_expansion(arg)
 		} else {
 			arg.clone()
@@ -308,8 +316,9 @@ fn build_scope_argv(
 
 /// `env` launcher with an `argv[0]` override, skipping `--argv0` (coreutils
 /// 9.5+) when the override equals the executable. `$`-escaping is left to
-/// the caller: [`ToolProcessLimit::wrap_scope_command`] escapes the whole
-/// wrapped command once, so escaping here as well would double-escape.
+/// the caller: the transient-service probe escapes its arguments while
+/// scope commands pass through unchanged, so escaping here would
+/// double-escape the probe.
 #[cfg(target_os = "linux")]
 fn env_exec(executable: &OsStr, argv0: &OsStr, extra: &[OsString]) -> Vec<OsString> {
 	let mut command = vec![env_bin().clone()];
@@ -434,12 +443,17 @@ impl ToolProcessLimit {
 			}
 			let probe_unit =
 				format!("omp-tool-call-probe-{}.scope", state.slice.trim_end_matches(".slice"));
+			// The probe is a wrap of `true` with normal argv0, so it takes
+			// exactly the `env_exec` shape of a real wrapped command and
+			// needs no coreutils 9.5+ `--argv0`: a passing probe proves
+			// real commands launch on common distros. The unit name marks
+			// the probe; argv0 does not.
 			let probe = build_scope_argv(
 				&state.slice,
 				&probe_unit.replace(".scope", ".service"),
 				true,
 				false,
-				&env_exec(true_bin(), OsStr::new("omp-process-limit-probe"), &[]),
+				&env_exec(true_bin(), true_bin(), &[]),
 				&ScopeEnvironment::default(),
 			);
 			let result = Command::new(&probe[0]).args(&probe[1..]).output()?;
@@ -982,6 +996,204 @@ exec "$@"
 		assert_eq!(&payload[1..5], ["-u", "DBUS_SESSION_BUS_ADDRESS", "-u", "XDG_RUNTIME_DIR"]);
 		assert_eq!(&payload[5..10], super::background_priority_prefix());
 		assert_eq!(payload.last(), Some(super::true_bin()));
+	}
+
+	/// Bounded compatibility vehicle, no user manager, bus, or cgroup is
+	/// touched: PATH fixtures emulate coreutils <9.5 `env` (no `--argv0`,
+	/// the CI failure on Ubuntu 24.04 / Debian 12) and a pre-254 manager
+	/// (`systemctl --version` reports 253, so the escaping fallback is
+	/// active). The probe must launch with normal argv0 on such hosts, scope
+	/// arguments containing `$` must pass through unescaped (scope launches
+	/// never expand arguments), and a caller's custom argv0 must still be
+	/// honored where `env --argv0` exists. The pre-fix probe shape must fail
+	/// the same way CI did, or the fixture proves nothing.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn probe_and_scope_launch_on_pre_95_env_with_normal_argv0() {
+		use std::os::unix::fs::{PermissionsExt, symlink};
+
+		const CASE_ENV: &str = "OMP_PRE95_ENV_TEST_CASE";
+		const FIXTURES_ENV: &str = "OMP_PRE95_ENV_FIXTURES";
+		if let Ok(case) = std::env::var(CASE_ENV) {
+			let fixtures = std::path::PathBuf::from(std::env::var_os(FIXTURES_ENV).unwrap());
+			let launch = |argv: &[std::ffi::OsString]| {
+				let mut command = Command::new(&argv[0]);
+				command.args(&argv[1..]).env_clear().env("PATH", &fixtures);
+				command.output().expect("launch through fixtures")
+			};
+			let probe_argv = |argv0: &std::ffi::OsStr| {
+				super::build_scope_argv(
+					"test.slice",
+					"omp-tool-call-probe-test.service",
+					true,
+					false,
+					&super::env_exec(super::true_bin(), argv0, &[]),
+					&super::ScopeEnvironment::default(),
+				)
+			};
+			let fixed_probe = probe_argv(super::true_bin());
+			assert!(
+				!fixed_probe.iter().any(|arg| arg.to_string_lossy().starts_with("--argv0=")),
+				"probe must not need coreutils 9.5+ --argv0: {fixed_probe:?}"
+			);
+			match case.as_str() {
+				"pre95" => {
+					// Fixture validity: the pre-fix probe shape (cosmetic
+					// argv0 override) fails exactly like CI.
+					let old = launch(&probe_argv(std::ffi::OsStr::new("omp-process-limit-probe")));
+					assert!(!old.status.success(), "pre-fix probe shape must fail on coreutils <9.5");
+					assert!(
+						String::from_utf8_lossy(&old.stderr).contains("--argv0"),
+						"fixture must reject --argv0 like coreutils <9.5: {}",
+						String::from_utf8_lossy(&old.stderr)
+					);
+					let fixed = launch(&fixed_probe);
+					assert!(
+						fixed.status.success(),
+						"fixed probe must launch: {}",
+						String::from_utf8_lossy(&fixed.stderr)
+					);
+					// Scope arguments pass through unchanged even while the
+					// pre-254 escaping fallback is active.
+					let dollar = super::build_scope_argv(
+						"test.slice",
+						"test.scope",
+						false,
+						true,
+						&[
+							super::resolved_binary("sh"),
+							"-c".into(),
+							r#"printf %s "$1""#.into(),
+							"sh".into(),
+							"A$B".into(),
+						],
+						&super::ScopeEnvironment::default(),
+					);
+					let out = launch(&dollar);
+					assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+					assert_eq!(String::from_utf8_lossy(&out.stdout), "A$B");
+				}
+				"custom-arg0" | "custom-arg0-unsupported" => {
+					let shell = super::resolved_binary("sh");
+					// Probe the actual fixture env, not a version string: old
+					// supported hosts legitimately cannot override argv0.
+					let capability = Command::new(super::env_bin())
+						.arg("--argv0=custom-marker")
+						.arg(&shell)
+						.args(["-c", r#"printf %s "$0""#])
+						.env_clear()
+						.env("PATH", &fixtures)
+						.output()
+						.expect("probe env --argv0 capability");
+					if case == "custom-arg0-unsupported" {
+						assert!(!capability.status.success(), "old env fixture must reject --argv0");
+					}
+					let argv = super::build_scope_argv(
+						"test.slice",
+						"test.scope",
+						false,
+						true,
+						&super::env_exec(
+							&shell,
+							std::ffi::OsStr::new("custom-marker"),
+							&["-c".into(), r#"printf %s "$0""#.into()],
+						),
+						&super::ScopeEnvironment::default(),
+					);
+					let out = launch(&argv);
+					if capability.status.success() {
+						assert_eq!(String::from_utf8_lossy(&capability.stdout), "custom-marker");
+						assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+						assert_eq!(String::from_utf8_lossy(&out.stdout), "custom-marker");
+						eprintln!("{case}: supported custom argv0 executed");
+					} else {
+						for rejected in [&capability, &out] {
+							assert_eq!(rejected.status.code(), Some(125));
+							let stderr = String::from_utf8_lossy(&rejected.stderr);
+							assert!(
+								stderr.contains("unrecognized option") && stderr.contains("--argv0=custom-marker"),
+								"unsupported env must explicitly reject custom argv0: {stderr}"
+							);
+						}
+						eprintln!("{case}: unsupported custom argv0 explicitly rejected");
+					}
+				}
+				other => panic!("unknown case {other}"),
+			}
+			return;
+		}
+
+		let fixtures = tempfile::tempdir().expect("private launcher fixtures");
+		let shell = super::resolved_binary("sh");
+		let real_env = super::resolved_binary("env");
+		assert!(std::path::Path::new(&shell).is_absolute(), "sh must be available");
+		// coreutils <9.5 emulation: `--argv0` did not exist.
+		let old_env_path = fixtures.path().join("env");
+		std::fs::write(
+			&old_env_path,
+			format!(
+				"#!{shell}\ncase \"$1\" in --argv0=*) echo \"env: unrecognized option '$1'\" >&2; \
+				 exit 125;; esac\nexec '{real_env}' \"$@\"\n",
+				shell = shell.to_string_lossy(),
+				real_env = real_env.to_string_lossy()
+			),
+		)
+		.unwrap();
+		std::fs::set_permissions(&old_env_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+		symlink(super::true_bin(), fixtures.path().join("true")).unwrap();
+		symlink(&shell, fixtures.path().join("sh")).unwrap();
+		for (name, body) in [
+			("systemctl", "printf 'systemd 253\\n'\n"),
+			(
+				"systemd-run",
+				"while [ \"$#\" -gt 0 ] && [ \"$1\" != '--' ]; do shift; done\n[ \"$#\" -gt 0 ] || \
+				 exit 93\nshift\nexec \"$@\"\n",
+			),
+			("nice", "[ \"$1\" = '-n19' ] || exit 95\nshift\nexec \"$@\"\n"),
+			("ionice", "[ \"$1\" = '-c2' ] && [ \"$2\" = '-n7' ] || exit 96\nshift 2\nexec \"$@\"\n"),
+		] {
+			let path = fixtures.path().join(name);
+			std::fs::write(&path, format!("#!{shell}\n{body}", shell = shell.to_string_lossy()))
+				.unwrap();
+			std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+		}
+		// Phase 2 uses the actual host env, which may also predate 9.5.
+		// The child checks its capability and asserts either execution or
+		// the explicit unsupported-option failure; neither path is skipped.
+		let modern = tempfile::tempdir().expect("host env fixture");
+		symlink(&real_env, modern.path().join("env")).unwrap();
+		for (case, path) in [
+			("pre95", fixtures.path().as_os_str().to_os_string()),
+			("custom-arg0-unsupported", fixtures.path().as_os_str().to_os_string()),
+			("custom-arg0", {
+				// PATH list, not a path: join with `:` and no separator.
+				let mut joined = modern.path().as_os_str().to_os_string();
+				joined.push(":");
+				joined.push(fixtures.path());
+				joined
+			}),
+		] {
+			let output = Command::new(std::env::current_exe().unwrap())
+				.args([
+					"--exact",
+					"process_limit::tests::probe_and_scope_launch_on_pre_95_env_with_normal_argv0",
+					"--nocapture",
+				])
+				.env_clear()
+				.env("PATH", &path)
+				.env(CASE_ENV, case)
+				.env(FIXTURES_ENV, &path)
+				.output()
+				.expect("run isolated compatibility case");
+			assert!(
+				output.status.success(),
+				"{case}: {:?}\n{}\n{}",
+				output.status,
+				String::from_utf8_lossy(&output.stdout),
+				String::from_utf8_lossy(&output.stderr)
+			);
+			eprintln!("{case}: passed\n{}", String::from_utf8_lossy(&output.stderr));
+		}
 	}
 
 	#[cfg(target_os = "linux")]

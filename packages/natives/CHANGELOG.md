@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Fixed Linux per-tool process boundaries rejecting every external command on hosts with coreutils <9.5 (Ubuntu 24.04, Debian 12): the enforcement probe no longer requires `env --argv0`.
+- Fixed scoped command arguments containing `$` being rewritten to `$$` on systemd <254, where scope launches never expand arguments (`sh -c 'echo $HOME'` ran `echo $$HOME`).
 - Fixed Bazel native addon builds failing to resolve the vendored brush-core dependency in pi-vcs.
 - Fixed macOS computer use reporting a working physical Escape stop (`globalEscape: true`) when Input Monitoring was turned off and the stop could not see keys; `inputPermission` now reports event-posting access, and permission errors name the terminal or IDE to grant ([#15157](https://github.com/can1357/oh-my-pi/pull/15157) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed a macOS element-ref `StaleRef` giving no lead when the app destroyed the element and put an identical one in its place: the error now names the one element of the window with the fields the ref was read with, registered as a new ref, and sends nothing to it ([#15574](https://github.com/can1357/oh-my-pi/pull/15574) by [@will-bogusz](https://github.com/will-bogusz))
