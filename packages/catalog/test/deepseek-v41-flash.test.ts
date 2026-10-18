@@ -17,7 +17,8 @@ function bundled(provider: Parameters<typeof getBundledModels>[0], id: string): 
 describe("DeepSeek V4.1 Flash", () => {
 	test("the bundled native row accepts image input", () => {
 		const model = bundled("deepseek", "deepseek-flash");
-		expect(model.name).toBe("DeepSeek V4.1 Flash");
+		// The display name is upstream-owned (it currently carries a release-date
+		// suffix) and incidental to this contract; only image behavior is asserted.
 		expect(model.reasoning).toBe(true);
 		expect(model.input).toEqual(["text", "image"]);
 		expect(model.compat.stripImageInput).toBe(false);

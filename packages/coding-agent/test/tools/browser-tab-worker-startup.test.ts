@@ -632,58 +632,88 @@ describe("browser tabs whose renderer crashed", () => {
 		45_000,
 	);
 
-	it.skipIf(!CHROMIUM_AVAILABLE)(
-		"cancels an inline worker's run whose renderer crashed instead of letting it go on after its caller was told",
-		async () => {
-			let requests = 0;
-			const started = Promise.withResolvers<void>();
-			const server = Bun.serve({
-				port: 0,
-				fetch: request => {
-					if (new URL(request.url).pathname === "/started") started.resolve();
-					else requests++;
-					return new Response("ok");
-				},
-			});
-			const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
-			const name = `crashed-continuation-${process.pid}`;
-			const url = `data:text/html,<title>${name}</title>`;
-			try {
-				// An inline worker runs the code in this process, where closing the tab does not stop it. Worker
-				// threads failing to start is what puts a tab on one.
-				const RealWorker = globalThis.Worker;
-				Object.defineProperty(globalThis, "Worker", {
-					configurable: true,
-					writable: true,
-					value: function UnavailableWorker(): never {
-						throw new Error("Worker threads unavailable");
+	for (const outcome of ["renderer crash", "user cancellation", "normal completion"] as const) {
+		it.skipIf(!CHROMIUM_AVAILABLE)(
+			`settles an inline worker's held continuation after ${outcome}`,
+			async () => {
+				let requests = 0;
+				const started = Promise.withResolvers<void>();
+				const resume = Promise.withResolvers<void>();
+				const settled = Promise.withResolvers<void>();
+				const server = Bun.serve({
+					port: 0,
+					fetch: async request => {
+						switch (new URL(request.url).pathname) {
+							case "/started":
+								started.resolve();
+								await resume.promise;
+								break;
+							case "/after-crash":
+								requests++;
+								break;
+							case "/settled":
+								settled.resolve();
+								break;
+						}
+						return new Response("ok");
 					},
 				});
+				const browser = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+				const name = `crashed-continuation-${process.pid}`;
+				const url = `data:text/html,<title>${name}</title>`;
 				try {
-					await acquireTab(name, browser, { url, timeoutMs: 30_000 });
+					// An inline worker runs the code in this process, where closing the tab does not stop it. Worker
+					// threads failing to start is what puts a tab on one.
+					const RealWorker = globalThis.Worker;
+					Object.defineProperty(globalThis, "Worker", {
+						configurable: true,
+						writable: true,
+						value: function UnavailableWorker(): never {
+							throw new Error("Worker threads unavailable");
+						},
+					});
+					try {
+						await acquireTab(name, browser, { url, timeoutMs: 30_000 });
+					} finally {
+						globalThis.Worker = RealWorker;
+					}
+					expect(getTab(name)).toMatchObject({ worker: { mode: "inline" } });
+					const ac = new AbortController();
+					const run = runInTab(name, {
+						code: `try {
+							await wait(async () => { await fetch("http://127.0.0.1:${server.port}/started"); return true; });
+							await fetch("http://127.0.0.1:${server.port}/after-crash");
+						} finally { await fetch("http://127.0.0.1:${server.port}/settled"); }`,
+						timeoutMs: 10_000,
+						session,
+						signal: ac.signal,
+					}).then(
+						value => value,
+						(error: unknown) => error,
+					);
+					await started.promise;
+					if (outcome === "renderer crash") await crashRenderer(browser, url);
+					else if (outcome === "user cancellation") ac.abort();
+					else resume.resolve();
+					const result = await run;
+					// Release the held predicate only after the caller sees the outcome. Even an
+					// incorrectly surviving cell must finish before we count its next request.
+					resume.resolve();
+					await settled.promise;
+					if (outcome === "renderer crash") expect(String(result)).toContain("Browser tab's renderer crashed");
+					else if (outcome === "user cancellation") expect(result).toMatchObject({ name: "ToolAbortError" });
+					else expect(result).not.toBeInstanceOf(Error);
+					expect(requests).toBe(outcome === "normal completion" ? 1 : 0);
 				} finally {
-					globalThis.Worker = RealWorker;
+					resume.resolve();
+					await releaseTab(name, { kill: true });
+					if ("browser" in browser && browser.browser.connected) await releaseBrowser(browser, { kill: true });
+					server.stop(true);
 				}
-				expect(getTab(name)).toMatchObject({ worker: { mode: "inline" } });
-				const run = runInTab(name, {
-					code: `await fetch("http://127.0.0.1:${server.port}/started"); await wait(2_000); await fetch("http://127.0.0.1:${server.port}/after-crash");`,
-					timeoutMs: 10_000,
-					session,
-				}).catch((error: unknown) => error);
-				await started.promise;
-				await crashRenderer(browser, url);
-				expect(String(await run)).toContain("the tab could not be reattached and was closed");
-				// A run left going reaches the second fetch two seconds after it started; nothing marks that it did not.
-				await Bun.sleep(2_500);
-				expect(requests).toBe(0);
-			} finally {
-				await releaseTab(name, { kill: true });
-				if ("browser" in browser && browser.browser.connected) await releaseBrowser(browser, { kill: true });
-				server.stop(true);
-			}
-		},
-		45_000,
-	);
+			},
+			45_000,
+		);
+	}
 
 	it.skipIf(!CHROMIUM_AVAILABLE)(
 		"brings back a settle-frozen tab whose renderer crashed",
