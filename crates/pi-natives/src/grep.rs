@@ -3842,6 +3842,8 @@ mod tests {
 			max_columns:        None,
 			mode:               Some(super::GrepOutputMode::Count),
 			max_count_per_file: None,
+			max_scan_files:     None,
+			max_scan_bytes:     None,
 			filesystem:         super::BlockingFs::native(),
 			stream:             None,
 		};
