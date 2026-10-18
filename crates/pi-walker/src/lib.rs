@@ -5424,7 +5424,7 @@ mod tests {
 				.glob(CompiledWalkGlob::new(["**/*.txt"]).expect("compile glob"))
 				.node_modules_unless_mentioned(mentioned);
 			for limit in [2, usize::MAX] {
-				let mut collector = RankedCollectVisitor::new(&filter, WalkRank::PathAsc, limit);
+				let mut collector = RankedCollectVisitor::new(&filter, WalkRank::PathAsc, limit, None);
 				for (relative, file_type, size) in inputs {
 					collector
 						.visit(Entry {
