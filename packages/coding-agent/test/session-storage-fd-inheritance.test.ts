@@ -11,11 +11,12 @@
  *
  * Oracle: list the child's descriptor table. `sh -c` is required — a bare `ls`
  * resolves to an in-process builtin, whose `$$` is omp itself. A deliberately
- * inheritable control descriptor (the exact `fs.openSync(path, "a")` the
- * pre-fix writer used) runs in the same child so the assertions cannot pass
+ * inheritable control descriptor (created with dup, which clears CLOEXEC)
+ * runs in the same child so the assertions cannot pass
  * vacuously. /proc makes this Linux-only; the helper's flag handling is
  * covered on every platform by `packages/utils/test/fs-open.test.ts`.
  */
+import { dlopen, FFIType } from "bun:ffi";
 import { afterAll, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
@@ -53,15 +54,23 @@ test.skipIf(process.platform !== "linux")("bash tool children never inherit sess
 	logSink.write("entry");
 
 	const control = path.join(root, "control.jsonl");
-	const controlFd = fs.openSync(control, "a");
+	// dup explicitly clears close-on-exec, independently of Bun's open defaults.
+	const libc = dlopen("libc.so.6", {
+		dup: { args: [FFIType.i32], returns: FFIType.i32 },
+	});
+	const originalControlFd = fs.openSync(control, "a");
+	const controlFd = libc.symbols.dup(originalControlFd);
+	fs.closeSync(originalControlFd);
 
 	let output = "";
 	try {
+		expect(controlFd).toBeGreaterThanOrEqual(0);
 		await new Shell().run({ command: "sh -c 'ls -l /proc/$$/fd'", cwd: root }, (_err, chunk) => {
 			output += chunk;
 		});
 	} finally {
-		fs.closeSync(controlFd);
+		if (controlFd >= 0) fs.closeSync(controlFd);
+		libc.close();
 		logSink.close();
 		await writer.close();
 	}
