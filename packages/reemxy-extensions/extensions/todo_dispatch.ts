@@ -21,16 +21,20 @@ import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } fr
 import { derivePresence, isDeadlineStateEntryMetadata, isGoalLifecycleEntryMetadata, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
-function todoStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
+export function todoStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
+  const phases = pending.length === 0 ? ctx.getTodoPhases?.() : undefined;
+  if (phases !== undefined) return [{ type: "custom", customType: "user_todo_edit", data: { phases } }];
   const branch = selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata);
   return pending.length ? [...branch, ...pending] : branch;
 }
 
-function dispatchStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
+export function dispatchStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
+  const phases = pending.length === 0 ? ctx.getTodoPhases?.() : undefined;
   const branch = selectBranchEntries(ctx.sessionManager, (metadata) =>
-    isTodoSelectionEntryMetadata(metadata) || isDeadlineStateEntryMetadata(metadata) || isGoalLifecycleEntryMetadata(metadata) ||
+    (phases === undefined && isTodoSelectionEntryMetadata(metadata)) || isDeadlineStateEntryMetadata(metadata) || isGoalLifecycleEntryMetadata(metadata) ||
     (metadata.type === "message" && metadata.messageRole === "user"),
   );
+  if (phases !== undefined) return [...branch, { type: "custom", customType: "user_todo_edit", data: { phases } }];
   return pending.length ? [...branch, ...pending] : branch;
 }
 

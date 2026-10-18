@@ -781,6 +781,7 @@ export class ExtensionRunner {
 		private readonly agent: ExtensionAgentIdentity = TOP_LEVEL_AGENT,
 		/** Builds `ctx.annotations`; supplied by the host that wires the bundled `/annotate` command. */
 		createAnnotations?: ExtensionAnnotationsFactory,
+		private readonly getTodoPhases?: ExtensionContext["getTodoPhases"],
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
@@ -1538,6 +1539,7 @@ export class ExtensionRunner {
 			getTaskMaxConcurrency: () => (this.settings ? cfgTaskMaxConcurrency.get(this.settings) : undefined),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
+			getTodoPhases: () => this.getTodoPhases?.(),
 			setSubagentFastMode: this.#setSubagentFastModeFn,
 			hasUI: this.hasUI(),
 			cwd: this.cwd,

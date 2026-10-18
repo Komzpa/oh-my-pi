@@ -38,6 +38,7 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import type { ContextUsage } from "@oh-my-pi/pi-tui/status-line/types";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	Api,
@@ -670,6 +671,8 @@ export type ExtensionAnnotationsFactory = (
 ) => ExtensionAnnotationsAPI;
 
 export interface ExtensionContext {
+	/** Current hydrated plan, without replaying the session journal. Undefined before session initialization. */
+	getTodoPhases?(): TodoPhase[] | undefined;
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
 	/** Current run mode. Use `"tui"` to guard terminal-only UI such as custom components. */
