@@ -1,4 +1,5 @@
 import { calculateUsageCost } from "@oh-my-pi/pi-catalog/models";
+import { YAML } from "bun";
 import { describe, expect, it } from "bun:test";
 import {
 	type ApiKeyResolveContext,
@@ -96,26 +97,41 @@ describe("TextJudge", () => {
 	});
 
 	it("renders scalar fields directly, nested fields as YAML, and unsafe keys through field tags", () => {
-		expect(
-			renderJudgmentState({
-				name: 'a < b & "quoted"',
-				count: 2,
-				active: true,
-				missing: null,
-				config: { retries: 3, labels: ["fast", "safe"] },
-				"bad key": { enabled: false },
-			}),
-		).toBe(
-			'<name>a &lt; b &amp; "quoted"</name>\n' +
-				"<count>2</count>\n" +
-				"<active>true</active>\n" +
-				"<missing>null</missing>\n" +
-				"<config>\nretries: 3\nlabels: \n  - fast\n  - safe\n</config>\n" +
-				'<field name="bad key">\nenabled: false\n</field>',
-		);
-		expect(renderJudgmentState(["a", { nested: "<value>" }])).toBe(
-			'<state>\n- a\n- nested: "&lt;value&gt;"\n</state>',
-		);
+		const rendered = renderJudgmentState({
+			name: 'a < b & "quoted"',
+			count: 2,
+			active: true,
+			missing: null,
+			config: { retries: 3, labels: ["fast", "safe"] },
+			"bad key": { enabled: false },
+		});
+		expect(rendered).toContain('<name>a &lt; b &amp; "quoted"</name>');
+		expect(rendered).toContain("<count>2</count>");
+		expect(rendered).toContain("<active>true</active>");
+		expect(rendered).toContain("<missing>null</missing>");
+		expect(rendered).toContain('<field name="bad key">');
+		expect(rendered).not.toContain("<bad key>");
+		// Nested values are block YAML inside their tag. Assert the parsed object,
+		// not the serializer's incidental whitespace/quoting (it drifts across Bun
+		// versions: `labels: ` vs `labels:`).
+		const parseTagYaml = (open: string, close: string): unknown => {
+			const start = rendered.indexOf(open);
+			const bodyStart = start + open.length;
+			const end = rendered.indexOf(close, bodyStart);
+			expect(start).toBeGreaterThanOrEqual(0);
+			expect(end).toBeGreaterThan(bodyStart);
+			return YAML.parse(rendered.slice(bodyStart, end));
+		};
+		expect(parseTagYaml("<config>", "</config>")).toEqual({ retries: 3, labels: ["fast", "safe"] });
+		expect(parseTagYaml('<field name="bad key">', "</field>")).toEqual({ enabled: false });
+
+		// Top-level arrays wrap in <state>; nested values stay XML-escaped in the
+		// YAML body without pinning the YAML serialization format.
+		const renderedList = renderJudgmentState(["a", { nested: "<value>" }]);
+		expect(renderedList).toStartWith("<state>\n");
+		expect(renderedList).toEndWith("\n</state>");
+		expect(renderedList).toContain("&lt;value&gt;");
+		expect(renderedList).not.toContain("<value>");
 	});
 
 	it("batches several questions into one completion and parses `id: answer` lines", async () => {

@@ -264,17 +264,19 @@ jobs:
 
    # Provides the linux-x64 addon pair every downstream TS job installs.
    #
-   # PRs never build. They restore the pair main built for the same native
-   # sources from actions/cache (key = hash of every native build input, the
-   # same file set as the bazel-cache action's config+source hashes). With no
-   # exact entry (the PR changes native inputs, or main has not built this
-   # state yet) they take main's newest entry, and with no entry at all the
-   # latest npm release. The workspace loader skips its version sentinel for
-   # workspace loads, so any of these load under a newer checkout. Testing
-   # against main's build instead of the last release keeps merged-but-
-   # unreleased native fixes from failing every PR that did not touch Rust
-   # (a merged grep fix plus its TS test failed 75 PR runs against the
-   # 18.3.1 addon). Only main saves; see the save step for why.
+   # PRs restore the pair main built for the same native sources from
+   # actions/cache (key = hash of every native build input, the same file set
+   # as the bazel-cache action's config+source hashes), and on no exact entry
+   # (the PR changes native inputs, or main has not built this state yet)
+   # they build the pair from their own sources. A restore-prefix or
+   # npm-latest fallback shipped an addon compiled from other sources: the
+   # workspace loader skips its version sentinel for workspace loads, so a
+   # mismatched addon loads fine and fails wherever a missing export is
+   # first used (PR 124: `new ToolResourceScope()` crashed every downstream
+   # job against the previous entry) or a stale renderer drifts goldens
+   # (square snapcompact PNGs). Downstream tests always run against addons
+   # compiled from the sources under review. Only main saves; see the save
+   # step for why.
    #
    # Main (kata, cluster remote cache) builds only the pair here so the TS
    # fan-out starts as soon as it links; native_addons_cross builds the other
@@ -304,7 +306,7 @@ jobs:
               echo "prefix=natives-linux-x64-v1-" >> "$GITHUB_OUTPUT"
               echo "key=natives-linux-x64-v1-$NATIVE_INPUTS_HASH" >> "$GITHUB_OUTPUT"
 
-         # ---- PR path: main-built addons from actions/cache, else npm ----
+         # ---- PR path: main's exact build from cache, else build below ----
          # `ci-natives` is a plain workspace-relative path on purpose: the
          # cache version hashes the literal path list, so kata (save) and
          # hosted (restore) must spell it identically, and upload-artifact
@@ -315,22 +317,13 @@ jobs:
            uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            with:
               path: ci-natives
+              # Exact key only. A restore-keys prefix match could hand this
+              # PR an addon built before its native sources existed, missing
+              # their exports; a miss falls through to the source build.
               key: ${{ steps.natives-key.outputs.key }}
-              restore-keys: |
-                 ${{ steps.natives-key.outputs.prefix }}
-         - name: Fetch release native addons (npm)
-           if: github.event_name == 'pull_request' && steps.natives-cache.outputs.cache-matched-key == ''
-           shell: bash
-           run: |
-              set -euo pipefail
-              tarball="$(npm view @oh-my-pi/pi-natives-linux-x64@latest dist.tarball)"
-              echo "Fetching $tarball"
-              curl -fsSL --retry 3 "$tarball" | tar -xz -C "$RUNNER_TEMP"
-              mkdir -p ci-natives/natives-linux-x64-baseline ci-natives/natives-linux-x64-modern
-              cp "$RUNNER_TEMP/package/pi_natives.linux-x64-baseline.node" ci-natives/natives-linux-x64-baseline/
-              cp "$RUNNER_TEMP/package/pi_natives.linux-x64-modern.node" ci-natives/natives-linux-x64-modern/
-         # Make the addon source visible whenever it is not source-matched,
-         # instead of leaving a reviewer to wonder which addons the tests ran.
+         # Two states, both source-matched: main's build for these exact
+         # sources, or this PR's own build right below. A reviewer should
+         # never have to guess which addon the tests ran against.
          - name: Report native addon source
            if: github.event_name == 'pull_request'
            shell: bash
@@ -340,20 +333,21 @@ jobs:
            run: |
               if [ "$EXACT" = true ]; then
                 echo "Using main's addons for this exact native source state ($MATCHED)."
-              elif [ -n "$MATCHED" ]; then
-                echo "::notice title=Native addons not source-matched::No main build matches this PR's native sources; testing against main's newest addon build ($MATCHED). Native changes are validated post-merge on main and at release."
               else
-                echo "::notice title=Native addons from npm::No main-built addon cache entry is available; testing against the latest npm release addons."
+                echo "::notice title=Native addons built from source::No main build matches this PR's native sources; building the linux-x64 pair from the PR's own sources."
               fi
 
-         # ---- main path: bazel build of the linux-x64 pair ----
+         # ---- source build: bazel build of the linux-x64 pair ----
+         # Runs on main always, and on PRs whose exact source state has no
+         # cached pair (they changed native inputs, or main has not built
+         # this state yet).
          - id: cache
-           if: github.event_name != 'pull_request'
+           if: github.event_name != 'pull_request' || steps.natives-cache.outputs.cache-hit != 'true'
            uses: ./.github/actions/bazel-cache
            with:
               scope: linux
          - name: Build linux-x64 native addons
-           if: github.event_name != 'pull_request'
+           if: github.event_name != 'pull_request' || steps.natives-cache.outputs.cache-hit != 'true'
            run: |
               set -eo pipefail
               if [ "$(ulimit -Sn)" != unlimited ] && [ "$(ulimit -Sn)" -lt 65536 ]; then ulimit -Sn 65536 || true; fi
@@ -376,7 +370,7 @@ jobs:
          # thousands of actions is the failure mode that made CI slow — make
          # it visible in the run summary instead of discovering it weeks in.
          - name: Report bazel cache stats
-           if: github.event_name != 'pull_request'
+           if: github.event_name != 'pull_request' || steps.natives-cache.outputs.cache-hit != 'true'
            shell: bash
            run: |
               # Bazel runs with --color=yes (config=ci); strip ANSI before
