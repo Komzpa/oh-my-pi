@@ -60,8 +60,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			format: "esm",
 			bytecode: true,
 			splitting: true,
-			// Discovery entries can share both a basename and a hash (type-only modules).
-			// Preserve their source directories so compiled chunks remain distinct.
+			// Identical discovery modules can share both basename and hash; retain their source directories.
 			naming: { chunk: "chunks/[dir]/[name]-[hash].[ext]" },
 			minify: {
 				identifiers: options.minifyIdentifiers ?? false,
