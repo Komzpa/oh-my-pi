@@ -1,7 +1,7 @@
 import { expect, it } from "bun:test";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { hydrateHistoryOffThread } from "../../src/registry/persisted-history-client";
-import { readPersistedAgentHistory } from "../../src/registry/persisted-agents";
+import { readHistoryOffThread } from "../../src/registry/persisted-history-client";
+import { readPersistedAgentHistoryInline } from "../../src/registry/persisted-agents";
 
 it("returns the same usage and model attribution as the transcript reader", async () => {
 	using dir = TempDir.createSync("history-worker-");
@@ -29,32 +29,15 @@ it("returns the same usage and model attribution as the transcript reader", asyn
 			.join("\n") + "\n",
 	);
 	const transcript = { id: "child", sessionFile: file };
-	const expected = await readPersistedAgentHistory(transcript, () => true);
-	let accepted = 0;
-	await hydrateHistoryOffThread(
-		[transcript],
-		() => true,
-		(source, history) => {
-			expect(source).toEqual(transcript);
-			expect(history).toEqual(expected);
-			expect(history.directCost).toBe(0.5);
-			accepted++;
-		},
-	);
-	expect(accepted).toBe(1);
+	const expected = await readPersistedAgentHistoryInline(transcript, () => true);
+	const history = await readHistoryOffThread(transcript, () => true);
+	expect(history).toEqual(expected);
+	expect(history.directCost).toBe(0.5);
 });
 
 it("does not accept results after the caller cancels", async () => {
 	let active = true;
-	let accepted = 0;
-	const pending = hydrateHistoryOffThread(
-		[{ id: "absent", sessionFile: "/nonexistent/worker.jsonl" }],
-		() => active,
-		() => {
-			accepted++;
-		},
-	);
+	const pending = readHistoryOffThread({ id: "absent", sessionFile: "/nonexistent/worker.jsonl" }, () => active);
 	active = false;
-	await pending;
-	expect(accepted).toBe(0);
+	expect(await pending).toEqual({});
 });

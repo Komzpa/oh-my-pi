@@ -1,25 +1,25 @@
 import { parentPort } from "node:worker_threads";
 import { consumeWorkerInbox } from "@oh-my-pi/pi-utils/worker-host";
-import { readPersistedAgentHistory, type PersistedTranscript } from "./persisted-agents";
+import { readPersistedAgentHistoryInline, type PersistedTranscript } from "./persisted-agents";
 import type { HistoryWorkerReply } from "./persisted-history-client";
 
 if (!parentPort) throw new Error("History worker requires a parent port");
 const send = (reply: HistoryWorkerReply): void => {
 	parentPort!.postMessage(reply);
 };
-async function load(transcripts: PersistedTranscript[]): Promise<void> {
+async function load(request: { id: number; transcript: PersistedTranscript }): Promise<void> {
 	try {
-		for (const transcript of transcripts) {
-			const history = await readPersistedAgentHistory(transcript, () => true);
-			send({ type: "history", transcript, history });
+		const { id, transcript } = request;
+		{
+			const history = await readPersistedAgentHistoryInline(transcript, () => true);
+			send({ id, history });
 		}
-		send({ type: "done" });
 	} catch (error) {
-		send({ type: "error", error: String(error) });
+		send({ id: request.id, error: String(error) });
 	}
 }
 const handle = (message: unknown): void => {
-	void load(message as PersistedTranscript[]);
+	void load(message as { id: number; transcript: PersistedTranscript });
 };
 const inbox = consumeWorkerInbox();
 if (inbox) inbox.bind(handle);
