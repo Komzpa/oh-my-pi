@@ -55,9 +55,16 @@ test.skipIf(process.platform !== "linux")("bash tool children never inherit sess
 
 	const control = path.join(root, "control.jsonl");
 	// dup explicitly clears close-on-exec, independently of Bun's open defaults.
-	const libc = dlopen("libc.so.6", {
+	const symbols = {
 		dup: { args: [FFIType.i32], returns: FFIType.i32 },
-	});
+	} as const;
+	const libc = (() => {
+		try {
+			return dlopen("libc.so.6", symbols);
+		} catch {
+			return dlopen("libc.so", symbols);
+		}
+	})();
 	const originalControlFd = fs.openSync(control, "a");
 	const controlFd = libc.symbols.dup(originalControlFd);
 	fs.closeSync(originalControlFd);
