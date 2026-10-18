@@ -438,7 +438,13 @@ test("vetoes native and plugin goal completion until branch TODO work is closed"
 	host.getLatestTodoPhasesFromEntries = undefined;
 	expect(invoke("goal", { op: "complete" })).toMatchObject({ block: true });
 	expect(invoke("other_tool", { op: "complete" })).toBeUndefined();
-	expect(branchReads).toHaveLength(callsBeforeUnrelated + 1);
+	expect(branchReads).toHaveLength(callsBeforeUnrelated);
+
+	ctx.getTodoPhases = () => phases;
+	expect(invoke("goal", { op: "complete" })).toBeUndefined();
+	phases = [{ name: "Delivery", tasks: [{ content: "Still running", status: "in_progress" }] }];
+	expect(invoke("update_goal", { status: "complete" })).toMatchObject({ block: true });
+	expect(branchReads).toHaveLength(callsBeforeUnrelated);
 });
 
 test("native lifecycle preserves the original deadline without reviving stale goal focus", async () => {

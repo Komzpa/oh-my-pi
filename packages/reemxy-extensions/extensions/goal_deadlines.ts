@@ -360,10 +360,10 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 			return;
 		}
 		const host = pi.pi as unknown as { getLatestTodoPhasesFromEntries?: TodoCompletionReducer } | undefined;
-		const phases =
+		const phases = ctx.getTodoPhases?.() ?? (
 			typeof host?.getLatestTodoPhasesFromEntries === "function"
 				? host.getLatestTodoPhasesFromEntries(selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata))
-				: [];
+				: []);
 		const todoShowsDue = (phases ?? []).some(phase =>
 			phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
 		);
@@ -413,12 +413,12 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		const isPluginCompletion = event.toolName === "update_goal" && event.input.status === "complete";
 		if (!isNativeCompletion && !isPluginCompletion) return;
 
-		const branch = selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata);
+		const livePhases = ctx.getTodoPhases?.();
 		const host = pi.pi as unknown as { getLatestTodoPhasesFromEntries?: TodoCompletionReducer } | undefined;
-		if (typeof host?.getLatestTodoPhasesFromEntries !== "function") {
+		if (livePhases === undefined && typeof host?.getLatestTodoPhasesFromEntries !== "function") {
 			return { block: true, reason: "Cannot verify TODO closure: the host TODO reducer is unavailable." };
 		}
-		const reason = todoCompletionBlockReason(host.getLatestTodoPhasesFromEntries(branch));
+		const reason = todoCompletionBlockReason(livePhases ?? host!.getLatestTodoPhasesFromEntries!(selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata)));
 		return reason ? { block: true, reason } : undefined;
 	});
 
