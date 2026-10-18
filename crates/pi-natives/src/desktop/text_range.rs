@@ -2,6 +2,7 @@
 //!
 //! Accessibility text ranges count UTF-16 code units, so every offset here is
 //! in UTF-16 units, never UTF-8 bytes or Unicode scalars.
+
 #[cfg(any(target_os = "macos", test))]
 use std::fmt::Write as _;
 
@@ -47,8 +48,8 @@ pub struct TextSelectRequest {
 }
 
 /// A selection in UTF-16 code units.
-#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(any(target_os = "macos", test))]
 pub struct Utf16Range {
 	pub start:  usize,
 	pub length: usize,
