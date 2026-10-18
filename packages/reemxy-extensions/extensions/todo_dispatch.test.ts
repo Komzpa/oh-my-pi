@@ -2313,6 +2313,7 @@ test("a resolved merge left open is committed first, and a merge gets one worker
     const realNow = Date.now;
     Date.now = () => realNow() + 20_000; // past the git-state cache
     try {
+      await context();
       const requirement = requirementProvider!(ctx) as { toolName: string; reminder: Array<{ content: string }>; satisfies: (call: unknown) => boolean };
       expect(requirement.toolName).toBe("task");
       expect(requirement.reminder[0]!.content).toContain("skill://chief-of-staff");
@@ -2326,6 +2327,7 @@ test("a resolved merge left open is committed first, and a merge gets one worker
       expect((await call("todo", { op: "done", task: "Resolve merge" }))).toBeUndefined();
       git("commit", "-q", "--no-edit");
       Date.now = () => realNow() + 40_000;
+      await context();
       expect(requirementProvider!(ctx)).toBeUndefined();
     } finally {
       Date.now = realNow;

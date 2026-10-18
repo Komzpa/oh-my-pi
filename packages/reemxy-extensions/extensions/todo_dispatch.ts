@@ -188,25 +188,29 @@ export interface GitIntegrationState {
   unpushed?: number;
   oldestUnpushedAgeMs?: number;
 }
-export function readGitIntegrationState(cwd: string, now: number): GitIntegrationState | null {
-  const git = (...args: string[]) => {
-    const out = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 5_000, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
-    return out.status === 0 ? out.stdout.trim() : null;
+export async function readGitIntegrationState(cwd: string, now: number): Promise<GitIntegrationState | null> {
+  const git = async (...args: string[]): Promise<string | null> => {
+    try {
+      const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8", timeout: 5_000, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+      return stdout.trim();
+    } catch {
+      return null;
+    }
   };
-  const head = git("rev-parse", "HEAD");
+  const head = await git("rev-parse", "HEAD");
   if (!head) return null;
   const state: GitIntegrationState = { head };
-  const mergePath = git("rev-parse", "--git-path", "MERGE_HEAD");
+  const mergePath = await git("rev-parse", "--git-path", "MERGE_HEAD");
   if (mergePath) {
     try {
       const stat = statSync(isAbsolute(mergePath) ? mergePath : join(cwd, mergePath));
-      state.mergeHead = git("rev-parse", "--short", "MERGE_HEAD") ?? "MERGE_HEAD";
+      state.mergeHead = await git("rev-parse", "--short", "MERGE_HEAD") ?? "MERGE_HEAD";
       state.mergeAgeMs = now - stat.mtimeMs;
-      const unmerged = git("diff", "--name-only", "--diff-filter=U");
+      const unmerged = await git("diff", "--name-only", "--diff-filter=U");
       state.unmerged = unmerged ? new Set(unmerged.split("\n").filter(Boolean)).size : 0;
     } catch {}
   }
-  const unpushed = git("log", "--format=%ct", "@{upstream}..HEAD");
+  const unpushed = await git("log", "--format=%ct", "@{upstream}..HEAD");
   if (unpushed !== null) {
     const times = unpushed.split("\n").filter(Boolean).map(Number);
     state.unpushed = times.length;
@@ -3020,15 +3024,26 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   });
   let gitStateCache: { cwd: string; at: number; state: GitIntegrationState | null } | null = null;
   const lastChiefHead = new Map<string, string>();
-  const gitState = (ctx: ExtensionContext, now: number, force = false) => {
-    if (force || !gitStateCache || gitStateCache.cwd !== ctx.cwd || now - gitStateCache.at > 15_000)
-      gitStateCache = { cwd: ctx.cwd, at: now, state: readGitIntegrationState(ctx.cwd, now) };
-    return gitStateCache.state;
+  let gitStatePending: { cwd: string; promise: Promise<GitIntegrationState | null> } | null = null;
+  const gitState = async (ctx: ExtensionContext, now: number, force = false): Promise<GitIntegrationState | null> => {
+    if (!force && gitStateCache?.cwd === ctx.cwd && now - gitStateCache.at <= 15_000) return gitStateCache.state;
+    if (gitStatePending?.cwd === ctx.cwd) return gitStatePending.promise;
+    const pending = { cwd: ctx.cwd, promise: readGitIntegrationState(ctx.cwd, now) };
+    gitStatePending = pending;
+    try {
+      const state = await pending.promise;
+      if (gitStatePending === pending) gitStateCache = { cwd: pending.cwd, at: Date.now(), state };
+      return state;
+    } finally {
+      if (gitStatePending === pending) gitStatePending = null;
+    }
   };
   const resolvedMerge = (state: GitIntegrationState | null) =>
     state?.mergeHead !== undefined && state.unmerged === 0 && (state.mergeAgeMs ?? 0) >= STALE_MERGE_MS ? state : null;
   const integrationRequirement = (ctx: ExtensionContext, goalActive: boolean, now: number) => {
-    const state = gitState(ctx, now);
+    // This host callback is synchronous. Never run a child process here or use
+    // expired advice; context/tool admission refreshes the canonical snapshot.
+    const state = gitStateCache?.cwd === ctx.cwd && now - gitStateCache.at <= 15_000 ? gitStateCache.state : null;
     const merge = resolvedMerge(state);
     if (merge) {
       const minutes = Math.round((merge.mergeAgeMs ?? 0) / 60_000);
@@ -3320,7 +3335,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       : "";
   };
   const integrationFacts = async (ctx: ExtensionContext, now: number) => {
-    const state = gitState(ctx, now, true);
+    const state = await gitState(ctx, now, true);
     const lines: string[] = [];
     const sessionId = ctx.sessionManager.getHeader?.()?.id ?? "unknown";
     const headKey = `${ctx.cwd}\0${sessionId}`;
@@ -3610,8 +3625,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const text = JSON.stringify(event.input ?? {});
       const adds = event.toolName === "task" || /"op"\s*:\s*"(append|init)"/.test(text);
       // A worker told to commit (and push) the merge is the right move, not more merge work.
-      const merge = adds && MERGE_WORK.test(text) && !/\bcommit/i.test(text) ? resolvedMerge(gitState(ctx, Date.now())) : null;
-      const open = event.toolName === "task" && MERGE_WORK.test(text) ? gitState(ctx, Date.now()) : null;
+      const integration = MERGE_WORK.test(text) && (adds || event.toolName === "task") ? await gitState(ctx, Date.now(), true) : null;
+      const merge = adds && !/\bcommit/i.test(text) ? resolvedMerge(integration) : null;
+      const open = event.toolName === "task" ? integration : null;
       if (open?.mergeHead && !merge) {
         const items = ((event.input as { tasks?: unknown[] } | undefined)?.tasks ?? [event.input]).filter((item) => MERGE_WORK.test(JSON.stringify(item ?? {})));
         const running = (ctx.getAsyncJobSnapshot()?.running ?? []).filter((job) => job.type === "task" && job.status === "running" && MERGE_WORK.test(`${job.id} ${job.label ?? ""} ${job.agentId ?? ""}`));

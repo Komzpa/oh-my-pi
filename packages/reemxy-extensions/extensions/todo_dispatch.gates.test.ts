@@ -187,6 +187,7 @@ async function outcome(state: State, cwd: string, call: Call | null, strictDeman
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   try {
+    await handlers.get("context")!({ messages: [] }, ctx);
     const demand = provider?.(ctx) as Demand;
     if (!call) {
       const handed = enforced?.(ctx);
