@@ -3703,6 +3703,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return `retrospective due (${sprintState.retroDueReason}): read the Retro block in the final answer of the ${workerIds.length} workers who finished since ${safeTimestamp(since, timeZone)} from agent://<id> (do not write to them; a missing block is recorded as missing), then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}; for each red item, identify which instruction line (skill or prompt) missed it and output a mechanism row that edits that instruction.`;
   };
   const planCheck = async (ctx: ExtensionContext, pending: unknown[] = [], problemsOnly = false): Promise<string | null> => {
+    // Finish I/O before reading or mutating plan state. A worker may finish or
+    // a todo result may arrive while Git is pending; judge the fresh snapshot.
+    const sampledJobs = (ctx.getAsyncJobSnapshot()?.running ?? []).filter((job) => job.type === "task" && job.status === "running");
+    const commitTimes = new Map(await Promise.all(sampledJobs.map(async (job) => {
+      const id = job.agentId ?? job.id;
+      return [id, await workerCommitAt(id)] as const;
+    })));
     pendingSizingNoticeIds = [];
     const now = Date.now();
     const decision = currentDecision(ctx, now, pending);
@@ -3788,13 +3795,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const age = activityByName.get(id)?.ageMs;
       return { id, row, label, trace, age, p95Text };
     });
-    // Git can wait on disk or hooks; never hold the interactive event loop while checking workers.
-    const commitTimes = await Promise.all(workerInfos.map(({ id }) => workerCommitAt(id)));
-    const staleWorkers = workerInfos.flatMap(({ id, row, label, trace }, index) => {
+    const staleWorkers = workerInfos.flatMap(({ id, row, label, trace }) => {
       const job = running.find(candidate => (candidate.agentId ?? candidate.id) === id);
       const startTime = job?.startTime;
       const elapsed = typeof startTime === "number" ? now - startTime : 0;
-      const commitAt = commitTimes[index];
+      const commitAt = commitTimes.get(id);
       const isStale = elapsed > SILENT_MS && commitAt !== undefined && now - commitAt > SILENT_MS;
       const minutesOld = Math.floor(elapsed / 60_000);
       const warning = isStale ? { minutes: minutesOld, lastLine: trace.lastTool, ...(row ? { row: row.content } : {}) } : undefined;
