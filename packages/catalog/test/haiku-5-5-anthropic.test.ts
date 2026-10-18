@@ -28,11 +28,11 @@ function anthropicModel(id: string): Model<"anthropic-messages"> {
 }
 
 describe("claude-haiku-5-5 on the direct anthropic route", () => {
-	test("resolves adaptive thinking with medium effort and no forced tool choice", () => {
+	test("resolves adaptive thinking with medium effort and keeps forced tool choice", () => {
 		const model = anthropicModel("claude-haiku-5-5");
 		expect(model.thinking?.mode).toBe("anthropic-adaptive");
 		expect(model.thinking?.efforts).toContain(Effort.Medium);
-		expect(model.compat.supportsForcedToolChoice).toBe(false);
+		expect(model.compat.supportsForcedToolChoice).toBe(true);
 	});
 
 	test("claude-haiku-4-5 keeps budget thinking", () => {

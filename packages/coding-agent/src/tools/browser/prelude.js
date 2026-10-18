@@ -28,7 +28,7 @@
 	const invoke = async (action, options) => {
 		const response = await globalThis.__omp_prelude__("browser", { ...options, action });
 		if (response && typeof response.text === "string" && response.text.length > 0) {
-			globalThis.__omp_display__(response.text);
+			globalThis.__omp_log__("log", response.text);
 		}
 		return response && typeof response.details === "object" && response.details !== null ? response.details : {};
 	};
@@ -256,6 +256,10 @@
 		},
 		async tabs() {
 			const details = await invoke("tabs", {});
+			return Array.isArray(details.value) ? details.value : [];
+		},
+		async targets(options) {
+			const details = await invoke("targets", validateOptions("browser.targets", options));
 			return Array.isArray(details.value) ? details.value : [];
 		},
 		async close(options) {
