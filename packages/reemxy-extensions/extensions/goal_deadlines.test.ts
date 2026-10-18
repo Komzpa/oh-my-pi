@@ -836,3 +836,30 @@ test("persists a hard deadline without inventing goal focus or requiring goal me
 	expect(focused.details.state).toMatchObject({ goalId: "focused-goal", goalStartedAt: 1_000, active: true });
 	expect(typeof focused.details.state?.timezone).toBe("string");
 });
+
+test("tool results paint deadline state once, after recording delivery", () => {
+	const handlers = new Map<string, Function>();
+	const branch = [{ type: "custom", customType: STATE_ENTRY, data: structuredClone(state) }];
+	const paints: unknown[] = [];
+	goalDeadlines({
+		pi: { goalRef, readFocusedGoal: () => ({ id: "goal-1", createdAt: 1_000, status: "active" }), rehydrateDeadlineState, STATE_ENTRY },
+		on: (event, handler) => handlers.set(event, handler),
+		registerTool: () => {},
+		appendEntry: (customType, data) => branch.push({ type: "custom", customType, data: structuredClone(data) }),
+		zod: z,
+	} as unknown as ExtensionAPI);
+	const ctx = {
+		cwd: "/tmp", hasUI: true,
+		sessionManager: branchMock(() => branch),
+		ui: { setStatus: () => {}, setWidget: (_key, lines) => paints.push(lines) },
+	} as unknown as ExtensionContext;
+	handlers.get("session_start")!({}, ctx);
+	paints.length = 0;
+	handlers.get("tool_result")!({ toolName: "bash", isError: false }, ctx);
+	expect(paints).toHaveLength(1);
+	paints.length = 0;
+	handlers.get("tool_result")!({ toolName: "update_goal_task", isError: false, input: { task_id: "draft", status: "complete", evidence: "draft delivered" } }, ctx);
+	expect(paints).toHaveLength(1);
+	expect(branch.at(-1)!.data.stages[0].deliveredArtifact).toBe("draft delivered");
+	expect(JSON.stringify(paints[0])).not.toContain("Draft");
+});

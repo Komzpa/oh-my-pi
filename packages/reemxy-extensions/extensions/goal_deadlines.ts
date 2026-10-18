@@ -436,7 +436,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 
 	pi.on("tool_result", (event, ctx) => {
 		if (event.isError) return;
-		refresh(ctx);
+		activeGoal = focusedGoal(ctx);
 		if (state?.active && event.toolName === "update_goal_task") {
 			const input = event.input as { task_id?: unknown; status?: unknown; evidence?: unknown };
 			const stage =
