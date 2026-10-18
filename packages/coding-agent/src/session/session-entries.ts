@@ -285,6 +285,12 @@ export interface SessionInitEntry extends SessionEntryBase {
 	isolated?: boolean;
 	/** Work-pool yield items of the last model call; revival restores them so the yield tool matches. Absent when none. */
 	workPoolYieldItems?: WorkPoolYieldItem[];
+	/** Spawn-installed `subagent:<id>` retry-fallback role, so cold revival can reinstall the same chain. Absent when the spawn installed none. */
+	retryFallbackRole?: string;
+	/** Primary model selector the retry-fallback role is pinned to. Absent when no chain was installed. */
+	retryFallbackPrimary?: string;
+	/** Model selectors after the primary in the spawn's profile ladder. Absent or empty when no chain was installed. */
+	retryFallbackChain?: string[];
 }
 
 /** Mode change entry - tracks agent mode transitions (e.g. plan mode). */
