@@ -3056,7 +3056,7 @@ export class ModelRegistry {
 				provider => requested.has(provider.toLowerCase()) && isProviderAvailable(provider),
 			),
 		);
-		const models = this.#composeStaticModels(availableProviders);
+		const models = [...availableProviders].flatMap(provider => this.#modelsForProviderLookup(provider));
 		return kind === "all" ? models : models.filter(model => modelKind(model) === kind);
 	}
 

@@ -81,6 +81,51 @@ describe("ModelRegistry lazy bundled composition", () => {
 		expect(registry.find("litellm", "cached-fixture")?.name).toBe("Cached Fixture");
 	});
 
+	test("cached availability follows credential removal and provider replacement", async () => {
+		const auth = await AuthStorage.create(":memory:");
+		authStorages.push(auth);
+		const registry = new ModelRegistry(auth, undefined, { ignoreLocalModelConfig: true });
+		const provider = "availability-fixture";
+		const config = {
+			baseUrl: "https://fixture.invalid/v1",
+			apiKey: "fixture-key",
+			api: "openai-completions" as const,
+			models: [
+				{
+					id: "first",
+					name: "First",
+					reasoning: false,
+					input: ["text" as const],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 8192,
+					maxTokens: 1024,
+				},
+			],
+		};
+		registry.registerProvider(provider, config, "ext://availability-fixture");
+		const source = auth.keys.source.bind(auth.keys);
+		let enabled = true;
+		spies.push(
+			spyOn(auth.keys, "source").mockImplementation((id, options) =>
+				id === provider && !enabled ? undefined : source(id, options),
+			),
+		);
+		const available = () => registry.getAvailableForProviders(new Set([provider])).map(model => model.id);
+		expect(available()).toEqual(["first"]);
+		enabled = false;
+		expect(available()).toEqual([]);
+		enabled = true;
+		expect(available()).toEqual(["first"]);
+		registry.registerProvider(
+			provider,
+			{ ...config, models: [{ ...config.models[0], id: "second" }] },
+			"ext://availability-fixture",
+		);
+		expect(available()).toEqual(["second"]);
+		registry.clearSourceRegistrations("ext://availability-fixture");
+		expect(available()).toEqual([]);
+	});
+
 	test("query order preserves ordering, snapshots, and model identity", async () => {
 		const createRegistry = async (name: string, maskTypeSafeEnvAuth = false): Promise<ModelRegistry> => {
 			const tempDir = TempDir.createSync(`@model-registry-lazy-${name}-`);
