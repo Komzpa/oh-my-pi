@@ -28,6 +28,7 @@ import { resolveApiKeyOnce } from "@oh-my-pi/pi-ai/auth-retry";
 import type { DiscoverAuthStorageOptions } from "@oh-my-pi/pi-ai/auth-broker/discover";
 import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
 import { prewarmOpenAICodexResponses } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+import { prewarmModelConnection } from "@oh-my-pi/pi-ai/providers/connection-prewarm";
 import { isOpenAICodexWebSocketPreferred } from "@oh-my-pi/pi-ai/providers/openai-codex-transport";
 import { withCredentialRedaction } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import { resolveCatalogPolicy } from "@oh-my-pi/pi-catalog/compat/catalog-policy";
@@ -291,6 +292,7 @@ import {
 	xdevEntries,
 } from "./tools";
 import { resolveYieldReportText } from "./tools/yield";
+import { createModelJobWidgetAuthor, type JobWidgetAuthor, JobWidgets, resolveToolCallIntent } from "./job-widgets";
 import { createBrowserPrelude } from "./tools/browser";
 import { isMCPToolName, normalizeToolNames } from "./tools/builtin-names";
 import { createComputerPrelude } from "./tools/computer";
@@ -319,6 +321,7 @@ import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 import {
 	cfgArchiveEnabled,
 	cfgAsyncMaxJobs,
+	cfgAsyncWidgets,
 	cfgComputerEnabled,
 	cfgRatchetEnabled,
 	cfgGenerateImageEnabled,
@@ -634,6 +637,8 @@ export interface CreateAgentSessionOptions {
 	deferredPrewalk?: { target: string; patterns: string[] };
 	/** Host-owned display sink for non-fatal startup prewalk warnings. */
 	onPrewalkWarning?: (warning: string) => void;
+	/** Keep `prewalk.auto` away from the startup session (`--no-prewalk`); `/new` lifts it. */
+	suppressAutoPrewalk?: boolean;
 	/** Force read-only plan mode at start, auto-approve on the model's first resolve call, then switch to execute. */
 	planYolo?: PlanYolo;
 
@@ -806,7 +811,7 @@ export interface CreateAgentSessionOptions {
 	taskDepth?: number;
 	/** Parent Hindsight state to alias for subagent memory tools. */
 	parentHindsightSessionState?: HindsightSessionState;
-	/** Parent Mnemopi state to alias for subagent memory tools. */
+	/** Parent Mnemopi state: subagents alias it; a top-level fork (`/tan`) inherits its delivered recall. */
 	parentMnemopiSessionState?: MnemopiSessionState;
 	/** Pre-allocated agent identity for IRC routing. Default: "Main" for top-level, parentTaskPrefix-derived for sub. */
 	agentId?: string;
@@ -830,6 +835,12 @@ export interface CreateAgentSessionOptions {
 	parentTaskPrefix?: string;
 	/** Parent's async jobs and delivery sinks; child sessions never resolve a process-global manager. */
 	asyncJobManager?: AsyncJobManager;
+	/**
+	 * Writes the specs of the root session's live job widgets. Defaults to the
+	 * `widget` model role; tests inject a fake. Ignored for child sessions,
+	 * which share their root's widgets.
+	 */
+	jobWidgetAuthor?: JobWidgetAuthor;
 	/**
 	 * Registry id of the spawning agent, recorded as this subagent's parent in
 	 * the agent registry. Distinct from `parentTaskPrefix`, which is this agent's
@@ -1410,6 +1421,11 @@ export function customToolToDefinition(tool: CustomTool, sourcePath?: string): T
 		deferrable: tool.deferrable,
 		readsSkillUris: tool.readsSkillUris,
 		approval: typeof tool.approval === "function" ? tool.approval.bind(tool) : tool.approval,
+		// Extension tools take part in Ask-and-remember grants through the same bridge.
+		approvalCacheTargets:
+			typeof tool.approvalCacheTargets === "function"
+				? tool.approvalCacheTargets.bind(tool)
+				: tool.approvalCacheTargets,
 		// Preserved through RegisteredToolAdapter so MCP-backed tools' explicit
 		// `strict: false` (#4336/#4340) survives the custom-tool → definition bridge.
 		strict: tool.strict,
@@ -2115,13 +2131,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				? resolveProvisionalAutoLevel(resolvedModel)
 				: resolveThinkingLevelForModel(resolvedModel, effectiveThinkingLevel),
 		);
-		// Fire-and-forget TLS+H2 handshake to the model's host so it overlaps
-		// with the rest of session setup (extension/skill load, tool registry,
-		// system prompt build). Without this, the first `fetch(...)` pays the
-		// full handshake serially — 100–300 ms transcontinental for
-		// api.anthropic.com from a residential IP. Every mode benefits
-		// (interactive, print, rpc, acp).
-		preconnectModelHost(model.baseUrl);
+		// Fire-and-forget connection warm-up so the handshake overlaps the rest
+		// of session setup (extension/skill load, tool registry, system prompt
+		// build). Effective for endpoints known before any request (official
+		// Anthropic); others warm once a request has revealed their real origin.
+		// Every mode benefits (interactive, print, rpc, acp).
+		void prewarmModelConnection(model);
 	}
 
 	// Re-derives the thinking level whenever startup settles on a different
@@ -2240,6 +2255,34 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				maxRunningJobs: () => Math.min(100, cfgAsyncMaxJobs.get(settings)),
 			})
 		: undefined;
+	if (asyncJobManager) {
+		asyncJobManager.widgets = new JobWidgets({
+			enabled: () => cfgAsyncWidgets.get(settings),
+			author:
+				options.jobWidgetAuthor ??
+				createModelJobWidgetAuthor({
+					settings,
+					modelRegistry,
+					sessionId: () => sessionManager.getSessionId(),
+					telemetry: () => agent?.telemetry,
+					obfuscate: () => (obfuscator?.hasSecrets() ? text => obfuscator?.obfuscate(text) ?? text : undefined),
+					onUsage: message => {
+						if (!message.usage) return;
+						sessionManager.appendModelUsage(
+							{
+								purpose: "job-widget",
+								api: message.api,
+								provider: message.provider,
+								model: message.model,
+								usage: message.usage,
+								stopReason: message.stopReason,
+							},
+							{ sessionId: sessionManager.getSessionId(), parentId: sessionManager.getLeafId() },
+						);
+					},
+				}),
+		});
+	}
 	const scopedAsyncJobManager = asyncJobManager ?? options.asyncJobManager;
 
 	const agentRegistry = options.agentRegistry ?? AgentRegistry.global();
@@ -2319,6 +2362,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				);
 			},
 			restrictToolNames,
+			get seanceSourceArtifactsDir() {
+				return sessionManager.getSeanceSourceArtifactsDir() ?? undefined;
+			},
 			get hasEditTool() {
 				const requestedToolNames = options.toolNames ? normalizeToolNames(options.toolNames) : undefined;
 				return restrictToolNames
@@ -2411,6 +2457,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getWorkPoolYieldItems: () => session?.getWorkPoolYieldItems() ?? [],
 			getLastAssistantText: () => session?.getLastAssistantText(),
 			getYieldReportText: toolCallId => resolveYieldReportText(session?.messages ?? [], toolCallId),
+			getToolCallIntent: toolCallId => resolveToolCallIntent(session?.messages ?? [], toolCallId),
 			setWorkPoolYieldItems: items => session.setWorkPoolYieldItems(items),
 			getCheckpointState: () => session.getCheckpointState(),
 			setCheckpointState: state => session.setCheckpointState(state ?? undefined),
@@ -2830,7 +2877,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						// model: any value derived from the earlier fallback model's
 						// `thinking.defaultLevel` must not become sticky.
 						adoptThinkingForModel(restoredModel);
-						preconnectModelHost(restoredModel.baseUrl);
+						void prewarmModelConnection(restoredModel);
 						return true;
 					}
 				}
@@ -3164,7 +3211,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					);
 					modelFallbackMessage = `Fallback: ${usageFallbackReason.from} -> ${target}\n${usageFallbackReason.reason}`;
 				}
-				preconnectModelHost(selectedModel.baseUrl);
+				void prewarmModelConnection(selectedModel);
 				break;
 			}
 			if (!model) {
@@ -3209,7 +3256,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				// `pickInitialThinkingLevel` closes over `defaultRoleSpec`,
 				// so the role's explicit selector (e.g. `:max`) now applies.
 				adoptThinkingForModel(resolvedDefaultModel);
-				preconnectModelHost(resolvedDefaultModel.baseUrl);
+				void prewarmModelConnection(resolvedDefaultModel);
 				return true;
 			};
 
@@ -3283,7 +3330,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						restoredSessionThinkingLevel = retryFallback.originalThinkingLevel;
 					}
 					adoptThinkingForModel(resolved.model);
-					preconnectModelHost(resolved.model.baseUrl);
+					void prewarmModelConnection(resolved.model);
 					return true;
 				}
 				return false;
@@ -4683,6 +4730,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			initialRetryFallback,
 			deferRetryFallbackValidation: options.deferRetryFallbackValidation,
 			prewalk,
+			suppressAutoPrewalk: options.suppressAutoPrewalk,
 			planYolo: options.planYolo,
 			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,
@@ -5516,22 +5564,5 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			});
 		}
 		throw error;
-	}
-}
-
-/**
- * Best-effort preconnect to the model's API host. Bun's `fetch.preconnect`
- * primes DNS + TCP + TLS + H2 so the first real request reuses the warm
- * connection. Errors are swallowed: preconnect is an optimization, never a
- * hard dependency.
- */
-function preconnectModelHost(baseUrl: string | undefined): void {
-	if (!baseUrl) return;
-	const preconnect = (globalThis.fetch as typeof fetch & { preconnect?: (url: string) => void }).preconnect;
-	if (typeof preconnect !== "function") return;
-	try {
-		preconnect(baseUrl);
-	} catch {
-		// Best effort.
 	}
 }

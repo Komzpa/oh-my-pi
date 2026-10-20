@@ -321,6 +321,26 @@ function resolveWorkPoolYieldItem(items: readonly WorkPoolYieldItem[], value: un
 	throw new Error(`key must be one of: ${items.map(candidate => candidate.index).join(", ")}`);
 }
 
+/**
+ * Reject root argument keys `parameters` does not declare, skipping `null` (strict-mode
+ * filler). They are payload the model put beside `data`; dropping them would publish a
+ * success that silently lost part of the result.
+ *
+ * @throws naming every unsupported field and the allowed ones, so the model can resubmit.
+ */
+function assertSupportedRootFields(parameters: TSchema, args: Record<string, unknown>): void {
+	const declared = isPlainRecord(parameters) && isPlainRecord(parameters.properties) ? parameters.properties : {};
+	const unsupported: string[] = [];
+	for (const key in args) {
+		if (args[key] != null && !Object.hasOwn(declared, key)) unsupported.push(key);
+	}
+	if (unsupported.length === 0) return;
+	throw new Error(
+		`yield arguments carry unsupported root field(s) ${formatYieldLabels(unsupported)}; nothing was submitted. ` +
+			`Allowed root fields: ${formatYieldLabels(Object.keys(declared))}. Put the entire output inside \`data\`. ${YIELD_FORMAT_HINT}`,
+	);
+}
+
 function buildYieldParameters(dataSchema: Record<string, unknown>): Record<string, unknown> {
 	// `data` xor `error`, and "omitted data requires a `type`", are enforced in
 	// `execute()` at runtime, NOT in this schema: a top-level combinator
@@ -852,6 +872,13 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				);
 			}
 		}
+		// Root fields the schema does not declare are payload the model put beside
+		// `data`; refuse them rather than publish a reduced success (#16317). The wrong-key
+		// bounce above runs first: it owns the answer-under-a-stray-key case and its retry budget.
+		assertSupportedRootFields(
+			workPoolItems.length > 0 ? wrapWorkPoolYieldParameters(workPoolItems) : this.#parameters,
+			raw,
+		);
 		// Unknown incremental labels are a hard contract mismatch with the closed caller
 		// schema. Reject before the last-turn short-circuit too: `type: ["findings"], result: {}`
 		// would otherwise be accepted as a typed last-turn incremental yield, then a sibling
