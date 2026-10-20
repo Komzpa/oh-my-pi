@@ -1328,7 +1328,7 @@ export function renderSubagentHudLines(
 							/\s*[\r\n]+\s*/g,
 							" ↵ ",
 						);
-						const budget = Math.max(0, rowWidth - visibleWidth(line) - 1);
+						const budget = Math.max(0, rowWidth - visibleWidth(line) - 1 - visibleWidth(warningText));
 						if (budget > 0) line += ` ${theme.fg("muted", truncateToWidth(formatted, budget))}`;
 					}
 				}
