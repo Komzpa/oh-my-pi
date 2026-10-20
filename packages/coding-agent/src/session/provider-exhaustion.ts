@@ -6,9 +6,9 @@ import { withFileLockSync } from "@oh-my-pi/pi-utils/file-lock";
 
 /**
  * Billing and quota failures keep a provider out of fallback chains and new
- * subagent spawns; without explicit retry timing the ban lasts six hours.
+ * subagent spawns; without explicit retry timing the ban lasts one hour.
  */
-export const PROVIDER_EXHAUSTION_COOLDOWN_MS = 6 * 60 * 60 * 1_000;
+export const PROVIDER_EXHAUSTION_COOLDOWN_MS = 60 * 60 * 1_000;
 
 /** One provider's persisted unavailability record. */
 export interface ProviderExhaustionRecord {
