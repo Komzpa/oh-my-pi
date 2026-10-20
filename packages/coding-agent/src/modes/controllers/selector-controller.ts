@@ -962,6 +962,22 @@ export class SelectorController {
 			this.ctx.session.modelRegistry,
 			this.ctx.session.scopedModels,
 			{
+				onSelectForSession: model => {
+					// Over-context pick: close the hub first so the compaction
+					// loader is visible and a second Enter cannot start a
+					// competing switch (mirrors #showModelPicker).
+					const contextTokens = this.ctx.session.getContextUsage()?.tokens ?? 0;
+					const contextWindow = model.contextWindow ?? 0;
+					const overContext = contextWindow > 0 && contextTokens > contextWindow;
+					if (overContext) done();
+					void this.switchSessionModel(model)
+						.catch(error => {
+							this.ctx.showError(error instanceof Error ? error.message : String(error));
+						})
+						.finally(() => {
+							if (!overContext) done();
+						});
+				},
 				onAssign: async (model, role, thinkingLevel, selector, scope?: ModelRoleSelectionScope) => {
 					const releaseDefaultMutation = role === "default" ? await this.#acquireDefaultRoleMutation() : undefined;
 					const configuredStorage = cfgModelRoleStorage.get(this.ctx.settings);
@@ -1226,6 +1242,7 @@ export class SelectorController {
 				currentSelector: this.ctx.session.model
 					? `${this.ctx.session.model.provider}/${this.ctx.session.model.id}`
 					: undefined,
+				currentSessionModel: this.ctx.session.model,
 			},
 		);
 		const menu = this.#claimMenu("model-hub");

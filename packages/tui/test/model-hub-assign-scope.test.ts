@@ -83,6 +83,7 @@ const registryStub: ModelHubRegistry = {
 function createHub(): { hub: ModelHubComponent; body: () => string; assigned: string[]; key: (data: string) => void } {
 	const assigned: string[] = [];
 	const callbacks: ModelHubCallbacks = {
+		onSelectForSession: () => {},
 		onAssign: (_m, role, _t, selector) => {
 			assigned.push(`${role}:${selector}`);
 			return true;
