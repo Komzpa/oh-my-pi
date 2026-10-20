@@ -11,7 +11,6 @@ const HOUR_MS = 60 * 60 * 1_000;
  */
 async function runProcess(stateDir: string, body: string): Promise<unknown> {
 	const script = `
-import { logProviderTurnError } from ${JSON.stringify(path.join(sourceDir, "messages.ts"))};
 import * as exhaustion from ${JSON.stringify(path.join(sourceDir, "provider-exhaustion.ts"))};
 import { findRetryFallbackCandidates } from ${JSON.stringify(path.join(sourceDir, "retry-fallback-chains.ts"))};
 const context = {
@@ -19,6 +18,14 @@ const context = {
 	getModelRole: () => undefined,
 	modelLookup: { find: () => ({}), hasProvider: () => true },
 };
+// Mirrors TurnRecovery: a failed turn cools its provider once rotation found no sibling credential.
+function logProviderTurnError(message) {
+	if (exhaustion.isProviderExhaustionError(message.errorStatus, message.errorMessage)) {
+		exhaustion.coolDownExhaustedProvider(message.provider, {
+			reason: ((message.errorStatus ?? "") + " " + (message.errorMessage ?? "provider exhausted")).trim(),
+		});
+	}
+}
 function pick() {
 	const exclusions = [];
 	const candidates = findRetryFallbackCandidates(context, "default", "openai/gpt-4o-mini", undefined, { exclusions });
@@ -81,24 +88,64 @@ describe("persisted provider billing cooldown", () => {
 		]);
 	});
 
-	it("(b) restores a provider after a mocked models probe or TTL expiry", async () => {
+	it("(b) restores a provider after its cooldown expires", async () => {
 		await runProcess(
 			stateDir.path(),
 			`exhaustion.coolDownExhaustedProvider("deepseek", { reason: "402 Insufficient Balance" });
 			exhaustion.coolDownExhaustedProvider("kimi-code", { reason: "403 monthly usage limit", now: Date.now() - ${7 * HOUR_MS} });
-			const requested = [];
-			const recovered = await exhaustion.probeExhaustedProvider("deepseek", {
-				url: "https://deepseek.invalid/v1/models",
-				fetchFn: async (url, init) => { requested.push({ url, method: init.method }); return { ok: true, status: 200 }; },
-			});
-			return { recovered, requested };`,
+			return true;`,
 		);
 		const picked = (await runProcess(stateDir.path(), "return pick();")) as {
 			order: string[];
-			exclusions: unknown[];
+			exclusions: Array<{ provider: string }>;
 		};
 
-		expect(picked).toEqual({ order: ["deepseek", "kimi-code", "codex-lb"], exclusions: [] });
+		expect(picked.order).toEqual(["kimi-code", "codex-lb"]);
+		expect(picked.exclusions.map(exclusion => exclusion.provider)).toEqual(["deepseek"]);
+	});
+
+	it("leaves minute-scale token throttles and informative 402s out of the long ban", async () => {
+		const result = await runProcess(
+			stateDir.path(),
+			`return {
+				dashscope: exhaustion.isProviderExhaustionError(429, "You exceeded your current quota, please check your plan and billing details. For more information, see https://help.aliyun.com/zh/model-studio/error-code#token-limit"),
+				subscription: exhaustion.isProviderExhaustionError(402, "A subscription is required for this endpoint"),
+				balance: exhaustion.isProviderExhaustionError(402, "Insufficient Balance"),
+			};`,
+		);
+
+		expect(result).toEqual({ dashscope: false, subscription: false, balance: true });
+	});
+
+	it("does not lose a concurrent process's cooldown", async () => {
+		const providers = ["p1", "p2", "p3", "p4", "p5", "p6"];
+		await Promise.all(
+			providers.map(provider =>
+				runProcess(
+					stateDir.path(),
+					`exhaustion.coolDownExhaustedProvider(${JSON.stringify(provider)}, { reason: "402 Insufficient Balance" }); return true;`,
+				),
+			),
+		);
+		const cooled = (await runProcess(
+			stateDir.path(),
+			`return ${JSON.stringify(providers)}.filter(provider => exhaustion.isProviderExhausted(provider));`,
+		)) as string[];
+
+		expect(cooled).toEqual(providers);
+	});
+
+	it("treats an unwritable state directory as best effort", async () => {
+		const blocker = path.join(stateDir.path(), "not-a-directory");
+		await Bun.write(blocker, "file");
+		const result = await runProcess(
+			path.join(blocker, "state"),
+			`let threw = false;
+			try { exhaustion.coolDownExhaustedProvider("deepseek", { reason: "402 Insufficient Balance" }); } catch { threw = true; }
+			return { threw, cooled: exhaustion.isProviderExhausted("deepseek") };`,
+		);
+
+		expect(result).toEqual({ threw: false, cooled: false });
 	});
 
 	it("(c) keeps rate limits short and plain 403 authentication errors unbanned", async () => {

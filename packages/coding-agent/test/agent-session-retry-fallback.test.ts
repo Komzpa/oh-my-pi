@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { type } from "@oh-my-pi/omptype";
@@ -296,6 +297,7 @@ describe("AgentSession retry fallback", () => {
 	let sharedRegistry: ModelRegistry;
 	let modelRegistry: ModelRegistry;
 	let session: AgentSession | undefined;
+	let previousRouterStateDir: string | undefined;
 
 	// The model registry is an immutable fixture whose construction builds a
 	// canonical index over ~2.7k bundled models (~100ms). Build it (and the
@@ -303,6 +305,7 @@ describe("AgentSession retry fallback", () => {
 	// mutable retry-fallback cooldown state between tests.
 	beforeAll(async () => {
 		tempDir = TempDir.createSync("@pi-retry-fallback-");
+		previousRouterStateDir = process.env.OMP_AGENT_ROUTER_STATE_DIR;
 		process.env.OMP_AGENT_ROUTER_STATE_DIR = path.join(tempDir.path(), "router-state");
 		await initTheme();
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
@@ -318,11 +321,15 @@ describe("AgentSession retry fallback", () => {
 	});
 
 	afterAll(() => {
+		if (previousRouterStateDir === undefined) delete process.env.OMP_AGENT_ROUTER_STATE_DIR;
+		else process.env.OMP_AGENT_ROUTER_STATE_DIR = previousRouterStateDir;
 		authStorage.close();
 		tempDir.removeSync();
 	});
 
 	beforeEach(() => {
+		// Provider exhaustion cooldowns persist on disk; never let one test's ban reach the next.
+		fs.rmSync(path.join(tempDir.path(), "router-state"), { recursive: true, force: true });
 		// Reset to the shared registry (a few tests reassign it to a scoped
 		// instance) and clear cooldown suppressions left by fallback-path tests
 		// (default 5-minute suppression) so state never leaks between tests.
@@ -9147,5 +9154,38 @@ describe("AgentSession retry fallback", () => {
 		expect(workerTwoCandidates.some(candidate => candidate.model.provider === primaryModel.provider)).toBe(false);
 		expect(isProviderExhaustionError(429, "429 rate limit")).toBe(false);
 		expect(isProviderExhaustionError(500, "500 server error")).toBe(false);
+	});
+	it("does not cool a provider while credential rotation still has a sibling account", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!primaryModel) throw new Error("Expected bundled test model to exist");
+
+		let calls = 0;
+		const mock = createMockModel({ provider: primaryModel.provider });
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: (model, context, options) => {
+				calls++;
+				if (calls === 1)
+					mock.push({ throw: Object.assign(new Error("402 Insufficient Balance"), { status: 402 }) });
+				else mock.push({ content: ["ok"] });
+				return mock.stream(model, context, options);
+			},
+		});
+		// The first account is spent but a sibling credential takes over.
+		vi.spyOn(modelRegistry.authStorage.limits, "markReached").mockResolvedValue({ switched: true });
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 1,
+			"retry.maxRetries": 2,
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+		session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
+
+		await session.prompt("Rotate to the sibling account");
+		await session.waitForIdle();
+
+		expect(calls).toBe(2);
+		expect(isProviderExhausted(primaryModel.provider)).toBe(false);
 	});
 });

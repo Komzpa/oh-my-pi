@@ -4707,10 +4707,6 @@ export class AgentSession implements SettingsScope {
 
 			if (event.message.role === "assistant") {
 				const assistantMsg = event.message as AssistantMessage;
-				// Record provider exhaustion before fallback recovery replaces
-				// the last assistant message. Always the provider that produced the
-				// failed message: the active model may have changed meanwhile.
-				logProviderTurnError(assistantMsg);
 				// Fold this turn's timing into per-model perf aggregates (drives the
 				// /models TPS/TTFT display). Errored turns measure nothing; aborted
 				// turns with reported usage are still valid throughput samples.
@@ -4894,6 +4890,12 @@ export class AgentSession implements SettingsScope {
 				});
 			};
 			maintenanceRoute("entered");
+
+			// Surface provider stream failures in the main log. The routing trace
+			// above is debug-only and drops the error fields, so a session dying
+			// repeatedly on provider errors otherwise leaves no actionable trace
+			// outside the session transcript (issue #6177).
+			logProviderTurnError(msg);
 
 			// Invalidate GitHub Copilot credentials on a hard auth failure (401, or an
 			// expired/revoked token) so stale tokens aren't reused on the next request.

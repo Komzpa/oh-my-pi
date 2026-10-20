@@ -1,11 +1,13 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { is402BillingCapBody, isDashScopeTokenLimitText, isUsageLimitOutcome } from "@oh-my-pi/pi-ai";
 import { extractRetryHint, logger } from "@oh-my-pi/pi-utils";
+import { withFileLockSync } from "@oh-my-pi/pi-utils/file-lock";
 
 /**
- * Billing and quota failures are unavailable until a cheap health probe succeeds;
- * without explicit retry timing or a successful probe the ban lasts six hours.
+ * Billing and quota failures keep a provider out of fallback chains and new
+ * subagent spawns; without explicit retry timing the ban lasts six hours.
  */
 export const PROVIDER_EXHAUSTION_COOLDOWN_MS = 6 * 60 * 60 * 1_000;
 
@@ -25,8 +27,6 @@ export interface ProviderExhaustionExclusion {
 	reason: string;
 	until: number;
 }
-
-type FetchLike = (url: string, init: RequestInit) => Promise<{ ok: boolean; status: number }>;
 
 /**
  * Router state dir shared by every omp process of the user. Overridable so
@@ -76,18 +76,20 @@ function writePersisted(records: Iterable<ProviderExhaustionRecord>): void {
 	fs.renameSync(tmp, file);
 }
 
+/**
+ * Read-merge-write under the cross-process lock: the rename keeps readers from
+ * seeing partial state, the lock keeps two processes cooling different
+ * providers from overwriting each other's record.
+ */
 function persist(record: ProviderExhaustionRecord): void {
-	const merged = readPersisted(Math.min(record.recordedAt, Date.now()));
-	const key = record.provider.toLowerCase();
-	// Preserve other providers already recorded by earlier sessions.
-	const existing = merged.get(key);
-	if (!existing || existing.recordedAt <= record.recordedAt) merged.set(key, record);
-	writePersisted(merged.values());
-}
-
-function clear(provider: string): void {
-	const merged = readPersisted(0);
-	if (merged.delete(provider.toLowerCase())) writePersisted(merged.values());
+	withFileLockSync(statePath(), () => {
+		const merged = readPersisted(Math.min(record.recordedAt, Date.now()));
+		const key = record.provider.toLowerCase();
+		// Preserve other providers already recorded by earlier sessions.
+		const existing = merged.get(key);
+		if (!existing || existing.recordedAt <= record.recordedAt) merged.set(key, record);
+		writePersisted(merged.values());
+	});
 }
 
 /** Mark a provider unavailable after a balance/billing/quota failure; shared by all omp processes. */
@@ -97,7 +99,18 @@ export function coolDownExhaustedProvider(provider: string, options?: { now?: nu
 	const reason = detail.startsWith("billing:") ? detail : `billing: ${detail}`;
 	const wasCooling = isProviderExhausted(provider, now);
 	const cooldownMs = extractRetryHint(undefined, detail) ?? PROVIDER_EXHAUSTION_COOLDOWN_MS;
-	persist({ provider, reason, recordedAt: now, until: now + cooldownMs });
+	try {
+		persist({ provider, reason, recordedAt: now, until: now + cooldownMs });
+	} catch (error) {
+		// The cooldown is an optimization: an unwritable state dir must not abort fallback recovery
+		// or mask the original provider error.
+		logger.warn("Failed to persist provider exhaustion cooldown", {
+			provider,
+			stateFile: statePath(),
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return;
+	}
 	if (!wasCooling) {
 		logger.warn("Provider exhausted; cooling down fallback routes", {
 			provider,
@@ -125,44 +138,20 @@ export function providerExhaustionExclusion(provider: string): ProviderExhaustio
 	return { provider, reason: `${record.reason} until ${new Date(record.until).toISOString()}`, until: record.until };
 }
 
-/**
- * Cheap balance/health probe: a models-listing GET (no generation, no billing
- * call). A successful response ends the unavailability early; failure keeps the
- * ban until the TTL expires.
- */
-export async function probeExhaustedProvider(
-	provider: string,
-	options: { url: string; headers?: RequestInit["headers"]; fetchFn?: FetchLike; timeoutMs?: number },
-): Promise<boolean> {
-	const fetchFn = options.fetchFn ?? globalThis.fetch;
-	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 5_000);
-	try {
-		const response = await fetchFn(options.url, {
-			method: "GET",
-			headers: options.headers,
-			signal: controller.signal,
-		});
-		if (response.ok) {
-			clear(provider);
-			logger.warn("Provider health probe succeeded; clearing exhaustion cooldown", { provider });
-			return true;
-		}
-		return false;
-	} catch {
-		return false;
-	} finally {
-		clearTimeout(timer);
-	}
-}
-
 /** Billing and long-lived quota failures ban a provider; transient rate limits retain short retries. */
 export function isProviderExhaustionError(status: number | undefined, message: string | undefined): boolean {
 	const detail = message ?? "";
+	// Defer to the established usage-limit classifier for what is NOT exhaustion: minute-scale token
+	// throttles (DashScope `#token-limit`) and informative 402s such as "subscription required".
+	if (isDashScopeTokenLimitText(detail)) return false;
+	if (status === 402 && !is402BillingCapBody(message)) return false;
 	// A 429 carried only inside the message (no structured status) counts too.
 	if (status === 429 || (status === undefined && /\b429\b/u.test(detail))) {
+		// `quota` wording must also be an account-scoped cap per the shared classifier: rolling TPM/RPM
+		// windows are phrased with it too but self-heal within the minute.
 		return (
-			/per[\s_-]+day|daily|quota/iu.test(detail) || (extractRetryHint(undefined, detail) ?? 0) >= 10 * 60 * 1_000
+			(/per[\s_-]+day|daily|quota/iu.test(detail) && isUsageLimitOutcome(429, detail)) ||
+			(extractRetryHint(undefined, detail) ?? 0) >= 10 * 60 * 1_000
 		);
 	}
 	if (status !== undefined && status >= 500 && status <= 599) return false;
