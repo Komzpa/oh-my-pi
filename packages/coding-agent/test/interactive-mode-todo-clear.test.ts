@@ -785,171 +785,13 @@ describe("InteractiveMode todo HUD anchor", () => {
 		expect(secondLine).toContain(theme.checkbox.unchecked);
 		expect(lines.some(line => line.includes("third task"))).toBe(true);
 		const firstLine = lines.find(line => line.includes("first task"));
-		expect(firstLine).toBeUndefined();
+		expect(firstLine).toContain(theme.checkbox.checked);
+		// Upcoming stage: header with its own progress; its open task shows too because
+		// every open row fits the panel.
 		expect(lines.some(line => line.includes("II. Verification") && line.includes("0/1"))).toBe(true);
-		// No overflow rows — the header/progress counts imply what is hidden.
+		expect(lines.some(line => line.includes("run tests"))).toBe(true);
+		// Everything open is visible, so there is no overflow row.
 		expect(lines.some(line => line.includes("more"))).toBe(false);
-	});
-
-	it("renders nothing when there are no todos", () => {
-		mode.setTodos([]);
-		expect(mode.todoContainer.render(80)).toHaveLength(0);
-	});
-
-	it("keeps the summed progress bar but omits the roman numeral for a single-phase list", () => {
-		mode.setTodos([
-			{
-				name: "Tasks",
-				tasks: [
-					{ content: "alpha", status: "pending" },
-					{ content: "beta", status: "pending" },
-				],
-			},
-		]);
-		const lines = mode.todoContainer
-			.render(80)
-			.flatMap(line => line.split("\n"))
-			.map(line => Bun.stripANSI(line));
-		// One stage still renders the compact title; progress belongs to the
-		// tree spine and tail.
-		const root = lines.find(line => line.includes("TODO"));
-		expect(root?.trim()).toBe("TODO");
-		// The stage keeps its task progress; no roman numeral for a lone stage.
-		expect(lines.some(line => line.includes("Tasks") && line.includes("0/2"))).toBe(true);
-		expect(lines.some(line => line.includes("I. Tasks"))).toBe(false);
-		expect(lines.some(line => line.includes("alpha"))).toBe(true);
-	});
-
-	it("bounds a multi-phase display and reports the hidden task count", () => {
-		// A short (still non-compact) viewport keeps the overflow summary; a tall
-		// one shows every stage that fits. The window follows the viewport height,
-		// not a fixed row count.
-		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
-		const stage = (name: string): TodoPhase => ({ name, tasks: [{ content: `${name} task`, status: "pending" }] });
-		mode.setTodos([
-			stage("Discovery"),
-			stage("Two"),
-			stage("Three"),
-			stage("Four"),
-			stage("Five"),
-			stage("Six"),
-			stage("Seven"),
-			stage("Eight"),
-			stage("Nine"),
-			stage("Ten"),
-			stage("Eleven"),
-			stage("Twelve"),
-		]);
-		const lines = mode.todoContainer
-			.render(80)
-			.flatMap(line => line.split("\n"))
-			.map(line => Bun.stripANSI(line));
-		expect(lines.some(line => line.includes("II. Two"))).toBe(true);
-		expect(lines.some(line => line.includes("IX. Nine"))).toBe(false);
-		expect(lines.some(line => line.includes("Ten"))).toBe(false);
-		expect(lines.some(line => line.includes("+10 more open"))).toBe(true);
-		// The header accounts for every open row, including overflow.
-		const root = lines.find(line => line.includes("TODO"));
-		expect(root).toContain("12 open");
-	});
-
-	it("sizes the collapsed todo window from the viewport instead of a fixed five", () => {
-		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 40, configurable: true });
-		mode.setTodos([
-			{
-				name: "Tasks",
-				tasks: Array.from({ length: 7 }, (_, index): TodoItem => ({
-					content: `Fitted task ${index + 1}`,
-					status: "pending",
-				})),
-			},
-		]);
-		const tall = renderTodos(mode);
-		for (let index = 1; index <= 7; index++) expect(tall).toContain(`Fitted task ${index}`);
-		expect(tall).not.toContain("more todo");
-		// Every row the window paints still fits the viewport it was sized against.
-		expect(mode.todoContainer.render(120).length).toBeLessThanOrEqual(40);
-	});
-
-	it("keeps the collapsed window bounded with an overflow summary on a short viewport", () => {
-		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
-		mode.setTodos([
-			{
-				name: "Tasks",
-				tasks: Array.from({ length: 20 }, (_, index): TodoItem => ({
-					content: `Crowded task ${index + 1}`,
-					status: "pending",
-				})),
-			},
-		]);
-		const short = renderTodos(mode);
-		expect(short).toContain("Crowded task 3");
-		expect(short).not.toContain("Crowded task 4");
-		expect(short).toContain("+17 more open");
-		expect(mode.todoContainer.render(120).length).toBeLessThanOrEqual(18);
-	});
-
-	it("accounts for every hidden task within the allocated panel", () => {
-		// 18 rows leaves nine task rows, so a tenth row still fits (revealed in
-		// place of its own summary) and an eleventh keeps the overflow summary.
-		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
-		mode.setTodos([
-			{
-				name: "Tasks",
-				tasks: Array.from({ length: 10 }, (_, index): TodoItem => ({
-					content: `Task ${index + 1}`,
-					status: index === 0 ? "in_progress" : "pending",
-				})),
-			},
-		]);
-		expect(renderTodos(mode)).not.toContain("Task 10");
-		expect(renderTodos(mode)).toContain("+7 more open");
-
-		mode.setTodos([
-			{
-				name: "Tasks",
-				tasks: Array.from({ length: 11 }, (_, index): TodoItem => ({
-					content: `Task ${index + 1}`,
-					status: index === 0 ? "in_progress" : "pending",
-				})),
-			},
-		]);
-		expect(renderTodos(mode)).not.toContain("Task 11");
-		expect(renderTodos(mode)).toContain("+8 more open");
-	});
-
-	it("shows every phase when its open rows fit the viewport", () => {
-		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 40, configurable: true });
-		const stage = (name: string): TodoPhase => ({ name, tasks: [{ content: `${name} task`, status: "pending" }] });
-		mode.setTodos([stage("One"), stage("Two"), stage("Three"), stage("Four"), stage("Five"), stage("Six")]);
-		const oneHidden = renderTodos(mode);
-		expect(oneHidden).toContain("VI. Six");
-		expect(oneHidden).not.toContain("more stage");
-	});
-
-	it("expands and collapses the complete todo HUD through /todo", async () => {
-		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
-		mode.setTodos([
-			{
-				name: "Implementation",
-				tasks: Array.from({ length: 12 }, (_, index): TodoItem => ({
-					content: `Task ${index + 1}`,
-					status: index === 0 ? "in_progress" : "pending",
-				})),
-			},
-		]);
-
-		await mode.handleTodoCommand("expand");
-		await mode.handleTodoCommand("expand");
-
-		expect(renderTodos(mode)).toContain("Task 12");
-		expect(renderTodos(mode)).not.toContain("more todo");
-
-		await mode.handleTodoCommand("collapse");
-		await mode.handleTodoCommand("collapse");
-
-		expect(renderTodos(mode)).not.toContain("Task 12");
-		expect(renderTodos(mode)).toContain("+9 more open");
 	});
 
 	it("marks the matching in-progress todo row when its worker has no recent commit", async () => {
@@ -1116,6 +958,221 @@ describe("InteractiveMode todo HUD anchor", () => {
 			vi.advanceTimersByTime(100);
 			registry.unregister(id, ref);
 		}
+	});
+
+	it("renders nothing when there are no todos", () => {
+		mode.setTodos([]);
+		expect(mode.todoContainer.render(80)).toHaveLength(0);
+	});
+
+	it("keeps the summed progress bar but omits the roman numeral for a single-phase list", () => {
+		mode.setTodos([
+			{
+				name: "Tasks",
+				tasks: [
+					{ content: "alpha", status: "pending" },
+					{ content: "beta", status: "pending" },
+				],
+			},
+		]);
+		const lines = mode.todoContainer
+			.render(80)
+			.flatMap(line => line.split("\n"))
+			.map(line => Bun.stripANSI(line));
+		// One stage still renders the compact title; progress belongs to the
+		// tree spine and tail.
+		const root = lines.find(line => line.includes("TODO"));
+		expect(root?.trim()).toBe("TODO");
+		// The stage keeps its task progress; no roman numeral for a lone stage.
+		expect(lines.some(line => line.includes("Tasks") && line.includes("0/2"))).toBe(true);
+		expect(lines.some(line => line.includes("I. Tasks"))).toBe(false);
+		expect(lines.some(line => line.includes("alpha"))).toBe(true);
+	});
+
+	it("bounds a multi-phase display and reports the hidden task count", () => {
+		// A short (still non-compact) viewport keeps the overflow summary; a tall
+		// one shows every stage that fits. The window follows the viewport height,
+		// not a fixed row count.
+		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
+		const stage = (name: string): TodoPhase => ({ name, tasks: [{ content: `${name} task`, status: "pending" }] });
+		mode.setTodos([
+			stage("Discovery"),
+			stage("Two"),
+			stage("Three"),
+			stage("Four"),
+			stage("Five"),
+			stage("Six"),
+			stage("Seven"),
+			stage("Eight"),
+			stage("Nine"),
+			stage("Ten"),
+			stage("Eleven"),
+			stage("Twelve"),
+		]);
+		const lines = mode.todoContainer
+			.render(80)
+			.flatMap(line => line.split("\n"))
+			.map(line => Bun.stripANSI(line));
+		expect(lines.some(line => line.includes("II. Two"))).toBe(true);
+		expect(lines.some(line => line.includes("IX. Nine"))).toBe(false);
+		expect(lines.some(line => line.includes("Ten"))).toBe(false);
+		expect(lines.some(line => line.includes("… 7 more stages"))).toBe(true);
+		expect(lines.some(line => line.includes("4 more todos · /todo expand"))).toBe(true);
+		// The header accounts for every open row, including overflow.
+		const root = lines.find(line => line.includes("TODO"));
+		expect(root).toContain("12 open");
+	});
+
+	it("sizes the collapsed todo window from the viewport instead of a fixed five", () => {
+		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 40, configurable: true });
+		mode.setTodos([
+			{
+				name: "Tasks",
+				tasks: Array.from({ length: 7 }, (_, index): TodoItem => ({
+					content: `Fitted task ${index + 1}`,
+					status: "pending",
+				})),
+			},
+		]);
+		const tall = renderTodos(mode);
+		for (let index = 1; index <= 7; index++) expect(tall).toContain(`Fitted task ${index}`);
+		expect(tall).not.toContain("more todo");
+		// Every row the window paints still fits the viewport it was sized against.
+		expect(mode.todoContainer.render(120).length).toBeLessThanOrEqual(40);
+	});
+
+	it("keeps the collapsed window bounded with an overflow summary on a short viewport", () => {
+		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
+		mode.setTodos([
+			{
+				name: "Tasks",
+				tasks: Array.from({ length: 20 }, (_, index): TodoItem => ({
+					content: `Crowded task ${index + 1}`,
+					status: "pending",
+				})),
+			},
+		]);
+		const short = renderTodos(mode);
+		expect(short).toContain("Crowded task 1");
+		expect(short).not.toContain("Crowded task 2");
+		expect(short).toContain("19 more todos · /todo expand");
+		expect(mode.todoContainer.render(120).length).toBeLessThanOrEqual(18);
+	});
+
+	it("accounts for every hidden task within the allocated panel", () => {
+		// 18 rows leaves a 6-row panel: one task row plus the exact hidden count.
+		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
+		mode.setTodos([
+			{
+				name: "Tasks",
+				tasks: Array.from({ length: 10 }, (_, index): TodoItem => ({
+					content: `Task ${index + 1}`,
+					status: index === 0 ? "in_progress" : "pending",
+				})),
+			},
+		]);
+		expect(renderTodos(mode)).not.toContain("Task 10");
+		expect(renderTodos(mode)).toContain("9 more todos · /todo expand");
+
+		mode.setTodos([
+			{
+				name: "Tasks",
+				tasks: Array.from({ length: 11 }, (_, index): TodoItem => ({
+					content: `Task ${index + 1}`,
+					status: index === 0 ? "in_progress" : "pending",
+				})),
+			},
+		]);
+		expect(renderTodos(mode)).not.toContain("Task 11");
+		expect(renderTodos(mode)).toContain("10 more todos · /todo expand");
+	});
+
+	it("caps the stage window and names the stages past it", () => {
+		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 40, configurable: true });
+		const stage = (name: string): TodoPhase => ({ name, tasks: [{ content: `${name} task`, status: "pending" }] });
+		mode.setTodos([stage("One"), stage("Two"), stage("Three"), stage("Four"), stage("Five"), stage("Six")]);
+		const oneHidden = renderTodos(mode);
+		expect(oneHidden).toContain("V. Five");
+		expect(oneHidden).not.toContain("VI. Six");
+		expect(oneHidden).toContain("1 more stage");
+	});
+
+	it("expands and collapses the complete todo HUD through /todo", async () => {
+		mode.setTodos([
+			{
+				name: "Implementation",
+				tasks: Array.from({ length: 8 }, (_, index): TodoItem => ({
+					content: `Task ${index + 1}`,
+					status: index === 0 ? "in_progress" : "pending",
+				})),
+			},
+		]);
+
+		await mode.handleTodoCommand("expand");
+		await mode.handleTodoCommand("expand");
+
+		expect(renderTodos(mode)).toContain("Task 8");
+		expect(renderTodos(mode)).not.toContain("more todo");
+
+		await mode.handleTodoCommand("collapse");
+		await mode.handleTodoCommand("collapse");
+
+		// A short terminal leaves a 6-row panel: 3 rows of chrome, the stage header,
+		// 1 summary row, so 1 task row fits and 7 open todos are reported hidden.
+		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
+		mode.setTodos(mode.todoPhases);
+		expect(renderTodos(mode)).not.toContain("Task 8");
+		expect(renderTodos(mode)).toContain("Task 1");
+		expect(renderTodos(mode)).toContain("7 more todos · /todo expand");
+	});
+
+	describe("collapsed panel row budget", () => {
+		function setTerminalRows(rows: number): void {
+			Object.defineProperty(mode.ui.terminal, "rows", { get: () => rows, configurable: true });
+		}
+		const stages: TodoPhase[] = [
+			{
+				name: "Build",
+				tasks: [
+					{ content: "done one", status: "completed" },
+					{ content: "build a", status: "in_progress" },
+					...Array.from({ length: 6 }, (_, index): TodoItem => ({
+						content: `build p${index}`,
+						status: "pending",
+					})),
+				],
+			},
+			{
+				name: "Ship",
+				tasks: [
+					{ content: "ship blocked", status: "blocked" },
+					{ content: "ship pending", status: "pending" },
+				],
+			},
+		];
+		afterEach(() => setTerminalRows(24));
+
+		it("lists open rows from every stage when the panel has room", () => {
+			setTerminalRows(40);
+			mode.setTodos(stages);
+			const text = renderTodos(mode);
+			for (const content of ["build a", "build p5", "ship blocked", "ship pending"]) expect(text).toContain(content);
+			expect(text).not.toContain("more todo");
+		});
+
+		it("prioritises in-progress then blocked work and counts the hidden remainder exactly", () => {
+			setTerminalRows(21);
+			mode.setTodos(stages);
+			const text = renderTodos(mode);
+			const open = 9; // 7 open in Build + 2 in Ship; the completed task is context
+			const shown = stages
+				.flatMap(stage => stage.tasks)
+				.filter(task => task.status !== "completed" && text.includes(task.content));
+			expect(text).toContain("build a");
+			expect(text).toContain("ship blocked");
+			expect(text).not.toContain("build p5");
+			expect(text).toContain(`${open - shown.length} more todos · /todo expand`);
+		});
 	});
 
 	describe("compact todo for small terminal height (< 18 rows)", () => {
