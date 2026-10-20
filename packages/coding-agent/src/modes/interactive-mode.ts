@@ -79,15 +79,15 @@ import {
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { pickTableChart } from "../auto-graph/planner";
 import { restartArgv } from "../cli/flag-tables";
+import type { CollabGuestLink } from "../collab/guest";
+import { CollabController } from "../collab/controller";
+import type { CollabHost } from "../collab/host";
+import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import {
 	createInteractiveViewSourceRouter,
 	createLocalInteractiveViewSource,
 	type InteractiveViewSource,
 } from "./interactive-view";
-import type { CollabGuestLink } from "../collab/guest";
-import { CollabController } from "../collab/controller";
-import type { CollabHost } from "../collab/host";
-import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { appKey, editorKey, rawKeyHint } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { formatModelString, type ResolvedModelRoleValue } from "../config/model-resolver";
 import { isSettingsInitialized, Settings, settings } from "../config/settings";
