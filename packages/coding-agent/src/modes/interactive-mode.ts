@@ -7653,9 +7653,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Release the writer claim before replacing the runtime with the exact checkpoint.
 		await this.#sessionConnection.checkpoint();
 		this.ui.stop();
+		await this.#relaunch(cmd, sessionId, sessionFile);
+	}
+
+	/** Close the session, then replace this process with the relaunch command. */
+	async #relaunch(cmd: string[], sessionId: string, sessionFile: string): Promise<void> {
+		if (this.#isShuttingDown) return;
 		this.#beginClose();
 		try {
 			await this.#teardown();
+		} catch (error) {
+			this.#handleTeardownError("restart", error);
+			return;
+		}
+		try {
 			await postmortem.cleanup();
 			await postmortem.drainStdout();
 		} catch (error) {
