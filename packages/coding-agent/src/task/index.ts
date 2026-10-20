@@ -310,13 +310,13 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 		}
 		return undefined;
 	}
+	const callResourcesError = hasTask ? validateResources(params.resources, "The call") : undefined;
+	if (callResourcesError && validateEffort(params.effort, "The call") === undefined) return callResourcesError;
 	if (!hasTask) {
 		return batchEnabled
 			? "Missing `tasks`. Provide a `tasks` array (one subagent per item) with a shared `context`."
 			: "Missing `task`. Provide complete, self-contained instructions for the agent.";
 	}
-	const callResourcesError = validateResources(params.resources, "The call");
-	if (callResourcesError && validateEffort(params.effort, "The call") === undefined) return callResourcesError;
 	return validateEffort(params.effort, "The call");
 }
 
