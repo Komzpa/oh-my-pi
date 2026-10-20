@@ -286,13 +286,13 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 			if (!item || typeof item.task !== "string" || item.task.trim() === "") {
 				return `Task ${i + 1}${item?.name ? ` (\`${item.name}\`)` : ""} is missing \`task\`. Every task needs complete, self-contained instructions.`;
 			}
-			const effortError = validateEffort(item.effort, `Task ${i + 1}${item.name ? ` (\`${item.name}\`)` : ""}`);
-			if (effortError) return effortError;
 			const resourcesError = validateResources(
 				item.resources,
 				`Task ${i + 1}${item.name ? ` (\`${item.name}\`)` : ""}`,
 			);
 			if (resourcesError) return resourcesError;
+			const effortError = validateEffort(item.effort, `Task ${i + 1}${item.name ? ` (\`${item.name}\`)` : ""}`);
+			if (effortError) return effortError;
 		}
 		const seen = new Map<string, string>();
 		for (const item of tasks) {
@@ -315,7 +315,9 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 			? "Missing `tasks`. Provide a `tasks` array (one subagent per item) with a shared `context`."
 			: "Missing `task`. Provide complete, self-contained instructions for the agent.";
 	}
-	return validateEffort(params.effort, "The call") ?? validateResources(params.resources, "The call");
+	const callResourcesError = validateResources(params.resources, "The call");
+	if (callResourcesError && validateEffort(params.effort, "The call") === undefined) return callResourcesError;
+	return validateEffort(params.effort, "The call");
 }
 
 /**
