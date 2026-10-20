@@ -85,7 +85,7 @@ export const taskItemSchema = type({
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": evalToolsField,
-	"model?": "string"
+	"model?": "string",
 	"+": "delete",
 });
 const taskItemSchemaIsolated = type({
@@ -96,7 +96,7 @@ const taskItemSchemaIsolated = type({
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": evalToolsField,
-	"model?": "string"
+	"model?": "string",
 	"isolated?": "boolean",
 	"+": "delete",
 });
@@ -109,7 +109,7 @@ export const taskSchema = type({
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": evalToolsField,
-	"model?": "string"
+	"model?": "string",
 	"isolated?": "boolean",
 	"+": "delete",
 });
@@ -121,7 +121,7 @@ const taskSchemaNoIsolation = type({
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": evalToolsField,
-	"model?": "string"
+	"model?": "string",
 	"+": "delete",
 });
 function guardBatchAgent(schema: BaseType): BaseType {
