@@ -115,6 +115,12 @@ const HTTP2_STREAM_RESET_ERROR_RE =
 const PREMATURE_STREAM_CLOSE_ERROR_RE =
 	/(?:stream closed before a (?:finish_reason|terminal response event)|Codex stream ended before terminal completion event|Cursor stream ended before turnEnded)/i;
 
+// Responses transport drops reported in the gateway's or provider's own words
+// (`stream_incomplete`, a websocket closed before `response.completed`). Narrower
+// than `AIError.isTransientStreamDropError`, which also covers Anthropic envelope
+// errors whose committed text keeps the main-session replay veto.
+const RESPONSES_STREAM_DROP_ERROR_RE = /stream_incomplete|(?:stream|websocket) closed before response\.completed/i;
+
 /**
  * Bare abort sentinels with no provider reason: our own `"Request was aborted"`
  * plus Node/Bun `AbortError`s (`"The operation was aborted"`) surfaced by
@@ -1671,11 +1677,9 @@ export class TurnRecovery {
 	 * Mid-generation transport death: the local idle watchdog's stream stall, an
 	 * HTTP/2 stream reset, or a gateway close without the terminal event. A
 	 * premature close (no finish_reason/terminal event) is the same failure
-	 * class as a stall or reset, and so is a transport drop the provider or a
-	 * proxy reports in its own words (for example a Responses `stream_incomplete`
-	 * error event for an upstream websocket that closed before
-	 * `response.completed`); `AIError.isTransientStreamDropError` owns that
-	 * wording. Resets and closes are ignored while a deliberate abort, disposal,
+	 * class as a stall or reset, and so is a Responses transport drop the provider or a
+	 * proxy reports in its own words (a `stream_incomplete` error event for an
+	 * upstream websocket that closed before `response.completed`). Resets and closes are ignored while a deliberate abort, disposal,
 	 * or streaming-edit abort owns the stream.
 	 */
 	#isMidStreamTransportFailure(message: AssistantMessage, id: number): boolean {
@@ -1692,8 +1696,8 @@ export class TurnRecovery {
 			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage) ||
 			// Providers such as Cursor keep the raw diagnostic in errorClassificationMessage and
 			// display-only text in errorMessage; retry classification reads both, so must this.
-			AIError.isTransientStreamDropError(errorMessage) ||
-			AIError.isTransientStreamDropError(message.errorClassificationMessage ?? "")
+			RESPONSES_STREAM_DROP_ERROR_RE.test(errorMessage) ||
+			RESPONSES_STREAM_DROP_ERROR_RE.test(message.errorClassificationMessage ?? "")
 		);
 	}
 	/**
