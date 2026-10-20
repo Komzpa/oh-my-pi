@@ -400,14 +400,8 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 
 	pi.on("tool_call", (event, ctx) => {
 		if ((event.toolName === "task" || (event.toolName === "todo" && (event.input.op === "init" || event.input.op === "append"))) && deadlineSdk.isUserDeadlineMissed(state)) {
-			const input = event.input;
-			const work = event.toolName === "task"
-				? (Array.isArray(input.tasks) ? input.tasks : [input]).map(item => item.name ?? item.task)
-				: (input.list?.flatMap(phase => phase.items) ?? input.items ?? []);
-			const user = deadlineSdk.latestDeadlineUserMessage(userEntries(ctx));
-			const approvalLines = user && user.at >= state!.baselineDeadlineAt! && user.id !== state!.userConstraint!.messageId ? user.text.split("\n") : [];
-			const missingIndex = work.findIndex(item => typeof item !== "string" || !approvalLines.includes(`Approve new work: ${item}`));
-			if (work.length === 0 || missingIndex >= 0) return { block: true, reason: `Refusing new work after the user deadline. Exactly: ask the user to reply ${JSON.stringify(`Approve new work: ${work[missingIndex] ?? "<exact row or task name>"}`)}.` };
+			const due = deadlineSdk.formatLocalClock(state!.baselineDeadlineAt! * 1_000, state!.timezone);
+			return { block: true, reason: `Refusing new work after the missed ${due} user deadline. Ask the user for a new deadline time (it replaces the missed one) or whether to drop the deadline; record the answer with goal_deadline set or clear.` };
 		}
 		const isNativeCompletion = event.toolName === "goal" && event.input.op === "complete";
 		const isPluginCompletion = event.toolName === "update_goal" && event.input.status === "complete";
@@ -460,14 +454,14 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		name: "goal_deadline",
 		label: "Goal Deadline",
 		description:
-			"Manage milestone deadlines and durable user delivery constraints. With no focused goal, action=set records the constraint in this same session owner. user_message is an exact quote from the latest real user message giving the deadline. The goal id, start time, and local timezone default from state or focus; never infer deadline times. deadline_at is a Unix timestamp in seconds, not milliseconds. Same-goal updates preserve receipts and final due time. Only a newer user message giving a new time can replace a user deadline; action=clear requires the user to say /deadline close. A promised status time is not authorization.",
+			"Manage milestone deadlines and durable user delivery constraints. With no focused goal, action=set records the constraint in this same session owner. user_message is an exact quote from the latest real user message giving the deadline. The goal id, start time, and local timezone default from state or focus; never infer deadline times. deadline_at is a Unix timestamp in seconds, not milliseconds. Same-goal updates preserve receipts and final due time. Only a newer user message giving a new time can replace a user deadline; action=clear needs a newer real user message dropping the deadline, quoted in user_message (or /deadline close). A promised status time is not authorization.",
 		parameters: z.object({
 			action: z.enum(["set", "deliver", "status", "clear"]),
 
 			goal_id: z.string().optional(),
 			goal_started_at: z.number().int().optional(),
 			timezone: z.string().optional(),
-			user_message: z.string().optional().describe("Exact quote from the latest real user message authorizing this deadline; include its explicit local HH:MM time."),
+			user_message: z.string().optional().describe("Exact quote from the latest real user message authorizing this deadline (set: include its explicit local HH:MM time; clear: the words dropping it)."),
 			stages: z
 				.array(
 					z.object({
@@ -572,7 +566,8 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 			} else if (params.action === "clear") {
 				if (state?.userConstraint) {
 					const user = deadlineSdk.latestDeadlineUserMessage(userEntries(ctx));
-					if (!user || user.id === state.userConstraint.messageId || user.at < state.userConstraint.recordedAt || user.text.trim() !== "/deadline close") throw new Error("Exactly: ask the user to say /deadline close");
+					const quoted = user?.text.trim() === "/deadline close" || (params.user_message?.trim() && user?.text.includes(params.user_message));
+					if (!user || user.id === state.userConstraint.messageId || user.at < state.userConstraint.recordedAt || !quoted) throw new Error("Ask the user whether to drop the deadline, then quote their newer message in user_message (or they say /deadline close)");
 				}
 				state = state ? { ...state, active: false, stages: [], baselineDeadlineAt: undefined } : null;
 			}

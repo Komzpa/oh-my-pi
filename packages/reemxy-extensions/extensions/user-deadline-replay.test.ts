@@ -63,7 +63,7 @@ test("transcript replay persists without focus, wraps at 23:00, and survives rew
 	expect(h.context()).toContain("WRAP-UP MODE");
 	expect(h.context()).toContain("deadline 23:00 missed");
 	expect(h.context()).toContain("by 0m");
-	expect(h.gate("todo", { op: "append", items: ["New row"] })).toEqual({ block: true, reason: 'Refusing new work after the user deadline. Exactly: ask the user to reply "Approve new work: New row".' });
+	expect(h.gate("todo", { op: "append", items: ["New row"] })).toEqual({ block: true, reason: "Refusing new work after the missed 23:00 user deadline. Ask the user for a new deadline time (it replaces the missed one) or whether to drop the deadline; record the answer with goal_deadline set or clear." });
 	expect(h.gate("todo", { op: "init", list: [{ phase: "New scope", items: ["New row"] }] })).toMatchObject({ block: true });
 	expect(h.gate("task", { tasks: [{ name: "NewWorker", agent: "coder", task: "New row" }] })).toMatchObject({ block: true });
 	expect(h.gate("todo", { op: "schedule", updates: [{ task: "Existing row", content: "Corrected row" }] })).toBeUndefined();
@@ -110,18 +110,20 @@ test("a newer real user time replaces the constraint and clears wrap-up", async 
 	expect(h.gate("task", { name: "AllowedWorker", task: "Delivery" })).toBeUndefined();
 });
 
-test("explicit user approval allows only the exact new row or worker, not a correction or prefix", async () => {
+test("after a miss only a new time or the user's own reset reopens new work", async () => {
 	const h = deadlineHarness();
 	await h.call(replay.set);
 	h.setNow(replay.dueAt);
 	h.user("correction", "Correct the existing item: show its real verification state");
 	expect(h.gate("todo", { op: "append", items: ["New row"] })).toMatchObject({ block: true });
-	h.user("approval", "Approve new work: New row\nApprove new work: NewWorker");
+	expect(h.gate("task", { name: "NewWorker", task: "New row" })).toMatchObject({ block: true });
+	await expect(h.call({ action: "clear", user_message: "drop the deadline" })).rejects.toThrow("/deadline close");
+	h.user("reset", "сбрось дедлайн, работаем дальше");
+	await expect(h.call({ action: "clear", user_message: "drop the deadline" })).rejects.toThrow("/deadline close");
+	await h.call({ action: "clear", user_message: "сбрось дедлайн" });
+	expect(h.context()).not.toContain("WRAP-UP MODE");
 	expect(h.gate("todo", { op: "append", items: ["New row"] })).toBeUndefined();
 	expect(h.gate("task", { name: "NewWorker", task: "New row" })).toBeUndefined();
-	expect(h.gate("todo", { op: "append", items: ["New row", "Other row"] })).toMatchObject({ block: true });
-	expect(h.gate("todo", { op: "append", items: ["New"] })).toMatchObject({ block: true });
-	expect(h.context()).toContain("WRAP-UP MODE");
 });
 
 test("delivering stages and dropping focus do not close the user's deadline", async () => {
