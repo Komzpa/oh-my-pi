@@ -579,6 +579,7 @@ test("a zero-worker deadline incident requests lead evidence rather than nonexis
     const notice = await f.check();
     expect(notice).toContain("retrospective due (deadline passed)");
     expect(notice).toContain("no new eligible worker reports");
+    expect(notice).toContain("closes only when a task with agent retro-facilitator completes");
     expect(notice).toContain("lead's tool results, plan history and available receipts");
     expect(notice).toContain("only when the evidence identifies an actual instruction defect");
     expect(notice).not.toContain("read the Retro block");
