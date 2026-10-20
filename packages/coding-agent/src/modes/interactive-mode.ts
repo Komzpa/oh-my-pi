@@ -4878,6 +4878,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (hiddenStages > 0) {
 			pushBlock(theme.fg("muted", formatMoreItems(hiddenStages, "stage")));
 		}
+		if (hudSelection && hudSelection.hidden > 0) {
+			pushBlock(theme.fg("muted", `${formatMoreItems(hudSelection.hidden, "todo")} · /todo expand`));
+		}
+
+		// Closing tail: hook + a few horizontals. Every tail cell is 1 column in
+		// both glyph sets, so string slicing below splits it by visible cells.
+		const tailLen = 6;
+		const tail = theme.tree.hook + theme.tree.horizontal.repeat(Math.max(0, tailLen - visibleWidth(theme.tree.hook)));
+
 		if (workers.unassigned.length > 0) {
 			pushBlock(
 				[
@@ -4887,14 +4896,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				[undefined, ...workers.unassigned.map(worker => worker.id)],
 			);
 		}
-		if (hudSelection && hudSelection.hidden > 0) {
-			pushBlock(theme.fg("muted", `${formatMoreItems(hudSelection.hidden, "todo")} · /todo expand`));
-		}
-
-		// Closing tail: hook + a few horizontals. Every tail cell is 1 column in
-		// both glyph sets, so string slicing below splits it by visible cells.
-		const tailLen = 6;
-		const tail = theme.tree.hook + theme.tree.horizontal.repeat(Math.max(0, tailLen - visibleWidth(theme.tree.hook)));
 
 		// Overall progress (summed across every stage) fills the path in reading
 		// order: down the spine, around the bend, out along the tail.
