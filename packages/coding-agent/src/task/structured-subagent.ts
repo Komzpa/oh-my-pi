@@ -27,7 +27,7 @@ import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" wit
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
 import isolationRecoveryHintTemplate from "../prompts/tools/isolation-recovery-hint.md" with { type: "text" };
 import salvagedChildHintTemplate from "../prompts/tools/salvaged-child-hint.md" with { type: "text" };
-import { MAIN_AGENT_ID } from "../registry/agent-registry";
+import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { TaskEffort } from "@oh-my-pi/pi-tui/thinking";
 import type { TaskImage } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "../tools";
@@ -36,7 +36,7 @@ import { buildOutputValidator } from "../tools/output-schema-validator";
 import { bindRequirementRowArtifact, getLatestTodoPhasesFromEntries } from "../tools/todo";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
-import { type ExecutorOptions, runSubprocess } from "./executor";
+import { type ExecutorOptions, runSubprocess, type SubagentToolResult } from "./executor";
 import {
 	applyEligibleNestedPatches,
 	type IsolationContext,
@@ -165,6 +165,8 @@ export interface StructuredSubagentRequest {
 	images?: TaskImage[];
 	signal?: AbortSignal;
 	onProgress?: (progress: AgentProgress) => void;
+	/** See {@link ExecutorOptions.onToolResult}. */
+	onToolResult?: (result: SubagentToolResult) => void;
 }
 
 /** A normalized preflight result, reusable by tests and adapters. */
@@ -651,6 +653,7 @@ function buildExecutorOptions(
 		eventBus: session.eventBus,
 		subagentEventBus: session.subagentEventBus,
 		onProgress: request.onProgress,
+		onToolResult: request.onToolResult,
 		authStorage: session.authStorage,
 		modelRegistry: session.modelRegistry,
 		settings: session.settings,
@@ -874,50 +877,64 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 				);
 			}
 		}
+		// An inline (`detached: false`) spawn keeps its parent's tool call open
+		// until the child finishes: no message to the parent lands before then.
+		const releaseHold =
+			request.detached === false
+				? (request.session.agentRegistry ?? AgentRegistry.global()).awaits.hold(
+						baseOptions.parentAgentId ?? MAIN_AGENT_ID,
+						[id],
+						{ interruptible: false },
+					)
+				: undefined;
 		let result: SingleResult;
-		if (!isolationContext) {
-			// Bind the actual execution checkout before any worker can finish. This also
-			// covers non-QA owners and async/wait receipts after registry cleanup.
-			const manager = request.session.sessionManager;
-			if (manager) {
-				const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
-				for (const phase of phases) {
-					for (const task of phase.tasks) {
-						if (!("schedule" in task)) continue;
-						const schedule = task.schedule;
-						if (!schedule || typeof schedule !== "object" || !("owner" in schedule) || schedule.owner !== id)
-							continue;
-						await bindRequirementRowArtifact(
-							{
-								cwd: baseOptions.cwd,
-								sessionManager: manager,
-								executionCheckout: { owner: id, cwd: baseOptions.cwd },
-							},
-							task.content,
-							phases,
-							{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
-						);
+		try {
+			if (!isolationContext) {
+				// Bind the actual execution checkout before any worker can finish. This also
+				// covers non-QA owners and async/wait receipts after registry cleanup.
+				const manager = request.session.sessionManager;
+				if (manager) {
+					const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
+					for (const phase of phases) {
+						for (const task of phase.tasks) {
+							if (!("schedule" in task)) continue;
+							const schedule = task.schedule;
+							if (!schedule || typeof schedule !== "object" || !("owner" in schedule) || schedule.owner !== id)
+								continue;
+							await bindRequirementRowArtifact(
+								{
+									cwd: baseOptions.cwd,
+									sessionManager: manager,
+									executionCheckout: { owner: id, cwd: baseOptions.cwd },
+								},
+								task.content,
+								phases,
+								{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
+							);
+						}
 					}
 				}
+				result = await runSubprocess(baseOptions);
+				// Recorded at the execution boundary so completion gates can bind the
+				// row after the worker leaves the registry; isolated runs never carry it.
+				result.checkoutCwd = baseOptions.cwd;
+				onSubprocessResult?.(result);
+			} else {
+				result = await runIsolatedSubprocess({
+					baseOptions,
+					context: isolationContext,
+					preferredBackend: parseIsolationBackend(cfgIsolationBackend.get(request.session.settings)),
+					agentId: id,
+					mergeMode: policy.mergeMode,
+					artifactsDir: lease.artifactsDir,
+					description: trimToUndefined(request.identity?.label),
+					buildCommitMessage: makeIsolationCommitMessage(request.session),
+					buildFailureResult: buildFailureResult(request, policy, id, Date.now()),
+					onSubprocessResult,
+				});
 			}
-			result = await runSubprocess(baseOptions);
-			// Recorded at the execution boundary so completion gates can bind the
-			// row after the worker leaves the registry; isolated runs never carry it.
-			result.checkoutCwd = baseOptions.cwd;
-			onSubprocessResult?.(result);
-		} else {
-			result = await runIsolatedSubprocess({
-				baseOptions,
-				context: isolationContext,
-				preferredBackend: parseIsolationBackend(cfgIsolationBackend.get(request.session.settings)),
-				agentId: id,
-				mergeMode: policy.mergeMode,
-				artifactsDir: lease.artifactsDir,
-				description: trimToUndefined(request.identity?.label),
-				buildCommitMessage: makeIsolationCommitMessage(request.session),
-				buildFailureResult: buildFailureResult(request, policy, id, Date.now()),
-				onSubprocessResult,
-			});
+		} finally {
+			releaseHold?.();
 		}
 		settled = result;
 		attachStructuredOutputMetadata(result, policy.schema);
