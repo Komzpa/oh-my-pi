@@ -9,7 +9,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { buildOutputValidator } from "@oh-my-pi/pi-coding-agent/tools/output-schema-validator";
-import { YieldTool } from "@oh-my-pi/pi-coding-agent/tools/yield";
+import { YieldTool, YieldTool as WorkerYieldTool } from "@oh-my-pi/pi-coding-agent/tools/yield";
 import { buildWorkPoolOutputSchema } from "../../src/task/workpool-yield";
 import { yieldSectionShapes } from "../../src/task/yield-assembly";
 import { assembleYieldResult } from "@oh-my-pi/pi-tui/tools/task-yield-assembly";
@@ -382,7 +382,16 @@ describe("YieldTool", () => {
 			},
 			"payload",
 		);
-		const bridgedResult = await tool.execute("call-bridged", bridged);
+		// The first accepted yield latched this run's tool; a fresh run gets a fresh tool.
+		const bridgedTool = new YieldTool(
+			createSession({
+				outputSchema: {
+					type: "object",
+					properties: { summary: { type: "string" }, findings: { type: "array", items: { type: "string" } } },
+				},
+			}),
+		);
+		const bridgedResult = await bridgedTool.execute("call-bridged", bridged);
 		expect(bridgedResult.details).toMatchObject({ status: "success", data: { summary: "s" } });
 	});
 
@@ -819,6 +828,18 @@ describe("YieldTool", () => {
 
 		expect(shapes.get("blockers")).toBe("array");
 	});
+});
+
+describe("YieldTool independent provider arguments", () => {
+	// Each argument case is a separate worker submission. Lifecycle tests use
+	// WorkerYieldTool directly and prove that one worker cannot submit twice.
+	class YieldTool {
+		constructor(private readonly session: ToolSession) {}
+
+		execute(...args: Parameters<WorkerYieldTool["execute"]>) {
+			return new WorkerYieldTool(this.session).execute(...args);
+		}
+	}
 
 	it("rejects missing success data unless a yield type requests last-turn mode", async () => {
 		const tool = new YieldTool(createSession());
@@ -897,7 +918,22 @@ describe("YieldTool", () => {
 		expect(String(failure.message)).toContain('{"key":2,"error":"boom"}');
 		expect(String(failure.message)).not.toContain('"type"');
 	});
+	it("accepts data alongside an empty-string error (non-strict OpenAI-compatible backends)", async () => {
+		const tool = new YieldTool(createSession());
+		// Order matters: a terminal result is one-shot, so the structural check runs
+		// first (it throws without latching) and the accepting call runs last.
+		const failure = await tool.execute("call-only-empty-error", { error: "" } as never).catch(err => err);
+		expect(failure).toBeInstanceOf(Error);
+		expect(String(failure.message)).toContain("yield must contain either `data` or `error`");
 
+		const result = await tool.execute("call-empty-error", { type: "result", data: { ok: true }, error: "" } as never);
+		expect(result.details?.status).toBe("success");
+		expect(result.details?.data).toEqual({ ok: true });
+		expect(result.details?.error).toBeUndefined();
+	});
+});
+
+describe("YieldTool", () => {
 	it("aborts instead of throwing forever after repeated untyped empty results", async () => {
 		const tool = new YieldTool(createSession());
 		const expectedGuidance =
@@ -916,7 +952,7 @@ describe("YieldTool", () => {
 		expect(abortResult.content).toEqual([{ type: "text", text: expect.stringContaining("Task aborted") }]);
 	});
 
-	it("resets the untyped empty-result retry budget after a valid yield", async () => {
+	it("resets the untyped empty-result retry budget after a valid incremental yield", async () => {
 		const tool = new YieldTool(createSession());
 		const expectedGuidance =
 			'yield must contain either `data` or `error`. Submit success as {"data":<your output>} or failure as {"error":"message"}.';
@@ -927,8 +963,13 @@ describe("YieldTool", () => {
 			);
 		}
 
-		const validResult = await tool.execute("call-valid-reset", { data: { ok: true } } as never);
-		expect(validResult.details).toEqual({ data: { ok: true }, status: "success", error: undefined });
+		const validResult = await tool.execute("call-valid-reset", { type: ["progress"], data: { ok: true } } as never);
+		expect(validResult.details).toEqual({
+			data: { ok: true },
+			status: "success",
+			error: undefined,
+			type: ["progress"],
+		});
 
 		for (let attempt = 1; attempt <= 3; attempt++) {
 			await expect(tool.execute(`call-empty-after-valid-${attempt}`, {} as never)).rejects.toThrow(expectedGuidance);
@@ -1057,6 +1098,9 @@ describe("YieldTool", () => {
 				},
 			}),
 		);
+		await expect(
+			tool.execute("call-required-null", { data: { status: null, steps: [{ name: "completed" }] } }),
+		).rejects.toThrow(/status: expected string, received null/);
 		const result = await tool.execute("call-nested-optionals", {
 			data: {
 				status: "done",
@@ -1070,9 +1114,6 @@ describe("YieldTool", () => {
 			status: "done",
 			steps: [{ name: "completed", blocker_details: null }],
 		});
-		await expect(
-			tool.execute("call-required-null", { data: { status: null, steps: [{ name: "completed" }] } }),
-		).rejects.toThrow(/status: expected string, received null/);
 	});
 
 	it("omits optional nulls in strict prefixItems and trailing items without changing required fields", async () => {
@@ -1107,6 +1148,9 @@ describe("YieldTool", () => {
 			}),
 		);
 		expect(tool.strict).toBe(true);
+		await expect(
+			tool.execute("call-tuple-required", { data: { tuple: [{ id: null }, { label: "next" }] } }),
+		).rejects.toThrow(/tuple\/0\/id: expected string, received null/);
 		const result = await tool.execute("call-tuple", {
 			data: {
 				tuple: [
@@ -1116,9 +1160,6 @@ describe("YieldTool", () => {
 			},
 		});
 		expect(result.details?.data).toEqual({ tuple: [{ id: "done" }, { label: "next" }] });
-		await expect(
-			tool.execute("call-tuple-required", { data: { tuple: [{ id: null }, { label: "next" }] } }),
-		).rejects.toThrow(/tuple\/0\/id: expected string, received null/);
 	});
 
 	it("normalizes optional nulls inside JTD discriminator variants", async () => {
@@ -1162,7 +1203,8 @@ describe("YieldTool", () => {
 		const primitiveResult = await tool.execute("call-true-number", { data: 42 } as never);
 		expect(primitiveResult.details).toEqual({ data: 42, status: "success", error: undefined });
 
-		const arrayResult = await tool.execute("call-true-array", { data: ["ok", 1, false] } as never);
+		const arrayTool = new YieldTool(createSession({ outputSchema: true }));
+		const arrayResult = await arrayTool.execute("call-true-array", { data: ["ok", 1, false] } as never);
 		expect(arrayResult.details).toEqual({
 			data: ["ok", 1, false],
 			status: "success",
@@ -1268,11 +1310,11 @@ describe("YieldTool", () => {
 		expect(issueSchema.type).toBe("integer");
 
 		await expect(
-			tool.execute("call-mixed-valid", { data: { results: [{ issue: 185 }] } } as never),
-		).resolves.toBeDefined();
-		await expect(
 			tool.execute("call-mixed-invalid", { data: { results: [{ issue: "185" }] } } as never),
 		).rejects.toThrow("Output does not match schema");
+		await expect(
+			tool.execute("call-mixed-valid", { data: { results: [{ issue: 185 }] } } as never),
+		).resolves.toBeDefined();
 	});
 
 	it("expands section variants so a strict reviewer can submit one incremental section", () => {
@@ -1586,14 +1628,14 @@ describe("YieldTool", () => {
 		};
 		const tool = new YieldTool(createSession({ outputSchema }));
 
-		const firstResult = await tool.execute("call-valid-1", { data: { token: "abcd" } } as never);
+		const firstResult = await tool.execute("call-valid-1", { type: ["token"], data: "abcd" } as never);
 		expect(firstResult.content).toEqual([{ type: "text", text: "Result submitted." }]);
 
-		const secondResult = await tool.execute("call-valid-2", { data: { token: "abcde" } } as never);
+		const secondResult = await tool.execute("call-valid-2", { type: ["token"], data: "abcde" } as never);
 		expect(secondResult.content).toEqual([{ type: "text", text: "Result submitted." }]);
 
-		await expect(tool.execute("call-invalid-after-valid", { data: { token: "ab" } } as never)).rejects.toThrow(
-			"Output does not match schema",
+		await expect(tool.execute("call-invalid-after-valid", { type: ["token"], data: "ab" } as never)).rejects.toThrow(
+			"does not match schema",
 		);
 	});
 
@@ -1655,11 +1697,13 @@ describe("YieldTool", () => {
 
 		// Exhaust the schema-retry budget.
 		for (let attempt = 1; attempt <= 3; attempt++) {
-			await expect(tool.execute(`call-struct-${attempt}`, { data: { token: "ab" } } as never)).rejects.toThrow(
-				"Output does not match schema",
+			await expect(tool.execute(`call-struct-${attempt}`, { type: ["token"], data: "ab" } as never)).rejects.toThrow(
+				"does not match schema",
 			);
 		}
-		await expect(tool.execute("call-struct-override", { data: { token: "ab" } } as never)).resolves.toBeDefined();
+		await expect(
+			tool.execute("call-struct-override", { type: ["token"], data: "ab" } as never),
+		).resolves.toBeDefined();
 
 		// Structural errors (empty untyped submission) still throw even after override.
 		await expect(tool.execute("call-struct-missing", {} as never)).rejects.toThrow(
@@ -1814,14 +1858,50 @@ describe("YieldTool", () => {
 		// enum value is treated as opaque data (not mistaken for an unresolved
 		// schema reference that would discard the enum entirely).
 		expect(tool.strict).toBe(false);
-		const result = await tool.execute("call-literal-ref-enum", {
-			data: { $ref: "literal" },
-		} as never);
-		expect(result.details?.data).toEqual({ $ref: "literal" });
 		await expect(
 			tool.execute("call-invalid-literal-ref-enum", {
 				data: { $ref: "different" },
 			} as never),
 		).rejects.toThrow("Output does not match schema");
+		const result = await tool.execute("call-literal-ref-enum", {
+			data: { $ref: "literal" },
+		} as never);
+		expect(result.details?.data).toEqual({ $ref: "literal" });
+	});
+});
+
+describe("YieldTool wrong-key and untyped empty payloads (#108)", () => {
+	it("bounces a result carried under a stray key instead of accepting last-turn prose", async () => {
+		const tool = new YieldTool({
+			...createSession(),
+			getLastAssistantText: () => "Done.",
+		} as ToolSession);
+		await expect(
+			tool.execute("call-wrong-key", { type: "result", result: "| id | verdict |\n| 1 | clean |" } as never),
+		).rejects.toThrow(/not in `result`/);
+		const done = await tool.execute("call-real", {
+			type: "result",
+			data: "| id | verdict |\n| 1 | clean |",
+		} as never);
+		expect(done.details).toMatchObject({ status: "success", data: "| id | verdict |\n| 1 | clean |" });
+	});
+
+	it("bounces an untyped success yield whose data is empty", async () => {
+		const tool = new YieldTool(createSession());
+		await expect(tool.execute("call-untyped-empty", { data: "" } as never)).rejects.toThrow(/data is empty/);
+		const done = await tool.execute("call-untyped-real", { data: { verdict: "clean" } } as never);
+		expect(done.details).toMatchObject({ status: "success", data: { verdict: "clean" } });
+	});
+
+	it("negative control: a typed result carrying its table in data succeeds unchanged", async () => {
+		const tool = new YieldTool({
+			...createSession(),
+			getLastAssistantText: () => "Done.",
+		} as ToolSession);
+		const done = await tool.execute("call-control", {
+			type: "result",
+			data: "| id |verdict|",
+		} as never);
+		expect(done.details).toMatchObject({ status: "success", data: "| id |verdict|" });
 	});
 });

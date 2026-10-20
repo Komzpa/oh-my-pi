@@ -55,7 +55,6 @@ import { IrcBus } from "../irc/bus";
 import type { MCPManager } from "../mcp/manager";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import { initializeExtensions } from "../modes/runtime-init";
-import subagentAsyncPendingTemplate from "../prompts/system/subagent-async-pending.md" with { type: "text" };
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
 import { AgentLifecycleManager, type AgentReviver } from "../registry/agent-lifecycle";
@@ -75,7 +74,6 @@ import {
 	type PromptOptions,
 } from "../session/agent-session";
 import { type ArtifactManager, writeArtifact } from "../session/artifacts";
-import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
 import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
 import { hasConversationalHistory, SessionManager } from "../session/session-manager";
@@ -94,7 +92,7 @@ import { DEFAULT_PEER_ROSTER_LIMIT } from "@oh-my-pi/pi-tui/tools/irc";
 import { normalizeSchema } from "../tools/jtd-to-json-schema";
 import { buildOutputValidator, summarizeValidationFailure } from "../tools/output-schema-validator";
 import { ToolAbortError } from "../tools/tool-errors";
-import { resetYieldTurnState } from "../tools/yield";
+import { resetYieldTurnState, subscribeYieldAcceptedResult } from "../tools/yield";
 import { type EventBus, emitSubagentFrame } from "../utils/event-bus";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { buildNamedToolChoice } from "../utils/tool-choice";
@@ -1172,8 +1170,8 @@ export function createSubagentSettings(
 		"tier.google": subagentTiers.google ?? "none",
 		// Async jobs and bash/eval auto-backgrounding are inherited from the parent:
 		// background jobs are owner-routed to the subagent's own session, and
-		// the run driver's quiescence barrier + teardown reap guarantee no
-		// owner job outlives the run, so worktree capture/cleanup stays
+		// terminal yield warns before abandonment and teardown reaps unfinished
+		// owner jobs, so worktree capture/cleanup stays
 		// race-free (previously both were force-disabled here).
 
 		// Subagents run headless — there is no UI to confirm prompts against, so
@@ -1276,20 +1274,6 @@ interface SubagentRunMonitor {
 	budgetStopRequested(): boolean;
 	/** Resolves when the budget-stop session abort has settled (immediately when no stop fired). */
 	waitForBudgetStop(): Promise<void>;
-	/**
-	 * True when a recorded yield was invalidated by a later async-result
-	 * injection and no fresh yield has landed since: the yield payload
-	 * predates background job outcomes the model was shown.
-	 */
-	yieldInvalidatedByAsync(): boolean;
-	/**
-	 * True once a terminal yield with pending owner async work stopped the
-	 * free-running turn (recoverable, like a budget stop) instead of
-	 * terminating the run. Cleared when {@link waitForYieldTurnStop} settles.
-	 */
-	yieldTurnStopRequested(): boolean;
-	/** Resolves when the yield turn-stop session abort has settled (immediately when none fired). */
-	waitForYieldTurnStop(): Promise<void>;
 	/** The abort kind for this run, when an abort was requested. */
 	abortKind(): AbortReason | undefined;
 	terminalError(): string | undefined;
@@ -1323,15 +1307,6 @@ interface SubagentRunMonitor {
 	scheduleProgress(flush?: boolean): void;
 	/** Stop processing events and clear listeners/timers. Call once the run settled. */
 	finish(): void;
-}
-
-/**
- * True when `message` is the session-injected async-result follow-up
- * ({@link ASYNC_RESULT_MESSAGE_TYPE}): the transcript-ordered signal that a
- * background job outcome landed after whatever the model said before it.
- */
-function isAsyncResultInjection(message: AgentMessage | undefined): boolean {
-	return message?.role === "custom" && message.customType === ASYNC_RESULT_MESSAGE_TYPE;
 }
 
 function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
@@ -1398,11 +1373,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	let budgetCheckDeferred = false;
 	/** True while the reminder ladder's forced final `yield` is outstanding. */
 	let finalYieldForced = false;
-	let yieldInvalidatedByAsync = false;
-	/** Epoch ms the current terminal yield was recorded; cleared when it is invalidated. */
+	/** Epoch ms of the first accepted terminal yield; never reset. */
 	let yieldAcceptedAt: number | undefined;
-	let yieldTurnStopRequested = false;
-	let yieldTurnStopPromise: Promise<void> | null = null;
 
 	// Accumulate usage incrementally from message_end events (no memory for streaming events)
 	const accumulatedUsage: Usage = {
@@ -1508,29 +1480,6 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		terminalError ??= message;
 		requestAbort("terminate");
 	};
-	// Yield turn-stop: a terminal yield recorded while owner async work is
-	// still pending is a scheduling pause, not run completion. Stop the
-	// free-running turn exactly like a budget stop (session abort, monitor
-	// signal untouched) so driveSessionToResult's quiescence barrier can settle
-	// the jobs, fold their results in, and demand a fresh yield. Terminating
-	// here instead would abort the run signal and make the barrier
-	// unreachable, completing the run with a payload that predates the job
-	// outcomes.
-	const requestYieldTurnStop = () => {
-		if (yieldTurnStopRequested || abortSent || resolved) return;
-		yieldTurnStopRequested = true;
-		const session = activeSession;
-		yieldTurnStopPromise = session
-			? session.abort().catch(error => {
-					logger.debug("Subagent yield turn-stop abort failed", {
-						error: error instanceof Error ? error.message : String(error),
-					});
-				})
-			: Promise.resolve();
-	};
-
-	/** Owner async work that can still re-wake the run (quiescence barrier predicate). */
-	const sessionHasPendingAsyncWork = (): boolean => activeSession?.hasPendingAsyncWork?.() ?? false;
 
 	// Handle abort signal
 	if (signal) {
@@ -1733,7 +1682,52 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		emitSubagentFrame(args.eventBus, args.subagentEventBus, TASK_SUBAGENT_EVENT_CHANNEL, payload);
 	};
 
+	// Direct event + accepted-hook dedupe: both observe the same accepted call
+	// (the hook fires at YieldTool.execute return, the session event follows),
+	// so the first claim wins and incremental sections accumulate exactly once.
+	const seenYieldAcceptances = new Set<string>();
+	const claimYieldAcceptance = (toolCallId: string): boolean => {
+		if (seenYieldAcceptances.has(toolCallId)) return false;
+		seenYieldAcceptances.add(toolCallId);
+		return true;
+	};
+	// Accepted-yield producer notification for paths that never emit a session
+	// tool_execution_end (eval JS/Python bridge). Runs the same extraction and
+	// termination policy as the event path from the real accepted record.
+	const recordHookYield = (toolCallId: string, details: unknown): void => {
+		// Detach/finish drops the subscription; a settled run ignores late calls
+		// even if a stale execution kept its snapshot past detach.
+		if (resolved) return;
+		if (!claimYieldAcceptance(toolCallId)) return;
+		recordExtractedToolData("yield", details);
+		yieldCallPending = false;
+		if (budgetCheckDeferred) {
+			budgetCheckDeferred = false;
+			// The yield validated without ending the run: the turn that
+			// submitted it still counts against the budget.
+			if (!yieldCalled) evaluateSoftRequestBudget();
+		}
+		const handler = subprocessToolRegistry.getHandler("yield");
+		const wantsTerminate =
+			handler?.shouldTerminate?.({
+				toolName: "yield",
+				toolCallId,
+				args: {},
+				result: { content: [], details },
+				isError: false,
+			}) === true;
+		const forcedFinalYield = finalYieldForced && yieldCalled;
+		if (wantsTerminate || forcedFinalYield) {
+			// The yield tool warned before accepting abandoned processes;
+			// teardown reaps them without reopening submission.
+			requestAbort("terminate");
+		}
+	};
+
 	const recordExtractedToolData = (toolName: string, data: unknown): void => {
+		// Terminal acceptance is a one-way boundary. Ignore late extraction from
+		// already-running calls, but keep their tool events/errors visible.
+		if (toolName === "yield" && yieldCalled) return;
 		progress.extractedToolData = progress.extractedToolData || {};
 		const existing = progress.extractedToolData[toolName] || [];
 		existing.push(data);
@@ -1748,10 +1742,9 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			yieldCalled = !incremental || finalYieldForced || item?.complete === true || item?.status === "aborted";
 			yieldCallPending = false;
 			if (yieldCalled) {
-				yieldInvalidatedByAsync = false;
 				yieldAcceptedAt = Date.now();
-				// Submitted: the remaining work is finalization (or waiting on owned
-				// async jobs), so stop showing the last stale self-estimate.
+				// Submitted: the remaining work is finalization, so stop showing
+				// the last stale self-estimate.
 				if (completionProbe) progress.completionPercent = 99;
 				args.onYieldAccepted?.();
 			}
@@ -1824,17 +1817,6 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				if (event.message?.role === "assistant") {
 					assistantStreaming = true;
 					resetRecentOutput();
-				}
-				// An async-result follow-up injected after a recorded yield
-				// supersedes that yield: its payload predates the job outcome the
-				// model is now being shown. Un-latch so the quiescence barrier's
-				// reminder ladder demands a fresh yield. Guarded on the run signal:
-				// once the run is completing, late injections must not destabilize
-				// the settled classification.
-				if (yieldCalled && !abortSignal.aborted && isAsyncResultInjection(event.message)) {
-					yieldCalled = false;
-					yieldInvalidatedByAsync = true;
-					yieldAcceptedAt = undefined;
 				}
 				break;
 
@@ -1951,7 +1933,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 							isError: event.isError,
 						});
 						if (data !== undefined) {
-							recordExtractedToolData(event.toolName, data);
+							// The accepted hook may already have recorded this same
+							// call: first claim wins, incrementals only once.
+							const firstClaim = event.toolName !== "yield" || claimYieldAcceptance(event.toolCallId);
+							if (firstClaim) recordExtractedToolData(event.toolName, data);
 						}
 					}
 
@@ -1980,18 +1965,13 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					const forcedFinalYield = event.toolName === "yield" && finalYieldForced && yieldCalled;
 					endsRun = wantsTerminate || forcedFinalYield;
 					if (endsRun) {
-						if (event.toolName === "yield" && sessionHasPendingAsyncWork()) {
-							// Terminal yield with owner jobs still pending: park the
-							// run behind the quiescence barrier instead of completing
-							// it (see requestYieldTurnStop).
-							requestYieldTurnStop();
-						} else {
-							requestAbort("terminate");
-						}
+						// The yield tool warned before accepting abandoned processes;
+						// teardown reaps them without reopening submission.
+						requestAbort("terminate");
 					}
 				}
 				if (event.toolName === "yield") {
-					if (event.isError && !abortSent) {
+					if (event.isError && !yieldCalled && !abortSent) {
 						consecutiveYieldToolErrors++;
 						let yieldErrorText = "";
 						const resultContent = event.result?.content;
@@ -2220,7 +2200,13 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			progress.contextWindow = contextWindow;
 			scheduleProgress(true);
 		};
-		return session.subscribe(event => {
+		// The eval bridge executes the real YieldTool with no session
+		// tool_execution_end, so the accepted-yield producer notifies this
+		// monitor directly. Per-attach lifetime: detach drops the subscription,
+		// and the tool's generation fence plus call-id dedupe keep a stale
+		// execution from marking a new run.
+		const unsubscribeYield = subscribeYieldAcceptedResult(session.getToolByName?.("yield"), recordHookYield);
+		const unsubscribeEvents = session.subscribe(event => {
 			emitSubagentEvent(event);
 			publishAdvisorState(session);
 			publishServingModel();
@@ -2264,6 +2250,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				}
 			}
 		});
+		return () => {
+			unsubscribeYield();
+			unsubscribeEvents();
+		};
 	};
 
 	const captureSalvage = (session: AgentSession): void => {
@@ -2306,25 +2296,6 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			budgetStopRequested,
 		budgetStopRequested: () => budgetStopRequested,
 		waitForBudgetStop: () => budgetStopAbortPromise ?? Promise.resolve(),
-		yieldInvalidatedByAsync: () => yieldInvalidatedByAsync,
-		yieldTurnStopRequested: () => yieldTurnStopRequested,
-		waitForYieldTurnStop: async () => {
-			const pending = yieldTurnStopPromise;
-			if (!pending) {
-				yieldTurnStopRequested = false;
-				return;
-			}
-			try {
-				await pending;
-			} finally {
-				// Clear only after the abort settled so the idempotence gate in
-				// requestYieldTurnStop stays closed while it is in flight.
-				if (yieldTurnStopPromise === pending) {
-					yieldTurnStopPromise = null;
-					yieldTurnStopRequested = false;
-				}
-			}
-		},
 		// A soft stop that never escalated still identifies as a budget abort so
 		// the lifecycle can park the agent as resumable instead of killing it.
 		abortKind: () => abortReason ?? (budgetStopRequested ? "budget" : undefined),
@@ -2537,13 +2508,9 @@ async function driveSessionToResult(
 			}
 			await awaitAbortable(session.waitForIdle());
 		} catch (err) {
-			// A budget stop or a yield turn-stop (terminal yield parked behind
-			// the async quiescence barrier) cancels the free-running turn by
-			// aborting the session, which can surface here as a rejected
-			// prompt. Swallow it and drive the barrier/forced final yield
-			// below; real caller/timeout aborts (monitor signal) and genuine
-			// failures keep the old path.
-			const recoverableStop = monitor.budgetStopRequested() || monitor.yieldTurnStopRequested();
+			// A budget stop cancels the free-running turn without ending the run.
+			// Drive its forced final yield below; genuine failures still propagate.
+			const recoverableStop = monitor.budgetStopRequested();
 			if (!recoverableStop || abortSignal.aborted || err instanceof PromptDispatchError) throw err;
 		}
 
@@ -2585,8 +2552,8 @@ async function driveSessionToResult(
 					const isFinalRetry = retryCount >= MAX_YIELD_RETRIES;
 					// Last chance: the next accepted yield ends the run, incremental
 					// or not, so the pinned model cannot answer the pin forever.
-					// Armed for this prompt's turn only — the quiescence barrier's
-					// later notice turn may legitimately submit more sections.
+					// Armed for this prompt's turn only; drop recovery must not
+					// promote another turn's incremental sections to terminal.
 					retriesForced = isFinalRetry;
 					await dispatchPrompt(
 						reminder,
@@ -2621,31 +2588,9 @@ async function driveSessionToResult(
 			}
 		};
 
-		// Yield ladder + quiescence barrier (structured concurrency), one
-		// loop: a turn without a yield first settles pending owner work, then
-		// spends reminders only after there is nothing left to wait for.
-		// A yield also waits for quiescence; each delivered result supersedes
-		// the previous yield and demands a fresh one.
-		//
-		// A final yield with owner background jobs still running or
-		// undelivered is a scheduling pause, not run completion — the monitor
-		// parks such a yield with a recoverable turn-stop instead of
-		// terminating the run. Jobs are settled and their results folded into
-		// the run as async-result follow-up turns; each delivered result
-		// supersedes the yield it postdates, so the reminder ladder re-runs
-		// to demand a fresh yield that accounts for it. Only a yield with no
-		// pending owner work left is terminal — the isolation runner captures
-		// and destroys the worktree right after this run resolves, so no
-		// owner job that could still re-wake the session may outlive it.
-		// Suppressed (acknowledged / wait-watched) jobs never re-wake the run
-		// and are reaped at teardown.
-		//
-		// Before blocking on running jobs after a yield, tell the model ONCE
-		// what it is waiting on so it can stand by or cancel the job. A turn
-		// without a yield settles its pending jobs without an extra notice.
-		// Runs that exhaust the ladder with no pending work, or hit a terminal
-		// model error, skip the barrier; teardown reaps their jobs.
-		let asyncPendingNoticeSent = false;
+		// Before acceptance, settle owner work before spending yield reminders.
+		// The yield tool refuses the first terminal submission with live processes;
+		// a warned repeat records abandonment before teardown reaps owner jobs.
 		while (!abortSignal.aborted) {
 			if (!monitor.yieldCalled()) {
 				await runYieldLadder();
@@ -2657,46 +2602,8 @@ async function driveSessionToResult(
 				)
 					break;
 			}
-			// Let the parked yield's turn-stop session abort settle before
-			// prompting again (mirrors waitForBudgetStop).
-			await awaitAbortable(monitor.waitForYieldTurnStop());
-			if (!session.hasPendingAsyncWork()) {
-				if (monitor.yieldCalled()) break;
-				continue;
-			}
-			if (!monitor.yieldCalled()) {
-				await awaitAbortable(session.settleAsyncWork());
-				continue;
-			}
-			if (!asyncPendingNoticeSent) {
-				asyncPendingNoticeSent = true;
-				const running = session.getAsyncJobSnapshot()?.running ?? [];
-				if (running.length > 0) {
-					const jobs = running.map(job => `${job.id}${job.label ? ` (${job.label})` : ""}`).join(", ");
-					const notice = prompt.render(subagentAsyncPendingTemplate, {
-						count: running.length,
-						multiple: running.length > 1,
-						jobs,
-					});
-					try {
-						await dispatchPrompt(notice, { attribution: "agent", synthetic: true }, "async-pending notice");
-						await awaitAbortable(session.waitForIdle());
-					} catch (err) {
-						if (abortSignal.aborted || err instanceof ToolAbortError || err instanceof PromptDispatchError)
-							throw err;
-						// Other notice-turn failures leave the pending jobs to settle passively.
-						logger.warn("Subagent async-pending notice failed", {
-							error: err instanceof Error ? err.message : String(err),
-						});
-					}
-					// Re-evaluate: the notice turn may have cancelled, watched, or
-					// absorbed the jobs — or already re-yielded.
-					continue;
-				}
-			}
+			if (monitor.yieldCalled()) break;
 			await awaitAbortable(session.settleAsyncWork());
-			// Results delivered during the settle invalidated the recorded
-			// yield: the next iteration's ladder demands a fresh one.
 		}
 
 		if (!monitor.yieldCalled()) {
@@ -2734,18 +2641,6 @@ async function driveSessionToResult(
 			aborted = true;
 			abortReasonText ??= monitor.resolveAbortReasonText();
 			exitCode = 1;
-		}
-
-		// A recorded yield that async-result deliveries superseded and the
-		// model never refreshed is stale: fail the run instead of letting the
-		// parent act on a payload that predates the background job outcomes
-		// the model was shown. The stale payload still ships through
-		// finalizeSubprocessOutput's failed-after-yield path (exit 1 + stderr,
-		// output preserved as salvage).
-		if (monitor.yieldInvalidatedByAsync() && !abortSignal.aborted) {
-			exitCode = 1;
-			error ??=
-				"Background job results arrived after the subagent's last yield; it did not submit a refreshed yield covering them.";
 		}
 	} catch (err) {
 		if (abortSignal.aborted && monitor.yieldCalled() && !monitor.runtimeLimitExceeded()) {
@@ -2860,6 +2755,11 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	}
 	const lastYield = yieldItems?.[yieldItems.length - 1];
 	const yieldAbortReason = lastYield?.status === "aborted" ? lastYield.error || "Subagent aborted task" : undefined;
+	const abandonedJobs = lastYield?.abandonedJobs;
+	if (abandonedJobs?.length) {
+		const warning = `Terminal yield abandoned running processes: ${abandonedJobs.map(job => job.id).join(", ")}. Task cleanup cancels unfinished owner jobs.`;
+		stderr = stderr ? `${stderr}\n${warning}` : warning;
+	}
 	const { abortedViaYield, hasYield } = finalized;
 	const { content: truncatedOutput, truncated } = truncateTail(rawOutput, {
 		maxBytes: MAX_OUTPUT_BYTES,
@@ -2999,6 +2899,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		stderr,
 		truncated: Boolean(truncated),
 		...(finalized.structuredOutput ? { structuredOutput: finalized.structuredOutput } : {}),
+		...(abandonedJobs?.length ? { abandonedJobs } : {}),
 		durationMs: Date.now() - args.startTime,
 		tokens: progress.tokens,
 		requests: progress.requests,
@@ -3369,6 +3270,11 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			if (activeSession) turnMonitor.captureSalvage(activeSession);
 			const lastAssistant = session.getLastAssistantMessage();
 			const yielded = turnMonitor.yieldCalled();
+			if (yielded && session.asyncJobManager) {
+				const reap = await session.asyncJobManager.cancelAndReapOwnerJobs(id, Date.now() + 5000);
+				if (!reap.settled) trackLateCleanup(reap.completion, { id, resource: "IRC wake turn" });
+			}
+
 			const runtimeLimitExceeded = turnMonitor.runtimeLimitExceeded();
 			const aborted = runtimeLimitExceeded || (lastAssistant?.stopReason === "aborted" && !yielded);
 			// Two error lanes. `error` carries full diagnostics (a thrown turn
@@ -3827,10 +3733,24 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 			AgentRegistry.global().markResultAccepted(id, session, monitor.yieldAcceptedAt());
 		}
 	} finally {
+		const cleanupDeadlineAt = Date.now() + 5000;
 		try {
-			await untilAborted(AbortSignal.timeout(5000), () => monitor.waitForActiveSessionAbort());
+			await untilAborted(AbortSignal.timeout(Math.max(0, cleanupDeadlineAt - Date.now())), () =>
+				monitor.waitForActiveSessionAbort(),
+			);
 		} catch {
 			// Ignore abort cleanup timeouts; the session stays adopted either way.
+		}
+		const jobManager = session.asyncJobManager;
+		if (monitor.yieldCalled() && jobManager) {
+			const reap = await jobManager.cancelAndReapOwnerJobs(id, cleanupDeadlineAt);
+			if (!reap.settled) {
+				trackLateCleanup(reap.completion, { id, resource: "subagent follow-up" });
+				logger.warn("Subagent follow-up async job cleanup exceeded its deadline", {
+					id,
+					pendingJobIds: reap.pendingJobIds,
+				});
+			}
 		}
 		attemptUnsubscribe();
 		const active = monitor.takeActiveSession();
