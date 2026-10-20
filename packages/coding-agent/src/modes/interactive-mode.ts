@@ -83,15 +83,15 @@ import type { CollabGuestLink } from "../collab/guest";
 import { CollabController } from "../collab/controller";
 import type { CollabHost } from "../collab/host";
 import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
+import { appKey, editorKey, rawKeyHint } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
+import { formatModelString, type ResolvedModelRoleValue } from "../config/model-resolver";
+import { isSettingsInitialized, Settings, settings } from "../config/settings";
+import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import {
 	createInteractiveViewSourceRouter,
 	createLocalInteractiveViewSource,
 	type InteractiveViewSource,
 } from "./interactive-view";
-import { appKey, editorKey, rawKeyHint } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
-import { formatModelString, type ResolvedModelRoleValue } from "../config/model-resolver";
-import { isSettingsInitialized, Settings, settings } from "../config/settings";
-import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
 	AutocompleteProviderFactory,
 	ContextUsage,
