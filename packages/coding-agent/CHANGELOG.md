@@ -141,6 +141,8 @@
 - Fixed supported Bedrock Claude models falling back to soft instead of remote compaction ([#16343](https://github.com/can1357/oh-my-pi/pull/16343) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy))
 - Fixed browser `tab.run(fn, [url])` and `browser.open("https://…")` failing with a bare "expects an options object"; the errors now say to pass `{ args: [...] }` and `browser.open({ url, name })` ([#16236](https://github.com/can1357/oh-my-pi/pull/16236) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed the built-in `ts-set-map`, `ts-import-type` and `ts-no-any` rules reminding you about code they allow: an empty or computed `Set`/`Map`, a runtime `await import()`, or the word "any" in a comment ([#16242](https://github.com/can1357/oh-my-pi/pull/16242) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed committed-text turns stopping after a Responses `stream_incomplete` drop (including drops reported only through the classification message); the turn now continues with a resume reminder ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
+- Fixed committed-text stream-stall recovery burning its whole continuation budget within seconds on repeated websocket drops: the five per-prompt transport continuations are now paced at 2s, 5s, 15s, 30s and 60s instead of resuming immediately, and aborting or resetting the conversation during a pacing wait drops the pending continuation ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
 
 ## [18.12.3] - 2026-10-19
 
