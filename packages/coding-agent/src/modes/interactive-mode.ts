@@ -7358,7 +7358,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.#isShuttingDown) return;
 		this.#beginClose();
 		try {
-			this.#preserveServicesOnRestart = true;
 			await this.#teardown();
 		} catch (error) {
 			this.#handleTeardownError("restart", error);
