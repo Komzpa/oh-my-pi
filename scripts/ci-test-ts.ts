@@ -477,6 +477,9 @@ async function runTestCommand(testCommand: TestCommand): Promise<void> {
 function buildChildEnv(): Record<string, string | undefined> {
 	const env: Record<string, string | undefined> = {
 		...Bun.env,
+		// Provider exhaustion cooldowns persist across omp processes; a developer's real ban list
+		// (default `~/.local/state/omp-agent-router`) must never steer test routing.
+		OMP_AGENT_ROUTER_STATE_DIR: path.join(os.tmpdir(), `omp-test-router-state-${process.pid}`),
 		GITHUB_ACTIONS: "",
 		...(Bun.env.GITHUB_ACTIONS === "true" ? { OMP_FORCE_RUST_TASKS: "1" } : {}),
 		PI_TEST_RUNTIME: "1",
