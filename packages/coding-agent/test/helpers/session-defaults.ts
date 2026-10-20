@@ -14,6 +14,7 @@ export function createSessionDefaults() {
 		dispose: async () => {},
 		releaseTaskResources: async () => {},
 		setIrcWakeTurnObserver: () => {},
+		isParentIrcSteer: () => false,
 		isAdvisorActive: () => false,
 		subscribeRunState: () => () => {},
 		addDisposer: () => {},

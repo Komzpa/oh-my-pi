@@ -69,7 +69,8 @@ impl builtins::Command for ExecCommand {
 			argv0.as_ref(),
 			&self.args[1..],
 			self.empty_environment,
-		)?;
+		)
+		.await?;
 
 		let exec_error = cmd.exec();
 
@@ -106,7 +107,8 @@ impl ExecCommand {
 			argv0.as_ref(),
 			&self.args[1..],
 			self.empty_environment,
-		)?;
+		)
+		.await?;
 		pi_iso::process::background_child(&mut cmd);
 
 		let mut cmd = tokio::process::Command::from(cmd);
