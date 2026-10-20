@@ -11,7 +11,6 @@ import {
 	isNonBlankContext,
 	joinAdditionalContext,
 } from "@oh-my-pi/pi-agent-core";
-import { ASSISTANT_GATE_REFUSAL } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import type {
 	AssistantMessage,
 	CredentialDisabledEvent,
@@ -30,6 +29,7 @@ import type { KeyId } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import { refreshShellConfigCache } from "@oh-my-pi/pi-utils/procmgr";
 import { MAIN_AGENT_RULE_NAME } from "../../capability/rule";
+import { ASSISTANT_GATE_REFUSAL } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import type { ModelRegistry } from "../../config/model-registry";
 import { type Settings, withActiveSettings } from "../../config/settings";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
