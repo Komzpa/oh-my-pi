@@ -1033,7 +1033,9 @@ exec "$@"
 			};
 			let fixed_probe = probe_argv(super::true_bin());
 			assert!(
-				!fixed_probe.iter().any(|arg| arg.to_string_lossy().starts_with("--argv0=")),
+				!fixed_probe
+					.iter()
+					.any(|arg| arg.to_string_lossy().starts_with("--argv0=")),
 				"probe must not need coreutils 9.5+ --argv0: {fixed_probe:?}"
 			);
 			match case.as_str() {
@@ -1072,7 +1074,7 @@ exec "$@"
 					let out = launch(&dollar);
 					assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 					assert_eq!(String::from_utf8_lossy(&out.stdout), "A$B");
-				}
+				},
 				"custom-arg0" | "custom-arg0-unsupported" => {
 					let shell = super::resolved_binary("sh");
 					// Probe the actual fixture env, not a version string: old
@@ -1093,11 +1095,10 @@ exec "$@"
 						"test.scope",
 						false,
 						true,
-						&super::env_exec(
-							&shell,
-							std::ffi::OsStr::new("custom-marker"),
-							&["-c".into(), r#"printf %s "$0""#.into()],
-						),
+						&super::env_exec(&shell, std::ffi::OsStr::new("custom-marker"), &[
+							"-c".into(),
+							r#"printf %s "$0""#.into(),
+						]),
 						&super::ScopeEnvironment::default(),
 					);
 					let out = launch(&argv);
@@ -1111,13 +1112,14 @@ exec "$@"
 							assert_eq!(rejected.status.code(), Some(125));
 							let stderr = String::from_utf8_lossy(&rejected.stderr);
 							assert!(
-								stderr.contains("unrecognized option") && stderr.contains("--argv0=custom-marker"),
+								stderr.contains("unrecognized option")
+									&& stderr.contains("--argv0=custom-marker"),
 								"unsupported env must explicitly reject custom argv0: {stderr}"
 							);
 						}
 						eprintln!("{case}: unsupported custom argv0 explicitly rejected");
 					}
-				}
+				},
 				other => panic!("unknown case {other}"),
 			}
 			return;
