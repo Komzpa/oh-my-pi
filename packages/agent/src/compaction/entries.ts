@@ -8,6 +8,11 @@ export interface SessionEntryBase {
 	timestamp: string;
 	/** Build identity recorded by coding-agent when it writes the entry. */
 	runtime?: RuntimeIdentity;
+	/**
+	 * Active leaf at append time for an entry written off the active branch; the loader
+	 * replays it instead of treating this entry as the leaf. Null records a cleared leaf.
+	 */
+	activeLeafId?: string | null;
 }
 
 /** Build identity stamped on entries written by an omp process. */
