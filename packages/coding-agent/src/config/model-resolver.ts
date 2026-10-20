@@ -1318,7 +1318,6 @@ export interface AgentModelSelection {
 	patterns: string[];
 	/** Role alias the patterns came from (`@task` -> `task`), when the source named one. */
 	role: string | undefined;
-	inheritsParentModel: boolean;
 }
 
 /**
@@ -1329,16 +1328,17 @@ export interface AgentModelSelection {
  */
 export function resolveAgentModelSelection(options: AgentModelPatternResolutionOptions): AgentModelSelection {
 	const { source, patterns } = resolveEffectiveAgentModelSelection(options);
-	return {
-		patterns,
-		role: resolveExplicitModelRole(source, options.settings),
-		inheritsParentModel: source === undefined,
-	};
+	return { patterns, role: resolveExplicitModelRole(source, options.settings) };
 }
 
 /** Effective agent model patterns alone, for callers with no interest in role identity. */
 export function resolveAgentModelPatterns(options: AgentModelPatternResolutionOptions): string[] {
 	return resolveEffectiveAgentModelSelection(options).patterns;
+}
+
+/** True when no request, settings override or agent profile named a model, so the patterns come from the parent. */
+export function agentInheritsParentModel(options: AgentModelPatternResolutionOptions): boolean {
+	return resolveEffectiveAgentModelSelection(options).source === undefined;
 }
 
 /** Default prewalk hand-off target when no explicit target is configured. */

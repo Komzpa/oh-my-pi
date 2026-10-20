@@ -6,6 +6,7 @@ import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models
 import { logger } from "@oh-my-pi/pi-utils";
 import { parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import {
+	agentInheritsParentModel,
 	expandRoleAlias,
 	extractExplicitThinkingSelector,
 	filterAvailableModelsByEnabledPatterns,
@@ -1228,7 +1229,7 @@ describe("resolveAgentModelPatterns", () => {
 				agentModel: ["@definition"],
 				settings,
 			}),
-		).toEqual({ patterns: ["openai/gpt-4o"], role: "override", inheritsParentModel: false });
+		).toEqual({ patterns: ["openai/gpt-4o"], role: "override" });
 
 		expect(
 			resolveAgentModelSelection({
@@ -1237,7 +1238,7 @@ describe("resolveAgentModelPatterns", () => {
 				agentModel: ["@definition"],
 				settings,
 			}),
-		).toEqual({ patterns: ["anthropic/claude-sonnet-4-5"], role: "definition", inheritsParentModel: false });
+		).toEqual({ patterns: ["anthropic/claude-sonnet-4-5"], role: "definition" });
 
 		// An explicit selector carries no role identity, so the child must not
 		// capture the routing of a role that happens to name the same model.
@@ -1248,7 +1249,7 @@ describe("resolveAgentModelPatterns", () => {
 				agentModel: ["@definition"],
 				settings,
 			}),
-		).toEqual({ patterns: ["openai/gpt-4o"], role: undefined, inheritsParentModel: false });
+		).toEqual({ patterns: ["openai/gpt-4o"], role: undefined });
 	});
 
 	test("falls back to the active session model when @task is unset", () => {
@@ -2913,5 +2914,17 @@ describe("Devin selector parity", () => {
 	test("a live raw model still wins over the collapsed carrier routing to it", () => {
 		const withRaw = [...devinModels, devinModel("claude-mythos-9-high")];
 		expect(resolveProviderModelReference("devin", "claude-mythos-9-high", withRaw)?.id).toBe("claude-mythos-9-high");
+	});
+});
+
+describe("agentInheritsParentModel", () => {
+	test("is true only when no request, override or definition named a model", () => {
+		const settings = Settings.isolated({ modelRoles: { default: "anthropic/claude-sonnet-4-5" } });
+		expect(agentInheritsParentModel({ activeModelPattern: "openai/gpt-4o", settings })).toBe(true);
+		expect(
+			agentInheritsParentModel({ agentModel: ["@definition"], activeModelPattern: "openai/gpt-4o", settings }),
+		).toBe(false);
+		expect(agentInheritsParentModel({ requestModel: "openai/gpt-4o", settings })).toBe(false);
+		expect(agentInheritsParentModel({ settingsOverride: "@override", settings })).toBe(false);
 	});
 });

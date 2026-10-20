@@ -10,7 +10,11 @@ import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { Effort } from "@oh-my-pi/pi-ai";
-import { resolveAgentModelSelection, resolveConfiguredModelPatterns } from "../config/model-resolver";
+import {
+	agentInheritsParentModel,
+	resolveAgentModelSelection,
+	resolveConfiguredModelPatterns,
+} from "../config/model-resolver";
 import { type OAuthAccountPools, validateAgentAccountPools } from "../config/account-pools";
 import {
 	type CompactionThresholdPair,
@@ -463,11 +467,7 @@ export async function resolveEffectiveSubagentPolicy(
 	// Role identity and patterns come from one call so they cannot be derived
 	// from different sources: the expansion below discards the alias, and the
 	// child's inherited retry-fallback chain is keyed off the role.
-	const {
-		patterns: modelOverride,
-		role: modelRole,
-		inheritsParentModel,
-	} = resolveAgentModelSelection(modelResolution);
+	const { patterns: modelOverride, role: modelRole } = resolveAgentModelSelection(modelResolution);
 	const isolationEnabled = cfgTaskIsolationEnabled.get(request.session.settings);
 	const isIsolated = request.isolation?.requested === true;
 	if (isIsolated && !isolationEnabled) {
@@ -476,6 +476,7 @@ export async function resolveEffectiveSubagentPolicy(
 			"Subagent isolated execution requires task.isolation.enabled; it is currently false.",
 		);
 	}
+	const inheritsParentModel = agentInheritsParentModel(modelResolution);
 	return {
 		discovery,
 		agentName,
@@ -550,19 +551,19 @@ async function applySpawnHook(
 	// Ordinary routing preserves explicit rework selectors; mandatory session policy does not.
 	if (request.model !== undefined && !spawnResult.enforce) return policy;
 	const replacement = resolveConfiguredModelPatterns(spawnResult.model, request.session.settings);
-	if (replacement.length === 0) {
-		if (spawnResult.enforce)
-			throw new StructuredSubagentError("preflight", "Mandatory routing has no available model.");
-		return policy;
+	if (replacement.length === 0 && spawnResult.enforce)
+		throw new StructuredSubagentError("preflight", "Mandatory routing has no available model.");
+	// A routed replacement ends the parent-model fallback and carries the router's tier and effort limits.
+	if (replacement.length > 0) {
+		policy = {
+			...policy,
+			parentActiveModelPattern: undefined,
+			requiredModelServiceTiers: spawnResult.requiredModelServiceTiers,
+			claudeEffortCap: spawnResult.claudeEffortCap,
+		};
 	}
-	return {
-		...policy,
-		modelOverride: replacement,
-		parentActiveModelPattern: undefined,
-		modelRoute: spawnResult.note,
-		requiredModelServiceTiers: spawnResult.requiredModelServiceTiers,
-		claudeEffortCap: spawnResult.claudeEffortCap,
-	};
+	if (replacement.length === 0) return policy;
+	return { ...policy, modelOverride: replacement, modelRoute: spawnResult.note };
 }
 
 /** Reserve a session-global agent id only after preflight has succeeded. */

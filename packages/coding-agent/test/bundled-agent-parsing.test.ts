@@ -102,7 +102,6 @@ describe("bundled agent parsing", () => {
 			expect(resolveAgentModelSelection({ agentModel: agent?.model, settings })).toEqual({
 				patterns: [model],
 				role,
-				inheritsParentModel: false,
 			});
 		}
 	});

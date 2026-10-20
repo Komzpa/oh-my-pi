@@ -40,7 +40,7 @@ import { truncateForPrompt } from "../tools/approval";
 import { hasWaitTool } from "../tools/wait";
 import { isIrcEnabled } from "../irc/messaging";
 import { isReadOnlyAgent } from "./read-only-policy";
-import { resolveAgentModelSelection, resolveModelOverride } from "../config/model-resolver";
+import { agentInheritsParentModel, resolveAgentModelSelection, resolveModelOverride } from "../config/model-resolver";
 import { formatTaskResultSummary } from "./result-summary";
 import { isScoutSpawnable, type ResolvedSpawnPolicy, resolveSpawnPolicy } from "./spawn-policy";
 import { isBundledSeance, seanceTaskGuidance, seanceTaskSchemaFields, validateSeanceParams } from "./seance";
@@ -799,19 +799,20 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const requestedAgent = [...this.#discoveredAgents, ...(this.session.getSessionAgents?.() ?? [])].find(
 				agent => agent.name === requestedProfile,
 			);
-			const modelSelection = resolveAgentModelSelection({
+			const modelResolution = {
 				agentModel: requestedAgent?.model,
 				settingsOverride: requestedProfile
 					? cfgTaskAgentModelOverrides.get(this.session.settings)[requestedProfile]
 					: undefined,
 				settings: this.session.settings,
-			});
+			};
+			const modelSelection = resolveAgentModelSelection(modelResolution);
 			const previousModel = this.session.modelRegistry
 				?.getAvailable()
 				.find(model => `${model.provider}/${model.id}` === previous.resolvedModel);
 			const sameProfile = spawn.agent === undefined || spawn.agent === previous.agentProfile;
 			const retryWithinProfile =
-				modelSelection.inheritsParentModel ||
+				agentInheritsParentModel(modelResolution) ||
 				Boolean(
 					previousModel &&
 					modelSelection.patterns.some(
