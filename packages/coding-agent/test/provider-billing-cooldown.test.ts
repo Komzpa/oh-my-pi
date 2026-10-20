@@ -93,7 +93,7 @@ describe("persisted provider billing cooldown", () => {
 		await runProcess(
 			stateDir.path(),
 			`exhaustion.coolDownExhaustedProvider("deepseek", { reason: "402 Insufficient Balance" });
-			exhaustion.coolDownExhaustedProvider("kimi-code", { reason: "403 monthly usage limit", now: Date.now() - ${7 * HOUR_MS} });
+			exhaustion.coolDownExhaustedProvider("kimi-code", { reason: "403 monthly usage limit", now: Date.now() - ${2 * HOUR_MS} });
 			return true;`,
 		);
 		const picked = (await runProcess(stateDir.path(), "return pick();")) as {
@@ -206,7 +206,7 @@ describe("persisted provider billing cooldown", () => {
 		expect(result).toEqual({
 			long: true,
 			short: false,
-			fallback: 6 * HOUR_MS,
+			fallback: HOUR_MS,
 			order: ["deepseek", "kimi-code", "codex-lb"],
 			exclusions: [],
 		});
