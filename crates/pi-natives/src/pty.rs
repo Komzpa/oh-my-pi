@@ -316,6 +316,14 @@ impl PtySession {
 	}
 }
 
+/// Result for a run whose cancel token fired during PTY setup, before any child
+/// existed: report it the way a mid-run cancellation or timeout is reported
+/// instead of rejecting the promise with a setup error.
+fn aborted_before_spawn(error: &Error) -> PtyRunResult {
+	let timed_out = error.to_string().contains("Timeout");
+	PtyRunResult { exit_code: None, cancelled: !timed_out, timed_out }
+}
+
 fn run_pty_sync(
 	config: PtyRunConfig,
 	on_chunk: Option<ThreadsafeFunction<String, UnknownReturnValue>>,
@@ -325,8 +333,9 @@ fn run_pty_sync(
 	ct: task::CancelToken,
 ) -> Result<PtyRunResult> {
 	let pty_system = native_pty_system();
-	ct.heartbeat()
-		.map_err(|err| Error::from_reason(format!("PTY setup cancelled before openpty: {err}")))?;
+	if let Err(error) = ct.heartbeat() {
+		return Ok(aborted_before_spawn(&error));
+	}
 
 	const PTY_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 	let pair = if cfg!(windows) {
@@ -401,8 +410,9 @@ fn run_pty_sync(
 			cmd.env(key, value);
 		}
 	}
-	ct.heartbeat()
-		.map_err(|err| Error::from_reason(format!("PTY setup cancelled before spawn: {err}")))?;
+	if let Err(error) = ct.heartbeat() {
+		return Ok(aborted_before_spawn(&error));
+	}
 
 	let mut child = pair
 		.slave
@@ -966,9 +976,11 @@ mod zombie_repro_tests {
 				cols:    80,
 				rows:    24,
 			};
-			// Pre-spawn heartbeats bail with `Err`, so `Ok` means this iteration
-			// reached the post-spawn cancellation path.
-			if run_pty_sync(config, None, None, tx, rx, ct).is_ok() {
+			// A cancellation before spawn reports `exit_code: None`, so a code
+			// means this iteration reached the post-spawn cancellation path.
+			if run_pty_sync(config, None, None, tx, rx, ct)
+				.is_ok_and(|result| result.exit_code.is_some())
+			{
 				spawned += 1;
 			}
 		}

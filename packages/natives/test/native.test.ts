@@ -892,6 +892,33 @@ try {
 			expect(JSON.parse(payload)).toEqual(expected);
 		});
 
+		it("reports a start aborted before the PTY opens as cancelled instead of rejecting", async () => {
+			const session = new PtySession();
+			const controller = new AbortController();
+			controller.abort();
+			let spawned = false;
+			const result = await session.startArgv(
+				{
+					application: process.execPath,
+					args: ["-e", "setTimeout(() => {}, 10_000)"],
+					cwd: testDir,
+					timeoutMs: 5_000,
+					cols: 80,
+					rows: 24,
+					signal: controller.signal,
+				},
+				undefined,
+				() => {
+					spawned = true;
+				},
+			);
+
+			expect(result.cancelled).toBeTrue();
+			expect(result.timedOut).toBeFalse();
+			expect(result.exitCode).toBeUndefined();
+			expect(spawned).toBeFalse();
+		});
+
 		it("reports the child PID as soon as the PTY process starts", async () => {
 			const session = new PtySession();
 			const started = Promise.withResolvers<{ error: Error | null; pid: number }>();

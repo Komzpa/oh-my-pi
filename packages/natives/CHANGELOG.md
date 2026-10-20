@@ -7,6 +7,9 @@
 ### Fixed
 
 - Fixed a macOS background action leaving its target in front of your app after you clicked another of your windows, when placing the click took longer than the click itself ([#16217](https://github.com/can1357/oh-my-pi/pull/16217))
+### Fixed
+
+- Fixed a PTY run whose cancellation or timeout fired during PTY setup, before the child started, rejecting with `PTY setup cancelled before openpty/spawn` instead of resolving with `cancelled` or `timedOut` like a mid-run cancellation
 
 ## [18.12.4] - 2026-10-20
 
