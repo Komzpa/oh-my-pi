@@ -10,6 +10,7 @@ import {
 	renderKittyPlaceholderLines,
 	setKittyGraphics,
 } from "./kitty-graphics";
+import { ensureSixelRasterWidth } from "./sixel";
 import {
 	isInsideTerminalMultiplexer,
 	isTerminalBackgroundQueryTrusted,
@@ -17,7 +18,7 @@ import {
 	terminalMultiplexerForTerm,
 	terminalMultiplexerSessions,
 } from "./terminal-multiplexer";
-import { resolveTmuxClientTerminalNames, wrapTmuxPassthroughIfNeeded } from "./tmux";
+import { resolveTmuxClientTerminalNames, tmuxPaneAllowsPassthrough, wrapTmuxPassthroughIfNeeded } from "./tmux";
 import { detectTerminalBackground } from "./theme/theme";
 import { type HangulCompatibilityJamoWidth, visibleWidth } from "./utils";
 
@@ -560,6 +561,12 @@ export function resolveImageProtocol(
 	) {
 		return null;
 	}
+	// Kitty graphics reach a tmux client only through the DCS passthrough
+	// envelope, which tmux drops unless `allow-passthrough` is enabled. A Kitty
+	// client identity alone would otherwise send images into the void.
+	if (imageProtocol === ImageProtocol.Kitty && env.TMUX && !tmuxPaneAllowsPassthrough(env)) {
+		return null;
+	}
 	return imageProtocol;
 }
 
@@ -1023,50 +1030,6 @@ export function parseSixelDirectPlacementLine(line: string): ParsedSixelPlacemen
 		heightPx: Number(raster?.[2] ?? 0),
 	};
 }
-/** A palette definition `#Pc;2;Pr;Pg;Pb`: global SIXEL state, not pixel data. */
-const SIXEL_PALETTE_DEFINITION = /#\d+;\d+;\d+;\d+;\d+/g;
-/** A colour selection `#Pc`; the lookahead keeps palette definitions out. */
-const SIXEL_COLOUR_SELECTION = /#\d+(?![\d;])/g;
-
-/**
- * Drop the top `hiddenPx` pixels of a SIXEL body. SIXEL paints six-pixel
- * bands separated by `-`; whole bands are dropped, rounding up so the kept
- * rows never exceed the visible ones. The raster attributes and palette
- * definitions of the dropped bands, and the colour in effect at the cut, are
- * re-established before the kept bands, and the raster height shrinks to the
- * kept pixels.
- */
-function cropSixelBody(body: string, hiddenPx: number): string {
-	const bands = (body.endsWith("-") ? body.slice(0, -1) : body).split("-");
-	const drop = Math.min(Math.ceil(hiddenPx / 6), bands.length - 1);
-	if (drop <= 0) return body;
-	const kept = bands.slice(drop);
-	const dropped = bands.slice(0, drop).join("-");
-	const raster = /^"(\d+;\d+;\d+);(\d+)/.exec(bands[0] ?? "");
-	const head = raster ? `"${raster[1]};${Number(raster[2]) - 6 * drop}` : "";
-	const palettes = dropped.match(SIXEL_PALETTE_DEFINITION)?.join("") ?? "";
-	const colour = [...dropped.matchAll(SIXEL_COLOUR_SELECTION)].at(-1)?.[0] ?? "";
-	return `${head}${palettes}${colour}${kept.join("-")}-`;
-}
-
-/**
- * Rebuild a SIXEL {@link Image} direct-placement line for the viewport row it
- * is written at. The component line anchors at `CUU(rows-1)` from its last
- * row; once the block's leading rows have scrolled out that clamps at the
- * viewport top and the full image paints from row 0 over the rows below.
- * Re-anchor at row 0 with only the bottom slice still visible. Lines that do
- * not straddle the top are returned unchanged.
- */
-export function clipSixelDirectPlacementLine(line: string, screenRow: number, cellHeightPx: number): string {
-	const parsed = parseSixelDirectPlacementLine(line);
-	if (!parsed) return line;
-	const hiddenRows = parsed.lift - screenRow;
-	if (hiddenRows <= 0 || cellHeightPx <= 0) return line;
-	const body = cropSixelBody(parsed.body, hiddenRows * cellHeightPx);
-	const moveUp = screenRow > 0 ? `\x1b[${screenRow}A` : "";
-	return `${parsed.prefix}\x1b7${moveUp}${parsed.introducer}${body}\x1b\\\x1b8${parsed.suffix}`;
-}
-
 /**
  * Rebuild an {@link Image} direct-placement line for the viewport row it is
  * written at. The component-rendered line encodes `CUU(rows-1)`, which clamps
@@ -1362,7 +1325,9 @@ export function encodeSixelNow(
 	backgroundRgb = getTerminalBackgroundColor(),
 ): string | null {
 	try {
-		return encodeSixel(new Uint8Array(Buffer.from(base64Data, "base64")), widthPx, heightPx, backgroundRgb);
+		return ensureSixelRasterWidth(
+			encodeSixel(new Uint8Array(Buffer.from(base64Data, "base64")), widthPx, heightPx, backgroundRgb),
+		);
 	} catch {
 		return null;
 	}
