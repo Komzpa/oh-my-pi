@@ -1825,3 +1825,39 @@ describe("YieldTool", () => {
 		).rejects.toThrow("Output does not match schema");
 	});
 });
+
+describe("YieldTool explicitly empty result data", () => {
+	it.each([
+		["blank string", ""],
+		["whitespace string", "  \n"],
+		["empty object", {}],
+		["empty array", []],
+	])("bounces a terminal result with %s data and accepts the resubmission", async (_name, empty) => {
+		const typed = new YieldTool(createSession());
+		await expect(typed.execute("call-typed-empty", { type: "result", data: empty } as never)).rejects.toThrow(
+			/data` is empty/,
+		);
+		const untyped = new YieldTool(createSession());
+		await expect(untyped.execute("call-untyped-empty", { data: empty } as never)).rejects.toThrow(/data` is empty/);
+		const done = await untyped.execute("call-real", { data: { verdict: "clean" } } as never);
+		expect(done.details).toMatchObject({ status: "success", data: { verdict: "clean" } });
+	});
+
+	it("aborts after repeated empty results instead of retrying forever", async () => {
+		const tool = new YieldTool(createSession());
+		for (let attempt = 0; attempt < 3; attempt++) {
+			await expect(tool.execute(`call-${attempt}`, { data: "" } as never)).rejects.toThrow(/retries remaining/);
+		}
+		const aborted = await tool.execute("call-final", { data: "" } as never);
+		expect(aborted.details).toMatchObject({ status: "aborted" });
+	});
+
+	it("negative control: scalar content and error yields are not bounced", async () => {
+		const zero = await new YieldTool(createSession()).execute("call-zero", { data: 0 } as never);
+		expect(zero.details).toMatchObject({ status: "success", data: 0 });
+		const flag = await new YieldTool(createSession()).execute("call-false", { data: false } as never);
+		expect(flag.details).toMatchObject({ status: "success", data: false });
+		const failed = await new YieldTool(createSession()).execute("call-error", { error: "boom" } as never);
+		expect(failed.details).toMatchObject({ status: "aborted", error: "boom" });
+	});
+});

@@ -164,6 +164,17 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * True when a `data` payload is provably answer-less: blank text or an empty
+ * container (`[]`, `{}`). Genuine scalars (`0`, `false`) count as content.
+ */
+function isEmptyResultData(value: unknown): boolean {
+	if (typeof value === "string") return value.trim().length === 0;
+	if (Array.isArray(value)) return value.length === 0;
+	if (isPlainRecord(value)) return Object.keys(value).length === 0;
+	return false;
+}
+
+/**
  * Read the optional `error` argument, trimmed. Strict-mode providers (OpenAI/Codex) send
  * omitted optionals as `null`; non-strict OpenAI-compatible backends routinely fill the
  * optional string with `""` (or a filler such as `"unused"`) next to a valid `data`
@@ -578,6 +589,39 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 
 		const status = errorMessage !== undefined && workPoolItemId === undefined ? "aborted" : "success";
 		if (workPoolItemId !== undefined && errorMessage !== undefined) data = { error: errorMessage };
+		// A terminal result whose `data` is explicitly empty (`""`, `{}`, `[]`) would
+		// complete the run with an empty answer the parent cannot use, and the child
+		// never gets a chance to resend. Bounce it as a retryable error, sharing the
+		// empty-result budget. Left alone: error yields, incremental sections,
+		// workpool items, and schema-bound runs (an output schema may legitimately
+		// accept `{}`; the validator owns that case).
+		if (
+			status === "success" &&
+			!isIncremental &&
+			workPoolItems.length === 0 &&
+			this.#validate === undefined &&
+			isEmptyResultData(data)
+		) {
+			this.#emptyResultFailures++;
+			if (this.#emptyResultFailures > MAX_EMPTY_RESULT_RETRIES) {
+				const attemptCount = this.#emptyResultFailures;
+				this.#emptyResultFailures = 0;
+				const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
+				return {
+					content: [{ type: "text", text: `Task aborted: ${error}` }],
+					details: {
+						data: undefined,
+						status: "aborted",
+						error,
+						type: yieldType,
+					},
+				};
+			}
+			const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
+			throw new Error(
+				`yield \`data\` is empty: pass your full final answer in \`data\`. ${YIELD_FORMAT_HINT} Empty result retries remaining before abort: ${remaining}.`,
+			);
+		}
 		let schemaValidationOverridden = false;
 		let schemaValidationFailureCount = 0;
 		// Unknown incremental labels are a hard contract mismatch with the closed caller
