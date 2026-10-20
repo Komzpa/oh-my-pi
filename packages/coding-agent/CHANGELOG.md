@@ -6,6 +6,8 @@
 
 - Fixed Mnemopi memory completions ignoring the memory role's thinking suffix, including one inherited from `tiny` or `smol` when `modelRoles.memory` is unset; each `retry.fallbackChains.memory` entry sends its own level, and `:off` disables reasoning ([#16378](https://github.com/can1357/oh-my-pi/pull/16378) by [@alphastorm](https://github.com/alphastorm))
 - Fixed `/move` path completion jumping into a subfolder on Tab: `..`, `.`, and `~` now complete to `../`, `./`, and `~/` before listing their children, a trailing `\` lists a folder on Windows, absolute Windows paths (`C:/…`) are no longer rewritten as relative paths, and the project directory is offered as `./` instead of `/`
+- Fixed `bash` service mode rejecting calls that carry materialized `async: false` / `timeout: 0` placeholders the caller never passed, and fixed `env` being ignored on finite non-service commands: `env` is now accepted on every bash schema and threaded through the executor, PTY, ACP terminal, and service-daemon backends (caller values win over direnv/shell defaults). Explicit `async: true` or a nonzero `timeout` with a service `name` still rejects per the documented contract.
+- Bash now refuses commands that signal desktop session processes, stop/restart/kill user D-Bus services, or remove user runtime files. The default deny also inspects `kill $(pgrep ...)` and applies before all execution backends; the same check recurses into `sh -c` / `bash -lc` / `eval` payloads; read-only inspection remains allowed.
 
 ## [18.12.3] - 2026-10-19
 

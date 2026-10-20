@@ -286,6 +286,91 @@ function bashCommandSegments(command: string): string[] {
 		.filter(segment => segment.length > 0);
 }
 
+const SESSION_INFRASTRUCTURE_REFUSAL =
+	"Session infrastructure is off-limits: report the anomaly to the lead; do not repair the host.";
+const SESSION_PROCESS_TARGET =
+	/(?:^|[\s/`(^|])(?:dbus-broker|dbus-daemon|kwin[^\s)]*|plasmashell|Xwayland|yakuake)(?:$|[\s)`.*$|])|\bsystemd\s+--user\b/u;
+const SESSION_RUNTIME_TARGET = /^(?:\/run\/user\/[^/]+(?:\/|$)|\$\{?XDG_RUNTIME_DIR\}?(?:\/|$))/u;
+const SESSION_COMMAND_WRAPPERS: Record<string, true> = {
+	sudo: true,
+	env: true,
+	command: true,
+	builtin: true,
+	exec: true,
+	nice: true,
+	ionice: true,
+	nohup: true,
+};
+
+const SESSION_MAX_PAYLOAD_DEPTH = 4;
+const SESSION_PAYLOAD_SHELLS: Record<string, true> = { sh: true, bash: true, zsh: true, dash: true, ksh: true };
+
+/** Command strings an executable will itself run as shell code (`-c` payloads, `eval` arguments). */
+function shellPayloads(executable: string | undefined, args: string[]): string[] {
+	if (!executable) return [];
+	if (executable === "eval") return args.length > 0 ? [args.join(" ")] : [];
+	if (!Object.hasOwn(SESSION_PAYLOAD_SHELLS, executable)) return [];
+	const payloads: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		// Short-option clusters such as `-c`, `-lc`, `-ic` carry the command flag.
+		if (/^-[A-Za-z]*c[A-Za-z]*$/u.test(args[i]) && i + 1 < args.length) payloads.push(args[i + 1]);
+	}
+	return payloads;
+}
+
+/** Default denies precede user allows and apply to every execution backend. */
+function targetsSessionInfrastructure(command: string, depth = 0): boolean {
+	// Nested `sh -c` payloads are inspected recursively; absurd nesting is refused
+	// outright instead of being trusted as unparseable.
+	if (depth > SESSION_MAX_PAYLOAD_DEPTH) return true;
+	const segments = tokenizeShellSegments(command);
+	for (let index = 0; index < segments.length; index++) {
+		const tokens = segments[index];
+		let start = 0;
+		// Keep command position: an echo containing a dangerous command is not execution.
+		while (start < tokens.length) {
+			const token = tokens[start];
+			const name = token.slice(token.lastIndexOf("/") + 1);
+			if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token) || Object.hasOwn(SESSION_COMMAND_WRAPPERS, name)) {
+				start++;
+				continue;
+			}
+			if (start > 0 && token.startsWith("-")) {
+				// Common wrapper options with a separate value.
+				start += ["-u", "-g", "-n", "-c"].includes(token) ? 2 : 1;
+				continue;
+			}
+			break;
+		}
+		const executable = tokens[start]?.split("/").pop();
+		const args = tokens.slice(start + 1);
+		if (executable === "kill" || executable === "pkill" || executable === "killall") {
+			if (SESSION_PROCESS_TARGET.test(args.join(" "))) return true;
+			// The shared tokenizer splits unquoted $(...) at its parentheses.
+			// Inspect its pgrep segment only when it supplies this kill's arguments;
+			// a standalone pgrep remains read-only and must not be denied.
+			if (args.at(-1) === "$" && segments[index + 1]?.[0]?.split("/").pop() === "pgrep") {
+				if (SESSION_PROCESS_TARGET.test(segments[index + 1].slice(1).join(" "))) return true;
+			}
+		}
+		// `sh -c '<payload>'`, `bash -lc '<payload>'`, `eval '<payload>'`: the
+		// protected operation lives inside the payload token, so re-run the detector on it.
+		for (const payload of shellPayloads(executable, args)) {
+			if (targetsSessionInfrastructure(payload, depth + 1)) return true;
+		}
+		if (executable === "rm" && args.some(arg => SESSION_RUNTIME_TARGET.test(arg))) return true;
+		if (
+			executable === "systemctl" &&
+			args.includes("--user") &&
+			args.some(arg => arg === "stop" || arg === "restart" || arg === "kill") &&
+			args.some(arg => /^dbus/u.test(arg) || SESSION_PROCESS_TARGET.test(arg))
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // `deny`/`prompt` matching: the rule fires when its glob matches the whole
 // command or any single segment of a compound command.
 function commandSegmentMatchesBashApprovalPattern(command: string, pattern: string): boolean {
@@ -328,11 +413,14 @@ async function saveBashOriginalArtifact(session: ToolSession, originalText: stri
 
 const BASH_TIMEOUT_DESCRIPTION = `timeout in seconds; 0 disables the command deadline; nonzero values are clamped to ${TOOL_TIMEOUTS.bash.min}-${TOOL_TIMEOUTS.bash.max}`;
 
+const BASH_ENV_DESCRIPTION = "extra environment variables for the command (finite and service commands alike)";
+
 const bashSchemaBase = type({
 	command: type("string"),
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
 	"pty?": "boolean",
+	"env?": type("Record<string,string>").describe(BASH_ENV_DESCRIPTION),
 });
 
 const bashSchemaWithAsync = type({
@@ -341,6 +429,7 @@ const bashSchemaWithAsync = type({
 	"cwd?": "string",
 	"pty?": "boolean",
 	"async?": "boolean",
+	"env?": type("Record<string,string>").describe(BASH_ENV_DESCRIPTION),
 });
 
 const bashSchemaWithService = type({
@@ -349,6 +438,7 @@ const bashSchemaWithService = type({
 	"cwd?": "string",
 	"pty?": "boolean",
 	"name?": "string <= 48",
+	"env?": type("Record<string,string>").describe(BASH_ENV_DESCRIPTION),
 	"ready?": type({
 		"log?": "string",
 		"port?": "number",
@@ -364,6 +454,7 @@ const bashSchemaWithAsyncAndService = type({
 	"pty?": "boolean",
 	"async?": "boolean",
 	"name?": "string <= 48",
+	"env?": type("Record<string,string>").describe(BASH_ENV_DESCRIPTION),
 	"ready?": type({
 		"log?": "string",
 		"port?": "number",
@@ -386,6 +477,7 @@ export interface BashToolInput {
 	ready?: ServiceReady;
 	async?: boolean;
 	pty?: boolean;
+	env?: Record<string, string>;
 }
 
 /**
@@ -413,6 +505,20 @@ function normalizeReady(ready: ServiceReady | undefined): ServiceReady | undefin
 	const timeout = Number.isFinite(ready.timeout) ? ready.timeout : undefined;
 	if (log === undefined && host === undefined && port === undefined && timeout === undefined) return undefined;
 	return { log, host, port, timeout };
+}
+/**
+ * Drops env overlays that carry no variables. Some tool-call layers
+ * materialize every optional argument, spelling "not set" as `{}` (or an
+ * object whose values are not strings); an empty overlay must not count as
+ * caller env, and non-string values must not reach process spawn.
+ */
+function normalizeEnv(env: Record<string, unknown> | undefined): Record<string, string> | undefined {
+	if (!env || typeof env !== "object" || Array.isArray(env)) return undefined;
+	const out: Record<string, string> = {};
+	for (const [key, value] of Object.entries(env)) {
+		if (typeof value === "string") out[key] = value;
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export interface BashToolOptions {}
@@ -512,6 +618,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 	readonly approval = (args: unknown): ToolApprovalDecision => {
 		const rawCommand = (args as Partial<BashToolInput>).command;
 		const command = typeof rawCommand === "string" ? rawCommand : "";
+		if (targetsSessionInfrastructure(command)) {
+			return { tier: "exec", override: true, policy: "deny", reason: SESSION_INFRASTRUCTURE_REFUSAL };
+		}
 		const patternRules = getBashApprovalPatternRules(cfgBashPatterns.get(this.session.settings));
 		const shell = cfgBashAllowCompoundCommands.get(this.session.settings)
 			? this.session.settings.getShellConfig().shell
@@ -842,6 +951,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		sessionId: string | undefined;
 		/** The model's `i` intent on the call, for the job's widget author. */
 		intent?: string;
+		/** Caller-supplied extra environment; threaded to executeBash so async/auto-background runs match the foreground path. */
+		env?: Record<string, string>;
 	}): ManagedBashJobHandle {
 		const manager = this.session.asyncJobManager;
 		if (!manager) {
@@ -896,6 +1007,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 						timeout: options.timeoutMs ?? 0,
 						signal: runSignal,
 						gitGuard: cfgBashGitGuard.get(this.session.settings),
+						...(options.env !== undefined ? { env: options.env } : {}),
 						// Bound to the job's own signal: the job outlives the call that started it.
 						filesystem: this.#urlFilesystem(runSignal, options.approvalTier).shellFilesystem(),
 						artifactPath,
@@ -986,11 +1098,13 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			ready: rawReady,
 			async: rawAsync,
 			pty,
+			env: rawEnv,
 		}: BashToolInput,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
 		ctx?: AgentToolContext,
 	): Promise<AgentToolResult<BashToolDetails>> {
+		if (targetsSessionInfrastructure(rawCommand)) throw new ToolError(SESSION_INFRASTRUCTURE_REFUSAL);
 		let command = rawCommand;
 		// The session this call belongs to, captured before any await: a session
 		// change while the call waits must not move it into the new session's shell.
@@ -1012,14 +1126,18 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		// every optional argument with empty or placeholder values still asked
 		// for a plain command. Only `async: true` is an async request, a blank
 		// `name` is no service name, and service-only fields with nothing in
-		// them are not a service request.
+		// them are not a service request. The same holds for `timeout`: layers
+		// that spell "not set" as `0` (the "no deadline" contract) or as a
+		// placeholder number must not trip service-mode rejection.
 		const name = blankToUndefined(rawName);
 		const ready = normalizeReady(rawReady);
 		const asyncRequested = rawAsync === true;
+		const timeoutRequested = rawTimeout !== undefined && rawTimeout !== 0;
+		const env = normalizeEnv(rawEnv as Record<string, unknown> | undefined);
 		const pendingNotices: string[] = [];
 		if (name !== undefined) {
 			if (!this.#launchEnabled) throw new ToolError("Service launch is disabled in this session.");
-			if (asyncRequested || rawTimeout !== undefined)
+			if (asyncRequested || timeoutRequested)
 				throw new ToolError("Service mode does not accept async or timeout; use ready.timeout for readiness.");
 		} else if (ready !== undefined && (ready.log !== undefined || (ready.port !== undefined && ready.port !== 0))) {
 			// Host/timeout only configure a readiness condition; neither requests one,
@@ -1111,6 +1229,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					cwd: commandCwd,
 					pty: pty ?? true,
 					ready,
+					...(env !== undefined ? { env } : {}),
 				},
 				signal,
 				ready === undefined ? undefined : ctx?.toolCall?.steeringSignal,
@@ -1181,6 +1300,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				approvalTier,
 				sessionId,
 				intent: this.session.getToolCallIntent?.(toolCallId),
+				...(env !== undefined ? { env } : {}),
 			});
 			return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {
 				requestedTimeoutSec,
@@ -1223,6 +1343,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				approvalTier,
 				sessionId,
 				intent: this.session.getToolCallIntent?.(toolCallId),
+				...(env !== undefined ? { env } : {}),
 			});
 			if (startBackgrounded) {
 				return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {
@@ -1280,6 +1401,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		const backendPreflight =
 			bridgeTerminalAvailable || canUseInteractiveBashPty(pty === true, ctx)
 				? await applyDirenvPreflight(command, commandCwd, {
+						callerEnv: env,
 						signal,
 						timeoutMs: cfgBashDirenvLoadTimeoutMs.get(this.session.settings),
 						callerTimeoutMs: timeoutMs,
@@ -1352,16 +1474,19 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			try {
 				// direnv-transformed command (carries any `unset -v` prefix) + direnv
 				// env; falls back to the raw command when direnv is off/absent.
+				// The caller's explicit env wins over direnv values here, matching
+				// applyDirenvPreflight's merge contract for the other backends.
 				const bridgeCommand = backendPreflight?.command ?? command;
-				const bridgeEnv = backendPreflight?.env;
+				const bridgeEnv = { ...backendPreflight?.env, ...env };
 				const shellSpawn = wrapShellLineForClientTerminal(bridgeCommand, this.session.settings.getShellConfig());
 				const createP = clientBridge.createTerminal({
 					command: shellSpawn.command,
 					args: shellSpawn.args,
 					cwd: commandCwd,
-					env: bridgeEnv
-						? Object.entries(bridgeEnv).map(([name, value]) => ({ name, value: value as string }))
-						: undefined,
+					env:
+						Object.keys(bridgeEnv).length > 0
+							? Object.entries(bridgeEnv).map(([name, value]) => ({ name, value: value as string }))
+							: undefined,
 					outputByteLimit: DEFAULT_MAX_BYTES,
 				});
 				const createRaced = await Promise.race([
@@ -1575,16 +1700,18 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					// PTY bypasses executeBash, so feed it the direnv-transformed
 					// command + direnv env (backendPreflight is defined whenever this
 					// branch runs, since both gate on canUseInteractiveBashPty).
+					// The caller's explicit env wins over direnv values here.
 					command: backendPreflight?.command ?? command,
 					cwd: commandCwd,
 					timeoutMs,
 					signal,
-					env: backendPreflight?.env,
+					env: { ...backendPreflight?.env, ...env },
 					artifactPath,
 					artifactId,
 				})
 			: // executeBash runs its OWN direnv preflight internally — pass the RAW
-				// command here so the unset prefix is not applied twice.
+				// command here so the unset prefix is not applied twice. The caller
+				// env rides `options.env` so it wins over direnv inside the executor.
 				await executeBash(command, {
 					cwd: commandCwd,
 					sessionKey: sessionId,
@@ -1592,6 +1719,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					timeout: timeoutMs ?? 0,
 					signal,
 					gitGuard: cfgBashGitGuard.get(this.session.settings),
+					...(env !== undefined ? { env } : {}),
 					filesystem: this.#urlFilesystem(signal, approvalTier).shellFilesystem(),
 					artifactPath,
 					artifactId,
