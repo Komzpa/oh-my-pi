@@ -684,6 +684,8 @@ type ScheduledAgentContinueOptions = {
 	delayMs?: number;
 	generation?: number;
 	shouldContinue?: () => boolean;
+	/** Runs once, right before `agent.continue()`; skipped requests never run it. */
+	beforeContinue?: () => void;
 	onSkip?: (reason: AgentContinueSkipReason) => void;
 	onError?: (error: unknown) => void;
 };
@@ -5028,6 +5030,7 @@ export class AgentSession implements SettingsScope {
 			if (signal.aborted || this.#isDisposed || this.#abortInProgress) {
 				return { status: "skipped", reason: "session-unavailable" };
 			}
+			request.options.beforeContinue?.();
 			for (;;) {
 				try {
 					await this.agent.continue(signal);
