@@ -1,8 +1,7 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { is402BillingCapBody, isDashScopeTokenLimitText, isUsageLimitOutcome } from "@oh-my-pi/pi-ai";
-import { extractRetryHint, logger } from "@oh-my-pi/pi-utils";
+import { extractRetryHint, getProviderCooldownsPath, logger } from "@oh-my-pi/pi-utils";
 import { withFileLockSync } from "@oh-my-pi/pi-utils/file-lock";
 
 /**
@@ -10,8 +9,6 @@ import { withFileLockSync } from "@oh-my-pi/pi-utils/file-lock";
  * subagent spawns; without explicit retry timing the ban lasts six hours.
  */
 export const PROVIDER_EXHAUSTION_COOLDOWN_MS = 6 * 60 * 60 * 1_000;
-
-const STATE_FILE_NAME = "provider-cooldowns.json";
 
 /** One provider's persisted unavailability record. */
 export interface ProviderExhaustionRecord {
@@ -28,16 +25,8 @@ export interface ProviderExhaustionExclusion {
 	until: number;
 }
 
-/**
- * Router state dir shared by every omp process of the user. Overridable so
- * tests can point sessions at isolated fixture dirs.
- */
-function stateDir(): string {
-	return process.env.OMP_AGENT_ROUTER_STATE_DIR ?? path.join(os.homedir(), ".local", "state", "omp-agent-router");
-}
-
 function statePath(): string {
-	return path.join(stateDir(), STATE_FILE_NAME);
+	return getProviderCooldownsPath();
 }
 
 function readPersisted(now: number): Map<string, ProviderExhaustionRecord> {

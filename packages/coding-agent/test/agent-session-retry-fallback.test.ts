@@ -46,7 +46,7 @@ import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { resolveSubagentRetryFallbackCandidates } from "@oh-my-pi/pi-coding-agent/task/executor";
 import { isProviderExhausted, isProviderExhaustionError } from "@oh-my-pi/pi-coding-agent/session/provider-exhaustion";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { getProviderCooldownsPath, TempDir } from "@oh-my-pi/pi-utils";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
 
@@ -297,7 +297,6 @@ describe("AgentSession retry fallback", () => {
 	let sharedRegistry: ModelRegistry;
 	let modelRegistry: ModelRegistry;
 	let session: AgentSession | undefined;
-	let previousRouterStateDir: string | undefined;
 
 	// The model registry is an immutable fixture whose construction builds a
 	// canonical index over ~2.7k bundled models (~100ms). Build it (and the
@@ -305,8 +304,6 @@ describe("AgentSession retry fallback", () => {
 	// mutable retry-fallback cooldown state between tests.
 	beforeAll(async () => {
 		tempDir = TempDir.createSync("@pi-retry-fallback-");
-		previousRouterStateDir = process.env.OMP_AGENT_ROUTER_STATE_DIR;
-		process.env.OMP_AGENT_ROUTER_STATE_DIR = path.join(tempDir.path(), "router-state");
 		await initTheme();
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 		authStorage.keys.setRuntime("anthropic", "anthropic-test-key");
@@ -321,15 +318,14 @@ describe("AgentSession retry fallback", () => {
 	});
 
 	afterAll(() => {
-		if (previousRouterStateDir === undefined) delete process.env.OMP_AGENT_ROUTER_STATE_DIR;
-		else process.env.OMP_AGENT_ROUTER_STATE_DIR = previousRouterStateDir;
+		fs.rmSync(getProviderCooldownsPath(), { force: true });
 		authStorage.close();
 		tempDir.removeSync();
 	});
 
 	beforeEach(() => {
 		// Provider exhaustion cooldowns persist on disk; never let one test's ban reach the next.
-		fs.rmSync(path.join(tempDir.path(), "router-state"), { recursive: true, force: true });
+		fs.rmSync(getProviderCooldownsPath(), { force: true });
 		// Reset to the shared registry (a few tests reassign it to a scoped
 		// instance) and clear cooldown suppressions left by fallback-path tests
 		// (default 5-minute suppression) so state never leaks between tests.
