@@ -58,6 +58,23 @@ describe("AskDialogComponent", () => {
 		expect(footer).toContain("cancel");
 	});
 
+	it("footer says edit instead of note while Other is highlighted", () => {
+		const questions: ExtensionAskDialogQuestion[] = [
+			{ id: "q1", question: "Choose one?", options: [{ label: "A1" }, { label: "A2" }] },
+		];
+		const component = new AskDialogComponent(questions, {
+			onSubmit: vi.fn(),
+			onCancel: vi.fn(),
+			onPrompt: vi.fn(),
+		});
+		expect(render(component)).toContain("n note");
+		component.handleInput(DOWN);
+		component.handleInput(DOWN);
+		const output = render(component);
+		expect(output).toContain("n edit");
+		expect(output).not.toContain("n note");
+	});
+
 	it("single-question, single-select: Enter on option submits immediately", () => {
 		const onSubmit = vi.fn();
 		const onCancel = vi.fn();
