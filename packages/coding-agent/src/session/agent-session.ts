@@ -854,6 +854,8 @@ type ScheduledAgentContinueOptions = {
 	delayMs?: number;
 	generation?: number;
 	shouldContinue?: () => boolean;
+	/** Runs once, right before `agent.continue()`; skipped requests never run it. */
+	beforeContinue?: () => void;
 	onSkip?: (reason: AgentContinueSkipReason) => void;
 	onError?: (error: unknown) => void;
 	/** Messages the continued turn answers, handed to the turn observer (see `#startTurnObservation`). */
@@ -2502,6 +2504,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			await this.#prewalk.advanceAtTurnEnd(messages, context);
 			if (context?.willContinue) this.#steerAnthropicWrapUp();
 			await this.#advisors.onPrimaryTurnEnd(messages, context?.willContinue, signal);
+			// A worker can keep calling tools for an entire task without admitting
+			// another prompt. Restore at this boundary once a fallback has served;
+			// never restart a primary while its retry saga is still in flight.
+			if (context?.willContinue && this.#recovery.attempt === 0 && !signal?.aborted) {
+				await this.#recovery.maybeRestoreRetryFallbackPrimary({ requireContextFit: true });
+			}
 			await this.#maintenance.maintainContextMidRun(messages, signal, context);
 		});
 		this.yieldQueue = new YieldQueue({
@@ -5483,6 +5491,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			if (signal.aborted || this.#isDisposed || this.#abortInProgress) {
 				return { status: "skipped", reason: "session-unavailable" };
 			}
+			request.options.beforeContinue?.();
 			for (;;) {
 				try {
 					if (!this.agent.state.isStreaming) onStart?.();
