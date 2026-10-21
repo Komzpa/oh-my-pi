@@ -436,11 +436,7 @@ import {
 	SessionAdvisors,
 	type SessionAdvisorsHost,
 } from "./session-advisors";
-import type {
-	BuildSessionContextOptions,
-	SessionContext,
-	TranscriptSessionContextOptions,
-} from "./session-context";
+import type { BuildSessionContextOptions, SessionContext, TranscriptSessionContextOptions } from "./session-context";
 import {
 	buildSessionContext,
 	createRestartNoticeFilter,
