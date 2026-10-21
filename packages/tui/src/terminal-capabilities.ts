@@ -1003,7 +1003,8 @@ export function directPlacementLift(line: string): number {
  * `ESC 7 CUU(n)`; composer chip lines carry `ESC 7 CUU(n) CHA(c)`, so the column comes from the
  * CHA and not from the visible text before the block. A line may hold several blocks.
  */
-const SIXEL_DIRECT_PLACEMENT_LINE = /(?:\x1b7(?:\x1b\[(\d+)A)?(?:\x1b\[(\d+)G)?)?(\x1bP[0-9;]*q)([\s\S]*?)\x1b\\(?:\x1b8)?/g;
+const SIXEL_DIRECT_PLACEMENT_LINE =
+	/(?:\x1b7(?:\x1b\[(\d+)A)?(?:\x1b\[(\d+)G)?)?(\x1bP[0-9;]*q)([\s\S]*?)\x1b\\(?:\x1b8)?/g;
 
 export interface ParsedSixelPlacementLine {
 	prefix: string;

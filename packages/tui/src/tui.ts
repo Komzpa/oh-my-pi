@@ -3412,15 +3412,13 @@ export class TUI extends Container {
 			}
 			const previous = placements?.get(placementRow)?.sixels;
 			const erase = previous ? this.#retireSixelPlacements(physical, new Set(previous)) : "";
-			const tracked = sixels.map(
-				(sixel): SixelPlacement => ({
-					row: screenRow - Math.min(sixel.lift, clipRow),
-					col: sixel.column,
-					rows: Math.ceil(sixel.heightPx / cell.heightPx),
-					columns: Math.ceil(sixel.widthPx / cell.widthPx),
-					history: placements === undefined,
-				}),
-			);
+			const tracked = sixels.map((sixel): SixelPlacement => ({
+				row: screenRow - Math.min(sixel.lift, clipRow),
+				col: sixel.column,
+				rows: Math.ceil(sixel.heightPx / cell.heightPx),
+				columns: Math.ceil(sixel.widthPx / cell.widthPx),
+				history: placements === undefined,
+			}));
 			physical.push(...tracked);
 			placements?.set(placementRow, { imageId: 0, placementId: 0, line, sixels: tracked });
 			// Cell deletion removes the raster, not the text. EL on the lifted

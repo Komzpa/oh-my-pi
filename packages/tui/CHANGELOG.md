@@ -111,6 +111,7 @@
 - Fixed the status-line footer total leaving out task subagent spend; it now reads the session's cumulative usage, the same source the interactive status line uses ([#14393](https://github.com/can1357/oh-my-pi/pull/14393) by [@F0Rextasy](https://github.com/F0Rextasy))
 - Fixed transcript rows disappearing from scrollback or reappearing out of order when bottom chrome stays taller after a turn, self-clearing HUDs close, or the composer shape changes ([#15820](https://github.com/can1357/oh-my-pi/pull/15820) by [@emmahyde](https://github.com/emmahyde))
 - Fixed Konsole SIXEL placement retirement to use each image's actual column and scroll-adjusted live origin without deleting sibling images or graphics retained in history; the Kitty cell-delete workaround is now Konsole-only
+- Fixed Konsole SIXEL rasters emitted through a `CHA`-addressed row, such as pasted-image composer chip thumbnails, being tracked at column 0 and one per row, so every history append left another stale copy behind
 
 
 ## [18.11.1] - 2026-10-15

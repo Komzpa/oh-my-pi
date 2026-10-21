@@ -271,7 +271,8 @@ preserving partial final bands so the graphics rectangle cannot cover text below
 On Konsole (`KONSOLE_VERSION`) outside grid-owning multiplexers, the renderer
 tracks graphics rectangles separately from text: each scrolling LF moves their
 origins, and cell deletion targets only
-cells owned by live placements being retired. Committed history rectangles,
+cells owned by live placements being retired. A row may hold several rasters, each located by its `ESC 7 CUU CHA` lead-in (the `CHA` column wins over
+visible text width), so composer chip thumbnails are tracked like any other image. Committed history rectangles,
 including those partly in scrollback, are never targets of live repaint deletion.
 Other SIXEL terminals and grid-owning multiplexers keep the portable
 lift/line-erase path without positional Kitty APC deletes: pane-local cells
