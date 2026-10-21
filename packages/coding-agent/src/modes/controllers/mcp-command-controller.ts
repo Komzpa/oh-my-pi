@@ -45,6 +45,8 @@ import {
 	removeManagedMcpOAuthCredential,
 	removeManagedMcpOAuthCredentials,
 } from "../../mcp/oauth-credentials";
+import { cfgMcpEnableProjectConfig } from "../../mcp/settings";
+
 import {
 	clearSmitheryApiKey,
 	createSmitheryCliAuthSession,
@@ -1674,7 +1676,6 @@ export class MCPCommandController {
 				return;
 			}
 
-			assertMCPReloadAllowed(this.ctx.session, this.ctx.mcpManager ?? undefined);
 			if (options.reload !== false) assertMCPReloadAllowed(this.ctx.session, this.ctx.mcpManager ?? undefined);
 			if (found.config.enabled === false) {
 				if (!options.silent) this.ctx.showError(`Server "${name}" is disabled. Run /mcp enable ${name} first.`);
@@ -1711,7 +1712,7 @@ export class MCPCommandController {
 				);
 
 				if (options.reload !== false) {
-					await this.reloadServers();
+					if (!(await this.#reloadAfterMutation())) return outcome.config;
 					const state = await this.#waitForServerConnectionWithAnimation(name);
 
 					const lines = [
