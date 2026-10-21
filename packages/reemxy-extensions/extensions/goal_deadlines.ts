@@ -258,7 +258,7 @@ export function renderDeadlineUi(state: DeadlineState, now: number, todoShowsDue
 }
 
 export function renderMissingScheduleReminder(goal: ActiveGoalRef): string {
-	return `[GOAL DEADLINES goalId=${bounded(goal.id, 64)}]\nNo deadline schedule is recorded. If the user gave a delivery time, resolve its exact date and timezone from the user message and call goal_deadline(action=set), even if the time has passed; report an overdue deadline honestly. Never invent a time, postpone it, or silently omit it. Otherwise continue without a schedule.`;
+	return `[GOAL DEADLINES goalId=${bounded(goal.id, 64)}]\nNo deadline schedule is recorded. If the user gave a delivery time, pass the wall-clock time from the user message as stages[].local_time (for example "19:00") with the timezone to goal_deadline(action=set); the tool computes the epoch and rejects a time already more than 5 minutes past as an arithmetic error, so tell the user instead of forcing it. Never invent a time, postpone it, or silently omit it. Otherwise continue without a schedule.`;
 }
 
 function readQuota(): QuotaSnapshot | undefined {
@@ -279,12 +279,46 @@ function readQuota(): QuotaSnapshot | undefined {
 	}
 }
 
+const WALL_CLOCK = /^(?:(\d{4})-(\d{2})-(\d{2})[ T])?(\d{1,2}):(\d{2})$/;
+const SANITY_PAST_SECONDS = 5 * 60;
+const SANITY_AHEAD_SECONDS = 7 * 24 * 3600;
+const SAME_MESSAGE_CORRECTION_SECONDS = 30 * 60;
+function zonedFields(ms: number, timeZone: string): { year: number; month: number; day: number; hour: number; minute: number; second: number } {
+	const parts = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(new Date(ms));
+	const f = Object.fromEntries(parts.map(({ type, value }) => [type, Number(value)]));
+	return { year: f.year!, month: f.month!, day: f.day!, hour: f.hour!, minute: f.minute!, second: f.second! };
+}
+function zoneOffsetMs(ms: number, timeZone: string): number {
+	const f = zonedFields(ms, timeZone);
+	return Date.UTC(f.year, f.month - 1, f.day, f.hour, f.minute, f.second) - Math.floor(ms / 1_000) * 1_000;
+}
+/** Resolve "19:00" (next such moment: today, else tomorrow) or "2026-10-21 19:00" in `timeZone` to Unix seconds. */
+export function resolveWallClock(text: string, timeZone: string, nowMs: number): number | undefined {
+	const match = WALL_CLOCK.exec(text.trim());
+	if (!match) return undefined;
+	const hour = Number(match[4]);
+	const minute = Number(match[5]);
+	if (hour > 23 || minute > 59) return undefined;
+	const at = (year: number, month: number, day: number) => {
+		const wall = Date.UTC(year, month - 1, day, hour, minute);
+		let utc = wall - zoneOffsetMs(wall, timeZone);
+		utc = wall - zoneOffsetMs(utc, timeZone);
+		return Math.floor(utc / 1_000);
+	};
+	if (match[1]) return at(Number(match[1]), Number(match[2]), Number(match[3]));
+	const today = zonedFields(nowMs, timeZone);
+	const candidate = at(today.year, today.month, today.day);
+	if (candidate * 1_000 > nowMs) return candidate;
+	const tomorrow = new Date(Date.UTC(today.year, today.month - 1, today.day + 1));
+	return at(tomorrow.getUTCFullYear(), tomorrow.getUTCMonth() + 1, tomorrow.getUTCDate());
+}
+
 interface DeadlineToolParams {
 	action: "set" | "deliver" | "status" | "clear";
 	goal_id?: string;
 	goal_started_at?: number;
 	timezone?: string;
-	stages?: Array<{ id: string; label: string; expected_result: string; deadline_at: number }>;
+	stages?: Array<{ id: string; label: string; expected_result: string; deadline_at?: number; local_time?: string }>;
 	stage_id?: string;
 	delivered_artifact?: string;
 	user_message?: string;
@@ -454,7 +488,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		name: "goal_deadline",
 		label: "Goal Deadline",
 		description:
-			"Manage milestone deadlines and durable user delivery constraints. With no focused goal, action=set records the constraint in this same session owner. user_message is an exact quote from the latest real user message giving the deadline. The goal id, start time, and local timezone default from state or focus; never infer deadline times. deadline_at is a Unix timestamp in seconds, not milliseconds. Same-goal updates preserve receipts and final due time. Only a newer user message giving a new time can replace a user deadline; action=clear needs a newer real user message dropping the deadline, quoted in user_message (or /deadline close). A promised status time is not authorization.",
+			"Manage milestone deadlines and durable user delivery constraints. With no focused goal, action=set records the constraint in this same session owner. user_message is an exact quote from the latest real user message giving the deadline. The goal id, start time, and local timezone default from state or focus; never infer deadline times. Pass each stage's local_time as the wall-clock string from the user message ('19:00' or '2026-10-21 19:00') with timezone; the tool computes the Unix epoch itself (a bare HH:MM means the next such moment). deadline_at is a Unix timestamp in seconds, not milliseconds, and optional: used only as a cross-check, and a value that differs from local_time by more than a minute is rejected with the resolved value. A new user deadline already more than 5 minutes past, or more than 7 days ahead, is rejected as an arithmetic error. Same-goal updates preserve receipts and final due time. Only a newer user message giving a new time can replace a user deadline (exception: a wrong value set from the same user message can be corrected within 30 minutes by quoting it again); action=clear needs a newer real user message dropping the deadline, quoted in user_message (or /deadline close). A promised status time is not authorization.",
 		parameters: z.object({
 			action: z.enum(["set", "deliver", "status", "clear"]),
 
@@ -468,11 +502,16 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 						id: z.string(),
 						label: z.string(),
 						expected_result: z.string(),
+						local_time: z
+							.string()
+							.optional()
+							.describe('Wall-clock time from the user message in `timezone`: "19:00" (next such moment) or "2026-10-21 19:00". The tool computes the epoch.'),
 						deadline_at: z
 							.number()
 							.int()
+							.optional()
 							.describe(
-								"Unix timestamp in seconds, not milliseconds; current dates are 10 digits and must be no later than 2100-01-01T00:00:00Z.",
+								"Optional cross-check: Unix timestamp in seconds, not milliseconds. Must match local_time within a minute; without local_time it is the deadline itself and must be no later than 2100-01-01T00:00:00Z.",
 							),
 					}),
 				)
@@ -489,11 +528,24 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 				const goalStartedAt = params.goal_started_at ?? activeGoal?.createdAt ?? user?.at ?? Math.floor(Date.now() / 1_000);
 				const timezone = deadlineSdk.resolveTimeZone(params.timezone ?? state?.timezone);
 				if (!Number.isFinite(goalStartedAt) || !params.stages?.length) throw new Error("set requires non-empty stages and a valid start time");
+				const nowSeconds = Math.floor(Date.now() / 1_000);
+				params.stages = params.stages.map(stage => {
+					if (stage.local_time === undefined) {
+						if (stage.deadline_at === undefined) throw new Error(`stage ${stage.id} needs local_time (for example "19:00") or deadline_at`);
+						return stage;
+					}
+					const resolved = resolveWallClock(stage.local_time, timezone, Date.now());
+					if (resolved === undefined) throw new Error(`local_time for stage ${stage.id} must look like "19:00" or "2026-10-21 19:00", got ${JSON.stringify(stage.local_time)}`);
+					if (stage.deadline_at !== undefined && Math.abs(stage.deadline_at - resolved) > 60)
+						throw new Error(`deadline_at ${stage.deadline_at} for stage ${stage.id} does not match local_time ${stage.local_time} ${timezone}; it resolves to ${resolved} (${new Date(resolved * 1_000).toISOString()}). Pass local_time and let the tool compute the epoch.`);
+					return { ...stage, deadline_at: resolved };
+				});
 				if (activeGoal && goalId !== activeGoal.id)
 					throw new Error(`deadline goal ${goalId} does not match focused goal ${activeGoal.id}`);
 				const stageIds = new Set(params.stages.map(stage => stage.id));
+				const resolvedStages = params.stages as Array<{ id: string; label: string; expected_result: string; deadline_at: number }>;
 				if (stageIds.size !== params.stages.length) throw new Error("stage ids must be unique");
-				for (const stage of params.stages) {
+				for (const stage of resolvedStages) {
 					if (!Number.isSafeInteger(stage.deadline_at))
 						throw new Error(`deadline_at for stage ${stage.id} must be Unix seconds (integer), not milliseconds`);
 					if (!isUnixSeconds(stage.deadline_at))
@@ -501,16 +553,25 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 							`deadline_at for stage ${stage.id} must be Unix seconds (10-digit timestamp for current dates), not milliseconds, and no later than 2100-01-01T00:00:00Z`,
 						);
 				}
-				const finalDue = Math.max(...params.stages.map(stage => stage.deadline_at));
+				const finalDue = Math.max(...resolvedStages.map(stage => stage.deadline_at));
 				const quote = params.user_message ?? user?.text;
 				if (params.user_message && (!user || !user.text.includes(params.user_message))) throw new Error("user_message must quote the latest real user message");
 				const userTime = user && quote && quote.includes(deadlineSdk.formatLocalClock(finalDue * 1_000, timezone));
 				const replacesUserTime = state?.userConstraint && userTime && user!.id !== state.userConstraint.messageId && user!.at >= state.userConstraint.recordedAt;
-				if (state?.userConstraint && finalDue !== state.baselineDeadlineAt && !replacesUserTime) throw new Error("Only a newer user message setting a new time can replace the user deadline");
-				const previous = !replacesUserTime && (state?.userConstraint || state?.goalId === goalId) ? state : null;
+				if (state?.userConstraint && finalDue !== state.baselineDeadlineAt && !replacesUserTime && !(userTime && user && user.id === state.userConstraint.messageId && nowSeconds - state.userConstraint.recordedAt <= SAME_MESSAGE_CORRECTION_SECONDS)) throw new Error("Only a newer user message setting a new time can replace the user deadline");
+				// A wrong value set from the SAME user message (arithmetic slip) may be corrected shortly after; a
+				// self-extension still needs the user's own words to contain the new clock time.
+				const correctsSameMessage = !replacesUserTime && !!state?.userConstraint && !!userTime && !!user && user.id === state.userConstraint.messageId && nowSeconds - state.userConstraint.recordedAt <= SAME_MESSAGE_CORRECTION_SECONDS && finalDue !== state.baselineDeadlineAt;
+				if (user && (!state?.userConstraint || replacesUserTime || correctsSameMessage)) {
+					if (finalDue < nowSeconds - SANITY_PAST_SECONDS)
+						throw new Error(`deadline ${new Date(finalDue * 1_000).toISOString()} is ${Math.round((nowSeconds - finalDue) / 60)} min in the past: this is an epoch arithmetic error, not a missed deadline. Pass local_time (for example "19:00") with timezone and let the tool compute the epoch.`);
+					if (finalDue > nowSeconds + SANITY_AHEAD_SECONDS)
+						throw new Error(`deadline ${new Date(finalDue * 1_000).toISOString()} is more than 7 days ahead: this is an epoch arithmetic error. Pass local_time (for example "19:00") with timezone and let the tool compute the epoch.`);
+				}
+				const previous = !replacesUserTime && !correctsSameMessage && (state?.userConstraint || state?.goalId === goalId) ? state : null;
 				const previousStages = new Map(previous?.stages.map(stage => [stage.id, stage] as const));
 				const repairedStageIds = new Set<string>();
-				for (const stage of params.stages) {
+				for (const stage of resolvedStages) {
 					const old = previousStages.get(stage.id);
 					if (!old || old.deadlineAt === stage.deadline_at) continue;
 					if (old.deadlineAt > MAX_REASONABLE_DEADLINE_SECONDS && old.deadlineAt === stage.deadline_at * 1_000) {
@@ -521,7 +582,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 				}
 				const stages = [
 					...(previous?.stages.filter(stage => !stageIds.has(stage.id)) ?? []),
-					...params.stages.map(stage => {
+					...resolvedStages.map(stage => {
 						const old = previousStages.get(stage.id);
 						return {
 							id: stage.id,
@@ -544,7 +605,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 						: previous?.baselineDeadlineAt) ??
 					(previous?.stages.length
 						? Math.max(...stages.map(stage => stage.deadlineAt))
-						: Math.max(...params.stages.map(stage => stage.deadline_at)));
+						: Math.max(...resolvedStages.map(stage => stage.deadline_at)));
 				state = {
 					version: 1,
 					goalId,

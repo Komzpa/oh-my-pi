@@ -1,5 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,7 @@ import goalDeadlines, {
 	renderDeadlineReminder,
 	renderDeadlineUi,
 	renderPresence,
+	resolveWallClock,
 } from "./goal_deadlines";
 import {
 	goalRef,
@@ -868,4 +869,82 @@ test("tool results paint deadline state once, after recording delivery", () => {
 	expect(paints).toHaveLength(1);
 	expect(branch.at(-1)!.data.stages[0].deliveredArtifact).toBe("draft delivered");
 	expect(JSON.stringify(paints[0])).not.toContain("Draft");
+});
+
+describe("goal_deadline resolves wall-clock times and rejects arithmetic slips", () => {
+	afterEach(() => setSystemTime());
+	const NOW = Date.parse("2026-10-21T13:24:00Z");
+	const TBILISI = "Asia/Tbilisi";
+
+	const harness = (userText = "Continue until 19:00", userAtMs = NOW) => {
+		const branch: unknown[] = [{ id: "u1", type: "message", timestamp: new Date(userAtMs).toISOString(), message: { role: "user", content: userText } }];
+		let tool: { description: string; execute: (...args: unknown[]) => Promise<{ details: { state: DeadlineState | null } }> } | undefined;
+		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+		goalDeadlines({
+			pi: { goalRef, readFocusedGoal: () => null, rehydrateDeadlineState, STATE_ENTRY, latestDeadlineUserMessage: undefined },
+			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+			registerTool: (t: typeof tool) => {
+				tool = t;
+			},
+			appendEntry: (customType: string, data: unknown) => branch.push({ type: "custom", customType, data }),
+			zod: z,
+		} as unknown as ExtensionAPI);
+		const ctx = { cwd: "/tmp", hasUI: false, sessionManager: branchMock(() => branch) } as unknown as ExtensionContext;
+		handlers.get("session_start")?.({}, ctx);
+		const set = (stage: Record<string, unknown>, quote = userText) =>
+			tool!.execute("set", { action: "set", timezone: TBILISI, user_message: quote, stages: [{ id: "final", label: "Final", expected_result: "Delivered", ...stage }] }, undefined, undefined, ctx);
+		return { tool: tool!, set, branch };
+	};
+
+	test("resolves a bare HH:MM to the next such moment in the timezone", () => {
+		expect(new Date(resolveWallClock("19:00", TBILISI, NOW)! * 1000).toISOString()).toBe("2026-10-21T15:00:00.000Z");
+		expect(new Date(resolveWallClock("10:00", TBILISI, NOW)! * 1000).toISOString()).toBe("2026-10-22T06:00:00.000Z");
+		expect(new Date(resolveWallClock("2026-10-21 19:00", TBILISI, NOW)! * 1000).toISOString()).toBe("2026-10-21T15:00:00.000Z");
+		expect(new Date(resolveWallClock("2026-07-01T09:30", "America/New_York", NOW)! * 1000).toISOString()).toBe("2026-07-01T13:30:00.000Z");
+		expect(resolveWallClock("25:00", TBILISI, NOW)).toBeUndefined();
+		expect(resolveWallClock("tomorrow", TBILISI, NOW)).toBeUndefined();
+	});
+
+	test("live case: 'Continue until 19:00' at 17:24 +04 becomes 15:00Z, not a missed 2025 deadline", async () => {
+		setSystemTime(NOW);
+		const { set, tool } = harness();
+		expect(tool.description).toContain("local_time");
+		const result = await set({ local_time: "19:00" });
+		expect(result.details.state?.stages[0]?.deadlineAt).toBe(Date.parse("2026-10-21T15:00:00Z") / 1000);
+		expect(result.details.state?.baselineDeadlineAt).toBe(1_792_594_800);
+	});
+
+	test("a deadline_at that disagrees with local_time is rejected with the resolved value", async () => {
+		setSystemTime(NOW);
+		const { set } = harness();
+		await expect(set({ local_time: "19:00", deadline_at: 1_761_058_800 })).rejects.toThrow(/resolves to 1792594800 \(2026-10-21T15:00:00.000Z\)/);
+		const agreeing = await set({ local_time: "19:00", deadline_at: 1_792_594_830 });
+		expect(agreeing.details.state?.stages[0]?.deadlineAt).toBe(1_792_594_800);
+	});
+
+	test("a new user deadline in the past or beyond a week is an arithmetic error, never WRAP-UP", async () => {
+		setSystemTime(NOW);
+		const past = harness();
+		await expect(past.set({ deadline_at: 1_761_058_800 })).rejects.toThrow(/epoch arithmetic error/);
+		const far = harness();
+		await expect(far.set({ deadline_at: 1_792_594_800 + 8 * 24 * 3600 })).rejects.toThrow(/more than 7 days ahead/);
+		const recent = harness();
+		const barely = await recent.set({ deadline_at: Math.floor(NOW / 1000) - 120 });
+		expect(barely.details.state?.active).toBe(true);
+	});
+
+	test("a wrong value from the same user message can be corrected; a self-extension cannot", async () => {
+		setSystemTime(NOW);
+		const same = harness();
+		const wrong = await same.set({ local_time: "18:00" });
+		expect(wrong.details.state?.baselineDeadlineAt).toBe(1_792_591_200);
+		const fixed = await same.set({ local_time: "19:00" });
+		expect(fixed.details.state?.baselineDeadlineAt).toBe(1_792_594_800);
+		await expect(same.set({ local_time: "20:00" })).rejects.toThrow(/Only a newer user message/);
+		// Negative control: after the correction window the same message no longer licenses a change.
+		const late = harness();
+		await late.set({ local_time: "18:00" });
+		setSystemTime(NOW + 45 * 60_000);
+		await expect(late.set({ local_time: "19:00" })).rejects.toThrow(/Only a newer user message/);
+	});
 });
