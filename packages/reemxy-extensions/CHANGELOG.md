@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `todo_dispatch`: the idle PLAN CHECK ticker fingerprints the problem list alone (worker telemetry excluded) and dedupes on that fingerprint, so an unchanged problem is delivered once instead of every minute (nine wake-ups in eleven minutes, live 2026-10-21); the receding-finish wording now says the projected finish moved from X to Y and names the current time.
+
 - Keep the main event loop responsive during Git integration checks: await Git in context and merge admission, share in-flight probes, and keep the synchronous advice callback free of subprocesses.
 
 - `todo_dispatch`: the planning-failure worker-name refusal tells the chief to name the result its row produces, verb first (e.g. `AdmitChiefBashLooks`), matching the canonical chief-of-staff naming rule, instead of a semantic noun. Role names (`…Owner`, `…Oracle`) and reopen verbs stay refused; compliant result names and existing-owner resumption are unchanged.

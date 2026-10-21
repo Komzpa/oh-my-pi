@@ -1890,9 +1890,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     sprintFlushScheduled = true;
     queueMicrotask(flushSprintState);
   };
-  const sendHarnessNotice = (kind: string, rowKey: string, content: string, details?: unknown): boolean => {
+  // `identity` is the stable fingerprint of what the notice says (defaults to the full text): a notice
+  // whose rendered text only differs by minute counters or worker telemetry must not look new.
+  const sendHarnessNotice = (kind: string, rowKey: string, content: string, details?: unknown, identity: string = content): boolean => {
     const key = noticeKey(kind, rowKey);
-    const digest = noticeDigest(content);
+    const digest = noticeDigest(identity);
     if (sprintState.lastNotices[key] === digest) {
       pi.appendEntry("todo-dispatch-silent-notice", { kind, digest, at: Date.now() });
       return false;
@@ -3888,7 +3890,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // with no execution duties decides, and the chief applies it (user 2026-09-25: "давай 1 2 3").
     if (now - recedingSince >= 20 * 60_000)
       return `the finish has receded with the clock for ${minutes(now - first.at)} and ${minutes(now - recedingSince)} after this was first reported (samples, now → finish: ${history}). Run \`task\` with agent \`plan-doctor\` now: give it the goal, these samples, the open rows with dependencies, owners and receipts, and ask one question: what makes the finish later and which plan change shortens it. Apply its plan in one \`todo\` call; do not add rows of your own before it answers`;
-    return `the finish recedes with the clock: ${minutes(now - first.at)} ago it was ${safeTimestamp(first.finish, timeZone)}, now ${safeTimestamp(finish, timeZone)}. Work is being found as fast as it is done, one defect per attempt. Find all remaining defects in one pass (run the whole check once with failures collected instead of stopping at the first), fix them as parallel rows, and take every check that does not consume the stuck output off the chain`;
+    return `the finish recedes with the clock: the projected finish moved from ${safeTimestamp(first.finish, timeZone)} (projected ${minutes(now - first.at)} ago) to ${safeTimestamp(finish, timeZone)} (projected now; the current time is ${safeTimestamp(now, timeZone)}). Work is being found as fast as it is done, one defect per attempt. Find all remaining defects in one pass (run the whole check once with failures collected instead of stopping at the first), fix them as parallel rows, and take every check that does not consume the stuck output off the chain`;
   };
   const retroWorkerIds = (): string[] => {
     const finishes = sprintState.workerFinishes.filter((finish) => (sprintState.lastRetroAt === null || finish.at >= sprintState.lastRetroAt) && !sprintState.retroCoveredIds.includes(finish.id));
@@ -3908,6 +3910,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (workerIds.length === 0) return `retrospective due (${sprintState.retroDueReason}): no new eligible worker reports. Review the triggering incident using the lead's tool results, plan history and available receipts; do not fabricate worker reports or skip the incident review. Then retro-facilitator (skill://chief-of-staff Retrospective) uses that evidence to identify what happened and the next corrective action. Create a mechanism row editing a skill or prompt only when the evidence identifies an actual instruction defect; otherwise record that no instruction change is warranted. It closes only when a task with agent retro-facilitator completes; retro notes recorded on todo rows do not close it.`;
     return `retrospective due (${sprintState.retroDueReason}): read the Retro block in the final answer of the ${workerIds.length} workers who finished since ${safeTimestamp(since, timeZone)} from agent://<id> (do not write to them; a missing block is recorded as missing), then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}; for each red item, identify which instruction line (skill or prompt) missed it and output a mechanism row that edits that instruction. It closes only when a task with agent retro-facilitator completes; retro notes recorded on todo rows do not close it.`;
   };
+  let lastPlanProblems = "";
   const planCheck = async (ctx: ExtensionContext, pending: unknown[] = [], problemsOnly = false): Promise<string | null> => {
     // Finish I/O before reading or mutating plan state. A worker may finish or
     // a todo result may arrive while Git is pending; judge the fresh snapshot.
@@ -4154,6 +4157,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ...(unread.length ? ["unread-receipts"] : []),
       ...(overdue.length ? ["missed-eta"] : []),
     ], false);
+    // The identity of this check is its problem list alone: worker telemetry (last tool, age, files
+    // written) changes every minute and must not make an unchanged problem look new.
+    lastPlanProblems = problems.map((line, i) => `(${i + 1}) ${line}`).join(" ");
     // Background ticks must not wake the chief for healthy worker telemetry.
     if (problemsOnly && problems.length === 0) return null;
     return problems.length
@@ -4221,9 +4227,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       // never repeating let it idle on one worker for half an hour unnoticed (03:05-03:35).
       const now = Date.now();
       // Minutes and timestamps change every tick; the problem list is the same unless the words change.
-      const key = check
+      const key = lastPlanProblems
         .replace(/\(\d+\) planning round due:.*?\(skill:\/\/chief-of-staff Planning\)\s*/g, "")
-        .replace(/\(\d+\) worker sizing:.*?(?= \(\d+\) |\. Fix them with the pass)/g, "")
+        .replace(/\(\d+\) worker sizing:.*?(?= \(\d+\) |\. Fix them with the pass|$)/g, "")
         .replace(/\s+/g, " ")
         .replace(/\d+/g, "#");
       if (gateSwitchedOff(ctx)) return planTrace(ctx, "switched-off");
@@ -4231,7 +4237,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         return planTrace(ctx, "same-problems-recently-sent");
       lastIdlePlanCheck = key;
       lastIdlePlanCheckAt = now;
-      sendHarnessNotice("todo-plan-check", key, check);
+      // Digest the stable key, not the rendered text: only a changed problem list or an escalation
+      // (the stuck-worker and receding-finish wording changes at 30/60/20 min) delivers again.
+      sendHarnessNotice("todo-plan-check", key, check, undefined, key);
       markSizingNotices();
       planTrace(ctx, "sent", { problems: check.slice(0, 160) });
     } catch (error) {

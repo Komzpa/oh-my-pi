@@ -1068,7 +1068,7 @@ test("main-session plan snapshots feed plan-doctor from dispatcher-owned state f
   }
 }, 60_000);
 
-test("a plan with problems is reported once per problem list, and again after ten minutes", async () => {
+test("a plan with problems is reported once per problem list, not again while it stands", async () => {
   const cwd = repo("clean");
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   const now = Date.now();
@@ -1129,21 +1129,23 @@ test("a plan with problems is reported once per problem list, and again after te
     expect(sent[1]!.content).toContain('- "Row D" (waits on "Row C")\n- "Row E" (waits on "Row D")');
     // The running critical row is being worked on and is not in the split list.
     expect(sent[1]!.content).not.toContain('- "Row A"');
-    // The same problems still standing ten minutes later are said again (03:05-03:35 went unsaid).
+    // The same problems still standing ten minutes later are NOT said again (live 2026-10-21: nine
+    // identical notices in eleven minutes each cost the chief a turn); only a changed problem list or
+    // an escalation step (stuck 30/60 min, receding 20 min) delivers again.
     const realNow = Date.now;
     Date.now = () => realNow() + 11 * 60_000;
     try {
       (await tick!());
-      expect(sent).toHaveLength(3);
+      expect(sent).toHaveLength(2);
       (await tick!());
-      expect(sent).toHaveLength(3);
+      expect(sent).toHaveLength(2);
     } finally {
       Date.now = realNow;
     }
     // Negative control: a plan without problems sends nothing.
     branch = plan("none", now);
     (await tick!());
-    expect(sent).toHaveLength(3);
+    expect(sent).toHaveLength(2);
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });
@@ -1720,6 +1722,76 @@ test("PLAN CHECK includes compact running-worker status from session tool events
   }
 }, 60_000);
 
+test("PLAN CHECK delivers an unchanged problem once while worker telemetry and the clock advance (live 2026-10-21 18:29-18:40Z)", async () => {
+  const cwd = repo("clean");
+  const sessions = mkdtempSync(join(tmpdir(), "gates-plan-check-spam-"));
+  const sessionFile = join(sessions, "main.jsonl");
+  mkdirSync(join(sessions, "main"));
+  const workerLog = join(sessions, "main", "worker-a.jsonl");
+  const writeTelemetry = (tick: number) => writeFileSync(workerLog, `${JSON.stringify({
+    type: "message",
+    timestamp: new Date().toISOString(),
+    message: { role: "assistant", content: [{ type: "toolCall", name: "edit", arguments: { path: `src/file-${String.fromCharCode(97 + tick)}.ts` } }] },
+  })}\n`);
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  let clock = Date.now();
+  const nowSpy = spyOn(Date, "now").mockImplementation(() => clock);
+  const sent: string[] = [];
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: clock + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: (message: { content: string }) => { sent.push(message.content); },
+  } as unknown as ExtensionAPI;
+  await todoDispatch(api);
+  const branch = plan("ready", clock);
+  let tick: (() => void) | undefined;
+  let extraWorker = false;
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: "gates-plan-check-spam" }), ...branchMock(() => branch), getSessionFile: () => sessionFile },
+    getAsyncJobSnapshot: () => ({
+      running: [
+        { id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: clock - 5 * 60_000 },
+        ...(extraWorker ? [{ id: "stray-worker", agentId: "stray-worker", type: "task", status: "running", label: "Stray", startTime: clock }] : []),
+      ],
+      recent: [],
+      nonJobAgents: [],
+    }),
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    setInterval: (callback: () => void) => { tick = callback; return {}; },
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  const checks = () => sent.filter((text) => text.includes("PLAN CHECK"));
+  try {
+    handlers.get("session_start")!({}, ctx);
+    // One tick per minute for nine minutes: same problem, new last tool, new age every time.
+    for (let minute = 0; minute < 9; minute += 1) {
+      writeTelemetry(minute);
+      await tick!();
+      clock += 60_000;
+    }
+    expect(checks().length).toBeGreaterThan(0);
+    expect(checks()).toHaveLength(1);
+    // Neighbour: a genuinely new problem (a running worker that owns no row) still delivers.
+    extraWorker = true;
+    writeTelemetry(99);
+    await tick!();
+    expect(checks()).toHaveLength(2);
+    expect(checks()[1]).toContain("stray-worker");
+  } finally {
+    nowSpy.mockRestore();
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(sessions, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("PLAN CHECK warns both live workers and chief once when worker writes overlap", async () => {
   const cwd = repo("clean");
   const sessions = mkdtempSync(join(tmpdir(), "gates-worker-overlap-"));
@@ -2049,6 +2121,10 @@ test("PLAN CHECK says when the finish recedes with the clock, not before 45 minu
     await at(110);
     const last = sent.at(-1)!;
     expect(last).toContain("the finish recedes with the clock");
+    // The projected finish is never labelled "now": it moved from X to Y, and the real clock is named.
+    expect(last).toContain("the projected finish moved from");
+    expect(last).toContain("the current time is");
+    expect(last).not.toMatch(/ago it was .*, now /);
     expect(last).toContain("Find all remaining defects in one pass");
     expect(last).not.toContain("plan-doctor");
     // Twenty minutes later the finish still recedes: the check hands the plan to plan-doctor.
