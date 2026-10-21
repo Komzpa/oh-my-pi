@@ -1709,7 +1709,7 @@ test("PLAN CHECK includes compact running-worker status from session tool events
     expect(text).toContain('worker-a row="Row A"');
     expect(text).toContain("last=bash git add -- src/beta.ts");
     expect(text).toContain("age=2 min");
-    expect(text).toContain("wrote=src/alpha.ts,src/beta.ts");
+    expect(text).toContain(`wrote=${join(cwd, "src/alpha.ts")},${join(cwd, "src/beta.ts")}`);
     expect(text).toContain("P95=");
     expect(text).not.toContain("settled-worker");
     expect(text).not.toContain("src/settled.ts");
@@ -1786,9 +1786,9 @@ test("PLAN CHECK warns both live workers and chief once when worker writes overl
     await Promise.resolve();
     expect(nudges).toHaveLength(2);
     expect(nudges.map((nudge) => nudge.id).sort()).toEqual(["worker-a", "worker-b"]);
-    expect(nudges[0]!.content).toContain("file overlap on src/shared.ts");
+    expect(nudges[0]!.content).toContain(`file overlap on ${join(cwd, "src/shared.ts")}`);
     expect(nudges[0]!.content).toContain("other live owner");
-    expect(sent[0]).toContain("file overlap: src/shared.ts written by worker-a and worker-b");
+    expect(sent[0]).toContain(`file overlap: ${join(cwd, "src/shared.ts")} written by worker-a and worker-b`);
     expect(sent[0]).not.toContain("settled-worker");
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);

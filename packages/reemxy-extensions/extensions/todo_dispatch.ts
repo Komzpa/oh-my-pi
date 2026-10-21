@@ -15,7 +15,7 @@ import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState } from "./deadlines";
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
@@ -365,6 +365,102 @@ function blankSprintState(): SprintState {
 /** Retro receipt ids are only consulted for membership, so keep the newest window; one id per retro is ~20 bytes. */
 const MAX_RETRO_RECEIPT_IDS = 500;
 /** Notice dedupe keeps only digests of the most recent keys; full notice texts made each persisted state megabytes. */
+// Worker write tracking. A worker's session cwd is the lead's checkout; the files it changes and the
+// commits it makes live in its own git worktree, reached through tool paths and bash `cwd`/`cd`/`git -C`.
+// Paths are compared as normalized absolute paths so a shared word ("log") or the same relative name in two
+// different worktrees is not an overlap.
+// Split on &&, ||, ;, | and newlines outside quotes.
+function splitShellSegments(command: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let quote = "";
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]!;
+    if (quote) {
+      if (char === "\\" && quote === '"') { current += char + (command[index + 1] ?? ""); index += 1; continue; }
+      if (char === quote) quote = "";
+      current += char;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+      current += char;
+    } else if (char === ";" || char === "|" || char === "&" || char === "\n") {
+      segments.push(current);
+      current = "";
+    } else current += char;
+  }
+  segments.push(current);
+  return segments;
+}
+function shellWords(segment: string): string[] {
+  const words: string[] = [];
+  const pattern = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
+  for (let match = pattern.exec(segment); match; match = pattern.exec(segment))
+    words.push(match[1] ?? match[2] ?? match[3] ?? "");
+  return words;
+}
+export function normalizeWrittenPath(candidate: unknown, base?: string): string | undefined {
+  if (typeof candidate !== "string") return undefined;
+  const raw = candidate.trim();
+  if (!raw || /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || raw.startsWith("-") || /[*?[\]{}$`<>]/.test(raw)) return undefined;
+  if (raw === "." || raw === "..") return undefined;
+  const bare = raw.replace(/:\d+(?:-\d+)?$/, "");
+  if (isAbsolute(bare)) return normalize(bare);
+  return base && isAbsolute(base) ? resolve(base, bare) : normalize(bare);
+}
+// Files named by `git add` segments of a shell command, and the directories the command works in
+// (`cd X`, `git -C X`). Only real `git add` arguments count: other words of a chained command are not paths.
+export function bashWriteEffects(command: string, cwd?: string): { files: string[]; dirs: string[] } {
+  const files: string[] = [];
+  const dirs: string[] = [];
+  let base = cwd;
+  for (const segment of splitShellSegments(command)) {
+    const words = shellWords(segment);
+    if (words.length === 0) continue;
+    if (words[0] === "cd" && words[1]) {
+      const target = normalizeWrittenPath(words[1], base);
+      if (target && isAbsolute(target)) { base = target; dirs.push(target); }
+      continue;
+    }
+    if (words[0] !== "git") continue;
+    let index = 1;
+    let gitBase = base;
+    while (index < words.length && words[index]!.startsWith("-")) {
+      if (words[index] === "-C" && words[index + 1]) {
+        const target = normalizeWrittenPath(words[index + 1], gitBase);
+        if (target && isAbsolute(target)) { gitBase = target; dirs.push(target); }
+        index += 2;
+      } else index += 1;
+    }
+    if (words[index] === "commit" && gitBase) dirs.push(gitBase);
+    if (words[index] !== "add") continue;
+    if (gitBase) dirs.push(gitBase);
+    for (const word of words.slice(index + 1)) {
+      if (word === "--") continue;
+      const file = normalizeWrittenPath(word, gitBase);
+      if (file) files.push(file);
+    }
+  }
+  return { files, dirs };
+}
+export function gitRootOf(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  let dir = path;
+  for (let depth = 0; depth < 40; depth += 1) {
+    try {
+      if (existsSync(join(dir, ".git"))) return dir;
+    } catch {}
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+  return undefined;
+}
+const EDIT_INPUT_HEADER = /^\[([^\]#\n]+?)(?:#[^\]\n]*)?\]\s*$/gm;
+export function editInputPaths(input: unknown): string[] {
+  if (typeof input !== "string") return [];
+  return [...input.matchAll(EDIT_INPUT_HEADER)].map((match) => match[1]!.trim()).filter(Boolean);
+}
+
 export const MAX_NOTICE_KEYS = 200;
 
 export function noticeDigest(text: string): string {
@@ -3205,31 +3301,38 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (typeof args.pattern === "string") return shorten(args.pattern, 80);
     return "";
   };
-  const pathsFromGitAdd = (command: string) => {
-    const match = command.match(/\bgit\s+add\s+(?:--\s+)?(.+)$/);
-    if (!match) return [];
-    return match[1]!
-      .split(/\s+/)
-      .filter((path) => path && !path.startsWith("-") && !path.includes("="));
-  };
-  const isWritablePath = (path: string) => !/^[a-z]+:\/\//i.test(path);
   const workerTrace = (ctx: ExtensionContext, id: string) => {
     const path = workerSessionPath(ctx, id);
-    if (!path) return { lastTool: "none", wrote: [] as string[] };
+    if (!path) return { lastTool: "none", wrote: [] as string[], repos: [] as string[] };
+    const sessionCwd = (AgentRegistry.global().get(id)?.session?.sessionManager?.getCwd?.() ?? (ctx as { cwd?: string }).cwd) as string | undefined;
     const wrote: string[] = [];
+    const repos: string[] = [];
     let lastTool = "none";
-    const rememberPath = (candidate: unknown) => {
-      if (typeof candidate !== "string" || !isWritablePath(candidate)) return;
-      if (!wrote.includes(candidate)) wrote.push(candidate);
+    const rememberRepo = (dir: string | undefined) => {
+      const root = dir && isAbsolute(dir) ? gitRootOf(dir) : undefined;
+      if (root && !repos.includes(root)) repos.push(root);
+    };
+    const rememberPath = (candidate: unknown, base: string | undefined) => {
+      const file = normalizeWrittenPath(candidate, base);
+      if (!file) return;
+      if (!wrote.includes(file)) wrote.push(file);
+      if (isAbsolute(file)) rememberRepo(dirname(file));
     };
     const observeTool = (name: unknown, rawArgs: unknown) => {
       if (typeof name !== "string") return;
       const args = rawArgs && typeof rawArgs === "object" ? rawArgs as Record<string, unknown> : {};
       const target = toolTarget(name, args);
       lastTool = target ? `${name} ${target}` : name;
-      if (name === "edit" || name === "write") rememberPath(args.path ?? args.file_path);
-      if (name === "bash" && typeof args.command === "string")
-        for (const file of pathsFromGitAdd(args.command)) rememberPath(file);
+      if (name === "edit" || name === "write") {
+        rememberPath(args.path ?? args.file_path, sessionCwd);
+        for (const file of editInputPaths(args.input)) rememberPath(file, sessionCwd);
+      }
+      if (name === "bash" && typeof args.command === "string") {
+        const callCwd = normalizeWrittenPath(args.cwd, sessionCwd) ?? sessionCwd;
+        const effects = bashWriteEffects(args.command, callCwd);
+        for (const file of effects.files) rememberPath(file, callCwd);
+        for (const dir of effects.dirs) rememberRepo(dir);
+      }
     };
     try {
       for (const line of readTail(path).split("\n")) {
@@ -3254,18 +3357,29 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         }
       }
     } catch {}
-    return { lastTool, wrote: wrote.slice(-4) };
+    return { lastTool, wrote: wrote.slice(-4), repos };
   };
-  const workerCommitAt = async (id: string): Promise<number | undefined> => {
-    const cwd = AgentRegistry.global().get(id)?.session?.sessionManager?.getCwd();
-    if (!cwd) return undefined;
-    try {
-      const repo = vcs.git(cwd);
-      if (!repo) return undefined;
-      return await vcs.lastCommitTime(repo);
-    } catch {
-      return undefined;
+  // The worker's own worktrees: git roots it edited, added or committed in. The session cwd is the lead's
+  // checkout and only stands in when the worker has not touched any other repository.
+  const workerRepoRoots = (ctx: ExtensionContext, id: string): string[] => {
+    const sessionCwd = AgentRegistry.global().get(id)?.session?.sessionManager?.getCwd?.() as string | undefined;
+    let repos: string[] = [];
+    try { repos = workerTrace(ctx, id).repos; } catch {}
+    const own = repos.filter((root) => !sessionCwd || resolve(root) !== resolve(sessionCwd));
+    if (own.length) return own;
+    return sessionCwd ? [sessionCwd] : [];
+  };
+  const workerCommitAt = async (ctx: ExtensionContext, id: string): Promise<number | undefined> => {
+    const times: number[] = [];
+    for (const root of workerRepoRoots(ctx, id)) {
+      try {
+        const repo = vcs.git(root);
+        if (!repo) continue;
+        const at = await vcs.lastCommitTime(repo);
+        if (typeof at === "number") times.push(at);
+      } catch {}
     }
+    return times.length ? Math.max(...times) : undefined;
   };
   const noCommitWarnings = new Set<string>();
   // Newest mtime of any file under a worker's cwd (bounded walk; VCS and build dirs skipped). A worker that
@@ -3769,7 +3883,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const sampledJobs = (ctx.getAsyncJobSnapshot()?.running ?? []).filter((job) => job.type === "task" && job.status === "running");
     const commitTimes = new Map(await Promise.all(sampledJobs.map(async (job) => {
       const id = job.agentId ?? job.id;
-      return [id, await workerCommitAt(id)] as const;
+      return [id, await workerCommitAt(ctx, id)] as const;
     })));
     pendingSizingNoticeIds = [];
     const now = Date.now();
@@ -3861,8 +3975,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const startTime = job?.startTime;
       const elapsed = typeof startTime === "number" ? now - startTime : 0;
       const commitAt = commitTimes.get(id);
-      const cwd = AgentRegistry.global().get(id)?.session?.sessionManager?.getCwd?.();
-      const filesAt = elapsed > SILENT_MS ? newestFileMtime(cwd) : undefined;
+      const roots = elapsed > SILENT_MS ? workerRepoRoots(ctx, id) : [];
+      const mtimes = roots.map((root) => newestFileMtime(root)).filter((value): value is number => value !== undefined);
+      const filesAt = mtimes.length ? Math.max(...mtimes) : undefined;
       const commitStale = commitAt !== undefined && now - commitAt > SILENT_MS;
       const filesStale = filesAt !== undefined && now - filesAt > SILENT_MS && (commitAt === undefined || commitStale);
       const isStale = elapsed > SILENT_MS && (commitStale || filesStale);
