@@ -4676,6 +4676,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#todoHudGeometryKey = `${width}:${this.ui.terminal.rows}:${panelRows}`;
 		this.todoContainer.clear();
 		this.#todoHudNative = undefined;
+		// Record the budget before any early return: the Composer allocation callback rebuilds
+		// the HUD whenever this differs, so an empty or hidden plan must not leave it stale.
+		this.#todoHudRenderedRows = this.getTodoHudPanelRows();
+		const activeDescs = this.#getActiveSubagentDescriptions();
 		const running =
 			cfgDisplayPinnedAgents.get(settings) === "off"
 				? []
@@ -4763,13 +4767,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		}));
 		this.#todoLineContext = { now, workers: workers.byTask };
 		// Highlight rows by the live workers linked to them, in the shape the shared HUD policy matches on.
-		const activeDescs = [...workers.byTask.keys()].map(todo => todo.content);
+		// The list is replaced in place: its declaration next to the row-budget record stays identical to the
+		// upstream TODO panel topic's, so both apply together.
+		activeDescs.splice(0, activeDescs.length, ...[...workers.byTask.keys()].map(todo => todo.content));
 		const expanded = this.todoExpanded;
 		const multiPhase = phases.length > 1;
 		const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
 		// Fixed budgets keep the HUD bounded regardless of plan size / progress.
 		const subsequentStageCap = 4; // stages shown after the active one (a trailing summary row covers the rest)
-		this.#todoHudRenderedRows = this.getTodoHudPanelRows();
 
 		// A pending todo "lights up" (accent) when an in-flight subagent is doing
 		// its work, matched by normalized content overlap.
