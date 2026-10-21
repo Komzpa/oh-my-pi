@@ -546,6 +546,7 @@ export class Agent {
 	#onModelCallSystemPrompt?: (systemPrompt: string[]) => void;
 	#beforeModelCall?: AgentBeforeModelCall;
 	#additionalBeforeModelCalls = new Set<AgentBeforeModelCall>();
+	#additionalBeforeModelCallActivity = new WeakMap<AgentBeforeModelCall, () => boolean>();
 	#asideMessageProvider?: () => AsideMessage[] | Promise<AsideMessage[]>;
 	#telemetry?: AgentLoopConfig["telemetry"];
 	#appendOnlyContext?: AppendOnlyContextManager;
@@ -1255,10 +1256,13 @@ export class Agent {
 	 * Add a pre-model callback without replacing callbacks owned by the host.
 	 * Returns a disposer that removes only this callback. Like
 	 * {@link setBeforeModelCall}, the first gate installed while a run is in
-	 * flight takes effect on the next run.
+	 * flight takes effect on the next run. `isActive` reports whether the gate can
+	 * currently stop a call; a dormant gate does not make an aborted run skip its
+	 * provider call (see {@link AgentLoopConfig.beforeModelCallActive}).
 	 */
-	addBeforeModelCall(fn: AgentBeforeModelCall): () => void {
+	addBeforeModelCall(fn: AgentBeforeModelCall, isActive?: () => boolean): () => void {
 		this.#additionalBeforeModelCalls.add(fn);
+		if (isActive) this.#additionalBeforeModelCallActivity.set(fn, isActive);
 		return () => {
 			this.#additionalBeforeModelCalls.delete(fn);
 		};
@@ -2099,6 +2103,11 @@ export class Agent {
 							return undefined;
 						}
 					: undefined,
+			beforeModelCallActive: () =>
+				this.#beforeModelCall !== undefined ||
+				[...this.#additionalBeforeModelCalls].some(
+					gate => this.#additionalBeforeModelCallActivity.get(gate)?.() ?? true,
+				),
 			cursorExecHandlers: this.#cursorExecHandlers,
 			cursorOnToolResult,
 			cwd: this.#cwd,

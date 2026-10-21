@@ -1868,11 +1868,15 @@ export class AgentSession implements SettingsScope {
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.agent.requireQueuedMessagePersistenceAcknowledgement();
-		this.#detachRestartDrainBeforeModelCall = this.agent.addBeforeModelCall(() => {
-			if (this.#restartDrainLeaseCount === 0) return;
-			this.#restartDrainStoppedRun = true;
-			return { stop: true, reason: "Session restart drain" };
-		});
+		this.#detachRestartDrainBeforeModelCall = this.agent.addBeforeModelCall(
+			() => {
+				if (this.#restartDrainLeaseCount === 0) return;
+				this.#restartDrainStoppedRun = true;
+				return { stop: true, reason: "Session restart drain" };
+			},
+			// Dormant outside a drain, so an aborted run still ends with the provider's aborted message.
+			() => this.#restartDrainLeaseCount > 0,
+		);
 		this.tokenRate = new TokenRateMeter(text => this.agent.tokenizer.countTokens(text));
 		this.#reseedTokenRate();
 		this.agent.setQueuedMessageGrouping(

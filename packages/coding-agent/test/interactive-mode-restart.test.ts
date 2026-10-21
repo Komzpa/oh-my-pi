@@ -19,6 +19,7 @@ describe("InteractiveMode restart", () => {
 	let sessionManager: SessionManager;
 	let session: AgentSession | undefined;
 	let originalArgv: string[];
+	let lastRestartErrors: string[] = [];
 
 	beforeAll(() => initTheme());
 	beforeEach(async () => {
@@ -41,7 +42,13 @@ describe("InteractiveMode restart", () => {
 		resetSettingsForTest();
 	});
 
-	async function restart(argv: string[]): Promise<string[]> {
+	/**
+	 * Restart is queue-based: `restart()` files a request that the controller bound by
+	 * `init()` executes once the session is idle. Drive the real queue and stop only at
+	 * the `process.execve` replacement boundary; teardown and argv production run for real.
+	 * Returns `undefined` when no successor was exec'd; `lastRestartErrors` then holds the reasons shown.
+	 */
+	async function restart(argv: string[]): Promise<string[] | undefined> {
 		const modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("expected bundled model");
@@ -55,16 +62,24 @@ describe("InteractiveMode restart", () => {
 		mode.ui.requestRender = () => {};
 		mode.ui.terminal.drainInput = async () => {};
 		process.argv = [originalArgv[0], originalArgv[1], ...argv];
-		// Stop only at the process replacement boundary; teardown and argv production run for real.
-		const exec = vi.spyOn(natives, "execReplace").mockImplementation(() => undefined as never);
-		const spawn = vi.spyOn(Bun, "spawn").mockReturnValue({ exited: Promise.resolve(0) } as never);
+		const executed = Promise.withResolvers<string[]>();
+		vi.spyOn(process, "execve").mockImplementation(((_file: string, args: string[]) => {
+			executed.resolve(args);
+			// Stand in for a successful exec, which never returns to the caller.
+			throw new Error("execve replaced the process");
+		}) as never);
 		vi.spyOn(postmortem, "cleanup").mockResolvedValue();
 		vi.spyOn(postmortem, "drainStdout").mockResolvedValue();
 		vi.spyOn(postmortem, "quit").mockResolvedValue();
+		const showError = vi.spyOn(mode, "showError");
+		await mode.init();
 		await mode.restart();
-		const command = process.platform === "win32" ? spawn.mock.calls[0]?.[0] : exec.mock.calls[0]?.[0];
-		if (!Array.isArray(command)) throw new Error("expected replacement command");
-		return command;
+		const outcome = await Promise.race([executed.promise, Bun.sleep(5_000).then(() => undefined)]);
+		if (outcome === undefined) {
+			// A refused restart reports the reason to the user instead of exiting.
+			lastRestartErrors = showError.mock.calls.map(call => String(call[0]));
+		}
+		return outcome;
 	}
 
 	it("resumes an explicitly opened persona journal without rediscovering its ID", async () => {
@@ -108,6 +123,7 @@ describe("InteractiveMode restart", () => {
 			"openai-codex/gpt-6.1-sol:high",
 			"initial request",
 		]);
+		if (!command) throw new Error("expected replacement command");
 		const parsed = parseArgs(command.slice(command.indexOf("--model")));
 		expect(parsed.model).toBe("openai-codex/gpt-6.1-sol:high");
 		expect(parsed.messages).toEqual([]);
@@ -116,7 +132,11 @@ describe("InteractiveMode restart", () => {
 		try {
 			expect(resumed.getSessionFile()).toBe(file);
 			expect(resumed.getSessionId()).toBe(id);
-			expect(resumed.buildSessionContext().messages).toEqual(transcript);
+			// The journal resumes intact; the only addition is the restart request's own queue notice.
+			expect(resumed.buildSessionContext().messages).toEqual([
+				...transcript,
+				expect.objectContaining({ role: "custom", customType: "restart-queued" }),
+			]);
 		} finally {
 			await resumed.close();
 		}
@@ -132,6 +152,7 @@ describe("InteractiveMode restart", () => {
 		if (!file) throw new Error("expected persisted journal");
 		const id = sessionManager.getSessionId();
 		const command = await restart(["--model", "anthropic/claude-sonnet-4-5", `--session-dir=${relativeDir.path()}`]);
+		if (!command) throw new Error("expected replacement command");
 		const parsed = parseArgs(command.slice(command.indexOf("--model")));
 		const resumed = await createSessionManager(parsed, tempDir.path(), Settings.isolated());
 		if (!resumed) throw new Error("expected resumed journal");
@@ -140,20 +161,24 @@ describe("InteractiveMode restart", () => {
 			expect(resumed.getSessionId()).toBe(id);
 			expect(resumed.buildSessionContext().messages).toEqual([
 				{ role: "user", content: "saved request", timestamp: 1 },
+				expect.objectContaining({ role: "custom", customType: "restart-queued" }),
 			]);
 		} finally {
 			await resumed.close();
 		}
 	});
 
-	it("does not resume a journal that has never materialized", async () => {
+	it("materializes a never-written journal with the restart notice and resumes that exact file", async () => {
 		const file = sessionManager.getSessionFile();
-		const command = await restart(["--model", "anthropic/claude-sonnet-4-5", "initial request"]);
-		const parsed = parseArgs(command.slice(command.indexOf("--model")));
-		expect(parsed.resume).toBeUndefined();
-		expect(parsed.messages).toEqual([]);
-		expect(sessionManager.isSessionOnDisk()).toBe(false);
 		if (!file) throw new Error("expected allocated journal path");
 		expect(await Bun.file(file).exists()).toBe(false);
+		const command = await restart(["--model", "anthropic/claude-sonnet-4-5", "initial request"]);
+		if (!command) throw new Error(`expected replacement command; errors: ${lastRestartErrors.join("; ")}`);
+		const parsed = parseArgs(command.slice(command.indexOf("--model")));
+		// Queueing the restart writes its notice, so the relaunch has a durable journal to resume
+		// and does not replay the original prompt into a fresh session.
+		expect(parsed.resume).toBe(file);
+		expect(parsed.messages).toEqual([]);
+		expect(await Bun.file(file).exists()).toBe(true);
 	});
 });
