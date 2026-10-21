@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { ConcatSink, getBlobsDir, isEisdir, isEnoent, isEnotdir, parseJsonlLenient } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
@@ -453,7 +452,7 @@ export async function hasFileAsPathComponent(filePath: string): Promise<boolean>
 	let current = path.resolve(filePath);
 	for (;;) {
 		try {
-			return !(await fs.stat(current)).isDirectory();
+			return !(await fs.promises.stat(current)).isDirectory();
 		} catch {
 			// Missing component: climb to the first existing ancestor.
 		}

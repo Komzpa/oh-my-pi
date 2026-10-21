@@ -11,20 +11,16 @@ import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/
 import { IrcBridge, type IrcBridgeHost } from "@oh-my-pi/pi-coding-agent/session/irc-bridge";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-<<<<<<< HEAD
 import { attachIrcWakeTurnMonitor } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { createSessionDefaults } from "../helpers/session-defaults";
+import { ensurePersistedRoster } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
+import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 type IrcWakeObserver = (records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined;
 
 const wakeAgent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
-=======
-import { executeSend } from "@oh-my-pi/pi-coding-agent/irc/messaging";
-import { ensurePersistedRoster } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
-import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { TempDir } from "@oh-my-pi/pi-utils";
->>>>>>> 039ee1ca1fd (Restart queue topic)
 
 interface FakeSession {
 	session: AgentSession;
