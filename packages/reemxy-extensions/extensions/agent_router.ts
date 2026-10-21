@@ -149,7 +149,7 @@ const POOL_SIZES: Record<string, number> = {
 	"ui-coder": 6,
 	scout: 5,
 	"gate-runner": 5,
-	"git-pr-owner": 5,
+	"git-pr-owner": 4,
 	scribe: 5,
 	reviewer: 4,
 	workhorse: 7,

@@ -20,7 +20,6 @@ describe("Reemxy extension agent model chains", () => {
 			scribe: true,
 			workhorse: true,
 			"gate-runner": true,
-			"git-pr-owner": true,
 			researcher: true,
 			task: true,
 		};

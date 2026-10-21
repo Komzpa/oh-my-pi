@@ -188,7 +188,7 @@ describe("agent router", () => {
 				...AGENT_POOLS["git-pr-owner"].pool.filter(spec => !spec.endsWith(":free")),
 				...AGENT_POOLS["git-pr-owner"].fallbacks,
 			]);
-			expect(publish.model[0]).toBe(dots);
+			expect(publish.model).not.toContain(dots);
 			for (const agent of ["qa-auditor", "gate-runner", "verification", "verifier", "verification-agent", "install", "installer", "install-agent", "task"]) {
 				const routed = await routeSubagentSpawn({ agent, patterns: [dots, "kimi-code/k3:high"] }, ctx(), createRouterState(), options);
 				expect(routed.model[0]).not.toBe(dots);
