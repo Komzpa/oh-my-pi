@@ -132,6 +132,7 @@ import {
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily, isServiceTierForFamily, serviceTierSettingToTier } from "../config/service-tier";
 import { combine, type SettingsScope } from "../config/registry";
+import type { MCPLoadResult } from "../mcp/manager";
 import type { Settings } from "../config/settings";
 import { RawSseDebugBuffer } from "@oh-my-pi/pi-tui/apps/debug/raw-sse-buffer";
 import { getEditStore } from "../edit/store";
@@ -1103,6 +1104,8 @@ export class AgentSession implements SettingsScope {
 	#sideStreamFn: StreamFn;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#disconnectOwnedMcpManager: (() => Promise<void>) | undefined;
+	#reloadOwnedMcpManager: (() => Promise<MCPLoadResult>) | undefined;
+	#mcpReloadInFlight: Promise<MCPLoadResult> | undefined;
 
 	readonly #ttsr: TtsrCoordinator;
 	readonly #stats: SessionStatsTracker;
@@ -2261,6 +2264,7 @@ export class AgentSession implements SettingsScope {
 			skillsReloadable: config.skillsReloadable,
 		});
 		this.#disconnectOwnedMcpManager = config.disconnectOwnedMcpManager;
+		this.#reloadOwnedMcpManager = config.reloadOwnedMcpManager;
 		const ttsrHost: TtsrCoordinatorHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -6870,6 +6874,23 @@ export class AgentSession implements SettingsScope {
 		return this.#tools.refreshBaseSystemPrompt(commitIf);
 	}
 
+	/** Actual owned-runtime reload, never a command-metadata refresh or global lookup. */
+	reloadMCPRuntime(): Promise<MCPLoadResult> {
+		if (this.isDisposed) throw new Error("Cannot reload MCP on a disposed session");
+		if (this.isStreaming || this.isBashRunning || this.isEvalRunning)
+			throw new Error("MCP reload requires an idle session");
+		if (!this.#reloadOwnedMcpManager) throw new Error("This session does not own an MCP runtime");
+		if (this.#mcpReloadInFlight) return this.#mcpReloadInFlight;
+		const pending = this.#reloadOwnedMcpManager();
+		this.#mcpReloadInFlight = pending;
+		void pending
+			.finally(() => {
+				if (this.#mcpReloadInFlight === pending) this.#mcpReloadInFlight = undefined;
+			})
+			.catch(() => {});
+		return pending;
+	}
+
 	/** Replaces connected MCP tools and enables them immediately. */
 	refreshMCPTools(mcpTools: CustomTool[]): Promise<void> {
 		return this.#tools.refreshMCPTools(mcpTools);
@@ -7731,13 +7752,17 @@ export class AgentSession implements SettingsScope {
 		// Handle extension commands first (execute immediately, even during streaming)
 		if (expandPromptTemplates && text.startsWith("/")) {
 			if (options?.runCommands !== false) {
-				const handled = await this.#tryExecuteExtensionCommand(text, options?.onPromptAdmitted);
+				const handled = await this.#tryExecuteExtensionCommand(
+					text,
+					options?.onPromptAdmitted,
+					options?.throwOnCommandError,
+				);
 				if (handled) {
 					return false;
 				}
 
 				// Try custom commands (TypeScript slash commands)
-				const customResult = await this.#tryExecuteCustomCommand(text);
+				const customResult = await this.#tryExecuteCustomCommand(text, options?.throwOnCommandError);
 				if (customResult !== null) {
 					if (customResult === "") {
 						return false;
@@ -8585,7 +8610,7 @@ export class AgentSession implements SettingsScope {
 	 * Try to execute an extension command. Returns true if command was found and executed.
 	 * `onRouted` fires once the command is found, before its handler runs.
 	 */
-	async #tryExecuteExtensionCommand(text: string, onRouted?: () => void): Promise<boolean> {
+	async #tryExecuteExtensionCommand(text: string, onRouted?: () => void, throwOnError = false): Promise<boolean> {
 		if (!this.#extensionRunner) return false;
 
 		// Parse command name and args
@@ -8610,6 +8635,7 @@ export class AgentSession implements SettingsScope {
 				event: "command",
 				error: err instanceof Error ? err.message : String(err),
 			});
+			if (throwOnError) throw err;
 			return true;
 		}
 	}
@@ -8705,7 +8731,7 @@ export class AgentSession implements SettingsScope {
 	 * Try to execute a custom command. Returns the prompt string if found, null otherwise.
 	 * If the command returns void, returns empty string to indicate it was handled.
 	 */
-	async #tryExecuteCustomCommand(text: string): Promise<string | null> {
+	async #tryExecuteCustomCommand(text: string, throwOnError = false): Promise<string | null> {
 		if (this.#customCommands.length === 0 && this.#mcpPromptCommands.length === 0) return null;
 
 		// Parse command name and args
@@ -8744,6 +8770,7 @@ export class AgentSession implements SettingsScope {
 				const message = err instanceof Error ? err.message : String(err);
 				logger.error("Custom command failed", { commandName, error: message });
 			}
+			if (throwOnError) throw err;
 			return ""; // Command was handled (with error)
 		}
 	}
