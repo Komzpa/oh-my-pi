@@ -66,9 +66,7 @@ describe("coordination advisory ownership guidance", () => {
 		expect(advisory).toContain(
 			"Before dispatching another writer, resolve any overlap with a running writer's declared resource scope.",
 		);
-		expect(advisory).toContain(
-			"Peer messages or promises to wait inside the new worker do not release that scope.",
-		);
+		expect(advisory).toContain("Peer messages or promises to wait inside the new worker do not release that scope.");
 		expect(advisory).toContain("Establish disjoint ownership or wait for the holder to finish and release it;");
 		expect(advisory).toContain("use a separately prepared checkout only where permitted.");
 	});
