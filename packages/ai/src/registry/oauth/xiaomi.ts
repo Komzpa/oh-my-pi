@@ -40,36 +40,25 @@ function isTokenPlanKey(apiKey: string): boolean {
 	return apiKey.startsWith(TOKEN_PLAN_KEY_PREFIX);
 }
 
-/** Model identity a Xiaomi request resolves against: provider id and stored baseUrl. */
-export type XiaomiTokenPlanModelRef = { provider?: string; baseUrl?: string };
-
-/** Resolve the Token Plan host for a `tp-` key: stored login region, else sgp. */
-export function resolveXiaomiTokenPlanBaseUrl(storedRegion?: string | null): string {
-	if (storedRegion === "ams" || storedRegion === "cn" || storedRegion === "sgp") {
-		return TOKEN_PLAN_VALIDATION_ENDPOINTS[storedRegion].baseUrl;
-	}
-	return TOKEN_PLAN_SGP_API_BASE_URL;
-}
-
 /**
- * Request-time base URL for a Xiaomi `tp-` key: every Xiaomi host (bundled or
- * discovered, standard or Token Plan) resolves to the Token Plan cluster for the
- * stored login region, else SGP. A non-Xiaomi host is a deliberate user override
- * and is kept as-is. Non-`tp-` keys keep the model's own baseUrl.
+ * Request-time base URL for a Xiaomi `tp-` key. Bundled and cached catalog rows
+ * keep the standard host (`api.xiaomimimo.com`), which rejects Token Plan keys,
+ * so a Xiaomi row on any `xiaomimimo.com` host resolves to the Token Plan
+ * cluster of the region stored at login (provider id or host), else SGP. A
+ * non-Xiaomi host is a deliberate override and is kept, as is any non-`tp-` key.
  */
 export function resolveXiaomiRequestBaseUrl(
-	model: XiaomiTokenPlanModelRef,
+	model: { provider?: string; baseUrl?: string },
 	apiKey: string | undefined,
 ): string | undefined {
 	const provider = model.provider ?? "";
-	if (provider !== "xiaomi" && !provider.startsWith("xiaomi-token-plan-")) return model.baseUrl;
+	if (provider !== PROVIDER_ID && !provider.startsWith("xiaomi-token-plan-")) return model.baseUrl;
 	if (apiKey === undefined || !isTokenPlanKey(apiKey)) return model.baseUrl;
 	if (model.baseUrl !== undefined && !model.baseUrl.includes("xiaomimimo.com")) return model.baseUrl;
-	// Region stored at login: provider id (`xiaomi-token-plan-<region>`) or Token Plan host, else SGP.
-	const storedRegion =
+	const region =
 		/^xiaomi-token-plan-(sgp|ams|cn)$/.exec(provider)?.[1] ??
 		/token-plan-(sgp|ams|cn)\./.exec(model.baseUrl ?? "")?.[1];
-	return resolveXiaomiTokenPlanBaseUrl(storedRegion);
+	return TOKEN_PLAN_VALIDATION_ENDPOINTS[(region as XiaomiTokenPlanRegion | undefined) ?? "sgp"].baseUrl;
 }
 
 const VALIDATION_TIMEOUT_MS = 15_000;
