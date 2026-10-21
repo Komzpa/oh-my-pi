@@ -335,7 +335,6 @@ const TASK_POOL: PoolConfig = {
 		"kimi-code/kimi-for-coding:high",
 		"deepseek/deepseek-v4-pro:high",
 		"kimi-code/k3:high",
-		"xiaomi/mimo-v2.6-pro",
 		"xai-oauth/grok-4.5",
 		"muse-code/muse-spark-1.3-contributor",
 		"xai-oauth/grok-4.6",

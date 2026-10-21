@@ -612,7 +612,7 @@ describe("agent router", () => {
 			expect(before?.model.at(-1)).toBe("openrouter/dots-studio/dots-3-note-preview:free");
 			writeFileSync(
 				profilePath,
-				profile.replace(/^model:.*$/m, "model: xiaomi/mimo-v2.6-pro, kimi-code/kimi-for-coding:high"),
+				profile.replace(/^model:.*$/m, "model: deepseek/deepseek-v4-pro:high, kimi-code/kimi-for-coding:high"),
 			);
 			const after = await routeSubagentSpawn(
 				{ agent: "coder", spawnKey: "profile-after" },
@@ -623,7 +623,7 @@ describe("agent router", () => {
 					profileDir,
 				},
 			);
-			expect(after?.model).toContain("xiaomi/mimo-v2.6-pro");
+			expect(after?.model).toContain("deepseek/deepseek-v4-pro:high");
 			expect(after?.model).toContain("kimi-code/kimi-for-coding:high");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -693,17 +693,14 @@ describe("agent router", () => {
 		}
 	});
 
-	test("subscribed Xiaomi and Muse models can each be the first pick, not fallback-only", async () => {
+	test("subscribed pool models can each be the first pick, not fallback-only", async () => {
 		const candidates = [
-			["coder", "xiaomi/mimo-v2.6-pro"],
 			["coder", "muse-code/muse-spark-1.3-contributor"],
-			["ui-coder", "xiaomi/mimo-v2.6-pro"],
 			["scout", "xiaomi/mimo-v2.6-flash"],
 			["gate-runner", "xiaomi/mimo-v2.6-flash"],
 			["git-pr-owner", "xiaomi/mimo-v2.6-flash"],
 			["scribe", "xiaomi/mimo-v2.6-flash"],
 			["workhorse", "xiaomi/mimo-v2.6-flash"],
-			["task", "xiaomi/mimo-v2.6-pro"],
 			["task", "muse-code/muse-spark-1.3-contributor"],
 		] as const;
 		const { dir, file } = tempStateFile();
@@ -1904,28 +1901,28 @@ describe("agent router", () => {
 			const t0 = new Date("2026-10-01T15:00:00.000Z");
 			const state = createRouterState();
 			const context = ctx();
-			const xiaomiFirst = <T>(items: readonly T[]) => {
-				const index = items.indexOf("xiaomi/mimo-v2.6-pro" as T);
+			const kimiFirst = <T>(items: readonly T[]) => {
+				const index = items.indexOf("kimi-code/kimi-for-coding:high" as T);
 				return [...items.slice(index), ...items.slice(0, index)];
 			};
 			const first = await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-auth-1" }, context, state, {
 				stateFile: file,
 				now: () => t0,
-				shuffle: xiaomiFirst,
+				shuffle: kimiFirst,
 			});
-			expect(first?.model[0]).toBe("xiaomi/mimo-v2.6-pro");
+			expect(first?.model[0]).toBe("kimi-code/kimi-for-coding:high");
 			const base = ctx();
-			const xiaomiModel = {
-				provider: "xiaomi",
-				id: "mimo-v2.6-pro",
-				baseUrl: "https://api.xiaomimimo.com/v1",
+			const kimiModel = {
+				provider: "kimi-code",
+				id: "kimi-for-coding",
+				baseUrl: "https://api.moonshot.ai/v1",
 			};
 			const deadContext = ctx({
 				models: {
-					list: () => [xiaomiModel],
+					list: () => [kimiModel],
 					resolve: (spec: string) =>
-						spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === "xiaomi/mimo-v2.6-pro"
-							? xiaomiModel
+						spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === "kimi-code/kimi-for-coding"
+							? kimiModel
 							: base.models.resolve(spec),
 				},
 				modelRegistry: {
@@ -1943,8 +1940,8 @@ describe("agent router", () => {
 								agent: "coder",
 								exitCode: 1,
 								durationMs: 200,
-								resolvedModel: "xiaomi/mimo-v2.6-pro",
-								error: "[xiaomi/mimo-v2.6-pro] 401 Invalid API Key",
+								resolvedModel: "kimi-code/kimi-for-coding:high",
+								error: "[kimi-code/kimi-for-coding:high] 401 Invalid API Key",
 							},
 						],
 					},
@@ -1958,16 +1955,16 @@ describe("agent router", () => {
 			const whileDead = await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-auth-2" }, context, state, {
 				stateFile: file,
 				now: () => new Date(t0.getTime() + 60 * 60 * 1000),
-				shuffle: xiaomiFirst,
+				shuffle: kimiFirst,
 			});
 			expect(whileDead?.model).toBeDefined();
-			expect(whileDead?.model).not.toContain("xiaomi/mimo-v2.6-pro");
+			expect(whileDead?.model).not.toContain("kimi-code/kimi-for-coding:high");
 			const afterTtl = await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-auth-3" }, context, state, {
 				stateFile: file,
 				now: () => new Date(t0.getTime() + 7 * 60 * 60 * 1000),
-				shuffle: xiaomiFirst,
+				shuffle: kimiFirst,
 			});
-			expect(afterTtl?.model[0]).toBe("xiaomi/mimo-v2.6-pro");
+			expect(afterTtl?.model[0]).toBe("kimi-code/kimi-for-coding:high");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -1981,7 +1978,7 @@ describe("agent router", () => {
 			const base = ctx();
 			const xiaomiModel = {
 				provider: "xiaomi",
-				id: "mimo-v2.6-pro",
+				id: "mimo-v2.6-flash",
 				// Bundled cold-start entry: hardcoded standard host before discovery runs.
 				baseUrl: "https://api.xiaomimimo.com/v1",
 			};
@@ -1989,7 +1986,7 @@ describe("agent router", () => {
 				models: {
 					list: () => [xiaomiModel],
 					resolve: (spec: string) =>
-						spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === "xiaomi/mimo-v2.6-pro"
+						spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === "xiaomi/mimo-v2.6-flash"
 							? xiaomiModel
 							: base.models.resolve(spec),
 				},
@@ -2010,16 +2007,16 @@ describe("agent router", () => {
 				details: {
 					results: [
 						{
-							agent: "coder",
+							agent: "scout",
 							exitCode: 1,
 							durationMs: 200,
-							resolvedModel: "xiaomi/mimo-v2.6-pro",
-							error: "[xiaomi/mimo-v2.6-pro] 401 Invalid API Key",
+							resolvedModel: "xiaomi/mimo-v2.6-flash",
+							error: "[xiaomi/mimo-v2.6-flash] 401 Invalid API Key",
 						},
 					],
 				},
 			};
-			await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-probe-1" }, context, state, {
+			await routeSubagentSpawn({ agent: "scout", spawnKey: "scout-probe-1" }, context, state, {
 				stateFile: file,
 				now: () => t0,
 			});
@@ -2027,8 +2024,8 @@ describe("agent router", () => {
 			expect(probed).toEqual([
 				{ url: "https://token-plan-sgp.xiaomimimo.com/v1/models", authorization: "Bearer tp-test-key" },
 			]);
-			expect(state.authDead.has("xiaomi/mimo-v2.6-pro")).toBe(false);
-			await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-probe-2" }, context, state, {
+			expect(state.authDead.has("xiaomi/mimo-v2.6-flash")).toBe(false);
+			await routeSubagentSpawn({ agent: "scout", spawnKey: "scout-probe-2" }, context, state, {
 				stateFile: file,
 				now: () => new Date(t0.getTime() + 30 * 60 * 1000),
 			});
@@ -2038,7 +2035,7 @@ describe("agent router", () => {
 				fetch: fetchMock,
 			});
 			expect(probed).toHaveLength(1); // probe result cached for the hour
-			expect(state.authDead.has("xiaomi/mimo-v2.6-pro")).toBe(false);
+			expect(state.authDead.has("xiaomi/mimo-v2.6-flash")).toBe(false);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -2257,7 +2254,6 @@ describe("agent router", () => {
 			"kimi-code/kimi-for-coding": { api: "anthropic-messages", identity: { class: "kimi" } },
 			"kimi-code/k3": { api: "anthropic-messages", identity: { class: "kimi" } },
 			"deepseek/deepseek-v4-pro": { api: "openai-completions", identity: { class: "deepseek" } },
-			"xiaomi/mimo-v2.6-pro": { api: "openai-completions", identity: { class: "mimo" } },
 			"muse-code/muse-spark-1.3-contributor": { api: "openai-completions", identity: { class: "meta" } },
 			"cerebras/qwen-3.8-27b": { api: "openai-completions", identity: { class: "qwen" } },
 		};
@@ -2293,7 +2289,6 @@ describe("agent router", () => {
 			"xai-oauth/grok-4.6",
 			"muse-code/muse-spark-1.3-contributor",
 			"xai-oauth/grok-4.5",
-			"xiaomi/mimo-v2.6-pro",
 			"kimi-code/k3:high",
 			"deepseek/deepseek-v4-pro:high",
 			"kimi-code/kimi-for-coding:high",
