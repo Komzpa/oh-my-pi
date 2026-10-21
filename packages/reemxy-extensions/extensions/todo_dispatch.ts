@@ -64,6 +64,7 @@ export type SprintState = {
   seenJobIds: string[];
   retroFacilitatorJobs: string[];
   retroCoveredIds: string[];
+  retroCoveredAttempts: string[];
   retroReceiptIds: string[];
   correctionPending: boolean;
   retroDueReason: string | null;
@@ -354,6 +355,7 @@ function blankSprintState(): SprintState {
     seenJobIds: [],
     retroFacilitatorJobs: [],
     retroCoveredIds: [],
+    retroCoveredAttempts: [],
     retroReceiptIds: [],
     correctionPending: false,
     retroDueReason: null,
@@ -685,6 +687,7 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
       seenJobIds: Array.isArray(data.seenJobIds) ? data.seenJobIds.filter((item): item is string => typeof item === "string") : [],
       retroFacilitatorJobs: Array.isArray(data.retroFacilitatorJobs) ? data.retroFacilitatorJobs.filter((item): item is string => typeof item === "string") : [],
       retroCoveredIds: Array.isArray(data.retroCoveredIds) ? data.retroCoveredIds.filter((item): item is string => typeof item === "string") : [],
+      retroCoveredAttempts: Array.isArray((data as Partial<SprintState>).retroCoveredAttempts) ? ((data as Partial<SprintState>).retroCoveredAttempts as unknown[]).filter((item): item is string => typeof item === "string") : [],
       retroReceiptIds: Array.isArray(data.retroReceiptIds) ? data.retroReceiptIds.filter((item): item is string => typeof item === "string") : [],
       correctionPending: data.correctionPending === true,
       retroDueReason: typeof data.retroDueReason === "string" ? data.retroDueReason : null,
@@ -708,6 +711,28 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
 export const MAX_SEEN_JOB_IDS = 256;
 /** Cap on retained settled roster children; live children are always kept. */
 export const MAX_SETTLED_CHILDREN = 32;
+/** A covered row attempt is a JSON-encoded [row content, attempt id] pair. */
+function rowAttemptKeys(task: TaskRow): string[] {
+  const schedule = task.schedule && typeof task.schedule === "object" ? task.schedule : undefined;
+  const attempts = Array.isArray(schedule?.attemptHistory) ? schedule.attemptHistory : [];
+  const ids: string[] = [];
+  if (typeof schedule?.owner === "string" && schedule.owner !== "") ids.push(schedule.owner);
+  for (const attempt of attempts) {
+    if (typeof attempt !== "object" || attempt === null) continue;
+    const record = attempt as { attemptId?: unknown; workerName?: unknown };
+    if (typeof record.attemptId === "string" && record.attemptId !== "") ids.push(record.attemptId);
+    else if (typeof record.workerName === "string" && record.workerName !== "") ids.push(record.workerName);
+  }
+  return ids.map((id) => JSON.stringify([task.content, id]));
+}
+function coveredAttemptRow(key: string): string {
+  try {
+    const parsed: unknown = JSON.parse(key);
+    return Array.isArray(parsed) && typeof parsed[0] === "string" ? parsed[0] : key;
+  } catch {
+    return key;
+  }
+}
 
 /**
  * Bound sprint state to the rows still in the todo plan plus a recent window. Every array here
@@ -728,6 +753,7 @@ export function pruneSprintState(
   // chief turns instead of silent notices. Keep the digest cache but bound it
   // so 500 dead rows cannot persist unbounded state.
   const lastNotices = boundedNotices(state.lastNotices);
+  const retroCoveredAttempts = (state.retroCoveredAttempts ?? []).filter((key) => keepRow(coveredAttemptRow(key))).slice(-MAX_RETRO_RECEIPT_IDS);
   const workerFinishes = state.workerFinishes.filter(
     (finish) => now - finish.at < RECENT_FINISH_MS || keepRow(finish.row),
   );
@@ -736,7 +762,7 @@ export function pruneSprintState(
   for (const id of state.seenJobIds.slice(-MAX_SEEN_JOB_IDS)) {
     if (!seenJobIds.includes(id)) seenJobIds.push(id);
   }
-  return { ...state, seenRows, rowStatuses, reopenedRows, lastNotices, workerFinishes, seenJobIds };
+  return { ...state, seenRows, rowStatuses, reopenedRows, lastNotices, workerFinishes, seenJobIds, retroCoveredAttempts };
 }
 
 function mergePersistedChildren(
@@ -1985,7 +2011,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const { facilitatorSettled, updaterRejected } = settleSprintJobs([...branchAsyncTaskResults(ctx, recentMessages), ...(jobs?.recent ?? [])], now);
     // One persist per loop: a burst of background receipts used to persist a full snapshot per receipt.
     const freshReceipts = branchRetroReceiptIds(ctx, recentMessages).filter((receipt) => !sprintState.retroReceiptIds.includes(receipt));
-    if (facilitatorSettled || freshReceipts.length > 0) finishRetro(freshReceipts.length > 0 ? freshReceipts : undefined, false);
+    if (facilitatorSettled || freshReceipts.length > 0) finishRetro(freshReceipts.length > 0 ? freshReceipts : undefined, false, tasks.flatMap(rowAttemptKeys));
     if (open.length > 0 && sprintState.goalWorkStartedAt === null) {
       // Only finishes since the last retro start the next goal-work window; older ones were covered.
       const sinceRetro = sprintState.workerFinishes.filter((finish) => sprintState.lastRetroAt === null || finish.at >= sprintState.lastRetroAt);
@@ -2010,7 +2036,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // A lead re-dispatch of one row, read from the row's own attempt data: owners
     // Foo -> Foo-2 -> Foo-3 accumulated on one row, or the row sent out again after an
     // attempt already completed. Parallel workers on one row are not a re-dispatch.
+    const coveredAttempts = new Set(sprintState.retroCoveredAttempts ?? []);
     const redispatchedRow = tasks.some((task) => {
+      const keys = rowAttemptKeys(task);
+      if (keys.every((key) => coveredAttempts.has(key))) return false;
       const schedule = task.schedule && typeof task.schedule === "object" ? task.schedule : undefined;
       const attempts = Array.isArray(schedule?.attemptHistory) ? schedule.attemptHistory : [];
       const names = [
@@ -2050,11 +2079,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     sprintState = { ...sprintState, rowStatuses: nextStatuses };
     persistSprintState();
   };
-  const finishRetro = (receipt?: string | string[], persist = true) => {
+  const finishRetro = (receipt?: string | string[], persist = true, coveredAttempts: string[] = []) => {
     const handledDeadlineAt = sprintState.retroDueReason === "deadline passed" ? sprintState.retroDueDeadlineAt : sprintState.handledDeadlineAt;
     const handledDeliveryKey = sprintState.retroDueReason === "goal delivered" ? sprintState.retroDueDeliveryKey : sprintState.handledDeliveryKey;
     const covered = new Set(sprintState.retroCoveredIds);
     for (const id of retroWorkerIds()) covered.add(id);
+    const coveredRows = new Set([...(sprintState.retroCoveredAttempts ?? []), ...coveredAttempts].slice(-MAX_RETRO_RECEIPT_IDS));
     sprintState = {
       ...sprintState,
       lastRetroAt: Date.now(),
@@ -2067,6 +2097,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       reopenedRows: [],
       retroFacilitatorJobs: [],
       retroCoveredIds: [...covered],
+      retroCoveredAttempts: [...coveredRows],
       retroReceiptIds: [...sprintState.retroReceiptIds, ...(Array.isArray(receipt) ? receipt : receipt === undefined ? [] as string[] : [receipt]).filter((id) => !sprintState.retroReceiptIds.includes(id))].slice(-MAX_RETRO_RECEIPT_IDS),
       ...(handledDeadlineAt === undefined ? {} : { handledDeadlineAt }),
       ...(handledDeliveryKey === undefined ? {} : { handledDeliveryKey }),
@@ -4272,7 +4303,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     lastTaskDispatchRefused = Boolean(event.isError);
     if (!event.isError && isRetroFacilitatorTaskResult(event)) {
       dispatchedAgents.delete(event.toolCallId);
-      finishRetro(retroFacilitatorResultId(event));
+      let covered: string[] = [];
+      try {
+        covered = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never).flatMap((phase) => phase.tasks).flatMap(rowAttemptKeys);
+      } catch {
+        covered = [];
+      }
+      finishRetro(retroFacilitatorResultId(event), true, covered);
     } else if (!event.isError) {
       const details = event.details as { results?: unknown } | undefined;
       if (Array.isArray(details?.results)) {

@@ -468,6 +468,32 @@ test("a lead re-dispatch chain Foo to Foo-3 on one row opens repeated failure", 
     expect(await f.check()).toContain("retrospective due (repeated failure)");
   } finally { setSystemTime(); }
 });
+test("a covered redispatch chain stays quiet until a new attempt appears", async () => {
+  setSystemTime(new Date(liveNow));
+  try {
+    const chain = (owner: string, attempts: unknown[]) => ({
+      ...row("Ship feature", "in_progress"),
+      schedule: {
+        dependencies: [],
+        estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180, confidence: "medium", basis: "retro fixture", updatedAt: liveNow },
+        owner,
+        attemptHistory: attempts,
+      },
+    });
+    const attempts = [{ workerName: "Foo" }, { workerName: "Foo-2" }];
+    const f = await fixture([{ name: "Work", tasks: [chain("Foo-3", attempts)] }], [], liveNow + 24 * 60 * 60_000);
+    expect(await f.check()).toContain("retrospective due (repeated failure)");
+    await f.dispatch("SprintRetro");
+    await f.finish();
+    expect(await f.check()).not.toContain("retrospective due");
+    expect(await f.check()).not.toContain("retrospective due");
+    const g = await fixture([{ name: "Work", tasks: [chain("Foo-3", attempts)] }], [], liveNow + 24 * 60 * 60_000, f.branch);
+    await g.handlers.get("session_branch")!({}, g.ctx);
+    expect(await g.check()).not.toContain("retrospective due");
+    g.setPlan([{ name: "Work", tasks: [chain("Foo-4", [...attempts, { workerName: "Foo-3" }])] }]);
+    expect(await g.check()).toContain("retrospective due (repeated failure)");
+  } finally { setSystemTime(); }
+});
 
 test("a single attempt on one row opens no repeated failure", async () => {
   setSystemTime(new Date(liveNow));
