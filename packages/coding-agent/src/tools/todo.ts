@@ -478,7 +478,7 @@ function replayTodoEdit(
 	}
 	if (resolved.op === "schedule") {
 		const errors: string[] = [];
-		const next = applyEntry(current, resolved, errors, edit.at, options.archived);
+		const next = applyEntry(current, resolved, errors, edit.at, options.archived, { replay: true });
 		if (errors.length > 0) return undefined;
 		return { phases: next, mutable: true };
 	}
@@ -959,12 +959,39 @@ function isSameAcceptedEstimate(
 	);
 }
 
+/** Rows in one schedule call that may share an O/L/P triple before the call is refused. */
+const IDENTICAL_ESTIMATE_LIMIT = 2;
+
+/**
+ * An identical triple on three or more rows of one call is a pasted default, not an estimate: it
+ * carries no per-row information and makes every forecast and every displayed duration the same
+ * number (2026-10-21: seven rows were all passed 1200/2400/3600 s and all showed "40m"; the month's
+ * actual/mean ratio was 0.2-0.3 for most models). The todo schema has no notion of a declared batch
+ * shard, so such rows are refused. Replay of recorded history is exempt: a session stays loadable.
+ */
+function identicalEstimateErrors(changed: ReadonlyArray<{ task: string; estimate: AcceptedEstimateFields }>): string[] {
+	const groups = new Map<string, string[]>();
+	for (const { task, estimate } of changed) {
+		const key = `${estimate.optimisticSeconds}/${estimate.likelySeconds}/${estimate.pessimisticSeconds}`;
+		groups.set(key, [...(groups.get(key) ?? []), task]);
+	}
+	const errors: string[] = [];
+	for (const [key, tasks] of groups) {
+		if (tasks.length <= IDENTICAL_ESTIMATE_LIMIT) continue;
+		errors.push(
+			`${tasks.length} rows in this schedule call share the same optimistic/likely/pessimistic estimate ${key} s (${tasks.map(task => `"${task}"`).join(", ")}). An identical triple is a copied default, not an estimate; estimate each row separately from its own scope, history and risk, and resend the call.`,
+		);
+	}
+	return errors;
+}
+
 function applyScheduleUpdates(
 	phases: TodoPhase[],
 	entry: TodoOpEntryValue,
 	errors: string[],
 	now: number,
 	archived: TodoPhase[],
+	options: { replay?: boolean } = {},
 ): TodoPhase[] {
 	const updates = entry.updates;
 	if (!updates || updates.length === 0) {
@@ -979,6 +1006,7 @@ function applyScheduleUpdates(
 	const renamedTasks = new Map<TodoItem, string>();
 	const renamedContent = new Map<string, string>();
 	const renamedTitles = new Set<string>();
+	const changedEstimates: Array<{ task: string; estimate: AcceptedEstimateFields }> = [];
 	for (const update of updates) {
 		if (seenUpdates.has(update.task)) {
 			errors.push(`Duplicate schedule update for task "${update.task}"`);
@@ -1056,6 +1084,7 @@ function applyScheduleUpdates(
 			if (isSameAcceptedEstimate(previousEstimate, estimate)) {
 				schedule.estimate = { ...estimate, updatedAt: previousEstimate.updatedAt };
 			} else {
+				changedEstimates.push({ task: update.task, estimate });
 				schedule.reestimateCount = (schedule.reestimateCount ?? 0) + (previousEstimate && !ownerChanged ? 1 : 0);
 				schedule.estimateRevision = (schedule.estimateRevision ?? (previousEstimate ? 1 : 0)) + 1;
 				schedule.estimate = { ...estimate, updatedAt: now };
@@ -1065,6 +1094,7 @@ function applyScheduleUpdates(
 		candidates.set(task, schedule);
 	}
 
+	if (!options.replay) errors.push(...identicalEstimateErrors(changedEstimates));
 	if (errors.length > initialErrorCount) return phases;
 	if (renamedContent.size > 0) {
 		for (const phase of phases) {
@@ -1091,6 +1121,7 @@ function applyEntry(
 	errors: string[],
 	now = Date.now(),
 	archived: TodoPhase[] = [],
+	options: { replay?: boolean } = {},
 ): TodoPhase[] {
 	switch (entry.op) {
 		case "init":
@@ -1171,7 +1202,7 @@ function applyEntry(
 		case "append":
 			return appendItems(phases, entry, errors);
 		case "schedule":
-			return applyScheduleUpdates(phases, entry, errors, now, archived);
+			return applyScheduleUpdates(phases, entry, errors, now, archived, options);
 		case "view":
 			return phases;
 	}

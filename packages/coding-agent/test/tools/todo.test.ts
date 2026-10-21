@@ -485,13 +485,13 @@ describe("TodoTool operations", () => {
 		});
 		await tool.execute("plan", {
 			op: "schedule",
-			updates: ["first", "second", "third"].map(task => ({
+			updates: ["first", "second", "third"].map((task, index) => ({
 				task,
 				dependencies: [],
 				estimate: {
-					optimisticSeconds: 10,
-					likelySeconds: 20,
-					pessimisticSeconds: 40,
+					optimisticSeconds: 10 + index,
+					likelySeconds: 20 + index,
+					pessimisticSeconds: 40 + index,
 					confidence: "high",
 					basis: "Bounded task transition fixture",
 				},
@@ -516,13 +516,13 @@ describe("TodoTool operations", () => {
 		});
 		await tool.execute("plan", {
 			op: "schedule",
-			updates: ["a1", "a2", "b1"].map(task => ({
+			updates: ["a1", "a2", "b1"].map((task, index) => ({
 				task,
 				dependencies: [],
 				estimate: {
-					optimisticSeconds: 10,
-					likelySeconds: 20,
-					pessimisticSeconds: 40,
+					optimisticSeconds: 10 + index,
+					likelySeconds: 20 + index,
+					pessimisticSeconds: 40 + index,
 					confidence: "high",
 					basis: "Bounded task transition fixture",
 				},
@@ -1861,5 +1861,120 @@ describe("todoToolRenderer.renderCall preview sanitization", () => {
 		expect(rendered).not.toContain("\t");
 		expect(Bun.stripANSI(rendered)).toContain("ship");
 		expect(Bun.stripANSI(rendered)).toContain("it");
+	});
+});
+
+describe("todo schedule rejects copied estimates", () => {
+	const triple = (optimisticSeconds: number, likelySeconds: number, pessimisticSeconds: number) => ({
+		optimisticSeconds,
+		likelySeconds,
+		pessimisticSeconds,
+		confidence: "medium" as const,
+		basis: "calibration fixture",
+	});
+	const rows = ["a", "b", "c", "d"];
+	async function schedule(tool: TodoTool, id: string, estimates: Array<ReturnType<typeof triple>>) {
+		return tool
+			.execute(id, {
+				op: "schedule",
+				updates: estimates.map((estimate, index) => ({ task: rows[index]!, dependencies: [], estimate })),
+			})
+			.then(
+				result => ({
+					ok: (result as { isError?: boolean }).isError !== true,
+					text: result.content.map(part => (part.type === "text" ? part.text : "")).join("\n"),
+				}),
+				error => ({ ok: false as const, text: String(error) }),
+			);
+	}
+	async function estimateOf(tool: TodoTool, task: string) {
+		const view = await tool.execute("view", { op: "view" });
+		return view.details?.phases[0]?.tasks.find(row => row.content === task)?.schedule?.estimate;
+	}
+
+	it("refuses three rows with one O/L/P triple in a single call and applies none of them", async () => {
+		const tool = new TodoTool(createSession());
+		await tool.execute("init", { op: "init", list: [{ phase: "Work", items: rows }] });
+		const outcome = await schedule(tool, "same", [
+			triple(1200, 2400, 3600),
+			triple(1200, 2400, 3600),
+			triple(1200, 2400, 3600),
+		]);
+		expect(outcome.ok).toBe(false);
+		expect(outcome.text).toContain(
+			"3 rows in this schedule call share the same optimistic/likely/pessimistic estimate 1200/2400/3600 s",
+		);
+		expect(outcome.text).toContain('"a", "b", "c"');
+		expect(outcome.text).toContain("estimate each row separately");
+		// Atomic: not even the rows' dependencies are written.
+		expect(await estimateOf(tool, "a")).toBeUndefined();
+	});
+
+	it("accepts two rows that share a triple and three rows with distinct triples", async () => {
+		const tool = new TodoTool(createSession());
+		await tool.execute("init", { op: "init", list: [{ phase: "Work", items: rows }] });
+		expect((await schedule(tool, "two", [triple(60, 120, 240), triple(60, 120, 240), triple(30, 90, 600)])).ok).toBe(
+			true,
+		);
+		expect(
+			(await schedule(tool, "distinct", [triple(60, 120, 240), triple(61, 130, 250), triple(30, 90, 600)])).ok,
+		).toBe(true);
+		expect((await estimateOf(tool, "b"))?.likelySeconds).toBe(130);
+	});
+
+	it("counts only rows whose estimate changes, so resending an accepted plan is not refused", async () => {
+		const tool = new TodoTool(createSession());
+		await tool.execute("init", { op: "init", list: [{ phase: "Work", items: rows }] });
+		expect(
+			(await schedule(tool, "first", [triple(60, 120, 240), triple(61, 130, 250), triple(30, 90, 600)])).ok,
+		).toBe(true);
+		// Re-estimating one row to a value two others already hold stays at two rows per triple.
+		expect(
+			(await schedule(tool, "again", [triple(60, 120, 240), triple(61, 130, 250), triple(60, 120, 240)])).ok,
+		).toBe(true);
+	});
+
+	it("replays a recorded call that carried a copied triple, so an older session still loads", () => {
+		const phases = [{ name: "Work", tasks: rows.map(content => ({ content, status: "pending" as const })) }];
+		const same = triple(1200, 2400, 3600);
+		const entries = [
+			{
+				type: "custom",
+				customType: "user_todo_edit",
+				data: { phases },
+				id: "base",
+				parentId: null,
+				timestamp: "2026-10-01T10:00:00.000Z",
+			},
+			{
+				type: "message",
+				id: "copied",
+				parentId: "base",
+				timestamp: "2026-10-01T10:00:01.000Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "copied",
+					toolName: "todo",
+					content: [],
+					details: {
+						op: "schedule",
+						edit: {
+							v: 1,
+							kind: "op",
+							at: 1_790_000_000_000,
+							op: "schedule",
+							params: {
+								op: "schedule",
+								updates: rows.slice(0, 3).map(task => ({ task, dependencies: [], estimate: same })),
+							},
+						},
+					},
+					isError: false,
+					timestamp: 1_790_000_000_000,
+				},
+			},
+		] as SessionEntry[];
+		const restored = getLatestTodoPhasesFromEntries(entries);
+		expect(restored[0]?.tasks[2]?.schedule?.estimate?.likelySeconds).toBe(2400);
 	});
 });

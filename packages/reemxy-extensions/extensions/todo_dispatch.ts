@@ -20,6 +20,7 @@ import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, lifecycle
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 import { derivePresence, isDeadlineStateEntryMetadata, isGoalLifecycleEntryMetadata, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
+import { calibrationHints, readDurationHistory } from "./todo_calibration";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
 export function todoStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
@@ -4107,6 +4108,24 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     planTicker = ctx.setInterval(() => planTick(ctx), PLAN_TICK_MS);
   };
   disarmPlanTicker = stopPlanTicker;
+  // `todo schedule` hands the lead the finished-run history of the owners it just set, so the next
+  // estimate starts from what that role/model actually took. Generic text; the journal is the router's.
+  const scheduleCalibrationHints = (event: { input?: unknown }, ctx: ExtensionContext, pending: unknown[]): string[] => {
+    const input = event.input as { op?: unknown; updates?: unknown } | undefined;
+    if (input?.op !== "schedule" || !Array.isArray(input.updates)) return [];
+    try {
+      const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending) as never);
+      const ownerOf = (task: string) => phases.flatMap((phase) => phase.tasks).find((row) => row.content === task)?.schedule?.owner;
+      const targets = input.updates.flatMap((update: { task?: unknown; owner?: unknown }) => {
+        if (typeof update?.task !== "string") return [];
+        const owner = (typeof update.owner === "string" ? update.owner : ownerOf(update.task))?.trim();
+        return owner && !/^(?:unit|job):/.test(owner) ? [{ task: update.task, owner }] : [];
+      });
+      return calibrationHints(targets, readDurationHistory());
+    } catch {
+      return [];
+    }
+  };
   pi.on("tool_result", async (event, ctx) => {
     healPlanTicker(ctx);
     await refreshLiveWorkerModels(ctx);
@@ -4126,10 +4145,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       // The hook runs before this result joins the branch: check the plan the call just produced
       // (live 21:32: an owner written by this very call was reported as missing).
       const details = (event as { details?: unknown }).details;
-      const check = await planCheck(ctx, details ? [{ type: "message", message: { role: "toolResult", toolName: "todo", details } }] : []);
-      if (!check) return;
+      const pendingTodo = details ? [{ type: "message", message: { role: "toolResult", toolName: "todo", details } }] : [];
+      const hints = scheduleCalibrationHints(event, ctx, pendingTodo);
+      const hintPart = hints.length ? [{ type: "text" as const, text: hints.join("\n") }] : [];
+      const check = await planCheck(ctx, pendingTodo);
+      if (!check) return hintPart.length ? { content: [...event.content, ...hintPart] } : undefined;
       markSizingNotices();
-      return { content: [...event.content, { type: "text" as const, text: check }] };
+      return { content: [...event.content, ...hintPart, { type: "text" as const, text: check }] };
     }
     if (event.toolName !== "task") return;
     lastTaskDispatchRefused = Boolean(event.isError);
