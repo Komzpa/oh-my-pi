@@ -22,6 +22,8 @@ import agentRouter, {
 	countLiveWorkerModels,
 	createRouterState,
 	modelEffortOf,
+	parseRetryAfterMs,
+	recordAsyncResultOutcome,
 	readModelBlacklist,
 	recordRetryFallbackApplied,
 	recordTaskOutcome,
@@ -222,7 +224,7 @@ describe("agent router", () => {
 				const routed = await routeSubagentSpawn({ agent }, ctx(), createRouterState(), { stateFile: file, modeFile });
 				expect(routed?.model.length).toBeGreaterThan(0);
 				for (const spec of routed!.model) {
-					expect([...STRONG_MODELS, "cerebras/qwen-3.8-27b"]).toContain(spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, ""));
+					expect(STRONG_MODELS).toContain(spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, ""));
 					expect(spec).not.toMatch(/:free|ling/);
 				}
 				expect(routed.requiredModelServiceTiers["codex-lb/gpt-6-luna"]).toBe("priority");
@@ -230,22 +232,25 @@ describe("agent router", () => {
 				const expected = profile ? [...profile.pool, ...profile.fallbacks]
 					.filter(spec => STRONG_MODELS.includes(modelSelectorBase(spec)) && !spec.includes("luna"))
 					.map(modelSelectorBase) : [];
-				expect(routed.model.filter(spec => !spec.startsWith("cerebras/")).slice(0, expected.length).map(modelSelectorBase)).toEqual(expected);
+				expect(routed.model.filter(spec => !spec.includes("luna")).slice(0, expected.length).map(modelSelectorBase)).toEqual(expected);
 			}
 		} finally { rmSync(dir, { recursive: true, force: true }); }
 	});
 
-	test("brrrr puts the fast Cerebras model first for scout and last for coder", async () => {
+	test("brrrr puts the fast Luna low lane first for scout and Luna last for coder, once", async () => {
 		const { dir, file } = tempStateFile();
 		const modeFile = join(dir, "mode.json");
 		writeFileSync(modeFile, JSON.stringify({ enabled: true }));
 		const previous = process.env.OMP_AGENT_ROUTER_MODELS;
 		process.env.OMP_AGENT_ROUTER_MODELS = new URL("./brrrr_models.json", import.meta.url).pathname;
-		const fast = "cerebras/qwen-3.8-27b";
+		const fast = "codex-lb/gpt-6-luna";
 		try {
 			const scout = await routeSubagentSpawn({ agent: "scout" }, ctx(), createRouterState(), { stateFile: file, modeFile });
 			const coder = await routeSubagentSpawn({ agent: "coder" }, ctx(), createRouterState(), { stateFile: file, modeFile });
-			expect(modelSelectorBase(scout.model[0])).toBe(fast);
+			expect(scout.model[0]).toBe("codex-lb/gpt-6-luna:low");
+			expect(scout.model.filter(spec => modelSelectorBase(spec) === fast)).toHaveLength(1);
+			expect(coder.model.filter(spec => modelSelectorBase(spec) === fast)).toHaveLength(1);
+			expect(scout.requiredModelServiceTiers[fast]).toBe("priority");
 			expect(scout.model.length).toBeGreaterThan(1);
 			expect(modelSelectorBase(coder.model.at(-1))).toBe(fast);
 			expect(modelSelectorBase(coder.model[0])).not.toBe(fast);
@@ -257,10 +262,14 @@ describe("agent router", () => {
 		}
 	});
 
-	test("brrrr skips Cerebras after real retry cooldown and restores it after expiry", async () => {
+	test("brrrr excludes a cooled non-strong fast model and restores it after expiry", async () => {
 		const { dir, file } = tempStateFile();
 		const previousModeDir = process.env.OMP_AGENT_ROUTER_MODE_DIR;
 		const previousState = process.env.OMP_AGENT_ROUTER_STATE;
+		const previousModels = process.env.OMP_AGENT_ROUTER_MODELS;
+		const fixture = join(dir, "fast-fixture.json");
+		writeFileSync(fixture, JSON.stringify([...JSON.parse(readFileSync(new URL("./brrrr_models.json", import.meta.url).pathname, "utf8")).filter(m => m.class === "strong"), { id: "cerebras/qwen-3.8-27b", class: "fast" }]));
+		process.env.OMP_AGENT_ROUTER_MODELS = fixture;
 		process.env.OMP_AGENT_ROUTER_MODE_DIR = dir;
 		process.env.OMP_AGENT_ROUTER_STATE = file;
 		writeFileSync(join(dir, "session-1.json"), JSON.stringify({ enabled: true }));
@@ -285,6 +294,8 @@ describe("agent router", () => {
 			writeFileSync(join(dir, "session-1.json"), JSON.stringify({ enabled: false }));
 			expect((await spawn()).enforce).toBeUndefined();
 		} finally {
+			if (previousModels === undefined) delete process.env.OMP_AGENT_ROUTER_MODELS;
+			else process.env.OMP_AGENT_ROUTER_MODELS = previousModels;
 			if (previousModeDir === undefined) delete process.env.OMP_AGENT_ROUTER_MODE_DIR;
 			else process.env.OMP_AGENT_ROUTER_MODE_DIR = previousModeDir;
 			if (previousState === undefined) delete process.env.OMP_AGENT_ROUTER_STATE;
@@ -299,7 +310,7 @@ describe("agent router", () => {
 		const modeFile = join(dir, "mode.json");
 		writeFileSync(modeFile, JSON.stringify({ enabled: true }));
 		try {
-			const health = Object.fromEntries([...STRONG_MODELS, "cerebras/qwen-3.8-27b"].map(id => [id, { state: "depleted", accounts: [] }]));
+			const health = Object.fromEntries(STRONG_MODELS.map(id => [id, { state: "depleted", accounts: [] }]));
 			expect(await routeSubagentSpawn({ agent: "coder" }, ctxWithHealth(health), createRouterState(), { stateFile: file, modeFile })).toBeUndefined();
 		} finally { rmSync(dir, { recursive: true, force: true }); }
 	});
@@ -2619,5 +2630,63 @@ describe("cooldown demotion and account-level rate limits", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("brrrr cooled strong members and async-result outcomes", () => {
+	test("brrrr keeps a cooled strong member, demoted to the end", async () => {
+		const { dir, file } = tempStateFile();
+		const modeFile = join(dir, "mode.json");
+		writeFileSync(modeFile, JSON.stringify({ enabled: true }));
+		try {
+			const context = ctx();
+			context.modelRegistry = { isSelectorSuppressed: (spec: string) => modelSelectorBase(spec) === "anthropic/claude-opus-5-5" };
+			const routed = await routeSubagentSpawn({ agent: "coder" }, context, createRouterState(), { stateFile: file, modeFile });
+			expect(routed?.model.at(-1)?.startsWith("anthropic/claude-opus-5-5")).toBe(true);
+			expect(routed?.model.filter(spec => spec.startsWith("anthropic/claude-opus-5-5"))).toHaveLength(1);
+			expect(routed?.model[0]).not.toContain("opus");
+			// Negative control: not cooled -> opus is not last.
+			const normal = await routeSubagentSpawn({ agent: "coder" }, ctx(), createRouterState(), { stateFile: file, modeFile });
+			expect(normal?.model.at(-1)?.startsWith("anthropic/claude-opus-5-5")).toBe(false);
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
+
+	const REAL_FAILURE =
+		'Error: anthropic: billing: 429 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."},"request_id":"req_x"} retry-after-ms=292698000 until 2026-10-21T23:00:00.442Z';
+
+	test("parseRetryAfterMs reads the real core failure text", () => {
+		const now = Date.parse("2026-10-21T06:52:40.000Z");
+		expect(parseRetryAfterMs(REAL_FAILURE, now)).toBe(Date.parse("2026-10-21T23:00:00.442Z") - now);
+		expect(parseRetryAfterMs("429 retry-after-ms=292698000", now)).toBe(292698000);
+		expect(parseRetryAfterMs("429 retry-after: 15", now)).toBe(15000);
+		expect(parseRetryAfterMs("429 boom", now)).toBeUndefined();
+	});
+
+	test("a failed async-result delivery with no wait is recorded and rate-limits anthropic", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const t0 = new Date("2026-10-21T06:52:40.000Z");
+			const state = createRouterState();
+			const context = ctx();
+			const luna = "codex-lb/gpt-6-luna:high", opus = "anthropic/claude-opus-5-5:high", sonnet = "anthropic/claude-sonnet-5-5:medium";
+			const opts = { stateFile: file, modeFile: join(dir, "mode.json"), blacklistFile: join(dir, "blacklist.json"), now: () => t0 };
+			await routeSubagentSpawn({ agent: "qa-auditor", spawnKey: "AuditR22ScmBody", isolated: true, patterns: [opus, sonnet, luna] }, context, state, opts);
+			const message = {
+				role: "custom",
+				customType: "async-result",
+				content: `<system-notice>\n<task-result id="AuditR22ScmBody" agent="qa-auditor" status="failed (exit 1)" duration="457ms">\n<output>\n${REAL_FAILURE}\n</output>\n</task-result>\n</system-notice>`,
+				details: { jobs: [{ jobId: "AuditR22ScmBody", status: "failed", durationMs: 457 }] },
+			};
+			const rows = await recordAsyncResultOutcome(message, context, state, opts);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toMatchObject({ spawnKey: "AuditR22ScmBody", status: "failed", durationMs: 457 });
+			expect(readJsonl(file).filter(row => row.kind === "outcome")).toHaveLength(1);
+			// Delivered twice: no duplicate row.
+			expect(await recordAsyncResultOutcome(message, context, state, opts)).toHaveLength(0);
+			const next = await routeSubagentSpawn({ agent: "qa-auditor", spawnKey: "n", isolated: true, patterns: [opus, sonnet, luna] }, context, state, { ...opts, now: () => new Date(t0.getTime() + 60_000) });
+			expect(next?.model).toEqual([luna]);
+			// Negative control: a different message type records nothing.
+			expect(await recordAsyncResultOutcome({ ...message, customType: "other" }, context, state, opts)).toHaveLength(0);
+		} finally { rmSync(dir, { recursive: true, force: true }); }
 	});
 });

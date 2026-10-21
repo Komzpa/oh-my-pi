@@ -133,7 +133,15 @@ function strongOrder(agent: string, config: PoolConfig, models: BrrrrModel[]): s
 	if (strong.some(model => model.id === "codex-lb/gpt-6-luna" && model.serviceTier === "priority")) {
 		order.push(profile.find(spec => spec.startsWith("codex-lb/gpt-6-luna")) ?? "codex-lb/gpt-6-luna");
 	}
-	return ["scout", "workhorse", "gate-runner", "scribe", "git-pr-owner", "sonic"].includes(agent) ? [...fast, ...order] : [...order, ...fast];
+	const ordered = ["scout", "workhorse", "gate-runner", "scribe", "git-pr-owner", "sonic"].includes(agent) ? [...fast, ...order] : [...order, ...fast];
+	// A fast entry may be the same model as a strong one at a lower effort (Luna `:low`): keep the first placement only.
+	const seen = new Set<string>();
+	return ordered.filter(spec => {
+		const base = spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
+		if (seen.has(base)) return false;
+		seen.add(base);
+		return true;
+	});
 }
 // Pool lengths are routing policy; model selectors and fallback order live in agent frontmatter.
 const POOL_SIZES: Record<string, number> = {
@@ -651,7 +659,7 @@ async function availablePoolMembers(
 	ctx: ExtensionContext,
 	state?: RouterState,
 	now?: () => Date,
-	options: { keepCooled?: boolean } = {},
+	options: { keepCooled?: boolean | ((spec: string) => boolean) } = {},
 ): Promise<{ available: string[]; skipped: SkippedModelRecord[]; cooled: string[] }> {
 	const nowMs = (now ?? (() => new Date()))().getTime();
 	const allowed = pool.filter(isAllowedOpenRouterModel);
@@ -671,7 +679,7 @@ async function availablePoolMembers(
 			skipped.push({ model: spec, reason: "retry_cooldown" });
 			// A cooldown is a preference to try others first, not proof the provider is
 			// dead: callers that opt in keep it eligible at the end of the order.
-			if (options.keepCooled) cooled.push(spec);
+			if (typeof options.keepCooled === "function" ? options.keepCooled(spec) : options.keepCooled) cooled.push(spec);
 			continue;
 		}
 		if (state) {
@@ -847,9 +855,13 @@ export async function routeSubagentSpawn(
 	const blacklist = sanctions.filter((entry): entry is string => typeof entry === "string");
 	const filteredConfig = brrrr ? { pool: strongOrder(agent, config, brrrrModels), fallbacks: [] } : config;
 	const pool = filteredConfig.pool.filter(spec => !isBlacklistedModel(spec, blacklist));
-	// brrrr enforces a strong-only set, so a cooled-down member there stays excluded;
-	// otherwise a cooldown only demotes it, so one failing provider cannot empty the order.
-	const keepCooled = !brrrr;
+	// A cooldown only demotes a member, so one failing provider cannot empty the order.
+	// brrrr is strong-only: a cooled strong member is still strong and stays last, but a
+	// non-strong (fast-class) member stays excluded.
+	const strongBases = new Set(brrrrModels.filter(model => model.class === "strong").map(model => model.id));
+	const keepCooled = brrrr
+		? (spec: string) => strongBases.has(spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, ""))
+		: true;
 	const { available, skipped: poolSkipped, cooled: poolCooled } = await availablePoolMembers(pool, ctx, state, options.now, { keepCooled });
 	const { available: fallbacks, skipped: fallbackSkipped, cooled: fallbackCooled } = await availablePoolMembers(
 		filteredConfig.fallbacks.filter(spec => !isBlacklistedModel(spec, blacklist)),
@@ -1106,6 +1118,12 @@ function failedModelSelector(text: string, fallback: string): string {
 
 /** Retry-after (seconds, ms, ISO or HTTP date) found in a failure text, as ms from now. */
 export function parseRetryAfterMs(text: string, nowMs: number): number | undefined {
+	// Core's recorded failure text ends `retry-after-ms=N until <ISO>`: the absolute time is exact.
+	const until = text.match(/\buntil\s+(\d{4}-\d\d-\d\dT[0-9:.]+Z)/i);
+	if (until) {
+		const at = Date.parse(until[1]!);
+		if (Number.isFinite(at)) return at - nowMs;
+	}
 	const match = text.match(/retry[-_ ]after(?:[-_ ]ms)?["'\s:=]*([0-9]+(?:\.[0-9]+)?|\d{4}-\d\d-\d\dT[0-9:.]+Z|[A-Z][a-z]{2}, \d\d [A-Z][a-z]{2} \d{4} [0-9:]+ GMT)/i);
 	if (!match) return undefined;
 	const raw = match[1]!;
@@ -1132,7 +1150,8 @@ function markRateLimitedAfterFailure(
 	const delay = parseRetryAfterMs(text, nowMs);
 	if (delay === undefined || delay < RATE_LIMIT_SKIP_MIN_MS) return;
 	const selector = resolvedModel ?? failedModelSelector(text, spawn.chosen);
-	const provider = specProvider(selector, ctx);
+	// Core prefixes the failing provider: `Error: anthropic: billing: 429 ...`.
+	const provider = text.match(/\b(?:Error:\s*)?([a-z][a-z0-9-]*): (?:billing|rate)/i)?.[1] ?? specProvider(selector, ctx);
 	if (!provider) return;
 	state.rateLimited.set(provider, Math.max(state.rateLimited.get(provider) ?? 0, nowMs + delay));
 }
@@ -1293,6 +1312,40 @@ export async function recordTaskOutcome(
 	return rows;
 }
 
+/**
+ * Background jobs deliver their result as an `async-result` custom message, not as a
+ * `task`/`wait` tool result, so a fast failure nobody waited on never reached
+ * recordTaskOutcome (AuditR22ScmBody, 457 ms). Replay the delivery as a `wait` result.
+ */
+export async function recordAsyncResultOutcome(
+	message: unknown,
+	ctx: ExtensionContext,
+	state: RouterState,
+	options: RecordOutcomeOptions = {},
+): Promise<OutcomeRecord[]> {
+	if (!message || typeof message !== "object") return [];
+	const custom = message as Record<string, unknown>;
+	if (custom.role !== "custom" || custom.customType !== "async-result") return [];
+	const details = custom.details;
+	const jobs = details && typeof details === "object" ? (details as Record<string, unknown>).jobs : undefined;
+	if (!Array.isArray(jobs)) return [];
+	const content = typeof custom.content === "string" ? custom.content : Array.isArray(custom.content)
+		? custom.content.map(part => (part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : "")).join("\n")
+		: "";
+	const synthetic: Record<string, unknown>[] = [];
+	for (const raw of jobs) {
+		if (!raw || typeof raw !== "object") continue;
+		const job = raw as Record<string, unknown>;
+		const id = stringValue(job.jobId);
+		if (!id) continue;
+		const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const segment = content.match(new RegExp(`<task-result id="${escaped}"[\\s\\S]*?(?:</task-result>|$)`))?.[0] ?? content;
+		synthetic.push({ id, status: job.status, durationMs: job.durationMs, ...(job.status === "failed" ? { error: segment } : {}) });
+	}
+	if (synthetic.length === 0) return [];
+	return recordTaskOutcome({ toolName: "wait", details: { jobs: synthetic } }, ctx, state, options);
+}
+
 export default function agentRouter(pi: ExtensionAPI) {
 	const state = createRouterState();
 	pi.setLabel?.("Agent Router");
@@ -1325,7 +1378,7 @@ export default function agentRouter(pi: ExtensionAPI) {
 			persistBrrrrMode(ctx, enabled);
 			pi.appendEntry(BRRRR_ENTRY, { enabled });
 			updateStatus(ctx);
-			if (changed) ctx.ui.notify(`brrrr ${enabled ? "on: strong models only (Luna fast only)" : "off: normal routing"}`, "info");
+			if (changed) ctx.ui.notify(`brrrr ${enabled ? "on: strong models only; fast lane per brrrr-models.json" : "off: normal routing"}`, "info");
 		},
 	});
 	for (const event of ["session_start", "session_switch", "session_branch", "session_tree"] as const) {
@@ -1344,5 +1397,8 @@ export default function agentRouter(pi: ExtensionAPI) {
 	});
 	pi.on("tool_result", (event, ctx) => {
 		void recordTaskOutcome(event as ToolResultEvent, ctx, state);
+	});
+	pi.on("message_end", (event, ctx) => {
+		void recordAsyncResultOutcome((event as { message?: unknown }).message, ctx, state);
 	});
 }

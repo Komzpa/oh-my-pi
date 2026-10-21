@@ -5,5 +5,5 @@
   { "id": "anthropic/claude-sonnet-5-5", "class": "strong" },
   { "id": "anthropic/claude-fable-5-1", "class": "strong" },
   { "id": "codex-lb/gpt-6-luna", "class": "strong", "serviceTier": "priority" },
-  { "id": "cerebras/qwen-3.8-27b", "class": "fast" }
+  { "id": "codex-lb/gpt-6-luna:low", "class": "fast" }
 ]
