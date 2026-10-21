@@ -503,7 +503,6 @@
 
 - Keep delivered background jobs readable through `proc://<id>` until normal retention expires, while omitting consumed jobs from listings and preserving owner isolation ([#90](https://github.com/Komzpa/oh-my-pi/pull/90)).
 - Owner quiescence includes foreground-backed jobs, and failed workers report retained background jobs without allowing their labels to forge harness messages ([#90](https://github.com/Komzpa/oh-my-pi/pull/90)).
-- Queue incoming messages behind a subagent's brief while its first prompt is being prepared, rather than starting a competing IRC wake that can fail the spawn with `AgentBusyError` ([#90](https://github.com/Komzpa/oh-my-pi/pull/90)).
 
 ## [18.10.4] - 2026-10-13
 
