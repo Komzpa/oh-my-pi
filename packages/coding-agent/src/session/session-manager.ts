@@ -997,6 +997,40 @@ interface SessionFileBody {
 	}>;
 }
 
+/**
+ * Deep-copy session records so a snapshot owns its data. Records written by
+ * extensions can carry values the structured clone algorithm rejects (a
+ * `Proxy` around custom-message details); those fall back to a plain-data walk
+ * that reads through the proxy instead of failing the capture.
+ */
+function cloneOwnedRecords<T>(value: T): T {
+	try {
+		return structuredClone(value);
+	} catch (error) {
+		if (!(error instanceof DOMException) || error.name !== "DataCloneError") throw error;
+		return cloneAsPlainData(value, new WeakMap()) as T;
+	}
+}
+
+function cloneAsPlainData(value: unknown, seen: WeakMap<object, unknown>): unknown {
+	if (value === null || typeof value !== "object") return typeof value === "function" ? undefined : value;
+	if (seen.has(value)) return seen.get(value);
+	if (Array.isArray(value)) {
+		const copy: unknown[] = [];
+		seen.set(value, copy);
+		for (const item of value) copy.push(cloneAsPlainData(item, seen));
+		return copy;
+	}
+	try {
+		return structuredClone(value);
+	} catch {
+		const copy: Record<string, unknown> = {};
+		seen.set(value, copy);
+		for (const key of Object.keys(value)) copy[key] = cloneAsPlainData((value as Record<string, unknown>)[key], seen);
+		return copy;
+	}
+}
+
 /** Whether `text` is exactly the concatenation of `lines`, compared without building it. */
 function textMatchesLines(text: string, lines: readonly string[]): boolean {
 	let offset = 0;
@@ -2014,7 +2048,16 @@ export class SessionManager {
 					}
 					throw error;
 				}
-				if (this.#diskEpoch !== epoch) return false;
+				if (this.#diskEpoch !== epoch) {
+					try {
+						if (textMatchesLines(await this.#storage.readText(sessionFile), body.lines)) {
+							this.#recordFullRewrite(body, sessionFile);
+						}
+					} catch {
+						// A superseding rewrite owns the durability record when its body cannot be read back.
+					}
+					return false;
+				}
 				this.#recordFullRewrite(body, sessionFile);
 			} while (this.#atomicRewriteDirty);
 			return true;
@@ -2448,7 +2491,7 @@ export class SessionManager {
 			fallbackRuntimeOnly: this.#fallbackRuntimeOnly,
 			// Snapshots own mutable records independently of this manager and restores.
 			header: structuredClone(this.#header),
-			entries: structuredClone(this.getEntries()),
+			entries: cloneOwnedRecords(this.getEntries()),
 		};
 	}
 
@@ -2487,7 +2530,7 @@ export class SessionManager {
 		this.#forceFileCreation = snapshot.onDisk;
 		this.#draftOnlySessionCleanupArmed = snapshot.draftOnlySessionCleanupArmed;
 		this.#fallbackRuntimeOnly = snapshot.fallbackRuntimeOnly;
-		this.#applyEntries(structuredClone(snapshot.header), structuredClone(snapshot.entries));
+		this.#applyEntries(structuredClone(snapshot.header), cloneOwnedRecords(snapshot.entries));
 		this.#additionalDirectories = [...(snapshot.header.additionalDirectories ?? [])];
 		this.#sessionName = snapshot.sessionName;
 
