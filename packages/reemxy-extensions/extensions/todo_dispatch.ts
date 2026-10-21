@@ -2023,6 +2023,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     pi.appendEntry(ROSTER_ENTRY_TYPE, { version: 1, children: next });
   };
   let armPlanTicker: (ctx: ExtensionContext) => void = () => {};
+  let healPlanTicker: (ctx: ExtensionContext) => void = () => {};
   let disarmPlanTicker = () => {};
   let writeCurrentPlanSnapshot: (ctx: ExtensionContext, decision: ReturnType<typeof decideTodoDispatch>, now: number, phases: TodoScheduleInput) => void = () => {};
   let liveWorkerModelCount = 0;
@@ -2084,7 +2085,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     reset();
     disarmPlanTicker();
   });
-  pi.on("agent_start", clearIdleTimer);
+  pi.on("agent_start", (_event, ctx) => {
+    clearIdleTimer();
+    healPlanTicker(ctx);
+  });
+  pi.on("turn_start", (_event, ctx) => healPlanTicker(ctx));
   let presenceCache: { minute: number; entries: number; presence: Presence } | null = null;
   const presenceOf = (branch: readonly unknown[], now: number): Presence => {
     const minute = Math.floor(now / 60_000);
@@ -3131,7 +3136,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // Read each child's appended session events once, including a preexisting compaction on first observation.
   const workerCompactionAt = (worker: { name: string; path?: string; size?: number }): number | undefined => {
     const manager = AgentRegistry.global().get(worker.name)?.session?.sessionManager;
-    if (manager && worker.path && manager.getSessionFile() === worker.path) {
+    if (manager && worker.path && typeof manager.getSessionFile === "function" && manager.getSessionFile() === worker.path) {
       const entry = selectLatestBranchEntry(manager, metadata => metadata.type === "compaction");
       const at = entry ? Date.parse(entry.timestamp) : undefined;
       return at !== undefined && Number.isFinite(at) ? at : undefined;
@@ -3262,6 +3267,33 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
   };
   const noCommitWarnings = new Set<string>();
+  // Newest mtime of any file under a worker's cwd (bounded walk; VCS and build dirs skipped). A worker that
+  // is alive but waiting writes its session file and nothing else; the files it is meant to change tell
+  // whether it is working.
+  const newestFileMtime = (root: string | undefined): number | undefined => {
+    if (!root) return undefined;
+    let newest: number | undefined;
+    let budget = 4000;
+    const walk = (dir: string, depth: number) => {
+      let entries;
+      try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (budget-- <= 0) return;
+        if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "target" || entry.name === "dist") continue;
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (depth < 4) walk(full, depth + 1);
+        } else {
+          try {
+            const mtime = statSync(full).mtimeMs;
+            if (newest === undefined || mtime > newest) newest = mtime;
+          } catch {}
+        }
+      }
+    };
+    walk(root, 0);
+    return newest;
+  };
   const silentWorkers = (activity: ReturnType<typeof workerActivity>) =>
     activity.filter((worker) => worker.known && worker.ageMs !== undefined && worker.ageMs >= SILENT_MS);
   const minutes = (ms: number | undefined) => `${Math.round((ms ?? 0) / 60_000)} min`;
@@ -3828,8 +3860,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const startTime = job?.startTime;
       const elapsed = typeof startTime === "number" ? now - startTime : 0;
       const commitAt = commitTimes.get(id);
-      const isStale = elapsed > SILENT_MS && commitAt !== undefined && now - commitAt > SILENT_MS;
+      const cwd = AgentRegistry.global().get(id)?.session?.sessionManager?.getCwd?.();
+      const filesAt = elapsed > SILENT_MS ? newestFileMtime(cwd) : undefined;
+      const commitStale = commitAt !== undefined && now - commitAt > SILENT_MS;
+      const filesStale = filesAt !== undefined && now - filesAt > SILENT_MS && (commitAt === undefined || commitStale);
+      const isStale = elapsed > SILENT_MS && (commitStale || filesStale);
       const minutesOld = Math.floor(elapsed / 60_000);
+      // The wording changes at 30 and 60 minutes so the once-per-problem-list dedupe lets the escalation through.
+      const stuckFor = elapsed >= 60 * 60_000 ? "STUCK over 60 min, stop it now" : elapsed >= 30 * 60_000 ? "STILL STUCK over 30 min" : "";
       const warning = isStale ? { minutes: minutesOld, lastLine: trace.lastTool, ...(row ? { row: row.content } : {}) } : undefined;
       AgentRegistry.global().setWorktreeWarning(id, warning);
       if (!warning) {
@@ -3837,7 +3875,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         return [];
       }
       noCommitWarnings.add(id);
-      return [`suspect: ${label} · ${id} · ${minutesOld} · ${trace.lastTool}`];
+      return [`suspect: ${label} · ${id} · ${minutesOld} · ${trace.lastTool}${filesStale && !commitStale ? ` · no file change in its worktree for ${Math.floor((now - filesAt!) / 60_000)} min` : ""}${stuckFor ? ` (${stuckFor})` : ""}; write agent://${id} asking for done/left with a receipt, or stop it`];
     });
     for (const id of noCommitWarnings) {
       if (running.some(job => (job.agentId ?? job.id) === id)) continue;
@@ -3986,7 +4024,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let lastIdlePlanCheck: string | null = null;
   let lastIdlePlanCheckAt = 0;
   const stopPlanTicker = () => {
-    if (planTicker && tickerContext) tickerContext.clearTimer(planTicker);
+    if (planTicker && tickerContext) tickerContext.clearTimer?.(planTicker);
     planTicker = null;
     tickerContext = null;
     lastIdlePlanCheck = null;
@@ -3995,36 +4033,82 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     for (const id of pendingSizingNoticeIds) workerSizingNoticed.add(id);
     pendingSizingNoticeIds = [];
   };
-  const planTick = async (ctx: ExtensionContext) => {
-    if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return;
-    if (singleWriterLane || pauseGate?.paused || !isMain(ctx) || !pi.getActiveTools().includes("task") || ctx.hasPendingMessages()) return;
-    await refreshLiveWorkerModels(ctx);
-    const check = await planCheck(ctx, [], true);
-    if (!check || check === PLAN_CHECK_CLEAN) return;
-    // Once per distinct problem list, and again after PLAN_REPEAT_MS while the same problems stand:
-    // a per-minute repeat made the model restate its status every minute (22:08-22:11), while
-    // never repeating let it idle on one worker for half an hour unnoticed (03:05-03:35).
+  // Why the ticker was silent, readable from ~/.local/state/omp-todo-dispatch/<session>.gate.jsonl:
+  // one line per change of reason, and a heartbeat every PLAN_HEARTBEAT_MS so "no lines" can only
+  // mean "no ticks" (live 2026-10-20: a ticker stopped after 07:51Z and nothing said why).
+  const PLAN_HEARTBEAT_MS = 10 * 60_000;
+  const PLAN_HEAL_AFTER_MS = 3 * 60_000;
+  let lastPlanTickAt = 0;
+  let planTickCount = 0;
+  let lastPlanTickReason = "";
+  let lastPlanHeartbeatAt = 0;
+  const planTrace = (ctx: ExtensionContext, reason: string, detail: Record<string, unknown> = {}) => {
     const now = Date.now();
-    // Minutes and timestamps change every tick; the problem list is the same unless the words change.
-    const key = check
-      .replace(/\(\d+\) planning round due:.*?\(skill:\/\/chief-of-staff Planning\)\s*/g, "")
-      .replace(/\(\d+\) worker sizing:.*?(?= \(\d+\) |\. Fix them with the pass)/g, "")
-      .replace(/\s+/g, " ")
-      .replace(/\d+/g, "#");
-    if (gateSwitchedOff(ctx) || (pendingSizingNoticeIds.length === 0 && key === lastIdlePlanCheck && now - lastIdlePlanCheckAt < PLAN_REPEAT_MS)) return;
-    lastIdlePlanCheck = key;
-    lastIdlePlanCheckAt = now;
-    sendHarnessNotice("todo-plan-check", key, check);
-    markSizingNotices();
+    if (reason === lastPlanTickReason && now - lastPlanHeartbeatAt < PLAN_HEARTBEAT_MS) return;
+    lastPlanTickReason = reason;
+    lastPlanHeartbeatAt = now;
+    try {
+      const dir = join(homedir(), ".local", "state", "omp-todo-dispatch");
+      mkdirSync(dir, { recursive: true });
+      const session = ctx.sessionManager?.getHeader?.()?.id ?? "unknown";
+      appendFileSync(join(dir, `${session}.gate.jsonl`), `${JSON.stringify({ at: new Date(now).toISOString(), pid: process.pid, plantick: reason, ticks: planTickCount, ...detail })}\n`);
+    } catch {}
+  };
+  const planTick = async (ctx: ExtensionContext) => {
+    lastPlanTickAt = Date.now();
+    planTickCount += 1;
+    try {
+      if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return planTrace(ctx, "user-deadline-missed");
+      // ctx.hasPendingMessages() is not a guard: the notice is an aside, which the queue delivers in
+      // order, and a flag stuck true silenced the ticker for a whole session.
+      if (singleWriterLane) return planTrace(ctx, "single-writer-lane");
+      if (pauseGate?.paused) return planTrace(ctx, "pause-gate");
+      if (!isMain(ctx)) return planTrace(ctx, "not-main");
+      if (!pi.getActiveTools().includes("task")) return planTrace(ctx, "task-tool-inactive");
+      await refreshLiveWorkerModels(ctx);
+      const check = await planCheck(ctx, [], true);
+      if (!check) return planTrace(ctx, "no-problems");
+      if (check === PLAN_CHECK_CLEAN) return planTrace(ctx, "plan-clean");
+      // Once per distinct problem list, and again after PLAN_REPEAT_MS while the same problems stand:
+      // a per-minute repeat made the model restate its status every minute (22:08-22:11), while
+      // never repeating let it idle on one worker for half an hour unnoticed (03:05-03:35).
+      const now = Date.now();
+      // Minutes and timestamps change every tick; the problem list is the same unless the words change.
+      const key = check
+        .replace(/\(\d+\) planning round due:.*?\(skill:\/\/chief-of-staff Planning\)\s*/g, "")
+        .replace(/\(\d+\) worker sizing:.*?(?= \(\d+\) |\. Fix them with the pass)/g, "")
+        .replace(/\s+/g, " ")
+        .replace(/\d+/g, "#");
+      if (gateSwitchedOff(ctx)) return planTrace(ctx, "switched-off");
+      if (pendingSizingNoticeIds.length === 0 && key === lastIdlePlanCheck && now - lastIdlePlanCheckAt < PLAN_REPEAT_MS)
+        return planTrace(ctx, "same-problems-recently-sent");
+      lastIdlePlanCheck = key;
+      lastIdlePlanCheckAt = now;
+      sendHarnessNotice("todo-plan-check", key, check);
+      markSizingNotices();
+      planTrace(ctx, "sent", { problems: check.slice(0, 160) });
+    } catch (error) {
+      planTrace(ctx, "tick-threw", { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+  // The interval can vanish without an error (clearManagedTimers on a session change, a throwing
+  // tick before this guard): any later session, turn or tool event re-arms it when no tick ran for 3 min.
+  healPlanTicker = (ctx: ExtensionContext) => {
+    if (singleWriterLane || !ctx.setInterval) return;
+    if (lastPlanTickAt === 0 || Date.now() - lastPlanTickAt <= PLAN_HEAL_AFTER_MS) return;
+    planTrace(ctx, "ticker-rearmed", { sinceLastTickMs: Date.now() - lastPlanTickAt });
+    armPlanTicker(ctx);
   };
   armPlanTicker = (ctx: ExtensionContext) => {
     stopPlanTicker();
     if (singleWriterLane || !ctx.setInterval) return;
     tickerContext = ctx;
+    lastPlanTickAt = Date.now();
     planTicker = ctx.setInterval(() => planTick(ctx), PLAN_TICK_MS);
   };
   disarmPlanTicker = stopPlanTicker;
   pi.on("tool_result", async (event, ctx) => {
+    healPlanTicker(ctx);
     await refreshLiveWorkerModels(ctx);
     if (singleWriterLane) return;
     if (event.content?.some((part) => part.type === "text" && part.text.startsWith("Blocked:"))) {

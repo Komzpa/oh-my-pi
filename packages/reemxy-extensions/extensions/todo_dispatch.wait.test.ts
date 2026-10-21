@@ -848,3 +848,116 @@ test("OMP_LANE_UNIT suppresses chief gates, retros and continuation nudges", asy
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}
 });
+
+async function stuckWorkerHarness(options: { filesAgeMs: number; elapsedMs: number }) {
+	const sessionId = `plantick-${process.pid}-${Math.random().toString(36).slice(2)}`;
+	const traceFile = path.join(os.homedir(), ".local", "state", "omp-todo-dispatch", `${sessionId}.gate.jsonl`);
+	const tree = fs.mkdtempSync(path.join(os.tmpdir(), "todo-plantick-tree-"));
+	const sessions = fs.mkdtempSync(path.join(os.tmpdir(), "todo-plantick-session-"));
+	const sessionFile = path.join(sessions, "main.jsonl");
+	fs.mkdirSync(path.join(sessions, "main"));
+	const now = Date.now();
+	const file = path.join(tree, "work.txt");
+	fs.writeFileSync(file, "x");
+	const at = new Date(now - options.filesAgeMs);
+	fs.utimesSync(file, at, at);
+	fs.writeFileSync(
+		path.join(sessions, "main", "worker-a.jsonl"),
+		`${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "wait", arguments: {} }] } })}\n`,
+	); // session file is fresh: the worker is alive but only waiting
+	const phases = chainedPlan(2, now);
+	const running = [{ id: "worker-a", agentId: "worker-a", type: "task" as const, status: "running" as const, label: "Row 1", startTime: now - options.elapsedMs }];
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+	const sent: string[] = [];
+	const api = {
+		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+		getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+		pi: {
+			forecastTodoPlan,
+			formatPlanForecast,
+			formatTaskForecast,
+			getLatestTodoPhasesFromEntries: () => phases,
+			readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }),
+			sendMessage: (message: { content: string }) => sent.push(message.content),
+		},
+		registerSoftToolRequirementProvider: () => undefined,
+		appendEntry: () => undefined,
+		sendMessage: (message: { content: string }) => sent.push(message.content),
+	} as unknown as ExtensionAPI;
+	await todoDispatch(api);
+	const registry = new AgentRegistry();
+	vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
+	registry.register({ id: "worker-a", displayName: "worker-a", kind: "sub", session: { sessionManager: { getCwd: () => tree }, abort: () => undefined } as never });
+	const ticks: Array<() => void | Promise<void>> = [];
+	const ctx = {
+		cwd: tree,
+		sessionManager: {
+			getHeader: () => ({ id: sessionId }),
+			...branchMock(() => [{ type: "custom", customType: "user_todo_edit", data: { phases } }]),
+			getSessionFile: () => sessionFile,
+		},
+		getAsyncJobSnapshot: () => ({ running, recent: [], nonJobAgents: [{ id: "worker-a", live: true }] }),
+		getTaskMaxConcurrency: () => 3,
+		hasPendingMessages: () => true, // stuck true must not silence the ticker
+		isIdle: () => true,
+		setTimeout: () => ({}),
+		setInterval: (callback: () => void | Promise<void>) => {
+			ticks.push(callback);
+			return {};
+		},
+		clearTimer: () => undefined,
+	} as unknown as ExtensionContext;
+	await handlers.get("session_start")!({}, ctx);
+	const cleanup = () => {
+		handlers.get("session_shutdown")?.({}, ctx);
+		vi.restoreAllMocks();
+		for (const dir of [tree, sessions]) fs.rmSync(dir, { recursive: true, force: true });
+		fs.rmSync(traceFile, { force: true });
+	};
+	const trace = () => {
+		return fs.existsSync(traceFile) ? fs.readFileSync(traceFile, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+	};
+	return { handlers, ctx, ticks, sent, cleanup, trace };
+}
+
+test("plan tick flags an alive-but-waiting worker whose worktree is quiet, escalates, and ignores a stuck pending flag", async () => {
+	const h = await stuckWorkerHarness({ filesAgeMs: 40 * 60_000, elapsedMs: 40 * 60_000 });
+	try {
+		await h.ticks.at(-1)!();
+		const text = h.sent.join("\n");
+		expect(text).toContain("suspect: Row 1 · worker-a · 40");
+		expect(text).toContain("no file change in its worktree for 40 min");
+		expect(text).toContain("STILL STUCK over 30 min");
+		expect(text).toContain("write agent://worker-a asking for done/left with a receipt, or stop it");
+		expect(h.trace().some(row => row.plantick === "sent")).toBe(true);
+	} finally {
+		h.cleanup();
+	}
+}, 60_000);
+
+test("plan tick negative control: a worker whose worktree changed recently is not a suspect", async () => {
+	const h = await stuckWorkerHarness({ filesAgeMs: 60_000, elapsedMs: 40 * 60_000 });
+	try {
+		await h.ticks.at(-1)!();
+		expect(h.sent.join("\n")).not.toContain("suspect:");
+		expect(h.trace().length).toBeGreaterThan(0); // the silent tick still says why
+	} finally {
+		h.cleanup();
+	}
+}, 60_000);
+
+test("plan ticker is re-armed on a turn when no tick ran for three minutes", async () => {
+	const h = await stuckWorkerHarness({ filesAgeMs: 60_000, elapsedMs: 40 * 60_000 });
+	const realNow = Date.now.bind(Date);
+	try {
+		const armed = h.ticks.length;
+		await h.handlers.get("turn_start")!({}, h.ctx);
+		expect(h.ticks.length).toBe(armed); // fresh: no re-arm
+		vi.spyOn(Date, "now").mockImplementation(() => realNow() + 4 * 60_000);
+		await h.handlers.get("turn_start")!({}, h.ctx);
+		expect(h.ticks.length).toBe(armed + 1);
+		expect(h.trace().some(row => row.plantick === "ticker-rearmed")).toBe(true);
+	} finally {
+		h.cleanup();
+	}
+}, 60_000);
