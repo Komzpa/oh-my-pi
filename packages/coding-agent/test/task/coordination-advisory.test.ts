@@ -13,8 +13,10 @@ describe("buildCoordinationAdvisory", () => {
 		expect(buildCoordinationAdvisory([item()], true, true)).toBeUndefined();
 	});
 
-	it("stays silent when messaging is unavailable", () => {
-		expect(buildCoordinationAdvisory([item(), item()], true, false)).toBeUndefined();
+	it("keeps writer ownership guidance when messaging is unavailable", () => {
+		expect(buildCoordinationAdvisory([item(), item()], true, false)).toBe(
+			buildCoordinationAdvisory([item(), item()], true, true),
+		);
 	});
 
 	it("stays silent without spawn capacity", () => {
@@ -35,8 +37,8 @@ describe("composeSpawnAdvisory", () => {
 		const asynchronous = composeSpawnAdvisory({ ...genericFanout, ircEnabled: true, willRunAsync: true });
 
 		expect(noMessaging).toBeDefined();
-		expect(synchronous).toEqual(noMessaging);
-		expect(asynchronous).not.toEqual(noMessaging);
+		expect(asynchronous).toEqual(noMessaging);
+		expect(synchronous).not.toEqual(noMessaging);
 	});
 
 	it("returns no advisory for a single specialist or exhausted spawn capacity", () => {
@@ -57,5 +59,23 @@ describe("composeSpawnAdvisory", () => {
 				willRunAsync: true,
 			}),
 		).toBeUndefined();
+	});
+});
+
+describe("coordination advisory ownership guidance", () => {
+	it("requires resolving writer scope overlap before dispatch", () => {
+		const advisory = buildCoordinationAdvisory([item(), item()], true, true);
+		expect(advisory).toContain(
+			"Before dispatching another writer, resolve any overlap with a running writer's declared resource scope.",
+		);
+		expect(advisory).toContain("Peer messages or promises to wait inside the new worker do not release that scope.");
+		expect(advisory).toContain("Establish disjoint ownership or wait for the holder to finish and release it;");
+		expect(advisory).toContain("use a separately prepared checkout only where permitted.");
+	});
+
+	it("no longer suggests messaging peers before editing shared files", () => {
+		const advisory = buildCoordinationAdvisory([item(), item()], true, true) ?? "";
+		expect(advisory).not.toContain("have them message each other");
+		expect(advisory).not.toContain("before editing shared files");
 	});
 });

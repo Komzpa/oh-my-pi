@@ -478,17 +478,15 @@ export function buildSpecializationAdvisory(
 }
 
 /**
- * Suggestion — never a rejection — nudging the spawner to coordinate via the
- * peer messages when one call creates ≥2 live siblings and it still holds spawn
- * capacity. Returns undefined when there is nothing to coordinate or peer
- * messaging is unavailable.
+ * Non-blocking writer-ownership guidance while multiple siblings run and spawn capacity remains.
+ * Ownership applies independently of the peer messaging transport.
  */
 export function buildCoordinationAdvisory(
 	items: TaskItem[],
 	depthCapacity: boolean,
-	ircEnabled: boolean,
+	_ircEnabled: boolean,
 ): string | undefined {
-	if (!depthCapacity || !ircEnabled || items.length < 2) return undefined;
+	if (!depthCapacity || items.length < 2) return undefined;
 	return prompt.render(taskCoordinationAdvisoryTemplate, { count: items.length }).trim();
 }
 
