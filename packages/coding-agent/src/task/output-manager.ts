@@ -13,7 +13,6 @@
 import * as fs from "node:fs/promises";
 import { ADVISOR_TRANSCRIPT_STEM } from "../advisor/transcript-names";
 import { PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-tui/prompt/composer";
-import { stripOmpCollisionSuffixChain } from "./id-collision";
 
 /**
  * Manages agent output ID allocation to ensure uniqueness.
@@ -83,14 +82,9 @@ export class AgentOutputManager {
 
 	/** Pick the first free name (base, then `base-2`, `base-3`, …) and reserve it. */
 	#allocateUnique(id: string): string {
-		if (!this.#taken.has(id)) {
-			this.#taken.add(id);
-			return this.#parentPrefix ? `${this.#parentPrefix}.${id}` : id;
-		}
-		const base = stripOmpCollisionSuffixChain(id);
-		let candidate = `${base}-2`;
-		for (let n = 3; this.#taken.has(candidate); n++) {
-			candidate = `${base}-${n}`;
+		let candidate = id;
+		for (let n = 2; this.#taken.has(candidate); n++) {
+			candidate = `${id}-${n}`;
 		}
 		this.#taken.add(candidate);
 		return this.#parentPrefix ? `${this.#parentPrefix}.${candidate}` : candidate;

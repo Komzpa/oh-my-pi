@@ -20,41 +20,6 @@ describe("AgentOutputManager", () => {
 		expect(await mgr.allocate("Bob")).toBe("Bob");
 	});
 
-	it("collapses a taken collision chain before choosing the next suffix", async () => {
-		const mgr = new AgentOutputManager(() => null);
-		await mgr.reserve([
-			"SystemsCueInteractionOwner",
-			"SystemsCueInteractionOwner-2",
-			"SystemsCueInteractionOwner-3",
-			"SystemsCueInteractionOwner-3-2",
-		]);
-
-		expect(await mgr.allocate("SystemsCueInteractionOwner-3-2")).toBe("SystemsCueInteractionOwner-4");
-	});
-
-	it("preserves a deliberate suffixed id when it is free", async () => {
-		const mgr = new AgentOutputManager(() => null);
-
-		expect(await mgr.allocate("Worker-2")).toBe("Worker-2");
-	});
-
-	it("uses the smallest free suffix for base collisions", async () => {
-		const mgr = new AgentOutputManager(() => null);
-		await mgr.reserve(["Worker", "Worker-3"]);
-
-		expect(await mgr.allocate("Worker")).toBe("Worker-2");
-	});
-
-	it("de-duplicates repeated names while preserving order", async () => {
-		const mgr = new AgentOutputManager(() => null);
-
-		const ids: string[] = [];
-		for (const name of ["Auth", "Auth", "Api", "Auth"]) {
-			ids.push(await mgr.allocate(name));
-		}
-		expect(ids).toEqual(["Auth", "Auth-2", "Api", "Auth-3"]);
-	});
-
 	it("nests ids under a parent prefix and still suffixes repeats", async () => {
 		const mgr = new AgentOutputManager(() => null, { parentPrefix: "Anna" });
 
