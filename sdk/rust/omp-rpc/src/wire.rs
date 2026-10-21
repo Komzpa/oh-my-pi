@@ -2881,6 +2881,13 @@ impl SubagentStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoAwaitingUser {
+	pub action: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TodoItem {
 	pub content: String,
 	pub status: TodoStatus,
@@ -2891,6 +2898,18 @@ pub struct TodoItem {
 	pub details: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub notes: Option<Vec<String>>,
+	/// Persisted checkout whose clean HEAD is the row's QA artifact.
+	#[serde(rename = "artifactCwd", default, skip_serializing_if = "Option::is_none")]
+	pub artifact_cwd: Option<String>,
+	/// Owner whose checkout was last verified as artifactCwd.
+	#[serde(rename = "artifactOwner", default, skip_serializing_if = "Option::is_none")]
+	pub artifact_owner: Option<String>,
+	/// Explicit deployment identity for this requirement row.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub deployment: Option<String>,
+	/// User-owned pending check; it does not constitute verification or close the row.
+	#[serde(rename = "awaitingUser", default, skip_serializing_if = "Option::is_none")]
+	pub awaiting_user: Option<TodoAwaitingUser>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

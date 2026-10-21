@@ -549,6 +549,12 @@ class ModelInfo:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class TodoAwaitingUser:
+    action: str
+    ids: tuple[str, ...] | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class TodoItem:
     content: str
     status: TodoStatus
@@ -556,6 +562,14 @@ class TodoItem:
     """What a `blocked` task is waiting on."""
     details: str | None = None
     notes: tuple[str, ...] | None = None
+    artifact_cwd: str | None = None
+    """Persisted checkout whose clean HEAD is the row's QA artifact."""
+    artifact_owner: str | None = None
+    """Owner whose checkout was last verified as artifactCwd."""
+    deployment: str | None = None
+    """Explicit deployment identity for this requirement row."""
+    awaiting_user: TodoAwaitingUser | None = None
+    """User-owned pending check; it does not constitute verification or close the row."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1822,6 +1836,14 @@ def parse_model_info(value: object, path: str = "ModelInfo") -> ModelInfo:
     )
 
 
+def parse_todo_awaiting_user(value: object, path: str = "TodoAwaitingUser") -> TodoAwaitingUser:
+    payload = expect_object(value, path)
+    return TodoAwaitingUser(
+        action=required(payload, "action", decode_str, path),
+        ids=optional(payload, "ids", array(decode_str), path),
+    )
+
+
 def parse_todo_item(value: object, path: str = "TodoItem") -> TodoItem:
     payload = expect_object(value, path)
     return TodoItem(
@@ -1830,6 +1852,10 @@ def parse_todo_item(value: object, path: str = "TodoItem") -> TodoItem:
         blocker=optional(payload, "blocker", decode_str, path),
         details=optional(payload, "details", decode_str, path),
         notes=optional(payload, "notes", array(decode_str), path),
+        artifact_cwd=optional(payload, "artifactCwd", decode_str, path),
+        artifact_owner=optional(payload, "artifactOwner", decode_str, path),
+        deployment=optional(payload, "deployment", decode_str, path),
+        awaiting_user=optional(payload, "awaitingUser", parse_todo_awaiting_user, path),
     )
 
 
@@ -3884,6 +3910,7 @@ __all__ = [
     "ThinkingLevelChangedEvent",
     "ThinkingLevelCycleResult",
     "TodoAutoClearEvent",
+    "TodoAwaitingUser",
     "TodoItem",
     "TodoPhase",
     "TodoReminderEvent",
@@ -4046,6 +4073,7 @@ __all__ = [
     "parse_thinking_level_changed_event",
     "parse_thinking_level_cycle_result",
     "parse_todo_auto_clear_event",
+    "parse_todo_awaiting_user",
     "parse_todo_item",
     "parse_todo_phase",
     "parse_todo_reminder_event",
