@@ -425,6 +425,8 @@ export interface RouterState {
 	spawns: Map<string, SpawnState>;
 	fallbacks: FallbackRecord[];
 	authDead: Map<string, number>;
+	/** Provider -> epoch ms until which an account-level 429 with a long retry-after is known to last. */
+	rateLimited: Map<string, number>;
 	authProbe: Map<string, AuthProbeRecord>;
 }
 export interface BeforeSubagentSpawnEvent {
@@ -456,10 +458,12 @@ export interface RetryFallbackAppliedEvent {
 export type JsonlRecord = SpawnRecord | OutcomeRecord;
 
 export function createRouterState(): RouterState {
-	return { spawns: new Map(), fallbacks: [], authDead: new Map(), authProbe: new Map() };
+	return { spawns: new Map(), fallbacks: [], authDead: new Map(), rateLimited: new Map(), authProbe: new Map() };
 }
 
 export const AUTH_DEAD_TTL_MS = 6 * 60 * 60 * 1000;
+/** Retry-after shorter than this is a transient throttle, not an account-level outage worth skipping a provider for. */
+export const RATE_LIMIT_SKIP_MIN_MS = 60 * 1000;
 export const AUTH_PROBE_TTL_MS = 60 * 60 * 1000;
 
 export function defaultStateFile(): string {
@@ -621,18 +625,41 @@ function authSkipRecord(spec: string, state: RouterState, nowMs: number): Skippe
 	return { model: spec, reason: `auth_failed_retry_after_${new Date(deadUntil).toISOString()}` };
 }
 
+function specProvider(spec: string, ctx: ExtensionContext): string | undefined {
+	const resolved = ctx.models?.resolve?.(spec) as { provider?: string } | undefined;
+	return resolved?.provider ?? (spec.includes("/") ? spec.slice(0, spec.indexOf("/")) : undefined);
+}
+
+function rateLimitSkipRecord(
+	spec: string,
+	ctx: ExtensionContext,
+	state: RouterState,
+	nowMs: number,
+): SkippedModelRecord | undefined {
+	const provider = specProvider(spec, ctx);
+	if (!provider) return undefined;
+	const until = state.rateLimited.get(provider);
+	if (until === undefined || until <= nowMs) {
+		if (until !== undefined) state.rateLimited.delete(provider);
+		return undefined;
+	}
+	return { model: spec, reason: `rate_limited_retry_after_${new Date(until).toISOString()}` };
+}
+
 async function availablePoolMembers(
 	pool: readonly string[],
 	ctx: ExtensionContext,
 	state?: RouterState,
 	now?: () => Date,
-): Promise<{ available: string[]; skipped: SkippedModelRecord[] }> {
+	options: { keepCooled?: boolean } = {},
+): Promise<{ available: string[]; skipped: SkippedModelRecord[]; cooled: string[] }> {
 	const nowMs = (now ?? (() => new Date()))().getTime();
 	const allowed = pool.filter(isAllowedOpenRouterModel);
 	const skipped: SkippedModelRecord[] = pool
 		.filter(spec => !isAllowedOpenRouterModel(spec))
 		.map(model => ({ model, reason: "paid_openrouter_disabled" }));
-	if (!ctx.models?.resolve || !ctx.models?.list) return { available: allowed, skipped };
+	const cooled: string[] = [];
+	if (!ctx.models?.resolve || !ctx.models?.list) return { available: allowed, skipped, cooled };
 	const authenticated = new Set(ctx.models.list().map(model => `${model.provider}/${model.id}`));
 	const available: string[] = [];
 	for (const spec of allowed) {
@@ -642,9 +669,17 @@ async function availablePoolMembers(
 		// selector cooldown even when credential health cannot report a balance.
 		if (ctx.modelRegistry?.isSelectorSuppressed?.(spec)) {
 			skipped.push({ model: spec, reason: "retry_cooldown" });
+			// A cooldown is a preference to try others first, not proof the provider is
+			// dead: callers that opt in keep it eligible at the end of the order.
+			if (options.keepCooled) cooled.push(spec);
 			continue;
 		}
 		if (state) {
+			const rateSkip = rateLimitSkipRecord(spec, ctx, state, nowMs);
+			if (rateSkip) {
+				skipped.push(rateSkip);
+				continue;
+			}
 			const authSkip = authSkipRecord(spec, state, nowMs);
 			if (authSkip) {
 				skipped.push(authSkip);
@@ -658,7 +693,7 @@ async function availablePoolMembers(
 		}
 		available.push(spec);
 	}
-	return { available, skipped };
+	return { available, skipped, cooled };
 }
 
 /** True when this routed agent has at least one authenticated, non-depleted pool or fallback model now. */
@@ -812,12 +847,16 @@ export async function routeSubagentSpawn(
 	const blacklist = sanctions.filter((entry): entry is string => typeof entry === "string");
 	const filteredConfig = brrrr ? { pool: strongOrder(agent, config, brrrrModels), fallbacks: [] } : config;
 	const pool = filteredConfig.pool.filter(spec => !isBlacklistedModel(spec, blacklist));
-	const { available, skipped: poolSkipped } = await availablePoolMembers(pool, ctx, state, options.now);
-	const { available: fallbacks, skipped: fallbackSkipped } = await availablePoolMembers(
+	// brrrr enforces a strong-only set, so a cooled-down member there stays excluded;
+	// otherwise a cooldown only demotes it, so one failing provider cannot empty the order.
+	const keepCooled = !brrrr;
+	const { available, skipped: poolSkipped, cooled: poolCooled } = await availablePoolMembers(pool, ctx, state, options.now, { keepCooled });
+	const { available: fallbacks, skipped: fallbackSkipped, cooled: fallbackCooled } = await availablePoolMembers(
 		filteredConfig.fallbacks.filter(spec => !isBlacklistedModel(spec, blacklist)),
 		ctx,
 		state,
 		options.now,
+		{ keepCooled },
 	);
 	const skipped = [...poolSkipped, ...fallbackSkipped];
 	const poolOrder = brrrr ? available : [
@@ -825,6 +864,7 @@ export async function routeSubagentSpawn(
 		...shuffle(available.filter(spec => !spec.endsWith(":free"))),
 	];
 	const order = [...poolOrder, ...fallbacks];
+	const cooledOrder = [...poolCooled, ...fallbackCooled];
 	// A critical-path row starts on the fast lane: the earliest chain entry whose
 	// model realizes priority service tier moves to the front. All other rows keep
 	// the existing order; chains without a priority-capable entry are untouched.
@@ -849,6 +889,8 @@ export async function routeSubagentSpawn(
 		const preferred = order.filter(spec => !demotions.has(modelSelectorBase(spec)));
 		order.splice(0, order.length, ...preferred, ...demoted);
 	}
+	// Cooled-down (retry_cooldown) members go last, after sanction demotions too.
+	order.push(...cooledOrder.filter(spec => !order.includes(spec)));
 	const chosen = order[0];
 	if (!chosen) return undefined;
 
@@ -1062,6 +1104,39 @@ function failedModelSelector(text: string, fallback: string): string {
 	return match?.[1] ?? fallback;
 }
 
+/** Retry-after (seconds, ms, ISO or HTTP date) found in a failure text, as ms from now. */
+export function parseRetryAfterMs(text: string, nowMs: number): number | undefined {
+	const match = text.match(/retry[-_ ]after(?:[-_ ]ms)?["'\s:=]*([0-9]+(?:\.[0-9]+)?|\d{4}-\d\d-\d\dT[0-9:.]+Z|[A-Z][a-z]{2}, \d\d [A-Z][a-z]{2} \d{4} [0-9:]+ GMT)/i);
+	if (!match) return undefined;
+	const raw = match[1]!;
+	if (/^[0-9.]+$/.test(raw)) {
+		const value = Number.parseFloat(raw);
+		if (!Number.isFinite(value)) return undefined;
+		return /retry[-_ ]after[-_ ]ms/i.test(match[0]) ? value : value * 1000;
+	}
+	const at = Date.parse(raw);
+	return Number.isFinite(at) ? at - nowMs : undefined;
+}
+
+function markRateLimitedAfterFailure(
+	ctx: ExtensionContext,
+	state: RouterState,
+	spawn: SpawnState,
+	resolvedModel: string | undefined,
+	payload: Record<string, unknown>,
+	now: () => Date,
+): void {
+	const text = authFailureText(payload);
+	if (!text || !/\b429\b|rate[-_ ]?limit/i.test(text)) return;
+	const nowMs = now().getTime();
+	const delay = parseRetryAfterMs(text, nowMs);
+	if (delay === undefined || delay < RATE_LIMIT_SKIP_MIN_MS) return;
+	const selector = resolvedModel ?? failedModelSelector(text, spawn.chosen);
+	const provider = specProvider(selector, ctx);
+	if (!provider) return;
+	state.rateLimited.set(provider, Math.max(state.rateLimited.get(provider) ?? 0, nowMs + delay));
+}
+
 async function markAuthDeadAfterFailure(
 	ctx: ExtensionContext,
 	state: RouterState,
@@ -1071,6 +1146,7 @@ async function markAuthDeadAfterFailure(
 	now: () => Date,
 	options: Pick<RecordOutcomeOptions, "authProbe" | "fetch"> = {},
 ): Promise<void> {
+	markRateLimitedAfterFailure(ctx, state, spawn, resolvedModel, payload, now);
 	const text = authFailureText(payload);
 	if (!text || !isAuthFailureText(text)) return;
 	const selector = resolvedModel ?? failedModelSelector(text, spawn.chosen);

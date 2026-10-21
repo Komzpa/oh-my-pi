@@ -2506,3 +2506,118 @@ test("spawn effort negative control: no router effort stays default and unrecord
 		}
 	}
 });
+
+describe("cooldown demotion and account-level rate limits", () => {
+	const luna = "codex-lb/gpt-6-luna:high";
+	const opus = "anthropic/claude-opus-5-5:high";
+	const sonnet = "anthropic/claude-sonnet-5-5:medium";
+
+	test("a retry_cooldown member stays eligible, last in the order", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const context = ctx();
+			context.modelRegistry = { isSelectorSuppressed: (spec: string) => spec === "codex-lb/gpt-6-luna" || spec === luna };
+			const routed = await routeSubagentSpawn({ agent: "qa-auditor", spawnKey: "cd-1", isolated: true, patterns: [luna, opus, sonnet] }, context, createRouterState(), {
+				stateFile: file, modeFile: join(dir, "mode.json"), blacklistFile: join(dir, "blacklist.json"),
+				shuffle: items => items,
+			});
+			expect(routed?.model).toEqual(expect.arrayContaining([opus, sonnet]));
+			expect(routed?.model.at(-1)).toBe(luna);
+			expect(routed?.model.filter(spec => spec === luna)).toHaveLength(1);
+			expect(routed?.model[0]).not.toBe(luna);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("negative control: no cooldown leaves luna in its normal place", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const routed = await routeSubagentSpawn({ agent: "qa-auditor", spawnKey: "cd-2", isolated: true, patterns: [luna, opus, sonnet] }, ctx(), createRouterState(), {
+				stateFile: file, modeFile: join(dir, "mode.json"), blacklistFile: join(dir, "blacklist.json"),
+				shuffle: items => items,
+			});
+			expect(routed?.model).toContain(luna);
+			expect(routed?.model.at(-1)).not.toBe(luna);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("cooldown of every member still yields an order instead of none", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const context = ctx();
+			context.modelRegistry = { isSelectorSuppressed: () => true };
+			const routed = await routeSubagentSpawn({ agent: "qa-auditor", spawnKey: "cd-3", isolated: true, patterns: [luna, opus, sonnet] }, context, createRouterState(), { stateFile: file, modeFile: join(dir, "mode.json"), blacklistFile: join(dir, "blacklist.json") });
+			expect(routed?.model.length).toBeGreaterThan(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("recorded Anthropic 429 with long retry-after skips both anthropic models until reset", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const t0 = new Date("2026-10-21T06:52:40.000Z");
+			const state = createRouterState();
+			const context = ctx();
+			const first = await routeSubagentSpawn({ agent: "qa-auditor", spawnKey: "rl-1", isolated: true, patterns: [luna, opus, sonnet] }, context, state, { stateFile: file, modeFile: join(dir, "mode.json"), blacklistFile: join(dir, "blacklist.json"), now: () => t0 });
+			expect(first?.model.some(spec => spec.startsWith("anthropic/"))).toBe(true);
+			await recordTaskOutcome(
+				{
+					toolName: "task",
+					isError: true,
+					details: {
+						results: [
+							{
+								agent: "qa-auditor",
+								exitCode: 1,
+								durationMs: 457,
+								resolvedModel: opus,
+								error: "[anthropic/claude-opus-5-5] 429 rate_limit_error retry-after: 15000",
+							},
+						],
+					},
+				},
+				context,
+				state,
+				{ stateFile: file, modeFile: join(dir, "mode.json"), blacklistFile: join(dir, "blacklist.json"), now: () => t0 },
+			);
+			const during = await routeSubagentSpawn({ agent: "qa-auditor", spawnKey: "rl-2", isolated: true, patterns: [luna, opus, sonnet] }, context, state, {
+				stateFile: file, modeFile: join(dir, "mode.json"), blacklistFile: join(dir, "blacklist.json"),
+				now: () => new Date(t0.getTime() + 60_000),
+			});
+			expect(during?.model.some(spec => spec.startsWith("anthropic/"))).toBe(false);
+			expect(during?.model).toContain(luna);
+			const after = await routeSubagentSpawn({ agent: "qa-auditor", spawnKey: "rl-3", isolated: true, patterns: [luna, opus, sonnet] }, context, state, {
+				stateFile: file, modeFile: join(dir, "mode.json"), blacklistFile: join(dir, "blacklist.json"),
+				now: () => new Date(t0.getTime() + 15_001_000),
+			});
+			expect(after?.model.some(spec => spec.startsWith("anthropic/"))).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("negative control: short retry-after or non-429 failure does not skip the provider", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const t0 = new Date("2026-10-21T06:52:40.000Z");
+			const state = createRouterState();
+			const context = ctx();
+			for (const [i, error] of ["[anthropic/claude-opus-5-5] 429 retry-after: 5", "[anthropic/claude-opus-5-5] 500 boom retry-after: 99999"].entries()) {
+				await routeSubagentSpawn({ agent: "qa-auditor", spawnKey: `nc-${i}`, isolated: true, patterns: [luna, opus, sonnet] }, context, state, { stateFile: file, modeFile: join(dir, "mode.json"), blacklistFile: join(dir, "blacklist.json"), now: () => t0 });
+				await recordTaskOutcome(
+					{ toolName: "task", isError: true, details: { results: [{ agent: "qa-auditor", exitCode: 1, durationMs: 100, resolvedModel: opus, error }] } },
+					context,
+					state,
+					{ stateFile: file, modeFile: join(dir, "mode.json"), blacklistFile: join(dir, "blacklist.json"), now: () => t0 },
+				);
+			}
+			expect(state.rateLimited.size).toBe(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
