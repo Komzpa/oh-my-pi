@@ -998,8 +998,12 @@ export function directPlacementLift(line: string): number {
 	return m ? Number(m[1]) : 0;
 }
 
-/** The placement may be surrounded by Box padding, borders, or SGR styling. */
-const SIXEL_DIRECT_PLACEMENT_LINE = /(?:\x1b7(?:\x1b\[(\d+)A)?)?(\x1bP[0-9;]*q)([\s\S]*?)\x1b\\(?:\x1b8)?/;
+/**
+ * One SIXEL block with its optional save/lift/column lead-in and cursor restore. Image lines carry
+ * `ESC 7 CUU(n)`; composer chip lines carry `ESC 7 CUU(n) CHA(c)`, so the column comes from the
+ * CHA and not from the visible text before the block. A line may hold several blocks.
+ */
+const SIXEL_DIRECT_PLACEMENT_LINE = /(?:\x1b7(?:\x1b\[(\d+)A)?(?:\x1b\[(\d+)G)?)?(\x1bP[0-9;]*q)([\s\S]*?)\x1b\\(?:\x1b8)?/g;
 
 export interface ParsedSixelPlacementLine {
 	prefix: string;
@@ -1012,24 +1016,33 @@ export interface ParsedSixelPlacementLine {
 	heightPx: number;
 }
 
+/** Locate every SIXEL block on a row without dropping the row's decorations. */
+export function parseSixelDirectPlacements(line: string): ParsedSixelPlacementLine[] {
+	const placements: ParsedSixelPlacementLine[] = [];
+	for (const match of line.matchAll(SIXEL_DIRECT_PLACEMENT_LINE)) {
+		const prefix = line.slice(0, match.index);
+		const body = match[4] ?? "";
+		const raster = /"\d+;\d+;(\d+);(\d+)/.exec(body);
+		placements.push({
+			prefix,
+			suffix: line.slice(match.index + match[0].length),
+			lift: Number(match[1] ?? 0),
+			// CHA is 1-based; without it the block starts where the visible text before it ends.
+			column: match[2] !== undefined ? Math.max(0, Number(match[2]) - 1) : visibleWidth(prefix),
+			introducer: match[3]!,
+			body,
+			widthPx: Number(raster?.[1] ?? 0),
+			heightPx: Number(raster?.[2] ?? 0),
+		});
+	}
+	return placements;
+}
+
 /** Locate Image's SIXEL block without dropping the enclosing row's decorations. */
 export function parseSixelDirectPlacementLine(line: string): ParsedSixelPlacementLine | null {
-	const match = SIXEL_DIRECT_PLACEMENT_LINE.exec(line);
-	if (!match) return null;
-	const prefix = line.slice(0, match.index);
-	const body = match[3] ?? "";
-	const raster = /"\d+;\d+;(\d+);(\d+)/.exec(body);
-	return {
-		prefix,
-		suffix: line.slice(match.index + match[0].length),
-		lift: Number(match[1] ?? 0),
-		column: visibleWidth(prefix),
-		introducer: match[2]!,
-		body,
-		widthPx: Number(raster?.[1] ?? 0),
-		heightPx: Number(raster?.[2] ?? 0),
-	};
+	return parseSixelDirectPlacements(line)[0] ?? null;
 }
+
 /**
  * Rebuild an {@link Image} direct-placement line for the viewport row it is
  * written at. The component-rendered line encodes `CUU(rows-1)`, which clamps

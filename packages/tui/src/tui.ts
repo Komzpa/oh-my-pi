@@ -44,7 +44,7 @@ import {
 	isImageProtocolForced,
 	isInsideTerminalMultiplexer,
 	parseKittyDirectPlacementLine,
-	parseSixelDirectPlacementLine,
+	parseSixelDirectPlacements,
 	setCellDimensions,
 	setTerminalImageProtocol,
 	shouldEnableSynchronizedOutputByDefault,
@@ -658,8 +658,8 @@ interface LiveImagePlacement {
 	imageId: number;
 	placementId: number;
 	line: string;
-	/** Absent for Kitty's id-keyed placements. Shares the physical scroll tracker. */
-	sixel?: SixelPlacement;
+	/** Absent for Kitty's id-keyed placements. Shares the physical scroll tracker. A row can carry several rasters (composer chips). */
+	sixels?: SixelPlacement[];
 }
 
 /** A physical Konsole rectangle; history is tracked but never a mutable owner. */
@@ -3355,7 +3355,7 @@ export class TUI extends Container {
 		const retiring = new Set<SixelPlacement>();
 		for (const [row, placement] of placements) {
 			if (!repaint && lines[row - top] === placement.line) continue;
-			if (placement.sixel) retiring.add(placement.sixel);
+			if (placement.sixels) for (const sixel of placement.sixels) retiring.add(sixel);
 			else output += encodeKittyDeletePlacement(placement.imageId, placement.placementId);
 			placements.delete(row);
 		}
@@ -3401,26 +3401,28 @@ export class TUI extends Container {
 				drawn = drawn.replace(/\x1b7\x1b\[\d+A/, lift > 0 ? `\x1b7\x1b[${lift}A` : "\x1b7");
 			}
 			const liftErase = lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}` : "";
-			const sixel = parseSixelDirectPlacementLine(drawn);
+			const sixels = parseSixelDirectPlacements(drawn);
 			if (
 				TERMINAL.imageProtocol !== ImageProtocol.Sixel ||
 				!Bun.env.KONSOLE_VERSION ||
 				isInsideTerminalMultiplexer() ||
-				!sixel
+				sixels.length === 0
 			) {
 				return liftErase + drawn;
 			}
-			const previous = placements?.get(placementRow)?.sixel;
-			const erase = previous ? this.#retireSixelPlacements(physical, new Set([previous])) : "";
-			const placement: SixelPlacement = {
-				row: screenRow - lift,
-				col: sixel.column,
-				rows: Math.ceil(sixel.heightPx / cell.heightPx),
-				columns: Math.ceil(sixel.widthPx / cell.widthPx),
-				history: placements === undefined,
-			};
-			physical.push(placement);
-			placements?.set(placementRow, { imageId: 0, placementId: 0, line, sixel: placement });
+			const previous = placements?.get(placementRow)?.sixels;
+			const erase = previous ? this.#retireSixelPlacements(physical, new Set(previous)) : "";
+			const tracked = sixels.map(
+				(sixel): SixelPlacement => ({
+					row: screenRow - Math.min(sixel.lift, clipRow),
+					col: sixel.column,
+					rows: Math.ceil(sixel.heightPx / cell.heightPx),
+					columns: Math.ceil(sixel.widthPx / cell.widthPx),
+					history: placements === undefined,
+				}),
+			);
+			physical.push(...tracked);
+			placements?.set(placementRow, { imageId: 0, placementId: 0, line, sixels: tracked });
 			// Cell deletion removes the raster, not the text. EL on the lifted
 			// rows would instead destroy the Box borders/padding just painted there.
 			return erase + drawn;
