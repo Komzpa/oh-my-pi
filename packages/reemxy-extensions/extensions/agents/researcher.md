@@ -3,6 +3,7 @@ name: researcher
 description: Web, docs, and long-reading researcher that answers with sources.
 tools: read, grep, glob, find, web_search, task
 model: "@free, @judgment"
+thinking-level: medium
 spawns: [scout]
 ---
 

@@ -3,6 +3,7 @@ name: git-pr-owner
 description: Sole narrow owner of one checkout, commit, PR, or sync operation.
 tools: read, grep, glob, find, bash
 model: "@free, @fast"
+thinking-level: low
 spawns: []
 ---
 

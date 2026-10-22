@@ -3,6 +3,7 @@ name: minor-coder
 description: Non-visual code owner for a small, known fix (about 10 minutes or less) with a given location and no design choice; anything bigger goes to coder.
 tools: read, grep, glob, find, edit, write, bash
 model: "@free, @fast, @code"
+thinking-level: low
 spawns: []
 ---
 

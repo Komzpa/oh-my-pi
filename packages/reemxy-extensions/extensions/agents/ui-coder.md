@@ -3,6 +3,7 @@ name: ui-coder
 description: Visual code owner for layout, CSS, components, and screenshot-verified UI changes.
 tools: read, grep, glob, find, edit, write, bash
 model: "@free, @vision-code"
+thinking-level: medium
 spawns: []
 ---
 

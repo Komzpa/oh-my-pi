@@ -3,6 +3,7 @@ name: coder
 description: Non-visual code owner for one bounded logic, API, backend, script, or test change that needs more than a trivial fix; small known fixes of about 10 minutes or less go to minor-coder.
 tools: read, grep, glob, find, edit, write, bash
 model: "@free, @code"
+thinking-level: medium
 spawns: []
 ---
 

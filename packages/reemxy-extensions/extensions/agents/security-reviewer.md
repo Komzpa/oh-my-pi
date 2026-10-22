@@ -3,6 +3,7 @@ name: security-reviewer
 description: "Read-only security specialist for evidence-backed repository vulnerability discovery"
 tools: read, find, grep, glob, lsp, ast_grep
 model: "@judgment"
+thinking-level: high
 output:
   properties:
     coverage_summary:

@@ -3,6 +3,7 @@ name: architect
 description: Design interfaces and split a large code change into independent parts.
 tools: read, grep, glob, find, task
 model: "@judgment"
+thinking-level: high
 spawns: [scout, researcher]
 ---
 

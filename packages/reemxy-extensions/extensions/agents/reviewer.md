@@ -3,6 +3,7 @@ name: reviewer
 description: Review a frozen diff or artifact, using codex review when available.
 tools: read, grep, glob, find, bash
 model: "@judgment"
+thinking-level: high
 spawns: []
 ---
 

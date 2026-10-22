@@ -3,6 +3,7 @@ name: scout
 description: Read-only bounded source, transcript, or repository lookup with exact evidence.
 tools: read, grep, glob, find
 model: "@free, @fast"
+thinking-level: low
 spawns: []
 read-summarize: false
 ---

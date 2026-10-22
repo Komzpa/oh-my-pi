@@ -3,6 +3,7 @@ name: business-analyst
 description: Turn a request into acceptance criteria and value-scoped deliverables.
 tools: read, grep, glob, find, bash
 model: "@judgment"
+thinking-level: medium
 spawns: []
 ---
 

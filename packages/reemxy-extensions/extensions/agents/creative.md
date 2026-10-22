@@ -3,6 +3,7 @@ name: creative
 description: creative owner of one artefact people will watch or read
 tools: read, grep, glob, find, write, edit, bash
 model: "@judgment"
+thinking-level: medium
 spawns: []
 ---
 

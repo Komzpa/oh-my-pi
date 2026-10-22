@@ -3,6 +3,7 @@ name: gate-runner
 description: Run one named build, test, browser, or install proof after a frozen artifact.
 tools: read, bash
 model: "@free, @fast"
+thinking-level: low
 spawns: []
 ---
 

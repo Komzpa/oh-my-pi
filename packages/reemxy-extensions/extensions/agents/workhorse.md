@@ -3,6 +3,7 @@ name: workhorse
 description: Mechanical worker for bulk edits, file moves, data munging, and given commands with no design decisions.
 tools: read, grep, glob, find, edit, write, bash
 model: "@free, @fast"
+thinking-level: medium
 spawns: []
 ---
 

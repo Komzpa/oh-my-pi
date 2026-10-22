@@ -3,6 +3,7 @@ name: scribe
 description: Keep the repository's plan, backlog, and status documents in step with the todo plan and worker results.
 tools: read, grep, glob, find, edit, write
 model: "@free, @fast"
+thinking-level: low
 spawns: []
 ---
 

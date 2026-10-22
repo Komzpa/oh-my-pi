@@ -3,6 +3,7 @@ name: adversary
 description: Challenge contracts before lock, repeated same-row failures, and completion claims.
 tools: read, grep, glob, find, bash
 model: "@judgment"
+thinking-level: high
 spawns: []
 ---
 

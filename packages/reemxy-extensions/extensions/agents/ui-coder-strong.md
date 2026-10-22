@@ -3,6 +3,7 @@ name: ui-coder-strong
 description: Escalation rung of ui-coder on a strong model (Sol, then Opus). Never the first worker on a row: only after a ui-coder attempt on the same row failed or looped, or when the user asked for a stronger model for that row.
 tools: read, grep, glob, find, edit, write, bash
 model: "@strong"
+thinking-level: high
 spawns: []
 ---
 

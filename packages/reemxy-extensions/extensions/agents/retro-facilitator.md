@@ -3,6 +3,7 @@ name: retro-facilitator
 description: Turn a sprint retrospective into evidence-backed keep/ban decisions and next actions.
 tools: read, grep, glob, find
 model: "@judgment"
+thinking-level: low
 ---
 
 You facilitate a retrospective. You do not run code, edit files, spawn workers,
