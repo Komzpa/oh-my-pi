@@ -8,6 +8,7 @@ import { unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
+import { resolveAgentModelSelection } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
@@ -287,6 +288,45 @@ describe("subagent runtime model resolution", () => {
 		expect(result.modelOverride).toEqual(["primary/bad-runtime-model", "fallback/working-model"]);
 		expect(result.resolvedModel).toBe("fallback/working-model");
 		expect(result.resolvedModelIsFallback).toBe(true);
+	});
+
+	it("installs the pool-drawn order's tail as the child's fallback chain", async () => {
+		const models = ["a", "b", "c"].map(id => model("pool", id));
+		let childFallbackChains: Record<string, string[]> | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			if (!options) throw new Error("Expected createAgentSession options");
+			childFallbackChains = (options.settings ? cfgRetryFallbackChains.get(options.settings) : undefined) as
+				| Record<string, string[]>
+				| undefined;
+			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
+		});
+		const settings = Settings.isolated({
+			modelRoles: { pool: "pool/a, pool/b, pool/c" },
+			modelRolePools: { pool: { "pool/a": 1, "pool/b": 1, "pool/c": 1 } },
+		});
+		// Find a seed whose draw differs from the configured order.
+		let seed = 0;
+		let drawn = resolveAgentModelSelection({ agentModel: "@pool", settings, seed: `s${seed}` }).patterns;
+		while (drawn.join() === "pool/a,pool/b,pool/c") {
+			seed++;
+			drawn = resolveAgentModelSelection({ agentModel: "@pool", settings, seed: `s${seed}` }).patterns;
+		}
+		await runSubprocess({
+			cwd: "/tmp",
+			agent: { name: "task", description: "test", systemPrompt: "test", source: "bundled" },
+			task: "work",
+			index: 0,
+			id: "pool-spawn",
+			modelOverride: drawn,
+			settings,
+			modelRegistry: {
+				refresh: async () => {},
+				getAvailable: () => models,
+				getApiKey: async () => "test-key",
+			} as never,
+			enableLsp: false,
+		});
+		expect(childFallbackChains?.["subagent:pool-spawn"]).toEqual(drawn.slice(1));
 	});
 
 	it("persists the installed subagent fallback role for cold revival (#13789)", async () => {
