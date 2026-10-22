@@ -9,7 +9,6 @@ import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-ent
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { execFileSync } from "node:child_process";
 import todoDispatch, { noticeDigest } from "./todo_dispatch";
-import { getAgentPools } from "./agent_router";
 
 function branchMock(getBranch: () => unknown[]) {
 	return {
@@ -517,7 +516,7 @@ test("capacity reports zero when no authenticated worker profile can start", asy
 	} as unknown as ExtensionContext;
 	const result = (await handlers.get("context")!({ messages: [] }, ctx)) as { messages?: Array<{ content: string }> };
 	expect(result?.messages?.at(-1)?.content).toContain("Task cap=0");
-	const route = getAgentPools().coder.pool[0].replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
+	const route = "codex-lb/gpt-6-luna";
 	const separator = route.indexOf("/");
 	const onlyModel = { provider: route.slice(0, separator), id: route.slice(separator + 1) };
 	const oneProviderCtx = {

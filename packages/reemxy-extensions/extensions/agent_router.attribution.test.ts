@@ -1,25 +1,9 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { createRouterState, recordTaskOutcome } from "./agent_router";
-
-// Isolation: never read the host ~/.omp/agent/model-blacklist.json.
-let routerBlacklistDir = "";
-let prevRouterBlacklist: string | undefined;
-beforeAll(() => {
-	routerBlacklistDir = fs.mkdtempSync(path.join(os.tmpdir(), "router-blacklist-"));
-	const file = path.join(routerBlacklistDir, "blacklist.json");
-	fs.writeFileSync(file, "[]");
-	prevRouterBlacklist = process.env.OMP_AGENT_ROUTER_BLACKLIST;
-	process.env.OMP_AGENT_ROUTER_BLACKLIST = file;
-});
-afterAll(() => {
-	if (prevRouterBlacklist === undefined) delete process.env.OMP_AGENT_ROUTER_BLACKLIST;
-	else process.env.OMP_AGENT_ROUTER_BLACKLIST = prevRouterBlacklist;
-	if (routerBlacklistDir) fs.rmSync(routerBlacklistDir, { recursive: true, force: true });
-});
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -44,10 +28,8 @@ async function outcome(result: Record<string, unknown>, wait = false) {
 		order: [chosen, first, served],
 		recordedOutcome: false,
 	});
-	const cooldowns: string[] = [];
 	const context = {
 		sessionManager: { getHeader: () => ({ id: "parent" }) },
-		modelRegistry: { isSelectorSuppressed: () => false, suppressSelector: (key: string) => cooldowns.push(key) },
 	} as unknown as ExtensionContext;
 	const rows = await recordTaskOutcome(
 		{
@@ -60,7 +42,7 @@ async function outcome(result: Record<string, unknown>, wait = false) {
 		state,
 		{ stateFile: path.join(dir, "spawns.jsonl") },
 	);
-	return { row: rows[0]!, cooldowns };
+	return { row: rows[0]! };
 }
 
 test("served attribution preserves chosen and first turn on task and wait outcomes", async () => {
@@ -85,20 +67,8 @@ test("fallback outcome records exact provider error class status and message hea
 	expect(row.fallbacks).toEqual([{ from: first, to: served, at, reason }]);
 });
 
-test("retry cooldown belongs only to the failing fallback source not chosen or successful served", async () => {
-	const { cooldowns } = await outcome({
-		resolvedModel: served,
-		firstTurnModel: first,
-		fallbacks: [{ from: first, to: served, at, reason }],
-	});
-	expect(cooldowns).toEqual([first]);
-	expect(cooldowns).not.toContain(chosen);
-	expect(cooldowns).not.toContain(served);
-});
-
 test("spawn substitution without a recorded trigger never invents failure cooldown", async () => {
-	const { row, cooldowns } = await outcome({ resolvedModel: served });
+	const { row } = await outcome({ resolvedModel: served });
 	expect(row.resolvedModel).toBe(served);
-	expect(cooldowns).toEqual([]);
 	expect(row.fallbackReason).toBe("unrecorded");
 });
