@@ -48,10 +48,17 @@ describe("agent pool policy (Darafei 2026-10-22)", () => {
 		]);
 	});
 
-	test("the head-first roles make their first entry the deterministic first pick", () => {
+	test("the head-first roles share load across a pool of two different providers", () => {
+		const pairs: Record<string, string[]> = {
+			"ui-coder": ["codex-lb/gpt-6.1-sol:high", "anthropic/claude-sonnet-5-5"],
+			"git-pr-owner": ["anthropic/claude-haiku-5-5:low", "codex-lb/gpt-6.1-sol:low"],
+			coder: ["codex-lb/gpt-6.1-sol:medium", "muse-code/muse-spark-1.3-contributor:medium"],
+			"minor-coder": ["codex-lb/gpt-6-luna:low", "inception/mercury-3:low"],
+		};
 		const pools = getAgentPools();
-		for (const agent of ["ui-coder", "git-pr-owner", "coder", "minor-coder"]) {
-			expect(pools[agent]!.pool, agent).toHaveLength(1);
+		for (const [agent, pair] of Object.entries(pairs)) {
+			expect(pools[agent]!.pool, agent).toEqual(pair);
+			expect(new Set(pair.map(spec => spec.split("/")[0])).size, agent).toBe(2);
 		}
 	});
 

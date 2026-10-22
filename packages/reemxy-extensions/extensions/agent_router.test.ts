@@ -580,11 +580,11 @@ describe("agent router", () => {
 				stateFile: file,
 				shuffle: reversed,
 			});
-			// The ui-coder pool is its single head (sol:high); the rest is ordered fallbacks, free dots demoted last.
+			// The ui-coder pool is its two head entries (shuffled, here reversed); the rest is ordered fallbacks, free dots demoted last.
 			expect(result?.model).toEqual(
 				dotsLast([...AGENT_POOLS["ui-coder"].pool.slice().reverse(), ...AGENT_POOLS["ui-coder"].fallbacks]),
 			);
-			expect(result?.model[0]).toBe("codex-lb/gpt-6.1-sol:high");
+			expect(result?.model.slice(0, 2)).toEqual(["anthropic/claude-sonnet-5-5", "codex-lb/gpt-6.1-sol:high"]);
 			expect(result?.model).not.toContain("anthropic/claude-sonnet-5:medium");
 			expect(result?.note).toBe(`pool pick ${result?.model[0]} (eval)`);
 		} finally {

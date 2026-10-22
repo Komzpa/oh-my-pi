@@ -144,14 +144,14 @@ function strongOrder(agent: string, config: PoolConfig, models: BrrrrModel[]): s
 	});
 }
 // Pool lengths are routing policy; model selectors and fallback order live in agent frontmatter.
-// Size 1 makes the profile's first entry the deterministic first pick; the rest of the chain stays ordered fallbacks.
+// Size 2 shares load between the first two entries (different providers) so one provider's 429 cannot take the role down; the rest of the chain stays ordered fallbacks.
 const POOL_SIZES: Record<string, number> = {
-	coder: 1,
-	"minor-coder": 1,
-	"ui-coder": 1,
+	coder: 2,
+	"minor-coder": 2,
+	"ui-coder": 2,
 	scout: 5,
 	"gate-runner": 5,
-	"git-pr-owner": 1,
+	"git-pr-owner": 2,
 	scribe: 5,
 	reviewer: 4,
 	workhorse: 7,
