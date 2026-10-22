@@ -59,3 +59,21 @@ describe("composeSpawnAdvisory", () => {
 		).toBeUndefined();
 	});
 });
+
+describe("coordination advisory ownership guidance", () => {
+	it("requires resolving writer scope overlap before dispatch", () => {
+		const advisory = buildCoordinationAdvisory([item(), item()], true, true);
+		expect(advisory).toContain(
+			"Before dispatching another writer, resolve any overlap with a running writer's declared resource scope.",
+		);
+		expect(advisory).toContain("Peer messages or promises to wait inside the new worker do not release that scope.");
+		expect(advisory).toContain("Establish disjoint ownership or wait for the holder to finish and release it;");
+		expect(advisory).toContain("use a separately prepared checkout only where permitted.");
+	});
+
+	it("no longer suggests messaging peers before editing shared files", () => {
+		const advisory = buildCoordinationAdvisory([item(), item()], true, true) ?? "";
+		expect(advisory).not.toContain("have them message each other");
+		expect(advisory).not.toContain("before editing shared files");
+	});
+});
