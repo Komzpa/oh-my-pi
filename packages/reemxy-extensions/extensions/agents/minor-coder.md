@@ -2,8 +2,7 @@
 name: minor-coder
 description: Non-visual code owner for a small, known fix (about 10 minutes or less) with a given location and no design choice; anything bigger goes to coder.
 tools: read, grep, glob, find, edit, write, bash
-model: codex-lb/gpt-6-luna:low, inception/mercury-3:low, anthropic/claude-haiku-5-5:low, openrouter/dots-studio/dots-3-note-preview:free, codex-lb/gpt-6.1-sol:low, xiaomi/mimo-v2.6-flash
-thinking-level: low
+model: "@free, @fast, @code"
 spawns: []
 ---
 

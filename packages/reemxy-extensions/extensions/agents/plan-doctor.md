@@ -2,8 +2,7 @@
 name: plan-doctor
 description: Repair a collapsed plan by cutting, merging, splitting, and parallelizing rows without running code.
 tools: read, grep, glob, find, task
-model: codex-lb/gpt-6.1-sol:high, codex-lb/gpt-6-astra:xhigh, anthropic/claude-opus-5-5:high, xai-oauth/grok-4.7
-thinking-level: high
+model: "@judgment"
 spawns: [scout]
 ---
 

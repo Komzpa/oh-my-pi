@@ -2,7 +2,7 @@
 name: adversary
 description: Challenge contracts before lock, repeated same-row failures, and completion claims.
 tools: read, grep, glob, find, bash
-model: codex-lb/gpt-6-astra:high, anthropic/claude-opus-5-5:high
+model: "@judgment"
 spawns: []
 ---
 

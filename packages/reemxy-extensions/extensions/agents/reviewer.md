@@ -2,8 +2,7 @@
 name: reviewer
 description: Review a frozen diff or artifact, using codex review when available.
 tools: read, grep, glob, find, bash
-model: codex-lb/gpt-6-luna:low, anthropic/claude-haiku-5-5:medium, deepseek/deepseek-v4-pro:high, anthropic/claude-opus-5-5:high, anthropic/claude-sonnet-5-5
-thinking-level: high
+model: "@judgment"
 spawns: []
 ---
 

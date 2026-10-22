@@ -2,8 +2,7 @@
 name: coder
 description: Non-visual code owner for one bounded logic, API, backend, script, or test change that needs more than a trivial fix; small known fixes of about 10 minutes or less go to minor-coder.
 tools: read, grep, glob, find, edit, write, bash
-model: codex-lb/gpt-6.1-sol:medium, muse-code/muse-spark-1.3-contributor:medium, openrouter/dots-studio/dots-3-note-preview:free, kimi-code/kimi-for-coding:high, deepseek/deepseek-v4-pro:high, inception/mercury-3:medium, anthropic/claude-haiku-5-5:medium, kimi-code/k3:high, xai-oauth/grok-4.5, xai-oauth/grok-4.6, muse-code/muse-wonder-full-1.0-contributor, anthropic/claude-sonnet-5-5, codex-lb/Qwen3.8-27B, cerebras/qwen-3.8-27b
-thinking-level: high
+model: "@free, @code"
 spawns: []
 ---
 

@@ -2,8 +2,7 @@
 name: coder-strong
 description: Escalation rung of coder on a strong model (Sol, then Opus). Never the first worker on a row: only after a coder attempt on the same row failed or looped, or when the user asked for a stronger model for that row.
 tools: read, grep, glob, find, edit, write, bash
-model: codex-lb/gpt-6.1-sol:high, anthropic/claude-opus-5-5:high, muse-code/muse-wonder-full-1.0-contributor, anthropic/claude-sonnet-5-5:medium
-thinking-level: high
+model: "@strong"
 spawns: []
 ---
 

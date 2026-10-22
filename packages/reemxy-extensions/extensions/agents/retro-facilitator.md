@@ -2,8 +2,7 @@
 name: retro-facilitator
 description: Turn a sprint retrospective into evidence-backed keep/ban decisions and next actions.
 tools: read, grep, glob, find
-model: codex-lb/gpt-6.1-sol:high, xai-oauth/grok-4.7
-thinking-level: high
+model: "@judgment"
 ---
 
 You facilitate a retrospective. You do not run code, edit files, spawn workers,

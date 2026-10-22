@@ -2,8 +2,7 @@
 name: creative
 description: creative owner of one artefact people will watch or read
 tools: read, grep, glob, find, write, edit, bash
-model: anthropic/claude-opus-5-5:high, codex-lb/gpt-6.1-sol:high, xai-oauth/grok-4.7, codex-lb/Qwen3.8-27B
-thinking-level: high
+model: "@judgment"
 spawns: []
 ---
 
