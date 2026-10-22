@@ -33,6 +33,7 @@ import {
 	type RetryFallbackRole,
 	resolveRetryFallbackChainKey,
 } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { FileSessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
@@ -713,6 +714,46 @@ describe("persisted subagent revival", () => {
 
 		expect(capturedOptions?.modelPattern).toEqual(["@review-fast", "anthropic/claude-sonnet-4-5"]);
 		expect(capturedOptions?.modelPatternAuthFallback).toBe("anthropic/claude-sonnet-4-5");
+	});
+
+	it("re-applies the Claude implementation-worker effort cap on cold revival", async () => {
+		const cwd = makeTempDir("@pi-impl-cap-revive-");
+		const sessionFile = await createPersistedSession(cwd, false, "default", undefined, { agent: "coder" });
+		const claude = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!claude) throw new Error("Expected bundled claude-sonnet-4-5");
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+
+		const ref = createRef(sessionFile);
+		const modelRegistry = { authStorage: {}, getAvailable: () => [claude] } as unknown as ModelRegistry;
+		const reviver = await createFactory(cwd, undefined, { modelRegistry })(ref);
+		if (!reviver) throw new Error("Expected a persisted reviver");
+		await reviver(ref);
+
+		expect(capturedOptions?.thinkingLevelCeiling).toBe(Effort.High);
+	});
+
+	it("re-applies task.agentMaxEffort to a scout on a non-Claude model on cold revival", async () => {
+		const cwd = makeTempDir("@pi-agent-max-effort-revive-");
+		const sessionFile = await createPersistedSession(cwd, false, "default", undefined, { agent: "scout" });
+		const claude = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!claude) throw new Error("Expected bundled gpt-5.6-sol");
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+
+		const ref = createRef(sessionFile);
+		const modelRegistry = { authStorage: {}, getAvailable: () => [claude] } as unknown as ModelRegistry;
+		const reviver = await createFactory(cwd, undefined, { modelRegistry })(ref);
+		if (!reviver) throw new Error("Expected a persisted reviver");
+		await reviver(ref);
+
+		expect(capturedOptions?.thinkingLevelCeiling).toBe(Effort.Low);
 	});
 
 	it("restores compaction threshold behavior after parent settings change", async () => {

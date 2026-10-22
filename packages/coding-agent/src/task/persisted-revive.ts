@@ -6,6 +6,7 @@ import { validateAgentAccountPools } from "../config/account-pools";
 import type { ModelRegistry } from "../config/model-registry";
 import { resolveAgentAdvisorRolePattern } from "../config/model-resolver";
 import { formatModelRoleAlias } from "../config/model-roles";
+import { resolveModelOverride } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { MCPManager } from "../mcp/manager";
 import { initializeExtensions } from "../modes/runtime-init";
@@ -24,10 +25,13 @@ import {
 import type { EventBus } from "../utils/event-bus";
 import {
 	attachIrcWakeTurnMonitor,
+	capImplementationWorkerEffortCeiling,
 	compactionThresholdSettings,
 	createMCPProxyTools,
 	createSubagentSettings,
 	followMCPTools,
+	readAgentMaxEffort,
+	hasAgentEffortCeiling,
 	subagentRetryFallbackRole,
 } from "./executor";
 import { isCompletionProbeEnabled } from "./completion-probe";
@@ -225,6 +229,19 @@ export function createPersistedSubagentReviverFactory(
 
 			let session: AgentSession;
 			try {
+				// The spawn-time implementation-worker Claude cap is not persisted;
+				// recompute it from the persisted agent name and resolved model.
+				const reviveAgentMaxEffort = readAgentMaxEffort(ctx.settings);
+				const revivedModel =
+					init.resolvedModel && hasAgentEffortCeiling(init.agent ?? "", reviveAgentMaxEffort)
+						? resolveModelOverride([init.resolvedModel], ctx.modelRegistry, ctx.settings).model
+						: undefined;
+				const revivedEffortCeiling = capImplementationWorkerEffortCeiling(
+					init.agent ?? "",
+					revivedModel,
+					undefined,
+					reviveAgentMaxEffort,
+				);
 				({ session } = await createAgentSession({
 					cwd: restoredSeance?.cwd ?? ctx.session.sessionManager.getCwd(),
 					authStorage: ctx.authStorage,
@@ -234,6 +251,7 @@ export function createPersistedSubagentReviverFactory(
 					modelRegistry: ctx.modelRegistry,
 					...(persistedModelPattern ? { modelPattern: persistedModelPattern } : {}),
 					modelPatternAuthFallback: restoredSeance ? undefined : init.resolvedModel,
+					...(revivedEffortCeiling ? { thinkingLevelCeiling: revivedEffortCeiling } : {}),
 					settings: subagentSettings,
 					sessionManager: reopened,
 					agentId: ref.id,
