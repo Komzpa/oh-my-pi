@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import type { ThinkingLevelCeiling } from "./session/agent-session-types";
 import {
 	Agent,
 	type AgentEvent,
@@ -15,7 +16,6 @@ import {
 import type {
 	Context,
 	CredentialDisabledEvent,
-	Effort,
 	Message,
 	Model,
 	ModelUsageHealth,
@@ -628,7 +628,7 @@ export interface CreateAgentSessionOptions {
 	/** Thinking selector. Default: from settings, else unset */
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Hard ceiling on the session's thinking effort (e.g. a task spawn's `task.maxEffort`-capped hint); retry-fallback recovery re-clamps to it. */
-	thinkingLevelCeiling?: Effort;
+	thinkingLevelCeiling?: ThinkingLevelCeiling;
 	/** OpenAI service-tier override for this session. `null` omits `service_tier`. */
 	openAIServiceTier?: ServiceTier | null;
 	/**

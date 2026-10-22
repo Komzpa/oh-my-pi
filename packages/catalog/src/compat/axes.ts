@@ -319,6 +319,12 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	"supports-sampling-params": wire("supportsSamplingParams", [...OAI, "anthropic", "bedrock", "devin", "google"]),
 
 	// ── thinking control surface ──
+	"thinking-implementation-worker-max-effort": {
+		key: "implementationWorkerMaxEffort",
+		set: "catalog",
+		shape: "scalar",
+		values: EFFORTS,
+	},
 	"thinking-default-level": { key: "defaultLevel", set: "thinking", shape: "scalar", values: EFFORTS },
 	"thinking-effort-budgets": { key: "effortBudgets", set: "thinking", shape: "object" },
 	"thinking-effort-map": { key: "effortMap", set: "thinking", shape: "object" },

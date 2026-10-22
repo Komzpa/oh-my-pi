@@ -20,6 +20,30 @@ const EMPTY_AGENT_COMPACTION_THRESHOLD_OVERRIDES: Record<string, AgentCompaction
 const EMPTY_AGENT_ACCOUNT_POOLS: Record<string, OAuthAccountPools> = {};
 const EMPTY_AGENT_SOFT_REQUEST_BUDGET: Record<string, number | null> = {};
 
+/**
+ * Per-role effort ceilings. Max effort stays allowed only for analysis and judgment
+ * roles (architect, adversary, plan-doctor, researcher, business-analyst, reviewer,
+ * security-reviewer, qa-auditor, retro-facilitator, creative), which therefore have
+ * no entry. Executor roles are capped at `high` (sol coder at max: 13.5 min vs 9.1
+ * at high with the same success; `task` at max has a p90 of 164 min). Mechanical
+ * roles stay at `low` (git-pr-owner on Sol: low median 44 s vs medium 155 s), and
+ * `minor-coder`, for small known fixes, is capped at `low`. A user value replaces
+ * this whole map.
+ */
+const DEFAULT_AGENT_MAX_EFFORT: Record<string, string> = {
+	scout: "low",
+	"gate-runner": "low",
+	"git-pr-owner": "low",
+	workhorse: "low",
+	scribe: "low",
+	"minor-coder": "low",
+	coder: "high",
+	"coder-strong": "high",
+	"ui-coder": "high",
+	"ui-coder-strong": "high",
+	task: "high",
+};
+
 const DEFAULT_AGENT_MODEL_OVERRIDES: Record<string, string | string[]> = {};
 
 // Delegation. Task and isolation settings declare `protocolDefault`: protocol hosts get neutral
@@ -459,6 +483,28 @@ export const cfgTaskCompletionProbe = register({
 		description:
 			"Ask a working subagent, through a cached side request like /btw, to estimate how complete its task is: after 2, 5, 10 and 30 more minutes, then hourly. The estimate shows next to the subagent in wait and task views. Only subagents spawned by the main agent of an interactive session are asked; print, RPC, ACP and SDK runs never probe.",
 	},
+});
+
+function validateAgentMaxEffort(value: unknown): void {
+	if (value === undefined || value === null) return;
+	if (!isRecord(value)) {
+		const received = Array.isArray(value) ? "an array" : `a ${typeof value}`;
+		throw new Error(`Invalid task.agentMaxEffort: expected a map of agent name to effort level, got ${received}.`);
+	}
+	for (const [agentName, level] of Object.entries(value)) {
+		if (typeof level === "string" && (THINKING_EFFORTS as readonly string[]).includes(level)) continue;
+		throw new Error(
+			`Invalid task.agentMaxEffort.${agentName}: expected one of ${THINKING_EFFORTS.join(", ")}, got ${Bun.inspect(level)}.`,
+		);
+	}
+}
+
+export const cfgTaskAgentMaxEffort = register({
+	id: "task.agentMaxEffort",
+	protocolDefault: ["rpc", "acp"],
+	type: "record",
+	default: DEFAULT_AGENT_MAX_EFFORT,
+	validate: validateAgentMaxEffort,
 });
 
 export const cfgTaskAgentIdleTtlMs = register({

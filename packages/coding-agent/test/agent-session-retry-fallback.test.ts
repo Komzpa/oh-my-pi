@@ -1,3 +1,4 @@
+import { capImplementationWorkerEffortCeiling } from "@oh-my-pi/pi-coding-agent/task/executor";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
@@ -7329,6 +7330,39 @@ describe("AgentSession retry fallback", () => {
 		expect(session.model?.id).toBe(primaryModel.id);
 		expect(session.thinkingLevel).toBeUndefined();
 	});
+
+	it.each([false, true])(
+		"recomputes implementation effort policy when fallback changes model (Claude primary: %s)",
+		async claudePrimary => {
+			const claude = getBundledModel("anthropic", "claude-opus-4-6");
+			const gpt = getBundledModel("openai-codex", "gpt-5.6-sol");
+			if (!claude || !gpt) throw new Error("Expected fallback fixture models");
+			const primary = claudePrimary ? claude : gpt;
+			const fallback = claudePrimary ? gpt : claude;
+			const requestedModels: string[] = [];
+			const agent = createFallbackAgent(primary, requestedModels);
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 5,
+				"retry.fallbackChains": { default: [`${fallback.provider}/${fallback.id}:max`] },
+			});
+			settings.setModelRole("default", `${primary.provider}/${primary.id}`);
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				thinkingLevel: Effort.Max,
+				thinkingLevelCeiling: model => capImplementationWorkerEffortCeiling("sonic", model, undefined, {}),
+			});
+			expect(session.thinkingLevel).toBe(claudePrimary ? Effort.High : Effort.Max);
+			await session.prompt("Trigger an offline fallback");
+			await session.waitForIdle();
+			expect(requestedModels).toEqual([`${primary.provider}/${primary.id}`, `${fallback.provider}/${fallback.id}`]);
+			expect(session.thinkingLevel).toBe(claudePrimary ? Effort.Max : Effort.High);
+			expect(agent.state.thinkingLevel).toBe(claudePrimary ? Effort.Max : Effort.High);
+		},
+	);
 
 	for (const { name, primaryThinking, suffix, expectedThinking } of [
 		{

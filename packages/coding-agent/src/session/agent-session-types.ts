@@ -51,6 +51,9 @@ import type { SettingsGatedToolDelta } from "./session-tools";
 import type { CostGate } from "./cost-gate";
 import type { SessionManager } from "./session-manager";
 
+/** A fixed spawn cap or a policy evaluated for each active model. */
+export type ThinkingLevelCeiling = Effort | ((model: Model | undefined) => Effort | undefined);
+
 /** Maximum time the interactive shutdown path waits for Mnemopi consolidation. */
 export const SHUTDOWN_CONSOLIDATE_BUDGET_MS = 1_500;
 
@@ -207,7 +210,7 @@ export interface AgentSessionConfig {
 	/** Initial session thinking selector. */
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Hard ceiling on the session's thinking effort (e.g. a task spawn's `task.maxEffort`-capped hint); every later change, including retry-fallback recovery, is re-clamped to it. */
-	thinkingLevelCeiling?: Effort;
+	thinkingLevelCeiling?: ThinkingLevelCeiling;
 	/**
 	 * Disable retry fallback, context promotion and usage-aware fallback: the turn retries on, or fails
 	 * with, its own model instead. Startup model selection, and the return to the primary after a

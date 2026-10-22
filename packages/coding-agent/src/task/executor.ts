@@ -139,6 +139,7 @@ import { assembleYieldResult } from "@oh-my-pi/pi-tui/tools/task-yield-assembly"
 import {
 	cfgTaskPrewalk,
 	cfgTaskAgentPrewalk,
+	cfgTaskAgentMaxEffort,
 	cfgTaskMaxEffort,
 	cfgTaskSoftRequestBudgetNotice,
 	cfgTaskSoftRequestBudget,
@@ -165,6 +166,12 @@ import {
 	cfgCompactionThresholdTokens,
 } from "../session/context-settings";
 
+import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
+import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
+import {
+	modelSupportsEffortCeiling,
+	clampThinkingLevelToCeiling as clampLevelToAgentCeiling,
+} from "@oh-my-pi/pi-tui/thinking";
 export type { YieldItem } from "@oh-my-pi/pi-tui/tools/task";
 
 const TASK_ABORT_CLEANUP_GRACE_MS = 10_000;
@@ -4246,6 +4253,94 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 }
 
 /**
+ * Implementation roles that must never run a Claude model above high effort
+ * (see the spawn-ceiling clamp in `runSubprocess`). `AgentDefinition` carries
+ * no role/category field, so this is an explicit allowlist: review/judgment
+ * roles (reviewer, qa-auditor, adversarial-review profiles, …) stay out and
+ * remain unclamped.
+ */
+const IMPL_WORKER_EFFORT_CAP_AGENTS: Record<string, true> = {
+	coder: true,
+	"ui-coder": true,
+	"coder-strong": true,
+	"ui-coder-strong": true,
+	task: true,
+	workhorse: true,
+	sonic: true,
+	deepseek: true,
+};
+
+export function isImplementationWorkerAgent(agentName: string): boolean {
+	return IMPL_WORKER_EFFORT_CAP_AGENTS[agentName] === true;
+}
+
+/**
+ * Effort ceiling for an active model. `ceiling` is the operator-opted-in
+ * spawn ceiling (`task.maxEffort`, set only when the caller supplied `effort`);
+ * it is never synthesized from the setting here, so `task.maxEffort` keeps its
+ * opt-in semantics. Implementation workers on Claude additionally get `high`.
+ * Re-evaluate this per active model (initial resolution and cold revival).
+ */
+export function capImplementationWorkerEffortCeiling(
+	agentName: string,
+	model: Model | undefined,
+	ceiling: (typeof THINKING_EFFORTS)[number] | undefined,
+	agentMaxEffort?: Readonly<Record<string, unknown>>,
+): (typeof THINKING_EFFORTS)[number] | undefined {
+	let result = ceiling;
+	const lower = (candidate: (typeof THINKING_EFFORTS)[number]): void => {
+		if (result === undefined || THINKING_EFFORTS.indexOf(candidate) < THINKING_EFFORTS.indexOf(result)) {
+			result = candidate;
+		}
+	};
+	// Resolve current KDL policy for bundled rows and older discovery caches too.
+	const implementationPolicy = model ? resolveModelPolicy(model).catalog.implementationWorkerMaxEffort : undefined;
+	const implementationCeiling = THINKING_EFFORTS.find(effort => effort === implementationPolicy);
+	if (isImplementationWorkerAgent(agentName) && implementationCeiling) lower(implementationCeiling);
+	// `task.agentMaxEffort` applies to any model/provider, so it needs no model.
+	const perAgent =
+		agentMaxEffort !== undefined && Object.hasOwn(agentMaxEffort, agentName) ? agentMaxEffort[agentName] : undefined;
+	const perAgentEffort = THINKING_EFFORTS.find(candidate => candidate === perAgent);
+	if (perAgentEffort !== undefined) lower(perAgentEffort);
+	return result;
+}
+
+/** Current `task.agentMaxEffort` map (agent name to maximum effort level). */
+export function readAgentMaxEffort(settings: Settings): Readonly<Record<string, unknown>> {
+	return cfgTaskAgentMaxEffort.get(settings);
+}
+
+/** True when an agent's effort ceiling can depend on the resolved model or `task.agentMaxEffort`. */
+export function hasAgentEffortCeiling(agentName: string, agentMaxEffort?: Readonly<Record<string, unknown>>): boolean {
+	return (
+		isImplementationWorkerAgent(agentName) ||
+		(agentMaxEffort !== undefined && Object.hasOwn(agentMaxEffort, agentName))
+	);
+}
+
+/**
+ * Snap a concrete level above the agent's effort ceiling (implementation-worker
+ * Claude cap, `task.agentMaxEffort`) down to the model's highest supported
+ * effort at or below it.
+ */
+function capImplementationWorkerThinkingLevel(
+	agentName: string,
+	model: Model | undefined,
+	level: ConfiguredThinkingLevel | undefined,
+	agentMaxEffort: Readonly<Record<string, unknown>> | undefined,
+): ConfiguredThinkingLevel | undefined {
+	const ceiling = capImplementationWorkerEffortCeiling(agentName, model, undefined, agentMaxEffort);
+	if (model && ceiling && !modelSupportsEffortCeiling(model, ceiling)) {
+		throw new Error(`Agent ${agentName} model ${model.provider}/${model.id} cannot honor effort ceiling ${ceiling}`);
+	}
+	if (level === undefined) return level;
+	const effort = THINKING_EFFORTS.find(candidate => candidate === level);
+	if (ceiling === undefined || effort === undefined) return level;
+	if (THINKING_EFFORTS.indexOf(effort) <= THINKING_EFFORTS.indexOf(ceiling)) return level;
+	return clampLevelToAgentCeiling(model, effort, ceiling);
+}
+
+/**
  * Run a single agent in-process.
  */
 export async function runSubprocess(options: ExecutorOptions): Promise<SingleResult> {
@@ -4697,7 +4792,19 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						pattern: prewalkPattern,
 						warning: resolvedPrewalk.warning,
 					});
-				} else if (prewalkWouldBeNoop(model, effectiveThinkingLevel, target, resolvedPrewalk.thinkingLevel)) {
+				} else if (
+					prewalkWouldBeNoop(
+						model,
+						capImplementationWorkerThinkingLevel(
+							agent.name,
+							model,
+							effectiveThinkingLevel,
+							cfgTaskAgentMaxEffort.get(settings),
+						),
+						target,
+						resolvedPrewalk.thinkingLevel,
+					)
+				) {
 					// Same model AND same effective thinking level: switching would only
 					// inject the plan/checklist nudges for no gain — skip. An effort-only
 					// delta on the same model still arms (it is a real cheapening hand-off).
@@ -4770,8 +4877,13 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						model || modelOverride === undefined ? undefined : subagentRetryFallbackRole(id),
 					modelPatternDefaultFallbackChain:
 						model || modelOverride === undefined ? undefined : inheritedRetryFallbackChain,
-					thinkingLevel: effectiveThinkingLevel,
-					...(perCallModelGrants
+					thinkingLevel: capImplementationWorkerThinkingLevel(
+						agent.name,
+						model,
+						effectiveThinkingLevel,
+						cfgTaskAgentMaxEffort.get(settings),
+					),
+										...(perCallModelGrants
 						? {
 								// Every request stays on an approved model that can run at or below the spawn's effort ceiling.
 								assertDispatchModel: (dispatchModel: Model) => {
@@ -4782,7 +4894,13 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 								disableServerSideFallback: true,
 							}
 						: {}),
-					thinkingLevelCeiling: spawnEffortCeiling,
+					thinkingLevelCeiling: activeModel =>
+						capImplementationWorkerEffortCeiling(
+							agent.name,
+							activeModel,
+							spawnEffortCeiling,
+							cfgTaskAgentMaxEffort.get(settings),
+						),
 					// Subagents are short-lived; never schedule background warm requests.
 					cacheWarming: false,
 					toolNames,

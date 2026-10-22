@@ -274,7 +274,7 @@ export interface TurnRecoveryHost {
 	configuredThinkingLevel(): ConfiguredThinkingLevel | undefined;
 	setThinkingLevel(level: ConfiguredThinkingLevel | undefined): void;
 	/** Hard per-session effort ceiling; fallback recovery must never raise thinking above it. */
-	thinkingLevelCeiling(): Effort | undefined;
+	thinkingLevelCeiling(model?: Model): Effort | undefined;
 	/** The session never switches to a retry fallback model (a per-call `model` subagent). */
 	modelFallbackDisabled?(): boolean;
 	isDisposed(): boolean;
@@ -2037,13 +2037,13 @@ export class TurnRecovery {
 		if (!cfgRetryModelFallback.get(this.#host.settings) || this.#host.modelFallbackDisabled?.()) return false;
 
 		let fallback: { role: string; selector: RetryFallbackSelector; apiKey: string } | undefined;
-		const ceiling = this.#host.thinkingLevelCeiling();
 		const chainKeys = this.retryFallbackChainKeys(currentSelector, currentModel);
 		for (const role of chainKeys) {
 			for (const candidate of this.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
 				if (this.isRetryFallbackSelectorSuppressed(candidate)) continue;
 				const resolved = resolveModelOverride([candidate.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidateModel = resolved.model ?? this.#host.modelRegistry.find(candidate.provider, candidate.id);
+				const ceiling = this.#host.thinkingLevelCeiling(candidateModel);
 				if (!candidateModel || !this.#host.modelRegistry.hasConfiguredAuth(candidateModel)) continue;
 				if (ceiling !== undefined && !modelSupportsEffortCeiling(candidateModel, ceiling)) continue;
 				// A usage fallback must also fit: skip a candidate whose window cannot
@@ -2168,7 +2168,7 @@ export class TurnRecovery {
 		if (requested === AUTO_THINKING || configured === AUTO_THINKING) return requested === configured;
 		const effective = resolveThinkingLevelForModel(
 			candidate,
-			clampThinkingLevelToCeiling(candidate, requested, this.#host.thinkingLevelCeiling()),
+			clampThinkingLevelToCeiling(candidate, requested, this.#host.thinkingLevelCeiling(candidate)),
 		);
 		return effective === configured;
 	}
@@ -2202,7 +2202,11 @@ export class TurnRecovery {
 		const nextThinkingLevel =
 			requestedThinkingLevel === AUTO_THINKING
 				? requestedThinkingLevel
-				: clampThinkingLevelToCeiling(candidate, requestedThinkingLevel, this.#host.thinkingLevelCeiling());
+				: clampThinkingLevelToCeiling(
+						candidate,
+						requestedThinkingLevel,
+						this.#host.thinkingLevelCeiling(candidate),
+					);
 		const candidateSelector = formatModelStringWithRouting(candidate);
 		const previousModel = this.#host.model();
 		// Capture the edit mode under the outgoing model so the base system prompt
@@ -2273,7 +2277,6 @@ export class TurnRecovery {
 			sameModelRetryAvailable?: boolean;
 		},
 	): Promise<boolean> {
-		const ceiling = this.#host.thinkingLevelCeiling();
 		const latestAssistant = options?.preserveFailedTurn
 			? failedMessage
 			: this.#host.agent.state.messages.findLast(
@@ -2373,6 +2376,7 @@ export class TurnRecovery {
 				}
 				// A candidate whose effort floor exceeds the per-spawn ceiling would be
 				// clamped UP past the cap by its model floor — skip it entirely.
+				const ceiling = this.#host.thinkingLevelCeiling(candidate);
 				if (ceiling !== undefined && !modelSupportsEffortCeiling(candidate, ceiling)) continue;
 				// Skip a candidate whose window cannot hold the retry context. The
 				// failed assistant is excluded only when retry removes it; preserved
