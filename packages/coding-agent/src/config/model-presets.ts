@@ -375,8 +375,15 @@ function writeSessionPreset(settings: Settings, name: string, preset: ModelPrese
 	};
 	try {
 		// A `null` entry hides a role a lower layer sets, matching a global switch that clears omitted roles.
+		// `default` is exempt: a runtime record override replaces the whole map, so dropping or nulling it would
+		// send the live switch to the automatic pick (first authed model). A preset without `default` carries
+		// the configured one over explicitly.
 		const roles: Record<string, string | null> = { ...preset.modelRoles };
-		for (const role of Object.keys(settings.getModelRoles())) if (!Object.hasOwn(roles, role)) roles[role] = null;
+		const base = settings.getModelRoles();
+		for (const role of Object.keys(base)) {
+			if (Object.hasOwn(roles, role)) continue;
+			roles[role] = role === "default" ? base[role]! : null;
+		}
 		write(cfgModelRoles, roles);
 		if (preset.defaultThinkingLevel !== undefined) write(cfgDefaultThinkingLevel, preset.defaultThinkingLevel);
 		for (const [id, value] of Object.entries(preset.settings ?? {})) {
@@ -465,6 +472,8 @@ async function applyModelPresetLocked(
 				reason: `no credentials for ${resolved.model.provider}/${resolved.model.id}`,
 			};
 		}
+	} else if (scope === "session" && settings.getModelRole("default")) {
+		// A session preset keeps the configured default; the automatic pick is never reached.
 	} else if (!pickAutomaticDefault(session, candidates)) {
 		// No `default` to apply and nothing to fall back to: refuse before writing.
 		return { kind: "unavailable", reason: "no model with configured credentials is available" };

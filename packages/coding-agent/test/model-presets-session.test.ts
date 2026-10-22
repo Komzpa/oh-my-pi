@@ -97,6 +97,22 @@ describe("session-scoped model presets", () => {
 		expect(getSessionModelPreset(settings)).toBe("fast");
 	});
 
+	it("a preset without `default` keeps the configured default instead of the automatic pick", async () => {
+		const settings = Settings.isolated({ modelRoles: { default: SONNET, slow: SONNET_46 } });
+		cfgModelPresets.setEntry(settings, "noDefault", { modelRoles: { smol: OPUS } });
+		const session = createSession(settings, OPUS);
+
+		const result = await applyModelPreset(settings, session, "noDefault", { scope: "session" });
+
+		expect(result.kind).toBe("switched");
+		expect(settings.getModelRole("default")).toBe(SONNET);
+		expect(session.model?.id).toBe("claude-sonnet-4-5");
+		// Other omitted roles are still hidden for the session.
+		expect({ ...settings.getModelRoles() }).toEqual({ default: SONNET, smol: OPUS });
+		clearSessionModelPreset(settings);
+		expect(settings.getModelRole("default")).toBe(SONNET);
+	});
+
 	it("clearing restores exact prior values, including pre-existing runtime overrides", async () => {
 		const settings = Settings.isolated({
 			modelRoles: { default: SONNET, smol: SONNET_46 },
