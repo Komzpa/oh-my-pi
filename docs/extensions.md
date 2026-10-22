@@ -126,6 +126,7 @@ Core methods:
 - `getSessionName`, `setSessionName`
 - `setModel`, `getThinkingLevel`, `setThinkingLevel`
 - `getServiceTiers`, `setServiceTier`
+- `applySessionModelPreset`, `clearSessionModelPreset`, `getSessionModelPreset`
 - `registerProvider`, `unregisterProvider`
 - `registerFileWriteFallback`, `registerFileDeleteFallback`
 - `events` (shared event bus)
@@ -137,6 +138,8 @@ labeling action. `getAllTools()` returns tool schemas and source metadata, while
 `getActiveTools()` returns enabled names.
 
 `getServiceTiers()` returns a detached snapshot of the session's live per-family tier map. `setServiceTier(family, tier)` changes one family for subsequent requests; pass `undefined` to clear that session override. OpenAI accepts `auto`, `default`, `flex`, `scale`, `priority`, or `ultrafast`; Anthropic accepts `priority`; Google accepts `flex` or `priority`. Changes made while a response is streaming do not alter that in-flight request.
+
+`applySessionModelPreset(name)` applies a saved model preset to this session only (see [Model presets](./models.md#session-only-presets)): roles, default thinking level and the preset's `settings` become runtime overrides, nothing is written to config, subagents spawned afterwards inherit them, and the active model switches to the preset's `default`. It resolves to the same result as a normal switch; check `kind === "switched"`. `clearSessionModelPreset()` restores exactly the displaced overrides (the model is not switched back) and returns the cleared name, and `getSessionModelPreset()` returns the active name.
 
 ### Provider registration
 

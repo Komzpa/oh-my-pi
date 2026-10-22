@@ -1033,6 +1033,15 @@ export class Settings {
 		return settled;
 	}
 
+	/**
+	 * Own runtime-override value of `setting` (deep copy; `undefined` when this instance holds none).
+	 * Session-scoped features read it to restore exactly what they displaced.
+	 */
+	runtimeOverrideValue(setting: AnySetting): unknown {
+		const value = getByPath(this.#overrides, setting.segments);
+		return value === undefined ? undefined : structuredClone(value);
+	}
+
 	/** Registry plumbing behind `Setting.clearOverride`: drops the runtime override of `setting`. */
 	clearOverrideValue(setting: AnySetting): void {
 		if (setting === cfgModelRoles) {

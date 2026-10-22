@@ -21,6 +21,7 @@ import { hasFsCode, isEacces, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { type ExtensionModule, extensionModuleCapability } from "../../capability/extension-module";
 import { type Hook, hookCapability } from "../../capability/hook";
 import { isServiceTierFamily, isServiceTierForFamily } from "../../config/service-tier";
+import type { ModelPresetSwitchResult } from "../../config/model-presets";
 import { loadCapability } from "../../discovery";
 import { getExtensionNameFromPath } from "../../discovery/helpers";
 import type { ExecOptions } from "../../exec/exec";
@@ -159,6 +160,18 @@ export class ExtensionRuntime implements IExtensionRuntime {
 	}
 
 	setServiceTier(): void {
+		throw new ExtensionRuntimeNotInitializedError();
+	}
+
+	applySessionModelPreset(): Promise<never> {
+		throw new ExtensionRuntimeNotInitializedError();
+	}
+
+	clearSessionModelPreset(): string | undefined {
+		throw new ExtensionRuntimeNotInitializedError();
+	}
+
+	getSessionModelPreset(): string | undefined {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
 
@@ -349,6 +362,18 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 			throw new TypeError(`Invalid service tier "${String(tier)}" for family "${String(family)}"`);
 		}
 		this.runtime.setServiceTier(family, tier);
+	}
+
+	applySessionModelPreset(name: string): Promise<ModelPresetSwitchResult> {
+		return this.runtime.applySessionModelPreset(name);
+	}
+
+	clearSessionModelPreset(): string | undefined {
+		return this.runtime.clearSessionModelPreset();
+	}
+
+	getSessionModelPreset(): string | undefined {
+		return this.runtime.getSessionModelPreset();
 	}
 
 	getSessionName(): string | undefined {
