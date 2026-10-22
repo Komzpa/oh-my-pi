@@ -30,7 +30,6 @@ export interface ModelPreset {
 
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_STRING_RECORD: Record<string, string> = {};
-const EMPTY_MODEL_ROLE_POOLS: Record<string, ModelRolePool> = {};
 const DEFAULT_CYCLE_ORDER: string[] = ["smol", "default", "slow"];
 const EMPTY_MODEL_TAGS_RECORD: ModelTagsSettings = {};
 const EMPTY_MODEL_PRESETS_RECORD: Record<string, ModelPreset> = {};
@@ -118,7 +117,7 @@ export const cfgModelRoles = register({ id: "modelRoles", type: "record", defaul
 export const cfgModelRolePools = register({
 	id: "modelRolePools",
 	type: "record",
-	default: EMPTY_MODEL_ROLE_POOLS,
+	default: {} as Record<string, ModelRolePool>,
 });
 
 /** Named model presets; no settings-panel UI — managed by `/modelpreset` and the model hub. */
