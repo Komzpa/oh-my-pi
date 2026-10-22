@@ -7,6 +7,7 @@
  * caller-supplied hooks.
  */
 import { toError } from "@oh-my-pi/pi-utils";
+import { createSessionModelPresetActions } from "../config/model-presets";
 import { runExtensionCompact, runExtensionSetModel } from "../extensibility/extensions/compact-handler";
 import { getSessionSlashCommands } from "../extensibility/extensions/get-commands-handler";
 import type { ExtensionError, ExtensionMode, ExtensionUIContext } from "../extensibility/extensions/types";
@@ -133,6 +134,7 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			setThinkingLevel: level => session.setThinkingLevel(level),
 			getServiceTiers: () => session.serviceTierByFamily,
 			setServiceTier: (family, tier) => session.setServiceTierFamily(family, tier),
+			...createSessionModelPresetActions(session),
 			getSessionName: () => session.sessionManager.getSessionName(),
 			setSessionName: async name => {
 				await session.sessionManager.setSessionName(name, "user");

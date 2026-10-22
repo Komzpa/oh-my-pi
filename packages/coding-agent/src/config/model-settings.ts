@@ -25,6 +25,11 @@ export interface ModelPreset {
 	modelRoles: Record<string, string>;
 	/** `defaultThinkingLevel` at save time; absent in hand-written presets that leave it alone. */
 	defaultThinkingLevel?: SettingValueOf<typeof cfgDefaultThinkingLevel>;
+	/**
+	 * Extra settings (registered setting id → value, e.g. `tier.openai: priority`) that a
+	 * session-scoped switch applies as runtime overrides. A global switch does not apply them.
+	 */
+	settings?: Record<string, unknown>;
 }
 
 const EMPTY_STRING_ARRAY: string[] = [];
