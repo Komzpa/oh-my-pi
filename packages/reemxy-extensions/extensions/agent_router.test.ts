@@ -1043,3 +1043,45 @@ test("a failed async-result delivery with no wait is recorded once", async () =>
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+describe("/brrrr session preset", () => {
+	function brrrrHandler(extra: Record<string, unknown>) {
+		let handler: ((args: string, ctx: ExtensionContext) => Promise<void>) | undefined;
+		agentRouter({
+			setLabel: () => undefined,
+			on: () => undefined,
+			registerCommand: (name: string, command: { handler: typeof handler }) => {
+				if (name === "brrrr") handler = command.handler;
+			},
+			...extra,
+		} as unknown as ExtensionAPI);
+		const notes: string[] = [];
+		const context = { ui: { notify: (message: string) => notes.push(message) } } as unknown as ExtensionContext;
+		return { run: (args: string) => handler!(args, context), notes };
+	}
+
+	test("applies the brrrr preset and clears it on off", async () => {
+		const applied: string[] = [];
+		const { run, notes } = brrrrHandler({
+			applySessionModelPreset: async (name: string) => (applied.push(name), { kind: "switched" }),
+			clearSessionModelPreset: () => "brrrr",
+		});
+		await run("");
+		expect(applied).toEqual(["brrrr"]);
+		expect(notes.at(-1)).toBe("brrrr on");
+		await run("off");
+		expect(notes.at(-1)).toContain("brrrr off");
+	});
+
+	test("reports a missing preset and an unsupported build without acting", async () => {
+		const missing = brrrrHandler({
+			applySessionModelPreset: async () => ({ kind: "missing" }),
+			clearSessionModelPreset: () => undefined,
+		});
+		await missing.run("");
+		expect(missing.notes.at(-1)).toContain("not applied (missing");
+		const old = brrrrHandler({});
+		await old.run("");
+		expect(old.notes.at(-1)).toContain("unavailable in this build");
+	});
+});
