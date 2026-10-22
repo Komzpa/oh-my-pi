@@ -76,6 +76,7 @@ import {
 	resolveCacheRetention,
 } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
+import { isSubagentElapsedNote } from "../utils/subagent-elapsed-note";
 import {
 	clearStreamingPartialJson,
 	copyPerCallContextMessage,
@@ -4930,6 +4931,14 @@ type AnthropicControlSpec = { toolChanges: AnthropicToolChange[]; effort?: Anthr
 
 type AnthropicControlCarrier = object & { [ANTHROPIC_CONTROL]?: AnthropicControlSpec };
 
+function anthropicRetainedMessageCount(messages: readonly Message[]): number {
+	let count = 0;
+	for (const message of messages) {
+		if (!isSubagentElapsedNote(message)) count++;
+	}
+	return count;
+}
+
 /**
  * An assistant message in `context.messages` whose request declared controls.
  * `live` when it still sits at the index it was written at: the history before
@@ -5633,7 +5642,7 @@ function buildParams(
 	const requestControls: AnthropicRequestControls | undefined =
 		toolPlan.record || effortPlan.record
 			? {
-					messageIndex: context.messages.length,
+					messageIndex: anthropicRetainedMessageCount(context.messages),
 					...(toolPlan.record && { tools: toolPlan.record }),
 					...(effortPlan.record && { effort: effortPlan.record }),
 				}

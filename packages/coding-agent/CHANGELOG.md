@@ -560,6 +560,8 @@
 ### Changed
 
 - Tool approval prompts now replace the composer like `ask`, show one row per detail, and approve with `Ctrl+Enter` (or `Ctrl+Q`) instead of `Enter` ([#15548](https://github.com/can1357/oh-my-pi/pull/15548) by [@H4vC](https://github.com/H4vC))
+- Added a per-request, child-only elapsed-time context signal (`elapsed Ns / 900s`) as a transient provider-context tail message, preserving the original assignment clock across follow-ups and cold revival without changing the stable system/tool prefix or hard runtime behavior; providers with an active-turn wire (Cursor, Devin, Codex) and chained Responses requests ignore it as scaffolding
+- `/dump all` writes a zip to the temp directory with the main transcript, the LLM request JSON, and one file per subagent transcript (nested subagents included, killed ones marked aborted); the TUI copies the archive path to the clipboard. Plain `/dump` is unchanged ([#13908](https://github.com/can1357/oh-my-pi/pull/13908) by [@H4vC](https://github.com/H4vC))
 
 ### Fixed
 
