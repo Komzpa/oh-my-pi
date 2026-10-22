@@ -127,7 +127,7 @@ function strongOrder(agent: string, config: PoolConfig, models: BrrrrModel[]): s
 		const base = spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
 		if (!strong.some(model => model.id === base) || base === "codex-lb/gpt-6-luna") continue;
 		if (order.some(candidate => candidate.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === base)) continue;
-		const implementation = ["coder", "ui-coder", "task", "workhorse"].includes(agent) || agent.endsWith("-strong");
+		const implementation = ["coder", "minor-coder", "ui-coder", "task", "workhorse"].includes(agent) || agent.endsWith("-strong");
 		order.push(implementation && base.startsWith("anthropic/claude-") && !/:(?:minimal|low|medium|high)$/.test(spec) ? `${base}:high` : spec);
 	}
 	if (strong.some(model => model.id === "codex-lb/gpt-6-luna" && model.serviceTier === "priority")) {
@@ -144,15 +144,17 @@ function strongOrder(agent: string, config: PoolConfig, models: BrrrrModel[]): s
 	});
 }
 // Pool lengths are routing policy; model selectors and fallback order live in agent frontmatter.
+// Size 1 makes the profile's first entry the deterministic first pick; the rest of the chain stays ordered fallbacks.
 const POOL_SIZES: Record<string, number> = {
-	coder: 10,
-	"ui-coder": 7,
-	scout: 6,
-	"gate-runner": 6,
-	"git-pr-owner": 5,
-	scribe: 6,
+	coder: 1,
+	"minor-coder": 1,
+	"ui-coder": 1,
+	scout: 5,
+	"gate-runner": 5,
+	"git-pr-owner": 1,
+	scribe: 5,
 	reviewer: 4,
-	workhorse: 8,
+	workhorse: 7,
 	"retro-facilitator": 3,
 	architect: 4,
 	"plan-doctor": 3,
@@ -167,6 +169,7 @@ const POOL_SIZES: Record<string, number> = {
 const WRITE_CAPABLE_WORKERS = new Set([
 	"coder",
 	"coder-strong",
+	"minor-coder",
 	"ui-coder",
 	"ui-coder-strong",
 	"workhorse",
@@ -929,7 +932,7 @@ export async function routeSubagentSpawn(
 		...(brrrr ? {
 			enforce: true,
 			requiredModelServiceTiers: Object.fromEntries(brrrrModels.filter(model => model.serviceTier).map(model => [model.id, model.serviceTier])),
-			claudeEffortCap: ["coder", "ui-coder", "task", "workhorse"].includes(agent) || agent.endsWith("-strong"),
+			claudeEffortCap: ["coder", "minor-coder", "ui-coder", "task", "workhorse"].includes(agent) || agent.endsWith("-strong"),
 		} : {}),
 	};
 }

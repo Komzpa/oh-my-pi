@@ -145,6 +145,11 @@ const MODEL_FLOORS: Record<string, ThinkingLevel> = {
 	"deepseek/deepseek-v4-flash": "high",
 };
 
+/** A chain with the router's hard-fail free model (dots) demoted to the end, as the blacklist does for coder roles. */
+function dotsLast(chain: readonly string[]): string[] {
+	return [...chain.filter(spec => !spec.endsWith(":free")), ...chain.filter(spec => spec.endsWith(":free"))];
+}
+
 function modelSelectorBase(spec: string): string {
 	const separator = spec.lastIndexOf(":");
 	if (separator <= spec.indexOf("/")) return spec;
@@ -367,11 +372,7 @@ describe("agent router", () => {
 			expect(after.model).not.toContain(ling);
 			writeFileSync(modeFile, JSON.stringify({ enabled: false }));
 			const off = await routeSubagentSpawn({ agent: "coder" }, context, state, options);
-			expect(off.model).toEqual([
-				...AGENT_POOLS.coder.pool.filter(spec => !spec.endsWith(":free")),
-				...AGENT_POOLS.coder.fallbacks,
-				...AGENT_POOLS.coder.pool.filter(spec => spec.endsWith(":free")),
-			]);
+			expect(off.model).toEqual(dotsLast([...AGENT_POOLS.coder.pool, ...AGENT_POOLS.coder.fallbacks]));
 			expect(off.enforce).toBeUndefined();
 		} finally {
 			if (previous === undefined) delete process.env.OMP_AGENT_ROUTER_MODELS;
@@ -579,12 +580,11 @@ describe("agent router", () => {
 				stateFile: file,
 				shuffle: reversed,
 			});
-			expect(result?.model).toEqual([
-				...AGENT_POOLS["ui-coder"].pool.filter(spec => !spec.endsWith(":free")).reverse(),
-				...AGENT_POOLS["ui-coder"].fallbacks,
-				...AGENT_POOLS["ui-coder"].pool.filter(spec => spec.endsWith(":free")),
-			]);
-			expect(result?.model).toContain("codex-lb/gpt-6.1-sol:medium");
+			// The ui-coder pool is its single head (sol:high); the rest is ordered fallbacks, free dots demoted last.
+			expect(result?.model).toEqual(
+				dotsLast([...AGENT_POOLS["ui-coder"].pool.slice().reverse(), ...AGENT_POOLS["ui-coder"].fallbacks]),
+			);
+			expect(result?.model[0]).toBe("codex-lb/gpt-6.1-sol:high");
 			expect(result?.model).not.toContain("anthropic/claude-sonnet-5:medium");
 			expect(result?.note).toBe(`pool pick ${result?.model[0]} (eval)`);
 		} finally {
@@ -676,12 +676,12 @@ describe("agent router", () => {
 	test("skips the only free model when usage-depleted", async () => {
 		const { dir, file } = tempStateFile();
 		try {
-			const firstFree = AGENT_POOLS.coder.pool.find(spec => spec.endsWith(":free"))!;
+			const firstFree = AGENT_POOLS.task.pool.find(spec => spec.endsWith(":free"))!;
 			const modelKey = firstFree.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "");
 			const unavailableFirstFree = ctxWithHealth({ [modelKey]: { state: "depleted", accounts: [] } });
 			for (let i = 0; i < 50; i++) {
 				const result = await routeSubagentSpawn(
-					{ agent: "coder", spawnKey: `free-first-${i}` },
+					{ agent: "task", spawnKey: `free-first-${i}` },
 					unavailableFirstFree,
 					createRouterState(),
 					{ stateFile: file },
@@ -695,12 +695,10 @@ describe("agent router", () => {
 
 	test("subscribed pool models can each be the first pick, not fallback-only", async () => {
 		const candidates = [
-			["coder", "muse-code/muse-spark-1.3-contributor"],
-			["scout", "xiaomi/mimo-v2.6-flash"],
-			["gate-runner", "xiaomi/mimo-v2.6-flash"],
-			["git-pr-owner", "xiaomi/mimo-v2.6-flash"],
-			["scribe", "xiaomi/mimo-v2.6-flash"],
-			["workhorse", "xiaomi/mimo-v2.6-flash"],
+			["scout", "kimi-code/kimi-for-coding-highspeed:low"],
+			["gate-runner", "kimi-code/kimi-for-coding-highspeed:medium"],
+			["scribe", "kimi-code/kimi-for-coding-highspeed:low"],
+			["workhorse", "kimi-code/kimi-for-coding-highspeed:medium"],
 			["task", "muse-code/muse-spark-1.3-contributor"],
 		] as const;
 		const { dir, file } = tempStateFile();
@@ -1306,8 +1304,13 @@ describe("agent router", () => {
 	});
 
 	test("high-volume execution agents retain Kimi in their pools", () => {
-		for (const agent of ["task", "scout", "gate-runner", "git-pr-owner", "scribe", "coder", "workhorse"]) {
+		for (const agent of ["task", "scout", "gate-runner", "scribe", "workhorse"]) {
 			expect(AGENT_POOLS[agent]?.pool.some(spec => spec.startsWith("kimi-code/"))).toBe(true);
+		}
+		// The head-first roles keep Kimi as an ordered fallback behind their deterministic first pick.
+		for (const agent of ["git-pr-owner", "coder"]) {
+			const config = AGENT_POOLS[agent]!;
+			expect([...config.pool, ...config.fallbacks].some(spec => spec.startsWith("kimi-code/"))).toBe(true);
 		}
 	});
 
@@ -1334,7 +1337,7 @@ describe("agent router", () => {
 		for (const agent of executingProfiles) {
 			const content = readFileSync(new URL(`./agents/${agent}.md`, import.meta.url), "utf8");
 			const instructions = content.replace(/^---\n[\s\S]*?\n---\n/, "").toLowerCase();
-			const boundedWindow = /(?:~|about|approximately|roughly|around|up to|within)\s*15\s*(?:minutes?|mins?)\b/.test(
+			const boundedWindow = /(?:~|about|approximately|roughly|around|up to|within)\s*(?:10|15)\s*(?:minutes?|mins?)\b/.test(
 				instructions,
 			);
 			const stopForOversizedWork =
@@ -1612,7 +1615,7 @@ describe("agent router", () => {
 				createRouterState(),
 				{ stateFile: file, shuffle: items => [...items] },
 			);
-			expect(result?.model[0]).toBe("kimi-code/kimi-for-coding:high");
+			expect(result?.model[0]).toBe("codex-lb/gpt-6.1-sol:medium");
 			expect(result?.model.at(-1)).toBe("openrouter/dots-studio/dots-3-note-preview:free");
 			expect(result?.model.filter(model => model.endsWith(":free"))).toEqual([
 				"openrouter/dots-studio/dots-3-note-preview:free",
@@ -1709,8 +1712,8 @@ describe("agent router", () => {
 					at: "2026-09-24T18:00:02.000Z",
 					sessionId: "session-1",
 					agent: "coder",
-					chosen: AGENT_POOLS.coder.pool[1],
-					order: [...AGENT_POOLS.coder.pool.slice(1), ...AGENT_POOLS.coder.fallbacks, AGENT_POOLS.coder.pool[0]],
+					chosen: AGENT_POOLS.coder.pool[0],
+					order: dotsLast([...AGENT_POOLS.coder.pool, ...AGENT_POOLS.coder.fallbacks]),
 					status: "completed",
 					durationMs: 1234,
 					resolvedModel: "deepseek/deepseek-v4-pro:high",
@@ -1906,7 +1909,7 @@ describe("agent router", () => {
 				const index = items.indexOf("kimi-code/kimi-for-coding:high" as T);
 				return [...items.slice(index), ...items.slice(0, index)];
 			};
-			const first = await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-auth-1" }, context, state, {
+			const first = await routeSubagentSpawn({ agent: "task", spawnKey: "coder-auth-1" }, context, state, {
 				stateFile: file,
 				now: () => t0,
 				shuffle: kimiFirst,
@@ -1938,7 +1941,7 @@ describe("agent router", () => {
 					details: {
 						results: [
 							{
-								agent: "coder",
+								agent: "task",
 								exitCode: 1,
 								durationMs: 200,
 								resolvedModel: "kimi-code/kimi-for-coding:high",
@@ -1953,14 +1956,14 @@ describe("agent router", () => {
 			);
 			expect(rows).toHaveLength(1);
 			expect(rows[0]?.status).toBe("failed");
-			const whileDead = await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-auth-2" }, context, state, {
+			const whileDead = await routeSubagentSpawn({ agent: "task", spawnKey: "coder-auth-2" }, context, state, {
 				stateFile: file,
 				now: () => new Date(t0.getTime() + 60 * 60 * 1000),
 				shuffle: kimiFirst,
 			});
 			expect(whileDead?.model).toBeDefined();
 			expect(whileDead?.model).not.toContain("kimi-code/kimi-for-coding:high");
-			const afterTtl = await routeSubagentSpawn({ agent: "coder", spawnKey: "coder-auth-3" }, context, state, {
+			const afterTtl = await routeSubagentSpawn({ agent: "task", spawnKey: "coder-auth-3" }, context, state, {
 				stateFile: file,
 				now: () => new Date(t0.getTime() + 7 * 60 * 60 * 1000),
 				shuffle: kimiFirst,

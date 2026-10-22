@@ -4,6 +4,8 @@
 
 ### Added
 
+- Add the `minor-coder` agent for small, known fixes of about 10 minutes or less (pool: Luna low, Mercury-3 low, Haiku 5.5 low, free dots, Sol low, mimo) and register it in the router pool sizes, write-capable workers, Claude effort cap and the dots role sanction; `coder` becomes the bigger-task role.
+- Reorder agent pools by the omp agent x model report: `ui-coder` opens on Sol high then Sonnet 5.5 and drops Luna; `git-pr-owner` opens on Haiku 5.5 low, Sol low, Mercury-3 low and drops Luna; `coder` opens on Sol medium then Muse Spark and drops Luna; these four roles have a pool of one so the first entry is the deterministic pick. `xiaomi/mimo-v2.6-*` moves to the end of every chain; scout, gate-runner, scribe and workhorse pool sizes drop by one to keep their pool members unchanged.
 - Require commit workers to inspect effective Git author/committer identity and provenance, use configured real identities, stop without committing when identity is missing or invalid, preserve genuine contributor authors, and read back commit identities.
 
 - `/brrrr` persisted routing with hot user-wide model classes and blacklist reads, fast-only Luna, Cerebras light-role preference, fail-closed mandatory routing, and Claude implementation effort capped at high.

@@ -2,7 +2,7 @@
 name: workhorse
 description: Mechanical worker for bulk edits, file moves, data munging, and given commands with no design decisions.
 tools: read, grep, glob, find, edit, write, bash
-model: openrouter/dots-studio/dots-3-note-preview:free, codex-lb/gpt-6-luna:low, inception/mercury-3:low, anthropic/claude-haiku-5-5:medium, deepseek/deepseek-v4-flash:high, kimi-code/kimi-for-coding-highspeed:medium, xiaomi/mimo-v2.6-flash, xai-oauth/grok-build-0.1, codex-lb/gpt-6.1-sol:medium, anthropic/claude-sonnet-5-5, codex-lb/Qwen3.8-27B, cerebras/qwen-3.8-27b
+model: openrouter/dots-studio/dots-3-note-preview:free, codex-lb/gpt-6-luna:low, inception/mercury-3:low, anthropic/claude-haiku-5-5:medium, deepseek/deepseek-v4-flash:high, kimi-code/kimi-for-coding-highspeed:medium, xai-oauth/grok-build-0.1, codex-lb/gpt-6.1-sol:medium, anthropic/claude-sonnet-5-5, codex-lb/Qwen3.8-27B, cerebras/qwen-3.8-27b, xiaomi/mimo-v2.6-flash
 thinking-level: low
 spawns: []
 ---

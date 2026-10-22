@@ -15,6 +15,7 @@ describe("Reemxy extension agent model chains", () => {
 	test("OpenRouter entries are explicitly free light-worker models", () => {
 		const lightRoles: Record<string, true> = {
 			coder: true,
+			"minor-coder": true,
 			"ui-coder": true,
 			scout: true,
 			scribe: true,
@@ -30,8 +31,10 @@ describe("Reemxy extension agent model chains", () => {
 				if (model.endsWith(":free")) expect(lightRoles[profile.name] === true, profile.name).toBe(true);
 			}
 		}
+		// coder, ui-coder and minor-coder open on a measured non-free head (2026-10-22 pool policy).
+		const headNotFree = new Set(["coder", "ui-coder", "minor-coder"]);
 		for (const profile of extensionProfiles()) {
-			if (lightRoles[profile.name] !== true) continue;
+			if (lightRoles[profile.name] !== true || headNotFree.has(profile.name)) continue;
 			expect(profile.model?.[0]?.startsWith("openrouter/"), profile.name).toBe(true);
 		}
 	});
@@ -60,6 +63,10 @@ describe("Reemxy extension agent model chains", () => {
 			workhorse: "inception/mercury-3:low",
 			"gate-runner": "inception/mercury-3:low",
 			scribe: "inception/mercury-3:low",
+			"minor-coder": "inception/mercury-3:low",
+		};
+		// Roles whose head is not luna: mercury-3 stays in the chain at the pinned effort.
+		const withoutLuna: Record<string, string> = {
 			"git-pr-owner": "inception/mercury-3:low",
 			coder: "inception/mercury-3:medium",
 			"ui-coder": "inception/mercury-3:medium",
@@ -67,6 +74,14 @@ describe("Reemxy extension agent model chains", () => {
 		for (const profile of extensionProfiles()) {
 			const models = profile.model ?? [];
 			const want = expected[profile.name];
+			if (withoutLuna[profile.name]) {
+				expect(models, profile.name).toContain(withoutLuna[profile.name]);
+				expect(
+					models.some(model => model.startsWith("codex-lb/gpt-6-luna")),
+					profile.name,
+				).toBe(false);
+				continue;
+			}
 			if (!want) {
 				expect(models.some(model => model.startsWith("inception/")), profile.name).toBe(false);
 				continue;

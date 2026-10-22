@@ -148,7 +148,7 @@ capacity, however many there are.
 ### 8. A ready row has no worker and a slot is free
 One `task` call with one item per ready row, up to the free slots; never one worker per turn. Each item carries the row's exact
 title, the goal in one sentence, what to produce and the receipt to return. Each item names the most specific
-`agent` for its row: code changes `coder`, visual work `ui-coder`, a build or test or browser
+`agent` for its row: code changes `coder` (a given fix with a known location, no design choice and about 10 minutes or less: `minor-coder`), visual work `ui-coder`, a build or test or browser
 check `gate-runner`, git `git-pr-owner`, reading and lookup in files `scout` (it has no shell, so anything that runs a command on the live system, such as `smartctl`, `systemctl`, `journalctl`, …, goes to `gate-runner`), review `reviewer`, bulk
 mechanical edits `workhorse`, and so on through the agents the `task` tool lists. The bundled
 general `task` agent is the fallback when no specialist fits, not the default: specialists carry
