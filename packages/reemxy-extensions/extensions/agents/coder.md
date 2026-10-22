@@ -2,7 +2,7 @@
 name: coder
 description: Non-visual code owner for one bounded logic, API, backend, script, or test change.
 tools: read, grep, glob, find, edit, write, bash
-model: openrouter/dots-studio/dots-3-note-preview:free, kimi-code/kimi-for-coding:high, deepseek/deepseek-v4-pro:high, codex-lb/gpt-6-luna:medium, anthropic/claude-haiku-5-5:medium, kimi-code/k3:high, xai-oauth/grok-4.5, muse-code/muse-spark-1.3-contributor, xai-oauth/grok-4.6, codex-lb/gpt-6.1-sol:medium, muse-code/muse-wonder-full-1.0-contributor, anthropic/claude-sonnet-5-5, codex-lb/Qwen3.8-27B, cerebras/qwen-3.8-27b
+model: openrouter/dots-studio/dots-3-note-preview:free, kimi-code/kimi-for-coding:high, deepseek/deepseek-v4-pro:high, codex-lb/gpt-6-luna:medium, inception/mercury-3:medium, anthropic/claude-haiku-5-5:medium, kimi-code/k3:high, xai-oauth/grok-4.5, muse-code/muse-spark-1.3-contributor, xai-oauth/grok-4.6, codex-lb/gpt-6.1-sol:medium, muse-code/muse-wonder-full-1.0-contributor, anthropic/claude-sonnet-5-5, codex-lb/Qwen3.8-27B, cerebras/qwen-3.8-27b
 thinking-level: high
 spawns: []
 ---

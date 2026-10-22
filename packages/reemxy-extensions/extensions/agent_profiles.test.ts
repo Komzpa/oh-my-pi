@@ -53,4 +53,27 @@ describe("Reemxy extension agent model chains", () => {
 			expect(profile?.model?.some(model => model === "codex-lb/Qwen3.8-27B" || model.endsWith(":free"))).toBe(false);
 		}
 	});
+
+	test("inception mercury-3 is a mechanical-role pool member right after luna, never in strong roles", () => {
+		const expected: Record<string, string> = {
+			scout: "inception/mercury-3:low",
+			workhorse: "inception/mercury-3:low",
+			"gate-runner": "inception/mercury-3:low",
+			scribe: "inception/mercury-3:low",
+			"git-pr-owner": "inception/mercury-3:low",
+			coder: "inception/mercury-3:medium",
+			"ui-coder": "inception/mercury-3:medium",
+		};
+		for (const profile of extensionProfiles()) {
+			const models = profile.model ?? [];
+			const want = expected[profile.name];
+			if (!want) {
+				expect(models.some(model => model.startsWith("inception/")), profile.name).toBe(false);
+				continue;
+			}
+			const luna = models.findIndex(model => model.startsWith("codex-lb/gpt-6-luna"));
+			expect(luna, profile.name).toBeGreaterThanOrEqual(0);
+			expect(models[luna + 1], profile.name).toBe(want);
+		}
+	});
 });

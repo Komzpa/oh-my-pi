@@ -1512,6 +1512,7 @@ describe("agent router", () => {
 						"muse-code",
 						"cerebras",
 						"xai-oauth",
+						"inception",
 					].map(provider => [provider, { state: "depleted", accounts: [] }]),
 				),
 			);
@@ -1572,7 +1573,7 @@ describe("agent router", () => {
 					true,
 				);
 			expect(
-				["openrouter/", "kimi-code/", "claude-bridge/", "xiaomi/", "muse-code/", "anthropic/", "xai-oauth/"].some(provider =>
+				["openrouter/", "kimi-code/", "claude-bridge/", "xiaomi/", "muse-code/", "anthropic/", "xai-oauth/", "inception/"].some(provider =>
 					result?.model[0]?.startsWith(provider),
 				),
 			).toBe(true);

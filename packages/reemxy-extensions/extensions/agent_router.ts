@@ -145,14 +145,14 @@ function strongOrder(agent: string, config: PoolConfig, models: BrrrrModel[]): s
 }
 // Pool lengths are routing policy; model selectors and fallback order live in agent frontmatter.
 const POOL_SIZES: Record<string, number> = {
-	coder: 9,
-	"ui-coder": 6,
-	scout: 5,
-	"gate-runner": 5,
-	"git-pr-owner": 4,
-	scribe: 5,
+	coder: 10,
+	"ui-coder": 7,
+	scout: 6,
+	"gate-runner": 6,
+	"git-pr-owner": 5,
+	scribe: 6,
 	reviewer: 4,
-	workhorse: 7,
+	workhorse: 8,
 	"retro-facilitator": 3,
 	architect: 4,
 	"plan-doctor": 3,
