@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -404,6 +405,7 @@ import {
 	normalizeCustomMessagePayload,
 	operatorTitleText,
 	type PythonExecutionMessage,
+	REWIND_REPORT_MESSAGE_TYPE,
 	SILENT_ABORT_MARKER,
 	SKILL_PROMPT_MESSAGE_TYPE,
 	sanitizeAssistantForReparentedHistory,
@@ -595,6 +597,8 @@ const AGENT_START_POLICY_MAX_ATTEMPTS = 3;
 export const MCP_DISCOVERY_TURN_WAIT_MS = 1500;
 /** Vision descriptions gate admission; stay under the RPC clients' 30 s request timeout. */
 const IMAGE_DESCRIPTION_ADMISSION_TIMEOUT_MS = 20_000;
+/** Marks work running inside the deferred extension load so it never waits on itself. */
+const deferredExtensionLoadScope = new AsyncLocalStorage<true>();
 
 /** A failed preparation, not a provider failure: the ordinary input can still be restored. */
 class AgentStartPolicyChangedError extends Error {
@@ -1088,7 +1092,7 @@ export class AgentSession implements SettingsScope {
 	 * Async-delivery generation, bumped on every session transition that evicts
 	 * this owner's jobs (see {@link AgentSession.#cancelOwnAsyncJobs}). Stamped
 	 * onto each queued async-result follow-up so a delivery formatted or drained
-	 * across a `/new` is dropped regardless of job-id reuse.
+	 * across a `/new` or `/resume` is dropped regardless of job-id reuse.
 	 */
 	#asyncDeliveryEpoch = 0;
 
@@ -1215,6 +1219,13 @@ export class AgentSession implements SettingsScope {
 	 * otherwise the prompt changes on the next turn and the provider prompt cache misses.
 	 */
 	#pendingMCPDiscovery: Promise<void> | undefined;
+	/**
+	 * Startup-deferred extensions (see `startup-deferral.ts`): the loader binding
+	 * them into this session, then its in-flight run once started. Submissions and
+	 * turns await the run so the first request carries their tools and hooks.
+	 */
+	#deferredExtensionLoader: (() => Promise<void>) | undefined;
+	#deferredExtensionLoad: Promise<void> | undefined;
 	#activeAgentContinue: ActiveAgentContinue | undefined;
 	#agentContinueSchedulerToken = 0;
 
@@ -1284,6 +1295,8 @@ export class AgentSession implements SettingsScope {
 			this.#sessionTransitionSettled = undefined;
 			this.#resolveSessionTransition = undefined;
 			resolve?.();
+			// Deliveries held while the transcript was swapped go to whichever session it settled on.
+			this.yieldQueue.requestIdleFlush();
 		},
 	};
 	#promptSequence = 0;
@@ -2224,7 +2237,9 @@ export class AgentSession implements SettingsScope {
 			await this.#maintenance.maintainContextMidRun(messages, signal, context);
 		});
 		this.yieldQueue = new YieldQueue({
-			isStreaming: () => this.isStreaming,
+			// A transition swaps the transcript under the agent: hold idle deliveries until it
+			// settles, so a result from the outgoing session cannot start a turn in the target.
+			isStreaming: () => this.isStreaming || this.isSessionTransitioning,
 			injectIdle: async messages => {
 				const first = messages[0];
 				if (!first) return;
@@ -3366,6 +3381,7 @@ export class AgentSession implements SettingsScope {
 		if (this.#restartDrainLeaseCount > 0 && options.allowDuringRestartDrain !== true) throw new AgentBusyError();
 		this.#admittedSubmissionCount++;
 		try {
+			if (this.hasPendingDeferredExtensions) await this.loadDeferredExtensions();
 			return await work();
 		} finally {
 			if (--this.#admittedSubmissionCount === 0 && this.#admittedSubmissionsSettled) {
@@ -7487,6 +7503,45 @@ export class AgentSession implements SettingsScope {
 		this.#pendingMCPDiscovery = pending;
 	}
 
+	/** Bind startup-deferred extensions on the first {@link loadDeferredExtensions} call. */
+	setDeferredExtensionLoader(load: () => Promise<void>): void {
+		this.#deferredExtensionLoader = load;
+	}
+
+	/** Whether startup-deferred extensions are still unbound (loading or not yet started). */
+	get hasPendingDeferredExtensions(): boolean {
+		return this.#deferredExtensionLoader !== undefined || this.#deferredExtensionLoad !== undefined;
+	}
+
+	/**
+	 * Start binding the startup-deferred extensions (once) and resolve when they
+	 * are live; never rejects. Resolves at once when none are pending, and inside
+	 * the load itself so a deferred extension's `session_start` handler that sends
+	 * a message cannot wait on its own load.
+	 */
+	loadDeferredExtensions(): Promise<void> {
+		if (deferredExtensionLoadScope.getStore()) return Promise.resolve();
+		const load = this.#deferredExtensionLoader;
+		if (load) {
+			this.#deferredExtensionLoader = undefined;
+			const pending = deferredExtensionLoadScope
+				.run(true, load)
+				.then(
+					() => this.#notifyCommandMetadataChanged(),
+					(error: unknown) => {
+						logger.error("Deferred extension load failed", {
+							error: error instanceof Error ? error.message : String(error),
+						});
+					},
+				)
+				.finally(() => {
+					if (this.#deferredExtensionLoad === pending) this.#deferredExtensionLoad = undefined;
+				});
+			this.#deferredExtensionLoad = pending;
+		}
+		return this.#deferredExtensionLoad ?? Promise.resolve();
+	}
+
 	/** Replaces host-owned RPC tools before the next model call. */
 	refreshRpcHostTools(rpcTools: AgentTool[]): Promise<void> {
 		return this.#tools.refreshRpcHostTools(rpcTools);
@@ -8868,6 +8923,7 @@ export class AgentSession implements SettingsScope {
 			(!this.#isDisposed || alreadyDisposing) &&
 			!signal?.aborted;
 		const cancelled = { baseXdevCatalogDelivered: false, commit: () => undefined };
+		if (this.hasPendingDeferredExtensions) await this.loadDeferredExtensions();
 		const pendingMCPDiscovery = this.#pendingMCPDiscovery;
 		if (pendingMCPDiscovery) {
 			const timedOut = new Error("MCP discovery still pending");
@@ -12126,7 +12182,7 @@ export class AgentSession implements SettingsScope {
 		const rewoundAt = new Date().toISOString();
 		const details = { report, startedAt: checkpointState.startedAt, rewoundAt };
 		this.sessionManager.appendCustomMessageEntry(
-			"rewind-report",
+			REWIND_REPORT_MESSAGE_TYPE,
 			prompt.render(rewindReportTemplate, { report }),
 			false,
 			details,
@@ -13218,6 +13274,12 @@ export class AgentSession implements SettingsScope {
 				previousSessionContext !== undefined &&
 				didSessionMessagesChange(previousSessionContext.messages, sessionContext.messages);
 			this.#rehydrateCheckpointRewindState();
+
+			// As on /new: the outgoing session's background jobs share this agent id, so their
+			// results would otherwise land in the resumed transcript. Cancelled after the cwd and
+			// model checks, so a rejected switch keeps them, and before hooks hear of the switch,
+			// so jobs they start belong to the resumed session. Deliveries are held until now.
+			if (switchingToDifferentSession) this.#cancelOwnAsyncJobs();
 
 			// Emit session_switch event to hooks
 			if (this.#extensionRunner) {

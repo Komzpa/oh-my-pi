@@ -64,6 +64,7 @@ import {
 	CURRENT_SESSION_VERSION,
 	type CustomEntry,
 	type CustomMessageEntry,
+	EPHEMERAL_MODEL_CHANGE_ROLE,
 	type FileEntry,
 	type LabelEntry,
 	type ModeChangeEntry,
@@ -4016,12 +4017,17 @@ export class SessionManager {
 
 	/**
 	 * The most recent model role on the current branch, or undefined when no
-	 * model change has been recorded.
+	 * model change has been recorded. `skipEphemeral` passes over temporary
+	 * switches (retry fallback hops, prewalk, context promotion), returning the
+	 * role the session was last assigned.
 	 */
-	getLastModelChangeRole(): string | undefined {
+	getLastModelChangeRole(options?: { skipEphemeral?: boolean }): string | undefined {
 		let role: string | undefined;
 		for (const entry of this.iterateBranch("model_change")) {
-			if (entry.type === "model_change") role = entry.role ?? "default";
+			if (entry.type !== "model_change") continue;
+			const entryRole = entry.role ?? "default";
+			if (options?.skipEphemeral && entryRole === EPHEMERAL_MODEL_CHANGE_ROLE) continue;
+			role = entryRole;
 		}
 		return role;
 	}
