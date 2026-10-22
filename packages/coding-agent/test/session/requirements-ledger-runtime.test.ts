@@ -1027,16 +1027,16 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 			},
 		]);
 		try {
-			expect(runtime.refuseUnclassifiedCandidate("read")).toBeUndefined();
-			expect(runtime.refuseUnclassifiedCandidate("grep")).toBeUndefined();
-			expect(runtime.refuseUnclassifiedCandidate("peers")).toBeUndefined();
-			expect(runtime.refuseUnclassifiedCandidate("ask")).toBeUndefined();
-			expect(runtime.refuseUnclassifiedCandidate("todo")).toBeUndefined();
-			const refusal = runtime.refuseUnclassifiedCandidate("task");
-			expect(refusal?.block).toBe(true);
-			expect(refusal?.reason).toContain('op="append"');
-			expect(refusal?.reason).not.toContain("Finished row alpha");
-			expect(refusal?.reason).not.toContain("Finished row beta");
+			expect(runtime.remindUnclassifiedCandidates("read")).toBeUndefined();
+			expect(runtime.remindUnclassifiedCandidates("grep")).toBeUndefined();
+			expect(runtime.remindUnclassifiedCandidates("peers")).toBeUndefined();
+			expect(runtime.remindUnclassifiedCandidates("ask")).toBeUndefined();
+			expect(runtime.remindUnclassifiedCandidates("todo")).toBeUndefined();
+			const refusal = runtime.remindUnclassifiedCandidates("task");
+			expect(refusal?.block).toBeUndefined();
+			expect(refusal?.additionalContext).toContain('op="append"');
+			expect(refusal?.additionalContext).not.toContain("Finished row alpha");
+			expect(refusal?.additionalContext).not.toContain("Finished row beta");
 			const publicationGate = gate();
 			expect(publicationGate).toBeDefined();
 			const published = (await publicationGate?.(
@@ -1061,10 +1061,10 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 			},
 		]);
 		try {
-			const refusal = runtime.refuseUnclassifiedCandidate("task");
-			expect(refusal?.block).toBe(true);
-			expect(refusal?.reason).toContain("Live row gamma");
-			expect(refusal?.reason).not.toContain("Finished row alpha");
+			const refusal = runtime.remindUnclassifiedCandidates("task");
+			expect(refusal?.block).toBeUndefined();
+			expect(refusal?.additionalContext).toContain("Live row gamma");
+			expect(refusal?.additionalContext).not.toContain("Finished row alpha");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -1118,7 +1118,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 			content: [{ type: "text", text: "Understood." }],
 			stopReason: "stop",
 		} as never);
-		expect(runtime.refuseUnclassifiedCandidate("bash")).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("bash")).toBeUndefined();
 	});
 
 	it("keeps obligations after acknowledgement words as candidates with stable source IDs", () => {
@@ -1182,11 +1182,12 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 		});
 
 		runtime.captureCandidate("write probe.txt into the repo");
-		expect(runtime.refuseUnclassifiedCandidate("write")).toBeUndefined();
-		expect(runtime.refuseUnclassifiedCandidate("bash")).toBeUndefined();
-		expect(runtime.refuseUnclassifiedCandidate("task")?.block).toBe(true);
-		expect(runtime.refuseUnclassifiedCandidate("read")).toBeUndefined();
-		expect(runtime.refuseUnclassifiedCandidate("todo")).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("write")).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("bash")).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("task")?.block).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("task")?.additionalContext).toContain("R1");
+		expect(runtime.remindUnclassifiedCandidates("read")).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("todo")).toBeUndefined();
 
 		const classified = classifyRequirement(getLatestRequirements(manager.getBranch()), "R1", "linked", {
 			rows: ["Write probe"],
@@ -1196,7 +1197,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 			{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
 			classified.requirements,
 		);
-		expect(runtime.refuseUnclassifiedCandidate("task")).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("task")).toBeUndefined();
 	});
 
 	it("does not gate a user acknowledgement recorded as a non-requirement", () => {
@@ -1212,7 +1213,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 
 		runtime.captureCandidate("go");
 		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("not-a-requirement");
-		expect(runtime.refuseUnclassifiedCandidate("write")).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("write")).toBeUndefined();
 	});
 });
 

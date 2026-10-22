@@ -352,6 +352,12 @@ export function appendRequirementsSnapshot(
 	pi.appendEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, ledger);
 }
 
+/** Every non-empty line starts with `>`: a quote of earlier text, not a new ask. */
+function isQuotedText(rawText: string): boolean {
+	const lines = rawText.split(/\r?\n/u).filter(line => line.trim() !== "");
+	return lines.length > 0 && lines.every(line => line.trimStart().startsWith(">"));
+}
+
 /** Append candidates in ask order, assigning stable Rn IDs while preserving each raw string byte-for-byte. */
 export function createRequirementCandidates(
 	requirements: readonly RequirementLedgerItem[],
@@ -372,7 +378,8 @@ export function createRequirementCandidates(
 			throw new TypeError("Requirement rawText must be a non-empty string");
 		}
 		const images = imagesByCandidate[position];
-		const acknowledgementOnly = !images?.length && isAcknowledgementOnlyInput(rawText);
+		const quoted = !images?.length && isQuotedText(rawText);
+		const acknowledgementOnly = !images?.length && (quoted || isAcknowledgementOnlyInput(rawText));
 		// An image with no backing bytes and no source path cannot be shown to
 		// qa-auditor later; mark it once so the done-gate asks the user instead
 		// of demanding an impossible audit every round.
@@ -382,7 +389,13 @@ export function createRequirementCandidates(
 			at,
 			rawText,
 			classification: acknowledgementOnly ? ("not-a-requirement" as const) : ("candidate" as const),
-			...(acknowledgementOnly ? { reason: "Acknowledgement or reaction without a deliverable" } : {}),
+			...(acknowledgementOnly
+				? {
+						reason: quoted
+							? "Quoted text, not a new ask"
+							: "Acknowledgement, urgency or reaction without a deliverable",
+					}
+				: {}),
 			rows: [],
 			...(images?.length ? { images: [...structuredClone(images)] } : {}),
 			...(unresolvable ? { imageState: "needs-user-restatement" as const } : {}),
@@ -462,14 +475,6 @@ export function classifyRequirement(
 		};
 	}
 
-	const incomingMerges = requirements.filter(
-		requirement => requirement.classification === "merged" && requirement.mergeInto === id,
-	);
-	if (classification !== "linked" && incomingMerges.length > 0) {
-		return {
-			error: `Blocked: cannot classify ${id} ("${source.rawText}") while ${incomingMerges.map(requirement => requirement.id).join(", ")} is merged into it; the ledger would lose its active target. Reclassify the merged requirement(s) first, then call todo with op="classify", id="${id}", classification="<linked|not-a-requirement|merged>", rows=["<exact todo row>"]`,
-		};
-	}
 	const next = requirements.map(requirement => ({ ...requirement, rows: [...requirement.rows] }));
 	const updatedSource: RequirementLedgerItem = {
 		...source,
@@ -502,16 +507,33 @@ export function classifyRequirement(
 				error: `Blocked: merging ${id} ("${source.rawText}") requires a different existing Rn in mergeInto. ${formatMergeRecovery(source, requirements)}. Then retry`,
 			};
 		}
-		const targetIndex = next.findIndex(requirement => requirement.id === mergeInto);
+		let targetIndex = next.findIndex(requirement => requirement.id === mergeInto);
 		if (targetIndex < 0)
 			return {
 				error: `Blocked: unknown merge target ${mergeInto} for ${id}. ${formatMergeRecovery(source, requirements)}. Then retry`,
 			};
+		// A target merged earlier in this or a previous call resolves to the active
+		// requirement it points at, so batched classify calls are order independent.
+		for (const seen = new Set([targetIndex]); next[targetIndex]!.classification === "merged";) {
+			const hop = next.findIndex(requirement => requirement.id === next[targetIndex]!.mergeInto);
+			if (hop < 0 || seen.has(hop)) break;
+			seen.add(hop);
+			targetIndex = hop;
+		}
 		const target = next[targetIndex]!;
-		if (target.classification === "merged" || target.classification === "not-a-requirement") {
+		if (target.id === id || target.classification === "merged") {
 			return {
-				error: `Blocked: merge target ${mergeInto} is not an active requirement. ${formatMergeRecovery(source, requirements)}. Then retry`,
+				error: `Blocked: merge target ${mergeInto} does not resolve to an active requirement. ${formatMergeRecovery(source, requirements)}. Then retry`,
 			};
+		}
+		if (target.classification === "not-a-requirement") {
+			// Merging into a non-requirement says this one is not a requirement either.
+			updatedSource.classification = "not-a-requirement";
+			updatedSource.reason =
+				options.reason?.trim() || `Inherited from ${target.id}: ${target.reason ?? "not a requirement"}`;
+			delete updatedSource.mergeInto;
+			next[sourceIndex] = updatedSource;
+			return { requirements: cascadeIncomingMerges(next, updatedSource) };
 		}
 		const mergedRows = [...new Set([...target.rows, ...source.rows])];
 		next[targetIndex] = {
@@ -522,7 +544,7 @@ export function classifyRequirement(
 		};
 		delete next[targetIndex]!.verdict;
 		delete next[targetIndex]!.rowVerdicts;
-		updatedSource.mergeInto = mergeInto;
+		updatedSource.mergeInto = target.id;
 	}
 
 	if (superseding) {
@@ -540,7 +562,29 @@ export function classifyRequirement(
 		];
 	}
 	next[sourceIndex] = updatedSource;
-	return { requirements: next };
+	return { requirements: cascadeIncomingMerges(next, updatedSource) };
+}
+
+/**
+ * Requirements merged into a row that just became a non-requirement inherit that
+ * verdict; ones merged into a row that was itself merged follow it to its target.
+ * Either order of a batched classify therefore lands in the same ledger.
+ */
+function cascadeIncomingMerges(
+	requirements: RequirementLedgerItem[],
+	changed: RequirementLedgerItem,
+): RequirementLedgerItem[] {
+	if (changed.classification !== "not-a-requirement" && changed.classification !== "merged") return requirements;
+	return requirements.map(requirement => {
+		if (requirement.classification !== "merged" || requirement.mergeInto !== changed.id) return requirement;
+		if (changed.classification === "merged") return { ...requirement, mergeInto: changed.mergeInto };
+		const { mergeInto: _mergeInto, ...rest } = requirement;
+		return {
+			...rest,
+			classification: "not-a-requirement" as const,
+			reason: `Inherited from ${changed.id}: ${changed.reason ?? "not a requirement"}`,
+		};
+	});
 }
 
 /**
@@ -1435,9 +1479,8 @@ export function formatClassifyCall(
 	return `todo with op="classify", id="${requirement.id}", classification="linked", rows=["<exact todo row>"] (no todo row exists yet: first create one with todo op="append", items=["<exact todo row>"] (or op="init"), then retry the classify call; or classification="not-a-requirement" with reason="<why this is not a requirement>")`;
 }
 
-/** Gate refusal naming the blocked tool, the reason, and the exact call that unblocks it. */
-export function formatUnclassifiedCandidateRefusal(
-	toolName: string,
+/** Non-blocking reminder: pending candidates never delay dispatch, only the completion gate holds them. */
+export function formatUnclassifiedCandidateReminder(
 	candidates: readonly RequirementLedgerItem[],
 	rows: readonly string[],
 ): string {
@@ -1449,7 +1492,7 @@ export function formatUnclassifiedCandidateRefusal(
 			`requirement ${requirement.id} (${JSON.stringify(requirement.rawText)}) is an unclassified candidate. Call ${formatClassifyCall(requirement, rows)}`,
 	);
 	const available = rows.length > 0 ? ` Available todo rows: ${JSON.stringify([...rows])}.` : ``;
-	return `Blocked: ${toolName} is blocked because ${parts.join("; ")}.${available} Then retry ${toolName}`;
+	return `Reminder (this call was not blocked): ${parts.join("; ")}.${available} Classify them when convenient; completion stays gated until they are classified.`;
 }
 
 /** Compact model-only context: raw asks and worker evidence stay in the ledger. */

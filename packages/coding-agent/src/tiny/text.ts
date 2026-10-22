@@ -110,7 +110,24 @@ const ACKNOWLEDGEMENT_REACTIONS = new Set([
 	"сука",
 	"пиздец",
 	"нахуй",
+	// urgency / impatience: asks for speed, not for a new deliverable
+	"хули",
+	"хуле",
+	"мразь",
+	"где",
+	"долго",
+	"так",
+	"быстрее",
+	"скорее",
+	"wtf",
+	"hurry",
+	"faster",
 ]);
+
+/** `бляяяядь` -> `блядь`: runs of a repeated letter are one letter for reaction matching. */
+function collapseRepeats(token: string): string {
+	return token.replace(/(\p{L})\1+/gu, "$1");
+}
 
 /** No task object: every raw word is an acknowledgement or an emotional reaction.
  * Unlike title cleanup, this keeps code and quoted words in the decision; an
@@ -124,6 +141,7 @@ export function isAcknowledgementOnlyInput(message: string): boolean {
 	return tokens.every(
 		token =>
 			ACKNOWLEDGEMENT_REACTIONS.has(token) ||
+			ACKNOWLEDGEMENT_REACTIONS.has(collapseRepeats(token)) ||
 			(FILLER_TITLE_TOKENS.has(token) && token !== "test" && token !== "tests" && token !== "testing"),
 	);
 }

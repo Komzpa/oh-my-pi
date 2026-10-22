@@ -17,7 +17,7 @@ import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
 	formatRequirementGateArtifact,
-	formatUnclassifiedCandidateRefusal,
+	formatUnclassifiedCandidateReminder,
 	formatRequirementGateNotice,
 	formatRequirementPublicationStatus,
 	getLatestRequirements,
@@ -193,10 +193,12 @@ export class RequirementsLedgerRuntime {
 		this.syncPublicationGate();
 	}
 
-	refuseUnclassifiedCandidate(toolName: string, input?: unknown): BeforeToolCallResult | undefined {
-		// Classification gates new workers, never observation, ordinary work, or
-		// messages/cancellation needed to stop an existing worker immediately.
-		// TODO closure has its own completion gate.
+	/**
+	 * Pending candidates never block dispatch: an angry or urgent owner message
+	 * must not delay the work. The reminder rides on the `task` result; the
+	 * completion gates (todo done, publication) keep holding unclassified candidates.
+	 */
+	remindUnclassifiedCandidates(toolName: string, input?: unknown): BeforeToolCallResult | undefined {
 		if (this.#host.agentKind() !== "main" || toolName !== "task") return undefined;
 		if (
 			isRecord(input) &&
@@ -212,11 +214,7 @@ export class RequirementsLedgerRuntime {
 		);
 		const candidates = getUnclassifiedRequirementCandidates(branch);
 		if (candidates.length === 0) return undefined;
-		const rows = openTodoRowContents(branch);
-		return {
-			block: true,
-			reason: formatUnclassifiedCandidateRefusal(toolName, candidates, rows),
-		};
+		return { additionalContext: formatUnclassifiedCandidateReminder(candidates, openTodoRowContents(branch)) };
 	}
 
 	/** Audit scope comes only from named workers' structured TODO ownership, never task prose or quoted IDs. */

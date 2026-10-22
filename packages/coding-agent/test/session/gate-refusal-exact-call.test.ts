@@ -75,21 +75,23 @@ describe("gate refusal names the exact unblocking call", () => {
 	it("allows worker stop controls without classifying while keeping new work blocked", () => {
 		const { manager, runtime } = setupCandidateSession();
 		expect(
-			runtime.refuseUnclassifiedCandidate("write", { path: "agent://PhoneWorker", content: "stop" }),
+			runtime.remindUnclassifiedCandidates("write", { path: "agent://PhoneWorker", content: "stop" }),
 		).toBeUndefined();
-		expect(runtime.refuseUnclassifiedCandidate("write", { path: "agent://all", content: "stop" })).toBeUndefined();
-		expect(runtime.refuseUnclassifiedCandidate("write", { path: "proc://PhoneWorker/kill" })).toBeUndefined();
-		expect(runtime.refuseUnclassifiedCandidate("task", { action: "abort", id: "PhoneWorker" })).toBeUndefined();
-		expect(runtime.refuseUnclassifiedCandidate("task", { action: "cancel", id: "PhoneWorker" })).toBeUndefined();
-		expect(runtime.refuseUnclassifiedCandidate("task", { tasks: [{ task: "tap the phone" }] })?.block).toBe(true);
-		expect(runtime.refuseUnclassifiedCandidate("task", { action: "cancel", task: "tap the phone" })?.block).toBe(
-			true,
-		);
-		expect(runtime.refuseUnclassifiedCandidate("write", { path: "probe.txt", content: "new work" })).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("write", { path: "agent://all", content: "stop" })).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("write", { path: "proc://PhoneWorker/kill" })).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("task", { action: "abort", id: "PhoneWorker" })).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("task", { action: "cancel", id: "PhoneWorker" })).toBeUndefined();
 		expect(
-			runtime.refuseUnclassifiedCandidate("write", { path: "proc://PhoneWorker/mode", content: "persist" }),
+			runtime.remindUnclassifiedCandidates("task", { tasks: [{ task: "tap the phone" }] })?.additionalContext,
+		).toContain("R1");
+		expect(
+			runtime.remindUnclassifiedCandidates("task", { action: "cancel", task: "tap the phone" })?.additionalContext,
+		).toContain("R1");
+		expect(runtime.remindUnclassifiedCandidates("write", { path: "probe.txt", content: "new work" })).toBeUndefined();
+		expect(
+			runtime.remindUnclassifiedCandidates("write", { path: "proc://PhoneWorker/mode", content: "persist" }),
 		).toBeUndefined();
-		expect(runtime.refuseUnclassifiedCandidate("bash", { command: "touch probe.txt" })).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("bash", { command: "touch probe.txt" })).toBeUndefined();
 		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("candidate");
 	});
 
@@ -104,7 +106,7 @@ describe("gate refusal names the exact unblocking call", () => {
 		);
 		expect(phases[0]!.tasks[0]!.status).toBe("pending");
 		expect(
-			runtime.refuseUnclassifiedCandidate("write", { path: "agent://PhoneWorker", content: "stop" }),
+			runtime.remindUnclassifiedCandidates("write", { path: "agent://PhoneWorker", content: "stop" }),
 		).toBeUndefined();
 	});
 
@@ -119,19 +121,19 @@ describe("gate refusal names the exact unblocking call", () => {
 			"not-a-requirement",
 			"not-a-requirement",
 		]);
-		expect(runtime.refuseUnclassifiedCandidate("task", { task: "continue existing plan" })).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("task", { task: "continue existing plan" })).toBeUndefined();
 		runtime.captureCandidate("го почини login");
 		expect(getLatestRequirements(manager.getBranch()).at(-1)?.classification).toBe("candidate");
-		expect(runtime.refuseUnclassifiedCandidate("task", { task: "fix login" })?.block).toBe(true);
-		expect(runtime.refuseUnclassifiedCandidate("bash", { command: "touch probe.txt" })).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("task", { task: "fix login" })?.additionalContext).toContain("R");
+		expect(runtime.remindUnclassifiedCandidates("bash", { command: "touch probe.txt" })).toBeUndefined();
 	});
 
 	it("copied placeholder hint cannot link; an explicit relevant row unblocks", async () => {
 		const { manager, runtime, phases } = setupCandidateSession();
 
-		const refusal = runtime.refuseUnclassifiedCandidate("task", { task: "fix the login bug" });
-		expect(refusal?.block).toBe(true);
-		const reason = refusal && typeof refusal === "object" && "reason" in refusal ? String(refusal.reason) : "";
+		const refusal = runtime.remindUnclassifiedCandidates("task", { task: "fix the login bug" });
+		expect(refusal?.block).toBeUndefined();
+		const reason = refusal?.additionalContext ?? "";
 		// The refusal names the exact candidate but never a guessed runnable row.
 		expect(reason).toContain('op="classify"');
 		expect(reason).toContain('id="R1"');
@@ -157,7 +159,9 @@ describe("gate refusal names the exact unblocking call", () => {
 		} as never);
 		expect(refused.isError).toBe(true);
 		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("candidate");
-		expect(runtime.refuseUnclassifiedCandidate("task", { task: "fix the login bug" })?.block).toBe(true);
+		expect(runtime.remindUnclassifiedCandidates("task", { task: "fix the login bug" })?.additionalContext).toContain(
+			"unclassified candidate",
+		);
 
 		// Explicitly selecting the relevant row succeeds and unblocks bash.
 		const result = await tool.execute("call-2", {
@@ -169,6 +173,6 @@ describe("gate refusal names the exact unblocking call", () => {
 		expect(result.isError).toBeFalsy();
 		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("linked");
 
-		expect(runtime.refuseUnclassifiedCandidate("task", { task: "fix the login bug" })).toBeUndefined();
+		expect(runtime.remindUnclassifiedCandidates("task", { task: "fix the login bug" })).toBeUndefined();
 	});
 });

@@ -5362,15 +5362,26 @@ export class AgentSession implements SettingsScope {
 	 * execution still emit there).
 	 */
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
+		const result = await this.#beforeToolCallCore(ctx, signal);
+		if (result?.block) return result;
+		// Pending requirement candidates only remind; they never delay dispatch.
+		const reminder =
+			this.#agentKind === "main" && this.getActiveToolNames().includes("todo") && ctx.tool.name !== "todo"
+				? this.#requirementsLedger.remindUnclassifiedCandidates(ctx.tool.name, ctx.args)?.additionalContext
+				: undefined;
+		if (reminder === undefined) return result;
+		return {
+			...result,
+			additionalContext: result?.additionalContext ? `${result.additionalContext}\n\n${reminder}` : reminder,
+		};
+	}
+
+	async #beforeToolCallCore(
+		ctx: BeforeToolCallContext,
+		signal?: AbortSignal,
+	): Promise<BeforeToolCallResult | undefined> {
 		const runner = this.#extensionRunner;
 		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
-		if (this.#agentKind === "main" && this.getActiveToolNames().includes("todo") && ctx.tool.name !== "todo") {
-			const refusal = this.#requirementsLedger.refuseUnclassifiedCandidate(ctx.tool.name, ctx.args);
-			if (refusal) {
-				runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
-				return refusal;
-			}
-		}
 		let preparedArgs = ctx.args;
 		if (this.#agentKind === "main" && ctx.tool.name === "task") {
 			const revised = await this.#requirementsLedger.prepareAuditorTaskCall(

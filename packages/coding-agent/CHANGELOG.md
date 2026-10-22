@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Unclassified requirement candidates no longer block the `task` tool: they are listed as a reminder on the call and still hold the completion gates. Merging into a requirement classified not-a-requirement now inherits that verdict, merging into a merged requirement follows the link to its active target, and batched classify calls give the same ledger in any order. Quoted text (`>` lines) and pure urgency or profanity are recorded as not-a-requirement on capture
+
 ### Changed
 
 - An agent that messages another agent can now `wait` for the reply instead of erroring; the wait ends early, without an error, once the agent asked finishes its turn without replying or is itself waiting on the caller's result ([#16445](https://github.com/can1357/oh-my-pi/pull/16445) by [@will-bogusz](https://github.com/will-bogusz))
