@@ -324,6 +324,32 @@ export async function visitEntriesFromFileStream(
 			}
 			let recordEnd = firstNewline;
 			let awaitingMoreData = false;
+			// Whether a value starting at `start` is still unfinished at newline `end`.
+			// That is monotone in `end`, so the first newline that can end the value is
+			// found by bisection instead of re-parsing the growing prefix line by line,
+			// which is quadratic for a long multi-line record.
+			const unfinishedAt = (end: number): boolean => {
+				const probe = Bun.JSONL.parseChunk(view, start, end + 1);
+				return probe.values.length === 0 && !probe.error && !probe.done;
+			};
+			const lastNewline = view.lastIndexOf(0x0a);
+			if (lastNewline > firstNewline && unfinishedAt(firstNewline)) {
+				if (unfinishedAt(lastNewline)) {
+					recordEnd = lastNewline;
+				} else {
+					let low = firstNewline;
+					let high = lastNewline;
+					while (true) {
+						const middle = (low + high) >> 1;
+						let probeAt = view.indexOf(0x0a, middle);
+						if (probeAt < 0 || probeAt >= high) probeAt = view.lastIndexOf(0x0a, middle);
+						if (probeAt <= low) break;
+						if (unfinishedAt(probeAt)) low = probeAt;
+						else high = probeAt;
+					}
+					recordEnd = high;
+				}
+			}
 			while (true) {
 				const { values, error, read, done } = Bun.JSONL.parseChunk(view, start, recordEnd + 1);
 				if (values.length > 0) {
