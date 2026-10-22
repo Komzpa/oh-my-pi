@@ -12,6 +12,8 @@
 ### Fixed
 
 - `todo_dispatch`: the idle PLAN CHECK ticker fingerprints the problem list alone (worker telemetry excluded) and dedupes on that fingerprint, so an unchanged problem is delivered once instead of every minute (nine wake-ups in eleven minutes, live 2026-10-21); the receding-finish wording now says the projected finish moved from X to Y and names the current time.
+- `todo_dispatch`: re-deliver an unchanged PLAN CHECK problem list once every 30 minutes after its last delivery, so problem kinds without an escalation step (understaffed, no worker) are not said once and then never again; a changed list or an escalation still delivers at once and restarts the 30-minute clock.
+
 
 - Keep the main event loop responsive during Git integration checks: await Git in context and merge admission, share in-flight probes, and keep the synchronous advice callback free of subprocesses.
 

@@ -2426,7 +2426,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // situation and points here (user 2026-09-25: "одну идемпотентную доку … её в любой ситуации тыкай").
   const PLAN_CHECK_CLEAN = "PLAN CHECK: no problems.";
   const PLAN_TICK_MS = 60_000;
-  const PLAN_REPEAT_MS = 10 * 60_000;
+  const PLAN_REDELIVERY_MS = 30 * 60_000;
+  let planHeartbeatSeq = 0;
   const ORDER = "Put things in order: run the pass of skill://chief-of-staff now (read it first if it is not in your context).";
   const PARALLEL_GATES = "Checks of the same candidate (lint, unit, build, browser, visual, accessibility, performance, video capture) depend on that candidate only, never on each other: give each its own row that depends on the candidate row, run them side by side, and split a long suite into shards on separate workers. Resolving a merge is one row and one worker for all conflicted files; commit it the moment no path is unresolved, and run the checks on that commit.";
   // Enough rows already (parked >= free slots): adding more only grows the idle pile (live 00:40:
@@ -4222,9 +4223,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const check = await planCheck(ctx, [], true);
       if (!check) return planTrace(ctx, "no-problems");
       if (check === PLAN_CHECK_CLEAN) return planTrace(ctx, "plan-clean");
-      // Once per distinct problem list, and again after PLAN_REPEAT_MS while the same problems stand:
-      // a per-minute repeat made the model restate its status every minute (22:08-22:11), while
-      // never repeating let it idle on one worker for half an hour unnoticed (03:05-03:35).
+      // Once per distinct problem list, plus one heartbeat every PLAN_REDELIVERY_MS while the same problems
+      // stand: a per-minute repeat made the model restate its status every minute (22:08-22:11), while
+      // never repeating let problem kinds without an escalation step (understaffed, no worker) go
+      // unmentioned for the rest of the session. Escalations change the wording, so they change the key.
       const now = Date.now();
       // Minutes and timestamps change every tick; the problem list is the same unless the words change.
       const key = lastPlanProblems
@@ -4233,13 +4235,17 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         .replace(/\s+/g, " ")
         .replace(/\d+/g, "#");
       if (gateSwitchedOff(ctx)) return planTrace(ctx, "switched-off");
-      if (pendingSizingNoticeIds.length === 0 && key === lastIdlePlanCheck && now - lastIdlePlanCheckAt < PLAN_REPEAT_MS)
+      const unchanged = key === lastIdlePlanCheck;
+      if (pendingSizingNoticeIds.length === 0 && unchanged && now - lastIdlePlanCheckAt < PLAN_REDELIVERY_MS)
         return planTrace(ctx, "same-problems-recently-sent");
+      // A heartbeat re-delivers an unchanged list, so it needs an identity the notice digest has not seen.
+      const heartbeat = unchanged && now - lastIdlePlanCheckAt >= PLAN_REDELIVERY_MS;
+      if (heartbeat) planHeartbeatSeq += 1;
+      if (!unchanged || heartbeat) lastIdlePlanCheckAt = now;
       lastIdlePlanCheck = key;
-      lastIdlePlanCheckAt = now;
       // Digest the stable key, not the rendered text: only a changed problem list or an escalation
       // (the stuck-worker and receding-finish wording changes at 30/60/20 min) delivers again.
-      sendHarnessNotice("todo-plan-check", key, check, undefined, key);
+      sendHarnessNotice("todo-plan-check", key, check, undefined, heartbeat ? `${key}|heartbeat-${planHeartbeatSeq}` : key);
       markSizingNotices();
       planTrace(ctx, "sent", { problems: check.slice(0, 160) });
     } catch (error) {

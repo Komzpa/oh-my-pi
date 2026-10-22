@@ -1792,6 +1792,63 @@ test("PLAN CHECK delivers an unchanged problem once while worker telemetry and t
   }
 }, 60_000);
 
+test("PLAN CHECK heartbeat: an unchanged problem without an escalation step is repeated once per 30 minutes, a changed one at once", async () => {
+  const cwd = repo("clean");
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  let clock = Date.now();
+  const nowSpy = spyOn(Date, "now").mockImplementation(() => clock);
+  const sent: string[] = [];
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: clock + 3_600_000 * 3 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: (message: { content: string }) => { sent.push(message.content); },
+  } as unknown as ExtensionAPI;
+  await todoDispatch(api);
+  // Estimates far longer than the replay keep the missed-ETA and receding-finish escalations out of this fixture.
+  const branch = plan("ready", clock) as Array<{ message: { details: { phases: Array<{ tasks: Array<{ schedule: { estimate: Record<string, number> } }> }> } } }>;
+  for (const task of branch[0]!.message.details.phases[0]!.tasks) Object.assign(task.schedule.estimate, { optimisticSeconds: 36_000, likelySeconds: 40_000, pessimisticSeconds: 50_000 });
+  let running: unknown[] = [];
+  let tick: (() => void) | undefined;
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: "gates-plan-heartbeat" }), ...branchMock(() => branch), getSessionFile: () => undefined },
+    getAsyncJobSnapshot: () => ({ running, recent: [], nonJobAgents: [] }),
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    setInterval: (callback: () => void) => { tick = callback; return {}; },
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  const checks = () => sent.filter((text) => text.includes("PLAN CHECK"));
+  try {
+    handlers.get("session_start")!({}, ctx);
+    // 31 one-minute ticks (minute 0 through minute 30) of the same "no worker" problem.
+    for (let minute = 0; minute < 31; minute += 1) {
+      await tick!();
+      if (minute < 30) expect(checks()).toHaveLength(1);
+      clock += 60_000;
+    }
+    expect(checks()).toHaveLength(2);
+    expect(checks()[1]).toContain("have no worker");
+    // The next heartbeat is 30 minutes after the last delivery (minute 30), so nothing goes out through minute 59.
+    for (let minute = 0; minute < 28; minute += 1) { clock += 60_000; await tick!(); }
+    expect(checks()).toHaveLength(2);
+    // A changed problem list is delivered at once, regardless of the heartbeat clock.
+    running = [{ id: "stray-worker", agentId: "stray-worker", type: "task", status: "running", label: "Stray", startTime: clock }];
+    await tick!();
+    expect(checks()).toHaveLength(3);
+    expect(checks()[2]).toContain("stray-worker");
+  } finally {
+    nowSpy.mockRestore();
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("PLAN CHECK warns both live workers and chief once when worker writes overlap", async () => {
   const cwd = repo("clean");
   const sessions = mkdtempSync(join(tmpdir(), "gates-worker-overlap-"));
