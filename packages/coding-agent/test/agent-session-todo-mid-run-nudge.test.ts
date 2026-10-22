@@ -8,7 +8,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { TodoTool, WriteTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { BashTool, TodoTool, WriteTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
@@ -49,6 +49,7 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 	let reminderEvents: Array<Extract<AgentSessionEvent, { type: "todo_reminder" }>>;
 	let asideProvider: (() => AsideMessage[] | Promise<AsideMessage[]>) | undefined;
 	let taskExecutions: number;
+	let bashExecutions: number;
 
 	const THRESHOLD = 12; // mirrors MID_RUN_NUDGE_MUTATION_THRESHOLD
 	const NUDGE_TYPE = "mid-run-todo-nudge";
@@ -167,11 +168,26 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 			},
 		};
 
+		// Real BashTool approval classification, stubbed execution: the gate must see the production tier.
+		const realBash = new BashTool(toolSession);
+		const bashTool: AgentTool = {
+			name: "bash",
+			label: "Bash",
+			description: "Mock bash with production approval",
+			parameters: type({}),
+			approval: realBash.approval,
+			execute: async () => {
+				bashExecutions++;
+				return { content: [{ type: "text", text: "bash-ok" }] };
+			},
+		};
+		bashExecutions = 0;
+
 		const agent = new Agent({
 			initialState: {
 				model,
 				systemPrompt: ["Test"],
-				tools: [todoTool, writeTool, taskTool] as unknown as AgentTool[],
+				tools: [todoTool, writeTool, taskTool, bashTool] as unknown as AgentTool[],
 				messages: [],
 			},
 		});
@@ -195,6 +211,7 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 				["todo", todoTool as unknown as AgentTool],
 				["write", writeTool as unknown as AgentTool],
 				["task", taskTool],
+				["bash", bashTool],
 			]),
 		});
 
@@ -407,5 +424,24 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		});
 		expect(taskExecutions).toBe(1);
 		expect(await Bun.file(path).text()).toBe("original");
+	});
+
+	it("lets read-only bash through while planning debt blocks mutating bash", async () => {
+		const bash = session.agent.state.tools.find(tool => tool.name === "bash")!;
+		const phases = session.getTodoPhases();
+		delete phases[0].tasks[1].schedule;
+		session.setTodoPhases(phases);
+
+		await expect(bash.execute("bash-read", { command: "git diff --stat | head" })).resolves.toEqual({
+			content: [{ type: "text", text: "bash-ok" }],
+		});
+		expect(bashExecutions).toBe(1);
+		await expect(bash.execute("bash-commit", { command: "git commit -m x" })).rejects.toThrow(
+			"Complete whole-plan estimates and dependencies before executing bash",
+		);
+		await expect(bash.execute("bash-redirect", { command: "ls > f" })).rejects.toThrow(
+			"Complete whole-plan estimates and dependencies before executing bash",
+		);
+		expect(bashExecutions).toBe(1);
 	});
 });

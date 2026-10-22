@@ -545,9 +545,11 @@ describe("tool-owned dynamic approval declarations", () => {
 			],
 		};
 
+		// Read-only inspection matched by an allow pattern keeps the `read` tier, which planning admission needs.
 		for (const command of ["git diff packages/coding-agent/src/tools/bash.ts", "git status", "git log --oneline"]) {
-			expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "write", policy: "allow" });
+			expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "read", policy: "allow" });
 		}
+		expect(bashApproval("git checkout main", settingsOverrides)).toEqual({ tier: "write", policy: "allow" });
 
 		expect(bashApproval("rm -rf build", settingsOverrides)).toEqual({
 			tier: "exec",
@@ -597,7 +599,7 @@ describe("tool-owned dynamic approval declarations", () => {
 		};
 
 		expect(bashApproval("git status", settingsOverrides)).toEqual({
-			tier: "write",
+			tier: "read",
 			policy: "allow",
 		});
 	});
@@ -687,7 +689,7 @@ describe("tool-owned dynamic approval declarations", () => {
 		}
 
 		for (const command of ["git status", "git status --short", "git  status", "git\tstatus"]) {
-			expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "write", policy: "allow" });
+			expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "read", policy: "allow" });
 		}
 	});
 
@@ -815,7 +817,8 @@ describe("tool-owned dynamic approval declarations", () => {
 				{ match: "rm *", approval: "prompt" },
 			],
 		});
-		const commands = ["cmp before after && pwd", "pwd && whoami"];
+		// `whoami` stands in for an unmatched, non-read-only command (allow-listed read-only ones are `read` tier).
+		const commands = ["cmp before after && whoami", "whoami && id"];
 		const cases: Array<[ApprovalMode, Record<string, "allow" | "prompt" | "deny">, "allow" | "prompt" | "deny"]> = [
 			["always-ask", {}, "prompt"],
 			["write", {}, "prompt"],
@@ -830,7 +833,7 @@ describe("tool-owned dynamic approval declarations", () => {
 				const args = { command };
 				expect(resolveApproval(bash, args, mode, userPolicy).policy).toBe(policy);
 				expect(resolveApproval(bash, args, mode, userPolicy).policy).toBe(
-					resolveApproval(bash, { command: "pwd" }, mode, userPolicy).policy,
+					resolveApproval(bash, { command: "whoami" }, mode, userPolicy).policy,
 				);
 				if (policy === "deny") {
 					expect(() => requiresApproval(bash, args, mode, userPolicy)).toThrow();

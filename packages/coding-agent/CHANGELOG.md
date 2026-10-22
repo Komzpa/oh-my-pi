@@ -7,6 +7,7 @@
 - Added the `_session/steering` ACP extension (advertised as `_meta.steering.supported`), so clients such as agent-shell can steer a running turn; a steer sent while a permission dialog is open cancels that dialog, and `_meta.steering.queue: "followUp"` queues a follow-up instead ([#15885](https://github.com/can1357/oh-my-pi/pull/15885) by [@marcintustin](https://github.com/marcintustin))
 - `/mcp reauth <name>` now works over ACP, RPC, and print mode (`omp -p '/mcp reauth <name>'`): it opens the browser, prints the authorization URL, reconnects the server in the running session, and print mode exits 1 when reauthorization fails ([#16046](https://github.com/can1357/oh-my-pi/pull/16046) by [@marcintustin](https://github.com/marcintustin))
 
+- Bash commands made only of allow-listed inspection (`git status/diff/log/show/rev-parse/ls-files/branch`, `ls`, `cat`, `head`, `tail`, `wc`, `pwd`, `rg`, `grep`, `find` without `-exec`/`-delete`) now report the `read` approval tier, so they pass the incomplete-plan admission gate; redirection, substitution, assignments, `git -c`, `--output`, `--ext-diff` and `--textconv` keep `exec`.
 ### Changed
 
 - ACP `session/cancel` now also cancels prompts that are queued or still dispatching, and stops autonomous runs, instead of being ignored when no client turn is streaming ([#15885](https://github.com/can1357/oh-my-pi/pull/15885) by [@marcintustin](https://github.com/marcintustin))
