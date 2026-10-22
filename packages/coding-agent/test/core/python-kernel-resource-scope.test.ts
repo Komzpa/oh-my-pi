@@ -35,7 +35,7 @@ describe.skipIf(Bun.env.PI_PYTHON_INTEGRATION !== "1")("Python kernel resource s
 					if (Number.isFinite(tasks)) tasksMax = Math.min(tasksMax, tasks);
 					cgroupPath = path.dirname(cgroupPath);
 				}
-				expect(tasksMax).toBeLessThanOrEqual(500);
+				expect(tasksMax).toBeLessThanOrEqual(16_384);
 			}
 			output = "";
 			const result = await kernel.execute("print(retained + 1)", {

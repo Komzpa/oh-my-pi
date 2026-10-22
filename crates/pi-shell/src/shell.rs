@@ -1153,10 +1153,7 @@ async fn run_shell_command_in_filesystem(
 			.map_err(|err| Error::msg(format!("Failed to pop env scope: {err}")))?;
 	}
 	if spawn_registry.process_limit_was_hit()? {
-		return Err(Error::msg(
-			"tool process limit exceeded: Linux cgroup pids.max blocked process creation at 500 \
-			 tasks; reduce concurrent child processes and retry",
-		));
+		return Err(Error::msg(spawn_registry.process_limit_message()));
 	}
 
 	result.map(|(exec, minimized)| {
@@ -1721,10 +1718,7 @@ async fn run_shell_command_streams_in_filesystem(
 	let _ = cancel_bridge.await;
 
 	if spawn_registry.process_limit_was_hit()? {
-		return Err(Error::msg(
-			"tool process limit exceeded: Linux cgroup pids.max blocked process creation at 500 \
-			 tasks; reduce concurrent child processes and retry",
-		));
+		return Err(Error::msg(spawn_registry.process_limit_message()));
 	}
 
 	let result = result.map_err(|err| Error::msg(format!("Shell execution failed: {err}")))?;

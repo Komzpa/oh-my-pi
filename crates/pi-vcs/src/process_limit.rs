@@ -1,6 +1,11 @@
 //! Linux per-tool process boundaries for external shell commands.
 //!
-//! Each shell execution owns a transient systemd slice with `TasksMax=500`.
+//! Each shell execution owns a transient systemd slice with
+//! `TasksMax=DEFAULT_TASK_LIMIT` (see below), overridable with
+//! `OMP_TOOL_TASKS_MAX`. cgroup v2 counts threads, so a GPU browser suite with
+//! a dozen workers needs thousands of tasks; the cap exists to contain fork
+//! bombs and runaway trees, not ordinary parallel workloads. An invalid
+//! `OMP_TOOL_TASKS_MAX` fails closed: external commands are rejected.
 //! External programs run as transient scopes beneath that slice, so their
 //! descendants and forks are counted together by cgroup v2. Scopes preserve
 //! inherited descriptors, resource limits, and the caller's environment.
@@ -26,8 +31,45 @@ use std::{
 
 use brush_core::ExternalCommandWrapper;
 
-const DEFAULT_TASK_LIMIT: u32 = 500;
+/// Default `TasksMax` per tool slice. Measured 2026-10-22: a 12-worker GPU
+/// Chromium Playwright run exceeded 1,468 tasks within 16 s of start (about
+/// 150 per worker, extrapolating to roughly 1,800 steady). 16,384 is about 9x
+/// that and still far below the per-user cgroup limit.
+pub const DEFAULT_TASK_LIMIT: u32 = 16_384;
+/// Environment variable overriding [`DEFAULT_TASK_LIMIT`].
+pub const TASK_LIMIT_ENV: &str = "OMP_TOOL_TASKS_MAX";
+const MIN_TASK_LIMIT: u32 = 64;
+/// Linux `PID_MAX_LIMIT`: a larger cap can never be reached.
+const MAX_TASK_LIMIT: u32 = 4_194_304;
 static NEXT_SCOPE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Parse an `OMP_TOOL_TASKS_MAX` value: unset or blank means the default; any
+/// other value must be a decimal integer within the supported range.
+pub fn parse_task_limit(value: Option<&OsStr>) -> Result<u32, String> {
+	let Some(value) = value else {
+		return Ok(DEFAULT_TASK_LIMIT);
+	};
+	let text = value
+		.to_str()
+		.ok_or_else(|| format!("{TASK_LIMIT_ENV} is not valid UTF-8"))?
+		.trim();
+	if text.is_empty() {
+		return Ok(DEFAULT_TASK_LIMIT);
+	}
+	let limit: u32 = text.parse().map_err(|_| {
+		format!(
+			"{TASK_LIMIT_ENV}={text:?} is not a decimal integer in \
+			 {MIN_TASK_LIMIT}..={MAX_TASK_LIMIT}"
+		)
+	})?;
+	if !(MIN_TASK_LIMIT..=MAX_TASK_LIMIT).contains(&limit) {
+		return Err(format!(
+			"{TASK_LIMIT_ENV}={limit} is outside the supported range \
+			 {MIN_TASK_LIMIT}..={MAX_TASK_LIMIT}"
+		));
+	}
+	Ok(limit)
+}
 
 /// Stable parent for a session's tool processes, including across exec.
 pub fn session_slice_name(session_id: &str) -> io::Result<String> {
@@ -353,14 +395,24 @@ struct LimitState {
 
 #[derive(Debug)]
 pub struct ToolProcessLimit {
-	slice: String,
-	limit: u32,
-	state: Mutex<LimitState>,
+	slice:        String,
+	limit:        u32,
+	/// Invalid `OMP_TOOL_TASKS_MAX`; reported on first use so the guard fails
+	/// closed.
+	config_error: Option<String>,
+	state:        Mutex<LimitState>,
 }
 
 impl Default for ToolProcessLimit {
 	fn default() -> Self {
-		Self::new(DEFAULT_TASK_LIMIT)
+		match parse_task_limit(std::env::var_os(TASK_LIMIT_ENV).as_deref()) {
+			Ok(limit) => Self::new(limit),
+			Err(error) => {
+				let mut this = Self::new(DEFAULT_TASK_LIMIT);
+				this.config_error = Some(error);
+				this
+			},
+		}
 	}
 }
 
@@ -406,6 +458,7 @@ impl ToolProcessLimit {
 		Self {
 			slice: format!("omp-tool-call-{}-{id}.slice", std::process::id()),
 			limit,
+			config_error: None,
 			state: Mutex::new(LimitState {
 				initialized:     false,
 				created:         false,
@@ -418,6 +471,9 @@ impl ToolProcessLimit {
 	fn ensure_enforced(&self, state: &mut LimitState) -> io::Result<()> {
 		if state.initialized {
 			return Ok(());
+		}
+		if let Some(error) = &self.config_error {
+			return Err(io::Error::new(io::ErrorKind::InvalidInput, error.clone()));
 		}
 		#[cfg(not(target_os = "linux"))]
 		{
@@ -476,6 +532,11 @@ impl ToolProcessLimit {
 			state.initialized = true;
 		}
 		Ok(())
+	}
+
+	/// The `TasksMax` this boundary enforces.
+	pub fn limit(&self) -> u32 {
+		self.limit
 	}
 
 	pub fn limit_was_hit(&self) -> io::Result<bool> {
@@ -763,6 +824,7 @@ fn sweep_stale_call_dropins_in(control: &std::path::Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
 	use std::{
+		ffi::OsStr,
 		io::{BufRead, BufReader},
 		process::{Child, Command, Stdio},
 		time::{Duration, Instant},
@@ -770,7 +832,63 @@ mod tests {
 
 	use brush_core::ExternalCommandWrapper;
 
-	use super::ToolProcessLimit;
+	use super::{
+		DEFAULT_TASK_LIMIT, MAX_TASK_LIMIT, MIN_TASK_LIMIT, TASK_LIMIT_ENV, ToolProcessLimit,
+		parse_task_limit,
+	};
+
+	#[test]
+	fn default_task_limit_fits_browser_suites_under_user_cgroup() {
+		assert!(DEFAULT_TASK_LIMIT >= 4096);
+		assert!(DEFAULT_TASK_LIMIT < 74_157);
+		assert_eq!(parse_task_limit(None), Ok(DEFAULT_TASK_LIMIT));
+		assert_eq!(parse_task_limit(Some(OsStr::new("  "))), Ok(DEFAULT_TASK_LIMIT));
+		assert_eq!(ToolProcessLimit::new(DEFAULT_TASK_LIMIT).limit(), DEFAULT_TASK_LIMIT);
+	}
+
+	#[test]
+	fn task_limit_override_accepts_valid_values() {
+		assert_eq!(parse_task_limit(Some(OsStr::new("20000"))), Ok(20000));
+		assert_eq!(parse_task_limit(Some(OsStr::new(" 500 "))), Ok(500));
+		assert_eq!(
+			parse_task_limit(Some(OsStr::new(&MIN_TASK_LIMIT.to_string()))),
+			Ok(MIN_TASK_LIMIT)
+		);
+		assert_eq!(
+			parse_task_limit(Some(OsStr::new(&MAX_TASK_LIMIT.to_string()))),
+			Ok(MAX_TASK_LIMIT)
+		);
+	}
+
+	#[test]
+	fn task_limit_override_rejects_invalid_values_naming_the_variable() {
+		let too_small = (MIN_TASK_LIMIT - 1).to_string();
+		let too_large = (MAX_TASK_LIMIT + 1).to_string();
+		for bad in
+			["abc", "-5", "1.5", "0x400", "0", "99999999999", too_small.as_str(), too_large.as_str()]
+		{
+			let error = parse_task_limit(Some(OsStr::new(bad))).expect_err(bad);
+			assert!(error.contains(TASK_LIMIT_ENV), "{error}");
+		}
+		#[cfg(unix)]
+		{
+			use std::os::unix::ffi::OsStrExt;
+			assert!(parse_task_limit(Some(OsStr::from_bytes(b"\xff"))).is_err());
+		}
+	}
+
+	#[test]
+	#[cfg(target_os = "linux")]
+	fn invalid_override_fails_closed_before_any_command_runs() {
+		let mut limit = ToolProcessLimit::new(DEFAULT_TASK_LIMIT);
+		limit.config_error = Some(format!("{TASK_LIMIT_ENV}=\"abc\" is invalid"));
+		let command = [std::ffi::OsString::from("true")];
+		let error = limit
+			.wrap_scope_command(&command, &super::ScopeEnvironment::default())
+			.expect_err("invalid override must reject commands");
+		assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+		assert!(error.to_string().contains(TASK_LIMIT_ENV), "{error}");
+	}
 
 	#[test]
 	fn session_slice_naming_and_call_parenting() {

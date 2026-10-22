@@ -31,7 +31,9 @@ This document covers execution/process/terminal primitives in `@oh-my-pi/pi-nati
 
 On Linux with cgroup v2 and a working systemd user manager, each shell tool
 call places external commands and their descendants in its own transient slice
-with kernel-enforced `TasksMax=500`. The task limit is read back
+with kernel-enforced `TasksMax=16384` (threads count; override with
+`OMP_TOOL_TASKS_MAX`, an integer from 64 to 4194304; an invalid value rejects
+external commands). The task limit is read back
 from the cgroup before user code runs. A successful persistent-shell call
 retains its scope while external background work remains live; later runs prune
 empty scopes, and cancellation, timeout, cap-hit, or session teardown stops the
@@ -45,7 +47,7 @@ Local bash commands carry `OMP_SESSION_ID`. The native boundary binds its first
 launch to `omp-tool-<h12>.slice`, using a child named
 `omp-tool-<h12>-call-<pid>-<id>.slice`, where `h12` is the first 12 hex characters
 of SHA-256 of the full session id; systemd's slice hierarchy gives the
-session a single parent without changing the per-call `TasksMax=500` limit.
+session a single parent without changing the per-call `TasksMax` limit.
 `sessionSliceName(sessionId)` in the natives package is the canonical naming
 helper. Unowned host operations retain their existing per-call boundary.
 

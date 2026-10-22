@@ -1208,6 +1208,17 @@ impl SpawnRegistry {
 		Self { state: Mutex::default(), process_limit: ToolProcessLimit::new(task_limit) }
 	}
 
+	/// Failure message for a cap hit, naming the effective limit and its
+	/// override.
+	pub fn process_limit_message(&self) -> String {
+		format!(
+			"tool process limit exceeded: Linux cgroup pids.max blocked process creation at {} tasks \
+			 (threads count); reduce concurrent child processes, or raise the cap with {}",
+			self.process_limit.limit(),
+			pi_vcs::process_limit::TASK_LIMIT_ENV,
+		)
+	}
+
 	/// Reports whether the kernel rejected a process creation at the tool cap.
 	pub fn process_limit_was_hit(&self) -> std::io::Result<bool> {
 		self.process_limit.limit_was_hit()
