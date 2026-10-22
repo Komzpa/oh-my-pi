@@ -31,7 +31,9 @@ use std::{
 
 use brush_core::ExternalCommandWrapper;
 
-/// Default `TasksMax` per tool slice. Measured 2026-10-22: a 12-worker GPU
+/// Default `TasksMax` per tool slice.
+///
+/// Measured 2026-10-22: a 12-worker GPU
 /// Chromium Playwright run exceeded 1,468 tasks within 16 s of start (about
 /// 150 per worker, extrapolating to roughly 1,800 steady). 16,384 is about 9x
 /// that and still far below the per-user cgroup limit.
@@ -535,7 +537,7 @@ impl ToolProcessLimit {
 	}
 
 	/// The `TasksMax` this boundary enforces.
-	pub fn limit(&self) -> u32 {
+	pub const fn limit(&self) -> u32 {
 		self.limit
 	}
 
