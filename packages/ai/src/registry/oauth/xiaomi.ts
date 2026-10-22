@@ -42,7 +42,10 @@ export function resolveXiaomiRequestBaseUrl(
 	const region =
 		/^xiaomi-token-plan-(sgp|ams|cn)$/.exec(provider)?.[1] ??
 		/token-plan-(sgp|ams|cn)\./.exec(model.baseUrl ?? "")?.[1];
-	return TOKEN_PLAN_VALIDATION_ENDPOINTS[(region as XiaomiTokenPlanRegion | undefined) ?? "sgp"].baseUrl;
+	// Upstream keeps each regional validation host in its auth policy; reuse it instead of a second table.
+	const login = authPolicyFor(`xiaomi-token-plan-${region ?? "sgp"}`)?.login;
+	if (login?.kind !== "api-key" || login.validate?.kind !== "chat-completions") return model.baseUrl;
+	return login.validate.baseUrl;
 }
 
 const VALIDATION_TIMEOUT_MS = 15_000;
