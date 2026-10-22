@@ -842,8 +842,8 @@ describe("canonical requirements ledger", () => {
 			classification: "not-a-requirement",
 			reason: "duplicate of the approval ask",
 		};
-		const result = classifyRequirement(requirements, "R20", "merged", { mergeInto: "R19" });
-		if (!("error" in result)) throw new Error("expected the inactive merge target to block the call");
+		const result = classifyRequirement(requirements, "R20", "merged", { mergeInto: "R99" });
+		if (!("error" in result)) throw new Error("expected the unknown merge target to block the call");
 		const recovery = result.error;
 		expect(recovery).not.toContain('classification="merged"');
 		expect(recovery).not.toContain("mergeInto=");
@@ -870,8 +870,8 @@ describe("canonical requirements ledger", () => {
 			classification: "not-a-requirement",
 			reason: "duplicate of the approval ask",
 		};
-		const result = classifyRequirement(requirements, "R20", "merged", { mergeInto: "R19" });
-		if (!("error" in result)) throw new Error("expected the inactive merge target to block the call");
+		const result = classifyRequirement(requirements, "R20", "merged", { mergeInto: "R99" });
+		if (!("error" in result)) throw new Error("expected the unknown merge target to block the call");
 		const recovery = result.error;
 		expect(recovery).toContain('Available active merge targets: ["R1"]');
 		const availability = recovery.match(/Available active merge targets: (\[[^\]]*\])/)?.[1];
@@ -1097,7 +1097,7 @@ describe("todo requirement classification", () => {
 		}
 	});
 
-	it("rejects reclassifying a candidate with incoming merge references before persistence", async () => {
+	it("carries incoming merges along when their target is reclassified", async () => {
 		for (const transition of [
 			{ classification: "not-a-requirement" as const, reason: "not in scope" },
 			{ classification: "merged" as const, mergeInto: "R1" },
@@ -1111,12 +1111,17 @@ describe("todo requirement classification", () => {
 				{ appendEntry: (customType, data) => manager.appendCustomEntry(customType, data) },
 				merged.requirements,
 			);
-			const before = getLatestRequirements(manager.getBranch());
-			const result = await tool.execute("invalid-merge-target", { op: "classify", id: "R2", ...transition });
-			expect(result.isError).toBe(true);
-			const first = result.content[0];
-			expect(first?.type === "text" ? first.text : undefined).toContain("R3 is merged into it");
-			expect(parseRequirementsLedger({ version: 1, requirements: before })).toBeDefined();
+			const result = await tool.execute("reclassify-merge-target", { op: "classify", id: "R2", ...transition });
+			expect(result.isError).toBeFalsy();
+			const after = getLatestRequirements(manager.getBranch());
+			const dependent = after.find(requirement => requirement.id === "R3")!;
+			if (transition.classification === "merged") {
+				expect(dependent).toMatchObject({ classification: "merged", mergeInto: "R1" });
+			} else {
+				expect(dependent.classification).toBe("not-a-requirement");
+				expect(dependent.reason).toContain("R2");
+			}
+			expect(parseRequirementsLedger({ version: 1, requirements: after })).toBeDefined();
 		}
 	});
 

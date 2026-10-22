@@ -141,7 +141,7 @@ describe("gate refusal names the exact unblocking call", () => {
 		expect(reason).toContain('rows=["<exact todo row>"]');
 		expect(reason).not.toContain(`rows=${JSON.stringify([ROW])}`);
 		expect(reason).toContain(ROW);
-		expect(reason).toContain("Then retry");
+		expect(reason).toContain("Classify them when convenient");
 
 		// Copying the placeholder hint cannot silently link the candidate.
 		const id = /id="(R\d+)"/.exec(reason)?.[1];
