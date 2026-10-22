@@ -4,6 +4,7 @@
  */
 import { register, type SettingValueOf } from "./registry";
 import type { AuthAccountPolicies } from "@oh-my-pi/pi-ai/auth-storage";
+import type { ModelRolePool } from "./model-role-pools";
 import type { cfgDefaultThinkingLevel } from "../session/settings";
 
 /** Display metadata for one model tag. */
@@ -29,6 +30,7 @@ export interface ModelPreset {
 
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_STRING_RECORD: Record<string, string> = {};
+const EMPTY_MODEL_ROLE_POOLS: Record<string, ModelRolePool> = {};
 const DEFAULT_CYCLE_ORDER: string[] = ["smol", "default", "slow"];
 const EMPTY_MODEL_TAGS_RECORD: ModelTagsSettings = {};
 const EMPTY_MODEL_PRESETS_RECORD: Record<string, ModelPreset> = {};
@@ -107,6 +109,17 @@ export const cfgModelRoleStorage = register({
 });
 
 export const cfgModelRoles = register({ id: "modelRoles", type: "record", default: EMPTY_STRING_RECORD });
+
+/**
+ * Weighted pools (`modelRolePools.<role>.<selector> = weight`). A role listed here is a pool: when it
+ * expands for a seeded caller (subagent spawn), its members are reordered by a weighted random draw.
+ * No settings-panel UI.
+ */
+export const cfgModelRolePools = register({
+	id: "modelRolePools",
+	type: "record",
+	default: EMPTY_MODEL_ROLE_POOLS,
+});
 
 /** Named model presets; no settings-panel UI — managed by `/modelpreset` and the model hub. */
 export const cfgModelPresets = register({
