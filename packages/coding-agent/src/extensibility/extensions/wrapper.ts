@@ -10,7 +10,7 @@ import {
 	type ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
 import type { ComputerSafetyCheck, ImageContent, Static, TextContent, TSchema } from "@oh-my-pi/pi-ai";
-import { prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
+import { popLoopPhase, prompt, pushLoopPhase, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import nativeDelegationTemplate from "../../prompts/tools/native-delegation.md" with { type: "text" };
 import {
@@ -291,6 +291,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			if (!loopDispatchedToolCall) this.runner.cancelToolCallPreflight?.(toolCallId);
 		};
 		if (!loopEmittedToolCall && this.runner.hasHandlers("tool_call")) {
+			pushLoopPhase(`extension.tool_call:${this.tool.name}`);
 			try {
 				const callResult = (await this.runner.emitToolCall(
 					{
@@ -325,6 +326,8 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 					throw err;
 				}
 				throw new Error(`Extension failed, blocking execution: ${String(err)}`);
+			} finally {
+				popLoopPhase();
 			}
 		}
 		if (!loopDispatchedToolCall) {
@@ -500,55 +503,60 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 
 		// Emit tool_result event - extensions can modify the result and error status
 		if (this.runner.hasHandlers("tool_result")) {
-			const resultResult = await this.runner.emitToolResult(
-				{
-					type: "tool_result",
-					toolName: this.tool.name,
-					toolCallId,
-					input: normalizeToolEventInput(
-						this.tool.name,
-						resolveToolEventInput(this.tool, toolEventArgs(effectiveParams, context)),
-					),
-					content: result.content,
-					details: result.details,
-					isError: !!executionError || result.isError === true,
-				},
-				this.#agent,
-			);
+			pushLoopPhase(`extension.tool_result:${this.tool.name}`);
+			try {
+				const resultResult = await this.runner.emitToolResult(
+					{
+						type: "tool_result",
+						toolName: this.tool.name,
+						toolCallId,
+						input: normalizeToolEventInput(
+							this.tool.name,
+							resolveToolEventInput(this.tool, toolEventArgs(effectiveParams, context)),
+						),
+						content: result.content,
+						details: result.details,
+						isError: !!executionError || result.isError === true,
+					},
+					this.#agent,
+				);
 
-			// Handler context reports into this call's sink like tool-authored
-			// context: it is delivered even for a failed call (the handler saw
-			// `isError`), and precedes any pending `tool_call` context.
-			if (resultResult?.additionalContext !== undefined) {
-				context?.addAdditionalContext?.(resultResult.additionalContext);
-			}
-
-			// `content` is present only when a handler modified the result.
-			if (resultResult?.content !== undefined) {
-				const modifiedContent: (TextContent | ImageContent)[] = resultResult.content;
-				const modifiedDetails = (resultResult.details ?? result.details) as TDetails;
-
-				// Effective error state: an explicit handler override wins; otherwise the
-				// original execution outcome stands. This lets a handler rewrite a failed
-				// call's model-visible content/details while keeping it an error, flip a
-				// failure to success, or flag a success as an error.
-				const effectiveError = resultResult.isError ?? !!executionError;
-				if (!effectiveError && pendingAdditionalContext !== undefined) {
-					context?.addAdditionalContext?.(pendingAdditionalContext);
+				// Handler context reports into this call's sink like tool-authored
+				// context: it is delivered even for a failed call (the handler saw
+				// `isError`), and precedes any pending `tool_call` context.
+				if (resultResult?.additionalContext !== undefined) {
+					context?.addAdditionalContext?.(resultResult.additionalContext);
 				}
 
-				// Return the (possibly modified) result carrying the error flag rather than
-				// rethrowing the original exception. The agent loop honors
-				// `AgentToolResult.isError` and surfaces it as a tool error on the wire (see
-				// `coerceToolResult` in agent-loop), so replacement failure content reaches
-				// the model while the call remains an error — the original exception text is
-				// no longer forced through, which previously discarded the replacement.
-				return {
-					content: modifiedContent,
-					details: modifiedDetails,
-					providerMetadata: result.providerMetadata,
-					...(effectiveError ? { isError: true } : {}),
-				};
+				// `content` is present only when a handler modified the result.
+				if (resultResult?.content !== undefined) {
+					const modifiedContent: (TextContent | ImageContent)[] = resultResult.content;
+					const modifiedDetails = (resultResult.details ?? result.details) as TDetails;
+
+					// Effective error state: an explicit handler override wins; otherwise the
+					// original execution outcome stands. This lets a handler rewrite a failed
+					// call's model-visible content/details while keeping it an error, flip a
+					// failure to success, or flag a success as an error.
+					const effectiveError = resultResult.isError ?? !!executionError;
+					if (!effectiveError && pendingAdditionalContext !== undefined) {
+						context?.addAdditionalContext?.(pendingAdditionalContext);
+					}
+
+					// Return the (possibly modified) result carrying the error flag rather than
+					// rethrowing the original exception. The agent loop honors
+					// `AgentToolResult.isError` and surfaces it as a tool error on the wire (see
+					// `coerceToolResult` in agent-loop), so replacement failure content reaches
+					// the model while the call remains an error — the original exception text is
+					// no longer forced through, which previously discarded the replacement.
+					return {
+						content: modifiedContent,
+						details: modifiedDetails,
+						providerMetadata: result.providerMetadata,
+						...(effectiveError ? { isError: true } : {}),
+					};
+				}
+			} finally {
+				popLoopPhase();
 			}
 		}
 
