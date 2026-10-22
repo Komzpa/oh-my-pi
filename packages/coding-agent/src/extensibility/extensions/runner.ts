@@ -136,6 +136,10 @@ export interface ToolCallPreflight {
 export const EXTENSION_HANDLER_TIMEOUT_MS = 30_000;
 let extensionHandlerTimeoutMs = EXTENSION_HANDLER_TIMEOUT_MS;
 
+function throwUnsupportedModelPresetAction(): never {
+	throw new Error("This extension host does not support session model presets");
+}
+
 function throwUnsupportedServiceTierAction(): never {
 	throw new Error("This extension host does not support service-tier actions");
 }
@@ -838,6 +842,9 @@ export class ExtensionRunner {
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
 		this.runtime.getServiceTiers = actions.getServiceTiers ?? throwUnsupportedServiceTierAction;
 		this.runtime.setServiceTier = actions.setServiceTier ?? throwUnsupportedServiceTierAction;
+		this.runtime.applySessionModelPreset = actions.applySessionModelPreset ?? throwUnsupportedModelPresetAction;
+		this.runtime.clearSessionModelPreset = actions.clearSessionModelPreset ?? throwUnsupportedModelPresetAction;
+		this.runtime.getSessionModelPreset = actions.getSessionModelPreset ?? throwUnsupportedModelPresetAction;
 		this.runtime.getSessionName = actions.getSessionName;
 		this.runtime.setSessionName = actions.setSessionName;
 		this.runtime.registerProvider = (name, config, sourceId) => {

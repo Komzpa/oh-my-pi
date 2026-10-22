@@ -7,6 +7,7 @@ import { Database } from "bun:sqlite";
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { cfgEnabledModels, cfgModelPresets, cfgModelRoles } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import type { ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
@@ -1007,6 +1008,42 @@ describe("ACP agent", () => {
 
 		harness.abortController.abort();
 		await Bun.sleep(0);
+	});
+
+	it("announces preset model-list changes from extension actions and keeps clear synchronous", async () => {
+		const initialize = vi.spyOn(ExtensionRunner.prototype, "initialize");
+		const harness = await createHarness({ extensionRunners: true });
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		const registry = { ...session.modelRegistry, hasConfiguredAuth: () => true, hasConcreteAuth: () => true };
+		Object.defineProperty(session, "modelRegistry", { value: registry, configurable: true });
+		Object.defineProperty(session, "scopedModels", { value: [], configurable: true });
+		vi.spyOn(session, "getAvailableModels").mockImplementation(() =>
+			cfgEnabledModels.get(session.settings).length ? [TEST_MODELS[0]!] : TEST_MODELS,
+		);
+		cfgModelRoles.override(session.settings, { default: "anthropic/claude-sonnet-4-20250514" });
+		cfgModelPresets.override(session.settings, {
+			limited: {
+				modelRoles: { default: "anthropic/claude-sonnet-4-20250514" },
+				settings: { enabledModels: ["anthropic/claude-sonnet-4-20250514"] },
+			},
+		});
+		const actions = initialize.mock.calls.at(-1)![0];
+		const before = harness.updates.length;
+		await actions.applySessionModelPreset!("limited");
+		await Bun.sleep(0);
+		const cleared = actions.clearSessionModelPreset!();
+		expect(cleared).toBe("limited");
+		await Bun.sleep(0);
+		const updates = harness.updates.slice(before).filter(n => n.update.sessionUpdate === "config_option_update");
+		expect(updates).toHaveLength(2);
+		const sizes = updates.map(n => {
+			if (n.update.sessionUpdate !== "config_option_update") throw new Error("Expected config update");
+			const option = n.update.configOptions.find(o => o.id === "model");
+			return option?.type === "select" ? option.options.length : -1;
+		});
+		expect(sizes).toEqual([1, 2]);
+		await harness.agent.dispose();
 	});
 
 	it("pushes config_option_update when thinking level changes internally", async () => {

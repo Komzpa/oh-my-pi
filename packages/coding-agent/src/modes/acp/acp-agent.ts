@@ -45,6 +45,7 @@ import {
 	type Usage,
 } from "@oh-my-pi/pi-utils/acp";
 import { disableProvider, enableProvider } from "../../capability";
+import { createSessionModelPresetActions } from "../../config/model-presets";
 import { Settings } from "../../config/settings";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
@@ -3018,6 +3019,15 @@ export class AcpAgent implements Agent {
 			return;
 		}
 
+		const presetActions = createSessionModelPresetActions(record.session);
+		const notifyPresetConfig = () => {
+			const delivery = this.#pushConfigOptionUpdate(record).catch((error: unknown) => {
+				logger.warn("ACP session preset config update failed", { error });
+			});
+			record.promptEventHandlers.add(delivery);
+			void delivery.finally(() => record.promptEventHandlers.delete(delivery));
+		};
+
 		extensionRunner.initialize(
 			{
 				sendMessage: (message, options) => {
@@ -3050,6 +3060,17 @@ export class AcpAgent implements Agent {
 				setThinkingLevel: level => record.session.setThinkingLevel(level),
 				getServiceTiers: () => record.session.serviceTierByFamily,
 				setServiceTier: (family, tier) => record.session.setServiceTierFamily(family, tier),
+				...presetActions,
+				applySessionModelPreset: async name => {
+					const result = await presetActions.applySessionModelPreset(name);
+					if (result.kind === "switched" || result.kind === "failed") notifyPresetConfig();
+					return result;
+				},
+				clearSessionModelPreset: () => {
+					const cleared = presetActions.clearSessionModelPreset();
+					if (cleared !== undefined) notifyPresetConfig();
+					return cleared;
+				},
 				getSessionName: () => record.session.sessionManager.getSessionName(),
 				setSessionName: async name => {
 					await record.session.sessionManager.setSessionName(name, "user");
