@@ -42,7 +42,7 @@ export function resolveXiaomiRequestBaseUrl(
 	const region =
 		/^xiaomi-token-plan-(sgp|ams|cn)$/.exec(provider)?.[1] ??
 		/token-plan-(sgp|ams|cn)\./.exec(model.baseUrl ?? "")?.[1];
-	// Upstream keeps each regional validation host in its auth policy; reuse it instead of a second table.
+	// Each regional Token Plan host lives once, in its auth policy; reuse it instead of a second table.
 	const login = authPolicyFor(`xiaomi-token-plan-${region ?? "sgp"}`)?.login;
 	if (login?.kind !== "api-key" || login.validate?.kind !== "chat-completions") return model.baseUrl;
 	return login.validate.baseUrl;
