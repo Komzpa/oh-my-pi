@@ -35,12 +35,12 @@ import taskSpawnFeedbackTemplate from "../prompts/tools/task-spawn-feedback.md" 
 import taskSpecializationAdvisoryTemplate from "../prompts/tools/task-specialization-advisory.md" with { type: "text" };
 import taskFollowUpTemplate from "../prompts/tools/task-follow-up.md" with { type: "text" };
 import { TASK_EFFORTS, type TaskEffort } from "@oh-my-pi/pi-tui/thinking";
-import { THINKING_EFFORTS, type Effort } from "@oh-my-pi/pi-catalog/effort";
+import { type Effort } from "@oh-my-pi/pi-catalog/effort";
 import { truncateForPrompt } from "../tools/approval";
 import { hasWaitTool } from "../tools/wait";
 import { isIrcEnabled } from "../irc/messaging";
 import { isReadOnlyAgent } from "./read-only-policy";
-import { agentInheritsParentModel, resolveAgentModelSelection, resolveModelOverride } from "../config/model-resolver";
+import { resolveAgentModelSelection } from "../config/model-resolver";
 import { formatTaskResultSummary } from "./result-summary";
 import { isScoutSpawnable, type ResolvedSpawnPolicy, resolveSpawnPolicy } from "./spawn-policy";
 import { isBundledSeance, seanceTaskGuidance, seanceTaskSchemaFields, validateSeanceParams } from "./seance";
@@ -57,10 +57,10 @@ import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
 import { renderResult, renderCall as renderTaskCall } from "@oh-my-pi/pi-tui/tools/task";
 import { repairTaskParams } from "@oh-my-pi/pi-tui/tools/task-repair-args";
+import { isInfraFailure, nextUntriedVendorModel } from "./redispatch-vendor";
 import { captureReworkReflection, renderPreviousAttempts, type ReworkReflectionResult } from "./rework-reflection";
 import {
 	resolveEffectiveSubagentPolicy,
-	resumeStructuredSubagent,
 	runStructuredSubagent,
 	StructuredSubagentError,
 	type StructuredSubagentResult,
@@ -104,8 +104,6 @@ import {
 	cfgTaskMaxConcurrency,
 	cfgTaskMaxRecursionDepth,
 	cfgTaskMaxRuntimeMs,
-	cfgTaskReworkLadder,
-	type TaskReworkLadderEntry,
 	cfgTaskSpeculativeLaunch,
 	cfgTaskStructured,
 } from "./settings";
@@ -408,31 +406,10 @@ interface ReworkRoute {
 	row: { phase: string; content: string };
 	previous: NonNullable<TodoSchedule["executor"]>;
 	reason?: string;
-	rung?: { model?: string; effort: Effort };
+	/** Next-vendor model from the agent's own chain; absent means ordinary routing. */
+	rung?: { model: string };
 	failedLine?: string;
 	context?: string;
-}
-
-function nextReworkRung(ladder: readonly TaskReworkLadderEntry[], model: string, effort: string) {
-	const choices = ladder.map(entry => {
-		const colon = entry.lastIndexOf(":");
-		return { model: entry.slice(0, colon) || model, effort: entry.slice(colon + 1) as Effort };
-	});
-	// Anchor explicit model traversal independently of the actual effort. A
-	// clamped/overridden effort must never restart an already visited family.
-	const exact = choices.findLastIndex(choice => choice.model === model && choice.effort === effort);
-	const explicit = choices.findIndex((choice, index) => !ladder[index]!.startsWith(":") && choice.model === model);
-	const start = Math.max(exact + 1, explicit, 0);
-	for (let index = start; index < choices.length; index++) {
-		const choice = choices[index]!;
-		if (
-			choice.model === model &&
-			THINKING_EFFORTS.indexOf(choice.effort) <= THINKING_EFFORTS.indexOf(effort as Effort)
-		)
-			continue;
-		return { model: ladder[index]!.startsWith(":") ? undefined : choice.model, effort: choice.effort };
-	}
-	return undefined;
 }
 
 /**
@@ -792,49 +769,49 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const exhaustedBlocked =
 			task.status === "blocked" && task.blocker?.startsWith("waits for user: Rework ladder exhausted.");
 		if (!previous?.outcome) return {};
-		if (previous.outcome !== "completed") {
-			if (!previous.resolvedModel || !previous.thinkingLevel)
-				return { error: `Cannot redispatch "${task.content}": the worker's resolved model or effort is missing.` };
-			const requestedProfile = spawn.agent ?? previous.agentProfile;
+		const requestedProfile = spawn.agent ?? previous.agentProfile;
+		const history = task.schedule?.attemptHistory ?? [];
+		// Vendors already spent on this row: every rejected or model-failed attempt, plus the
+		// attempt being re-dispatched. Infrastructure failures say nothing about the model.
+		const triedModels = history
+			.filter(attempt => attempt.terminalStatus === "completed" || !isInfraFailure(attempt.infraFailureError))
+			.map(attempt => attempt.resolvedModel);
+		/** Next-vendor model; undefined = no chain (ordinary routing); null = every vendor tried. */
+		const nextVendorModel = (): string | null | undefined => {
 			const requestedAgent = [...this.#discoveredAgents, ...(this.session.getSessionAgents?.() ?? [])].find(
 				agent => agent.name === requestedProfile,
 			);
-			const modelResolution = {
+			const chain = resolveAgentModelSelection({
 				agentModel: requestedAgent?.model,
 				settingsOverride: requestedProfile
 					? cfgTaskAgentModelOverrides.get(this.session.settings)[requestedProfile]
 					: undefined,
 				settings: this.session.settings,
-			};
-			const modelSelection = resolveAgentModelSelection(modelResolution);
-			const previousModel = this.session.modelRegistry
-				?.getAvailable()
-				.find(model => `${model.provider}/${model.id}` === previous.resolvedModel);
+			}).patterns;
+			if (chain.length === 0) return undefined;
+			return nextUntriedVendorModel(chain, triedModels) ?? null;
+		};
+		const exhausted = {
+			error: `Blocked: "${task.content}" has no untried model vendor left and will not run again. Call todo with op=append to split it into 2-4 smaller rows, each with its own checkable result, then op=drop on the exhausted row (or make it depend on the new rows), then dispatch the new rows.`,
+		};
+		if (previous.outcome !== "completed") {
+			const failed = history.findLast(attempt => attempt.attemptId === `${previous.workerId}:${previous.startedAt}`);
+			const infra = isInfraFailure(failed?.infraFailureError);
 			const sameProfile = spawn.agent === undefined || spawn.agent === previous.agentProfile;
-			const retryWithinProfile =
-				agentInheritsParentModel(modelResolution) ||
-				Boolean(
-					previousModel &&
-					modelSelection.patterns.some(
-						pattern =>
-							resolveModelOverride([pattern], { getAvailable: () => [previousModel] }, this.session.settings)
-								.model,
-					),
-				);
-			const failed = task.schedule?.attemptHistory?.findLast(
-				attempt => attempt.attemptId === `${previous.workerId}:${previous.startedAt}`,
-			);
+			let model: string | null | undefined;
+			if (!infra && sameProfile) {
+				if (!previous.resolvedModel)
+					return { error: `Cannot redispatch "${task.content}": the worker's resolved model is missing.` };
+				triedModels.push(previous.resolvedModel);
+				model = nextVendorModel();
+				if (model === null) return exhausted;
+			}
 			return {
 				route: {
 					row: { phase, content: task.content },
 					previous,
-					rung:
-						sameProfile && retryWithinProfile
-							? { model: previous.resolvedModel, effort: previous.thinkingLevel as Effort }
-							: undefined,
-					failedLine:
-						failed?.infraFailureLine ??
-						`attempt ${(task.schedule?.attemptHistory?.length ?? 0) + 1} failed: ${previous.outcome}`,
+					rung: model ? { model } : undefined,
+					failedLine: failed?.infraFailureLine ?? `attempt ${history.length + 1} failed: ${previous.outcome}`,
 				},
 			};
 		}
@@ -847,22 +824,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				error: `Cannot rework "${task.content}": the completed worker's resolved model, effort, or finish time is missing.`,
 			};
 		}
-		const rung = nextReworkRung(
-			cfgTaskReworkLadder.get(this.session.settings),
-			previous.resolvedModel,
-			previous.thinkingLevel,
-		);
-		if (exhaustedBlocked || rung === undefined) {
-			return {
-				error: `Blocked: "${task.content}" exhausted the rework ladder (top rung reached) and will not run again. Call todo with op=append to split it into 2-4 smaller rows, each with its own checkable result, then op=drop on the exhausted row (or make it depend on the new rows), then dispatch the new rows.`,
-			};
-		}
+		triedModels.push(previous.resolvedModel);
+		const model = nextVendorModel();
+		if (exhaustedBlocked || model === null) return exhausted;
 		return {
 			route: {
 				row: { phase, content: task.content },
 				previous,
 				reason,
-				rung,
+				rung: model ? { model } : undefined,
 			},
 		};
 	}
@@ -1621,11 +1591,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const policy = policies[index]!;
 			const agentSource = policy.agent.source;
 			const run = adopted.get(index);
-			const route = this.#reworkRoutes.get(`${toolCallId}:${index}`);
 			const agentId =
-				route?.reason && route.rung && !route.rung.model
-					? route.previous.workerId
-					: (run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName())));
+				run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName()));
 			const assignment = item.task ?? "";
 			spawns.push({
 				agentId,
@@ -2259,7 +2226,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				...this.#resultParams(params),
 				...this.#effortParams(params),
 				solutionSpace: params.solutionSpace,
-				...(route?.rung ? { model: route.rung.model, thinkingLevel: route.rung.effort } : {}),
+				...(route?.rung ? { model: route.rung.model } : {}),
 				...(params.tools?.length
 					? {
 							customTools: createEvalCustomTools(
@@ -2307,18 +2274,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					});
 				},
 			};
-			let execution: StructuredSubagentResult;
-			if (route?.reason && route.rung && !route.rung.model) {
-				const previous = this.#workerSessions.get(route.previous.workerId);
-				if (!previous) throw new Error(`Rework session ${route.previous.workerId} is unavailable.`);
-				execution = await resumeStructuredSubagent(
-					{ ...request, assignment: [context, assignment].filter(Boolean).join("\n\n") },
-					previous,
-					route.rung.effort,
-				);
-			} else {
-				execution = await runStructuredSubagent(request);
-			}
+			const execution: StructuredSubagentResult = await runStructuredSubagent(request);
 			this.#workerSessions.set(execution.result.id, execution);
 			this.#recordFailedAttempt(execution.result);
 			this.#reworkRoutes.delete(`${toolCallId}:${spawnIndex}`);

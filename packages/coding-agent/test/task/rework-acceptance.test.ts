@@ -1,6 +1,5 @@
 /** Observable task-tool acceptance coverage for retry and rework routing. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import type { Effort } from "@oh-my-pi/pi-ai";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
@@ -21,16 +20,31 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
 const ROW = "Render the accepted cut";
 const OWNER = "RenderCut";
+const OPENAI = "codex-lb/gpt-6-luna";
 const MODEL = "anthropic/claude-sonnet-4";
-const FAMILIES = ["codex-lb/gpt-6-luna", "codex-lb/gpt-5.6-terra", "codex-lb/gpt-6.1-sol", "codex-lb/gpt-6-astra"];
-const FAMILY_LADDER = FAMILIES.map(model => `${model}:medium`);
-const EFFORT_LADDER = [":minimal", ":low", ":medium", ":high", ":xhigh", ":max"];
+const XAI = "openrouter/x-ai/grok-5";
+/** The agent's own chain: three vendors, one model each. */
+const CHAIN = [OPENAI, MODEL, XAI];
 const taskAgent: AgentDefinition = {
 	name: "task",
 	description: "General-purpose task agent",
 	systemPrompt: "You are a task agent.",
 	source: "bundled",
+	model: CHAIN,
 };
+const attempt = (model: string, n: number, extra: Record<string, unknown> = {}) => ({
+	attemptId: `old${n}:${n}`,
+	workerName: `old${n}`,
+	resolvedModel: model,
+	effort: "medium",
+	startedAt: n,
+	finishedAt: n + 1,
+	durationMs: 1,
+	terminalStatus: "completed" as const,
+	deliverablePaths: [],
+	rejectionReason: `Rejection ${n}.`,
+	...extra,
+});
 
 function makeResult(id: string, overrides: Partial<SingleResult> = {}): SingleResult {
 	return {
@@ -54,10 +68,7 @@ function makeResult(id: string, overrides: Partial<SingleResult> = {}): SingleRe
 	};
 }
 
-function createSession(
-	initial: TodoPhase[] = [],
-	ladder: readonly string[] = EFFORT_LADDER,
-): {
+function createSession(initial: TodoPhase[] = []): {
 	session: ToolSession;
 	phases: () => TodoPhase[];
 	setPhases: (value: TodoPhase[]) => void;
@@ -72,7 +83,6 @@ function createSession(
 		settings: Settings.isolated({
 			"async.enabled": false,
 			"tools.approvalMode": "yolo",
-			...(ladder === undefined ? {} : { "task.reworkLadder": [...ladder] }),
 		}),
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
@@ -135,6 +145,14 @@ function seededPhase(
 	];
 }
 
+/** Every vendor of CHAIN is spent: two rejected attempts plus the completed one on the last vendor. */
+function exhaustedPhase(): TodoPhase[] {
+	return seededPhase("completed", [attempt(OPENAI, 1), attempt(MODEL, 2)], {
+		resolvedModel: XAI,
+		thinkingLevel: "high",
+	});
+}
+
 function text(result: { content: Array<{ type: string; text?: string }> }): string {
 	return result.content.map(part => (part.type === "text" ? (part.text ?? "") : "")).join("\n");
 }
@@ -175,24 +193,27 @@ describe("task rework acceptance", () => {
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
 	});
-	it("advances explicit families independently of the previous effort", async () => {
-		const harness = createSession([], FAMILY_LADDER);
+	it("moves a rejected row to the next untried vendor using the whole attempt history", async () => {
+		const harness = createSession();
 		const run = vi
 			.spyOn(executorModule, "runSubprocess")
 			.mockImplementation(async options => makeResult(options.id ?? OWNER));
 		vi.spyOn(reflectionModule, "captureReworkReflection").mockResolvedValue({ answer: "Change the approach." });
 		const tool = await TaskTool.create(harness.session);
 		await tool.execute("seed", { name: OWNER, task: ROW });
-		for (let index = 0; index < FAMILIES.length - 1; index++) {
-			harness.setPhases(seededPhase("completed", [], { resolvedModel: FAMILIES[index], thinkingLevel: "high" }));
-			await tool.execute(`family-${index}`, { name: OWNER, task: ROW, rework: "The result is still wrong." });
-			expect(run.mock.calls.at(-1)![0].modelOverride).toEqual([FAMILIES[index + 1]!]);
-		}
-		expect(run).toHaveBeenCalledTimes(4);
+		harness.setPhases(seededPhase("completed", [], { resolvedModel: OPENAI }));
+		await tool.execute("rework-1", { name: OWNER, task: ROW, rework: "The result is still wrong." });
+		expect(run.mock.calls.at(-1)![0].modelOverride).toEqual([MODEL]);
+		expect(run.mock.calls.at(-1)![0].exactThinkingLevel).toBeUndefined();
+		// A same-vendor sibling route must not count as a new vendor: openai was tried first.
+		harness.setPhases(seededPhase("completed", [attempt("openrouter/openai/gpt-5.6", 1)], { resolvedModel: MODEL }));
+		await tool.execute("rework-2", { name: OWNER, task: ROW, rework: "Still wrong." });
+		expect(run.mock.calls.at(-1)![0].modelOverride).toEqual([XAI]);
+		expect(run).toHaveBeenCalledTimes(3);
 	});
 
 	it("refuses an exhausted top-rung redispatch without approval and names the split", async () => {
-		const harness = createSession([], FAMILY_LADDER);
+		const harness = createSession();
 		const run = vi
 			.spyOn(executorModule, "runSubprocess")
 			.mockImplementation(async options => makeResult(options.id ?? OWNER));
@@ -201,7 +222,7 @@ describe("task rework acceptance", () => {
 			.mockResolvedValue({ answer: "Change the approach." });
 		const tool = await TaskTool.create(harness.session);
 		await tool.execute("seed", { name: OWNER, task: ROW });
-		harness.setPhases(seededPhase("completed", [], { resolvedModel: FAMILIES[3], thinkingLevel: "high" }));
+		harness.setPhases(exhaustedPhase());
 		const params = { name: OWNER, task: ROW, rework: "The final result is wrong." };
 		const select = vi.fn(async () => "Approve");
 		const wrapped = wrapTask(tool, harness.session, select);
@@ -223,20 +244,20 @@ describe("task rework acceptance", () => {
 		expect(select).not.toHaveBeenCalled();
 		expect(run).toHaveBeenCalledTimes(1);
 		expect(reflection).not.toHaveBeenCalled();
-		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toEqual([]);
+		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toEqual([attempt(OPENAI, 1), attempt(MODEL, 2)]);
 	});
 
 	it("dispatches a split child row right away after an exhausted refusal", async () => {
 		const CHILD_A = "Render the opening cut";
 		const CHILD_B = "Render the closing cut";
-		const harness = createSession([], FAMILY_LADDER);
+		const harness = createSession();
 		const run = vi
 			.spyOn(executorModule, "runSubprocess")
 			.mockImplementation(async options => makeResult(options.id ?? OWNER));
 		vi.spyOn(reflectionModule, "captureReworkReflection").mockResolvedValue({ answer: "Change the approach." });
 		const tool = await TaskTool.create(harness.session);
 		await tool.execute("seed", { name: OWNER, task: ROW });
-		harness.setPhases(seededPhase("completed", [], { resolvedModel: FAMILIES[3], thinkingLevel: "high" }));
+		harness.setPhases(exhaustedPhase());
 		const select = vi.fn(async () => "Approve");
 		const wrapped = wrapTask(tool, harness.session, select);
 		const refused = await wrapped.execute("top-rung", {
@@ -259,10 +280,7 @@ describe("task rework acceptance", () => {
 	});
 
 	it("rejects mixed exhausted recovery before reflection or any dispatch", async () => {
-		const harness = createSession(
-			seededPhase("completed", [], { resolvedModel: FAMILIES[3], thinkingLevel: "high" }),
-			FAMILY_LADDER,
-		);
+		const harness = createSession(exhaustedPhase());
 		const run = vi
 			.spyOn(executorModule, "runSubprocess")
 			.mockImplementation(async options => makeResult(options.id ?? OWNER));
@@ -287,21 +305,15 @@ describe("task rework acceptance", () => {
 		expect(reflection).not.toHaveBeenCalled();
 	});
 
-	it("keeps an infrastructure retry on its current rung without rejection history", async () => {
+	it("re-dispatches an infrastructure failure on ordinary selection without spending its vendor", async () => {
 		const existing = [
-			{
+			attempt(MODEL, 1, {
 				attemptId: `${OWNER}:100`,
-				workerName: OWNER,
-				resolvedModel: MODEL,
-				effort: "medium",
-				startedAt: 100,
-				finishedAt: 200,
-				durationMs: 100,
-				terminalStatus: "failed" as const,
-				deliverablePaths: [],
+				terminalStatus: "failed",
+				rejectionReason: undefined,
 				infraFailureError: "HTTP 402 payment required",
 				infraFailureLine: "attempt 1 failed: HTTP 402 payment required",
-			},
+			}),
 		];
 		const harness = createSession(seededPhase("failed", existing));
 		const run = vi
@@ -316,60 +328,85 @@ describe("task rework acceptance", () => {
 		} as TaskParams);
 
 		expect(run).toHaveBeenCalledTimes(1);
-		expect(run.mock.calls[0]![0].exactThinkingLevel).toBe("medium" as Effort);
-		expect(run.mock.calls[0]![0].modelOverride).toEqual([MODEL]);
+		expect(run.mock.calls[0]![0].modelOverride).toEqual(CHAIN);
+		expect(run.mock.calls[0]![0].exactThinkingLevel).toBeUndefined();
 		expect(run.mock.calls[0]![0].context).toBe("attempt 1 failed: HTTP 402 payment required");
 		expect(text(result)).not.toContain("Previous attempts:");
-		expect(text(result)).not.toContain("Rejection reason:");
 		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toEqual(existing);
 	});
 
-	it.each([
-		["failed", "task"],
-		["aborted", "task"],
-		["failed", "ui-coder-strong"],
-		["aborted", "ui-coder-strong"],
-	] as const)("honors strong routing after a %s attempt on %s", async (outcome, previousProfile) => {
-		const strongAgent: AgentDefinition = {
-			...taskAgent,
-			name: "ui-coder-strong",
-			model: ["codex-lb/gpt-6.1-sol:high"],
-		};
-		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
-			agents: [taskAgent, strongAgent],
-			projectAgentsDir: null,
-		});
-		const harness = createSession(
-			seededPhase(outcome, [], { resolvedModel: "codex-lb/gpt-6-luna", thinkingLevel: "max" }),
-		);
-		harness.phases()[0]!.tasks[0]!.schedule!.executor!.agentProfile = previousProfile;
+	it("moves a model-attributable failure to the next untried vendor, counting all attempts", async () => {
+		const history = [
+			attempt(OPENAI, 1, { terminalStatus: "failed", rejectionReason: undefined, infraFailureError: "no report" }),
+			attempt(XAI, 2, {
+				terminalStatus: "failed",
+				rejectionReason: undefined,
+				infraFailureError: "429 rate limit",
+				infraFailureLine: "attempt 2 failed: 429 rate limit",
+			}),
+		];
+		// The current (third) attempt failed on anthropic with a model fault; xai only hit a rate limit.
+		const phases = seededPhase("failed", [
+			...history,
+			attempt(MODEL, 3, { terminalStatus: "failed", rejectionReason: undefined, infraFailureError: "gave up" }),
+		]);
+		const harness = createSession(phases);
 		const run = vi
 			.spyOn(executorModule, "runSubprocess")
 			.mockImplementation(async options => makeResult(options.id ?? OWNER));
 		const tool = await TaskTool.create(harness.session);
-		await tool.execute("strong-retry", { agent: strongAgent.name, name: OWNER, task: ROW });
-		expect(run).toHaveBeenCalledTimes(1);
-		expect(run.mock.calls[0]![0].modelOverride).toEqual(["codex-lb/gpt-6.1-sol:high"]);
-		expect(run.mock.calls[0]![0].context).toContain(`failed: ${outcome}`);
-		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toEqual([]);
+		await tool.execute("retry", { agent: "task", name: OWNER, task: ROW } as TaskParams);
+		expect(run.mock.calls[0]![0].modelOverride).toEqual([XAI]);
 	});
 
-	it("advances completed rework in the same worker session and preserves ordinary routing", async () => {
+	it("blocks a model-attributable failure once every vendor has failed", async () => {
+		const failed = (model: string, n: number) =>
+			attempt(model, n, { terminalStatus: "failed", rejectionReason: undefined, infraFailureError: "no report" });
+		const harness = createSession(
+			seededPhase("failed", [failed(OPENAI, 1), failed(MODEL, 2), failed(XAI, 3)], { resolvedModel: XAI }),
+		);
+		const run = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? OWNER));
+		const tool = await TaskTool.create(harness.session);
+		const result = await tool.execute("retry", { agent: "task", name: OWNER, task: ROW } as TaskParams);
+		expect(text(result)).toContain("op=append");
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it.each(["failed", "aborted"] as const)(
+		"leaves a %s attempt re-dispatched under another agent profile on that profile's ordinary routing",
+		async outcome => {
+			const strongAgent: AgentDefinition = {
+				...taskAgent,
+				name: "ui-coder-strong",
+				model: ["codex-lb/gpt-6.1-sol:high"],
+			};
+			vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+				agents: [taskAgent, strongAgent],
+				projectAgentsDir: null,
+			});
+			const harness = createSession(seededPhase(outcome, [], { resolvedModel: OPENAI, thinkingLevel: "max" }));
+			const run = vi
+				.spyOn(executorModule, "runSubprocess")
+				.mockImplementation(async options => makeResult(options.id ?? OWNER));
+			const tool = await TaskTool.create(harness.session);
+			await tool.execute("strong-retry", { agent: strongAgent.name, name: OWNER, task: ROW });
+			expect(run).toHaveBeenCalledTimes(1);
+			expect(run.mock.calls[0]![0].modelOverride).toEqual(["codex-lb/gpt-6.1-sol:high"]);
+			expect(run.mock.calls[0]![0].context).toContain(`failed: ${outcome}`);
+			expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory).toEqual([]);
+		},
+	);
+
+	it("re-dispatches completed rework on a fresh worker at the next vendor with the rejection context", async () => {
 		const harness = createSession();
 		const run = vi
 			.spyOn(executorModule, "runSubprocess")
 			.mockImplementation(async options => makeResult(options.id ?? OWNER));
-		let followUpCalls = 0;
-		const followUp = vi.spyOn(executorModule, "runSubagentFollowUpTurn").mockImplementation(async options => {
-			const call = ++followUpCalls;
-			const effort = options.thinkingLevel ?? "medium";
-			return makeResult(options.id, {
-				output: call === 1 ? "Use a simpler cut path." : "Reworked the crop.",
-				resolvedModel: `${MODEL}:${effort}`,
-				resolvedModelIdentity: MODEL,
-				resolvedThinkingLevel: effort as SingleResult["resolvedThinkingLevel"],
-			});
-		});
+		const followUp = vi
+			.spyOn(executorModule, "runSubagentFollowUpTurn")
+			.mockImplementation(async options => makeResult(options.id, { output: "Use a simpler cut path." }));
 		const tool = await TaskTool.create(harness.session);
 
 		const first = await tool.execute("ordinary-first", {
@@ -382,7 +419,7 @@ describe("task rework acceptance", () => {
 		expect(text(first)).not.toContain("Previous attempts:");
 		expect(run.mock.calls[0]![0].context).toBeUndefined();
 
-		harness.setPhases(seededPhase("completed"));
+		harness.setPhases(seededPhase("completed", [], { resolvedModel: OPENAI }));
 		const rework = await tool.execute("rework", {
 			agent: "task",
 			name: OWNER,
@@ -390,9 +427,7 @@ describe("task rework acceptance", () => {
 			rework: "The motion blur obscures the subject.",
 		} as TaskParams);
 		const reflection = followUp.mock.calls[0]![0];
-		const resumed = followUp.mock.calls[1]![0];
-		expect(run).toHaveBeenCalledTimes(1);
-		expect(followUp).toHaveBeenCalledTimes(2);
+		expect(followUp).toHaveBeenCalledTimes(1);
 		expect(reflection.id).toBe(OWNER);
 		expect(reflection.message).toContain(
 			"What was wrong with your approach, and what should the next attempt do differently?",
@@ -401,11 +436,12 @@ describe("task rework acceptance", () => {
 			"The chief rejected your completed attempt: The motion blur obscures the subject.",
 		);
 		expect(reflection.message).toContain('answer exactly: "Is there a much simpler different way?"');
-		expect(resumed.id).toBe(OWNER);
-		expect(resumed.thinkingLevel).toBe("high" as Effort);
-		expect(resumed.message).toContain("Previous attempts:");
-		expect(resumed.message).toContain("Rejection reason: The motion blur obscures the subject.");
-		expect(rework.details?.results[0]?.id).toBe(OWNER);
+		expect(run).toHaveBeenCalledTimes(2);
+		const redispatch = run.mock.calls[1]![0];
+		expect(redispatch.modelOverride).toEqual([MODEL]);
+		expect(redispatch.exactThinkingLevel).toBeUndefined();
+		expect(redispatch.context).toContain("Previous attempts:");
+		expect(redispatch.context).toContain("Rejection reason: The motion blur obscures the subject.");
 		expect(rework.details?.results[0]?.resolvedModelIdentity).toBe(MODEL);
 		expect(harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory?.[0]?.rejectionReason).toBe(
 			"The motion blur obscures the subject.",
@@ -448,9 +484,6 @@ describe("task rework acceptance", () => {
 		const run = vi
 			.spyOn(executorModule, "runSubprocess")
 			.mockImplementation(async options => makeResult(options.id ?? OWNER));
-		const followUp = vi
-			.spyOn(executorModule, "runSubagentFollowUpTurn")
-			.mockImplementation(async options => makeResult(options.id));
 		vi.spyOn(reflectionModule, "captureReworkReflection").mockResolvedValue({
 			noAnswerReason: "worker returned no reflection answer",
 		});
@@ -474,16 +507,15 @@ describe("task rework acceptance", () => {
 			rework: "The crop still hides the subject.",
 		} as TaskParams);
 
-		const message = followUp.mock.calls[0]![0].message;
+		const message = run.mock.calls[1]![0].context ?? "";
 		expect(message).toContain("Worker reflection: no answer (worker returned no reflection answer)");
 		expect(message).toContain("Final report paragraph: Final report paragraph.");
 		expect(message).toContain("Rejection reason: The crop still hides the subject.");
-		expect(run).toHaveBeenCalledTimes(1);
+		expect(run).toHaveBeenCalledTimes(2);
 	});
 
 	it("replays ordered rejections durably and gates the final rung after restart", async () => {
-		const ladder = [":low", ":medium", ":high", "codex-lb/gpt-6-sol:medium"];
-		const harness = createSession([], ladder);
+		const harness = createSession();
 		const run = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
 			const resolvedModelIdentity = options.modelOverride?.[0] ?? MODEL;
 			const resolvedThinkingLevel = options.thinkingLevel ?? options.exactThinkingLevel ?? "high";
@@ -562,8 +594,8 @@ describe("task rework acceptance", () => {
 		const previousAttempts = thirdDispatch.context ?? "";
 		const firstReason = previousAttempts.indexOf("First rejection.");
 		const secondReason = previousAttempts.indexOf("Second rejection.");
-		expect(thirdDispatch.modelOverride).toEqual(["codex-lb/gpt-6-sol"]);
-		expect(thirdDispatch.thinkingLevel ?? thirdDispatch.exactThinkingLevel).toBe("medium" as Effort);
+		expect(thirdDispatch.modelOverride).toEqual([OPENAI]);
+		expect(thirdDispatch.exactThinkingLevel).toBeUndefined();
 		expect(previousAttempts).toContain("Previous attempts:");
 		expect(previousAttempts).toContain("Worker: OlderWorker");
 		expect(previousAttempts).toContain(`Resolved model:effort: ${MODEL}:medium`);
@@ -609,12 +641,12 @@ describe("task rework acceptance", () => {
 
 		const thirdWorkerId = third.details?.results[0]?.id ?? firstWorkerId;
 		harness.setPhases(
-			seededPhase("completed", harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory, {
+			seededPhase("completed", [...harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory!, attempt(XAI, 9)], {
 				owner: thirdWorkerId,
 				workerId: thirdWorkerId,
 				startedAt: 500,
 				finishedAt: 600,
-				resolvedModel: "codex-lb/gpt-6-sol",
+				resolvedModel: OPENAI,
 				thinkingLevel: "medium",
 			}),
 		);
@@ -630,11 +662,15 @@ describe("task rework acceptance", () => {
 		expect(topRung.details?.results).toEqual([]);
 		expect(select).not.toHaveBeenCalled();
 		const history = harness.phases()[0]!.tasks[0]!.schedule!.attemptHistory!;
-		expect(history.map(attempt => attempt.rejectionReason)).toEqual(["First rejection.", "Second rejection."]);
+		expect(history.map(attempt => attempt.rejectionReason)).toEqual([
+			"First rejection.",
+			"Second rejection.",
+			"Rejection 9.",
+		]);
 		expect(history[0]).toEqual(base[0]!.tasks[0]!.schedule!.attemptHistory![0]);
-		expect(new Set(history.map(attempt => attempt.attemptId)).size).toBe(2);
+		expect(new Set(history.map(attempt => attempt.attemptId)).size).toBe(3);
 		expect(run).toHaveBeenCalledTimes(2);
-		const restoredHarness = createSession(structuredClone(harness.phases()), ladder);
+		const restoredHarness = createSession(structuredClone(harness.phases()));
 		const restored = await TaskTool.create(restoredHarness.session);
 		const afterRestart = await wrapTask(restored, restoredHarness.session, async () => "Deny").execute(
 			"after-restart",

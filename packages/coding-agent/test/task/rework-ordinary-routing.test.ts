@@ -147,7 +147,7 @@ describe("task ordinary routing without a rework reason", () => {
 		expect(text(result)).not.toContain("Cannot redispatch");
 	});
 
-	it("still refuses a retry when the failed worker's model or effort is missing", async () => {
+	it("still refuses a model-failure retry when the failed worker's model is missing", async () => {
 		const phases = completedPhase();
 		const executor = phases[0]!.tasks[0]!.schedule!.executor!;
 		executor.outcome = "failed";
