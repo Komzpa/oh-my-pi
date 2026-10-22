@@ -48,6 +48,7 @@ const effortRule = '"lo" | "med" | "hi"' as const;
 export const taskItemSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
+	"resources?": "string[]",
 	task: "string",
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
@@ -58,6 +59,7 @@ export const taskItemSchema = type({
 const taskItemSchemaIsolated = type({
 	"name?": "string",
 	agent: "string = 'task'",
+	"resources?": "string[]",
 	task: "string",
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
@@ -70,6 +72,7 @@ const taskItemSchemaIsolated = type({
 export const taskSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
+	"resources?": "string[]",
 	task: "string",
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
@@ -81,6 +84,7 @@ export const taskSchema = type({
 const taskSchemaNoIsolation = type({
 	"name?": "string",
 	agent: "string = 'task'",
+	"resources?": "string[]",
 	task: "string",
 	solutionSpace: "string",
 	"outputSchema?": outputSchemaInputSchema,
@@ -164,6 +168,7 @@ function createTaskSchema(options: {
 				...schemaFields,
 				...toolsField,
 				...seanceFields,
+				"resources?": "string[]",
 				"isolated?": "boolean",
 				"+": "delete",
 			});
@@ -178,6 +183,7 @@ function createTaskSchema(options: {
 		const item = type.raw({
 			"name?": "string",
 			agent,
+			"resources?": "string[]",
 			task: "string",
 			solutionSpace: "string",
 			...effortField,
@@ -204,6 +210,7 @@ function createTaskSchema(options: {
 			...schemaFields,
 			...toolsField,
 			...seanceFields,
+			"resources?": "string[]",
 			"isolated?": "boolean",
 			"+": "delete",
 		});
@@ -211,6 +218,7 @@ function createTaskSchema(options: {
 	return type.raw({
 		"name?": "string",
 		agent,
+		"resources?": "string[]",
 		task: "string",
 		solutionSpace: "string",
 		...effortField,

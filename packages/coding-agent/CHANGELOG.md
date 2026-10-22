@@ -492,6 +492,9 @@
 - Fixed startup without an explicit model picking an unrelated authenticated provider instead of the first available model in the configured default fallback chain ([#15781](https://github.com/can1357/oh-my-pi/pull/15781) by [@mvid](https://github.com/mvid))
 
 ## [18.11.0] - 2026-10-14
+### Fixed: Finished background job lookup
+
+- Keep delivered background jobs readable through `proc://<id>` until normal retention expires, while omitting consumed jobs from listings and preserving owner isolation.
 
 ### Added
 
@@ -504,6 +507,9 @@
 ### Changed
 
 - The in-composer tool approval prompt summarizes the command, path, or content to one row so the composer keeps its room; `Ctrl+O` shows them in full ([#15642](https://github.com/can1357/oh-my-pi/pull/15642) by [@H4vC](https://github.com/H4vC))
+### Changed
+
+- Task items accept an optional `resources: string[]` declaring the checkout paths a child edits; declared lists are the sole ownership source (`[]` owns nothing, absent keeps the existing fallback, malformed declarations are rejected before spawn) and are forwarded verbatim on `before_subagent_spawn` ([#90](https://github.com/Komzpa/oh-my-pi/pull/90)).
 - Background task guidance now lives in the Task tool description (and in same-name extension replacements that delegate to Task) instead of being repeated in every spawn acknowledgment ([#15477](https://github.com/can1357/oh-my-pi/pull/15477) by [@iliaal](https://github.com/iliaal))
 - The Auto-Promote Context and Retry Model Fallback settings now state that they are independent; turn off Retry Model Fallback (`retry.modelFallback`) to stop `retry.fallbackChains` model switches ([#15636](https://github.com/can1357/oh-my-pi/issues/15636))
 
@@ -548,6 +554,11 @@
 - Fixed hashline edits silently dropping the tail of a line that `read` or `grep` had cut at the column limit; such an edit is now refused until a `:raw` read shows the full line ([#15649](https://github.com/can1357/oh-my-pi/issues/15649))
 - Fixed isolated tasks failing on linked worktrees with initialized recursive submodules and leaving updated submodule pins unreachable after cleanup ([#15457](https://github.com/can1357/oh-my-pi/issues/15457))
 - Fixed `/tan` missing the parent's prompt cache by advertising `xd://` tools top-level and omitting `ask` ([#15578](https://github.com/can1357/oh-my-pi/issues/15578)).
+
+### Fixed: Task runtime
+
+- Keep delivered background jobs readable through `proc://<id>` until normal retention expires, while omitting consumed jobs from listings and preserving owner isolation ([#90](https://github.com/Komzpa/oh-my-pi/pull/90)).
+- Owner quiescence includes foreground-backed jobs, and failed workers report retained background jobs without allowing their labels to forge harness messages ([#90](https://github.com/Komzpa/oh-my-pi/pull/90)).
 
 ## [18.10.4] - 2026-10-13
 
