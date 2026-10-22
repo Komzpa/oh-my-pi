@@ -186,8 +186,6 @@ export interface EffectiveSubagentPolicy {
 	modelRoute?: string;
 	/** Exact-name `task.agentServiceTierOverrides` entry for this agent, applied after model resolution. */
 	serviceTierOverride?: ServiceTierInheritSettingValue;
-	requiredModelServiceTiers?: Record<string, "priority">;
-	claudeEffortCap?: boolean;
 	/** Exact-name entry normalized to both child compaction threshold fields. */
 	compactionThresholdOverride?: CompactionThresholdPair;
 	/** Exact-name `task.agentAccountPools` entry: the only OAuth accounts the child may use, per listed provider. */
@@ -215,26 +213,6 @@ export interface StructuredSubagentResult {
 }
 
 /** Effort suffixes the router appends to its chosen model (`model:effort`). */
-const ROUTER_EFFORT_SUFFIXES = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
-
-/**
- * Explicit effort from the router's chosen model pattern (`order[0]`).
- * The router picks `model:effort` via `before_subagent_spawn`; when the caller
- * did not specify its own `effort`/`thinkingLevel`, that suffix is the chosen
- * effort and must win over agent frontmatter. Returns `undefined` when there
- * is no usable suffix so the child falls back to its default.
- */
-export function resolveRouterChosenEffort(modelOverride: string[] | undefined): Effort | undefined {
-	const first = modelOverride?.[0]?.trim();
-	if (!first) return undefined;
-	const separator = first.lastIndexOf(":");
-	if (separator <= first.indexOf("/")) return undefined;
-	const suffix = first
-		.slice(separator + 1)
-		.trim()
-		.toLowerCase();
-	return (ROUTER_EFFORT_SUFFIXES as readonly string[]).includes(suffix) ? (suffix as Effort) : undefined;
-}
 
 /** Machine-readable failure category so adapters can retain their native errors. */
 export class StructuredSubagentError extends Error {
@@ -544,24 +522,13 @@ async function applySpawnHook(
 		throw new StructuredSubagentError("preflight", spawnResult.reason ?? "Subagent spawn blocked by extension.");
 	}
 	if (spawnResult?.model === undefined) {
-		if (spawnResult?.enforce)
-			throw new StructuredSubagentError("preflight", "Mandatory routing has no available model.");
 		return policy;
 	}
-	// Ordinary routing preserves explicit rework selectors; mandatory session policy does not.
-	if (request.model !== undefined && !spawnResult.enforce) return policy;
+	// Explicit rework selectors win over extension routing.
+	if (request.model !== undefined) return policy;
 	const replacement = resolveConfiguredModelPatterns(spawnResult.model, request.session.settings);
-	if (replacement.length === 0 && spawnResult.enforce)
-		throw new StructuredSubagentError("preflight", "Mandatory routing has no available model.");
-	// A routed replacement ends the parent-model fallback and carries the router's tier and effort limits.
-	if (replacement.length > 0) {
-		policy = {
-			...policy,
-			parentActiveModelPattern: undefined,
-			requiredModelServiceTiers: spawnResult.requiredModelServiceTiers,
-			claudeEffortCap: spawnResult.claudeEffortCap,
-		};
-	}
+	// A routed replacement ends the parent-model fallback.
+	if (replacement.length > 0) policy = { ...policy, parentActiveModelPattern: undefined };
 	if (replacement.length === 0) return policy;
 	return { ...policy, modelOverride: replacement, modelRoute: spawnResult.note };
 }
@@ -660,8 +627,6 @@ function buildExecutorOptions(
 		modelRole: policy.modelRole,
 		modelRoute: policy.modelRoute,
 		serviceTierOverride: policy.serviceTierOverride,
-		requiredModelServiceTiers: policy.requiredModelServiceTiers,
-		claudeEffortCap: policy.claudeEffortCap,
 		compactionThresholdOverride: policy.compactionThresholdOverride,
 		oauthAccountPools: policy.oauthAccountPools,
 		parentActiveModelPattern: policy.parentActiveModelPattern,
@@ -669,9 +634,7 @@ function buildExecutorOptions(
 		effort: request.effort,
 		solutionSpace: request.solutionSpace?.trim() || undefined,
 		structured: policy.structured,
-		exactThinkingLevel:
-			request.thinkingLevel ??
-			(request.effort === undefined ? resolveRouterChosenEffort(policy.modelOverride) : undefined),
+		exactThinkingLevel: request.thinkingLevel,
 		...(policy.schema.source === "none"
 			? {}
 			: {

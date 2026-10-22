@@ -8,7 +8,6 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import { AgentBusyError, EventLoopKeepalive, recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
-import { ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
 import type { Api, Effort, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
 import { isCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { isRecord, logger, popLoopPhase, prompt, pushLoopPhase, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
@@ -556,9 +555,6 @@ export interface ExecutorOptions {
 	 * `tier.subagent` (Vibe workers) omit it.
 	 */
 	serviceTierOverride?: ServiceTierInheritSettingValue;
-	/** Mandatory exact-model tiers supplied by the parent routing policy. */
-	requiredModelServiceTiers?: Record<string, "priority">;
-	claudeEffortCap?: boolean;
 	/** Exact-name `task.agentCompactionThresholdOverrides` pair selected by dispatch. */
 	compactionThresholdOverride?: CompactionThresholdPair;
 	/** Exact-name `task.agentAccountPools` entry selected by dispatch; see `CreateAgentSessionOptions.oauthAccountPools`. */
@@ -3918,8 +3914,6 @@ interface SubagentSessionSpec {
 	>;
 	preparedSession?: Pick<PreparedSeanceSession, "promptSuffix">;
 	prompt: SubagentPromptInputs;
-	requiredModelServiceTiers?: Record<string, "priority">;
-	claudeEffortCap?: boolean;
 }
 
 /** Launch-only session inputs: a revived session restores these from its transcript or goes without. */
@@ -4078,33 +4072,6 @@ function trackSubagentSettings(session: AgentSession, capture: WarmReviveCapture
 	});
 }
 
-/** Re-applied on revival; the resolver sees the final model on every request. */
-export function enforceSubagentRequestPolicy(
-	session: AgentSession,
-	policy: { requiredModelServiceTiers?: Record<string, "priority">; claudeEffortCap?: boolean },
-): void {
-	if (policy.requiredModelServiceTiers) {
-		const inherited = session.agent.serviceTierResolver;
-		session.agent.serviceTierResolver = model =>
-			policy.requiredModelServiceTiers?.[`${model.provider}/${model.id}`] ?? inherited?.(model);
-	}
-	if (policy.claudeEffortCap) {
-		const cap = () => {
-			if (
-				session.model?.provider === "anthropic" &&
-				session.model.id.startsWith("claude-") &&
-				(session.thinkingLevel === ThinkingLevel.Max || session.thinkingLevel === ThinkingLevel.XHigh)
-			) {
-				session.setThinkingLevel(ThinkingLevel.High);
-			}
-		};
-		cap();
-		session.subscribe(event => {
-			if (event.type === "model_changed" || event.type === "thinking_level_changed") cap();
-		});
-	}
-}
-
 /**
  * Lifecycle reviver for a parked subagent: park closed the JSONL writer, so reopening takes the
  * single-writer lock cleanly and restores the full message history (createAgentSession →
@@ -4176,7 +4143,6 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 		} finally {
 			capture.spec.prompt.reviving = false;
 		}
-		enforceSubagentRequestPolicy(revived, capture.spec);
 		AgentRegistry.global().syncSessionStatus(id, revived);
 		attachIrcWakeTurnMonitor(revived, capture.wake);
 		return revived;
@@ -4752,8 +4718,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					ircRenders: new Map(),
 					reviving: false,
 				},
-				requiredModelServiceTiers: options.requiredModelServiceTiers,
-				claudeEffortCap: options.claudeEffortCap,
 			};
 
 			const sessionManager = await awaitAbortable(sessionManagerPromise);
@@ -4807,7 +4771,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				throw err;
 			}
 			mcpFollower?.bind(session);
-			enforceSubagentRequestPolicy(session, sessionSpec);
 			// The SDK records a new session's initial model as the default role.
 			// Pin the child's own chain so a parent default sharing that model
 			// cannot steal its fallback routing. Resumed history keeps its role.

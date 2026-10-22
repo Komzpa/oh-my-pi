@@ -16,7 +16,6 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { getBundledAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { resolveModelOverrideWithAuthFallback } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import type { AgentCompactionThresholdOverride } from "@oh-my-pi/pi-coding-agent/config/compaction-threshold";
@@ -38,7 +37,6 @@ import * as isolationRunner from "@oh-my-pi/pi-coding-agent/task/isolation-runne
 import {
 	buildStructuredSubagentRecoveryHint,
 	resolveEffectiveSubagentPolicy,
-	resolveRouterChosenEffort,
 	runStructuredSubagent,
 	StructuredSubagentError,
 	type StructuredSubagentRequest,
@@ -51,16 +49,6 @@ import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 
 import { cfgRetryModelFallback } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { cfgTaskAgentModelOverrides, cfgTaskEnableEffort } from "@oh-my-pi/pi-coding-agent/task/settings";
-
-describe("router-chosen effort", () => {
-	it("uses only a recognized effort from the first router choice", () => {
-		expect(resolveRouterChosenEffort(["openai/model:high", "other/model:low"])).toBe(Effort.High);
-		expect(resolveRouterChosenEffort([" openai/model:HIGH "])).toBe(Effort.High);
-		expect(resolveRouterChosenEffort(["openai/model:unknown", "other/model:high"])).toBeUndefined();
-		expect(resolveRouterChosenEffort(["provider:region/model"])).toBeUndefined();
-		expect(resolveRouterChosenEffort(undefined)).toBeUndefined();
-	});
-});
 
 const AGENT: AgentDefinition = {
 	name: "worker",
@@ -151,52 +139,6 @@ afterEach(() => {
 });
 
 describe("structured subagent primitive", () => {
-	it("brrrr mandatory routing replaces explicit weak selectors", async () => {
-		mockDiscovery();
-		const parent = session();
-		parent.emitBeforeSubagentSpawn = async () => ({
-			enforce: true,
-			model: ["anthropic/claude-opus-5-5:high"],
-			requiredModelServiceTiers: { "codex-lb/gpt-6-luna": "priority" },
-		});
-		const run = vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(result());
-		await runStructuredSubagent(request({ session: parent, model: "weak/model" }));
-		expect(run.mock.calls[0]![0].modelOverride).toEqual(["anthropic/claude-opus-5-5:high"]);
-		expect(run.mock.calls[0]![0].requiredModelServiceTiers).toEqual({ "codex-lb/gpt-6-luna": "priority" });
-	});
-
-	it("brrrr mandatory routing blocks an undefined strong order", async () => {
-		mockDiscovery();
-		const parent = session();
-		parent.emitBeforeSubagentSpawn = async () => ({ enforce: true });
-		const run = vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(result());
-		await expect(runStructuredSubagent(request({ session: parent }))).rejects.toThrow("no available model");
-		expect(run).not.toHaveBeenCalled();
-	});
-
-	it("brrrr Luna requests and fallback always carry fast priority only for Luna", () => {
-		let listener: (event: { type: string }) => void = () => {};
-		const child = {
-			agent: {
-				serviceTierResolver: (_model: { provider: string; id: string }): "priority" | undefined => undefined,
-			},
-			model: { provider: "anthropic", id: "claude-opus-5-5" },
-			thinkingLevel: "max",
-			setThinkingLevel: vi.fn(),
-			subscribe: (callback: typeof listener) => {
-				listener = callback;
-			},
-		};
-		executorModule.enforceSubagentRequestPolicy(child as never, {
-			requiredModelServiceTiers: { "codex-lb/gpt-6-luna": "priority" },
-			claudeEffortCap: true,
-		});
-		expect(child.setThinkingLevel).toHaveBeenCalledWith("high");
-		expect(child.agent.serviceTierResolver({ provider: "codex-lb", id: "gpt-6-luna" })).toBe("priority");
-		expect(child.agent.serviceTierResolver({ provider: "codex-lb", id: "gpt-6.1-sol" })).toBeUndefined();
-		listener({ type: "model_changed" });
-		expect(child.setThinkingLevel).toHaveBeenCalledTimes(2);
-	});
 	it("ordinary to strong dispatch resolves the selected family and never authenticates via parent Luna", async () => {
 		const models = ["gpt-6-luna", "gpt-6.1-sol"].map(id =>
 			buildModel({
