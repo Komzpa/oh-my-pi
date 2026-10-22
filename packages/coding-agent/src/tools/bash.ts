@@ -288,6 +288,91 @@ function bashCommandSegments(command: string): string[] {
 		.filter(segment => segment.length > 0);
 }
 
+const SESSION_INFRASTRUCTURE_REFUSAL =
+	"Session infrastructure is off-limits: report the anomaly to the lead; do not repair the host.";
+const SESSION_PROCESS_TARGET =
+	/(?:^|[\s/`(^|])(?:dbus-broker|dbus-daemon|kwin[^\s)]*|plasmashell|Xwayland|yakuake)(?:$|[\s)`.*$|])|\bsystemd\s+--user\b/u;
+const SESSION_RUNTIME_TARGET = /^(?:\/run\/user\/[^/]+(?:\/|$)|\$\{?XDG_RUNTIME_DIR\}?(?:\/|$))/u;
+const SESSION_COMMAND_WRAPPERS: Record<string, true> = {
+	sudo: true,
+	env: true,
+	command: true,
+	builtin: true,
+	exec: true,
+	nice: true,
+	ionice: true,
+	nohup: true,
+};
+
+const SESSION_MAX_PAYLOAD_DEPTH = 4;
+const SESSION_PAYLOAD_SHELLS: Record<string, true> = { sh: true, bash: true, zsh: true, dash: true, ksh: true };
+
+/** Command strings an executable will itself run as shell code (`-c` payloads, `eval` arguments). */
+function shellPayloads(executable: string | undefined, args: string[]): string[] {
+	if (!executable) return [];
+	if (executable === "eval") return args.length > 0 ? [args.join(" ")] : [];
+	if (!Object.hasOwn(SESSION_PAYLOAD_SHELLS, executable)) return [];
+	const payloads: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		// Short-option clusters such as `-c`, `-lc`, `-ic` carry the command flag.
+		if (/^-[A-Za-z]*c[A-Za-z]*$/u.test(args[i]) && i + 1 < args.length) payloads.push(args[i + 1]);
+	}
+	return payloads;
+}
+
+/** Default denies precede user allows and apply to every execution backend. */
+function targetsSessionInfrastructure(command: string, depth = 0): boolean {
+	// Nested `sh -c` payloads are inspected recursively; absurd nesting is refused
+	// outright instead of being trusted as unparseable.
+	if (depth > SESSION_MAX_PAYLOAD_DEPTH) return true;
+	const segments = tokenizeShellSegments(command);
+	for (let index = 0; index < segments.length; index++) {
+		const tokens = segments[index];
+		let start = 0;
+		// Keep command position: an echo containing a dangerous command is not execution.
+		while (start < tokens.length) {
+			const token = tokens[start];
+			const name = token.slice(token.lastIndexOf("/") + 1);
+			if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token) || Object.hasOwn(SESSION_COMMAND_WRAPPERS, name)) {
+				start++;
+				continue;
+			}
+			if (start > 0 && token.startsWith("-")) {
+				// Common wrapper options with a separate value.
+				start += ["-u", "-g", "-n", "-c"].includes(token) ? 2 : 1;
+				continue;
+			}
+			break;
+		}
+		const executable = tokens[start]?.split("/").pop();
+		const args = tokens.slice(start + 1);
+		if (executable === "kill" || executable === "pkill" || executable === "killall") {
+			if (SESSION_PROCESS_TARGET.test(args.join(" "))) return true;
+			// The shared tokenizer splits unquoted $(...) at its parentheses.
+			// Inspect its pgrep segment only when it supplies this kill's arguments;
+			// a standalone pgrep remains read-only and must not be denied.
+			if (args.at(-1) === "$" && segments[index + 1]?.[0]?.split("/").pop() === "pgrep") {
+				if (SESSION_PROCESS_TARGET.test(segments[index + 1].slice(1).join(" "))) return true;
+			}
+		}
+		// `sh -c '<payload>'`, `bash -lc '<payload>'`, `eval '<payload>'`: the
+		// protected operation lives inside the payload token, so re-run the detector on it.
+		for (const payload of shellPayloads(executable, args)) {
+			if (targetsSessionInfrastructure(payload, depth + 1)) return true;
+		}
+		if (executable === "rm" && args.some(arg => SESSION_RUNTIME_TARGET.test(arg))) return true;
+		if (
+			executable === "systemctl" &&
+			args.includes("--user") &&
+			args.some(arg => arg === "stop" || arg === "restart" || arg === "kill") &&
+			args.some(arg => /^dbus/u.test(arg) || SESSION_PROCESS_TARGET.test(arg))
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // `deny`/`prompt` matching: the rule fires when its glob matches the whole
 // command or any single segment of a compound command.
 function commandSegmentMatchesBashApprovalPattern(command: string, pattern: string): boolean {
@@ -514,6 +599,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 	readonly approval = (args: unknown): ToolApprovalDecision => {
 		const rawCommand = (args as Partial<BashToolInput>).command;
 		const command = typeof rawCommand === "string" ? rawCommand : "";
+		if (targetsSessionInfrastructure(command)) {
+			return { tier: "exec", override: true, policy: "deny", reason: SESSION_INFRASTRUCTURE_REFUSAL };
+		}
 		const patternRules = getBashApprovalPatternRules(cfgBashPatterns.get(this.session.settings));
 		const shell = cfgBashAllowCompoundCommands.get(this.session.settings)
 			? this.session.settings.getShellConfig().shell
@@ -1011,6 +1099,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		ctx?: AgentToolContext,
 	): Promise<AgentToolResult<BashToolDetails>> {
 		let command = rawCommand;
+		if (targetsSessionInfrastructure(rawCommand)) throw new ToolError(SESSION_INFRASTRUCTURE_REFUSAL);
 		// The session this call belongs to, captured before any await: a session
 		// change while the call waits must not move it into the new session's
 		// shell, nor hand it the new session's identity.
@@ -1040,7 +1129,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		const pendingNotices: string[] = [];
 		if (name !== undefined) {
 			if (!this.#launchEnabled) throw new ToolError("Service launch is disabled in this session.");
-			if (asyncRequested || rawTimeout !== undefined)
+			// `timeout: 0` ("no deadline") is how layers that materialize every
+			// optional argument spell "not set"; only a real deadline is rejected.
+			if (asyncRequested || (rawTimeout !== undefined && rawTimeout !== 0))
 				throw new ToolError("Service mode does not accept async or timeout; use ready.timeout for readiness.");
 		} else if (ready !== undefined && (ready.log !== undefined || (ready.port !== undefined && ready.port !== 0))) {
 			// Host/timeout only configure a readiness condition; neither requests one,
