@@ -719,6 +719,26 @@ chain rather than inheriting the active conversation model.
 
 If a role points at another role, the target model still inherits normally and any explicit suffix on the referring role wins for that role-specific use.
 
+#### Role pools
+
+`modelRolePools` turns a role into a weighted pool for load sharing across providers:
+
+```yaml
+modelRoles:
+  free: "openrouter/a:free, openrouter/b:free, groq/c"
+modelRolePools:
+  free:
+    "openrouter/a:free": 3   # drawn first ~3x as often as an unlisted member
+    "groq/c": 0              # never first; kept at the tail
+```
+
+When a subagent spawn expands a pool role (agent frontmatter `model: "@free, @fast"`), the role's members
+are reordered by a weighted random draw without replacement, seeded by the spawn so the pick and the
+child's installed fallback chain come from one draw. Members absent from the weight map weigh 1; weight 0
+keeps a member at the tail in its original order. Each role of a concatenated list shuffles inside its own
+segment, so `@free` stays ahead of `@fast`. Weights are keyed by the member selector as it appears in the
+role (after nested role aliases expand). Roles not listed, and callers without a seed, keep the configured order.
+
 ### Model presets
 
 A model preset is a named snapshot of every role assignment plus `defaultThinkingLevel`, so you can swap a whole setup at once:
@@ -750,6 +770,7 @@ Saving captures the effective assignments — including any `--model` session ov
 Related settings:
 
 - `modelRoles` (record)
+- `modelRolePools` (record of role -> selector -> weight; see [Role pools](#role-pools))
 - `enabledModels` (scoped pattern list)
 - `modelProviderOrder` (provider precedence when equivalent concrete choices share an id)
 - `providers.kimiApiFormat` (`auto|openai|anthropic`; `auto` follows server-declared model metadata)

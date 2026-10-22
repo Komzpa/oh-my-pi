@@ -473,6 +473,23 @@ function discoverAgentsShared(cwd: string, extensionRoots?: EffectiveExtensionRo
 }
 
 /**
+ * Seed for `modelRolePools` draws. The agent id is only reserved after preflight, so the seed is
+ * built from what identifies this spawn up front; the draw happens once here and the resulting
+ * patterns feed both the executor's pick and its installed fallback chain. Absent when the
+ * request carries nothing that distinguishes it, which keeps the configured order.
+ */
+function modelPoolSeed(request: StructuredSubagentRequest): string | undefined {
+	const parts = [
+		request.identity?.id ?? request.identity?.label,
+		request.parentToolCallId,
+		request.index,
+		request.invokedAt,
+	];
+	if (parts.every(part => part === undefined)) return undefined;
+	return parts.map(part => part ?? "").join("|");
+}
+
+/**
  * Resolve every policy shared by task and eval before allocating artifacts or
  * dispatching work. Callers translate {@link StructuredSubagentError} into
  * their own wire-level error surface.
@@ -587,6 +604,7 @@ export async function resolveEffectiveSubagentPolicy(
 		settings: request.session.settings,
 		activeModelPattern: parentActiveModelPattern,
 		fallbackModelPattern: hasPreparedSeance ? undefined : request.session.getModelString?.(),
+		seed: modelPoolSeed(request),
 	};
 	// Role identity and patterns come from one call so they cannot be derived
 	// from different sources: the expansion below discards the alias, and the

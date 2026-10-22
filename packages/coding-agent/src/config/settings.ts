@@ -55,7 +55,8 @@ import {
 } from "./registry";
 // Registers every setting before any instance is read (definitions live next to their domains).
 import "./all-settings";
-import { cfgModelRoles, cfgModelRoleStorage } from "./model-settings";
+import type { ModelRolePool } from "./model-role-pools";
+import { cfgModelRolePools, cfgModelRoles, cfgModelRoleStorage } from "./model-settings";
 import { cfgShellPath } from "../exec/settings";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1847,6 +1848,20 @@ export class Settings {
 		const roles: unknown = cfgModelRoles.get(this);
 		if (!isRecord(roles)) return undefined;
 		return modelRoleValueFromUnknown(roles[role]);
+	}
+	/**
+	 * Get the pool weights (`modelRolePools.<role>`) of a model role, or `undefined` when the role is not a pool.
+	 */
+	getModelRolePool(role: ModelRole | string): ModelRolePool | undefined {
+		const pools: unknown = cfgModelRolePools.get(this);
+		if (!isRecord(pools) || !Object.hasOwn(pools, role)) return undefined;
+		const pool = pools[role];
+		if (!isRecord(pool)) return undefined;
+		const weights: Record<string, number> = {};
+		for (const [selector, weight] of Object.entries(pool)) {
+			if (typeof weight === "number") weights[selector] = weight;
+		}
+		return weights;
 	}
 	/**
 	 * Get a model role from only the global settings layer (an {@link overlay}'s own, else its parent's).
