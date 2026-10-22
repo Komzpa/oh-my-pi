@@ -159,6 +159,43 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		};
 	}
 
+	test("applies a worker ceiling to the deferred role model instead of its recorded fallback", async () => {
+		const claude = getBundledModel("anthropic", "claude-opus-4-6");
+		if (!claude) throw new Error("Expected the Claude fixture");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", "deferred-claude/claude-opus-4-6:max");
+		const { session } = await createAgentSession({
+			...buildSessionOptions("task"),
+			settings,
+			modelPatternAuthFallback: "openai-codex/gpt-5.6-sol:max",
+			cacheWarming: false,
+			extensions: [
+				pi =>
+					pi.registerProvider("deferred-claude", {
+						baseUrl: "https://deferred.example.com",
+						apiKey: "DEFERRED_TEST_KEY",
+						api: "anthropic-messages",
+						models: [
+							{
+								...claude,
+								contextWindow: claude.contextWindow ?? 200_000,
+								maxTokens: claude.maxTokens ?? 32_000,
+							},
+						],
+					}),
+			],
+			thinkingLevelCeiling: model =>
+				executorModule.capImplementationWorkerEffortCeiling("sonic", model, undefined, {}),
+		});
+		try {
+			expect(session.model?.provider).toBe("deferred-claude");
+			expect(session.thinkingLevel).toBe(Effort.High);
+			expect(session.agent.state.thinkingLevel).toBe(Effort.High);
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	test("resolves explicit modelPattern after extension providers register", async () => {
 		const { session, modelFallbackMessage } = await createAgentSession(
 			buildSessionOptions("runtime-provider/runtime-model"),
