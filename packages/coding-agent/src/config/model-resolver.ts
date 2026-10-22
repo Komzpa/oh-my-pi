@@ -1755,6 +1755,16 @@ export async function resolveModelOverrideWithAuthFallback(
 	if (primaryKey === kNoAuth || isAuthenticated(primaryKey)) {
 		return { ...primary, authFallbackUsed: false };
 	}
+	// The ordered override list is the caller's own fallback chain: an
+	// authenticated later entry beats the parent's model.
+	for (const pattern of resolveConfiguredModelPatterns(modelPatterns, settings)) {
+		const candidate = resolveModelOverride([pattern], lookupRegistry, settings);
+		if (!candidate.model || modelsAreEqual(candidate.model, primary.model)) continue;
+		const candidateKey = await modelRegistry.getApiKey(candidate.model, sessionId);
+		if (candidateKey === kNoAuth || isAuthenticated(candidateKey)) {
+			return { ...candidate, authFallbackUsed: false };
+		}
+	}
 
 	// The ordered override list is tried by the upstream chain loop (can1357/oh-my-pi#16640);
 	// with no parent model there is nothing further to fall back to.
