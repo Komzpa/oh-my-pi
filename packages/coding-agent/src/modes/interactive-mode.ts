@@ -155,13 +155,14 @@ import type { ForeignSessionSource } from "../session/foreign-session-store";
 import { HistoryStorage } from "../session/history-storage";
 import { syncTextPrediction, textPredictionBackend } from "../predict/client";
 import { setWordPredictionHost } from "@oh-my-pi/pi-tui/prompt/word-completion";
+import { imageAttachmentSource, tagImageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveMarkdownLinkHrefs } from "../internal-urls/hyperlink-targets";
 import type { ResolveContext } from "../internal-urls/index";
 import { modelMentionDisplayName } from "@oh-my-pi/pi-tui/prompt/model-mention-syntax";
 import { modelMentionChipLabel, shiftImageMarkers } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
 import type { SessionContext } from "../session/session-context";
-import type { SessionManager } from "../session/session-manager";
+import type { DraftEditorState, DraftImage, SessionManager } from "../session/session-manager";
 import {
 	canAutoCreateWorktree,
 	planWorktreeExit,
@@ -2262,7 +2263,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// signal arriving mid-Ctrl+C no-ops instead of racing a second dispose.
 		this.#signalTeardown = createSessionTeardown({
 			getDraftText: () => this.#inputController.getDraftText(),
-			getDraftState: () => this.editor.snapshotDraftState(),
+			getDraftState: () => this.#draftEditorState(),
 			beginDispose: () => {
 				void this.#sessionConnection.beginDispose();
 				this.statusLine.dispose();
@@ -2641,7 +2642,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (draft && !this.editor.getText()) {
 				this.editor.setText(draft);
 				const state = await this.#sessionConnection.consumeDraftState?.(draft);
-				if (state) this.editor.restoreDraftState(state);
+				if (state) this.#restoreDraftEditorState(state);
 				this.updateEditorBorderColor();
 				this.ui.requestRender();
 			}
@@ -7653,11 +7654,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Shared teardown reuses this save instead of overwriting it with a cleared editor.
 		const draftAtSnapshot = this.editor.getText();
 		if (this.#signalTeardown) await this.#signalTeardown.saveDraft();
-		else
-			await this.#sessionConnection.saveDraft(
-				this.#inputController.getDraftText(),
-				this.editor.snapshotDraftState(),
-			);
+		else await this.#sessionConnection.saveDraft(this.#inputController.getDraftText(), this.#draftEditorState());
 		// Release the writer claim before replacing the runtime with the exact checkpoint.
 		await this.#sessionConnection.checkpoint();
 		// Keys typed while the checkpoint flushed reached the editor after the snapshot; stopping the
@@ -7667,12 +7664,44 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.#relaunch(cmd, sessionId, sessionFile);
 	}
 
+	/** Cursor, collapsed-content payloads and unsent image attachments of the composer. */
+	#draftEditorState(): DraftEditorState {
+		const editor = this.editor;
+		const images: DraftImage[] = editor.pendingImages.map((image, index) => {
+			const source = imageAttachmentSource(image);
+			const link = editor.pendingImageLinks[index];
+			return {
+				mimeType: image.mimeType,
+				data: image.data,
+				...(image.detail ? { detail: image.detail } : {}),
+				...(link ? { link } : {}),
+				...(source ? { source: { path: source.path, kind: source.kind } } : {}),
+			};
+		});
+		return { ...editor.snapshotDraftState(), images };
+	}
+
+	/** Re-attach saved images as the same pending attachments (order, bytes, links), then payloads and caret. */
+	#restoreDraftEditorState(state: DraftEditorState): void {
+		const images = state.images ?? [];
+		if (images.length > 0 && this.editor.pendingImages.length === 0) {
+			this.editor.pendingImages = images.map(saved => {
+				const image: ImageContent = { type: "image", data: saved.data, mimeType: saved.mimeType };
+				if (saved.detail) image.detail = saved.detail;
+				return saved.source ? tagImageAttachmentSource(image, saved.source.path, saved.source.kind) : image;
+			});
+			this.editor.pendingImageLinks = images.map(saved => saved.link);
+			this.editor.imageLinks = this.editor.pendingImageLinks;
+		}
+		this.editor.restoreDraftState(state);
+	}
+
 	/** Re-save the draft when keys reached the editor after the restart snapshot; never blocks the restart. */
 	async #persistLateDraft(savedText: string): Promise<void> {
 		const text = this.editor.getText();
 		if (text === savedText) return;
 		try {
-			await this.#sessionConnection.saveDraft(text, this.editor.snapshotDraftState());
+			await this.#sessionConnection.saveDraft(text, this.#draftEditorState());
 		} catch (error) {
 			logger.warn("Failed to save late session draft during restart", { error: String(error) });
 		}

@@ -12,6 +12,8 @@ import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
 
 const LARGE_PASTE = `\x1b[200~${Array.from({ length: 12 }, (_, i) => `pasted line ${i + 1}`).join("\n")}\x1b[201~`;
 const LEFT = "\x1b[D";
+const RED_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAEElEQVR4nGP4z8AAQQxwFgBB0gX7h/C5SAAAAABJRU5ErkJggg==";
+const BLUE_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGNgYPiPhIjiAACOsw/xs6MvMwAAAABJRU5ErkJggg==";
 
 /** Real InteractiveMode, real restart queue; only the `process.execve` boundary is replaced. */
 describe("InteractiveMode restart keeps the unsent editor draft", () => {
@@ -36,7 +38,10 @@ describe("InteractiveMode restart keeps the unsent editor draft", () => {
 
 	afterEach(async () => {
 		vi.restoreAllMocks();
-		for (const mode of modes) mode.ui.stop();
+		for (const mode of modes) {
+			mode.statusLine.dispose();
+			mode.ui.stop();
+		}
 		for (const session of sessions) await session.dispose();
 		await sessionManager.close();
 		authStorage.close();
@@ -65,6 +70,23 @@ describe("InteractiveMode restart keeps the unsent editor draft", () => {
 	function type(mode: InteractiveMode, ...keys: string[]): void {
 		for (const key of keys) mode.editor.handleInput(key);
 	}
+
+	/** Attach through the editor's real image-path paste hook, as a dropped or pasted file does. */
+	async function attachImage(mode: InteractiveMode, base64: string, name: string): Promise<void> {
+		const file = path.join(tempDir.path(), name);
+		await Bun.write(file, Buffer.from(base64, "base64"));
+		const before = mode.editor.pendingImages.length;
+		mode.editor.onPasteImagePath?.(file);
+		for (let i = 0; i < 100 && mode.editor.pendingImages.length === before; i++) await Bun.sleep(20);
+		if (mode.editor.pendingImages.length === before) throw new Error("image was not attached");
+	}
+
+	const imageSummary = (mode: InteractiveMode) =>
+		mode.editor.pendingImages.map((image, index) => ({
+			mimeType: image.mimeType,
+			data: image.data,
+			link: mode.editor.pendingImageLinks[index],
+		}));
 
 	async function resume(file: string): Promise<InteractiveMode> {
 		const resumedManager = await SessionManager.open(file);
@@ -164,5 +186,86 @@ describe("InteractiveMode restart keeps the unsent editor draft", () => {
 		const file = await restartFrom(mode);
 		const resumed = await resume(file);
 		expect(resumed.editor.getText()).toBe("");
+	});
+
+	it("restores pending images as the same attachments and sends them on submit", async () => {
+		const mode = createMode(sessionManager);
+		await mode.init();
+		type(mode, ..."look ");
+		await attachImage(mode, RED_PNG, "red.png");
+		type(mode, ..." and ");
+		await attachImage(mode, BLUE_PNG, "blue.png");
+		type(mode, ..." now");
+		const before = {
+			text: mode.editor.getText(),
+			images: imageSummary(mode),
+			expanded: mode.editor.getExpandedText(),
+		};
+		expect(before.images).toHaveLength(2);
+
+		const file = await restartFrom(mode);
+		const resumed = await resume(file);
+
+		expect(resumed.editor.getText()).toBe(before.text);
+		expect(imageSummary(resumed)).toEqual(before.images);
+		expect(resumed.editor.getExpandedText()).toBe(before.expanded);
+
+		const prompt = vi.spyOn(sessions[sessions.length - 1], "prompt").mockResolvedValue(undefined as never);
+		resumed.editor.handleInput("\r");
+		await Bun.sleep(100);
+		expect(prompt).toHaveBeenCalledTimes(1);
+		const [sentText, options] = prompt.mock.calls[0] as [string, { images?: { data: string; mimeType: string }[] }];
+		expect(sentText).toBe(before.expanded);
+		expect(options.images?.map(image => [image.mimeType, image.data])).toEqual(
+			before.images.map(image => [image.mimeType, image.data]),
+		);
+		const artifacts = sessionManager.getArtifactsDir();
+		if (!artifacts) throw new Error("expected artifacts dir");
+		for (const name of ["draft.txt", "draft-editor.json", "draft-image-0.b64", "draft-image-1.b64"])
+			expect(await Bun.file(path.join(artifacts, name)).exists()).toBe(false);
+	});
+
+	it("keeps an image attached while the restart checkpoint was flushing", async () => {
+		const mode = createMode(sessionManager);
+		await mode.init();
+		type(mode, ..."pic ");
+		const close = sessionManager.close.bind(sessionManager);
+		let attached = "";
+		vi.spyOn(sessionManager, "close").mockImplementation(async () => {
+			await attachImage(mode, RED_PNG, "late.png");
+			attached = mode.editor.pendingImages[0].data;
+			await close();
+		});
+		const file = await restartFrom(mode);
+		const resumed = await resume(file);
+		expect(resumed.editor.pendingImages).toHaveLength(1);
+		expect(resumed.editor.pendingImages[0].data).toBe(attached);
+		expect(attached).not.toBe("");
+	});
+
+	it("writes no image files without images and does not restore a submitted message's images", async () => {
+		const noImages = createMode(sessionManager);
+		await noImages.init();
+		type(noImages, ..."text only");
+		await restartFrom(noImages);
+		const artifacts = sessionManager.getArtifactsDir();
+		if (!artifacts) throw new Error("expected artifacts dir");
+		expect(await Bun.file(path.join(artifacts, "draft-image-0.b64")).exists()).toBe(false);
+		vi.restoreAllMocks();
+
+		const mode = createMode(sessionManager);
+		await mode.init();
+		const session = sessions[sessions.length - 1];
+		vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+		type(mode, ..."sending ");
+		await attachImage(mode, RED_PNG, "sent.png");
+		mode.editor.handleInput("\r");
+		await Bun.sleep(100);
+		expect(mode.editor.pendingImages).toHaveLength(0);
+		const file = await restartFrom(mode);
+		expect(await Bun.file(path.join(artifacts, "draft-image-0.b64")).exists()).toBe(false);
+		const resumed = await resume(file);
+		expect(resumed.editor.getText()).toBe("");
+		expect(resumed.editor.pendingImages).toHaveLength(0);
 	});
 });

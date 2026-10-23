@@ -147,7 +147,20 @@ export interface DraftEditorState {
 	pastes: [number, string][];
 	atoms: [string, string][];
 	pasteCounter: number;
+	/** Unsent image attachments, in chip order. Bytes persist as `draft-image-N.b64` files, not in the JSON. */
+	images?: DraftImage[];
 }
+
+/** One pending editor image attachment: base64 bytes plus the metadata its chip is bound to. */
+export interface DraftImage {
+	mimeType: string;
+	data: string;
+	detail?: "auto" | "low" | "high" | "original";
+	link?: string;
+	source?: { path: string; kind: "image" | "video" };
+}
+
+const draftImageFile = (index: number): string => `draft-image-${index}.b64`;
 const DISCARDED_ENTRY_BRANCH_MARKER = "discarded-entry-branch";
 /**
  * Read-back-and-retry passes one full rewrite makes after meeting another
@@ -3518,6 +3531,7 @@ export class SessionManager {
 					if (!isEnoent(err)) throw err;
 				}
 			}
+			await this.#removeDraftImages(draftPath, 0);
 			return;
 		}
 
@@ -3534,13 +3548,39 @@ export class SessionManager {
 		}
 		await this.#storage.writeText(draftPath, text);
 		if (state) {
-			await this.#storage.writeText(statePath, JSON.stringify({ version: 1, text, state }));
+			const images = state.images ?? [];
+			const dir = path.dirname(draftPath);
+			const manifest = [];
+			for (const [index, image] of images.entries()) {
+				await this.#storage.writeText(path.join(dir, draftImageFile(index)), image.data);
+				const { data: _data, ...meta } = image;
+				manifest.push(meta);
+			}
+			await this.#removeDraftImages(draftPath, images.length);
+			await this.#storage.writeText(
+				statePath,
+				JSON.stringify({ version: 1, text, state: { ...state, images: manifest } }),
+			);
 		} else {
+			await this.#removeDraftImages(draftPath, 0);
 			// A text-only save must not leave a previous draft's cursor and payloads behind.
 			try {
 				await this.#storage.unlink(statePath);
 			} catch (err) {
 				if (!isEnoent(err)) throw err;
+			}
+		}
+	}
+
+	/** Delete `draft-image-N.b64` files from index `from` upward until the first gap. */
+	async #removeDraftImages(draftPath: string, from: number): Promise<void> {
+		const dir = path.dirname(draftPath);
+		for (let index = from; ; index++) {
+			try {
+				await this.#storage.unlink(path.join(dir, draftImageFile(index)));
+			} catch (err) {
+				if (isEnoent(err)) return;
+				throw err;
 			}
 		}
 	}
@@ -3570,13 +3610,31 @@ export class SessionManager {
 		} catch (err) {
 			if (!isEnoent(err)) throw err;
 		}
+		// Image files are one-shot with the manifest: read what the manifest names, then delete all.
+		let parsed: { version?: unknown; text?: unknown; state?: DraftEditorState } | undefined;
 		try {
-			const parsed = JSON.parse(raw) as { version?: unknown; text?: unknown; state?: DraftEditorState };
-			if (parsed.version !== 1 || parsed.text !== draftText || !parsed.state) return null;
-			return parsed.state;
+			parsed = JSON.parse(raw);
 		} catch {
-			return null;
+			parsed = undefined;
 		}
+		const manifest = (parsed?.state?.images ?? []) as Omit<DraftImage, "data">[];
+		const images: DraftImage[] = [];
+		let intact = parsed?.version === 1 && parsed.text === draftText && parsed.state !== undefined;
+		for (const [index, meta] of manifest.entries()) {
+			if (!intact) break;
+			try {
+				images.push({
+					...meta,
+					data: await this.#storage.readText(path.join(path.dirname(draftPath), draftImageFile(index))),
+				});
+			} catch (err) {
+				if (!isEnoent(err)) throw err;
+				intact = false;
+			}
+		}
+		await this.#removeDraftImages(draftPath, 0);
+		if (!intact || !parsed?.state) return null;
+		return { ...parsed.state, images };
 	}
 
 	async consumeDraft(): Promise<string | null> {

@@ -94,8 +94,19 @@ describe("SessionManager draft", () => {
 
 		await session.saveDraft("abc [Paste #1, 7 chars]", state);
 		expect(await session.consumeDraft()).toBe("abc [Paste #1, 7 chars]");
-		expect(await session.consumeDraftState("abc [Paste #1, 7 chars]")).toEqual(state);
+		expect(await session.consumeDraftState("abc [Paste #1, 7 chars]")).toEqual({ ...state, images: [] });
 		expect(await session.consumeDraftState("abc [Paste #1, 7 chars]")).toBeNull();
+
+		// Image bytes live in sidecar files bound to the same text; consuming deletes them.
+		const withImages = { ...state, images: [{ mimeType: "image/png", data: "QUJD", link: "local://a.png" }] };
+		await session.saveDraft("pic", withImages);
+		const dir = session.getArtifactsDir()!;
+		expect(await Bun.file(path.join(dir, "draft-image-0.b64")).text()).toBe("QUJD");
+		expect(await session.consumeDraftState("pic")).toEqual(withImages);
+		expect(await Bun.file(path.join(dir, "draft-image-0.b64")).exists()).toBe(false);
+		await session.saveDraft("pic", withImages);
+		await session.saveDraft("pic");
+		expect(await Bun.file(path.join(dir, "draft-image-0.b64")).exists()).toBe(false);
 
 		// A text-only save drops the earlier state; mismatched text never receives stale state.
 		await session.saveDraft("first", state);
