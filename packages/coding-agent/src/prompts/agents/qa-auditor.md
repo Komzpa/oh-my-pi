@@ -2,8 +2,8 @@
 name: qa-auditor
 description: Check a built artifact against every user requirement linked to a row, one verdict per requirement with evidence. Required before a deliverable row closes.
 tools: read, grep, glob, find, bash
-model: codex-lb/gpt-6-luna:high, anthropic/claude-opus-5-5:high, anthropic/claude-sonnet-5-5:medium
-thinking-level: high
+model: codex-lb/gpt-6-luna:medium, anthropic/claude-opus-5-5:medium, anthropic/claude-sonnet-5-5:medium
+thinking-level: medium
 spawns: []
 ---
 
