@@ -2025,8 +2025,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const hasExistingSession = existingBranch.length > 0;
 	const hasThinkingEntry = existingBranch.some(entry => entry.type === "thinking_level_change");
 	const hasServiceTierEntry = existingBranch.some(entry => entry.type === "service_tier_change");
-	// A resumed session gets its session model preset back before the first turn and any task dispatch.
-	if (hasExistingSession) restoreSessionModelPreset(settings, existingBranch);
 
 	const deferredModelPatterns = Array.isArray(options.modelPattern)
 		? options.modelPattern.map(pattern => pattern.trim()).filter(Boolean)
@@ -2035,6 +2033,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			: [];
 	const hasExplicitModel = options.model !== undefined || deferredModelPatterns.length > 0;
 	const modelMatchPreferences = getModelMatchPreferences(settings);
+	// A resumed session gets its session model preset back before the first turn and any task dispatch.
+	restoreSessionModelPreset(settings, sessionManager.getBranch());
 	const defaultRoleValue = settings.getModelRole("default");
 	let explicitDefaultProviders: Set<string> | undefined;
 	if ((cfgEnabledModels.get(settings)?.length ?? 0) === 0) {
