@@ -2694,7 +2694,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     if (name.value === "find") return !args.some((word) => /^-(?:exec|execdir|ok|okdir|delete|fprint\w*|fls)$/.test(word.value));
     if (name.value === "sort") return !args.some((word) => /^(?:-o|--output)/.test(word.value));
-    if (name.value === "systemctl") return !args[0]?.dynamic && ["status", "is-active"].includes(args[0]?.value);
+    // systemctl reads: leading display/scope options, then a listing or state verb (live 2026-10-23 15:59Z:
+    // `systemctl --user list-units --all 'review-*' --no-legend` was refused).
+    if (name.value === "systemctl") {
+      const verb = args.find((word) => !word.value.startsWith("-"));
+      if (!verb || verb.dynamic) return false;
+      if (!args.every((word) => !word.value.startsWith("-") || /^(?:--user|--system|--all|-a|--no-legend|--no-pager|--plain|--full|-l|--failed|--state=[\w,-]+|--type=[\w,-]+|--property=[\w,]+|-p)$/.test(word.value))) return false;
+      return ["status", "is-active", "is-enabled", "is-failed", "list-units", "list-timers", "list-unit-files", "show", "cat"].includes(verb.value);
+    }
     if (name.value === "journalctl") return !args.some((word) => word.dynamic || /^--(?:rotate|vacuum|flush|sync|relinquish-var|smart-relinquish-var|setup-keys|update-catalog)(?:[=-]|$)/.test(word.value));
     return READ_ONLY_BASH.test(name.value);
   };

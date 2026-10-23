@@ -321,6 +321,9 @@ test("chief bash admits mid-chain cd and read-only git plumbing, and still refus
       // Refused live at 15:21:17Z: classifying gate failures from a report.
       "cd /x && jq -r '.a' report.json | grep -E 'intercepts|waiting for' | sed -E 's/[0-9]+ ×//' | cut -c1-160 | sort | uniq -c | sort -rn | head -15",
       "sed -n 's/a/b/p' f",
+      // Refused live at 15:59Z while checking the review page units.
+      "ss -ltnp | grep -E ':(4671|8891|8767)\\b'; systemctl --user list-units --all 'review-*' --no-legend | head",
+      "systemctl --user status review-x.service --no-pager; systemctl --user show review-x.service -p Slice",
     ];
     const refused = [
       "git checkout main",
@@ -328,6 +331,9 @@ test("chief bash admits mid-chain cd and read-only git plumbing, and still refus
       "git stash",
       "git stash pop",
       "sed -i 's/a/b/' f",
+      "systemctl --user stop review-x.service",
+      "systemctl --user restart review-x.service",
+      "systemctl --user --now disable review-x.service",
       "sed 's/a/b/w out' f",
       "sed 's/a/b/e' f",
       "sed -f script.sed f",
