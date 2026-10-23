@@ -27,6 +27,7 @@ import {
 	identityOf,
 	type Identity,
 	REQUIREMENT_ARTIFACT_LIMITS,
+	describeGitCheckoutState,
 	parseRequirementIdentity,
 	type RequirementIdentity,
 	type RequirementIdentityTarget,
@@ -295,9 +296,18 @@ async function resolveTypedRequirementArtifact(
 			if ("error" in resolved) errors.push(resolved.error);
 			else identities.push(resolved.identity);
 		}
-		return errors.length
-			? { cwd: location, head: null, dirty: false, reason: `current identity unavailable (${errors.join("; ")})` }
-			: { cwd: location, head: null, dirty: false, identities };
+		if (errors.length) {
+			const gitTarget = resolvedTargets.find(target => target.kind === "git");
+			const state =
+				gitTarget?.kind === "git" ? await describeGitCheckoutState(gitTarget.repo, ctx.signal) : undefined;
+			return {
+				cwd: location,
+				head: state?.head ?? null,
+				dirty: state?.dirty ?? false,
+				reason: `current identity unavailable (${errors.join("; ")})`,
+			};
+		}
+		return { cwd: location, head: null, dirty: false, identities };
 	};
 	if (receipt === undefined) return current();
 	const reject = async (reason: string): Promise<RequirementRowArtifact> => {

@@ -644,13 +644,23 @@ export async function checkRequirementIdentity(
 			fail(`${identity.commit}: expected commit is unavailable or not a commit`);
 		const head = await repo.headSha(signal);
 		if (!head) fail(`${identity.repo}: checkout has no HEAD commit`);
-		const dirty = await repo.isDirty(signal);
+		// Untracked files are not committed content: HEAD fully identifies the tree. Only
+		// staged/unstaged changes to tracked files make the committed identity unprovable.
+		const trackedChanges = (await repo.statusPorcelain({ untracked: "no" }, signal))
+			.split("\n")
+			.map(line => line.trimEnd())
+			.filter(Boolean);
 		if ((await repo.headSha(signal)) !== head) fail(`${identity.repo}: HEAD changed during identity probe`);
 		if (head.toLowerCase() !== identity.commit)
 			return { state: "stale", kind: "git", location, expected: identity.commit, observed: head };
-		if (dirty)
+		if (trackedChanges.length)
 			fail(
-				`${identity.repo}: checkout is dirty but the commit identity is unchanged; exact named paths are required to verify audited content`,
+				`${identity.repo}: checkout HEAD ${head} has uncommitted changes to tracked files (${trackedChanges
+					.slice(0, 5)
+					.map(line => line.slice(3))
+					.join(
+						", ",
+					)}${trackedChanges.length > 5 ? `, +${trackedChanges.length - 5} more` : ""}); exact named paths are required to verify audited content`,
 			);
 		return { state: "fresh" };
 	} catch (err) {
@@ -662,6 +672,21 @@ export async function checkRequirementIdentity(
 			expected,
 			reason: err instanceof Error ? err.message : String(err),
 		};
+	}
+}
+
+/** Real HEAD and tracked-file dirt of a checkout root, for diagnostics that must not invent `head=unknown, dirty=false`. */
+export async function describeGitCheckoutState(
+	root: string,
+	signal?: AbortSignal,
+): Promise<{ head: string | null; dirty: boolean } | undefined> {
+	try {
+		const repo = await identityGitRepo(root);
+		const head = (await repo.headSha(signal)) ?? null;
+		const tracked = (await repo.statusPorcelain({ untracked: "no" }, signal)).trim();
+		return { head, dirty: tracked.length > 0 };
+	} catch {
+		return undefined;
 	}
 }
 
