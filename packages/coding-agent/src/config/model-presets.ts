@@ -243,7 +243,41 @@ export type ModelPresetSwitchResult =
 export type ModelPresetSession = Pick<
 	AgentSession,
 	"setModel" | "setThinkingLevel" | "getAvailableModels" | "scopedModels" | "modelRegistry"
->;
+> &
+	Partial<Pick<AgentSession, "sessionManager">>;
+
+/** Custom session entry recording the session preset in force (`name: null` once cleared). */
+export const SESSION_MODEL_PRESET_CUSTOM_TYPE = "session-model-preset";
+
+type SessionPresetRecorder = { appendCustomEntry(customType: string, data?: unknown): string };
+
+function recordSessionModelPreset(recorder: SessionPresetRecorder | undefined, name: string | null): void {
+	recorder?.appendCustomEntry(SESSION_MODEL_PRESET_CUSTOM_TYPE, { name });
+}
+
+/**
+ * Re-apply the session preset recorded in a resumed session's entries (the last record wins; `name: null`
+ * means cleared). Writes the runtime overrides only: the session file already holds the live model, and
+ * nothing new is recorded. Call before the first turn and before any subagent dispatch.
+ *
+ * @returns the restored name, or undefined when none was recorded, it was cleared, or the preset is gone/malformed.
+ */
+export function restoreSessionModelPreset(
+	settings: Settings,
+	entries: ReadonlyArray<{ type: string; customType?: string; data?: unknown }>,
+): string | undefined {
+	let name: string | null | undefined;
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== SESSION_MODEL_PRESET_CUSTOM_TYPE) continue;
+		const data = entry.data;
+		name = isRecord(data) && typeof data.name === "string" ? data.name : null;
+	}
+	if (!name) return undefined;
+	const lookup = getModelPreset(settings, name);
+	if (lookup.kind !== "found") return undefined;
+	writeSessionPreset(settings, name, lookup.preset);
+	return name;
+}
 
 function presetCandidates(session: ModelPresetSession): Model[] {
 	const scoped = session.scopedModels.map(entry => entry.model);
@@ -357,11 +391,12 @@ function restoreDisplaced(settings: Settings, state: SessionPresetState): void {
  *
  * @returns the cleared preset's name, or undefined when no session preset was active.
  */
-export function clearSessionModelPreset(settings: Settings): string | undefined {
+export function clearSessionModelPreset(settings: Settings, recorder?: SessionPresetRecorder): string | undefined {
 	const state = sessionPresets.get(settings);
 	if (!state) return undefined;
 	sessionPresets.delete(settings);
 	restoreDisplaced(settings, state);
+	recordSessionModelPreset(recorder, null);
 	return state.name;
 }
 
@@ -479,8 +514,10 @@ async function applyModelPresetLocked(
 		return { kind: "unavailable", reason: "no model with configured credentials is available" };
 	}
 
-	if (scope === "session") writeSessionPreset(settings, name, preset);
-	else writePresetRoles(settings, preset);
+	if (scope === "session") {
+		writeSessionPreset(settings, name, preset);
+		recordSessionModelPreset(session.sessionManager, name);
+	} else writePresetRoles(settings, preset);
 	const shadowed = shadowedRoles(settings, preset);
 	const thinkingShadow = shadowedThinking(settings, preset);
 
@@ -511,7 +548,7 @@ export function createSessionModelPresetActions(session: Pick<AgentSession, "set
 	return {
 		applySessionModelPreset: (name: string) =>
 			applyModelPreset(session.settings, session, name, { scope: "session" }),
-		clearSessionModelPreset: () => clearSessionModelPreset(session.settings),
+		clearSessionModelPreset: () => clearSessionModelPreset(session.settings, session.sessionManager),
 		getSessionModelPreset: () => getSessionModelPreset(session.settings),
 	};
 }

@@ -998,7 +998,7 @@ async function runPresetsCommand(
 				};
 			}
 			if (name === "off") {
-				const cleared = clearSessionModelPreset(settings);
+				const cleared = clearSessionModelPreset(settings, session.sessionManager);
 				return {
 					message: cleared
 						? `Cleared session model preset "${cleared}"; role models and settings are restored (the current model is unchanged)`

@@ -15,6 +15,8 @@ import {
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { cfgModelPresets, cfgModelRoles } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import { createAssistantMessage } from "./helpers/agent-session-setup";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -111,6 +113,147 @@ describe("session-scoped model presets", () => {
 		expect({ ...settings.getModelRoles() }).toEqual({ default: SONNET, smol: OPUS });
 		clearSessionModelPreset(settings);
 		expect(settings.getModelRole("default")).toBe(SONNET);
+	});
+
+	describe("persistence across resume", () => {
+		const PRESET = {
+			modelRoles: { default: OPUS, smol: SONNET_46 },
+			defaultThinkingLevel: Effort.Low,
+			settings: { "tier.openai": "priority" },
+		};
+
+		function freshSettings() {
+			const settings = Settings.isolated({ modelRoles: { default: SONNET, slow: SONNET_46 } });
+			cfgModelPresets.setEntry(settings, "brrrr", PRESET);
+			return settings;
+		}
+
+		async function persistedManager() {
+			const dir = TempDir.createSync("@pi-session-preset-resume-");
+			tempDirs.push(dir);
+			const manager = SessionManager.create(dir.path(), dir.path());
+			manager.appendMessage({ role: "user", content: "seed", timestamp: Date.now() });
+			manager.appendMessage(createAssistantMessage("seed reply"));
+			return { dir, manager };
+		}
+
+		async function resume(dir: TempDir, file: string, settings: Settings) {
+			const result = await createAgentSession({
+				cwd: dir.path(),
+				agentDir: dir.path(),
+				sessionManager: await SessionManager.open(file),
+				model: bundled(SONNET),
+				authStorage,
+				modelRegistry,
+				settings,
+				disableExtensionDiscovery: true,
+				skills: [],
+				contextFiles: [],
+				workspaceTree: { rootPath: dir.path(), rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
+				promptTemplates: [],
+				slashCommands: [],
+				enableMCP: false,
+				enableLsp: false,
+			});
+			sessions.push(result.session);
+			return result.session;
+		}
+
+		it("re-applies the session preset when the same session file is resumed", async () => {
+			const { dir, manager } = await persistedManager();
+			const settings = freshSettings();
+			const session = new AgentSession({
+				agent: new Agent({
+					initialState: {
+						model: bundled(SONNET),
+						systemPrompt: ["Test"],
+						tools: [],
+						messages: [],
+						thinkingLevel: Effort.High,
+					},
+				}),
+				sessionManager: manager,
+				settings,
+				modelRegistry,
+			});
+			sessions.push(session);
+			expect((await applyModelPreset(settings, session, "brrrr", { scope: "session" })).kind).toBe("switched");
+			await manager.flush();
+			const file = manager.getSessionFile()!;
+
+			// A restart: a new process has fresh settings with no runtime overrides.
+			const restarted = freshSettings();
+			expect(getSessionModelPreset(restarted)).toBeUndefined();
+			await resume(dir, file, restarted);
+
+			expect(getSessionModelPreset(restarted)).toBe("brrrr");
+			expect({ ...restarted.getModelRoles() }).toEqual({ default: OPUS, smol: SONNET_46 });
+			expect(restarted.getModelRole("default")).toBe(OPUS);
+			expect(cfgTierOpenai.get(restarted)).toBe("priority");
+			expect(cfgDefaultThinkingLevel.get(restarted)).toBe(Effort.Low);
+		});
+
+		it("stays cleared after resume once the preset was cleared", async () => {
+			const { dir, manager } = await persistedManager();
+			const settings = freshSettings();
+			const session = new AgentSession({
+				agent: new Agent({
+					initialState: {
+						model: bundled(SONNET),
+						systemPrompt: ["Test"],
+						tools: [],
+						messages: [],
+						thinkingLevel: Effort.High,
+					},
+				}),
+				sessionManager: manager,
+				settings,
+				modelRegistry,
+			});
+			sessions.push(session);
+			await applyModelPreset(settings, session, "brrrr", { scope: "session" });
+			expect(clearSessionModelPreset(settings, session.sessionManager)).toBe("brrrr");
+			await manager.flush();
+
+			const restarted = freshSettings();
+			await resume(dir, manager.getSessionFile()!, restarted);
+
+			expect(getSessionModelPreset(restarted)).toBeUndefined();
+			expect({ ...restarted.getModelRoles() }).toEqual({ default: SONNET, slow: SONNET_46 });
+			expect(cfgTierOpenai.get(restarted)).toBe("none");
+		});
+
+		it("does not give a fresh session the preset", async () => {
+			const { dir, manager } = await persistedManager();
+			const settings = freshSettings();
+			const session = new AgentSession({
+				agent: new Agent({
+					initialState: {
+						model: bundled(SONNET),
+						systemPrompt: ["Test"],
+						tools: [],
+						messages: [],
+						thinkingLevel: Effort.High,
+					},
+				}),
+				sessionManager: manager,
+				settings,
+				modelRegistry,
+			});
+			sessions.push(session);
+			await applyModelPreset(settings, session, "brrrr", { scope: "session" });
+			await manager.flush();
+
+			const other = SessionManager.create(dir.path(), dir.path());
+			other.appendMessage({ role: "user", content: "other", timestamp: Date.now() });
+			other.appendMessage(createAssistantMessage("other reply"));
+			await other.flush();
+			const restarted = freshSettings();
+			await resume(dir, other.getSessionFile()!, restarted);
+
+			expect(getSessionModelPreset(restarted)).toBeUndefined();
+			expect(restarted.getModelRole("default")).toBe(SONNET);
+		});
 	});
 
 	it("clearing restores exact prior values, including pre-existing runtime overrides", async () => {
