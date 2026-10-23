@@ -1,5 +1,5 @@
 import { untilAborted } from "@oh-my-pi/pi-utils";
-import type { SessionManager } from "../session/session-manager";
+import type { DraftEditorState, SessionManager } from "../session/session-manager";
 import type { AgentSessionDisposeOptions } from "../session/agent-session-types";
 import type { AgentSession } from "../session/agent-session";
 
@@ -23,8 +23,10 @@ export interface InteractiveSessionConnection extends Pick<
 	/** Observe owner quiescence without cancelling its work when the view goes away. */
 	waitForSettled(signal?: AbortSignal): Promise<void>;
 	/** Draft sidecar belongs to the runtime writer, even when the terminal is remote. */
-	saveDraft(text: string): Promise<void>;
+	saveDraft(text: string, state?: DraftEditorState): Promise<void>;
 	consumeDraft(): Promise<string | null>;
+	/** Cursor and paste payloads saved with the draft; absent on remote runtimes that only carry text. */
+	consumeDraftState?(draftText: string): Promise<DraftEditorState | null>;
 	/** Explicit owner termination; never called merely to release a view lease. */
 	beginDispose(): void | Promise<void>;
 	disposeSession(options?: AgentSessionDisposeOptions): Promise<void>;
@@ -36,9 +38,16 @@ export interface InteractiveSessionConnection extends Pick<
 export function createLocalInteractiveSessionConnection(
 	session: Omit<
 		InteractiveSessionConnection,
-		"waitForSettled" | "saveDraft" | "consumeDraft" | "beginDispose" | "disposeSession" | "checkpoint"
+		| "waitForSettled"
+		| "saveDraft"
+		| "consumeDraft"
+		| "consumeDraftState"
+		| "beginDispose"
+		| "disposeSession"
+		| "checkpoint"
 	> & {
-		sessionManager: Pick<SessionManager, "saveDraft" | "consumeDraft" | "close" | "seal">;
+		sessionManager: Pick<SessionManager, "saveDraft" | "consumeDraft" | "close" | "seal"> &
+			Partial<Pick<SessionManager, "consumeDraftState">>;
 	} & Pick<AgentSession, "waitForIdle" | "settleAsyncWork" | "beginDispose" | "dispose">,
 ): InteractiveSessionConnection {
 	return {
@@ -48,8 +57,9 @@ export function createLocalInteractiveSessionConnection(
 			await session.sessionManager.close();
 			session.sessionManager.seal();
 		},
-		saveDraft: text => session.sessionManager.saveDraft(text),
+		saveDraft: (text, state) => session.sessionManager.saveDraft(text, state),
 		consumeDraft: () => session.sessionManager.consumeDraft(),
+		consumeDraftState: async draftText => (await session.sessionManager.consumeDraftState?.(draftText)) ?? null,
 		promptCustomMessage: (...args) => session.promptCustomMessage(...args),
 		prompt: (...args) => session.prompt(...args),
 		abort: (...args) => session.abort(...args),

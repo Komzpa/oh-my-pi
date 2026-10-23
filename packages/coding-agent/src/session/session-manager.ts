@@ -139,6 +139,15 @@ import { recordSessionRecap, recordSessionTitle } from "./session-index";
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
+const DRAFT_STATE_FILE = "draft-editor.json";
+
+/** Editor state a plain-text draft cannot carry: cursor and collapsed paste/atom payloads. */
+export interface DraftEditorState {
+	cursor: { line: number; col: number };
+	pastes: [number, string][];
+	atoms: [string, string][];
+	pasteCounter: number;
+}
 const DISCARDED_ENTRY_BRANCH_MARKER = "discarded-entry-branch";
 /**
  * Read-back-and-retry passes one full rewrite makes after meeting another
@@ -3496,15 +3505,18 @@ export class SessionManager {
 		return (await this.#artifactManagerForSession()?.getPath(id)) ?? null;
 	}
 
-	async saveDraft(text: string): Promise<void> {
+	async saveDraft(text: string, state?: DraftEditorState): Promise<void> {
 		const draftPath = this.#draftPath();
 		if (!draftPath || !this.#persist) return;
+		const statePath = this.#draftStatePath(draftPath);
 
 		if (text.length === 0) {
-			try {
-				await this.#storage.unlink(draftPath);
-			} catch (err) {
-				if (!isEnoent(err)) throw err;
+			for (const target of [draftPath, statePath]) {
+				try {
+					await this.#storage.unlink(target);
+				} catch (err) {
+					if (!isEnoent(err)) throw err;
+				}
 			}
 			return;
 		}
@@ -3521,6 +3533,50 @@ export class SessionManager {
 			this.#draftOnlySessionCleanupArmed = true;
 		}
 		await this.#storage.writeText(draftPath, text);
+		if (state) {
+			await this.#storage.writeText(statePath, JSON.stringify({ version: 1, text, state }));
+		} else {
+			// A text-only save must not leave a previous draft's cursor and payloads behind.
+			try {
+				await this.#storage.unlink(statePath);
+			} catch (err) {
+				if (!isEnoent(err)) throw err;
+			}
+		}
+	}
+
+	#draftStatePath(draftPath: string): string {
+		return path.join(path.dirname(draftPath), DRAFT_STATE_FILE);
+	}
+
+	/**
+	 * One-shot companion of {@link consumeDraft}: the cursor and collapsed-paste payloads saved
+	 * with the same draft text. Returns null when absent, malformed, or saved for different text,
+	 * so a stale sidecar can never attach to a newer draft.
+	 */
+	async consumeDraftState(draftText: string): Promise<DraftEditorState | null> {
+		const draftPath = this.#draftPath();
+		if (!draftPath) return null;
+		const statePath = this.#draftStatePath(draftPath);
+		let raw: string;
+		try {
+			raw = await this.#storage.readText(statePath);
+		} catch (err) {
+			if (isEnoent(err)) return null;
+			throw err;
+		}
+		try {
+			await this.#storage.unlink(statePath);
+		} catch (err) {
+			if (!isEnoent(err)) throw err;
+		}
+		try {
+			const parsed = JSON.parse(raw) as { version?: unknown; text?: unknown; state?: DraftEditorState };
+			if (parsed.version !== 1 || parsed.text !== draftText || !parsed.state) return null;
+			return parsed.state;
+		} catch {
+			return null;
+		}
 	}
 
 	async consumeDraft(): Promise<string | null> {

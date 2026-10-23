@@ -594,6 +594,14 @@ export interface PasteOptions {
 	submitAfterPaste?: boolean;
 }
 
+/** Editor state a plain-text draft loses: cursor position and collapsed paste/atom payloads. */
+export interface EditorDraftState {
+	cursor: { line: number; col: number };
+	pastes: [number, string][];
+	atoms: [string, string][];
+	pasteCounter: number;
+}
+
 export class Editor implements Component, Focusable {
 	#state: EditorState = {
 		lines: [""],
@@ -2885,6 +2893,35 @@ export class Editor implements Component, Focusable {
 			if (paste) return this.#pastes.get(Number(paste[1])) ?? match;
 			return this.#atoms.get(match) ?? match;
 		});
+	}
+
+	/** Cursor and collapsed-content payloads that the buffer text alone cannot recover. */
+	snapshotDraftState(): EditorDraftState {
+		const text = this.getText();
+		const pastes: [number, string][] = [];
+		for (const match of text.matchAll(/\[Paste #(\d+)(?:, (?:\+\d+ lines|\d+ chars))?\]/g)) {
+			const id = Number(match[1]);
+			const value = this.#pastes.get(id);
+			if (value !== undefined && !pastes.some(([known]) => known === id)) pastes.push([id, value]);
+		}
+		const atoms = [...this.#atoms].filter(([label]) => text.includes(label));
+		return {
+			cursor: this.getCursor(),
+			pastes,
+			atoms,
+			pasteCounter: this.#pasteCounter,
+		};
+	}
+
+	/** Re-register payloads and place the cursor after the host restored the text with {@link setText}. */
+	restoreDraftState(state: EditorDraftState): void {
+		const text = this.getText();
+		for (const [id, value] of state.pastes) this.#pastes.set(id, value);
+		this.#pasteCounter = Math.max(this.#pasteCounter, state.pasteCounter);
+		for (const [label, expansion] of state.atoms) if (text.includes(label)) this.registerAtom(label, expansion);
+		const line = Math.min(Math.max(state.cursor.line, 0), this.#state.lines.length - 1);
+		this.#state.cursorLine = line;
+		this.#setCursorCol(Math.min(Math.max(state.cursor.col, 0), this.#state.lines[line]?.length ?? 0));
 	}
 
 	/** Register `label` as a collapsed atom expanding to `expansion` on submit, without inserting

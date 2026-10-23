@@ -2262,11 +2262,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		// signal arriving mid-Ctrl+C no-ops instead of racing a second dispose.
 		this.#signalTeardown = createSessionTeardown({
 			getDraftText: () => this.#inputController.getDraftText(),
+			getDraftState: () => this.editor.snapshotDraftState(),
 			beginDispose: () => {
 				void this.#sessionConnection.beginDispose();
 				this.statusLine.dispose();
 			},
-			saveDraft: text => this.#sessionConnection.saveDraft(text),
+			saveDraft: (text, state) => this.#sessionConnection.saveDraft(text, state),
 			disposeSession: async reason => {
 				await this.#btwController.dispose();
 				await this.#sessionConnection.disposeSession({
@@ -2639,6 +2640,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			const draft = await logger.time("InteractiveMode.init:draft", () => this.#sessionConnection.consumeDraft());
 			if (draft && !this.editor.getText()) {
 				this.editor.setText(draft);
+				const state = await this.#sessionConnection.consumeDraftState?.(draft);
+				if (state) this.editor.restoreDraftState(state);
 				this.updateEditorBorderColor();
 				this.ui.requestRender();
 			}
@@ -7648,12 +7651,31 @@ export class InteractiveMode implements InteractiveModeContext {
 		const cmd = [...resolveCliEntryCmd(), ...restartArgv(process.argv.slice(2), sessionFile)];
 		// Snapshot the unsent composer before closing input and disposing UI controllers.
 		// Shared teardown reuses this save instead of overwriting it with a cleared editor.
+		const draftAtSnapshot = this.editor.getText();
 		if (this.#signalTeardown) await this.#signalTeardown.saveDraft();
-		else await this.#sessionConnection.saveDraft(this.#inputController.getDraftText());
+		else
+			await this.#sessionConnection.saveDraft(
+				this.#inputController.getDraftText(),
+				this.editor.snapshotDraftState(),
+			);
 		// Release the writer claim before replacing the runtime with the exact checkpoint.
 		await this.#sessionConnection.checkpoint();
+		// Keys typed while the checkpoint flushed reached the editor after the snapshot; stopping the
+		// UI drains stdin, so persist the final text now or those keys are lost with the old process.
+		await this.#persistLateDraft(draftAtSnapshot);
 		this.ui.stop();
 		await this.#relaunch(cmd, sessionId, sessionFile);
+	}
+
+	/** Re-save the draft when keys reached the editor after the restart snapshot; never blocks the restart. */
+	async #persistLateDraft(savedText: string): Promise<void> {
+		const text = this.editor.getText();
+		if (text === savedText) return;
+		try {
+			await this.#sessionConnection.saveDraft(text, this.editor.snapshotDraftState());
+		} catch (error) {
+			logger.warn("Failed to save late session draft during restart", { error: String(error) });
+		}
 	}
 
 	/** Close the session, then replace this process with the relaunch command. */

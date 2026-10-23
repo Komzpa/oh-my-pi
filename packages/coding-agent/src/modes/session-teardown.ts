@@ -10,11 +10,14 @@
  * is directly unit-testable without instantiating the full TUI stack.
  */
 import { logger, type postmortem } from "@oh-my-pi/pi-utils";
+import type { DraftEditorState } from "../session/session-manager";
 
 /** Dependencies the teardown captures at construction time. */
 export interface SessionTeardownDeps {
 	/** Snapshot the current editor text; called once, before disposal touches session state. */
 	getDraftText: () => string;
+	/** Snapshot the cursor and paste payloads; taken together with {@link getDraftText}. */
+	getDraftState?: () => DraftEditorState | undefined;
 	/**
 	 * Synchronously mark the session as disposing before any awaited teardown
 	 * work. This closes the async gap where deferred jobs could otherwise start
@@ -25,7 +28,7 @@ export interface SessionTeardownDeps {
 	 * Persist the snapshotted draft. Called even for an empty string so a
 	 * previously-persisted draft sidecar is cleared on a clean exit.
 	 */
-	saveDraft: (text: string) => Promise<void>;
+	saveDraft: (text: string, state?: DraftEditorState) => Promise<void>;
 	/**
 	 * Dispose the session — emits `session_shutdown`, drains async jobs, closes
 	 * the manager. Receives the postmortem reason that triggered the teardown
@@ -71,13 +74,21 @@ export function createSessionTeardown(deps: SessionTeardownDeps): SessionTeardow
 	let pending: Promise<void> | undefined;
 	let draftSave: Promise<void> | undefined;
 	let draftText: string | undefined;
-	const snapshotDraft = (): string => (draftText ??= deps.getDraftText());
+	let draftState: DraftEditorState | undefined;
+	const snapshotDraft = (): string => {
+		if (draftText === undefined) {
+			draftText = deps.getDraftText();
+			draftState = deps.getDraftState?.();
+		}
+		return draftText;
+	};
 	const saveDraft = (): Promise<void> => {
 		if (!draftSave) {
-			draftSave = deps.saveDraft(snapshotDraft()).catch(error => {
+			draftSave = deps.saveDraft(snapshotDraft(), draftState).catch(error => {
 				// A failed restart leaves the editor active; retry its latest text.
 				draftSave = undefined;
 				draftText = undefined;
+				draftState = undefined;
 				throw error;
 			});
 		}
