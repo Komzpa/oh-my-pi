@@ -327,6 +327,9 @@ test("chief bash admits mid-chain cd and read-only git plumbing, and still refus
       // Refused live while counting gate failure keys per spec file.
       "cd /x && head -3 failure-keys.txt; echo; wc -l failure-keys.txt; awk -F'[›|\\t]' '{print $0}' failure-keys.txt | grep -oE '[a-z0-9-]+\\.spec\\.ts' | sort | uniq -c | sort -rn",
       "awk '{ n += $2 } END { print n }' f",
+      // Refused live twice at 16:54-16:55Z while finding which checkout each e2e run belongs to.
+      "for p in $(pgrep -f 'playwright test|vite'); do echo \"$p $(readlink /proc/$p/cwd) :: $(tr '\\0' ' ' </proc/$p/cmdline | cut -c1-140)\"; done",
+      "wc -l < report.json; sort < keys.txt | uniq -c",
     ];
     const refused = [
       "git checkout main",
@@ -339,6 +342,12 @@ test("chief bash admits mid-chain cd and read-only git plumbing, and still refus
       "awk '{ system(\"rm \" $1) }' f",
       "awk '{ print | \"sh\" }' f",
       "awk -f prog.awk f",
+      "cat <<EOF > x\nhi\nEOF",
+      "cat <> f",
+      "cat <&3",
+      "diff <(sort a) b",
+      "sort < keys.txt > out",
+      "wc -l <",
       "systemctl --user restart review-x.service",
       "systemctl --user --now disable review-x.service",
       "sed 's/a/b/w out' f",

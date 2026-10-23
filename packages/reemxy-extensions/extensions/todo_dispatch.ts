@@ -2873,6 +2873,16 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           if (char !== "\n" || (previous && !(previous.plain && Object.hasOwn(separators, previous.value)))) tokens.push({ value, plain: true, dynamic: false, newline: char === "\n" });
           continue;
         }
+        // `< file` only reads; its path word is not an argument (live 2026-10-23 16:55Z: `tr '\0' ' ' </proc/$p/cmdline`
+        // was refused twice). `<<`, `<>`, `<&` and `<(` stay outside this grammar.
+        let inputRedirect = false;
+        if (char === "<") {
+          if (/[<>&(]/.test(command[cursor + 1] ?? "")) return null;
+          cursor += 1;
+          while (command[cursor] === " " || command[cursor] === "\t") cursor += 1;
+          if (cursor >= command.length || /[;|&\n]/.test(command[cursor]!)) return null;
+          inputRedirect = true;
+        }
         const start = cursor;
         let value = "";
         let plain = true;
@@ -2916,6 +2926,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           }
         }
         if (quote) return null;
+        if (inputRedirect) continue;
         tokens.push({ value, plain, dynamic, assignment: /^[A-Za-z_][A-Za-z0-9_]*=/.test(command.slice(start, cursor)) });
       }
       return stop ? null : tokens;
