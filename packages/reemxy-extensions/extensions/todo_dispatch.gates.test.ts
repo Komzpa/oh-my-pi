@@ -315,11 +315,17 @@ test("chief bash admits mid-chain cd and read-only git plumbing, and still refus
       "git cat-file -t HEAD; git cat-file -p HEAD | head; git branch --list; git branch --show-current",
       "git remote -v; git remote show fork; git describe --tags; git rev-list --count HEAD; git for-each-ref refs/heads | tail -3",
       "git worktree list | head; cd /x && git worktree list",
+      // Refused live at 14:34:36Z: a look at the review checkout before trusting a receipt.
+      "git status --short | head; git rev-parse --short HEAD; git stash list | head -3; echo ---; cat /x/key-c.md",
+      "git stash show -p | head",
     ];
     const refused = [
       "git checkout main",
       "cd /x && git reset --hard",
       "git stash",
+      "git stash pop",
+      "git stash drop",
+      "git stash push -m x",
       "git merge topic",
       "git rebase main",
       "git add -A",

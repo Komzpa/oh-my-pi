@@ -2730,11 +2730,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
             subcommand += 1;
           } else break;
         }
-        if (!words[subcommand] || words[subcommand].dynamic || !/^(?:status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|ls-tree|cat-file|merge-base|worktree|fetch|patch-id|rev-list|for-each-ref|name-rev|describe|blame|shortlog|grep)$/.test(words[subcommand].value)) return false;
+        if (!words[subcommand] || words[subcommand].dynamic || !/^(?:status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|ls-tree|cat-file|merge-base|worktree|fetch|patch-id|rev-list|for-each-ref|name-rev|describe|blame|shortlog|grep|stash)$/.test(words[subcommand].value)) return false;
         const verb = words[subcommand].value;
         const rest = words.slice(subcommand + 1);
         // Plumbing that can write: `worktree add/remove/…`, `remote add/remove/set-url/…`, and `--output=<file>`.
         if (verb === "worktree") return rest[0] !== undefined && !rest[0].dynamic && rest[0].value === "list";
+        // `stash list` and `stash show` read; a bare `stash`, `push`, `pop`, `apply`, `drop` or `clear` writes.
+        if (verb === "stash") return rest[0] !== undefined && !rest[0].dynamic && ["list", "show"].includes(rest[0].value);
         if (verb === "remote" && rest.length > 0 && (rest[0].dynamic || !/^(?:-v|--verbose|show|get-url)$/.test(rest[0].value))) return false;
         if (["diff", "log", "show"].includes(verb) && rest.some((word) => /^--output(?:=|$)/.test(word.value))) return false;
         if (words[subcommand].value !== "branch") return true;
