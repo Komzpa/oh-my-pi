@@ -324,6 +324,9 @@ test("chief bash admits mid-chain cd and read-only git plumbing, and still refus
       // Refused live at 15:59Z while checking the review page units.
       "ss -ltnp | grep -E ':(4671|8891|8767)\\b'; systemctl --user list-units --all 'review-*' --no-legend | head",
       "systemctl --user status review-x.service --no-pager; systemctl --user show review-x.service -p Slice",
+      // Refused live while counting gate failure keys per spec file.
+      "cd /x && head -3 failure-keys.txt; echo; wc -l failure-keys.txt; awk -F'[›|\\t]' '{print $0}' failure-keys.txt | grep -oE '[a-z0-9-]+\\.spec\\.ts' | sort | uniq -c | sort -rn",
+      "awk '{ n += $2 } END { print n }' f",
     ];
     const refused = [
       "git checkout main",
@@ -332,6 +335,10 @@ test("chief bash admits mid-chain cd and read-only git plumbing, and still refus
       "git stash pop",
       "sed -i 's/a/b/' f",
       "systemctl --user stop review-x.service",
+      "awk '{ print > \"out\" }' f",
+      "awk '{ system(\"rm \" $1) }' f",
+      "awk '{ print | \"sh\" }' f",
+      "awk -f prog.awk f",
       "systemctl --user restart review-x.service",
       "systemctl --user --now disable review-x.service",
       "sed 's/a/b/w out' f",

@@ -2692,6 +2692,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (!flags.every((word) => /^-[Enr]+$/.test(word.value))) return false;
       return scripts.length >= 1 && /^s([^\\\w\s])(?:(?!\1).|\\.)*\1(?:(?!\1).|\\.)*\1[gIp\d]*$/.test(scripts[0].value);
     }
+    // awk reads unless its program writes or runs: no redirection, pipe, system(), getline or close()
+    // (live 2026-10-23 16:4xZ: `awk -F'[›|\t]' '{print $0}' failure-keys.txt | grep …` was refused).
+    if (name.value === "awk") {
+      const program = args.find((word, index) => !word.value.startsWith("-") && !/^-[Fv]$/.test(args[index - 1]?.value ?? ""));
+      if (!program || program.dynamic) return false;
+      if (args.some((word) => /^-(?:f|-file|i|-include|E|-exec)/.test(word.value))) return false;
+      return !/[>|]|\bsystem\s*\(|\bgetline\b|\bclose\s*\(|\bfflush\b/.test(program.value);
+    }
     if (name.value === "find") return !args.some((word) => /^-(?:exec|execdir|ok|okdir|delete|fprint\w*|fls)$/.test(word.value));
     if (name.value === "sort") return !args.some((word) => /^(?:-o|--output)/.test(word.value));
     // systemctl reads: leading display/scope options, then a listing or state verb (live 2026-10-23 15:59Z:
