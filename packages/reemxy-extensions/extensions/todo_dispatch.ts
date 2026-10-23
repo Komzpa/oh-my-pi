@@ -627,6 +627,47 @@ export function parseTodoOverride(input: unknown): string | undefined {
   for (const id of GATE_IDS) if (lowered.includes(id)) return id;
   return undefined;
 }
+export const GLOBAL_KILL_REFUSAL =
+  "Blocked: global kill on a shared host. Record the PID of each process you start and stop only that PID with `kill <pid>`.";
+// A subagent shares the host with other sessions' servers and tests: a kill chosen by name, pattern,
+// file or "everything" hits their processes (live sunbim 2026-10-20: `pkill -f "vite preview"`,
+// `fuser -k`, `pkill -9 -f "node.*playwright"`, repeated after the lead's STOP). Only a kill of a
+// literal numeric PID or a variable holding one stays allowed.
+export function isGlobalKillCommand(command: string, depth = 0): boolean {
+  // Text inside quotes is data (echo/grep arguments), except `$(...)`/backticks inside double quotes,
+  // which run, and the program text of `sh -c '...'`, which is scanned on its own.
+  const inner: string[] = [];
+  let code = "";
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i]!;
+    if (ch !== "'" && ch !== '"') { code += ch; continue; }
+    let j = i + 1;
+    while (j < command.length && command[j] !== ch) j += ch === '"' && command[j] === "\\" ? 2 : 1;
+    const body = command.slice(i + 1, j);
+    inner.push(body);
+    if (ch === '"') code += (body.match(/\$\([^)]*\)|`[^`]*`/g) ?? []).join(" ");
+    i = j;
+    code += " ";
+  }
+  const patternPids = /\b(?:pgrep|pidof|lsof|fuser|ps)\b/;
+  if (/\bkill\b[^;&|\n]*(?:\$\(|`)[^)`]*\b(?:pgrep|pidof|lsof|fuser|ps)\b/.test(code)) return true;
+  if (new RegExp(`${patternPids.source}[^;&\\n]*\\|\\s*xargs\\b[^|;&\\n]*\\bkill\\b`).test(code)) return true;
+  for (const segment of code.split(/[;&|\n(){}`]+/)) {
+    const words = segment.trim().split(/\s+/).filter(Boolean);
+    while (words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]!) || ["sudo", "env", "nohup", "time", "command", "exec", "builtin"].includes(words[0]!))) words.shift();
+    if (words[0] === "timeout") words.splice(0, 2);
+    const head = words[0]?.replace(/^.*\//, "");
+    const args = words.slice(1);
+    if (head === "pkill" || head === "killall") return true;
+    if (head === "fuser" && args.some((arg) => /^-[A-Za-z0-9]*k/.test(arg))) return true;
+    // `kill 0` signals the process group; `-1` is "every process" only as a pid operand (`kill -9 -1`,
+    // `kill -- -1`), while `kill -1 <pid>` sends SIGHUP to one pid.
+    if (head === "kill" && args.some((arg, index) => arg === "0" || (arg === "-1" && (index > 0 || args[0] === "--")))) return true;
+    if (depth < 2 && (head === "bash" || head === "sh" || head === "zsh") && args.includes("-c"))
+      for (const body of inner) if (isGlobalKillCommand(body, depth + 1)) return true;
+  }
+  return false;
+}
 export function decideGateCall(
   call: GateCall,
   gates: readonly ActiveGate[],
@@ -3441,6 +3482,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       }
     };
     walk(root, 0);
+    // A walk cut off by the entry budget only underestimates the newest mtime, so a "stale" verdict
+    // from it is unknown, never a number (live 2026-10-23: "no file change ... for 125916 min").
+    // Epoch or invalid mtimes are unknown too.
+    if (newest !== undefined && (!Number.isFinite(newest) || newest <= 0)) return undefined;
+    if (budget <= 0 && newest !== undefined && Date.now() - newest > SILENT_MS) return undefined;
     return newest;
   };
   const silentWorkers = (activity: ReturnType<typeof workerActivity>) =>
@@ -3751,6 +3797,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   });
 
   pi.on("tool_call", async (event, ctx) => {
+    // A safety control, not a staffing gate: it holds even when the staffing gates are switched off.
+    if (event.toolName === "bash" && !isMain(ctx)) {
+      const command = (event.input as { command?: unknown } | undefined)?.command;
+      if (typeof command === "string" && isGlobalKillCommand(command)) return { block: true, reason: GLOBAL_KILL_REFUSAL };
+    }
     await refreshLiveWorkerModels(ctx);
     if (gateSwitchedOff(ctx)) return;
     if (singleWriterLane) return;
@@ -4128,7 +4179,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return owner && !running.some((job) => job.id === owner || job.agentId === owner) && settled.some((job) => job.id === owner || job.agentId === owner);
     });
     const receding = recedingFinish(ctx, open, now, decision.deadline?.timezone);
-    // Serial fan-in: many open rows wait (directly or through other rows) on one row a worker is
+    // Serial fan-in: many open rows wait directly on one row a worker is
     // running while worker slots are free (live batumarket 2026-10-22: 6 of 9 rows behind one
     // landing row, one worker running, no line said so). Waiting stays allowed; the chief is told
     // to split that row or start the independent parts now.
@@ -4138,15 +4189,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       for (const row of open) {
         const owner = ownerOf.get(row.content);
         if (!owner || !running.some((job) => job.id === owner || job.agentId === owner)) continue;
+        // Direct dependents only: a chain A->B->C->D is a pipeline that cannot be parallelised.
         const behind = new Set<string>();
-        for (let grew = true; grew; ) {
-          grew = false;
-          for (const [content, deps] of structure)
-            if (content !== row.content && !behind.has(content) && deps.some((dep) => dep === row.content || behind.has(dep))) {
-              behind.add(content);
-              grew = true;
-            }
-        }
+        for (const [content, deps] of structure) if (content !== row.content && deps.includes(row.content)) behind.add(content);
         if (behind.size > 3)
           serialQueues.push(`${behind.size} rows are queued behind ${JSON.stringify(shorten(row.content))}: split it or start the independent parts now (${capacity - running.length} worker slot(s) free). Queued: ${names([...behind].map((content) => ({ content })))}`);
       }

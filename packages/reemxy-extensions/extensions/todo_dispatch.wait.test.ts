@@ -850,7 +850,7 @@ test("OMP_LANE_UNIT suppresses chief gates, retros and continuation nudges", asy
 	}
 });
 
-async function stuckWorkerHarness(options: { filesAgeMs: number; elapsedMs: number }) {
+async function stuckWorkerHarness(options: { filesAgeMs: number; elapsedMs: number; bulkFiles?: number }) {
 	const sessionId = `plantick-${process.pid}-${Math.random().toString(36).slice(2)}`;
 	const traceFile = path.join(os.homedir(), ".local", "state", "omp-todo-dispatch", `${sessionId}.gate.jsonl`);
 	const tree = fs.mkdtempSync(path.join(os.tmpdir(), "todo-plantick-tree-"));
@@ -862,6 +862,16 @@ async function stuckWorkerHarness(options: { filesAgeMs: number; elapsedMs: numb
 	fs.writeFileSync(file, "x");
 	const at = new Date(now - options.filesAgeMs);
 	fs.utimesSync(file, at, at);
+	if (options.bulkFiles) {
+		// A tree larger than the mtime walk's entry budget: the walk is cut off, so its newest mtime is a lower bound.
+		const bulk = path.join(tree, "bulk");
+		fs.mkdirSync(bulk);
+		for (let i = 0; i < options.bulkFiles; i += 1) {
+			const f = path.join(bulk, `f${i}.txt`);
+			fs.writeFileSync(f, "x");
+			fs.utimesSync(f, at, at);
+		}
+	}
 	fs.writeFileSync(
 		path.join(sessions, "main", "worker-a.jsonl"),
 		`${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "wait", arguments: {} }] } })}\n`,
@@ -931,6 +941,18 @@ test("plan tick flags an alive-but-waiting worker whose worktree is quiet, escal
 		expect(text).toContain("STILL STUCK over 30 min");
 		expect(text).toContain("write agent://worker-a asking for done/left with a receipt, or stop it");
 		expect(h.trace().some(row => row.plantick === "sent")).toBe(true);
+	} finally {
+		h.cleanup();
+	}
+}, 60_000);
+
+test("plan tick never prints a quiet-worktree age from a cut-off mtime walk", async () => {
+	const h = await stuckWorkerHarness({ filesAgeMs: 40 * 60_000, elapsedMs: 40 * 60_000, bulkFiles: 4100 });
+	try {
+		await h.ticks.at(-1)!();
+		const text = h.sent.join("\n");
+		expect(text).not.toContain("no file change in its worktree");
+		expect(text).not.toMatch(/for \d{4,} min/);
 	} finally {
 		h.cleanup();
 	}
