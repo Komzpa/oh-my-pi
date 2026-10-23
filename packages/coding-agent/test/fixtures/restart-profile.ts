@@ -48,6 +48,13 @@ if (process.argv[2] === "receive") {
 	const mode = new InteractiveMode(session, "test");
 	mode.ui.requestRender = () => {};
 	mode.ui.terminal.drainInput = async () => {};
+	// The child has no TTY: a real terminal start would report a disconnect and SIGHUP the process.
+	mode.ui.start = () => {};
 	vi.spyOn(workerClient, "resolveCliEntryCmd").mockReturnValue([process.execPath, import.meta.path, "receive"]);
+	// Restart is queue-based: init() binds the controller that executes the request once idle.
+	await mode.init();
 	await mode.restart();
+	// A successful restart execs the successor in place and never returns here.
+	await Bun.sleep(20_000);
+	throw new Error("Restart request was never executed");
 }

@@ -3,12 +3,13 @@ import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { createLocalInteractiveSessionConnection } from "@oh-my-pi/pi-coding-agent/modes/interactive-session";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as theme from "@oh-my-pi/pi-tui/theme";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
 
 import {
 	cfgStatusLineContextLine,
@@ -61,6 +62,79 @@ describe("InteractiveMode live settings", () => {
 		resetSettingsForTest();
 		await theme.setSymbolPreset("unicode");
 		vi.restoreAllMocks();
+	});
+
+	it("restores the supplied runtime draft instead of the frontend writer's draft", async () => {
+		mode.stop();
+		const localRead = vi
+			.spyOn(session.sessionManager, "consumeDraft")
+			.mockRejectedValue(new Error("frontend writer"));
+		const consumeDraft = vi.fn(async () => "Черновик владельца 🐈");
+		const connection = { ...createLocalInteractiveSessionConnection(session), consumeDraft };
+		mode = new InteractiveMode(
+			session,
+			"test",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			connection,
+		);
+		await mode.init({ suppressWelcomeIntro: true });
+		expect(mode.editor.getText()).toBe("Черновик владельца 🐈");
+		expect(consumeDraft).toHaveBeenCalledTimes(1);
+		expect(localRead).not.toHaveBeenCalled();
+	});
+
+	it("shuts down the supplied owner without disposing the frontend session", async () => {
+		mode.stop();
+		const events: string[] = [];
+		const connection = {
+			...createLocalInteractiveSessionConnection(session),
+			consumeDraft: async () => null,
+			beginDispose: async () => {
+				events.push("begin");
+			},
+			saveDraft: async (text: string) => {
+				events.push(`draft:${text}`);
+			},
+			disposeSession: async () => {
+				events.push("dispose");
+			},
+		};
+		mode = new InteractiveMode(
+			session,
+			"test",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			connection,
+		);
+		await mode.init({ suppressWelcomeIntro: true });
+		mode.editor.setText("не отправлено 🐈");
+		vi.spyOn(mode.ui.terminal, "drainInput").mockResolvedValue(undefined);
+		const localBegin = vi.spyOn(session, "beginDispose");
+		const localDispose = vi.spyOn(session, "dispose");
+		const quit = vi.spyOn(postmortem, "quit").mockRejectedValue(new Error("captured owner exit"));
+		try {
+			await expect(mode.shutdown()).rejects.toThrow("captured owner exit");
+			expect(events).toEqual(["begin", "draft:не отправлено 🐈", "dispose"]);
+			expect(localBegin).not.toHaveBeenCalled();
+			expect(localDispose).not.toHaveBeenCalled();
+		} finally {
+			localBegin.mockRestore();
+			localDispose.mockRestore();
+			quit.mockRestore();
+		}
 	});
 
 	it("applies status-line and thinking-visibility changes made outside the settings panel", async () => {

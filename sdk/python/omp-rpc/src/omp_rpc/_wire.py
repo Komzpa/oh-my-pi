@@ -495,6 +495,18 @@ class AssistantErrorEvent(TypedDict):
     error: AssistantMessage
 
 
+class CustomPromptMessage(TypedDict):
+    customType: str
+    content: MessageContent
+    display: bool
+    details: NotRequired[JsonValue]
+    attribution: NotRequired[Literal["user", "agent"]]
+
+
+class InteractiveViewOptions(TypedDict):
+    collapseCompactedHistory: NotRequired[bool]
+
+
 class SelectOptionDetail(TypedDict):
     """Presentation metadata aligned positionally with `options`."""
     description: NotRequired[str]
@@ -581,6 +593,43 @@ class QueuedMessagesState:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class CustomPromptOptions:
+    streaming_behavior: Literal["steer", "followUp", "aside"] | None = None
+    tool_choice: JsonValue | None = None
+    queue_chip_text: str | None = None
+    queue_only: bool | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionPromptOptions:
+    expand_prompt_templates: bool | None = None
+    run_commands: bool | None = None
+    throw_on_drop: bool | None = None
+    images: tuple[ImageContent, ...] | None = None
+    streaming_behavior: Literal["steer", "followUp", "aside"] | None = None
+    tool_choice: JsonValue | None = None
+    synthetic: bool | None = None
+    user_initiated: bool | None = None
+    attribution: Literal["user", "agent"] | None = None
+    skip_compaction_check: bool | None = None
+    solution_space: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionDisposeOptions:
+    mnemopi_consolidate_timeout_ms: float | None = None
+    drain_timeout_ms: float | None = None
+    reason: Literal["pre_exit", "exit", "sigint", "sigterm", "sighup", "uncaught_exception", "unhandled_rejection", "manual"] | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionAbortOptions:
+    goal_reason: Literal["interrupted", "internal"] | None = None
+    reason: str | None = None
+    preserve_compaction: bool | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class ToolDescriptor:
     name: str
     description: str
@@ -638,12 +687,26 @@ class UsageLimitWrapUp:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class InteractiveViewSnapshot:
+    session_id: str
+    context: JsonObject
+    stream_message: AgentMessage | None
+    pending_tool_call_ids: tuple[str, ...]
+    is_streaming: bool
+    entry_count: float
+    compaction_count: float
+    session_file: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class SessionState:
     session_id: str
+    view: InteractiveViewSnapshot | None = None
     model: ModelInfo | None = None
     thinking_level: ThinkingLevel | None = None
     is_streaming: bool = False
     is_compacting: bool = False
+    has_post_prompt_work: bool = False
     steering_mode: QueueMode = "one-at-a-time"
     follow_up_mode: QueueMode = "one-at-a-time"
     interrupt_mode: InterruptMode = "immediate"
@@ -1753,6 +1816,14 @@ parse_assistant_error_event = cast("Decoder[AssistantErrorEvent]", open_record("
 """Decodes a `AssistantErrorEvent` open record: checks the discriminator and keeps every key."""
 
 
+parse_custom_prompt_message = cast("Decoder[CustomPromptMessage]", open_record(None, None))
+"""Decodes a `CustomPromptMessage` open record: checks the discriminator and keeps every key."""
+
+
+parse_interactive_view_options = cast("Decoder[InteractiveViewOptions]", open_record(None, None))
+"""Decodes a `InteractiveViewOptions` open record: checks the discriminator and keeps every key."""
+
+
 parse_select_option_detail = cast("Decoder[SelectOptionDetail]", open_record(None, None))
 """Decodes a `SelectOptionDetail` open record: checks the discriminator and keeps every key."""
 
@@ -1859,6 +1930,51 @@ def parse_queued_messages_state(value: object, path: str = "QueuedMessagesState"
     )
 
 
+def parse_custom_prompt_options(value: object, path: str = "CustomPromptOptions") -> CustomPromptOptions:
+    payload = expect_object(value, path)
+    return CustomPromptOptions(
+        streaming_behavior=optional(payload, "streamingBehavior", cast('Decoder[Literal["steer", "followUp", "aside"]]', literal(frozenset({"steer", "followUp", "aside"}))), path),
+        tool_choice=optional(payload, "toolChoice", decode_json, path),
+        queue_chip_text=optional(payload, "queueChipText", decode_str, path),
+        queue_only=optional(payload, "queueOnly", decode_bool, path),
+    )
+
+
+def parse_session_prompt_options(value: object, path: str = "SessionPromptOptions") -> SessionPromptOptions:
+    payload = expect_object(value, path)
+    return SessionPromptOptions(
+        expand_prompt_templates=optional(payload, "expandPromptTemplates", decode_bool, path),
+        run_commands=optional(payload, "runCommands", decode_bool, path),
+        throw_on_drop=optional(payload, "throwOnDrop", decode_bool, path),
+        images=optional(payload, "images", array(parse_image_content), path),
+        streaming_behavior=optional(payload, "streamingBehavior", cast('Decoder[Literal["steer", "followUp", "aside"]]', literal(frozenset({"steer", "followUp", "aside"}))), path),
+        tool_choice=optional(payload, "toolChoice", decode_json, path),
+        synthetic=optional(payload, "synthetic", decode_bool, path),
+        user_initiated=optional(payload, "userInitiated", decode_bool, path),
+        attribution=optional(payload, "attribution", cast('Decoder[Literal["user", "agent"]]', literal(frozenset({"user", "agent"}))), path),
+        skip_compaction_check=optional(payload, "skipCompactionCheck", decode_bool, path),
+        solution_space=optional(payload, "solutionSpace", decode_str, path),
+    )
+
+
+def parse_session_dispose_options(value: object, path: str = "SessionDisposeOptions") -> SessionDisposeOptions:
+    payload = expect_object(value, path)
+    return SessionDisposeOptions(
+        mnemopi_consolidate_timeout_ms=optional(payload, "mnemopiConsolidateTimeoutMs", decode_float, path),
+        drain_timeout_ms=optional(payload, "drainTimeoutMs", decode_float, path),
+        reason=optional(payload, "reason", cast('Decoder[Literal["pre_exit", "exit", "sigint", "sigterm", "sighup", "uncaught_exception", "unhandled_rejection", "manual"]]', literal(frozenset({"pre_exit", "exit", "sigint", "sigterm", "sighup", "uncaught_exception", "unhandled_rejection", "manual"}))), path),
+    )
+
+
+def parse_session_abort_options(value: object, path: str = "SessionAbortOptions") -> SessionAbortOptions:
+    payload = expect_object(value, path)
+    return SessionAbortOptions(
+        goal_reason=optional(payload, "goalReason", cast('Decoder[Literal["interrupted", "internal"]]', literal(frozenset({"interrupted", "internal"}))), path),
+        reason=optional(payload, "reason", decode_str, path),
+        preserve_compaction=optional(payload, "preserveCompaction", decode_bool, path),
+    )
+
+
 def parse_tool_descriptor(value: object, path: str = "ToolDescriptor") -> ToolDescriptor:
     payload = expect_object(value, path)
     return ToolDescriptor(
@@ -1919,14 +2035,30 @@ def parse_usage_limit_wrap_up(value: object, path: str = "UsageLimitWrapUp") -> 
     )
 
 
+def parse_interactive_view_snapshot(value: object, path: str = "InteractiveViewSnapshot") -> InteractiveViewSnapshot:
+    payload = expect_object(value, path)
+    return InteractiveViewSnapshot(
+        session_id=required(payload, "sessionId", decode_str, path),
+        context=required(payload, "context", decode_json_object, path),
+        stream_message=required(payload, "streamMessage", nullable(parse_agent_message), path),
+        pending_tool_call_ids=required(payload, "pendingToolCallIds", array(decode_str), path),
+        is_streaming=required(payload, "isStreaming", decode_bool, path),
+        entry_count=required(payload, "entryCount", decode_float, path),
+        compaction_count=required(payload, "compactionCount", decode_float, path),
+        session_file=optional(payload, "sessionFile", decode_str, path),
+    )
+
+
 def parse_session_state(value: object, path: str = "SessionState") -> SessionState:
     payload = expect_object(value, path)
     return SessionState(
         session_id=required(payload, "sessionId", decode_str, path),
+        view=optional(payload, "view", parse_interactive_view_snapshot, path),
         model=optional(payload, "model", parse_model_info, path),
         thinking_level=optional(payload, "thinkingLevel", _decode_thinking_level, path),
         is_streaming=defaulted(payload, "isStreaming", decode_bool, path, False),
         is_compacting=defaulted(payload, "isCompacting", decode_bool, path, False),
+        has_post_prompt_work=defaulted(payload, "hasPostPromptWork", decode_bool, path, False),
         steering_mode=defaulted(payload, "steeringMode", _decode_queue_mode, path, "one-at-a-time"),
         follow_up_mode=defaulted(payload, "followUpMode", _decode_queue_mode, path, "one-at-a-time"),
         interrupt_mode=defaulted(payload, "interruptMode", _decode_interrupt_mode, path, "immediate"),
@@ -3124,6 +3256,12 @@ class WireClient:
     def _listen(self, frame_type: str, listener: Callable[..., None]) -> Callable[[], None]:
         raise NotImplementedError
 
+    def prompt_custom(self, message: CustomPromptMessage) -> None:
+        """Submit an attributed custom message through the owner admission pipeline."""
+        params: dict[str, object] = {}
+        params["message"] = message
+        self._command("prompt_custom", params)
+
     def steer(self, message: str, *, images: Sequence[ImageContent] | None = None) -> None:
         """Queue a steering message."""
         params: dict[str, object] = {}
@@ -3180,9 +3318,37 @@ class WireClient:
             params["modelId"] = model_id
         return parse_open_session_result(self._command("open_session", params), "open_session")
 
-    def get_state(self) -> SessionState:
-        """Snapshot the session state."""
+    def begin_dispose(self) -> None:
+        """Stop admitting new owner work before explicit shutdown."""
         params: dict[str, object] = {}
+        self._command("begin_dispose", params)
+
+    def dispose_session(self) -> None:
+        """Dispose the runtime owner; view detachment does not call this."""
+        params: dict[str, object] = {}
+        self._command("dispose_session", params)
+
+    def checkpoint_session(self) -> None:
+        """Close and seal the owner journal after restart admission."""
+        params: dict[str, object] = {}
+        self._command("checkpoint_session", params)
+
+    def save_draft(self, text: str) -> None:
+        """Persist unsent editor text with the runtime session writer."""
+        params: dict[str, object] = {}
+        params["text"] = text
+        self._command("save_draft", params)
+
+    def consume_draft(self) -> str | None:
+        """Restore and remove the unsent editor draft once."""
+        params: dict[str, object] = {}
+        return required(expect_object(self._command("consume_draft", params), "consume_draft"), "text", nullable(decode_str), "consume_draft")
+
+    def get_state(self, view: InteractiveViewOptions | None = None) -> SessionState:
+        """Snapshot the session state, optionally including presentation without opening a view writer."""
+        params: dict[str, object] = {}
+        if view is not None:
+            params["view"] = view
         return parse_session_state(self._command("get_state", params), "get_state")
 
     def set_fast_mode(self, enabled: bool) -> FastModeResult:
@@ -3779,6 +3945,8 @@ __all__ = [
     "ConfirmUiRequest",
     "ContextUsage",
     "CustomMessage",
+    "CustomPromptMessage",
+    "CustomPromptOptions",
     "DeveloperMessage",
     "EditorUiRequest",
     "Effort",
@@ -3801,6 +3969,8 @@ __all__ = [
     "HostUriSchemeDefinition",
     "ImageContent",
     "InputUiRequest",
+    "InteractiveViewOptions",
+    "InteractiveViewSnapshot",
     "InterruptMode",
     "IrcMessageEvent",
     "LiveEndEvent",
@@ -3849,9 +4019,12 @@ __all__ = [
     "RpcNotification",
     "SelectOptionDetail",
     "SelectUiRequest",
+    "SessionAbortOptions",
     "SessionCredits",
+    "SessionDisposeOptions",
     "SessionEntries",
     "SessionInfoUpdateEvent",
+    "SessionPromptOptions",
     "SessionSettledEvent",
     "SessionState",
     "SessionStats",
@@ -3962,6 +4135,8 @@ __all__ = [
     "parse_confirm_ui_request",
     "parse_context_usage",
     "parse_custom_message",
+    "parse_custom_prompt_message",
+    "parse_custom_prompt_options",
     "parse_developer_message",
     "parse_editor_ui_request",
     "parse_extension_error",
@@ -3980,6 +4155,8 @@ __all__ = [
     "parse_host_uri_scheme_definition",
     "parse_image_content",
     "parse_input_ui_request",
+    "parse_interactive_view_options",
+    "parse_interactive_view_snapshot",
     "parse_irc_message_event",
     "parse_live_end_event",
     "parse_live_levels_event",
@@ -4019,9 +4196,12 @@ __all__ = [
     "parse_rpc_frame_error_event",
     "parse_select_option_detail",
     "parse_select_ui_request",
+    "parse_session_abort_options",
     "parse_session_credits",
+    "parse_session_dispose_options",
     "parse_session_entries",
     "parse_session_info_update_event",
+    "parse_session_prompt_options",
     "parse_session_settled_event",
     "parse_session_state",
     "parse_session_stats",

@@ -12,6 +12,7 @@ function makeBridge() {
 		isStreaming: () => false,
 		planModeEnabled: () => false,
 		emitSessionEvent: async () => {},
+		isRestartDraining: () => false,
 		wakeForIrc: (records: AgentMessage[]) => {
 			woken.push(records);
 		},
@@ -62,6 +63,7 @@ describe("IrcBridge broadcast legs reaching a streaming recipient", () => {
 			isStreaming: () => true,
 			planModeEnabled: () => false,
 			emitSessionEvent: async () => {},
+			isRestartDraining: () => false,
 			wakeForIrc: () => {},
 		} as unknown as IrcBridgeHost;
 		AgentRegistry.global().register({

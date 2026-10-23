@@ -490,6 +490,10 @@
 - Fixed `read` ignoring JSON and JSONL `?q=` filters and pagination for `local://` and `artifact://` files ([#15767](https://github.com/can1357/oh-my-pi/issues/15767)).
 - Agents can now read saved context notes without accidentally clearing them ([#15748](https://github.com/can1357/oh-my-pi/pull/15748) by [@Komzpa](https://github.com/Komzpa))
 - Fixed startup without an explicit model picking an unrelated authenticated provider instead of the first available model in the configured default fallback chain ([#15781](https://github.com/can1357/oh-my-pi/pull/15781) by [@mvid](https://github.com/mvid))
+### Fixed
+
+- Restore child sessions concurrently during restart instead of waiting for each child in turn.
+- Restored unanswered interactive questions after restarting or resuming a session.
 
 ## [18.11.0] - 2026-10-14
 
@@ -500,6 +504,10 @@
 - Added agent frontmatter `structured: true`: that agent's task spawns keep the `yield` tool and its `output` schema validation while `task.structured` is off ([#15717](https://github.com/can1357/oh-my-pi/pull/15717) by [@alphastorm](https://github.com/alphastorm))
 - The composer stays usable while a tool approval is pending: sending a message denies the call and steers the turn with it, so the agent knows why it was denied ([#15642](https://github.com/can1357/oh-my-pi/pull/15642) by [@H4vC](https://github.com/H4vC))
 - Session entries record which omp build wrote them, so a transcript shows whether a fix was live even in a session left open across an upgrade: the version, plus commit, branch, and uncommitted-diff hash when run from a source checkout, and `OMP_BUILD_LABEL` when set. `/session` lists the builds that wrote the session ([#15680](https://github.com/can1357/oh-my-pi/pull/15680) by [@will-bogusz](https://github.com/will-bogusz))
+- Graceful restart now replaces the process in place using `process.execve`, preserving its PID and terminal without retaining old session heaps. A replacement startup failure returns to the shell; the checkpoint remains resumable ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
+- Disposing a subagent or parent session settles restart-drain waiters with a terminal outcome instead of an unhandled rejection that could crash the lead process ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
+- Restart discovery reports extension entry hashes captured at load, so rolling installs can restart stale extension code even when the session already runs the current binary ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
+- Restart handoff no longer times out the successor while the parent finishes teardown; stale queue checkpoints are superseded after a cancelled restart or a queue edit; superseded deliveries outside a drain write no checkpoint; queued prompts during a drain acknowledge admission; and the terminal restart notice is queued before the root continuation ([#93](https://github.com/Komzpa/oh-my-pi/pull/93)).
 
 ### Changed
 
@@ -508,6 +516,8 @@
 - The Auto-Promote Context and Retry Model Fallback settings now state that they are independent; turn off Retry Model Fallback (`retry.modelFallback`) to stop `retry.fallbackChains` model switches ([#15636](https://github.com/can1357/oh-my-pi/issues/15636))
 
 ### Fixed
+
+- Avoid loading historical message payloads when detecting a pending restart during startup.
 
 - Fixed browser `tab.click("text/…")` timing out when the match was below the fold or the tab was in the background ([#14864](https://github.com/can1357/oh-my-pi/pull/14864) by [@alnaggar-dev](https://github.com/alnaggar-dev), [#15496](https://github.com/can1357/oh-my-pi/pull/15496) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed browser clicks the page never received, such as on a disabled control or inside an `inert` subtree, reporting success; the call now fails saying the browser did not deliver the click ([#15496](https://github.com/can1357/oh-my-pi/pull/15496) by [@will-bogusz](https://github.com/will-bogusz))
@@ -548,6 +558,14 @@
 - Fixed hashline edits silently dropping the tail of a line that `read` or `grep` had cut at the column limit; such an edit is now refused until a `:raw` read shows the full line ([#15649](https://github.com/can1357/oh-my-pi/issues/15649))
 - Fixed isolated tasks failing on linked worktrees with initialized recursive submodules and leaving updated submodule pins unreachable after cleanup ([#15457](https://github.com/can1357/oh-my-pi/issues/15457))
 - Fixed `/tan` missing the parent's prompt cache by advertising `xd://` tools top-level and omitting `ask` ([#15578](https://github.com/can1357/oh-my-pi/issues/15578)).
+
+### Fixed
+
+- Fixed long-session resume retaining discarded history in memory while preserving context, history, tree navigation, exports, and persisted edits. Public session records remain directly cloneable; producers announce historical edits before persistence so they survive awaits and garbage collection ([#123](https://github.com/Komzpa/oh-my-pi/pull/123) by [@Komzpa](https://github.com/Komzpa)).
+
+### Fixed
+
+- Automatic tool-result pruning now appends an overlay without rewriting the journal, preserving original bytes and matching live context on resume and forks.  Image removal (`dropImages`) now operates on raw journal entries, so images inside pruned tool results are removed too, and the session tree finds prune entries by searching "prune".
 
 ## [18.10.4] - 2026-10-13
 

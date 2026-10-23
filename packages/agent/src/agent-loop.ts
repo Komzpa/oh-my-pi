@@ -1388,7 +1388,7 @@ async function runLoopBody(
 					}
 					throw error;
 				}
-				if (config.beforeModelCall && signal?.aborted) {
+				if (config.beforeModelCall && signal?.aborted && (config.beforeModelCallActive?.() ?? true)) {
 					gateResult = { stop: true };
 				}
 				if (gateResult?.stop) {
