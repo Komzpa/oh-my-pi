@@ -793,6 +793,63 @@ test("empty dispatchable ready after restored-child filtering admits chief bash 
   }
 }, 60_000);
 
+test("PLAN CHECK names the rows queued behind one running row while worker slots are free", async () => {
+  const cwd = repo("clean");
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const now = Date.now();
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: () => undefined,
+  } as unknown as ExtensionAPI;
+  await todoDispatch(api);
+  const row = (content: string, dependencies: string[], owner?: string) => ({
+    content,
+    status: owner ? ("in_progress" as const) : ("pending" as const),
+    schedule: {
+      dependencies,
+      resources: [content],
+      ...(owner ? { owner } : {}),
+      estimate: { optimisticSeconds: 300, likelySeconds: 600, pessimisticSeconds: 900, confidence: "medium" as const, basis: "fan-in fixture", updatedAt: now - 60_000 },
+    },
+  });
+  // batumarket 2026-10-22: one landing row is running; the other rows wait on it through real
+  // output links (some only transitively), so the understaffed line stays silent by design.
+  const fanIn = (dependents: number) => {
+    const tasks = [row("Land branches", [], "land-worker")];
+    for (let i = 1; i <= dependents; i += 1) tasks.push(row(`Behind ${i}`, [i === dependents && i > 1 ? `Behind ${i - 1}` : "Land branches"]));
+    tasks.push(row("Independent part", []));
+    return [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } }];
+  };
+  const check = async (dependents: number) => {
+    const branch = fanIn(dependents);
+    const ctx = {
+      cwd,
+      sessionManager: { getHeader: () => ({ id: `fan-in-${dependents}` }), ...branchMock(() => branch), getSessionFile: () => undefined },
+      getAsyncJobSnapshot: () => ({ running: [{ id: "land-worker", agentId: "land-worker", type: "task", status: "running", label: "Land branches", startTime: now } as never], recent: [], nonJobAgents: [] }),
+      isIdle: () => false,
+      hasPendingMessages: () => false,
+      setTimeout: () => ({}),
+      clearTimer: () => undefined,
+    } as unknown as ExtensionContext;
+    const out = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: `t${dependents}`, input: {}, content: [{ type: "text", text: "done" }], details: branch[0]!.message.details, isError: false }, ctx)) as { content: Array<{ text: string }> };
+    return out.content.at(-1)!.text;
+  };
+  try {
+    const text = await check(6);
+    expect(text).toContain('6 rows are queued behind "Land branches": split it or start the independent parts now');
+    expect(text).toContain('"Behind 1"');
+    expect(text).toContain('"Behind 6"');
+    // Negative control: three queued rows are not a serial queue.
+    expect(await check(3)).not.toContain("rows are queued behind");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("every todo result in the main session ends with the plan's problems", async () => {
   const cwd = repo("clean");
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();

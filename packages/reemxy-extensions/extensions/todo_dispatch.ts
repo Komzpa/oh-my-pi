@@ -4128,6 +4128,29 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return owner && !running.some((job) => job.id === owner || job.agentId === owner) && settled.some((job) => job.id === owner || job.agentId === owner);
     });
     const receding = recedingFinish(ctx, open, now, decision.deadline?.timezone);
+    // Serial fan-in: many open rows wait (directly or through other rows) on one row a worker is
+    // running while worker slots are free (live batumarket 2026-10-22: 6 of 9 rows behind one
+    // landing row, one worker running, no line said so). Waiting stays allowed; the chief is told
+    // to split that row or start the independent parts now.
+    const structure = new Map((decision.openStructure ?? []).filter(([content]) => openContents.has(content)));
+    const serialQueues: string[] = [];
+    if (running.length < capacity) {
+      for (const row of open) {
+        const owner = ownerOf.get(row.content);
+        if (!owner || !running.some((job) => job.id === owner || job.agentId === owner)) continue;
+        const behind = new Set<string>();
+        for (let grew = true; grew; ) {
+          grew = false;
+          for (const [content, deps] of structure)
+            if (content !== row.content && !behind.has(content) && deps.some((dep) => dep === row.content || behind.has(dep))) {
+              behind.add(content);
+              grew = true;
+            }
+        }
+        if (behind.size > 3)
+          serialQueues.push(`${behind.size} rows are queued behind ${JSON.stringify(shorten(row.content))}: split it or start the independent parts now (${capacity - running.length} worker slot(s) free). Queued: ${names([...behind].map((content) => ({ content })))}`);
+      }
+    }
     const problems = [
       retroLine,
       ...staleWorkers,
@@ -4141,6 +4164,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       sizing.length ? `worker sizing: ${sizing.map((worker) => `${worker.id} ${worker.fact}; write agent://${worker.id} asking for done/left with a receipt, then split the rest`).join("; ")}` : "",
       ...overlapWarnings,
       silent.length ? `${silent.length} running worker(s) silent: ${silent.slice(0, 6).map((worker) => `${worker.name} (${worker.lastAt === undefined ? "no activity since start" : "last activity"} ${minutes(worker.ageMs)} ago)`).join(", ")}; write agent://<id> asking what it waits on. Workers not named here are active: their results arrive by themselves, so do not read their history` : "",
+      ...serialQueues,
       understaffed && (hasReplannableWait(decision) || waitingCritical.includes("queued behind")) ? `only ${running.length} of ${capacity} worker slots run and no row is ready: the rest wait on running work. ${waitingCritical ? `Waiting rows on the chain that sets the ETA, in order:${waitingCritical}\n${waitingCritical.includes("queued behind") ? `${RESOURCE_QUEUE}\n` : ""}${WHY_EACH_LINK}\n${SPLIT_EACH} (skill step 7)` : "Split the waiting rows into the part that needs that result and the part that can start now, and dispatch the second part (skill step 7)"}` : "",
       missing ? `${missing} planning issue(s) (missing estimates or dependencies) block every non-read tool` : "",
       overdue.length ? `${overdue.length} open row(s) past their time: ${names(overdue)}` : "",
