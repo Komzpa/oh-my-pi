@@ -318,12 +318,20 @@ test("chief bash admits mid-chain cd and read-only git plumbing, and still refus
       // Refused live at 14:34:36Z: a look at the review checkout before trusting a receipt.
       "git status --short | head; git rev-parse --short HEAD; git stash list | head -3; echo ---; cat /x/key-c.md",
       "git stash show -p | head",
+      // Refused live at 15:21:17Z: classifying gate failures from a report.
+      "cd /x && jq -r '.a' report.json | grep -E 'intercepts|waiting for' | sed -E 's/[0-9]+ ×//' | cut -c1-160 | sort | uniq -c | sort -rn | head -15",
+      "sed -n 's/a/b/p' f",
     ];
     const refused = [
       "git checkout main",
       "cd /x && git reset --hard",
       "git stash",
       "git stash pop",
+      "sed -i 's/a/b/' f",
+      "sed 's/a/b/w out' f",
+      "sed 's/a/b/e' f",
+      "sed -f script.sed f",
+      "sed '1d' f",
       "git stash drop",
       "git stash push -m x",
       "git merge topic",
@@ -430,7 +438,7 @@ test("chief bash blocks mutations inside structure and malformed shell", async (
       'git branch -D x',
       "sed -i 's/a/b/' x",
       "sed -n 'w out' x",
-      "sed 's/a/b/' x",
+      "sed 's/a/b/;w out' x",
       'find . -delete',
       'find . -exec rm {} ;',
       'sort -o out x',

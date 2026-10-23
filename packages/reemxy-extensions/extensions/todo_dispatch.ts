@@ -2654,7 +2654,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const readOnlyLook = (words: Array<{ value: string; dynamic: boolean }>) => {
     const [name, ...args] = words;
     if (["sed", "find", "sort"].includes(name.value) && args.some((word) => word.dynamic)) return false;
-    if (name.value === "sed") return args[0]?.value === "-n" && args.length >= 2 && /^(?:\d+|\$)(?:,(?:\d+|\$))?p$/.test(args[1].value);
+    // sed is a look as a line-range print (`-n 10,20p`) or as one plain substitution filter
+    // (`-E 's/a/b/g'`): no -i, no script file, and no flag beyond g/I/p/N, so no `w` file write or `e` exec.
+    if (name.value === "sed") {
+      if (args[0]?.value === "-n" && args.length >= 2 && /^(?:\d+|\$)(?:,(?:\d+|\$))?p$/.test(args[1].value)) return true;
+      const flags = args.filter((word) => word.value.startsWith("-"));
+      const scripts = args.filter((word) => !word.value.startsWith("-"));
+      if (!flags.every((word) => /^-[Enr]+$/.test(word.value))) return false;
+      return scripts.length >= 1 && /^s([^\\\w\s])(?:(?!\1).|\\.)*\1(?:(?!\1).|\\.)*\1[gIp\d]*$/.test(scripts[0].value);
+    }
     if (name.value === "find") return !args.some((word) => /^-(?:exec|execdir|ok|okdir|delete|fprint\w*|fls)$/.test(word.value));
     if (name.value === "sort") return !args.some((word) => /^(?:-o|--output)/.test(word.value));
     if (name.value === "systemctl") return !args[0]?.dynamic && ["status", "is-active"].includes(args[0]?.value);
