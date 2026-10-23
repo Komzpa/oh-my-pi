@@ -3,6 +3,7 @@ import type { Component, OverlayHandle, TUI } from "@oh-my-pi/pi-tui";
 import { Container, Spacer, Text } from "@oh-my-pi/pi-tui";
 import type { CollabUiRequestDraft, CollabUiSelectItem } from "@oh-my-pi/pi-wire";
 import type { CollabHost } from "../../collab/host";
+import { createSessionModelPresetActions } from "../../config/model-presets";
 import { formatKeyHint, formatKeyHints, KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import type {
 	CompactOptions,
@@ -238,6 +239,7 @@ export class ExtensionUiController {
 			setThinkingLevel: level => this.ctx.session.setThinkingLevel(level),
 			getServiceTiers: () => this.ctx.session.serviceTierByFamily,
 			setServiceTier: (family, tier) => this.ctx.session.setServiceTierFamily(family, tier),
+			...createSessionModelPresetActions(this.ctx.session),
 			getCommands: () => getSessionSlashCommands(this.ctx.session),
 			getSessionName: () => this.ctx.sessionManager.getSessionName(),
 			setSessionName: name => this.#updateSessionName(name),
@@ -469,6 +471,7 @@ export class ExtensionUiController {
 			setThinkingLevel: (level, persist) => this.ctx.session.setThinkingLevel(level, persist),
 			getServiceTiers: () => this.ctx.session.serviceTierByFamily,
 			setServiceTier: (family, tier) => this.ctx.session.setServiceTierFamily(family, tier),
+			...createSessionModelPresetActions(this.ctx.session),
 			getCommands: () => getSessionSlashCommands(this.ctx.session),
 			getSessionName: () => this.ctx.sessionManager.getSessionName(),
 			setSessionName: name => this.#updateSessionName(name),

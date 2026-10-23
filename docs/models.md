@@ -717,6 +717,8 @@ A model preset is a named snapshot of every role assignment plus `defaultThinkin
 /modelpreset save cheap      # save the current roles and thinking level
 /modelpreset switch deep     # apply a saved preset
 /modelpreset                 # pick one from a list (interactive)
+/modelpreset session fast    # apply a preset to this session only (nothing is saved)
+/modelpreset session off     # drop the session preset, restoring what it displaced
 /modelpreset list | delete <name>
 ```
 
@@ -734,6 +736,23 @@ modelPresets:
 Switching writes roles the way the model picker does: into the scope chosen by `modelRoleStorage`, clearing roles the preset leaves out and replacing `--model`/`--smol` session overrides. The preset's `defaultThinkingLevel` is written to the global config. It then switches the active model to the resulting `default` (an automatic provider-default selection when the preset has none) and sets the session's thinking level from the `:level` suffix on that selector, or else the preset's `defaultThinkingLevel`; a `:inherit` suffix leaves the level the model switch set. When a preset's `default` model is unavailable, nothing is changed. Roles that another layer still decides — a `--config` file, a project config in `global` storage, or the global config in `project` storage — are listed in the switch message with the layer that wins, instead of being reported as switched. The same goes for a `defaultThinkingLevel` set by a project config or `--config` file: the session still switches to the preset's level, but the message names that layer, whose level returns on the next start.
 
 When several config layers define a preset of the same name, the highest layer (command line, then `--config` file, then project config, then global config) wins whole: entries are never merged across layers, so a project `deep` that only sets `default` applies without the global `deep`'s other roles. A `null` entry in a `--config` file (or a command-line override) hides the preset from lists and switches; a `null` entry in a project config is ignored, so the global preset of that name still applies. Saving always writes the named entry to the global config and reports when a higher layer still takes precedence for that name.
+
+#### Session-only presets
+
+`/modelpreset session <name>` applies a preset as runtime overrides of this session's settings instead of writing config files: its roles (roles it leaves out are hidden for the session), `defaultThinkingLevel` and an optional `settings` map. The active model switches to the resulting `default` like a normal switch. Nothing is persisted, and subagents spawned afterwards inherit the overrides through their settings overlay. `/modelpreset session off` restores exactly the runtime overrides the preset displaced, including ones set earlier by `--model` or an extension; the current model is not switched back. `/modelpreset session` shows the active session preset. Applying another session preset replaces the first and keeps the original baseline.
+
+`settings` maps registered setting ids to values and is validated against the settings schema (unknown ids and invalid values make the preset malformed; `modelRoles`, `defaultThinkingLevel` and `modelPresets` are not allowed there):
+
+```yaml
+modelPresets:
+  fast:
+    modelRoles:
+      default: openai/gpt-5.5
+    settings:
+      tier.openai: priority
+```
+
+A global `/modelpreset switch` does not apply `settings`; the switch message lists the ids it skipped. Programmatic use: `applyModelPreset(settings, session, name, { scope: "session" })`, `clearSessionModelPreset(settings)` and `getSessionModelPreset(settings)` from `config/model-presets`; extensions call `pi.applySessionModelPreset(name)`, `pi.clearSessionModelPreset()` and `pi.getSessionModelPreset()`.
 
 Saving captures the effective assignments — including any `--model` session override — and the configured `defaultThinkingLevel`, not the session's live thinking level.
 

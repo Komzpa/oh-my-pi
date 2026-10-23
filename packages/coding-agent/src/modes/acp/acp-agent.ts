@@ -45,6 +45,7 @@ import {
 	type Usage,
 } from "@oh-my-pi/pi-utils/acp";
 import { disableProvider, enableProvider } from "../../capability";
+import { createSessionModelPresetActions } from "../../config/model-presets";
 import { Settings } from "../../config/settings";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
@@ -3001,6 +3002,7 @@ export class AcpAgent implements Agent {
 				setThinkingLevel: level => record.session.setThinkingLevel(level),
 				getServiceTiers: () => record.session.serviceTierByFamily,
 				setServiceTier: (family, tier) => record.session.setServiceTierFamily(family, tier),
+				...createSessionModelPresetActions(record.session),
 				getSessionName: () => record.session.sessionManager.getSessionName(),
 				setSessionName: async name => {
 					await record.session.sessionManager.setSessionName(name, "user");

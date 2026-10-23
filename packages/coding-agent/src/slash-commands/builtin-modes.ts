@@ -12,6 +12,8 @@ import {
 import type { Settings } from "../config/settings";
 import {
 	applyModelPreset,
+	clearSessionModelPreset,
+	getSessionModelPreset,
 	deleteModelPreset,
 	formatModelPresetSwitch,
 	getModelPresetNames,
@@ -833,12 +835,17 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "model",
 		description: "Save and switch model presets (role models + thinking level)",
 		acpDescription: "Manage model presets",
-		acpInputHint: "[list|save|switch|delete] [name]",
-		inlineHint: "[save|switch|delete|list] [name]",
+		acpInputHint: "[list|save|switch|session|delete] [name|off]",
+		inlineHint: "[save|switch|session|delete|list] [name|off]",
 		subcommands: [
 			{ name: "list", description: "List saved presets" },
 			{ name: "save", description: "Save the current role models and thinking level", usage: "<name>" },
 			{ name: "switch", description: "Apply a saved preset", usage: "<name>" },
+			{
+				name: "session",
+				description: "Apply a preset to this session only (not saved; subagents inherit it); off clears it",
+				usage: "<name|off>",
+			},
 			{ name: "delete", description: "Delete a saved preset", usage: "<name>" },
 		],
 		allowArgs: true,
@@ -934,7 +941,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 ];
 
-const PRESETS_USAGE = "Usage: /modelpreset [list | save <name> | switch <name> | delete <name>]";
+const PRESETS_USAGE = "Usage: /modelpreset [list | save <name> | switch <name> | session <name|off> | delete <name>]";
 const NO_PRESETS_MESSAGE = "No model presets saved. Use /modelpreset save <name> to create one.";
 
 interface PresetsCommandOutcome {
@@ -979,6 +986,33 @@ async function runPresetsCommand(
 				failed: !isCleanModelPresetSwitch(result),
 				switched: result.kind === "switched",
 				changedConfig: wroteRoles,
+			};
+		}
+		case "session": {
+			const active = getSessionModelPreset(settings);
+			if (!name) {
+				return {
+					message: active
+						? `Session model preset: ${active} (/modelpreset session off to clear)`
+						: "No session model preset. Use /modelpreset session <name> to apply one to this session only.",
+				};
+			}
+			if (name === "off") {
+				const cleared = clearSessionModelPreset(settings, session.sessionManager);
+				return {
+					message: cleared
+						? `Cleared session model preset "${cleared}"; role models and settings are restored (the current model is unchanged)`
+						: "No session model preset to clear",
+					failed: !cleared,
+					// Roles changed back: refresh the status line even though the model stays.
+					switched: cleared !== undefined,
+				};
+			}
+			const result = await applyModelPreset(settings, session, name, { scope: "session" });
+			return {
+				message: formatModelPresetSwitch(name, result, "session"),
+				failed: !isCleanModelPresetSwitch(result),
+				switched: result.kind === "switched",
 			};
 		}
 		case "delete": {

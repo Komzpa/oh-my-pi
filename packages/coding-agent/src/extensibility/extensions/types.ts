@@ -74,6 +74,7 @@ import type { ComposerShapeDefinition } from "@oh-my-pi/pi-tui/overlays/composer
 import type { CodeReviewAnnotation, TextReviewAnnotation } from "@oh-my-pi/pi-tui/overlays/annotation-types";
 export type { ComposerShapeDefinition } from "@oh-my-pi/pi-tui/overlays/composer-shape-registry";
 import type { ModelRegistry } from "../../config/model-registry";
+import type { ModelPresetSwitchResult } from "../../config/model-presets";
 import type { EditToolDetails } from "@oh-my-pi/pi-tui/tools/edit";
 import type { PythonResult } from "../../eval/py/executor";
 import type { BashResult } from "../../exec/bash-executor";
@@ -1907,6 +1908,23 @@ export interface ExtensionAPI {
 		tier: ExtensionServiceTier<Family> | undefined,
 	): void;
 
+	/**
+	 * Apply the saved model preset `name` to this session only: its roles, default thinking level and
+	 * `settings` become runtime overrides (nothing is written to config), subagents spawned afterwards
+	 * inherit them, and the active model switches to the preset's `default` role. Applying another
+	 * preset replaces the first. Check `result.kind === "switched"` for success.
+	 */
+	applySessionModelPreset(name: string): Promise<ModelPresetSwitchResult>;
+
+	/**
+	 * Remove the session preset, restoring exactly the overrides it displaced. The active model is
+	 * left unchanged. Returns the cleared preset's name, or undefined when none was active.
+	 */
+	clearSessionModelPreset(): string | undefined;
+
+	/** Name of the preset currently applied to this session, if any. */
+	getSessionModelPreset(): string | undefined;
+
 	/** Get the current session name. */
 	getSessionName(): string | undefined;
 
@@ -2128,6 +2146,12 @@ export type GetServiceTiersHandler = () => ServiceTierByFamily;
 
 export type SetServiceTierHandler = (family: ServiceTierFamily, tier: ServiceTier | undefined) => void;
 
+export type ApplySessionModelPresetHandler = (name: string) => Promise<ModelPresetSwitchResult>;
+
+export type ClearSessionModelPresetHandler = () => string | undefined;
+
+export type GetSessionModelPresetHandler = () => string | undefined;
+
 /** Shared state created by loader, used during registration and runtime. */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
@@ -2154,6 +2178,9 @@ export interface ExtensionActions {
 	setThinkingLevel: SetThinkingLevelHandler;
 	getServiceTiers?: GetServiceTiersHandler;
 	setServiceTier?: SetServiceTierHandler;
+	applySessionModelPreset?: ApplySessionModelPresetHandler;
+	clearSessionModelPreset?: ClearSessionModelPresetHandler;
+	getSessionModelPreset?: GetSessionModelPresetHandler;
 	getSessionName: () => string | undefined;
 	setSessionName: (name: string) => Promise<void>;
 }
@@ -2197,6 +2224,9 @@ export interface ExtensionCommandContextActions {
 export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {
 	getServiceTiers: GetServiceTiersHandler;
 	setServiceTier: SetServiceTierHandler;
+	applySessionModelPreset: ApplySessionModelPresetHandler;
+	clearSessionModelPreset: ClearSessionModelPresetHandler;
+	getSessionModelPreset: GetSessionModelPresetHandler;
 }
 
 /** Loaded extension with all registered items. */
