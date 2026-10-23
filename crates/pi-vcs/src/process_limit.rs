@@ -682,6 +682,9 @@ fn sweep_once_in_background() {
 				if let Err(error) = sweep_stale_call_dropins() {
 					eprintln!("omp: stale tool slice drop-in sweep failed: {error}");
 				}
+				if let Err(error) = sweep_empty_slices() {
+					eprintln!("omp: empty tool slice sweep failed: {error}");
+				}
 			});
 		if let Err(error) = spawned {
 			eprintln!("omp: could not start stale tool slice drop-in sweep: {error}");
@@ -745,6 +748,183 @@ fn stale_call_slice_units<'a>(
 			})
 		})
 		.collect()
+}
+
+/// Minimum time a slice must have been active before the empty-slice sweep
+/// may stop it, so a slice another process is still setting up survives.
+#[cfg(all(target_os = "linux", not(test)))]
+const EMPTY_SLICE_MIN_AGE_US: u64 = 30 * 60 * 1_000_000;
+
+/// One `omp-tool-*` slice as seen by the empty-slice sweep.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SliceInfo {
+	name:  String,
+	/// Active, `TasksCurrent` is exactly 0 (hierarchical), and old enough.
+	/// Anything unknown counts as not empty.
+	empty: bool,
+}
+
+/// Whether `unit` is an `omp-tool-` slice name made only of hex, lowercase and
+/// dashes. `omp-keep.slice` and every other name fail this.
+#[cfg(target_os = "linux")]
+fn is_tool_slice_name(unit: &str) -> bool {
+	unit
+		.strip_prefix("omp-tool-")
+		.and_then(|rest| rest.strip_suffix(".slice"))
+		.is_some_and(|stem| {
+			!stem.is_empty()
+				&& stem
+					.bytes()
+					.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+		})
+}
+
+/// Pid named by any call segment: `…call-<pid>`, `…call-<pid>-<n>`.
+#[cfg(target_os = "linux")]
+fn named_call_pid(unit: &str) -> Option<u32> {
+	let stem = unit.strip_prefix("omp-tool-")?.strip_suffix(".slice")?;
+	let mut parts = stem.split('-');
+	while let Some(part) = parts.next() {
+		if part == "call" {
+			let pid = parts.next()?;
+			if !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()) {
+				return pid.parse().ok();
+			}
+			return None;
+		}
+	}
+	None
+}
+
+/// Dash-parent of a slice name (`a-b-c.slice` -> `a-b.slice`), which is how
+/// systemd nests slices.
+#[cfg(target_os = "linux")]
+fn slice_parent(unit: &str) -> Option<String> {
+	let stem = unit.strip_suffix(".slice")?;
+	let (parent, _) = stem.rsplit_once('-')?;
+	Some(format!("{parent}.slice"))
+}
+
+/// Slices that are leaked empties: the slice is empty, no slice under it or
+/// equal to it names a live pid, and nothing under it is non-empty. Ancestors
+/// of a live or non-empty slice are kept. Names outside the `omp-tool-`
+/// scheme are never returned. Deepest slices come first.
+#[cfg(target_os = "linux")]
+fn empty_leaked_slice_units(units: &[SliceInfo], is_alive: impl Fn(u32) -> bool) -> Vec<String> {
+	let mut keep = std::collections::HashSet::new();
+	let mut protect = |name: &str| {
+		let mut current = Some(name.to_owned());
+		while let Some(unit) = current {
+			if !keep.insert(unit.clone()) {
+				break;
+			}
+			current = slice_parent(&unit);
+		}
+	};
+	for unit in units.iter().filter(|unit| is_tool_slice_name(&unit.name)) {
+		if !unit.empty || named_call_pid(&unit.name).is_some_and(&is_alive) {
+			protect(&unit.name);
+		}
+	}
+	let mut chosen: Vec<String> = units
+		.iter()
+		.filter(|unit| is_tool_slice_name(&unit.name) && !keep.contains(&unit.name))
+		.map(|unit| unit.name.clone())
+		.collect();
+	chosen.sort_by(|a, b| {
+		b.matches('-')
+			.count()
+			.cmp(&a.matches('-').count())
+			.then_with(|| a.cmp(b))
+	});
+	chosen
+}
+
+/// `omp-tool-*` slices known to the manager, with emptiness from
+/// `TasksCurrent`.
+#[cfg(all(target_os = "linux", not(test)))]
+fn tool_slice_infos() -> io::Result<Vec<SliceInfo>> {
+	let list = systemd_user_manager_command(systemctl_bin())
+		.args(["--user", "list-units", "--type=slice", "--all", "--no-legend", "--plain"])
+		.output()?;
+	if !list.status.success() {
+		return Err(io::Error::other(format!(
+			"systemd could not list slices: {}",
+			String::from_utf8_lossy(&list.stderr).trim()
+		)));
+	}
+	let names: Vec<String> = String::from_utf8_lossy(&list.stdout)
+		.lines()
+		.filter_map(|line| line.split_whitespace().next())
+		.filter(|name| is_tool_slice_name(name))
+		.map(str::to_owned)
+		.collect();
+	let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+	// SAFETY: `now` is a valid out-pointer for the duration of the call.
+	let clock_ok = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) } == 0;
+	let now_us = u64::try_from(now.tv_sec).unwrap_or(0) * 1_000_000
+		+ u64::try_from(now.tv_nsec).unwrap_or(0) / 1000;
+	let mut infos = Vec::with_capacity(names.len());
+	for chunk in names.chunks(REVERT_BATCH) {
+		let shown = systemd_user_manager_command(systemctl_bin())
+			.args(["--user", "show"])
+			.args(chunk)
+			.args(["-p", "Id,TasksCurrent,ActiveState,ActiveEnterTimestampMonotonic"])
+			.output()?;
+		if !shown.status.success() {
+			return Err(io::Error::other(format!(
+				"systemd could not show slices: {}",
+				String::from_utf8_lossy(&shown.stderr).trim()
+			)));
+		}
+		let text = String::from_utf8_lossy(&shown.stdout);
+		for block in text.split("\n\n") {
+			let prop = |key: &str| {
+				block.lines().find_map(|line| {
+					line
+						.strip_prefix(key)
+						.and_then(|rest| rest.strip_prefix('='))
+				})
+			};
+			let Some(id) = prop("Id") else { continue };
+			let started: u64 = prop("ActiveEnterTimestampMonotonic")
+				.and_then(|v| v.parse().ok())
+				.unwrap_or(0);
+			let empty = clock_ok
+				&& prop("ActiveState") == Some("active")
+				&& prop("TasksCurrent") == Some("0")
+				&& started != 0
+				&& now_us.saturating_sub(started) >= EMPTY_SLICE_MIN_AGE_US;
+			infos.push(SliceInfo { name: id.to_owned(), empty });
+		}
+	}
+	Ok(infos)
+}
+
+/// Stops and reverts leaked empty tool slices (and their implicit parents)
+/// whose owner pids are gone. Called once per process from
+/// [`sweep_once_in_background`], after the drop-in sweep.
+#[cfg(all(target_os = "linux", not(test)))]
+fn sweep_empty_slices() -> io::Result<()> {
+	let infos = tool_slice_infos()?;
+	let chosen = empty_leaked_slice_units(&infos, process_alive);
+	for chunk in chosen.chunks(REVERT_BATCH) {
+		for verb in ["stop", "revert"] {
+			let result = systemd_user_manager_command(systemctl_bin())
+				.args(["--user", verb])
+				.args(chunk)
+				.output()?;
+			if !result.status.success() {
+				eprintln!(
+					"omp: could not {verb} {} empty tool slices: {}",
+					chunk.len(),
+					String::from_utf8_lossy(&result.stderr).trim()
+				);
+			}
+		}
+	}
+	Ok(())
 }
 
 /// Active slice units. A failed query is an error, so the sweep keeps every
@@ -1559,6 +1739,94 @@ exec "$@"
 		assert!(
 			super::stale_call_slice_units([own.as_str()], super::process_alive, |_| false).is_empty()
 		);
+	}
+
+	#[cfg(target_os = "linux")]
+	fn infos(units: &[(&str, bool)]) -> Vec<super::SliceInfo> {
+		units
+			.iter()
+			.map(|(name, empty)| super::SliceInfo { name: (*name).to_owned(), empty: *empty })
+			.collect()
+	}
+
+	#[cfg(target_os = "linux")]
+	const CHAIN: [&str; 5] = [
+		"omp-tool-0123456789ab.slice",
+		"omp-tool-0123456789ab-call.slice",
+		"omp-tool-0123456789ab-call-4242.slice",
+		"omp-tool-0123456789ab-call-4242-7.slice",
+		"omp-tool-call-4242-8.slice",
+	];
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn empty_sweep_keeps_chain_of_live_pid() {
+		let units = infos(&CHAIN.map(|name| (name, true)));
+		assert!(super::empty_leaked_slice_units(&units, |pid| pid == 4242).is_empty());
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn empty_sweep_selects_dead_chain_deepest_first_including_parents() {
+		let units = infos(&CHAIN.map(|name| (name, true)));
+		let chosen = super::empty_leaked_slice_units(&units, |_| false);
+		assert_eq!(chosen.len(), 5);
+		let depth = |name: &str| name.matches('-').count();
+		assert!(
+			chosen
+				.windows(2)
+				.all(|pair| depth(&pair[0]) >= depth(&pair[1]))
+		);
+		let position = |name: &str| chosen.iter().position(|chosen| chosen == name).unwrap();
+		assert!(position(CHAIN[3]) < position(CHAIN[2]));
+		assert!(position(CHAIN[2]) < position(CHAIN[1]));
+		assert!(position(CHAIN[1]) < position(CHAIN[0]));
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn empty_sweep_live_pid_keeps_only_its_own_ancestors() {
+		let units = infos(&[
+			("omp-tool-0123456789ab.slice", true),
+			("omp-tool-0123456789ab-call.slice", true),
+			("omp-tool-0123456789ab-call-4242.slice", true),
+			("omp-tool-0123456789ab-call-4242-7.slice", true),
+			("omp-tool-0123456789ab-call-99-1.slice", true),
+			("omp-tool-0123456789ab-call-99.slice", true),
+		]);
+		let chosen = super::empty_leaked_slice_units(&units, |pid| pid == 4242);
+		assert_eq!(chosen, vec![
+			"omp-tool-0123456789ab-call-99-1.slice".to_owned(),
+			"omp-tool-0123456789ab-call-99.slice".to_owned(),
+		]);
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn empty_sweep_keeps_non_empty_subtree_and_its_ancestors() {
+		let units = infos(&[
+			("omp-tool-0123456789ab.slice", true),
+			("omp-tool-0123456789ab-call.slice", true),
+			("omp-tool-0123456789ab-call-99.slice", true),
+			("omp-tool-0123456789ab-call-99-1.slice", false),
+			("omp-tool-call-98-1.slice", true),
+		]);
+		let chosen = super::empty_leaked_slice_units(&units, |_| false);
+		assert_eq!(chosen, vec!["omp-tool-call-98-1.slice".to_owned()]);
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn empty_sweep_never_selects_foreign_names() {
+		let units = infos(&[
+			("omp-keep.slice", true),
+			("omp-tool-.slice", true),
+			("omp-tool-UPPER.slice", true),
+			("omp-tool-x.service", true),
+			("user.slice", true),
+			("app-omp-tool-call-1-1.slice", true),
+		]);
+		assert!(super::empty_leaked_slice_units(&units, |_| false).is_empty());
 	}
 
 	/// Slice name enforced by `limit`, read from its state.
