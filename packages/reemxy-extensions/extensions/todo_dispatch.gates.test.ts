@@ -2910,3 +2910,28 @@ test("external wait: jobs use exact running job IDs or live proc PIDs, not unkno
     expect(await fixture.nag()).toBeUndefined();
   } finally { fixture.close(); }
 });
+
+test("a worker that works in its own checkout cannot write a relative path into the lead's (sunbim 2026-10-23 18:41)", () => {
+  const lead = "/home/kom/proj/sunbim/datacenter-decision-graph";
+  const own = "/home/kom/proj/sunbim/wt/roles-workspaces-2026-10-23";
+  const refuse = dispatchModule.refuseRelativeWorkerWrite;
+  const seen = new Map<string, string>();
+  // The live sequence: a read in the lead's checkout, a read in its own worktree, then a relative patch.
+  expect(refuse(seen, "w", "read", { path: `${lead}/AGENTS.md` }, lead)).toBeUndefined();
+  expect(refuse(seen, "w", "read", { path: `${own}/AGENTS.md:24-30` }, lead)).toBeUndefined();
+  const reason = refuse(seen, "w", "edit", { input: "*** Begin Patch\n[AGENTS.md#3BBD]\nPUT 26.=27:\n+x\n*** End Patch" }, lead);
+  expect(reason).toContain("relative path `AGENTS.md`");
+  expect(reason).toContain(own);
+  expect(refuse(seen, "w", "write", { path: "notes.md", content: "x" }, lead)).toContain("Blocked:");
+  // The absolute retry passes.
+  expect(refuse(seen, "w", "edit", { input: `*** Begin Patch\n[${own}/AGENTS.md#3BBD]\nPUT 26.=27:\n+x\n*** End Patch` }, lead)).toBeUndefined();
+  // A worker that only ever works in the lead's checkout keeps relative paths.
+  const local = new Map<string, string>();
+  expect(refuse(local, "v", "read", { path: `${lead}/src/a.ts` }, lead)).toBeUndefined();
+  expect(refuse(local, "v", "edit", { input: "*** Begin Patch\n[src/a.ts#AB12]\n*** End Patch" }, lead)).toBeUndefined();
+  expect(refuse(local, "v", "write", { path: "agent://Main", content: "x" }, lead)).toBeUndefined();
+  // Sessions are tracked apart; home-relative and scheme paths do not count as another checkout.
+  expect(refuse(seen, "other", "write", { path: "x.md" }, lead)).toBeUndefined();
+  expect(refuse(local, "v", "read", { path: "~/.omp/agent/skills/x/SKILL.md" }, lead)).toBeUndefined();
+  expect(refuse(local, "v", "write", { path: "y.md" }, lead)).toBeUndefined();
+});

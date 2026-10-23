@@ -627,6 +627,35 @@ export function parseTodoOverride(input: unknown): string | undefined {
   for (const id of GATE_IDS) if (lowered.includes(id)) return id;
   return undefined;
 }
+// A worker's session cwd is the lead's checkout. Once a worker works by absolute path in another
+// checkout, a relative edit/write path still resolves against the lead's checkout and lands there
+// (live sunbim 2026-10-23 18:41: RolesBuild read wt/roles-workspaces-2026-10-23/AGENTS.md, then its
+// `[AGENTS.md#3BBD]` patch edited the user's review checkout, which the brief said never to write).
+const WRITE_TOOLS = new Set(["edit", "write", "ast_edit"]);
+function inputPaths(input: unknown): { absolute: string[]; relativeWrites: string[] } {
+  const absolute: string[] = [];
+  const relative: string[] = [];
+  const args = (input ?? {}) as Record<string, unknown>;
+  const take = (value: unknown) => {
+    if (typeof value !== "string" || !value || /^[a-z]+:\/\//i.test(value)) return;
+    (value.startsWith("/") || value.startsWith("~") ? absolute : relative).push(value);
+  };
+  take(args.path);
+  take(args.cwd);
+  if (typeof args.input === "string") for (const match of args.input.matchAll(/^\[([^\]#\n]+)#/gm)) take(match[1]);
+  return { absolute, relativeWrites: relative };
+}
+/** Records where a subagent works and refuses a relative write once it works outside `cwd`. */
+export function refuseRelativeWorkerWrite(seenElsewhere: Map<string, string>, session: string, toolName: string, input: unknown, cwd: string): string | undefined {
+  const { absolute, relativeWrites } = inputPaths(input);
+  const root = cwd.endsWith("/") ? cwd : `${cwd}/`;
+  const outside = absolute.find((path) => !path.startsWith("~") && path !== cwd && !path.startsWith(root));
+  if (outside && !seenElsewhere.has(session)) seenElsewhere.set(session, outside);
+  const elsewhere = seenElsewhere.get(session);
+  const target = WRITE_TOOLS.has(toolName) ? relativeWrites[0] : undefined;
+  if (!elsewhere || !target) return undefined;
+  return `Blocked: relative path \`${target}\` resolves into ${cwd}, the lead's checkout, but you work in another checkout (${elsewhere}). Repeat the ${toolName} with the absolute path inside your ROOT.`;
+}
 export const GLOBAL_KILL_REFUSAL =
   "Blocked: global kill on a shared host. Record the PID of each process you start and stop only that PID with `kill <pid>`.";
 // A subagent shares the host with other sessions' servers and tests: a kill chosen by name, pattern,
@@ -3804,6 +3833,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     persistSprintState();
   };
 
+  const workerWorksElsewhere = new Map<string, string>();
   pi.on("before_subagent_spawn", async (event, ctx) => {
     if (singleWriterLane) return;
     await refreshLiveWorkerModels(ctx);
@@ -3820,6 +3850,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (event.toolName === "bash" && !isMain(ctx)) {
       const command = (event.input as { command?: unknown } | undefined)?.command;
       if (typeof command === "string" && isGlobalKillCommand(command)) return { block: true, reason: GLOBAL_KILL_REFUSAL };
+    }
+    if (!isMain(ctx)) {
+      const reason = refuseRelativeWorkerWrite(workerWorksElsewhere, ctx.sessionManager.getHeader()?.id ?? ctx.cwd, event.toolName, event.input, ctx.cwd);
+      if (reason) return { block: true, reason };
     }
     await refreshLiveWorkerModels(ctx);
     if (gateSwitchedOff(ctx)) return;
