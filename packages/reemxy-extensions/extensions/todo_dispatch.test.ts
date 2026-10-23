@@ -1344,6 +1344,54 @@ test("PLAN CHECK advises executor planning only for three unseen rows and clears
   expect((await check(plan))).not.toContain("planning round due");
 });
 
+test("planning-round nag skips rows that wait on unfinished rows and clears once the plan-doctor has read the plan", async () => {
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const estimate = { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180, confidence: "medium" as const, basis: "planning fixture", updatedAt: now };
+  const row = (content: string, dependencies: string[], extra: Record<string, unknown> = {}) => ({ content, status: "pending" as const, schedule: { dependencies, estimate }, ...extra });
+  // Sunbim 2026-10-23: tail rows behind a user wait and behind running work cannot be planned yet.
+  const waiting: TodoScheduleInput = [{
+    name: "Planning",
+    tasks: [
+      { ...row("Darafei answers roles page", [], { blocker: "waiting for Darafei's answer" }), status: "blocked" as const },
+      row("Build workspaces", ["Darafei answers roles page"]),
+      row("Full e2e gate", ["Running stage"]),
+      row("Before/after preview", ["Full e2e gate"]),
+      row("After captures", ["Full e2e gate", "Running stage"]),
+      { ...row("Running stage", [], { }), status: "in_progress" as const, schedule: { dependencies: [], estimate, owner: "stage-worker" } },
+    ],
+  }];
+  const free: TodoScheduleInput = [{ name: "Planning", tasks: ["Alpha", "Beta", "Gamma"].map((content) => row(content, [])) }];
+  let plan: TodoScheduleInput = waiting;
+  const branch: unknown[] = [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } }];
+  await todoDispatch({
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task"],
+    appendEntry: (customType: string, data?: unknown) => branch.push({ type: "custom", customType, data }),
+    pi: extensionSdk,
+  } as unknown as ExtensionAPI);
+  const ctx = {
+    cwd: "/tmp/planning-nag-waiters",
+    sessionManager: { getHeader: () => ({ id: "root" }), ...branchMock(() => branch) },
+    getAsyncJobSnapshot: () => ({ running: [{ id: "stage-worker", type: "task", status: "running", label: "Running stage", startTime: now } as never], recent: [], nonJobAgents: [] }),
+    getTaskMaxConcurrency: () => 6,
+  } as unknown as ExtensionContext;
+  const check = async () => {
+    branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
+    const result = (await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "todo-plan", isError: false, content: [{ type: "text", text: "schedule: changed" }], details: { phases: plan } }, ctx)) as { content: Array<{ text?: string }> };
+    return result.content.map((part) => part.text ?? "").join("\n");
+  };
+  // Four open rows, all behind unfinished rows: nothing to plan yet.
+  expect(await check()).not.toContain("planning round due");
+  // Neighbour: three independent unlooked-at rows still get the nag.
+  plan = free;
+  expect(await check()).toContain("planning round due: 3 rows no executor has looked at");
+  // A plan-doctor task has read every open row: a new independent trio is covered, not nagged.
+  plan = [{ name: "Planning", tasks: ["Delta", "Epsilon", "Zeta"].map((content) => row(content, [])) }];
+  branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
+  await handlers.get("tool_call")!({ toolName: "task", toolCallId: "pd", input: { tasks: [{ agent: "plan-doctor", task: "read the plan" }] } }, ctx);
+  expect(await check()).not.toContain("planning round due");
+});
+
 test("PLAN CHECK advises retrospectives for sprint triggers and clears after retro-facilitator finishes", async () => {
   const liveNow = Date.UTC(2026, 8, 25, 10, 0, 0);
   setSystemTime(new Date(liveNow));

@@ -3820,6 +3820,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const gitOwnerConflict = refuseConcurrentGitPrOwner(event as { toolName: string; input?: unknown }, ctx);
     if (gitOwnerConflict) return gitOwnerConflict;
     if (event.toolName === "task" && isPlanDoctorTaskInput(event.input)) {
+      // The plan-doctor reads the whole plan: every row open now has been looked at by an executor.
+      try {
+        let marked = false;
+        for (const phase of sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx)))
+          for (const task of phase.tasks)
+            if (isOpenRowStatus(task.status) && !sprintState.seenRows.includes(task.content)) { sprintLiveRows = new Set([...(sprintLiveRows ?? []), task.content]); addSeenRow(task.content); marked = true; }
+        if (marked) persistSprintState();
+      } catch {}
       currentDecision(ctx, Date.now(), [], true);
       resetFinishHistory(ctx);
     }
@@ -4131,9 +4139,21 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     });
     pendingSizingNoticeIds = sizing.map(worker => worker.jobId);
     const runningByContent = new Map((decision.ownerRunStates ?? []).map((row) => [row.content, row.running]));
+    // A row that waits on unfinished rows (a running worker, a queued stage, or a user wait) cannot be
+    // planned usefully yet: its estimate and split depend on that output. The nag names only rows whose
+    // dependencies are empty, closed or unknown (a dangling link is a plan defect the chief can fix now).
+    // Measured over four lead journals 2026-10-23: 71% of named rows were such waiters.
+    const statusByContent = new Map(phasesNow.flatMap((phase) => phase.tasks).map((task) => [task.content, task.status] as const));
+    const waitsOnUnfinished = (task: { schedule?: { dependencies?: readonly string[] } }) => {
+      const deps = task.schedule?.dependencies ?? [];
+      return deps.length > 0 && deps.every((dep) => {
+        const status = statusByContent.get(String(dep));
+        return status === "pending" || status === "in_progress" || status === "blocked";
+      });
+    };
     const unseenPlanningRows = phasesNow
       .flatMap((phase) => phase.tasks)
-      .filter((task) => isOpenRowStatus(task.status) && runningByContent.get(task.content) !== true && !sprintState.seenRows.includes(task.content))
+      .filter((task) => isOpenRowStatus(task.status) && runningByContent.get(task.content) !== true && !sprintState.seenRows.includes(task.content) && !waitsOnUnfinished(task))
       .map((task) => task.content);
     let planningAdvice = "";
     if (unseenPlanningRows.length >= 3) {
