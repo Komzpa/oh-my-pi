@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { FileLock, IpcConnection, IpcServer, Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
 import { isEnoent, isRecord, logger, postmortem, procmgr, sanitizeText, setProcessName } from "@oh-my-pi/pi-utils";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { TerminalQueryResponder } from "@oh-my-pi/pi-utils/vterm";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
 import {
@@ -19,6 +20,7 @@ import {
 	DAEMON_SPEC_FILE,
 	daemonBrokerEndpoint,
 	readStoredDaemonRecord,
+	processStartTime,
 	writeDaemonScopeMeta,
 } from "./paths";
 import type { DaemonReadySpec, DaemonSnapshot, DaemonSpec } from "@oh-my-pi/pi-tui/tools/daemon";
@@ -98,6 +100,7 @@ interface ManagedDaemon {
 	dir: string;
 	log?: DaemonLog;
 	process?: ManagedProcess;
+	processStartTime?: string;
 	input?: Bun.FileSink;
 	pty?: PtySession;
 	generation: number;
@@ -389,7 +392,11 @@ async function acquireBrokerLease(runtimeDir: string, endpoint: string): Promise
 			lock.release();
 			return null;
 		}
-		await fs.writeFile(pidPath, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
+		await fs.writeFile(
+			pidPath,
+			JSON.stringify({ pid: process.pid, processStartTime: processStartTime(process.pid) }),
+			{ mode: 0o600 },
+		);
 		return { path: pidPath, lock };
 	} catch (error) {
 		lock.release();
@@ -440,6 +447,10 @@ class DaemonBroker {
 	 * profile lock) or keeps running untracked.
 	 */
 	readonly #startingNames = new Set<string>();
+	/** Accepted launch work, including requests still updating completion subscriptions. */
+	readonly #launches = new Set<Promise<void>>();
+	readonly #releasedSockets = new WeakSet<IpcConnection>();
+	#releasePromise: Promise<void> | undefined;
 	readonly #clients = new Set<IpcConnection>();
 	readonly #ownerSockets = new Map<string, { socket: IpcConnection; subscriptionId: string | undefined }>();
 	readonly #completionSubscriptions = new Map<string, string | undefined>();
@@ -542,6 +553,7 @@ class DaemonBroker {
 
 	async #handleLine(socket: IpcConnection, line: string, onAuthenticated: () => void): Promise<void> {
 		let id = "unknown";
+		let launchFinished: (() => void) | undefined;
 		try {
 			const decoded: unknown = JSON.parse(line);
 			// Correlate before validating: an operation this broker cannot parse (a newer omp
@@ -551,6 +563,24 @@ class DaemonBroker {
 			const request = parseDaemonWireRequest(decoded);
 			if (request.token !== this.#token) throw new Error("Daemon broker authentication failed");
 			onAuthenticated();
+			if (["start", "restart", "mode"].includes(request.operation.op)) {
+				if (this.#releasePromise || this.#releasedSockets.has(socket)) {
+					throw new Error("Daemon broker session connection has been released");
+				}
+				const pending = Promise.withResolvers<void>();
+				this.#launches.add(pending.promise);
+				launchFinished = () => {
+					this.#launches.delete(pending.promise);
+					pending.resolve();
+				};
+			}
+			// Establish the barrier before completion bookkeeping can yield. Starts
+			// accepted on any connection before this point remain in #launches.
+			if (request.operation.op === "release") {
+				await this.#release(request.operation.timeoutMs);
+				socket.send(JSON.stringify({ id, ok: true, result: { op: "release" } }));
+				return;
+			}
 			for (const owner of request.completionUnsubscribes ?? []) {
 				const subscriptionId = this.#completionSubscriptions.get(owner);
 				if (
@@ -628,7 +658,7 @@ class DaemonBroker {
 			if (controller) this.#inFlight.set(id, { socket, controller });
 			let result: DaemonRpcResult;
 			try {
-				result = await this.#dispatch(request.operation, socket, controller?.signal);
+				result = await this.#dispatch(request.operation, socket, controller?.signal, launchFinished);
 			} finally {
 				if (controller && this.#inFlight.get(id)?.controller === controller) this.#inFlight.delete(id);
 			}
@@ -637,15 +667,28 @@ class DaemonBroker {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			socket.send(JSON.stringify({ id, ok: false, error: message }));
+		} finally {
+			launchFinished?.();
 		}
 	}
 
-	async #dispatch(operation: DaemonOperation, socket: IpcConnection, signal?: AbortSignal): Promise<DaemonRpcResult> {
+	async #dispatch(
+		operation: DaemonOperation,
+		socket: IpcConnection,
+		signal?: AbortSignal,
+		launchFinished?: () => void,
+	): Promise<DaemonRpcResult> {
 		switch (operation.op) {
 			case "ping":
 				return { op: "ping", projectDir: this.#projectDir };
 			case "start":
-				return this.#start(operation.spec, operation.owner, operation.replace, operation.awaitReady);
+				return this.#start(
+					operation.spec,
+					operation.owner,
+					operation.replace,
+					operation.awaitReady,
+					launchFinished,
+				);
 			case "list": {
 				await Promise.all([...this.#records.values()].map(record => this.#refreshDetached(record)));
 				return {
@@ -673,6 +716,9 @@ class DaemonBroker {
 				}
 				return { op: "stop", daemon: record.snapshot };
 			}
+			case "release":
+				await this.#release(operation.timeoutMs);
+				return { op: "release" };
 			case "restart":
 				return this.#restart(operation.name);
 			case "mode":
@@ -687,7 +733,36 @@ class DaemonBroker {
 		}
 	}
 
-	async #start(spec: DaemonSpec, owner?: string, replace = false, awaitReady = true): Promise<DaemonRpcResult> {
+	#release(timeoutMs: number): Promise<void> {
+		if (this.#releasePromise) return this.#releasePromise;
+		// Old connections cannot start another generation after this barrier;
+		// a resumed AgentSession may connect afresh once release has settled.
+		for (const socket of this.#clients) this.#releasedSockets.add(socket);
+		this.#releasePromise = this.#doRelease(timeoutMs).finally(() => {
+			this.#releasePromise = undefined;
+		});
+		return this.#releasePromise;
+	}
+
+	async #doRelease(timeoutMs: number): Promise<void> {
+		await Promise.all([...this.#launches]);
+		const results = await Promise.allSettled(
+			[...this.#records.values()].map(async record => {
+				await this.#stopRecord(record, timeoutMs);
+				await record.persistQueue;
+			}),
+		);
+		const failures = results.flatMap(result => (result.status === "rejected" ? [String(result.reason)] : []));
+		if (failures.length > 0) throw new Error(`Daemon session release failed: ${failures.join("; ")}`);
+	}
+
+	async #start(
+		spec: DaemonSpec,
+		owner?: string,
+		replace = false,
+		awaitReady = true,
+		launchFinished?: () => void,
+	): Promise<DaemonRpcResult> {
 		if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/.test(spec.name)) {
 			throw new Error("Daemon name must be 1-48 letters, numbers, dots, underscores, or hyphens");
 		}
@@ -765,6 +840,7 @@ class DaemonBroker {
 			this.#startingNames.delete(spec.name);
 		}
 		await this.#launch(record);
+		launchFinished?.();
 		let readyTimedOut = false;
 		if (spec.ready && awaitReady && !terminalState(record.snapshot.state)) {
 			// Wake on the sticky readyAt marker or any terminal state, not the live
@@ -783,7 +859,13 @@ class DaemonBroker {
 		return { op: "start", daemon: record.snapshot, readyTimedOut };
 	}
 
-	async #launch(record: ManagedDaemon): Promise<void> {
+	#launch(record: ManagedDaemon): Promise<void> {
+		const launch = this.#doLaunch(record).finally(() => this.#launches.delete(launch));
+		this.#launches.add(launch);
+		return launch;
+	}
+
+	async #doLaunch(record: ManagedDaemon): Promise<void> {
 		record.generation++;
 		const generation = record.generation;
 		record.stopRequested = false;
@@ -895,12 +977,13 @@ class DaemonBroker {
 		const pid = await started.promise;
 		if (pid !== undefined && generation === record.generation) {
 			record.snapshot.pid = pid;
+			record.processStartTime = processStartTime(pid);
 			this.#persist(record);
 		}
 	}
 
 	#launchPipe(record: ManagedDaemon, generation: number): void {
-		const process = Bun.spawn([record.spec.application, ...record.spec.args], {
+		const process = spawnBackground([record.spec.application, ...record.spec.args], {
 			cwd: record.spec.cwd,
 			env: workerEnvFromParent(record.spec.env),
 			stdin: "pipe",
@@ -911,6 +994,7 @@ class DaemonBroker {
 		record.process = process;
 		record.input = process.stdin;
 		record.snapshot.pid = process.pid;
+		record.processStartTime = processStartTime(process.pid);
 		this.#persist(record);
 		const stdout = this.#drain(record, generation, process.stdout);
 		const stderr = this.#drain(record, generation, process.stderr);
@@ -925,7 +1009,7 @@ class DaemonBroker {
 		const logPath = path.join(record.dir, LOG_FILE);
 		const output = await fs.open(logPath, "a", 0o600);
 		try {
-			const process = Bun.spawn([record.spec.application, ...record.spec.args], {
+			const process = spawnBackground([record.spec.application, ...record.spec.args], {
 				cwd: record.spec.cwd,
 				env: workerEnvFromParent(record.spec.env),
 				stdio: ["ignore", output.fd, output.fd],
@@ -933,6 +1017,7 @@ class DaemonBroker {
 			});
 			record.process = process;
 			record.snapshot.pid = process.pid;
+			record.processStartTime = processStartTime(process.pid);
 			this.#persist(record);
 			process.unref();
 			void process.exited
@@ -1010,7 +1095,12 @@ class DaemonBroker {
 		await this.#readDetachedOutput(record, generation);
 		if (generation !== record.generation || record.process) return;
 		const processRef = record.snapshot.pid === undefined ? null : Process.fromPid(record.snapshot.pid);
-		if (processRef?.status() === "running") return;
+		if (
+			processRef?.status() === "running" &&
+			(process.platform !== "linux" ||
+				(record.snapshot.pid !== undefined && record.processStartTime === processStartTime(record.snapshot.pid)))
+		)
+			return;
 		await this.#settle(record, generation);
 	}
 
@@ -1079,7 +1169,7 @@ class DaemonBroker {
 		const shouldRestart =
 			!record.stopRequested &&
 			(record.spec.restart === "always" || (record.spec.restart === "on-failure" && failed));
-		if (shouldRestart && !this.#shuttingDown) {
+		if (shouldRestart && !this.#shuttingDown && !this.#releasePromise) {
 			const uptime = Date.now() - record.snapshot.startedAt;
 			record.consecutiveFailures = uptime >= 30_000 ? 0 : record.consecutiveFailures + 1;
 			record.snapshot.restartCount++;
@@ -1098,6 +1188,7 @@ class DaemonBroker {
 			);
 			this.#persist(record);
 			record.restartTimer = setTimeout(() => {
+				if (this.#releasePromise || record.stopRequested) return;
 				record.restartTimer = undefined;
 				void this.#launch(record);
 			}, delay);
@@ -1290,6 +1381,7 @@ class DaemonBroker {
 		else record.pty?.kill();
 		const settled = await this.#waitUntil(record, () => terminalState(record.snapshot.state), timeoutMs + 1_000);
 		if (!settled && record.pty) record.pty.kill();
+		if (!settled) throw new Error(`Daemon ${record.snapshot.name} did not stop within ${timeoutMs + 1_000}ms`);
 	}
 
 	async #restart(name: string): Promise<DaemonRpcResult> {
@@ -1359,6 +1451,7 @@ class DaemonBroker {
 	#serializeMetadata(record: ManagedDaemon): string {
 		return JSON.stringify({
 			daemon: { ...record.snapshot },
+			processStartTime: record.processStartTime,
 			completionEvents: record.completionCapable,
 			completionSubscriptionId: record.completionSubscriptionId,
 			completionPending: record.pendingCompletions.length > 0,
@@ -1455,6 +1548,10 @@ class DaemonBroker {
 				const record: ManagedDaemon = {
 					spec,
 					snapshot,
+					processStartTime:
+						"processStartTime" in decoded && typeof decoded.processStartTime === "string"
+							? decoded.processStartTime
+							: undefined,
 					dir,
 					generation: 0,
 					stopRequested: !detached || snapshot.state === "stopping",

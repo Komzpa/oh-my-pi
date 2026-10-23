@@ -59,7 +59,7 @@ pub use error::{BuiltinError, Error, ErrorKind};
 pub use extensions::ShellExtensions;
 pub use interp::{
 	ExecutionParameters, ExternalCommandInfo, ExternalCommandOutputMarker,
-	ExternalCommandOutputMarkers, ProcessGroupPolicy, SpawnObserver,
+	ExternalCommandOutputMarkers, ExternalCommandWrapper, ProcessGroupPolicy, SpawnObserver,
 };
 pub use parser::{SourcePosition, SourcePositionOffset, SourceSpan};
 pub use pipetap::{PipeMirror, PipeTap};

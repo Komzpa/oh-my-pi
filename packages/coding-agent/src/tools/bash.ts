@@ -22,6 +22,7 @@ import { isPosixShell } from "@oh-my-pi/pi-utils/procmgr";
 import { raceJobSettlement, resolveAutoBackgroundWaitMs } from "../async";
 import type { Settings } from "../config/settings";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
+import { sessionPtyOptions } from "../exec/session-slice";
 import { InternalUrlRouter } from "../internal-urls";
 import { sessionResolveContext } from "../internal-urls/context";
 import { InternalUrlFilesystem, UrlFsError } from "../internal-urls/url-filesystem";
@@ -911,6 +912,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 						// backgrounded. A job that starts in the background gets its own
 						// shell, so it never holds the session's.
 						sessionKey: options.foreground ? options.sessionId : `${options.sessionId ?? ""}:async:${jobId}`,
+						sessionId: options.sessionId,
+						maskDesktopSession: this.session.agentKind === "sub",
 						isSessionCurrent: () => (this.session.getSessionId?.() ?? undefined) === options.sessionId,
 						timeout: options.timeoutMs ?? 0,
 						signal: runSignal,
@@ -1587,6 +1590,10 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			}
 		}
 
+		const runOwnedInteractiveBashPty = async (
+			ui: Parameters<typeof runInteractiveBashPty>[0],
+			options: Parameters<typeof runInteractiveBashPty>[1],
+		) => runInteractiveBashPty(ui, await sessionPtyOptions(this.session.getSessionId?.() ?? undefined, options));
 		// Allocate artifact for truncated output storage
 		const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 
@@ -1596,7 +1603,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		}
 		const wallTimeStart = performance.now();
 		const result: BashResult | BashInteractiveResult = interactiveUi
-			? await runInteractiveBashPty(interactiveUi, {
+			? await runOwnedInteractiveBashPty(interactiveUi, {
 					// PTY bypasses executeBash, so feed it the direnv-transformed
 					// command + direnv env (backendPreflight is defined whenever this
 					// branch runs, since both gate on canUseInteractiveBashPty).
@@ -1614,6 +1621,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 					cwd: commandCwd,
 					env: sessionEnv,
 					sessionKey: sessionId,
+					sessionId,
+					maskDesktopSession: this.session.agentKind === "sub",
 					isSessionCurrent: () => (this.session.getSessionId?.() ?? undefined) === sessionId,
 					timeout: timeoutMs ?? 0,
 					signal,

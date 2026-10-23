@@ -48,6 +48,9 @@
 
 ### Fixed
 
+- Fixed Linux per-tool process boundaries rejecting every external command on hosts with coreutils <9.5 (Ubuntu 24.04, Debian 12): the enforcement probe no longer requires `env --argv0`.
+- Fixed scoped command arguments containing `$` being rewritten to `$$` on systemd <254, where scope launches never expand arguments (`sh -c 'echo $HOME'` ran `echo $$HOME`).
+- Fixed Bazel native addon builds failing to resolve the vendored brush-core dependency in pi-vcs.
 - Fixed the output minimizer altering what `ssh` commands print in the bash tool: remote lines were cut to 120 characters and blank lines dropped; ssh's own login and connection notices are still stripped ([#16314](https://github.com/can1357/oh-my-pi/pull/16314) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed X11 background shortcuts and typing reporting `Cancelled` when you stopped them right after the last key went down: the key releases now always go out and the call succeeds ([#16235](https://github.com/can1357/oh-my-pi/pull/16235) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed `wrapTextWithAnsi` leaving rows half-empty in Chinese and Japanese text: CJK runs now break between characters to fill each row, closing punctuation such as `，。！」` never starts a row, and opening brackets never end one ([#16219](https://github.com/can1357/oh-my-pi/issues/16219))
@@ -418,6 +421,16 @@
 ### Fixed
 
 - Fixed Ctrl+V on Windows sometimes pasting text with a few characters replaced by unrelated glyphs (for example `https://` turning into `՞ttp缀難//`); clipboard reads and writes no longer run at the same time ([#14144](https://github.com/can1357/oh-my-pi/pull/14144) by [@H4vC](https://github.com/H4vC))
+### Fixed
+
+- Let desktop-masked Linux workers launch scoped tools through the systemd user manager without exposing its runtime directory or bus address to tool payloads.
+- Parent Linux tool-call boundaries under a stable session slice when the payload carries `OMP_SESSION_ID`, and export `sessionSliceName` for the session lifecycle owner.
+- Run Linux scoped tool children (external shell commands, PTYs, git hooks, and Python/JavaScript eval kernels) at CPU niceness 19 and best-effort IO priority 7 without lowering omp's own priority.
+- Detached repositories borrow a single transitive object store for healthy `--reference` chains; genuinely cyclic chains are materialized locally without inheriting an alternates pointer.
+
+### Added
+
+- Added `unsetEnv` to native shell session and one-shot options to remove inherited environment variables after session imports and snapshot sourcing.
 
 ## [18.4.10] - 2026-10-02
 

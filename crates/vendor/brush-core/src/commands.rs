@@ -198,6 +198,19 @@ impl<SE: extensions::ShellExtensions> std::ops::DerefMut for ShellForCommand<'_,
 	}
 }
 
+/// The wrapper that must contain this launch, if any. Reparented launches
+/// (`detach_reparent`, e.g. `nohup cmd &`) never get one: a per-call scope
+/// would kill them with the call, defeating the reparent.
+fn applicable_external_wrapper(
+	params: &ExecutionParameters,
+) -> Option<&std::sync::Arc<dyn crate::interp::ExternalCommandWrapper>> {
+	if params.detach_reparent {
+		None
+	} else {
+		params.external_command_wrapper()
+	}
+}
+
 /// The host path a file-backed virtual path aliases, if any.
 ///
 /// External processes have no view of the shell's virtual filesystem, so a
@@ -335,19 +348,79 @@ pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtension
 		}
 	}
 
-	let mut cmd = std::process::Command::new(&program);
-
-	// Override argv[0].
-	// NOTE: Not supported on all platforms.
-	cmd.arg0(argv0);
-
+	let mut command_args: Vec<OsString> = Vec::with_capacity(args.len());
 	for arg in args {
 		let arg = arg.as_ref();
 		match host_arg(filesystem, arg).await? {
-			Some(rewritten) => cmd.arg(rewritten),
-			None => cmd.arg(arg),
-		};
+			Some(rewritten) => command_args.push(rewritten),
+			None => command_args.push(arg.to_os_string()),
+		}
 	}
+	let mut command_env: Vec<(OsString, OsString)> = Vec::new();
+	// Add in exported variables.
+	if !empty_env {
+		for (k, v) in context.shell.env().iter_exported() {
+			// NOTE: To match bash behavior, we only include exported variables
+			// that are set (i.e., have a value). This means a variable that
+			// shows up in `declare -p` but has no *set* value will be omitted.
+			if v.value().is_set() {
+				command_env.push((k.as_str().into(), v.value().to_cow_str(context.shell).as_ref().into()));
+			}
+		}
+		// A child started in the directory a URL aliases must not be told its
+		// working directory is the URL: anything reading `PWD` directly would
+		// disagree with its own `getcwd()`. The shell's own `$PWD` keeps the
+		// URL spelling; only the child's environment is corrected.
+		if spawn_dir != working_dir {
+			command_env.push(("PWD".into(), spawn_dir.clone().into_os_string()));
+		}
+		// Set _ to the resolved command path for external commands, as the host
+		// spells it when the program was a URL.
+		command_env.push(("_".into(), program.clone().into_os_string()));
+	}
+
+	// Add in exported functions.
+	if !empty_env {
+		for (func_name, registration) in context.shell.funcs().iter() {
+			if registration.is_exported() {
+				let var_name = std::format!("BASH_FUNC_{func_name}%%");
+				let value = std::format!("() {}", registration.definition().body);
+				command_env.push((var_name.into(), value.into()));
+			}
+		}
+	}
+
+	// Reparented launches (`detach_reparent`, e.g. `nohup cmd &`) double-fork
+	// out of the descendant tree and must survive the host's teardown. A
+	// per-call scope (e.g. the tool process-limit slice, stopped on drop)
+	// would still contain them via cgroup membership and kill them when the
+	// call ends, so they bypass the external-command wrapper entirely.
+	let wrapped = {
+		applicable_external_wrapper(&context.params)
+			.map(|wrapper| {
+				wrapper.wrap_external_command(
+					program.as_os_str(),
+					OsStr::new(argv0),
+					&command_args,
+					&command_env,
+				)
+			})
+			.transpose()
+			.map_err(|err| error::Error::from(error::ErrorKind::FailedToExecuteCommand(
+				context.command_name.clone(), err,
+			)))?
+			.flatten()
+	};
+	let mut cmd = if let Some((program, wrapped_args)) = wrapped {
+		let mut cmd = std::process::Command::new(program);
+		cmd.args(wrapped_args);
+		cmd
+	} else {
+		let mut cmd = std::process::Command::new(&program);
+		cmd.arg0(argv0);
+		cmd.args(command_args);
+		cmd
+	};
 
 	// Apply `ulimit` overrides to the child only; the host keeps its own limits.
 	#[cfg(unix)]
@@ -382,38 +455,7 @@ pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtension
 	// Start with a clear environment.
 	cmd.env_clear();
 
-	// Add in exported variables.
-	if !empty_env {
-		for (k, v) in context.shell.env().iter_exported() {
-			// NOTE: To match bash behavior, we only include exported variables
-			// that are set (i.e., have a value). This means a variable that
-			// shows up in `declare -p` but has no *set* value will be omitted.
-			if v.value().is_set() {
-				cmd.env(k.as_str(), v.value().to_cow_str(context.shell).as_ref());
-			}
-		}
-		// A child started in the directory a URL aliases must not be told its
-		// working directory is the URL: anything reading `PWD` directly would
-		// disagree with its own `getcwd()`. The shell's own `$PWD` keeps the
-		// URL spelling; only the child's environment is corrected.
-		if spawn_dir != working_dir {
-			cmd.env("PWD", &spawn_dir);
-		}
-		// Set _ to the resolved command path for external commands, as the host
-		// spells it when the program was a URL.
-		cmd.env("_", &program);
-	}
-
-	// Add in exported functions.
-	if !empty_env {
-		for (func_name, registration) in context.shell.funcs().iter() {
-			if registration.is_exported() {
-				let var_name = std::format!("BASH_FUNC_{func_name}%%");
-				let value = std::format!("() {}", registration.definition().body);
-				cmd.env(var_name, value);
-			}
-		}
-	}
+	cmd.envs(command_env);
 
 	// Redirect stdin, if applicable.
 	match context.try_fd(OpenFiles::STDIN_FD) {
@@ -1298,4 +1340,37 @@ pub const fn child_session_action(
 	}
 
 	ChildSessionAction::DetachSession
+}
+
+#[cfg(test)]
+mod detach_wrapper_tests {
+	use std::{
+		ffi::{OsStr, OsString},
+		sync::Arc,
+	};
+
+	use super::applicable_external_wrapper;
+	use crate::interp::{ExecutionParameters, ExternalCommandWrapper};
+
+	struct Noop;
+	impl ExternalCommandWrapper for Noop {
+		fn wrap_external_command(
+			&self,
+			_: &OsStr,
+			_: &OsStr,
+			_: &[OsString],
+			_: &[(OsString, OsString)],
+		) -> std::io::Result<Option<(OsString, Vec<OsString>)>> {
+			Ok(None)
+		}
+	}
+
+	#[test]
+	fn reparented_launch_bypasses_wrapper_but_normal_launch_keeps_it() {
+		let mut params = ExecutionParameters::default();
+		params.set_external_command_wrapper(Arc::new(Noop));
+		assert!(applicable_external_wrapper(&params).is_some());
+		params.detach_reparent = true;
+		assert!(applicable_external_wrapper(&params).is_none());
+	}
 }
