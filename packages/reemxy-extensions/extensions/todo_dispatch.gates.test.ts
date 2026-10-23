@@ -304,6 +304,51 @@ test("chief bash admits git global options and read-only pager sinks", async () 
   }
 });
 
+test("chief bash admits mid-chain cd and read-only git plumbing, and still refuses writers (sunbim 2026-10-23 13:12:44Z)", async () => {
+  const cwd = repo("clean");
+  const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
+  try {
+    const allowed = [
+      // The exact refused command from the live session.
+      "cd /home/kom/proj/sunbim/datacenter-decision-graph && git status --short | head; git rev-parse --short HEAD; cd /home/kom/proj/sunbim/wt/expert-mode-2026-10-23 && git diff --name-only cc3ddf57 HEAD; git status --short | head -5; cd /home/kom/proj/sunbim/wt/panel-layout-2026-10-23 && git log --oneline -3 && git status --short | head -5",
+      "git merge-base --is-ancestor a b; git ls-files | wc -l; git ls-tree HEAD | sort",
+      "git cat-file -t HEAD; git cat-file -p HEAD | head; git branch --list; git branch --show-current",
+      "git remote -v; git remote show fork; git describe --tags; git rev-list --count HEAD; git for-each-ref refs/heads | tail -3",
+      "git worktree list | head; cd /x && git worktree list",
+    ];
+    const refused = [
+      "git checkout main",
+      "cd /x && git reset --hard",
+      "git stash",
+      "git merge topic",
+      "git rebase main",
+      "git add -A",
+      "git rm f",
+      "git clean -fd",
+      "git worktree add ../w",
+      "git worktree remove ../w",
+      "git branch -d old",
+      "git branch -D old",
+      "git remote add x url",
+      "git remote remove fork",
+      "git diff --output=out.txt",
+      "cd /x && make",
+      "cd $HOME && git status",
+      "cd -- && git status",
+      "cd /x; rm f",
+    ];
+    const run = async (list: string[]) => {
+      const results = [];
+      for (const command of list) results.push({ command, executed: (await outcome(state, cwd, { name: "bash", arguments: { command } })).executed });
+      return results;
+    };
+    expect(await run(allowed)).toEqual(allowed.map((command) => ({ command, executed: true })));
+    expect(await run(refused)).toEqual(refused.map((command) => ({ command, executed: false })));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("chief bash still refuses git mutations, tee pipes, redirects and chained mutators", async () => {
   const cwd = repo("clean");
   const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };

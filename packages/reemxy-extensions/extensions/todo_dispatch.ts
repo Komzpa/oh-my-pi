@@ -2712,6 +2712,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         if (binary) words = [{ ...words[0], value: binary[1] }, ...words.slice(1)];
         // `cat`, `head`, `tail` and `wc` are looks only as a pipe sink: flags and numbers, never files.
         if (piped && ["cat", "head", "tail", "wc"].includes(words[0].value) && words.slice(1).some((word) => word.dynamic || !/^(?:-\S*|\d+)$/.test(word.value))) return false;
+        // `cd <dir>` anywhere in a chain is navigation: the commands around it are classified on their own,
+        // so `cd x && git status; cd y && git log` passes and `cd x && make` still fails closed.
+        if (words[0].value === "cd") return words.length === 2 && !words[1].dynamic && !words[1].value.startsWith("-");
         if (words[0].value === "gh") return readOnlyGh(words);
         if (words[0].value !== "git") return readOnlyLook(words);
         let subcommand = 1;
@@ -2727,7 +2730,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
             subcommand += 1;
           } else break;
         }
-        if (!words[subcommand] || words[subcommand].dynamic || !/^(?:status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|ls-tree|cat-file|merge-base|fetch|patch-id|rev-list|for-each-ref|name-rev|describe|blame|shortlog|grep)$/.test(words[subcommand].value)) return false;
+        if (!words[subcommand] || words[subcommand].dynamic || !/^(?:status|log|show|diff|rev-parse|branch|remote|ls-files|ls-remote|ls-tree|cat-file|merge-base|worktree|fetch|patch-id|rev-list|for-each-ref|name-rev|describe|blame|shortlog|grep)$/.test(words[subcommand].value)) return false;
+        const verb = words[subcommand].value;
+        const rest = words.slice(subcommand + 1);
+        // Plumbing that can write: `worktree add/remove/…`, `remote add/remove/set-url/…`, and `--output=<file>`.
+        if (verb === "worktree") return rest[0] !== undefined && !rest[0].dynamic && rest[0].value === "list";
+        if (verb === "remote" && rest.length > 0 && (rest[0].dynamic || !/^(?:-v|--verbose|show|get-url)$/.test(rest[0].value))) return false;
+        if (["diff", "log", "show"].includes(verb) && rest.some((word) => /^--output(?:=|$)/.test(word.value))) return false;
         if (words[subcommand].value !== "branch") return true;
         // Bare names create branches; -d/-D/-m/-M/-c/-C and unknown options mutate or
         // cannot be classified. Only known listing forms belong to the chief.
