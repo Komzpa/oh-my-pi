@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { afterEach, describe, expect, it } from "bun:test";
+import { currentRequirementIdentity, formatRequirementIdentity } from "../../src/utils/requirement-artifact";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { RequirementsLedgerRuntime } from "@oh-my-pi/pi-coding-agent/session/requirements-ledger-runtime";
@@ -341,6 +342,28 @@ describe("typed identity: accepted receipts", () => {
 		const done = await fx.done("p2", ROW);
 		expect(done.isError).not.toBe(true);
 		expect(statusOf(fx, ROW)).toBe("completed");
+	});
+
+	it("completes QA for a skill directory with linked Markdown and refuses a later link retarget", async () => {
+		const root = tempDir("omp-linked-skill-");
+		const skillDir = path.join(root, "skill");
+		fs.mkdirSync(skillDir);
+		fs.writeFileSync(path.join(root, "source.md"), "# Skill\n");
+		fs.symlinkSync("../source.md", path.join(skillDir, "SKILL.md"));
+		const captured = await currentRequirementIdentity({ kind: "file", path: skillDir });
+		if ("error" in captured) throw new Error(captured.error);
+		const receipt = artifactCell(ROW, [formatRequirementIdentity(captured.identity)]);
+		const fx = await harness([ROW], { resources: [skillDir] });
+		expect(fx.classifyResult.isError).not.toBe(true);
+		expect(containsText(await fx.prepare(ROW), receipt)).toBe(true);
+		expect(await fx.receive(receipt)).toBeUndefined();
+		expect((await fx.done("linked-skill", ROW)).isError).not.toBe(true);
+		expect(statusOf(fx, ROW)).toBe("completed");
+		fs.unlinkSync(path.join(skillDir, "SKILL.md"));
+		fs.symlinkSync("../other.md", path.join(skillDir, "SKILL.md"));
+		const stale = await fx.done("retargeted-skill", ROW);
+		expect(stale.isError).toBe(true);
+		expect(textOf(stale)).toContain("stale file");
 	});
 
 	for (const changed of [false, true]) {

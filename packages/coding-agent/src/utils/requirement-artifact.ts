@@ -9,7 +9,7 @@ import { probeRequirementDeployment, type RequirementDeploymentIdentity } from "
 /** Declarative identities carried by requirement receipts, independent of worker ownership. */
 export type RequirementIdentity =
 	| { kind: "git"; repo: string; commit: string; paths?: string[] }
-	| { kind: "file"; path: string; sha256: string }
+	| { kind: "file"; path: string; canonicalPath?: string; sha256: string }
 	| RequirementDeploymentIdentity;
 
 export type RequirementIdentityTarget =
@@ -51,7 +51,10 @@ function wireString(value: string): string {
 }
 
 export function formatRequirementIdentity(identity: RequirementIdentity): string {
-	if (identity.kind === "file") return `file:${wireString(identity.path)}@sha256=${identity.sha256.toLowerCase()}`;
+	if (identity.kind === "file") {
+		const canonical = identity.canonicalPath === undefined ? "" : ` canonical=${wireString(identity.canonicalPath)}`;
+		return `file:${wireString(identity.path)}@sha256=${identity.sha256.toLowerCase()}${canonical}`;
+	}
 	if (identity.kind === "git") {
 		const paths = identity.paths === undefined ? "" : ` paths=${JSON.stringify(identity.paths)}`;
 		return `git:${wireString(identity.repo)}@${identity.commit.toLowerCase()}${paths}`;
@@ -117,8 +120,22 @@ export function parseRequirementIdentity(text: string): { identity: RequirementI
 			if (!absoluteIdentityPath(target.value)) fail("file identity requires an exact absolute path");
 			if (!/^sha256=[a-fA-F0-9]{64}$/.test(value.value))
 				fail("file identity requires sha256= followed by a full SHA-256");
-			if (suffix) fail("file identity does not accept attributes");
-			return { identity: { kind: "file", path: target.value, sha256: value.value.slice(7).toLowerCase() } };
+			let canonicalPath: string | undefined;
+			if (suffix) {
+				if (!suffix.startsWith("canonical=")) fail("file identity accepts only canonical=<absolute path>");
+				const canonical = readWireAtom(suffix.slice(10), false);
+				if (canonical.rest.trim() || !absoluteIdentityPath(canonical.value))
+					fail("file canonical path requires an exact absolute path");
+				canonicalPath = canonical.value;
+			}
+			return {
+				identity: {
+					kind: "file",
+					path: target.value,
+					sha256: value.value.slice(7).toLowerCase(),
+					...(canonicalPath === undefined ? {} : { canonicalPath }),
+				},
+			};
 		}
 		if (prefix[1] === "git") {
 			if (!absoluteIdentityPath(target.value)) fail("git identity requires an exact absolute repository root");
@@ -183,8 +200,8 @@ export function parseRequirementIdentity(text: string): { identity: RequirementI
 
 /**
  * Bounds for requirement artifacts. Exceeding any bound fails closed with a reason.
- * Assumptions: resources are local regular files or directories; symlinks anywhere
- * inside a resource are rejected, never followed; ancestors of declared paths are trusted.
+ * Top-level resources resolve to local regular files or directories. Canonical targets
+ * use non-following stable reads; directory symlinks describe links, never target bytes.
  */
 export const REQUIREMENT_ARTIFACT_LIMITS = {
 	maxFiles: 4096,
@@ -196,10 +213,10 @@ export const REQUIREMENT_ARTIFACT_LIMITS = {
  * Identity of a requirement resource.
  * - `dirty: false`: `sha256` is the digest the requirement verdict is bound to.
  * - `dirty: true`: this helper cannot attest the resource; `reason` says why.
- * `cwd` is the real binding directory in both cases, so callers can persist it.
+ * `cwd` preserves the given binding path; `canonicalPaths` records the resolved read targets.
  */
 export type RequirementResourceArtifact =
-	| { cwd: string; head: null; dirty: false; sha256: string }
+	| { cwd: string; head: null; dirty: false; sha256: string; canonicalPaths: string[] }
 	| { cwd: string; head: null; dirty: true; reason: string };
 
 /** Domain tag that keeps manifest digests disjoint from plain file digests. */
@@ -213,12 +230,12 @@ export interface Identity {
 	ctimeMs: number;
 }
 
-interface FileEntry {
+type FileEntry = {
 	/** Relative path, `/`-separated, unique within the manifest. */
 	rel: string;
 	abs: string;
 	identity: Identity;
-}
+} & ({ type: "file" } | { type: "symlink"; target: string });
 
 class ArtifactError extends Error {}
 
@@ -351,9 +368,23 @@ export async function hashArtifactFile(filePath: string, signal?: AbortSignal): 
 	return hasher.digest("hex");
 }
 
+/** Read the link itself, with the same replacement and ancestor checks as regular files. */
+async function readStableArtifactLink(abs: string, rel: string): Promise<FileEntry & { type: "symlink" }> {
+	const parents = await safeArtifactParents(abs);
+	const before = await fs.lstat(abs).catch(err => fail(describeFsError(abs, err)));
+	if (!before.isSymbolicLink()) fail(`${abs}: changed before reading symlink`);
+	const target = await fs.readlink(abs).catch(err => fail(describeFsError(abs, err)));
+	const after = await fs.lstat(abs).catch(err => fail(describeFsError(abs, err)));
+	if (!after.isSymbolicLink() || !sameIdentity(identityOf(before), identityOf(after)) || before.mode !== after.mode)
+		fail(`${abs}: changed while reading symlink`);
+	if (JSON.stringify(parents) !== JSON.stringify(await safeArtifactParents(abs)))
+		fail(`${abs}: ancestor changed while reading symlink`);
+	return { rel, abs, identity: identityOf(before), type: "symlink", target };
+}
+
 /**
  * Deterministic, bounded listing of a directory tree. Every regular file is included,
- * dotfiles too. Symlinks, special files, and excess depth, count, or bytes fail closed.
+ * dotfiles too. Symlinks are entries; special files and excess depth, count, or bytes fail closed.
  * Result is sorted by codepoint order of the relative path.
  */
 async function walkDirectory(root: string, signal?: AbortSignal): Promise<FileEntry[]> {
@@ -366,25 +397,31 @@ async function walkDirectory(root: string, signal?: AbortSignal): Promise<FileEn
 		const before = await fs.lstat(dir).catch(err => fail(describeFsError(dir, err)));
 		if (before.isSymbolicLink()) fail(`${dir}: symlink is not followed`);
 		if (!before.isDirectory()) fail(`${dir}: not a directory`);
-		const label = relDir || ".";
 		const dirents: Dirent[] = await fs
 			.readdir(dir, { withFileTypes: true })
-			.catch(err => fail(describeFsError(label, err)));
+			.catch(err => fail(describeFsError(dir, err)));
 		for (const dirent of dirents) {
 			const rel = relDir ? `${relDir}/${dirent.name}` : dirent.name;
 			const abs = path.join(dir, dirent.name);
-			if (dirent.isSymbolicLink()) fail(`${rel}: symlink is not followed`);
 			if (dirent.isDirectory()) {
 				if (depth + 1 > maxDepth) fail(`${rel}: exceeds depth bound ${maxDepth}`);
 				await visit(abs, rel, depth + 1);
 				continue;
 			}
-			if (!dirent.isFile()) fail(`${rel}: not a regular file`);
 			if (files.length >= maxFiles) fail(`directory exceeds file-count bound ${maxFiles}`);
-			const st = await statRegularFile(abs, rel);
-			bytes += st.size;
-			if (bytes > maxBytes) fail(`directory exceeds aggregate byte bound ${maxBytes}`);
-			files.push({ rel, abs, identity: identityOf(st) });
+			let entry: FileEntry;
+			if (dirent.isSymbolicLink()) {
+				const link = await readStableArtifactLink(abs, rel);
+				bytes += Buffer.byteLength(link.target, "utf8");
+				entry = link;
+			} else {
+				if (!dirent.isFile()) fail(`${abs}: not a regular file`);
+				const st = await statRegularFile(abs, abs);
+				bytes += st.size;
+				entry = { rel, abs, identity: identityOf(st), type: "file" };
+			}
+			if (bytes > maxBytes) fail(`${root}: directory exceeds aggregate byte bound ${maxBytes}`);
+			files.push(entry);
 		}
 		const after = await fs.lstat(dir).catch(err => fail(describeFsError(dir, err)));
 		if (!sameIdentity(identityOf(before), identityOf(after)) || after.isSymbolicLink())
@@ -398,11 +435,18 @@ async function walkDirectory(root: string, signal?: AbortSignal): Promise<FileEn
 /**
  * Manifest digest: SHA-256 of the JSON text `["omp-requirement-manifest/v1", [[relPath, fileSha256], ...]]`.
  * Rows are in codepoint order of `relPath`. JSON string escaping makes the encoding unambiguous.
+ * Symlink rows are [relPath, "symlink", SHA256(JSON(["symlink", readlinkTarget]))].
+ * They intentionally bind only the target string: retargeting stales the artifact,
+ * while editing the linked file does not. Links are never traversed (even dangling/cyclic ones).
  */
 async function manifestSha256(files: readonly FileEntry[], signal?: AbortSignal): Promise<string> {
-	const rows: [string, string][] = [];
+	const rows: Array<[string, string] | [string, "symlink", string]> = [];
 	for (const file of files) {
-		rows.push([file.rel, await hashArtifactFile(file.abs, signal)]);
+		signal?.throwIfAborted();
+		if (file.type === "symlink") {
+			const digest = new Bun.CryptoHasher("sha256").update(JSON.stringify(["symlink", file.target])).digest("hex");
+			rows.push([file.rel, "symlink", digest]);
+		} else rows.push([file.rel, await hashArtifactFile(file.abs, signal)]);
 	}
 	return new Bun.CryptoHasher("sha256").update(JSON.stringify([MANIFEST_TAG, rows])).digest("hex");
 }
@@ -410,12 +454,20 @@ async function manifestSha256(files: readonly FileEntry[], signal?: AbortSignal)
 /** Directory manifest. A second walk must match the first, so concurrent adds or removes fail closed. */
 async function hashDirectory(root: string, signal?: AbortSignal): Promise<string> {
 	const parents = await safeArtifactParents(root);
+	const before = await fs.lstat(root).catch(err => fail(describeFsError(root, err)));
 	const first = await walkDirectory(root, signal);
 	if (first.length === 0) fail(`${root}: directory contains no regular files`);
 	const digest = await manifestSha256(first, signal);
 	const second = await walkDirectory(root, signal);
-	const identitiesOf = (files: readonly FileEntry[]) => JSON.stringify(files.map(f => [f.rel, f.identity]));
-	if (identitiesOf(first) !== identitiesOf(second)) fail(`${root}: changed while hashing`);
+	const identitiesOf = (files: readonly FileEntry[]) =>
+		JSON.stringify(files.map(f => [f.rel, f.type, f.identity, f.type === "symlink" ? f.target : null]));
+	const after = await fs.lstat(root).catch(err => fail(describeFsError(root, err)));
+	if (
+		!after.isDirectory() ||
+		!sameIdentity(identityOf(before), identityOf(after)) ||
+		identitiesOf(first) !== identitiesOf(second)
+	)
+		fail(`${root}: changed while hashing`);
 	if (JSON.stringify(parents) !== JSON.stringify(await safeArtifactParents(root)))
 		fail(`${root}: ancestor changed while hashing`);
 	return digest;
@@ -457,40 +509,55 @@ export async function resolveResourceArtifact(
 	try {
 		if (absPaths.length === 0) fail("no resource paths declared");
 		if (new Set(absPaths).size !== absPaths.length) fail("duplicate resource path");
+		const canonicalPaths: string[] = [];
+		for (const abs of absPaths) canonicalPaths.push(await canonicalArtifactPath(abs));
+		let sha256: string;
 		if (absPaths.length === 1) {
-			const [abs] = absPaths;
+			const [abs] = canonicalPaths;
 			const st = await fs.lstat(abs).catch(err => fail(describeFsError(abs, err)));
-			if (st.isDirectory()) {
-				return { cwd, head: null, dirty: false, sha256: await hashDirectory(abs, signal) };
+			sha256 = st.isDirectory() ? await hashDirectory(abs, signal) : await hashArtifactFile(abs, signal);
+		} else {
+			const files: FileEntry[] = [];
+			let bytes = 0;
+			for (const [index, abs] of canonicalPaths.entries()) {
+				const rel = path.relative(cwd, absPaths[index]!).split(path.sep).join("/");
+				const st = await statRegularFile(abs, abs);
+				if (files.length >= REQUIREMENT_ARTIFACT_LIMITS.maxFiles) {
+					fail(`resource set exceeds file-count bound ${REQUIREMENT_ARTIFACT_LIMITS.maxFiles}`);
+				}
+				bytes += st.size;
+				if (bytes > REQUIREMENT_ARTIFACT_LIMITS.maxBytes) {
+					fail(`resource set exceeds aggregate byte bound ${REQUIREMENT_ARTIFACT_LIMITS.maxBytes}`);
+				}
+				files.push({ rel, abs, identity: identityOf(st), type: "file" });
 			}
-			return { cwd, head: null, dirty: false, sha256: await hashArtifactFile(abs, signal) };
-		}
-		const files: FileEntry[] = [];
-		let bytes = 0;
-		for (const abs of absPaths) {
-			const rel = path.relative(cwd, abs).split(path.sep).join("/");
-			const st = await statRegularFile(abs, rel);
-			if (files.length >= REQUIREMENT_ARTIFACT_LIMITS.maxFiles) {
-				fail(`resource set exceeds file-count bound ${REQUIREMENT_ARTIFACT_LIMITS.maxFiles}`);
+			files.sort((a, b) => compareCodepoints(a.rel, b.rel));
+			sha256 = await manifestSha256(files, signal);
+			// Re-check every explicit file after the full manifest is hashed, so an earlier file changed during a later hash fails closed.
+			for (const file of files) {
+				const current = identityOf(await statRegularFile(file.abs, file.abs));
+				if (!sameIdentity(file.identity, current)) fail(`${file.rel}: changed while hashing`);
 			}
-			bytes += st.size;
-			if (bytes > REQUIREMENT_ARTIFACT_LIMITS.maxBytes) {
-				fail(`resource set exceeds aggregate byte bound ${REQUIREMENT_ARTIFACT_LIMITS.maxBytes}`);
-			}
-			files.push({ rel, abs, identity: identityOf(st) });
 		}
-		files.sort((a, b) => compareCodepoints(a.rel, b.rel));
-		const sha256 = await manifestSha256(files, signal);
-		// Re-check every explicit file after the full manifest is hashed, so an earlier file changed during a later hash fails closed.
-		for (const file of files) {
-			const current = identityOf(await statRegularFile(file.abs, file.rel));
-			if (!sameIdentity(file.identity, current)) fail(`${file.rel}: changed while hashing`);
+		for (const [index, abs] of absPaths.entries()) {
+			if ((await canonicalArtifactPath(abs)) !== canonicalPaths[index])
+				fail(`${abs}: canonical path changed while hashing`);
 		}
-		return { cwd, head: null, dirty: false, sha256 };
+		return { cwd, head: null, dirty: false, sha256, canonicalPaths };
 	} catch (err) {
 		if (signal?.aborted) throw err;
 		const reason = err instanceof Error ? err.message : String(err);
 		return { cwd, head: null, dirty: true, reason };
+	}
+}
+
+/** Resolve only the declared resource boundary; readers below it must still refuse symlink traversal. */
+async function canonicalArtifactPath(given: string): Promise<string> {
+	try {
+		return await fs.realpath(given);
+	} catch (err) {
+		const reason = describeFsError(given, err).slice(given.length + 2);
+		fail(`${given}: cannot resolve canonical path (${reason})`);
 	}
 }
 
@@ -630,8 +697,21 @@ export async function checkRequirementIdentity(
 				: { state: "stale", kind: "deploy", location, expected: identity.value, observed: observed.value };
 		}
 		if (identity.kind === "file") {
+			// Legacy real-path receipts implicitly bind canonical location to their given path.
+			const expectedCanonical = identity.canonicalPath ?? identity.path;
+			const canonical = await canonicalArtifactPath(identity.path);
+			if (canonical !== expectedCanonical)
+				return { state: "stale", kind: "file", location, expected: expectedCanonical, observed: canonical };
 			const artifact = await resolveResourceArtifact([identity.path], signal);
 			if (artifact.dirty) fail(artifact.reason);
+			if (artifact.canonicalPaths[0] !== expectedCanonical)
+				return {
+					state: "stale",
+					kind: "file",
+					location,
+					expected: expectedCanonical,
+					observed: artifact.canonicalPaths[0]!,
+				};
 			return artifact.sha256 === identity.sha256
 				? { state: "fresh" }
 				: { state: "stale", kind: "file", location, expected: identity.sha256, observed: artifact.sha256 };
@@ -718,7 +798,15 @@ export async function currentRequirementIdentity(
 		if (target.kind === "file") {
 			const artifact = await resolveResourceArtifact([target.path], signal);
 			if (artifact.dirty) fail(artifact.reason);
-			return { identity: { kind: "file", path: target.path, sha256: artifact.sha256 } };
+			const canonicalPath = artifact.canonicalPaths[0]!;
+			return {
+				identity: {
+					kind: "file",
+					path: target.path,
+					sha256: artifact.sha256,
+					...(canonicalPath === target.path ? {} : { canonicalPath }),
+				},
+			};
 		}
 		const repo = await identityGitRepo(target.repo);
 		const head = await repo.headSha(signal);

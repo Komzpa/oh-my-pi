@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed requirement QA gates rejecting symlinked artifacts; directory manifests now track link destinations ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
 - Unclassified requirement candidates no longer block the `task` tool: they are listed as a reminder on the call and still hold the completion gates. Merging into a requirement classified not-a-requirement now inherits that verdict, merging into a merged requirement follows the link to its active target, and batched classify calls give the same ledger in any order. Quoted text (`>` lines) and pure urgency or profanity are recorded as not-a-requirement on capture
 
 ### Changed
