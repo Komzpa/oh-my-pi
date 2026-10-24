@@ -2130,6 +2130,12 @@ export class AgentSession implements SettingsScope {
 			await this.#prewalk.advanceAtTurnEnd(messages, context);
 			if (context?.willContinue) this.#steerAnthropicWrapUp();
 			await this.#advisors.onPrimaryTurnEnd(messages, context?.willContinue, signal);
+			// A worker can keep calling tools for an entire task without admitting
+			// another prompt. Restore at this boundary once a fallback has served;
+			// never restart a primary while its retry saga is still in flight.
+			if (context?.willContinue && this.#recovery.attempt === 0 && !signal?.aborted) {
+				await this.#recovery.maybeRestoreRetryFallbackPrimary({ requireContextFit: true });
+			}
 			await this.#maintenance.maintainContextMidRun(messages, signal, context);
 		});
 		this.yieldQueue = new YieldQueue({
