@@ -98,7 +98,8 @@ const UNEXPECTED_STOP_MAX_RETRIES = 3;
 const UNEXPECTED_STOP_TIMEOUT_MS = 15_000;
 const EMPTY_STOP_MAX_RETRIES = 3;
 const MALFORMED_FUNCTION_CALL_MAX_RETRIES = 3;
-const STREAM_STALL_CONTINUE_MAX_RETRIES = 3;
+const STREAM_STALL_CONTINUE_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000] as const;
+const STREAM_STALL_CONTINUE_MAX_RETRIES = STREAM_STALL_CONTINUE_DELAYS_MS.length;
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
 const NON_WHITESPACE_RE = /\S/;
 const USAGE_PREFLIGHT_BLOCKED_PREFIX = "Usage preflight blocked:";
@@ -113,6 +114,12 @@ const HTTP2_STREAM_RESET_ERROR_RE =
 // eligible for preserved-turn continuation on resolved tool turns.
 const PREMATURE_STREAM_CLOSE_ERROR_RE =
 	/(?:stream closed before a (?:finish_reason|terminal response event)|Codex stream ended before terminal completion event|Cursor stream ended before turnEnded)/i;
+
+// Responses transport drops reported in the gateway's or provider's own words
+// (`stream_incomplete`, a websocket closed before `response.completed`). Narrower
+// than `AIError.isTransientStreamDropError`, which also covers Anthropic envelope
+// errors whose committed text keeps the main-session replay veto.
+const RESPONSES_STREAM_DROP_ERROR_RE = /stream_incomplete|(?:stream|websocket) closed before response\.completed/i;
 
 /**
  * Bare abort sentinels with no provider reason: our own `"Request was aborted"`
@@ -261,6 +268,8 @@ export interface TurnRecoveryHost {
 		delayMs?: number;
 		generation?: number;
 		shouldContinue?: () => boolean;
+		/** Runs once, immediately before `agent.continue()`; never runs for a skipped request. */
+		beforeContinue?: () => void;
 		onError?: (error: unknown) => void;
 	}): void;
 	waitForSessionMessagePersistence(message: AssistantMessage): Promise<void>;
@@ -720,23 +729,29 @@ export class TurnRecovery {
 			provider: message.provider,
 			errorMessage: message.errorMessage,
 		});
-		this.#host.agent.appendMessage({
-			role: "developer",
-			content: [
-				{
-					type: "text",
-					text: prompt.render(streamStallContinueTemplate, {
-						retryCount: this.#streamStallContinueCount,
-						maxRetries: STREAM_STALL_CONTINUE_MAX_RETRIES,
-					}),
-				},
-			],
-			attribution: "agent",
-			timestamp: Date.now(),
-		});
+		const retryCount = this.#streamStallContinueCount;
 		this.#host.scheduleAgentContinue({
 			source: "stream-stall-continue",
+			delayMs: STREAM_STALL_CONTINUE_DELAYS_MS[retryCount - 1],
 			generation: this.#host.promptGeneration(),
+			// Append the reminder only when the delayed continuation really starts:
+			// an Esc during the wait must not leave a "resume the answer" instruction
+			// behind for the user's next, unrelated prompt.
+			beforeContinue: () =>
+				this.#host.agent.appendMessage({
+					role: "developer",
+					content: [
+						{
+							type: "text",
+							text: prompt.render(streamStallContinueTemplate, {
+								retryCount,
+								maxRetries: STREAM_STALL_CONTINUE_MAX_RETRIES,
+							}),
+						},
+					],
+					attribution: "agent",
+					timestamp: Date.now(),
+				}),
 		});
 		return true;
 	}
@@ -761,8 +776,8 @@ export class TurnRecovery {
 	 * primary, so callers can re-run the pre-send context-fit check against the
 	 * reverted (possibly smaller) window before issuing the next request.
 	 */
-	maybeRestoreRetryFallbackPrimary(): Promise<boolean> {
-		return this.#maybeRestoreRetryFallbackPrimary();
+	maybeRestoreRetryFallbackPrimary(options?: { requireContextFit?: boolean }): Promise<boolean> {
+		return this.#maybeRestoreRetryFallbackPrimary(options);
 	}
 
 	/** Applies model fallback policy from live usage health before a turn starts. */
@@ -1662,8 +1677,10 @@ export class TurnRecovery {
 	 * Mid-generation transport death: the local idle watchdog's stream stall, an
 	 * HTTP/2 stream reset, or a gateway close without the terminal event. A
 	 * premature close (no finish_reason/terminal event) is the same failure
-	 * class as a stall or reset. Resets and closes are ignored while a
-	 * deliberate abort, disposal, or streaming-edit abort owns the stream.
+	 * class as a stall or reset, and so is a Responses transport drop the provider or a
+	 * proxy reports in its own words (a `stream_incomplete` error event for an
+	 * upstream websocket that closed before `response.completed`). Resets and closes are ignored while a deliberate abort, disposal,
+	 * or streaming-edit abort owns the stream.
 	 */
 	#isMidStreamTransportFailure(message: AssistantMessage, id: number): boolean {
 		if (message.stopReason !== "error" || !AIError.retriable(id)) return false;
@@ -1676,7 +1693,11 @@ export class TurnRecovery {
 			HTTP2_STREAM_RESET_ERROR_RE.test(errorMessage) ||
 			AIError.PYTHON_HTTP2_STREAM_RESET_PATTERN.test(errorMessage) ||
 			AIError.PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(errorMessage) ||
-			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage)
+			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage) ||
+			// Providers such as Cursor keep the raw diagnostic in errorClassificationMessage and
+			// display-only text in errorMessage; retry classification reads both, so must this.
+			RESPONSES_STREAM_DROP_ERROR_RE.test(errorMessage) ||
+			RESPONSES_STREAM_DROP_ERROR_RE.test(message.errorClassificationMessage ?? "")
 		);
 	}
 	/**
@@ -1719,27 +1740,17 @@ export class TurnRecovery {
 		);
 	}
 	/**
-	 * First-attempt mid-stream socket drop with streamed progress: the transport
-	 * died after the model had already emitted reasoning or tool calls, so the
-	 * failure says nothing about model health — retry the same model once before
-	 * consulting the fallback chain. A drop with no streamed content keeps the
-	 * immediate fallback (a different route may genuinely help), as do later
-	 * attempts. Never applies once the retry budget is spent (e.g.
-	 * `retry.maxRetries: 0`): there is no same-model retry left, so the
-	 * fallback-chain consult is the only recovery. Mirrors the stall handler's
-	 * socket check, extended to turns with tool calls.
+	 * A dropped stream says nothing about model availability, including when
+	 * the transport closed before the first token. Spend the same-model retry
+	 * budget before switching routes. Classification keeps hard HTTP failures
+	 * out even when their diagnostic mentions a dropped stream.
 	 */
-	#isFirstAttemptMidStreamSocketDrop(message: AssistantMessage, id: number, retryBudgetExhausted: boolean): boolean {
-		if (this.#retryAttempt !== 1 || retryBudgetExhausted) return false;
+	#isTransientStreamDrop(message: AssistantMessage, id: number): boolean {
 		if (message.stopReason !== "error" || !AIError.retriable(id)) return false;
+		if (AIError.is(id, AIError.Flag.UsageLimit) || AIError.is(id, AIError.Flag.AuthFailed)) return false;
 		if (this.#host.streamingEditAbortTriggered()) return false;
-		if (!isUnexpectedSocketCloseMessage(message.errorMessage ?? "")) return false;
-		return message.content.some(
-			block =>
-				(block.type === "thinking" && block.thinking.trim().length > 0) ||
-				block.type === "toolCall" ||
-				(block.type === "text" && block.text.trim().length > 0),
-		);
+		const diagnostic = message.errorClassificationMessage ?? message.errorMessage ?? "";
+		return AIError.isTransientStreamDropError(diagnostic) || isUnexpectedSocketCloseMessage(diagnostic);
 	}
 
 	/** Checks whether a provider error represents a classifier refusal. */
@@ -2446,7 +2457,7 @@ export class TurnRecovery {
 		return true;
 	}
 
-	async #maybeRestoreRetryFallbackPrimary(): Promise<boolean> {
+	async #maybeRestoreRetryFallbackPrimary(options?: { requireContextFit?: boolean }): Promise<boolean> {
 		if (!this.#activeRetryFallback) return false;
 		if (this.#activeRetryFallback.pinned) return false;
 		if (this.#getRetryFallbackRevertPolicy() !== "cooldown-expiry") return false;
@@ -2486,6 +2497,9 @@ export class TurnRecovery {
 		const primaryModel =
 			resolvedPrimary.model ?? this.#host.modelRegistry.find(originalSelector.provider, originalSelector.id);
 		if (!primaryModel) return false;
+		// Tool loops already own their live context. Leave a larger fallback in
+		// place when restoring would require pre-prompt context maintenance.
+		if (options?.requireContextFit && !this.#host.contextFitsModel(primaryModel)) return false;
 		const apiKey = await this.#host.modelRegistry.getApiKey(primaryModel, this.#host.sessionId());
 		if (!apiKey) return false;
 
@@ -2765,6 +2779,7 @@ export class TurnRecovery {
 		// contents, not model health (issue #8760). Keep it on the same model; the
 		// retry budget still bounds a genuinely stuck stream.
 		const thinkingLoop = AIError.is(id, AIError.Flag.ThinkingLoop);
+		const transientStreamDrop = this.#isTransientStreamDrop(message, id);
 		// A Codex steering rejection answers our own `response.steer`, not the
 		// model's health, and the provider already stopped steering the session:
 		// replay on the same model while same-model retries remain. Once the
@@ -2814,7 +2829,7 @@ export class TurnRecovery {
 				!sameModelSteerReplay &&
 				!waitForSiblingCredential &&
 				!refusalWalkRepeats &&
-				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted)
+				(!transientStreamDrop || retryBudgetExhausted)
 			) {
 				if (classifierRefusal) {
 					this.#refusalWalkTried.add(refusalWalkKey);
@@ -2825,7 +2840,11 @@ export class TurnRecovery {
 					// to a still-exhausted primary. A switched credential means a
 					// sibling is free now, and that wait covers only the spent one.
 					const usageCooldownMs = recordedUsageLimitOutcome?.switchedCredential ? undefined : usageLimitWaitMs;
-					this.noteRetryFallbackCooldown(currentSelector, usageCooldownMs ?? parsedRetryAfterMs, errorMessage);
+					this.noteRetryFallbackCooldown(
+						currentSelector,
+						transientStreamDrop ? 60_000 : (usageCooldownMs ?? parsedRetryAfterMs),
+						errorMessage,
+					);
 				}
 				switchedModel = await this.#tryRetryModelFallback(currentSelector, message, {
 					excludeProvider: longUsageLimitFallback ? currentModel.provider : undefined,
