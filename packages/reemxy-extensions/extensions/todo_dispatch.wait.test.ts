@@ -110,10 +110,10 @@ function forecastTodoPlan(phases: WaitTestPhase[], { now }: { now: number }) {
 	};
 }
 
-async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initialJobs: unknown[] = [], forecastLeadMs = 0, forecastOverride = undefined) {
+async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initialJobs: unknown[] = [], forecastLeadMs = 0, forecastOverride = undefined, restoredEntries: unknown[] = []) {
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	const notices: Array<{ customType: string; content: string }> = [];
-	const entries: Array<{ type: "custom"; customType: string; data?: unknown }> = [];
+	const entries: Array<{ type: "custom"; customType: string; data?: unknown }> = [...restoredEntries];
 	const intervals: Array<() => void | Promise<void>> = [];
 	const timeouts: Array<() => void | Promise<void>> = [];
 	let recent = initialJobs;
@@ -1000,7 +1000,7 @@ async function stuckWorkerHarness(options: { filesAgeMs: number; elapsedMs: numb
 	const trace = () => {
 		return fs.existsSync(traceFile) ? fs.readFileSync(traceFile, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
 	};
-	return { handlers, ctx, ticks, sent, cleanup, trace };
+	return { handlers, ctx, ticks, sent, cleanup, trace, running, phases, workerFile: path.join(sessions, "main", "worker-a.jsonl") };
 }
 
 test("plan tick flags an alive-but-waiting worker whose worktree is quiet, escalates, and ignores a stuck pending flag", async () => {
@@ -1175,3 +1175,150 @@ test("80-percent ETA notice and second-reestimate warning precede consistent sch
 		for (const notice of [...eta, ...caps()]) expect(notice.content.split("\n").length).toBeLessThanOrEqual(2);
 	} finally { h.shutdown(); nowSpy.mockRestore(); if (previousLane === undefined) delete process.env.OMP_LANE_UNIT; else process.env.OMP_LANE_UNIT = previousLane; }
 });
+
+
+test("cap refusal blocks main wait through check-ins and owner edits until kill plus reassignment", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const row = phases[0].tasks[0];
+	row.content = "Publish cobalt map";
+	const forecast = (phases, options) => {
+		const out = forecastTodoPlan(phases, options);
+		Object.assign(out.rows[0], { estimateUpdatedAt: now, reestimateCount: 2,
+			estimateRangeSeconds: { optimistic: 60, likely: 180, pessimistic: 420 } });
+		return out;
+	};
+	const h = await noticeHarness(phases, now + 3600_000, [], 0, forecast);
+	let running = [{ id: "worker-a", type: "task", status: "running", label: row.content, startTime: now }];
+	h.ctx.getAsyncJobSnapshot = () => ({ running, recent: [], nonJobAgents: [] });
+	const call = (toolName, input = {}) => h.handlers.get("tool_call")!({ toolName, input }, h.ctx);
+	const killResult = (isError = false) => h.handlers.get("tool_result")!({ toolName: "write", isError,
+		input: { path: "proc://worker-a/kill" }, content: [],
+		details: { proc: { op: "cancel", cancelled: [{ id: "worker-a", status: "cancelled" }] } } }, h.ctx);
+	try {
+		const cap = await call("todo", { op: "schedule", updates: [{ task: row.content, estimate: { likelySeconds: 200 } }] });
+		expect(cap?.block).toBe(true);
+		const blocked = await call("wait");
+		expect(blocked?.block).toBe(true);
+		expect(blocked.reason.split("\n")[0]).toContain('Kill worker-a; reassign "Publish cobalt map" before wait.');
+		expect(blocked.reason.split("\n")[0].length).toBeLessThanOrEqual(100);
+		expect(await call("read", { path: "proc://worker-a" })).toBeUndefined();
+		await call("write", { path: "agent://worker-a", content: "Report progress" });
+		expect((await call("wait"))?.block).toBe(true);
+		const header = h.ctx.sessionManager.getHeader;
+		h.ctx.sessionManager.getHeader = () => ({ id: "child", parentSession: "main" });
+		expect((await call("wait"))?.block).not.toBe(true);
+		h.ctx.sessionManager.getHeader = header;
+		row.schedule.owner = "worker-b";
+		running.push({ ...running[0], id: "worker-b" });
+		expect((await call("wait"))?.block).toBe(true); // renaming alone must not orphan the old worker
+		await killResult(true);
+		expect((await call("wait"))?.block).toBe(true);
+		running = running.filter(job => job.id !== "worker-a");
+		await killResult();
+		expect((await call("wait"))?.block).not.toBe(true);
+		const notices = h.notices.filter(n => n.customType === "todo-gate-recovery");
+		expect(notices).toHaveLength(1);
+		expect(notices[0].content).toContain("wait will be refused");
+	} finally { h.shutdown(); }
+});
+
+test("sixty-minute escalation refuses repeated waits, ignores lead check-ins, and accepts a newer worker yield", async () => {
+	const h = await stuckWorkerHarness({ filesAgeMs: 70 * 60_000, elapsedMs: 70 * 60_000 });
+	const call = (toolName, input = {}) => h.handlers.get("tool_call")!({ toolName, input }, h.ctx);
+	try {
+		await h.ticks.at(-1)!();
+		expect(h.sent.join("\n")).toContain("STUCK over 60 min, stop it now");
+		for (let i = 0; i < 2; i++) {
+			const blocked = await call("wait");
+			expect(blocked?.block).toBe(true);
+			expect(blocked.reason.split("\n")[0]).toBe('Kill worker-a or get its new receipt before wait.');
+		}
+		expect(await call("read", { path: "proc://worker-a" })).toBeUndefined();
+		await call("write", { path: "agent://worker-a", content: "done/left?" });
+		expect((await call("wait"))?.block).toBe(true);
+		fs.appendFileSync(h.workerFile, JSON.stringify({ type: "message", message: { role: "toolResult", toolName: "yield", isError: false, timestamp: Date.now() + 1, content: [{ type: "text", text: "Artifact: cobalt.svg; proof passed" }] } }) + "\n");
+		expect((await call("wait"))?.block).not.toBe(true);
+		await h.ticks.at(-1)!();
+		expect((await call("wait"))?.block).not.toBe(true);
+		expect(h.sent.filter(text => text.includes("wait will be refused") && text.includes("worker-a"))).toHaveLength(1);
+	} finally { h.cleanup(); }
+}, 60_000);
+
+test("stuck escalation clears on kill with a new running owner; a sub-hour quiet worker permits wait", async () => {
+	const h = await stuckWorkerHarness({ filesAgeMs: 50 * 60_000, elapsedMs: 50 * 60_000 });
+	const call = () => h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
+	try {
+		await h.ticks.at(-1)!();
+		expect((await call())?.block).not.toBe(true);
+		h.running[0].startTime -= 20 * 60_000;
+		await h.ticks.at(-1)!();
+		expect((await call())?.block).toBe(true);
+		h.phases[0].tasks[0].schedule.owner = "worker-b";
+		h.running.splice(0, 1, { ...h.running[0], id: "worker-b", agentId: "worker-b", startTime: Date.now() });
+		await h.handlers.get("tool_result")!({ toolName: "write", input: { path: "proc://worker-a/kill" }, content: [], isError: false,
+			details: { proc: { op: "cancel", cancelled: [{ id: "worker-a", status: "cancelled" }] } } }, h.ctx);
+		expect((await call())?.block).not.toBe(true);
+	} finally { h.cleanup(); }
+}, 60_000);
+
+
+test("cap recovery survives session restore, requires reassign after kill, and permits row closure or drop", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const forecast = (phases, options) => {
+		const out = forecastTodoPlan(phases, options);
+		for (const row of out.rows) Object.assign(row, { estimateUpdatedAt: now, reestimateCount: 2 });
+		return out;
+	};
+	let h = await noticeHarness(phases, now + 3600_000, [], 0, forecast);
+	let running = [{ id: "worker-a", type: "task", status: "running", label: "Row 1", startTime: now }];
+	const snapshot = () => ({ running, recent: [], nonJobAgents: [] });
+	const call = (toolName, input = {}) => h.handlers.get("tool_call")!({ toolName, input }, h.ctx);
+	const cap = () => call("todo", { op: "schedule", updates: [{ task: "Row 1", estimate: { updatedAt: now + 1 } }] });
+	h.ctx.getAsyncJobSnapshot = snapshot;
+	try {
+		await cap();
+		expect((await call("wait"))?.block).toBe(true);
+		await Promise.resolve();
+		const entries = [...h.entries];
+		h.shutdown();
+		h = await noticeHarness(phases, now + 3600_000, [], 0, forecast, entries);
+		h.ctx.getAsyncJobSnapshot = snapshot;
+		expect((await call("wait"))?.block).toBe(true);
+		running = [];
+		await h.handlers.get("tool_result")!({ toolName: "write", isError: false, input: { path: "proc://worker-a/kill" }, content: [],
+			details: { proc: { op: "cancel", cancelled: [{ id: "worker-a", status: "cancelled" }] } } }, h.ctx);
+		expect((await call("wait"))?.reason).toContain("reassign");
+		phases[0].tasks[0].status = "blocked";
+		phases[0].tasks[0].blocker = "Waiting for map layout";
+		expect((await call("wait"))?.reason).toContain("reassign");
+		phases[0].tasks[0].status = "completed";
+		expect((await call("wait"))?.block).not.toBe(true);
+		phases[0].tasks[0].status = "in_progress";
+		running = [{ id: "worker-a", type: "task", status: "running", label: "Row 1", startTime: now + 10 }];
+		await cap();
+		expect((await call("wait"))?.block).toBe(true);
+		phases[0].tasks.splice(0, 1);
+		expect((await call("wait"))?.block).not.toBe(true);
+	} finally { h.shutdown(); }
+});
+
+test("stuck wait requires a fresh successful yield or completed result, never old receipts or failed yields", async () => {
+	const h = await stuckWorkerHarness({ filesAgeMs: 70 * 60_000, elapsedMs: 70 * 60_000 });
+	const call = () => h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
+	try {
+		const old = Date.now() - 1000;
+		fs.appendFileSync(h.workerFile, JSON.stringify({ type: "message", message: { role: "toolResult", toolName: "yield", timestamp: old, content: [] } }) + "\n");
+		await h.ticks.at(-1)!();
+		expect((await call())?.block).toBe(true);
+		fs.appendFileSync(h.workerFile, JSON.stringify({ type: "message", message: { role: "toolResult", toolName: "yield", isError: true, timestamp: Date.now() + 1, content: [] } }) + "\n");
+		expect((await call())?.block).toBe(true);
+		const recent = [{ ...h.running[0], status: "completed", endTime: old }];
+		h.ctx.getAsyncJobSnapshot = () => ({ running: h.running, recent, nonJobAgents: [] });
+		expect((await call())?.block).toBe(true);
+		recent[0].endTime = Date.now() + 1;
+		h.running.splice(0);
+		expect((await call())?.block).not.toBe(true);
+	} finally { h.cleanup(); }
+}, 60_000);

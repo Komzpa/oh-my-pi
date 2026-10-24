@@ -56,6 +56,7 @@ type Jobs = Pick<AsyncJobSnapshot, "running" | "recent"> & {
 };
 type PersistedChild = { id: string; owner: string | null; live: boolean };
 type SprintWorkerFinish = { jobId: string; id: string; at: number; row: string };
+type RecoveryWait = { kind: "cap" | "stuck"; row: string; owner: string; at: number; startTime?: number; killed?: boolean; received?: boolean };
 export type SprintState = {
   version: 1;
   seenRows: string[];
@@ -79,6 +80,7 @@ export type SprintState = {
   handledDeliveryKey?: string;
   lastNotices: Record<string, string>;
   ignoredDemands: Record<string, number>;
+  recoveryWaits?: RecoveryWait[];
 };
 type TaskRow = TodoScheduleInput[number]["tasks"][number];
 type SnapshotRow = { number: number; phase: string; task: TaskRow };
@@ -773,6 +775,9 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
       lastNotices: typeof data.lastNotices === "object" && data.lastNotices !== null
         ? boundedNotices(Object.fromEntries(Object.entries(data.lastNotices).filter((entry): entry is [string, string] => typeof entry[1] === "string")))
         : {},
+      ...(Array.isArray(data.recoveryWaits) ? { recoveryWaits: data.recoveryWaits.filter((item): item is RecoveryWait =>
+        item !== null && typeof item === "object" && (item.kind === "cap" || item.kind === "stuck") &&
+        typeof item.row === "string" && typeof item.owner === "string" && typeof item.at === "number") } : {}),
       ignoredDemands: typeof data.ignoredDemands === "object" && data.ignoredDemands !== null
         ? Object.fromEntries(Object.entries(data.ignoredDemands).filter((entry): entry is [string, number] => typeof entry[1] === "number").slice(-MAX_NOTICE_KEYS))
         : {},
@@ -2958,6 +2963,48 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (sprintState.lastNotices[noticeKey("todo-gate-user-reply", key)] === noticeDigest(content)) return;
     sendHarnessNotice("todo-gate-user-reply", key, content);
   };
+  // These are recovery obligations, not advice: changing an owner label cannot abandon its live attempt.
+  const requireRecovery = (ctx: ExtensionContext, recovery: RecoveryWait) => {
+    if (!isMain(ctx) || singleWriterLane || pauseGate?.paused) return;
+    const existing = sprintState.recoveryWaits ?? [];
+    if (existing.some(item => item.kind === recovery.kind && (item.kind === "stuck" || item.row === recovery.row) && item.owner === recovery.owner && item.startTime === recovery.startTime)) return;
+    sprintState = { ...sprintState, recoveryWaits: [...existing, recovery] };
+    persistSprintState();
+  };
+  const recoveryAction = (item: RecoveryWait) => item.kind === "cap"
+    ? `Kill ${shorten(item.owner, 24)}; reassign ${actionTarget(item.row, 42)} before wait.`
+    : `Kill ${shorten(item.owner, 48)} or get its new receipt before wait.`;
+  const recoveryNotice = (item: RecoveryWait) => prompt.render(gateNoticeInstructions, {
+    recovery: true, action: recoveryAction(item), owner: item.owner, recoveryCap: item.kind === "cap",
+  }).trim();
+  const activeRecoveries = (ctx: ExtensionContext, pending: unknown[] = []) => {
+    const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending));
+    const tasks = phases.flatMap(phase => phase.tasks);
+    const jobs = ctx.getAsyncJobSnapshot();
+    const previous = sprintState.recoveryWaits ?? [];
+    const kept = previous.flatMap((item): RecoveryWait[] => {
+      const row = tasks.find(task => task.content === item.row);
+      const matches = (job: Jobs["running"][number]) => job.type === "task" && (job.id === item.owner || job.agentId === item.owner);
+      const running = jobs?.running.some(job => matches(job) && job.status === "running");
+      const killed = item.killed || jobs?.recent.some(job => matches(job) && job.status === "cancelled" && (job.endTime ?? 0) > item.at);
+      if (item.kind === "cap") {
+        if (!row || !isNonClosedRowStatus(row.status)) return [];
+        if (killed && !running && row.schedule?.owner && row.schedule.owner !== item.owner) return [];
+      } else {
+        if (killed && !running) return [];
+        const received = item.received || jobs?.recent.some(job => matches(job) && (job.status === "completed" || job.status === "failed") && (job.endTime ?? 0) > item.at)
+          || (workerTrace(ctx, item.owner).receiptAt ?? 0) > item.at;
+        // Retain the acknowledged escalation for this attempt so the next tick cannot rearm it.
+        if (received) return running ? [{ ...item, received: true }] : [];
+      }
+      return [{ ...item, ...(killed ? { killed: true } : {}) }];
+    });
+    if (JSON.stringify(kept) !== JSON.stringify(previous)) {
+      sprintState = { ...sprintState, recoveryWaits: kept };
+      persistSprintState();
+    }
+    return kept.filter(item => !item.received);
+  };
   const announceGates = (ctx: ExtensionContext, pending: unknown[] = [], now = Date.now(), measured?: DispatchDecision) => {
     if (singleWriterLane || !isMain(ctx) || typeof pi.sendMessage !== "function" || typeof pi.appendEntry !== "function") return;
     const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending));
@@ -2970,6 +3017,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const tasks = [...new Set(getTodoPlanningIssues(phases).map(issue => issue.task))];
     if (tasks.length) notice("schedule", JSON.stringify(tasks), { schedule: true, rows: tasks.map(task => JSON.stringify(task)).join(", "), tasks });
     if (pauseGate?.paused || gateSwitchedOff(ctx)) return;
+    for (const item of activeRecoveries(ctx, pending)) notice("recovery", JSON.stringify([item.kind, item.row, item.owner, item.at]), {
+      recovery: true, action: recoveryAction(item), owner: item.owner, recoveryCap: item.kind === "cap",
+    });
     const decision = measured ?? currentDecision(ctx, now, pending);
     const rows = decision.dispatchableReady ?? [];
     if (rows.length) notice("staffing", JSON.stringify(rows.map(row => [row.content, row.owner, row.ownership])), {
@@ -3538,6 +3588,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const wrote: string[] = [];
     const repos: string[] = [];
     let lastTool = "none";
+    let receiptAt: number | undefined;
     const rememberRepo = (dir: string | undefined) => {
       const root = dir && isAbsolute(dir) ? gitRootOf(dir) : undefined;
       if (root && !repos.includes(root)) repos.push(root);
@@ -3577,7 +3628,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         }
         const message = (entry as { message?: unknown }).message;
         if (!message || typeof message !== "object") continue;
-        const msg = message as { role?: unknown; toolName?: unknown; content?: unknown };
+        const msg = message as { role?: unknown; toolName?: unknown; content?: unknown; timestamp?: unknown; isError?: unknown };
+        if (msg.role === "toolResult" && msg.toolName === "yield" && msg.isError !== true && typeof msg.timestamp === "number")
+          receiptAt = Math.max(receiptAt ?? 0, msg.timestamp);
         if (msg.role === "toolResult") observeTool(msg.toolName, {});
         if (!Array.isArray(msg.content)) continue;
         for (const part of msg.content) {
@@ -3587,7 +3640,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         }
       }
     } catch {}
-    return { lastTool, wrote: wrote.slice(-4), repos };
+    return { lastTool, wrote: wrote.slice(-4), repos, receiptAt };
   };
   // The worker's own worktrees: git roots it edited, added or committed in. The session cwd is the lead's
   // checkout and only stands in when the worker has not touched any other repository.
@@ -4005,21 +4058,37 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           runningProfiles.set(job.agentId ?? job.id, profile);
           if (typeof candidate.startTime === "number") runningStartedAt.set(job.agentId ?? job.id, candidate.startTime);
         }
+        const rows = currentDecision(ctx, Date.now(), [], true, true).forecast?.rows ?? [];
+        const updates = todoScheduleUpdates(event.input);
         const slip = slipReestimateRefusal({
-          updates: todoScheduleUpdates(event.input),
-          rows: currentDecision(ctx, Date.now(), [], true, true).forecast?.rows ?? [],
+          updates,
+          rows,
           runningProfiles,
           runningStartedAt,
           now: Date.now(),
         });
         if (slip) {
+          for (const row of rows) {
+            if (row.reestimateCount < 2 || !row.owner) continue;
+            if (slipReestimateRefusal({ updates, rows: [row], runningProfiles, runningStartedAt, now: Date.now() }) === slip) {
+              requireRecovery(ctx, { kind: "cap", row: row.content, owner: row.owner, at: Date.now(), startTime: runningStartedAt.get(row.owner) });
+              break;
+            }
+          }
+          announceGates(ctx);
           gateTrace(ctx, "slip-reestimate-refused", {});
           return { block: true, reason: slip };
         }
       }
     }
     if (event.toolName === "task" && taskItems(event.input).some((item) => item["agent"] === "retro-facilitator")) resetDemand("retro");
-    if (event.toolName === "wait") return blockIdleWait(ctx);
+    if (event.toolName === "wait") {
+      if (isMain(ctx) && !pauseGate?.paused) {
+        const recovery = activeRecoveries(ctx)[0];
+        if (recovery) return { block: true, reason: recoveryNotice(recovery) };
+      }
+      return blockIdleWait(ctx);
+    }
     if (event.toolName === "task") chiefRefusals = 0;
     const rerouted = rerouteSettledWorkerWrite(event as { toolName: string; input?: unknown }, ctx);
     if (rerouted) return rerouted;
@@ -4229,6 +4298,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const age = activityByName.get(id)?.ageMs;
       return { id, row, label, trace, age, p95Text };
     });
+    let escalated = false;
     const staleWorkers = workerInfos.flatMap(({ id, row, label, trace }) => {
       const job = running.find(candidate => (candidate.agentId ?? candidate.id) === id);
       const startTime = job?.startTime;
@@ -4250,8 +4320,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         return [];
       }
       noCommitWarnings.add(id);
+      if (elapsed >= 60 * 60_000) {
+        requireRecovery(ctx, { kind: "stuck", row: row?.content ?? label, owner: id, at: now, startTime });
+        escalated = true;
+      }
       return [`suspect: ${label} · ${id} · ${minutesOld} · ${trace.lastTool}${filesStale && !commitStale ? ` · no file change in its worktree for ${Math.floor((now - filesAt!) / 60_000)} min` : ""}${stuckFor ? ` (${stuckFor})` : ""}; write agent://${id} asking for done/left with a receipt, or stop it`];
     });
+    if (escalated) announceGates(ctx, pending, now, decision);
     for (const id of noCommitWarnings) {
       if (running.some(job => (job.agentId ?? job.id) === id)) continue;
       AgentRegistry.global().setWorktreeWarning(id, undefined);
@@ -4544,6 +4619,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     healPlanTicker(ctx);
     await refreshLiveWorkerModels(ctx);
     if (singleWriterLane) return;
+    if (!event.isError && isMain(ctx)) {
+      const cancelled = (event.details as { proc?: { op?: string; cancelled?: Array<{ id: string; status: string }> } } | undefined)?.proc;
+      if (cancelled?.op === "cancel" && cancelled.cancelled?.some(item => item.status === "cancelled")) {
+        sprintState = { ...sprintState, recoveryWaits: (sprintState.recoveryWaits ?? []).map(item =>
+          cancelled.cancelled!.some(outcome => outcome.id === item.owner && outcome.status === "cancelled") ? { ...item, killed: true } : item) };
+        persistSprintState();
+      }
+    }
     if (event.content?.some((part) => part.type === "text" && part.text.startsWith("Blocked:"))) {
       setRetroDue("gate rejection");
       persistSprintState();

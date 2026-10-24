@@ -9,3 +9,5 @@ No overlapping writer can start until it settles; use another row with disjoint 
 {{#if missed}}Ask the user for a new time or /deadline close before adding task or TODO work.{{else}}After it passes, task and new TODO work require a newer user time or /deadline close.{{/if}}{{/if}}
 {{#if completion}}{{action}}
 Goal completion is refused until every TODO row is closed with evidence or explicit user disposition.{{/if}}
+{{#if recovery}}{{action}}
+Main wait will be refused until {{#if recoveryCap}}proc://{{owner}}/kill succeeds and the row has a different owner or is split, or the row is closed/dropped{{else}}proc://{{owner}}/kill succeeds or this worker returns a result/yield newer than the escalation; a lead check-in is not a receipt{{/if}}.{{/if}}

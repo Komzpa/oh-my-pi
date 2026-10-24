@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- Refuse main-session wait after a capped reestimate or a 60-minute stuck-worker escalation until the required recovery or fresh worker receipt ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Put gate recovery actions first and announce scheduling, staffing, ETA, reestimate, reply, and writer constraints before refusal ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Main sessions must reply to the latest human message before waiting or ending an empty turn ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
