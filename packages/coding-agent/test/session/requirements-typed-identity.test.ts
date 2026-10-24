@@ -138,7 +138,9 @@ interface Harness {
 	manager: SessionManager;
 	classifyResult: TodoToolResult;
 	/** Real auditor dispatch preparation for the assigned row. */
-	prepare(row: string): Promise<unknown>;
+	prepare(row: string, requirementIds?: string[]): Promise<unknown>;
+	remove(row: string): Promise<TodoToolResult>;
+	append(row: string): Promise<TodoToolResult>;
 	/** Real auditor receipt intake, fed one receipt table. */
 	receive(artifact: string, rawWords?: string): Promise<unknown>;
 	/** Persist a schedule/evidence edit through the saved TODO history. */
@@ -212,7 +214,7 @@ async function harness(
 		cwd,
 		manager,
 		classifyResult,
-		async prepare(row) {
+		async prepare(row, requirementIds) {
 			const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
 			for (const task of phases.flatMap(phase => phase.tasks)) {
 				const schedule =
@@ -223,6 +225,7 @@ async function harness(
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 			return runtime.prepareAuditorTaskCall("task", AUDIT_CALL, {
 				name: mappedCwd ? "main" : "AuditTyped-1",
+				...(requirementIds ? { requirementIds } : {}),
 				agent: "qa-auditor",
 				task: `Audit R1 for ${row}`,
 				context: "",
@@ -251,6 +254,12 @@ async function harness(
 			Object.assign(task, { schedule: { ...schedule, estimate: 25, evidence: "schedule-review" } });
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 		},
+		async append(row) {
+			return tool.execute("append-typed", { op: "append", phase: "Release", items: [row] } as never);
+		},
+		async remove(row) {
+			return tool.execute("remove-typed", { op: "rm", task: row } as never);
+		},
 		async done(label, row) {
 			return tool.execute(`done-${label}`, { op: "done", task: row } as never);
 		},
@@ -264,6 +273,69 @@ function verdictOf(fx: Harness, row: string) {
 function statusOf(fx: Harness, row: string) {
 	return getLatestTodoPhasesFromEntries(fx.manager.getBranch())[0]?.tasks.find(task => task.content === row)?.status;
 }
+
+describe("QA scope after linked rows leave the active plan", () => {
+	it("audits and closes the third row after two completed siblings are pruned, preserving requirement history", async () => {
+		const rows = ["Profile whole graph", "Measure candidate PRs", "Render whole graph"];
+		const file = path.join(tempDir("omp-pruned-siblings-"), "artifact.txt");
+		fs.writeFileSync(file, "whole graph evidence\n");
+		const fx = await harness(rows, { resources: [file] });
+		expect(fx.classifyResult.isError).not.toBe(true);
+		const linked = getLatestRequirements(fx.manager.getBranch())[0]!;
+		const amendments = [{ at: AT, oldRows: [rows[0]!], newRows: rows, reason: "Split delivery into three rows" }];
+		appendRequirementsSnapshot({ appendEntry: (type, data) => fx.manager.appendCustomEntry(type, data) }, [
+			{ ...linked, amendments },
+		]);
+		for (const row of rows.slice(0, 2)) {
+			await fx.prepare(row);
+			expect(await fx.receive(artifactCell(row, [fileId(file)]))).toBeUndefined();
+			expect((await fx.done("sibling", row)).isError).not.toBe(true);
+			expect(statusOf(fx, row)).toBe("completed");
+			const saved = getLatestRequirements(fx.manager.getBranch())[0]!;
+			expect((await fx.remove(row)).isError).not.toBe(true);
+			expect(statusOf(fx, row)).toBeUndefined();
+			expect(getLatestRequirements(fx.manager.getBranch())[0]).toEqual(saved);
+		}
+		const beforeAudit = getLatestRequirements(fx.manager.getBranch())[0]!;
+		const remaining = rows[2]!;
+		const blocked = await fx.done("before-audit", remaining);
+		expect(blocked.isError).toBe(true);
+		expect(textOf(blocked)).toContain(`requirement R1 has no verdict for row "${remaining}"`);
+		const prepared = await fx.prepare(remaining, ["R1"]);
+		expect(containsText(prepared, artifactCell(remaining, [fileId(file)]))).toBe(true);
+		for (const row of rows.slice(0, 2)) expect(containsText(prepared, `R1 row "${row}"`)).toBe(false);
+		expect(await fx.receive(artifactCell(remaining, [fileId(file)]))).toBeUndefined();
+		expect((await fx.done("third", remaining)).isError).not.toBe(true);
+		expect(statusOf(fx, remaining)).toBe("completed");
+		const afterAudit = getLatestRequirements(fx.manager.getBranch())[0]!;
+		expect(afterAudit.rows).toEqual(rows);
+		expect(afterAudit.amendments).toEqual(amendments);
+		for (const row of rows.slice(0, 2)) {
+			expect(afterAudit.rowVerdicts?.[row]).toEqual(beforeAudit.rowVerdicts?.[row]);
+			expect(afterAudit.rowVerdicts?.[row]?.status).toBe("pass");
+		}
+	});
+
+	it("rejects an audit whose only linked row was removed and gives the exact restore command", async () => {
+		const file = path.join(tempDir("omp-missing-audit-row-"), "artifact.txt");
+		fs.writeFileSync(file, "release evidence\n");
+		const fx = await harness([ROW], { resources: [file] });
+		await fx.prepare(ROW);
+		expect(await fx.receive(artifactCell(ROW, [fileId(file)]))).toBeUndefined();
+		expect((await fx.done("only", ROW)).isError).not.toBe(true);
+		expect((await fx.remove(ROW)).isError).not.toBe(true);
+		expect(statusOf(fx, ROW)).toBeUndefined();
+		await expect(fx.prepare(ROW, ["R1"])).rejects.toThrow(
+			`QA requirement scope R1 has no live linked Todo rows for requested audit rows ${JSON.stringify([ROW])}; missing rows: ${JSON.stringify([ROW])}. Restore them with todo op="append", phase="Release", items=${JSON.stringify([ROW])}, then retry the audit`,
+		);
+		expect((await fx.append(ROW)).isError).not.toBe(true);
+		await fx.prepare(ROW, ["R1"]);
+		expect(await fx.receive(artifactCell(ROW, [fileId(file)]))).toBeUndefined();
+		expect((await fx.done("restored", ROW)).isError).not.toBe(true);
+		expect(statusOf(fx, ROW)).toBe("completed");
+		expect(getLatestRequirements(fx.manager.getBranch())[0]?.rows).toEqual([ROW]);
+	});
+});
 
 describe("typed identity: accepted receipts", () => {
 	it("P1 accepts a typed deploy receipt from a live Bun HTTP version endpoint after its owner is gone", async () => {

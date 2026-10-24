@@ -932,6 +932,11 @@ export function getRequirementVerdictStaleness(
 	return null;
 }
 
+/** Linked rows intersected with this consumer's Todo rows; pruned siblings retain their ledger history. */
+export function getLinkedRequirementRows(requirement: RequirementLedgerItem, rows: readonly string[]): string[] {
+	return requirement.classification === "linked" ? requirement.rows.filter(row => rows.includes(row)) : [];
+}
+
 export interface RequirementDoneGateIssue {
 	requirement: RequirementLedgerItem;
 	issues: string[];
@@ -971,8 +976,7 @@ export async function evaluateRequirementDoneGate(
 			open.push({ requirement, issues: [issue], awaitingUserIssues: [issue], auditRows });
 			continue;
 		}
-		for (const row of requirement.rows) {
-			if (!targets.has(row)) continue;
+		for (const row of getLinkedRequirementRows(requirement, rows)) {
 			const verdict = getRequirementRowVerdict(requirement, row);
 			const sourceIssue = verdict ? getRequirementVerdictSourceIssue(requirement, row, verdict) : undefined;
 			const receipt = !sourceIssue && verdict?.status === "pass" ? verdict.artifact : undefined;
@@ -1021,7 +1025,7 @@ export async function evaluateRequirementDoneGate(
 					auditRows.push({
 						row,
 						ids: requirements
-							.filter(item => item.classification === "linked" && item.rows.includes(row))
+							.filter(item => getLinkedRequirementRows(item, [row]).length > 0)
 							.map(item => item.id),
 						artifact: current,
 					});

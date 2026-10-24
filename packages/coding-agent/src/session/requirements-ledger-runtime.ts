@@ -21,6 +21,7 @@ import {
 	formatRequirementGateNotice,
 	formatRequirementPublicationStatus,
 	getLatestRequirements,
+	getLinkedRequirementRows,
 	getUnclassifiedRequirementCandidates,
 	getPersistedRequirementAuditorAssignments,
 	getPersistedRequirementAuditRejections,
@@ -248,21 +249,23 @@ export class RequirementsLedgerRuntime {
 			if (item.requirementIds !== undefined) {
 				if (!Array.isArray(item.requirementIds) || item.requirementIds.length === 0)
 					throw new Error("QA requirementIds must be a nonempty array of linked requirement IDs");
-				const rows = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
+				const rows = phases.flatMap(phase => phase.tasks.map(task => task.content));
 				return [
 					...new Set(
 						item.requirementIds.flatMap(id => {
 							const requirement = requirements.find(requirement => requirement.id === id);
-							if (
-								!requirement ||
-								requirement.classification !== "linked" ||
-								requirement.rows.length === 0 ||
-								requirement.rows.some(row => !rows.has(row))
-							)
+							if (!requirement || requirement.classification !== "linked" || requirement.rows.length === 0)
 								throw new Error(
-									`QA requirement scope ${String(id)} must reference a linked requirement with existing Todo rows`,
+									`QA requirement scope ${String(id)} is not a linked requirement with Todo rows; active audit rows: ${JSON.stringify(rows)}; missing rows: ${JSON.stringify(requirement?.rows.filter(row => !rows.includes(row)) ?? [])}. Inspect the ledger with todo op="read", then retry with a linked requirement ID`,
 								);
-							return requirement.rows;
+							const linkedRows = getLinkedRequirementRows(requirement, rows);
+							if (linkedRows.length === 0) {
+								const missingRows = requirement.rows.filter(row => !rows.includes(row));
+								throw new Error(
+									`QA requirement scope ${String(id)} has no live linked Todo rows for requested audit rows ${JSON.stringify(requirement.rows)}; missing rows: ${JSON.stringify(missingRows)}. Restore them with todo op="append", phase=${JSON.stringify(phases[0]?.name ?? "QA recovery")}, items=${JSON.stringify(missingRows)}, then retry the audit`,
+								);
+							}
+							return linkedRows;
 						}),
 					),
 				];
@@ -284,10 +287,8 @@ export class RequirementsLedgerRuntime {
 			return requirements
 				.filter(
 					requirement =>
-						requirement.classification === "linked" &&
-						(explicitIds
-							? explicitIds.includes(requirement.id)
-							: requirement.rows.some(row => assignedRows.includes(row))),
+						(!explicitIds || explicitIds.includes(requirement.id)) &&
+						getLinkedRequirementRows(requirement, assignedRows).length > 0,
 				)
 				.map(requirement => requirement.id);
 		});
@@ -355,8 +356,7 @@ export class RequirementsLedgerRuntime {
 			}
 			for (const id of ids) {
 				const requirement = requirements.find(candidate => candidate.id === id)!;
-				for (const row of requirement.rows) {
-					if (!assignedRows.includes(row)) continue;
+				for (const row of getLinkedRequirementRows(requirement, assignedRows)) {
 					const artifact = await bindRequirementRowArtifact(
 						{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager, signal },
 						row,
