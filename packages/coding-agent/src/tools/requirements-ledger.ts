@@ -27,7 +27,13 @@ export function prepareAwaitingUserCheck(
 	if (entry.op !== "block" && entry.op !== "unblock") return true;
 	const action = entry.awaitingUser?.action.trim();
 	if (entry.op === "block" && entry.awaitingUser && !action) {
-		errors.push("awaitingUser requires the exact action the user must take");
+		const row = entry.task ?? entry.phase ?? "the target row";
+		errors.push(
+			formatRequirementActionRefusal(
+				`Add the exact user action before blocking ${JSON.stringify(row)}.`,
+				"awaitingUser requires the exact action the user must take.",
+			),
+		);
 		return false;
 	}
 	if (entry.op === "block" && action && !entry.reason?.replace(/\s+/g, " ").trim()) entry.reason = action;
@@ -418,6 +424,12 @@ export interface ClassifyRequirementOptions {
 
 export type ClassifyRequirementResult = { requirements: RequirementLedgerItem[] } | { error: string };
 
+/** Keep the actionable instruction visible in the one-line todo preview. */
+export function formatRequirementActionRefusal(action: string, details: string): string {
+	const firstLine = action.length <= 100 ? action : `${action.slice(0, 97).trimEnd()}...`;
+	return `${firstLine}\n${details}`;
+}
+
 /** Classify once, or record a reasoned transition authorized by a newer owner statement. */
 export function classifyRequirement(
 	requirements: readonly RequirementLedgerItem[],
@@ -429,7 +441,10 @@ export function classifyRequirement(
 	const sourceIndex = requirements.findIndex(requirement => requirement.id === id);
 	if (sourceIndex < 0)
 		return {
-			error: `Blocked: requirement ${id} is unknown. No classify call can target it; call todo op="view" to list current requirements and rows, then ${classifyForm}`,
+			error: formatRequirementActionRefusal(
+				`View requirements, then classify ${id}.`,
+				`Requirement ${id} is unknown. No classify call can target it; call todo op="view" to list current requirements and rows, then ${classifyForm}`,
+			),
 		};
 	const source = requirements[sourceIndex]!;
 	const superseding =
@@ -450,7 +465,10 @@ export function classifyRequirement(
 			!options.reason?.trim()
 		) {
 			return {
-				error: `Blocked: changing ${id} requires supersededBy="<newer owner Rn>" and a nonblank reason; cite an existing owner statement strictly newer than the original requirement and its last superseding statement. Candidate requirements must be classified normally.`,
+				error: formatRequirementActionRefusal(
+					`Cite a newer owner requirement to change ${id}.`,
+					`Changing ${id} requires supersededBy="<newer owner Rn>" and a nonblank reason; cite an existing owner statement strictly newer than the original requirement and its last superseding statement. Candidate requirements must be classified normally.`,
+				),
 			};
 		}
 	}
@@ -466,12 +484,18 @@ export function classifyRequirement(
 		new RegExp(`\\b${id}\\b`).test(restatementTarget.rawText);
 	if (source.classification !== "candidate" && !resolvesImage && !superseding) {
 		return {
-			error: `Blocked: ${id} has already been classified as ${source.classification}; a classification change requires supersededBy="<newer owner Rn>" and a nonblank reason. Use relink=true with a reason only for linked -> linked row changes`,
+			error: formatRequirementActionRefusal(
+				`Cite a newer owner requirement to change ${id}.`,
+				`${id} has already been classified as ${source.classification}; a classification change requires supersededBy="<newer owner Rn>" and a nonblank reason. Use relink=true with a reason only for linked -> linked row changes`,
+			),
 		};
 	}
 	if (classification === "not-a-requirement" && !options.reason?.trim()) {
 		return {
-			error: `Blocked: classifying ${id} ("${source.rawText}") as not-a-requirement requires a reason. Call todo with op="classify", id="${id}", classification="not-a-requirement", reason="<why this is not a requirement>". Then retry`,
+			error: formatRequirementActionRefusal(
+				`Add a reason to classify ${id} as not a requirement.`,
+				`Classifying ${id} ("${source.rawText}") as not-a-requirement requires a reason. Call todo with op="classify", id="${id}", classification="not-a-requirement", reason="<why this is not a requirement>". Then retry`,
+			),
 		};
 	}
 
@@ -494,7 +518,10 @@ export function classifyRequirement(
 			options.rows.some(row => typeof row !== "string" || row.trim() === "")
 		) {
 			return {
-				error: `Blocked: linking ${id} ("${source.rawText}") requires at least one TODO row. Call todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"]. When no matching row exists yet, first create it with todo op="append", items=["<exact todo row>"] (or op="init"), then retry the classify call`,
+				error: formatRequirementActionRefusal(
+					`Link ${id} to an exact TODO row.`,
+					`Linking ${id} ("${source.rawText}") requires at least one TODO row. Call todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"]. When no matching row exists yet, first create it with todo op="append", items=["<exact todo row>"] (or op="init"), then retry the classify call`,
+				),
 			};
 		}
 		updatedSource.rows = [...new Set(options.rows)];
@@ -504,13 +531,19 @@ export function classifyRequirement(
 		const mergeInto = options.mergeInto;
 		if (!mergeInto || mergeInto === id) {
 			return {
-				error: `Blocked: merging ${id} ("${source.rawText}") requires a different existing Rn in mergeInto. ${formatMergeRecovery(source, requirements)}. Then retry`,
+				error: formatRequirementActionRefusal(
+					`Choose another requirement as the merge target for ${id}.`,
+					`Merging ${id} ("${source.rawText}") requires a different existing Rn in mergeInto. ${formatMergeRecovery(source, requirements)}. Then retry`,
+				),
 			};
 		}
 		let targetIndex = next.findIndex(requirement => requirement.id === mergeInto);
 		if (targetIndex < 0)
 			return {
-				error: `Blocked: unknown merge target ${mergeInto} for ${id}. ${formatMergeRecovery(source, requirements)}. Then retry`,
+				error: formatRequirementActionRefusal(
+					`Choose an existing merge target for ${id}.`,
+					`Unknown merge target ${mergeInto} for ${id}. ${formatMergeRecovery(source, requirements)}. Then retry`,
+				),
 			};
 		// A target merged earlier in this or a previous call resolves to the active
 		// requirement it points at, so batched classify calls are order independent.
@@ -523,7 +556,10 @@ export function classifyRequirement(
 		const target = next[targetIndex]!;
 		if (target.id === id || target.classification === "merged") {
 			return {
-				error: `Blocked: merge target ${mergeInto} does not resolve to an active requirement. ${formatMergeRecovery(source, requirements)}. Then retry`,
+				error: formatRequirementActionRefusal(
+					`Choose an active merge target for ${id}.`,
+					`Merge target ${mergeInto} does not resolve to an active requirement. ${formatMergeRecovery(source, requirements)}. Then retry`,
+				),
 			};
 		}
 		if (target.classification === "not-a-requirement") {
@@ -602,20 +638,32 @@ function relinkRequirement(
 	const relinkForm = `todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"], relink=true, reason="<why the rows change>"`;
 	if (classification !== "linked")
 		return {
-			error: `Blocked: relink=true only relinks linked -> linked for ${id}; classification="${classification}" cannot relink. Call ${relinkForm}`,
+			error: formatRequirementActionRefusal(
+				`Use linked classification to relink ${id}.`,
+				`relink=true only relinks linked -> linked for ${id}; classification="${classification}" cannot relink. Call ${relinkForm}`,
+			),
 		};
 	if (source.classification !== "linked")
 		return {
-			error: `Blocked: relink=true requires ${id} to already be linked; it is ${source.classification}. Classify it normally first, then call ${relinkForm}`,
+			error: formatRequirementActionRefusal(
+				`Classify ${id} as linked before relinking it.`,
+				`relink=true requires ${id} to already be linked; it is ${source.classification}. Classify it normally first, then call ${relinkForm}`,
+			),
 		};
 	const reason = options.reason?.trim();
 	if (!reason)
 		return {
-			error: `Blocked: relinking ${id} ("${source.rawText}") requires a reason. Call ${relinkForm}. Then retry`,
+			error: formatRequirementActionRefusal(
+				`Add a reason to relink ${id}.`,
+				`Relinking ${id} ("${source.rawText}") requires a reason. Call ${relinkForm}. Then retry`,
+			),
 		};
 	if (!options.rows?.length || options.rows.some(row => typeof row !== "string" || row.trim() === ""))
 		return {
-			error: `Blocked: relinking ${id} ("${source.rawText}") requires at least one TODO row; relink cannot unlink to zero rows. Call ${relinkForm}. When no matching row exists yet, first create it with todo op="append", items=["<exact todo row>"] (or op="init"), then retry`,
+			error: formatRequirementActionRefusal(
+				`Link ${id} to a replacement TODO row.`,
+				`Relinking ${id} ("${source.rawText}") requires at least one TODO row; relink cannot unlink to zero rows. Call ${relinkForm}. When no matching row exists yet, first create it with todo op="append", items=["<exact todo row>"] (or op="init"), then retry`,
+			),
 		};
 	const oldRows = [...source.rows];
 	const newRows = [...new Set(options.rows)];
@@ -1505,7 +1553,6 @@ export function formatRequirementGateNotice(
 ): string {
 	const details = new Map<string, string>();
 	const lines: string[] = [];
-	const actions = new Set<string>();
 	for (const { requirement, issues, awaitingUser } of open) {
 		const candidate = requirement.classification === "candidate";
 		const status = candidate
@@ -1513,13 +1560,6 @@ export function formatRequirementGateNotice(
 			: awaitingUser
 				? "awaiting user check"
 				: "needs qa-auditor pass at current row head";
-		actions.add(
-			candidate
-				? "classify candidate IDs with todo"
-				: awaitingUser
-					? "await user checks"
-					: "request one qa-auditor pass covering the audit IDs above",
-		);
 		const refs = new Set<string>();
 		for (const issue of issues) {
 			const staleReason = issue.split("freshness check failed: ")[1]?.split("; resolved checkout: ")[0];
@@ -1546,11 +1586,18 @@ export function formatRequirementGateNotice(
 		}
 		lines.push(`${requirement.id}: ${status}${refs.size ? ` [${[...refs].join(",")}]` : ""}`);
 	}
-	const prefix = [
-		"Blocked: requested work is not audit-verified.",
-		...[...details].map(([detail, id]) => `${id}: ${detail}`),
-	];
-	const action = `Next: ${[...actions].join("; ")}.`;
+	const prefix = [...details].map(([detail, id]) => `${id}: ${detail}`);
+	const first = open[0]!;
+	const rowMatch = /\(("(?:\\.|[^"\\])*")\):/.exec(first.issues[0] ?? "");
+	const row = rowMatch?.[1];
+	const more = open.length > 1 ? ` (+${open.length - 1} more below)` : "";
+	const actionText =
+		first.requirement.classification === "candidate"
+			? `Classify ${first.requirement.id}${more} before closing ${row ?? "its row"}.`
+			: first.awaitingUser
+				? `Complete the user check for ${first.requirement.id}${more} before closing ${row ?? "its row"}.`
+				: `Re-audit ${first.requirement.id}${more} before closing ${row ?? "its row"}.`;
+	const action = formatRequirementActionRefusal(actionText, "").split("\n", 1)[0]!;
 	let count = lines.length;
 	while (
 		count > 0 &&
@@ -1565,15 +1612,15 @@ export function formatRequirementGateNotice(
 	)
 		count--;
 	while (
-		prefix.length > 1 &&
+		prefix.length > 0 &&
 		Buffer.byteLength([...prefix, ...lines.slice(0, count), action, `+${lines.length - count} more`].join("\n")) >
 			1500
 	)
 		prefix.pop();
 	return [
+		action,
 		...prefix,
 		...lines.slice(0, count),
-		action,
 		...(count < lines.length ? [`+${lines.length - count} more`] : []),
 	].join("\n");
 }
@@ -1606,5 +1653,25 @@ export function formatDoneGateRefusal(open: readonly RequirementDoneGateIssue[])
 		const task = `Audit exact requirement IDs ${ids} for TODO row ${JSON.stringify(row)} at its current artifact (${formatRequirementGateArtifact(retry.artifact, row)}). Return one table row per exact ID; do not append letter suffixes.`;
 		return `agent="qa-auditor", task=${JSON.stringify(task)}`;
 	});
-	return `Blocked: todo done is blocked until every linked requirement has a fresh qa-auditor pass for this row artifact: ${issues.join("; ")}.${calls.length ? ` Request one fresh audit per row: ${calls.join("; ")}.` : ""} Then retry todo with op="done", task="<exact row>" (or op="done", items=["<row1>", ...])`;
+	const first = open[0]!;
+	const firstIssue = first.issues[0] ?? "";
+	const count = new Set(open.map(item => item.requirement.id)).size;
+	const more = count > 1 ? ` (+${count - 1} more below)` : "";
+	const unavailable = /identity unavailable|checkout mapping unavailable|unknown row|unresolved artifact/.test(
+		firstIssue,
+	);
+	const actionText =
+		first.requirement.classification === "candidate"
+			? `Classify ${first.requirement.id}${more}; then retry done.`
+			: first.awaitingUserIssues.length > 0
+				? `Complete the user check for ${first.requirement.id}${more}; then retry done.`
+				: unavailable
+					? `Restore or bind the artifact for ${first.requirement.id}${more}; then retry done.`
+					: `Re-audit ${first.requirement.id}${more}; then retry done.`;
+	const row = /\(("(?:\\.|[^"\\])*"),?\):/.exec(firstIssue)?.[1] ?? "<row>";
+	const classifications = open
+		.filter(item => item.requirement.classification === "candidate")
+		.map(item => formatClassifyCall(item.requirement, []));
+	const details = `${classifications.length ? `Classify first: ${classifications.join("; ")}. ` : ""}Linked requirements need a fresh qa-auditor pass bound to each row artifact: ${issues.join("; ")}.${calls.length ? ` Request one fresh audit per row: ${calls.join("; ")}.` : ""} Then retry todo with op="done", task=${row} (or op="done", items=["<row1>", ...]).`;
+	return formatRequirementActionRefusal(actionText, details);
 }

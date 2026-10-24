@@ -11,7 +11,9 @@ The requirement ledger extends the [todo tool](todo.md) with classification, aut
 
 ## Same-turn requirement classification
 
-Every new main-session user message that creates an unclassified requirement candidate gates mutating tool calls in that same turn; the `todo` tool remains available to classify it. Bare approval replies are exempt: a message that is only `go`, `ok`, `да`, or `продолжай` (whitespace-normalized) with no images is ignored, creating no requirement or gate and allocating no requirement ID.
+Every new main-session user message that creates unclassified candidates announces their IDs and the classify call before the next model turn. Candidates hold completion and publication until classified; ordinary work and task dispatch remain available. Bare approval replies create no unclassified candidate.
+
+Linking or starting a linked row announces the required artifact-bound QA pass and audit call. A changed artifact makes its saved pass stale and announces the re-audit. Before completion, removal, or plan replacement, notices explain that requirement links, verdicts, and amendment history remain in the ledger. Identical state notices are deduplicated across reloads. Each notice uses at most two lines; each refusal starts with a concrete next action of at most 100 characters, followed by its reason and full retry call.
 
 An already-classified requirement can change only when the owner has supplied a newer canonical requirement statement. Use `op="classify", id="R5", classification="not-a-requirement", supersededBy="R14", reason="R14 cancels the fold rows"`. The superseding statement must be strictly newer than R5 and the last owner statement used to supersede it; missing, self, unknown, equal/older, reused IDs and blank reasons refuse without writing. The transition appends history with old/new classifications and rows, reason, timestamp, and superseding ID; original words and earlier snapshots remain intact. Cancelled requirements no longer gate completion or publication; reactivation requires newer owner authority and fresh QA. Ordinary same-class `relink=true` keeps its existing reasoned row-change contract.
 

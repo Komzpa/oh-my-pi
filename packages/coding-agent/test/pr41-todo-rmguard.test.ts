@@ -162,6 +162,11 @@ describe("requirement-linked TODO removal guard", () => {
 			release.resolve();
 			const result = await completing;
 			expect(result.isError).toBe(true);
+			const text = result.content.find(item => item.type === "text")?.text ?? "";
+			const firstLine = text.split("\n", 1)[0]!;
+			expect(firstLine.length).toBeLessThanOrEqual(100);
+			expect(firstLine).toContain(LINKED_ROW);
+			expect(firstLine).toContain("Retry done");
 			expect(phases().flatMap(phase => phase.tasks.map(task => [task.content, task.status]))).toEqual([
 				[LINKED_ROW, "in_progress"],
 				["Unlinked neighbor", "pending"],

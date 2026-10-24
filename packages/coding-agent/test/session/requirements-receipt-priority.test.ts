@@ -285,7 +285,7 @@ describe("receipt priority #924: real runtime intake", () => {
 			if (defect === "nonhex digest") malformed = `${identity.slice(0, -1)}z`;
 			if (defect === "wrong label") malformed = identity.replace("@sha256=", "@SHA256=");
 			if (defect === "file attribute") malformed = `${identity} paths=["artifact.txt"]`;
-			expect(refusalText(await fx.receive(receipt(malformed)))).toContain("Blocked");
+			expect(refusalText(await fx.receive(receipt(malformed)))).toContain("requirements receipt rejected");
 			expect(fx.verdict()).toEqual(prior);
 		});
 	}
@@ -332,7 +332,7 @@ describe("receipt priority #924: real runtime intake", () => {
 			if (defect === "suffix")
 				output += `\n| R42a | ${requirementSourceDigest(RAW42)} | pass | inspected | row "${ROW}" @ ${artifact} |`;
 			const result = await fx.receive(output);
-			expect(refusalText(result)).toContain("Blocked");
+			expect(refusalText(result)).toContain("requirements receipt rejected");
 			expect(fx.verdict()).toEqual(prior);
 		});
 	}
@@ -343,7 +343,7 @@ describe("receipt priority #924: real runtime intake", () => {
 		writeFileSync(fx.file, "newer artifact\n");
 		expect(await fx.receive(receipt(fx.identity(), "fail"))).toBeUndefined();
 		const newerFail = fx.verdict();
-		expect(refusalText(await fx.receive(receipt(old)))).toContain("Blocked");
+		expect(refusalText(await fx.receive(receipt(old)))).toContain("requirements receipt rejected");
 		expect(fx.verdict()).toEqual(newerFail);
 	});
 

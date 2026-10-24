@@ -4436,7 +4436,7 @@ export class AgentSession implements SettingsScope {
 			if (event.message.role === "user" && event.message.attribution === "user") {
 				const rawText = this.#queuedMessageRawText.get(event.message);
 				if (rawText !== undefined)
-					this.#captureRawRequirementCandidate(
+					await this.#captureRawRequirementCandidate(
 						rawText,
 						"content" in event.message
 							? (event.message.content as unknown[]).filter(
@@ -5364,6 +5364,9 @@ export class AgentSession implements SettingsScope {
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
 		const result = await this.#beforeToolCallCore(ctx, signal);
 		if (result?.block) return result;
+		if (this.#agentKind === "main" && ctx.tool.name === "todo") {
+			await this.#requirementsLedger.beforeTodoCall(ctx.tool.name, result?.args ?? ctx.args, signal);
+		}
 		// Pending requirement candidates only remind; they never delay dispatch.
 		const reminder =
 			this.#agentKind === "main" && this.getActiveToolNames().includes("todo") && ctx.tool.name !== "todo"
@@ -8017,7 +8020,7 @@ export class AgentSession implements SettingsScope {
 				}
 			: { role: "user" as const, content: userContent, attribution: promptAttribution, timestamp: submittedAt };
 		if (message.role === "user" && message.attribution === "user" && this.getActiveToolNames().includes("todo")) {
-			this.#captureRawRequirementCandidate(typedText, options?.images);
+			await this.#captureRawRequirementCandidate(typedText, options?.images);
 		}
 
 		const preludeMessages: AgentMessage[] = [];
@@ -14436,7 +14439,7 @@ export class AgentSession implements SettingsScope {
 	consumeActiveFallbackCreditRedemption(targetModel?: Model): AnthropicFallbackCreditHandle | undefined {
 		return this.#recovery.consumeActiveFallbackCreditRedemption(targetModel);
 	}
-	#captureRawRequirementCandidate(rawText: string, images?: readonly ImageContent[]): void {
-		if (this.getActiveToolNames().includes("todo")) this.#requirementsLedger.captureCandidate(rawText, images);
+	async #captureRawRequirementCandidate(rawText: string, images?: readonly ImageContent[]): Promise<void> {
+		if (this.getActiveToolNames().includes("todo")) await this.#requirementsLedger.captureCandidate(rawText, images);
 	}
 }

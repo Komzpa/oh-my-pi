@@ -45,6 +45,7 @@ import {
 	appendRequirementsSnapshot,
 	classifyRequirement,
 	formatDoneGateRefusal,
+	formatRequirementActionRefusal,
 	getLatestRequirements,
 	evaluateRequirementDoneGate,
 	getRequirementRowVerdict,
@@ -315,7 +316,17 @@ async function resolveTypedRequirementArtifact(
 		const retry = own.identities
 			? `retry with row ${JSON.stringify(row)} @ ${own.identities.map(formatRequirementIdentity).join("; ")}`
 			: own.reason!;
-		return { ...own, reason: undefined, identityCheck: { artifact: receipt, reason: `${reason}; ${retry}` } };
+		return {
+			...own,
+			reason: undefined,
+			identityCheck: {
+				artifact: receipt,
+				reason: formatRequirementActionRefusal(
+					`Re-audit ${JSON.stringify(row)} on its current artifact.`,
+					`${reason}; ${retry}`,
+				),
+			},
+		};
 	};
 	let receiptIdentities = parsed ?? parseRequirementReceiptIdentities(receipt);
 	if ("legacy" in receiptIdentities) {
@@ -680,6 +691,31 @@ export interface TodoCompletionSelector {
 	task?: string;
 	phase?: string;
 	items?: string[];
+}
+
+/** Resolve the rows a todo operation will touch so gate notices match execution. */
+export function getTodoActionRows(
+	phases: TodoPhase[],
+	entry: {
+		op: string;
+		task?: string;
+		phase?: string;
+		items?: string[];
+		list?: Array<{ phase: string; items: string[] }>;
+	},
+): string[] {
+	if (entry.op === "init") {
+		const replacement = new Set([...(entry.items ?? []), ...(entry.list?.flatMap(item => item.items) ?? [])]);
+		return phases.flatMap(phase => phase.tasks.map(task => task.content).filter(row => !replacement.has(row)));
+	}
+	if (entry.op === "append") return [...new Set(entry.items ?? [])];
+	if (!["done", "drop", "rm", "start", "block", "unblock"].includes(entry.op)) return [];
+	const errors: string[] = [];
+	const targets =
+		entry.op === "done" || entry.op === "drop"
+			? getCompletionTargets(phases, entry, errors)
+			: getTaskTargets(phases, { ...entry, op: entry.op as TodoOpEntryValue["op"] }, errors);
+	return errors.length === 0 ? [...new Set(targets.map(task => task.content))] : [];
 }
 
 /** Select the exact rows a `done`/`drop` batch names; an empty batch is an
@@ -1534,7 +1570,10 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 						content: [
 							{
 								type: "text",
-								text: `Blocked: cannot remove unfinished requirement-linked TODO row ${JSON.stringify(row)} (${requirement.id}). Obtain a fresh qa-auditor pass and mark the row done before removing it, or relink the requirement with relink=true and a reason to its replacement row.`,
+								text: formatRequirementActionRefusal(
+									`Re-audit ${requirement.id} for ${JSON.stringify(row)} before removing it.`,
+									`Cannot remove unfinished requirement-linked TODO row ${JSON.stringify(row)} (${requirement.id}). Obtain a fresh qa-auditor pass and mark the row done before removing it, or relink the requirement with relink=true and a reason to its replacement row.`,
+								),
 							},
 						],
 						details: { op: entry.op, phases: previousPhases, storage },
@@ -1564,7 +1603,10 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				content: [
 					{
 						type: "text",
-						text: "Blocked: TODO state changed during the artifact check. Retry against the current plan; no changes were applied.",
+						text: formatRequirementActionRefusal(
+							`Retry ${entry.op} for ${JSON.stringify(entry.task ?? entry.items?.[0] ?? entry.phase ?? "TODO plan")} against the current plan.`,
+							"TODO state changed during the artifact check; no changes were applied.",
+						),
 					},
 				],
 				details: { op: entry.op, phases: clonePhases(currentPhases), storage },
@@ -1678,7 +1720,10 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				content: [
 					{
 						type: "text",
-						text: `Blocked: classify requires an Rn id and classification. Call todo with op="classify", id="<Rn>", classification="linked", rows=["<exact todo row>"] (or classification="not-a-requirement" with reason="<why this is not a requirement>", or classification="merged" with mergeInto="<other Rn>"). Then retry`,
+						text: formatRequirementActionRefusal(
+							`Provide ${id ?? "an Rn id"} and its classification.`,
+							`Classify call needs an Rn id and classification. Call todo with op="classify", id="<Rn>", classification="linked", rows=["<exact todo row>"] (or classification="not-a-requirement" with reason="<why this is not a requirement>", or classification="merged" with mergeInto="<other Rn>"). Then retry`,
+						),
 					},
 				],
 				details,
@@ -1691,7 +1736,10 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				content: [
 					{
 						type: "text",
-						text: `Blocked: classify requires persistent session storage. Retry the same call todo with op="classify", id="${id ?? "<Rn>"}", classification="<linked|not-a-requirement|merged>" in a persisted session`,
+						text: formatRequirementActionRefusal(
+							`Run classify ${id} in a persisted session.`,
+							`Classify requires persistent session storage. Retry the same call todo with op="classify", id="${id}", classification="<linked|not-a-requirement|merged>" in a persisted session`,
+						),
 					},
 				],
 				details,
@@ -1720,7 +1768,10 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 					content: [
 						{
 							type: "text",
-							text: `Blocked: unknown TODO rows for ${id}: ${unknownRows.map(row => JSON.stringify(row)).join(", ")}. Available rows: ${available.length > 0 ? available.join(", ") : '(none: first create one with todo op="append", items=["<exact todo row>"] (or op="init"))'}. Call todo with op="classify", id="${id}", classification="linked", rows=[<exact existing row>]. Then retry`,
+							text: formatRequirementActionRefusal(
+								`Create or select a TODO row for ${id}.`,
+								`Unknown TODO rows for ${id}: ${unknownRows.map(row => JSON.stringify(row)).join(", ")}. Available rows: ${available.length > 0 ? available.join(", ") : '(none: first create one with todo op="append", items=["<exact todo row>"] (or op="init"))'}. Call todo with op="classify", id="${id}", classification="linked", rows=[<exact existing row>]. Then retry`,
+							),
 						},
 					],
 					details,
@@ -1756,7 +1807,10 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 					content: [
 						{
 							type: "text",
-							text: `Blocked: deployment for ${id} requires classification="linked", nonempty exact TODO rows, and one canonical deploy identity${"error" in parsed ? ` (${parsed.error})` : ""}; deployment and resources are mutually exclusive. Call todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"], deployment="deploy:<HTTP(S) URL>@<version> field=<dot.path>" (or "deploy:<unit.service>@<version> scope=<user|system> env=<ENV_IDENTIFIER>"). Then retry`,
+							text: formatRequirementActionRefusal(
+								`Declare a valid deployment binding for ${id}.`,
+								`Deployment for ${id} requires classification="linked", nonempty exact TODO rows, and one canonical deploy identity${"error" in parsed ? ` (${parsed.error})` : ""}; deployment and resources are mutually exclusive. Call todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"], deployment="deploy:<HTTP(S) URL>@<version> field=<dot.path>" (or "deploy:<unit.service>@<version> scope=<user|system> env=<ENV_IDENTIFIER>"). Then retry`,
+							),
 						},
 					],
 					details,
@@ -1777,7 +1831,10 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				content: [
 					{
 						type: "text",
-						text: `Blocked: resources for ${id} must be a nonempty list of absolute paths on classification="linked". Call todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"], resources=["/absolute/file-or-checkout"]. Then retry`,
+						text: formatRequirementActionRefusal(
+							`Declare absolute resource paths for ${id}.`,
+							`Resources for ${id} must be a nonempty list of absolute paths on classification="linked". Call todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"], resources=["/absolute/file-or-checkout"]. Then retry`,
+						),
 					},
 				],
 				details,
@@ -1817,7 +1874,10 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				content: [
 					{
 						type: "text",
-						text: `Blocked: replacing a saved deployment or resource binding for ${id} requires relink=true and a nonblank reason. Call todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"], relink=true, reason="<why the artifact binding changes>", deployment="deploy:<HTTP(S)-URL>@<version> field=<dot.path>" (or deployment="deploy:<literal.service>@<version> scope=<user|system> env=<ENV_KEY>", or resources=["/absolute/file-or-checkout"]). Then retry`,
+						text: formatRequirementActionRefusal(
+							`Give ${id} a reasoned relink for its new artifact.`,
+							`Replacing a saved deployment or resource binding for ${id} requires relink=true and a nonblank reason. Call todo with op="classify", id="${id}", classification="linked", rows=["<exact todo row>"], relink=true, reason="<why the artifact binding changes>", deployment="deploy:<HTTP(S)-URL>@<version> field=<dot.path>" (or deployment="deploy:<literal.service>@<version> scope=<user|system> env=<ENV_KEY>", or resources=["/absolute/file-or-checkout"]). Then retry`,
+						),
 					},
 				],
 				details,

@@ -112,7 +112,7 @@ describe("TodoCommandController linked-requirement gate", () => {
 		await controller.handleTodoCommand("done Gate artifact");
 
 		expect(ctx.showError).toHaveBeenCalledWith(
-			expect.stringContaining("blocked until every linked requirement has a fresh qa-auditor pass"),
+			expect.stringContaining("Restore or bind the artifact for R1; then retry done."),
 		);
 		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining('R1 ("Gate artifact")'));
 		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining("R1: malformed or partial verdict table"));
@@ -150,9 +150,7 @@ describe("TodoCommandController linked-requirement gate", () => {
 
 		await controller.handleTodoCommand("done Gate artifact");
 
-		expect(ctx.showError).toHaveBeenCalledWith(
-			expect.stringContaining("blocked until every linked requirement has a fresh qa-auditor pass"),
-		);
+		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining("Re-audit R1; then retry done."));
 		expect(ctx.setTodos).not.toHaveBeenCalled();
 		const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
 		expect(persisted[0]!.tasks[0]!.status).toBe("pending");

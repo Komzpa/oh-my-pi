@@ -858,8 +858,12 @@ describe("requirements ledger auditor binding", () => {
 				result: { content: [] },
 				isError: false,
 			} as never);
-			expect(outcome?.content?.[0]).toMatchObject({ type: "text" });
-			expect(outcome?.content?.[0]).toMatchObject({ text: expect.stringContaining("not the bundled auditor") });
+			const first = outcome?.content?.[0];
+			const text = first?.type === "text" ? first.text : "";
+			const action = text.split("\n", 1)[0]!;
+			expect(text).toContain("not the bundled auditor");
+			expect(action).toContain("Restore bundled qa-auditor for R1");
+			expect(action.length).toBeLessThanOrEqual(100);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

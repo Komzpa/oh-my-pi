@@ -28,10 +28,13 @@ import {
 	getRequirementAuditSources,
 	getRequirementReceiptArtifactRowLabels,
 	getRequirementRowArtifactIdentity,
+	getRequirementRowVerdict,
 	getRequirementVerdictSourceIssue,
 	getRequirementVerdictStaleness,
+	formatRequirementActionRefusal,
 	evaluateRequirementDoneGate,
 	type RequirementVerdict,
+	type RequirementGateArtifact,
 	parseRequirementReceipt,
 	parseRequirementsLedger,
 	requirementAuditSnapshot,
@@ -94,6 +97,7 @@ import {
 	getLatestTodoPhasesFromEntries,
 	getRequirementRowArtifact,
 	getTodoRowChanges,
+	getTodoActionRows,
 	USER_TODO_EDIT_CUSTOM_TYPE,
 	type RequirementRowArtifact,
 } from "../tools/todo";
@@ -102,6 +106,7 @@ import type { AgentDefinition } from "../task/types";
 import { artifactsDirsFromRegistry } from "../internal-urls/registry-helpers";
 import auditInputTemplate from "../prompts/session/requirements-ledger-audit-input.md" with { type: "text" };
 import receiptHeader from "../prompts/session/requirements-ledger-receipt-header.md" with { type: "text" };
+import flowNoticeTemplate from "../prompts/session/requirements-ledger-flow-notice.md" with { type: "text" };
 
 function isTodoStateEntryMetadata(entry: RequirementEntryMetadata): boolean {
 	return (
@@ -147,6 +152,18 @@ function openTodoRowContents(entries: Parameters<typeof getLatestTodoPhasesFromE
 	);
 }
 
+function requirementArtifactState(artifact: RequirementGateArtifact): unknown {
+	return {
+		cwd: artifact.cwd,
+		head: artifact.head,
+		dirty: artifact.dirty,
+		sha256: artifact.sha256,
+		dirtyFingerprint: artifact.dirtyFingerprint,
+		identities: artifact.identities,
+		awaitingUser: artifact.awaitingUser,
+	};
+}
+
 export type RequirementPublicationGate = (
 	message: AssistantMessage,
 	signal: AbortSignal,
@@ -178,7 +195,7 @@ export class RequirementsLedgerRuntime {
 		this.syncPublicationGate();
 	}
 
-	captureCandidate(rawText: string, images?: readonly ImageContent[]): void {
+	async captureCandidate(rawText: string, images?: readonly ImageContent[]): Promise<void> {
 		if (this.#host.agentKind() !== "main" || !rawText.trim() || rawText.trimStart().startsWith("/")) return;
 		const requirements = getLatestRequirements(
 			matchingRequirementBranch(
@@ -187,11 +204,149 @@ export class RequirementsLedgerRuntime {
 			),
 		);
 		const referenced = extractRequirementImages(rawText, images);
+		const before = requirements
+			.filter(requirement => requirement.classification === "candidate")
+			.map(requirement => requirement.id);
 		appendRequirementsSnapshot(
 			this.#appender(),
 			createRequirementCandidates(requirements, [rawText], new Date().toISOString(), [referenced]),
 		);
+		const after = getUnclassifiedRequirementCandidates(
+			matchingRequirementBranch(
+				this.#host.sessionManager,
+				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+			),
+		);
+		const added = after.filter(
+			requirement => requirement.classification === "candidate" && !before.includes(requirement.id),
+		);
+		if (added.length > 0) {
+			const branch = matchingRequirementBranch(
+				this.#host.sessionManager,
+				metadata => metadata.type === "custom" || metadata.type === "message",
+			);
+			const rows = openTodoRowContents(branch);
+			const ids = added.map(requirement => requirement.id);
+			const details = formatUnclassifiedCandidateReminder(added, rows);
+			await this.#announceFlowNotice(
+				JSON.stringify(["candidate", ids, added.map(requirement => requirement.rawText)]),
+				`Classify ${ids.join(", ")} before closing affected todo rows.`,
+				details,
+			);
+		}
 		this.syncPublicationGate();
+	}
+
+	/** Announce newly reachable todo gates and requirement-retention behavior before execution. */
+	async beforeTodoCall(toolName: string, input: unknown, signal?: AbortSignal): Promise<void> {
+		if (this.#host.agentKind() !== "main" || toolName !== "todo" || !isRecord(input)) return;
+		const op = input.op;
+		if (op !== "done" && op !== "rm" && op !== "drop" && op !== "init") return;
+		const branch = matchingRequirementBranch(
+			this.#host.sessionManager,
+			metadata =>
+				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+				isTodoStateEntryMetadata(metadata),
+		);
+		const requirements = getLatestRequirements(branch).filter(requirement => requirement.classification === "linked");
+		const phases = getLatestTodoPhasesFromEntries(branch);
+		const requested = getTodoActionRows(
+			phases,
+			input as {
+				op: "done" | "rm" | "drop" | "init";
+				task?: string;
+				phase?: string;
+				items?: string[];
+				list?: Array<{ phase: string; items: string[] }>;
+			},
+		);
+		const affected = requirements.flatMap(requirement =>
+			requirement.rows.filter(row => requested.includes(row)).map(row => ({ requirement, row })),
+		);
+		if (affected.length === 0) return;
+		if (op === "rm" || op === "init") {
+			const transition = op === "init" ? "init replacement" : "removal";
+			const details = affected
+				.map(
+					({ requirement, row }) =>
+						`${requirement.id} stays linked to ${JSON.stringify(row)} after ${transition}; ledger history and verdicts are retained.`,
+				)
+				.join(" ");
+			await this.#announceFlowNotice(
+				JSON.stringify([transition, affected.map(({ requirement, row }) => [requirement.id, row])]),
+				`Preserve or reclassify ${affected[0]!.requirement.id} before changing ${JSON.stringify(affected[0]!.row)}.`,
+				details,
+			);
+			return;
+		}
+		if (op === "drop") {
+			await this.#announceFlowNotice(
+				JSON.stringify(["abandon", affected.map(({ requirement, row }) => [requirement.id, row])]),
+				`Account for linked requirement ${affected[0]!.requirement.id} before abandoning its row.`,
+				affected
+					.map(
+						({ requirement, row }) =>
+							`${requirement.id} stays linked to ${JSON.stringify(row)}; ledger history and verdicts are retained.`,
+					)
+					.join(" "),
+			);
+			return;
+		}
+		await this.#announceFlowNotice(
+			JSON.stringify(["complete", affected.map(({ requirement, row }) => [requirement.id, row])]),
+			`Keep ${affected[0]!.requirement.id} linked while completing ${JSON.stringify(affected[0]!.row)}.`,
+			affected
+				.map(
+					({ requirement, row }) =>
+						`${requirement.id} remains in the ledger after completion of ${JSON.stringify(row)}; todo done requires its fresh qa-auditor verdict for the current row artifact.`,
+				)
+				.join(" "),
+		);
+		const linkedRows = [...new Set(affected.map(item => item.row))];
+		const changes = getTodoRowChanges(branch);
+		const staleRows: Array<{
+			requirement: RequirementLedgerItem;
+			row: string;
+			artifact: RequirementGateArtifact;
+			verdict: RequirementVerdict;
+			lastChange?: { at: string; id: string };
+		}> = [];
+		for (const requirement of requirements) {
+			for (const row of requirement.rows.filter(row => linkedRows.includes(row))) {
+				const verdict = getRequirementRowVerdict(requirement, row);
+				if (verdict?.status !== "pass") continue;
+				const artifact = await getRequirementRowArtifact(
+					{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager, signal },
+					row,
+					phases,
+				);
+				const lastChange = changes.get(row);
+				if (getRequirementVerdictStaleness(requirement, [{ row, ...artifact, lastChange }]) !== null)
+					staleRows.push({ requirement, row, artifact, verdict, lastChange });
+			}
+		}
+		await this.#announceStaleRows(staleRows);
+	}
+
+	async #announceFlowNotice(key: string, action: string, details: string): Promise<void> {
+		const branch = matchingRequirementBranch(
+			this.#host.sessionManager,
+			metadata => metadata.type === "custom" || metadata.type === "message",
+		);
+		if (
+			branch.some(
+				entry =>
+					entry.type === "custom" &&
+					entry.customType === "requirements_flow_notice" &&
+					isRecord(entry.data) &&
+					entry.data.key === key,
+			)
+		)
+			return;
+		this.#host.sessionManager.appendCustomEntry("requirements_flow_notice", { key });
+		await this.#host.queueModelNotice?.(
+			prompt.render(flowNoticeTemplate, { action, details: details.replace(/\s*\n\s*/g, " ") }),
+		);
 	}
 
 	/**
@@ -248,7 +403,12 @@ export class RequirementsLedgerRuntime {
 			if (!isRecord(item) || item.agent !== "qa-auditor") return [];
 			if (item.requirementIds !== undefined) {
 				if (!Array.isArray(item.requirementIds) || item.requirementIds.length === 0)
-					throw new Error("QA requirementIds must be a nonempty array of linked requirement IDs");
+					throw new Error(
+						formatRequirementActionRefusal(
+							`Retry task with requirementIds=["<linked ID>"] for the rows owned by qa-auditor.`,
+							"QA requirementIds must be a nonempty array of linked requirement IDs.",
+						),
+					);
 				const rows = phases.flatMap(phase => phase.tasks.map(task => task.content));
 				return [
 					...new Set(
@@ -256,13 +416,19 @@ export class RequirementsLedgerRuntime {
 							const requirement = requirements.find(requirement => requirement.id === id);
 							if (!requirement || requirement.classification !== "linked" || requirement.rows.length === 0)
 								throw new Error(
-									`QA requirement scope ${String(id)} is not a linked requirement with Todo rows; active audit rows: ${JSON.stringify(rows)}; missing rows: ${JSON.stringify(requirement?.rows.filter(row => !rows.includes(row)) ?? [])}. Inspect the ledger with todo op="read", then retry with a linked requirement ID`,
+									formatRequirementActionRefusal(
+										`Link ${String(id)} to an active Todo row, then retry task with requirementIds=[${JSON.stringify(String(id))}].`,
+										`Active audit rows: ${JSON.stringify(rows)}; missing rows: ${JSON.stringify(requirement?.rows.filter(row => !rows.includes(row)) ?? [])}. Inspect the ledger with todo op="view".`,
+									),
 								);
 							const linkedRows = getLinkedRequirementRows(requirement, rows);
 							if (linkedRows.length === 0) {
 								const missingRows = requirement.rows.filter(row => !rows.includes(row));
 								throw new Error(
-									`QA requirement scope ${String(id)} has no live linked Todo rows for requested audit rows ${JSON.stringify(requirement.rows)}; missing rows: ${JSON.stringify(missingRows)}. Restore them with todo op="append", phase=${JSON.stringify(phases[0]?.name ?? "QA recovery")}, items=${JSON.stringify(missingRows)}, then retry the audit`,
+									formatRequirementActionRefusal(
+										`Restore ${String(id)} rows with todo append, then retry task requirementIds=[${JSON.stringify(String(id))}].`,
+										`Requested audit rows: ${JSON.stringify(requirement.rows)}; missing rows: ${JSON.stringify(missingRows)}. Restore with todo op="append", phase=${JSON.stringify(phases[0]?.name ?? "QA recovery")}, items=${JSON.stringify(missingRows)}.`,
+									),
 								);
 							}
 							return linkedRows;
@@ -312,7 +478,10 @@ export class RequirementsLedgerRuntime {
 			if (ids.length === 0 && !requirements.some(requirement => requirement.classification === "linked")) continue;
 			if (ids.length === 0)
 				throw new Error(
-					`QA audit ${String(item.name ?? "(unnamed)")} has no linked requirement scope. Set requirementIds to the linked requirement IDs, or match name to the Todo row's schedule.owner before dispatch.`,
+					formatRequirementActionRefusal(
+						`Set linked requirementIds for ${String(item.name ?? "qa-auditor")} or match its name to a row owner.`,
+						"QA audit has no linked requirement scope. Set requirementIds to linked IDs or match the Todo row schedule.owner.",
+					),
 				);
 
 			const sources = [
@@ -408,6 +577,37 @@ export class RequirementsLedgerRuntime {
 
 	async afterToolCall(context: AfterToolCallContext): Promise<AfterToolCallResult | undefined> {
 		if (this.#host.agentKind() !== "main") return undefined;
+		if (context.toolCall.name === "todo" && !context.isError) {
+			const details = isRecord(context.result.details) ? context.result.details : undefined;
+			if (details && (details.op === "classify" || details.op === "start")) {
+				const branch = matchingRequirementBranch(
+					this.#host.sessionManager,
+					metadata =>
+						(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+						isTodoStateEntryMetadata(metadata),
+				);
+				const requirements = getLatestRequirements(branch).filter(item => item.classification === "linked");
+				const phases = getLatestTodoPhasesFromEntries(branch);
+				for (const requirement of requirements) {
+					for (const row of requirement.rows) {
+						if (!phases.some(phase => phase.tasks.some(task => task.content === row))) continue;
+						const rowRequirements = requirements.filter(item => item.rows.includes(row));
+						const ids = rowRequirements.map(item => item.id);
+						const artifact = await getRequirementRowArtifact(
+							{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager },
+							row,
+							phases,
+						);
+						const verdicts = rowRequirements.map(item => getRequirementRowVerdict(item, row));
+						await this.#announceFlowNotice(
+							JSON.stringify(["linked-row", row, ids, artifact, verdicts]),
+							`Audit ${ids.join(", ")} on ${JSON.stringify(row)} before marking it done.`,
+							`Closing this linked row requires a pass bound to ${formatRequirementGateArtifact(artifact, row)}. Call task({agent:"qa-auditor",name:"qa-auditor",requirementIds:${JSON.stringify(ids)},task:${JSON.stringify(`Audit ${ids.join(", ")} for TODO row ${JSON.stringify(row)} at its current artifact; return one receipt row per ID.`)}}).`,
+						);
+					}
+				}
+			}
+		}
 		if (context.toolCall.name === "wait") {
 			await this.#consumeWaitSnapshot(context.result);
 			return undefined;
@@ -419,11 +619,14 @@ export class RequirementsLedgerRuntime {
 			this.#auditCalls.delete(context.toolCall.id);
 			return {
 				content: [
-					...context.result.content,
 					{
 						type: "text",
-						text: `Blocked: resolved qa-auditor profile is ${refusal.source}, not the bundled auditor. ${refusal.ids.map(id => `Call task with agent="qa-auditor", task="Audit ${id} at the current clean row HEAD". Then retry`).join("; ")}`,
+						text: formatRequirementActionRefusal(
+							`Restore bundled qa-auditor for ${refusal.ids[0] ?? "the linked requirement"}, then retry the audit task.`,
+							`Resolved profile is ${refusal.source}, not the bundled auditor. ${refusal.ids.map(id => `Call task with agent="qa-auditor", requirementIds=[${JSON.stringify(id)}], task="Audit ${id} at the current clean row HEAD"`).join("; ")}`,
+						),
 					},
+					...context.result.content,
 				],
 			};
 		}
@@ -432,6 +635,7 @@ export class RequirementsLedgerRuntime {
 		this.#auditCalls.delete(context.toolCall.id);
 
 		const rejected: string[] = [];
+		let firstRejectedId: string | undefined;
 		const details = isRecord(context.result.details) ? context.result.details : {};
 		const results = Array.isArray(details.results) ? details.results : [];
 		const progress = Array.isArray(details.progress) ? details.progress : [];
@@ -442,7 +646,10 @@ export class RequirementsLedgerRuntime {
 				const launched =
 					results.some(value => isRecord(value) && value.index === assignment.index) ||
 					progress.some(value => isRecord(value) && value.index === assignment.index);
-				if (launched) rejected.push(`${assignment.ids.join(", ")}: qa-auditor task failed`);
+				if (launched) {
+					firstRejectedId ??= assignment.ids[0];
+					rejected.push(`${assignment.ids.join(", ")}: qa-auditor task failed`);
+				}
 				continue;
 			}
 			const result = results.find(value => isRecord(value) && value.index === assignment.index);
@@ -459,11 +666,13 @@ export class RequirementsLedgerRuntime {
 					typeof result.output !== "string" ||
 					result.truncated === true
 				) {
+					firstRejectedId ??= assignment.ids[0];
 					rejected.push(`${assignment.ids.join(", ")}: not a complete qa-auditor result`);
 					continue;
 				}
 				const issue = await this.#acceptReceipt(result.id, { ...assignment, workerId: result.id }, result.output);
 				if (issue) {
+					firstRejectedId ??= assignment.ids[0];
 					rejected.push(issue);
 					this.#persistPendingAuditors({ workerId: result.id, ids: assignment.ids, reason: issue });
 				} else {
@@ -476,6 +685,7 @@ export class RequirementsLedgerRuntime {
 				this.#pendingAuditors.set(worker.id, { ...assignment, workerId: worker.id });
 				pendingChanged = true;
 			} else {
+				firstRejectedId ??= assignment.ids[0];
 				rejected.push(`${assignment.ids.join(", ")}: task result did not identify its qa-auditor worker`);
 			}
 		}
@@ -483,11 +693,14 @@ export class RequirementsLedgerRuntime {
 		if (rejected.length === 0) return undefined;
 		return {
 			content: [
-				...context.result.content,
 				{
 					type: "text",
-					text: `Blocked: requirements receipt rejected: ${rejected.join("; ")}.`,
+					text: formatRequirementActionRefusal(
+						`Repair the qa-auditor receipt for ${firstRejectedId ?? "the assigned requirement"}, then retry task.`,
+						`requirements receipt rejected: ${rejected.join("; ")}.`,
+					),
 				},
+				...context.result.content,
 			],
 		};
 	}
@@ -560,6 +773,7 @@ export class RequirementsLedgerRuntime {
 		}
 		const decisionGeneration = this.#getPublicationGeneration();
 		const { requirements, staleById, awaitingUserIssues } = freshness;
+		await this.#announceStaleRows(freshness.staleRows);
 		const open = this.#openRequirements(requirements, staleById);
 		this.syncPublicationGate();
 		// Never erase the assistant's own text on a generation race: publish unchanged.
@@ -572,14 +786,15 @@ export class RequirementsLedgerRuntime {
 		if (message.content.some(block => block.type === "toolCall")) return;
 		const noticeState = JSON.stringify(open.map(item => [item.requirement.id, item.issues]));
 		if (noticeState !== this.#noticeState) {
-			await this.#host.queueModelNotice?.(
-				formatRequirementGateNotice(
-					open.map(item => ({
-						...item,
-						awaitingUser: item.issues.every(issue => awaitingUserIssues.has(issue)),
-					})),
-				),
-			);
+			if (freshness.staleRows.length === 0)
+				await this.#host.queueModelNotice?.(
+					formatRequirementGateNotice(
+						open.map(item => ({
+							...item,
+							awaitingUser: item.issues.every(issue => awaitingUserIssues.has(issue)),
+						})),
+					),
+				);
 			this.#noticeState = noticeState;
 		}
 		const branch = matchingRequirementBranch(
@@ -636,6 +851,13 @@ export class RequirementsLedgerRuntime {
 		requirements: RequirementLedgerItem[];
 		staleById: Map<string, string[]>;
 		awaitingUserIssues: Set<string>;
+		staleRows: Array<{
+			requirement: RequirementLedgerItem;
+			row: string;
+			artifact: RequirementGateArtifact;
+			verdict: RequirementVerdict;
+			lastChange?: { at: string; id: string };
+		}>;
 	}> {
 		const branch = matchingRequirementBranch(
 			this.#host.sessionManager,
@@ -662,11 +884,56 @@ export class RequirementsLedgerRuntime {
 			}),
 			getPersistedRequirementAuditRejections(branch, this.#sessionId()),
 		);
+		const staleRows = open.flatMap(item => {
+			if (!item.issues.some(issue => issue.includes("freshness check failed"))) return [];
+			return item.auditRows.flatMap(audit => {
+				const verdict = getRequirementRowVerdict(item.requirement, audit.row);
+				return verdict?.status === "pass" && audit.ids.includes(item.requirement.id)
+					? [
+							{
+								requirement: item.requirement,
+								row: audit.row,
+								artifact: audit.artifact,
+								verdict,
+								lastChange: changes.get(audit.row),
+							},
+						]
+					: [];
+			});
+		});
 		return {
 			requirements,
 			staleById: new Map(open.map(item => [item.requirement.id, item.issues])),
 			awaitingUserIssues: new Set(open.flatMap(item => item.awaitingUserIssues)),
+			staleRows,
 		};
+	}
+
+	async #announceStaleRows(
+		staleRows: readonly {
+			requirement: RequirementLedgerItem;
+			row: string;
+			artifact: RequirementGateArtifact;
+			verdict: RequirementVerdict;
+			lastChange?: { at: string; id: string };
+		}[],
+	): Promise<void> {
+		for (const { requirement, row, artifact, verdict, lastChange } of staleRows) {
+			const artifactText = formatRequirementGateArtifact(artifact, row);
+			const key = JSON.stringify([
+				"stale",
+				requirement.id,
+				row,
+				requirementArtifactState(artifact),
+				verdict,
+				lastChange,
+			]);
+			await this.#announceFlowNotice(
+				key,
+				`Re-audit ${requirement.id} for ${JSON.stringify(row)} before publishing.`,
+				`The saved pass for ${verdict.artifact} is stale for this row artifact (${artifactText}). Call task({agent:"qa-auditor",name:"qa-auditor",requirementIds:${JSON.stringify([requirement.id])},task:${JSON.stringify(`Audit ${requirement.id} for TODO row ${JSON.stringify(row)} at its current artifact; return one receipt row for this exact ID.`)}}).`,
+			);
+		}
 	}
 
 	#openRequirements(

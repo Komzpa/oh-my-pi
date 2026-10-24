@@ -325,9 +325,16 @@ describe("QA scope after linked rows leave the active plan", () => {
 		expect((await fx.done("only", ROW)).isError).not.toBe(true);
 		expect((await fx.remove(ROW)).isError).not.toBe(true);
 		expect(statusOf(fx, ROW)).toBeUndefined();
-		await expect(fx.prepare(ROW, ["R1"])).rejects.toThrow(
-			`QA requirement scope R1 has no live linked Todo rows for requested audit rows ${JSON.stringify([ROW])}; missing rows: ${JSON.stringify([ROW])}. Restore them with todo op="append", phase="Release", items=${JSON.stringify([ROW])}, then retry the audit`,
-		);
+		let diagnostic = "";
+		try {
+			await fx.prepare(ROW, ["R1"]);
+		} catch (error) {
+			diagnostic = error instanceof Error ? error.message : String(error);
+		}
+		expect(diagnostic.split("\n")[0]).toContain("Restore R1");
+		expect(diagnostic.split("\n")[0]!.length).toBeLessThanOrEqual(100);
+		expect(diagnostic).toContain(`missing rows: ${JSON.stringify([ROW])}`);
+		expect(diagnostic).toContain(`todo op="append", phase="Release", items=${JSON.stringify([ROW])}`);
 		expect((await fx.append(ROW)).isError).not.toBe(true);
 		await fx.prepare(ROW, ["R1"]);
 		expect(await fx.receive(artifactCell(ROW, [fileId(file)]))).toBeUndefined();
@@ -678,7 +685,10 @@ describe("typed identity: stale receipts block done with expected and observed v
 			artifactCell(ROW, [head, head]),
 		]) {
 			await fx.prepare(ROW);
-			expect(textOf(await fx.receive(artifact))).toContain("Blocked");
+			const refusal = textOf(await fx.receive(artifact));
+			expect(refusal).toContain("receipt rejected");
+			expect(refusal.split("\n")[0]).toContain("Repair the qa-auditor receipt for R1");
+			expect(refusal.split("\n")[0]!.length).toBeLessThanOrEqual(100);
 			expect(verdictOf(fx, ROW)).toEqual(authenticatedVerdict);
 		}
 		fs.writeFileSync(path.join(repo, "artifact.txt"), "dirty\n");
@@ -696,7 +706,10 @@ describe("typed identity: stale receipts block done with expected and observed v
 		]) {
 			const other = await harness([ROW], target);
 			await other.prepare(ROW);
-			expect(textOf(await other.receive(artifactCell(ROW, [head])))).toContain("Blocked");
+			const refusal = textOf(await other.receive(artifactCell(ROW, [head])));
+			expect(refusal).toContain("receipt rejected");
+			expect(refusal.split("\n")[0]).toContain("Repair the qa-auditor receipt for R1");
+			expect(refusal.split("\n")[0]!.length).toBeLessThanOrEqual(100);
 		}
 		fs.writeFileSync(path.join(repo, "artifact.txt"), "advanced\n");
 		const gitRepo = vcs.requireGit(repo);
