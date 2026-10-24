@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- Put gate recovery actions first and announce scheduling, staffing, ETA, reestimate, reply, and writer constraints before refusal ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Main sessions must reply to the latest human message before waiting or ending an empty turn ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - `todo_dispatch`: the idle PLAN CHECK ticker fingerprints the problem list alone (worker telemetry excluded) and dedupes on that fingerprint, so an unchanged problem is delivered once instead of every minute (nine wake-ups in eleven minutes, live 2026-10-21); the receding-finish wording now says the projected finish moved from X to Y and names the current time.

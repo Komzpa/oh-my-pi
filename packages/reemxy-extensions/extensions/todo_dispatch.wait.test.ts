@@ -8,6 +8,7 @@ import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { execFileSync } from "node:child_process";
+import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch, { noticeDigest } from "./todo_dispatch";
 
 function branchMock(getBranch: () => unknown[]) {
@@ -74,11 +75,11 @@ function forecastTodoPlan(phases: WaitTestPhase[], { now }: { now: number }) {
 	return {
 		rows: tasks.map(task => {
 			const status = task.status;
-			const dependencies = task.schedule.dependencies;
+			const dependencies = task.schedule?.dependencies ?? [];
 			return {
 				content: task.content,
 				status,
-				owner: task.schedule.owner ?? null,
+				owner: task.schedule?.owner ?? null,
 				ready:
 					(status === "pending" || status === "in_progress") &&
 					dependencies.every(dependency => {
@@ -109,7 +110,7 @@ function forecastTodoPlan(phases: WaitTestPhase[], { now }: { now: number }) {
 	};
 }
 
-async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initialJobs: unknown[] = [], forecastLeadMs = 0) {
+async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initialJobs: unknown[] = [], forecastLeadMs = 0, forecastOverride = undefined) {
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	const notices: Array<{ customType: string; content: string }> = [];
 	const entries: Array<{ type: "custom"; customType: string; data?: unknown }> = [];
@@ -122,10 +123,10 @@ async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initia
 		appendEntry: (customType: string, data?: unknown) => entries.push({ type: "custom", customType, data }),
 		sendMessage: (message: { customType: string; content: string }) => notices.push(message),
 		pi: {
-			forecastTodoPlan: (phases, options) => forecastTodoPlan(phases, { ...options, now: options.now + forecastLeadMs }),
+			forecastTodoPlan: (phases, options) => forecastOverride ? forecastOverride(phases, options) : forecastTodoPlan(phases, { ...options, now: options.now + forecastLeadMs }),
 			formatPlanForecast,
 			formatTaskForecast,
-			getLatestTodoPhasesFromEntries: () => phases,
+			getLatestTodoPhasesFromEntries,
 			readGoalDeadline: () => ({ goalId: "notice-test", deadlineAt }),
 			agentPauseGate: { paused: false },
 		},
@@ -256,7 +257,7 @@ test("healthy worker telemetry does not wake the chief on a plan tick", async ()
 	try {
 		await h.tick();
 		await h.tick();
-		expect(h.notices).toEqual([]);
+		expect(h.notices.filter(notice => !notice.customType.startsWith("todo-gate-"))).toEqual([]);
 		// A newly unstaffed ready row is still actionable and must wake the chief.
 		h.ctx.getAsyncJobSnapshot = () => ({ running: [], recent: [], nonJobAgents: [] });
 		await h.tick();
@@ -283,16 +284,16 @@ test("repeated retro and checkpoint notices do not send another chief turn", asy
 		const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
 		try {
 			await h.tick();
-			expect(h.notices).toHaveLength(1);
+			expect(h.notices.filter(notice => notice.customType === "todo-plan-check")).toHaveLength(1);
 			now += 11 * 60_000;
 			await h.tick();
-			expect(h.notices).toHaveLength(1);
+			expect(h.notices.filter(notice => notice.customType === "todo-plan-check")).toHaveLength(1);
 			// The unchanged problem list is re-delivered once, 30 minutes after the first delivery.
 			now += 20 * 60_000;
 			await h.tick();
-			expect(h.notices).toHaveLength(2);
+			expect(h.notices.filter(notice => notice.customType === "todo-plan-check")).toHaveLength(2);
 			const silent = h.entries.filter(entry => entry.customType === "todo-dispatch-silent-notice");
-			expect(silent).toHaveLength(0);
+			expect(silent.filter(entry => entry.data?.kind === "todo-plan-check")).toHaveLength(0);
 		} finally {
 			h.shutdown();
 		}
@@ -352,10 +353,10 @@ test("an identical due notice is suppressed but a new worker failure wakes chief
 		try {
 			await h.handlers.get("agent_end")!({}, h.ctx);
 			await h.fireIdleWake();
-			expect(h.notices).toHaveLength(1);
+			expect(h.notices.filter(notice => !notice.customType.startsWith("todo-gate-"))).toHaveLength(1);
 			await h.handlers.get("agent_end")!({}, h.ctx);
 			await h.fireIdleWake();
-			expect(h.notices).toHaveLength(1);
+			expect(h.notices.filter(notice => !notice.customType.startsWith("todo-gate-"))).toHaveLength(1);
 			h.setRecent([
 				{
 					id: "failed-new-worker",
@@ -367,8 +368,8 @@ test("an identical due notice is suppressed but a new worker failure wakes chief
 			]);
 			await h.handlers.get("agent_end")!({}, h.ctx);
 			await h.fireIdleWake();
-			expect(h.notices).toHaveLength(2);
-			expect(h.notices[1]?.customType).toBe("agent-focus-gym-eval-sandbox-wake");
+			expect(h.notices.filter(notice => !notice.customType.startsWith("todo-gate-"))).toHaveLength(2);
+			expect(h.notices.filter(notice => !notice.customType.startsWith("todo-gate-"))[1]?.customType).toBe("agent-focus-gym-eval-sandbox-wake");
 		} finally {
 			h.shutdown();
 		}
@@ -419,7 +420,7 @@ test("wait is allowed when open rows depend on running work or user approval", a
 			forecastTodoPlan,
 			formatPlanForecast,
 			formatTaskForecast,
-			getLatestTodoPhasesFromEntries: () => phases,
+			getLatestTodoPhasesFromEntries,
 			readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }),
 		},
 		appendEntry: () => undefined,
@@ -563,7 +564,7 @@ test("capacity reports zero when no authenticated worker profile can start", asy
 			forecastTodoPlan,
 			formatPlanForecast,
 			formatTaskForecast,
-			getLatestTodoPhasesFromEntries: () => phases,
+			getLatestTodoPhasesFromEntries,
 			readGoalDeadline: () => undefined,
 		},
 		appendEntry: () => undefined,
@@ -657,7 +658,7 @@ test("PLAN CHECK puts stale no-commit workers first and never aborts them", asyn
 			forecastTodoPlan,
 			formatPlanForecast,
 			formatTaskForecast,
-			getLatestTodoPhasesFromEntries: () => phases,
+			getLatestTodoPhasesFromEntries,
 			readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }),
 			sendMessage: (message: { content: string }) => sent.push(message.content),
 		},
@@ -733,7 +734,7 @@ test("dispatcher renders forecast and deadline times in the persisted goal timez
 			forecastTodoPlan,
 			formatPlanForecast: () => "P95=2026-09-25T19:16:00.000Z",
 			formatTaskForecast,
-			getLatestTodoPhasesFromEntries: () => phases,
+			getLatestTodoPhasesFromEntries,
 			readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 60_000, timezone: "Asia/Tbilisi" }),
 		},
 		appendEntry: () => undefined,
@@ -789,7 +790,7 @@ test("wait refusals deduplicate by rendered content across plan revisions", asyn
 				forecastTodoPlan,
 				formatPlanForecast,
 				formatTaskForecast,
-				getLatestTodoPhasesFromEntries: () => phases,
+				getLatestTodoPhasesFromEntries,
 				readGoalDeadline: () => undefined,
 			},
 			appendEntry: () => undefined,
@@ -861,7 +862,7 @@ test("OMP_LANE_UNIT suppresses chief gates, retros and continuation nudges", asy
 					forecastTodoPlan,
 					formatPlanForecast,
 					formatTaskForecast,
-					getLatestTodoPhasesFromEntries: () => phases,
+					getLatestTodoPhasesFromEntries,
 					readGoalDeadline: () => ({ goalId: "lane-goal", deadlineAt: now + 3_600_000 }),
 					agentPauseGate: { paused: false },
 				},
@@ -958,7 +959,7 @@ async function stuckWorkerHarness(options: { filesAgeMs: number; elapsedMs: numb
 			forecastTodoPlan,
 			formatPlanForecast,
 			formatTaskForecast,
-			getLatestTodoPhasesFromEntries: () => phases,
+			getLatestTodoPhasesFromEntries,
 			readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }),
 			sendMessage: (message: { content: string }) => sent.push(message.content),
 		},
@@ -1055,3 +1056,122 @@ test("plan ticker is re-armed on a turn when no tick ran for three minutes", asy
 		h.cleanup();
 	}
 }, 60_000);
+
+function actionable(reason: string, target: string) {
+	const first = reason.split("\n")[0];
+	expect(first.length).toBeLessThanOrEqual(100);
+	expect(first).toContain(target);
+	expect(first).not.toMatch(/^(Blocked:|Stop waiting:|Refusing|todo done is blocked until)/);
+}
+
+test("a genuine Main message announces reply-before-wait once before either refusal", async () => {
+	const h = await noticeHarness([], Date.now() + 3600_000);
+	try {
+		const entry = humanQuestion();
+		await h.handlers.get("message_start")?.({ message: entry.message }, h.ctx);
+		h.entries.push(entry);
+		const notices = () => h.notices.filter(notice => notice.customType === "todo-gate-user-reply");
+		expect(notices()).toHaveLength(1);
+		expect(notices()[0].content).toContain("before any wait/stop");
+		const refusal = await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
+		actionable(refusal.reason, "2026-10-24T04:23:16.000Z");
+		expect((await h.handlers.get("session_stop")!({}, h.ctx)).decision).toBe("block");
+		expect(notices()).toHaveLength(1);
+		h.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Two checks left; finishing them now." }] } });
+		expect(await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx)).toBeUndefined();
+	} finally { h.shutdown(); }
+});
+
+test("appended incomplete rows announce the exact schedule batch before any work can be refused", async () => {
+	const h = await noticeHarness([], Date.now() + 3600_000);
+	try {
+		const phases = [{ name: "New scope", tasks: [{ content: "Publish cobalt tile", status: "pending" }] }];
+		await h.handlers.get("tool_result")!({ toolName: "todo", input: { op: "append" }, content: [], details: { phases }, isError: false }, h.ctx);
+		const notices = h.notices.filter(notice => notice.customType === "todo-gate-schedule");
+		expect(notices).toHaveLength(1);
+		expect(notices[0].content).toContain('task:"Publish cobalt tile"');
+		expect(notices[0].content).toContain('op:"schedule"');
+		expect(notices[0].content).toContain("dependencies:[]");
+		expect(notices[0].content).toContain("optimisticSeconds:O");
+		const callShape = notices[0].content.split("\n")[1].split("; use actual")[0].replace("Call todo ", "");
+		const schedule = Bun.JSON5.parse(callShape.replace(/:O\b/g, ":10").replace(/:L\b/g, ":20").replace(/:P\b/g, ":30"));
+		expect(schedule).toMatchObject({ op: "schedule", updates: [{ task: "Publish cobalt tile", dependencies: [], estimate: { optimisticSeconds: 10, likelySeconds: 20, pessimisticSeconds: 30 } }] });
+		expect(notices[0].content).toContain("non-read work is refused");
+		expect(notices[0].content.split("\n")).toHaveLength(2);
+		await h.handlers.get("tool_result")!({ toolName: "todo", content: [], details: { phases }, isError: false }, h.ctx);
+		expect(h.notices.filter(notice => notice.customType === "todo-gate-schedule")).toHaveLength(1);
+	} finally { h.shutdown(); }
+});
+
+test("an unstaffed ready row announces staffing before wait and chief-work refusals", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(3, now);
+	for (const task of phases[0].tasks) { task.schedule.dependencies = []; task.schedule.owner = undefined; }
+	const h = await noticeHarness(phases, now + 3600_000);
+	try {
+		const notices = () => h.notices.filter(notice => notice.customType === "todo-gate-staffing");
+		expect(notices()).toHaveLength(1);
+		expect(notices()[0].content).toContain('"Row 1"');
+		expect(notices()[0].content).toContain("wait will be refused until staffed");
+		const wait = await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
+		actionable(wait.reason, "Row 1");
+		const bash = await h.handlers.get("tool_call")!({ toolName: "bash", input: { command: "bun test" } }, h.ctx);
+		actionable(bash.reason, "Row 1");
+		expect(bash.reason.split("\n")[0]).toContain("task");
+		expect(notices()).toHaveLength(1);
+		h.setRecent(phases[0].tasks.map((task, index) => ({ id: `staff-${index}`, agentId: `staff-${index}`, type: "task", status: "running", label: task.content })));
+	} finally { h.shutdown(); }
+});
+
+test("80-percent ETA notice and second-reestimate warning precede consistent schedule refusals", async () => {
+	const previousLane = process.env.OMP_LANE_UNIT;
+	delete process.env.OMP_LANE_UNIT;
+	let now = Date.now();
+	const origin = now;
+	const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const phases = chainedPlan(1, now);
+	const row = phases[0].tasks[0];
+	row.content = "Polish amber chart";
+	row.schedule.startedAt = origin;
+	row.schedule.reestimateCount = 0;
+	row.schedule.estimateRevision = 1;
+	const forecast = (phases, options) => {
+		const out = forecastTodoPlan(phases, options);
+		Object.assign(out.rows[0], { startedAt: origin, resourceFinish: origin + 100_000, estimateUpdatedAt: origin,
+			estimateRangeSeconds: { optimistic: 60, likely: 100, pessimistic: 140 },
+			estimateRevision: row.schedule.estimateRevision, reestimateCount: row.schedule.reestimateCount,
+			overdue: now > origin + 100_000 });
+		return out;
+	};
+	const h = await noticeHarness(phases, now + 3600_000, [], 0, forecast);
+	h.ctx.getAsyncJobSnapshot = () => ({ running: [{ id: "worker-a", type: "task", status: "running", label: row.content, startTime: origin - 3600_000 }], recent: [], nonJobAgents: [] });
+	try {
+		expect(h.notices.filter(n => n.customType === "todo-gate-eta")).toHaveLength(0);
+		now = origin + 80_000;
+		await h.tick();
+		const eta = h.notices.filter(n => n.customType === "todo-gate-eta");
+		expect(eta).toHaveLength(1);
+		expect(eta[0].content).toContain('"Polish amber chart"');
+		expect(eta[0].content).toContain("evidence + a new estimate");
+		expect(eta[0].content).toContain("third same-owner reestimate is refused");
+		now = origin + 101_000;
+		const input = { op: "schedule", updates: [{ task: row.content, estimate: { likelySeconds: 200, updatedAt: now } }] };
+		const missed = await h.handlers.get("tool_call")!({ toolName: "todo", input }, h.ctx);
+		actionable(missed.reason, "Polish amber chart");
+		expect(missed.reason).toContain("evidence");
+		expect(await h.handlers.get("tool_call")!({ toolName: "todo", input: { ...input, updates: [{ ...input.updates[0], evidence: "Renderer now returns a partial artifact; integration remains." }] } }, h.ctx)).toBeUndefined();
+		row.schedule.reestimateCount = 2;
+		row.schedule.estimateRevision = 3;
+		await h.handlers.get("tool_result")!({ toolName: "todo", content: [], details: { phases }, isError: false }, h.ctx);
+		const caps = () => h.notices.filter(n => n.customType === "todo-gate-cap");
+		expect(caps()).toHaveLength(1);
+		expect(caps()[0].content).toContain("next same-owner reestimate is refused");
+		expect(caps()[0].content).toContain("proc://worker-a/kill");
+		const cap = await h.handlers.get("tool_call")!({ toolName: "todo", input }, h.ctx);
+		actionable(cap.reason, "Polish amber chart");
+		expect(cap.reason).toContain("proc://worker-a/kill");
+		await h.tick();
+		expect(caps()).toHaveLength(1);
+		for (const notice of [...eta, ...caps()]) expect(notice.content.split("\n").length).toBeLessThanOrEqual(2);
+	} finally { h.shutdown(); nowSpy.mockRestore(); if (previousLane === undefined) delete process.env.OMP_LANE_UNIT; else process.env.OMP_LANE_UNIT = previousLane; }
+});

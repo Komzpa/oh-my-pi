@@ -167,6 +167,33 @@ describe("agent router", () => {
 		}
 	});
 
+	test("keeps long file paths and worker ids actionable in the first line", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const call = toolCallHandler();
+			const longPath = `src/${"very-long-directory-".repeat(8)}target-file.txt`;
+			const write = await call({ toolName: "write", input: { path: longPath, content: "" } }, ctx({ cwd: dir }));
+			const writeAction = write.reason.split("\n", 1)[0];
+			expect(writeAction.length).toBeLessThanOrEqual(100);
+			expect(writeAction).toContain("replace: true");
+			expect(writeAction).toContain("target-file.txt");
+			expect(write.reason).toContain(longPath);
+
+			const longId = `writer-${"x".repeat(120)}-end-92`;
+			const state = createRouterState();
+			const context = ctx({ getAsyncJobSnapshot: () => ({ running: [{ id: longId, type: "task", status: "running" }], recent: [], delivery: {} }) });
+			routeSubagentSpawn({ agent: "coder", spawnKey: longId }, ctx(), state, { stateFile: file });
+			const blocked = routeSubagentSpawn({ agent: "coder", spawnKey: "second-writer" }, context, state, { stateFile: file });
+			const writerAction = blocked.reason.split("\n", 1)[0];
+			expect(writerAction.length).toBeLessThanOrEqual(100);
+			expect(writerAction).toContain("writer-");
+			expect(writerAction).toContain("end-92");
+			expect(blocked.reason).toContain(longId);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("incoming git-pr-owner bypasses the checkout gate while file writers stay gated", async () => {
 		const { dir, file } = tempStateFile();
 		try {
@@ -251,6 +278,10 @@ describe("agent router", () => {
 			const overlap = await spawn("coder", "coder-overlap");
 			expect(overlap?.block).toBe(true);
 			expect(overlap?.reason).toContain("owner-1");
+			const firstLine = overlap?.reason.split("\n", 1)[0] ?? "";
+			expect(firstLine.length).toBeLessThanOrEqual(100);
+			expect(firstLine).toContain("owner-1");
+			expect(firstLine).toContain("git-pr-owner");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -332,7 +363,7 @@ describe("agent router", () => {
 			);
 			expect(controlSecond?.block).toBe(true);
 			expect(controlSecond?.reason).toContain("control-1");
-			expect(controlSecond?.reason).toContain("this spawn scope");
+			expect(controlSecond?.reason).toContain("coder targets");
 			expect(controlSecond?.reason).toContain(laneA);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -809,6 +840,60 @@ describe("agent router", () => {
 		expect(handlers.has("tool_result")).toBe(true);
 	});
 
+	test("announces file guard at session start and active writer once after async spawn", async () => {
+		const { dir, file } = tempStateFile();
+		const previousStatePath = process.env.OMP_AGENT_ROUTER_STATE;
+		const handlers = new Map<string, Function>();
+		const messages: Array<{ customType: string; content: string }> = [];
+		let running = false;
+		process.env.OMP_AGENT_ROUTER_STATE = file;
+		try {
+			execFileSync("git", ["init", "-q", dir]);
+			const api = {
+				setLabel: () => undefined,
+				on: (event: string, handler: Function) => handlers.set(event, handler),
+				sendMessage: (message: { customType: string; content: string }) => messages.push(message),
+			} as unknown as ExtensionAPI;
+			agentRouter(api);
+			const context = ctx({
+				cwd: dir,
+				getAsyncJobSnapshot: () => ({ running: running ? [{ id: "WriterR92", type: "task", status: "running" }] : [], recent: [], delivery: {} }),
+			});
+			handlers.get("session_start")!({}, context);
+			handlers.get("session_start")!({}, context);
+			expect(messages).toHaveLength(1);
+			expect(messages[0]?.content).toContain(dir);
+			expect(messages[0]?.content).toContain("replace: true");
+			const writeGate = await handlers.get("tool_call")!({ toolName: "write", input: { path: "draft.txt", content: "" } }, context);
+			expect(writeGate?.block).toBe(true);
+			expect(messages[0]?.content).toContain("empty or tiny tracked-file writes require replace: true");
+
+			handlers.get("before_subagent_spawn")!({ agent: "coder", spawnKey: "WriterR92", patterns: [] }, context);
+			const started = {
+				toolName: "task",
+				isError: false,
+				details: {
+					async: { state: "running", jobId: "job-r92" },
+					progress: [{ id: "WriterR92", agent: "coder", status: "running" }],
+				},
+			};
+			running = true;
+			handlers.get("tool_result")!(started, context);
+			handlers.get("tool_result")!(started, context);
+			expect(messages).toHaveLength(2);
+			expect(messages[1]?.content).toContain("WriterR92");
+			expect(messages[1]?.content).toContain("No overlapping writer");
+			expect(messages[1]?.content.split("\n")).toHaveLength(2);
+			const gate = handlers.get("before_subagent_spawn")!({ agent: "coder", spawnKey: "WriterR93", patterns: [] }, context);
+			expect(gate?.block).toBe(true);
+			expect(messages[1]?.content).toContain("until it settles");
+		} finally {
+			if (previousStatePath === undefined) delete process.env.OMP_AGENT_ROUTER_STATE;
+			else process.env.OMP_AGENT_ROUTER_STATE = previousStatePath;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("extension follows a late core fallback with the actual routed model in UI", () => {
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 		const notifications: Array<{ message: string; type?: string }> = [];
@@ -848,6 +933,9 @@ describe("agent router", () => {
 			expect(refused).toMatchObject({ block: true });
 			expect(refused.reason).toContain("empty.txt");
 			expect(refused.reason).toContain("empty");
+		const action = refused.reason.split("\n", 1)[0] ?? "";
+		expect(action).toBe("Pass replace: true for empty.txt.");
+		expect(action.length).toBeLessThanOrEqual(100);
 			expect(
 				await call({ toolName: "write", input: { path: "empty.txt", content: "", replace: true } }, context),
 			).toBeUndefined();
@@ -868,6 +956,9 @@ describe("agent router", () => {
 			expect(refused).toMatchObject({ block: true });
 			expect(refused.reason).toContain("tracked.txt");
 			expect(refused.reason).toContain("5%");
+		const action = refused.reason.split("\n", 1)[0] ?? "";
+		expect(action).toBe("Pass replace: true to shrink tracked.txt.");
+		expect(action.length).toBeLessThanOrEqual(100);
 			expect(
 				await call({ toolName: "write", input: { path: "tracked.txt", content: "tiny", replace: true } }, context),
 			).toBeUndefined();
@@ -1004,7 +1095,7 @@ describe("agent router", () => {
 			expect(refused).toMatchObject({ block: true });
 			expect(refused?.reason).toContain("holder-1");
 			expect(refused?.reason).toContain(repoA);
-			expect(refused?.reason).toContain("if this row edits another repo, put that repo path in the row resources");
+			expect(refused?.reason).toContain("Put the other repo path in this row's resources");
 			expect(refused?.reason).toContain(`isolated: true isolates only ${repoA}`);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });

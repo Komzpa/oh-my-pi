@@ -2275,7 +2275,7 @@ test("the context hook does not add the chief rules per request, and no entry ap
   // The per-request context carries only the CHIEF_OF_STAFF one-liner, never the full runbook text.
   expect(JSON.stringify(first?.messages)).not.toContain("Run the pass from step 1");
   // No compaction event → no chief-rules history entry.
-  expect(sent).toHaveLength(0);
+  expect(sent.filter(([message]) => message.customType === "chief-rules-after-compaction")).toHaveLength(0);
   rmSync(dir, { recursive: true, force: true });
 });
 

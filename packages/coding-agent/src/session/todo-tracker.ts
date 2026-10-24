@@ -122,7 +122,9 @@ export class TodoTracker {
 	get planningRepairMessage(): string | undefined {
 		const issues = this.planningIssues;
 		if (issues.length === 0) return undefined;
-		return issues.map(issue => `- ${issue.task}: ${issue.message}`).join("\n");
+		const rows = [...new Set(issues.map(issue => issue.task))];
+		const action = `Schedule "${rows[0]!.replace(/\s+/g, " ").slice(0, 24)}" first with an estimate and dependencies${rows.length > 1 ? ` (+${rows.length - 1} more below)` : ""}.`;
+		return `${action}\n${issues.map(issue => `- ${issue.task}: ${issue.message}`).join("\n")}`;
 	}
 
 	/** Names of blocked unfinished tasks, independent of metadata validity. */

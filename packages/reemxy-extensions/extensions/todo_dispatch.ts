@@ -2,6 +2,7 @@
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { selectBranchEntries, selectBranchNewestFirst, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import { prompt } from "@oh-my-pi/pi-utils";
+import { truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
@@ -10,7 +11,7 @@ import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { availableParallelism } from "node:os";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
-import { parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -19,6 +20,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, latestDeadlineUserMessage, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState } from "./deadlines";
 import unansweredUserInstructions from "./unanswered-user-reply.md" with { type: "text" };
+import gateNoticeInstructions from "./gate-notices.md" with { type: "text" };
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 import { derivePresence, isDeadlineStateEntryMetadata, isGoalLifecycleEntryMetadata, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
@@ -560,7 +562,7 @@ export function slipReestimateRefusal(args: {
     if (!reestimate) continue;
     const budgetMs = todoOverrunBudgetMs({ startedAt: row.startedAt, estimateUpdatedAt: row.estimateUpdatedAt, reestimateCount: row.reestimateCount, estimateRangeSeconds: row.estimateRangeSeconds });
     const overBudget = typeof row.startedAt === "number" && budgetMs !== undefined && args.now - row.startedAt > budgetMs;
-    const exhausted = row.reestimateCount >= 3;
+    const exhausted = row.reestimateCount >= 2;
     const startedAt = args.runningStartedAt?.get(row.owner);
     // A freshly started owner is a new attempt after crash recovery (658): its
     // reestimate replans the remainder, it does not slip the old ETA. Only the
@@ -577,10 +579,10 @@ export function slipReestimateRefusal(args: {
     const profile = args.runningProfiles.get(row.owner);
     const strong = typeof profile === "string" && existsSync(new URL(`./agents/${profile}-strong.md`, import.meta.url)) ? `${profile}-strong` : undefined;
     if (!exhausted) {
-      return `Refusing todo schedule: ${JSON.stringify(content)} is past its ETA under running owner ${row.owner}. Exactly: todo schedule the row with evidence (the failure reason) plus a new estimate, or with a new owner${strong ? ` (${strong})` : ""} or split the remainder into new rows.`;
+      return `Reestimate ${actionTarget(content)} with evidence + estimate.\nRefusing todo schedule: ${JSON.stringify(content)} is past its ETA under running owner ${row.owner}. Exactly: todo schedule the row with evidence (the failure reason) plus a new estimate, or with a new owner${strong ? ` (${strong})` : ""} or split the remainder into new rows.`;
     }
     const why = `has ${row.reestimateCount} reestimates under owner ${row.owner}`;
-    return `Refusing todo schedule: ${JSON.stringify(content)} ${why}. Exactly: write proc://${row.owner}/kill (empty content), read its receipt, then todo schedule the row with a new owner${strong ? ` (${strong})` : ""} or split the remainder into new rows.`;
+    return `Kill ${shorten(row.owner, 32)}; reassign ${actionTarget(content)}.\nRefusing todo schedule: ${JSON.stringify(content)} ${why}. Exactly: write proc://${row.owner}/kill (empty content), read its receipt, then todo schedule the row with a new owner${strong ? ` (${strong})` : ""} or split the remainder into new rows.`;
   }
   return undefined;
 }
@@ -656,10 +658,10 @@ export function refuseRelativeWorkerWrite(seenElsewhere: Map<string, string>, se
   const elsewhere = seenElsewhere.get(session);
   const target = WRITE_TOOLS.has(toolName) ? relativeWrites[0] : undefined;
   if (!elsewhere || !target) return undefined;
-  return `Blocked: relative path \`${target}\` resolves into ${cwd}, the lead's checkout, but you work in another checkout (${elsewhere}). Repeat the ${toolName} with the absolute path inside your ROOT.`;
+  return `Use an absolute ${toolName} path for ${actionTarget(target, 37)} inside ROOT.\nBlocked: relative path \`${target}\` resolves into ${cwd}, the lead's checkout, but you work in another checkout (${elsewhere}). Repeat the ${toolName} with the absolute path inside your ROOT.`;
 }
 export const GLOBAL_KILL_REFUSAL =
-  "Blocked: global kill on a shared host. Record the PID of each process you start and stop only that PID with `kill <pid>`.";
+  "Stop only your recorded PID with kill <pid>.\nBlocked: global kill on a shared host. Record the PID of each process you start and stop only that PID with `kill <pid>`.";
 // A subagent shares the host with other sessions' servers and tests: a kill chosen by name, pattern,
 // file or "everything" hits their processes (live sunbim 2026-10-20: `pkill -f "vite preview"`,
 // `fuser -k`, `pkill -9 -f "node.*playwright"`, repeated after the lead's STOP). Only a kill of a
@@ -724,7 +726,7 @@ export function decideGateCall(
   return {
     allowed: false,
     remedyGateIds: gates.map((gate) => gate.id),
-    reason: `blocked by ${gates.length} gate(s): ${gates.map((gate) => `${gate.id} (remedy: ${gate.remedy})`).join("; ")}`,
+    reason: `Answer ${shorten(gates[0]!.id, 32)} via todo${gates.length > 1 ? ` (+${gates.length - 1} more below)` : ""}.\nblocked by ${gates.length} gate(s): ${gates.map((gate) => `${gate.id} (remedy: ${gate.remedy})`).join("; ")}`,
   };
 }
 
@@ -898,6 +900,7 @@ function restoredChildren(
   );
 }
 const shorten = (text: string, max = MAX_LABEL) => text.replace(/\s+/g, " ").trim().slice(0, max);
+const actionTarget = (text: string, width = 34) => truncateMiddleToWidth(JSON.stringify(text.replace(/\s+/g, " ")), width);
 function containsExactString(value: unknown, expected: string): boolean {
   if (value === expected) return true;
   if (Array.isArray(value)) return value.some((item) => containsExactString(item, expected));
@@ -2194,6 +2197,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     for (const id of new Set([...Object.keys(next), ...activeIds])) {
       const current = next[id] ?? 0;
       if (active.has(id)) {
+        if (current === 0 && typeof pi.sendMessage === "function") sendHarnessNotice("todo-gate-escalation", id, prompt.render(gateNoticeInstructions, { escalation: true, gate: id }).trim());
         if (current < 99) { next[id] = current + 1; changed = true; }
       } else if (current > 0) { next[id] = 0; changed = true; }
       else if (current < 0) { next[id] = current + 1; changed = true; }
@@ -2270,12 +2274,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     for (const name of sprintState.retroFacilitatorJobs) retroFacilitatorJobs.add(name);
     persistedSprintStateJson = JSON.stringify(sprintState);
     if (!singleWriterLane) armPlanTicker(ctx);
+    if (!singleWriterLane && isMain(ctx) && pi.getActiveTools().includes("task") && typeof pi.sendMessage === "function")
+      sendHarnessNotice("todo-gate-worker-names", ctx.sessionManager.getHeader()?.id ?? ctx.cwd, prompt.render(gateNoticeInstructions, { names: true }).trim());
   };
   const loadAndRefresh = (_event: unknown, ctx: ExtensionContext) => {
 	load(ctx);
 	// Quota discovery may wait on providers; restoring the session must not.
 	// The refresh already coalesces requests and handles failures internally.
 	void refreshLiveWorkerModels(ctx);
+    announceGates(ctx);
   };
   pi.on("session_start", loadAndRefresh);
   pi.on("session_switch", loadAndRefresh);
@@ -2291,7 +2298,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     clearIdleTimer();
     healPlanTicker(ctx);
   });
-  pi.on("turn_start", (_event, ctx) => healPlanTicker(ctx));
+  pi.on("turn_start", (_event, ctx) => { healPlanTicker(ctx); announceGates(ctx); });
   let presenceCache: { minute: number; entries: number; presence: Presence } | null = null;
   const presenceOf = (branch: readonly unknown[], now: number): Presence => {
     const minute = Math.floor(now / 60_000);
@@ -2463,7 +2470,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const workList = decision.awayWorkList ?? [];
       if (workList.length === 0) return;
       return refuseWait(
-        `Stop waiting while the user is away; finish this work list first: ${workList.join(" ")}`,
+        `Finish ${actionTarget(open[0]?.content ?? "away work", 37)} before wait.\nStop waiting while the user is away; finish this work list first: ${workList.join(" ")}`,
         `away:${decision.key}`,
       );
     }
@@ -2474,19 +2481,19 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       : replanInstruction(ctx, open, workerCapacity(ctx));
     if (idle) {
       const reason = [
-        "Stop waiting: nothing is running, so nothing will arrive.",
+        `Staff ${actionTarget(readyRows[0]?.content ?? open[0]?.content ?? "open plan")} via task before wait.\nStop waiting: nothing is running, so nothing will arrive.`,
         overdue ? "You are past the deadline." : undefined,
         next,
-      ].filter(Boolean).join(" ");
+      ].filter(Boolean).join("\n");
       return refuseWait(reason);
     }
     // Dependency-waiting and recorded-approval rows cannot start yet, so they do not make the wait gate idle.
     if (runningTasks.length === 0 || ready.length === 0) return;
     const reason = [
-      `Stop waiting: ready work lacks a distinct running worker${overdue ? ", and you are past the deadline" : late ? ", and you are about to miss the deadline" : ""}.`,
+      `Staff ${actionTarget(readyRows[0]?.content ?? "ready work")} via task before wait.\nStop waiting: ready work lacks a distinct running worker${overdue ? ", and you are past the deadline" : late ? ", and you are about to miss the deadline" : ""}.`,
       next,
       activityLine(ctx, runningTasks),
-    ].filter(Boolean).join(" ");
+    ].filter(Boolean).join("\n");
     return refuseWait(reason);
   };
   // Chief of staff: the main session plans, dispatches and integrates. While worker slots are free
@@ -2943,6 +2950,50 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const header = ctx.sessionManager.getHeader();
     return header !== null && !header.parentSession;
   };
+  const announceHuman = (ctx: ExtensionContext, user: { at: number; text: string }) => {
+    if (singleWriterLane || !isMain(ctx) || typeof pi.sendMessage !== "function" || typeof pi.appendEntry !== "function") return;
+    const timestamp = new Date(user.at * 1_000).toISOString();
+    const key = `${timestamp}:${user.text}`;
+    const content = prompt.render(gateNoticeInstructions, { human: true, timestamp }).trim();
+    if (sprintState.lastNotices[noticeKey("todo-gate-user-reply", key)] === noticeDigest(content)) return;
+    sendHarnessNotice("todo-gate-user-reply", key, content);
+  };
+  const announceGates = (ctx: ExtensionContext, pending: unknown[] = [], now = Date.now(), measured?: DispatchDecision) => {
+    if (singleWriterLane || !isMain(ctx) || typeof pi.sendMessage !== "function" || typeof pi.appendEntry !== "function") return;
+    const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending));
+    const notice = (kind: string, key: string, data: Record<string, unknown>) => {
+      const type = `todo-gate-${kind}`;
+      const content = prompt.render(gateNoticeInstructions, data).trim();
+      if (sprintState.lastNotices[noticeKey(type, key)] === noticeDigest(content)) return;
+      sendHarnessNotice(type, key, content);
+    };
+    const tasks = [...new Set(getTodoPlanningIssues(phases).map(issue => issue.task))];
+    if (tasks.length) notice("schedule", JSON.stringify(tasks), { schedule: true, rows: tasks.map(task => JSON.stringify(task)).join(", "), tasks });
+    if (pauseGate?.paused || gateSwitchedOff(ctx)) return;
+    const decision = measured ?? currentDecision(ctx, now, pending);
+    const rows = decision.dispatchableReady ?? [];
+    if (rows.length) notice("staffing", JSON.stringify(rows.map(row => [row.content, row.owner, row.ownership])), {
+      staffing: true, rows: rows.map(row => JSON.stringify(row.content)).join(", "),
+    });
+    if (decision.presence === "away" && !rows.length && decision.awayWorkList?.length) notice("away", decision.key, {
+      away: true, rows: decision.awayWorkList.join(" "),
+    });
+    for (const row of decision.forecast?.rows ?? []) {
+      if (!isOpenRowStatus(row.status) || !row.owner) continue;
+      const key = `${row.content}:${row.owner}:${row.estimateRevision}`;
+      const data = { row: JSON.stringify(row.content), owner: row.owner };
+      if (row.reestimateCount >= 2) notice("cap", key, { ...data, cap: true });
+      const start = row.estimateUpdatedAt ?? row.startedAt;
+      const finish = row.resourceFinish;
+      if (row.status === "in_progress" && start !== undefined && finish !== undefined && finish > start && now >= start + 0.8 * (finish - start))
+        notice("eta", key, { ...data, eta: true });
+    }
+
+  };
+  pi.on("message_start", (event, ctx) => {
+    const user = latestDeadlineUserMessage([{ type: "message", message: event.message }]);
+    if (user) announceHuman(ctx, user);
+  });
   const unansweredUserReason = (ctx: ExtensionContext) => {
     if (singleWriterLane || !isMain(ctx)) return;
     // Canonical history contains finalized assistant_message rewrites, not streamed drafts.
@@ -3049,7 +3100,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     });
     return {
       block: true,
-      reason: `${addressed} is settled; row ${JSON.stringify(shorten(row.content))} current live owner is ${currentOwner}; redirect requested.`,
+      reason: `Write agent://${shorten(currentOwner, 35)} for ${actionTarget(row.content, 28)}.\n${addressed} is settled; row ${JSON.stringify(shorten(row.content))} current live owner is ${currentOwner}; redirect requested.`,
     };
   };
   let lastTaskDispatchRefused = false;
@@ -3080,7 +3131,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const ready = (decision.dispatchableReady ?? []).slice(0, MAX_TASK_DISPATCH).map((row) => JSON.stringify(shorten(row.content)));
     return {
       block: true,
-      reason: `Blocked: ${event.toolName} is work for a worker. Start one with a task call for: ${ready.join(", ")}. If a row only waits on a unit or job, set its owner to unit:<name> or job:<pid>. Reading (read, grep, find, git status/log/show/diff) stays allowed. ${ORDER}`,
+      reason: `Staff ${actionTarget(decision.dispatchableReady[0].content)} via task before ${event.toolName}.\nBlocked: ${event.toolName} is work for a worker. Start one with a task call for: ${ready.join(", ")}. If a row only waits on a unit or job, set its owner to unit:<name> or job:<pid>. Reading (read, grep, find, git status/log/show/diff) stays allowed. ${ORDER}`,
     };
   };
   const completedPlanRows = (ctx: ExtensionContext): Array<{ content: string; schedule?: { owner?: unknown } }> => {
@@ -3128,7 +3179,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       gateTrace(ctx, "planning-failure-worker-name-refused", { name: item.name, word });
       return {
         block: true,
-        reason: `Worker name ${JSON.stringify(item.name)} contains planning-failure word ${JSON.stringify(word)}: name the result its row produces, verb first (e.g. AdmitChiefBashLooks), never a reopen verb like Fix/Repair/Retry; a resend reuses the row owner. ${WORKER_NAME_ACTION[group] ?? WORKER_NAME_ACTION.Owner} (skill step 8: ${WORKER_NAME_GUIDANCE[group] ?? WORKER_NAME_GUIDANCE.Owner}).`,
+        reason: `Rename ${actionTarget(item.name)} to the result it produces.\nWorker name ${JSON.stringify(item.name)} contains planning-failure word ${JSON.stringify(word)}: name the result its row produces, verb first (e.g. AdmitChiefBashLooks), never a reopen verb like Fix/Repair/Retry; a resend reuses the row owner. ${WORKER_NAME_ACTION[group] ?? WORKER_NAME_ACTION.Owner} (skill step 8: ${WORKER_NAME_GUIDANCE[group] ?? WORKER_NAME_GUIDANCE.Owner}).`,
       };
     }
   };
@@ -3159,7 +3210,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         gateTrace(ctx, "git-pr-owner-checkout-refused", { checkout: displayCheckoutKey(key), running: conflict.owner });
         return {
           block: true,
-          reason: `checkout ${displayCheckoutKey(key)} already has live git-pr-owner ${conflict.owner}; do not start a second git-pr-owner on the same checkout. Use a different worktree for parallel git ownership, or wait for the running one.`,
+          reason: `Use ${shorten(conflict.owner, 30)} for ${actionTarget(displayCheckoutKey(key))}; keep one git-pr-owner.\ncheckout ${displayCheckoutKey(key)} already has live git-pr-owner ${conflict.owner}; do not start a second git-pr-owner on the same checkout. Use a different worktree for parallel git ownership, or wait for the running one.`,
         };
       }
       const previous = claimed.get(key);
@@ -3167,7 +3218,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         gateTrace(ctx, "git-pr-owner-batch-checkout-refused", { checkout: displayCheckoutKey(key), first: previous, second: item.name });
         return {
           block: true,
-          reason: `checkout ${displayCheckoutKey(key)} is targeted by multiple git-pr-owner task items in this batch (${previous}, ${String(item.name ?? "unnamed")}); one checkout gets one git-pr-owner.`,
+          reason: `Keep only ${shorten(previous, 28)} for ${actionTarget(displayCheckoutKey(key))} in this batch.\ncheckout ${displayCheckoutKey(key)} is targeted by multiple git-pr-owner task items in this batch (${previous}, ${String(item.name ?? "unnamed")}); one checkout gets one git-pr-owner.`,
         };
       }
       claimed.set(key, String(item.name ?? "unnamed"));
@@ -3325,6 +3376,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // expired advice; context/tool admission refreshes the canonical snapshot.
     const state = gitStateCache?.cwd === ctx.cwd && now - gitStateCache.at <= 15_000 ? gitStateCache.state : null;
     const merge = resolvedMerge(state);
+    if (state?.mergeHead) sendHarnessNotice("todo-gate-merge", state.mergeHead, prompt.render(gateNoticeInstructions, { merge: true, head: state.mergeHead }).trim());
     if (merge) {
       const minutes = Math.round((merge.mergeAgeMs ?? 0) / 60_000);
       gateTrace(ctx, "merge-commit-demand", { mergeHead: merge.mergeHead, minutes });
@@ -3955,7 +4007,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         }
         const slip = slipReestimateRefusal({
           updates: todoScheduleUpdates(event.input),
-          rows: currentDecision(ctx, Date.now(), [], true).forecast?.rows ?? [],
+          rows: currentDecision(ctx, Date.now(), [], true, true).forecast?.rows ?? [],
           runningProfiles,
           runningStartedAt,
           now: Date.now(),
@@ -3988,8 +4040,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           return {
             block: true,
             reason: running.length
-              ? `Merge ${open.mergeHead} already has its worker (${running.map((job) => job.id).join(", ")}); one merge gets one worker. ${ORDER}`
-              : `This batch splits merge ${open.mergeHead} across ${items.length} workers; one merge gets one worker. ${ORDER}`,
+              ? `Use ${shorten(running[0].id, 30)} for merge ${shorten(open.mergeHead, 12)}.\nMerge ${open.mergeHead} already has its worker (${running.map((job) => job.id).join(", ")}); one merge gets one worker. ${ORDER}`
+              : `Assign one worker to merge ${shorten(open.mergeHead, 12)}.\nThis batch splits merge ${open.mergeHead} across ${items.length} workers; one merge gets one worker. ${ORDER}`,
           };
         }
       }
@@ -3997,7 +4049,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         gateTrace(ctx, `merge-work-refused-${event.toolName}`, { mergeHead: merge.mergeHead });
         return {
           block: true,
-          reason: `The merge of ${merge.mergeHead} has no unresolved paths; it needs a commit, not more merge work. ${ORDER}`,
+          reason: `Commit merge ${shorten(merge.mergeHead, 12)} now.\nThe merge of ${merge.mergeHead} has no unresolved paths; it needs a commit, not more merge work. ${ORDER}`,
         };
       }
     }
@@ -4094,6 +4146,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     pendingSizingNoticeIds = [];
     const now = Date.now();
     const decision = currentDecision(ctx, now, pending);
+    announceGates(ctx, pending, now, decision);
     const phasesNow = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending) as never);
     touchSprintState(ctx, phasesNow, ctx.getAsyncJobSnapshot(), now, decision.deadline, decision.alarms);
     const retroAdvice = () => {
@@ -4507,6 +4560,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       // (live 21:32: an owner written by this very call was reported as missing).
       const details = (event as { details?: unknown }).details;
       const pendingTodo = details ? [{ type: "message", message: { role: "toolResult", toolName: "todo", details } }] : [];
+      const updates = todoScheduleUpdates(event.input);
+      for (const update of updates) {
+        if (typeof update.owner !== "string" || typeof update.task !== "string") continue;
+        sendHarnessNotice("todo-gate-steering", `${update.task}:${update.owner}`, prompt.render(gateNoticeInstructions, { steering: true, row: JSON.stringify(update.task), owner: update.owner }).trim());
+      }
       const hints = scheduleCalibrationHints(event, ctx, pendingTodo);
       const hintPart = hints.length ? [{ type: "text" as const, text: hints.join("\n") }] : [];
       const check = await planCheck(ctx, pendingTodo);
@@ -4573,6 +4631,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const deduped = dedupeLatestWinsCompactionMessages(event.messages);
     const passThrough = deduped !== event.messages ? { messages: deduped } : undefined;
     await refreshLiveWorkerModels(ctx);
+    announceGates(ctx);
     if (singleWriterLane) return passThrough;
     const now = Date.now();
     if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)), now / 1_000)) return passThrough;

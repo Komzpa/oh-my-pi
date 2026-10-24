@@ -931,7 +931,7 @@ export class SessionTools {
 						PLANNING_CONTROL_TOOLS[target.name] !== true
 					) {
 						throw new ToolError(
-							`Complete whole-plan estimates and dependencies before executing ${target.name}:\n${planningRepair}`,
+							`${planningRepair}\nEvery non-read tool is refused until the whole plan has estimates and dependencies.`,
 						);
 					}
 					return await target.execute(toolCallId, args as never, signal, onUpdate, ctx as never);

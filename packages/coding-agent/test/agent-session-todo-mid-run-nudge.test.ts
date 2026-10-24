@@ -416,9 +416,16 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		delete phases[0].tasks[1].schedule;
 		session.setTodoPhases(phases);
 
-		await expect(directWrite.execute("write-debt", { path, content: "bad write" })).rejects.toThrow(
-			"Complete whole-plan estimates and dependencies before executing write",
+		const refusal = await directWrite.execute("write-debt", { path, content: "bad write" }).then(
+			() => "",
+			error => (error instanceof Error ? error.message : String(error)),
 		);
+		const firstLine = refusal.split("\n")[0]!;
+		expect(firstLine.length).toBeLessThanOrEqual(100);
+		expect(firstLine).toContain('Schedule "Update tests"');
+		expect(firstLine).toContain("estimate and dependencies");
+		expect(firstLine).not.toStartWith("Complete whole-plan");
+		expect(refusal).toContain("Every non-read tool is refused");
 		await expect(task.execute("task-debt", {})).resolves.toEqual({
 			content: [{ type: "text", text: "task-ok" }],
 		});
@@ -437,10 +444,10 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		});
 		expect(bashExecutions).toBe(1);
 		await expect(bash.execute("bash-commit", { command: "git commit -m x" })).rejects.toThrow(
-			"Complete whole-plan estimates and dependencies before executing bash",
+			'Schedule "Update tests" first',
 		);
 		await expect(bash.execute("bash-redirect", { command: "ls > f" })).rejects.toThrow(
-			"Complete whole-plan estimates and dependencies before executing bash",
+			'Schedule "Update tests" first',
 		);
 		expect(bashExecutions).toBe(1);
 	});

@@ -6,6 +6,9 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
+import { prompt } from "@oh-my-pi/pi-utils";
+import gateNotices from "./gate-notices.md" with { type: "text" };
+import { shortenPath, truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { checkoutScopesFromResources, checkoutScopesOverlap } from "./checkout_scope";
 
@@ -222,6 +225,7 @@ export interface FallbackRecord {
 
 interface SpawnState extends SpawnRecord {
 	recordedOutcome: boolean;
+	writerNoticeSent?: boolean;
 }
 
 export interface RouterState {
@@ -267,6 +271,7 @@ export function defaultStateFile(): string {
 function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
+
 
 function recordKey(spawnKey: string, agent: string): string {
 	return `${spawnKey}\u0000${agent}`;
@@ -341,9 +346,10 @@ async function truncatingWriteRefusal(requestedPath: string, input: Record<strin
 	);
 	const content = typeof input.content === "string" ? input.content : "";
 	if (content.length === 0) {
+		const action = `Pass replace: true for ${truncateMiddleToWidth(shortenPath(requestedPath), 48)}.`;
 		return {
 			block: true,
-			reason: `Refusing write to ${requestedPath}: content is empty; pass replace: true to confirm intentional replacement.`,
+			reason: `${action.slice(0, 100)}\nRequested path: ${requestedPath}. Refusing an empty write without explicit replacement confirmation.`,
 		};
 	}
 	const targetRepo = vcs.git(target);
@@ -354,9 +360,10 @@ async function truncatingWriteRefusal(requestedPath: string, input: Record<strin
 	const size = statSync(target).size;
 	const newSize = Buffer.byteLength(content, "utf8");
 	if (newSize < size * 0.05) {
+		const action = `Pass replace: true to shrink ${truncateMiddleToWidth(shortenPath(requestedPath), 42)}.`;
 		return {
 			block: true,
-			reason: `Refusing write to ${requestedPath}: ${newSize} bytes is under 5% of the tracked file's ${size} bytes; pass replace: true to confirm intentional replacement.`,
+			reason: `${action.slice(0, 100)}\nRequested path: ${requestedPath}. This ${newSize}-byte write is under 5% of the tracked ${size}-byte file.`,
 		};
 	}
 	return undefined;
@@ -436,9 +443,10 @@ export function routeSubagentSpawn(
 						? `${incomingFirst[0]}/${incomingFirst[1]}`
 						: incomingFirst[0]
 					: cwdRepoLabel(ctx);
+			const action = `Wait for ${truncateMiddleToWidth(activeWriter.agent, 18)} ${truncateMiddleToWidth(activeWriter.spawnKey, 22)} or use disjoint resources.`;
 			return {
 				block: true,
-				reason: `Refusing ${agent}: ${activeWriter.agent} worker ${activeWriter.spawnKey} is running in ${holderRepoLabel(activeWriter, ctx)} (holder scope ${heldScope}); this spawn scope is ${incomingScope}; if this row edits another repo, put that repo path in the row resources; isolated: true isolates only ${cwdRepoLabel(ctx)}.`,
+				reason: `${action.slice(0, 100)}\nWorker ${activeWriter.agent} ${activeWriter.spawnKey} is writing ${heldScope}; ${agent} targets ${incomingScope}. Put the other repo path in this row's resources; isolated: true isolates only ${cwdRepoLabel(ctx)}.`,
 			};
 		}
 	}
@@ -898,8 +906,23 @@ export async function recordAsyncResultOutcome(
 
 export default function agentRouter(pi: ExtensionAPI) {
 	const state = createRouterState();
+	const announcedGuardSessions = new Set<string>();
 	pi.setLabel?.("Agent Router");
 	pi.on("tool_call", (event, ctx) => fileToolRefusal(event, ctx));
+	pi.on("session_start", (_event, ctx) => {
+		const sessionKey = sessionId(ctx) ?? ctx.cwd ?? "unknown-session";
+		if (announcedGuardSessions.has(sessionKey)) return;
+		announcedGuardSessions.add(sessionKey);
+		pi.sendMessage?.(
+			{
+				customType: "agent-router-write-guard-notice",
+				content: prompt.render(gateNotices, { fileWrites: true, repo: cwdRepoLabel(ctx) }).trim(),
+				display: false,
+				attribution: "agent",
+			},
+			{ deliverAs: "aside" },
+		);
+	});
 	pi.on("before_subagent_spawn", (event, ctx) =>
 		routeSubagentSpawn(event as BeforeSubagentSpawnEvent, ctx, state, {
 			latestTodo: pi.pi?.getLatestTodoPhasesFromEntries,
@@ -909,6 +932,28 @@ export default function agentRouter(pi: ExtensionAPI) {
 		recordAndNotifyRetryFallbackApplied(event as RetryFallbackAppliedEvent, ctx, state);
 	});
 	pi.on("tool_result", (event, ctx) => {
+		if (event.toolName === "task" && event.isError !== true && event.details && typeof event.details === "object") {
+			const details = event.details as { progress?: unknown; async?: { state?: unknown } };
+			if (details.async?.state === "running" && Array.isArray(details.progress)) {
+				for (const item of details.progress) {
+					if (!item || typeof item !== "object") continue;
+					const progress = item as { id?: unknown; status?: unknown };
+					if (progress.status !== "running" || typeof progress.id !== "string") continue;
+					const spawn = [...state.spawns.values()].find(candidate => candidate.spawnKey === progress.id);
+					if (!spawn || spawn.recordedOutcome || spawn.writerNoticeSent || !WRITE_CAPABLE_WORKERS.has(spawn.agent)) continue;
+					spawn.writerNoticeSent = true;
+					pi.sendMessage?.(
+						{
+							customType: "agent-router-active-writer-notice",
+							content: prompt.render(gateNotices, { writer: true, agent: spawn.agent, worker: spawn.spawnKey }).trim(),
+							display: false,
+							attribution: "agent",
+						},
+						{ deliverAs: "aside" },
+					);
+				}
+			}
+		}
 		void recordTaskOutcome(event as ToolResultEvent, ctx, state);
 	});
 	pi.on("message_end", (event, ctx) => {

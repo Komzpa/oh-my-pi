@@ -978,8 +978,9 @@ function identicalEstimateErrors(changed: ReadonlyArray<{ task: string; estimate
 	const errors: string[] = [];
 	for (const [key, tasks] of groups) {
 		if (tasks.length <= IDENTICAL_ESTIMATE_LIMIT) continue;
+		const firstTask = tasks[0]!.replace(/\s+/g, " ").slice(0, 24);
 		errors.push(
-			`${tasks.length} rows in this schedule call share the same optimistic/likely/pessimistic estimate ${key} s (${tasks.map(task => `"${task}"`).join(", ")}). An identical triple is a copied default, not an estimate; estimate each row separately from its own scope, history and risk, and resend the call.`,
+			`Re-estimate "${firstTask}" individually${tasks.length > 1 ? ` (+${tasks.length - 1} more rows)` : ""}, then resend schedule.\n${tasks.length} rows in this schedule call share the same optimistic/likely/pessimistic estimate ${key} s (${tasks.map(task => `"${task}"`).join(", ")}). An identical triple is a copied default; estimate each row separately from its own scope, history and risk.`,
 		);
 	}
 	return errors;

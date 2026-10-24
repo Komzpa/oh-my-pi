@@ -404,6 +404,10 @@ test("vetoes native and plugin goal completion until branch TODO work is closed"
 
 	const native = invoke("goal", { op: "complete" }) as { block?: boolean; reason?: string };
 	expect(native.block).toBe(true);
+	const action = native.reason?.split("\n", 1)[0] ?? "";
+	expect(action.length).toBeLessThanOrEqual(100);
+	expect(action).toContain("Repair export");
+	expect(action).not.toMatch(/^Cannot complete goal/);
 	expect(native.reason).toContain("3 TODO tasks are unresolved");
 	expect(native.reason).toContain("Repair export");
 	expect(native.reason).toContain("Repair retrieval");
@@ -437,7 +441,11 @@ test("vetoes native and plugin goal completion until branch TODO work is closed"
 	expect(branchReads).toHaveLength(callsBeforeUnrelated);
 
 	host.getLatestTodoPhasesFromEntries = undefined;
-	expect(invoke("goal", { op: "complete" })).toMatchObject({ block: true });
+	const noReducer = invoke("goal", { op: "complete" }) as { block?: boolean; reason?: string };
+	expect(noReducer.block).toBe(true);
+	const noReducerAction = noReducer.reason?.split("\n", 1)[0] ?? "";
+	expect(noReducerAction).toBe("Restore the TODO reducer before completing this goal.");
+	expect(noReducerAction.length).toBeLessThanOrEqual(100);
 	expect(invoke("other_tool", { op: "complete" })).toBeUndefined();
 	expect(branchReads).toHaveLength(callsBeforeUnrelated);
 
@@ -878,6 +886,7 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 
 	const harness = (userText = "Continue until 19:00", userAtMs = NOW) => {
 		const branch: unknown[] = [{ id: "u1", type: "message", timestamp: new Date(userAtMs).toISOString(), message: { role: "user", content: userText } }];
+		const notices: Array<{ customType: string; content: string }> = [];
 		let tool: { description: string; execute: (...args: unknown[]) => Promise<{ details: { state: DeadlineState | null } }> } | undefined;
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 		goalDeadlines({
@@ -887,13 +896,14 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 				tool = t;
 			},
 			appendEntry: (customType: string, data: unknown) => branch.push({ type: "custom", customType, data }),
+			sendMessage: (message: { customType: string; content: string }) => notices.push(message),
 			zod: z,
 		} as unknown as ExtensionAPI);
 		const ctx = { cwd: "/tmp", hasUI: false, sessionManager: branchMock(() => branch) } as unknown as ExtensionContext;
 		handlers.get("session_start")?.({}, ctx);
 		const set = (stage: Record<string, unknown>, quote = userText) =>
 			tool!.execute("set", { action: "set", timezone: TBILISI, user_message: quote, stages: [{ id: "final", label: "Final", expected_result: "Delivered", ...stage }] }, undefined, undefined, ctx);
-		return { tool: tool!, set, branch };
+		return { tool: tool!, set, branch, notices, handlers, ctx };
 	};
 
 	test("resolves a bare HH:MM to the next such moment in the timezone", () => {
@@ -914,12 +924,54 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		expect(result.details.state?.baselineDeadlineAt).toBe(1_792_594_800);
 	});
 
+	test("deadline set and arrival notices are two lines, deduped, and precede the missed-deadline refusal", async () => {
+		setSystemTime(NOW);
+		const h = harness();
+		const result = await h.set({ local_time: "19:00" });
+		expect(result.details.state?.baselineDeadlineAt).toBe(Date.parse("2026-10-21T15:00:00Z") / 1000);
+		expect(h.notices).toHaveLength(1);
+		expect(h.notices[0]?.content).toContain("19:00");
+		expect(h.notices[0]?.content.split("\n")).toHaveLength(2);
+		h.handlers.get("context")!({ messages: [] }, h.ctx);
+		expect(h.notices).toHaveLength(1);
+
+		setSystemTime(Date.parse("2026-10-21T15:00:01Z"));
+		h.handlers.get("context")!({ messages: [] }, h.ctx);
+		expect(h.notices).toHaveLength(2);
+		expect(h.notices[1]?.content).toContain("passed");
+		expect(h.notices[1]?.content.split("\n")).toHaveLength(2);
+		h.handlers.get("context")!({ messages: [] }, h.ctx);
+		expect(h.notices).toHaveLength(2);
+
+		const blocked = h.handlers.get("tool_call")!({ toolName: "todo", input: { op: "append" } }, h.ctx) as { block?: boolean; reason?: string };
+		expect(blocked.block).toBe(true);
+		expect(h.notices[1]?.content).toContain("before adding task or TODO work");
+		expect(blocked.reason?.split("\n", 1)[0]).toContain("19:00");
+	});
+
 	test("a deadline_at that disagrees with local_time is rejected with the resolved value", async () => {
 		setSystemTime(NOW);
 		const { set } = harness();
 		await expect(set({ local_time: "19:00", deadline_at: 1_761_058_800 })).rejects.toThrow(/resolves to 1792594800 \(2026-10-21T15:00:00.000Z\)/);
 		const agreeing = await set({ local_time: "19:00", deadline_at: 1_792_594_830 });
 		expect(agreeing.details.state?.stages[0]?.deadlineAt).toBe(1_792_594_800);
+	});
+
+	test("invalid long stage ids keep a bounded imperative action and the full id in the detail", async () => {
+		setSystemTime(NOW);
+		const h = harness();
+		const stageId = `deadline-${"x".repeat(100)}-tail-92`;
+		let message = "";
+		try {
+			await h.set({ id: stageId, local_time: "not-a-time" });
+		} catch (error) {
+			message = error instanceof Error ? error.message : String(error);
+		}
+		const firstLine = message.split("\n", 1)[0] ?? "";
+		expect(firstLine.length).toBeLessThanOrEqual(100);
+		expect(firstLine).toContain("Set a valid local_time");
+		expect(firstLine).toContain("tail-92");
+		expect(message).toContain(stageId);
 	});
 
 	test("a new user deadline in the past or beyond a week is an arithmetic error, never WRAP-UP", async () => {
@@ -947,4 +999,32 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		setSystemTime(NOW + 45 * 60_000);
 		await expect(late.set({ local_time: "19:00" })).rejects.toThrow(/Only a newer user message/);
 	});
+});
+
+
+test("goal focus announces open TODO completion requirements before either completion tool", () => {
+	const handlers = new Map<string, Function>();
+	const notices: Array<{ customType: string; content: string }> = [];
+	const phases = [{ name: "Release", tasks: [{ content: "Publish violet report", status: "pending" }] }];
+	goalDeadlines({
+		pi: { goalRef },
+		on: (event, handler) => handlers.set(event, handler),
+		registerTool: () => {}, appendEntry: () => {}, zod: z,
+		sendMessage: message => notices.push(message),
+	} as unknown as ExtensionAPI);
+	const ctx = { getTodoPhases: () => phases, hasUI: false } as unknown as ExtensionContext;
+	const focus = () => handlers.get("goal_updated")!({ goal: { id: "violet-goal", createdAt: 1_000, status: "active" } }, ctx);
+	focus(); focus();
+	expect(notices).toHaveLength(1);
+	expect(notices[0].content.split("\n")).toHaveLength(2);
+	expect(notices[0].content).toContain("Publish violet report");
+	for (const call of [{ toolName: "goal", input: { op: "complete" } }, { toolName: "update_goal", input: { status: "complete" } }]) {
+		const refusal = handlers.get("tool_call")!(call, ctx);
+		expect(refusal.block).toBe(true);
+		expect(refusal.reason.split("\n")[0]).toBe(notices[0].content.split("\n")[0]);
+	}
+	phases[0].tasks[0].status = "completed";
+	focus();
+	expect(notices).toHaveLength(1);
+	expect(handlers.get("tool_call")!({ toolName: "goal", input: { op: "complete" } }, ctx)).toBeUndefined();
 });

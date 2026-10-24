@@ -30,6 +30,13 @@ import {
 import todoDispatch, { decideGateCall, decideTodoDispatch, parseTodoOverride, SPRINT_STATE_ENTRY_TYPE } from "./todo_dispatch";
 import * as dispatchModule from "./todo_dispatch";
 
+function assertLegible(reason: string | undefined, target?: string) {
+  const first = reason?.split("\n")[0] ?? "";
+  expect(first.length).toBeLessThanOrEqual(100);
+  expect(first).not.toMatch(/^(Blocked:|Stop waiting:|Refusing|blocked by|todo done is blocked until)/);
+  if (target) expect(first).toContain(target);
+}
+
 function branchMock(getBranch: () => unknown[]) {
   return {
     getBranch,
@@ -197,7 +204,9 @@ async function outcome(state: State, cwd: string, call: Call | null, strictDeman
     const satisfies = strictDemand && demand?.toolName ? (c: Call) => c.name === demand.toolName : demand?.satisfies ?? ((c: Call) => c.name === demand?.toolName);
     // omp skips calls only for a demand handed to it; strictDemand simulates the old enforcement.
     const skipped = strictDemand && Boolean(demand?.toolName) && !satisfies(call);
-    const refusedByHook = Boolean(((await handlers.get("tool_call")!({ toolName: call.name, toolCallId: "c", input: call.arguments }, ctx)) as { block?: boolean } | undefined)?.block);
+    const refusal = await handlers.get("tool_call")!({ toolName: call.name, toolCallId: "c", input: call.arguments }, ctx) as { block?: boolean; reason?: string } | undefined;
+    if (refusal?.block) assertLegible(refusal.reason);
+    const refusedByHook = Boolean(refusal?.block);
     const refusedByAdmission = !state.admissionOpen && !ADMISSION_ALWAYS.has(call.name);
     return { demand, satisfied: Boolean(demand?.toolName) && satisfies(call), executed: !skipped && !refusedByHook && !refusedByAdmission };
   } finally {
@@ -728,6 +737,7 @@ test("task calls refuse planning-failure worker names but allow verb-first neigh
     for (const [name, word] of Object.entries(alwaysBlocked)) {
       const refusal = (await call(name));
       expect(refusal?.block, name).toBe(true);
+      assertLegible(refusal?.reason, name);
       expect(refusal?.reason, name).toContain(word);
       expect(refusal?.reason, name).toContain("skill step 8");
       expect(refusal?.reason, name).toContain("verb first");
@@ -736,6 +746,7 @@ test("task calls refuse planning-failure worker names but allow verb-first neigh
     for (const [name, word] of Object.entries(reopenBlocked)) {
       const refusal = (await call(name, "Export pipeline"));
       expect(refusal?.block, name).toBe(true);
+      assertLegible(refusal?.reason, name);
       expect(refusal?.reason, name).toContain(word);
       expect(refusal?.reason, name).toContain("skill step 8");
       expect(refusal?.reason, name).toContain("verb first");
@@ -1220,7 +1231,7 @@ test("a plan with problems is reported once per problem list, not again while it
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string }, options?: { deliverAs?: string }) => { sent.push({ content: message.content, deliverAs: options?.deliverAs }); },
+    sendMessage: (message: { content: string; customType?: string }, options?: { deliverAs?: string }) => { if (!message.customType?.startsWith("todo-gate-")) sent.push({ content: message.content, deliverAs: options?.deliverAs }); },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
   let branch = plan("ready", now);
@@ -1311,7 +1322,7 @@ test("PLAN CHECK names a worker whose session file went quiet, and only that one
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string }) => { sent.push(message.content); },
+    sendMessage: (message: { content: string; customType?: string }) => { if (!message.customType?.startsWith("todo-gate-")) sent.push(message.content); },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
   const branch = plan("chained", now);
@@ -1393,8 +1404,8 @@ for (const live of [false, true]) test(`PLAN CHECK reports compaction from ${liv
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000, timezone: "Asia/Tbilisi" }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string }) => {
-      sent.push(message.content);
+    sendMessage: (message: { content: string; customType?: string }) => {
+      if (!message.customType?.startsWith("todo-gate-")) sent.push(message.content);
     },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
@@ -1474,8 +1485,8 @@ test("PLAN CHECK asks only workers running longer than fifteen minutes for a don
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000 }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string }) => {
-      sent.push(message.content);
+    sendMessage: (message: { content: string; customType?: string }) => {
+      if (!message.customType?.startsWith("todo-gate-")) sent.push(message.content);
     },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
@@ -1565,7 +1576,7 @@ test("PLAN CHECK has the harness ask an overdue worker once instead of telling c
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000, timezone: "Asia/Tbilisi" }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string }) => { sent.push(message.content); },
+    sendMessage: (message: { content: string; customType?: string }) => { if (!message.customType?.startsWith("todo-gate-")) sent.push(message.content); },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
   const branch = plan("chained", liveNow - 60 * 60_000) as Array<{ message: { details: { phases: TodoScheduleInput } } }>;
@@ -1634,7 +1645,7 @@ test("PLAN CHECK falls back when worker message delivery returns false", async (
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000 }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string }) => { sent.push(message.content); },
+    sendMessage: (message: { content: string; customType?: string }) => { if (!message.customType?.startsWith("todo-gate-")) sent.push(message.content); },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
   const branch = plan("chained", liveNow - 60 * 60_000);
@@ -1693,7 +1704,7 @@ test("PLAN CHECK keeps the manual fallback when worker messaging is absent", asy
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000 }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string }) => { sent.push(message.content); },
+    sendMessage: (message: { content: string; customType?: string }) => { if (!message.customType?.startsWith("todo-gate-")) sent.push(message.content); },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
   const branch = plan("chained", liveNow - 60 * 60_000);
@@ -1824,7 +1835,7 @@ test("PLAN CHECK includes compact running-worker status from session tool events
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000 }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string }) => { sent.push(message.content); },
+    sendMessage: (message: { content: string; customType?: string }) => { if (!message.customType?.startsWith("todo-gate-")) sent.push(message.content); },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
   const branch = plan("ready", liveNow);
@@ -1884,7 +1895,7 @@ test("PLAN CHECK delivers an unchanged problem once while worker telemetry and t
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: clock + 3_600_000 }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string }) => { sent.push(message.content); },
+    sendMessage: (message: { content: string; customType?: string }) => { if (!message.customType?.startsWith("todo-gate-")) sent.push(message.content); },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
   const branch = plan("ready", clock);
@@ -1945,7 +1956,7 @@ test("PLAN CHECK heartbeat: an unchanged problem without an escalation step is r
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: clock + 3_600_000 * 3 }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string }) => { sent.push(message.content); },
+    sendMessage: (message: { content: string; customType?: string }) => { if (!message.customType?.startsWith("todo-gate-")) sent.push(message.content); },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
   // Estimates far longer than the replay keep the missed-ETA and receding-finish escalations out of this fixture.
@@ -2022,7 +2033,7 @@ test("PLAN CHECK warns both live workers and chief once when worker writes overl
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000 }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string }) => { sent.push(message.content); },
+    sendMessage: (message: { content: string; customType?: string }) => { if (!message.customType?.startsWith("todo-gate-")) sent.push(message.content); },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
   let tick: (() => void) | undefined;
@@ -2108,6 +2119,7 @@ test("write to a settled worker names and redirects to the row's current live ow
       input: { path: "agent://worker-old", content: "what is current proof?" },
     }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(stale?.block).toBe(true);
+    assertLegible(stale?.reason, "Row A");
     expect(stale?.reason).toContain("worker-old is settled");
     expect(stale?.reason).toContain('row "Row A" current live owner is worker-new');
     expect(stale?.reason).toContain("redirect requested");
@@ -2190,6 +2202,7 @@ test("refuses a second git-pr-owner on the same checkout while allowing another 
       input: { tasks: [{ name: "LandCueTimingSha", agent: "git-pr-owner", task: `Land cue timing fix in ${cwd}` }] },
     }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(same?.block).toBe(true);
+    assertLegible(same?.reason, "LandV3CaptionMirror");
     expect(same?.reason).toContain(`checkout ${cwd}`);
     expect(same?.reason).toContain("already has live git-pr-owner LandV3CaptionMirror");
 
@@ -2281,7 +2294,7 @@ test("PLAN CHECK says when the finish recedes with the clock, not before 45 minu
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 6 * 3_600_000 }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string }) => { sent.push(message.content); },
+    sendMessage: (message: { content: string; customType?: string }) => { if (!message.customType?.startsWith("todo-gate-")) sent.push(message.content); },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
   let branch = plan("chained", now);
@@ -2416,7 +2429,7 @@ test("the waiting list is the chain that sets the ETA and names a shared resourc
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: (message: { content: string }) => { sent.push(message.content); },
+    sendMessage: (message: { content: string; customType?: string }) => { if (!message.customType?.startsWith("todo-gate-")) sent.push(message.content); },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
   const row = (content: string, dependencies: string[], resources: string[], owner?: string) => ({
@@ -2476,6 +2489,7 @@ test("decideGateCall: reads, steering and non-done todo pass; other calls need a
   expect(blocked.allowed).toBe(false);
   expect(blocked.remedyGateIds).toEqual(["receipt"]);
   expect(blocked.reason).toContain("receipt");
+  assertLegible(blocked.reason, "receipt");
   const allowed = decideGateCall({ name: "todo", arguments: { op: "done", task: "Row A" } }, [receipt]);
   expect(allowed.allowed).toBe(true);
   expect(allowed.remedyGateIds).toEqual(["receipt"]);
@@ -2658,7 +2672,9 @@ async function slipCall(tasks: unknown[], jobs: Jobs, call: Call) {
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   try {
-    return (await handlers.get("tool_call")!({ toolName: call.name, toolCallId: "c", input: call.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    const result = await handlers.get("tool_call")!({ toolName: call.name, toolCallId: "c", input: call.arguments }, ctx) as { block?: boolean; reason?: string } | undefined;
+    if (result?.block) assertLegible(result.reason, String(tasks[0]?.content).slice(0, 12));
+    return result;
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });
@@ -2680,7 +2696,7 @@ test("empty dispatchableReady does not refuse work that cannot be delegated", as
 
 test("R1 (case A): a same-owner reestimate on a slipping running row is refused with one exact action", async () => {
   const stale = Date.now() - 65 * 60_000;
-  const tasks = () => [slipRow("Force-layout callouts", "IntegrateFacilityCallouts", 2, stale)];
+  const tasks = () => [slipRow("Force-layout callouts", "IntegrateFacilityCallouts", 1, stale)];
   const jobs = slipJobs("IntegrateFacilityCallouts", "ui-coder", stale);
   const refused = await slipCall(tasks(), jobs, reestimateCall("Force-layout callouts"));
   expect(refused?.block).toBe(true);
@@ -2713,8 +2729,8 @@ test("R2 (case B): the sixth reestimate under the same owner is refused, overdue
   expect(refused?.block).toBe(true);
   expect(refused?.reason).toContain("reestimates");
   expect(refused?.reason).toContain("Exactly: write proc://FixR8LastFails/kill");
-  // Negative control: under three reestimates the same reestimate passes.
-  expect(await slipCall([slipRow("Report r8 REQ-7 and REQ-11 fails fixed", "FixR8LastFails", 2, fresh)], jobs, reestimateCall("Report r8 REQ-7 and REQ-11 fails fixed"))).toBeUndefined();
+  // Negative control: the second same-owner reestimate still passes.
+  expect(await slipCall([slipRow("Report r8 REQ-7 and REQ-11 fails fixed", "FixR8LastFails", 1, fresh)], jobs, reestimateCall("Report r8 REQ-7 and REQ-11 fails fixed"))).toBeUndefined();
 });
 
 test("owner recovery: five reestimates under A do not exhaust the next schedule under B", async () => {
@@ -2761,9 +2777,10 @@ test("owner recovery negative control: the same owner at three reestimates stays
 
 test("R4: the slip refusal is one exact action whose calls compose with the escalation gate", async () => {
   const stale = Date.now() - 65 * 60_000;
-  const refused = await slipCall([slipRow("Force-layout callouts", "IntegrateFacilityCallouts", 2, stale)], slipJobs("IntegrateFacilityCallouts", "ui-coder", stale), reestimateCall("Force-layout callouts"));
+  const refused = await slipCall([slipRow("Force-layout callouts", "IntegrateFacilityCallouts", 1, stale)], slipJobs("IntegrateFacilityCallouts", "ui-coder", stale), reestimateCall("Force-layout callouts"));
   const reason = refused?.reason ?? "";
-  expect(reason.startsWith("Refusing todo schedule:")).toBe(true);
+  expect(reason.split("\n")[0]).toContain("Reestimate");
+  expect(reason.split("\n")[0].length).toBeLessThanOrEqual(100);
   expect(reason.split("Refusing").length - 1).toBe(1);
   expect(reason.length).toBeLessThan(400);
   expect(reason).toContain("Exactly: todo schedule the row with evidence");
@@ -2816,7 +2833,7 @@ test("a fresh running owner may reestimate a slipping row; stale owners remain r
   const now = Date.now();
   const fresh = now - 5 * 60_000;
   const stale = now - 20 * 60_000;
-  const freshRow = slipRow("Fresh recovery row", "FreshRecoveryOwner", 2, now - 65 * 60_000);
+  const freshRow = slipRow("Fresh recovery row", "FreshRecoveryOwner", 1, now - 65 * 60_000);
   const freshResult = await slipCall(
     [freshRow],
     slipJobs("FreshRecoveryOwner", "coder", fresh),
@@ -2824,7 +2841,7 @@ test("a fresh running owner may reestimate a slipping row; stale owners remain r
   );
   expect(freshResult).toBeUndefined();
 
-  const staleRow = slipRow("Stale slipping row", "StaleSlippingOwner", 2, now - 65 * 60_000);
+  const staleRow = slipRow("Stale slipping row", "StaleSlippingOwner", 1, now - 65 * 60_000);
   const staleResult = await slipCall(
     [staleRow],
     slipJobs("StaleSlippingOwner", "coder", stale),
@@ -2944,7 +2961,9 @@ test("a worker that works in its own checkout cannot write a relative path into 
   const reason = refuse(seen, "w", "edit", { input: "*** Begin Patch\n[AGENTS.md#3BBD]\nPUT 26.=27:\n+x\n*** End Patch" }, lead);
   expect(reason).toContain("relative path `AGENTS.md`");
   expect(reason).toContain(own);
-  expect(refuse(seen, "w", "write", { path: "notes.md", content: "x" }, lead)).toContain("Blocked:");
+  const refused = refuse(seen, "w", "write", { path: "notes.md", content: "x" }, lead);
+  expect(refused).toContain("Blocked:");
+  assertLegible(refused, "notes.md");
   // The absolute retry passes.
   expect(refuse(seen, "w", "edit", { input: `*** Begin Patch\n[${own}/AGENTS.md#3BBD]\nPUT 26.=27:\n+x\n*** End Patch` }, lead)).toBeUndefined();
   // A worker that only ever works in the lead's checkout keeps relative paths.

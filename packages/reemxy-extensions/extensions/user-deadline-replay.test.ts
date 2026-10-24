@@ -63,7 +63,10 @@ test("transcript replay persists without focus, wraps at 23:00, and survives rew
 	expect(h.context()).toContain("WRAP-UP MODE");
 	expect(h.context()).toContain("deadline 23:00 missed");
 	expect(h.context()).toContain("by 0m");
-	expect(h.gate("todo", { op: "append", items: ["New row"] })).toEqual({ block: true, reason: "Refusing new work after the missed 23:00 user deadline. Ask the user for a new deadline time (it replaces the missed one) or whether to drop the deadline; record the answer with goal_deadline set or clear." });
+	const missed = h.gate("todo", { op: "append", items: ["New row"] });
+	expect(missed).toMatchObject({ block: true });
+	expect(missed.reason.split("\n", 1)[0]).toBe("Ask about the 23:00 deadline: set a new time or clear it.");
+	expect(missed.reason.split("\n", 1)[0].length).toBeLessThanOrEqual(100);
 	expect(h.gate("todo", { op: "init", list: [{ phase: "New scope", items: ["New row"] }] })).toMatchObject({ block: true });
 	expect(h.gate("task", { tasks: [{ name: "NewWorker", agent: "coder", task: "New row" }] })).toMatchObject({ block: true });
 	expect(h.gate("todo", { op: "schedule", updates: [{ task: "Existing row", content: "Corrected row" }] })).toBeUndefined();

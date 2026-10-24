@@ -1901,6 +1901,11 @@ describe("todo schedule rejects copied estimates", () => {
 			triple(1200, 2400, 3600),
 		]);
 		expect(outcome.ok).toBe(false);
+		const firstLine = outcome.text.split("\n")[0]!;
+		expect(firstLine.length).toBeLessThanOrEqual(100);
+		expect(firstLine).toContain('Re-estimate "a" individually');
+		expect(firstLine).toContain("+2 more rows");
+		expect(firstLine).not.toStartWith("3 rows in this schedule call");
 		expect(outcome.text).toContain(
 			"3 rows in this schedule call share the same optimistic/likely/pessimistic estimate 1200/2400/3600 s",
 		);
