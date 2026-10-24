@@ -1,0 +1,1 @@
+Reply to the user's {{timestamp}} message («{{excerpt}}») in plain text first: what is left, ETA, and what you are doing about it; then wait or end the turn. Tool calls and private reasoning do not count as a reply.

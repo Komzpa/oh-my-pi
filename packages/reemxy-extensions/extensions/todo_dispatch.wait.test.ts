@@ -172,6 +172,77 @@ async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initia
 	};
 }
 
+const humanQuestion = () => ({
+	type: "message",
+	message: {
+		role: "user", attribution: "user", steering: true,
+		content: [{ type: "text", text: "сука а ты можешь быстрее?:???????" }],
+		timestamp: Date.parse("2026-10-24T04:23:16.412Z"),
+	},
+});
+
+test("an unanswered human message refuses every wait with its timestamp and text, while reads stay allowed", async () => {
+	const h = await noticeHarness([], Date.now() + 3600_000);
+	try {
+		h.entries.push(humanQuestion());
+		h.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "I should reply" }, { type: "toolCall", name: "read", arguments: {} }] } });
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const result = await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
+			expect(result?.block).toBe(true);
+			expect(result.reason).toContain("2026-10-24T04:23:16.000Z");
+			expect(result.reason).toContain("сука а ты можешь быстрее?:???????");
+		}
+		expect(await h.handlers.get("tool_call")!({ toolName: "read", input: { path: "README.md" } }, h.ctx)).toBeUndefined();
+	} finally { h.shutdown(); }
+});
+
+test("published assistant text answers the human, but a newer human turn requires another reply", async () => {
+	const h = await noticeHarness([], Date.now() + 3600_000);
+	try {
+		h.entries.push(humanQuestion());
+		h.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Checking the final test; about two minutes left." }] } });
+		h.entries.push({ type: "custom", customType: "notice", data: {} });
+		expect(await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx)).toBeUndefined();
+		h.entries.push(humanQuestion());
+		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).toBe(true);
+	} finally { h.shutdown(); }
+});
+
+test("injected peer messages and synthetic notices do not require human replies", async () => {
+	const h = await noticeHarness([], Date.now() + 3600_000);
+	try {
+		h.entries.push({ type: "message", message: { role: "custom", customType: "irc:incoming", attribution: "agent", content: "worker result" } });
+		h.entries.push({ type: "message", message: { ...humanQuestion().message, attribution: "agent" } });
+		h.entries.push({ type: "message", message: { ...humanQuestion().message, synthetic: true } });
+		expect(await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx)).toBeUndefined();
+	} finally { h.shutdown(); }
+});
+
+test("a worker's unanswered brief does not block wait or stop", async () => {
+	const h = await noticeHarness([], Date.now() + 3600_000);
+	try {
+		h.ctx.sessionManager.getHeader = () => ({ id: "worker", parentSession: "/parent.jsonl" });
+		h.entries.push(humanQuestion());
+		expect(await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx)).toBeUndefined();
+		expect(await h.handlers.get("session_stop")!({}, h.ctx)).toBeUndefined();
+	} finally { h.shutdown(); }
+});
+
+test("empty stop and unpublished drafts keep the human unanswered until final text reaches history", async () => {
+	const h = await noticeHarness([], Date.now() + 3600_000);
+	try {
+		h.entries.push(humanQuestion());
+		// A pre-publication draft (including a completion claim rejected by a rewrite hook)
+		// is not in canonical history. Streamed text likewise cannot discharge the reply.
+		await h.handlers.get("message_update")?.({ message: { role: "assistant", content: [{ type: "text", text: "Done" }] } }, h.ctx);
+		h.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "  " }] } });
+		expect((await h.handlers.get("session_stop")!({}, h.ctx))?.decision).toBe("block");
+		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).toBe(true);
+		h.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Verification is pending; checking it now." }] } });
+		expect(await h.handlers.get("session_stop")!({}, h.ctx)).toBeUndefined();
+	} finally { h.shutdown(); }
+});
+
 test("healthy worker telemetry does not wake the chief on a plan tick", async () => {
 	const previousLane = process.env.OMP_LANE_UNIT;
 	delete process.env.OMP_LANE_UNIT;

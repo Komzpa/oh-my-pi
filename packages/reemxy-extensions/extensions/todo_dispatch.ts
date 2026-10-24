@@ -1,6 +1,7 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
-import { selectBranchEntries, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
+import { selectBranchEntries, selectBranchNewestFirst, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
+import { prompt } from "@oh-my-pi/pi-utils";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
@@ -16,7 +17,8 @@ import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
-import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState } from "./deadlines";
+import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, latestDeadlineUserMessage, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState } from "./deadlines";
+import unansweredUserInstructions from "./unanswered-user-reply.md" with { type: "text" };
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 import { derivePresence, isDeadlineStateEntryMetadata, isGoalLifecycleEntryMetadata, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
@@ -2941,6 +2943,33 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const header = ctx.sessionManager.getHeader();
     return header !== null && !header.parentSession;
   };
+  const unansweredUserReason = (ctx: ExtensionContext) => {
+    if (singleWriterLane || !isMain(ctx)) return;
+    // Canonical history contains finalized assistant_message rewrites, not streamed drafts.
+    // Walk the selected branch backwards, including across compaction, stopping at its latest
+    // genuine human turn. Reuse deadline attribution rules so peers/notices stay agent-owned.
+    let replied = false;
+    for (const entry of selectBranchNewestFirst(ctx.sessionManager, metadata =>
+      metadata.type === "message" && (metadata.messageRole === "user" || metadata.messageRole === "assistant"),
+    )) {
+      const message = entry.message;
+      if (message.role === "assistant") {
+        if (message.content.some(part => part.type === "text" && part.text.trim())) replied = true;
+        continue;
+      }
+      const user = latestDeadlineUserMessage([entry]);
+      if (!user) continue;
+      if (replied) return;
+      return prompt.render(unansweredUserInstructions, {
+        timestamp: new Date(user.at * 1_000).toISOString(),
+        excerpt: shorten(user.text.replace(/\s+/g, " ").trim(), 80),
+      }).trim();
+    }
+  };
+  pi.on("session_stop", (_event, ctx) => {
+    const reason = unansweredUserReason(ctx);
+    if (reason) return { decision: "block", reason };
+  });
   // The full chief-of-staff runbook (main) or a worker's original brief (subagent) can drop out of
   // context at compaction when the summary replaces the retained prefix. Conditionally re-persist it
   // once, right after a compaction that drops it, as a custom message entry that joins LLM context
@@ -3872,6 +3901,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   });
 
   pi.on("tool_call", async (event, ctx) => {
+    if (event.toolName === "wait") {
+      const reason = unansweredUserReason(ctx);
+      if (reason) return { block: true, reason };
+    }
     // A safety control, not a staffing gate: it holds even when the staffing gates are switched off.
     if (event.toolName === "bash" && !isMain(ctx)) {
       const command = (event.input as { command?: unknown } | undefined)?.command;

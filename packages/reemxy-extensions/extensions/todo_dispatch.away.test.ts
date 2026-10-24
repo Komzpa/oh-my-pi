@@ -157,6 +157,8 @@ const minutesAgo = (now: number, minutes: number) => {
 };
 
 async function session(phases: unknown[], branch: unknown[], running: Array<{ id: string; label: string }>) {
+	// Presence scenarios start after the lead acknowledged the user's request.
+	branch.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "The report is running; I will check its result." }] } });
 	const cwd = mkdtempSync(join(tmpdir(), "todo-away-"));
 	const now = Date.now();
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();

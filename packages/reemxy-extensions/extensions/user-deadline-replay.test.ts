@@ -174,6 +174,9 @@ test("real staffing consumer yields its demands and worker gate to missed-deadli
 		expect(provider.demand(ctx)).toBeUndefined();
 		expect(await handlers.get("context")!({ messages: [] }, ctx)).toBeUndefined();
 		expect(await handlers.get("tool_call")!({ toolName: "bash", input: { command: "git status" } }, ctx)).toBeUndefined();
+		// Wrap-up still requires an answer to the human before waiting.
+		expect((await handlers.get("tool_call")!({ toolName: "wait", input: {} }, ctx))?.block).toBe(true);
+		h.branch.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "The deadline passed; final verification is unfinished." }] } });
 		expect(await handlers.get("tool_call")!({ toolName: "wait", input: {} }, ctx)).toBeUndefined();
 	} finally {
 		if (previousLane === undefined) delete process.env.OMP_LANE_UNIT;
