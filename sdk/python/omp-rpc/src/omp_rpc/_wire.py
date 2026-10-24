@@ -129,6 +129,16 @@ _SUBAGENT_STATUS_VALUES: Final[frozenset[str]] = frozenset({"pending", "running"
 _decode_subagent_status = cast("Decoder[SubagentStatus]", literal(_SUBAGENT_STATUS_VALUES))
 
 
+TodoConfidence: TypeAlias = Literal["low", "medium", "high"]
+_TODO_CONFIDENCE_VALUES: Final[frozenset[str]] = frozenset({"low", "medium", "high"})
+_decode_todo_confidence = cast("Decoder[TodoConfidence]", literal(_TODO_CONFIDENCE_VALUES))
+
+
+TodoWorkerOutcome: TypeAlias = Literal["completed", "failed", "aborted"]
+_TODO_WORKER_OUTCOME_VALUES: Final[frozenset[str]] = frozenset({"completed", "failed", "aborted"})
+_decode_todo_worker_outcome = cast("Decoder[TodoWorkerOutcome]", literal(_TODO_WORKER_OUTCOME_VALUES))
+
+
 SlowModeScope: TypeAlias = Literal["session", "global"]
 """Where `/slow` lives: persisted config shared by every session, or this session's flex tier."""
 _SLOW_MODE_SCOPE_VALUES: Final[frozenset[str]] = frozenset({"session", "global"})
@@ -552,6 +562,7 @@ class ModelInfo:
 class TodoItem:
     content: str
     status: TodoStatus
+    schedule: TodoSchedule | None = None
     blocker: str | None = None
     """What a `blocked` task is waiting on."""
     details: str | None = None
@@ -562,6 +573,76 @@ class TodoItem:
 class TodoPhase:
     name: str
     tasks: tuple[TodoItem, ...]
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TodoEstimate:
+    """User-maintained duration estimate in seconds; `updatedAt` is Unix milliseconds."""
+    optimistic_seconds: float
+    likely_seconds: float
+    pessimistic_seconds: float
+    confidence: TodoConfidence
+    basis: str
+    updated_at: float
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TodoScheduleProgress:
+    at: float
+    evidence: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TodoScheduleExecutor:
+    """Observed Task worker that executed this row, independent of forecast ownership; timestamps are Unix milliseconds."""
+    worker_id: str
+    started_at: float
+    agent_profile: str | None = None
+    resolved_model: str | None = None
+    thinking_level: str | None = None
+    finished_at: float | None = None
+    outcome: TodoWorkerOutcome | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TodoReworkAttempt:
+    """Immutable terminal worker attempt attached to its exact todo row; timestamps and duration are milliseconds."""
+    attempt_id: str
+    worker_name: str
+    resolved_model: str
+    effort: str
+    started_at: float
+    finished_at: float
+    duration_ms: float
+    terminal_status: TodoWorkerOutcome
+    deliverable_paths: tuple[str, ...]
+    rejection_reason: str | None = None
+    reflection_answer: str | None = None
+    no_answer_reason: str | None = None
+    final_report_paragraph: str | None = None
+    infra_failure_line: str | None = None
+    infra_failure_error: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TodoSchedule:
+    """Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds."""
+    dependencies: tuple[str, ...] | None = None
+    """Exact task-content references; absent means unknown, while an empty array explicitly means independent."""
+    owner: str | None = None
+    """Exclusive forecast owner while this task is running."""
+    resources: tuple[str, ...] | None = None
+    """Exclusive resource identifiers while running; absent means undeclared."""
+    estimate: TodoEstimate | None = None
+    estimate_revision: float | None = None
+    """Server-owned revision: the first estimate is revision 1."""
+    reestimate_count: float | None = None
+    progress: TodoScheduleProgress | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
+    attempt_history: tuple[TodoReworkAttempt, ...] | None = None
+    """Append-only durable attempts for this exact row."""
+    executor: TodoScheduleExecutor | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1262,7 +1343,12 @@ class SubagentLifecyclePayload:
     agent_source: AgentSource
     status: SubagentLifecycleStatus
     index: int
+    at: float | None = None
+    """Wall clock of the emitted lifecycle transition, in Unix milliseconds."""
+    resolved_model_identity: str | None = None
+    resolved_thinking_level: str | None = None
     description: str | None = None
+    task_text: str | None = None
     session_file: str | None = None
     parent_tool_call_id: str | None = None
     detached: bool | None = None
@@ -1827,6 +1913,7 @@ def parse_todo_item(value: object, path: str = "TodoItem") -> TodoItem:
     return TodoItem(
         content=required(payload, "content", decode_str, path),
         status=required(payload, "status", _decode_todo_status, path),
+        schedule=optional(payload, "schedule", parse_todo_schedule, path),
         blocker=optional(payload, "blocker", decode_str, path),
         details=optional(payload, "details", decode_str, path),
         notes=optional(payload, "notes", array(decode_str), path),
@@ -1838,6 +1925,77 @@ def parse_todo_phase(value: object, path: str = "TodoPhase") -> TodoPhase:
     return TodoPhase(
         name=required(payload, "name", decode_str, path),
         tasks=required(payload, "tasks", array(parse_todo_item), path),
+    )
+
+
+def parse_todo_estimate(value: object, path: str = "TodoEstimate") -> TodoEstimate:
+    payload = expect_object(value, path)
+    return TodoEstimate(
+        optimistic_seconds=required(payload, "optimisticSeconds", decode_float, path),
+        likely_seconds=required(payload, "likelySeconds", decode_float, path),
+        pessimistic_seconds=required(payload, "pessimisticSeconds", decode_float, path),
+        confidence=required(payload, "confidence", _decode_todo_confidence, path),
+        basis=required(payload, "basis", decode_str, path),
+        updated_at=required(payload, "updatedAt", decode_float, path),
+    )
+
+
+def parse_todo_schedule_progress(value: object, path: str = "TodoScheduleProgress") -> TodoScheduleProgress:
+    payload = expect_object(value, path)
+    return TodoScheduleProgress(
+        at=required(payload, "at", decode_float, path),
+        evidence=required(payload, "evidence", decode_str, path),
+    )
+
+
+def parse_todo_schedule_executor(value: object, path: str = "TodoScheduleExecutor") -> TodoScheduleExecutor:
+    payload = expect_object(value, path)
+    return TodoScheduleExecutor(
+        worker_id=required(payload, "workerId", decode_str, path),
+        started_at=required(payload, "startedAt", decode_float, path),
+        agent_profile=optional(payload, "agentProfile", decode_str, path),
+        resolved_model=optional(payload, "resolvedModel", decode_str, path),
+        thinking_level=optional(payload, "thinkingLevel", decode_str, path),
+        finished_at=optional(payload, "finishedAt", decode_float, path),
+        outcome=optional(payload, "outcome", _decode_todo_worker_outcome, path),
+    )
+
+
+def parse_todo_rework_attempt(value: object, path: str = "TodoReworkAttempt") -> TodoReworkAttempt:
+    payload = expect_object(value, path)
+    return TodoReworkAttempt(
+        attempt_id=required(payload, "attemptId", decode_str, path),
+        worker_name=required(payload, "workerName", decode_str, path),
+        resolved_model=required(payload, "resolvedModel", decode_str, path),
+        effort=required(payload, "effort", decode_str, path),
+        started_at=required(payload, "startedAt", decode_float, path),
+        finished_at=required(payload, "finishedAt", decode_float, path),
+        duration_ms=required(payload, "durationMs", decode_float, path),
+        terminal_status=required(payload, "terminalStatus", _decode_todo_worker_outcome, path),
+        deliverable_paths=required(payload, "deliverablePaths", array(decode_str), path),
+        rejection_reason=optional(payload, "rejectionReason", decode_str, path),
+        reflection_answer=optional(payload, "reflectionAnswer", decode_str, path),
+        no_answer_reason=optional(payload, "noAnswerReason", decode_str, path),
+        final_report_paragraph=optional(payload, "finalReportParagraph", decode_str, path),
+        infra_failure_line=optional(payload, "infraFailureLine", decode_str, path),
+        infra_failure_error=optional(payload, "infraFailureError", decode_str, path),
+    )
+
+
+def parse_todo_schedule(value: object, path: str = "TodoSchedule") -> TodoSchedule:
+    payload = expect_object(value, path)
+    return TodoSchedule(
+        dependencies=optional(payload, "dependencies", array(decode_str), path),
+        owner=optional(payload, "owner", decode_str, path),
+        resources=optional(payload, "resources", array(decode_str), path),
+        estimate=optional(payload, "estimate", parse_todo_estimate, path),
+        estimate_revision=optional(payload, "estimateRevision", decode_float, path),
+        reestimate_count=optional(payload, "reestimateCount", decode_float, path),
+        progress=optional(payload, "progress", parse_todo_schedule_progress, path),
+        started_at=optional(payload, "startedAt", decode_float, path),
+        finished_at=optional(payload, "finishedAt", decode_float, path),
+        attempt_history=optional(payload, "attemptHistory", array(parse_todo_rework_attempt), path),
+        executor=optional(payload, "executor", parse_todo_schedule_executor, path),
     )
 
 
@@ -2627,7 +2785,11 @@ def parse_subagent_lifecycle_payload(value: object, path: str = "SubagentLifecyc
         agent_source=required(payload, "agentSource", _decode_agent_source, path),
         status=required(payload, "status", _decode_subagent_lifecycle_status, path),
         index=required(payload, "index", decode_int, path),
+        at=optional(payload, "at", decode_float, path),
+        resolved_model_identity=optional(payload, "resolvedModelIdentity", decode_str, path),
+        resolved_thinking_level=optional(payload, "resolvedThinkingLevel", decode_str, path),
         description=optional(payload, "description", decode_str, path),
+        task_text=optional(payload, "taskText", decode_str, path),
         session_file=optional(payload, "sessionFile", decode_str, path),
         parent_tool_call_id=optional(payload, "parentToolCallId", decode_str, path),
         detached=optional(payload, "detached", decode_bool, path),
@@ -4068,3 +4230,17 @@ __all__ = [
     "parse_user_content",
     "parse_user_message",
 ]
+__all__.extend([
+    "TodoConfidence",
+    "TodoEstimate",
+    "TodoReworkAttempt",
+    "TodoSchedule",
+    "TodoScheduleExecutor",
+    "TodoScheduleProgress",
+    "TodoWorkerOutcome",
+    "parse_todo_estimate",
+    "parse_todo_rework_attempt",
+    "parse_todo_schedule",
+    "parse_todo_schedule_executor",
+    "parse_todo_schedule_progress",
+])

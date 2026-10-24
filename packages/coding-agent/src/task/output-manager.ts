@@ -11,7 +11,7 @@
  * collisions across repeated or nested task invocations.
  */
 import * as fs from "node:fs/promises";
-import { ADVISOR_TRANSCRIPT_STEM } from "../advisor/transcript-recorder";
+import { ADVISOR_TRANSCRIPT_STEM } from "../advisor/transcript-names";
 import { PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-tui/prompt/composer";
 
 /**

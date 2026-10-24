@@ -7,6 +7,7 @@ import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mod
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import * as theme from "@oh-my-pi/pi-tui/theme";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -73,6 +74,28 @@ describe("InteractiveMode live settings", () => {
 		expect(effective.leftSegments).toEqual(["time", "model"]);
 		expect(effective.contextLine).toBe("off");
 		expect(mode.hideThinkingBlock).toBe(true);
+	});
+
+	it("coalesces restored agent registrations and renders their final state", async () => {
+		const sync = vi.spyOn(mode, "syncRunningSubagentBadge");
+		const badge = vi.spyOn(mode.statusLine, "setRunningSubagents");
+		const registry = AgentRegistry.global();
+		const ids = Array.from({ length: 100 }, (_, index) => `restore-burst-${index}`);
+		try {
+			for (const id of ids) {
+				registry.register({ id, displayName: id, kind: "sub", session: null, status: "running" });
+			}
+			expect(sync).not.toHaveBeenCalled();
+			await new Promise(resolve => setTimeout(resolve, 150));
+			expect(sync).toHaveBeenCalledTimes(1);
+			expect(badge.mock.calls.at(-1)?.[0]).toEqual(expect.arrayContaining(ids));
+			for (const id of ids) registry.unregister(id);
+			await new Promise(resolve => setTimeout(resolve, 150));
+			expect(sync).toHaveBeenCalledTimes(2);
+			expect(badge.mock.calls.at(-1)?.[0].some(id => ids.includes(id))).toBe(false);
+		} finally {
+			for (const id of ids) registry.unregister(id);
+		}
 	});
 
 	it("keeps an explicitly configured unicode status bar after Glyph Protocol confirmation", async () => {

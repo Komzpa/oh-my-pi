@@ -739,7 +739,7 @@ export interface TspAgentProps {
 	name: string;
 	/** Agent type ("task", "explore") as a badge. */
 	agent?: string;
-	/** One-line task description (the assignment summary, never the raw "Complete assignment thoroughly:" prefix). */
+	/** One-line task description shown in the agent hub. */
 	task?: TspText;
 	status: "pending" | "running" | "done" | "failed" | "aborted" | "idle" | "parked";
 	model?: string;
