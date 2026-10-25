@@ -298,15 +298,57 @@ describe("loadEntriesFromFileStream (Bun.JSONL parity)", () => {
 		const file = await writeTemp(content);
 		let bytesRead = 0;
 
-		await sessionLoader.visitEntriesFromFileStream(file, () => {}, {
-			maxBytes: 1024 * 1024,
-			onBytesConsumed: bytes => {
-				bytesRead += bytes;
-			},
+		let parsedBytes = 0;
+		const parseChunk = Bun.JSONL.parseChunk.bind(Bun.JSONL);
+		const parser = spyOn(Bun.JSONL, "parseChunk").mockImplementation((input, start = 0, end) => {
+			const size = typeof input === "string" ? input.length : input.byteLength;
+			parsedBytes += (end ?? size) - start;
+			if (parsedBytes > 2 * 1024 * 1024) throw new Error("multiline parser rescanned its byte budget");
+			return parseChunk(input, start, end);
 		});
+		try {
+			await sessionLoader.visitEntriesFromFileStream(file, () => {}, {
+				maxBytes: 1024 * 1024,
+				onBytesConsumed: bytes => {
+					bytesRead += bytes;
+				},
+			});
+		} finally {
+			parser.mockRestore();
+		}
 
 		expect(bytesRead).toBe(1024 * 1024);
+		// Measure parser work, independent of CPU speed and test timeouts.
+		expect(parsedBytes).toBeLessThanOrEqual(bytesRead + 1);
 		expect(await sessionLoader.readSessionHeaderId(file)).toBeUndefined();
+	});
+
+	it("frames a completed multiline value once across chunks with escaped and nested values", async () => {
+		const row = JSON.stringify({
+			text: 'quote " slash \\ braces {} [] café 🙂',
+			values: [true, false, null, -1.2e3],
+		});
+		const content = `{\n"id":"many-lines","rows":[\n${Array(20_000).fill(row).join(",\n")}\n]\n}\n`;
+		const file = await writeTemp(content);
+		let parsedBytes = 0;
+		const parseChunk = Bun.JSONL.parseChunk.bind(Bun.JSONL);
+		const parser = spyOn(Bun.JSONL, "parseChunk").mockImplementation((input, start = 0, end) => {
+			const size = typeof input === "string" ? input.length : input.byteLength;
+			parsedBytes += (end ?? size) - start;
+			return parseChunk(input, start, end);
+		});
+		try {
+			const positions: number[] = [];
+			const entries: FileEntry[] = [];
+			await sessionLoader.visitEntriesFromFileStream(file, entry => void entries.push(entry), {
+				onEntryPosition: (_entry, offset, length) => positions.push(offset, length),
+			});
+			expect(entries).toEqual([JSON.parse(content)]);
+			expect(positions).toEqual([0, Buffer.byteLength(content)]);
+			expect(parsedBytes).toBeLessThanOrEqual(Buffer.byteLength(content));
+		} finally {
+			parser.mockRestore();
+		}
 	});
 
 	it("stops after the first chunk of a delimiter-free file when the record cap is zero", async () => {
@@ -366,6 +408,91 @@ describe("loadEntriesFromFileStream (Bun.JSONL parity)", () => {
 		expect(loaded.malformedRecords).toBe(1);
 	});
 
+	it("keeps only the first JSON value of a physical line that holds two values, then resumes on the next line", async () => {
+		const first = JSON.stringify(msg("p1", "s1", "first"));
+		const second = JSON.stringify(msg("p2", "p1", "second"));
+		const content = `${JSON.stringify(HEADER)}\n${first} ${second}\n${JSON.stringify(msg("tail", "s1", "after"))}\n`;
+		const file = await writeTemp(content);
+		const loaded = await sessionLoader.loadEntriesFromFileStream(file);
+
+		expect(entryIds(loaded.entries)).toEqual(["s1", "p1", "tail"]);
+		expect(loaded.malformedRecords).toBe(1);
+	});
+
+	it("recovers a valid prefix before trailing junk, honoring maxRecords without a malformed callback", async () => {
+		const content = `${JSON.stringify(msg("pre", "s1", "prefix"))} junk\n${JSON.stringify(msg("tail", "s1", "after"))}\n`;
+		const file = await writeTemp(content);
+		const loaded = await sessionLoader.loadEntriesFromFileStream(file);
+		expect(entryIds(loaded.entries)).toEqual(["pre", "tail"]);
+		expect(loaded.malformedRecords).toBe(1);
+
+		const capped: string[] = [];
+		let capMalformed = 0;
+		await sessionLoader.visitEntriesFromFileStream(file, entry => void capped.push(entry.id), {
+			maxRecords: 1,
+			onMalformedRecord: () => {
+				capMalformed++;
+			},
+		});
+		expect(capped).toEqual(["pre"]);
+		expect(capMalformed).toBe(0);
+	});
+
+	it("demands only the valid JSON prefix of a positioned entry and reads its exact Unicode value", async () => {
+		const text = "café 漢字 🙂";
+		const headerLine = `${JSON.stringify(HEADER)}\n`;
+		const preLine = JSON.stringify(msg("pre", "s1", text));
+		const file = await writeTemp(`${headerLine}${preLine} junk\n${JSON.stringify(msg("tail", "s1", "after"))}\n`);
+		const positions = new Map<string, Parameters<typeof sessionLoader.readPositionedSessionEntry>[1]>();
+		const resume = await sessionLoader.visitSessionFileForResume(file, (entry, position) => {
+			positions.set(entry.id, position);
+		});
+		try {
+			const position = positions.get("pre");
+			if (!position || resume.sourceFd === undefined) throw new Error("missing positioned entry or source fd");
+			expect(position.offset).toBe(Buffer.byteLength(headerLine));
+			expect(position.length).toBe(Buffer.byteLength(preLine));
+			expect(sessionLoader.readPositionedSessionEntry(resume.sourceFd, position)).toMatchObject({
+				type: "message",
+				id: "pre",
+				parentId: "s1",
+				message: { content: [{ type: "text", text }] },
+			});
+		} finally {
+			if (resume.sourceFd !== undefined) fs.closeSync(resume.sourceFd);
+		}
+	});
+
+	it("uses the source session version when reading a positioned record", async () => {
+		for (const [version, expectedRole] of [
+			[2, "custom"],
+			[3, "hookMessage"],
+		] as const) {
+			const header = { ...HEADER, version };
+			const rawMessage = {
+				type: "message",
+				id: "legacy-hook",
+				parentId: "s1",
+				timestamp: ISO,
+				message: { role: "hookMessage", content: [], timestamp: 1 },
+			};
+			const file = await writeTemp(`${JSON.stringify(header)}\n${JSON.stringify(rawMessage)}\n`);
+			let position: Parameters<typeof sessionLoader.readPositionedSessionEntry>[1] | undefined;
+			const resume = await sessionLoader.visitSessionFileForResume(file, (_entry, located) => {
+				position = located;
+			});
+			try {
+				if (!position || resume.sourceFd === undefined) throw new Error("missing positioned entry or source fd");
+				expect(sessionLoader.readPositionedSessionEntry(resume.sourceFd, position)).toMatchObject({
+					type: "message",
+					message: { role: expectedRole },
+				});
+			} finally {
+				if (resume.sourceFd !== undefined) fs.closeSync(resume.sourceFd);
+			}
+		}
+	});
+
 	it("counts a truncated header-only file as malformed and an invalid header", async () => {
 		// Cut mid-value: parseChunk reports "incomplete", not a syntax error, so the
 		// fragment used to vanish without being counted (parseJsonlLenient counts it).
@@ -381,6 +508,26 @@ describe("loadEntriesFromFileStream (Bun.JSONL parity)", () => {
 			malformed: lenient.malformedRecords,
 			invalid: lenient.invalidHeader,
 		});
+	});
+
+	it("recovers after a malformed multiline record and marks the journal for rewrite", async () => {
+		const content = `${JSON.stringify(HEADER)}\n{"type":"message",\n\n${JSON.stringify(msg("tail", "s1", "kept"))}\n`;
+		const file = await writeTemp(content);
+		const loaded = await sessionLoader.loadEntriesFromFileStream(file);
+
+		expect(entryIds(loaded.entries)).toEqual(["s1", "tail"]);
+		expect(loaded.malformedRecords).toBe(1);
+		expect(loaded.malformedRecords).toBe(sessionLoader.parseSessionContent(content).malformedRecords);
+		const indexed: string[] = [];
+		const resumed = await sessionLoader.visitSessionFileForResume(file, entry => {
+			indexed.push(entry.id);
+		});
+		try {
+			expect(indexed).toEqual(["tail"]);
+			expect(resumed.malformedRecords).toBe(1);
+		} finally {
+			if (resumed.sourceFd !== undefined) fs.closeSync(resumed.sourceFd);
+		}
 	});
 
 	it("counts an unterminated truncated tail record at end of file", async () => {
