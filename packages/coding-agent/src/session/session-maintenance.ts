@@ -287,6 +287,19 @@ function usageOverflowDeadEndNotice(reportedInputTokens: number, contextWindow: 
 	);
 }
 
+/**
+ * User-facing notice for a compaction dead end: maintenance freed too little
+ * to retry safely. `remedies` names the recovery actions left on the emitting
+ * path — by the time the post-pass dead end fires, the tiered rescue has
+ * already attempted both elide and image-drop automatically.
+ */
+function compactionDeadEndWarning(remedies: string): string {
+	return (
+		"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. " +
+		`The most recent turn alone is too large to reduce further; ${remedies} or switch to a larger-context model.`
+	);
+}
+
 /** Creates one provider-scoped compaction lifecycle descriptor. */
 export function createCodexCompactionContext(options: {
 	trigger: CodexCompactionContext["trigger"];
@@ -596,6 +609,18 @@ export class SessionMaintenance {
 		return resolveModelCompactionSettings(this.#host.settings, this.#model);
 	}
 
+	/** Remove raw images hidden by prune overlays without charging visible token savings. */
+	#dropHiddenPrunedImages(projectedEntries: readonly SessionEntry[]): number {
+		const projected = new Map(projectedEntries.map(entry => [entry.id, entry]));
+		let removed = 0;
+		for (const entry of this.#host.sessionManager.getRawBranch()) {
+			const visible = projected.get(entry.id);
+			if (entry.type !== "message" || visible?.type !== "message" || entry.message === visible.message) continue;
+			removed += stripImagesFromMessage(entry.message);
+		}
+		return removed;
+	}
+
 	get #tokenizer() {
 		return this.#host.agent.tokenizer;
 	}
@@ -701,17 +726,18 @@ export class SessionMaintenance {
 	}
 
 	/**
-	 * Durably commit a prune pass, restoring the blanked results when the rewrite
-	 * fails so live context never diverges from the history its derived state
-	 * (advisor prefix, todo phases, provider sessions) was built from.
+	 * Append the branch-local prune decision, rebuild live state from that
+	 * projection, then await ordinary storage durability. A latched append failure
+	 * propagates without rollback; the in-memory overlay is what later recovery persists.
 	 */
-	async #persistPrune(result: PruneResult): Promise<void> {
-		try {
-			await this.#host.sessionManager.rewriteEntries();
-		} catch (error) {
-			result.undo();
-			throw error;
-		}
+	async #persistPrune(result: PruneResult, reason: string): Promise<void> {
+		this.#host.sessionManager.appendToolResultPrune(result.targets, result.prunedAt);
+		const sessionContext = this.#host.buildDisplaySessionContext();
+		this.#host.agent.replaceMessages(sessionContext.messages);
+		this.#host.rebaseAdvisorPrefix(reason);
+		this.#host.syncTodoPhasesFromBranch();
+		this.#host.closeCodexProviderSessionsForHistoryRewrite();
+		await this.#host.sessionManager.flush();
 	}
 
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
@@ -737,12 +763,7 @@ export class SessionMaintenance {
 			return undefined;
 		}
 
-		await this.#persistPrune(result);
-		const sessionContext = this.#host.buildDisplaySessionContext();
-		this.#host.agent.replaceMessages(sessionContext.messages);
-		this.#host.rebaseAdvisorPrefix("prune-tool-outputs");
-		this.#host.syncTodoPhasesFromBranch();
-		this.#host.closeCodexProviderSessionsForHistoryRewrite();
+		await this.#persistPrune(result, "prune-tool-outputs");
 		return result;
 	}
 
@@ -754,10 +775,8 @@ export class SessionMaintenance {
 	 * provider prompt cache is cold), so it is cheap to run every turn. Gated
 	 * on the `compaction.supersedeReads` and `compaction.dropUseless` settings.
 	 *
-	 * Persists via `rewriteEntries` like every other history rewrite — the
-	 * session file must match the live (pruned) context or file-based forks
-	 * (`/fork`, `/tan`) and resume rebuild a divergent prefix and cold-miss the
-	 * provider prompt cache.
+	 * Persists one append-only overlay so file-based forks and resume reconstruct
+	 * the same pruned prefix without replacing the journal or its original bytes.
 	 */
 	async #pruneStaleToolResults(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const { supersedeReads, dropUseless } = this.#compactionSettings;
@@ -787,12 +806,7 @@ export class SessionMaintenance {
 			return undefined;
 		}
 
-		await this.#persistPrune(result);
-		const sessionContext = this.#host.buildDisplaySessionContext();
-		this.#host.agent.replaceMessages(sessionContext.messages);
-		this.#host.rebaseAdvisorPrefix("prune-stale-tool-results");
-		this.#host.syncTodoPhasesFromBranch();
-		this.#host.closeCodexProviderSessionsForHistoryRewrite();
+		await this.#persistPrune(result, "prune-stale-tool-results");
 		return result;
 	}
 
@@ -868,6 +882,8 @@ export class SessionMaintenance {
 			tokensFreed += saved;
 			if (anchored) anchoredTokensRemoved += saved;
 		}
+		// Detached prune projections hide raw images from token accounting.
+		removed += this.#dropHiddenPrunedImages(branchEntries);
 		if (removed === 0) {
 			return { removed: 0, tokensFreed: 0 };
 		}
