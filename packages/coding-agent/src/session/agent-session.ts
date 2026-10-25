@@ -1101,6 +1101,8 @@ export class AgentSession implements SettingsScope {
 	#asyncDeliveryEpoch = 0;
 
 	readonly #irc: IrcBridge;
+	#peerInboxDrainer: (() => Promise<void>) | undefined;
+	#peerInboxDrain: Promise<void> | undefined;
 	#ircWakeTurnObserver:
 		| ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined)
 		| undefined;
@@ -2552,7 +2554,10 @@ export class AgentSession implements SettingsScope {
 			this.#loopGuards.onAssistantEvent(message, assistantMessageEvent);
 		});
 		// Tool-result hook owns synchronous post-tool actions that must affect the current loop.
-		this.agent.afterToolCall = ctx => this.#afterToolCall(ctx);
+		this.agent.afterToolCall = async ctx => {
+			await this.#drainPeerInbox();
+			return this.#afterToolCall(ctx);
+		};
 		// Pre-scheduling tool_call wiring: extension handlers run at arg-prep
 		// time so a block/revision lands before concurrency resolution,
 		// tool_execution_start, and the wrapper's approval gate.
@@ -4654,7 +4659,10 @@ export class AgentSession implements SettingsScope {
 			}
 		}
 
-		if (event.type === "turn_end") this.#ttsr.onTurnEnd();
+		if (event.type === "turn_end") {
+			await this.#drainPeerInbox();
+			this.#ttsr.onTurnEnd();
+		}
 		// Finalize the tool-choice queue's in-flight yield after tools have executed.
 		// This must happen at turn_end (not message_end) because onInvoked handlers
 		// run during tool execution, which happens between message_end and turn_end.
@@ -12646,6 +12654,26 @@ export class AgentSession implements SettingsScope {
 	// =========================================================================
 	// IRC Delivery
 	// =========================================================================
+
+	/** Installs the durable cross-process peer inbox owned by the active publication. */
+	setPeerInboxDrainer(drainer: (() => Promise<void>) | undefined): void {
+		this.#peerInboxDrainer = drainer;
+	}
+
+	async #drainPeerInbox(): Promise<void> {
+		const drainer = this.#peerInboxDrainer;
+		if (!drainer) return;
+		if (this.#peerInboxDrain) return this.#peerInboxDrain;
+		const pending = drainer()
+			.catch(error => {
+				logger.warn("Failed to drain durable peer inbox", { error: String(error) });
+			})
+			.finally(() => {
+				if (this.#peerInboxDrain === pending) this.#peerInboxDrain = undefined;
+			});
+		this.#peerInboxDrain = pending;
+		return pending;
+	}
 
 	/** Surfaces and consumes pending IRC records before automatic injection. */
 	drainPendingIrcInboxMessages(agentId: string, opts?: { from?: string; limit?: number }): IrcMessage[] {

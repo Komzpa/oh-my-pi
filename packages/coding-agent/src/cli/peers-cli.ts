@@ -63,7 +63,13 @@ export async function runPeerListCommand(
 			`pid ${session.pid}`,
 			`main ${clean(session.mainAgentId)}`,
 			`started ${formatAge(Math.round((Date.now() - session.startedAt) / 1000)) || "just now"}`,
-			session.busy === null ? "busy unknown" : session.busy ? "working" : "idle",
+			session.probeTimedOut
+				? `busy (no answer in ${session.probeTimeoutMs ?? args.registry?.timeoutMs ?? 1_500} ms)`
+				: session.busy === null
+					? "busy unknown"
+					: session.busy
+						? "working"
+						: "idle",
 			`${session.agents.length} ${session.agents.length === 1 ? "agent" : "agents"}`,
 		];
 		print("");
@@ -110,6 +116,9 @@ export async function runPeerSendCommand(
 		print(JSON.stringify(output, null, 2));
 	} else if (receipt.status === "failed" || receipt.status === "uncertain") {
 		printErr(`${receipt.status}: ${receipt.reason ?? "delivery failed"}`);
+	} else if (receipt.status === "queued" && receipt.reason?.startsWith("session busy;")) {
+		print(`queued for ${receipt.target} (${receipt.reason})`);
+		if (receipt.replyTo) print(`Replies: omp peers inbox ${receipt.replyTo.replace("agent://", "")}`);
 	} else {
 		print(
 			`${receipt.status}: ${receipt.target} ${receipt.agent}${receipt.outcome ? ` (${receipt.outcome})` : ""}${receipt.reason ? `: ${receipt.reason}` : ""}`,

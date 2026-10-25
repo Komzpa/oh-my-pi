@@ -5359,6 +5359,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					irc: IrcBus.global(),
 					isBusy: () => session.isStreaming,
 				});
+				session.setPeerInboxDrainer(() => publication.drainInbox());
 				closePeerPublication = () => publication.close();
 			} catch (error) {
 				logger.warn("Failed to publish peer session", { error: String(error) });

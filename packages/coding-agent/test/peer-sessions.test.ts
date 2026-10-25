@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as net from "node:net";
-import { Agent, type AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AfterToolCallContext, type AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -88,13 +88,22 @@ async function publishFixture(
 		agentId?: string;
 		command?: (args: string) => void;
 		commandName?: string;
+		busy?: boolean;
 		deliver?: (message: IrcMessage) => Promise<"injected" | "woken">;
 		reloadMCP?: () => Promise<MCPLoadResult>;
 	},
-): Promise<{ delivered: IrcMessage[]; snapshot: PeerSessionSnapshot; registry: AgentRegistry; irc: IrcBus }> {
+): Promise<{
+	delivered: IrcMessage[];
+	snapshot: PeerSessionSnapshot;
+	registry: AgentRegistry;
+	irc: IrcBus;
+	publication: PeerSessionPublication;
+	agentSession?: AgentSession;
+}> {
 	const registry = new AgentRegistry();
 	const delivered: IrcMessage[] = [];
 	const agentId = options.agentId ?? MAIN_AGENT_ID;
+	let agentSession: AgentSession | undefined;
 	let session = fakeSession(options.outcome ?? "woken", delivered);
 	if (options.command || options.reloadMCP) {
 		const runtime = new ExtensionRuntime();
@@ -124,6 +133,7 @@ async function publishFixture(
 			modelRegistry,
 			extensionRunner: new ExtensionRunner([extension], runtime, options.cwd, sessionManager, modelRegistry),
 		});
+		agentSession = session;
 		session.deliverIrcMessage = fakeSession(options.outcome ?? "woken", delivered).deliverIrcMessage;
 		sessions.push(session);
 	}
@@ -148,12 +158,14 @@ async function publishFixture(
 		mainAgentId: MAIN_AGENT_ID,
 		registry,
 		irc,
+		isBusy: () => options.busy ?? false,
 	});
+	if (agentSession) agentSession.setPeerInboxDrainer(() => pub.drainInbox());
 	publications.push(pub);
 	const sessionId = typeof options.sessionId === "string" ? options.sessionId : options.sessionId();
 	const snapshot = (await listPeerSessions({ dir })).find(peer => peer.sessionId === sessionId);
 	if (!snapshot) throw new Error("published peer session was not listed");
-	return { delivered, snapshot, registry, irc };
+	return { delivered, snapshot, registry, irc, publication: pub, ...(agentSession ? { agentSession } : {}) };
 }
 
 describe("peer sessions", () => {
@@ -495,6 +507,74 @@ describe("peer sessions", () => {
 			release.resolve();
 			socket.destroy();
 		}
+	});
+
+	it("does not deliver a rate-limited durable record at a later inbox drain", async () => {
+		const dir = await tempDir();
+		const target = await publishFixture(dir, { sessionId: "sess-retired-message", cwd: dir });
+		let now = Date.now();
+		const clock = spyOn(Date, "now").mockImplementation(() => now);
+		const request = {
+			registry: { dir },
+			target: target.snapshot.instanceId,
+			text: "one sender",
+			from: { kind: "session" as const, sessionId: "sess-same-sender", cwd: dir },
+		};
+		try {
+			expect(await sendPeerMessage(request)).toMatchObject({ status: "delivered" });
+			await expect(sendPeerMessage(request)).rejects.toMatchObject({ code: "rate_limited" });
+			now += 1_001;
+			await target.publication.drainInbox();
+			expect(target.delivered).toHaveLength(1);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	it("drains a lost socket wake through AgentSession's post-tool boundary", async () => {
+		const dir = await tempDir();
+		const target = await publishFixture(dir, {
+			sessionId: "sess-tool-boundary",
+			cwd: "/tmp/tool-boundary",
+			command: () => {},
+		});
+		if (!target.agentSession) throw new Error("expected a real AgentSession fixture");
+		const senderId = "a".repeat(32);
+		const inboxDir = path.join(dir, "peer-inboxes");
+		await fs.mkdir(inboxDir, { recursive: true });
+		await fs
+			.writeFile(path.join(dir, "shell-inboxes", `${senderId}.jsonl`), "", { flag: "wx" })
+			.catch(async error => {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				await fs.mkdir(path.join(dir, "shell-inboxes"), { recursive: true });
+				await fs.writeFile(path.join(dir, "shell-inboxes", `${senderId}.jsonl`), "", { flag: "wx" });
+			});
+		await fs.appendFile(
+			path.join(inboxDir, `${target.snapshot.instanceId}-${target.snapshot.generation}.jsonl`),
+			`${JSON.stringify({
+				messageId: "tool-boundary-message-1",
+				instanceId: target.snapshot.instanceId,
+				generation: target.snapshot.generation,
+				from: { kind: "shell", id: senderId },
+				text: "recover after a lost socket wake",
+				createdAt: Date.now(),
+			})}\n`,
+		);
+		const afterToolCall = target.agentSession.agent.afterToolCall;
+		if (!afterToolCall) throw new Error("AgentSession did not install its post-tool hook");
+		const context = {
+			toolCall: { id: "tool-1", name: "test", arguments: {} },
+			args: {},
+			result: { content: [] },
+			isError: false,
+			assistantMessage: { role: "assistant", content: [] },
+			context: target.agentSession.agent.state,
+		} as unknown as AfterToolCallContext;
+		await afterToolCall(context);
+		expect(target.delivered).toHaveLength(1);
+		expect(target.delivered[0]?.body).toContain("recover after a lost socket wake");
+		await afterToolCall(context);
+		expect(target.delivered).toHaveLength(1);
 	});
 
 	it("reserves a sender slot during pending delivery and releases it after a failed handoff", async () => {
@@ -1045,6 +1125,41 @@ describe("peer sessions", () => {
 		expect(delivered[0]?.body).toBe("background note\n\n[from session sess-sender cwd /tmp/sender]");
 	});
 
+	it("acks a responsive busy peer before IRC injection and socket-wakes its durable inbox once", async () => {
+		const dir = await tempDir();
+		const release = Promise.withResolvers<"injected">();
+		const began = Promise.withResolvers<void>();
+		const finished = Promise.withResolvers<void>();
+		let deliveryFinished = false;
+		const target = await publishFixture(dir, {
+			sessionId: "sess-responsive-busy",
+			cwd: "/tmp/responsive-busy",
+			busy: true,
+			deliver: async () => {
+				began.resolve();
+				const outcome = await release.promise;
+				deliveryFinished = true;
+				finished.resolve();
+				return outcome;
+			},
+		});
+
+		const receipt = await sendPeerMessage({
+			registry: { dir, timeoutMs: 500 },
+			from: { kind: "shell" },
+			target: target.snapshot.instanceId,
+			text: "deliver after acknowledgment",
+		});
+		expect(receipt.status).toBe("queued");
+		await began.promise;
+		expect(target.delivered).toHaveLength(1);
+		expect(deliveryFinished).toBe(false);
+		release.resolve("injected");
+		await finished.promise;
+		await target.publication.drainInbox();
+		expect(target.delivered).toHaveLength(1);
+	});
+
 	it("executes a registered peer slash command with arguments instead of injecting IRC", async () => {
 		const dir = await tempDir();
 		const calls: string[] = [];
@@ -1164,6 +1279,141 @@ describe("peer sessions", () => {
 			name: "PeerSessionError",
 			code: "ambiguous",
 		});
+	});
+
+	it("keeps a stopped live peer discoverable and queues a send against its cached identity", async () => {
+		if (process.platform === "win32") return;
+		const dir = await tempDir();
+		const child = Bun.spawn([process.execPath, path.join(import.meta.dir, "fixtures/blocked-peer-session.ts"), dir], {
+			cwd: path.resolve(import.meta.dir, "../../../.."),
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const reader = child.stdout.getReader();
+		let buffered = "";
+		const readLine = async (): Promise<string> => {
+			while (!buffered.includes("\n")) {
+				const { value, done } = await reader.read();
+				if (done) throw new Error("blocked peer worker exited before producing the expected event");
+				buffered += new TextDecoder().decode(value);
+			}
+			const index = buffered.indexOf("\n");
+			const line = buffered.slice(0, index);
+			buffered = buffered.slice(index + 1);
+			return line;
+		};
+		try {
+			const ready = JSON.parse(await readLine()) as { ready: boolean; instanceId: string };
+			expect(ready.ready).toBe(true);
+			process.kill(child.pid, "SIGSTOP");
+			const peers = await listPeerSessions({ dir, timeoutMs: 100 });
+			const busy = peers.find(peer => peer.instanceId === ready.instanceId);
+			expect(busy).toMatchObject({
+				probeTimedOut: true,
+				busy: true,
+				sessionId: "blocked-worker-session-12345678",
+				sessionName: "Blocked peer worker",
+				cwd: "/work/blocked-peer",
+			});
+			expect((await resolvePeerSession("blocked-worker-session", { dir, timeoutMs: 100 })).instanceId).toBe(
+				ready.instanceId,
+			);
+			expect((await resolvePeerSession("/work/blocked-peer", { dir, timeoutMs: 100 })).instanceId).toBe(
+				ready.instanceId,
+			);
+			expect((await resolvePeerSession("Blocked peer worker", { dir, timeoutMs: 100 })).instanceId).toBe(
+				ready.instanceId,
+			);
+			const humanList: string[] = [];
+			await peersCli.runPeerListCommand({ json: false, registry: { dir, timeoutMs: 100 } }, line =>
+				humanList.push(line),
+			);
+			expect(humanList.join("\n")).toContain("busy (no answer in 100 ms)");
+			const receipt = await sendPeerMessage({
+				registry: { dir, timeoutMs: 100 },
+				from: { kind: "shell" },
+				target: "blocked-worker-session",
+				text: "queued while its event loop is stopped",
+			});
+			expect(receipt).toMatchObject({
+				status: "queued",
+				targetName: expect.stringContaining("Blocked peer worker"),
+			});
+			process.kill(child.pid, "SIGCONT");
+			const delivered = JSON.parse(await readLine()) as { delivered: string };
+			expect(delivered.delivered).toContain("queued while its event loop is stopped");
+			await child.exited;
+			let remaining = buffered;
+			while (true) {
+				const chunk = await reader.read();
+				if (chunk.done) break;
+				remaining += new TextDecoder().decode(chunk.value);
+			}
+			expect(remaining.trim()).toBe("");
+		} finally {
+			try {
+				process.kill(child.pid, "SIGCONT");
+				process.kill(child.pid, "SIGTERM");
+			} catch {
+				// The fixture may already have exited after its event loop resumed.
+			}
+			await child.exited;
+			reader.releaseLock();
+		}
+	}, 15_000);
+
+	it("reports a queued message in the sender inbox when the peer exits before reading it", async () => {
+		if (process.platform === "win32") return;
+		const dir = await tempDir();
+		const child = Bun.spawn(
+			[process.execPath, path.join(import.meta.dir, "fixtures/blocked-peer-session.ts"), dir, "exit"],
+			{ cwd: path.resolve(import.meta.dir, "../../../.."), stdout: "pipe", stderr: "pipe" },
+		);
+		const reader = child.stdout.getReader();
+		let buffered = "";
+		const readLine = async (): Promise<string> => {
+			while (!buffered.includes("\n")) {
+				const { value, done } = await reader.read();
+				if (done) throw new Error("peer exit fixture closed before its terminal status");
+				buffered += new TextDecoder().decode(value);
+			}
+			const index = buffered.indexOf("\n");
+			const line = buffered.slice(0, index);
+			buffered = buffered.slice(index + 1);
+			return line;
+		};
+		try {
+			const ready = JSON.parse(await readLine()) as { ready: boolean; instanceId: string };
+			expect(ready.ready).toBe(true);
+			process.kill(child.pid, "SIGSTOP");
+			const receipt = await sendPeerMessage({
+				registry: { dir, timeoutMs: 100 },
+				from: { kind: "shell" },
+				target: ready.instanceId,
+				text: "report this if you exit before reading",
+			});
+			expect(receipt.status).toBe("queued");
+			expect(receipt.replyTo).toMatch(/^agent:\/\/shell:/);
+			process.kill(child.pid, "SIGCONT");
+			expect(JSON.parse(await readLine())).toEqual({ closed: true });
+			await child.exited;
+			const replies = await readShellReplies(receipt.replyTo!.replace("agent://", ""), { dir });
+			expect(replies).toEqual([
+				expect.objectContaining({
+					text: expect.stringContaining("Undelivered: peer session exited before receiving"),
+				}),
+			]);
+			expect(buffered).toBe("");
+		} finally {
+			try {
+				process.kill(child.pid, "SIGCONT");
+				process.kill(child.pid, "SIGTERM");
+			} catch {
+				// The fixture may already have exited after its event loop resumed.
+			}
+			await child.exited;
+			reader.releaseLock();
+		}
 	});
 
 	it("ignores and prunes a dead-pid entry", async () => {
@@ -1504,7 +1754,7 @@ describe("PR23 alternate peer entry points", () => {
 });
 
 describe("PR23 uncertain shell replies", () => {
-	it("retains the advertised inbox through lost acknowledgements in JSON and human CLI output", async () => {
+	it("retains the reply inbox while durable delivery waits in JSON and human CLI output", async () => {
 		const dir = await tempDir();
 		for (const json of [true, false]) {
 			const release = Promise.withResolvers<void>();
@@ -1527,7 +1777,7 @@ describe("PR23 uncertain shell replies", () => {
 						line => output.push(line),
 						line => errors.push(line),
 					),
-				).toBe(1);
+				).toBe(0);
 				const replyTo: string | undefined = json
 					? JSON.parse(output.join("\n")).replyTo
 					: output.find(line => line.startsWith("Replies:"))?.match(/shell:[a-f0-9]{32}/)?.[0];
@@ -1536,10 +1786,13 @@ describe("PR23 uncertain shell replies", () => {
 				expect(address).toBe(`agent://${target.delivered[0]!.from}`);
 				if (json)
 					expect(JSON.parse(output.join("\n"))).toMatchObject({
-						status: "uncertain",
-						reason: "delivery_uncertain",
+						status: "queued",
+						reason: "session busy; will be delivered when it reads its inbox",
 					});
-				else expect(errors.join("\n")).toContain("Do not retry");
+				else {
+					expect(errors).toEqual([]);
+					expect(output.join("\n")).toContain(`queued for ${target.snapshot.instanceId} (session busy;`);
+				}
 				const result = await new AgentProtocolHandler({ dir }).write(
 					parseInternalUrl(address),
 					"late acknowledgement",
@@ -1561,6 +1814,7 @@ describe("PR23 uncertain shell replies", () => {
 			} finally {
 				release.resolve();
 				await completed.promise;
+				expect(target.delivered).toHaveLength(1);
 			}
 		}
 	});

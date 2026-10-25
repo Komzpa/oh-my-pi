@@ -142,6 +142,9 @@ export interface PeerSessionSnapshot {
 	startedAt: number;
 	/** Whether the main agent is currently running a turn, when known. */
 	busy: boolean | null;
+	/** True only when the PID is live but its last metadata probe timed out. */
+	probeTimedOut?: boolean;
+	probeTimeoutMs?: number;
 	/** Messageable agents in this process; no transcript or tool capabilities. */
 	agents: PeerAgentSnapshot[];
 }
@@ -163,6 +166,8 @@ export interface PeerDeliveryReceipt {
 export interface PeerSessionPublication {
 	readonly endpoint: string;
 	readonly instanceId: string;
+	/** Deliver durable messages accepted while this process could not answer. */
+	drainInbox(): Promise<void>;
 	close(): Promise<void>;
 }
 
@@ -215,11 +220,24 @@ export class PeerSessionError extends Error {
 interface PeerSessionRegistrySource {
 	snapshot(): PeerSessionSnapshot;
 	deliver(request: {
+		messageId?: string;
+		generation?: number;
 		from: PeerMessageSender;
 		text: string;
 		agent?: string;
 		fromName?: string;
 	}): Promise<PeerDeliveryReceipt>;
+}
+
+interface PeerInboxRecord {
+	messageId: string;
+	instanceId: string;
+	generation: number;
+	from: PeerMessageSender;
+	text: string;
+	createdAt: number;
+	agent?: string;
+	fromName?: string;
 }
 
 /** One resolved capability returned by {@link resolveCollabHostLink}. */
@@ -293,6 +311,8 @@ interface DiscoveryMetadata {
 	endpoint: string;
 	createdAt: number;
 	token: string;
+	/** Last peer metadata observed while its event loop was responsive. */
+	peerSnapshot?: PeerSessionSnapshot;
 }
 
 const INSTANCE_ID_PATTERN = /^[a-z0-9-]{8,64}$/;
@@ -319,6 +339,9 @@ function parseDiscoveryMetadata(text: string): DiscoveryMetadata | null {
 		endpoint: meta.endpoint,
 		createdAt: meta.createdAt,
 		token: meta.token,
+		...(meta.peerSnapshot && parsePeerSnapshot(meta.peerSnapshot)
+			? { peerSnapshot: parsePeerSnapshot(meta.peerSnapshot)! }
+			: {}),
 	};
 }
 
@@ -417,6 +440,118 @@ export function peerSessionDisplayName(args: {
 	return title ? `${title} — ${base} ${tail}` : `${base} ${tail}`;
 }
 
+function peerInboxPath(instanceId: string, generation: number, dir = peerSessionsRuntimeDir()): string {
+	return path.join(dir, "peer-inboxes", `${instanceId}-${generation}.jsonl`);
+}
+
+function peerInboxAckPath(instanceId: string, generation: number, dir = peerSessionsRuntimeDir()): string {
+	return path.join(dir, "peer-inboxes", `${instanceId}-${generation}.delivered`);
+}
+
+async function appendPeerInbox(record: PeerInboxRecord, dir = peerSessionsRuntimeDir()): Promise<void> {
+	const inbox = peerInboxPath(record.instanceId, record.generation, dir);
+	await ensurePrivateDir(path.dirname(inbox));
+	const handle = await fs.promises.open(
+		inbox,
+		fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT,
+		0o600,
+	);
+	try {
+		await handle.writeFile(`${JSON.stringify(record)}\n`);
+	} finally {
+		await handle.close();
+	}
+}
+
+async function readPeerInboxRecords(
+	instanceId: string,
+	generation: number,
+	dir = peerSessionsRuntimeDir(),
+): Promise<PeerInboxRecord[]> {
+	let text: string;
+	try {
+		text = await Bun.file(peerInboxPath(instanceId, generation, dir)).text();
+	} catch (error) {
+		if (isEnoent(error)) return [];
+		throw error;
+	}
+	let delivered = new Set<string>();
+	try {
+		delivered = new Set(
+			(await Bun.file(peerInboxAckPath(instanceId, generation, dir)).text()).split("\n").filter(Boolean),
+		);
+	} catch (error) {
+		if (!isEnoent(error)) throw error;
+	}
+	const records: PeerInboxRecord[] = [];
+	for (const line of text.split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const value = JSON.parse(line) as Partial<PeerInboxRecord>;
+			if (
+				typeof value.messageId === "string" &&
+				value.instanceId === instanceId &&
+				value.generation === generation &&
+				value.from &&
+				typeof value.text === "string" &&
+				!delivered.has(value.messageId)
+			)
+				records.push(value as PeerInboxRecord);
+		} catch {
+			// Ignore an incomplete append without hiding earlier complete records.
+		}
+	}
+	return records;
+}
+
+async function readAllPeerInboxRecords(instanceId: string, dir = peerSessionsRuntimeDir()): Promise<PeerInboxRecord[]> {
+	const inboxDir = path.join(dir, "peer-inboxes");
+	let names: string[];
+	try {
+		names = await fs.promises.readdir(inboxDir);
+	} catch (error) {
+		if (isEnoent(error)) return [];
+		throw error;
+	}
+	const prefix = `${instanceId}-`;
+	const generations = names
+		.filter(name => name.startsWith(prefix) && name.endsWith(".jsonl"))
+		.map(name => Number(name.slice(prefix.length, -".jsonl".length)))
+		.filter(generation => Number.isSafeInteger(generation) && generation > 0);
+	const records: PeerInboxRecord[] = [];
+	for (const generation of generations) records.push(...(await readPeerInboxRecords(instanceId, generation, dir)));
+	return records;
+}
+
+async function markPeerInboxDelivered(record: PeerInboxRecord, dir = peerSessionsRuntimeDir()): Promise<void> {
+	const ack = peerInboxAckPath(record.instanceId, record.generation, dir);
+	await ensurePrivateDir(path.dirname(ack));
+	const handle = await fs.promises.open(
+		ack,
+		fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT,
+		0o600,
+	);
+	try {
+		await handle.writeFile(`${record.messageId}\n`);
+	} finally {
+		await handle.close();
+	}
+}
+
+async function peerInboxMessageDelivered(
+	instanceId: string,
+	generation: number,
+	messageId: string,
+	dir: string,
+): Promise<boolean> {
+	try {
+		return (await Bun.file(peerInboxAckPath(instanceId, generation, dir)).text()).split("\n").includes(messageId);
+	} catch (error) {
+		if (isEnoent(error)) return false;
+		throw error;
+	}
+}
+
 function validPeerMessage(text: string): boolean {
 	if (text.trim().length === 0 || Buffer.byteLength(text, "utf8") > MAX_PEER_MESSAGE_BYTES) return false;
 	for (const char of text) {
@@ -475,6 +610,8 @@ function parsePeerSnapshot(raw: unknown): PeerSessionSnapshot | null {
 					}),
 		startedAt: peer.startedAt,
 		busy: typeof peer.busy === "boolean" ? peer.busy : null,
+		...(peer.probeTimedOut === true ? { probeTimedOut: true } : {}),
+		...(typeof peer.probeTimeoutMs === "number" ? { probeTimeoutMs: peer.probeTimeoutMs } : {}),
 		agents: agents as PeerAgentSnapshot[],
 	};
 }
@@ -526,6 +663,7 @@ function handleConnection(
 	connection: IpcConnection,
 	token: string,
 	source: CollabHostRegistrySource | PeerSessionRegistrySource,
+	runtimeDir: string,
 	onClose: () => void,
 ): void {
 	let handled = false;
@@ -594,15 +732,54 @@ function handleConnection(
 				return;
 			}
 			const fromName = typeof fields.fromName === "string" ? boundField(cleanWireLabel(fields.fromName)) : "";
-			source
-				.deliver({
-					from,
-					text: fields.text,
-					...(typeof fields.agent === "string" ? { agent: fields.agent } : {}),
-					...(fromName ? { fromName } : {}),
-				})
-				.then(receipt => respond({ ok: true, v: COLLAB_REGISTRY_VERSION, receipt }))
-				.catch(error => fail(error instanceof PeerSessionError ? error.code : "unavailable"));
+			const deliveryRequest = {
+				...(typeof fields.messageId === "string" ? { messageId: fields.messageId } : {}),
+				generation: snapshot.generation,
+				from,
+				text: fields.text,
+				...(typeof fields.agent === "string" ? { agent: fields.agent } : {}),
+				...(fromName ? { fromName } : {}),
+			};
+			const delivery = source.deliver(deliveryRequest);
+			if (snapshot.busy && deliveryRequest.messageId) {
+				// The receiver has durably accepted this message. Return before IRC/TUI
+				// injection can wait on the active turn, then let this socket wake drain
+				// the same ID that turn/tool boundaries use.
+				respond({
+					ok: true,
+					v: COLLAB_REGISTRY_VERSION,
+					receipt: {
+						status: "queued",
+						target: snapshot.instanceId,
+						agent: typeof fields.agent === "string" ? fields.agent : snapshot.mainAgentId,
+						outcome: "queued",
+						reason: "session busy; will be delivered when it reads its inbox",
+					},
+				});
+				const reportUndelivered = (reason: string): void => {
+					if (from.kind !== "shell" || !from.id || reason === "peer session is closing") return;
+					void writeShellReply(
+						`shell:${from.id}`,
+						{
+							from: `peer:${snapshot.sessionId}`,
+							fromName: snapshot.displayName,
+							text: `Undelivered: queued peer message failed: ${reason}`,
+							createdAt: Date.now(),
+						},
+						{ dir: runtimeDir },
+					).catch(() => {});
+				};
+				void delivery.then(
+					receipt => {
+						if (receipt.status === "failed") reportUndelivered(receipt.reason ?? "delivery failed");
+					},
+					error => reportUndelivered(error instanceof Error ? error.message : String(error)),
+				);
+			} else {
+				delivery
+					.then(receipt => respond({ ok: true, v: COLLAB_REGISTRY_VERSION, receipt }))
+					.catch(error => fail(error instanceof PeerSessionError ? error.code : "unavailable"));
+			}
 			return;
 		}
 		let snapshot: CollabHostSnapshot;
@@ -730,6 +907,7 @@ async function publishRegistrySource(
 	// `sun_path`); listers never guess it, the metadata records the endpoint.
 	const endpoint = ipcEndpoint(dir, entryId);
 	const metaPath = path.join(dir, `${entryId}.json`);
+	const initialPeerSnapshot = "deliver" in source ? boundPeerSnapshot(source.snapshot()) : undefined;
 
 	const liveConnections = new Set<IpcConnection>();
 	const server = await IpcServer.listen(
@@ -737,7 +915,7 @@ async function publishRegistrySource(
 		{ framing: "lines", maxFrameBytes: MAX_REQUEST_BYTES },
 		connection => {
 			liveConnections.add(connection);
-			handleConnection(connection, token, source, () => liveConnections.delete(connection));
+			handleConnection(connection, token, source, dir, () => liveConnections.delete(connection));
 		},
 	);
 	try {
@@ -748,6 +926,7 @@ async function publishRegistrySource(
 			endpoint,
 			createdAt: Date.now(),
 			token,
+			...(initialPeerSnapshot ? { peerSnapshot: initialPeerSnapshot } : {}),
 		};
 		// Write-then-rename so a concurrent list never observes a partial file
 		// (it would classify the entry as malformed and prune it, leaving this
@@ -808,15 +987,70 @@ export async function publishPeerSession(options: PeerSessionPublishOptions): Pr
 	const startedAt = Date.now();
 	const mainAgentId = options.mainAgentId ?? MAIN_AGENT_ID;
 	const senderReservations = new Map<string, { startedAt: number }>();
+	const activeDeliveries = new Map<string, Promise<PeerDeliveryReceipt>>();
+	const deliveredMessageIds = new Set<string>();
+	const reportedMessageIds = new Set<string>();
+	const runtimeDir = options.dir ?? peerSessionsRuntimeDir();
 	let sessionId = typeof options.sessionId === "string" ? options.sessionId : options.sessionId();
 	let generation = 1;
+	let closed = false;
+	let rotationReports = Promise.resolve();
+	const reportUndelivered = async (
+		records: PeerInboxRecord[],
+		reportSessionId: string,
+		displayName: string,
+		reason: string,
+	): Promise<void> => {
+		for (const record of records) {
+			if (reportedMessageIds.has(record.messageId)) continue;
+			reportedMessageIds.add(record.messageId);
+			if (record.from.kind === "shell" && record.from.id) {
+				try {
+					await writeShellReply(
+						`shell:${record.from.id}`,
+						{
+							from: `peer:${reportSessionId}`,
+							fromName: displayName,
+							text: `Undelivered: ${reason}: ${record.text}`,
+							createdAt: Date.now(),
+						},
+						{ dir: runtimeDir },
+					);
+				} catch {
+					// The sender may have discarded its inbox.
+				}
+			}
+			try {
+				await markPeerInboxDelivered(record, runtimeDir);
+			} catch {
+				// The in-memory reported set still prevents duplicate reports this run.
+			}
+		}
+	};
 	const source: PeerSessionRegistrySource = {
 		snapshot: () => {
 			const currentId = typeof options.sessionId === "string" ? options.sessionId : options.sessionId();
 			if (currentId !== sessionId) {
+				const retiredGeneration = generation;
+				const retiredSessionId = sessionId;
+				const retiredDisplayName = peerSessionDisplayName({
+					sessionName: options.title?.() ?? null,
+					cwd: resolvePeerCwd(options.cwd),
+					sessionId,
+					mainAgentId,
+				});
 				sessionId = currentId;
 				generation++;
 				senderReservations.clear();
+				rotationReports = rotationReports.then(async () => {
+					const pending = await readPeerInboxRecords(instanceId, retiredGeneration, runtimeDir);
+					await reportUndelivered(
+						pending,
+						retiredSessionId,
+						retiredDisplayName,
+						"peer session changed before receiving",
+					);
+				});
 			}
 			const refs = options.registry.list();
 			const sessionName = options.title?.() ?? null;
@@ -843,75 +1077,212 @@ export async function publishPeerSession(options: PeerSessionPublishOptions): Pr
 					})),
 			};
 		},
-		deliver: async request => {
-			const now = Date.now();
-			const sender = peerSenderLabel(request.from);
-			const last = senderReservations.get(sender);
-			if (last !== undefined && now - last.startedAt < PEER_RATE_LIMIT_MS) {
-				throw new PeerSessionError("rate_limited", "peer message rate limit exceeded");
+		deliver: request => {
+			if (closed) {
+				return Promise.resolve({
+					status: "failed",
+					target: instanceId,
+					agent: request.agent ?? mainAgentId,
+					reason: "peer session is closing",
+				});
 			}
-			// Reserve synchronously; concurrent sends must see pending work too.
-			const reservation = { startedAt: now };
-			senderReservations.set(sender, reservation);
-			let accepted = false;
-			try {
-				const to = request.agent ?? mainAgentId;
-				const session = options.registry.get(to)?.session;
-				if (session && request.text.startsWith("/")) {
-					try {
-						const command = await executePeerSlashCommand(session, request.text);
-						if (command) {
-							accepted = true;
+			if (request.messageId) {
+				const inFlight = activeDeliveries.get(request.messageId);
+				if (inFlight) return inFlight;
+				if (deliveredMessageIds.has(request.messageId)) {
+					return Promise.resolve({
+						status: "delivered",
+						target: instanceId,
+						agent: request.agent ?? mainAgentId,
+						outcome: "injected",
+					});
+				}
+			}
+			const delivery = (async (): Promise<PeerDeliveryReceipt> => {
+				const current = source.snapshot();
+				if (request.generation !== undefined && request.generation !== current.generation) {
+					throw new PeerSessionError("stale_generation", "peer session changed before message delivery");
+				}
+				if (
+					request.messageId &&
+					(await peerInboxMessageDelivered(
+						instanceId,
+						current.generation,
+						request.messageId,
+						options.dir ?? peerSessionsRuntimeDir(),
+					))
+				) {
+					return {
+						status: "delivered",
+						target: instanceId,
+						agent: request.agent ?? mainAgentId,
+						outcome: "injected",
+					};
+				}
+				if (request.generation !== undefined && source.snapshot().generation !== request.generation) {
+					throw new PeerSessionError("stale_generation", "peer session changed before message delivery");
+				}
+				const now = Date.now();
+				const sender = peerSenderLabel(request.from);
+				const last = senderReservations.get(sender);
+				if (last !== undefined && now - last.startedAt < PEER_RATE_LIMIT_MS) {
+					throw new PeerSessionError("rate_limited", "peer message rate limit exceeded");
+				}
+				// Reserve synchronously; concurrent sends must see pending work too.
+				const reservation = { startedAt: now };
+				senderReservations.set(sender, reservation);
+				let accepted = false;
+				try {
+					const to = request.agent ?? mainAgentId;
+					const session = options.registry.get(to)?.session;
+					if (session && request.text.startsWith("/")) {
+						try {
+							const command = await executePeerSlashCommand(session, request.text);
+							if (command) {
+								accepted = true;
+								return {
+									status: command.outcome === "queued" ? "queued" : "delivered",
+									target: instanceId,
+									agent: to,
+									...command,
+								};
+							}
+						} catch (error) {
 							return {
-								status: command.outcome === "queued" ? "queued" : "delivered",
+								status: "failed",
 								target: instanceId,
 								agent: to,
-								...command,
+								reason: error instanceof Error ? error.message : String(error),
 							};
 						}
-					} catch (error) {
+					}
+					const body = `${request.text}\n\n[${peerSenderNotice(request.from)}]`;
+					const receipt = await options.irc.send({
+						from: sender,
+						...(request.fromName ? { fromName: request.fromName } : {}),
+						to,
+						body,
+					});
+					if (receipt.outcome === "failed") {
+						if (request.messageId) {
+							deliveredMessageIds.add(request.messageId);
+							try {
+								await markPeerInboxDelivered(
+									{
+										messageId: request.messageId,
+										instanceId,
+										generation: current.generation,
+										from: request.from,
+										text: request.text,
+										createdAt: now,
+									},
+									options.dir ?? peerSessionsRuntimeDir(),
+								);
+							} catch {}
+						}
 						return {
 							status: "failed",
 							target: instanceId,
 							agent: to,
-							reason: error instanceof Error ? error.message : String(error),
+							reason: receipt.error ?? "delivery failed",
 						};
 					}
+					accepted = true;
+					if (request.messageId) {
+						deliveredMessageIds.add(request.messageId);
+						try {
+							await markPeerInboxDelivered(
+								{
+									messageId: request.messageId,
+									instanceId,
+									generation: current.generation,
+									from: request.from,
+									text: request.text,
+									createdAt: now,
+								},
+								options.dir ?? peerSessionsRuntimeDir(),
+							);
+						} catch {
+							// Keep this process-local latch set: an inbox ack failure must not duplicate a delivery.
+						}
+					}
+					return { status: "delivered", target: instanceId, agent: to, outcome: receipt.outcome };
+				} finally {
+					// A later send or conversation rotation may already own this sender's slot.
+					if (!accepted && senderReservations.get(sender) === reservation) senderReservations.delete(sender);
 				}
-				const body = `${request.text}\n\n[${peerSenderNotice(request.from)}]`;
-				const receipt = await options.irc.send({
-					from: sender,
-					...(request.fromName ? { fromName: request.fromName } : {}),
-					to,
-					body,
-				});
-				if (receipt.outcome === "failed") {
-					return {
-						status: "failed",
-						target: instanceId,
-						agent: to,
-						reason: receipt.error ?? "delivery failed",
-					};
-				}
-				accepted = true;
-				return { status: "delivered", target: instanceId, agent: to, outcome: receipt.outcome };
-			} finally {
-				// A later send or conversation rotation may already own this sender's slot.
-				if (!accepted && senderReservations.get(sender) === reservation) senderReservations.delete(sender);
-			}
+			})();
+			if (!request.messageId) return delivery;
+			const latched = delivery.catch(async error => {
+				deliveredMessageIds.add(request.messageId!);
+				try {
+					const current = source.snapshot();
+					await markPeerInboxDelivered(
+						{
+							messageId: request.messageId!,
+							instanceId,
+							generation: current.generation,
+							from: request.from,
+							text: request.text,
+							createdAt: Date.now(),
+						},
+						options.dir ?? peerSessionsRuntimeDir(),
+					);
+				} catch {}
+				throw error;
+			});
+			activeDeliveries.set(request.messageId, latched);
+			return latched.finally(() => activeDeliveries.delete(request.messageId!));
 		},
 	};
 	const pub = await publishRegistrySource(source, { dir: options.dir, instanceId }, peerSessionsRuntimeDir());
+	const drainInbox = async (): Promise<void> => {
+		const current = source.snapshot();
+		for (const record of await readPeerInboxRecords(instanceId, current.generation, runtimeDir)) {
+			try {
+				const receipt = await source.deliver(record);
+				if (receipt.status === "failed") {
+					await reportUndelivered(
+						[record],
+						current.sessionId,
+						current.displayName,
+						`queued message failed: ${receipt.reason ?? "delivery failed"}`,
+					);
+				}
+			} catch (error) {
+				await reportUndelivered(
+					[record],
+					current.sessionId,
+					current.displayName,
+					`queued message was rejected: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+	};
 	return {
 		endpoint: pub.endpoint,
 		instanceId,
-		close: () => pub.close(),
+		drainInbox,
+		async close(): Promise<void> {
+			if (closed) return;
+			closed = true;
+			const current = source.snapshot();
+			await rotationReports;
+			await reportUndelivered(
+				await readAllPeerInboxRecords(instanceId, runtimeDir),
+				current.sessionId,
+				current.displayName,
+				"peer session exited before receiving",
+			);
+			await pub.close();
+		},
 	};
 }
 
 type QueryResult<T> =
 	| { status: "ok"; value: T }
 	| { status: "dead" }
+	| { status: "timeout"; requestSent?: boolean }
 	| { status: "skip"; error?: string; requestSent?: boolean };
 
 /** Query one endpoint: connect, authenticate, send one request, read one bounded response line. */
@@ -925,9 +1296,9 @@ function query(meta: DiscoveryMetadata, request: object, timeoutMs: number): Pro
 		settled = true;
 		clearTimeout(timer);
 		connection?.destroy();
-		resolve(result.status === "skip" ? { ...result, requestSent } : result);
+		resolve(result.status === "skip" || result.status === "timeout" ? { ...result, requestSent } : result);
 	};
-	const timer = setTimeout(() => finish({ status: "skip" }), timeoutMs);
+	const timer = setTimeout(() => finish({ status: "timeout" }), timeoutMs);
 	const onLine = (line: string): void => {
 		let response: unknown;
 		try {
@@ -1046,7 +1417,26 @@ async function listEntry<T>(
 		return null;
 	}
 	const result = await querySnapshot(meta, timeoutMs, parse);
-	if (result.status === "ok") return { meta, snapshot: result.value };
+	if (result.status === "ok") {
+		if ("sessionId" in (result.value as object)) {
+			meta.peerSnapshot = result.value as PeerSessionSnapshot;
+			const file = path.join(dir, name);
+			const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+			try {
+				await Bun.write(tmp, JSON.stringify(meta));
+				await fs.promises.rename(tmp, file);
+			} catch {
+				await fs.promises.rm(tmp, { force: true });
+			}
+		}
+		return { meta, snapshot: result.value };
+	}
+	if (result.status === "timeout" && pidAlive(meta.pid) && meta.peerSnapshot) {
+		const cached = parse(meta.peerSnapshot);
+		if (cached && "sessionId" in (cached as object)) {
+			return { meta, snapshot: { ...cached, probeTimedOut: true, probeTimeoutMs: timeoutMs } as T };
+		}
+	}
 	if (result.status === "dead") await pruneEntry(dir, name, meta);
 	return null;
 }
@@ -1109,10 +1499,13 @@ function peerCandidatesText(candidates: PeerSessionSnapshot[]): string {
 }
 
 export async function resolvePeerSession(selector: string, options?: PeerSessionOptions): Promise<PeerSessionSnapshot> {
+	return resolvePeerSessionFromEntries(selector, await listPeerSessions(options));
+}
+
+function resolvePeerSessionFromEntries(selector: string, peers: PeerSessionSnapshot[]): PeerSessionSnapshot {
 	const qualified = selector.trim().startsWith("peer:");
 	const wanted = selector.trim().replace(/^peer:/, "");
 	if (!wanted) throw new PeerSessionError("not_found", "peer target is required");
-	const peers = await listPeerSessions(options);
 	const lower = wanted.toLowerCase();
 	const exact = peers.filter(peer =>
 		qualified
@@ -1254,7 +1647,10 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 		throw new PeerSessionError("invalid_message", "peer messages must be non-empty plain text of at most 16 KiB");
 	}
 	const live = await listLiveEntries(options.registry, peerSessionsRuntimeDir(), parsePeerSnapshot);
-	const snapshot = await resolvePeerSession(options.target, options.registry);
+	const snapshot = resolvePeerSessionFromEntries(
+		options.target,
+		live.map(item => item.snapshot),
+	);
 	const entry = live.find(item => item.snapshot.instanceId === snapshot.instanceId);
 	if (!entry) throw new PeerSessionError("not_found", `target peer session is no longer active`);
 	const from = await shellSender(options.from, options.registry);
@@ -1269,10 +1665,34 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 					mainAgentId: MAIN_AGENT_ID,
 				}))
 			: undefined;
+	const messageId = text.startsWith("/") ? undefined : crypto.randomBytes(16).toString("hex");
+	const inboxRecord: PeerInboxRecord | undefined = messageId
+		? {
+				messageId,
+				instanceId: snapshot.instanceId,
+				generation: snapshot.generation,
+				from,
+				text,
+				createdAt: Date.now(),
+				...(options.agent ? { agent: options.agent } : {}),
+				...(senderName ? { fromName: senderName } : {}),
+			}
+		: undefined;
+	if (inboxRecord) await appendPeerInbox(inboxRecord, options.registry?.dir ?? peerSessionsRuntimeDir());
+	const retireQueuedRecord = async (): Promise<void> => {
+		if (!inboxRecord) return;
+		try {
+			await markPeerInboxDelivered(inboxRecord, options.registry?.dir ?? peerSessionsRuntimeDir());
+		} catch {
+			// Best-effort durable cancellation. The receiver also latches definitive
+			// rejections in memory so a later boundary cannot revive them this run.
+		}
+	};
 	const result = await query(
 		entry.meta,
 		{
 			op: "send",
+			...(messageId ? { messageId } : {}),
 			instanceId: snapshot.instanceId,
 			generation: snapshot.generation,
 			from,
@@ -1284,7 +1704,10 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 	);
 	if (result.status === "ok") {
 		const receipt = parsePeerReceipt((result.value as Record<string, unknown>).receipt);
-		if (receipt) return { ...receipt, targetName: snapshot.displayName, ...(replyTo ? { replyTo } : {}) };
+		if (receipt) {
+			if (receipt.status === "failed") await retireQueuedRecord();
+			return { ...receipt, targetName: snapshot.displayName, ...(replyTo ? { replyTo } : {}) };
+		}
 		throw new PeerSessionError(
 			"delivery_uncertain",
 			"Peer returned an invalid receipt; delivery may have occurred. Do not retry without checking the target.",
@@ -1292,14 +1715,15 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 			replyTo,
 		);
 	}
-	if (result.status === "skip") {
-		const code = result.error;
+	if (result.status === "skip" || result.status === "timeout") {
+		const code = result.status === "skip" ? result.error : undefined;
 		if (
 			code === "stale_generation" ||
 			code === "invalid_message" ||
 			code === "invalid_sender" ||
 			code === "rate_limited"
 		) {
+			await retireQueuedRecord();
 			throw new PeerSessionError(code, `peer delivery rejected: ${code}`);
 		}
 		// These protocol rejections occur before dispatch. Other handler failures
@@ -1314,6 +1738,26 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 				"invalid_operation",
 				"invalid_agent",
 			].includes(code);
+		if (code === "unavailable" && result.requestSent) {
+			throw new PeerSessionError(
+				"delivery_uncertain",
+				"Peer send outcome is uncertain; the accepted handler may still complete. Do not retry without checking the target.",
+				[],
+				replyTo,
+			);
+		}
+		if (rejectedBeforeDispatch) await retireQueuedRecord();
+		if (messageId && result.status === "timeout" && pidAlive(snapshot.pid)) {
+			return {
+				status: "queued",
+				target: snapshot.instanceId,
+				agent: options.agent ?? snapshot.mainAgentId,
+				outcome: "queued",
+				reason: "session busy; will be delivered when it reads its inbox",
+				targetName: snapshot.displayName,
+				...(replyTo ? { replyTo } : {}),
+			};
+		}
 		if (result.requestSent && !rejectedBeforeDispatch) {
 			throw new PeerSessionError(
 				"delivery_uncertain",
@@ -1323,6 +1767,7 @@ export async function sendPeerMessage(options: PeerSendOptions): Promise<PeerDel
 			);
 		}
 	}
+	if (result.status === "dead") throw new PeerSessionError("not_found", "no such peer session");
 	throw new PeerSessionError("unavailable", `target peer session did not accept the send request`);
 }
 
