@@ -209,6 +209,15 @@ Transcript fetches are capped at 4 MiB per reply and end on complete JSONL lines
 Registered slash commands execute through the target's command dispatcher;
 other text arrives through IRC.
 
+Discovery keeps a live process visible with its last cached title, cwd and
+session identity when its event loop does not answer the short probe; those
+cached fields remain valid selectors. A plain-text send to a busy peer is
+persisted in that session's inbox, acknowledged as `queued for <instance>`,
+and deduplicated by message ID. The receiver drains on the socket wake, after
+tool calls and at turn end. A normal exit or session rotation reports unread
+messages in the sender's shell inbox. Slash commands retain their synchronous
+execution and timeout semantics and are not put in the durable text inbox.
+
 Every shell send creates an owner-private reply inbox before delivery. Its
 receipt includes `replyTo: "agent://shell:<id>"` in JSON mode, or prints
 `Replies: omp peers inbox shell:<id>` in text mode. The receiving message's
@@ -228,4 +237,3 @@ Replies persist after the sending command exits, under
 `0600` on POSIX. Once no further replies are needed, the sender may delete
 that inbox file; subsequent replies then fail clearly. No background waiter,
 live shell process, or session restart is required.
-
