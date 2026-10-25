@@ -311,6 +311,12 @@ function resolveSubagentInheritedRetryFallbackChain(
 	});
 }
 
+export interface InstalledSubagentRetryFallback {
+	role: string;
+	primary: string;
+	chain: string[];
+}
+
 function installSubagentRetryFallbackChain(args: {
 	settings: Settings;
 	id: string;
@@ -318,7 +324,7 @@ function installSubagentRetryFallbackChain(args: {
 	inheritedFallbackChain: string[] | undefined;
 	model: Model<Api> | undefined;
 	authFallbackUsed: boolean;
-}): string | undefined {
+}): InstalledSubagentRetryFallback | undefined {
 	const { settings, id, candidates, inheritedFallbackChain, model, authFallbackUsed } = args;
 	if (!model || authFallbackUsed || candidates.length === 0) return undefined;
 
@@ -335,7 +341,7 @@ function installSubagentRetryFallbackChain(args: {
 
 	const role = subagentRetryFallbackRole(id);
 	installRetryFallbackRole(settings, role, { primary: candidates[selectedIndex].selector, chain: fallbackChain });
-	return role;
+	return { role, primary: candidates[selectedIndex].selector, chain: fallbackChain };
 }
 
 export interface IrcPeerRosterRow {
@@ -4464,7 +4470,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 								resolvedModel,
 								inheritedSubagentServiceTiers(settings, options.parentServiceTier),
 							);
-			const retryFallbackRole = installSubagentRetryFallbackChain({
+			const retryFallback = installSubagentRetryFallbackChain({
 				settings: subagentSettings,
 				id,
 				candidates: resolveSubagentRetryFallbackCandidates(modelPatterns, modelRegistry, subagentSettings),
@@ -4472,9 +4478,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				model,
 				authFallbackUsed,
 			});
-			if (retryFallbackRole) {
+			if (retryFallback) {
 				logger.debug("Configured subagent runtime model fallback chain", {
-					role: retryFallbackRole,
+					role: retryFallback.role,
 					requested: modelPatterns,
 				});
 			}
@@ -4751,12 +4757,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// cannot steal its fallback routing. Resumed history keeps its role.
 			if (
 				!hasExistingModelRole &&
-				retryFallbackRole &&
+				retryFallback &&
 				model &&
 				session.model &&
 				formatModelStringWithRouting(session.model) === formatModelStringWithRouting(model)
 			) {
-				sessionManager.appendModelChange(formatModelStringWithRouting(model), retryFallbackRole);
+				sessionManager.appendModelChange(formatModelStringWithRouting(model), retryFallback.role);
 			}
 			sessionCreatedAt = performance.now();
 
