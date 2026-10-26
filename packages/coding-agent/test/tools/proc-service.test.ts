@@ -521,8 +521,10 @@ describe("proc:// background jobs", () => {
 			detached: false,
 		};
 		const stopped: string[] = [];
+		using temp = TempDir.createSync("@omp-proc-service-");
 		const client = {
 			projectDir: process.cwd(),
+			runtimeDir: temp.path(),
 			onCompletion: () => () => {},
 			close() {},
 			async request(operation: DaemonOperation): Promise<DaemonRpcResult> {
