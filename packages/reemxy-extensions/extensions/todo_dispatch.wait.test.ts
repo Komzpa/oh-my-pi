@@ -7,6 +7,9 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { execFileSync } from "node:child_process";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch, { noticeDigest } from "./todo_dispatch";
@@ -1324,16 +1327,35 @@ test("stuck wait requires a fresh successful yield or completed result, never ol
 }, 60_000);
 
 
-async function criticalSplitHarness({ capacity = 2, critical = true, model = "nvidia/nemotron-3.5-lightning:free", effort = "low", runningCritical = true } = {}) {
+async function criticalSplitHarness({ capacity = 2, critical = true, model = "nvidia/nemotron-3.5-lightning:free", effort = "low", runningCritical = true, profile = "reviewer", projectPolicy, modelOverride, maxEffort, freeRole = "test-provider/nvidia/nemotron-3.5-lightning:free", defaultEffort = "high", recordIdentity = true } = {}) {
 	const now = Date.now();
 	const phases = chainedPlan(2, now);
 	const [map, fix] = phases[0].tasks;
 	map.content = "Map Litterbox screenshot defects to current HEAD";
 	fix.content = "Fix Litterbox screenshot defects on Android";
 	fix.schedule.dependencies = [map.content];
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "restaff-policy-"));
+  if (projectPolicy) {
+    fs.mkdirSync(path.join(cwd, ".omp", "agents"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, ".omp", "agents", `${profile}.md`), projectPolicy);
+  }
+  const settings = Settings.isolated({
+    modelRoles: { free: freeRole, fast: "test-provider/capable-model", judgment: "test-provider/capable-model" },
+    defaultThinkingLevel: defaultEffort,
+    ...(modelOverride ? { "task.agentModelOverrides": { [profile]: modelOverride } } : {}),
+    ...(maxEffort ? { "task.maxEffort": maxEffort } : {}),
+  });
+  const sessionManager = SessionManager.inMemory(cwd);
+  if (recordIdentity) sessionManager.appendSessionInit({ agent: profile, systemPrompt: [], task: map.content, tools: [] });
+  const models = [...new Set([model, "capable-model", "nvidia/nemotron-3.5-lightning:free"])].map(id => buildModel({
+    provider: "test-provider", id, name: id, api: "openai-completions", baseUrl: "https://example.invalid",
+    reasoning: true, thinking: { mode: "effort", efforts: ["minimal", "low", "medium", "high"] },
+    input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192,
+  }));
 	const registry = new AgentRegistry();
 	registry.register({ id: "worker-a", displayName: "worker-a", kind: "sub",
-		session: { model: { provider: "test-provider", id: model }, thinkingLevel: effort } });
+    session: { model: models.find(candidate => candidate.id === model), thinkingLevel: effort, settings, sessionManager,
+      effectiveExtensionRoots: { explicit: [import.meta.dir], mode: "explicit-only", configured: [], configuredLevel: "user" } } });
 	const registrySpy = vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
 	const forecast = (phases, options) => {
 		const out = forecastTodoPlan(phases, options);
@@ -1342,13 +1364,15 @@ async function criticalSplitHarness({ capacity = 2, critical = true, model = "nv
 	};
 	const h = await noticeHarness(phases, now + 3600_000, [], 0, forecast);
 	h.ctx.getTaskMaxConcurrency = () => capacity;
-	const running = [{ id: "task-1", agentId: "worker-a", type: "task", status: "running", label: map.content, startTime: now }];
+  h.ctx.cwd = cwd;
+  h.ctx.modelRegistry = { getAvailable: () => models };
+  const running = [{ id: "task-1", agentId: "worker-a", ownerId: "main", type: "task", status: "running", label: map.content, command: undefined, startTime: now, endTime: undefined }];
 	h.ctx.getAsyncJobSnapshot = () => ({ running, recent: [], nonJobAgents: [] });
 	const call = (toolName, input = {}) => h.handlers.get("tool_call")({ toolName, input }, h.ctx);
-	return { ...h, phases, map, fix, running, call, shutdown: () => { h.shutdown(); registrySpy.mockRestore(); } };
+  return { ...h, phases, map, fix, running, call, settings, registry, cwd, shutdown: () => { h.shutdown(); registrySpy.mockRestore(); fs.rmSync(cwd, { recursive: true, force: true }); } };
 }
 
-test("critical split: Litterbox wait names both rows and the free worker, once per revision", async () => {
+test("critical split: Litterbox wait names both rows and the misrouted worker, once per revision", async () => {
 	const h = await criticalSplitHarness();
 	try {
 		const result = await h.call("wait");
@@ -1356,7 +1380,8 @@ test("critical split: Litterbox wait names both rows and the free worker, once p
 		expect(result.reason).toContain(h.map.content);
 		expect(result.reason).toContain(h.fix.content);
 		expect(result.reason).toContain("nvidia/nemotron-3.5-lightning:free");
-		expect(result.reason).toMatch(/strong model/i);
+		expect(result.reason).toMatch(/Restaff/i);
+		expect(result.reason).toMatch(/required model/i);
 		expect(result.reason).toMatch(/partial output/i);
 		expect(result.reason).toContain("append");
 		expect(await h.call("wait")).toBeUndefined();
@@ -1418,7 +1443,6 @@ test("critical split: a pending critical row behind a running non-critical row s
 		expect(result.reason).not.toContain("Restaff");
 	} finally { h.shutdown(); }
 });
-
 test("critical split: free models and low effort are each flagged in refusal and plan check", async () => {
 	for (const options of [{ model: "nvidia/nemotron-3.5-lightning:free", effort: "high" }, { model: "capable-model", effort: "low" }]) {
 		const h = await criticalSplitHarness(options);
@@ -1427,16 +1451,69 @@ test("critical split: free models and low effort are each flagged in refusal and
 			expect(result?.block).toBe(true);
 			expect(result.reason).toContain(options.model);
 			expect(result.reason).toContain(options.effort);
-			expect(result.reason).toMatch(/strong model/i);
+			expect(result.reason).toMatch(/Restaff/i);
+			expect(result.reason).toMatch(/required model/i);
 			await h.tick();
 			const check = h.notices.filter(n => n.customType === "todo-plan-check").at(-1)?.content ?? "";
 			expect(check).toContain(h.map.content);
 			expect(check).toContain(options.model);
 			expect(check).toContain(options.effort);
-			expect(check).toMatch(/strong model/i);
+			expect(check).toMatch(/Restaff/i);
 		} finally { h.shutdown(); }
 	}
 });
+
+test("critical split: a permitted mechanical low/free route never restaffs in refusal or plan check", async () => {
+	const h = await criticalSplitHarness({ profile: "gate-runner" });
+	try {
+		const result = await h.call("wait");
+		expect(result?.block).toBe(true);
+		expect(result.reason).toContain(h.map.content);
+		expect(result.reason).toContain(h.fix.content);
+		expect(result.reason).not.toMatch(/Restaff/i);
+		await h.tick();
+		const check = h.notices.filter(n => n.customType === "todo-plan-check").at(-1)?.content ?? "";
+		expect(check).toContain(h.map.content);
+		expect(check).not.toMatch(/Restaff/i);
+	} finally { h.shutdown(); }
+});
+const restaffPolicy = (name, selector, level = "low") => `---\nname: ${name}\ndescription: effective restaff control\nmodel: "${selector}"\n${level ? `thinking-level: ${level}\n` : ""}---\nRun the assigned check.\n`;
+test.each([
+  { name: "project reviewer overrides bundled policy", projectPolicy: restaffPolicy("reviewer", "@free"), warns: false },
+  { name: "custom low/free role", profile: "custom-check", projectPolicy: restaffPolicy("custom-check", "@free"), warns: false },
+  { name: "custom strong role", profile: "custom-check", projectPolicy: restaffPolicy("custom-check", "@judgment", "high"), warns: true },
+  { name: "operator permits reviewer low/free", modelOverride: "@free:low", warns: false },
+  { name: "operator requires gate-runner strong route", profile: "gate-runner", modelOverride: "@judgment:high", warns: true },
+  { name: "low operator effort ceiling", model: "capable-model", maxEffort: "low", warns: false },
+  { name: "high operator effort ceiling", model: "capable-model", maxEffort: "high", warns: true },
+  { name: "free alias resolves to paid model", profile: "gate-runner", freeRole: "test-provider/capable-model:high", effort: "high", warns: true },
+  { name: "compliant mixed-effort free fallback", modelOverride: "test-provider/capable-model:high,test-provider/nvidia/nemotron-3.5-lightning:free:low", warns: false },
+  { name: "truly under-effort free fallback", modelOverride: "test-provider/capable-model:high,test-provider/nvidia/nemotron-3.5-lightning:free:high", warns: true },
+  { name: "absent role effort inherits default", profile: "custom-check", projectPolicy: restaffPolicy("custom-check", "@judgment", ""), model: "capable-model", warns: true },
+])("critical split: effective policy $name", async ({ name: _name, warns, ...options }) => {
+  const h = await criticalSplitHarness(options);
+  try {
+    expect(h.registry.get("worker-a").history).toBeUndefined(); // no asynchronous roster hydration required
+    expect(h.running[0]).not.toHaveProperty("agent");
+    const refusal = await h.call("wait");
+    expect(refusal?.block).toBe(true);
+    expect(/Restaff/i.test(refusal.reason)).toBe(warns);
+    await h.tick();
+    const check = h.notices.filter(n => n.customType === "todo-plan-check").at(-1)?.content ?? "";
+    expect(check).toContain(h.map.content);
+    expect(/Restaff/i.test(check)).toBe(warns);
+  } finally { h.shutdown(); }
+});
+
+test("critical split: missing running identity cannot invent a policy mismatch", async () => {
+  const h = await criticalSplitHarness({ recordIdentity: false });
+  try {
+    expect((await h.call("wait"))?.reason).not.toMatch(/Restaff/i);
+    await h.tick();
+    expect(h.notices.filter(n => n.customType === "todo-plan-check").at(-1)?.content ?? "").not.toMatch(/Restaff/i);
+  } finally { h.shutdown(); }
+});
+
 
 
 test("critical split: a lone running critical row with nothing parked behind it may wait", async () => {
