@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed advisors dropping their review and showing a rate-limit error when the provider returns a timed 429 such as Codex's `turn_rate_limit_exceeded`; the advisor now waits out the Retry-After (within `retry.maxDelayMs`) and retries like the main agent ([#17087](https://github.com/can1357/oh-my-pi/pull/17087) by [@H4vC](https://github.com/H4vC))
+- Fixed bash caller environment overrides reaching services and ordinary commands, with caller values taking precedence over session defaults.
 
 ## [18.13.0] - 2026-10-26
 

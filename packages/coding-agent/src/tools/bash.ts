@@ -755,6 +755,7 @@ const bashSchemaBase = type({
 	command: type("string"),
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
+	"env?": { "[string]": "string" },
 	"pty?": "boolean",
 });
 
@@ -762,6 +763,7 @@ const bashSchemaWithAsync = type({
 	command: "string",
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
+	"env?": { "[string]": "string" },
 	"pty?": "boolean",
 	"async?": "boolean",
 });
@@ -770,6 +772,7 @@ const bashSchemaWithService = type({
 	command: "string",
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
+	"env?": { "[string]": "string" },
 	"pty?": "boolean",
 	"name?": "string <= 48",
 	"ready?": type({
@@ -784,6 +787,7 @@ const bashSchemaWithAsyncAndService = type({
 	command: "string",
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
+	"env?": { "[string]": "string" },
 	"pty?": "boolean",
 	"async?": "boolean",
 	"name?": "string <= 48",
@@ -805,6 +809,7 @@ export interface BashToolInput {
 	command: string;
 	timeout?: number;
 	cwd?: string;
+	env?: Record<string, string>;
 	name?: string;
 	ready?: ServiceReady;
 	async?: boolean;
@@ -1429,6 +1434,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			ready: rawReady,
 			async: rawAsync,
 			pty,
+			env,
 		}: BashToolInput,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
@@ -1440,7 +1446,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		// change while the call waits must not move it into the new session's
 		// shell, nor hand it the new session's identity.
 		const sessionId = this.session.getSessionId?.() ?? undefined;
-		const sessionEnv = this.#sessionEnv();
+		const sessionEnv = { ...this.#sessionEnv(), ...env };
 
 		// Extract a leading `cd <path> && ...` into cwd when the model ignores the
 		// cwd parameter. The scanner captures only a single path token and defers

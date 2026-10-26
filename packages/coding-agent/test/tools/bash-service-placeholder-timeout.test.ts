@@ -74,17 +74,43 @@ describe("bash service placeholder arguments", () => {
 			});
 			expect(started.details?.service?.ready).toBeTrue();
 			expect(textOf(started)).toContain("plain-service");
+			process.stdout.write(`service smoke plain pid=${started.details?.service?.pid}\n`);
 			// Materialized placeholders (async:false, timeout:0) are "not set" too.
 			const placeholders = await bash.execute("svc-placeholders", {
-				command: "printf 'READY2\\n'; sleep 30",
+				command: "printf '%s:%s\\n' \"$SERVICE_TEST_VALUE\" \"$PI_SESSION_ID\"; sleep 30",
 				name: "placeholder-service",
-				ready: { log: "READY2", timeout: 5 },
+				ready: { log: "caller-env:caller-session", timeout: 5 },
 				pty: false,
 				async: false,
 				timeout: 0,
+				env: { SERVICE_TEST_VALUE: "caller-env", PI_SESSION_ID: "caller-session" },
 			});
 			expect(placeholders.details?.service?.ready).toBeTrue();
 			expect(textOf(placeholders)).toContain("placeholder-service");
+			expect(textOf(placeholders)).not.toContain("Ignored timeout");
+			expect(textOf(placeholders)).not.toContain("Ignored async");
+			process.stdout.write(`service smoke caller-env pid=${placeholders.details?.service?.pid}\n`);
+			const notReady = await bash.execute("svc-not-ready", {
+				command: "sleep 30",
+				name: "not-ready-service",
+				ready: { log: "NEVER", timeout: 0.1 },
+				pty: false,
+				timeout: 0,
+			});
+			expect(notReady.details?.service).toMatchObject({ ready: false, timedOut: true });
+			process.stdout.write(`service smoke readiness-timeout pid=${notReady.details?.service?.pid}\n`);
+			const ordinary = await bash.execute("ordinary-env", {
+				command: "printf '%s:%s' \"$SERVICE_TEST_VALUE\" \"$PI_SESSION_ID\"",
+				env: { SERVICE_TEST_VALUE: "ordinary", PI_SESSION_ID: "caller-session" },
+				async: false,
+				timeout: 0,
+			});
+			expect(textOf(ordinary)).toBe("ordinary:caller-session");
+			const deadline = await bash.execute("ordinary-deadline", { command: "sleep 30", timeout: 1 });
+			expect(deadline.details?.timedOut).toBeTrue();
+			await expect(bash.execute("ordinary-async", { command: "true", async: true })).rejects.toThrow(
+				"Async bash execution is disabled",
+			);
 			// Explicit requests still reject per the documented no-async/timeout contract.
 			await expect(
 				bash.execute("svc-async", { command: "true", name: "bad", async: true, pty: false }),
@@ -95,6 +121,7 @@ describe("bash service placeholder arguments", () => {
 		} finally {
 			await client.request({ op: "stop", name: "plain-service", timeoutMs: 1_000 }).catch(() => undefined);
 			await client.request({ op: "stop", name: "placeholder-service", timeoutMs: 1_000 }).catch(() => undefined);
+			await client.request({ op: "stop", name: "not-ready-service", timeoutMs: 1_000 }).catch(() => undefined);
 			await client.request({ op: "shutdown" }).catch(() => undefined);
 			await manager.dispose({ timeoutMs: 1_000 });
 			client.close();
