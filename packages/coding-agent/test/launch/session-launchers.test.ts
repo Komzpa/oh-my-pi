@@ -68,6 +68,9 @@ describe("daemon birth identity", () => {
 			await Bun.write(path.join(dir, "meta.json"), JSON.stringify({ daemon, processStartTime: "0" }));
 			await Bun.write(path.join(dir, "spec.json"), "{}");
 			expect((await readStoredDaemonRecord(dir)) !== undefined).toBe(name === "history");
+			// The prune must be a real filesystem removal of the gone-pid record dir,
+			// while the terminal-history record dir stays on disk.
+			expect(await fs.exists(dir)).toBe(name === "history");
 		}
 	});
 	it("keeps a live pre-upgrade record that has no stored start time, and reaps a mismatched one", async () => {

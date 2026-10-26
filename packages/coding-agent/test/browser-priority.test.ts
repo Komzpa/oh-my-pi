@@ -53,6 +53,8 @@ test.skipIf(process.platform !== "linux")(
 		expect(received?.pipe).toBe(true);
 		expect(received?.ignoreDefaultArgs).toBe(true);
 		const ionice = Bun.which("ionice") ?? "ionice";
+		// The priority prefix becomes the executable; the browser moves into args.
+		expect(received?.executablePath).toBe(Bun.which("nice") ?? "nice");
 		expect(received?.args).toEqual([
 			"-n",
 			"19",
