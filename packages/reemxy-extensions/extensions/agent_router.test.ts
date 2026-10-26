@@ -181,9 +181,17 @@ describe("agent router", () => {
 
 			const longId = `writer-${"x".repeat(120)}-end-92`;
 			const state = createRouterState();
-			const context = ctx({ getAsyncJobSnapshot: () => ({ running: [{ id: longId, type: "task", status: "running" }], recent: [], delivery: {} }) });
+			const context = ctx({
+				getAsyncJobSnapshot: () => ({
+					running: [{ id: longId, type: "task", status: "running" }],
+					recent: [],
+					delivery: {},
+				}),
+			});
 			routeSubagentSpawn({ agent: "coder", spawnKey: longId }, ctx(), state, { stateFile: file });
-			const blocked = routeSubagentSpawn({ agent: "coder", spawnKey: "second-writer" }, context, state, { stateFile: file });
+			const blocked = routeSubagentSpawn({ agent: "coder", spawnKey: "second-writer" }, context, state, {
+				stateFile: file,
+			});
 			const writerAction = blocked.reason.split("\n", 1)[0];
 			expect(writerAction.length).toBeLessThanOrEqual(100);
 			expect(writerAction).toContain("writer-");
@@ -857,14 +865,21 @@ describe("agent router", () => {
 			agentRouter(api);
 			const context = ctx({
 				cwd: dir,
-				getAsyncJobSnapshot: () => ({ running: running ? [{ id: "WriterR92", type: "task", status: "running" }] : [], recent: [], delivery: {} }),
+				getAsyncJobSnapshot: () => ({
+					running: running ? [{ id: "WriterR92", type: "task", status: "running" }] : [],
+					recent: [],
+					delivery: {},
+				}),
 			});
 			handlers.get("session_start")!({}, context);
 			handlers.get("session_start")!({}, context);
 			expect(messages).toHaveLength(1);
 			expect(messages[0]?.content).toContain(dir);
 			expect(messages[0]?.content).toContain("replace: true");
-			const writeGate = await handlers.get("tool_call")!({ toolName: "write", input: { path: "draft.txt", content: "" } }, context);
+			const writeGate = await handlers.get("tool_call")!(
+				{ toolName: "write", input: { path: "draft.txt", content: "" } },
+				context,
+			);
 			expect(writeGate?.block).toBe(true);
 			expect(messages[0]?.content).toContain("empty or tiny tracked-file writes require replace: true");
 
@@ -884,7 +899,10 @@ describe("agent router", () => {
 			expect(messages[1]?.content).toContain("WriterR92");
 			expect(messages[1]?.content).toContain("No overlapping writer");
 			expect(messages[1]?.content.split("\n")).toHaveLength(2);
-			const gate = handlers.get("before_subagent_spawn")!({ agent: "coder", spawnKey: "WriterR93", patterns: [] }, context);
+			const gate = handlers.get("before_subagent_spawn")!(
+				{ agent: "coder", spawnKey: "WriterR93", patterns: [] },
+				context,
+			);
 			expect(gate?.block).toBe(true);
 			expect(messages[1]?.content).toContain("until it settles");
 		} finally {
@@ -933,9 +951,9 @@ describe("agent router", () => {
 			expect(refused).toMatchObject({ block: true });
 			expect(refused.reason).toContain("empty.txt");
 			expect(refused.reason).toContain("empty");
-		const action = refused.reason.split("\n", 1)[0] ?? "";
-		expect(action).toBe("Pass replace: true for empty.txt.");
-		expect(action.length).toBeLessThanOrEqual(100);
+			const action = refused.reason.split("\n", 1)[0] ?? "";
+			expect(action).toBe("Pass replace: true for empty.txt.");
+			expect(action.length).toBeLessThanOrEqual(100);
 			expect(
 				await call({ toolName: "write", input: { path: "empty.txt", content: "", replace: true } }, context),
 			).toBeUndefined();
@@ -956,9 +974,9 @@ describe("agent router", () => {
 			expect(refused).toMatchObject({ block: true });
 			expect(refused.reason).toContain("tracked.txt");
 			expect(refused.reason).toContain("5%");
-		const action = refused.reason.split("\n", 1)[0] ?? "";
-		expect(action).toBe("Pass replace: true to shrink tracked.txt.");
-		expect(action.length).toBeLessThanOrEqual(100);
+			const action = refused.reason.split("\n", 1)[0] ?? "";
+			expect(action).toBe("Pass replace: true to shrink tracked.txt.");
+			expect(action.length).toBeLessThanOrEqual(100);
 			expect(
 				await call({ toolName: "write", input: { path: "tracked.txt", content: "tiny", replace: true } }, context),
 			).toBeUndefined();
@@ -1162,6 +1180,20 @@ describe("/brrrr session preset", () => {
 		expect(notes.at(-1)).toBe("brrrr on");
 		await run("off");
 		expect(notes.at(-1)).toContain("brrrr off");
+	});
+
+	test.each([
+		{ kind: "unavailable", reason: "default model `anthropic/claude-opus-5-5` is not available" },
+		{ kind: "unavailable", reason: "no credentials for anthropic/claude-opus-5-5" },
+		{ kind: "invalid", reason: "preset default role must be a model selector" },
+		{ kind: "failed", reason: "model switch rejected", shadowed: [] },
+	])("reports the canonical $kind reason through the registered command", async result => {
+		const { run, notes } = brrrrHandler({
+			applySessionModelPreset: async () => result,
+			clearSessionModelPreset: () => undefined,
+		});
+		await run("");
+		expect(notes).toEqual([`brrrr: preset not applied (${result.kind}: ${result.reason})`]);
 	});
 
 	test("reports a missing preset and an unsupported build without acting", async () => {

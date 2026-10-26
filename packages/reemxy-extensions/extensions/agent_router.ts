@@ -4,6 +4,7 @@ import { randomInt } from "node:crypto";
 import { availableParallelism, homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ModelPresetSwitchResult } from "@oh-my-pi/pi-coding-agent/config/model-presets";
 import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { prompt } from "@oh-my-pi/pi-utils";
@@ -271,7 +272,6 @@ export function defaultStateFile(): string {
 function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
-
 
 function recordKey(spawnKey: string, agent: string): string {
 	return `${spawnKey}\u0000${agent}`;
@@ -940,12 +940,15 @@ export default function agentRouter(pi: ExtensionAPI) {
 					const progress = item as { id?: unknown; status?: unknown };
 					if (progress.status !== "running" || typeof progress.id !== "string") continue;
 					const spawn = [...state.spawns.values()].find(candidate => candidate.spawnKey === progress.id);
-					if (!spawn || spawn.recordedOutcome || spawn.writerNoticeSent || !WRITE_CAPABLE_WORKERS.has(spawn.agent)) continue;
+					if (!spawn || spawn.recordedOutcome || spawn.writerNoticeSent || !WRITE_CAPABLE_WORKERS.has(spawn.agent))
+						continue;
 					spawn.writerNoticeSent = true;
 					pi.sendMessage?.(
 						{
 							customType: "agent-router-active-writer-notice",
-							content: prompt.render(gateNotices, { writer: true, agent: spawn.agent, worker: spawn.spawnKey }).trim(),
+							content: prompt
+								.render(gateNotices, { writer: true, agent: spawn.agent, worker: spawn.spawnKey })
+								.trim(),
 							display: false,
 							attribution: "agent",
 						},
@@ -965,7 +968,7 @@ export default function agentRouter(pi: ExtensionAPI) {
 /** `/brrrr`: per-session "fast and reliable, paid allowed" preset, applied through core session presets. */
 function registerBrrrrCommand(pi: ExtensionAPI) {
 	const presets = pi as unknown as Partial<{
-		applySessionModelPreset(name: string): Promise<{ kind: string; message?: string }>;
+		applySessionModelPreset(name: string): Promise<ModelPresetSwitchResult>;
 		clearSessionModelPreset(): string | undefined;
 	}>;
 	pi.registerCommand?.("brrrr", {
@@ -986,10 +989,11 @@ function registerBrrrrCommand(pi: ExtensionAPI) {
 				return;
 			}
 			const result = await presets.applySessionModelPreset("brrrr");
+			const reason = "reason" in result ? result.reason : undefined;
 			ctx.ui.notify(
 				result.kind === "switched"
 					? "brrrr on"
-					: `brrrr: preset not applied (${result.kind}${result.message ? `: ${result.message}` : ""})`,
+					: `brrrr: preset not applied (${result.kind}${reason ? `: ${reason}` : ""})`,
 				result.kind === "switched" ? "info" : "warning",
 			);
 		},
