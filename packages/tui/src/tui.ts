@@ -50,6 +50,7 @@ import {
 	shouldEnableSynchronizedOutputByDefault,
 	synchronizedOutputUserOverride,
 	TERMINAL,
+	withDirectPlacementLift,
 } from "./terminal-capabilities";
 import { onTerminalBackgroundFallbackChange } from "./theme/theme";
 import { compositeLineAt } from "./render/composite";
@@ -3364,27 +3365,26 @@ export class TUI extends Container {
 	}
 
 	/**
-	 * Clip direct placements to the visible source slice and record live
-	 * ownership separately from history: Kitty tracks a live placement owner,
-	 * while SIXEL crops the encoded raster (iTerm2 images are not cropped).
-	 * SIXEL and iTerm2 have no delete command and composite over existing
-	 * pixels, so erase the visible rows they paint above `screenRow` before
-	 * repainting.
+	 * Clip direct placements to the frame's visible source slice; track physical
+	 * screen ownership separately so replay scrolling cannot retire history.
+	 * Uncroppable iTerm2/Kitty transmit-and-display blocks are omitted when
+	 * clipped instead of painting their hidden rows over following text.
 	 */
 	#imageLineSequence(
 		line: string,
-		screenRow: number,
+		frameRow: number,
 		placements: Map<number, LiveImagePlacement> | undefined,
 		placementRow: number,
+		screenRow: number,
 		physical: SixelPlacement[],
 	): string {
-		if (screenRow < 0) return line;
+		if (frameRow < 0) return line;
 		const parsed = parseKittyDirectPlacementLine(line);
 		if (!parsed) {
 			// During a history write, later newlines can still scroll this live
 			// image. Clip against its FINAL viewport row, then paint at the current
 			// physical row; the scroll tracker moves the origin on each emitted LF.
-			const clipRow = placements ? Math.min(screenRow, placementRow) : screenRow;
+			const clipRow = placements ? Math.min(frameRow, placementRow) : frameRow;
 			const cell = getCellDimensions();
 			let drawn = line;
 			const requestedLift = directPlacementLift(line);
@@ -3392,13 +3392,11 @@ export class TUI extends Container {
 			if (requestedLift > lift) {
 				const cropPixels = Math.round((requestedLift - lift) * cell.heightPx);
 				const maxHeightPixels = Math.floor((clipRow + 1) * cell.heightPx);
-				drawn = drawn.replace(/\x1bP[0-9;]*q[\s\S]*?\x1b\\/g, sequence =>
+				const clipped = line.replace(/\x1bP[0-9;]*q[\s\S]*?\x1b\\/g, sequence =>
 					this.#cropSixel(sequence, cropPixels, maxHeightPixels),
 				);
-				// Re-anchor the cropped raster at its final visible row: the line's own
-				// move-up counts the hidden rows, and later replay newlines would
-				// otherwise scroll the origin above the viewport.
-				drawn = drawn.replace(/\x1b7\x1b\[\d+A/g, lift > 0 ? `\x1b7\x1b[${lift}A` : "\x1b7");
+				if (clipped === line) return "";
+				drawn = withDirectPlacementLift(clipped, lift);
 			}
 			const liftErase = lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}` : "";
 			const sixels = parseSixelDirectPlacements(drawn);
@@ -3436,7 +3434,7 @@ export class TUI extends Container {
 				placementId,
 				columns: parsed.columns,
 				rows: parsed.rows,
-				screenRow,
+				screenRow: frameRow,
 				imageHeightPx: this.#imageBudget.getPlacementGeometry(parsed.imageId)?.heightPx ?? 0,
 			})
 		);
@@ -3795,9 +3793,9 @@ export class TUI extends Container {
 				buffer += `\x1b[${newTop + index + 1};1H${this.#lineRewriteSequence(
 					current,
 					width,
-					newTop + index,
+					index,
 					this.#osc66SpacerGlyphWidth(prepared.lines, index),
-					{ imagePlacements: this.#screenImagePlacements },
+					{ imagePlacements: this.#screenImagePlacements, imageRow: newTop + index },
 				)}`;
 			}
 			if (this.#providerWindow.length > rows && newTop + rows < height) {
@@ -3826,7 +3824,7 @@ export class TUI extends Container {
 						width,
 						Math.min(screenRow, height - 1),
 						this.#osc66SpacerGlyphWidth(preparedHistory.lines, index),
-						{ blankRow: compactReplay },
+						{ blankRow: compactReplay, screenRow: Math.min(screenRow, height - 1) },
 					),
 				);
 				screenRow++;
@@ -3836,16 +3834,19 @@ export class TUI extends Container {
 					buffer += "\n";
 					if (screenRow >= height) this.#scrollSixelPlacements(this.#screenSixelPlacements);
 				}
+				// Replay-split rows continue the history ledger, not live ownership.
+				const moved = index < replayViewportRows;
 				append(
 					this.#lineRewriteSequence(
 						prepared.rows[index]!,
 						width,
-						Math.min(screenRow, height - 1),
+						moved ? Math.min(screenRow, height - 1) : index,
 						this.#osc66SpacerGlyphWidth(prepared.lines, index),
 						{
 							blankRow: compactReplay,
-							imagePlacements: index < replayViewportRows ? undefined : this.#screenImagePlacements,
+							imagePlacements: moved ? undefined : this.#screenImagePlacements,
 							imageRow: newTop + index,
+							screenRow: Math.min(screenRow, height - 1),
 						},
 					),
 				);
@@ -4463,15 +4464,21 @@ export class TUI extends Container {
 		);
 	}
 
+	/**
+	 * Terminal bytes that rewrite one row. `frameRow` is the row's index within
+	 * the frame it belongs to (see {@link #imageLineSequence}); `imageRow`, the
+	 * physical row keying live Kitty placements, defaults to it.
+	 */
 	#lineRewriteSequence(
 		line: PreparedLine,
 		width: number,
-		screenRow = -1,
+		frameRow = -1,
 		spacerGlyphWidth = -1,
 		options?: {
 			blankRow?: boolean;
 			imagePlacements?: Map<number, LiveImagePlacement>;
 			imageRow?: number;
+			screenRow?: number;
 			sixelPlacements?: SixelPlacement[];
 		},
 	): string {
@@ -4494,9 +4501,10 @@ export class TUI extends Container {
 				ERASE_LINE +
 				this.#imageLineSequence(
 					line.line,
-					screenRow,
+					frameRow,
 					options?.imagePlacements,
-					options?.imageRow ?? screenRow,
+					options?.imageRow ?? frameRow,
+					options?.screenRow ?? options?.imageRow ?? frameRow,
 					options?.sixelPlacements ?? this.#screenSixelPlacements,
 				);
 		} else {

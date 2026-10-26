@@ -266,6 +266,10 @@ image environment settings.
 SIXEL direct placements retain surrounding Box padding and styles when clipped
 at the viewport top. Mutable placements are clipped against their final viewport
 row, even while an earlier history batch is still scrolling the physical screen.
+Frame-local clipping coordinates remain separate from physical screen ownership:
+history/replay newlines move SIXEL rectangles without extending the frame's crop
+boundary. Replay-split rows remain history owners. Uncroppable OSC/APC image
+blocks clipped at the frame top are omitted rather than overpainting later text.
 Clipping subtracts discarded six-pixel bands from the original raster height,
 preserving partial final bands so the graphics rectangle cannot cover text below.
 On Konsole (`KONSOLE_VERSION`) outside grid-owning multiplexers, the renderer

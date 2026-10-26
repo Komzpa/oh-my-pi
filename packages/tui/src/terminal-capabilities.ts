@@ -1006,6 +1006,7 @@ export function parseKittyDirectPlacementLine(line: string): ParsedKittyPlacemen
 
 /** `ESC 7` + `CUU(n)` lead-in of an {@link Image} direct-placement line. */
 const DIRECT_PLACEMENT_LIFT = /\x1b7\x1b\[(\d+)A/;
+const ALL_DIRECT_PLACEMENT_LIFTS = new RegExp(DIRECT_PLACEMENT_LIFT.source, "g");
 
 /**
  * Rows above its own line that an {@link Image} direct-placement line paints
@@ -1063,6 +1064,15 @@ export function parseSixelDirectPlacements(line: string): ParsedSixelPlacementLi
 /** Locate Image's SIXEL block without dropping the enclosing row's decorations. */
 export function parseSixelDirectPlacementLine(line: string): ParsedSixelPlacementLine | null {
 	return parseSixelDirectPlacements(line)[0] ?? null;
+}
+
+/**
+ * Re-anchor an {@link Image} direct-placement line `lift` rows above its own
+ * row instead of its encoded `CUU(rows-1)`. Bound this by the frame, not the
+ * physical screen, so clipped blocks cannot paint over committed history.
+ */
+export function withDirectPlacementLift(line: string, lift: number): string {
+	return line.replace(ALL_DIRECT_PLACEMENT_LIFTS, lift > 0 ? `\x1b7\x1b[${lift}A` : "\x1b7");
 }
 
 /**
