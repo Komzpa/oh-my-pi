@@ -1,11 +1,13 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { setImmediate } from "node:timers/promises";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import { type AssistantMessage, clearCustomApis, type Model, registerCustomApi } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { loadAdvisorTranscriptCosts } from "@oh-my-pi/pi-coding-agent/advisor/transcript-recorder";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -15,6 +17,7 @@ import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { CostCapError } from "@oh-my-pi/pi-coding-agent/session/cost-gate";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { __resetDirsFromEnvForTests, getProjectAgentDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
@@ -30,6 +33,7 @@ import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 import { cfgAdvisorEnabled, cfgAdvisorMaxNotesPerUpdate } from "@oh-my-pi/pi-coding-agent/advisor/settings";
 import { cfgCompactionKeepRecentTokens } from "@oh-my-pi/pi-coding-agent/session/context-settings";
+import { cfgSessionMaxCost } from "@oh-my-pi/pi-coding-agent/session/settings";
 
 describe("AgentSession advisor toggle", () => {
 	let authStorage: AuthStorage;
@@ -718,6 +722,7 @@ describe("AgentSession advisor toggle", () => {
 			// backfill signal the session exposes rather than a wall-clock guess.
 			await result.session.advisorCostRestore;
 			expect(result.session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+			expect(result.session.costGate.spent).toBeCloseTo(0.5, 8);
 		} finally {
 			await result.session.dispose();
 		}
@@ -726,6 +731,349 @@ describe("AgentSession advisor toggle", () => {
 		enableAdvisor();
 		session.restoreInitialAdvisorCosts(new Map([["", 0.5]]));
 		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+	});
+	it("counts restored advisor spend in the shared cost gate and refuses at the cap", () => {
+		cfgSessionMaxCost.override(session.settings, 0.25);
+		session.restoreInitialAdvisorCosts(new Map([["", 0.5]]));
+		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+		expect(session.costGate.spent).toBeCloseTo(0.5, 8);
+		const refusal = session.costGate.check();
+		expect(refusal).toBeDefined();
+		expect(refusal?.spent).toBeCloseTo(0.5, 8);
+	});
+	it("admits requests below the cap after a small advisor restore", () => {
+		cfgSessionMaxCost.override(session.settings, 0.25);
+		session.restoreInitialAdvisorCosts(new Map([["", 0.1]]));
+		expect(session.costGate.spent).toBeCloseTo(0.1, 8);
+		expect(session.costGate.check()).toBeUndefined();
+	});
+	it("leaves the gate empty when no advisor spend is restored", () => {
+		cfgSessionMaxCost.override(session.settings, 0.25);
+		session.restoreInitialAdvisorCosts(new Map());
+		expect(session.getAdvisorCost()).toBe(0);
+		expect(session.costGate.spent).toBe(0);
+		expect(session.costGate.check()).toBeUndefined();
+	});
+	it("keeps repeated advisor restores idempotent in the gate", () => {
+		cfgSessionMaxCost.override(session.settings, 0.25);
+		session.restoreInitialAdvisorCosts(new Map([["", 0.5]]));
+		expect(session.costGate.spent).toBeCloseTo(0.5, 8);
+		// A second settle carries the snapshot taken after the first restore,
+		// so the already-counted spend is not added again.
+		session.restoreInitialAdvisorCosts(new Map([["", 0.5]]), new Map([["", 0.5]]));
+		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+		expect(session.costGate.spent).toBeCloseTo(0.5, 8);
+	});
+	it("publishes the target advisor gate once before hooks and child reconciliation", async () => {
+		cfgSessionMaxCost.override(session.settings, 0.25);
+		async function saved(main: number, advisor: number): Promise<string> {
+			const file = SessionManager.createEmptySessionFile(tempDir.path());
+			const manager = await SessionManager.open(file);
+			manager.appendMessage(advisorMessage(main, 1));
+			await manager.close();
+			await writeAdvisorTranscript(file, "__advisor.jsonl", [advisor]);
+			return file;
+		}
+		const expensive = await saved(0.2, 0.5);
+		const cheap = await saved(0.05, 0.1);
+		const children: AgentSession[] = [];
+		const observed: number[] = [];
+		const gates: AgentSession["costGate"][] = [];
+		const extensionRunner = {
+			hasHandlers: () => false,
+			emit: async (event: { type: string }) => {
+				if (event.type === "session_switch") {
+					observed.push(session.costGate.spent);
+					gates.push(session.costGate);
+				}
+			},
+		} as unknown as ExtensionRunner;
+		await session.dispose();
+		session = new AgentSession({
+			agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
+			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
+			settings: Settings.isolated({ "compaction.enabled": false, "session.maxCost": 0.25 }),
+			modelRegistry,
+			advisorTools: [],
+			extensionRunner,
+		});
+		session.setSessionSwitchReconciler(async () => {
+			const child = new AgentSession({
+				agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
+				sessionManager: SessionManager.inMemory(tempDir.path()),
+				settings: session.settings,
+				modelRegistry,
+				advisorTools: [],
+				costGate: session.costGate,
+			});
+			children.push(child);
+		});
+		try {
+			for (const [file, total] of [
+				[expensive, 0.7],
+				[cheap, 0.15],
+				[expensive, 0.7],
+				[cheap, 0.15],
+			] as const) {
+				expect(await session.switchSession(file, { preserveLocalCwd: true })).toBe(true);
+				expect(observed.at(-1)).toBeCloseTo(total, 8);
+				expect(session.costGate.spent).toBeCloseTo(total, 8);
+				expect(gates.at(-1)).toBe(session.costGate);
+				expect(children.at(-1)!.costGate).toBe(session.costGate);
+				expect(Boolean(children.at(-1)!.costGate.check())).toBe(total >= 0.25);
+			}
+			await session.reload();
+			expect(session.costGate.spent).toBeCloseTo(0.15, 8);
+			expect(children.at(-1)!.costGate).toBe(session.costGate);
+			expect(await session.newSession()).toBe(true);
+			expect(session.costGate.spent).toBe(0);
+			expect(children.at(-1)!.costGate).toBe(session.costGate);
+			expect(children.at(-1)!.costGate.spent).toBe(0);
+			expect(gates.at(-1)).toBe(session.costGate);
+		} finally {
+			for (const child of children) await child.dispose();
+		}
+	});
+	it("rolls back the advisor ledger and shared gate when a switch hook fails", async () => {
+		const target = SessionManager.createEmptySessionFile(tempDir.path());
+		await writeAdvisorTranscript(target, "__advisor.jsonl", [0.1]);
+		const failure = new Error("switch hook failed after gate publication");
+		const extensionRunner = {
+			hasHandlers: () => false,
+			emit: async (event: { type: string }) => {
+				if (event.type === "session_switch") throw failure;
+			},
+		} as unknown as ExtensionRunner;
+		await session.dispose();
+		session = new AgentSession({
+			agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
+			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+			advisorTools: [],
+			extensionRunner,
+		});
+		session.restoreInitialAdvisorCosts(new Map([["", 0.5]]));
+		const gate = session.costGate;
+		const previousFile = session.sessionFile;
+		await expect(session.switchSession(target, { preserveLocalCwd: true })).rejects.toThrow(failure);
+		expect(session.sessionFile).toBe(previousFile);
+		expect(session.costGate).toBe(gate);
+		expect(session.costGate.spent).toBeCloseTo(0.5, 8);
+		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+	});
+	it.each(["switch", "rollback", "reload", "new"] as const)(
+		"settles SDK startup advisor restoration before %s publishes a gate",
+		async transition => {
+			const restore = Promise.withResolvers<Map<string, number>>();
+			const scanned = Promise.withResolvers<void>();
+			const boundary = Promise.withResolvers<void>();
+			const failure = new Error("overlapping switch hook failed");
+			const outgoing = SessionManager.createEmptySessionFile(tempDir.path());
+			await writeAdvisorTranscript(outgoing, "__advisor.jsonl", [0.5]);
+			const target = SessionManager.createEmptySessionFile(tempDir.path());
+			const targetManager = await SessionManager.open(target);
+			targetManager.appendMessage(advisorMessage(0.05, 1));
+			await targetManager.close();
+			await writeAdvisorTranscript(target, "__advisor.jsonl", [0.1]);
+			let startup = true;
+			const scan = advisorModule.loadAdvisorTranscriptCosts;
+			const load = vi
+				.spyOn(advisorModule, "loadAdvisorTranscriptCosts")
+				.mockImplementation(async (file, options) => {
+					if (startup) {
+						startup = false;
+						await options?.beforeSnapshot;
+						options?.onSnapshot?.();
+						scanned.resolve();
+						return restore.promise;
+					}
+					const costs = await scan(file, options);
+					boundary.resolve();
+					return costs;
+				});
+			let sdkSession: AgentSession | undefined;
+			let child: AgentSession | undefined;
+			let hookGate: AgentSession["costGate"] | undefined;
+			let hookBeforeRestore = false;
+			let released = false;
+			try {
+				({ session: sdkSession } = await createAgentSession({
+					cwd: tempDir.path(),
+					agentDir: tempDir.path(),
+					sessionManager: await SessionManager.open(outgoing),
+					authStorage,
+					modelRegistry,
+					settings: Settings.isolated({
+						"async.enabled": false,
+						"compaction.enabled": false,
+						"session.maxCost": 0.25,
+						"marketplace.autoUpdate": "off",
+					}),
+					model,
+					disableExtensionDiscovery: true,
+					skills: [],
+					contextFiles: [],
+					promptTemplates: [],
+					slashCommands: [],
+					enableMCP: false,
+					enableLsp: false,
+					skipPythonPreflight: true,
+				}));
+				await scanned.promise;
+				const active = sdkSession;
+				const oldGate = active.costGate;
+				const extensionRunner = {
+					hasHandlers: () => false,
+					emit: async (event: { type: string }) => {
+						if (event.type !== "session_switch") return;
+						hookBeforeRestore = !released;
+						hookGate = active.costGate;
+						child = new AgentSession({
+							agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
+							sessionManager: SessionManager.inMemory(tempDir.path()),
+							settings: active.settings,
+							modelRegistry,
+							advisorTools: [],
+							costGate: active.costGate,
+						});
+						await active.advisorCostRestore;
+						if (transition === "rollback") throw failure;
+					},
+				} as unknown as ExtensionRunner;
+				// Keep the SDK runner identity and script only the extension hook.
+				const emit = vi
+					.spyOn(active.extensionRunner!, "emit")
+					.mockImplementation(extensionRunner.emit.bind(extensionRunner));
+				const flush = active.sessionManager.flush.bind(active.sessionManager);
+				const drain = vi.spyOn(active.sessionManager, "flush").mockImplementation(async () => {
+					await flush();
+					if (transition === "reload" || transition === "new") boundary.resolve();
+				});
+				const pending = (
+					transition === "new"
+						? active.newSession()
+						: transition === "reload"
+							? active.reload()
+							: active.switchSession(target, { preserveLocalCwd: true })
+				).then(
+					value => ({ value, error: undefined }),
+					error => ({ value: undefined, error }),
+				);
+				// One event-loop turn drains the transition's already-ready continuations.
+				// Before the repair it reaches (and holds) the hook before restore release.
+				await boundary.promise;
+				await setImmediate();
+				released = true;
+				restore.resolve(new Map([["", 0.5]]));
+				const outcome = await pending;
+				emit.mockRestore();
+				drain.mockRestore();
+				expect(outcome.error).toBe(transition === "rollback" ? failure : undefined);
+				const expected =
+					transition === "new" ? 0 : transition === "reload" || transition === "rollback" ? 0.5 : 0.15;
+				expect(active.costGate.spent).toBeCloseTo(expected, 8);
+				expect(active.getAdvisorCost()).toBeCloseTo(transition === "switch" ? 0.1 : expected, 8);
+				expect(hookBeforeRestore).toBe(false);
+				expect(oldGate.spent).toBeCloseTo(0.5, 8);
+				expect(child).toBeDefined();
+				expect(child!.costGate).toBe(hookGate!);
+				if (transition === "rollback") {
+					expect(active.costGate).toBe(oldGate);
+					expect(active.sessionFile).toBe(outgoing);
+				} else {
+					expect(active.costGate).toBe(hookGate!);
+					expect(child!.costGate.spent).toBeCloseTo(expected, 8);
+					expect(Boolean(child!.costGate.check())).toBe(expected >= 0.25);
+				}
+			} finally {
+				restore.resolve(new Map());
+				await sdkSession?.advisorCostRestore;
+				await child?.dispose();
+				await sdkSession?.dispose();
+				load.mockRestore();
+			}
+		},
+	);
+	it("SDK guard meters live advisor spend once while historical restoration is pending", async () => {
+		const restore = Promise.withResolvers<Map<string, number>>();
+		const scanned = Promise.withResolvers<void>();
+		const load = vi.spyOn(advisorModule, "loadAdvisorTranscriptCosts").mockImplementation(async (_file, options) => {
+			await options?.beforeSnapshot;
+			options?.onSnapshot?.();
+			scanned.resolve();
+			return restore.promise;
+		});
+		const api = "test-advisor-restore-meter";
+		let calls = 0;
+		registerCustomApi(api, () => {
+			calls++;
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(() => stream.push({ type: "done", reason: "stop", message: advisorMessage(0.25, 1) }));
+			return stream;
+		});
+		const settings = Settings.isolated({
+			"async.enabled": false,
+			"advisor.enabled": true,
+			"compaction.enabled": false,
+			"session.maxCost": 0.8,
+			"marketplace.autoUpdate": "off",
+		});
+		const registry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"), { settings });
+		registry.registerProvider("anthropic", {
+			api,
+			baseUrl: "http://127.0.0.1:1",
+			apiKey: "fixture-key",
+			models: [{ ...model, api, contextWindow: model.contextWindow ?? 200000, maxTokens: model.maxTokens ?? 4096 }],
+		});
+		settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		let sdkSession: AgentSession | undefined;
+		try {
+			({ session: sdkSession } = await createAgentSession({
+				cwd: tempDir.path(),
+				agentDir: tempDir.path(),
+				sessionManager: SessionManager.inMemory(tempDir.path()),
+				authStorage,
+				modelRegistry: registry,
+				settings,
+				model: { ...model, api },
+				disableExtensionDiscovery: true,
+				skills: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				enableMCP: false,
+				enableLsp: false,
+				skipPythonPreflight: true,
+			}));
+			await scanned.promise;
+			const advisor = sdkSession.getAdvisorAgent();
+			if (!advisor) throw new Error("Expected SDK advisor");
+			await advisor.prompt("Review the current work");
+			expect(calls).toBe(1);
+			expect(sdkSession.getAdvisorCost()).toBeCloseTo(0.25, 8);
+			expect(sdkSession.costGate.spent).toBeCloseTo(0.25, 8);
+			const gate = sdkSession.costGate;
+			restore.resolve(new Map([["", 0.5]]));
+			await sdkSession.advisorCostRestore;
+			expect(sdkSession.getAdvisorCost()).toBeCloseTo(0.75, 8);
+			expect(gate.spent).toBeCloseTo(0.75, 8);
+			expect(gate.check()).toBeUndefined();
+			sdkSession.restoreInitialAdvisorCosts(new Map([["", 0.75]]), new Map([["", 0.75]]));
+			expect(sdkSession.costGate).toBe(gate);
+			expect(gate.spent).toBeCloseTo(0.75, 8);
+			cfgSessionMaxCost.override(settings, 0.75);
+			await expect(
+				Promise.resolve().then(() => advisor.streamFn(advisor.state.model, { messages: [] }, {})),
+			).rejects.toBeInstanceOf(CostCapError);
+			expect(calls).toBe(1);
+		} finally {
+			restore.resolve(new Map());
+			await sdkSession?.advisorCostRestore;
+			await sdkSession?.dispose();
+			load.mockRestore();
+			clearCustomApis();
+		}
 	});
 	it("attributes restored advisor spend to a subscription without a catalog scan", () => {
 		// #10131 follow-up: with no live runtime, subscription attribution comes
@@ -800,7 +1148,7 @@ describe("AgentSession advisor toggle", () => {
 			load.mockRestore();
 		}
 	});
-	it("ignores an initial cost restore after the active session changes", async () => {
+	it("keeps a new session empty after settling the outgoing initial restore", async () => {
 		const restore = Promise.withResolvers<Map<string, number>>();
 		const load = vi.spyOn(advisorModule, "loadAdvisorTranscriptCosts").mockImplementation((_file, options) => {
 			options?.onSnapshot?.();
@@ -808,9 +1156,10 @@ describe("AgentSession advisor toggle", () => {
 		});
 		try {
 			session.beginInitialAdvisorCostRestore();
-			await session.newSession();
+			const pending = session.newSession();
 			restore.resolve(new Map([["", 0.5]]));
 			await session.advisorCostRestore;
+			await pending;
 
 			expect(session.getAdvisorCost()).toBe(0);
 		} finally {

@@ -64,7 +64,7 @@ it.each([false, true])("startup skill compression respects exhausted=%s and mete
 				},
 			],
 		}));
-		const catalog = render.mock.contexts[0];
+		const catalog = render.mock.contexts[0] as descriptions.SkillDescriptionCatalog;
 		expect(catalog).toBeInstanceOf(descriptions.SkillDescriptionCatalog);
 		await catalog.waitForPending();
 		expect(send).toHaveBeenCalledTimes(exhausted ? 0 : 1);
