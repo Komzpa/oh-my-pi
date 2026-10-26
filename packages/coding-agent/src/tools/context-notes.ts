@@ -22,6 +22,11 @@ import type { ToolSession } from ".";
 import { throwIfAborted } from "./tool-errors";
 
 const contextNotesSchema = type({
+	action: type
+		.enumerated("read", "replace", "clear")
+		.describe(
+			'Required operation. "read" returns the latest notebook and never changes it, even if text is also supplied. "replace" replaces the entire notebook with text (required, nonempty). "clear" is the only way to clear the notebook. Examples: {action: "read"}, {action: "replace", text: "..."}, {action: "clear"}.',
+		),
 	"text?": type("string").describe(prompt.render(contextNotesTextDescription, { maxBytes: MAX_CONTEXT_NOTES_BYTES })),
 });
 
@@ -80,13 +85,14 @@ function createIfSupported<T extends ContextNotesTool | NewContextTool>(
 export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, ContextNotesToolDetails> {
 	readonly name = "context_notes";
 	readonly approval = (args: unknown): ToolApprovalDecision =>
-		args !== null && typeof args === "object" && Object.hasOwn(args, "text") ? "write" : "read";
+		args !== null && typeof args === "object" && "action" in args && args.action === "read" ? "read" : "write";
 	readonly label = "Context Notes";
 	readonly description = contextNotesDescription;
 	readonly parameters = contextNotesSchema;
-	// Strict-mode providers mark every property required, so an optional `text`
-	// would force models to send `""` (a clear) just to read. Stay non-strict
-	// so omitted `text` keeps meaning "read" while an explicit empty string clears.
+	// Strict-mode providers mark every property required, which would force a
+	// `text` value on read/clear calls. Stay non-strict so `text` stays optional;
+	// the required `action` enum — never text presence or emptiness — selects
+	// the operation, so a read can never be mistaken for a clear.
 	readonly strict = false;
 	readonly loadMode = "essential" as const;
 	readonly summary = "Read or replace persistent experimental context notes";
@@ -106,10 +112,14 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 	): Promise<AgentToolResult<ContextNotesToolDetails>> {
 		const manager = getExperimentalContextSession(this.session);
 		throwIfAborted(signal);
-		if (params.text !== undefined && typeof params.text !== "string") {
-			throw new ToolError("context_notes text must be a string.");
+		const action: unknown = params.action;
+		if (action !== "read" && action !== "replace" && action !== "clear") {
+			throw new ToolError(
+				'Context notes were not changed; the existing notebook is unchanged. context_notes requires action: "read", "replace", or "clear" — for example context_notes({i: "Reading current notebook", action: "read"}), context_notes({i: "Saving notebook", action: "replace", text: "..."}), or context_notes({i: "Clearing notebook", action: "clear"}). There is no default operation: omitted text no longer means read and empty text no longer clears.',
+			);
 		}
-		if (params.text === undefined) {
+		if (action === "read") {
+			// Read never mutates, whatever placeholder text a model may also send.
 			const notes = getContextNotes(manager.getBranch());
 			return {
 				content: [{ type: "text", text: notes?.text ?? "No context notes are stored for this session branch." }],
@@ -117,10 +127,23 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 			};
 		}
 
-		const bytes = Buffer.byteLength(params.text, "utf8");
+		let text: string;
+		if (action === "clear") {
+			text = "";
+		} else {
+			if (typeof params.text !== "string" || params.text.length === 0) {
+				throw new ToolError(
+					'Context notes were not saved; the existing notebook is unchanged. action: "replace" requires a nonempty text replacement. To read without changing anything use action: "read"; to clear the notebook use action: "clear" — empty text never clears.',
+				);
+			}
+			text = params.text;
+		}
+
+		const bytes = Buffer.byteLength(text, "utf8");
 		if (bytes > MAX_CONTEXT_NOTES_BYTES) {
+			const excess = bytes - MAX_CONTEXT_NOTES_BYTES;
 			throw new ToolError(
-				`Context notes are ${bytes} bytes; the limit is ${MAX_CONTEXT_NOTES_BYTES} UTF-8 bytes. Shorten the notebook and use history://current/full to recover raw detail.`,
+				`Context notes were not saved; the existing notebook is unchanged. The replacement is ${bytes} UTF-8 bytes, ${excess} bytes over the limit of ${MAX_CONTEXT_NOTES_BYTES} UTF-8 bytes. Read the current notebook with context_notes({i: "Reading current notebook", action: "read"}), recover any dropped detail from history://current/full, then retry with action: "replace" and a compact replacement that removes superseded entries and references history entry IDs instead of copying raw content. Do not finish the checkpoint until a replacement save succeeds.`,
 			);
 		}
 
@@ -140,12 +163,12 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 			throw new ToolError("Experimental context notes were not saved because the session branch changed.");
 		}
 
-		const data: ContextNotesEntry = { version: 1, text: params.text };
+		const data: ContextNotesEntry = { version: 1, text };
 		const entryId = manager.appendCustomEntry(CONTEXT_NOTES_ENTRY_TYPE, data);
 		await manager.flush();
 		return {
-			content: [{ type: "text", text: "Context notes saved." }],
-			details: { entryId, text: params.text, bytes },
+			content: [{ type: "text", text: action === "clear" ? "Context notes cleared." : "Context notes saved." }],
+			details: { entryId, text, bytes },
 		};
 	}
 }
