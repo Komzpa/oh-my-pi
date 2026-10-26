@@ -53,7 +53,7 @@ interface RecoveryCalls {
 	continued: { source: string; beforeContinue?: () => void }[];
 }
 
-function recovery(options: { textOutputCommitted?: boolean; calls?: RecoveryCalls } = {}): TurnRecovery {
+function recovery(options: { textOutputCommitted?: boolean; calls?: RecoveryCalls; owner?: "abort" | "disposal" | "streaming-edit" } = {}): TurnRecovery {
 	const calls = options.calls;
 	const host: TurnRecoveryHost = {
 		agent: {
@@ -78,11 +78,11 @@ function recovery(options: { textOutputCommitted?: boolean; calls?: RecoveryCall
 		configuredThinkingLevel: () => undefined,
 		setThinkingLevel: () => {},
 		thinkingLevelCeiling: () => undefined,
-		isDisposed: () => false,
+		isDisposed: () => options.owner === "disposal",
 		isStreaming: () => false,
 		isCompacting: () => false,
-		abortInProgress: () => false,
-		streamingEditAbortTriggered: () => false,
+		abortInProgress: () => options.owner === "abort",
+		streamingEditAbortTriggered: () => options.owner === "streaming-edit",
 		promptGeneration: () => 1,
 		promptSequence: () => 1,
 		sessionId: () => "stream-incomplete-test",
@@ -185,3 +185,13 @@ describe("TurnRecovery stream_incomplete after committed text", () => {
 		expect(calls.continued).toEqual([expect.objectContaining({ source: "stream-stall-continue" })]);
 	});
 });
+
+for (const owner of ["abort", "disposal", "streaming-edit"] as const) {
+	it(`does not restart committed output owned by ${owner}`, () => {
+		const calls: RecoveryCalls = { appended: [], continued: [] };
+		const subject = recovery({ textOutputCommitted: true, calls, owner });
+		expect(subject.handleCommittedTextStreamStall(assistant({ content: [{ type: "text", text: "committed" }], errorId: STREAM_INCOMPLETE_ERROR_ID }))).toBe(false);
+		expect(calls.continued).toEqual([]);
+		expect(calls.appended).toEqual([]);
+	});
+}
