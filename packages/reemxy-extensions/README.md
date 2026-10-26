@@ -31,7 +31,6 @@ A newer real user message explicitly giving a local `HH:MM` time can replace the
 
 Scope freezing on a **wrap-up request before the deadline**, and semantic recognition of arbitrary natural-language approvals, are not implemented here. Their owner is `todo_dispatch.ts`'s `input`/`isCorrectionInput` scope interpretation plus `goal_deadlines.ts`'s new-work `tool_call` gate; corrections must remain edits to existing rows rather than implicitly approve new rows.
 
-
 ## Subagent model selection
 
 The extension no longer picks models. Each agent profile names role groups (`@free`, `@fast`, `@code`, `@vision-code`, `@judgment`, `@strong`) in its `model:` frontmatter; the owner defines the groups as `modelRoles` in `config.yml`, and core resolves the chain, picks the first credentialed entry and falls back through the rest. A role missing from config falls back to `default` in core. Effort is not set in profiles: `defaultThinkingLevel: auto` decides.
@@ -39,6 +38,8 @@ The extension no longer picks models. Each agent profile names role groups (`@fr
 A re-dispatch of a Todo row after a rejected completion or a model-attributable failure takes the next entry of the agent's own chain whose vendor (model maker) the row has not tried yet (core, `task/redispatch-vendor.ts`).
 
 `/brrrr` applies the config preset `brrrr` to the current session through core session presets (children inherit it); `/brrrr off` clears it. Without core session-preset support the command says so and does nothing.
+
+The command MUST display the canonical core `ModelPresetSwitchResult.reason` for unsuccessful results that carry one (`unavailable`, `invalid`, and `failed`), without inventing a reason for `missing` or reporting success. The registered-command consumer oracle is the `/brrrr session preset` group in `extensions/agent_router.test.ts`; it covers model availability, absent credentials, invalid presets, failed switches, and the reasonless missing/success controls. Displaying a missing-credentials reason does not restore credentials or authorize login, credential import, or a different default model.
 
 What stays here: the write-scope gate (one non-isolated writer per checkout), the empty/shrinking-write refusal, and spawn/outcome records in `~/.local/state/omp-agent-router/spawns.jsonl` (`chosen` is the first candidate of the chain; the outcome's `resolvedModel` is what core ran). Oracles: `agent_router.test.ts`.
 
