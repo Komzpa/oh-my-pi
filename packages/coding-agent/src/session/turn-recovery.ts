@@ -2800,6 +2800,16 @@ export class TurnRecovery {
 		// retry budget still bounds a genuinely stuck stream.
 		const thinkingLoop = AIError.is(id, AIError.Flag.ThinkingLoop);
 		const transientStreamDrop = this.#isTransientStreamDrop(message, id);
+		// Bun's unexpected socket close retains the earlier route policy: one
+		// replay after streamed progress, immediate fallback before any content.
+		// Provider-reported stream drops still spend the configured retry budget.
+		const unexpectedSocketClose = isUnexpectedSocketCloseMessage(
+			message.errorClassificationMessage ?? errorMessage,
+		);
+		const sameModelStreamReplay =
+			transientStreamDrop &&
+			!retryBudgetExhausted &&
+			(!unexpectedSocketClose || (message.content.length > 0 && this.#retryAttempt === 1));
 		// A Codex steering rejection answers our own `response.steer`, not the
 		// model's health, and the provider already stopped steering the session:
 		// replay on the same model while same-model retries remain. Once the
@@ -2849,7 +2859,7 @@ export class TurnRecovery {
 				!sameModelSteerReplay &&
 				!waitForSiblingCredential &&
 				!refusalWalkRepeats &&
-				(!transientStreamDrop || retryBudgetExhausted)
+				!sameModelStreamReplay
 			) {
 				if (classifierRefusal) {
 					this.#refusalWalkTried.add(refusalWalkKey);
