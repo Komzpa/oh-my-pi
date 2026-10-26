@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, setDefaultTimeout } from "bun:test";
+import { afterEach, describe, expect, it, setDefaultTimeout, vi } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	disposeAllVmContexts,
@@ -9,6 +9,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/eval/js/context-manager";
 import type { WorkerInbound, WorkerOutbound } from "@oh-my-pi/pi-coding-agent/eval/js/worker-protocol";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { ToolResourceScope } from "@oh-my-pi/pi-natives";
 
 setDefaultTimeout(2_000);
 
@@ -97,6 +98,7 @@ describe("JS eval isolated startup failures", () => {
 	afterEach(async () => {
 		restoreFactories?.();
 		restoreFactories = undefined;
+		vi.restoreAllMocks();
 		delete process.env[EXECUTION_MARKER];
 		await disposeAllVmContexts();
 	});
@@ -104,7 +106,7 @@ describe("JS eval isolated startup failures", () => {
 	it("surfaces dual spawn failure without running synchronous cell code on the host", async () => {
 		let attempt = 0;
 		const factories: JsEvalWorkerFactories = {
-			spawnProcess() {
+			async spawnProcess() {
 				throw new Error("subprocess spawn failed");
 			},
 			spawnWorker() {
@@ -139,7 +141,7 @@ describe("JS eval isolated startup failures", () => {
 		let startupAttempt = 0;
 		const state: FailingHandleState = { runMessages: 0, terminations: 0 };
 		const factories: JsEvalWorkerFactories = {
-			spawnProcess() {
+			async spawnProcess() {
 				startupAttempt++;
 				return createInitFailingHandle("process", `subprocess init failed on attempt ${startupAttempt}`, state);
 			},
@@ -165,6 +167,63 @@ describe("JS eval isolated startup failures", () => {
 				: "worker init failed on attempt 2",
 		);
 		expect(state).toEqual({ runMessages: 0, terminations: process.platform === "linux" ? 2 : 4 });
+		expect(process.env[EXECUTION_MARKER]).toBeUndefined();
+	});
+	it("keeps the event loop responsive while the real JS worker scope is set up", async () => {
+		const originalWrap = ToolResourceScope.prototype.wrapCommandAsync;
+		const started = Promise.withResolvers<void>();
+		const gate = Promise.withResolvers<void>();
+		const wrapAsync = vi.spyOn(ToolResourceScope.prototype, "wrapCommandAsync").mockImplementation(async function (
+			this: ToolResourceScope,
+			command: string[],
+			env?: Record<string, string>,
+		) {
+			started.resolve();
+			await gate.promise;
+			return originalWrap.call(this, command, env);
+		});
+		const wrapSync = vi.spyOn(ToolResourceScope.prototype, "wrapCommand");
+		let output = "";
+		const execution = executeInVmContext({
+			sessionKey: "scoped-worker-startup",
+			sessionId: "scoped-worker-startup",
+			ownerId: "owner:scoped-worker-startup",
+			cwd: process.cwd(),
+			session: createSession(),
+			code: "print(41 + 1)",
+			filename: "[scoped-worker-startup].js",
+			timeoutMs: 15_000,
+			runState: {
+				onText: chunk => {
+					output += chunk;
+				},
+			},
+		});
+		await started.promise;
+		// A real zero-delay macrotask is the condition under test: it can only
+		// run while first-use scope setup remains pending if the loop is free.
+		const timer = Promise.withResolvers<void>();
+		setTimeout(() => timer.resolve(), 0);
+		await timer.promise;
+		gate.resolve();
+		await execution;
+		expect(output.trim()).toBe("42");
+		expect(wrapAsync).toHaveBeenCalledTimes(1);
+		expect(wrapSync).not.toHaveBeenCalled();
+	}, 15_000);
+
+	it("closes the real JS worker scope when async scope setup fails", async () => {
+		const close = vi.spyOn(ToolResourceScope.prototype, "close");
+		vi.spyOn(ToolResourceScope.prototype, "wrapCommandAsync").mockRejectedValue(
+			new Error("test scope setup unavailable"),
+		);
+		const error = await captureStartupError("scope-setup-failure");
+		expect(error.message).toContain(
+			process.platform === "linux"
+				? "Refusing an unbounded JS eval Worker fallback on Linux"
+				: "Failed to start isolated JS eval worker",
+		);
+		expect(close.mock.calls.length).toBeGreaterThan(0);
 		expect(process.env[EXECUTION_MARKER]).toBeUndefined();
 	});
 });

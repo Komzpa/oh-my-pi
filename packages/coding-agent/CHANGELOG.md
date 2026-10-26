@@ -5,6 +5,8 @@
 ### Fixed
 
 - Python eval kernels no longer block the JS event loop on first-use systemd scope setup: `PythonKernel.start` wraps the kernel command through the async `ToolResourceScope` variant, so `systemctl`/`systemd-run` probes run on the worker pool
+- JavaScript eval workers no longer block the JS event loop on first-use systemd scope setup: the scoped worker subprocess is created through the async `ToolResourceScope` boundary before `Bun.spawn`
+- Scoped kernels and workers no longer fail when the session `systemd-run` shim is first on PATH but the payload's complete spawn environment does not carry `OMP_SYSTEMD_RUN_REAL`: native scope launches exec the real manager binary directly
 - Masked desktop-session runtime dirs for Python eval kernels are now keyed by the session id instead of the cwd path: subagents sharing a cwd (or cwd paths sharing a 64-character sanitized prefix) no longer share one `XDG_RUNTIME_DIR`
 - Fixed advisors dropping their review and showing a rate-limit error when the provider returns a timed 429 such as Codex's `turn_rate_limit_exceeded`; the advisor now waits out the Retry-After (within `retry.maxDelayMs`) and retries like the main agent ([#17087](https://github.com/can1357/oh-my-pi/pull/17087) by [@H4vC](https://github.com/H4vC))
 

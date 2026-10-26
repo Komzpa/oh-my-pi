@@ -4,7 +4,7 @@ import { ToolResourceScope } from "@oh-my-pi/pi-natives";
 import { logger, Snowflake, workerHostEntry } from "@oh-my-pi/pi-utils";
 import {
 	createWorkerHandle,
-	createWorkerSubprocess,
+	createScopedWorkerSubprocess,
 	resolveWorkerSpawnCmd,
 	workerEnvFromParent,
 	type SpawnedSubprocess,
@@ -57,7 +57,7 @@ export interface JsEvalWorkerHandle {
 
 /** Startup dependencies overridden by tests to exercise process-to-Worker recovery. */
 export interface JsEvalWorkerFactories {
-	spawnProcess(env?: Record<string, string>): JsEvalWorkerHandle;
+	spawnProcess(env?: Record<string, string>): Promise<JsEvalWorkerHandle>;
 	spawnWorker(maskDesktopSession: boolean): JsEvalWorkerHandle;
 }
 
@@ -453,7 +453,7 @@ export async function disposeVmContextsByOwner(ownerId: string): Promise<void> {
  * `omp --smoke-test` so binary / source / tarball installs all exercise it.
  */
 export async function smokeTestJsEvalWorker(): Promise<void> {
-	const worker = spawnJsWorker(false);
+	const worker = await spawnJsWorker(false);
 	const session: JsSession = {
 		sessionKey: "smoke",
 		sessionId: "smoke",
@@ -623,7 +623,7 @@ async function acquireSession(
 		// and subprocess IPC can arrive immediately after the evaluator loads.
 		const maskDesktopSession = toolSession.agentKind === "sub";
 		const env = await toolSessionEnvironment(toolSession.getSessionId?.() ?? undefined, workerEnvFromParent());
-		const worker = spawnJsWorker(maskDesktopSession, env);
+		const worker = await spawnJsWorker(maskDesktopSession, env);
 		const session: JsSession = {
 			sessionKey,
 			sessionId: snapshot.sessionId,
@@ -970,13 +970,13 @@ async function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number, reason
 	}
 }
 
-function spawnJsWorker(maskDesktopSession: boolean, env?: Record<string, string>): JsEvalWorkerHandle {
+async function spawnJsWorker(maskDesktopSession: boolean, env?: Record<string, string>): Promise<JsEvalWorkerHandle> {
 	try {
 		const restoreDesktopEnv = maskDesktopSession
 			? enterMaskedDesktopSessionEnv(ensureSubagentRuntimeDir("js-eval"))
 			: undefined;
 		try {
-			return workerFactories.spawnProcess(
+			return await workerFactories.spawnProcess(
 				maskDesktopSession && env ? stripDesktopSessionEnv(env, ensureSubagentRuntimeDir("js-eval")) : env,
 			);
 		} finally {
@@ -1015,11 +1015,11 @@ function spawnBunWorker(maskDesktopSession: boolean): JsEvalWorkerHandle {
 	}
 }
 
-function spawnJsProcess(env?: Record<string, string>): JsEvalWorkerHandle {
+async function spawnJsProcess(env?: Record<string, string>): Promise<JsEvalWorkerHandle> {
 	const resourceScope = new ToolResourceScope();
 	let spawned: SpawnedSubprocess<WorkerOutbound>;
 	try {
-		spawned = createWorkerSubprocess<WorkerOutbound>({
+		spawned = await createScopedWorkerSubprocess<WorkerOutbound>({
 			spawnCommand: resolveWorkerSpawnCmd(JS_EVAL_PROCESS_ARG),
 			env: env ?? workerEnvFromParent(),
 			exitLabel: "JS eval worker",

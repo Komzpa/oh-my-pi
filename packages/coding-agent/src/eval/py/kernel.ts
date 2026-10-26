@@ -318,7 +318,7 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 			if (typeof value === "string") spawnEnv[key] = value;
 		}
 		if (options.maskDesktopSession) {
-			spawnEnv = stripDesktopSessionEnv(spawnEnv, ensureSubagentRuntimeDir(options.sessionId));
+			spawnEnv = stripDesktopSessionEnv(spawnEnv, ensureSubagentRuntimeDir(options.sessionId ?? Snowflake.next()));
 		}
 		for (const [key, value] of Object.entries(options.env ?? {})) {
 			if (typeof value === "string") spawnEnv[key] = value;
@@ -332,18 +332,21 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 
 		try {
 			kernel.#resourceScope = new ToolResourceScope();
-			const proc = Bun.spawn(await kernel.#resourceScope.wrapCommandAsync([runtime.pythonPath, "-u", scriptPath], spawnEnv), {
-				cwd: options.cwd,
-				detached: shouldDetachKernel(process.platform),
-				env: spawnEnv,
-				stdin: "pipe",
-				stdout: "pipe",
-				stderr: "pipe",
-				windowsHide: shouldHideKernelWindow({
-					platform: process.platform,
-					hostHasInheritableConsole: hostHasInheritableConsole(),
-				}),
-			});
+			const proc = Bun.spawn(
+				await kernel.#resourceScope.wrapCommandAsync([runtime.pythonPath, "-u", scriptPath], spawnEnv),
+				{
+					cwd: options.cwd,
+					detached: shouldDetachKernel(process.platform),
+					env: spawnEnv,
+					stdin: "pipe",
+					stdout: "pipe",
+					stderr: "pipe",
+					windowsHide: shouldHideKernelWindow({
+						platform: process.platform,
+						hostHasInheritableConsole: hostHasInheritableConsole(),
+					}),
+				},
+			);
 
 			kernel.setProcess(proc);
 			void proc.exited.then(() => kernel.#closeResourceScope());
