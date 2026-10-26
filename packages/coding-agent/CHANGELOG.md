@@ -6,6 +6,7 @@
 
 - Fixed advisors dropping their review and showing a rate-limit error when the provider returns a timed 429 such as Codex's `turn_rate_limit_exceeded`; the advisor now waits out the Retry-After (within `retry.maxDelayMs`) and retries like the main agent ([#17087](https://github.com/can1357/oh-my-pi/pull/17087) by [@H4vC](https://github.com/H4vC))
 - Fixed bash caller environment overrides reaching services and ordinary commands, with caller values taking precedence over session defaults.
+- Fixed bash session-infrastructure inspection of empty-input xargs and inherited stdin after non-consuming commands; syntax-only shell validation now remains allowed while outer-shell substitutions are still guarded.
 
 ## [18.13.0] - 2026-10-26
 

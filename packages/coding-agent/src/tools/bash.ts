@@ -34,6 +34,7 @@ import type {
 } from "../session/client-bridge";
 import { DEFAULT_MAX_BYTES, enforceInlineByteCap } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
+import { quotePosixArgv } from "../utils/shell-quote";
 import { TerminalGraphicsDecoder } from "../utils/terminal-graphics";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
@@ -362,6 +363,7 @@ function xargsInvocations(
 	replacement?: string,
 	maxArgs?: number,
 	eof?: string,
+	noRunIfEmpty = false,
 ): string[][] {
 	if (input === undefined) return [args];
 	if (delimiter === undefined && eof) {
@@ -381,6 +383,7 @@ function xargsInvocations(
 			rest = word.rest;
 		}
 	}
+	if (values.length === 0 && !replacement) return noRunIfEmpty ? [] : [args];
 	if (!replacement) {
 		if (!maxArgs || maxArgs < 1) return [[...args, ...values]];
 		const commands: string[][] = [];
@@ -420,6 +423,7 @@ function shellInvocation(
 	if (!executable || !Object.hasOwn(SESSION_PAYLOAD_SHELLS, executable)) return { payloads: [], stdin: false };
 	let stdin = false;
 	let commandString = false;
+	let noexec = false;
 	let i = 0;
 	for (; i < args.length; i++) {
 		const arg = args[i];
@@ -436,12 +440,15 @@ function shellInvocation(
 			const option = arg[flag];
 			if (option === "c") commandString = true;
 			if (option === "s" && arg[0] === "-") stdin = true;
+			if (option === "n") noexec = arg[0] === "-";
 			if (option === "o" || option === "O") {
 				if ((executable === "zsh" || executable === "ksh") && flag + 1 < arg.length) break;
+				if (args[i + 1] === "noexec") noexec = arg[0] === "-";
 				i++; // Shell option names are operands, even if they happen to contain c.
 			}
 		}
 	}
+	if (noexec) return { payloads: [], stdin: false };
 	return commandString
 		? { payloads: [args[i] ?? ""], stdin: false }
 		: { payloads: [], stdin: stdin || i === args.length, script: stdin ? undefined : args[i] };
@@ -502,7 +509,6 @@ function targetsSessionInfrastructure(
 	if (depth > SESSION_MAX_PAYLOAD_DEPTH) return true;
 	const segments = tokenizeShellExecutionSegments(command);
 	let pipelineOutput: string | undefined;
-	let first = true;
 	for (const { words, pipedStdin } of segments) {
 		const streams = new Map<string, string>();
 		for (const word of words) {
@@ -514,9 +520,13 @@ function targetsSessionInfrastructure(
 			}
 		}
 		const inputSources = new Map<number, string>();
-		if (first && stdin !== undefined) inputSources.set(0, stdin);
-		first = false;
-		if (pipedStdin && pipelineOutput !== undefined) inputSources.set(0, pipelineOutput);
+		// Non-consuming commands (true, echo, etc.) leave the enclosing shell's
+		// inherited descriptor available to later commands, not just the first.
+		if (stdin !== undefined) inputSources.set(0, stdin);
+		if (pipedStdin) {
+			inputSources.delete(0);
+			if (pipelineOutput !== undefined) inputSources.set(0, pipelineOutput);
+		}
 		const executableWords = words.filter((word, i) => {
 			if (word.hereDocument) {
 				inputSources.set(word.hereDocument.fd, word.hereDocument.body);
@@ -562,6 +572,7 @@ function targetsSessionInfrastructure(
 				let delimiter: string | undefined;
 				let maxArgs: number | undefined;
 				let eof: string | undefined;
+				let noRunIfEmpty = false;
 				let input = inputSources.get(0);
 				let describesOnly = false;
 				while (tokens[start]?.startsWith("-")) {
@@ -573,6 +584,7 @@ function targetsSessionInfrastructure(
 						if (/^-[^-]/u.test(option)) {
 							const flags = /^-[0rptx]*/u.exec(option)![0];
 							if (flags.includes("0")) delimiter = "\0";
+							if (flags.includes("r")) noRunIfEmpty = true;
 							if (flags.length > 1 && flags.length < option.length) option = `-${option.slice(flags.length)}`;
 						}
 						if (/^-n/u.test(option) || option === "--max-args" || option.startsWith("--max-args=")) {
@@ -592,6 +604,7 @@ function targetsSessionInfrastructure(
 						if (option.startsWith("-E")) eof = option.slice(2);
 						if (option.startsWith("-e")) eof = option.slice(2);
 						if (option.startsWith("--eof=")) eof = option.slice(6);
+						if (option === "--no-run-if-empty") noRunIfEmpty = true;
 						if (option === "-0" || option === "--null") delimiter = "\0";
 						if (option === "-I" || option === "-d") {
 							const value = tokens[start++];
@@ -645,10 +658,9 @@ function targetsSessionInfrastructure(
 						replacement,
 						maxArgs,
 						eof,
+						noRunIfEmpty,
 					)) {
-						const child = (argv.length ? argv : ["echo"])
-							.map(arg => `'${arg.replaceAll("'", `'\\''`)}'`)
-							.join(" ");
+						const child = quotePosixArgv(argv.length ? argv : ["echo"]);
 						if (targetsSessionInfrastructure(child, depth + 1)) return true;
 					}
 					start = tokens.length;
@@ -697,6 +709,15 @@ function targetsSessionInfrastructure(
 		) {
 			return true;
 		}
+		// These literal consumers drain inherited stdin. Redirected or piped
+		// input is a different descriptor and must not erase the inherited one.
+		if (
+			!pipedStdin &&
+			stdin !== undefined &&
+			stdinPayload === stdin &&
+			(invocation.stdin || (executable === "cat" && (args.length === 0 || args.includes("-"))))
+		)
+			stdin = undefined;
 		pipelineOutput =
 			executableWords.some(word => word.dynamic && !streams.has(word.value)) ||
 			words.some(word => word.redirection?.fd === 1)
