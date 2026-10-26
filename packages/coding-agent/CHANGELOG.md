@@ -500,6 +500,7 @@
 - Fixed an `ask` note added right after picking an answer landing on the next question's answer, in Tern and the TUI; Note now goes to the answer just picked until the next question gets other input ([#17126](https://github.com/can1357/oh-my-pi/pull/17126) by [@H4vC](https://github.com/H4vC))
 - Fixed transient stream drops switching models before same-model retries finish and keeping continuing workers on a fallback after recovery.
 - Fixed unexpected socket closes delaying configured fallback: empty responses switch immediately, while partial responses get one same-model retry before switching.
+- Fixed background skill-description compression bypassing `session.maxCost` during SDK startup; compression now checks and contributes to the session tree's existing spending gate.
 - Fixed committed-text turns stopping after a Responses `stream_incomplete` drop (including drops reported only through the classification message); the turn now continues with a resume reminder ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
 - Fixed committed-text stream-stall recovery burning its whole continuation budget within seconds on repeated websocket drops: the five per-prompt transport continuations are now paced at 2s, 5s, 15s, 30s and 60s instead of resuming immediately, and aborting or resetting the conversation during a pacing wait drops the pending continuation ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
 
