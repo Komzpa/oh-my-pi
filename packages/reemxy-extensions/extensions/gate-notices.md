@@ -16,4 +16,4 @@ Main wait will be refused until {{#if recoveryCap}}proc://{{owner}}/kill succeed
 {{#if waitingRows}}Carve out of each waiting critical row {{waitingRows}} the part that does not consume the running output (known fixes, fixtures, or the verifying check).
 {{/if}}{{#if staffingWarnings}}{{staffingWarnings}}
 {{/if}}If the chain is unsplittable, answer once via todo with override="idle-wait: <concrete reason>".{{/if}}
-{{#if criticalWorker}}Restaff {{row}} (worker {{worker}}, model {{model}}, effort {{effort}}) on a strong model with sufficient effort; keep its partial output.{{/if}}
+{{#if criticalWorker}}Restaff {{row}} (worker {{worker}}, model {{model}}, effort {{effort}}) on the role's required model and effort; keep its partial output. The live route conflicts with the discovered role policy after configured model overrides and effort caps.{{/if}}
