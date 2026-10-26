@@ -11,6 +11,11 @@ import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { availableParallelism } from "node:os";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
+import { discoverAgents, getAgent } from "@oh-my-pi/pi-coding-agent/task/discovery";
+import { resolveAgentModelPatterns, resolveModelOverride } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { cfgTaskAgentModelOverrides, cfgTaskMaxEffort } from "@oh-my-pi/pi-coding-agent/task/settings";
+import { cfgDefaultThinkingLevel } from "@oh-my-pi/pi-coding-agent/session/settings";
+import { clampThinkingLevelToCeiling, resolveThinkingLevelForModel } from "@oh-my-pi/pi-tui/thinking";
 import { getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -2449,25 +2454,55 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return deps.some((dep) => !known.includes(dep));
     });
   };
-  // Read the effective live route, not the profile's requested model or auto effort selector.
-  // Both wait refusal and PLAN CHECK must identify the same critical staffing defect.
-  const criticalWorkerWarnings = (rows: TodoTaskForecast[], running: Jobs["running"]) =>
-    rows.filter((row) => row.critical && row.owner).flatMap((row) =>
-      running.filter((job) => liveJobMatchesOwner(job, row.owner!)).flatMap((job) => {
+  // Identity is in the running session's session_init, not the public job snapshot.
+  // Rediscover through core precedence and resolve settings/aliases on each check;
+  // permitted mechanical routes and operator effort caps are not routing defects.
+  const criticalWorkerWarnings = async (ctx: ExtensionContext, rows: TodoTaskForecast[], running: Jobs["running"]) => {
+    const warnings = await Promise.all(rows.filter((row) => row.critical && row.owner).flatMap((row) =>
+      running.filter((job) => liveJobMatchesOwner(job, row.owner!)).map(async (job) => {
         const id = job.agentId ?? job.id;
-        const worker = AgentRegistry.global().get(id);
-        const model = worker?.session?.model;
-        const modelName = model ? `${model.provider}/${model.id}` : worker?.history?.resolvedModel;
-        const effort = worker?.session?.thinkingLevel;
-        if (!modelName?.endsWith(":free") && effort !== "low" && effort !== "minimal") return [];
+        const session = AgentRegistry.global().get(id)?.session;
+        const model = session?.model;
+        const effort = session?.thinkingLevel;
+        const isFree = model?.id.endsWith(":free") ?? false;
+        const isWeakEffort = effort === "low" || effort === "minimal";
+        if (!session || !model || (!isFree && !isWeakEffort)) return [];
+        const init = selectBranchEntries(session.sessionManager, metadata => metadata.type === "session_init")
+          .findLast(entry => typeof entry.agent === "string");
+        if (!init?.agent) return [];
+        const discovery = await discoverAgents(ctx.cwd, homedir(), session.effectiveExtensionRoots);
+        const agent = getAgent([...discovery.agents, ...(session.getSessionAgents?.() ?? [])], init.agent);
+        if (!agent) return [];
+        const settings = session.settings;
+        const patterns = resolveAgentModelPatterns({
+          settingsOverride: cfgTaskAgentModelOverrides.get(settings)[agent.name],
+          agentModel: agent.model, settings,
+        });
+        const routes = patterns.map(pattern => resolveModelOverride([pattern], ctx.modelRegistry, settings))
+          .filter(route => route.model);
+        const permitsFree = routes.some(route => route.model.id.endsWith(":free"));
+        // Each configured fallback keeps its own effort: judge the permitted route the
+        // live model resolves to, not the first route. A live model matching no route
+        // keeps the primary route's semantics (a free mismatch is the free defect).
+        const primary = routes.find(route =>
+          route.model.id === model.id && route.model.provider === model.provider) ?? routes[0];
+        const selector = primary?.explicitThinkingLevel ? primary.thinkingLevel
+          : agent.thinkingLevel ?? cfgDefaultThinkingLevel.get(settings);
+        const requiredEffort = selector === undefined || selector === "auto" ? undefined
+          : resolveThinkingLevelForModel(model, clampThinkingLevelToCeiling(model, selector, cfgTaskMaxEffort.get(settings)));
+        const requiresStrongEffort = requiredEffort === "medium" || requiredEffort === "high" ||
+          requiredEffort === "xhigh" || requiredEffort === "max";
+        if (!(isFree && routes.length > 0 && !permitsFree) && !(isWeakEffort && requiresStrongEffort)) return [];
         return [prompt.render(gateNoticeInstructions, {
           criticalWorker: true, row: JSON.stringify(row.content), worker: id,
-          model: modelName ?? "unknown", effort: effort ?? "unknown",
+          model: `${model.provider}/${model.id}`, effort: effort ?? "unknown",
         }).trim()];
       }),
-    );
+    ));
+    return warnings.flat();
+  };
   let criticalSplitWait: { key: string; structure: Structure } | null = null;
-  const blockIdleWait = (ctx: ExtensionContext) => {
+  const blockIdleWait = async (ctx: ExtensionContext) => {
     if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return;
     if (pauseGate?.paused) return;
     // Grievance 547: a todo override naming idle-wait answers this refusal; let
@@ -2530,7 +2565,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
             `${JSON.stringify(row.content)} (waiting on ${(depsByRow.get(row.content) ?? []).map((dep) => JSON.stringify(dep)).join(", ")})`).join(", ");
           return refuseWait(prompt.render(gateNoticeInstructions, {
             criticalSplit: true, splitRows: runningNames || waitingNames, waitingRows: waitingNames,
-            staffingWarnings: criticalWorkerWarnings(open, runningTasks).join("\n"),
+            staffingWarnings: (await criticalWorkerWarnings(ctx, open, runningTasks)).join("\n"),
           }).trim(), key);
         }
       }
@@ -4528,7 +4563,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ...overlapWarnings,
       silent.length ? `${silent.length} running worker(s) silent: ${silent.slice(0, 6).map((worker) => `${worker.name} (${worker.lastAt === undefined ? "no activity since start" : "last activity"} ${minutes(worker.ageMs)} ago)`).join(", ")}; write agent://<id> asking what it waits on. Workers not named here are active: their results arrive by themselves, so do not read their history` : "",
       ...serialQueues,
-      ...criticalWorkerWarnings(open, running),
+      ...await criticalWorkerWarnings(ctx, open, running),
       understaffed && (hasReplannableWait(decision) || waitingCritical.includes("queued behind")) ? `only ${running.length} of ${capacity} worker slots run and no row is ready: the rest wait on running work. ${waitingCritical ? `Waiting rows on the chain that sets the ETA, in order:${waitingCritical}\n${waitingCritical.includes("queued behind") ? `${RESOURCE_QUEUE}\n` : ""}${WHY_EACH_LINK}\n${SPLIT_EACH} (skill step 7)` : "Split the waiting rows into the part that needs that result and the part that can start now, and dispatch the second part (skill step 7)"}` : "",
       missing ? `${missing} planning issue(s) (missing estimates or dependencies) block every non-read tool` : "",
       overdue.length ? `${overdue.length} open row(s) past their time: ${names(overdue)}` : "",
