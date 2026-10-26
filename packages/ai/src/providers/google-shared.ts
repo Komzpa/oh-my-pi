@@ -28,6 +28,7 @@ import { shouldSendServiceTier } from "../types";
 import { normalizeSystemPrompts, normalizeToolCallId } from "../utils";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
+import { armPreResponseTimeout, getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs } from "../utils/idle-iterator";
 import { normalizeSchemaForCCA, normalizeSchemaForGoogle, toolWireSchema } from "../utils/schema";
 import type {
 	Content,
@@ -141,6 +142,7 @@ export function retainThoughtSignature(existing: string | undefined, incoming: s
 const base64SignaturePattern = /^[A-Za-z0-9+/]+={0,2}$/;
 
 export const SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
+const SKIP_THOUGHT_SIGNATURE_BASE64 = Buffer.from(SKIP_THOUGHT_SIGNATURE).toString("base64");
 
 function isValidThoughtSignature(signature: string | undefined): boolean {
 	if (!signature) return false;
@@ -305,7 +307,10 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 					const requiresFallback =
 						model.compat.requiresSkipThoughtSignature ||
 						(isFirstToolCall && model.compat.requiresSkipThoughtSignatureOnFirstFunctionCall);
-					const effectiveSignature = thoughtSignature || (requiresFallback ? SKIP_THOUGHT_SIGNATURE : undefined);
+					const skipSignature = model.compat.base64SkipThoughtSignature
+						? SKIP_THOUGHT_SIGNATURE_BASE64
+						: SKIP_THOUGHT_SIGNATURE;
+					const effectiveSignature = thoughtSignature || (requiresFallback ? skipSignature : undefined);
 					isFirstToolCall = false;
 
 					const part: Part = {
@@ -465,6 +470,7 @@ export function mapStopReason(reason: FinishReason): StopReason {
 		case "OTHER":
 		case "LANGUAGE":
 		case "MALFORMED_FUNCTION_CALL":
+		case "MALFORMED_RESPONSE":
 		case "UNEXPECTED_TOOL_CALL":
 		case "NO_IMAGE":
 			return "error";
@@ -758,12 +764,15 @@ export function googleStreamChunkError(error: NonNullable<GenerateContentRespons
 		error.message && error.status
 			? `${error.message} (${error.status})`
 			: error.message || error.status || "unknown error";
-	const message = `Google API stream error: ${detail}`;
+	const residue =
+		Array.isArray(error.details) && error.details.length > 0
+			? ` ${JSON.stringify({ error: { status: error.status, details: error.details } })}`
+			: "";
+	const message = `Google API stream error: ${detail}${residue}`;
 	return typeof error.code === "number" && error.code >= 400
 		? new AIError.GoogleApiError(message, error.code)
 		: new AIError.ProviderResponseError(message, { provider, kind: "output" });
 }
-
 /**
  * Drives the chunked `generateContentStream` iterator into an `AssistantMessage` and
  * the corresponding `AssistantMessageEventStream`. Shared between `streamGoogle` and
@@ -1060,20 +1069,40 @@ export function streamGoogleGenAI<T extends "google-generative-ai" | "google-ver
 
 			const bodyJson = JSON.stringify(paramsToWireBody(params));
 			const fetchImpl = plan.fetch ?? options?.fetch ?? (globalThis.fetch.bind(globalThis) as FetchImpl);
+			// Bun's native fetch ceiling is disabled (`timeout: false`) so configurable
+			// watchdogs govern slow-prefill streams (issues #2422, #16991). Direct callers
+			// that bypass `register-builtins` (which installs the iterator-level
+			// first-event watchdog) still need this pre-response timer, otherwise an
+			// endpoint that accepts the POST and never sends headers would hang forever.
+			const firstEventTimeoutMs =
+				options?.streamFirstEventTimeoutMs ??
+				getStreamFirstEventTimeoutMs(options?.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs());
 			const openStreamAt = async (requestUrl: string): Promise<ReadableStream<Uint8Array>> => {
-				const response = await fetchImpl(requestUrl, {
+				const watchdog = armPreResponseTimeout(options?.signal, firstEventTimeoutMs);
+				// `timeout` is a Bun fetch extension absent from the DOM `RequestInit`.
+				const init: RequestInit & { timeout: false } = {
 					method: "POST",
 					headers: { ...plan.headers, "Content-Type": "application/json", Accept: "text/event-stream" },
 					body: bodyJson,
-					signal: options?.signal,
-				});
-				if (!response.ok) {
-					const errorText = await response.text().catch(() => "");
-					throw new AIError.GoogleApiError(
-						`Google API error (${response.status}): ${extractGoogleErrorMessage(errorText, response.status)}`,
-						response.status,
-						{ headers: response.headers },
-					);
+					signal: watchdog.signal,
+					timeout: false,
+				};
+				let response: Response;
+				try {
+					response = await fetchImpl(requestUrl, init);
+					if (!response.ok) {
+						const errorText = await response.text().catch(() => "");
+						throw new AIError.GoogleApiError(
+							`Google API error (${response.status}): ${extractGoogleErrorMessage(errorText, response.status)}`,
+							response.status,
+							{ headers: response.headers },
+						);
+					}
+				} finally {
+					// Cleared once headers (or a finite error body) arrive: an absolute
+					// deadline would keep aborting an actively streaming body. Stream
+					// liveness belongs to the event iterator's idle watchdog.
+					watchdog.clear();
 				}
 				if (!response.body) {
 					throw new AIError.ProviderResponseError("Google API returned an empty response body", {
