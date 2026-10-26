@@ -7,6 +7,7 @@
 - Fixed inline images in Konsole leaving stale copies or deleting neighboring images when the transcript scrolls
 - Fixed pasted-image thumbnails in the Konsole composer leaving stale copies after history appends
 - Preserved frame-local image clipping and replay-history ownership while tracking Konsole SIXEL placements through physical scrolling
+- Deferred live Konsole SIXEL painting until overflowing history scrolls finish, preventing terminal-induced raster drift and stale copies above the viewport
 
 ## [18.13.0] - 2026-10-26
 

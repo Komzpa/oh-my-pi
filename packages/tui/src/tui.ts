@@ -3808,6 +3808,14 @@ export class TUI extends Container {
 			// viewport rows are not — erase them first so a scroll can only push
 			// committed rows and blanks, never an unfinished frame.
 			const pushed = Math.max(0, startTop + preparedHistory.lines.length + rows - height);
+			// Konsole moves below each SIXEL raster before ESC 8 restores the
+			// cursor. Painting at the transient bottom during replay would add an
+			// untracked scroll. Paint live rasters at their final cells instead.
+			const deferSixel =
+				pushed > 0 &&
+				TERMINAL.imageProtocol === ImageProtocol.Sixel &&
+				Boolean(Bun.env.KONSOLE_VERSION) &&
+				!isInsideTerminalMultiplexer();
 			if (pushed > this.#providerViewportTop && this.#providerWindow.length > 0) {
 				buffer += this.#eraseBelowRow(this.#providerViewportTop, height);
 			}
@@ -3836,6 +3844,11 @@ export class TUI extends Container {
 				}
 				// Replay-split rows continue the history ledger, not live ownership.
 				const moved = index < replayViewportRows;
+				if (deferSixel && !moved && prepared.rows[index]!.isImage) {
+					append(`${ERASE_LINE}\r`);
+					screenRow++;
+					continue;
+				}
 				append(
 					this.#lineRewriteSequence(
 						prepared.rows[index]!,
@@ -3851,6 +3864,17 @@ export class TUI extends Container {
 					),
 				);
 				screenRow++;
+			}
+			if (deferSixel) {
+				for (let index = replayViewportRows; index < rows; index++) {
+					if (!prepared.rows[index]!.isImage) continue;
+					append(`\x1b[${newTop + index + 1};1H`);
+					append(this.#lineRewriteSequence(
+						prepared.rows[index]!, width, index,
+						this.#osc66SpacerGlyphWidth(prepared.lines, index),
+						{ imagePlacements: this.#screenImagePlacements, imageRow: newTop + index },
+					));
+				}
 			}
 			if (newTop + rows < height) buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
 		}

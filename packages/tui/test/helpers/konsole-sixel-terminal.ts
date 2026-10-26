@@ -104,6 +104,17 @@ export class KonsoleSixelTerminal extends VirtualTerminal {
 				};
 				this.placements.push(placement);
 				this.paints.push(placement);
+				// Konsole's SIXEL addPlacement moves below the raster before ESC 8
+				// restores the cursor. At the bottom this scrolls graphics and text.
+				const nextRow = cursor.row + placement.rows;
+				if (nextRow >= this.rows) {
+					const scroll = nextRow - this.rows + 1;
+					this.scrolls += scroll;
+					for (const physical of this.placements) physical.row -= scroll;
+					super.write(`\x1b[${this.rows};1H${"\n".repeat(scroll)}`);
+				} else {
+					super.write(`\x1b[${nextRow + 1};1H`);
+				}
 			} else {
 				if (token === "\n" && this.getCursor().row === this.rows - 1) {
 					this.scrolls++;

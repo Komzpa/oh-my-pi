@@ -278,6 +278,10 @@ origins, and cell deletion targets only
 cells owned by live placements being retired. A row may hold several rasters, each located by its `ESC 7 CUU CHA` lead-in (the `CHA` column wins over
 visible text width), so composer chip thumbnails are tracked like any other image. Committed history rectangles,
 including those partly in scrollback, are never targets of live repaint deletion.
+During overflowing history emission, live SIXEL rows are painted only after the
+text scroll completes, at their final physical coordinates. Konsole advances
+below a raster before restoring the saved cursor; painting at the transient
+bottom would otherwise introduce an extra scroll and invalidate ownership.
 Other SIXEL terminals and grid-owning multiplexers keep the portable
 lift/line-erase path without positional Kitty APC deletes: pane-local cells
 cannot safely address the outer terminal's graphics rectangles.
