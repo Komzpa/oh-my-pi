@@ -971,6 +971,70 @@ describe("detachGitDir", () => {
 		}
 	}, 30_000);
 
+	it("links a single alternates entry so a --reference clone chain does not form a cycle", async () => {
+		// R is the deep object store; Q and P are `git clone --reference` clones,
+		// so P's alternates name only Q/objects while Q's name R/objects. The
+		// detach must write only the single source common objects entry and let
+		// gix walk the chain transitively: flattening the chain into the
+		// isolation's alternates makes gix see an object directory twice and
+		// fail with "Alternates form a cycle".
+		const r = await fs.mkdtemp(path.join(os.tmpdir(), "omp-alt-r-"));
+		tempDirs.push(r);
+		await runGit(r, ["init", "-q", "-b", "main"]);
+		await runGit(r, ["config", "user.email", "src@example.com"]);
+		await runGit(r, ["config", "user.name", "Source User"]);
+		await fs.writeFile(path.join(r, "file.txt"), "base\n");
+		await runGit(r, ["add", "file.txt"]);
+		await runGit(r, ["commit", "-q", "-m", "base"]);
+		const baseSha = (await runGit(r, ["rev-parse", "HEAD"])).trim();
+
+		const q = path.join(os.tmpdir(), `omp-alt-q-${path.basename(r)}`);
+		await runGit(r, ["clone", "-q", "--reference", r, r, q]);
+		tempDirs.push(q);
+		const p = path.join(os.tmpdir(), `omp-alt-p-${path.basename(r)}`);
+		await runGit(r, ["clone", "-q", "--reference", q, r, p]);
+		tempDirs.push(p);
+
+		const wt = path.join(os.tmpdir(), `omp-alt-wt-${path.basename(r)}`);
+		await runGit(p, ["worktree", "add", "-q", wt, "-b", "feature/parent", "HEAD"]);
+		tempDirs.push(wt);
+		const iso = await copyTree(wt);
+		await vcs.detachGitDir(iso, path.join(p, ".git"));
+
+		// gix must resolve objects through the borrowed chain: a flattened
+		// alternates file triggers "Alternates form a cycle" here.
+		await expect(vcs.requireGit(iso).headSha()).resolves.toBe(baseSha);
+		await expect(vcs.requireGit(iso).revListRange(baseSha, baseSha)).resolves.toEqual([]);
+		await expect(vcs.requireGit(iso).commitDetails(baseSha)).resolves.toMatchObject({
+			sha: baseSha,
+			message: "base",
+		});
+		// The isolation borrows exactly one object directory; the rest of the
+		// chain stays reachable transitively through it. Assert the reference
+		// chain itself (P borrows Q, Q borrows R) so the single entry below is
+		// meaningful and not an accident of a flattened or local copy.
+		const qAlternates = (await fs.readFile(path.join(q, ".git", "objects", "info", "alternates"), "utf8")).trim();
+		expect(qAlternates.split("\n")).toHaveLength(1);
+		expect(qAlternates).toBe(await fs.realpath(path.join(r, ".git", "objects")));
+		const pAlternates = (await fs.readFile(path.join(p, ".git", "objects", "info", "alternates"), "utf8")).trim();
+		expect(pAlternates.split("\n")).toHaveLength(1);
+		expect(pAlternates).toBe(await fs.realpath(path.join(q, ".git", "objects")));
+		const alternates = await fs.readFile(path.join(iso, ".git", "objects", "info", "alternates"), "utf8");
+		expect(alternates.trim().split("\n")).toHaveLength(1);
+		expect(alternates.trim()).toBe(await fs.realpath(path.join(p, ".git", "objects")));
+		// A commit made only in R after the clones exist only in R's object
+		// store: resolving it from the isolation proves post-clone traversal
+		// through the borrowed chain, not just pre-clone HEAD.
+		await fs.writeFile(path.join(r, "postclone.txt"), "postclone\n");
+		await runGit(r, ["add", "postclone.txt"]);
+		await runGit(r, ["commit", "-q", "-m", "postclone"]);
+		const postcloneSha = (await runGit(r, ["rev-parse", "HEAD"])).trim();
+		await expect(vcs.requireGit(iso).commitDetails(postcloneSha)).resolves.toMatchObject({
+			sha: postcloneSha,
+			message: "postclone",
+		});
+	});
+
 	it("keeps ensureIsolation from mutating a linked-worktree parent (rcopy backend)", async () => {
 		const { wt, baseSha } = await makeLinkedWorktree();
 		vi.spyOn(natives, "isoResolve").mockResolvedValue({
