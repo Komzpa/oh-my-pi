@@ -530,7 +530,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		const model = getBundledModel("anthropic", "claude-opus-4-6");
 		if (!model) throw new Error("Expected claude-opus-4-6 model to exist");
 		const settings = Settings.isolated({ "task.maxEffort": "low" });
-		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		settings.setModelRole("task", `${model.provider}/${model.id}:max`);
 		const session = yieldEmittingSession();
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
 
@@ -543,6 +543,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		});
 
 		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.High);
 		expect(effectiveCeiling(spy.mock.calls[0]?.[0])).toBe(Effort.High);
 	});
 
