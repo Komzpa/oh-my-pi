@@ -301,6 +301,12 @@ editor.borderColor = (s) => chalk.blue(s); // Change border dynamically
 - Horizontal lines above/below editor
 - Fake cursor rendering (hidden real cursor)
 
+When Vim mode is enabled with `editor.setVimMode(true)`, `.` must replay Insert-mode
+deletions relative to the actual edit cursor, even within repeated text. Backspace
+removes pre-session graphemes before the insertion anchor; Delete removes those
+after it. Text typed and erased within the session is not an original-text
+deletion. Replay preserves whole Unicode graphemes, line joins, and dot counts.
+
 **Key Bindings:**
 
 - `Enter` - Submit

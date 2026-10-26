@@ -3356,9 +3356,9 @@ export class AgentSession implements SettingsScope {
 		return { stop: true, reason: refusal.message };
 	}
 
-	/** A gate seeded with this session file's recorded spend. */
-	#createCostGate(): CostGate {
-		return new CostGate(this.settings, this.sessionManager.getUsageStatistics().cost, message =>
+	/** A gate seeded with this session file's recorded main and advisor spend. */
+	#createCostGate(advisorCost = 0): CostGate {
+		return new CostGate(this.settings, this.sessionManager.getUsageStatistics().cost + advisorCost, message =>
 			this.emitNotice("warning", message, COST_GATE_NOTICE_SOURCE),
 		);
 	}
@@ -3371,9 +3371,9 @@ export class AgentSession implements SettingsScope {
 	 * the tree's gate they were given.
 	 */
 	#reseedCostGate(): void {
-		if (this.#ownsCostGate) this.#costGate = this.#createCostGate();
+		if (!this.#ownsCostGate) return;
+		this.#costGate = this.#createCostGate(this.#advisors.getAdvisorCost());
 	}
-
 	/** Resolves once every currently admitted submission has dispatched, queued, or bailed. */
 	waitForAdmittedSubmissions(): Promise<void> {
 		if (this.#admittedSubmissionCount === 0) return Promise.resolve();
@@ -10942,6 +10942,9 @@ export class AgentSession implements SettingsScope {
 				} else {
 					await this.sessionManager.flush();
 				}
+				// Retire the outgoing backfill before clearing its ledger or publishing
+				// a new gate; a failed commit retains its fully restored spend.
+				await this.#advisorCostRestore;
 				await this.sessionManager.newSession({
 					...options,
 					additionalDirectories: cfgWorkspaceAdditionalDirectories.get(this.settings),
@@ -10951,6 +10954,7 @@ export class AgentSession implements SettingsScope {
 				// conversation's advisor spend is retired with it. Clearing at the commit
 				// point keeps the status line honest even if a later step below throws.
 				this.#advisors.clearCost();
+				this.#reseedCostGate();
 				sessionTransitioned = true;
 			} finally {
 				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
@@ -11007,7 +11011,6 @@ export class AgentSession implements SettingsScope {
 			resetCapabilities();
 			await this.refreshBaseSystemPrompt();
 
-			this.#reseedCostGate();
 			// Emit session_switch event with reason "new" to hooks
 			if (this.#extensionRunner) {
 				await this.#extensionRunner.emit({
@@ -12650,6 +12653,8 @@ export class AgentSession implements SettingsScope {
 		const previousFreshProviderSessionId = this.#freshProviderSessionId;
 		const previousInheritedProviderPromptCacheKey = this.#inheritedProviderPromptCacheKey;
 		const previousTaskSiblingCandidate = this.sessionManager.getTaskSiblingCandidate();
+		const previousCostGate = this.#costGate;
+		let previousAdvisorCosts: ReadonlyMap<string, number> | undefined;
 
 		// Snapshot the full checkpoint runtime state: the success path calls
 		// #rehydrateCheckpointRewindState(), which clears and rebuilds all four
@@ -12759,6 +12764,21 @@ export class AgentSession implements SettingsScope {
 			// so jobs they start belong to the resumed session. Deliveries are held until now.
 			if (switchingToDifferentSession) this.#cancelOwnAsyncJobs();
 
+			// Hydrate the target before publishing its gate: hooks and reconcilers can
+			// start requests or children immediately, and must all capture the final gate.
+			// Keep the old ledger and gate available until the switch commits for rollback.
+			if (switchingToDifferentSession) {
+				const providersBySlug = new Map<string, Set<string>>();
+				const costs = await loadAdvisorTranscriptCosts(this.sessionFile, { providersBySlug });
+				// The startup scan still owns the outgoing ledger and gate. Settle it
+				// before replacing either, including when a later hook rolls back.
+				await this.#advisorCostRestore;
+				previousAdvisorCosts = this.#advisors.costSnapshot();
+				this.#advisors.restoreCost(costs, providersBySlug);
+			} else {
+				// A reload publishes a fresh gate too: seed it only after backfill.
+				await this.#advisorCostRestore;
+			}
 			this.#reseedCostGate();
 			// Emit session_switch event to hooks
 			if (this.#extensionRunner) {
@@ -12872,16 +12892,6 @@ export class AgentSession implements SettingsScope {
 					error: String(refreshErr),
 				});
 			}
-			// Hand the ledger over to the session that just took over, and only once the
-			// switch has committed: an earlier swap would be lost work if any step above
-			// rolled it back. The target's own advisor transcripts are the record of what
-			// it already spent, so a session with history resumes with its total instead
-			// of restarting at zero.
-			if (switchingToDifferentSession) {
-				const providersBySlug = new Map<string, Set<string>>();
-				const costs = await loadAdvisorTranscriptCosts(this.sessionFile, { providersBySlug });
-				this.#advisors.restoreCost(costs, providersBySlug);
-			}
 			this.#bash.finishSessionTransition(bashTransition, true);
 			// Keep the old reservations during rollback; the target is committed now,
 			// so the snapshotted old queues can no longer be restored.
@@ -12899,6 +12909,14 @@ export class AgentSession implements SettingsScope {
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
+			this.#costGate = previousCostGate;
+			if (previousAdvisorCosts) {
+				// The outgoing recorders were drained before the swap, so their transcripts
+				// retain the provider attribution needed to restore the snapshotted ledger.
+				const providersBySlug = new Map<string, Set<string>>();
+				await loadAdvisorTranscriptCosts(previousSessionFile, { providersBySlug });
+				this.#advisors.restoreCost(previousAdvisorCosts, providersBySlug);
+			}
 			this.#freshProviderSessionId = previousFreshProviderSessionId;
 			this.#syncAgentSessionId(previousSessionState.sessionId, false);
 			this.#memory.rekeyForCurrentSessionId();
@@ -14905,7 +14923,12 @@ export class AgentSession implements SettingsScope {
 		costsAtSnapshot: ReadonlyMap<string, number> = new Map(),
 		providersBySlug?: ReadonlyMap<string, ReadonlySet<string>>,
 	): void {
+		const previousCost = this.#advisors.getAdvisorCost();
 		this.#advisors.restoreInitialCost(costs, costsAtSnapshot, providersBySlug);
+		// Live responses already pass the SDK's guarded stream. Only the historical
+		// increment introduced by this restore is missing from the shared gate.
+		const historicalCost = this.#advisors.getAdvisorCost() - previousCost;
+		if (this.#ownsCostGate && Number.isFinite(historicalCost)) this.#costGate.record(historicalCost);
 	}
 	/** Return whether any active or configured advisor is running on an OAuth/subscription model. */
 	isAdvisorUsingSubscription(): boolean {
