@@ -2803,9 +2803,7 @@ export class TurnRecovery {
 		// Bun's unexpected socket close retains the earlier route policy: one
 		// replay after streamed progress, immediate fallback before any content.
 		// Provider-reported stream drops still spend the configured retry budget.
-		const unexpectedSocketClose = isUnexpectedSocketCloseMessage(
-			message.errorClassificationMessage ?? errorMessage,
-		);
+		const unexpectedSocketClose = isUnexpectedSocketCloseMessage(message.errorClassificationMessage ?? errorMessage);
 		const sameModelStreamReplay =
 			transientStreamDrop &&
 			!retryBudgetExhausted &&

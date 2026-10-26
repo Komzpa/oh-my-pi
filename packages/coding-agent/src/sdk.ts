@@ -2283,6 +2283,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	// session owns one that follows its session file. Read it per request, so a request
 	// lands on the gate of the session file it was sent for.
 	const currentCostGate = (): CostGate | undefined => session?.costGate ?? options.costGate;
+	// Prompt rendering queues skill compression before the root gate exists.
+	// Hold those side requests until the session owns its recorded-spend gate.
+	const costGateReady = Promise.withResolvers<boolean>();
 	const enableLsp = options.enableLsp ?? !restrictToolNames;
 	const lspReadOnly = options.lspReadOnly ?? restrictToolNames;
 	// Every root owns its jobs and delivery sinks, even when another root is live.
@@ -3949,12 +3952,20 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			store: ownedSkillDescriptionStore,
 			// Like the other one-shot model calls, each compression request resolves
 			// its own telemetry handle, so its usage stays out of the run summary.
-			// The first requests can start before `agent` is constructed; they use
-			// the telemetry config and session id the agent is constructed with.
-			compress: createSkillDescriptionCompressor(modelRegistry, settings, undefined, () =>
-				agent
-					? resolveTelemetry(agent.telemetry, agent.sessionId)
-					: resolveTelemetry(options.telemetry, providerSessionId),
+			// Startup prompt rendering queues requests before `agent` exists;
+			// sending waits for the session's recorded-spend gate below.
+			compress: createSkillDescriptionCompressor(
+				modelRegistry,
+				settings,
+				undefined,
+				() =>
+					agent
+						? resolveTelemetry(agent.telemetry, agent.sessionId)
+						: resolveTelemetry(options.telemetry, providerSessionId),
+				async () => {
+					if (!(await costGateReady.promise)) throw new Error("Session startup failed before skill compression");
+					return currentCostGate();
+				},
 			),
 		});
 		// Instructions from MCP servers the host connects outside `mcpManager`
@@ -4943,6 +4954,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			autoTitle: options.autoTitle === true && !isSubagentSession,
 		});
 		hasSession = true;
+		costGateReady.resolve(true);
 		credentialNoticeSession = session;
 		// Hashline snapshots are session-scoped: /new and switchSession fire the
 		// change callbacks, so clear the tool-side store there — stale tags would
@@ -5661,6 +5673,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			subagentEventBus,
 		};
 	} catch (error) {
+		costGateReady.resolve(false);
 		try {
 			if (hasSession) {
 				await session.dispose();

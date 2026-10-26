@@ -16,6 +16,7 @@ import type { ModelRegistry } from "../config/model-registry";
 import { resolveRoleChain, resolveRoleSelection } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import compressDescriptionPrompt from "../prompts/skills/compress-description.md" with { type: "text" };
+import type { CostGate } from "../session/cost-gate";
 import { Semaphore } from "../task/parallel";
 import type { Skill } from "./skills";
 
@@ -51,6 +52,7 @@ export function createSkillDescriptionCompressor(
 	settings: Settings,
 	sessionId?: string,
 	getTelemetry?: () => AgentTelemetry | undefined,
+	getCostGate?: () => CostGate | undefined | Promise<CostGate | undefined>,
 ): SkillDescriptionCompressor {
 	const select = (): Model<Api> | undefined => {
 		const available = registry.getAvailable();
@@ -69,6 +71,8 @@ export function createSkillDescriptionCompressor(
 			if (!model) throw new Error("No smol or tiny model available");
 			const apiKey = await registry.getApiKey(model, sessionId);
 			if (!apiKey) throw new Error(`No credential for ${model.provider}/${model.id}`);
+			const costGate = await getCostGate?.();
+			costGate?.admit();
 			const response = await instrumentedCompleteSimple(
 				model,
 				{
@@ -84,6 +88,7 @@ export function createSkillDescriptionCompressor(
 				},
 				{ telemetry: getTelemetry?.(), oneshotKind: "skill_description" },
 			);
+			costGate?.record(response.usage.cost.total);
 			if (response.stopReason === "length") {
 				throw new SkillDescriptionLengthError("Model stopped: length");
 			}
