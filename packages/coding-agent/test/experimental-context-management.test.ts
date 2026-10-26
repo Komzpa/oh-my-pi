@@ -319,16 +319,17 @@ describe("experimental context management", () => {
 		});
 
 		await session.compact();
-		await notesTool.execute("notebook-one", { text: "First rollover notebook." });
+		await notesTool.execute("notebook-one", { action: "replace", text: "First rollover notebook." });
 		const second = [user("third task"), assistant("third result"), user("fourth task"), assistant("fourth result")];
 		for (const message of second) manager.appendMessage(message);
 		agent.replaceMessages([...agent.state.messages, ...second]);
 		await session.compact();
-		await notesTool.execute("notebook-two", { text: "Second rollover notebook." });
+		await notesTool.execute("notebook-two", { action: "replace", text: "Second rollover notebook." });
 		const third = [user("fifth task"), assistant("fifth result"), user("sixth task"), assistant("sixth result")];
 		for (const message of third) manager.appendMessage(message);
 		agent.replaceMessages([...agent.state.messages, ...third]);
 		await notesTool.execute("notebook-latest", {
+			action: "replace",
 			text: "Latest durable notebook: retry only after migration backup.",
 		});
 		await session.compact();
@@ -403,7 +404,7 @@ describe("experimental context management", () => {
 							type: "toolCall",
 							id: "batch-notes",
 							name: "context_notes",
-							arguments: { text: "Notebook saved with the request." },
+							arguments: { action: "replace", text: "Notebook saved with the request." },
 						},
 						{ type: "toolCall", id: "batch-rollover", name: "new_context", arguments: {} },
 					];
@@ -631,7 +632,7 @@ describe("experimental context management", () => {
 			builtInToolNames: BUILTIN_TOOL_NAMES,
 		});
 		const notebookText = `Durable notebook:\n${"- task state entry line. ".repeat(64)}`;
-		await contextNotes.execute("save-notebook", { text: notebookText });
+		await contextNotes.execute("save-notebook", { action: "replace", text: notebookText });
 		await session.compact();
 		const entry = manager
 			.getEntries()

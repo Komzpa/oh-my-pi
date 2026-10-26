@@ -1,1 +1,1 @@
-Entire replacement notebook text, up to {{maxBytes}} UTF-8 bytes. Omit to read without changing notes; use an empty string to clear.
+Entire replacement notebook text, up to {{maxBytes}} UTF-8 bytes. Required and nonempty only for `action: "replace"`; ignored for `action: "read"` and `action: "clear"` (clearing is done by `action: "clear"` alone — empty text never clears). Keep the notebook at roughly 12 KiB or less: replace superseded entries with compact current lines and reference history entry IDs rather than copying raw content, so oversized writes are never attempted.
