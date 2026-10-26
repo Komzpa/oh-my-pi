@@ -498,6 +498,9 @@
 - Fixed a hashline `PUT` being refused with "would hold one more copy of line N … than the range did" when its body restates the line next to the range, fills the range, and adds a new line equal to that neighbour (a second `@property` or `#[test]`, or a `break;` above a new `case`); it applies again, dropping only the restated line ([#17028](https://github.com/can1357/oh-my-pi/pull/17028))
 - Fixed task subagents receiving `AGENTS.md` files, including the user-level `~/.omp/agent/AGENTS.md`, when the session has additional workspace roots (`--add-dir`, `/add-dir`, `workspace.additionalDirectories`)
 - Fixed an `ask` note added right after picking an answer landing on the next question's answer, in Tern and the TUI; Note now goes to the answer just picked until the next question gets other input ([#17126](https://github.com/can1357/oh-my-pi/pull/17126) by [@H4vC](https://github.com/H4vC))
+- Fixed transient stream drops switching models before same-model retries finish and keeping continuing workers on a fallback after recovery.
+- Fixed committed-text turns stopping after a Responses `stream_incomplete` drop (including drops reported only through the classification message); the turn now continues with a resume reminder ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
+- Fixed committed-text stream-stall recovery burning its whole continuation budget within seconds on repeated websocket drops: the five per-prompt transport continuations are now paced at 2s, 5s, 15s, 30s and 60s instead of resuming immediately, and aborting or resetting the conversation during a pacing wait drops the pending continuation ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
 
 ## [18.13.0] - 2026-10-26
 
@@ -555,6 +558,7 @@
 - Fixed a turn that ended with background jobs still running looking stuck: the working row now says it is waiting for those jobs and names them instead of repeating the last tool call, and Esc ends the wait, so the jobs keep running and their results land in context for your next prompt instead of starting a new turn ([#17032](https://github.com/can1357/oh-my-pi/pull/17032) by [@sjawhar](https://github.com/sjawhar))
 
 ### Fixed
+
 
 - Honored `display_name`, `context_window`, and `input_modalities` when a model list nests them under `metadata`, so codex-lb-style gateways surface the advertised name, window, and image input instead of the raw id and defaults. ([#17010](https://github.com/can1357/oh-my-pi/pull/17010) by [@adi-IL](https://github.com/adi-IL))
 - Recovered spilled tool output in sessions without an artifacts directory: the `artifact://` link the truncation footer advertises now reads the in-memory copy instead of failing with "No session - artifacts unavailable". ([#17009](https://github.com/can1357/oh-my-pi/pull/17009) by [@adi-IL](https://github.com/adi-IL))
