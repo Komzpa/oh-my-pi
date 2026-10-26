@@ -162,4 +162,95 @@ describe("isolated agent release", () => {
 		await commitsAcrossRelease("ReleaseAfterCapture", patch, patch);
 		expect(events).toEqual(["commit", "irc wakes released"]);
 	});
+	it("surfaces a release-time commit failure with the retained workspace via the lifecycle release caller", async () => {
+		const id = "ReleaseFailureSurfaces";
+		const runEndPatch = patch;
+		const releasePatch = `${patch}+follow-up\n`;
+		const artifactsDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-isolation-release-"));
+		tempRoots.push(artifactsDir);
+		const workspace = path.join(artifactsDir, "isolation", "m");
+		await fs.mkdir(workspace, { recursive: true });
+		const taskFile = path.join(workspace, "task.txt");
+		await Bun.write(taskFile, runEndPatch);
+		const baseline = {
+			root: { repoRoot: "/repo", headCommit: "base", staged: "", unstaged: "", untracked: [], untrackedPatch: "" },
+			nested: [],
+		};
+		vi.spyOn(worktreeModule, "ensureIsolation").mockResolvedValue({
+			mergedDir: workspace,
+			backend: natives.IsoBackendKind.Rcopy,
+			fellBack: false,
+			fallbackReason: null,
+		});
+		vi.spyOn(worktreeModule, "captureIsolationBaseline").mockResolvedValue(baseline);
+		vi.spyOn(worktreeModule, "cleanupIsolation").mockResolvedValue();
+		vi.spyOn(worktreeModule, "captureDeltaPatch").mockImplementation(async () => ({
+			rootPatch: await Bun.file(taskFile).text(),
+			nestedPatches: [],
+		}));
+		const commitSpy = vi.spyOn(worktreeModule, "commitToBranch").mockImplementation(async () => {
+			events.push("commit");
+			return { branchName: `omp/task/${id}`, baseSha: "base", rootPatch: runEndPatch, nestedPatches: [] };
+		});
+		const session = {
+			prepareForHeadlessAdvisorDrain: () => {},
+			waitForAdvisorCatchup: async () => true,
+			dispose: async () => {},
+		} as unknown as AgentSession;
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			AgentRegistry.global().register({
+				id: options.id,
+				displayName: options.id,
+				kind: "sub",
+				session,
+				sessionFile: `/tmp/${options.id}.jsonl`,
+				status: "running",
+			});
+			options.deferIrcWakeRelease?.(() => events.push("irc wakes released"));
+			await executorModule.finalizeSubagentLifecycle({
+				id: options.id,
+				session,
+				aborted: false,
+				keepAlive: true,
+				isolated: true,
+				agentIdleTtlMs: 0,
+				reviveSession: async () => session,
+				onRelease: options.onRelease,
+			});
+			return result(options.id);
+		});
+		const runResult = await runIsolatedSubprocess({
+			baseOptions: {
+				cwd: "/repo",
+				agent: { name: "task", description: "Task agent", systemPrompt: "test", source: "bundled" },
+				task: "Do work",
+				index: 0,
+				id,
+			},
+			context: { repoRoot: "/repo" },
+			preferredBackend: undefined,
+			agentId: id,
+			mergeMode: "branch",
+			artifactsDir,
+			buildFailureResult: error => ({ ...result(id), exitCode: 1, error: String(error) }),
+		});
+		expect(runResult.error).toBeUndefined();
+		// Follow-up work after the run-end branch forces a second commit at release.
+		await Bun.write(taskFile, releasePatch);
+		commitSpy.mockRejectedValueOnce(new Error("release commit failed"));
+		const releaseError: unknown = await AgentLifecycleManager.global()
+			.release(id)
+			.then(
+				() => null,
+				error => error,
+			);
+		expect(releaseError).toBeInstanceOf(Error);
+		const message = releaseError instanceof Error ? releaseError.message : String(releaseError);
+		expect(message).toContain("release commit failed");
+		expect(message).toContain("Isolation workspace retained at");
+		const retainedDir = message.match(/Isolation workspace retained at (\S+)/)?.[1];
+		expect(retainedDir).toBeDefined();
+		expect(await Bun.file(path.join(retainedDir!, "task.txt")).text()).toBe(releasePatch);
+		expect(AgentRegistry.global().get(id)).toBeUndefined();
+	});
 });

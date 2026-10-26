@@ -1010,10 +1010,29 @@ describe("detachGitDir", () => {
 			message: "base",
 		});
 		// The isolation borrows exactly one object directory; the rest of the
-		// chain stays reachable transitively through it.
+		// chain stays reachable transitively through it. Assert the reference
+		// chain itself (P borrows Q, Q borrows R) so the single entry below is
+		// meaningful and not an accident of a flattened or local copy.
+		const qAlternates = (await fs.readFile(path.join(q, ".git", "objects", "info", "alternates"), "utf8")).trim();
+		expect(qAlternates.split("\n")).toHaveLength(1);
+		expect(qAlternates).toBe(await fs.realpath(path.join(r, ".git", "objects")));
+		const pAlternates = (await fs.readFile(path.join(p, ".git", "objects", "info", "alternates"), "utf8")).trim();
+		expect(pAlternates.split("\n")).toHaveLength(1);
+		expect(pAlternates).toBe(await fs.realpath(path.join(q, ".git", "objects")));
 		const alternates = await fs.readFile(path.join(iso, ".git", "objects", "info", "alternates"), "utf8");
 		expect(alternates.trim().split("\n")).toHaveLength(1);
 		expect(alternates.trim()).toBe(await fs.realpath(path.join(p, ".git", "objects")));
+		// A commit made only in R after the clones exist only in R's object
+		// store: resolving it from the isolation proves post-clone traversal
+		// through the borrowed chain, not just pre-clone HEAD.
+		await fs.writeFile(path.join(r, "postclone.txt"), "postclone\n");
+		await runGit(r, ["add", "postclone.txt"]);
+		await runGit(r, ["commit", "-q", "-m", "postclone"]);
+		const postcloneSha = (await runGit(r, ["rev-parse", "HEAD"])).trim();
+		await expect(vcs.requireGit(iso).commitDetails(postcloneSha)).resolves.toMatchObject({
+			sha: postcloneSha,
+			message: "postclone",
+		});
 	});
 
 	it("keeps ensureIsolation from mutating a linked-worktree parent (rcopy backend)", async () => {

@@ -5,6 +5,8 @@
 ### Fixed
 
 - Fixed advisors dropping their review and showing a rate-limit error when the provider returns a timed 429 such as Codex's `turn_rate_limit_exceeded`; the advisor now waits out the Retry-After (within `retry.maxDelayMs`) and retries like the main agent ([#17087](https://github.com/can1357/oh-my-pi/pull/17087) by [@H4vC](https://github.com/H4vC))
+- A failed merge-back in an isolated task no longer removes the worktree or drops the worker's commits: the workspace is retained and the error reports the kept path and the rescue branch ([#500](https://github.com/can1357/oh-my-pi/issues/500))
+- `isolated: true` no longer fails with `Alternates form a cycle` when the parent clone uses `git clone --reference` alternates; the detached repository borrows a single object directory instead of a flattened chain ([#463](https://github.com/can1357/oh-my-pi/issues/463))
 
 ## [18.13.0] - 2026-10-26
 
@@ -151,8 +153,6 @@
 - Fixed a collab guest losing the draft of a host-only command that takes its draft out of the composer on Enter (`/plan`, `/goal`, `/tan`, `/btw` and others): the draft now comes back with its images ([#16805](https://github.com/can1357/oh-my-pi/pull/16805) by [@lemonleks](https://github.com/lemonleks))
 - Fixed a hashline `PUT` whose body repeats the line just above or below its range (or both), and is shorter than the range, silently deleting the range's other lines or writing a neighbouring line twice in Python, TypeScript and other parsed files; it is now refused, and the "too short" refusal names the lines the body leaves out ([#17028](https://github.com/can1357/oh-my-pi/pull/17028) by [@sjawhar](https://github.com/sjawhar))
 - Fixed `omp gc --compress` exiting with "the event loop drained while it was still pending" on Bun 1.3.14 when a session artifact is pretty-printed JSON larger than 1 MiB, and session header probes (gc, session move and transfer) reading whole artifacts on Windows ([#15745](https://github.com/can1357/oh-my-pi/issues/15745), [#16754](https://github.com/can1357/oh-my-pi/pull/16754) by [@wolfiesch](https://github.com/wolfiesch))
-- A failed merge-back in an isolated task no longer removes the worktree or drops the worker's commits: the workspace is retained and the error reports the kept path and the rescue branch ([#500](https://github.com/can1357/oh-my-pi/issues/500))
-- `isolated: true` no longer fails with `Alternates form a cycle` when the parent clone uses `git clone --reference` alternates; the detached repository borrows a single object directory instead of a flattened chain ([#463](https://github.com/can1357/oh-my-pi/issues/463))
 - `/resume` into another session now cancels the previous session's background jobs, as `/new` does, instead of delivering their results into the resumed session and starting a turn there ([#16760](https://github.com/can1357/oh-my-pi/pull/16760) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed the models config migration writing `models.yml` readable by other users on the machine, and dropping every custom provider when the write was interrupted; the migrated file is now published atomically with owner-only permissions ([#16654](https://github.com/can1357/oh-my-pi/pull/16654) by [@adi-IL](https://github.com/adi-IL))
 - Fixed `/memory clear` in one project deleting the memory state of every other project that shares the same agent directory ([#16657](https://github.com/can1357/oh-my-pi/pull/16657) by [@adi-IL](https://github.com/adi-IL))

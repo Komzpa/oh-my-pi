@@ -59,8 +59,8 @@ export interface AgentHistorySummary {
 	patchPath?: string;
 	/** Isolated branch identity, when branch-mode capture succeeded. */
 	branchName?: string;
-	/** Captured nested-repo patches (`<id>.nested-<n>-<path>.patch`), one per nested repository the agent changed. */
-	nestedPatchPaths?: string[];
+	/** Last release-time cleanup failure (e.g. retained isolation workspace + rescue branch), set before unregister so the caller can surface it. */
+	error?: string;
 }
 
 export interface AgentRef {
