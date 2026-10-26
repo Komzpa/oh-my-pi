@@ -266,24 +266,24 @@ jobs:
          - name: Rustfmt
            run: bazelisk --bazelrc="${{ steps.cache.outputs.rc }}" build --config=rustfmt //crates/...
 
-   # Provides the linux-x64 addon pair every downstream TS job installs.
-   #
-   # PRs never build. They restore the pair main built for the same native
-   # sources from actions/cache (key = hash of every native build input:
-   # toolchain and build settings plus crates/** and BUILD.bazel). With no
-   # exact entry (the PR changes native inputs, or main has not built this
-   # state yet) they take main's newest entry, and with no entry at all the
-   # latest npm release. The workspace loader skips its version sentinel for
-   # workspace loads, so any of these load under a newer checkout. Testing
-   # against main's build instead of the last release keeps merged-but-
-   # unreleased native fixes from failing every PR that did not touch Rust
-   # (a merged grep fix plus its TS test failed 75 PR runs against the
-   # 18.3.1 addon). Only main saves; see the save step for why.
-   #
-   # Main (kata, cluster remote cache) builds only the pair here so the TS
-   # fan-out starts as soon as it links; native_addons_cross builds every
-   # other target in parallel. Job name says "bazel" for continuity
-   # with required checks.
+  # Provides the linux-x64 addon pair every downstream TS job installs.
+  #
+  # Exact source match or a build from this checkout's own native sources —
+  # never a stale approximation. PRs restore the pair main built for the same
+  # native sources from actions/cache (key = hash of every native build input:
+  # toolchain and build settings plus crates/** and BUILD.bazel). On an exact
+  # cache miss the job builds the pair from the PR's own sources with the same
+  # sequential per-target bazel invocations as main (uncached on hosted
+  # runners); the prefix-newest and latest-npm fallbacks are removed because a
+  # stale binary stamps the current release version yet lacks new native
+  # exports (run 40361495524: 18.12.6 npm binary stamped 18.13.0, missing
+  # editErrorKinds, TypeError at session-anonymizer.ts:565). Only main saves;
+  # see the save step for why.
+  #
+  # Main (kata, cluster remote cache) builds only the pair here so the TS
+  # fan-out starts as soon as it links; native_addons_cross builds every
+  # other target in parallel. Job name says "bazel" for continuity
+  # with required checks.
    native_addons:
       name: Build native addons (bazel)
       runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'omp-kata' }}
@@ -308,11 +308,13 @@ jobs:
               echo "prefix=natives-linux-x64-v1-" >> "$GITHUB_OUTPUT"
               echo "key=natives-linux-x64-v1-$NATIVE_INPUTS_HASH" >> "$GITHUB_OUTPUT"
 
-         # ---- PR path: main-built addons from actions/cache, else npm ----
+         # ---- PR path: exact main-built addons, else build PR sources ----
          # `ci-natives` is a plain workspace-relative path on purpose: the
          # cache version hashes the literal path list, so kata (save) and
          # hosted (restore) must spell it identically, and upload-artifact
-         # skips dot-directories by default.
+         # skips dot-directories by default. Exact key only: no restore-keys
+         # prefix fallback and no npm fallback — either would test this
+         # checkout against a binary that predates its native sources.
          - name: Restore main-built native addons
            id: natives-cache
            if: github.event_name == 'pull_request'
@@ -320,21 +322,8 @@ jobs:
            with:
               path: ci-natives
               key: ${{ steps.natives-key.outputs.key }}
-              restore-keys: |
-                 ${{ steps.natives-key.outputs.prefix }}
-         - name: Fetch release native addons (npm)
-           if: github.event_name == 'pull_request' && steps.natives-cache.outputs.cache-matched-key == ''
-           shell: bash
-           run: |
-              set -euo pipefail
-              tarball="$(npm view @oh-my-pi/pi-natives-linux-x64@latest dist.tarball)"
-              echo "Fetching $tarball"
-              curl -fsSL --retry 3 "$tarball" | tar -xz -C "$RUNNER_TEMP"
-              mkdir -p ci-natives/natives-linux-x64-baseline ci-natives/natives-linux-x64-modern
-              cp "$RUNNER_TEMP/package/pi_natives.linux-x64-baseline.node" ci-natives/natives-linux-x64-baseline/
-              cp "$RUNNER_TEMP/package/pi_natives.linux-x64-modern.node" ci-natives/natives-linux-x64-modern/
-         # Make the addon source visible whenever it is not source-matched,
-         # instead of leaving a reviewer to wonder which addons the tests ran.
+         # Make the addon source visible: exact reuse or a build below from
+         # this checkout's own native sources.
          - name: Report native addon source
            if: github.event_name == 'pull_request'
            shell: bash
@@ -344,18 +333,15 @@ jobs:
            run: |
               if [ "$EXACT" = true ]; then
                 echo "Using main's addons for this exact native source state ($MATCHED)."
-              elif [ -n "$MATCHED" ]; then
-                echo "::notice title=Native addons not source-matched::No main build matches this PR's native sources; testing against main's newest addon build ($MATCHED). Native changes are validated post-merge on main and at release."
               else
-                echo "::notice title=Native addons from npm::No main-built addon cache entry is available; testing against the latest npm release addons."
+                echo "No exact main-built addon entry for this PR's native sources; building the pair from this checkout below."
               fi
 
-         # ---- main path: bazel build of the linux-x64 pair ----
+         # ---- build path: main always; PR only on exact cache miss ----
          - id: cache
-           if: github.event_name != 'pull_request'
            uses: ./.github/actions/bazel-cache
          - name: Build linux-x64 native addons
-           if: github.event_name != 'pull_request'
+           if: github.event_name != 'pull_request' || steps.natives-cache.outputs.cache-hit != 'true'
            run: |
               set -eo pipefail
               if [ "$(ulimit -Sn)" != unlimited ] && [ "$(ulimit -Sn)" -lt 65536 ]; then ulimit -Sn 65536 || true; fi
@@ -378,7 +364,7 @@ jobs:
          # thousands of actions is the failure mode that made CI slow — make
          # it visible in the run summary instead of discovering it weeks in.
          - name: Report bazel cache stats
-           if: github.event_name != 'pull_request'
+           if: github.event_name != 'pull_request' || steps.natives-cache.outputs.cache-hit != 'true'
            shell: bash
            run: |
               # Bazel runs with --color=yes (config=ci); strip ANSI before
