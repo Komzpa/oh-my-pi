@@ -10,11 +10,7 @@ import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import contextNotesDescription from "../prompts/tools/context-notes.md" with { type: "text" };
 import contextNotesTextDescription from "../prompts/tools/context-notes-text.md" with { type: "text" };
 import newContextDescription from "../prompts/tools/new-context.md" with { type: "text" };
-import {
-	CONTEXT_NOTES_ENTRY_TYPE,
-	type ContextNotesEntry,
-	getContextNotes,
-} from "../session/context-notes";
+import { CONTEXT_NOTES_ENTRY_TYPE, type ContextNotesEntry, getContextNotes } from "../session/context-notes";
 import { cfgCompactionExperimentalContextManagement } from "../session/context-settings";
 import type { ToolSession } from ".";
 import { throwIfAborted } from "./tool-errors";
