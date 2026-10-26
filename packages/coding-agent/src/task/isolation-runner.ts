@@ -394,6 +394,8 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 	let baseReleasePromise: Promise<void> | undefined;
 	let cleanupPromise: Promise<void> | undefined;
 	let releasePromise: Promise<void> | undefined;
+	/** The run's IRC wake hold, released only once the run-end capture is done. */
+	let releaseIrcWakes: (() => void) | undefined;
 	const releaseBase = (): Promise<void> => {
 		baseReleasePromise ??= opts.baseOptions.onRelease?.() ?? Promise.resolve();
 		return baseReleasePromise;
@@ -507,6 +509,9 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 			// below cleans it up. Only kept-alive runs hand full capture+cleanup
 			// (`releaseIsolation`) to the agent lifecycle.
 			onRelease: opts.baseOptions.keepAlive === false ? releaseBase : releaseIsolation,
+			deferIrcWakeRelease: release => {
+				releaseIrcWakes = release;
+			},
 		});
 		opts.onSubprocessResult?.(result);
 		// A successful result cannot be captured while deferred owner jobs or
@@ -637,6 +642,10 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 				await cleanupHandle();
 			}
 		}
+		// The worktree is captured: a held peer message may now wake a turn in it.
+		if (releaseIrcWakes && opts.baseOptions.deferIrcWakeRelease)
+			opts.baseOptions.deferIrcWakeRelease(releaseIrcWakes);
+		else releaseIrcWakes?.();
 	}
 }
 
