@@ -5,6 +5,9 @@
 ### Fixed
 
 - Fixed advisors dropping their review and showing a rate-limit error when the provider returns a timed 429 such as Codex's `turn_rate_limit_exceeded`; the advisor now waits out the Retry-After (within `retry.maxDelayMs`) and retries like the main agent ([#17087](https://github.com/can1357/oh-my-pi/pull/17087) by [@H4vC](https://github.com/H4vC))
+- Fixed transient stream drops switching models before same-model retries finish and keeping continuing workers on a fallback after recovery.
+- Fixed committed-text turns stopping after a Responses `stream_incomplete` drop (including drops reported only through the classification message); the turn now continues with a resume reminder ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
+- Fixed committed-text stream-stall recovery burning its whole continuation budget within seconds on repeated websocket drops: the five per-prompt transport continuations are now paced at 2s, 5s, 15s, 30s and 60s instead of resuming immediately, and aborting or resetting the conversation during a pacing wait drops the pending continuation ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
 
 ## [18.13.0] - 2026-10-26
 
@@ -63,9 +66,6 @@
 
 ### Fixed
 
-- Fixed transient stream drops switching models before same-model retries finish and keeping continuing workers on a fallback after recovery.
-- Fixed committed-text turns stopping after a Responses `stream_incomplete` drop (including drops reported only through the classification message); the turn now continues with a resume reminder ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
-- Fixed committed-text stream-stall recovery burning its whole continuation budget within seconds on repeated websocket drops: the five per-prompt transport continuations are now paced at 2s, 5s, 15s, 30s and 60s instead of resuming immediately, and aborting or resetting the conversation during a pacing wait drops the pending continuation ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
 
 - Honored `display_name`, `context_window`, and `input_modalities` when a model list nests them under `metadata`, so codex-lb-style gateways surface the advertised name, window, and image input instead of the raw id and defaults. ([#17010](https://github.com/can1357/oh-my-pi/pull/17010) by [@adi-IL](https://github.com/adi-IL))
 - Recovered spilled tool output in sessions without an artifacts directory: the `artifact://` link the truncation footer advertises now reads the in-memory copy instead of failing with "No session - artifacts unavailable". ([#17009](https://github.com/can1357/oh-my-pi/pull/17009) by [@adi-IL](https://github.com/adi-IL))
