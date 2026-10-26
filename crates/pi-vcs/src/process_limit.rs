@@ -129,10 +129,15 @@ impl ScopeEnvironment {
 /// a manager, enforcement fails closed later anyway.
 #[cfg(target_os = "linux")]
 fn resolved_binary(name: &str) -> OsString {
+	resolved_binary_in(name, std::env::var_os("PATH"))
+}
+
+#[cfg(target_os = "linux")]
+fn resolved_binary_in(name: &str, path: Option<OsString>) -> OsString {
 	if name.contains('/') {
 		return OsString::from(name);
 	}
-	for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+	for dir in std::env::split_paths(&path.unwrap_or_default()) {
 		let candidate = dir.join(name);
 		if candidate.is_file() {
 			return candidate.into_os_string();
@@ -141,10 +146,23 @@ fn resolved_binary(name: &str) -> OsString {
 	OsString::from(name)
 }
 
+/// The session tool PATH puts an omp `systemd-run` shim first; the shim only
+/// works with `OMP_SYSTEMD_RUN_REAL` in its own environment, which a payload's
+/// complete spawn environment may not carry. Scope launches already pass an
+/// explicit slice, so they must exec the real manager binary directly.
+#[cfg(target_os = "linux")]
+fn systemd_run_binary_from(real: Option<OsString>, path: Option<OsString>) -> OsString {
+	match real {
+		Some(real) if !real.is_empty() => real,
+		_ => resolved_binary_in("systemd-run", path),
+	}
+}
+
 #[cfg(target_os = "linux")]
 fn systemd_run_bin() -> &'static OsString {
-	static BIN: std::sync::LazyLock<OsString> =
-		std::sync::LazyLock::new(|| resolved_binary("systemd-run"));
+	static BIN: std::sync::LazyLock<OsString> = std::sync::LazyLock::new(|| {
+		systemd_run_binary_from(std::env::var_os("OMP_SYSTEMD_RUN_REAL"), std::env::var_os("PATH"))
+	});
 	&BIN
 }
 
@@ -1296,6 +1314,27 @@ exec "$@"
 		assert_eq!(&payload[1..5], ["-u", "DBUS_SESSION_BUS_ADDRESS", "-u", "XDG_RUNTIME_DIR"]);
 		assert_eq!(&payload[5..10], super::background_priority_prefix());
 		assert_eq!(payload.last(), Some(super::true_bin()));
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn systemd_run_resolution_prefers_real_binary_over_session_shim() {
+		let fixtures = tempfile::tempdir().expect("systemd-run resolution fixtures");
+		let shim = fixtures.path().join("systemd-run");
+		std::fs::write(&shim, "#!/bin/sh\nexec \"$OMP_SYSTEMD_RUN_REAL\" \"$@\"\n").unwrap();
+		let path = Some(fixtures.path().as_os_str().to_os_string());
+		let real = std::ffi::OsString::from("/usr/bin/systemd-run");
+		assert_eq!(
+			super::systemd_run_binary_from(Some(real.clone()), path.clone()),
+			real,
+			"scope launches must not depend on the session shim's private env"
+		);
+		assert_eq!(
+			super::systemd_run_binary_from(Some(std::ffi::OsString::new()), path.clone()),
+			shim.as_os_str(),
+			"an empty real-binary binding falls back to PATH resolution"
+		);
+		assert_eq!(super::systemd_run_binary_from(None, path), shim.as_os_str());
 	}
 
 	/// Bounded compatibility vehicle, no user manager, bus, or cgroup is

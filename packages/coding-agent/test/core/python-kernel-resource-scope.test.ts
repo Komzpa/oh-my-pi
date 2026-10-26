@@ -71,7 +71,7 @@ describe.skipIf(Bun.env.PI_PYTHON_INTEGRATION !== "1")("Python kernel resource s
 	it("fails closed and releases the scope when wrapping the command fails", async () => {
 		using tempDir = TempDir.createSync("@python-kernel-scope-failure-");
 		const close = vi.spyOn(ToolResourceScope.prototype, "close");
-		vi.spyOn(ToolResourceScope.prototype, "wrapCommand").mockImplementation(() => {
+		vi.spyOn(ToolResourceScope.prototype, "wrapCommandAsync").mockImplementation(async () => {
 			throw new Error("test resource boundary unavailable");
 		});
 		const spawn = vi.spyOn(Bun, "spawn");
@@ -94,7 +94,7 @@ describe.skipIf(Bun.env.PI_PYTHON_INTEGRATION !== "1")("Python kernel resource s
 	it("releases its scope when spawning the wrapped command fails", async () => {
 		using tempDir = TempDir.createSync("@python-kernel-scope-spawn-");
 		const close = vi.spyOn(ToolResourceScope.prototype, "close");
-		const wrap = vi.spyOn(ToolResourceScope.prototype, "wrapCommand");
+		const wrap = vi.spyOn(ToolResourceScope.prototype, "wrapCommandAsync");
 		const spawn = vi.spyOn(Bun, "spawn").mockImplementationOnce(() => {
 			throw new Error("test wrapped spawn failed");
 		});

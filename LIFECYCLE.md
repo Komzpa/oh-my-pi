@@ -32,6 +32,15 @@ slices remain untouched; this is lifecycle/resource ownership, not an
 adversarial same-user sandbox. No existing unit or desktop browser is migrated
 or stopped by part A.
 
+Scoped launches that cross the JS boundary (JavaScript/Python eval kernels,
+browser, and daemon broker) MUST await `ToolResourceScope.wrapCommandAsync`;
+first-use systemd setup therefore runs off the JS event loop. The synchronous
+worker factory is only for unscoped workers. Native scope launches already
+pass an explicit slice, so when `OMP_SYSTEMD_RUN_REAL` is set they exec that
+real manager binary directly instead of resolving the session PATH shim,
+whose private real-target binding need not be present in a payload's complete
+spawn environment.
+
 ## Session shutdown and CPU ownership
 
 `AgentSession.dispose()` awaits the stop of every transcript slice it acquired.
