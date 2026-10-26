@@ -248,18 +248,50 @@ export function inferenceWorkerEnv(overlay?: Record<string, string>): Record<str
  * worker never blocks process exit. `exitLabel` prefixes the worker-error
  * message surfaced for an unexpected (non-intentional) exit.
  */
-export function createWorkerSubprocess<Outbound>(options: {
+interface CreateWorkerSubprocessOptions {
 	spawnCommand: WorkerSpawnCommand;
 	env: Record<string, string>;
 	exitLabel: string;
-	resourceScope?: { wrapCommand(command: string[], env?: Record<string, string>): string[]; close(): void };
 	/** Start the child as a new process-group/session leader where Bun supports it. */
 	detached?: boolean;
 	/** Treat exit code 0 as unexpected; eval cells can call process.exit(0). */
 	reportCleanExit?: boolean;
 	/** Whether an idle worker should stop keeping the parent event loop alive. */
 	unref?: boolean;
-}): SpawnedSubprocess<Outbound> {
+}
+
+interface WorkerResourceScope {
+	wrapCommandAsync(command: string[], env?: Record<string, string>): Promise<string[]>;
+	close(): void;
+}
+
+export function createWorkerSubprocess<Outbound>(options: CreateWorkerSubprocessOptions): SpawnedSubprocess<Outbound> {
+	return spawnWorkerSubprocess(options, options.spawnCommand.cmd);
+}
+
+/**
+ * Spawn a worker inside a resource scope without blocking the event loop on
+ * first-use scope setup. Scope ownership transfers to the spawned worker on
+ * success; setup and spawn failures close it before rejecting.
+ */
+export async function createScopedWorkerSubprocess<Outbound>(
+	options: CreateWorkerSubprocessOptions & { resourceScope: WorkerResourceScope },
+): Promise<SpawnedSubprocess<Outbound>> {
+	let cmd: string[];
+	try {
+		cmd = await options.resourceScope.wrapCommandAsync(options.spawnCommand.cmd, options.env);
+	} catch (error) {
+		options.resourceScope.close();
+		throw error;
+	}
+	return spawnWorkerSubprocess(options, cmd, options.resourceScope);
+}
+
+function spawnWorkerSubprocess<Outbound>(
+	options: CreateWorkerSubprocessOptions,
+	cmd: string[],
+	resourceScope?: WorkerResourceScope,
+): SpawnedSubprocess<Outbound> {
 	const inbound = new Set<(message: Outbound) => void>();
 	const errors = new Set<(error: Error) => void>();
 	const intentionalExit = { value: false };
@@ -279,9 +311,7 @@ export function createWorkerSubprocess<Outbound>(options: {
 	let proc: Subprocess<"ignore", "ignore", number | "ignore">;
 	try {
 		proc = Bun.spawn({
-			cmd: options.resourceScope
-				? options.resourceScope.wrapCommand(options.spawnCommand.cmd, options.env)
-				: options.spawnCommand.cmd,
+			cmd,
 			cwd: options.spawnCommand.cwd,
 			detached: options.detached,
 			env: options.env,
@@ -297,7 +327,7 @@ export function createWorkerSubprocess<Outbound>(options: {
 				disconnected.resolve();
 			},
 			onExit(_proc, exitCode, signalCode) {
-				options.resourceScope?.close();
+				resourceScope?.close();
 				unregisterFault();
 				startStderrDrain();
 				if (exitCode === 0 && !options.reportCleanExit) return;
@@ -318,7 +348,7 @@ export function createWorkerSubprocess<Outbound>(options: {
 			},
 		});
 	} catch (error) {
-		options.resourceScope?.close();
+		resourceScope?.close();
 		cleanupStderrCapture(stderrCapture);
 		throw error;
 	}
