@@ -53,7 +53,13 @@ interface RecoveryCalls {
 	continued: { source: string; beforeContinue?: () => void }[];
 }
 
-function recovery(options: { textOutputCommitted?: boolean; calls?: RecoveryCalls; owner?: "abort" | "disposal" | "streaming-edit" } = {}): TurnRecovery {
+function recovery(
+	options: {
+		textOutputCommitted?: boolean;
+		calls?: RecoveryCalls;
+		owner?: "abort" | "disposal" | "streaming-edit";
+	} = {},
+): TurnRecovery {
 	const calls = options.calls;
 	const host: TurnRecoveryHost = {
 		agent: {
@@ -190,7 +196,11 @@ for (const owner of ["abort", "disposal", "streaming-edit"] as const) {
 	it(`does not restart committed output owned by ${owner}`, () => {
 		const calls: RecoveryCalls = { appended: [], continued: [] };
 		const subject = recovery({ textOutputCommitted: true, calls, owner });
-		expect(subject.handleCommittedTextStreamStall(assistant({ content: [{ type: "text", text: "committed" }], errorId: STREAM_INCOMPLETE_ERROR_ID }))).toBe(false);
+		expect(
+			subject.handleCommittedTextStreamStall(
+				assistant({ content: [{ type: "text", text: "committed" }], errorId: STREAM_INCOMPLETE_ERROR_ID }),
+			),
+		).toBe(false);
 		expect(calls.continued).toEqual([]);
 		expect(calls.appended).toEqual([]);
 	});
