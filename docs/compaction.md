@@ -164,8 +164,9 @@ This opt-in mode replaces automatic summary recompression with local context-win
 boundaries. It also applies to `/compact` without an explicit mode or focus text.
 Explicit compaction modes and focused instructions retain their existing behavior.
 
-- `context_notes` reads the current notebook when `text` is omitted, replaces it
-  when `text` is supplied, and clears it with `text: ""`.
+- `context_notes` takes a required `action`: `"read"` returns the current
+  notebook and never changes it, `"replace"` replaces it with the nonempty
+  `text`, and `"clear"` is the only way to clear it.
 - Notebook revisions are journal entries on the active branch. Only the latest
   visible revision is injected into model context, including after resume or fork.
   A context reset clears the visible notebook. Each replacement is limited to
