@@ -710,6 +710,8 @@ export interface SessionStats {
 	sessionFile?: string;
 	credits?: SessionCredits;
 	routedModels?: Record<string, number>;
+	/** Failed edits by the engine's `errorKind`. */
+	editRejections?: Record<string, number>;
 	contextUsage?: ContextUsage;
 }
 
@@ -789,6 +791,8 @@ export interface BtwHistoryTurn {
 	status: BtwStatus;
 	createdAt: number;
 	updatedAt: number;
+	/** Images attached to the question. */
+	images?: ImageContent[];
 	error?: string;
 }
 
@@ -801,6 +805,8 @@ export interface BtwHistoryRecord {
 	updatedAt: number;
 	id: string;
 	leafId: string | null;
+	/** Images attached to the question. */
+	images?: ImageContent[];
 	error?: string;
 	followUps?: BtwHistoryTurn[];
 }
@@ -1088,6 +1094,8 @@ export interface PromptError {
 	provider?: string;
 	model?: string;
 	httpStatus?: number;
+	/** `cost_cap`: the session reached `session.maxCost` (`--max-cost`) and omp did not send the next request. */
+	code?: "cost_cap";
 }
 
 /** Terminal outcome of one accepted `prompt` / `abort_and_prompt`, keyed by request `id`. */

@@ -7,7 +7,6 @@ import type {
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import { prompt } from "@oh-my-pi/pi-utils";
 import contextNotesDescription from "../prompts/tools/context-notes.md" with { type: "text" };
 import contextNotesTextDescription from "../prompts/tools/context-notes-text.md" with { type: "text" };
 import newContextDescription from "../prompts/tools/new-context.md" with { type: "text" };
@@ -15,7 +14,6 @@ import {
 	CONTEXT_NOTES_ENTRY_TYPE,
 	type ContextNotesEntry,
 	getContextNotes,
-	MAX_CONTEXT_NOTES_BYTES,
 } from "../session/context-notes";
 import { cfgCompactionExperimentalContextManagement } from "../session/context-settings";
 import type { ToolSession } from ".";
@@ -27,7 +25,7 @@ const contextNotesSchema = type({
 		.describe(
 			'Required operation. "read" returns the latest notebook and never changes it, even if text is also supplied. "replace" replaces the entire notebook with text (required, nonempty). "clear" is the only way to clear the notebook. Examples: {action: "read"}, {action: "replace", text: "..."}, {action: "clear"}.',
 		),
-	"text?": type("string").describe(prompt.render(contextNotesTextDescription, { maxBytes: MAX_CONTEXT_NOTES_BYTES })),
+	"text?": type("string").describe(contextNotesTextDescription),
 });
 
 const newContextSchema = type({});
@@ -140,12 +138,6 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 		}
 
 		const bytes = Buffer.byteLength(text, "utf8");
-		if (bytes > MAX_CONTEXT_NOTES_BYTES) {
-			const excess = bytes - MAX_CONTEXT_NOTES_BYTES;
-			throw new ToolError(
-				`Context notes were not saved; the existing notebook is unchanged. The replacement is ${bytes} UTF-8 bytes, ${excess} bytes over the limit of ${MAX_CONTEXT_NOTES_BYTES} UTF-8 bytes. Read the current notebook with context_notes({i: "Reading current notebook", action: "read"}), recover any dropped detail from history://current/full, then retry with action: "replace" and a compact replacement that removes superseded entries and references history entry IDs instead of copying raw content. Do not finish the checkpoint until a replacement save succeeds.`,
-			);
-		}
 
 		const ownerId = this.session.getSessionId?.();
 		const branchLeafId = manager.getBranch().at(-1)?.id;

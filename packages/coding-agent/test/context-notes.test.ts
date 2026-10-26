@@ -8,7 +8,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	CONTEXT_NOTES_ENTRY_TYPE,
 	getContextNotes,
-	MAX_CONTEXT_NOTES_BYTES,
+	renderContextNotes,
 } from "@oh-my-pi/pi-coding-agent/session/context-notes";
 import type { ContextNotesEntry } from "@oh-my-pi/pi-coding-agent/session/context-notes";
 import type { CustomEntry, ResetBoundaryEntry, SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
@@ -136,69 +136,58 @@ describe("experimental context notes", () => {
 		expect(sessionManager.getBranch()).toHaveLength(journalLength);
 	});
 
-	it("rejects an oversized UTF-8 replacement while retaining the current notebook revision", async () => {
-		const sessionManager = SessionManager.inMemory();
+	it.each([18_824, 18_825, 18_828, 65_537])("saves and reopens %i UTF-8 bytes without truncation or an older-revision fallback", async bytes => {
+		using tempDir = TempDir.createSync("@omp-context-notes-large-");
+		const sessionDir = path.join(tempDir.path(), "sessions");
+		const manager = SessionManager.create(tempDir.path(), sessionDir);
 		const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
-		const session = toolSession(settings, sessionManager);
-		const tool = ContextNotesTool.createIf(session);
-		if (!tool) throw new Error("expected context notes tool");
-
-		await tool.execute("initial", { action: "replace", text: "Retain this notebook after an invalid replacement." });
-		const multibyteCharacter = "€";
-		const oversized = multibyteCharacter.repeat(
-			Math.floor(MAX_CONTEXT_NOTES_BYTES / Buffer.byteLength(multibyteCharacter, "utf8")) + 1,
-		);
-		await expect(tool.execute("overflow", { action: "replace", text: oversized })).rejects.toThrow(
-			`${MAX_CONTEXT_NOTES_BYTES} UTF-8 bytes`,
-		);
-		expect(Buffer.byteLength(oversized, "utf8")).toBeGreaterThan(MAX_CONTEXT_NOTES_BYTES);
-		expect(getContextNotes(sessionManager.getBranch())?.text).toBe(
-			"Retain this notebook after an invalid replacement.",
-		);
-		expect(
-			sessionManager
-				.getBranch()
-				.filter(entry => entry.type === "custom" && entry.customType === CONTEXT_NOTES_ENTRY_TYPE),
-		).toHaveLength(1);
+		const tool = new ContextNotesTool(toolSession(settings, manager));
+		const text = "n".repeat(bytes - Buffer.byteLength("€😀", "utf8")) + "€😀";
+		try {
+			await tool.execute("initial", { action: "replace", text: "prior notebook" });
+			const prior = getContextNotes(manager.getBranch());
+			const saved = await tool.execute("save-large", { action: "replace", text });
+			expect(Buffer.byteLength(text, "utf8")).toBe(bytes);
+			expect(saved.details?.bytes).toBe(bytes);
+			expect(saved.details?.text).toBe(text);
+			expect(getContextNotes(manager.getBranch())?.entryId).not.toBe(prior?.entryId);
+			expect(renderContextNotes(manager.getBranch())).toContain(text);
+			const read = await tool.execute("read-large", { action: "read", text: "ignored" });
+			expect(read.details?.text).toBe(text);
+			const file = manager.getSessionFile();
+			if (!file) throw new Error("expected persisted session file");
+			const resumed = await SessionManager.open(file, sessionDir);
+			try {
+				const restored = getContextNotes(resumed.getBranch());
+				expect(Buffer.from(restored?.text ?? "", "utf8")).toEqual(Buffer.from(text, "utf8"));
+				expect(renderContextNotes(resumed.getBranch())).toContain(text);
+			} finally { await resumed.close(); }
+		} finally { await manager.close(); }
 	});
 
-	it("saves exactly MAX_CONTEXT_NOTES_BYTES across a multibyte boundary and rejects one byte over without a new revision", async () => {
-		const sessionManager = SessionManager.inMemory();
+	it("preserves the previous notebook on cancelled or failed disk preparation", async () => {
+		using tempDir = TempDir.createSync("@omp-context-notes-error-");
+		const sessionDir = path.join(tempDir.path(), "sessions");
+		const manager = SessionManager.create(tempDir.path(), sessionDir);
 		const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
-		const session = toolSession(settings, sessionManager);
-		const tool = ContextNotesTool.createIf(session);
-		if (!tool) throw new Error("expected context notes tool");
-
-		await tool.execute("initial", { action: "replace", text: "prior notebook" });
-		const priorEntryId = getContextNotes(sessionManager.getBranch())?.entryId;
-		if (!priorEntryId) throw new Error("expected prior notebook entry");
-
-		// Exact cap, ending on a multibyte boundary: pad with ASCII then fill the tail with "€" (3 bytes).
-		const euroBytes = Buffer.byteLength("€", "utf8");
-		const euroCount = 2; // 6 bytes of "€" tail
-		const exactText = "a".repeat(MAX_CONTEXT_NOTES_BYTES - euroCount * euroBytes) + "€".repeat(euroCount);
-		expect(Buffer.byteLength(exactText, "utf8")).toBe(MAX_CONTEXT_NOTES_BYTES);
-		const saved = await tool.execute("exact-cap", { action: "replace", text: exactText });
-		expect(saved.details?.bytes).toBe(MAX_CONTEXT_NOTES_BYTES);
-		const exactRevision = getContextNotes(sessionManager.getBranch());
-		expect(exactRevision?.text).toBe(exactText);
-		expect(exactRevision?.entryId).not.toBe(priorEntryId);
-
-		// One byte over the cap rejects without a new revision or entry-ID change.
-		const oneOver = exactText + "b";
-		expect(Buffer.byteLength(oneOver, "utf8")).toBe(MAX_CONTEXT_NOTES_BYTES + 1);
-		const rejection = await tool
-			.execute("one-over", { action: "replace", text: oneOver })
-			.catch((error: unknown) => error);
-		expect(rejection).toBeInstanceOf(Error);
-		const after = getContextNotes(sessionManager.getBranch());
-		expect(after?.text).toBe(exactText);
-		expect(after?.entryId).toBe(exactRevision?.entryId);
-		expect(
-			sessionManager
-				.getBranch()
-				.filter(entry => entry.type === "custom" && entry.customType === CONTEXT_NOTES_ENTRY_TYPE),
-		).toHaveLength(2);
+		const tool = new ContextNotesTool(toolSession(settings, manager));
+		try {
+			await tool.execute("initial", { action: "replace", text: "Retain this complete notebook €😀" });
+			const previous = getContextNotes(manager.getBranch());
+			const file = manager.getSessionFile();
+			if (!file) throw new Error("expected persisted session file");
+			const before = await Bun.file(file).text();
+			await expect(tool.execute("cancelled", { action: "replace", text: "not saved" }, AbortSignal.abort())).rejects.toThrow();
+			const prepare = vi.spyOn(manager, "ensureOnDisk").mockRejectedValue(new Error("disk preparation failed"));
+			try {
+				await expect(tool.execute("failed", { action: "replace", text: "not saved" })).rejects.toThrow("disk preparation failed");
+			} finally { prepare.mockRestore(); }
+			expect(getContextNotes(manager.getBranch())).toEqual(previous);
+			expect(await Bun.file(file).text()).toBe(before);
+			const resumed = await SessionManager.open(file, sessionDir);
+			try { expect(getContextNotes(resumed.getBranch())).toEqual(previous); }
+			finally { await resumed.close(); }
+		} finally { await manager.close(); }
 	});
 
 	it("leaves the branch journal unchanged when reading a missing notebook", async () => {

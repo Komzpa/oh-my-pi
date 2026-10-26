@@ -138,6 +138,10 @@ export class TodoTracker {
 	setPhases(phases: TodoPhase[]): void {
 		this.#phases = this.#clonePhases(phases);
 		this.#planningNudgeSent = false;
+		// Every state write lands here — the native tool, a Cursor sync, or a
+		// bridged call — so the nudge budget re-arms on the progress it
+		// rations. Views, failed batches, and unchanged reads never arrive.
+		this.#midRunNudgeCount = 0;
 	}
 
 	/** Rehydrates todo phases from the current transcript branch. */
