@@ -610,8 +610,9 @@ export const DEMAND_IGNORE_MAX = 3;
 export const DEMAND_IGNORE_MAX_REPLAN = 5;
 export const OVERRIDE_SUPPRESS_TURNS = 5;
 const PLAN_DEMAND_IDS = new Set(["missed-eta", "todo-plan-doctor", "todo-replan", "todo-link", "unread-receipts"]);
-// append/init add work; they do not fix the plan.
-const PLAN_FIX_OPS = new Set(["schedule", "drop", "rm", "done"]);
+// Every todo op is plan bookkeeping (schedule, drop, classify, block, view, ...) except the two that
+// add work: append and init. An escalated demand admits the former and refuses the latter.
+const PLAN_WORK_OPS = new Set(["append", "init"]);
 const ESCALATION_REMEDY = "Fix the plan in a todo call: re-estimate the late row with evidence, split it, or drop it. Don't start workers to answer this.";
 // The retrospective is what stops the same failure from being retried: only staffing it lifts the gate.
 const RETRO_REMEDY = "Staff the retrospective now: one task with agent retro-facilitator. It cannot be skipped or overridden.";
@@ -4225,14 +4226,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // An ignored retro escalates too and only a retro-facilitator task lifts it.
     const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) => (id === "retro" || PLAN_DEMAND_IDS.has(id)) && isDemandEscalated(id));
     if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) {
-      // Viewing the plan is reading it, which finding the fix needs.
-      const planFix = (call: GateCall): boolean => call.name === "todo" && (PLAN_FIX_OPS.has(todoOpOf(call) ?? "") || todoOpOf(call) === "view");
+      const planFix = (call: GateCall): boolean => call.name === "todo" && !PLAN_WORK_OPS.has(todoOpOf(call) ?? "");
       const retroStaffed = (call: GateCall): boolean =>
         call.name === "task" && taskItems(call.arguments ?? {}).some((item) => item["agent"] === "retro-facilitator");
       const gates: ActiveGate[] = escalatedIds.map((id) => ({
         id,
         remedy: id === "retro" ? RETRO_REMEDY : ESCALATION_REMEDY,
-        satisfies: id === "retro" ? retroStaffed : planFix,
+        // Plan bookkeeping stays open under a due retro; only new work waits for the facilitator.
+        satisfies: id === "retro" ? (call: GateCall) => retroStaffed(call) || planFix(call) : planFix,
       }));
       const gateCall = { name: event.toolName, arguments: (event.input ?? {}) as Record<string, unknown> };
       const verdict = decideGateCall(gateCall, gates);
