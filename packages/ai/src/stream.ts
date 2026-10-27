@@ -1170,7 +1170,7 @@ function withSupportedSamplingParams<T extends SamplingOptions>(model: Model<Api
 	return supported;
 }
 
-function streamSimpleAllowed<TApi extends Api>(
+export function streamSimple<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options?: SimpleStreamOptions,
@@ -1180,6 +1180,7 @@ function streamSimpleAllowed<TApi extends Api>(
 	// byte-identical to a non-reasoning model's.
 	const effortRequested =
 		sessionOptions.reasoning !== undefined && !sessionOptions.disableReasoning && !sessionOptions.forceReasoningOff;
+	assertModelNotBlacklisted(model);
 	if (!effortRequested) model = withoutUnverifiedThinking(model);
 	if (!model.requiresGlyphTokenization) {
 		return streamSimpleRequest(model, context, sessionOptions);
@@ -2323,14 +2324,4 @@ export function stream<TApi extends Api>(
 ): AssistantMessageEventStream {
 	assertModelNotBlacklisted(model);
 	return streamAllowed(model, context, options);
-}
-
-/** Keep direct and simple streaming on the same owner-policy boundary. */
-export function streamSimple<TApi extends Api>(
-	model: Model<TApi>,
-	context: Context,
-	options?: SimpleStreamOptions,
-): AssistantMessageEventStream {
-	assertModelNotBlacklisted(model);
-	return streamSimpleAllowed(model, context, options);
 }
