@@ -3869,11 +3869,15 @@ export class TUI extends Container {
 				for (let index = replayViewportRows; index < rows; index++) {
 					if (!prepared.rows[index]!.isImage) continue;
 					append(`\x1b[${newTop + index + 1};1H`);
-					append(this.#lineRewriteSequence(
-						prepared.rows[index]!, width, index,
-						this.#osc66SpacerGlyphWidth(prepared.lines, index),
-						{ imagePlacements: this.#screenImagePlacements, imageRow: newTop + index },
-					));
+					append(
+						this.#lineRewriteSequence(
+							prepared.rows[index]!,
+							width,
+							index,
+							this.#osc66SpacerGlyphWidth(prepared.lines, index),
+							{ imagePlacements: this.#screenImagePlacements, imageRow: newTop + index },
+						),
+					);
 				}
 			}
 			if (newTop + rows < height) buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
