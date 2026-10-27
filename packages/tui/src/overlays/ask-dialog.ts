@@ -1047,7 +1047,10 @@ export class AskDialogComponent implements Component {
 		// On Other, `n` edits the custom answer instead of attaching a note.
 		const note = this.#highlightedRowIsOther()
 			? actionButton("Edit", "note", { keys: "n", title: "Edit the custom answer  n" })
-			: actionButton("Note", "note", { keys: "n", title: "Add a note to the highlighted answer  n" });
+			: actionButton("Note", "note", {
+					keys: "n",
+					title: "Add a note to the highlighted answer, or to the one just picked  n",
+				});
 		return actionBar([...lead, null, note, skip, submit]);
 	}
 
