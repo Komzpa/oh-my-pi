@@ -81,6 +81,31 @@ describe("owner model blacklist at dispatch", () => {
 		expect(calls).toEqual(["convicted"]);
 	});
 
+	for (const dispatch of [stream, streamSimple]) {
+		test(`${dispatch.name} rechecks a ban written while resolving headers`, async () => {
+			const model = {
+				...banned,
+				resolveHeaders: async () => {
+					ban();
+					return {};
+				},
+			};
+			await expect(dispatch(model, context).result()).rejects.toThrow("blacklisted");
+			expect(calls).toEqual([]);
+		});
+	}
+
+	test("rechecks a ban written while resolving credentials", async () => {
+		const result = streamSimple(banned, context, {
+			apiKey: async () => {
+				ban();
+				return "fixture-only";
+			},
+		});
+		await expect(result.result()).rejects.toThrow("blacklisted");
+		expect(calls).toEqual([]);
+	});
+
 	test("a malformed policy fails closed instead of silently restoring access", () => {
 		fs.writeFileSync(path.join(dir, "model-blacklist.json"), "{");
 		expect(() => streamSimple(banned, context)).toThrow("Cannot read model blacklist");
