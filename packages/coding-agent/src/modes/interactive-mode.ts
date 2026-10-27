@@ -2014,6 +2014,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** Repaints the subagent HUD so live-preview elapsed markers advance between progress events. */
 	#subagentPreviewTickTimer?: NodeJS.Timeout;
 	#observerUiSyncNeedsTodoSync = false;
+	#todoHudSubagentKey: string | undefined;
 	#runningSubagentCount = 0;
 	#agentRegistryUnsubscribe?: () => void;
 	#agentRegistrySubscriptionTarget?: AgentHubRegistry;
@@ -4637,6 +4638,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
 			todoChanged = true;
 		}
+		if (this.#getActiveSubagentDescriptions().join("\n") !== this.#todoHudSubagentKey) {
+			this.#renderTodoList();
+			todoChanged = true;
+		}
 		const hudChanged = this.#renderSubagentList();
 		if (badgeChanged || todoChanged || hudChanged) this.ui.requestRender();
 	}
@@ -4687,6 +4692,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// the HUD whenever this differs, so an empty or hidden plan must not leave it stale.
 		this.#todoHudRenderedRows = this.getTodoHudPanelRows();
 		const activeDescs = this.#getActiveSubagentDescriptions();
+		this.#todoHudSubagentKey = activeDescs.join("\n");
 		const running =
 			cfgDisplayPinnedAgents.get(settings) === "off"
 				? []
@@ -4776,7 +4782,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Highlight rows by the live workers linked to them, in the shape the shared HUD policy matches on.
 		// The list is replaced in place: its declaration next to the row-budget record stays identical to the
 		// upstream TODO panel topic's, so both apply together.
-		activeDescs.splice(0, activeDescs.length, ...[...workers.byTask.keys()].map(todo => todo.content));
+		const activeTodoWorkers =
+			cfgDisplayPinnedAgents.get(settings) === "off"
+				? linkTodoWorkers(livePhases, this.#observerRegistry.getSessions())
+				: workers;
+		activeDescs.splice(0, activeDescs.length, ...[...activeTodoWorkers.byTask.keys()].map(todo => todo.content));
 		const expanded = this.todoExpanded;
 		const multiPhase = phases.length > 1;
 		const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
@@ -5175,17 +5185,18 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#renderSubagentList(): boolean {
 		this.#cancelSubagentPreviewTick();
-		if (this.#currentTodoWorkerDisplayKey() !== this.#todoWorkerDisplayKey) this.#renderTodoList();
+		const todoChanged = this.#currentTodoWorkerDisplayKey() !== this.#todoWorkerDisplayKey;
+		if (todoChanged) this.#renderTodoList();
 		const view = this.#buildSubagentHudView();
 		if (!view) {
 			const changed = this.subagentContainer.children.length > 0;
 			if (changed) this.subagentContainer.clear();
 			this.#subagentHudKey = "";
-			return changed;
+			return changed || todoChanged;
 		}
 		this.#armSubagentPreviewTick(view.tickMs);
 		const key = JSON.stringify([view.lines, view.order, view.toggleRow]);
-		if (key === this.#subagentHudKey && this.subagentContainer.children.length > 0) return false;
+		if (key === this.#subagentHudKey && this.subagentContainer.children.length > 0) return todoChanged;
 		this.#subagentHudKey = key;
 		const hud = this.subagentContainer.children[0];
 		if (hud instanceof SubagentHudComponent) hud.update(view.lines, view.order, view.toggleRow);
