@@ -1242,17 +1242,22 @@ export function requirementSourceDigest(rawText: string): string {
 	return new Bun.CryptoHasher("sha256").update(rawText).digest("hex");
 }
 
-const [idHeader, sourceDigestHeader, statusHeader, evidenceHeader, artifactHeader] = receiptHeader
+const [idHeader, statusHeader, evidenceHeader, artifactHeader] = receiptHeader
 	.trim()
 	.split("|")
 	.map(cell => cell.toLowerCase().replace(/[^a-z]/g, ""));
 
-/** Parse one complete receipt; supplied source words are authoritative after assignment authentication. */
+/**
+ * Parse one complete receipt; supplied source words are authoritative after assignment authentication.
+ * The authenticated assignment, not an auditor-copied digest, binds each ID to its source: a legacy
+ * `source sha256` column is accepted and ignored. `onReject` receives the concrete first reason.
+ */
 export function parseRequirementReceipt(
 	output: string,
 	expectedIds: readonly string[],
 	rawWordsById?: ReadonlyMap<string, string>,
 	onIdentityError?: (receivedId: string, expectedParentId: string) => void,
+	onReject?: (reason: string) => void,
 ): Array<{
 	id: string;
 	rawWords: string;
@@ -1260,8 +1265,15 @@ export function parseRequirementReceipt(
 	evidence: string;
 	artifact: string;
 }> | null {
+	let rejected = false;
+	const reject = (reason: string): null => {
+		if (!rejected) onReject?.(reason);
+		rejected = true;
+		return null;
+	};
 	const expected = new Set(expectedIds);
-	if (expected.size === 0 || expected.size !== expectedIds.length) return null;
+	if (expected.size === 0 || expected.size !== expectedIds.length)
+		return reject(`expected IDs must be non-empty and unique, got [${expectedIds.join(", ")}]`);
 	const parentOf = (id: string): string => id.match(/^(R[1-9]\d*)[a-z]+$/)?.[1] ?? id;
 	const isUnrelatedId = (id: unknown): boolean =>
 		typeof id === "string" && /^R[1-9]\d*[a-z]*$/.test(id.trim()) && !expected.has(parentOf(id.trim()));
@@ -1290,7 +1302,10 @@ export function parseRequirementReceipt(
 							value => Array.isArray(value) && value.some(row => isRecord(row) && Object.hasOwn(row, "id")),
 						)
 				: [];
-		if (candidates.length !== 1 || !Array.isArray(candidates[0])) return null;
+		if (candidates.length !== 1 || !Array.isArray(candidates[0]))
+			return reject(
+				`JSON receipt must contain exactly one array of rows with an "id" field, found ${candidates.length}`,
+			);
 		const fields = [
 			["id"],
 			["raw_words", "rawWords", "raw_text"],
@@ -1299,7 +1314,7 @@ export function parseRequirementReceipt(
 			["artifact", "artifact_identity"],
 		];
 		for (const row of candidates[0]) {
-			if (!isRecord(row)) return null;
+			if (!isRecord(row)) return reject("JSON receipt row is not an object");
 			if (isUnrelatedId(row.id)) continue;
 			const cells: string[] = [];
 			for (const aliases of fields) {
@@ -1313,7 +1328,10 @@ export function parseRequirementReceipt(
 					cells.push(rawWordsById.get(parentOf(row.id))!);
 					continue;
 				}
-				if (keys.length !== 1 || typeof row[keys[0]!] !== "string") return null;
+				if (keys.length !== 1 || typeof row[keys[0]!] !== "string")
+					return reject(
+						`row ${typeof row.id === "string" ? row.id : "?"}: column "${aliases[0]}" must appear exactly once as a string (found ${keys.length === 0 ? "none" : keys.length > 1 ? `${keys.length} aliases` : typeof row[keys[0]!]})`,
+					);
 				cells.push((row[keys[0]!] as string).trim());
 			}
 			for (const key of ["claimed", "measured"] as const) {
@@ -1321,24 +1339,20 @@ export function parseRequirementReceipt(
 					cells.push("");
 					continue;
 				}
-				if (typeof row[key] !== "string") return null;
+				if (typeof row[key] !== "string")
+					return reject(`row ${String(row.id)}: column "${key}" must be a string, got ${typeof row[key]}`);
 				cells.push((row[key] as string).trim());
 			}
-			const digestKeys = ["source_sha256", "sourceSha256"].filter(key => Object.hasOwn(row, key));
-			if (digestKeys.length > 1) return null;
-			const digest = digestKeys.length === 1 ? row[digestKeys[0]!] : "";
-			if (typeof digest !== "string" || (digestKeys.length === 1 && !digest)) return null;
-			cells.push(digest);
 			rowCells.push(cells);
 		}
 	} else {
-		if (parsedOutput !== undefined && tableStrings.length !== 1) return null;
+		if (parsedOutput !== undefined && tableStrings.length !== 1)
+			return reject(`JSON receipt must carry exactly one Markdown table string, found ${tableStrings.length}`);
 		const lines = (parsedOutput === undefined ? output : tableStrings[0]!).split(/\r?\n/);
 		const headers: Array<{
 			line: number;
 			id: number;
 			rawWords: number;
-			sourceDigest: number;
 			status: number;
 			evidence: number;
 			artifact: number;
@@ -1346,6 +1360,7 @@ export function parseRequirementReceipt(
 			measured: number;
 			width: number;
 		}> = [];
+		let partialHeader: string | undefined;
 		for (let line = 0; line < lines.length - 1; line++) {
 			const cells = requirementTableCells(lines[line]!);
 			const separator = requirementTableCells(lines[line + 1]!);
@@ -1363,22 +1378,22 @@ export function parseRequirementReceipt(
 			};
 			const id = find([idHeader!]);
 			const rawWords = find(["rawwords", "rawtext"]);
-			const sourceDigest = find([sourceDigestHeader!]);
-			if (sourceDigest < 0 && normalized.some(name => name === sourceDigestHeader)) return null;
-			if (rawWords < 0 && normalized.some(name => name === "rawwords" || name === "rawtext")) return null;
+			if (rawWords < 0 && normalized.some(name => name === "rawwords" || name === "rawtext"))
+				return reject(`table header: column "raw words" must appear exactly once`);
 			const status = find(["status", statusHeader!]);
 			const evidence = find([evidenceHeader!]);
 			const artifact = find(["artifact", artifactHeader!]);
 			const claimed = find(["claimed"]);
-			if (claimed < 0 && normalized.some(name => name === "claimed")) return null;
+			if (claimed < 0 && normalized.some(name => name === "claimed"))
+				return reject(`table header: column "claimed" must appear exactly once`);
 			const measured = find(["measured"]);
-			if (measured < 0 && normalized.some(name => name === "measured")) return null;
+			if (measured < 0 && normalized.some(name => name === "measured"))
+				return reject(`table header: column "measured" must appear exactly once`);
 			if (id >= 0 && status >= 0 && evidence >= 0 && artifact >= 0) {
 				headers.push({
 					line,
 					id,
 					rawWords,
-					sourceDigest,
 					status,
 					evidence,
 					artifact,
@@ -1386,17 +1401,32 @@ export function parseRequirementReceipt(
 					measured,
 					width: cells.length,
 				});
+			} else if (id >= 0 || status >= 0 || evidence >= 0 || artifact >= 0) {
+				const missingColumns = [
+					["id", id],
+					["verdict", status],
+					["evidence", evidence],
+					["artifact identity", artifact],
+				].flatMap(([name, index]) => (index === -1 ? [name as string] : []));
+				partialHeader ??= `table header [${cells.join(" | ")}] lacks column(s): ${missingColumns.join(", ")} (expected: ${receiptHeader.trim()})`;
 			}
 		}
-		if (headers.length !== 1) return null;
+		if (headers.length === 0)
+			return reject(
+				partialHeader ??
+					`no Markdown table with header and separator rows found (expected: ${receiptHeader.trim()})`,
+			);
+		if (headers.length > 1) return reject(`found ${headers.length} receipt tables; return exactly one`);
 		const header = headers[0]!;
 		for (let line = header.line + 2; line < lines.length; line++) {
 			if (!lines[line]!.trim()) break;
 			const cells = requirementTableCells(lines[line]!);
 			if (!cells) break;
 			if (isUnrelatedId(cells[header.id])) continue;
-			if (cells.length !== header.width) continue;
-			if (header.sourceDigest >= 0 && !cells[header.sourceDigest]) return null;
+			if (cells.length !== header.width)
+				return reject(
+					`row ${cells[header.id] || "?"}: expected ${header.width} cells to match the header, got ${cells.length}`,
+				);
 			rowCells.push([
 				cells[header.id]!,
 				header.rawWords >= 0
@@ -1407,7 +1437,6 @@ export function parseRequirementReceipt(
 				cells[header.artifact]!,
 				header.claimed >= 0 ? cells[header.claimed]! : "",
 				header.measured >= 0 ? cells[header.measured]! : "",
-				header.sourceDigest >= 0 ? cells[header.sourceDigest]! : "",
 			]);
 		}
 	}
@@ -1421,8 +1450,7 @@ export function parseRequirementReceipt(
 	const receivedIds = new Set<string>();
 	const parentRows = new Map<string, boolean>();
 	for (const cells of rowCells) {
-		const [id, rawWords, verdict, evidence, artifact, claimed, measured, sourceDigest] = cells as [
-			string,
+		const [id, rawWords, verdict, evidence, artifact, claimed, measured] = cells as [
 			string,
 			string,
 			string,
@@ -1433,33 +1461,27 @@ export function parseRequirementReceipt(
 		];
 		const status = verdict.toLowerCase();
 		const parentId = parentOf(id);
-		if (sourceDigest) {
-			const source = rawWordsById?.get(parentId);
-			if (source === undefined || sourceDigest !== requirementSourceDigest(source)) return null;
-		}
 		const split = parentId !== id;
 		// Sub-rows are clause evidence, not new requirements. Only the authenticated
 		// assignment may bind them to a canonical parent; duplicate/mixed forms fail closed.
 		if (split && !rawWordsById?.has(parentId)) {
 			onIdentityError?.(id, parentId);
-			return null;
+			return reject(`row ${id}: sub-row ID without an authenticated parent ${parentId}`);
 		}
 		if (receivedIds.has(id) || (parentRows.has(parentId) && (!split || !parentRows.get(parentId)))) {
 			onIdentityError?.(id, parentId);
-			return null;
+			return reject(`row ${id}: duplicate or mixed parent/sub-row IDs for ${parentId}`);
 		}
 		receivedIds.add(id);
 		parentRows.set(parentId, split);
-		if (
-			!/^R[1-9]\d*[a-z]*$/.test(id) ||
-			!expected.has(parentId) ||
-			(!rawWords && !rawWordsById?.has(parentId)) ||
-			!Object.hasOwn(VERDICT_STATUSES, status) ||
-			!evidence ||
-			!artifact
-		) {
-			return null;
-		}
+		if (!/^R[1-9]\d*[a-z]*$/.test(id) || !expected.has(parentId))
+			return reject(`row "${id}": column "id" expected one of [${expectedIds.join(", ")}], got "${id}"`);
+		if (!rawWords && !rawWordsById?.has(parentId))
+			return reject(`row ${id}: column "raw words" is empty and no authenticated source exists`);
+		if (!Object.hasOwn(VERDICT_STATUSES, status))
+			return reject(`row ${id}: column "verdict" expected pass|fail|unverifiable, got "${verdict}"`);
+		if (!evidence) return reject(`row ${id}: column "evidence" is empty`);
+		if (!artifact) return reject(`row ${id}: column "artifact identity" is empty`);
 		// The authenticated auditor owns semantic measurement judgments. Free-text
 		// claimed/measured evidence must not become a second, lossy verdict veto.
 		const finalStatus = status;
@@ -1471,7 +1493,7 @@ export function parseRequirementReceipt(
 			// its artifact. All clauses must cover the same authenticated row identity.
 			if (prior.artifact !== artifact) {
 				onIdentityError?.(id, parentId);
-				return null;
+				return reject(`row ${id}: column "artifact identity" differs from sibling clause rows of ${parentId}`);
 			}
 			if (finalStatus === "fail" || (finalStatus === "unverifiable" && prior.status === "pass"))
 				prior.status = finalStatus as RequirementVerdictStatus;
@@ -1486,8 +1508,11 @@ export function parseRequirementReceipt(
 			});
 		}
 	}
-	if (new Set(rows.map(row => row.id)).size !== rows.length) return null;
-	return rows.length === expectedIds.length && expectedIds.every(id => rows.some(row => row.id === id)) ? rows : null;
+	if (new Set(rows.map(row => row.id)).size !== rows.length) return reject("duplicate requirement rows");
+	const missingRows = expectedIds.filter(id => !rows.some(row => row.id === id));
+	if (missingRows.length > 0 || rows.length !== expectedIds.length)
+		return reject(`missing rows for ${missingRows.join(", ") || "(none; extra rows present)"}`);
+	return rows;
 }
 
 /** Restore rejected QA receipt reasons from the newest assignment snapshot. */
@@ -1665,11 +1690,12 @@ export function formatRequirementGateNotice(
 			}
 			const rejection = issue.split("; rejected receipt: ")[1];
 			if (rejection) {
-				const reason = rejection.includes("artifact identity")
-					? "receipt artifact mismatch"
-					: rejection.includes("malformed or partial")
+				const reason =
+					rejection.includes("rejected verdict table") || rejection.includes("malformed or partial")
 						? "receipt incomplete or malformed"
-						: "receipt rejected";
+						: rejection.includes("artifact identity")
+							? "receipt artifact mismatch"
+							: "receipt rejected";
 				if (!details.has(reason)) details.set(reason, `D${details.size + 1}`);
 				refs.add(details.get(reason)!);
 			}
