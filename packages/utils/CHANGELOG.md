@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `openQuarantinedStoreForSalvage()`, which opens a scratch copy of a quarantined store for `readSalvageableRows()` and repairs a header page count larger than the file
+
 ## [18.13.2] - 2026-10-27
 
 ### Added
