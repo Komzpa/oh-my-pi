@@ -959,6 +959,14 @@ export interface CreateAgentSessionOptions {
 	autoApprove?: boolean;
 }
 
+/** Saved models were exhausted without permission to substitute another model. */
+export class SessionModelRestoreError extends Error {
+	constructor(modelSelector: string) {
+		super(`Could not restore model ${modelSelector}`);
+		this.name = "SessionModelRestoreError";
+	}
+}
+
 /** Result from createAgentSession */
 export interface CreateAgentSessionResult {
 	/** The created session */
@@ -2444,6 +2452,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				return session?.skills ?? skills;
 			},
 			refreshSkills: () => session.refreshSkills(),
+			skillRediscoveryHost: () => session.skillRediscoveryHost(),
 			rules: allRules,
 			activeRules: [...rulebookRules, ...alwaysApplyRules, ...ttsrManager.getRules()],
 			eventBus,
@@ -2815,6 +2824,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			extensionsResult = {
 				...options.preloadedExtensions,
 				extensions: [...options.preloadedExtensions.extensions],
+				preparedExtensions: options.preloadedExtensions.preparedExtensions?.slice(),
 			};
 			// Capture paths for downstream forwarding; filter inline-factory
 			// entries (`<inline-N>`) — those are per-session, not source paths.
@@ -2990,7 +3000,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			restoredSessionModelIndex < 0 &&
 			(!options.hasUI || options.allowSessionModelFallback === false || !cfgRetryModelFallback.get(settings))
 		) {
-			throw new Error(`Could not restore model ${sessionModelStrings[0]}`);
+			throw new SessionModelRestoreError(sessionModelStrings[0]);
 		}
 		// Resolve deferred --model/subagent patterns now that extension models are
 		// registered. Use the same CLI resolver as the immediate path so bare role
@@ -4799,6 +4809,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			get skillHintVisible() {
 				return toolSession.skillHintVisible;
+			},
+			// Live, not the spread's copy: a rediscovery after a plugin upgrade replaces the primary's list.
+			get skills() {
+				return toolSession.skills;
 			},
 			hasEditTool: true,
 			requireYieldTool: false,
