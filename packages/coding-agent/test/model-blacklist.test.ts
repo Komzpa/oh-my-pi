@@ -26,7 +26,7 @@ test("owner ban wins over re-added custom catalog, refresh, direct lookup and av
 		file,
 		JSON.stringify({
 			providers: {
-				"canary-provider": {
+				"canary.provider": {
 					baseUrl: "http://127.0.0.1:1",
 					api: "openai-completions",
 					apiKey: "fixture-only",
@@ -36,21 +36,21 @@ test("owner ban wins over re-added custom catalog, refresh, direct lookup and av
 		}),
 	);
 	const registry = new ModelRegistry(auth, file);
-	expect(registry.find("canary-provider", "convicted")?.id).toBe("convicted");
+	expect(registry.find("canary.provider", "convicted")?.id).toBe("convicted");
 	fs.writeFileSync(
 		path.join(dir, "model-blacklist.json"),
-		JSON.stringify({ "canary-provider/convicted": "fabricated receipt" }),
+		JSON.stringify({ "canary.provider/convicted": "fabricated receipt" }),
 	);
 	for (const models of [
 		registry.getAll(),
-		registry.getAvailableForProviders(new Set(["canary-provider"])),
-		registry.getProviderModels("canary-provider"),
+		registry.getAvailableForProviders(new Set(["canary.provider"])),
+		registry.getProviderModels("canary.provider"),
 	]) {
-		expect(models.some(m => m.provider === "canary-provider" && m.id === "convicted")).toBe(false);
-		expect(models.some(m => m.provider === "canary-provider" && m.id === "convicted-small")).toBe(true);
+		expect(models.some(m => m.provider === "canary.provider" && m.id === "convicted")).toBe(false);
+		expect(models.some(m => m.provider === "canary.provider" && m.id === "convicted-small")).toBe(true);
 	}
-	expect(registry.find("canary-provider", "convicted")).toBeUndefined();
+	expect(registry.find("canary.provider", "convicted")).toBeUndefined();
 	await registry.refresh("offline");
-	expect(registry.find("canary-provider", "convicted")).toBeUndefined();
-	expect(registry.find("canary-provider", "convicted-small")?.id).toBe("convicted-small");
+	expect(registry.find("canary.provider", "convicted")).toBeUndefined();
+	expect(registry.find("canary.provider", "convicted-small")?.id).toBe("convicted-small");
 });

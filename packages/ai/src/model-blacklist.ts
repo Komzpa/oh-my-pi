@@ -22,7 +22,15 @@ export function readModelBlacklist(): ReadonlyMap<string, string> {
 	}
 	const entries = Object.entries(value);
 	for (const [selector, reason] of entries) {
-		if (!/^[a-z0-9][a-z0-9_-]*\/\S+$/.test(selector) || typeof reason !== "string" || !reason.trim()) {
+		const separator = selector.indexOf("/");
+		if (
+			separator <= 0 ||
+			separator === selector.length - 1 ||
+			selector.trim() !== selector ||
+			selector.slice(0, separator) !== selector.slice(0, separator).toLowerCase() ||
+			typeof reason !== "string" ||
+			!reason.trim()
+		) {
 			throw new Error(`Invalid model blacklist ${file}: each provider/model requires a nonblank reason`);
 		}
 	}
