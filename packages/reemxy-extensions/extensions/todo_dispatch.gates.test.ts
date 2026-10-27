@@ -2569,7 +2569,8 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
       expect(spawn?.block, agent).toBe(true);
     }
     expect(await toolCall({ toolName: "read", toolCallId: "u2", input: CALLS.read!.arguments }, ctx)).toBeUndefined();
-    expect((await toolCall({ toolName: "todo", toolCallId: "u2v", input: { op: "view" } }, ctx) as { block?: boolean } | undefined)?.block).toBe(true);
+    // Viewing the plan is reading it.
+    expect(await toolCall({ toolName: "todo", toolCallId: "u2v", input: { op: "view" } }, ctx)).toBeUndefined();
     // Adding rows is more work, not a plan fix.
     expect((await toolCall({ toolName: "todo", toolCallId: "u2a", input: { op: "append", phase: "Tasks", items: ["More work"] } }, ctx) as { block?: boolean } | undefined)?.block).toBe(true);
     // A todo override alone does not lift it: the plan itself must be fixed.
@@ -2578,6 +2579,48 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
     expect(still?.block).toBe(true);
     // A plan-changing todo call passes.
     expect(await toolCall({ toolName: "todo", toolCallId: "u3", input: CALLS.todoSchedule!.arguments }, ctx)).toBeUndefined();
+  } finally {
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("an escalated demand decays once every row is closed (live sunbim 2026-10-27: unread-receipts blocked a 9/9-closed plan)", async () => {
+  const cwd = repo("clean");
+  const now = Date.now();
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => null },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: () => undefined,
+  } as unknown as ExtensionAPI;
+  const tasks = [{ content: "Row A", status: "completed", schedule: { dependencies: [], resources: ["a"], owner: "Done-A" } }];
+  const branch = [
+    { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } },
+    { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "unread-receipts": 5 } } },
+  ];
+  await todoDispatch(api);
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: "gates-closed-decay" }), ...branchMock(() => branch), getSessionFile: () => undefined },
+    getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => false,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  try {
+    await handlers.get("session_start")!({}, ctx);
+    const toolCall = handlers.get("tool_call")!;
+    const before = (await toolCall({ toolName: "bash", toolCallId: "c1", input: { command: "ss -ltn" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    expect(before?.reason ?? "").toContain("unread-receipts");
+    await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "c2", isError: false, content: [], details: undefined }, ctx);
+    const after = (await toolCall({ toolName: "bash", toolCallId: "c3", input: { command: "ss -ltn" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    expect(after?.reason ?? "", "closed plan clears the escalation").not.toContain("unread-receipts");
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });
