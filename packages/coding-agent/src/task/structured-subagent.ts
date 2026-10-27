@@ -792,6 +792,7 @@ function buildExecutorOptions(
 		enableIrc: policy.enableIrc,
 		maxRuntimeMs: request.maxRuntimeMs,
 		restrictToolNames,
+		...(request.images?.length ? { images: request.images } : {}),
 		keepAlive: request.keepAlive,
 		signal: request.signal,
 		eventBus: session.eventBus,
