@@ -1135,7 +1135,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(paintedStatus).toBe("active");
 	});
 
-	it("repaints the transcript todo card after the sticky HUD auto-clears", async () => {
+	it("keeps compact mutation receipts stable after the sticky HUD auto-clears", async () => {
 		cfgDisplayPinnedAgents.override(Settings.instance, "off");
 		cfgTasksTodoClearDelay.override(session.settings, 0);
 		await mode.init({ suppressWelcomeIntro: true });
@@ -1166,6 +1166,12 @@ describe("InteractiveMode subagent observer UI sync", () => {
 			{ expanded: false, isPartial: false },
 			theme,
 		);
+		const snapshot = todoToolRenderer.renderResult(
+			{ content: [], details: { op: "view", phases: transcriptPhases, storage: "session" } },
+			{ expanded: false, isPartial: false },
+			theme,
+		);
+		expect(Bun.stripANSI(snapshot.render(120).join("\n"))).toContain(target);
 		mode.chatContainer.addChild(card);
 		const readTranscript = () => Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
 		let painted = readTranscript();
@@ -1180,7 +1186,8 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("Reviewer", 0, target, true));
 		await Promise.resolve();
 		vi.advanceTimersByTime(100);
-		expect(painted).toContain(target);
+		// Mutation receipts remain concise; the explicit todo view owns snapshots.
+		expect(painted).not.toContain(target);
 		expect(mode.todoContainer.render(120)).toEqual([]);
 		expect(mode.subagentContainer.render(120)).toEqual([]);
 
