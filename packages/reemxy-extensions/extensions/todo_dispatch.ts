@@ -4684,7 +4684,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       lastIdlePlanCheck = key;
       // Digest the stable key, not the rendered text: only a changed problem list or an escalation
       // (the stuck-worker and receding-finish wording changes at 30/60/20 min) delivers again.
-      sendHarnessNotice("todo-plan-check", key, check, undefined, heartbeat ? `${key}|heartbeat-${planHeartbeatSeq}` : key, { interruptWait: activeRecoveries(ctx).length > 0 });
+      // An idle lead has no next step for an aside to land on: wake it, or open rows sit untouched
+      // until the user writes (live 2026-10-27: two leads idle 23:26-00:57 with ready rows unstaffed).
+      sendHarnessNotice("todo-plan-check", key, check, undefined, heartbeat ? `${key}|heartbeat-${planHeartbeatSeq}` : key, { interruptWait: activeRecoveries(ctx).length > 0, triggerTurn: ctx.isIdle?.() === true });
       markSizingNotices();
       planTrace(ctx, "sent", { problems: check.slice(0, 160) });
     } catch (error) {
