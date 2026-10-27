@@ -134,7 +134,7 @@ function setup(extra: "unlinked" | "different row" | "same row" | "shared publis
 }
 
 function receipt(identity: string, status = "pass", extra = "", raw = RAW42, row = ROW): string {
-	return `| ${header.trim()} |\n| --- | --- | --- | --- | --- |\n| R42 | ${requirementSourceDigest(raw)} | ${status} | inspected regex a\\|b | row "${row}" @ ${identity} |${extra ? `\n${extra}` : ""}`;
+	return `| ${header.trim()} |\n| --- | --- | --- | --- |\n| R42 | ${status} | inspected regex a\\|b | row "${row}" @ ${identity} |${extra ? `\n${extra}` : ""}`;
 }
 
 function refusalText(result: unknown): string {
@@ -178,11 +178,10 @@ describe("receipt priority #924: real runtime intake", () => {
 						if (expectedIds.includes(id)) assertion.toContain(`${id} (said at`);
 						else assertion.not.toContain(`${id} (said at`);
 					}
-					return `| ${header.trim()} |\n| --- | --- | --- | --- | --- |\n${expectedIds
+					return `| ${header.trim()} |\n| --- | --- | --- | --- |\n${expectedIds
 						.map(id => {
 							const row = receiptRow(id);
-							const raw = id === "R42" ? RAW42 : RAW43;
-							return `| ${id} | ${requirementSourceDigest(raw)} | pass | inspected current file | row "${row}" @ ${fx.identity()} |`;
+							return `| ${id} | pass | inspected current file | row "${row}" @ ${fx.identity()} |`;
 						})
 						.join("\n")}`;
 				}, ids),
@@ -329,8 +328,7 @@ describe("receipt priority #924: real runtime intake", () => {
 			if (defect === "wrong row") output = receipt(artifact, "pass", "", RAW42, OTHER_ROW);
 			if (defect === "changed identity") writeFileSync(fx.file, "changed artifact\n");
 			if (defect === "malformed verdict") output = receipt(artifact, "approved");
-			if (defect === "suffix")
-				output += `\n| R42a | ${requirementSourceDigest(RAW42)} | pass | inspected | row "${ROW}" @ ${artifact} |`;
+			if (defect === "suffix") output += `\n| R42a | pass | inspected | row "${ROW}" @ ${artifact} |`;
 			const result = await fx.receive(output);
 			expect(refusalText(result)).toContain("requirements receipt rejected");
 			expect(fx.verdict()).toEqual(prior);

@@ -179,7 +179,7 @@ async function auditFixtureArtifact(
 }
 
 describe("requirements ledger auditor binding", () => {
-	it("accepts a multiline lane brief by authenticated digest and rejects a changed digest", async () => {
+	it("accepts a multiline lane brief and ignores a mistyped auditor-copied digest", async () => {
 		const { cwd, manager, runtime } = fixture();
 		try {
 			const rawText = "# Target\r\nFix the login bug | preserve receipts\n# Acceptance\nLogin succeeds";
@@ -192,8 +192,7 @@ describe("requirements ledger auditor binding", () => {
 			const artifact = gitIdentity(cwd, git(cwd, "rev-parse", "HEAD"));
 			const digest = requirementSourceDigest(rawText);
 			for (const [workerId, sourceDigest, accepted] of [
-				["wrong", "0".repeat(64), false],
-				["fresh", digest, true],
+				["wrong", digest.slice(0, 10) + (digest[10] === "b" ? "c" : "b") + digest.slice(11), true],
 			] as const) {
 				await runtime.prepareAuditorTaskCall("task", workerId, {
 					name: "main",
@@ -552,7 +551,14 @@ describe("requirements ledger auditor binding", () => {
 				expect(outcome?.content).toContainEqual(
 					expect.objectContaining({
 						type: "text",
-						text: expect.stringContaining("expected id, verdict, evidence, artifact"),
+						text: expect.stringContaining(
+							{
+								"missing verdict": "lacks column(s): verdict",
+								"missing evidence": "lacks column(s): evidence",
+								"missing artifact": "lacks column(s): artifact identity",
+								"foreign Rn": "missing rows for R1",
+							}[defect]!,
+						),
 					}),
 				);
 				expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts).toBeUndefined();

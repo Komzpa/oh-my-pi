@@ -26,7 +26,7 @@ When the assigned row names a typed deployment, use the exact declaration from Q
 Also list user asks you found in the raw words that have no requirement id.
 Keep work to about 15 minutes. If it clearly will not fit or context is approaching compaction, stop at the next checkable point and return what is done with its receipt; the table below is still complete, with every requirement you did not reach marked `unverifiable` and evidence exactly `not reached`. Propose a split of the rest to the lead.
 
-Return the canonical table header supplied in QA AUDIT INPUT, one row per exact assigned parent ID. Its `source sha256` column references the captured owner source: copy the full supplied digest, never the multi-line raw words, into the cell. Intake verifies that digest against the immutable assignment. Read the original source once from QA AUDIT INPUT; a first lane brief remains one requirement even when it has multiple lines.
+Return the canonical table header supplied in QA AUDIT INPUT, one row per exact assigned parent ID. Never copy the multi-line raw words or any digest into a cell: intake binds each ID to the immutable captured source itself. Read the original source once from QA AUDIT INPUT; a first lane brief remains one requirement even when it has multiple lines.
 
 Use exact IDs and keep clause checks together in the evidence cell. Intake can recover authenticated R18a/R18b clause rows only when every clause names the same artifact: any fail makes R18 fail; otherwise any unverifiable makes it unverifiable; only all-pass clauses pass. Duplicate IDs, mixed parent/clause rows, or different artifacts require restating one exact parent row without discarding failing clause evidence.
 
