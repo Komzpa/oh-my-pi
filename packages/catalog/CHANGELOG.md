@@ -6,6 +6,10 @@
 
 - Added GPT-6.1 Terra: `openai/gpt-6.1-terra` ships bundled ($1/$5, $0.05 cached, >272K long-context tier, 1.05M window), and Codex-discovered `gpt-6.1-terra`/`-wm` get API-equivalent pricing, the 922K extended-context maximum, and routing to Plus-or-higher accounts.
 
+### Fixed
+
+- Fixed `openai/gpt-6.1-terra` sending reasoning effort `low` when reasoning is disabled; it now sends the officially supported `none` effort without changing neighboring models or pricing.
+
 ## [18.13.0] - 2026-10-26
 
 ### Breaking Changes
