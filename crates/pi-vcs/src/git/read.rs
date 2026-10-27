@@ -193,6 +193,64 @@ impl GitRepo {
 		{
 			return Err(Error::backend("git worktree blob", "expected an exact relative path"));
 		}
+		if self.is_reftable() {
+			let args = vec!["hash-object".to_owned(), format!("--path={path}"), "--stdin".to_owned()];
+			let output = super::cli::run_sync_write(
+				self.root(),
+				&args,
+				super::cli::SYNC_TIMEOUT,
+				&super::cli::SyncWrite { stdin: &bytes, env: &[] },
+			)?
+			.into_checked(&args)?;
+			let oid = output.stdout.trim();
+			if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+				return Err(Error::backend("git worktree blob", "invalid blob identity"));
+			}
+			let metadata = std::fs::symlink_metadata(self.root().join(path))?;
+			if !metadata.is_file() {
+				return Err(Error::backend("git worktree blob", "expected a regular worktree file"));
+			}
+			let mut mode = 0o100644;
+			if cfg!(unix)
+				&& cli_try(self.root(), &["config", "--bool", "core.fileMode"])?.as_deref()
+					!= Some("false")
+			{
+				#[cfg(unix)]
+				{
+					use std::os::unix::fs::PermissionsExt;
+					if metadata.permissions().mode() & 0o111 != 0 {
+						mode = 0o100755;
+					}
+				}
+			} else {
+				let args = vec![
+					"-c".to_owned(),
+					"core.quotePath=true".to_owned(),
+					"ls-files".to_owned(),
+					"--stage".to_owned(),
+					"--".to_owned(),
+					path.to_owned(),
+				];
+				let raw = cli_text_owned_capped(
+					self.root(),
+					&args,
+					super::cli::SYNC_TIMEOUT,
+					path.len().saturating_mul(4).saturating_add(512),
+				)?;
+				let wanted = quote_path(path);
+				for row in raw.lines() {
+					let Some((header, name)) = row.split_once('\t') else {
+						return Err(Error::backend("git worktree blob", "invalid index metadata"));
+					};
+					let fields: Vec<_> = header.split(' ').collect();
+					if name == wanted && fields.len() == 3 && fields[2] == "0" {
+						mode = u32::from_str_radix(fields[0], 8)
+							.map_err(|err| Error::backend("git worktree blob", err))?;
+					}
+				}
+			}
+			return Ok(GitTreeEntry { oid: oid.to_owned(), mode });
+		}
 		let repo = self.gix()?;
 		let index = load_index_or_empty(&repo, "git worktree blob")?;
 		let index_mode = index
