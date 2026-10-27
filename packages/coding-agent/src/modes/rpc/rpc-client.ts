@@ -13,13 +13,14 @@ import type { LogoutAccount } from "@oh-my-pi/pi-tui/overlays/logout-account-sel
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { FileSink } from "bun";
 import type { BashResult } from "../../exec/bash-executor";
-import type { AgentSession, AgentSessionEvent, SessionStats } from "../../session/agent-session";
-import type { AgentSessionDisposeOptions, PromptOptions } from "../../session/agent-session-types";
+import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
 import type { SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { SessionLeaseReport } from "../../session/session-storage";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, type RpcProtocolVersion } from "./rpc-frame";
 import type { RpcGoalOp, RpcGoalResult } from "./rpc-goal";
+import type { AgentSession } from "../../session/agent-session";
+import type { AgentSessionDisposeOptions, PromptOptions } from "../../session/agent-session-types";
 import {
 	RPC_MESSAGES_PAGE_BUSY_ERROR,
 	RPC_MESSAGES_PAGE_STALE_ERROR,
