@@ -913,9 +913,12 @@ function modelSelectorBlacklistError(pattern: string, availableModels: Model<Api
 			}
 		}
 		// Literal IDs containing a thinking/routing suffix still take precedence.
-		if (availableModels.some(model =>
-			formatModelString(model).toLowerCase() === lower || model.id.toLowerCase() === lower,
-		)) return undefined;
+		if (
+			availableModels.some(
+				model => formatModelString(model).toLowerCase() === lower || model.id.toLowerCase() === lower,
+			)
+		)
+			return undefined;
 		const { base, level } = splitThinkingSuffix(selector, -1, MAX_THINKING_SUFFIX_OPTIONS);
 		if (level) return visit(base);
 		const routing = splitUpstreamRouting(selector);
@@ -2155,8 +2158,10 @@ export function resolveCliModel(options: CliModelOptions): ResolveCliModelResult
 		return { model: undefined, selector: undefined, warning: undefined, error: undefined };
 	}
 	const trimmed = cliModel.trim();
-	const selector = cliProvider && !trimmed.toLowerCase().startsWith(`${cliProvider.toLowerCase()}/`)
-		? `${cliProvider}/${trimmed}` : trimmed;
+	const selector =
+		cliProvider && !trimmed.toLowerCase().startsWith(`${cliProvider.toLowerCase()}/`)
+			? `${cliProvider}/${trimmed}`
+			: trimmed;
 	const denied = modelSelectorBlacklistError(selector, modelRegistry.getAll());
 	if (denied) return { model: undefined, selector: undefined, warning: undefined, error: denied };
 
