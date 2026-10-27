@@ -1,8 +1,8 @@
-import { filterBlacklistedModels, modelBlacklistReason } from "@oh-my-pi/pi-ai/model-blacklist";
 import * as path from "node:path";
 import type { ApiKeyResolver, FetchImpl, ResolvedApiKey, UsageProvider } from "@oh-my-pi/pi-ai";
 import { type AuthApiKeyOptions, type AuthPeekOptions, oauthAccountKey } from "@oh-my-pi/pi-ai/auth-storage";
 import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
+import { filterBlacklistedModels, modelBlacklistReason } from "@oh-my-pi/pi-ai/model-blacklist";
 import { registerOAuthProvider, unregisterOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
 import { setCodexAttestationProvider } from "@oh-my-pi/pi-ai/providers/openai-codex-attestation";
@@ -3059,8 +3059,8 @@ export class ModelRegistry {
 				provider => requested.has(provider.toLowerCase()) && isProviderAvailable(provider),
 			),
 		);
-		const models = filterBlacklistedModels(this.#composeStaticModels(availableProviders));
-		return kind === "all" ? models : models.filter(model => modelKind(model) === kind);
+		const models = this.#composeStaticModels(availableProviders);
+		return filterBlacklistedModels(kind === "all" ? models : models.filter(model => modelKind(model) === kind));
 	}
 
 	/**
