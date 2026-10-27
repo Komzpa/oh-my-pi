@@ -37,7 +37,6 @@ import {
 	type RetryFallbackRole,
 	resolveRetryFallbackChainKey,
 } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
-import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { FileSessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
@@ -1433,31 +1432,34 @@ describe("persisted subagent revival", () => {
 		["coder", "anthropic", "claude-opus-4-6", Effort.High],
 		["scout", "openai-codex", "gpt-5.6-sol", Effort.Low],
 		["reviewer", "anthropic", "claude-opus-4-6", Effort.Max],
-	] as const)("enforces %s effort through the real revived SDK session", async (agent, provider, modelId, expected) => {
-		const cwd = makeTempDir("@pi-revive-real-effort-");
-		const sessionFile = await createPersistedSession(cwd, true, "default", undefined, {
-			agent,
-			resolvedModel: `${provider}/${modelId}`,
-		});
-		const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
-		authStorage.keys.setRuntime(provider, "test-key");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(cwd, "models.yml"));
-		const ref = AgentRegistry.global().register(createRef(sessionFile));
-		let revived: AgentSession | undefined;
-		try {
-			const reviver = await createFactory(cwd, undefined, { authStorage, modelRegistry })(ref);
-			if (!reviver) throw new Error("Expected a persisted reviver");
-			revived = await reviver(ref);
-			expect(revived.model?.provider).toBe(provider);
-			expect(revived.model?.id).toBe(modelId);
-			revived.setThinkingLevel(Effort.Max);
-			expect(revived.thinkingLevel).toBe(expected);
-		} finally {
-			await revived?.dispose();
-			AgentRegistry.global().unregister(ref.id);
-			authStorage.close();
-		}
-	});
+	] as const)(
+		"enforces %s effort through the real revived SDK session",
+		async (agent, provider, modelId, expected) => {
+			const cwd = makeTempDir("@pi-revive-real-effort-");
+			const sessionFile = await createPersistedSession(cwd, true, "default", undefined, {
+				agent,
+				resolvedModel: `${provider}/${modelId}`,
+			});
+			const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
+			authStorage.keys.setRuntime(provider, "test-key");
+			const modelRegistry = new ModelRegistry(authStorage, path.join(cwd, "models.yml"));
+			const ref = AgentRegistry.global().register(createRef(sessionFile));
+			let revived: AgentSession | undefined;
+			try {
+				const reviver = await createFactory(cwd, undefined, { authStorage, modelRegistry })(ref);
+				if (!reviver) throw new Error("Expected a persisted reviver");
+				revived = await reviver(ref);
+				expect(revived.model?.provider).toBe(provider);
+				expect(revived.model?.id).toBe(modelId);
+				revived.setThinkingLevel(Effort.Max);
+				expect(revived.thinkingLevel).toBe(expected);
+			} finally {
+				await revived?.dispose();
+				AgentRegistry.global().unregister(ref.id);
+				authStorage.close();
+			}
+		},
+	);
 
 	it("restores compaction threshold behavior after parent settings change", async () => {
 		const cwd = makeTempDir("@pi-compaction-threshold-revive-");
