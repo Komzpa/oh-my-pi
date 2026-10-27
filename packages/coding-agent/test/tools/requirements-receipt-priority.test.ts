@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseRequirementReceipt } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
+import { parseRequirementReceipt, requirementSourceDigest } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import table from "../fixtures/qa-pipe-924-bare-table.txt" with { type: "text" };
 
 const raw = "[Image #1, 1568x1185] some red shit";
@@ -71,5 +71,41 @@ describe("receipt priority #924: requested parent selection", () => {
 		).toBeNull();
 		expect(identityFailure).toBe("R42a:R42");
 		expect(parseRequirementReceipt(table.replace("| R43 |", "| R43-a |"), ["R42"])).toBeNull();
+	});
+});
+
+describe("receipt digest is not an auditor-copied proof", () => {
+	const goodDigest = requirementSourceDigest(raw);
+	const typo = `${goodDigest.slice(0, 7)}${goodDigest[7] === "b" ? "c" : "b"}${goodDigest.slice(8)}`;
+	const build = (digestCell: string | undefined) =>
+		digestCell === undefined
+			? `| id | verdict | evidence | artifact identity |\n| --- | --- | --- | --- |\n| R42 | pass | looked | ${artifact} |`
+			: `| id | source sha256 | verdict | evidence | artifact identity |\n| --- | --- | --- | --- | --- |\n| R42 | ${digestCell} | pass | looked | ${artifact} |`;
+	const sources = new Map([["R42", raw]]);
+
+	it("accepts a 1-char-off, empty, or absent digest and still binds the authenticated source", () => {
+		for (const cell of [typo, "", undefined]) {
+			const rows = parseRequirementReceipt(build(cell), ["R42"], sources);
+			expect(rows?.[0]).toMatchObject({ id: "R42", status: "pass", rawWords: raw, artifact });
+		}
+	});
+
+	it("names row, column, expected and received when a column is missing or invalid", () => {
+		const reasons: string[] = [];
+		const collect = (output: string) => {
+			let reason = "";
+			expect(parseRequirementReceipt(output, ["R42"], sources, undefined, r => (reason = r))).toBeNull();
+			reasons.push(reason);
+		};
+		collect(`| id | evidence | artifact identity |\n| --- | --- | --- |\n| R42 | looked | ${artifact} |`);
+		collect(build(undefined).replace("| pass |", "| approved |"));
+		collect(build(undefined).replace("| looked |", "|  |"));
+		collect(build(undefined).replace("| R42 |", "| R42 | extra |"));
+		collect(build(undefined).replace("R42 |", "R99 |"));
+		expect(reasons[0]).toContain("lacks column(s): verdict");
+		expect(reasons[1]).toContain('row R42: column "verdict" expected pass|fail|unverifiable, got "approved"');
+		expect(reasons[2]).toContain('row R42: column "evidence" is empty');
+		expect(reasons[3]).toContain("row R42: expected 4 cells to match the header, got 5");
+		expect(reasons[4]).toContain("missing rows for R42");
 	});
 });

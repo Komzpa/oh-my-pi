@@ -39,7 +39,6 @@ import {
 	parseRequirementsLedger,
 	requirementAuditSnapshot,
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
-	requirementSourceDigest,
 	requirementSourceSnapshot,
 	requirementRowDeclarationSnapshot,
 	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
@@ -634,10 +633,7 @@ export class RequirementsLedgerRuntime {
 			}
 
 			const protocol = prompt.render(auditInputTemplate, {
-				sources: sources.map(
-					source =>
-						`${source.id} (said at ${source.at}, source sha256=${requirementSourceDigest(source.rawText)}): ${source.rawText}`,
-				),
+				sources: sources.map(source => `${source.id} (said at ${source.at}): ${source.rawText}`),
 				imageLines,
 				rowHeads,
 				receiptHeader: receiptHeader.trim(),
@@ -1171,6 +1167,7 @@ export class RequirementsLedgerRuntime {
 		const sources = expectedIds.flatMap(id => getRequirementAuditSources(requirements, id));
 		const sourceIds = [...new Set(sources.map(source => source.id))];
 		let identityFailure: string | undefined;
+		let parseFailure: string | undefined;
 		const sourceReceipts = parseRequirementReceipt(
 			output,
 			sourceIds,
@@ -1178,12 +1175,13 @@ export class RequirementsLedgerRuntime {
 			(receivedId, expectedParentId) => {
 				identityFailure ??= `${expectedParentId}: received requirement ID ${receivedId}; restate one row with exact assigned ID ${expectedParentId}, verdict pass|fail|unverifiable, all clause evidence, and one unchanged assigned artifact identity. Do not mix parent and sub-row IDs or discard a failing clause.`;
 			},
+			reason => {
+				parseFailure = reason;
+			},
 		);
 		if (!sourceReceipts) {
 			if (identityFailure) return identityFailure;
-			const covered = new Set([...output.matchAll(/\|\s*(R[1-9]\d*)\s*\|/g)].map(match => match[1]!));
-			const missing = sourceIds.filter(id => !covered.has(id));
-			return `${expectedIds.join(", ")}: malformed or partial verdict table (expected id, verdict, evidence, artifact)${missing.length > 0 ? `; missing rows for ${missing.join(", ")}` : ""}`;
+			return `${expectedIds.join(", ")}: rejected verdict table: ${parseFailure ?? "unparseable"}`;
 		}
 		for (const source of sources) {
 			const receipt = sourceReceipts.find(receipt => receipt.id === source.id)!;

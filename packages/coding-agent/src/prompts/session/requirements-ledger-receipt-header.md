@@ -1,1 +1,1 @@
-id | source sha256 | verdict | evidence | artifact identity
+id | verdict | evidence | artifact identity

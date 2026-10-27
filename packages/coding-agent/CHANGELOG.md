@@ -243,6 +243,11 @@
 - Fixed find treating nonempty linked files as empty and dropping them before judgment ([#17180](https://github.com/can1357/oh-my-pi/pull/17180) by [@alphastorm](https://github.com/alphastorm))
 - Fixed JSON selectors failing on BOM-prefixed input, backup and extensionless files, and modifier-only queries ([#17179](https://github.com/can1357/oh-my-pi/pull/17179) by [@alphastorm](https://github.com/alphastorm))
 - Fixed JSON selectors on `ssh://` text files while preserving pagination and the remote read limit ([#17179](https://github.com/can1357/oh-my-pi/pull/17179) by [@alphastorm](https://github.com/alphastorm))
+- Preserved requirements publication hooks alongside revived-agent lifecycle policy and image-aware side questions.
+- Withdrawing queued user messages also withdraws their captured requirements; follow-up capture uses expanded editor text.
+- TODO Markdown imports now audit newly completed rows, share metadata preservation, and retain pending user checks during initialization.
+- Requirement receipts reject malformed requested clauses; image audits normalize the authenticated bytes, service targets retain their declared version, and named Git artifacts support reftable worktrees.
+- Requirement receipts no longer require an auditor-copied source digest (a typo voided valid receipts); a legacy digest column is ignored, the authenticated assignment binds the source, and a rejected receipt names the row, column, expected and received value.
 - Fixed `tool.apply_patch(...)` being rejected as an unknown tool in JavaScript eval when apply-patch editing is enabled ([#17178](https://github.com/can1357/oh-my-pi/pull/17178) by [@alphastorm](https://github.com/alphastorm))
 - Fixed eval silently changing supplied cell deadlines without showing the requested and effective timeouts ([#17178](https://github.com/can1357/oh-my-pi/pull/17178) by [@alphastorm](https://github.com/alphastorm))
 - Fixed unavailable Python remaining in eval's advertised languages and corrected its interpreter setup guidance ([#17178](https://github.com/can1357/oh-my-pi/pull/17178) by [@alphastorm](https://github.com/alphastorm))
