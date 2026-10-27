@@ -3419,10 +3419,14 @@ export class ModelRegistry {
 	 * pass `"all"` when the caller is intentionally selecting across kinds.
 	 */
 	getAvailableForProviders(providers: ReadonlySet<string>, kind: ModelKind | "all" = "chat"): Model<Api>[] {
+		return filterBlacklistedModels(this.#availableForProviders(providers, kind));
+	}
+
+	#availableForProviders(providers: ReadonlySet<string>, kind: ModelKind | "all"): Model<Api>[] {
 		const requested = new Set([...providers].map(provider => provider.trim().toLowerCase()).filter(Boolean));
 		const isProviderAvailable = this.#createProviderAvailabilityCheck();
 		if (this.#hasFullSnapshot) {
-			return filterBlacklistedModels(this.#models).filter(
+			return this.#models.filter(
 				model =>
 					requested.has(model.provider.toLowerCase()) &&
 					isProviderAvailable(model.provider) &&
@@ -3444,7 +3448,7 @@ export class ModelRegistry {
 			return filterBlacklistedModels(kind === "all" ? models.slice() : models.filter(model => modelKind(model) === kind));
 		}
 		const models = this.#composeStaticModels(availableProviders);
-		return filterBlacklistedModels(kind === "all" ? models : models.filter(model => modelKind(model) === kind));
+		return kind === "all" ? models : models.filter(model => modelKind(model) === kind);
 	}
 
 	/**
