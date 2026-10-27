@@ -2571,7 +2571,8 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
     expect(await toolCall({ toolName: "read", toolCallId: "u2", input: CALLS.read!.arguments }, ctx)).toBeUndefined();
     // Viewing the plan is reading it.
     expect(await toolCall({ toolName: "todo", toolCallId: "u2v", input: { op: "view" } }, ctx)).toBeUndefined();
-    // Adding rows is more work, not a plan fix.
+    // Plan bookkeeping passes (classify, block); adding rows is more work, not a plan fix.
+    expect(await toolCall({ toolName: "todo", toolCallId: "u2c", input: { op: "classify", id: "R1", classification: "not-a-requirement", reason: "test" } }, ctx)).toBeUndefined();
     expect((await toolCall({ toolName: "todo", toolCallId: "u2a", input: { op: "append", phase: "Tasks", items: ["More work"] } }, ctx) as { block?: boolean } | undefined)?.block).toBe(true);
     // A todo override alone does not lift it: the plan itself must be fixed.
     expect(await toolCall({ toolName: "todo", toolCallId: "u4", input: { ...CALLS.todoSchedule!.arguments, override: "missed-eta re-estimated" } }, ctx)).toBeUndefined();
