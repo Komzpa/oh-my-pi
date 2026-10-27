@@ -830,12 +830,11 @@ function withResolvedModelHeaders<TApi extends Api>(
 	return outer;
 }
 
-export function stream<TApi extends Api>(
+function streamAllowed<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
-	assertModelNotBlacklisted(model);
 	if (model.resolveHeaders) {
 		return withResolvedModelHeaders(model, options?.signal, resolvedModel => stream(resolvedModel, context, options));
 	}
@@ -1171,12 +1170,11 @@ function withSupportedSamplingParams<T extends SamplingOptions>(model: Model<Api
 	return supported;
 }
 
-export function streamSimple<TApi extends Api>(
+function streamSimpleAllowed<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
-	assertModelNotBlacklisted(model);
 	const sessionOptions = withInferenceSessionId(options);
 	// Unverified thinking is opt-in: without a requested effort the request is
 	// byte-identical to a non-reasoning model's.
@@ -2315,4 +2313,24 @@ function getGoogleBudget(
 
 	// Unknown model - use dynamic
 	return -1;
+}
+
+/** Enforce the owner's current ban before entering provider-specific streaming work. */
+export function stream<TApi extends Api>(
+	model: Model<TApi>,
+	context: Context,
+	options?: OptionsForApi<TApi>,
+): AssistantMessageEventStream {
+	assertModelNotBlacklisted(model);
+	return streamAllowed(model, context, options);
+}
+
+/** Keep direct and simple streaming on the same owner-policy boundary. */
+export function streamSimple<TApi extends Api>(
+	model: Model<TApi>,
+	context: Context,
+	options?: SimpleStreamOptions,
+): AssistantMessageEventStream {
+	assertModelNotBlacklisted(model);
+	return streamSimpleAllowed(model, context, options);
 }
