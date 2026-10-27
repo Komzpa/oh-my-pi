@@ -613,6 +613,8 @@ const PLAN_DEMAND_IDS = new Set(["missed-eta", "todo-plan-doctor", "todo-replan"
 // append/init add work; they do not fix the plan.
 const PLAN_FIX_OPS = new Set(["schedule", "drop", "rm", "done"]);
 const ESCALATION_REMEDY = "Fix the plan in a todo call: re-estimate the late row with evidence, split it, or drop it. Don't start workers to answer this.";
+// The retrospective is what stops the same failure from being retried: only staffing it lifts the gate.
+const RETRO_REMEDY = "Staff the retrospective now: one task with agent retro-facilitator. It cannot be skipped or overridden.";
 export const GATE_IDS = ["planning-issues", "chief-no-bash", "idle-wait", "checkout", "retro", "escalation", "missed-eta", "receipt", "duplicate-worker"] as const;
 const READ_TIER = new Set(["read", "grep", "glob", "find"]);
 const todoOpOf = (call: GateCall): string | undefined => {
@@ -2231,7 +2233,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const applyTodoOverride = (input: unknown, ctx: ExtensionContext, persist = true): string | undefined => {
     const gate = parseTodoOverride(input);
     // The escalated plan demands are lifted only by fixing the plan, never by naming them.
-    if (!gate || PLAN_DEMAND_IDS.has(gate)) return undefined;
+    if (!gate || gate === "retro" || PLAN_DEMAND_IDS.has(gate)) return undefined;
     sprintState = { ...sprintState, ignoredDemands: { ...sprintState.ignoredDemands, [gate]: -OVERRIDE_SUPPRESS_TURNS } };
     if (persist) persistSprintState();
     gateTrace(ctx, "override", { gate });
@@ -4137,12 +4139,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       resetFinishHistory(ctx);
     }
     if (event.toolName === "todo") {
-      // One persist for both: the override sets ignoredDemands[gate]=-5 and the retro reset clears it back
-      // to 0 when the same input names retro, so persisting each step wrote a net-zero record in between.
+      // Naming retro in a todo call no longer clears it ("Retro skipped per <rule>" let the same
+      // failure be retried all day); only a retro-facilitator task does.
       const gate = applyTodoOverride(event.input, ctx, false);
-      const retroMentioned = /retro/i.test(JSON.stringify(event.input ?? {}));
-      if (retroMentioned) resetDemand("retro", false);
-      if (gate !== undefined || retroMentioned) persistSprintState();
+      if (gate !== undefined) persistSprintState();
       // R1/R2: refuse the same-owner reestimate on a slipping row before any other todo handling.
       if (!pauseGate?.paused) {
         const runningProfiles = new Map<string, string | undefined>();
@@ -4222,20 +4222,23 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // Ignored plan-fix demands escalate: the model must fix the plan, not start more work. Only a
     // read-tier call or a `todo` call that changes the plan passes; an override or a worker spawn
     // does not lift it. It clears when the next plan check no longer reports the problem.
-    // retro stays a notice: a retrospective is extra work by definition.
-    const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) => PLAN_DEMAND_IDS.has(id) && isDemandEscalated(id));
+    // An ignored retro escalates too and only a retro-facilitator task lifts it.
+    const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) => (id === "retro" || PLAN_DEMAND_IDS.has(id)) && isDemandEscalated(id));
     if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) {
       const planFix = (call: GateCall): boolean => call.name === "todo" && PLAN_FIX_OPS.has(todoOpOf(call) ?? "");
+      const retroStaffed = (call: GateCall): boolean =>
+        call.name === "task" && taskItems(call.arguments ?? {}).some((item) => item["agent"] === "retro-facilitator");
       const gates: ActiveGate[] = escalatedIds.map((id) => ({
         id,
-        remedy: ESCALATION_REMEDY,
-        satisfies: planFix,
+        remedy: id === "retro" ? RETRO_REMEDY : ESCALATION_REMEDY,
+        satisfies: id === "retro" ? retroStaffed : planFix,
       }));
       const gateCall = { name: event.toolName, arguments: (event.input ?? {}) as Record<string, unknown> };
       const verdict = decideGateCall(gateCall, gates);
       if (!verdict.allowed) {
         gateTrace(ctx, "escalation-refused", { toolName: event.toolName, gates: verdict.remedyGateIds });
-        return { block: true, reason: `Plan problem ignored: ${verdict.remedyGateIds.join(", ")}. ${ESCALATION_REMEDY}` };
+        const remedies = [...new Set(verdict.remedyGateIds.map((id) => (id === "retro" ? RETRO_REMEDY : ESCALATION_REMEDY)))];
+        return { block: true, reason: `Plan problem ignored: ${verdict.remedyGateIds.join(", ")}. ${remedies.join(" ")}` };
       }
     }
     if (event.toolName === "todo" && pendingReplan) pendingReplan.answered = pendingReplan.demands;

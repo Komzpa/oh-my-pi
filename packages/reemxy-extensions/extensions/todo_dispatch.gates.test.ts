@@ -2584,7 +2584,7 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
   }
 }, 60_000);
 
-test("retro ignored for six ticks stays a notice and never blocks bash or task", async () => {
+test("ignored retro blocks until a retro-facilitator is staffed; an override does not lift it", async () => {
   const cwd = repo("clean");
   const now = Date.now();
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
@@ -2611,12 +2611,16 @@ test("retro ignored for six ticks stays a notice and never blocks bash or task",
   try {
     await handlers.get("session_start")!({}, ctx);
     const toolCall = handlers.get("tool_call")!;
-    for (const [id, name, input] of [["u1", "bash", { command: "bun test" }], ["u2", "task", CALLS.taskRow!.arguments]] as const) {
-      const out = (await toolCall({ toolName: name, toolCallId: id, input }, ctx)) as { block?: boolean; reason?: string } | undefined;
-      // Other gates (staffing the ready row) may still refuse bash; retro must not be the reason.
-      expect(out?.reason ?? "", `${name} is not blocked by retro`).not.toContain("retro");
-      if (name === "task") expect(out?.block, `task admitted: ${out?.reason}`).not.toBe(true);
-    }
+    const task = (await toolCall({ toolName: "task", toolCallId: "u2", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    expect(task?.block).toBe(true);
+    expect(task?.reason).toContain("retro-facilitator");
+    // "Retro skipped per <rule>" is the bypass that let the same failure be retried.
+    await toolCall({ toolName: "todo", toolCallId: "u3", input: { ...CALLS.todoSchedule!.arguments, override: "retro skipped per no-retro rule" } }, ctx);
+    const still = (await toolCall({ toolName: "task", toolCallId: "u4", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean } | undefined;
+    expect(still?.block).toBe(true);
+    const plan = (await toolCall({ toolName: "task", toolCallId: "u5", input: { tasks: [{ agent: "plan-doctor", name: "Doctor", task: "diagnose" }] } }, ctx)) as { block?: boolean } | undefined;
+    expect(plan?.block).toBe(true);
+    expect(await toolCall({ toolName: "task", toolCallId: "u6", input: { tasks: [{ agent: "retro-facilitator", name: "Retro", task: "keep/ban decisions" }] } }, ctx)).toBeUndefined();
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });
