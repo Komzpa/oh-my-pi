@@ -610,7 +610,8 @@ export const DEMAND_IGNORE_MAX = 3;
 export const DEMAND_IGNORE_MAX_REPLAN = 5;
 export const OVERRIDE_SUPPRESS_TURNS = 5;
 const PLAN_DEMAND_IDS = new Set(["missed-eta", "todo-plan-doctor", "todo-replan", "todo-link", "unread-receipts"]);
-const PLAN_FIX_OPS = new Set(["schedule", "drop", "rm", "done", "append", "init"]);
+// append/init add work; they do not fix the plan.
+const PLAN_FIX_OPS = new Set(["schedule", "drop", "rm", "done"]);
 const ESCALATION_REMEDY = "Fix the plan in a todo call: re-estimate the late row with evidence, split it, or drop it. Don't start workers to answer this.";
 export const GATE_IDS = ["planning-issues", "chief-no-bash", "idle-wait", "checkout", "retro", "escalation", "missed-eta", "receipt", "duplicate-worker"] as const;
 const READ_TIER = new Set(["read", "grep", "glob", "find"]);
@@ -2201,8 +2202,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const demandThreshold = (id: string): number => (id === "todo-replan" ? DEMAND_IGNORE_MAX_REPLAN : DEMAND_IGNORE_MAX);
   const isDemandEscalated = (id: string): boolean => (sprintState.ignoredDemands[id] ?? 0) >= demandThreshold(id);
   // Grievances 547/590: a todo override names the gate it answers and suppresses it
-  // for OVERRIDE_SUPPRESS_TURNS turns (negative count). Both refusal sites consult
-  // this so the named refusal stops blocking task and wait within that window.
+  // for OVERRIDE_SUPPRESS_TURNS turns (negative count); the idle-wait refusal consults this.
   const isOverrideSuppressed = (id: string): boolean => (sprintState.ignoredDemands[demandClassOf(id)] ?? 0) < 0;
   // persist=false lets planCheck fold the tick into the loop's trailing persist: the in-memory
   // counts stay authoritative and the decay lands on the next persisted record either way.
@@ -4219,10 +4219,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         };
       }
     }
-    // Ignored demands escalate: while one stands, only its remedy (a todo call or the
-    // demanded specialist) and the always-allowed calls pass this one union decision.
-    // Grievance 590: a demand the todo override names stays suppressed for the same
-    // few-turn window, so it must not escalate while the override is active.
     // Ignored plan-fix demands escalate: the model must fix the plan, not start more work. Only a
     // read-tier call or a `todo` call that changes the plan passes; an override or a worker spawn
     // does not lift it. It clears when the next plan check no longer reports the problem.
