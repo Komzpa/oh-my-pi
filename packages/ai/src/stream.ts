@@ -645,6 +645,7 @@ function withProviderInFlightLimit<
 	const limit = resolveProviderInFlightLimit(model.provider, options);
 	if (limit === undefined) {
 		options?.beforeDispatch?.();
+		assertModelNotBlacklisted(model);
 		return healLeakedThinking(model, dispatch(false));
 	}
 
@@ -682,6 +683,7 @@ function withProviderInFlightLimit<
 				throw options.signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
 			}
 			options?.beforeDispatch?.();
+			assertModelNotBlacklisted(model);
 			const inner = healLeakedThinking(model, dispatch(true));
 			let terminalEvent: AssistantMessageEvent | undefined;
 			for await (const event of inner) {
@@ -1216,6 +1218,7 @@ function streamSimpleRequest<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+	assertModelNotBlacklisted(model);
 	const requestOptions = withSupportedSamplingParams(
 		model,
 		withTransportFetch(model, (options || {}) as SimpleStreamOptions),
