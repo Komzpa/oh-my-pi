@@ -63,6 +63,15 @@ Behavior details:
 - No session entries are appended during export.
 - The default filename is `omp-session-<session-file-stem>.html` in the current directory. HTML export is not secret-redacted or encrypted; it can contain raw context, image data, and extension payloads.
 
+Packaging contract: the normal production bundle must pack all six HTML export
+assets (HTML, CSS, template JS, generated tool views, marked and highlight). The
+packaging oracle must retain the root workspace catalog alongside the unchanged
+coding-agent manifest and lockfile; a lockfile alone is not catalog context.
+An isolated fixture declares only its copied package as a workspace, so unrelated
+workspace directories need not exist. The oracle still invokes the real
+`bundleDist` and `bun pm pack`; dependency entries and asset assertions are not
+removed to make packing succeed.
+
 Caveat:
 
 - Parsing is whitespace-based, so quoted paths with spaces are not preserved. Use a path without spaces.

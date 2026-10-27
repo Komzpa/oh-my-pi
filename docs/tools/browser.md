@@ -145,6 +145,11 @@ Python `tab.run` accepts a JavaScript string only; it does not accept a Python c
 - **Tern:** inside a Tern pane, opens a visible browser picture-in-picture over the pane using native WKWebView, not Chromium. `app.tern: false` opts out; `headed` does not choose between Tern and Chromium. `app.tern: true` requires Tern. Automatic Tern selection falls back to Chromium with an explanatory result when Tern cannot host the page.
 - **Cmux:** drives an available cmux WKWebView surface.
 
+A refused CDP websocket upgrade must report the resolved websocket URL together
+with the native handshake failure (for example HTTP 404), not just the HTTP
+discovery address or `[object ErrorEvent]`. Transport normalization must retain
+the original error as its cause.
+
 The native-webview backends do not provide full Puppeteer/CDP capabilities. Tern provides fetch/XHR and navigation-response logging, not complete CDP subresource coverage; routing accepts only fetch/XHR resource types. CPU/network throttling, timezone/headers/reduced-motion emulation, CSS-transformed frame input, and tracing/profiling are unsupported; `metrics` returns navigation timing and DOM counts rather than full CDP metrics. Tern PDF accepts only `path`; storage loading restores only the current origin. Inspect backend-specific errors rather than assuming Chromium behavior.
 
 Reusing one tab name across browser kinds is rejected until the existing tab is closed. Closing omp-owned Chromium pages, tabs omp opened in the relay, Tern picture-in-pictures, and owned cmux surfaces closes them. Connected pages and borrowed relay tabs remain open. Spawned browser processes remain open unless `kill: true` releases their last managed tab and terminates an application owned by this process; reused processes are never killed.

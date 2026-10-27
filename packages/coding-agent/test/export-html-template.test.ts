@@ -182,9 +182,15 @@ describe("HTML export template", () => {
 		expect(buildExitCode, `${buildStdout}\n${buildStderr}`).toBe(0);
 		expect(await Bun.file(staleAssetPath).exists()).toBe(false);
 
-		const packDir = path.join(tempRoot, "production-package");
+		// Packing resolves catalog: against the workspace manifest, not just bun.lock.
+		// Keep the production package unchanged and reproduce its workspace location.
+		const workspaceDir = path.join(tempRoot, "production-workspace");
+		const packDir = path.join(workspaceDir, "packages", "coding-agent");
+		const workspaceManifest = await Bun.file(path.resolve(packageDir, "../../package.json")).json();
+		workspaceManifest.workspaces.packages = ["packages/coding-agent"];
+		await Bun.write(path.join(workspaceDir, "package.json"), JSON.stringify(workspaceManifest));
+		await Bun.write(path.join(workspaceDir, "bun.lock"), Bun.file(path.resolve(packageDir, "../../bun.lock")));
 		await Bun.write(path.join(packDir, "package.json"), Bun.file(path.join(packageDir, "package.json")));
-		await Bun.write(path.join(packDir, "bun.lock"), Bun.file(path.resolve(packageDir, "../../bun.lock")));
 		for (const entry of await fs.promises.readdir(productionBundleDir)) {
 			await Bun.write(path.join(packDir, "dist", entry), Bun.file(path.join(productionBundleDir, entry)));
 		}
