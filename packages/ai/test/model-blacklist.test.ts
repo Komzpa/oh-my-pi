@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as dirs from "@oh-my-pi/pi-utils";
 import { registerCustomApi, unregisterCustomApis } from "../src/api-registry";
-import { stream, streamSimple } from "../src/stream";
+import { __providerInFlightForTesting, stream, streamSimple } from "../src/stream";
 import type { Api, AssistantMessage, Context, Model } from "../src/types";
 import { AssistantMessageEventStream } from "../src/utils/event-stream";
 
@@ -41,6 +41,7 @@ describe("owner model blacklist at dispatch", () => {
 	beforeEach(() => {
 		dir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-blacklist-"));
 		rootSpy = spyOn(dirs, "getBaseConfigRoot").mockReturnValue(dir);
+		__providerInFlightForTesting.setRoot(path.join(dir, "permits"));
 		calls = [];
 		registerCustomApi(
 			api,
@@ -55,6 +56,8 @@ describe("owner model blacklist at dispatch", () => {
 	});
 	afterEach(() => {
 		unregisterCustomApis(source);
+		__providerInFlightForTesting.setRoot(undefined);
+		__providerInFlightForTesting.setLockCreatedObserver(undefined);
 		rootSpy.mockRestore();
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
@@ -91,6 +94,17 @@ describe("owner model blacklist at dispatch", () => {
 				},
 			};
 			await expect(dispatch(model, context).result()).rejects.toThrow("blacklisted");
+			expect(calls).toEqual([]);
+		});
+	}
+
+	for (const dispatch of [stream, streamSimple]) {
+		test(`${dispatch.name} rechecks a ban written while acquiring a permit`, async () => {
+			__providerInFlightForTesting.setLockCreatedObserver(async () => {
+				ban();
+			});
+			const result = dispatch(banned, context, { maxInFlightRequests: { "canary-provider": 1 } });
+			await expect(result.result()).rejects.toThrow("blacklisted");
 			expect(calls).toEqual([]);
 		});
 	}
