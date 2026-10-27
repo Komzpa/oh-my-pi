@@ -25,6 +25,8 @@ bun test test/compat-compile.test.ts test/compat-conformance.test.ts \
 
 `compat-compile.test.ts` fails when `rules.json` drifts from the KDL sources; `compat-parity.test.ts` proves the engine reproduces every baked `models.json` compat/thinking value. Commit `rules.json` together with the KDL change.
 
+For `openai/gpt-6.1-terra`, `disableReasoning: true` MUST serialize Responses `reasoning.effort` as the officially supported `"none"`, not `"low"`. The exact provider rule owns this contract; `packages/ai/test/openai-daybreak-effort.test.ts` enforces it through the production `buildParams` wire oracle for both rule-built and bundled models, with `gpt-6.1-sol` retaining its existing `"low"` fallback.
+
 ## Taxonomy grammar
 
 At a taxonomy document root, the only permitted nodes are `class`, `collapse`, and `discovery`; a source may contain multiple class nodes. Class names and override IDs must be unique across all bundled sources. Exactly one non-empty `collapse` definition is required across the inventory; at most one `discovery` definition may appear.
