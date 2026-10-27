@@ -8,7 +8,6 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import * as theme from "@oh-my-pi/pi-tui/theme";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
