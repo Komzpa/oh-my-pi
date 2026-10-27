@@ -606,8 +606,6 @@ export function isDistantWaitReason(blocker: string): boolean {
 export type GateCall = { name: string; arguments?: Record<string, unknown> };
 export type ActiveGate = { id: string; remedy: string; satisfies: (call: GateCall) => boolean };
 export type GateDecision = { allowed: boolean; remedyGateIds: string[]; reason?: string };
-export const DEMAND_IGNORE_MAX = 3;
-export const DEMAND_IGNORE_MAX_REPLAN = 5;
 export const OVERRIDE_SUPPRESS_TURNS = 5;
 export const GATE_IDS = ["planning-issues", "chief-no-bash", "idle-wait", "checkout", "retro", "escalation", "missed-eta", "receipt", "duplicate-worker"] as const;
 const READ_TIER = new Set(["read", "grep", "glob", "find"]);
@@ -632,7 +630,7 @@ export function parseTodoOverride(input: unknown): string | undefined {
   const lowered = override.toLowerCase();
   // Grievances 547/590: the tracked demands below never matched a GATE_ID, so an
   // override naming them was silently dropped and the refusal stood. Map each to
-  // the ignoredDemands key that trackDemands/isDemandEscalated use. These run first:
+  // the ignoredDemands key that trackDemands uses. These run first:
   // "unread-receipts" contains the GATE_ID "receipt" and must win over it.
   if (lowered.includes("plan-doctor")) return "todo-plan-doctor";
   if (lowered.includes("todo-replan") || lowered.includes("replan")) return "todo-replan";
@@ -2195,11 +2193,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     retroFacilitatorJobs.clear();
     if (persist) persistSprintState();
   };
-  const demandThreshold = (id: string): number => (id === "todo-replan" ? DEMAND_IGNORE_MAX_REPLAN : DEMAND_IGNORE_MAX);
-  const isDemandEscalated = (id: string): boolean => (sprintState.ignoredDemands[id] ?? 0) >= demandThreshold(id);
   // Grievances 547/590: a todo override names the gate it answers and suppresses it
-  // for OVERRIDE_SUPPRESS_TURNS turns (negative count). Both refusal sites consult
-  // this so the named refusal stops blocking task and wait within that window.
+  // for OVERRIDE_SUPPRESS_TURNS turns (negative count); the idle-wait refusal consults this.
   const isOverrideSuppressed = (id: string): boolean => (sprintState.ignoredDemands[demandClassOf(id)] ?? 0) < 0;
   // persist=false lets planCheck fold the tick into the loop's trailing persist: the in-memory
   // counts stay authoritative and the decay lands on the next persisted record either way.
@@ -4213,28 +4208,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           block: true,
           reason: `Commit merge ${shorten(merge.mergeHead, 12)} now.\nThe merge of ${merge.mergeHead} has no unresolved paths; it needs a commit, not more merge work. ${ORDER}`,
         };
-      }
-    }
-    // Ignored demands escalate: while one stands, only its remedy (a todo call or the
-    // demanded specialist) and the always-allowed calls pass this one union decision.
-    // Grievance 590: a demand the todo override names stays suppressed for the same
-    // few-turn window, so it must not escalate while the override is active.
-    const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) => isDemandEscalated(id) && !isOverrideSuppressed(id));
-    if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) {
-      const remedyTask = (call: GateCall): boolean =>
-        call.name === "task" && taskItems(call.arguments ?? {}).some((item) => item["agent"] === "retro-facilitator" || item["agent"] === "plan-doctor");
-      const gates: ActiveGate[] = escalatedIds.map((id) => ({
-        id,
-        remedy: id === "retro"
-          ? "staff the retrospective (retro-facilitator) or answer it in a todo call"
-          : "answer it in a todo call, or name it in the todo override field",
-        satisfies: (call: GateCall) => call.name === "todo" || remedyTask(call),
-      }));
-      const gateCall = { name: event.toolName, arguments: (event.input ?? {}) as Record<string, unknown> };
-      const verdict = decideGateCall(gateCall, gates);
-      if (!verdict.allowed) {
-        gateTrace(ctx, "escalation-refused", { toolName: event.toolName, gates: verdict.remedyGateIds });
-        return { block: true, reason: `${verdict.reason}. ${ORDER}` };
       }
     }
     if (event.toolName === "todo" && pendingReplan) pendingReplan.answered = pendingReplan.demands;
