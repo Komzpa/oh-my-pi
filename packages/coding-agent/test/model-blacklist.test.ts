@@ -64,6 +64,19 @@ test("owner ban wins over re-added custom catalog, refresh, direct lookup and av
 		expect(models.some(m => m.provider === "canary.provider" && m.id === "convicted")).toBe(false);
 		expect(models.some(m => m.provider === "canary.provider" && m.id === "convicted-small")).toBe(true);
 	}
+	const bannedSnapshot = registry.getAll();
+	expect(registry.getAll()).toBe(bannedSnapshot);
+	fs.rmSync(path.join(dir, "model-blacklist.json"));
+	const restoredSnapshot = registry.getAll();
+	expect(restoredSnapshot.some(model => model.provider === "canary.provider" && model.id === "convicted")).toBe(true);
+	expect(registry.getAll()).toBe(restoredSnapshot);
+	fs.writeFileSync(
+		path.join(dir, "model-blacklist.json"),
+		JSON.stringify({ "canary.provider/convicted": "fabricated receipt" }),
+	);
+	expect(registry.getAll().some(model => model.provider === "canary.provider" && model.id === "convicted")).toBe(
+		false,
+	);
 	expect(registry.find("canary.provider", "convicted")).toBeUndefined();
 	await registry.refresh("offline");
 	expect(registry.find("canary.provider", "convicted")).toBeUndefined();
