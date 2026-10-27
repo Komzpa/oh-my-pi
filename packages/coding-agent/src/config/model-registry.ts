@@ -2995,17 +2995,33 @@ export class ModelRegistry {
 	 */
 	getAll(kind: ModelKind | "all" = "chat"): Model<Api>[] {
 		const models = this.#ensureFullSnapshot();
-		if (kind === "all") return filterBlacklistedModels(models);
+		if (kind === "all") return this.#filterVisibleSnapshot(models);
 		let snapshots = this.#fullKindSnapshots.get(models);
 		if (!snapshots) {
 			snapshots = {};
 			this.#fullKindSnapshots.set(models, snapshots);
 		}
 		const cached = snapshots[kind];
-		if (cached) return filterBlacklistedModels(cached);
+		if (cached) return this.#filterVisibleSnapshot(cached);
 		const filtered = models.filter(model => modelKind(model) === kind);
 		snapshots[kind] = filtered;
-		return filterBlacklistedModels(filtered);
+		return this.#filterVisibleSnapshot(filtered);
+	}
+
+	#visibleModelSnapshots = new WeakMap<Model<Api>[], Model<Api>[]>();
+
+	#filterVisibleSnapshot(models: Model<Api>[]): Model<Api>[] {
+		const filtered = filterBlacklistedModels(models);
+		const previous = this.#visibleModelSnapshots.get(models);
+		if (
+			previous &&
+			previous.length === filtered.length &&
+			previous.every((model, index) => model === filtered[index])
+		) {
+			return previous;
+		}
+		this.#visibleModelSnapshots.set(models, filtered);
+		return filtered;
 	}
 
 	/**
