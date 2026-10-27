@@ -17,6 +17,9 @@ const MAX_RESTART_REQUEST_ID_LENGTH = 128;
 const MAX_RESTART_REASON_LENGTH = 1_024;
 const MAX_RESTART_ERROR_LENGTH = 4_096;
 const DEFAULT_RESTART_WORKER_GRACE_MS = 5_000;
+// Abort plus journal quiescence of a worker parked in a long tool: the tool's process tree
+// gets SIGTERM, then SIGKILL after its own grace, and the worker then flushes results.
+const DEFAULT_RESTART_WORKER_ABORT_GRACE_MS = 30_000;
 const RESTART_QUEUED_NOTICE_TYPE = "restart-queued";
 
 /**
@@ -428,7 +431,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		this.#restartWorkerAbortGraceMs =
 			options.restartWorkerAbortGraceMs !== undefined && Number.isFinite(options.restartWorkerAbortGraceMs)
 				? Math.max(0, Math.floor(options.restartWorkerAbortGraceMs))
-				: DEFAULT_RESTART_WORKER_GRACE_MS;
+				: DEFAULT_RESTART_WORKER_ABORT_GRACE_MS;
 		this.#restartWorkerGraceMs =
 			options.restartWorkerGraceMs !== undefined && Number.isFinite(options.restartWorkerGraceMs)
 				? Math.max(0, Math.floor(options.restartWorkerGraceMs))
@@ -979,6 +982,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 					throw new Error(`Restart worker ${id} cannot settle after its grace period`);
 				await abort.call(session, {
 					goalReason: "internal",
+					cancelBackgroundJobs: true,
 					reason: "Restart interrupted this worker; it will continue from its persisted session after relaunch.",
 				});
 				// abort() acknowledgement alone does not prove that tool results and

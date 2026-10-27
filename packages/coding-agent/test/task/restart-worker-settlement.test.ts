@@ -25,7 +25,7 @@ function session(
 	options: {
 		wasRunning?: boolean;
 		quiescence: Promise<void>;
-		abort?: () => Promise<void>;
+		abort?: (options?: unknown) => Promise<void>;
 	},
 ): AgentSession {
 	return {
@@ -46,7 +46,7 @@ function session(
 }
 
 async function makeController(options: {
-	abort: () => Promise<void>;
+	abort: (options?: unknown) => Promise<void>;
 	workerQuiescence: Promise<void>;
 	restart: () => Promise<void>;
 	onStateChange?: (record: RestartRequestRecord) => void;
@@ -155,6 +155,37 @@ describe("restart worker settlement", () => {
 		expect((await controllerState.promise).state).toBe("completed");
 		controller.dispose();
 	});
+
+	it("settles and restarts when a worker tool ignores the first signal for longer than the old 5s grace", async () => {
+		const quiescence = Promise.withResolvers<void>();
+		const terminal = Promise.withResolvers<RestartRequestRecord>();
+		let restarts = 0;
+		let abortOptions: unknown;
+		const { controller, identity } = await makeController({
+			workerQuiescence: quiescence.promise,
+			abort: async (options?: unknown) => {
+				abortOptions = options;
+				await Bun.sleep(5_400);
+				quiescence.resolve();
+			},
+			restart: async () => {
+				restarts++;
+			},
+			onStateChange: record => {
+				if (record.state === "failed" || record.state === "completed") terminal.resolve(record);
+			},
+		});
+		try {
+			await controller.handle({ identity, op: "request", requestId: "slow-tool" });
+			const result = await terminal.promise;
+			expect(result.error).toBeUndefined();
+			expect(result.state).toBe("completed");
+			expect(restarts).toBe(1);
+			expect(abortOptions).toMatchObject({ cancelBackgroundJobs: true });
+		} finally {
+			controller.dispose();
+		}
+	}, 15_000);
 
 	it.each(["abort", "quiescence"] as const)(
 		"fails a restart when worker %s ignores the abort deadline",
