@@ -20,7 +20,7 @@ import {
 } from "./terminal-multiplexer";
 import { resolveTmuxClientTerminalNames, tmuxPaneAllowsPassthrough, wrapTmuxPassthroughIfNeeded } from "./tmux";
 import { detectTerminalBackground } from "./theme/theme";
-import type { HangulCompatibilityJamoWidth } from "./utils";
+import { type HangulCompatibilityJamoWidth, visibleWidth } from "./utils";
 
 export * from "./terminal-multiplexer";
 export { wrapTmuxPassthrough } from "./tmux";
@@ -1005,7 +1005,8 @@ export function parseKittyDirectPlacementLine(line: string): ParsedKittyPlacemen
 }
 
 /** `ESC 7` + `CUU(n)` lead-in of an {@link Image} direct-placement line. */
-const DIRECT_PLACEMENT_LIFT = /^\x1b7\x1b\[(\d+)A/;
+const DIRECT_PLACEMENT_LIFT = /\x1b7\x1b\[(\d+)A/;
+const ALL_DIRECT_PLACEMENT_LIFTS = new RegExp(DIRECT_PLACEMENT_LIFT.source, "g");
 
 /**
  * Rows above its own line that an {@link Image} direct-placement line paints
@@ -1017,6 +1018,61 @@ const DIRECT_PLACEMENT_LIFT = /^\x1b7\x1b\[(\d+)A/;
 export function directPlacementLift(line: string): number {
 	const m = DIRECT_PLACEMENT_LIFT.exec(line);
 	return m ? Number(m[1]) : 0;
+}
+
+/**
+ * One SIXEL block with its optional save/lift/column lead-in and cursor restore. Image lines carry
+ * `ESC 7 CUU(n)`; composer chip lines carry `ESC 7 CUU(n) CHA(c)`, so the column comes from the
+ * CHA and not from the visible text before the block. A line may hold several blocks.
+ */
+const SIXEL_DIRECT_PLACEMENT_LINE =
+	/(?:\x1b7(?:\x1b\[(\d+)A)?(?:\x1b\[(\d+)G)?)?(\x1bP[0-9;]*q)([\s\S]*?)\x1b\\(?:\x1b8)?/g;
+
+export interface ParsedSixelPlacementLine {
+	prefix: string;
+	suffix: string;
+	lift: number;
+	column: number;
+	introducer: string;
+	body: string;
+	widthPx: number;
+	heightPx: number;
+}
+
+/** Locate every SIXEL block on a row without dropping the row's decorations. */
+export function parseSixelDirectPlacements(line: string): ParsedSixelPlacementLine[] {
+	const placements: ParsedSixelPlacementLine[] = [];
+	for (const match of line.matchAll(SIXEL_DIRECT_PLACEMENT_LINE)) {
+		const prefix = line.slice(0, match.index);
+		const body = match[4] ?? "";
+		const raster = /"\d+;\d+;(\d+);(\d+)/.exec(body);
+		placements.push({
+			prefix,
+			suffix: line.slice(match.index + match[0].length),
+			lift: Number(match[1] ?? 0),
+			// CHA is 1-based; without it the block starts where the visible text before it ends.
+			column: match[2] !== undefined ? Math.max(0, Number(match[2]) - 1) : visibleWidth(prefix),
+			introducer: match[3]!,
+			body,
+			widthPx: Number(raster?.[1] ?? 0),
+			heightPx: Number(raster?.[2] ?? 0),
+		});
+	}
+	return placements;
+}
+
+/** Locate Image's SIXEL block without dropping the enclosing row's decorations. */
+export function parseSixelDirectPlacementLine(line: string): ParsedSixelPlacementLine | null {
+	return parseSixelDirectPlacements(line)[0] ?? null;
+}
+
+/**
+ * Re-anchor an {@link Image} direct-placement line `lift` rows above its own
+ * row instead of its encoded `CUU(rows-1)`. Bound this by the frame, not the
+ * physical screen, so clipped blocks cannot paint over committed history.
+ */
+export function withDirectPlacementLift(line: string, lift: number): string {
+	return line.replace(ALL_DIRECT_PLACEMENT_LIFTS, lift > 0 ? `\x1b7\x1b[${lift}A` : "\x1b7");
 }
 
 /**
@@ -1082,6 +1138,17 @@ export function encodeKittyDeleteAllImages(): string {
  */
 export function encodeKittyDeletePlacement(imageId: number, placementId: number): string {
 	return wrapTmuxPassthroughIfNeeded(`\x1b_Ga=d,d=i,i=${imageId},p=${placementId},q=2\x1b\\`);
+}
+
+/**
+ * Konsole-only SIXEL workaround: its Kitty handler uses zero-based cells and
+ * removes every containing graphics rectangle, including SIXEL and history.
+ * The caller must prove the cell belongs only to placements it is retiring.
+ * Pane-local cells cannot target the outer terminal through a multiplexer.
+ */
+export function encodeKonsoleDeleteAtCell(column: number, row: number): string {
+	if (isInsideTerminalMultiplexer()) return "";
+	return `\x1b_Ga=d,d=p,x=${column},y=${row},q=2\x1b\\`;
 }
 
 export function encodeITerm2(

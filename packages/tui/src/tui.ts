@@ -39,15 +39,18 @@ import {
 	encodeKittyPlacementLine,
 	getCellDimensions,
 	getTerminalBackgroundColor,
+	encodeKonsoleDeleteAtCell,
 	ImageProtocol,
 	isImageProtocolForced,
 	isInsideTerminalMultiplexer,
 	parseKittyDirectPlacementLine,
+	parseSixelDirectPlacements,
 	setCellDimensions,
 	setTerminalImageProtocol,
 	shouldEnableSynchronizedOutputByDefault,
 	synchronizedOutputUserOverride,
 	TERMINAL,
+	withDirectPlacementLift,
 } from "./terminal-capabilities";
 import { onTerminalBackgroundFallbackChange } from "./theme/theme";
 import { compositeLineAt } from "./render/composite";
@@ -656,6 +659,17 @@ interface LiveImagePlacement {
 	imageId: number;
 	placementId: number;
 	line: string;
+	/** Absent for Kitty's id-keyed placements. Shares the physical scroll tracker. A row can carry several rasters (composer chips). */
+	sixels?: SixelPlacement[];
+}
+
+/** A physical Konsole rectangle; history is tracked but never a mutable owner. */
+interface SixelPlacement {
+	row: number;
+	col: number;
+	rows: number;
+	columns: number;
+	history: boolean;
 }
 
 interface PreparedLine {
@@ -1005,6 +1019,8 @@ export class TUI extends Container {
 	#imageBudget = new ImageBudget(DEFAULT_MAX_INLINE_IMAGES, () => this.requestRender());
 	#screenImagePlacements = new Map<number, LiveImagePlacement>();
 	#altImagePlacements = new Map<number, LiveImagePlacement>();
+	#screenSixelPlacements: SixelPlacement[] = [];
+	#altSixelPlacements: SixelPlacement[] = [];
 	#nextImagePlacementId = 1;
 	/** Last top-clipped SIXEL crop; only the block straddling row 0 is ever cropped. */
 	#sixelCrop: { source: string; pixels: number; maxHeightPixels: number; output: string } | undefined;
@@ -3271,52 +3287,141 @@ export class TUI extends Container {
 		return result;
 	}
 
-	/**
-	 * Remove placements before their viewport cells are replaced. History uses
-	 * separate placement ids, so deleting a live copy cannot erase scrollback.
-	 */
+	/** Delete only cells exclusively owned by the live rectangles being retired. */
+	#retireSixelPlacements(physical: SixelPlacement[], retiring: ReadonlySet<SixelPlacement>): string {
+		if (isInsideTerminalMultiplexer()) return "";
+		let output = "";
+		for (const placement of retiring) {
+			if (placement.history || placement.row < 0 || !physical.includes(placement)) continue;
+			let cell: { row: number; col: number } | undefined;
+			for (let row = placement.row; row < Math.min(this.terminal.rows, placement.row + placement.rows); row++) {
+				for (
+					let col = placement.col;
+					col < Math.min(this.terminal.columns, placement.col + placement.columns);
+					col++
+				) {
+					if (
+						physical.some(
+							other =>
+								!retiring.has(other) &&
+								row >= other.row &&
+								row < other.row + other.rows &&
+								col >= other.col &&
+								col < other.col + other.columns,
+						)
+					) {
+						continue;
+					}
+					cell = { row, col };
+					break;
+				}
+				if (cell) break;
+			}
+			if (!cell) continue;
+			output += encodeKonsoleDeleteAtCell(cell.col, cell.row);
+			for (let index = physical.length - 1; index >= 0; index--) {
+				const other = physical[index]!;
+				if (
+					cell.row >= other.row &&
+					cell.row < other.row + other.rows &&
+					cell.col >= other.col &&
+					cell.col < other.col + other.columns
+				) {
+					physical.splice(index, 1);
+				}
+			}
+		}
+		return output;
+	}
+
+	/** Every LF at the screen bottom moves Konsole rectangles, even history. */
+	#scrollSixelPlacements(physical: SixelPlacement[]): void {
+		for (let index = physical.length - 1; index >= 0; index--) {
+			const placement = physical[index]!;
+			placement.row--;
+			// Fully archived rectangles cannot be hit by a nonnegative cell delete.
+			if (placement.row + placement.rows <= 0) physical.splice(index, 1);
+		}
+	}
+
+	/** Kitty ids isolate history; Konsole cell deletes require physical ownership. */
 	#retireImagePlacements(
 		placements: Map<number, LiveImagePlacement>,
+		physical: SixelPlacement[],
 		lines: readonly string[],
 		top: number,
 		repaint: boolean,
 	): string {
 		let output = "";
+		const retiring = new Set<SixelPlacement>();
 		for (const [row, placement] of placements) {
 			if (!repaint && lines[row - top] === placement.line) continue;
-			output += encodeKittyDeletePlacement(placement.imageId, placement.placementId);
+			if (placement.sixels) for (const sixel of placement.sixels) retiring.add(sixel);
+			else output += encodeKittyDeletePlacement(placement.imageId, placement.placementId);
 			placements.delete(row);
 		}
+		if (Bun.env.KONSOLE_VERSION) output += this.#retireSixelPlacements(physical, retiring);
 		return output;
 	}
 
 	/**
-	 * Clip direct placements to the visible source slice: Kitty tracks a live
-	 * placement owner, while SIXEL crops the encoded raster (iTerm2 images are
-	 * not cropped). SIXEL and iTerm2 have no delete command and composite over
-	 * existing pixels, so erase the visible rows they paint above `screenRow`
-	 * before repainting.
+	 * Clip direct placements to the frame's visible source slice; track physical
+	 * screen ownership separately so replay scrolling cannot retire history.
+	 * Uncroppable iTerm2/Kitty transmit-and-display blocks are omitted when
+	 * clipped instead of painting their hidden rows over following text.
 	 */
 	#imageLineSequence(
 		line: string,
-		screenRow: number,
+		frameRow: number,
 		placements: Map<number, LiveImagePlacement> | undefined,
 		placementRow: number,
+		screenRow: number,
+		physical: SixelPlacement[],
 	): string {
-		if (screenRow < 0) return line;
+		if (frameRow < 0) return line;
 		const parsed = parseKittyDirectPlacementLine(line);
 		if (!parsed) {
+			// During a history write, later newlines can still scroll this live
+			// image. Clip against its FINAL viewport row, then paint at the current
+			// physical row; the scroll tracker moves the origin on each emitted LF.
+			const clipRow = placements ? Math.min(frameRow, placementRow) : frameRow;
+			const cell = getCellDimensions();
+			let drawn = line;
 			const requestedLift = directPlacementLift(line);
-			const lift = Math.min(requestedLift, screenRow);
+			const lift = Math.min(requestedLift, clipRow);
 			if (requestedLift > lift) {
-				const cellHeight = getCellDimensions().heightPx;
-				const cropPixels = Math.round((requestedLift - lift) * cellHeight);
-				const maxHeightPixels = Math.floor((screenRow + 1) * cellHeight);
-				line = line.replace(/\x1bP[0-9;]*q[\s\S]*?\x1b\\/g, sequence =>
+				const cropPixels = Math.round((requestedLift - lift) * cell.heightPx);
+				const maxHeightPixels = Math.floor((clipRow + 1) * cell.heightPx);
+				const clipped = line.replace(/\x1bP[0-9;]*q[\s\S]*?\x1b\\/g, sequence =>
 					this.#cropSixel(sequence, cropPixels, maxHeightPixels),
 				);
+				if (clipped === line) return "";
+				drawn = withDirectPlacementLift(clipped, lift);
 			}
-			return lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}${line}` : line;
+			const liftErase = lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}` : "";
+			const sixels = parseSixelDirectPlacements(drawn);
+			if (
+				TERMINAL.imageProtocol !== ImageProtocol.Sixel ||
+				!Bun.env.KONSOLE_VERSION ||
+				isInsideTerminalMultiplexer() ||
+				sixels.length === 0
+			) {
+				return liftErase + drawn;
+			}
+			const previous = placements?.get(placementRow)?.sixels;
+			const erase = previous ? this.#retireSixelPlacements(physical, new Set(previous)) : "";
+			const tracked = sixels.map((sixel): SixelPlacement => ({
+				row: screenRow - Math.min(sixel.lift, clipRow),
+				col: sixel.column,
+				rows: Math.ceil(sixel.heightPx / cell.heightPx),
+				columns: Math.ceil(sixel.widthPx / cell.widthPx),
+				history: placements === undefined,
+			}));
+			physical.push(...tracked);
+			placements?.set(placementRow, { imageId: 0, placementId: 0, line, sixels: tracked });
+			// Cell deletion removes the raster, not the text. EL on the lifted
+			// rows would instead destroy the Box borders/padding just painted there.
+			return erase + drawn;
 		}
 		const previous = placements?.get(placementRow);
 		const placementId = previous?.placementId ?? this.#nextImagePlacementId++;
@@ -3329,7 +3434,7 @@ export class TUI extends Container {
 				placementId,
 				columns: parsed.columns,
 				rows: parsed.rows,
-				screenRow,
+				screenRow: frameRow,
 				imageHeightPx: this.#imageBudget.getPlacementGeometry(parsed.imageId)?.heightPx ?? 0,
 			})
 		);
@@ -3663,7 +3768,13 @@ export class TUI extends Container {
 			!this.#forceViewportRepaintOnNextRender &&
 			!destructiveReset &&
 			this.#providerWindow.length > 0;
-		buffer += this.#retireImagePlacements(this.#screenImagePlacements, prepared.lines, newTop, !diffable);
+		buffer += this.#retireImagePlacements(
+			this.#screenImagePlacements,
+			this.#screenSixelPlacements,
+			prepared.lines,
+			newTop,
+			!diffable,
+		);
 		for (const sequence of this.#imageBudget.takeTransmits()) append(sequence);
 		if (diffable) {
 			for (let index = 0; index < rows; index++) {
@@ -3682,9 +3793,9 @@ export class TUI extends Container {
 				buffer += `\x1b[${newTop + index + 1};1H${this.#lineRewriteSequence(
 					current,
 					width,
-					newTop + index,
+					index,
 					this.#osc66SpacerGlyphWidth(prepared.lines, index),
-					{ imagePlacements: this.#screenImagePlacements },
+					{ imagePlacements: this.#screenImagePlacements, imageRow: newTop + index },
 				)}`;
 			}
 			if (this.#providerWindow.length > rows && newTop + rows < height) {
@@ -3697,40 +3808,77 @@ export class TUI extends Container {
 			// viewport rows are not — erase them first so a scroll can only push
 			// committed rows and blanks, never an unfinished frame.
 			const pushed = Math.max(0, startTop + preparedHistory.lines.length + rows - height);
+			// Konsole moves below each SIXEL raster before ESC 8 restores the
+			// cursor. Painting at the transient bottom during replay would add an
+			// untracked scroll. Paint live rasters at their final cells instead.
+			const deferSixel =
+				pushed > 0 &&
+				TERMINAL.imageProtocol === ImageProtocol.Sixel &&
+				Boolean(Bun.env.KONSOLE_VERSION) &&
+				!isInsideTerminalMultiplexer();
 			if (pushed > this.#providerViewportTop && this.#providerWindow.length > 0) {
 				buffer += this.#eraseBelowRow(this.#providerViewportTop, height);
 			}
 			buffer += `\x1b[${startTop + 1};1H`;
 			let screenRow = startTop;
 			for (let index = 0; index < preparedHistory.lines.length; index++) {
-				if (screenRow > startTop) buffer += "\n";
+				if (screenRow > startTop) {
+					buffer += "\n";
+					if (screenRow >= height) this.#scrollSixelPlacements(this.#screenSixelPlacements);
+				}
 				append(
 					this.#lineRewriteSequence(
 						preparedHistory.rows[index]!,
 						width,
 						Math.min(screenRow, height - 1),
 						this.#osc66SpacerGlyphWidth(preparedHistory.lines, index),
-						{ blankRow: compactReplay },
+						{ blankRow: compactReplay, screenRow: Math.min(screenRow, height - 1) },
 					),
 				);
 				screenRow++;
 			}
 			for (let index = 0; index < rows; index++) {
-				if (screenRow > startTop) buffer += "\n";
+				if (screenRow > startTop) {
+					buffer += "\n";
+					if (screenRow >= height) this.#scrollSixelPlacements(this.#screenSixelPlacements);
+				}
+				// Replay-split rows continue the history ledger, not live ownership.
+				const moved = index < replayViewportRows;
+				if (deferSixel && !moved && prepared.rows[index]!.isImage) {
+					append(`${ERASE_LINE}\r`);
+					screenRow++;
+					continue;
+				}
 				append(
 					this.#lineRewriteSequence(
 						prepared.rows[index]!,
 						width,
-						Math.min(screenRow, height - 1),
+						moved ? Math.min(screenRow, height - 1) : index,
 						this.#osc66SpacerGlyphWidth(prepared.lines, index),
 						{
 							blankRow: compactReplay,
-							imagePlacements: index < replayViewportRows ? undefined : this.#screenImagePlacements,
+							imagePlacements: moved ? undefined : this.#screenImagePlacements,
 							imageRow: newTop + index,
+							screenRow: Math.min(screenRow, height - 1),
 						},
 					),
 				);
 				screenRow++;
+			}
+			if (deferSixel) {
+				for (let index = replayViewportRows; index < rows; index++) {
+					if (!prepared.rows[index]!.isImage) continue;
+					append(`\x1b[${newTop + index + 1};1H`);
+					append(
+						this.#lineRewriteSequence(
+							prepared.rows[index]!,
+							width,
+							index,
+							this.#osc66SpacerGlyphWidth(prepared.lines, index),
+							{ imagePlacements: this.#screenImagePlacements, imageRow: newTop + index },
+						),
+					);
+				}
 			}
 			if (newTop + rows < height) buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
 		}
@@ -4344,12 +4492,23 @@ export class TUI extends Container {
 		);
 	}
 
+	/**
+	 * Terminal bytes that rewrite one row. `frameRow` is the row's index within
+	 * the frame it belongs to (see {@link #imageLineSequence}); `imageRow`, the
+	 * physical row keying live Kitty placements, defaults to it.
+	 */
 	#lineRewriteSequence(
 		line: PreparedLine,
 		width: number,
-		screenRow = -1,
+		frameRow = -1,
 		spacerGlyphWidth = -1,
-		options?: { blankRow?: boolean; imagePlacements?: Map<number, LiveImagePlacement>; imageRow?: number },
+		options?: {
+			blankRow?: boolean;
+			imagePlacements?: Map<number, LiveImagePlacement>;
+			imageRow?: number;
+			screenRow?: number;
+			sixelPlacements?: SixelPlacement[];
+		},
 	): string {
 		// End every rewrite at column zero. ConPTY can materialize a pending
 		// wrap before a following cursor-addressing sequence even while DECAWM is
@@ -4368,7 +4527,14 @@ export class TUI extends Container {
 		} else if (line.isImage) {
 			rewrite =
 				ERASE_LINE +
-				this.#imageLineSequence(line.line, screenRow, options?.imagePlacements, options?.imageRow ?? screenRow);
+				this.#imageLineSequence(
+					line.line,
+					frameRow,
+					options?.imagePlacements,
+					options?.imageRow ?? frameRow,
+					options?.screenRow ?? options?.imageRow ?? frameRow,
+					options?.sixelPlacements ?? this.#screenSixelPlacements,
+				);
 		} else {
 			const terminalLine = this.#terminalLine(line);
 			if (options?.blankRow) {
@@ -4516,7 +4682,13 @@ export class TUI extends Container {
 				prepared.rows.some((_row, r) =>
 					this.#rowNeedsRewrite(this.#altPreviousLines, this.#altPreparedRows, prepared.lines, prepared.rows, r),
 				));
-		prelude += this.#retireImagePlacements(this.#altImagePlacements, prepared.lines, 0, full);
+		prelude += this.#retireImagePlacements(
+			this.#altImagePlacements,
+			this.#altSixelPlacements,
+			prepared.lines,
+			0,
+			full,
+		);
 		let rowsBuffer = "";
 		for (let r = 0; r < height; r++) {
 			if (full) {
@@ -4533,7 +4705,7 @@ export class TUI extends Container {
 				width,
 				r,
 				this.#osc66SpacerGlyphWidth(prepared.lines, r),
-				{ imagePlacements: this.#altImagePlacements },
+				{ imagePlacements: this.#altImagePlacements, sixelPlacements: this.#altSixelPlacements },
 			);
 		}
 		this.#altPreviousLines = prepared.lines;
