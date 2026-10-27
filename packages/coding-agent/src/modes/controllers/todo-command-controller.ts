@@ -1,5 +1,5 @@
 import { selectBranchEntries } from "../../session/branch-selection";
-import { isTodoSelectionEntryMetadata } from "../../tools/todo";
+import { formatTodoView, isTodoSelectionEntryMetadata } from "../../tools/todo";
 import * as fs from "node:fs/promises";
 import {
 	applyOpsToPhases,
@@ -7,7 +7,6 @@ import {
 	getLatestTodoPhasesFromEntries,
 	getLatestTodoSnapshotIdentity,
 	markdownToPhases,
-	formatTodoView,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
 	USER_TODO_EDIT_CUSTOM_TYPE,
