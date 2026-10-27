@@ -2528,7 +2528,7 @@ test("parseTodoOverride names a gate id inside the override field", () => {
   expect(parseTodoOverride(null)).toBeUndefined();
 });
 
-test("ignored advisory demands (missed-eta, todo-plan-doctor) never block bash or task on the main agent", async () => {
+test("escalated plan demands refuse everything but a plan-fixing todo call; an override or a worker spawn does not lift it", async () => {
   const cwd = repo("clean");
   const now = Date.now();
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
@@ -2540,7 +2540,7 @@ test("ignored advisory demands (missed-eta, todo-plan-doctor) never block bash o
     appendEntry: () => undefined,
     sendMessage: () => undefined,
   } as unknown as ExtensionAPI;
-  const branch = [...plan("ready", now), { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "missed-eta": 6, "todo-plan-doctor": 6, retro: 6, "todo-replan": 6, "todo-link": 6, "unread-receipts": 6 } } }];
+  const branch = [...plan("ready", now), { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "missed-eta": 3 } } }];
   await todoDispatch(api);
   const ctx = {
     cwd,
@@ -2555,10 +2555,64 @@ test("ignored advisory demands (missed-eta, todo-plan-doctor) never block bash o
   try {
     await handlers.get("session_start")!({}, ctx);
     const toolCall = handlers.get("tool_call")!;
-    for (const [id, name, input] of [["u1", "bash", { command: "bun test" }], ["u2", "task", CALLS.taskRow!.arguments], ["u3", "bash", { command: "systemctl status codex-lb" }]] as const) {
+    const refused = (await toolCall({ toolName: "task", toolCallId: "u1", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    expect(refused?.block).toBe(true);
+    expect(refused?.reason).toContain("missed-eta");
+    expect(refused?.reason).toContain("Don't start workers to answer this.");
+    expect(refused?.reason).not.toContain("chief-of-staff");
+    const bash = (await toolCall({ toolName: "bash", toolCallId: "u1b", input: { command: "systemctl status codex-lb" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    expect(bash?.block).toBe(true);
+    expect(bash?.reason).toContain("missed-eta");
+    // A worker spawn answering the demand is refused too.
+    for (const agent of ["retro-facilitator", "plan-doctor"]) {
+      const spawn = (await toolCall({ toolName: "task", toolCallId: `u1-${agent}`, input: { tasks: [{ agent, name: "Doctor", task: "diagnose" }] } }, ctx)) as { block?: boolean } | undefined;
+      expect(spawn?.block, agent).toBe(true);
+    }
+    expect(await toolCall({ toolName: "read", toolCallId: "u2", input: CALLS.read!.arguments }, ctx)).toBeUndefined();
+    expect((await toolCall({ toolName: "todo", toolCallId: "u2v", input: { op: "view" } }, ctx) as { block?: boolean } | undefined)?.block).toBe(true);
+    // A todo override alone does not lift it: the plan itself must be fixed.
+    expect(await toolCall({ toolName: "todo", toolCallId: "u4", input: { ...CALLS.todoSchedule!.arguments, override: "missed-eta re-estimated" } }, ctx)).toBeUndefined();
+    const still = (await toolCall({ toolName: "task", toolCallId: "u5", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean } | undefined;
+    expect(still?.block).toBe(true);
+    // A plan-changing todo call passes.
+    expect(await toolCall({ toolName: "todo", toolCallId: "u3", input: CALLS.todoSchedule!.arguments }, ctx)).toBeUndefined();
+  } finally {
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("retro ignored for six ticks stays a notice and never blocks bash or task", async () => {
+  const cwd = repo("clean");
+  const now = Date.now();
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: () => undefined,
+  } as unknown as ExtensionAPI;
+  const branch = [...plan("ready", now), { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { retro: 6 } } }];
+  await todoDispatch(api);
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: "gates-plan-doctor" }), ...branchMock(() => branch), getSessionFile: () => undefined },
+    getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => false,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  try {
+    await handlers.get("session_start")!({}, ctx);
+    const toolCall = handlers.get("tool_call")!;
+    for (const [id, name, input] of [["u1", "bash", { command: "bun test" }], ["u2", "task", CALLS.taskRow!.arguments]] as const) {
       const out = (await toolCall({ toolName: name, toolCallId: id, input }, ctx)) as { block?: boolean; reason?: string } | undefined;
-      // Other gates (staffing the ready row) may still refuse bash; only the demand ids must be absent.
-      expect(out?.reason ?? "", `${name} is not blocked by an advisory demand`).not.toMatch(/missed-eta|todo-plan-doctor|retro|todo-replan|todo-link|unread-receipts/);
+      // Other gates (staffing the ready row) may still refuse bash; retro must not be the reason.
+      expect(out?.reason ?? "", `${name} is not blocked by retro`).not.toContain("retro");
       if (name === "task") expect(out?.block, `task admitted: ${out?.reason}`).not.toBe(true);
     }
   } finally {
@@ -2566,7 +2620,6 @@ test("ignored advisory demands (missed-eta, todo-plan-doctor) never block bash o
     rmSync(cwd, { recursive: true, force: true });
   }
 }, 60_000);
-
 
 // ---------------------------------------------------------------------------
 // First-slip intervention (R1-R4). Live 2026-10-03: case A row "Force-layout
