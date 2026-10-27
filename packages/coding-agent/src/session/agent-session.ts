@@ -12470,6 +12470,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		deliverQueuedMessages?: boolean;
 		/** Internal `/compact` startup keeps the manual-compaction marker alive while aborting the active turn. */
 		preserveCompaction?: boolean;
+		/**
+		 * Also cancel this agent's running background effect jobs (async bash, eval, ...).
+		 * Restart quiescence waits for those jobs to settle, and a plain abort never
+		 * signals them, so a worker parked on a long background tool could not drain.
+		 * Subagent `task` jobs are left to their own session abort.
+		 */
+		cancelBackgroundJobs?: boolean;
 	}): Promise<void> {
 		const userInterrupt = options?.reason === USER_INTERRUPT_LABEL;
 		this.#pendingAbortErrorId = userInterrupt ? AIError.create(AIError.Flag.UserInterrupt) : undefined;
@@ -12524,6 +12531,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			}
 			this.abortBash();
 			this.abortEval();
+			if (options?.cancelBackgroundJobs && this.#asyncJobManager && this.#agentId) {
+				const manager = this.#asyncJobManager;
+				for (const job of manager.getRunningJobs({ ownerId: this.#agentId })) {
+					if (job.type !== "task") manager.cancel(job.id, { ownerId: this.#agentId });
+				}
+			}
 			const computerControlRevocation = revokeComputerControlForOwner(this.#eval.getKernelOwnerId());
 			const postPromptDrain = this.#cancelPostPromptTasks(options?.reason);
 			this.agent.abort(options?.reason);

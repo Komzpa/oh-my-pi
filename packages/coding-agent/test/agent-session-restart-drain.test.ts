@@ -135,6 +135,42 @@ describe("AgentSession restart drain", () => {
 		expect(resumed.details?.jobs?.[0]).toMatchObject({ id: jobId, resultText: "preserved child result" });
 	});
 
+	it("restart abort cancels background effect jobs that quiescence otherwise waits on forever", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const manager = new AsyncJobManager({});
+		const settings = Settings.isolated({ "launch.enabled": false });
+		const mock = createMockModel({ responses: [] });
+		session = new AgentSession({
+			agent: new Agent({
+				initialState: { model, systemPrompt: ["Test"], tools: [] },
+				streamFn: mock.stream,
+				convertToLlm,
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			asyncJobManager: manager,
+			agentId: "Worker",
+		});
+		const jobId = manager.register(
+			"bash",
+			"emulator",
+			({ signal }) => new Promise<string>(resolve => signal.addEventListener("abort", () => resolve("killed"))),
+			{ ownerId: "Worker" },
+		);
+		const lease = session.beginRestartDrain();
+		let settled = false;
+		const quiescence = lease.waitForQuiescence().then(() => {
+			settled = true;
+		});
+		await Bun.sleep(100);
+		expect(settled).toBe(false); // the defect: a plain abort never signals the job
+		await session.abort({ goalReason: "internal", cancelBackgroundJobs: true });
+		await quiescence;
+		expect(manager.getJob(jobId)?.status).toBe("cancelled");
+		lease.release();
+	}, 15_000);
+
 	it("finishes the current tool batch, checkpoints once, and resumes once on cancel", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const toolStarted = Promise.withResolvers<void>();
