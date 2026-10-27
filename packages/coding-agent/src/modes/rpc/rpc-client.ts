@@ -589,7 +589,7 @@ export class RpcClient {
 		return this.#waitForExit(child);
 	}
 
-	/** Fail prompts that were acknowledged but whose `prompt_result` can no longer arrive. */
+	/** Reject waits that can no longer receive their RPC completion frames. */
 	#rejectPromptWaiters(error: Error): void {
 		for (const reject of this.#settleWaiters) reject(error);
 		this.#settleWaiters.clear();
