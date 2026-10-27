@@ -588,6 +588,30 @@ describe("IRC", () => {
 		});
 	});
 
+	it("makes a streaming IRC interrupt visible before the next turn boundary", async () => {
+		const bridge = new IrcBridge({
+			agent: new Agent(),
+			sessionManager: SessionManager.inMemory("/tmp"),
+			isDisposed: () => false,
+			isStreaming: () => true,
+			isRestartDraining: () => false,
+			queueForRestart: async () => {},
+			planModeEnabled: () => false,
+			emitSessionEvent: async () => {},
+			wakeForIrc: () => {},
+		});
+		const delivery = bridge.deliver({
+			id: "same-turn",
+			from: "Sender",
+			to: "Recipient",
+			body: "stop",
+			ts: Date.now(),
+		});
+		expect(bridge.hasInterrupts()).toBe(true);
+		expect(bridge.hasQueuedFrom("Sender")).toBe(true);
+		expect(await delivery).toBe("injected");
+	});
+
 	describe("wake-turn replies to broadcasts", () => {
 		/**
 		 * An idle subagent wired like a real one: deliveries go through the real
