@@ -11,7 +11,7 @@ import { AssistantMessageEventStream } from "../src/utils/event-stream";
 const api = "blacklist-test" as Api;
 const source = "model-blacklist-test";
 const context: Context = { systemPrompt: [], messages: [] };
-const banned: Model<Api> = { provider: "canary-provider", id: "convicted", name: "Canary", api } as Model<Api>;
+const banned: Model<Api> = { provider: "canary.provider", id: "convicted", name: "Canary", api } as Model<Api>;
 const allowed: Model<Api> = { ...banned, id: "convicted-small" };
 
 function message(model: Model<Api>): AssistantMessage {
@@ -64,7 +64,7 @@ describe("owner model blacklist at dispatch", () => {
 	function ban(): void {
 		fs.writeFileSync(
 			path.join(dir, "model-blacklist.json"),
-			JSON.stringify({ "canary-provider/convicted": "fabricated verification" }),
+			JSON.stringify({ "canary.provider/convicted": "fabricated verification" }),
 		);
 	}
 
@@ -103,7 +103,7 @@ describe("owner model blacklist at dispatch", () => {
 			__providerInFlightForTesting.setLockCreatedObserver(async () => {
 				ban();
 			});
-			const result = dispatch(banned, context, { maxInFlightRequests: { "canary-provider": 1 } });
+			const result = dispatch(banned, context, { maxInFlightRequests: { "canary.provider": 1 } });
 			await expect(result.result()).rejects.toThrow("blacklisted");
 			expect(calls).toEqual([]);
 		});
@@ -127,7 +127,7 @@ describe("owner model blacklist at dispatch", () => {
 	});
 
 	test("blank reasons cannot silently disable a policy entry", () => {
-		fs.writeFileSync(path.join(dir, "model-blacklist.json"), '{"canary-provider/convicted":""}');
+		fs.writeFileSync(path.join(dir, "model-blacklist.json"), '{"canary.provider/convicted":""}');
 		expect(() => streamSimple(banned, context)).toThrow("nonblank reason");
 		expect(calls).toEqual([]);
 	});
