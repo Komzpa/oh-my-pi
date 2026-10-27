@@ -25,6 +25,12 @@ import {
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ModelRoleLookup } from "@oh-my-pi/pi-tui/overlays/model-browser";
 import type { Api, Effort, KnownProvider, Model, ModelSpec } from "@oh-my-pi/pi-ai";
+import {
+	assertModelNotBlacklisted,
+	filterBlacklistedModels,
+	modelBlacklistReason,
+	readModelBlacklist,
+} from "@oh-my-pi/pi-ai/model-blacklist";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { roleDefaultModels } from "@oh-my-pi/pi-catalog/compat/behavior";
 import { resolveBareVariantSelector, resolveVariantSelector } from "@oh-my-pi/pi-catalog/compat/collapse";
@@ -89,6 +95,7 @@ export function pickDefaultAvailableModel(
 	availableModels: Model<Api>[],
 	hasConcreteCredential?: (provider: string) => boolean,
 ): Model<Api> | undefined {
+	availableModels = filterBlacklistedModels(availableModels);
 	const autoSelectable = availableModels.filter(model => providerEntry(model.provider)?.automaticDefault !== false);
 	const models =
 		hasConcreteCredential === undefined
@@ -894,6 +901,29 @@ export interface ParsedModelResult {
 	explicitThinkingLevel: boolean;
 }
 
+/** Recognize denied concrete selectors before fuzzy or thinking-suffix fallback. */
+function modelSelectorBlacklistError(pattern: string, availableModels: Model<Api>[]): string | undefined {
+	const blacklist = readModelBlacklist();
+	if (blacklist.size === 0) return undefined;
+	const visit = (selector: string): string | undefined => {
+		const lower = selector.toLowerCase();
+		for (const [identity, reason] of blacklist) {
+			if (identity.toLowerCase() === lower || identity.slice(identity.indexOf("/") + 1).toLowerCase() === lower) {
+				return `Model ${identity} is blacklisted: ${reason}`;
+			}
+		}
+		// Literal IDs containing a thinking/routing suffix still take precedence.
+		if (availableModels.some(model =>
+			formatModelString(model).toLowerCase() === lower || model.id.toLowerCase() === lower,
+		)) return undefined;
+		const { base, level } = splitThinkingSuffix(selector, -1, MAX_THINKING_SUFFIX_OPTIONS);
+		if (level) return visit(base);
+		const routing = splitUpstreamRouting(selector);
+		return routing ? visit(routing.base) : undefined;
+	};
+	return visit(pattern.trim());
+}
+
 /**
  * Parse a pattern to extract model and thinking level.
  * Handles models with colons in their IDs (e.g., OpenRouter's :exacto suffix).
@@ -912,6 +942,8 @@ function parseModelPatternWithContext(
 	context: ModelPreferenceContext,
 	options?: { allowInvalidThinkingSelectorFallback?: boolean },
 ): ParsedModelResult {
+	const denied = modelSelectorBlacklistError(pattern, availableModels);
+	if (denied) return { model: undefined, explicitThinkingLevel: false, warning: denied };
 	// Exact match on the full pattern first (no fuzzy): a literal id that
 	const exactMatch = matchModel(pattern, availableModels, context, { exactOnly: true });
 	if (exactMatch) {
@@ -1022,6 +1054,9 @@ export function parseModelPattern(
 	preferences?: ModelMatchPreferences,
 	options?: { allowInvalidThinkingSelectorFallback?: boolean },
 ): ParsedModelResult {
+	const denied = modelSelectorBlacklistError(pattern, availableModels);
+	if (denied) throw new Error(denied);
+	availableModels = filterBlacklistedModels(availableModels);
 	return matchPatternWithContext(
 		pattern,
 		availableModels,
@@ -1433,6 +1468,7 @@ export function resolveModelRoleValue(
 	availableModels: Model<Api>[],
 	options?: { settings?: Settings; roleLookup?: ModelRoleLookup; matchPreferences?: ModelMatchPreferences },
 ): ResolvedModelRoleValue {
+	availableModels = filterBlacklistedModels(availableModels);
 	if (!roleValue) {
 		return { model: undefined, thinkingLevel: undefined, explicitThinkingLevel: false, warning: undefined };
 	}
@@ -1529,6 +1565,9 @@ export function resolveModelFromString(
 	available: Model<Api>[],
 	matchPreferences?: ModelMatchPreferences,
 ): Model<Api> | undefined {
+	const denied = modelSelectorBlacklistError(value, available);
+	if (denied) throw new Error(denied);
+	available = filterBlacklistedModels(available);
 	const exact = available.find(model => `${model.provider}/${model.id}` === value);
 	if (exact) return exact;
 	const parsed = parseModelString(value, {
@@ -1551,7 +1590,8 @@ export function resolveModelFromSettings(options: {
 	matchPreferences?: ModelMatchPreferences;
 	roleOrder?: readonly ModelRole[];
 }): Model<Api> | undefined {
-	const { settings, availableModels, matchPreferences, roleOrder } = options;
+	const { settings, matchPreferences, roleOrder } = options;
+	const availableModels = filterBlacklistedModels(options.availableModels);
 	const roles = roleOrder ?? CHAT_MODEL_ROLE_IDS;
 	let sawConfiguredProviderQualifiedRole = false;
 	for (const role of roles) {
@@ -1561,7 +1601,7 @@ export function resolveModelFromSettings(options: {
 		if (expanded.includes("/")) {
 			sawConfiguredProviderQualifiedRole = true;
 		}
-		const resolved = resolveModelFromString(expanded, availableModels, matchPreferences);
+		const resolved = resolveModelRoleValue(expanded, availableModels, { settings, matchPreferences }).model;
 		if (resolved) return resolved;
 	}
 	return sawConfiguredProviderQualifiedRole ? undefined : availableModels[0];
@@ -1618,6 +1658,8 @@ export function resolveModelOverride(
 	const matchPreferences = getModelMatchPreferences(settings);
 	let warning: string | undefined;
 	for (const pattern of modelPatterns) {
+		const denied = modelSelectorBlacklistError(pattern, availableModels);
+		if (denied) throw new Error(denied);
 		const {
 			model,
 			thinkingLevel,
@@ -1833,7 +1875,7 @@ export async function resolveModelScope(
 	preferences?: ModelMatchPreferences,
 	settings?: Settings,
 ): Promise<ScopedModel[]> {
-	const availableModels = modelRegistry.getAvailable();
+	const availableModels = filterBlacklistedModels(modelRegistry.getAvailable());
 	const context = buildPreferenceContext(availableModels, preferences);
 	const scopedModels: ScopedModel[] = [];
 	const addScopedModel = (model: Model<Api>, thinkingLevel: ThinkingLevel | undefined, explicit: boolean) => {
@@ -1984,6 +2026,7 @@ export function filterAvailableModelsByEnabledPatterns(
 	patterns: readonly string[],
 	settings?: Settings,
 ): Model<Api>[] {
+	available = filterBlacklistedModels(available);
 	if (patterns.length === 0) return available;
 
 	const context = buildPreferenceContext(available, undefined);
@@ -2111,11 +2154,16 @@ export function resolveCliModel(options: CliModelOptions): ResolveCliModelResult
 	if (!cliModel) {
 		return { model: undefined, selector: undefined, warning: undefined, error: undefined };
 	}
+	const trimmed = cliModel.trim();
+	const selector = cliProvider && !trimmed.toLowerCase().startsWith(`${cliProvider.toLowerCase()}/`)
+		? `${cliProvider}/${trimmed}` : trimmed;
+	const denied = modelSelectorBlacklistError(selector, modelRegistry.getAll());
+	if (denied) return { model: undefined, selector: undefined, warning: undefined, error: denied };
 
 	const scoped = { ...options, cliModel };
 	const scope: CliModelScope = {
-		all: modelRegistry.getAll(),
-		available: preferredModels ?? modelRegistry.getAvailable(),
+		all: filterBlacklistedModels(modelRegistry.getAll()),
+		available: filterBlacklistedModels(preferredModels ?? modelRegistry.getAvailable()),
 	};
 	const disabled = disabledProviderIds(settings);
 	if (disabled.size === 0) return resolveCliModelInScope(scoped, scope);
@@ -2377,6 +2425,7 @@ export async function findInitialModel(options: {
 
 	// 1. CLI args take priority
 	if (cliProvider && cliModel) {
+		assertModelNotBlacklisted({ provider: cliProvider, id: cliModel });
 		const found = modelRegistry.find(cliProvider, cliModel);
 		if (!found) {
 			console.error(chalk.red(`Model ${cliProvider}/${cliModel} not found`));
@@ -2386,8 +2435,8 @@ export async function findInitialModel(options: {
 	}
 
 	// 2. Use first model from scoped models (skip if continuing/resuming)
-	if (scopedModels.length > 0 && !isContinuing) {
-		const scoped = scopedModels[0];
+	const scoped = scopedModels.find(entry => modelBlacklistReason(entry.model) === undefined);
+	if (scoped && !isContinuing) {
 		const scopedThinkingSelector =
 			scoped.thinkingLevel === ThinkingLevel.Inherit
 				? defaultThinkingSelector
@@ -2405,7 +2454,7 @@ export async function findInitialModel(options: {
 	// 3. Try saved default from settings
 	if (defaultProvider && defaultModelId) {
 		const found = modelRegistry.find(defaultProvider, defaultModelId);
-		if (found) {
+		if (found && modelBlacklistReason(found) === undefined) {
 			model = found;
 			thinkingLevel = clampThinkingLevelForModel(found, defaultThinkingSelector);
 			return { model, thinkingLevel, fallbackMessage: undefined };
