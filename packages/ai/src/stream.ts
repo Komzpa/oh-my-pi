@@ -1,3 +1,4 @@
+import { assertModelNotBlacklisted } from "./model-blacklist";
 import * as crypto from "node:crypto";
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
@@ -830,6 +831,7 @@ export function stream<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
+	assertModelNotBlacklisted(model);
 	if (model.resolveHeaders) {
 		return withResolvedModelHeaders(model, options?.signal, resolvedModel => stream(resolvedModel, context, options));
 	}
@@ -1170,6 +1172,7 @@ export function streamSimple<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+	assertModelNotBlacklisted(model);
 	const sessionOptions = withInferenceSessionId(options);
 	// Unverified thinking is opt-in: without a requested effort the request is
 	// byte-identical to a non-reasoning model's.
