@@ -461,6 +461,51 @@ test("override (missed-eta escalation): a todo.override alone does not lift it; 
   }
 }, 60_000);
 
+test("retro escalation: a re-dispatched row (Foo -> Foo-2) blocks after three real ticks until a retro-facilitator is staffed", async () => {
+  // The retro line is emitted once per incident; the demand must still count every tick while the retro is due.
+  const now = Date.now();
+  const fresh = { optimisticSeconds: 600, likelySeconds: 1200, pessimisticSeconds: 2400, confidence: "medium", basis: "liveness fixture", updatedAt: now };
+  const handlers = new Map();
+  const api = {
+    on: (event, handler) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait", "write"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: () => undefined,
+  };
+  await todoDispatch(api);
+  const tasks = [{ content: NAMES[0], status: "in_progress", schedule: { dependencies: [], resources: [NAMES[0]], owner: "Fix-2", startedAt: now, estimate: fresh, attemptHistory: [{ workerName: "Fix", terminalStatus: "failed" }] } }];
+  const branch = [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } }];
+  const jobs = { running: [{ id: "Fix-2", agentId: "Fix-2", type: "task", status: "running", label: NAMES[0], startTime: now }], recent: [], nonJobAgents: [] };
+  const ctx = {
+    cwd: (repos ??= { clean: makeRepo("clean"), resolvedStale: makeRepo("clean") }).clean,
+    sessionManager: { getHeader: () => ({ id: "liveness-retro" }), ...branchMock(() => branch), getSessionFile: () => undefined },
+    getAsyncJobSnapshot: () => jobs,
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => false,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    clearTimer: () => undefined,
+  };
+  let seq = 0;
+  const call = async (name, input = {}) => {
+    const out = await handlers.get("tool_call")({ toolName: name, toolCallId: `r-${seq += 1}`, input }, ctx);
+    return { admitted: !(out?.block === true), reason: out?.reason ?? "" };
+  };
+  try {
+    for (let i = 0; i < 4; i += 1)
+      await handlers.get("tool_result")({ toolName: "todo", toolCallId: `rt-${i}`, isError: false, content: [], details: undefined }, ctx);
+    const bash = await call("bash", { command: "bun test" });
+    expect(bash.admitted, "retro escalated through real ticks").toBe(false);
+    expect(bash.reason).toContain("retro-facilitator");
+    expect((await call("task", { tasks: [{ agent: "plan-doctor", name: "Doctor", task: "diagnose" }] })).admitted, "plan-doctor does not answer retro").toBe(false);
+    expect((await call("task", { tasks: [{ agent: "retro-facilitator", name: "Retro", task: "keep/ban decisions" }] })).admitted, "retro-facilitator answers it").toBe(true);
+  } finally {
+    handlers.get("session_shutdown")?.({}, ctx);
+  }
+}, 60_000);
+
 test("decideGateCall: allowed implies a satisfied remedy; refused names every gate", () => {
   const gates = [
     { id: "planning-issues", remedy: "fix estimates with todo", satisfies: (c) => c.name === "todo" },
