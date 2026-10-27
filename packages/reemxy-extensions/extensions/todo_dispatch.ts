@@ -4578,7 +4578,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ready.length > capacity - running.length && idle > capacity ? `${idle} idle rows for ${capacity} worker slots: prune before adding` : "",
     ].filter(Boolean);
     trackDemands([
-      ...(retroLine ? ["retro"] : []),
+      // retroLine is emitted once per incident, so it cannot count ticks; the demand stands while
+      // the retro is due and no retro-facilitator is running (a failed one leaves it due).
+      ...(sprintState.retroDueReason && !running.some((job) => [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name))) ? ["retro"] : []),
       ...(receding.includes("plan-doctor") ? ["todo-plan-doctor"] : []),
       ...(pendingReplan ? ["todo-replan"] : []),
       ...(unlinked.length ? ["todo-link"] : []),
