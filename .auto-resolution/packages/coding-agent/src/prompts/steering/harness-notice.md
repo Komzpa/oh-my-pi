@@ -1,2 +1,0 @@
-Harness (not Darafei):
-{{{notices}}}

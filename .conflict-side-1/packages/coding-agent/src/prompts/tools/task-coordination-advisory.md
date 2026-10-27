@@ -1,1 +1,0 @@
-{{count}} siblings run together. Overlapping files? Give each file one owner via `write agent://<id>`; siblings message only to unblock, never to announce edits. `read proc://` shows running jobs and agents.

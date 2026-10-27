@@ -1,4 +1,0 @@
-### "echo f\u{4}"
-% echo f
-file1  file2  foo.c  foo.h
-@ 0,8
