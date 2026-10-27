@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -7,16 +9,15 @@ import { executeSend } from "@oh-my-pi/pi-coding-agent/irc/messaging";
 import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { ensurePersistedRoster } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { IrcBridge, type IrcBridgeHost } from "@oh-my-pi/pi-coding-agent/session/irc-bridge";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { attachIrcWakeTurnMonitor } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { createSessionDefaults } from "../helpers/session-defaults";
-import { ensurePersistedRoster } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
-import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { TempDir } from "@oh-my-pi/pi-utils";
 
 type IrcWakeObserver = (records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined;
 
@@ -202,64 +203,68 @@ describe("IRC", () => {
 		});
 
 		it("send rehydrates and revives a terminal ref evicted from the resident roster", async () => {
-			using tempDir = TempDir.createSync("@omp-irc-evicted-resume-");
-			const rootFile = `${tempDir.path()}/main.jsonl`;
-			const rootDir = rootFile.slice(0, -".jsonl".length);
-			const childCount = 140;
-			const childId = (index: number) => `Worker-${String(index).padStart(3, "0")}`;
-			const sessionRecord = (id: string) =>
-				`${JSON.stringify({
-					type: "session",
-					version: CURRENT_SESSION_VERSION,
-					id,
-					timestamp: "2026-09-01T00:00:00.000Z",
-					cwd: tempDir.path(),
+			const tempPath = mkdtempSync(`${tmpdir()}/omp-irc-evicted-resume-`);
+			try {
+				const rootFile = `${tempPath}/main.jsonl`;
+				const rootDir = rootFile.slice(0, -".jsonl".length);
+				const childCount = 140;
+				const childId = (index: number) => `Worker-${String(index).padStart(3, "0")}`;
+				const sessionRecord = (id: string) =>
+					`${JSON.stringify({
+						type: "session",
+						version: CURRENT_SESSION_VERSION,
+						id,
+						timestamp: "2026-09-01T00:00:00.000Z",
+						cwd: tempPath,
+					})}\n`;
+				const initRecord = `${JSON.stringify({
+					type: "session_init",
+					id: "init",
+					parentId: null,
+					timestamp: "2026-09-01T00:00:01.000Z",
+					systemPrompt: "test",
+					task: "persisted task",
+					tools: ["read"],
 				})}\n`;
-			const initRecord = `${JSON.stringify({
-				type: "session_init",
-				id: "init",
-				parentId: null,
-				timestamp: "2026-09-01T00:00:01.000Z",
-				systemPrompt: "test",
-				task: "persisted task",
-				tools: ["read"],
-			})}\n`;
-			await Bun.write(rootFile, sessionRecord("main"));
-			await Promise.all(
-				Array.from({ length: childCount }, (_, index) => {
-					const id = childId(index);
-					return Bun.write(`${rootDir}/${id}.jsonl`, sessionRecord(id) + initRecord);
-				}),
-			);
-			registry.register({
-				id: "0-Main",
-				displayName: "main",
-				kind: "main",
-				session: makeFakeSession().session,
-				sessionFile: rootFile,
-				status: "idle",
-			});
-			await ensurePersistedRoster(registry, rootFile);
-			const evictedId = Array.from({ length: childCount }, (_, index) => childId(index)).find(
-				id => registry.get(id) === undefined,
-			);
-			expect(evictedId).toBeDefined();
-			if (!evictedId) throw new Error("Expected the resident terminal-ref bound to evict a recipient");
+				await Bun.write(rootFile, sessionRecord("main"));
+				await Promise.all(
+					Array.from({ length: childCount }, (_, index) => {
+						const id = childId(index);
+						return Bun.write(`${rootDir}/${id}.jsonl`, sessionRecord(id) + initRecord);
+					}),
+				);
+				registry.register({
+					id: "0-Main",
+					displayName: "main",
+					kind: "main",
+					session: makeFakeSession().session,
+					sessionFile: rootFile,
+					status: "idle",
+				});
+				await ensurePersistedRoster(registry, rootFile);
+				const evictedId = Array.from({ length: childCount }, (_, index) => childId(index)).find(
+					id => registry.get(id) === undefined,
+				);
+				expect(evictedId).toBeDefined();
+				if (!evictedId) throw new Error("Expected the resident terminal-ref bound to evict a recipient");
 
-			const worker = makeFakeSession();
-			worker.setOutcome("woken");
-			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
-				async ref => (ref.id === evictedId ? async () => worker.session : undefined),
-				() => 0,
-			);
-			const result = await executeSend(
-				{ registry, senderId: "0-Main", sessionFileHint: rootFile },
-				{ to: evictedId, message: "resume this task" },
-			);
-			expect(result.isError).not.toBe(true);
-			expect(worker.delivered.map(message => message.body)).toEqual(["resume this task"]);
-			expect(registry.get(evictedId)?.session).toBe(worker.session);
-			expect(registry.get(evictedId)?.status).toBe("idle");
+				const worker = makeFakeSession();
+				worker.setOutcome("woken");
+				AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+					async ref => (ref.id === evictedId ? async () => worker.session : undefined),
+					() => 0,
+				);
+				const result = await executeSend(
+					{ registry, senderId: "0-Main", sessionFileHint: rootFile },
+					{ to: evictedId, message: "resume this task" },
+				);
+				expect(result.isError).not.toBe(true);
+				expect(worker.delivered.map(message => message.body)).toEqual(["resume this task"]);
+				expect(registry.get(evictedId)?.session).toBe(worker.session);
+				expect(registry.get(evictedId)?.status).toBe("idle");
+			} finally {
+				rmSync(tempPath, { recursive: true, force: true });
+			}
 		});
 
 		it("send fails cleanly when a parked recipient has no reviver", async () => {

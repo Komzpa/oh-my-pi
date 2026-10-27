@@ -292,12 +292,9 @@ export class IrcBridge {
 			attribution: "agent",
 			timestamp: msg.ts,
 		};
+		if (await this.#queueDuringRestartDrain(record, peerMessage)) return "injected";
 		if (peerMessage) this.#peerMessages.add(record);
 		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
-		if (this.#host.isRestartDraining()) {
-			await this.#host.queueForRestart(record);
-			return "injected";
-		}
 		if (streaming) {
 			if (fromParent && !peerMessage) {
 				const steer: AgentMessage = {
@@ -327,6 +324,14 @@ export class IrcBridge {
 		}
 		this.#host.wakeForIrc([record]);
 		return "woken";
+	}
+
+	async #queueDuringRestartDrain(record: CustomMessage, peerMessage: boolean): Promise<boolean> {
+		if (!this.#host.isRestartDraining()) return false;
+		if (peerMessage) this.#peerMessages.add(record);
+		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
+		await this.#host.queueForRestart(record);
+		return true;
 	}
 
 	/** Emits an IRC relay observation for rendering without persisting it. */
