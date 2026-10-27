@@ -4,6 +4,7 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -81,19 +82,21 @@ describe("InteractiveMode live settings", () => {
 		const badge = vi.spyOn(mode.statusLine, "setRunningSubagents");
 		const registry = AgentRegistry.global();
 		const ids = Array.from({ length: 100 }, (_, index) => `restore-burst-${index}`);
+		vi.useFakeTimers();
 		try {
 			for (const id of ids) {
 				registry.register({ id, displayName: id, kind: "sub", session: null, status: "running" });
 			}
 			expect(sync).not.toHaveBeenCalled();
-			await new Promise(resolve => setTimeout(resolve, 150));
+			vi.advanceTimersByTime(100);
 			expect(sync).toHaveBeenCalledTimes(1);
 			expect(badge.mock.calls.at(-1)?.[0]).toEqual(expect.arrayContaining(ids));
 			for (const id of ids) registry.unregister(id);
-			await new Promise(resolve => setTimeout(resolve, 150));
+			vi.advanceTimersByTime(100);
 			expect(sync).toHaveBeenCalledTimes(2);
 			expect(badge.mock.calls.at(-1)?.[0].some(id => ids.includes(id))).toBe(false);
 		} finally {
+			vi.useRealTimers();
 			for (const id of ids) registry.unregister(id);
 		}
 	});
