@@ -4225,7 +4225,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // An ignored retro escalates too and only a retro-facilitator task lifts it.
     const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) => (id === "retro" || PLAN_DEMAND_IDS.has(id)) && isDemandEscalated(id));
     if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) {
-      const planFix = (call: GateCall): boolean => call.name === "todo" && PLAN_FIX_OPS.has(todoOpOf(call) ?? "");
+      // Viewing the plan is reading it, which finding the fix needs.
+      const planFix = (call: GateCall): boolean => call.name === "todo" && (PLAN_FIX_OPS.has(todoOpOf(call) ?? "") || todoOpOf(call) === "view");
       const retroStaffed = (call: GateCall): boolean =>
         call.name === "task" && taskItems(call.arguments ?? {}).some((item) => item["agent"] === "retro-facilitator");
       const gates: ActiveGate[] = escalatedIds.map((id) => ({
@@ -4324,10 +4325,20 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return buildRetroLine(now, decision.deadline?.timezone);
     };
     const retroLine = retroAdvice();
-    if (!decision.forecast)
+    const retroFacilitatorRunning = (ctx.getAsyncJobSnapshot()?.running ?? []).some((job) =>
+      job.type === "task" && job.status === "running" && [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name)));
+    // retroLine is emitted once per incident, so it cannot count ticks; the demand stands while
+    // the retro is due and no retro-facilitator is running (a failed one leaves it due).
+    const retroDemand = sprintState.retroDueReason && !retroFacilitatorRunning ? ["retro"] : [];
+    if (!decision.forecast) {
+      // A plan with no open rows has no plan problems: decay every other demand here too, or an
+      // escalated one (e.g. unread-receipts after the last row closed) would block forever.
+      trackDemands(retroDemand, false);
+      persistSprintState();
       return retroLine
         ? `PLAN CHECK: 1 problem(s). (1) ${retroLine}. Fix them with the pass of skill://chief-of-staff.`
         : null;
+    }
     const rows = decision.forecast.rows ?? [];
     const openContents = new Set(
       phasesNow.flatMap((phase) => phase.tasks.filter((task) => task.status === "pending" || task.status === "in_progress").map((task) => task.content)),
@@ -4578,9 +4589,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ready.length > capacity - running.length && idle > capacity ? `${idle} idle rows for ${capacity} worker slots: prune before adding` : "",
     ].filter(Boolean);
     trackDemands([
-      // retroLine is emitted once per incident, so it cannot count ticks; the demand stands while
-      // the retro is due and no retro-facilitator is running (a failed one leaves it due).
-      ...(sprintState.retroDueReason && !running.some((job) => [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name))) ? ["retro"] : []),
+      ...retroDemand,
       ...(receding.includes("plan-doctor") ? ["todo-plan-doctor"] : []),
       ...(pendingReplan ? ["todo-replan"] : []),
       ...(unlinked.length ? ["todo-link"] : []),
