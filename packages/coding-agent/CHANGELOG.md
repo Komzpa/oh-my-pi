@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `AgentStorage` starting with an empty credential table after it quarantined a corrupt `agent.db`; it now restores the readable credentials from the quarantined copy
+
 ## [18.13.2] - 2026-10-27
 
 ### Added

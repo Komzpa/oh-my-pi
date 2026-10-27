@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a corrupt `agent.db` losing every stored provider credential: after the damaged store is quarantined, the credentials still readable in it are copied into the replacement, and a failed salvage logs an error naming the quarantined path. A store whose header page count is one page too high (every statement fails with `SQLITE_CORRUPT`, rows intact) is read after repairing that count on a scratch copy
+
 ## [18.13.2] - 2026-10-27
 
 ### Fixed
