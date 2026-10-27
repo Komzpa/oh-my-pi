@@ -306,7 +306,7 @@ describe("bash session infrastructure default denies", () => {
 			["bash -n <(printf 'killall plasmashell')", false],
 			["bash -n +n -c 'killall plasmashell'", true],
 			["bash -n +o noexec -c 'killall plasmashell'", true],
-			["bash -n -c \"$(killall plasmashell)\"", true],
+			['bash -n -c "$(killall plasmashell)"', true],
 			["bash -n <<EOF\n$(killall plasmashell)\nEOF", true],
 			["printf '' | xargs -n1 echo killall plasmashell", false],
 		];
@@ -322,7 +322,7 @@ describe("bash session infrastructure default denies", () => {
 			["bash -n -c 'printf syntax-must-not-run'", "(no output)"],
 		]) {
 			const result = await bashTool().execute("safe-review-control", { command });
-			const text = result.content.map(part => part.type === "text" ? part.text : "").join("");
+			const text = result.content.map(part => (part.type === "text" ? part.text : "")).join("");
 			expect(text).toBe(expected);
 		}
 	});

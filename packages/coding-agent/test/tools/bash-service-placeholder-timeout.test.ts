@@ -77,7 +77,7 @@ describe("bash service placeholder arguments", () => {
 			process.stdout.write(`service smoke plain pid=${started.details?.service?.pid}\n`);
 			// Materialized placeholders (async:false, timeout:0) are "not set" too.
 			const placeholders = await bash.execute("svc-placeholders", {
-				command: "printf '%s:%s\\n' \"$SERVICE_TEST_VALUE\" \"$PI_SESSION_ID\"; sleep 30",
+				command: 'printf \'%s:%s\\n\' "$SERVICE_TEST_VALUE" "$PI_SESSION_ID"; sleep 30',
 				name: "placeholder-service",
 				ready: { log: "caller-env:caller-session", timeout: 5 },
 				pty: false,
@@ -100,7 +100,7 @@ describe("bash service placeholder arguments", () => {
 			expect(notReady.details?.service).toMatchObject({ ready: false, timedOut: true });
 			process.stdout.write(`service smoke readiness-timeout pid=${notReady.details?.service?.pid}\n`);
 			const ordinary = await bash.execute("ordinary-env", {
-				command: "printf '%s:%s' \"$SERVICE_TEST_VALUE\" \"$PI_SESSION_ID\"",
+				command: 'printf \'%s:%s\' "$SERVICE_TEST_VALUE" "$PI_SESSION_ID"',
 				env: { SERVICE_TEST_VALUE: "ordinary", PI_SESSION_ID: "caller-session" },
 				async: false,
 				timeout: 0,
