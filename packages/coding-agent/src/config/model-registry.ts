@@ -1,3 +1,4 @@
+import { filterBlacklistedModels, modelBlacklistReason } from "@oh-my-pi/pi-ai/model-blacklist";
 import * as path from "node:path";
 import type { ApiKeyResolver, FetchImpl, ResolvedApiKey, UsageProvider } from "@oh-my-pi/pi-ai";
 import { type AuthApiKeyOptions, type AuthPeekOptions, oauthAccountKey } from "@oh-my-pi/pi-ai/auth-storage";
@@ -3369,17 +3370,17 @@ export class ModelRegistry {
 	 */
 	getAll(kind: ModelKind | "all" = "chat"): Model<Api>[] {
 		const models = this.#ensureFullSnapshot();
-		if (kind === "all") return models;
+		if (kind === "all") return filterBlacklistedModels(models);
 		let snapshots = this.#fullKindSnapshots.get(models);
 		if (!snapshots) {
 			snapshots = {};
 			this.#fullKindSnapshots.set(models, snapshots);
 		}
 		const cached = snapshots[kind];
-		if (cached) return cached;
+		if (cached) return filterBlacklistedModels(cached);
 		const filtered = models.filter(model => modelKind(model) === kind);
 		snapshots[kind] = filtered;
-		return filtered;
+		return filterBlacklistedModels(filtered);
 	}
 
 	/**
@@ -3421,7 +3422,7 @@ export class ModelRegistry {
 		const requested = new Set([...providers].map(provider => provider.trim().toLowerCase()).filter(Boolean));
 		const isProviderAvailable = this.#createProviderAvailabilityCheck();
 		if (this.#hasFullSnapshot) {
-			return this.#models.filter(
+			return filterBlacklistedModels(this.#models).filter(
 				model =>
 					requested.has(model.provider.toLowerCase()) &&
 					isProviderAvailable(model.provider) &&
@@ -3439,10 +3440,10 @@ export class ModelRegistry {
 		// catalog modifiers can inspect live credentials, so keep reprojecting
 		// those rather than extending the lifetime of their output.
 		if (availableProviders.size === 1 && this.#runtimeModelModifiers.size === 0) {
-			const models = this.#modelsForProviderLookup(availableProviders.values().next().value!);
+			const models = filterBlacklistedModels(this.#modelsForProviderLookup(availableProviders.values().next().value!));
 			return kind === "all" ? models.slice() : models.filter(model => modelKind(model) === kind);
 		}
-		const models = this.#composeStaticModels(availableProviders);
+		const models = filterBlacklistedModels(this.#composeStaticModels(availableProviders));
 		return kind === "all" ? models : models.filter(model => modelKind(model) === kind);
 	}
 
@@ -3599,7 +3600,8 @@ export class ModelRegistry {
 	 */
 	find(provider: string, modelId: string): Model<Api> | undefined {
 		if (this.#isProviderDisabled(provider)) return undefined;
-		return resolveProviderModelReference(provider, modelId, this.#modelsForProviderLookup(provider));
+		const model = resolveProviderModelReference(provider, modelId, this.#modelsForProviderLookup(provider));
+		return model && modelBlacklistReason(model) === undefined ? model : undefined;
 	}
 
 	/** Whether settings disable `provider` (`disabledProviders`). */
@@ -3615,7 +3617,7 @@ export class ModelRegistry {
 	 */
 	getProviderModels(provider: string): Model<Api>[] {
 		const normalizedProvider = provider.trim().toLowerCase();
-		return this.#modelsForProviderLookup(provider).filter(
+		return filterBlacklistedModels(this.#modelsForProviderLookup(provider)).filter(
 			model => model.provider.toLowerCase() === normalizedProvider,
 		);
 	}
