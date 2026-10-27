@@ -960,9 +960,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const infra = isInfraFailure(failed?.infraFailureError);
 			const sameProfile = spawn.agent === undefined || spawn.agent === previous.agentProfile;
 			let model: string | null | undefined;
-			if (!infra && sameProfile) {
-				if (!previous.resolvedModel)
-					return { error: `Cannot redispatch "${task.content}": the worker's resolved model is missing.` };
+			// No resolved model means the worker failed before any model ran (a missing key, a bad
+			// spawn): that says nothing about the model, so the retry routes ordinarily.
+			if (!infra && sameProfile && previous.resolvedModel) {
 				triedModels.push(previous.resolvedModel);
 				model = nextVendorModel();
 				if (model === null) return exhausted;
