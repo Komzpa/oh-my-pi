@@ -1986,26 +1986,28 @@ export class SessionTools {
 	}
 
 	/** Rediscovers reloadable skills and refreshes prompt metadata. */
-	async refreshSkills(): Promise<void> {
-		resetCapabilities();
-		if (this.#skillsReloadable) {
-			const skillsSettings = cfgSkills.get(this.#host.settings);
-			const discovered = await loadSkills({
-				...skillsSettings,
-				cwd: this.#host.sessionManager.getCwd(),
-				disabledExtensions: cfgDisabledExtensions.get(this.#host.settings),
-				extensionRoots: this.#host.effectiveExtensionRoots(),
-			});
-			this.#skills = discovered.skills;
-			this.#skillWarnings = discovered.warnings;
-			this.#skillsSettings = skillsSettings;
+	refreshSkills(): Promise<void> {
+		return this.runToolRegistryMutation(async () => {
+			resetCapabilities();
+			if (this.#skillsReloadable) {
+				const skillsSettings = cfgSkills.get(this.#host.settings);
+				const discovered = await loadSkills({
+					...skillsSettings,
+					cwd: this.#host.sessionManager.getCwd(),
+					disabledExtensions: cfgDisabledExtensions.get(this.#host.settings),
+					extensionRoots: this.#host.effectiveExtensionRoots(),
+				});
+				this.#skills = discovered.skills;
+				this.#skillWarnings = discovered.warnings;
+				this.#skillsSettings = skillsSettings;
 
-			if (this.#host.agentKind() === "main") {
-				setActiveSkills(this.#skills);
+				if (this.#host.agentKind() === "main") {
+					setActiveSkills(this.#skills);
+				}
 			}
-		}
-		await this.refreshBaseSystemPrompt();
-		this.#host.notifyCommandMetadataChanged();
+			await this.refreshBaseSystemPrompt();
+			this.#host.notifyCommandMetadataChanged();
+		});
 	}
 
 	/** Selects enabled tools, ignoring names absent from the registry. */

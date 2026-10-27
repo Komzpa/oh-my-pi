@@ -3356,6 +3356,7 @@ export class ModelRegistry {
 			accountIds: accountAccess && Object.keys(accountAccess),
 			forceRefresh: options?.forceRefresh,
 			refreshReason: options?.refreshReason,
+			rejectedAccessToken: options?.rejectedAccessToken,
 			signal: options?.signal,
 		});
 	}
