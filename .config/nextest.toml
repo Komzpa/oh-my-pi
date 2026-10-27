@@ -35,3 +35,17 @@ threads-required = "num-test-threads"
 [[profile.ci.overrides]]
 filter = 'test(deeper_than_the_stack) + test(stopping_at_the_leaf_of_a_deep_ignore_chain_returns)'
 threads-required = "num-test-threads"
+
+# External shell launches and process-limit probes share the host's systemd
+# user manager. Unbounded concurrent scope creation delays FIFO writers past
+# their deadlock deadlines. Bound only these consumers; keep other tests parallel.
+[test-groups.systemd-user-manager]
+max-threads = 8
+
+[[profile.default.overrides]]
+filter = '(package(pi-shell) & (test(shell::tests::) + test(git::))) + (package(pi-vcs) & test(process_limit::))'
+test-group = "systemd-user-manager"
+
+[[profile.ci.overrides]]
+filter = '(package(pi-shell) & (test(shell::tests::) + test(git::))) + (package(pi-vcs) & test(process_limit::))'
+test-group = "systemd-user-manager"
