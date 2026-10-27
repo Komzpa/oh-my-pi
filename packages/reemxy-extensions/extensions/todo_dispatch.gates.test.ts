@@ -2528,7 +2528,7 @@ test("parseTodoOverride names a gate id inside the override field", () => {
   expect(parseTodoOverride(null)).toBeUndefined();
 });
 
-test("escalated demands refuse non-remedy calls until a todo override names them", async () => {
+test("ignored advisory demands (missed-eta, todo-plan-doctor) never block bash or task on the main agent", async () => {
   const cwd = repo("clean");
   const now = Date.now();
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
@@ -2540,7 +2540,7 @@ test("escalated demands refuse non-remedy calls until a todo override names them
     appendEntry: () => undefined,
     sendMessage: () => undefined,
   } as unknown as ExtensionAPI;
-  const branch = [...plan("ready", now), { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "missed-eta": 3 } } }];
+  const branch = [...plan("ready", now), { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "missed-eta": 6, "todo-plan-doctor": 6, retro: 6, "todo-replan": 6, "todo-link": 6, "unread-receipts": 6 } } }];
   await todoDispatch(api);
   const ctx = {
     cwd,
@@ -2555,63 +2555,18 @@ test("escalated demands refuse non-remedy calls until a todo override names them
   try {
     await handlers.get("session_start")!({}, ctx);
     const toolCall = handlers.get("tool_call")!;
-    const refused = (await toolCall({ toolName: "task", toolCallId: "u1", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
-    expect(refused?.block).toBe(true);
-    expect(refused?.reason).toContain("missed-eta");
-    expect(await toolCall({ toolName: "read", toolCallId: "u2", input: CALLS.read!.arguments }, ctx)).toBeUndefined();
-    expect(await toolCall({ toolName: "todo", toolCallId: "u3", input: CALLS.todoSchedule!.arguments }, ctx)).toBeUndefined();
-    // Naming the demand in the override field lets later calls through.
-    expect(await toolCall({ toolName: "todo", toolCallId: "u4", input: { ...CALLS.todoSchedule!.arguments, override: "missed-eta re-estimated" } }, ctx)).toBeUndefined();
-    expect(await toolCall({ toolName: "todo", toolCallId: "u5", input: CALLS.taskRow!.arguments }, ctx)).toBeUndefined();
+    for (const [id, name, input] of [["u1", "bash", { command: "bun test" }], ["u2", "task", CALLS.taskRow!.arguments], ["u3", "bash", { command: "systemctl status codex-lb" }]] as const) {
+      const out = (await toolCall({ toolName: name, toolCallId: id, input }, ctx)) as { block?: boolean; reason?: string } | undefined;
+      // Other gates (staffing the ready row) may still refuse bash; only the demand ids must be absent.
+      expect(out?.reason ?? "", `${name} is not blocked by an advisory demand`).not.toMatch(/missed-eta|todo-plan-doctor|retro|todo-replan|todo-link|unread-receipts/);
+      if (name === "task") expect(out?.block, `task admitted: ${out?.reason}`).not.toBe(true);
+    }
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });
   }
 }, 60_000);
 
-test("grievance 590: override naming todo-plan-doctor lets task dispatch through", async () => {
-  const cwd = repo("clean");
-  const now = Date.now();
-  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
-  const api = {
-    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
-    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
-    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
-    registerSoftToolRequirementProvider: () => undefined,
-    appendEntry: () => undefined,
-    sendMessage: () => undefined,
-  } as unknown as ExtensionAPI;
-  const branch = [...plan("ready", now), { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "todo-plan-doctor": 3 } } }];
-  await todoDispatch(api);
-  const ctx = {
-    cwd,
-    sessionManager: { getHeader: () => ({ id: "gates-plan-doctor" }), ...branchMock(() => branch), getSessionFile: () => undefined },
-    getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
-    getTaskMaxConcurrency: () => 20,
-    isIdle: () => false,
-    hasPendingMessages: () => false,
-    setTimeout: () => ({}),
-    clearTimer: () => undefined,
-  } as unknown as ExtensionContext;
-  try {
-    await handlers.get("session_start")!({}, ctx);
-    const toolCall = handlers.get("tool_call")!;
-    const refused = (await toolCall({ toolName: "task", toolCallId: "u1", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
-    expect(refused?.block).toBe(true);
-    expect(refused?.reason).toContain("todo-plan-doctor");
-    // Negative control: an override naming a different gate leaves the refusal standing.
-    expect(await toolCall({ toolName: "todo", toolCallId: "u2", input: { ...CALLS.todoSchedule!.arguments, override: "missed-eta re-estimated" } }, ctx)).toBeUndefined();
-    const stillRefused = (await toolCall({ toolName: "task", toolCallId: "u3", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
-    expect(stillRefused?.block).toBe(true);
-    expect(stillRefused?.reason).toContain("todo-plan-doctor");
-    // Naming the escalated demand in the override field lets later task calls through.
-    expect(await toolCall({ toolName: "todo", toolCallId: "u4", input: { ...CALLS.todoSchedule!.arguments, override: "todo-plan-doctor" } }, ctx)).toBeUndefined();
-    expect(await toolCall({ toolName: "task", toolCallId: "u5", input: CALLS.taskRow!.arguments }, ctx)).toBeUndefined();
-  } finally {
-    handlers.get("session_shutdown")?.({}, ctx);
-    rmSync(cwd, { recursive: true, force: true });
-  }
-}, 60_000);
 
 // ---------------------------------------------------------------------------
 // First-slip intervention (R1-R4). Live 2026-10-03: case A row "Force-layout

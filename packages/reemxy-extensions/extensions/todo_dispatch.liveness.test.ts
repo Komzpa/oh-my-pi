@@ -343,8 +343,8 @@ async function runMask(mask, repos, otherRepo) {
 
 // ------------------------------------------------------- union + override ---
 async function armMissedEtaEscalation(repos) {
-  // Stale estimates put every row past its finish for real, so three ignored PLAN CHECKs
-  // escalate missed-eta through the live trackDemands path (a retro line dedupes after its
+  // Stale estimates put every row past its finish for real, so ignored PLAN CHECKs
+  // track missed-eta through the live trackDemands path (a retro line dedupes after its
   // first notice and can only re-fire when new workers finish, so it cannot escalate alone).
   const now = Date.now();
   const stale = { optimisticSeconds: 60, likelySeconds: 300, pessimisticSeconds: 600, confidence: "medium", basis: "liveness fixture", updatedAt: now - 3_600_000 };
@@ -380,8 +380,8 @@ async function armMissedEtaEscalation(repos) {
     const out = await handlers.get("tool_call")({ toolName: name, toolCallId: `u-${seq += 1}`, input }, ctx);
     return { admitted: !(out?.block === true), reason: out?.reason };
   };
-  // Three ignored PLAN CHECKs escalate the overdue demand through the real hook path.
-  for (let i = 0; i < 3; i += 1)
+  // Six ignored PLAN CHECKs keep the overdue demand standing through the real hook path.
+  for (let i = 0; i < 6; i += 1)
     await handlers.get("tool_result")({ toolName: "todo", toolCallId: `ur-${i}`, isError: false, content: [], details: undefined }, ctx);
   return { call, shutdown: () => handlers.get("session_shutdown")?.({}, ctx) };
 }
@@ -424,35 +424,11 @@ test("matrix close-out: 512 real states driven, every trigger varied, no deadloc
   for (const cwd of [repos?.clean, repos?.resolvedStale, otherRepo]) if (cwd) rmSync(cwd, { recursive: true, force: true });
 }, 180_000);
 
-test("union decision (missed-eta escalation): refused state still admits the union of remedies", async () => {
+test("missed-eta ignored for six ticks stays advisory: bash and task are admitted", async () => {
   const u = await armMissedEtaEscalation(repos ??= { clean: makeRepo("clean"), resolvedStale: makeRepo("clean") });
   try {
-    const bash = await u.call("bash", { command: "bun test" });
-    expect(bash.admitted, "escalated missed-eta refuses the unrelated call").toBe(false);
-    expect(bash.reason ?? "", "refusal names every remedy gate").toContain("missed-eta (remedy:");
-    const verdict = decideGateCall({ name: "bash", arguments: { command: "bun test" } }, [
-      { id: "missed-eta", remedy: "re-estimate with a todo call", satisfies: (c) => c.name === "todo" },
-    ]);
-    expect(verdict.allowed).toBe(false);
-    expect(verdict.remedyGateIds).toEqual(["missed-eta"]);
-    // The union of remedies is admitted: todo, and the read tier.
-    expect((await u.call("todo", TODO_FIX)).admitted, "todo remedy admitted").toBe(true);
-    expect((await u.call("read", { path: "README.md" })).admitted, "read tier admitted").toBe(true);
-  } finally {
-    u.shutdown();
-  }
-}, 60_000);
-
-test("override (missed-eta escalation): an explicit reasoned todo.override passes", async () => {
-  const u = await armMissedEtaEscalation(repos ??= { clean: makeRepo("clean"), resolvedStale: makeRepo("clean") });
-  try {
-    const before = await u.call("bash", { command: "bun test" });
-    expect(before.admitted, "escalation armed").toBe(false);
-    expect(parseTodoOverride({ override: "missed-eta: chief accepts responsibility" })).toBe("missed-eta");
-    const over = await u.call("todo", { op: "schedule", updates: [], override: "missed-eta: chief accepts responsibility" });
-    expect(over.admitted, "override todo admitted").toBe(true);
-    const after = await u.call("bash", { command: "bun test" });
-    expect(after.admitted, `override suppresses the named gate (got: ${after.reason})`).toBe(true);
+    expect((await u.call("bash", { command: "bun test" })).admitted, "bash admitted").toBe(true);
+    expect((await u.call("task", { tasks: [] })).admitted, "task admitted").toBe(true);
   } finally {
     u.shutdown();
   }
