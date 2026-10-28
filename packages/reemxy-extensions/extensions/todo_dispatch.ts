@@ -619,6 +619,7 @@ const ESCALATION_REMEDY = "Fix the plan in a todo call: re-estimate the late row
 // replan when the demand was an unread worker result (live DC 2026-10-28).
 const UNREAD_REMEDY = (owners: readonly string[]) =>
   `Read ${owners.length ? owners.slice(0, 4).map((owner) => `agent://${owner}`).join(", ") : "each finished worker's agent:// output"}, then close its row or send it back with the reason in a todo call.`;
+const BLOCKING_RETRO_REASONS = new Set(["repeated failure", "reopened row", "user correction"]);
 const RETRO_REMEDY = "Staff the retrospective now: one task with agent retro-facilitator. It cannot be skipped or overridden.";
 export const GATE_IDS = ["planning-issues", "chief-no-bash", "idle-wait", "checkout", "retro", "escalation", "missed-eta", "receipt", "duplicate-worker"] as const;
 const READ_TIER = new Set(["read", "grep", "glob", "find"]);
@@ -4339,7 +4340,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       job.type === "task" && job.status === "running" && [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name)));
     // retroLine is emitted once per incident, so it cannot count ticks; the demand stands while
     // the retro is due and no retro-facilitator is running (a failed one leaves it due).
-    const retroDemand = sprintState.retroDueReason && !retroFacilitatorRunning ? ["retro"] : [];
+    // Only a retro that stops a repeat may block (Darafei 2026-10-27: retros exist so Foo -> Foo-2 ->
+    // Foo-3 cannot happen). Missed ETAs, gate rejections and failed todo updates stay advisory:
+    // forcing those produced review rows instead of product progress (live mail 2026-10-28: 8 of 10
+    // rows closed in 6 h were reviews).
+    const retroDemand = sprintState.retroDueReason && BLOCKING_RETRO_REASONS.has(sprintState.retroDueReason) && !retroFacilitatorRunning ? ["retro"] : [];
     if (!decision.forecast) {
       // A plan with no open rows has no plan problems: decay every other demand here too, or an
       // escalated one (e.g. unread-receipts after the last row closed) would block forever.
