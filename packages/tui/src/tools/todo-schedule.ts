@@ -658,7 +658,15 @@ function collectTodoPlanningIssues(phases: TodoScheduleInput, analysis: Dependen
 					message: `Provide a finite, ordered optimistic/likely/pessimistic remaining-time estimate in seconds, with confidence and a nonblank basis, for task: ${task.content}`,
 				});
 			}
-			if (estimate && Number.isFinite(estimate.pessimisticSeconds) && estimate.pessimisticSeconds > 3600) {
+			// Splitting is a decision before dispatch; a row already running under its owner cannot be cut.
+			const running =
+				task.status === "in_progress" && typeof task.schedule?.owner === "string" && task.schedule.owner !== "";
+			if (
+				!running &&
+				estimate &&
+				Number.isFinite(estimate.pessimisticSeconds) &&
+				estimate.pessimisticSeconds > 3600
+			) {
 				issues.push({
 					task: task.content,
 					code: "task-too-large",

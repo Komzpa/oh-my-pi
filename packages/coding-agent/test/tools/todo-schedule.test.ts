@@ -317,6 +317,32 @@ describe("native todo schedule operation", () => {
 		]);
 	});
 
+	it("does not ask to split a row that is already running under its owner", () => {
+		const estimate = {
+			optimisticSeconds: 5100,
+			likelySeconds: 7200,
+			pessimisticSeconds: 12000,
+			confidence: "low" as const,
+			basis: "measured suite progress",
+		};
+		const issues = getTodoPlanningIssues([
+			{
+				name: "Work",
+				tasks: [
+					{
+						content: "Running suite",
+						status: "in_progress",
+						schedule: { dependencies: [], owner: "job:4242", estimate },
+					},
+					{ content: "Unstarted suite", status: "pending", schedule: { dependencies: [], estimate } },
+				],
+			},
+		] as never);
+		expect(issues.filter(issue => issue.code === "task-too-large").map(issue => issue.task)).toEqual([
+			"Unstarted suite",
+		]);
+	});
+
 	it("accepts partial schedule repairs but refuses to start until the remainder is planned", async () => {
 		const harness = createHarness([
 			{
