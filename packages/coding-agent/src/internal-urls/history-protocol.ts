@@ -219,6 +219,10 @@ function appendTextContent(lines: string[], content: string | readonly { type: s
 function appendRawMessage(lines: string[], message: AgentMessage): void {
 	switch (message.role) {
 		case "user":
+			lines.push(`### ${message.role}`);
+			lines.push(`[attribution: ${message.attribution ?? "unknown"}; synthetic: ${message.synthetic === true}]`);
+			appendTextContent(lines, message.content);
+			return;
 		case "developer":
 			lines.push(`### ${message.role}`);
 			appendTextContent(lines, message.content);
