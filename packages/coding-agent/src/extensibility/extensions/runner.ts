@@ -8,7 +8,6 @@ import {
 	type AgentToolContext,
 	type AgentToolResult,
 	type AgentToolUpdateCallback,
-	abortReasonText,
 	isNonBlankContext,
 	joinAdditionalContext,
 } from "@oh-my-pi/pi-agent-core";
@@ -31,6 +30,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { refreshShellConfigCache } from "@oh-my-pi/pi-utils/procmgr";
 import { MAIN_AGENT_RULE_NAME } from "../../capability/rule";
 import { ASSISTANT_GATE_REFUSAL, assistantAbortedDraftText } from "@oh-my-pi/pi-agent-core/assistant-publication";
+import { abortReasonText } from "@oh-my-pi/pi-agent-core";
 import type { ModelRegistry } from "../../config/model-registry";
 import { type Settings, withActiveSettings } from "../../config/settings";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
