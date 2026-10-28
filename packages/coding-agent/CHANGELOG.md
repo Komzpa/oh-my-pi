@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A provider's account-wide free-tier daily limit (OpenRouter `free-models-per-day*`) now cools down every `:free` model of that provider, and new subagent model draws skip models in cooldown, so a retry or redispatch no longer lands on another exhausted `:free` model
+
 ## [18.13.2] - 2026-10-27
 
 ### Added

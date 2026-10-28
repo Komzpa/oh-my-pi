@@ -350,6 +350,8 @@ export class ModelRegistry {
 	#providerDiscoveryStates: Map<string, ProviderDiscoveryState> = new Map();
 	#cacheDbPath?: string;
 	#suppressedSelectors: Map<string, number> = new Map();
+	/** Providers whose account-wide free-tier quota is spent, mapped to the cooldown end. */
+	#suppressedFreeTiers: Map<string, number> = new Map();
 	#backgroundRefresh?: Promise<void>;
 	/** Whether the first background discovery has settled; latches once so a late-armed waiter still resolves. */
 	#initialRefreshSettled = false;
@@ -560,6 +562,7 @@ export class ModelRegistry {
 		// as a background reconcile, and must not spawn `!command` helpers.
 		this.#reloadStaticModelsForRefresh(options);
 		this.#suppressedSelectors.clear();
+		this.#suppressedFreeTiers.clear();
 		await this.#refreshRuntimeDiscoveries(strategy);
 	}
 
@@ -729,6 +732,7 @@ export class ModelRegistry {
 				this.#suppressedSelectors.delete(selector);
 			}
 		}
+		this.#suppressedFreeTiers.delete(providerId);
 		await this.#refreshRuntimeDiscoveries(strategy, new Set([providerId]));
 		// #reloadStaticModels above may have rebuilt #models from static sources,
 		// dropping models previously discovered by OTHER runtime providers (their
@@ -3753,6 +3757,16 @@ export class ModelRegistry {
 	}
 
 	/**
+	 * Suppress every `:free` model of the selector's provider until a specific timestamp. A provider's
+	 * free-tier daily limit (OpenRouter `free-models-per-day*`) is shared by the whole account, so
+	 * cooling down only the model that hit it lets the next draw pick another `:free` member.
+	 */
+	suppressFreeTier(selector: string, untilMs: number): void {
+		const normalized = normalizeSuppressedSelector(selector, (p, id) => this.find(p, id) !== undefined);
+		this.#suppressedFreeTiers.set(normalized.split("/")[0], untilMs);
+	}
+
+	/**
 	 * Check if a model selector is currently suppressed due to rate limits.
 	 */
 	isSelectorSuppressed(selector: string): boolean {
@@ -3760,10 +3774,23 @@ export class ModelRegistry {
 			selector,
 			(provider, id) => this.find(provider, id) !== undefined,
 		);
+		if (this.#isFreeTierSuppressed(normalizedSelector)) return true;
 		const suppressedUntil = this.#suppressedSelectors.get(normalizedSelector);
 		if (!suppressedUntil) return false;
 		if (suppressedUntil <= Date.now()) {
 			this.#suppressedSelectors.delete(normalizedSelector);
+			return false;
+		}
+		return true;
+	}
+
+	#isFreeTierSuppressed(normalizedSelector: string): boolean {
+		if (!normalizedSelector.endsWith(":free")) return false;
+		const provider = normalizedSelector.split("/")[0];
+		const suppressedUntil = this.#suppressedFreeTiers.get(provider);
+		if (!suppressedUntil) return false;
+		if (suppressedUntil <= Date.now()) {
+			this.#suppressedFreeTiers.delete(provider);
 			return false;
 		}
 		return true;
@@ -3784,6 +3811,7 @@ export class ModelRegistry {
 	 */
 	clearSuppressedSelectors(): void {
 		this.#suppressedSelectors.clear();
+		this.#suppressedFreeTiers.clear();
 	}
 }
 

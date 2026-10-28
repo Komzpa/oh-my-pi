@@ -1725,7 +1725,9 @@ export function sessionModelDiscoveryProviders(
 export async function resolveModelOverrideWithAuthFallback(
 	modelPatterns: string[],
 	parentActiveModelPattern: string | undefined,
-	modelRegistry: ModelLookupRegistry & Pick<ModelRegistry, "getApiKey">,
+	modelRegistry: ModelLookupRegistry &
+		Pick<ModelRegistry, "getApiKey"> &
+		Partial<Pick<ModelRegistry, "isSelectorSuppressed">>,
 	settings?: Settings,
 	sessionId?: string,
 ): Promise<{
@@ -1736,12 +1738,18 @@ export async function resolveModelOverrideWithAuthFallback(
 	warning?: string;
 }> {
 	const disabledProviders = disabledProviderIds(settings);
-	let lookupRegistry: ModelLookupRegistry = modelRegistry;
-	if (disabledProviders.size > 0) {
-		const enabledModels = modelRegistry.getAvailable().filter(model => !disabledProviders.has(model.provider));
+	const enabledModels = modelRegistry.getAvailable().filter(model => !disabledProviders.has(model.provider));
+	// Skip selectors cooling down after a rate limit so a new draw, or a redispatch of the same row,
+	// falls through to the next entry. When nothing outside the cooldown matches, keep the full list.
+	const awakeModels = enabledModels.filter(
+		model => !modelRegistry.isSelectorSuppressed?.(`${model.provider}/${model.id}`),
+	);
+	let lookupRegistry: ModelLookupRegistry = { getAvailable: () => awakeModels };
+	let primary = resolveModelOverride(modelPatterns, lookupRegistry, settings);
+	if (!primary.model && awakeModels.length < enabledModels.length) {
 		lookupRegistry = { getAvailable: () => enabledModels };
+		primary = resolveModelOverride(modelPatterns, lookupRegistry, settings);
 	}
-	const primary = resolveModelOverride(modelPatterns, lookupRegistry, settings);
 	if (!primary.model || !parentActiveModelPattern) {
 		return { ...primary, authFallbackUsed: false };
 	}
