@@ -166,6 +166,8 @@ interface State {
 async function outcome(state: State, cwd: string, call: Call | null, strictDemand = false, sessionId = "gates-root") {
   const now = Date.now();
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const sent: Array<{ customType?: string; content: string; details?: unknown }> = [];
+  let branch: unknown[] = [];
   let provider: ((ctx: ExtensionContext) => unknown) | undefined;
   let enforced: ((ctx: ExtensionContext) => unknown) | undefined;
   const api = {
@@ -176,12 +178,15 @@ async function outcome(state: State, cwd: string, call: Call | null, strictDeman
     // itself is read through its `demand` property.
     registerSoftToolRequirementProvider: (p: ((ctx: ExtensionContext) => unknown) & { demand?: (ctx: ExtensionContext) => unknown }) => { enforced = p; provider = p.demand ?? p; },
     appendEntry: () => undefined,
-    sendMessage: () => undefined,
+    sendMessage: (message: { customType?: string; content: string; details?: unknown; attribution?: string; display?: boolean }) => {
+      sent.push(message);
+      branch.push({ type: "custom_message", ...message, timestamp: new Date().toISOString() });
+    },
   } as unknown as ExtensionAPI;
   const jobs: Jobs = state.running
     ? { running: [{ id: "worker-a", type: "task", status: "running", label: "Row A", startTime: now, agentId: "worker-a" } as never], recent: [], nonJobAgents: [{ id: "worker-a", live: true }] }
     : { running: [], recent: [], nonJobAgents: [] };
-  const branch = plan(state.plan, now);
+  branch = plan(state.plan, now);
   await todoDispatch(api);
   const ctx = {
     cwd,
@@ -198,8 +203,8 @@ async function outcome(state: State, cwd: string, call: Call | null, strictDeman
     const demand = provider?.(ctx) as Demand;
     if (!call) {
       const handed = enforced?.(ctx);
-      const note = (await handlers.get("context")!({ messages: [] }, ctx)) as { messages?: Array<{ content: string }> } | undefined;
-      return { demand, handed, note: note?.messages?.at(-1)?.content ?? "" };
+      await handlers.get("turn_end")!({ toolResults: [] }, ctx);
+      return { demand, handed, note: sent.findLast((message) => message.customType === "todo-dispatch-time-note")?.content ?? "" };
     }
     const satisfies = strictDemand && demand?.toolName ? (c: Call) => c.name === demand.toolName : demand?.satisfies ?? ((c: Call) => c.name === demand?.toolName);
     // omp skips calls only for a demand handed to it; strictDemand simulates the old enforcement.
@@ -809,6 +814,7 @@ test("task calls allow re-staffing a legacy row whose owner already has the bloc
 test("a refused task dispatch opens bounded chief work without weakening the staffing gate", async () => {
   const cwd = repo("clean");
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const sent: Array<{ customType?: string; content: string }> = [];
   const now = Date.now();
   const api = {
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
@@ -816,7 +822,7 @@ test("a refused task dispatch opens bounded chief work without weakening the sta
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: () => undefined,
+    sendMessage: (message: { customType?: string; content: string }) => { sent.push(message); },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
   const ctx = {
@@ -836,8 +842,9 @@ test("a refused task dispatch opens bounded chief work without weakening the sta
     expect(blocked?.reason).toContain("is work for a worker");
     await handlers.get("tool_result")!({ toolName: "task", toolCallId: "refused-task", input: {}, content: [], isError: true }, ctx);
     expect(await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "bounded-after-refusal", input: bash }, ctx)).toBeUndefined();
-    const note = (await handlers.get("context")!({ messages: [] }, ctx)) as { messages: Array<{ content: string }> };
-    expect(note.messages.at(-1)!.content).toContain("The last task dispatch was refused; bounded work is open to you");
+    await handlers.get("context")!({ messages: [] }, ctx);
+    await handlers.get("turn_end")!({ toolResults: [] }, ctx);
+    expect(sent.findLast((message) => message.customType === "todo-dispatch-time-note")?.content).toContain("The last task dispatch was refused; bounded work is open to you");
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });
@@ -1265,7 +1272,7 @@ test("a plan with problems is reported once per problem list, not again while it
     (await tick!());
     (await tick!());
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.deliverAs).toBe("aside");
+    expect(sent[0]!.deliverAs).toBe("nextTurn");
     expect(sent[0]!.content).toContain("have no worker");
     idle = true;
     (await tick!());
@@ -2231,6 +2238,7 @@ test("refuses a second git-pr-owner on the same checkout while allowing another 
 test("GIT FACTS names commits since previous chief turn and running git jobs", async () => {
   const cwd = repo("clean");
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const sent: Array<{ customType?: string; content: string; details?: unknown }> = [];
   const liveNow = Date.now();
   const api = {
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
@@ -2238,7 +2246,10 @@ test("GIT FACTS names commits since previous chief turn and running git jobs", a
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000 }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
-    sendMessage: () => undefined,
+    sendMessage: (message: { customType?: string; content: string; details?: unknown }) => {
+      sent.push(message);
+      branch.push({ type: "custom_message", ...message, timestamp: new Date().toISOString() });
+    },
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
   const branch = plan("ready", liveNow);
@@ -2252,7 +2263,14 @@ test("GIT FACTS names commits since previous chief turn and running git jobs", a
     setTimeout: () => ({}),
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
-  const context = async () => ((await handlers.get("context")!({ messages: [] }, ctx)) as { messages?: Array<{ content: string }> } | undefined)?.messages?.at(-1)?.content ?? "";
+  const context = async () => {
+    const messages: unknown[] = [];
+    const result = await handlers.get("context")!({ messages }, ctx) as { messages: unknown[] };
+    expect(result.messages).toBe(messages);
+    const sentBefore = sent.length;
+    await handlers.get("turn_end")!({ toolResults: [] }, ctx);
+    return sent.length > sentBefore ? sent.at(-1)?.content ?? "" : "";
+  };
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
   let child: ReturnType<typeof spawn> | undefined;
@@ -2894,8 +2912,9 @@ test("a resumed live non-task worker staffs its row and allows wait", async () =
     clearTimer: () => undefined,
   } as unknown as ExtensionContext;
   try {
-    const requirement = await handlers.get("context")!({ messages: [] }, ctx) as { messages?: Array<{ content: string }> } | undefined;
-    expect(requirement?.messages?.at(-1)?.content).not.toContain("idle-live-owner");
+    const messages: unknown[] = [];
+    const requirement = await handlers.get("context")!({ messages }, ctx) as { messages?: unknown[] } | undefined;
+    expect(requirement?.messages).toBe(messages);
     expect(await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "resumed-wait", input: {} }, ctx)).toBeUndefined();
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);

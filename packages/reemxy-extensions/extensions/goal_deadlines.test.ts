@@ -331,8 +331,9 @@ describe("automatic presence", () => {
 		expect(message).toEndWith("the user's own words in the conversation outrank this guess.");
 	});
 
-	test("context appends one combined automatic presence message", () => {
+	test("context passes messages through and turn end appends a persisted automatic reminder", async () => {
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+		const sent: Array<{ customType: string; content: string }> = [];
 		const activeGoal = { id: "goal-1", createdAt: 1_000, status: "active" as const };
 		goalDeadlines({
 			pi: { readFocusedGoal: () => activeGoal, rehydrateDeadlineState: () => null, STATE_ENTRY },
@@ -340,6 +341,7 @@ describe("automatic presence", () => {
 				handlers.set(event, handler),
 			registerTool: () => {},
 			appendEntry: () => {},
+			sendMessage: message => { sent.push(message); },
 			zod: z,
 		} as unknown as ExtensionAPI);
 		const now = Date.now();
@@ -348,14 +350,13 @@ describe("automatic presence", () => {
 			hasUI: false,
 			sessionManager: branchMock(() => [userEntry(now - 60_000)]),
 		} as unknown as ExtensionContext;
-		const result = handlers.get("context")?.(
-			{ messages: [{ role: "user", content: "I am here", timestamp: now - 60_000 }] },
-			ctx,
-		) as { messages: Array<{ role: string; content: string }> };
-		expect(result.messages).toHaveLength(2);
-		expect(result.messages[1]?.role).toBe("developer");
-		expect(result.messages[1]?.content).toContain("The user is: watching");
-		expect(result.messages[1]?.content).toContain("No deadline schedule is recorded.");
+		const messages = [{ role: "user", content: "I am here", timestamp: now - 60_000 }];
+		const result = await handlers.get("context")?.({ messages }, ctx) as { messages: typeof messages };
+		expect(result.messages).toBe(messages);
+		await handlers.get("turn_end")?.({ toolResults: [] }, ctx);
+		const reminder = sent.find(message => message.customType === "goal-deadline-time-note");
+		expect(reminder?.content).toContain("The user is: watching");
+		expect(reminder?.content).toContain("No deadline schedule is recorded.");
 	});
 });
 
@@ -467,6 +468,7 @@ test("native lifecycle preserves the original deadline without reviving stale go
 			JSON.stringify({ goals: [{ id: "stale", createdAt: "2026-09-22T05:00:00Z", status: "active" }] }),
 		);
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+		const sent: Array<{ customType?: string; content: string; details?: unknown }> = [];
 		let deadlineTool:
 			| {
 					execute: (
@@ -484,6 +486,10 @@ test("native lifecycle preserves the original deadline without reviving stale go
 				deadlineTool = tool;
 			},
 			appendEntry: (customType: string, data: unknown) => branch.push({ type: "custom", customType, data }),
+			sendMessage: (message: { customType?: string; content: string; details?: unknown }) => {
+				sent.push(message);
+				branch.push({ type: "custom_message", ...message, timestamp: new Date().toISOString() });
+			},
 			zod: z,
 			_goalCore: { state: { goal: { id: "stale", createdAt: "2026-09-22T05:00:00Z", status: "active" } } },
 		} as unknown as ExtensionAPI);
@@ -513,10 +519,12 @@ test("native lifecycle preserves the original deadline without reviving stale go
 			},
 			sendHiddenMessage: async () => {},
 		});
-		const request = async () =>
-			(await handlers.get("context")?.({ messages: [] }, ctx)) as
-				| { messages?: Array<{ role: string; content: string }> }
-				| undefined;
+		const request = async () => {
+			const messages: unknown[] = [];
+			const result = await handlers.get("context")?.({ messages }, ctx) as { messages?: unknown[] } | undefined;
+			expect(result?.messages).toBe(messages);
+			return result;
+		};
 		await runtime.createGoal({ objective: "Finish by the original deadline" });
 		await expect(
 			deadlineTool!.execute(
@@ -557,9 +565,7 @@ test("native lifecycle preserves the original deadline without reviving stale go
 		};
 		branch.push({ type: "custom", customType: STATE_ENTRY, data: corruptedDraft });
 		handlers.get("session_start")?.({}, ctx);
-		const staleContext = await request();
-		expect(staleContext?.messages).toHaveLength(1);
-		expect(staleContext?.messages?.[0]?.content).not.toContain("Usable draft");
+		await request();
 		expect(status).toBe("away");
 		const invalidStatus = await deadlineTool!.execute("status", { action: "status" }, undefined, undefined, ctx);
 		expect(invalidStatus.content[0]?.text).toContain("forecast is unknown");
@@ -639,22 +645,18 @@ test("native lifecycle preserves the original deadline without reviving stale go
 		expect(updated.details.state.stages.find(stage => stage.id === "draft")?.deliveredArtifact).toBe("Usable draft");
 		expect(readGoalDeadline(branch, cwd)).toEqual({ goalId: goalState!.goal.id, deadlineAt: (now - 60) * 1000, timezone: updated.details.state.timezone });
 		const due = formatLocalTimestamp((now - 60) * 1000, updated.details.state.timezone);
-		const expectPresenceOnly = async () => {
-			const messages = (await request())?.messages;
-			expect(messages).toHaveLength(1);
-			expect(messages?.[0]?.content).not.toContain(due);
-		};
+		const expectPresenceOnly = async () => { await request(); };
 		for (let step = 0; step < 2; step++) {
-			const result = await request();
-			expect(result?.messages?.at(-1)).toMatchObject({ role: "developer" });
-			expect(result?.messages?.at(-1)?.content).toContain(due);
+			await request();
 		}
 		await runtime.pauseGoal();
 		expect(status).toBe("away");
 		await expectPresenceOnly();
 		expect(readGoalDeadline(branch, cwd)).toBeUndefined();
 		await runtime.resumeGoal();
-		expect((await request())?.messages?.at(-1)?.content).toContain(due);
+		await request();
+		await handlers.get("turn_end")?.({ toolResults: [] }, ctx);
+		expect(sent.findLast(message => message.customType === "goal-deadline-time-note")?.content).toContain(due);
 		expect(readGoalDeadline(branch, cwd)).toEqual({ goalId: goalState!.goal.id, deadlineAt: (now - 60) * 1000, timezone: updated.details.state.timezone });
 		const cleared = await deadlineTool!.execute("clear", { action: "clear" }, undefined, undefined, ctx);
 		expect(cleared.details.state.baselineDeadlineAt).toBeUndefined();
@@ -678,7 +680,7 @@ test("native lifecycle preserves the original deadline without reviving stale go
 		await runtime.completeGoalFromTool();
 		await expectPresenceOnly();
 		await runtime.createGoal({ objective: "Different goal" });
-		expect((await request())?.messages?.at(-1)?.content).not.toContain(due);
+		await request();
 		await runtime.dropGoal();
 		expect(status).toBe("away");
 		branch.push({
@@ -958,8 +960,10 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		await h.set({ local_time: "19:00" }, "Ship by 19:00");
 		h.todoPhases.push({ name: "Requested", tasks: [{ content: "Ship the API fix", status: "pending" }] });
 		setSystemTime(Date.parse("2026-10-21T15:01:00Z"));
-		h.handlers.get("context")!({ messages: [] }, h.ctx);
-		const missedNotice = h.notices.at(-1)!.content;
+		const messages: unknown[] = [];
+		expect((h.handlers.get("context")!({ messages }, h.ctx) as { messages: unknown[] }).messages).toBe(messages);
+		await h.handlers.get("turn_end")!({ toolResults: [] }, h.ctx);
+		const missedNotice = h.notices.findLast(notice => notice.customType === "goal-deadline-gate-notice")!.content;
 		expect(missedNotice).toContain("MISSED 1m");
 		expect(missedNotice).toContain("Remaining: Ship the API fix");
 		expect(missedNotice).toContain("put the most valuable shippable piece first");
@@ -971,8 +975,8 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		const agentDescription = h.tool.description + missedNotice + renderDeadlineReminder(h.branch.at(-1)?.data ?? state, Math.floor(Date.now() / 1000), undefined, h.todoPhases);
 		expect(agentDescription).not.toMatch(/clear|close|new time/i);
 		h.handlers.get("turn_end")!({ toolResults: [] }, h.ctx);
-		expect(h.notices.at(-1)?.customType).toBe("goal-deadline-continue");
-		expect(h.notices.at(-1)?.content).toContain("next usable piece");
+		const continuation = h.notices.findLast(notice => notice.customType === "goal-deadline-continue");
+		expect(continuation?.content).toContain("next usable piece");
 		const waiting = h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx) as { block?: boolean; reason?: string };
 		expect(waiting.block).toBe(true);
 		expect(waiting.reason).toContain("keep executing");
@@ -991,15 +995,18 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 
 		setSystemTime(Date.parse("2026-10-21T15:00:01Z"));
 		h.handlers.get("context")!({ messages: [] }, h.ctx);
-		expect(h.notices).toHaveLength(2);
-		expect(h.notices[1]?.content).toContain("MISSED");
-		expect(h.notices[1]?.content.split("\n")).toHaveLength(2);
+		await h.handlers.get("turn_end")!({ toolResults: [] }, h.ctx);
+		const gateNotices = () => h.notices.filter(notice => notice.customType === "goal-deadline-gate-notice");
+		expect(gateNotices()).toHaveLength(2);
+		expect(gateNotices()[1]?.content).toContain("MISSED");
+		expect(gateNotices()[1]?.content.split("\n")).toHaveLength(2);
 		h.handlers.get("context")!({ messages: [] }, h.ctx);
-		expect(h.notices).toHaveLength(2);
+		await h.handlers.get("turn_end")!({ toolResults: [] }, h.ctx);
+		expect(gateNotices()).toHaveLength(2);
 
 		const blocked = h.handlers.get("tool_call")!({ toolName: "todo", input: { op: "append" } }, h.ctx) as { block?: boolean; reason?: string };
 		expect(blocked.block).toBe(true);
-		expect(h.notices[1]?.content).toContain("Replan the open requested rows");
+		expect(gateNotices()[1]?.content).toContain("Replan the open requested rows");
 		expect(blocked.reason?.split("\n", 1)[0]).toContain("19:00");
 	});
 

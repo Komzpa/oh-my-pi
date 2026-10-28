@@ -28,12 +28,16 @@ function deadlineHarness(withDeadlineInput = true) {
 	vi.spyOn(Date, "now").mockImplementation(() => now);
 	const branch: unknown[] = withDeadlineInput ? [structuredClone(replay.userEntry)] : [];
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+	const sendMessage = (message) => {
+		branch.push({ type: "custom_message", customType: message.customType, content: message.content, details: message.details, attribution: message.attribution, display: message.display, timestamp: new Date(now).toISOString() });
+	};
 	let tool;
 	const api = {
 		pi: deadlines,
 		on: (name, handler) => handlers.set(name, handler),
 		zod: z,
 		appendEntry: (customType, data) => branch.push({ type: "custom", customType, data: structuredClone(data) }),
+		sendMessage,
 		registerTool: value => { tool = value; },
 	} as unknown as ExtensionAPI;
 	goalDeadlines(api);
@@ -43,7 +47,13 @@ function deadlineHarness(withDeadlineInput = true) {
 		branch, handlers, ctx,
 		setNow: (value: string) => { now = Date.parse(value); },
 		call: (params: unknown) => tool.execute("deadline-replay", params, undefined, undefined, ctx),
-		context: () => handlers.get("context")!({ messages: [] }, ctx).messages.at(-1).content,
+		context: async () => {
+			const messages = [{ role: "user", content: "prompt" }];
+			const result = await handlers.get("context")!({ messages }, ctx);
+			await handlers.get("turn_end")!({ toolResults: [] }, ctx);
+			expect(result.messages).toBe(messages);
+			return branch.filter(entry => entry.type === "custom_message" && entry.customType === "goal-deadline-time-note").at(-1)?.content ?? "";
+		},
 		gate: (toolName: string, input: unknown) => handlers.get("tool_call")!({ toolName, input }, ctx),
 		user: (id: string, text: string, attribution = "user") => branch.push({ type: "message", id, timestamp: new Date(now).toISOString(), message: { role: "user", attribution, content: text } }),
 	};
@@ -57,12 +67,12 @@ test("transcript replay persists without focus, wraps at 23:00, and survives rew
 	expect(h.branch.some(entry => entry.customType === deadlines.STATE_ENTRY)).toBe(true);
 	expect(deadlines.readGoalDeadline(h.branch)?.deadlineAt).toBe(Date.parse(replay.dueAt));
 	expect(nativeReadGoalDeadline(h.branch)?.deadlineAt).toBe(Date.parse(replay.dueAt));
-	expect(h.context()).not.toContain("MISSED");
+	expect(await h.context()).not.toContain("MISSED");
 	expect(h.gate("todo", { op: "append", items: ["New row"] })).toBeUndefined();
 	h.setNow(replay.dueAt);
-	expect(h.context()).toContain("MISSED by 0m");
-	expect(h.context()).toContain("deadline 23:00");
-	expect(h.context()).toContain("Remaining: Verified delivery");
+	expect(await h.context()).toContain("MISSED by 0m");
+	expect(await h.context()).toContain("deadline 23:00");
+	expect(await h.context()).toContain("Remaining: Verified delivery");
 	const missed = h.gate("todo", { op: "append", items: ["New row"] });
 	expect(missed).toMatchObject({ block: true });
 	expect(missed.reason).toContain("Only add or delegate work that serves an open requested TODO row");
@@ -73,16 +83,16 @@ test("transcript replay persists without focus, wraps at 23:00, and survives rew
 	h.setNow(replay.notesRewrittenAt);
 	h.branch.push({ type: "custom", customType: "experimental-context-notes", data: { text: "New notes with no deadline." } }, { type: "compaction", summary: "No deadline mentioned." });
 	h.handlers.get("session_compact")!({}, h.ctx);
-	expect(h.context()).toContain("MISSED by 129m");
+	expect(await h.context()).toContain("MISSED by 129m");
 	h.handlers.get("session_start")!({}, h.ctx);
-	expect(h.context()).toContain("MISSED by 129m");
+	expect(await h.context()).toContain("MISSED by 129m");
 });
 
-test("no-deadline negative control keeps context and todo/task behavior unchanged", () => {
+test("no-deadline negative control keeps context and todo/task behavior unchanged", async () => {
 	const h = deadlineHarness(false);
 	h.setNow(replay.notesRewrittenAt);
-	expect(h.context()).toContain("deadline not set");
-	expect(h.context()).not.toContain("WRAP-UP MODE");
+	expect(await h.context()).toContain("The user is: away");
+	expect(await h.context()).not.toContain("WRAP-UP MODE");
 	expect(h.gate("todo", { op: "append", items: ["New row"] })).toBeUndefined();
 	expect(h.gate("task", { name: "NewWorker", agent: "coder", task: "New row" })).toBeUndefined();
 });
@@ -97,7 +107,7 @@ test("assistant status promises and synthetic user messages cannot extend or cle
 	await expect(h.call({ action: "clear" })).rejects.toThrow("user_message must quote a newer real user message");
 	h.user("synthetic", "New deadline 23:45", "agent");
 	await expect(h.call({ ...later, user_message: "New deadline 23:45" })).rejects.toThrow("latest real user message");
-	expect(h.context()).toMatch(/MISSED by \d+m/);
+	expect(await h.context()).toMatch(/MISSED by \d+m/);
 });
 
 test("a newer real user time replaces the constraint and clears wrap-up", async () => {
@@ -107,8 +117,8 @@ test("a newer real user time replaces the constraint and clears wrap-up", async 
 	h.user("replacement", "New deadline: 00:45");
 	const replaced = await h.call({ ...replay.set, user_message: "New deadline: 00:45", stages: [{ ...replay.set.stages[0], deadline_at: replay.set.stages[0].deadline_at + 6_300 }] });
 	expect(replaced.details.state.userConstraint.messageId).toBe("replacement");
-	expect(h.context()).not.toContain("WRAP-UP MODE");
-	expect(h.context()).toContain("deadline 00:45");
+	expect(await h.context()).not.toContain("WRAP-UP MODE");
+	expect(await h.context()).toContain("deadline 00:45");
 	expect(h.gate("task", { name: "AllowedWorker", task: "Delivery" })).toBeUndefined();
 });
 
@@ -123,7 +133,7 @@ test("after a miss unrelated work stays blocked until the user changes the const
 	h.user("reset", "сбрось дедлайн, работаем дальше");
 	await expect(h.call({ action: "clear", user_message: "drop the deadline" })).rejects.toThrow("user_message must quote a newer real user message");
 	await h.call({ action: "clear", user_message: "сбрось дедлайн" });
-	expect(h.context()).not.toContain("MISSED");
+	expect(await h.context()).not.toContain("MISSED");
 	expect(h.gate("todo", { op: "append", items: ["New row"] })).toBeUndefined();
 	expect(h.gate("task", { name: "NewWorker", task: "New row" })).toBeUndefined();
 });
@@ -134,11 +144,11 @@ test("delivering stages and dropping focus do not close the user's deadline", as
 	await h.call({ action: "deliver", stage_id: "ship", delivered_artifact: "Verified partial delivery" });
 	h.branch.push({ type: "mode_change", mode: "none" });
 	h.setNow(replay.dueAt);
-	expect(h.context()).toContain("MISSED");
+	expect(await h.context()).toContain("MISSED");
 	expect(nativeReadGoalDeadline(h.branch)?.deadlineAt).toBe(Date.parse(replay.dueAt));
 	h.user("close", "/deadline close");
 	await h.call({ action: "clear", user_message: "/deadline close" });
-	expect(h.context()).not.toContain("MISSED");
+	expect(await h.context()).not.toContain("MISSED");
 	expect(nativeReadGoalDeadline(h.branch)).toBeUndefined();
 });
 
@@ -148,11 +158,11 @@ test("only a user-visible final records the single wrap-up status receipt", asyn
 	h.setNow(replay.dueAt);
 	const end = h.handlers.get("message_end")!;
 	end({ message: { role: "assistant", content: [{ type: "toolCall", name: "read" }, { type: "text", text: "Checking" }] } }, h.ctx);
-	expect(h.context()).toContain("Send one honest status message");
+	expect(await h.context()).toContain("Send one honest status message");
 	end({ message: { role: "assistant", content: [{ type: "text", text: "Verified partial delivery; the final review is unfinished." }] } }, h.ctx);
-	expect(h.context()).toContain("status was already sent");
+	expect(await h.context()).toContain("status was already sent");
 	h.handlers.get("session_compact")!({}, h.ctx);
-	expect(h.context()).toContain("status was already sent");
+	expect(await h.context()).toContain("status was already sent");
 });
 
 test("real staffing consumer yields its demands and worker gate to missed-deadline wrap-up", async () => {
@@ -174,7 +184,8 @@ test("real staffing consumer yields its demands and worker gate to missed-deadli
 		} as unknown as ExtensionAPI);
 		const ctx = { ...h.ctx, getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }), hasPendingMessages: () => false, getTaskMaxConcurrency: () => 20, sessionManager: { getHeader: () => ({ id: "deadline-replay" }), ...branchMock(() => h.branch), getSessionFile: () => undefined } } as unknown as ExtensionContext;
 		expect(provider.demand(ctx)).toBeUndefined();
-		expect(await handlers.get("context")!({ messages: [] }, ctx)).toBeUndefined();
+		const messages = [];
+		expect(await handlers.get("context")!({ messages }, ctx)).toEqual({ messages });
 		expect(await handlers.get("tool_call")!({ toolName: "bash", input: { command: "git status" } }, ctx)).toBeUndefined();
 		// Wrap-up still requires an answer to the human before waiting.
 		expect((await handlers.get("tool_call")!({ toolName: "wait", input: {} }, ctx))?.block).toBe(true);

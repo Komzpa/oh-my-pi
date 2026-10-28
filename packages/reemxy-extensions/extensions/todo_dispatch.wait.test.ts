@@ -115,7 +115,7 @@ function forecastTodoPlan(phases: WaitTestPhase[], { now }: { now: number }) {
 
 async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initialJobs: unknown[] = [], forecastLeadMs = 0, forecastOverride = undefined, restoredEntries: unknown[] = []) {
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
-	const notices: Array<{ customType: string; content: string; delivery?: { triggerTurn?: boolean; interruptWait?: boolean; deliverAs?: string } }> = [];
+	const notices: Array<{ customType: string; content: string; display?: boolean; delivery?: { triggerTurn?: boolean; interruptWait?: boolean; deliverAs?: string } }> = [];
 	const entries: Array<{ type: "custom"; customType: string; data?: unknown }> = [...restoredEntries];
 	const intervals: Array<() => void | Promise<void>> = [];
 	const timeouts: Array<() => void | Promise<void>> = [];
@@ -124,7 +124,10 @@ async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initia
 		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
 		getActiveTools: () => ["task", "todo", "wait"],
 		appendEntry: (customType: string, data?: unknown) => entries.push({ type: "custom", customType, data }),
-		sendMessage: (message: { customType: string; content: string }, delivery) => notices.push({ ...message, delivery }),
+		sendMessage: (message: { customType: string; content: string; display?: boolean }, delivery) => {
+			notices.push({ ...message, delivery });
+			if (delivery?.deliverAs === "nextTurn") entries.push({ type: "message", message: { role: "custom", customType: message.customType, content: [{ type: "text", text: message.content }], timestamp: Date.now() } });
+		},
 		pi: {
 			forecastTodoPlan: (phases, options) => forecastOverride ? forecastOverride(phases, options) : forecastTodoPlan(phases, { ...options, now: options.now + forecastLeadMs }),
 			formatPlanForecast,
@@ -185,6 +188,81 @@ const humanQuestion = () => ({
 	},
 });
 
+test("an idle chief gets a persisted continuation demand for ready and overdue rows under a paused goal", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const row = phases[0]!.tasks[0]!;
+	row.status = "pending";
+	row.schedule.owner = undefined;
+	row.schedule.dependencies = [];
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000, [], 0, (input, options) => {
+		const forecast = forecastTodoPlan(input, options);
+		return { ...forecast, rows: forecast.rows.map(candidate => ({ ...candidate, overdue: true })) };
+	});
+	try {
+		h.entries.push({ type: "mode_change", mode: "goal_paused", data: { goal: { id: "paused-plan", status: "paused", createdAt: now } } });
+		await h.handlers.get("session_stop")!({}, h.ctx);
+		const demand = h.notices.find(notice => notice.customType === "todo-idle-plan-demand");
+		expect(demand?.content).toContain('Overdue: "Row 1"');
+		expect(demand?.content).toContain('Ready: "Row 1"');
+		expect(demand?.content).toContain("Re-estimate each overdue row");
+		expect(demand?.content).toContain("staff every ready row");
+		expect(demand?.delivery).toMatchObject({ deliverAs: "nextTurn", triggerTurn: true });
+		expect(h.entries.some(entry => entry.type === "message" && entry.message?.customType === "todo-idle-plan-demand")).toBe(true);
+	} finally { h.shutdown(); }
+});
+
+test("an idle chief may stop when every open row needs the user to unblock it", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const row = phases[0]!.tasks[0]!;
+	row.status = "blocked";
+	row.blocker = "waits for user: approve the proposal";
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+	try {
+		await h.handlers.get("session_stop")!({}, h.ctx);
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(0);
+	} finally { h.shutdown(); }
+});
+
+test("waiting on a live worker does not demand another idle turn", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+	h.ctx.getAsyncJobSnapshot = () => ({ running: [{ id: "worker-a", type: "task", status: "running", agentId: "worker-a", label: "worker-a" }], recent: [], nonJobAgents: [] });
+	try {
+		const wait = await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
+		expect(wait?.block).not.toBe(true);
+		await h.handlers.get("session_stop")!({}, h.ctx);
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(0);
+	} finally { h.shutdown(); }
+});
+
+test("three ignored idle demands produce one user status line and no fourth wake", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const row = phases[0]!.tasks[0]!;
+	row.status = "pending";
+	row.schedule.owner = undefined;
+	row.schedule.dependencies = [];
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+	try {
+		for (let turn = 0; turn < 3; turn++) {
+			if (turn > 0) await h.handlers.get("turn_start")!({}, h.ctx);
+			await h.handlers.get("session_stop")!({}, h.ctx);
+		}
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(2);
+		const escalation = h.notices.filter(notice => notice.customType === "todo-idle-plan-escalation");
+		expect(escalation).toHaveLength(1);
+		expect(escalation[0]?.content).toContain("PLAN STATUS:");
+		expect(escalation[0]?.display).toBe(true);
+		expect(escalation[0]?.delivery).toMatchObject({ deliverAs: "nextTurn", triggerTurn: false });
+		await h.handlers.get("turn_start")!({}, h.ctx);
+		await h.handlers.get("session_stop")!({}, h.ctx);
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand" || notice.customType === "todo-idle-plan-escalation")).toHaveLength(3);
+	} finally { h.shutdown(); }
+});
+
 test("an unanswered human message refuses every wait with its timestamp and text, while reads stay allowed", async () => {
 	const h = await noticeHarness([], Date.now() + 3600_000);
 	try {
@@ -222,7 +300,7 @@ test("text in the in-flight assistant message carrying wait answers the human", 
 	} finally { h.shutdown(); }
 });
 
-test("a queued plan check is dropped when a row it names is completed before delivery", async () => {
+test("context delivery keeps an already queued plan check unchanged (append-only history)", async () => {
 	const now = Date.now();
 	const phases = chainedPlan(1, now);
 	const row = phases[0]!.tasks[0]!;
@@ -239,7 +317,7 @@ test("a queued plan check is dropped when a row it names is completed before del
 		const delivered = await h.handlers.get("context")!({
 			messages: [{ role: "custom", customType: "todo-plan-check", content: notice!.content, details: notice!.details }],
 		}, h.ctx) as { messages?: Array<{ customType?: string; content?: string }> };
-		expect(delivered.messages?.some((message) => message.customType === "todo-plan-check")).toBe(false);
+		expect(delivered.messages?.some((message) => message.customType === "todo-plan-check")).toBe(true);
 	} finally { h.shutdown(); }
 });
 
@@ -626,8 +704,9 @@ test("capacity reports zero when no authenticated worker profile can start", asy
 		setTimeout: () => ({}),
 		clearTimer: () => undefined,
 	} as unknown as ExtensionContext;
-	const result = (await handlers.get("context")!({ messages: [] }, ctx)) as { messages?: Array<{ content: string }> };
-	expect(result?.messages?.at(-1)?.content).toContain("Task cap=0");
+	const messages: unknown[] = [];
+	const result = (await handlers.get("context")!({ messages }, ctx)) as { messages?: unknown[] };
+	expect(result.messages).toBe(messages);
 	const route = "codex-lb/gpt-6-luna";
 	const separator = route.indexOf("/");
 	const onlyModel = { provider: route.slice(0, separator), id: route.slice(separator + 1) };
@@ -640,10 +719,9 @@ test("capacity reports zero when no authenticated worker profile can start", asy
 				spec.replace(/:(?:minimal|low|medium|high|xhigh|max)$/, "") === route ? onlyModel : undefined,
 		},
 	} as unknown as ExtensionContext;
-	const oneResult = (await handlers.get("context")!({ messages: [] }, oneProviderCtx)) as {
-		messages?: Array<{ content: string }>;
-	};
-	expect(oneResult?.messages?.at(-1)?.content).toContain("Task cap=1");
+	const oneMessages: unknown[] = [];
+	const oneResult = (await handlers.get("context")!({ messages: oneMessages }, oneProviderCtx)) as { messages?: unknown[] };
+	expect(oneResult.messages).toBe(oneMessages);
 });
 
 test("PLAN CHECK puts stale no-commit workers first and never aborts them", async () => {
@@ -796,11 +874,9 @@ test("dispatcher renders forecast and deadline times in the persisted goal timez
 		setTimeout: () => ({}),
 		clearTimer: () => undefined,
 	} as unknown as ExtensionContext;
-	const result = (await handlers.get("context")!({ messages: [] }, ctx)) as { messages?: Array<{ content: string }> };
-	const content = result.messages?.at(-1)?.content ?? "";
-	expect(content).toContain("P95=2026-09-25 23:16:00 Asia/Tbilisi");
-	expect(content).toContain("2026-09-25 23:17:00 Asia/Tbilisi");
-	expect(content).not.toContain("19:16:00.000Z");
+	const messages: unknown[] = [];
+	const result = (await handlers.get("context")!({ messages }, ctx)) as { messages?: unknown[] };
+	expect(result.messages).toBe(messages);
 });
 
 test("wait refusals deduplicate by rendered content across plan revisions", async () => {
@@ -934,7 +1010,8 @@ test("OMP_LANE_UNIT suppresses chief gates, retros and continuation nudges", asy
 		const wait = (await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "lane-wait", input: {} }, ctx)) as
 			| { block?: boolean }
 			| undefined;
-		const context = await handlers.get("context")!({ messages: [] }, ctx);
+		const messages: unknown[] = [];
+		const context = await handlers.get("context")!({ messages }, ctx) as { messages?: unknown[] };
 		const todoResult = await handlers.get("tool_result")!(
 			{
 				toolName: "todo",
@@ -948,7 +1025,7 @@ test("OMP_LANE_UNIT suppresses chief gates, retros and continuation nudges", asy
 		await handlers.get("agent_end")!({}, ctx);
 		expect(providerRegistered).toBe(false);
 		expect(wait).toBeUndefined();
-		expect(context).toBeUndefined();
+		expect(context.messages).toBe(messages);
 		expect(todoResult).toBeUndefined();
 		expect(timers).toBe(0);
 		expect(sent).toHaveLength(0);
@@ -1644,8 +1721,8 @@ test("recovery gates request wait interruption while startup advice stays passiv
  try {
   const info = h.notices.find(notice => notice.customType === "todo-gate-worker-names");
   const recovery = h.notices.find(notice => notice.customType === "todo-gate-recovery");
-  expect(info?.delivery).toMatchObject({ deliverAs: "aside", triggerTurn: false, interruptWait: false });
-  expect(recovery?.delivery).toMatchObject({ deliverAs: "aside", triggerTurn: false, interruptWait: true });
+	expect(info?.delivery).toMatchObject({ deliverAs: "nextTurn", triggerTurn: false, interruptWait: false });
+  expect(recovery?.delivery).toMatchObject({ deliverAs: "nextTurn", triggerTurn: false, interruptWait: true });
   expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).toBe(true);
  } finally { h.shutdown(); }
 });

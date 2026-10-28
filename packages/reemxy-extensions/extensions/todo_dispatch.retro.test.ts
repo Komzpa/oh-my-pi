@@ -36,7 +36,10 @@ async function fixture(initial: TodoScheduleInput, jobs: unknown[], deadlineAt =
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
     getActiveTools: () => ["task"],
     appendEntry: (customType: string, data?: unknown) => branch.push({ type: "custom", customType, data }),
-    sendMessage: (message: { content: string }) => notices.push(message.content),
+      sendMessage: (message: { customType?: string; content: string; details?: unknown; attribution?: string; display?: boolean }) => {
+        notices.push(message.content);
+        branch.push({ type: "custom_message", ...message, timestamp: new Date().toISOString() });
+      },
     pi: { ...sdk, readGoalDeadline: () => ({ goalId: "retro-test", deadlineAt }) },
   } as unknown as ExtensionAPI);
   const ctx = {
@@ -181,8 +184,12 @@ test("the per-request context note drops the due retro once its facilitator comp
     expect(await f.check()).toContain("retrospective due");
     await f.dispatch("SprintRetro");
     f.setJobs([...workers, { id: "SprintRetro", type: "task", status: "completed", label: "SprintRetro", startTime: liveNow - 1000, agentId: "SprintRetro" }]);
-    const note = (await f.handlers.get("context")!({ messages: [] }, f.ctx)) as { messages?: Array<{ content: unknown }> } | undefined;
-    expect(JSON.stringify(note?.messages ?? [])).not.toContain("retrospective due");
+    const messages: unknown[] = [];
+    const contextResult = await f.handlers.get("context")!({ messages }, f.ctx) as { messages: unknown[] };
+    expect(contextResult.messages).toBe(messages);
+    await f.handlers.get("turn_end")!({ toolResults: [] }, f.ctx);
+    const note = f.branch.findLast(entry => entry.type === "custom_message" && entry.customType === "todo-dispatch-time-note");
+    expect(JSON.stringify(note ?? {})).not.toContain("retrospective due");
   } finally { setSystemTime(); }
 });
 test("an async background retro receipt clears the demand and never relists covered workers", async () => {
