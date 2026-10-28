@@ -227,6 +227,69 @@ test("an idle chief may stop when every open row needs the user to unblock it", 
 	} finally { h.shutdown(); }
 });
 
+test("an ordinary-language blocker is rechecked once without claiming it is not waiting on the user", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const row = phases[0]!.tasks[0]!;
+	row.status = "blocked";
+	row.blocker = "Awaiting readable screenshot or choice names";
+	row.schedule.owner = undefined;
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+	try {
+		for (let turn = 0; turn < 4; turn++) {
+			if (turn) await h.handlers.get("turn_start")!({}, h.ctx);
+			await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
+			await h.handlers.get("session_stop")!({}, h.ctx);
+		}
+		const demands = h.notices.filter(notice => notice.customType === "todo-idle-plan-demand");
+		expect(demands).toHaveLength(1);
+		expect(demands[0]?.content).toContain("Awaiting readable screenshot or choice names");
+		expect(demands[0]?.content).not.toContain("not waiting on the user");
+	} finally { h.shutdown(); }
+});
+
+test("wait calls do not reset an unchanged idle continuation demand", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const row = phases[0]!.tasks[0]!;
+	row.status = "pending";
+	row.schedule.owner = undefined;
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+	try {
+		for (let turn = 0; turn < 4; turn++) {
+			if (turn) await h.handlers.get("turn_start")!({}, h.ctx);
+			await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
+			await h.handlers.get("session_stop")!({}, h.ctx);
+		}
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(2);
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-escalation")).toHaveLength(1);
+	} finally { h.shutdown(); }
+});
+
+test("a changed plan rearms an idle demand without dropping dependent work", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(2, now);
+	const row = phases[0]!.tasks[0]!;
+	row.status = "blocked";
+	row.blocker = "Investigate service failure";
+	row.schedule.owner = undefined;
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+	try {
+		await h.handlers.get("session_stop")!({}, h.ctx);
+		await h.handlers.get("turn_start")!({}, h.ctx);
+		row.status = "pending";
+		row.blocker = undefined;
+		await h.handlers.get("tool_call")!({ toolName: "todo", input: { op: "unblock" } }, h.ctx);
+		await h.handlers.get("turn_start")!({}, h.ctx);
+		await h.handlers.get("session_stop")!({}, h.ctx);
+		const demands = h.notices.filter(notice => notice.customType === "todo-idle-plan-demand");
+		expect(demands).toHaveLength(2);
+		expect(demands[0]?.content).toContain("Investigate service failure");
+		expect(demands[1]?.content).toContain('Ready: "Row 1"');
+		expect(phases[0]!.tasks[1]!.schedule.dependencies).toEqual(["Row 1"]);
+	} finally { h.shutdown(); }
+});
+
 test("waiting on a live worker does not demand another idle turn", async () => {
 	const now = Date.now();
 	const phases = chainedPlan(1, now);
@@ -257,6 +320,8 @@ test("three ignored idle demands produce one user status line and no fourth wake
 		const escalation = h.notices.filter(notice => notice.customType === "todo-idle-plan-escalation");
 		expect(escalation).toHaveLength(1);
 		expect(escalation[0]?.content).toContain("PLAN STATUS:");
+		expect(escalation[0]?.content).toContain("assistant has not staffed ready work");
+		expect(escalation[0]?.content).not.toContain("user intervention is needed");
 		expect(escalation[0]?.display).toBe(true);
 		expect(escalation[0]?.delivery).toMatchObject({ deliverAs: "nextTurn", triggerTurn: false });
 		await h.handlers.get("turn_start")!({}, h.ctx);
@@ -1386,6 +1451,31 @@ test("cap recovery clears when its worker is gone and the row has a running new 
 	} finally { h.shutdown(); }
 });
 
+test("a deferred row with a finished worker does not demand killing it before waiting for other work", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(2, now);
+	const forecast = (phases, options) => {
+		const out = forecastTodoPlan(phases, options);
+		Object.assign(out.rows[0], { estimateUpdatedAt: now, reestimateCount: 2 });
+		return out;
+	};
+	const h = await noticeHarness(phases, now + 3600_000, [], 0, forecast);
+	let running = [{ id: "worker-a", type: "task", status: "running", label: "Row 1", startTime: now }];
+	h.ctx.getAsyncJobSnapshot = () => ({ running, recent: [], nonJobAgents: [] });
+	const call = (toolName, input = {}) => h.handlers.get("tool_call")!({ toolName, input }, h.ctx);
+	try {
+		await call("todo", { op: "schedule", updates: [{ task: "Row 1", estimate: { updatedAt: now + 1 } }] });
+		expect((await call("wait"))?.reason).toContain("Kill worker-a");
+		phases[0].tasks[0].status = "blocked";
+		phases[0].tasks[0].blocker = "User deferred this work";
+		running = [{ id: "worker-b", type: "task", status: "running", label: "Row 2", startTime: now }];
+		phases[0].tasks[1].status = "in_progress";
+		phases[0].tasks[1].schedule.owner = "worker-b";
+		phases[0].tasks[1].schedule.dependencies = [];
+		expect((await call("wait"))?.reason ?? "").not.toContain("Kill worker-a");
+	} finally { h.shutdown(); }
+});
+
 test("stuck escalation drops once its worker is gone from the job table without a kill or receipt", async () => {
 	const h = await stuckWorkerHarness({ filesAgeMs: 70 * 60_000, elapsedMs: 70 * 60_000 });
 	const call = () => h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
@@ -1418,7 +1508,7 @@ test("stuck escalation clears on kill with a new running owner; a sub-hour quiet
 }, 60_000);
 
 
-test("cap recovery survives session restore, requires reassign after kill, and permits row closure or drop", async () => {
+test("cap recovery survives session restore, requires reassign after kill, and permits a blocked, closed or dropped row", async () => {
 	const now = Date.now();
 	const phases = chainedPlan(1, now);
 	const forecast = (phases, options) => {
@@ -1447,7 +1537,7 @@ test("cap recovery survives session restore, requires reassign after kill, and p
 		expect((await call("wait"))?.reason).toContain("reassign");
 		phases[0].tasks[0].status = "blocked";
 		phases[0].tasks[0].blocker = "Waiting for map layout";
-		expect((await call("wait"))?.reason).toContain("reassign");
+		expect((await call("wait"))?.reason ?? "").not.toContain("reassign");
 		phases[0].tasks[0].status = "completed";
 		expect((await call("wait"))?.block).not.toBe(true);
 		phases[0].tasks[0].status = "in_progress";

@@ -90,6 +90,7 @@ export type SprintState = {
   lastNotices: Record<string, string>;
   ignoredDemands: Record<string, number>;
   idleContinuationDemands: number;
+  idleContinuationKey?: string;
   recoveryWaits?: RecoveryWait[];
 };
 type TaskRow = TodoScheduleInput[number]["tasks"][number];
@@ -968,6 +969,7 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
       idleContinuationDemands: typeof (data as Partial<SprintState>).idleContinuationDemands === "number"
         ? Math.max(0, Math.min(3, Math.floor((data as Partial<SprintState>).idleContinuationDemands!)))
         : 0,
+      ...(typeof data.idleContinuationKey === "string" ? { idleContinuationKey: data.idleContinuationKey } : {}),
     };
   }
   return blankSprintState();
@@ -3426,6 +3428,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const killed = item.killed || jobs?.recent.some(job => matches(job) && job.status === "cancelled" && (job.endTime ?? 0) > item.at);
       if (item.kind === "cap") {
         if (!row || !isNonClosedRowStatus(row.status)) return [];
+        // A deliberately blocked row has no work to reassign once its old worker
+        // is absent. Preserve the blocker and let unrelated workers continue.
+        if (row.status === "blocked" && jobs && !running) return [];
         // A worker gone from the job table counts as stopped: its kill can only answer "not found".
         if ((killed || jobs) && !running && row.schedule?.owner && row.schedule.owner !== item.owner) return [];
       } else {
@@ -3487,12 +3492,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const user = latestDeadlineUserMessage([{ type: "message", message: event.message }]);
     if (user) announceHuman(ctx, user);
     if (!isMain(ctx) || event.message?.role !== "user") return;
+    if (user) resetIdleContinuationDemand();
     latestUserRequestAt = Date.now();
 
   });
   const resetIdleContinuationDemand = () => {
-    if (sprintState.idleContinuationDemands === 0) return;
-    sprintState = { ...sprintState, idleContinuationDemands: 0 };
+    if (sprintState.idleContinuationDemands === 0 && sprintState.idleContinuationKey === undefined) return;
+    sprintState = { ...sprintState, idleContinuationDemands: 0, idleContinuationKey: undefined };
     persistSprintState();
   };
   const demandIdlePlanContinuation = (ctx: ExtensionContext) => {
@@ -3523,11 +3529,33 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       resetIdleContinuationDemand();
       return;
     }
+    // Only a changed plan or ownership can rearm an idle demand. Tool calls such
+    // as wait, read and view do not by themselves change the work state.
+    const idleKey = JSON.stringify([tasks.map(task => [task.content, task.status, task.blocker, task.schedule]), [...runningRows].sort()]);
+    if (sprintState.idleContinuationKey !== idleKey) {
+      sprintState = { ...sprintState, idleContinuationKey: idleKey, idleContinuationDemands: 0 };
+      persistSprintState();
+    }
     const uncovered = new Set(uncoveredRows.map((row) => row.content));
-    const overdueRows = decision.forecast.rows.filter((row) => row.overdue && uncovered.has(row.content)).map((row) => row.content);
+    const overdueRows = decision.forecast.rows.filter((row) => row.overdue && row.ready && uncovered.has(row.content) && isOpenRowStatus(row.status)).map((row) => row.content);
     const readyRows = decision.forecast.rows.filter((row) => row.ready && uncovered.has(row.content)).map((row) => row.content);
     const rowList = (rows: string[]) => rows.length ? rows.slice(0, MAX_ROWS).map((row) => JSON.stringify(shorten(row))).join(", ") : "none";
     const openList = rowList(uncoveredRows.map((row) => row.content));
+    if (readyRows.length === 0 && overdueRows.length === 0) {
+      if (sprintState.idleContinuationDemands !== 0) return;
+      const blockers = uncoveredRows.filter(row => row.status === "blocked")
+        .map(row => `${JSON.stringify(shorten(row.content))}: ${shorten(row.blocker ?? "reason not recorded")}`);
+      idlePlanDemandedThisTurn = true;
+      sprintState = { ...sprintState, idleContinuationDemands: 3 };
+      persistSprintState();
+      pi.sendMessage({
+        customType: "todo-idle-plan-demand",
+        content: `No work is currently ready. Recheck the open blockers and dependencies once, continue any independently actionable work, and otherwise wait for the relevant change without repeating status. Open: ${openList}. Blockers: ${blockers.length ? blockers.join("; ") : "none recorded"}.`,
+        display: false,
+        attribution: "agent",
+      }, { deliverAs: "nextTurn", triggerTurn: true, interruptWait: false });
+      return;
+    }
     const demand = `REQUIRED PLAN CONTINUATION: open rows have no running worker and are not waiting on the user or a live worker. Overdue: ${rowList(overdueRows)}. Ready: ${rowList(readyRows)}. Open: ${openList}. Re-estimate each overdue row from current evidence, staff every ready row, resolve any other blocker, and keep going until the deliverable is complete or only user-blocked rows/live workers remain.`;
     const count = sprintState.idleContinuationDemands;
     if (count >= 3) return;
@@ -3538,7 +3566,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       pi.sendMessage(
         {
           customType: "todo-idle-plan-escalation",
-          content: `PLAN STATUS: 3 consecutive idle turns left overdue ${rowList(overdueRows)} and ready ${rowList(readyRows)} rows open; user intervention is needed.`,
+          content: `PLAN STATUS: after 3 idle turns, the assistant has not staffed ready work ${rowList(readyRows)} or addressed overdue ready work ${rowList(overdueRows)}. Work remains open.`,
           display: true,
           attribution: "agent",
         },
@@ -4608,7 +4636,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   pi.on("tool_call", async (event, ctx) => {
     if (isMain(ctx)) {
       turnToolNames.push(event.toolName);
-      resetIdleContinuationDemand();
     }
     if (event.toolName === "wait") {
       const reason = unansweredUserReasonWithDraft(ctx);
