@@ -122,11 +122,29 @@ describe("subagent warning injection", () => {
 		expect(result.exitCode).toBe(1);
 	});
 
-	it("normalizes explicit aborted yield into aborted payload", () => {
+	it("normalizes explicit aborted yield into aborted payload, preserving prior failure", () => {
 		const result = finalizeSubprocessOutput({
 			rawOutput: "partial output",
 			exitCode: 1,
 			stderr: "old error",
+			doneAborted: false,
+			signalAborted: false,
+			yieldItems: [{ status: "aborted", error: "blocked by permissions" }],
+			outputSchema: undefined,
+		});
+
+		expect(result.abortedViaYield).toBe(true);
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toBe("old error");
+		expect(result.rawOutput).toContain('"aborted": true');
+		expect(result.rawOutput).toContain('"blocked by permissions"');
+	});
+
+	it("produces clean exit on aborted yield without prior failure", () => {
+		const result = finalizeSubprocessOutput({
+			rawOutput: "partial output",
+			exitCode: 0,
+			stderr: "",
 			doneAborted: false,
 			signalAborted: false,
 			yieldItems: [{ status: "aborted", error: "blocked by permissions" }],

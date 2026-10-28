@@ -23,10 +23,11 @@ import { ExtensionRuntime } from "../../src/extensibility/extensions/loader";
 import { startDaemonBrokerFromEnvironment } from "../../src/launch/broker";
 import * as daemonPaths from "../../src/launch/paths";
 import { DAEMON_IDLE_GRACE_ENV, DAEMON_PROJECT_DIR_ENV, DAEMON_RUNTIME_DIR_ENV } from "../../src/launch/protocol";
+import { IrcBus } from "../../src/irc/bus";
 import { AgentLifecycleManager } from "../../src/registry/agent-lifecycle";
 import { AgentRegistry } from "../../src/registry/agent-registry";
 import * as sdkModule from "../../src/sdk";
-import { finalizeSubagentLifecycle, runSubprocess } from "../../src/task/executor";
+import { attachIrcWakeTurnMonitor, finalizeSubagentLifecycle, runSubprocess } from "../../src/task/executor";
 import { EventBus } from "../../src/utils/event-bus";
 import {
 	createDaemonBrokerClient,
@@ -37,6 +38,7 @@ import {
 } from "../../src/launch/client";
 import { readLiveDaemonBrokerPid } from "../../src/launch/presence";
 import { AgentSession } from "../../src/session/agent-session";
+import { convertToLlm } from "../../src/session/messages";
 import { SessionManager } from "../../src/session/session-manager";
 import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 
@@ -109,6 +111,95 @@ function startIsolatedBroker(client: DaemonBrokerClient): { listening: Promise<v
 	return { listening: listening.promise, finished };
 }
 describe("per-session daemon client release", () => {
+	for (const outcome of ["complete", "fail", "abort"] as const) {
+		it(`releases a kept-alive transcript after an autonomous IRC wake ${outcome}`, async () => {
+			using tempDir = TempDir.createSync("@omp-irc-wake-release-");
+			const projectDir = tempDir.path();
+			const authStorage = createInMemoryAuthStorage();
+			const manager = SessionManager.inMemory(projectDir);
+			const laneId = `wake-${crypto.randomUUID()}`;
+			const parentId = `parent-${crypto.randomUUID()}`;
+			const siblingId = `sibling-${crypto.randomUUID()}`;
+			const entered = Promise.withResolvers<void>();
+			const gate = Promise.withResolvers<void>();
+			const mock = createMockModel({
+				responses: [
+					async () => {
+						entered.resolve();
+						await gate.promise;
+						return outcome === "fail"
+							? { stopReason: "error", errorMessage: "fixture failure" }
+							: { content: ["wake complete"], delayMs: outcome === "abort" ? 30_000 : 0 };
+					},
+				],
+			});
+			const settings = Settings.isolated({ "compaction.enabled": false, "todo.enabled": false });
+			const session = new AgentSession({
+				agent: new Agent({
+					initialState: { model: mock.model, systemPrompt: ["Test"], tools: [], messages: [] },
+					getApiKey: () => "test-key",
+					convertToLlm,
+					streamFn: mock.stream,
+				}),
+				agentId: laneId,
+				agentKind: "sub",
+				sessionManager: manager,
+				settings,
+				modelRegistry: new ModelRegistry(authStorage, path.join(projectDir, "models.yml")),
+				toolRegistry: new Map(),
+			});
+			const registry = AgentRegistry.global();
+			const ref = registry.register({ id: laneId, displayName: laneId, kind: "sub", session, status: "idle" });
+			attachIrcWakeTurnMonitor(session, {
+				id: laneId,
+				agent: { name: "task", description: "test", systemPrompt: "Test", source: "bundled" },
+				structured: false,
+			});
+			const sessionId = manager.getSessionId();
+			const client = await daemonClientForProject(projectDir, sessionId, { idleGraceMs: IDLE_GRACE_MS });
+			const parent = await daemonClientForProject(projectDir, parentId, { idleGraceMs: IDLE_GRACE_MS });
+			const sibling = await daemonClientForProject(projectDir, siblingId, { idleGraceMs: IDLE_GRACE_MS });
+			try {
+				const daemon = await startFixtureDaemon(client, "wake-owned");
+				const parentDaemon = await startFixtureDaemon(parent, "wake-parent");
+				const siblingDaemon = await startFixtureDaemon(sibling, "wake-sibling");
+				expect((await IrcBus.global().send({ from: parentId, to: laneId, body: "wake" })).outcome).toBe("woken");
+				await withTimeout(entered.promise, 5_000, "Wake did not reach provider");
+				expect(daemon.status()).toBe(ProcessStatus.Running);
+				expect(client.closed).toBe(false);
+				if (outcome === "abort") {
+					gate.resolve();
+					await session.abort();
+				} else gate.resolve();
+				await withTimeout(session.waitForIrcReplies(), 15_000, "Wake did not finish");
+				expect(session.getLastAssistantMessage()?.stopReason).toBe(
+					outcome === "complete" ? "stop" : outcome === "fail" ? "error" : "aborted",
+				);
+				expect(daemon.status()).toBe(ProcessStatus.Exited);
+				expect(client.closed).toBe(true);
+				await expect(client.request({ op: "ping" })).rejects.toThrow();
+				expect(await hasCachedDaemonClientForSession(projectDir, sessionId)).toBe(false);
+				expect(session.isDisposed).toBe(false);
+				expect(registry.get(laneId)).toBe(ref);
+				for (const [control, process] of [
+					[parent, parentDaemon],
+					[sibling, siblingDaemon],
+				] as const) {
+					expect(process.status()).toBe(ProcessStatus.Running);
+					expect(control.closed).toBe(false);
+					expect((await control.request({ op: "ping" })).op).toBe("ping");
+				}
+				await waitForBrokerExit(client.runtimeDir);
+			} finally {
+				gate.resolve();
+				registry.unregister(laneId);
+				await session.dispose();
+				for (const id of [sessionId, parentId, siblingId]) await releaseDaemonClientsForSession(id);
+				await Promise.all([client, parent, sibling].map(control => waitForBrokerExit(control.runtimeDir)));
+				authStorage.close();
+			}
+		}, 30_000);
+	}
 	it("retains a persistent server across runtime replacement and still stops it on final release", async () => {
 		using temp = TempDir.createSync("@omp-restart-daemon-");
 		const id = `restart-${crypto.randomUUID()}`;

@@ -99,13 +99,13 @@ async function probeEndpoint(wsEndpoint: string): Promise<boolean> {
 /**
  * Chrome registers its main process with the user systemd manager over the
  * session bus and systemd then moves it into `app.slice/app-<name>-<pid>.scope`,
- * away from the session slice that owns the automation browser. The session bus
- * must therefore be absent from this child: an empty value is not enough (GDBus
- * then falls back to `$XDG_RUNTIME_DIR/bus`), so the variables are removed.
- * `env -u` execs in place, keeping Chrome's pid as the recorded daemon pid.
- * Only this browser child loses the bus; other broker children keep it.
+ * away from the scope that owns the browser. The session bus must therefore be
+ * absent from this child: an empty value is not enough (GDBus then falls back
+ * to `$XDG_RUNTIME_DIR/bus`), so the variables are removed. `env -u` execs in
+ * place, keeping Chrome's pid as the recorded process pid. Only the browser
+ * child loses the bus; other broker and tool children keep it.
  */
-function browserSpawnCommand(launch: SharedBrowserLaunchSpec): {
+export function browserSpawnCommand(launch: SharedBrowserLaunchSpec): {
 	application: string;
 	args: string[];
 } {
