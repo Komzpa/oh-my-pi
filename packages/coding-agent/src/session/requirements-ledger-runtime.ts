@@ -405,7 +405,15 @@ export class RequirementsLedgerRuntime {
 		);
 		const candidates = getUnclassifiedRequirementCandidates(branch);
 		if (candidates.length === 0) return undefined;
-		return { additionalContext: formatUnclassifiedCandidateReminder(candidates, openTodoRowContents(branch)) };
+		const rows = openTodoRowContents(branch);
+		const user = branch.findLast(entry => entry.type === "message" && entry.message.role === "user");
+		const key = JSON.stringify([user?.id ?? null, candidates.map(item => [item.id, item.rawText]), rows]);
+		const previous = branch.findLast(
+			entry => entry.type === "custom" && entry.customType === "requirements_candidate_reminder",
+		);
+		if (previous?.type === "custom" && isRecord(previous.data) && previous.data.key === key) return undefined;
+		this.#host.sessionManager.appendCustomEntry("requirements_candidate_reminder", { key });
+		return { additionalContext: formatUnclassifiedCandidateReminder(candidates, rows) };
 	}
 
 	/** Audit scope comes only from named workers' structured TODO ownership, never task prose or quoted IDs. */
