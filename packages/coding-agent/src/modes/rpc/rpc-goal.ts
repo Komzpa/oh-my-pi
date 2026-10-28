@@ -312,8 +312,7 @@ export class RpcGoalController {
 	/**
 	 * Leave the previous session's goal behind and restore a goal journaled in the
 	 * current session (startup, new/switch/branch/open), mirroring the TUI's reattach.
-	 * `preserveActiveGoal` keeps an active goal active (in-process session changes);
-	 * without it an active goal is paused (startup, a resumed process).
+	 * Active goals remain active across session changes and process resumes.
 	 * Queued behind any reconcile already running; resolves when this one has run.
 	 * Never awaited from {@link beginSessionChange}: `onThreadResumed` notifies
 	 * extensions, which may start another change.
