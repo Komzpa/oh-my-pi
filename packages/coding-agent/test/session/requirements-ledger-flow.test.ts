@@ -233,6 +233,7 @@ describe("requirements ledger flow notices", () => {
 			expect(classified.isError).toBeFalsy();
 			await runtime.afterToolCall({
 				toolCall: { id: "classify-flow", name: "todo" },
+				args: { op: "classify", id: "R1", classification: "linked", rows: ["Build artifact"] },
 				result: classified,
 				isError: false,
 			} as never);
@@ -240,6 +241,7 @@ describe("requirements ledger flow notices", () => {
 			expect(started.isError).toBeFalsy();
 			await runtime.afterToolCall({
 				toolCall: { id: "start-flow", name: "todo" },
+				args: { op: "start", task: "Build artifact" },
 				result: started,
 				isError: false,
 			} as never);
@@ -300,10 +302,18 @@ describe("requirements ledger flow notices", () => {
 			git(cwd, "add", ".");
 			git(cwd, "commit", "-m", "change audited artifact");
 			await runtime.beforeTodoCall?.("todo", { op: "done", task: "Build artifact" });
-			expect(notices.find(notice => notice.includes("Re-audit R1"))).toContain("Re-audit R1");
+			expect(notices.join("\n")).toContain("fresh qa-auditor verdict");
+			expect(notices.some(notice => notice.includes("Re-audit R1"))).toBe(false);
 			const todo = todoTool(cwd, manager);
 			const done = await todo.execute("stale-done-flow", { op: "done", task: "Build artifact" });
 			expect(done.isError).toBe(true);
+			await runtime.afterToolCall({
+				toolCall: { id: "stale-done-flow", name: "todo" },
+				args: { op: "done", task: "Build artifact" },
+				result: done,
+				isError: true,
+			} as never);
+			expect(notices.find(notice => notice.includes("Re-audit R1"))).toContain("Re-audit R1");
 			const doneRefusal = done.content.flatMap(part => (part.type === "text" ? [part.text] : [])).join("\n");
 			expect(doneRefusal).toContain("Re-audit R1");
 			const publicationGate = gate();
