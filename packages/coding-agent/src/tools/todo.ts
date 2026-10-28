@@ -5,7 +5,7 @@ import {
 	type TodoItem,
 	type TodoPhase,
 	type TodoCompletionTransition,
-	type TodoToolDetails as BaseTodoToolDetails,
+	type TodoToolDetails,
 } from "@oh-my-pi/pi-tui/tools/todo";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
@@ -63,7 +63,7 @@ import {
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
 
 /** Gate evidence already resolved by TodoTool; notices must not probe it again. */
-interface TodoToolDetails extends BaseTodoToolDetails {
+interface RequirementTodoToolDetails extends TodoToolDetails {
 	requirementGateIssues?: RequirementDoneGateIssue[];
 }
 
@@ -1543,7 +1543,7 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 // Tool Class
 // =============================================================================
 
-export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolDetails> {
+export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, RequirementTodoToolDetails> {
 	static readonly #schema: TodoToolSchema<TodoSchema> = createTodoToolSchema(todoSchema);
 	readonly name = "todo";
 	readonly approval = "read" as const;
@@ -1569,9 +1569,9 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		_toolCallId: string,
 		params: TodoToolParamsType<TodoSchema>,
 		_signal?: AbortSignal,
-		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
+		_onUpdate?: AgentToolUpdateCallback<RequirementTodoToolDetails>,
 		_context?: AgentToolContext,
-	): Promise<AgentToolResult<TodoToolDetails>> {
+	): Promise<AgentToolResult<RequirementTodoToolDetails>> {
 		const result = await artifactCwdScope.run(this.session.cwd, () =>
 			this.#executeTodo(_toolCallId, params, _signal, _onUpdate, _context),
 		);
@@ -1596,9 +1596,9 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		_toolCallId: string,
 		params: TodoToolParamsType<TodoSchema>,
 		_signal?: AbortSignal,
-		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
+		_onUpdate?: AgentToolUpdateCallback<RequirementTodoToolDetails>,
 		_context?: AgentToolContext,
-	): Promise<AgentToolResult<TodoToolDetails>> {
+	): Promise<AgentToolResult<RequirementTodoToolDetails>> {
 		const livePhasesSnapshot = JSON.stringify(this.session.getTodoPhases?.() ?? []);
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
 		if (this.session.sessionManager) {
@@ -1709,7 +1709,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		const effective = failed ? previousPhases : updated;
 		const completedTasks = readOnly || failed ? [] : getCompletionTransitions(previousPhases, updated);
 		if (!readOnly && !failed) this.session.setTodoPhases?.(updated);
-		const details: TodoToolDetails = { op, phases: effective, storage };
+		const details: RequirementTodoToolDetails = { op, phases: effective, storage };
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 
 		return {
@@ -1725,7 +1725,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		previousPhases: TodoPhase[],
 		storage: "memory" | "session",
 		signal?: AbortSignal,
-	): Promise<AgentToolResult<TodoToolDetails> | undefined> {
+	): Promise<AgentToolResult<RequirementTodoToolDetails> | undefined> {
 		const sessionManager = this.session.sessionManager;
 		if (!sessionManager) return undefined;
 		const task = typeof params.task === "string" ? params.task : undefined;
@@ -1815,8 +1815,8 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		params: Record<string, unknown>,
 		previousPhases: TodoPhase[],
 		storage: string,
-	): Promise<AgentToolResult<TodoToolDetails>> {
-		const details = { op: "classify", phases: previousPhases, storage } as unknown as TodoToolDetails;
+	): Promise<AgentToolResult<RequirementTodoToolDetails>> {
+		const details = { op: "classify", phases: previousPhases, storage } as unknown as RequirementTodoToolDetails;
 		const id = typeof params.id === "string" ? params.id : undefined;
 		const rawClassification = params.classification;
 		const classification =
