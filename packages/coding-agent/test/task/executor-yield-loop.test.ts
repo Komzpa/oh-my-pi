@@ -15,8 +15,6 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { YieldTool } from "@oh-my-pi/pi-coding-agent/tools/yield";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createSessionDefaults } from "../helpers/session-defaults";
@@ -240,110 +238,6 @@ describe("runSubprocess incremental yield loops", () => {
 		} as AgentSessionEvent);
 	}
 
-	async function emitYieldCall(
-		tool: YieldTool,
-		callId: string,
-		args: unknown,
-		emit: (event: AgentSessionEvent) => void,
-	): Promise<boolean> {
-		try {
-			const result = await tool.execute(callId, args);
-			emit({ type: "tool_execution_end", toolCallId: callId, toolName: "yield", result, isError: false });
-			return true;
-		} catch (error) {
-			emit({
-				type: "tool_execution_end",
-				toolCallId: callId,
-				toolName: "yield",
-				result: { content: [{ type: "text", text: String(error) }], details: {} },
-				isError: true,
-			});
-			return false;
-		}
-	}
-
-	function createYieldTool(): YieldTool {
-		return new YieldTool({ cwd: "/tmp", hasUI: false, settings: Settings.isolated() } as ToolSession);
-	}
-
-	it("accepted terminal A keeps the first result after 18 refused yields", async () => {
-		const id = "AcceptedThenRefused";
-		const tool = createYieldTool();
-		const accepted: boolean[] = [];
-		const handle = createMockSession(async ({ promptIndex, emit }) => {
-			if (promptIndex !== 1) return;
-			accepted.push(await emitYieldCall(tool, "first", { data: { report: "FIRST" } }, emit));
-			for (let index = 0; index < 18; index++) {
-				accepted.push(await emitYieldCall(tool, `later-${index}`, { data: { report: "LATER" } }, emit));
-			}
-		});
-		handle.asyncPending.value = true;
-		mockCreateAgentSession(handle.session);
-		registerRunning(id, handle.session);
-
-		const result = await runSubprocess(baseOptions(id, 0));
-
-		expect(result.exitCode).toBe(0);
-		expect(result.aborted).toBe(false);
-		expect(result.error).toBeUndefined();
-		expect(JSON.parse(result.output)).toEqual({ report: "FIRST" });
-		expect(result.extractedToolData?.yield).toHaveLength(1);
-		expect(accepted).toEqual([true, ...Array(18).fill(false)]);
-		expect(handle.prompts).toHaveLength(1);
-		expect(handle.abortCalls()).toBe(1);
-	});
-
-	it("accepted terminal B refuses incremental and terminal follow-ups without appending", async () => {
-		const id = "AcceptedThenIncremental";
-		const tool = createYieldTool();
-		const accepted: boolean[] = [];
-		const handle = createMockSession(async ({ promptIndex, emit }) => {
-			if (promptIndex !== 1) return;
-			accepted.push(await emitYieldCall(tool, "first", { data: { report: "FIRST" } }, emit));
-			// A late async delivery must not reopen the accepted terminal state.
-			emit({
-				type: "message_start",
-				message: {
-					role: "custom",
-					customType: "async-result",
-					content: "late result",
-					display: true,
-					timestamp: Date.now(),
-				},
-			} as AgentSessionEvent);
-			accepted.push(await emitYieldCall(tool, "section", { type: ["closure"], data: "APPENDED" }, emit));
-			accepted.push(await emitYieldCall(tool, "last", { data: { report: "REPLACEMENT" } }, emit));
-		});
-		handle.asyncPending.value = true;
-		mockCreateAgentSession(handle.session);
-		registerRunning(id, handle.session);
-
-		const result = await runSubprocess(baseOptions(id, 0));
-
-		expect(result.exitCode).toBe(0);
-		expect(result.aborted).toBe(false);
-		expect(JSON.parse(result.output)).toEqual({ report: "FIRST" });
-		expect(result.extractedToolData?.yield).toHaveLength(1);
-		expect(accepted).toEqual([true, false, false]);
-		expect(handle.prompts).toHaveLength(1);
-		expect(handle.abortCalls()).toBe(1);
-	});
-
-	it("fails a worker whose only yield is invalid", async () => {
-		const id = "InvalidOnly";
-		const tool = createYieldTool();
-		const handle = createMockSession(async ({ promptIndex, emit }) => {
-			if (promptIndex === 1) expect(await emitYieldCall(tool, "invalid", {}, emit)).toBe(false);
-		});
-		mockCreateAgentSession(handle.session);
-		registerRunning(id, handle.session);
-
-		const result = await runSubprocess(baseOptions(id, 0));
-
-		expect(result.exitCode).toBe(1);
-		expect(result.extractedToolData?.yield).toBeUndefined();
-	});
-
 	it("retries a dropped assignment before sending any yield reminder", async () => {
 		const id = "DroppedScout";
 		const handle = createMockSession(({ promptIndex, emit, pushMessage }) => {
@@ -554,8 +448,8 @@ describe("runSubprocess incremental yield loops", () => {
 		expect(JSON.parse(result.output)).toMatchObject({ progress: { section: "cleanup-1" } });
 	});
 
-	it("completes the forced terminal yield even with owner work pending", async () => {
-		const id = "PendingScout";
+	it("does not finalize a section submitted after the forced yield parked", async () => {
+		const id = "ParkedScout";
 		const handle = createMockSession(({ promptIndex, emit, pushMessage }) => {
 			if (promptIndex <= 3) {
 				const message = {
@@ -568,27 +462,39 @@ describe("runSubprocess incremental yield loops", () => {
 				return;
 			}
 			if (promptIndex === 4) {
-				// Acceptance ends the run; pending owner work is reaped at teardown.
+				// Owner work starts on the forced final reminder. Its terminal
+				// yield parks behind the quiescence barrier.
 				handle.asyncPending.value = true;
-				emitTerminalYieldTurn("FIRST", emit, pushMessage);
+				emitTerminalYieldTurn("PARKED", emit, pushMessage);
 				return;
 			}
+			if (promptIndex === 5) return "dropped";
+			if (promptIndex === 6) {
+				// The retried notice can make progress without satisfying the
+				// terminal yield parked behind the quiescence barrier.
+				handle.asyncPending.value = false;
+				emitIncrementalYieldTurn(1, emit, pushMessage);
+				return;
+			}
+			emitTerminalYieldTurn("FRESH", emit, pushMessage);
 		});
 		mockCreateAgentSession(handle.session);
 		registerRunning(id, handle.session);
 
 		const result = await runSubprocess(baseOptions(id, 0));
 
-		expect(handle.prompts).toHaveLength(4);
+		// The notice turn's section did not end the run: the ladder ran again
+		// and the run completed on the fresh terminal yield.
+		expect(handle.prompts[4]?.text).toBe(handle.prompts[5]?.text);
 		expect(result.exitCode).toBe(0);
-		expect(result.output).toContain("FIRST");
+		expect(result.output).toContain("FRESH");
 	});
 
-	it("never dispatches an async-pending notice after terminal acceptance", async () => {
-		const id = "NoPostAcceptanceNotice";
+	it("fails when every async-pending notice dispatch is dropped", async () => {
+		const id = "LostNoticeScout";
 		const handle = createMockSession(({ promptIndex, emit, pushMessage }) => {
 			if (promptIndex > 1) return "dropped";
-			emitTerminalYieldTurn("FIRST", emit, pushMessage);
+			emitTerminalYieldTurn("PARKED", emit, pushMessage);
 		});
 		handle.asyncPending.value = true;
 		mockCreateAgentSession(handle.session);
@@ -596,9 +502,9 @@ describe("runSubprocess incremental yield loops", () => {
 
 		const result = await runSubprocess(baseOptions(id, 0));
 
-		expect(handle.prompts).toHaveLength(1);
-		expect(result.exitCode).toBe(0);
-		expect(result.error).toBeUndefined();
-		expect(result.output).toContain("FIRST");
+		expect(handle.prompts).toHaveLength(5);
+		expect(handle.prompts.slice(1).map(({ text }) => text)).toEqual(Array(4).fill(handle.prompts[1]?.text));
+		expect(result.exitCode).toBe(1);
+		expect(result.error).toContain("async-pending notice dropped before provider dispatch after 4 attempts");
 	});
 });

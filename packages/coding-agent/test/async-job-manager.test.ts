@@ -726,8 +726,7 @@ describe("AsyncJobManager", () => {
 		vi.useFakeTimers();
 		try {
 			const manager = new AsyncJobManager({ retentionMs: 60_000, consumedResultEvictionMs: 25 });
-			const delivery = Promise.withResolvers<void>();
-			manager.registerDeliverySink("Main", () => delivery.promise);
+			manager.registerDeliverySink("Main", () => new Promise<void>(() => {}));
 
 			const jobId = manager.register("task", "hung", async () => "done", { ownerId: "Main" });
 			await manager.waitForAll();

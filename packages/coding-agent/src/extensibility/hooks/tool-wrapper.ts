@@ -9,7 +9,7 @@ import {
 } from "@oh-my-pi/pi-agent-core";
 import type { Static, TSchema } from "@oh-my-pi/pi-ai";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
-import { applyToolProxy, withDeferredToolResultAcceptance } from "../tool-proxy";
+import { applyToolProxy } from "../tool-proxy";
 import type { HookRunner } from "./runner";
 import type { ToolCallEventResult, ToolResultEventResult } from "./types";
 
@@ -39,18 +39,6 @@ export class HookToolWrapper<TParameters extends TSchema = TSchema, TDetails = u
 	}
 
 	async execute(
-		toolCallId: string,
-		params: Static<TParameters>,
-		signal?: AbortSignal,
-		onUpdate?: AgentToolUpdateCallback<TDetails, TParameters>,
-		context?: AgentToolContext,
-	) {
-		return withDeferredToolResultAcceptance(this.tool, toolCallId, () =>
-			this.#execute(toolCallId, params, signal, onUpdate, context),
-		);
-	}
-
-	async #execute(
 		toolCallId: string,
 		params: Static<TParameters>,
 		signal?: AbortSignal,

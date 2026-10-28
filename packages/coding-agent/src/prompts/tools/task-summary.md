@@ -15,9 +15,6 @@
 {{preview}}
 </output>
 {{/if}}
-{{#if abandonedWarning}}
-<warning>{{abandonedWarning}}</warning>
-{{/if}}
 {{#if mergeSummary}}
 <merge-summary>
 {{mergeSummary}}
