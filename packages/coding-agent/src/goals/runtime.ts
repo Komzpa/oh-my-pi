@@ -244,41 +244,22 @@ export class GoalRuntime {
 	async onTaskAborted(options?: { reason?: "interrupted" | "internal" }): Promise<void> {
 		const state = this.#host.getState();
 		const needsAccounting = state?.enabled && isAccountingStatus(state.goal);
-		const needsPause = options?.reason === "interrupted" && state?.enabled && state.goal.status === "active";
-		if (!needsAccounting && !needsPause) {
+		if (!needsAccounting) {
 			this.#turnSnapshot = undefined;
 			return;
 		}
 		await this.#withAccounting(async () => {
 			await this.#flushUsageLocked("suppressed", undefined, options?.reason === "internal");
 			this.#turnSnapshot = undefined;
-			if (options?.reason !== "interrupted") return;
-			const cloned = this.#getStateClone();
-			if (!cloned?.enabled || cloned.goal.status !== "active") return;
-			cloned.enabled = false;
-			cloned.goal.status = "paused";
-			cloned.goal.updatedAt = this.#now();
-			this.#clearActiveAccounting();
-			this.#budgetReportedFor = undefined;
-			await this.#commitState(cloned, { persist: "goal_paused" });
 		});
 	}
 
-	async onThreadResumed(options?: { preserveActiveGoal?: boolean }): Promise<GoalModeState | undefined> {
+	async onThreadResumed(_options?: { preserveActiveGoal?: boolean }): Promise<GoalModeState | undefined> {
 		const state = this.#getStateClone();
 		if (!state) return undefined;
-		if (options?.preserveActiveGoal && state.enabled && state.goal.status === "active") {
+		if (state.enabled && state.goal.status === "active") {
 			this.#markActiveAccounting(state.goal, true);
 			await this.#commitState(state, { emit: true });
-			return state;
-		}
-		if (state.goal.status === "active") {
-			state.enabled = false;
-			state.goal.status = "paused";
-			state.goal.updatedAt = this.#now();
-			this.#clearActiveAccounting();
-			this.#budgetReportedFor = undefined;
-			await this.#commitState(state, { persist: "goal_paused" });
 			return state;
 		}
 		if (state.enabled && isAccountingStatus(state.goal)) {
