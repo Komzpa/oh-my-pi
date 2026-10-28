@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import { todoMatchesAnyDescription } from "@oh-my-pi/pi-tui/tools/todo";
 import { prompt } from "@oh-my-pi/pi-utils";
 import gateNotices from "./gate-notices.md" with { type: "text" };
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -193,7 +194,22 @@ function deadline(due: number, start: number, now: number, timezone?: string): s
 	return `${clock} ${delta < 0 ? "overdue" : "left"} ${duration(delta)} (${percent ?? "n/a"}%)`;
 }
 
-export function renderDeadlineReminder(state: DeadlineState, now: number, currentQuota?: QuotaSnapshot): string | null {
+type TodoPhasesLike = ReadonlyArray<{ tasks: ReadonlyArray<{ content: string; status: string }> }>;
+
+/** Open (not completed/abandoned) TODO rows when the session has any, else undelivered stage labels. */
+export function remainingWork(state: DeadlineState, phases?: TodoPhasesLike): string[] {
+	const rows = (phases ?? []).flatMap(phase =>
+		phase.tasks.filter(task => task.status !== "completed" && task.status !== "abandoned").map(task => task.content),
+	);
+	return rows.length ? rows : state.stages.filter(stage => stage.deliveredAt === undefined).map(stage => stage.label);
+}
+
+export function renderDeadlineReminder(
+	state: DeadlineState,
+	now: number,
+	currentQuota?: QuotaSnapshot,
+	phases?: TodoPhasesLike,
+): string | null {
 	if (!state.active) return null;
 	if (
 		!isUnixSeconds(state.goalStartedAt) ||
@@ -203,8 +219,10 @@ export function renderDeadlineReminder(state: DeadlineState, now: number, curren
 		return null;
 	if (deadlineSdk.isUserDeadlineMissed(state, now)) {
 		const due = state.baselineDeadlineAt!;
+		const overdue = Math.floor((now - due) / 60);
+		const remaining = remainingWork(state, phases);
 		return [
-			`deadline ${deadlineSdk.formatLocalClock(due * 1_000, state.timezone)} missed at ${deadlineSdk.formatLocalTimestamp(due * 1_000, state.timezone)}, by ${Math.floor((now - due) / 60)}m.`,
+			`MISSED by ${overdue}m: deadline ${deadlineSdk.formatLocalClock(due * 1_000, state.timezone)}. Remaining: ${remaining.length ? remaining.join(", ") : "verify and report the requested deliverable"}.`,
 			wrapUpInstructions.trim(),
 			state.userConstraint?.statusSentAt === undefined
 				? "Send one honest status message to the user now: best verified state and unfinished work."
@@ -391,14 +409,16 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 	const goalCore = pi as unknown as { _goalCore?: { state?: { goal?: unknown } } };
 	const currentGoal = (): ActiveGoalRef | null => sdk.goalRef(goalCore._goalCore?.state?.goal);
 	const announcedGateNoticeKeys = new Set<string>();
-	const announceDeadlineGate = (deadlineState: DeadlineState, missed: boolean) => {
+	const announceDeadlineGate = (deadlineState: DeadlineState, missed: boolean, phases?: TodoPhasesLike) => {
 		if (!deadlineState.userConstraint || deadlineState.baselineDeadlineAt === undefined) return;
 		const phase = missed ? "missed" : "upcoming";
 		const key = `${deadlineState.goalId}:${deadlineState.baselineDeadlineAt}:${phase}`;
 		if (announcedGateNoticeKeys.has(key)) return;
 		announcedGateNoticeKeys.add(key);
 		const due = deadlineSdk.formatLocalClock(deadlineState.baselineDeadlineAt * 1_000, deadlineState.timezone);
-		const content = prompt.render(gateNotices, { deadline: true, missed, due, goal: deadlineState.goalId }).trim();
+		const overdueMinutes = Math.floor((Date.now() / 1_000 - deadlineState.baselineDeadlineAt) / 60);
+		const remaining = remainingWork(deadlineState, phases).join(", ") || "verify and report the requested deliverable";
+		const content = prompt.render(gateNotices, { deadline: true, missed, due, goal: deadlineState.goalId, overdueMinutes, remaining }).trim();
 		pi.sendMessage?.(
 			{ customType: "goal-deadline-gate-notice", content, display: false, attribution: "agent" },
 			{ deliverAs: "aside", triggerTurn: false, interruptWait: false },
@@ -423,6 +443,13 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 	};
 
 	const persist = () => pi.appendEntry(sdk.STATE_ENTRY, state);
+	const missedWorkDemand = (ctx: ExtensionContext): string | undefined => {
+		if (!deadlineSdk.isUserDeadlineMissed(state)) return undefined;
+		const phases = ctx.getTodoPhases?.() ?? [];
+		const open = remainingWork(state!, phases);
+		if (!open.length) return undefined;
+		return `The recorded deadline is missed. Replan the remaining requested work now, put the most valuable shippable piece first, and keep executing. Open rows: ${open.join("; ")}. Ship the next usable piece and report the verified delta.`;
+	};
 	const updateUi = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
 		const deadlineState = state?.active && (state.userConstraint || (state.auto && activeGoal?.status !== "active") || (activeGoal?.status === "active" && activeGoal.id === state.goalId)) ? state : null;
@@ -466,6 +493,15 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		persist();
 		updateUi(ctx);
 	});
+	pi.on("turn_end", (event, ctx) => {
+		if (event.toolResults.length > 0) return;
+		const reason = missedWorkDemand(ctx);
+		if (reason) pi.sendMessage?.({ customType: "goal-deadline-continue", content: reason, display: false, attribution: "agent" }, { deliverAs: "nextTurn", triggerTurn: true });
+	});
+	pi.on("session_stop", (_event, ctx) => {
+		const reason = missedWorkDemand(ctx);
+		if (reason) return { decision: "block", reason };
+	});
 	pi.on("goal_updated", (event, ctx) => {
 		activeGoal = sdk.goalRef(event.goal);
 		announceCompletionGate(ctx);
@@ -473,9 +509,19 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_call", (event, ctx) => {
+		if ((event.toolName === "wait" || event.toolName === "stop") && missedWorkDemand(ctx))
+			return { block: true, reason: missedWorkDemand(ctx) };
 		if ((event.toolName === "task" || (event.toolName === "todo" && (event.input.op === "init" || event.input.op === "append"))) && deadlineSdk.isUserDeadlineMissed(state)) {
 			const due = deadlineSdk.formatLocalClock(state!.baselineDeadlineAt! * 1_000, state!.timezone);
-			return { block: true, reason: `Ask about the ${due} deadline: set a new time or clear it.\nThe deadline was missed; record the user's answer with goal_deadline set or clear before adding work.` };
+			const phases = ctx.getTodoPhases?.() ?? [];
+			const openRows = phases.flatMap(phase => phase.tasks.filter(task => task.status !== "completed" && task.status !== "abandoned").map(task => task.content));
+			const input = event.input as Record<string, unknown>;
+			const proposals = event.toolName === "task"
+				? (Array.isArray(input.tasks) ? input.tasks.map(task => typeof task === "string" ? task : [task?.name, task?.task].filter(Boolean).join(" ")) : [])
+				: Array.isArray(input.items) ? input.items : Array.isArray(input.list) ? input.list.flatMap((phase: { items?: unknown[] }) => phase.items ?? []) : [];
+			const servesOpenWork = proposals.length > 0 && proposals.every(item => typeof item === "string" && todoMatchesAnyDescription(item, openRows));
+			if (!servesOpenWork)
+				return { block: true, reason: deadlineGateError(`The ${due} deadline is missed.`, "Only add or delegate work that serves an open requested TODO row; replan it, then keep delivering.").message };
 		}
 		const isNativeCompletion = event.toolName === "goal" && event.input.op === "complete";
 		const isPluginCompletion = event.toolName === "update_goal" && event.input.status === "complete";
@@ -494,11 +540,12 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		refresh(ctx);
 		announceCompletionGate(ctx);
 		const deadlineState = state?.active && (state.userConstraint || (state.auto && activeGoal?.status !== "active") || (activeGoal?.status === "active" && activeGoal.id === state.goalId)) ? state : null;
-		if (deadlineState?.userConstraint) announceDeadlineGate(deadlineState, deadlineSdk.isUserDeadlineMissed(deadlineState));
+		if (deadlineState?.userConstraint) announceDeadlineGate(deadlineState, deadlineSdk.isUserDeadlineMissed(deadlineState), ctx.getTodoPhases?.());
 		const reminder = deadlineState
-			? renderDeadlineReminder(deadlineState, Math.floor(Date.now() / 1000), readQuota())
+			? renderDeadlineReminder(deadlineState, Math.floor(Date.now() / 1000), readQuota(), ctx.getTodoPhases?.())
 			: activeGoal?.status === "active" ? renderMissingScheduleReminder(activeGoal) : null;
-		const content = [renderPresence(userEntries(ctx), deadlineState), reminder]
+		const missed = Boolean(deadlineState?.userConstraint && deadlineSdk.isUserDeadlineMissed(deadlineState));
+		const content = (missed ? [reminder, renderPresence(userEntries(ctx), deadlineState)] : [renderPresence(userEntries(ctx), deadlineState), reminder])
 			.filter(Boolean)
 			.join("\n\n");
 		return { messages: [...event.messages, { role: "developer", content, timestamp: Date.now() }] };
@@ -531,14 +578,14 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		name: "goal_deadline",
 		label: "Goal Deadline",
 		description:
-			"Manage milestone deadlines and durable user delivery constraints. With no focused goal, action=set records the constraint in this same session owner. user_message is an exact quote from the latest real user message giving the deadline. The goal id, start time, and local timezone default from state or focus; never infer deadline times. Pass each stage's local_time as the wall-clock string from the user message ('19:00' or '2026-10-21 19:00') with timezone; the tool computes the Unix epoch itself (a bare HH:MM means the next such moment). deadline_at is a Unix timestamp in seconds, not milliseconds, and optional: used only as a cross-check, and a value that differs from local_time by more than a minute is rejected with the resolved value. A new user deadline already more than 5 minutes past, or more than 7 days ahead, is rejected as an arithmetic error. Same-goal updates preserve receipts and final due time. Only a newer user message giving a new time can replace a user deadline (exception: a wrong value set from the same user message can be corrected within 30 minutes by quoting it again); action=clear needs a newer real user message dropping the deadline, quoted in user_message (or /deadline close). A promised status time is not authorization.",
+			"Manage milestone deadlines and durable user delivery constraints. With no focused goal, action=set records the constraint in this same session owner. user_message is an exact quote from a real user message giving the deadline; the newest matching user message is used. The goal id, start time, and local timezone default from state or focus; never infer deadline times. Pass each stage's local_time as the wall-clock string from the user message ('19:00' or '2026-10-21 19:00') with timezone; the tool computes the Unix epoch itself (a bare HH:MM means the next such moment). deadline_at is a Unix timestamp in seconds, not milliseconds, and optional: used only as a cross-check, and a value that differs from local_time by more than a minute is rejected with the resolved value. A user deadline already more than 5 minutes past, or more than 7 days ahead, is rejected as an arithmetic error. Same-goal updates preserve receipts and final due time. Only a newer direct user quote can authorize a changed user constraint; a wrong value set from the same message can be corrected within 30 minutes by quoting it again. A promised status time is not authorization.",
 		parameters: z.object({
 			action: z.enum(["set", "deliver", "status", "clear"]),
 
 			goal_id: z.string().optional(),
 			goal_started_at: z.number().int().optional(),
 			timezone: z.string().optional(),
-			user_message: z.string().optional().describe("Exact quote from the latest real user message authorizing this deadline (set: include its explicit local HH:MM time; clear: the words dropping it)."),
+			user_message: z.string().optional().describe("Exact quote from a real user message authorizing this action (for set, include its explicit local HH:MM time)."),
 			stages: z
 				.array(
 					z.object({
@@ -566,7 +613,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 			const params = rawParams as DeadlineToolParams;
 			refresh(ctx);
 			if (params.action === "set") {
-				const user = deadlineSdk.latestDeadlineUserMessage(userEntries(ctx));
+				const user = deadlineSdk.latestDeadlineUserMessage(userEntries(ctx), params.user_message);
 				const goalId = params.goal_id ?? activeGoal?.id ?? state?.goalId ?? "session-deadline";
 				const goalStartedAt = params.goal_started_at ?? activeGoal?.createdAt ?? user?.at ?? Math.floor(Date.now() / 1_000);
 				const timezone = deadlineSdk.resolveTimeZone(params.timezone ?? state?.timezone);
@@ -599,12 +646,12 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 				}
 				const finalDue = Math.max(...resolvedStages.map(stage => stage.deadline_at));
 				const quote = params.user_message ?? user?.text;
-				if (params.user_message && (!user || !user.text.includes(params.user_message)))
+				if (params.user_message && !user)
 					throw deadlineGateError("Quote the latest real user message in user_message.", "user_message must quote the latest real user message");
 				const userTime = user && quote && quote.includes(deadlineSdk.formatLocalClock(finalDue * 1_000, timezone));
 				const replacesUserTime = state?.userConstraint && userTime && user!.id !== state.userConstraint.messageId && user!.at >= state.userConstraint.recordedAt;
 				if (state?.userConstraint && finalDue !== state.baselineDeadlineAt && !replacesUserTime && !(userTime && user && user.id === state.userConstraint.messageId && nowSeconds - state.userConstraint.recordedAt <= SAME_MESSAGE_CORRECTION_SECONDS))
-					throw deadlineGateError("Ask the user for a new time before changing this deadline.", "Only a newer user message setting a new time can replace the user deadline");
+					throw deadlineGateError("Keep the recorded user deadline.", "The quoted user message does not authorize changing the recorded deadline");
 				// A wrong value set from the SAME user message (arithmetic slip) may be corrected shortly after; a
 				// self-extension still needs the user's own words to contain the new clock time.
 				const correctsSameMessage = !replacesUserTime && !!state?.userConstraint && !!userTime && !!user && user.id === state.userConstraint.messageId && nowSeconds - state.userConstraint.recordedAt <= SAME_MESSAGE_CORRECTION_SECONDS && finalDue !== state.baselineDeadlineAt;
@@ -672,15 +719,15 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 				stage.deliveredArtifact = params.delivered_artifact;
 			} else if (params.action === "clear") {
 				if (state?.userConstraint) {
-					const user = deadlineSdk.latestDeadlineUserMessage(userEntries(ctx));
-					const quoted = user?.text.trim() === "/deadline close" || (params.user_message?.trim() && user?.text.includes(params.user_message));
+					const user = deadlineSdk.latestDeadlineUserMessage(userEntries(ctx), params.user_message);
+					const quoted = params.user_message?.trim() && user;
 					if (!user || user.id === state.userConstraint.messageId || user.at < state.userConstraint.recordedAt || !quoted)
-						throw deadlineGateError("Ask the user to drop the deadline and quote their newer message.", "Ask whether to drop the deadline, then quote their newer message in user_message (or they say /deadline close)");
+						throw deadlineGateError("Quote a newer real user message.", "user_message must quote a newer real user message");
 				}
 				state = state ? { ...state, active: false, stages: [], baselineDeadlineAt: undefined } : null;
 			}
 			if (params.action !== "status") persist();
-			if (params.action === "set" && state?.userConstraint) announceDeadlineGate(state, deadlineSdk.isUserDeadlineMissed(state));
+			if (params.action === "set" && state?.userConstraint) announceDeadlineGate(state, deadlineSdk.isUserDeadlineMissed(state), ctx.getTodoPhases?.());
 			updateUi(ctx);
 			const hasInvalidTimestamp =
 				state !== null &&
@@ -688,7 +735,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 					state.stages.some(stage => !isUnixSeconds(stage.deadlineAt)) ||
 					(state.baselineDeadlineAt !== undefined && !isUnixSeconds(state.baselineDeadlineAt)));
 			const text = state
-				? (renderDeadlineReminder(state, Math.floor(Date.now() / 1000), readQuota()) ??
+				? (renderDeadlineReminder(state, Math.floor(Date.now() / 1000), readQuota(), ctx.getTodoPhases?.()) ??
 					(hasInvalidTimestamp
 						? "Goal deadline timestamp is invalid; forecast is unknown. Correct the affected stage using Unix seconds."
 						: "Goal deadline schedule has no pending stages."))
