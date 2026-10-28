@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Type } from "@oh-my-pi/omptype/typebox";
 import { Agent, type AgentEvent, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import { ASSISTANT_GATE_REFUSAL } from "@oh-my-pi/pi-agent-core/assistant-publication";
+import { ASSISTANT_GATE_REFUSAL, assistantAbortedDraftText } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -532,7 +532,8 @@ describe("assistant publication bridge", () => {
 			await prompt;
 			await session.waitForIdle();
 			expect(signal?.aborted).toBe(true);
-			expect(assistantTexts(agent.state.messages)).toEqual([ASSISTANT_GATE_REFUSAL]);
+			expect(assistantTexts(agent.state.messages)).toEqual([assistantAbortedDraftText("Request was aborted")]);
+			expect(assistantTexts(agent.state.messages)[0]).not.toContain("withheld");
 			expect(assistantTexts(manager.buildSessionContext().messages)).not.toContain(UNSAFE);
 			expect(agent.state.isStreaming).toBe(false);
 			expect(agent.state.streamMessage).toBeNull();
