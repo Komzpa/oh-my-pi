@@ -1250,6 +1250,20 @@ test("sixty-minute escalation refuses repeated waits, ignores lead check-ins, an
 	} finally { h.cleanup(); }
 }, 60_000);
 
+test("stuck escalation drops once its worker is gone from the job table without a kill or receipt", async () => {
+	const h = await stuckWorkerHarness({ filesAgeMs: 70 * 60_000, elapsedMs: 70 * 60_000 });
+	const call = () => h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
+	try {
+		await h.ticks.at(-1)!();
+		expect((await call())?.block).toBe(true);
+		// Live 2026-10-28: after a restart the escalated worker was absent from proc:// and recent,
+		// and every wait on five live workers was refused until it was "killed".
+		h.ctx.getAsyncJobSnapshot = () => ({ running: [], recent: [], nonJobAgents: [] });
+		// The row is now merely unstaffed; the recovery demand on the vanished worker is gone.
+		expect((await call())?.reason ?? "").not.toContain("Kill worker-a");
+	} finally { h.cleanup(); }
+}, 60_000);
+
 test("stuck escalation clears on kill with a new running owner; a sub-hour quiet worker permits wait", async () => {
 	const h = await stuckWorkerHarness({ filesAgeMs: 50 * 60_000, elapsedMs: 50 * 60_000 });
 	const call = () => h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
@@ -1566,8 +1580,9 @@ test("critical split: switching sessions resets the once-per-plan acknowledgemen
 
 test("recovery gates request wait interruption while startup advice stays passive", async () => {
  const now = Date.now();
- const h = await noticeHarness([], now + 3600_000, [], 0, undefined, [{ type: "custom", customType: "todo-dispatch-sprint-state", data: {
-  version: 1, recoveryWaits: [{ kind: "stuck", row: "Publish cobalt map", owner: "worker-a", at: now - 1000 }]
+ // A cap recovery outlives its worker; a stuck one only lives while its worker runs.
+ const h = await noticeHarness(chainedPlan(1, now), now + 3600_000, [], 0, undefined, [{ type: "custom", customType: "todo-dispatch-sprint-state", data: {
+  version: 1, recoveryWaits: [{ kind: "cap", row: "Row 1", owner: "worker-a", at: now - 1000 }]
  } }]);
  try {
   const info = h.notices.find(notice => notice.customType === "todo-gate-worker-names");
