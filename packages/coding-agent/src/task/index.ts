@@ -420,6 +420,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	}
 	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task, taskFile: params.taskFile };
 	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
+	if ("resources" in params) item.resources = params.resources;
 	if ("rework" in params) item.rework = params.rework;
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
@@ -493,6 +494,7 @@ function spawnParamsFor(params: TaskParams, item: ResolvedTaskItem, defaultAgent
 	if (item.taskFile !== undefined) spawn.taskFile = item.taskFile;
 	if (item.taskFileSha256 !== undefined) spawn.taskFileSha256 = item.taskFileSha256;
 	if (item.solutionSpace !== undefined) spawn.solutionSpace = item.solutionSpace;
+	if (item.resources !== undefined) spawn.resources = item.resources;
 	if (item.rework !== undefined) spawn.rework = item.rework;
 	if (params.context !== undefined) spawn.context = params.context;
 	if ("outputSchema" in item) spawn.outputSchema = item.outputSchema;
@@ -2418,6 +2420,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				...this.#resultParams(params),
 				...this.#effortParams(params),
 				solutionSpace: params.solutionSpace,
+				resources: params.resources,
 				...(route?.rung ? { model: route.rung.model } : {}),
 				...(params.tools?.length
 					? {
