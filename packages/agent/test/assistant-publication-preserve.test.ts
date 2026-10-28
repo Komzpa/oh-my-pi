@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { admitAssistantMessage, snapshotAssistantMessageForProviderReplay } from "../src/assistant-publication";
+import {
+	ASSISTANT_GATE_REFUSAL,
+	admitAssistantMessage,
+	assistantAbortedDraftText,
+	snapshotAssistantMessageForProviderReplay,
+} from "../src/assistant-publication";
 import { createAssistantMessage } from "./helpers";
 
 function toolTurn(): AssistantMessage {
@@ -78,5 +83,35 @@ describe("assistant publication replacement retention", () => {
 			() => "aborted",
 		);
 		expect(message.content).toEqual([{ type: "text", text: "safe narrative" }]);
+	});
+});
+
+describe("assistant publication abort labelling", () => {
+	it("labels an aborted turn as interrupted with its reason, never as a refusal", async () => {
+		const message = createAssistantMessage([{ type: "text", text: "unapproved narrative" }]);
+		const controller = new AbortController();
+		controller.abort("graceful restart");
+		await admitAssistantMessage(
+			message,
+			async () => undefined,
+			controller.signal,
+			s => String(s?.reason),
+		);
+		expect(message.content).toEqual([{ type: "text", text: assistantAbortedDraftText("graceful restart") }]);
+		expect(message.content).not.toContainEqual({ type: "text", text: ASSISTANT_GATE_REFUSAL });
+		expect(message.stopReason).toBe("aborted");
+	});
+
+	it("keeps the refusal text when the gate throws while not aborted", async () => {
+		const message = createAssistantMessage([{ type: "text", text: "unapproved narrative" }]);
+		await admitAssistantMessage(
+			message,
+			async () => {
+				throw new Error("gate failed");
+			},
+			new AbortController().signal,
+			() => "aborted",
+		);
+		expect(message.content).toEqual([{ type: "text", text: ASSISTANT_GATE_REFUSAL }]);
 	});
 });

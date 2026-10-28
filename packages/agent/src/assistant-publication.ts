@@ -74,6 +74,14 @@ const narrativeReplacedMessages = new WeakSet<AssistantMessage>();
 /** Safe narrative used when the publication gate cannot approve a draft. */
 export const ASSISTANT_GATE_REFUSAL = "Assistant response withheld because its delivery could not be approved.";
 
+/** Safe narrative used when a turn was aborted (restart or steer) before its draft was delivered; nothing was refused. */
+export function assistantAbortedDraftText(reason?: string): string {
+	const detail = reason?.trim();
+	return `Response interrupted before delivery${detail ? ` (${detail})` : ""}; the draft was not sent.`;
+}
+
+export const ASSISTANT_ABORTED_DRAFT = assistantAbortedDraftText();
+
 export function isAssistantNarrativeReplaced(message: AssistantMessage): boolean {
 	return narrativeReplacedMessages.has(message);
 }
@@ -151,7 +159,10 @@ export async function admitAssistantMessage(
 			if (result.settled) markAssistantPublicationSettled(message);
 		}
 	} catch {
-		replaceAssistantNarrative(message, ASSISTANT_GATE_REFUSAL);
+		replaceAssistantNarrative(
+			message,
+			gateSignal.aborted ? assistantAbortedDraftText(abortReasonText(gateSignal)) : ASSISTANT_GATE_REFUSAL,
+		);
 		if (gateSignal.aborted) {
 			message.stopReason = "aborted";
 			message.errorMessage = abortReasonText(gateSignal);

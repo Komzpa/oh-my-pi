@@ -75,6 +75,16 @@ import {
 	startExecuteToolSpan,
 	startInvokeAgentSpan,
 } from "./telemetry";
+import {
+	admitAssistantMessage,
+	copyAssistantProviderReplayState,
+	getAssistantPublicationGate,
+	snapshotAssistantMessageForProviderReplay,
+	ASSISTANT_GATE_REFUSAL,
+	assistantAbortedDraftText,
+	isAssistantNarrativeReplaced,
+	replaceAssistantNarrative,
+} from "./assistant-publication";
 import { validateAgentToolArguments } from "./tool-arguments";
 import {
 	createAdditionalContextMessage,
@@ -428,7 +438,7 @@ function snapshotAssistantContentBlock(block: AssistantContentBlock): AssistantC
 }
 
 function snapshotAssistantMessage(message: AssistantMessage): AssistantMessage {
-	return {
+	const snapshot: AssistantMessage = {
 		...message,
 		content: message.content.map(snapshotAssistantContentBlock),
 		usage: {
@@ -438,6 +448,8 @@ function snapshotAssistantMessage(message: AssistantMessage): AssistantMessage {
 		disabledFeatures: message.disabledFeatures ? [...message.disabledFeatures] : undefined,
 		toolCallAbortMessages: message.toolCallAbortMessages ? { ...message.toolCallAbortMessages } : undefined,
 	};
+	copyAssistantProviderReplayState(message, snapshot);
+	return snapshot;
 }
 
 /**
@@ -1216,6 +1228,7 @@ async function runLoopBody(
 	initialMessages: AgentMessage[],
 	streamFn?: StreamFn,
 ): Promise<void> {
+	const publicationGate = () => getAssistantPublicationGate(config);
 	let deadlineTimer: Timer | undefined;
 	if (config.deadline !== undefined) {
 		const deadline = config.deadline;
@@ -1529,9 +1542,17 @@ async function runLoopBody(
 					// ids are already claimed at run scope.
 					ensureUniqueToolCallIds(message, toolCallIdsDispatchedUnder(currentContext));
 					message = snapshotAssistantMessage(message);
+					await config.transformAssistantMessage?.(message, signal);
+					await admitAssistantMessage(message, publicationGate(), signal, abortReasonText);
 					currentContext.messages.push(message);
-					stream.push({ type: "message_start", message: snapshotAssistantMessage(message) });
-					stream.push({ type: "message_end", message: snapshotAssistantMessage(message) });
+					stream.push({
+						type: "message_start",
+						message: snapshotAssistantMessage(message),
+					});
+					stream.push({
+						type: "message_end",
+						message: snapshotAssistantMessage(message),
+					});
 				}
 				newMessages.push(message);
 
@@ -1945,10 +1966,17 @@ async function prepareProviderCall(
 	const model = config.getModel?.() ?? config.model;
 	let messages = context.messages;
 	if (config.transformContext) {
+		messages = messages.map(message =>
+			message.role === "assistant" ? snapshotAssistantMessageForProviderReplay(message) : message,
+		);
 		messages = await config.transformContext(messages, signal);
 	}
 
-	const llmMessages = await config.convertToLlm(messages);
+	const llmMessages = await config.convertToLlm(
+		messages.map(message =>
+			message.role === "assistant" ? snapshotAssistantMessageForProviderReplay(message) : message,
+		),
+	);
 	const normalizedMessages = normalizeMessagesForProvider(llmMessages, model);
 	const ownedDialect: Dialect | undefined =
 		(config.getDialect ? config.getDialect(model) : config.dialect) ?? resolveOwnedDialectFromEnv(Bun.env.PI_DIALECT);
@@ -2014,6 +2042,7 @@ async function streamAssistantResponse(
 	prepared?: PreparedProviderCall,
 	canDispatchFinalToolCalls?: (message: AssistantMessage) => boolean,
 ): Promise<AssistantMessage> {
+	const publicationGate = () => getAssistantPublicationGate(config);
 	const providerCall = prepared ?? (await prepareProviderCall(context, config, signal));
 	const { model, context: llmContext, promptToolWireTools, ownedDialect } = providerCall;
 
@@ -2221,6 +2250,7 @@ async function streamAssistantResponse(
 
 			let providerStreamSettled = false;
 			let speculationSettled = false;
+			let finalMessagePublished = false;
 			const responseIterator = response[Symbol.asyncIterator]();
 			const finishAbortedStream = async (): Promise<AssistantMessage> => {
 				try {
@@ -2231,7 +2261,7 @@ async function streamAssistantResponse(
 				}
 				await speculationCoordinator?.discardAll("run aborted", "aborted");
 				speculationSettled = true;
-				const aborted = emitAbortedAssistantMessage(
+				const aborted = await emitAbortedAssistantMessage(
 					partialMessage,
 					addedPartial,
 					completedToolCallIds,
@@ -2240,8 +2270,47 @@ async function streamAssistantResponse(
 					stream,
 					requestSignal,
 				);
+				finalMessagePublished = true;
 				await finishChat(aborted);
 				return aborted;
+			};
+			const finishFailedStream = async (error: unknown): Promise<AssistantMessage> => {
+				await speculationCoordinator?.discardAll("provider stream failed", "aborted");
+				speculationSettled = true;
+				// A throwing iterator/result has no terminal event. Preserve its private
+				// draft's completed calls, usage, and real error without a raw fallback.
+				const failed = snapshotAssistantMessage(
+					retainCompletedToolCalls(
+						{
+							...(partialMessage ?? createGateStopMessage(model, undefined)),
+							stopReason: requestSignal?.aborted ? "aborted" : "error",
+							errorMessage: requestSignal?.aborted
+								? abortReasonText(requestSignal)
+								: error instanceof Error
+									? error.message
+									: String(error),
+						},
+						completedToolCallIds,
+					),
+				);
+				try {
+					await config.transformAssistantMessage?.(failed, requestSignal);
+				} catch {
+					replaceAssistantNarrative(
+						failed,
+						requestSignal?.aborted
+							? assistantAbortedDraftText(abortReasonText(requestSignal))
+							: ASSISTANT_GATE_REFUSAL,
+					);
+				}
+				await admitAssistantMessage(failed, publicationGate(), requestSignal, abortReasonText);
+				context.messages.push(failed);
+				finalMessagePublished = true;
+				stream.push({ type: "message_start", message: failed });
+				stream.push({ type: "message_end", message: failed });
+				await finishChat(failed);
+				providerStreamSettled = true;
+				return failed;
 			};
 
 			// Set up a single abort race: register the abort listener once for the whole
@@ -2317,6 +2386,7 @@ async function streamAssistantResponse(
 						if (config.transformAssistantMessage) {
 							await config.transformAssistantMessage(finalMessage, requestSignal);
 						}
+						await admitAssistantMessage(finalMessage, publicationGate(), requestSignal, abortReasonText);
 						// A pre-dispatch hook may request approval or change external state, so
 						// do not run it until the outer loop has established this tool turn can
 						// actually dispatch. The same gate keeps host-deferred speculation from
@@ -2358,10 +2428,17 @@ async function streamAssistantResponse(
 							context.messages.push(finalMessage);
 						}
 						await appendCursorToolResults();
+						finalMessagePublished = true;
 						if (!addedPartial) {
-							stream.push({ type: "message_start", message: snapshotAssistantMessage(finalMessage) });
+							stream.push({
+								type: "message_start",
+								message: snapshotAssistantMessage(finalMessage),
+							});
 						}
-						stream.push({ type: "message_end", message: snapshotAssistantMessage(finalMessage) });
+						stream.push({
+							type: "message_end",
+							message: snapshotAssistantMessage(finalMessage),
+						});
 						await finishChat(finalMessage);
 						speculationSettled = true;
 						providerStreamSettled = true;
@@ -2381,13 +2458,15 @@ async function streamAssistantResponse(
 										toolCallId: block.id,
 										toolName: block.name,
 										customWireName: block.customWireName,
-										emit: update =>
+										emit: update => {
+											if (publicationGate()) return;
 											stream.push({
 												type: "tool_stream_update",
 												toolCallId: block.id,
 												toolName: block.name,
 												update,
-											}),
+											});
+										},
 									});
 									if (argStream) argStreams.set(event.contentIndex, { id: block.id, stream: argStream });
 								} catch (error) {
@@ -2420,6 +2499,10 @@ async function streamAssistantResponse(
 					switch (event.type) {
 						case "start":
 							partialMessage = event.partial;
+							if (publicationGate()) {
+								config.onAssistantMessageEvent?.(partialMessage, event);
+								break;
+							}
 							if (addedPartial) {
 								context.messages[context.messages.length - 1] = partialMessage;
 								completedToolCallIds.clear();
@@ -2515,41 +2598,43 @@ async function streamAssistantResponse(
 									}
 								}
 								partialMessage = event.partial;
-								context.messages[context.messages.length - 1] = partialMessage;
+								if (addedPartial) context.messages[context.messages.length - 1] = partialMessage;
 								config.onAssistantMessageEvent?.(partialMessage, event);
-								// Track which blocks are still streaming: open blocks are
-								// re-cloned on every delta, finalized blocks are shared.
-								const contentIndex = (event as { contentIndex?: number }).contentIndex;
-								if (contentIndex !== undefined) {
-									if (event.type.endsWith("_start")) openBlocks.add(contentIndex);
-									else if (event.type.endsWith("_end")) openBlocks.delete(contentIndex);
+								if (!publicationGate()) {
+									// Track which blocks are still streaming: open blocks are
+									// re-cloned on every delta, finalized blocks are shared.
+									const contentIndex = event.contentIndex;
+									if (contentIndex !== undefined) {
+										if (event.type.endsWith("_start")) openBlocks.add(contentIndex);
+										else if (event.type.endsWith("_end")) openBlocks.delete(contentIndex);
+									}
+									// READ-ONLY-CONSUMER INVARIANT: `message` and
+									// `assistantMessageEvent.partial` intentionally share one snapshot,
+									// and the snapshot is rebuilt incrementally — only the delta's
+									// block, open blocks, and newly appended blocks are deep-cloned;
+									// finalized blocks are carried over from the previous snapshot by
+									// reference (see `snapshotAssistantMessageIncremental`), so they are
+									// shared across ALL message_update snapshots of the turn.
+									// Consumers MUST treat both fields — and every content block inside
+									// them — as read-only: mutating a snapshot would corrupt every
+									// earlier and later snapshot of the turn, not just this one. In
+									// exchange, per-delta work is proportional to the live stream
+									// instead of the whole turn (issue #10605).
+									const messageSnapshot: AssistantMessage = turnSnapshot
+										? snapshotAssistantMessageIncremental(
+												partialMessage,
+												turnSnapshot,
+												contentIndex ?? -1,
+												openBlocks,
+											)
+										: snapshotAssistantMessage(partialMessage);
+									turnSnapshot = messageSnapshot;
+									stream.push({
+										type: "message_update",
+										assistantMessageEvent: snapshotAssistantMessageEvent(event, messageSnapshot),
+										message: messageSnapshot,
+									});
 								}
-								// READ-ONLY-CONSUMER INVARIANT: `message` and
-								// `assistantMessageEvent.partial` intentionally share one snapshot,
-								// and the snapshot is rebuilt incrementally — only the delta's
-								// block, open blocks, and newly appended blocks are deep-cloned;
-								// finalized blocks are carried over from the previous snapshot by
-								// reference (see `snapshotAssistantMessageIncremental`), so they are
-								// shared across ALL message_update snapshots of the turn.
-								// Consumers MUST treat both fields — and every content block inside
-								// them — as read-only: mutating a snapshot would corrupt every
-								// earlier and later snapshot of the turn, not just this one. In
-								// exchange, per-delta work is proportional to the live stream
-								// instead of the whole turn (issue #10605).
-								const messageSnapshot: AssistantMessage = turnSnapshot
-									? snapshotAssistantMessageIncremental(
-											partialMessage,
-											turnSnapshot,
-											contentIndex ?? -1,
-											openBlocks,
-										)
-									: snapshotAssistantMessage(partialMessage);
-								turnSnapshot = messageSnapshot;
-								stream.push({
-									type: "message_update",
-									assistantMessageEvent: snapshotAssistantMessageEvent(event, messageSnapshot),
-									message: messageSnapshot,
-								});
 							}
 							if (
 								event.type === "toolcall_end" &&
@@ -2562,6 +2647,9 @@ async function streamAssistantResponse(
 							break;
 					}
 				}
+			} catch (error) {
+				if (!publicationGate() || finalMessagePublished || error instanceof HarmonyLeakInterruption) throw error;
+				return await finishFailedStream(error);
 			} finally {
 				detachAbortListener?.();
 				cancelArgStreams();
@@ -2597,6 +2685,7 @@ async function streamAssistantResponse(
 					await config.transformAssistantMessage(trailing, requestSignal);
 				}
 				trailing = snapshotAssistantMessage(trailing);
+				await admitAssistantMessage(trailing, publicationGate(), requestSignal, abortReasonText);
 				const finalToolCallsCanDispatch =
 					!requestSignal?.aborted &&
 					(canDispatchFinalToolCalls?.(trailing) ??
@@ -2632,15 +2721,25 @@ async function streamAssistantResponse(
 					context.messages[context.messages.length - 1] = trailing;
 				} else {
 					context.messages.push(trailing);
-					stream.push({ type: "message_start", message: snapshotAssistantMessage(trailing) });
+					stream.push({
+						type: "message_start",
+						message: snapshotAssistantMessage(trailing),
+					});
 				}
 				await appendCursorToolResults();
-				stream.push({ type: "message_end", message: snapshotAssistantMessage(trailing) });
+				stream.push({
+					type: "message_end",
+					message: snapshotAssistantMessage(trailing),
+				});
+				finalMessagePublished = true;
 				await finishChat(trailing);
 				speculationSettled = true;
 				providerStreamSettled = true;
 				return trailing;
 			} catch (error) {
+				if (publicationGate() && !finalMessagePublished && !(error instanceof HarmonyLeakInterruption)) {
+					return await finishFailedStream(error);
+				}
 				if (!speculationSettled) {
 					await speculationCoordinator?.discardAll("provider stream finalization failed", "aborted");
 				}
@@ -2665,7 +2764,8 @@ function retainCompletedToolCalls(
 	let droppedIncompleteToolCall = false;
 	const content = message.content.filter(block => {
 		if (block.type !== "toolCall") return true;
-		const keep = completedToolCallIds.has(block.id);
+		const keep =
+			completedToolCallIds.has(block.id) || (block as CursorExecResolvedCarrier)[kCursorExecResolved] === true;
 		if (!keep) droppedIncompleteToolCall = true;
 		return keep;
 	});
@@ -2781,7 +2881,7 @@ export function abortReasonText(signal: AbortSignal | undefined): string {
 	return toolScopedAbortReason(signal)?.message ?? AIError.callerAbortReason(signal) ?? "Request was aborted";
 }
 
-function emitAbortedAssistantMessage(
+async function emitAbortedAssistantMessage(
 	partialMessage: AssistantMessage | null,
 	addedPartial: boolean,
 	completedToolCallIds: ReadonlySet<string>,
@@ -2789,7 +2889,8 @@ function emitAbortedAssistantMessage(
 	config: AgentLoopConfig,
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	requestSignal: AbortSignal | undefined,
-): AssistantMessage {
+): Promise<AssistantMessage> {
+	const publicationGate = getAssistantPublicationGate(config);
 	const model = config.getModel?.() ?? config.model;
 	const errorMessage = abortReasonText(requestSignal);
 	const errorId =
@@ -2827,13 +2928,32 @@ function emitAbortedAssistantMessage(
 		retained.toolCallAbortMessages = toolCallAbortMessages;
 	}
 	const abortedMessage = snapshotAssistantMessage(retained);
+	if (publicationGate) {
+		try {
+			await config.transformAssistantMessage?.(abortedMessage, requestSignal);
+		} catch {
+			replaceAssistantNarrative(abortedMessage, assistantAbortedDraftText(abortReasonText(requestSignal)));
+		}
+		await admitAssistantMessage(
+			abortedMessage,
+			publicationGate,
+			abortedMessage.stopReason === "aborted" ? undefined : requestSignal,
+			abortReasonText,
+		);
+	}
 	if (addedPartial) {
 		context.messages[context.messages.length - 1] = abortedMessage;
 	} else {
 		context.messages.push(abortedMessage);
-		stream.push({ type: "message_start", message: snapshotAssistantMessage(abortedMessage) });
+		stream.push({
+			type: "message_start",
+			message: snapshotAssistantMessage(abortedMessage),
+		});
 	}
-	stream.push({ type: "message_end", message: snapshotAssistantMessage(abortedMessage) });
+	stream.push({
+		type: "message_end",
+		message: snapshotAssistantMessage(abortedMessage),
+	});
 	return abortedMessage;
 }
 
@@ -2856,6 +2976,14 @@ interface PreparedToolCall {
 	blocked?: boolean;
 	blockReason?: string;
 	prepareError?: unknown;
+	/**
+	 * Gate deferral for the sibling-todo ordering barrier: when the batch holds
+	 * explicit todo mutations, a non-todo call skips `beforeToolCall` here and
+	 * `executeToolCalls` evaluates it once after the todo mutations settle, so
+	 * the gate reads post-mutation state. Never set alongside `blocked`.
+	 */
+	deferredGate?: boolean;
+	/** Keep mutation results out of transcript until deferred call args are finalized. */
 }
 
 /** Committed assistant messages whose unhealed DSML tool-call markup was stripped; the loop answers them with a failure nudge. */
@@ -2962,6 +3090,20 @@ function formatToolNotFoundMessage(
 	if (suggestions.length === 0) return `Tool ${name} not found`;
 	if (suggestions.length === 1) return `Tool ${name} not found. Did you mean ${suggestions[0]}?`;
 	return `Tool ${name} not found. Closest available: ${suggestions.slice(0, MAX_TOOL_NAME_SUGGESTIONS).join(", ")}`;
+}
+
+/**
+ * Whether a call is an explicit todo mutation (`op="classify"`, `"append"`,
+ * …). Only `op="view"` reads without mutating; a missing or unrecognized op is
+ * treated as a mutation so the sibling ordering barrier still applies. The
+ * prepare phase and `executeToolCalls` share this predicate to agree on which
+ * calls form the mutation barrier.
+ */
+function isTodoMutationCall(name: string, args: unknown): boolean {
+	if (name !== "todo") return false;
+	if (typeof args !== "object" || args === null) return true;
+	if (!("op" in args)) return true;
+	return args.op !== "view";
 }
 
 /**
@@ -3080,6 +3222,12 @@ async function prepareToolCallDispatch(
 	// message keys per-call state on `toolCall.id`.
 	ensureUniqueToolCallIds(assistantMessage, toolCallIdsDispatchedUnder(context));
 	const prepared = new Map<string, PreparedToolCall>();
+	// Sibling-todo ordering barrier: when the batch holds explicit todo
+	// mutations, non-todo calls skip `beforeToolCall` here so the gate reads
+	// post-mutation state after `executeToolCalls` runs the mutations first.
+	const batchHasTodoMutation = assistantMessage.content.some(
+		call => call.type === "toolCall" && isTodoMutationCall(call.name, call.arguments),
+	);
 	for (const toolCall of assistantMessage.content) {
 		if (toolCall.type !== "toolCall") continue;
 		if ((toolCall as CursorExecResolvedCarrier)[kCursorExecResolved] === true) continue;
@@ -3102,8 +3250,8 @@ async function prepareToolCallDispatch(
 				: extractIntent(toolCall.arguments);
 			argsForExecution = strippedArgs;
 			if (intent) {
-				toolCall.intent = intent;
-			} else if (typeof tool?.intent === "function") {
+				if (!isAssistantNarrativeReplaced(assistantMessage)) toolCall.intent = intent;
+			} else if (!isAssistantNarrativeReplaced(assistantMessage) && typeof tool?.intent === "function") {
 				try {
 					const derived = tool.intent(strippedArgs as never)?.trim();
 					if (derived) {
@@ -3131,6 +3279,10 @@ async function prepareToolCallDispatch(
 		const effectiveArgs = validate(argsForExecution);
 		if (effectiveArgs === undefined) continue;
 		entry.args = effectiveArgs;
+		if (batchHasTodoMutation && !isTodoMutationCall(toolCall.name, effectiveArgs)) {
+			entry.deferredGate = true;
+			continue;
+		}
 		if (!beforeToolCall || !tool) continue;
 		let beforeResult: BeforeToolCallResult | undefined;
 		try {
@@ -3170,6 +3322,8 @@ async function prepareToolCallDispatch(
  * Final calls that can still reach tool execution after pre-dispatch policy.
  * Omitting a call is deliberate: reconciliation discards its direct candidate
  * and streamed children before final admission can release deferred work.
+ * Deferred-gate calls are omitted for the same reason: their candidate would
+ * otherwise launch and cache pre-gate arguments before the deferred hook runs.
  */
 function transformedExecutionArgs(
 	prepared: PreparedToolCall,
@@ -3208,6 +3362,7 @@ async function speculativeFinalCalls(
 		if (
 			!prepared ||
 			prepared.blocked ||
+			prepared.deferredGate === true ||
 			prepared.prepareError !== undefined ||
 			prepared.validationErrorMessage !== undefined
 		) {
@@ -3269,6 +3424,7 @@ async function executeToolCalls(
 		resolveFallbackTool,
 		suggestFallbackToolNames,
 		afterToolCall,
+		beforeToolCall,
 	} = config;
 	type ToolCallContent = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
 	// Defensive: the outer loop already filters exec-resolved blocks before
@@ -3343,12 +3499,13 @@ async function executeToolCalls(
 			result: undefined as AgentToolResult<any> | undefined,
 			isError: false,
 			skipped: false,
-			toolResultMessage: undefined as ToolResultMessage | undefined,
 			resultEmitted: false,
+			toolResultMessage: undefined as ToolResultMessage | undefined,
 			validationErrorMessage: prepared.validationErrorMessage,
 			blocked: prepared.blocked === true,
 			blockReason: prepared.blockReason,
 			prepareError: prepared.prepareError,
+			deferredGate: prepared.deferredGate === true,
 			preparedContext: prepared.additionalContext,
 			reportedContext: [] as string[],
 			executionArgs: prepared.executionArgs,
@@ -3774,6 +3931,68 @@ async function executeToolCalls(
 		await checkSteering().catch(() => undefined);
 	};
 
+	// Sibling-todo ordering barrier, second half: evaluate the deferred
+	// `beforeToolCall` gates once the todo mutations settle, so sibling
+	// execution tools read post-mutation state. A failed classify leaves the
+	// candidate unclassified, so the gate still blocks — classification failure
+	// never bypasses it. Each gate runs exactly once per call: the prepare
+	// phase skipped these calls, and this is their single evaluation.
+	const evaluateDeferredGates = async (): Promise<void> => {
+		for (const record of records) {
+			if (!record.deferredGate) continue;
+			record.deferredGate = false;
+			if (record.validationErrorMessage !== undefined) continue;
+			const { toolCall, tool } = record;
+			if (!beforeToolCall || !tool) continue;
+			let gateResult: BeforeToolCallResult | undefined;
+			try {
+				gateResult = await beforeToolCall(
+					{ assistantMessage, toolCall, tool, args: record.args, context: currentContext },
+					signal,
+				);
+			} catch (e) {
+				record.prepareError = e;
+				continue;
+			}
+			if (gateResult?.block) {
+				record.blocked = true;
+				record.blockReason = gateResult.reason;
+				continue;
+			}
+			if (isNonBlankContext(gateResult?.additionalContext)) {
+				record.preparedContext = gateResult.additionalContext;
+			}
+			if (gateResult?.args !== undefined) {
+				// A hook revision supersedes any cached admission-time transform
+				// result: runTool must derive execution args from the revised call.
+				record.executionArgs = undefined;
+				try {
+					const revised = validateAgentToolArguments(tool, { ...toolCall, arguments: gateResult.args });
+					toolCall.arguments = gateResult.args;
+					record.args = revised;
+				} catch (validationError) {
+					record.args = gateResult.args;
+					record.validationErrorMessage =
+						validationError instanceof Error ? validationError.message : String(validationError);
+				}
+			}
+		}
+	};
+
+	const barrierActive = records.some(record => record.deferredGate);
+	const mutationIndices: number[] = [];
+	const restIndices: number[] = [];
+	if (barrierActive) {
+		records.forEach((record, index) => {
+			if (isTodoMutationCall(record.toolCall.name, record.args)) {
+				mutationIndices.push(index);
+			} else {
+				restIndices.push(index);
+			}
+		});
+	}
+	const orderedIndices: number[] | undefined = barrierActive ? [...mutationIndices, ...restIndices] : undefined;
+
 	let lastExclusive: Promise<void> = Promise.resolve();
 	let sharedTasks: Promise<void>[] = [];
 	const tasks: Promise<void>[] = [];
@@ -3851,7 +4070,7 @@ async function executeToolCalls(
 					STEERING_INTERRUPT_POLL_MS,
 				)
 			: undefined;
-	for (let index = 0; index < records.length; index++) {
+	const scheduleRecord = (index: number): void => {
 		const record = records[index];
 		const concurrencyMode = record.tool?.concurrency;
 		let concurrency: "shared" | "exclusive";
@@ -3883,8 +4102,16 @@ async function executeToolCalls(
 		} else {
 			sharedTasks.push(task);
 		}
-	}
+	};
 	try {
+		if (barrierActive) {
+			for (const index of mutationIndices) scheduleRecord(index);
+			await Promise.allSettled(tasks);
+			await evaluateDeferredGates();
+			for (const index of restIndices) scheduleRecord(index);
+		} else {
+			for (const index of orderedIndices ?? records.map((_record, index) => index)) scheduleRecord(index);
+		}
 		await Promise.allSettled(tasks);
 	} finally {
 		if (speculationCoordinator) speculationCoordinator.onIdle = undefined;
