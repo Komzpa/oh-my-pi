@@ -2619,6 +2619,9 @@ test("an escalated demand decays once every row is closed (live sunbim 2026-10-2
     const toolCall = handlers.get("tool_call")!;
     const before = (await toolCall({ toolName: "bash", toolCallId: "c1", input: { command: "ss -ltn" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(before?.reason ?? "").toContain("unread-receipts");
+    // Its remedy is reading the result, not the missed-ETA replan text (live DC 2026-10-28).
+    expect(before?.reason ?? "").toContain("agent://");
+    expect(before?.reason ?? "").not.toContain("re-estimate");
     await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "c2", isError: false, content: [], details: undefined }, ctx);
     const after = (await toolCall({ toolName: "bash", toolCallId: "c3", input: { command: "ss -ltn" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(after?.reason ?? "", "closed plan clears the escalation").not.toContain("unread-receipts");
