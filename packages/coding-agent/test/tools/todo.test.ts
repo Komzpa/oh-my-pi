@@ -256,6 +256,23 @@ describe("todo archive policy", () => {
 				text: expect.stringContaining("Closed task 001"),
 			});
 			expect(writes).toHaveBeenCalledTimes(2);
+			// The runtime lead could see an archived row in this view but could not reopen it (2026-10-28).
+			const reopened = await tool.execute("reopen-archived", { op: "start", task: "Closed task 001" });
+			expect(reopened.isError).not.toBe(true);
+			expect(
+				reopened.details?.phases.flatMap(phase => phase.tasks).find(task => task.content === "Closed task 001")
+					?.status,
+			).toBe("in_progress");
+			entries.push({
+				type: "custom",
+				customType: "user_todo_edit",
+				data: { edit: reopened.details?.edit },
+				id: "reopened",
+				parentId: "scheduled",
+				timestamp: new Date(now).toISOString(),
+			} as SessionEntry);
+			const replayed = getLatestTodoPhasesFromEntries(entries).flatMap(phase => phase.tasks);
+			expect(replayed.find(task => task.content === "Closed task 001")?.status).toBe("in_progress");
 		} finally {
 			setSystemTime();
 			vi.restoreAllMocks();
