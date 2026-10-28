@@ -886,6 +886,7 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 
 	const harness = (userText = "Continue until 19:00", userAtMs = NOW) => {
 		const branch: unknown[] = [{ id: "u1", type: "message", timestamp: new Date(userAtMs).toISOString(), message: { role: "user", content: userText } }];
+		const todoPhases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }> = [];
 		const notices: Array<{ customType: string; content: string }> = [];
 		let tool: { description: string; execute: (...args: unknown[]) => Promise<{ details: { state: DeadlineState | null } }> } | undefined;
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
@@ -899,11 +900,11 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 			sendMessage: (message: { customType: string; content: string }) => notices.push(message),
 			zod: z,
 		} as unknown as ExtensionAPI);
-		const ctx = { cwd: "/tmp", hasUI: false, sessionManager: branchMock(() => branch) } as unknown as ExtensionContext;
+		const ctx = { cwd: "/tmp", hasUI: false, sessionManager: branchMock(() => branch), getTodoPhases: () => todoPhases } as unknown as ExtensionContext;
 		handlers.get("session_start")?.({}, ctx);
 		const set = (stage: Record<string, unknown>, quote = userText) =>
 			tool!.execute("set", { action: "set", timezone: TBILISI, user_message: quote, stages: [{ id: "final", label: "Final", expected_result: "Delivered", ...stage }] }, undefined, undefined, ctx);
-		return { tool: tool!, set, branch, notices, handlers, ctx };
+		return { tool: tool!, set, branch, notices, handlers, ctx, todoPhases };
 	};
 
 	test("resolves a bare HH:MM to the next such moment in the timezone", () => {
@@ -924,6 +925,59 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		expect(result.details.state?.baselineDeadlineAt).toBe(1_792_594_800);
 	});
 
+	test("a deadline quote selects the newest real user message containing it", async () => {
+		setSystemTime(NOW);
+		const h = harness("Push it by 19:00");
+		h.branch.push(
+			{ id: "u2", type: "message", timestamp: new Date(NOW + 60_000).toISOString(), message: { role: "user", content: "Keep going" } },
+			{ id: "u3", type: "message", timestamp: new Date(NOW + 120_000).toISOString(), message: { role: "user", content: "One more detail" } },
+		);
+		const result = await h.set({ local_time: "19:00" }, "Push it by 19:00");
+		expect(result.details.state?.userConstraint).toMatchObject({ messageId: "u1", recordedAt: Math.floor(NOW / 1000) });
+	});
+
+	test("a made-up quote is rejected even when a user message exists", async () => {
+		setSystemTime(NOW);
+		const h = harness("Push it by 19:00");
+		await expect(h.set({ local_time: "19:00" }, "push it by 13:10")).rejects.toThrow("user_message must quote the latest real user message");
+	});
+
+	test("an older quoted message cannot replace a newer recorded deadline", async () => {
+		setSystemTime(NOW);
+		const h = harness("Push it by 19:00");
+		const first = await h.set({ local_time: "19:00" }, "Push it by 19:00");
+		h.branch.push({ id: "u2", type: "message", timestamp: new Date(NOW + 60_000).toISOString(), message: { role: "user", content: "New deadline 20:00" } });
+		await h.set({ local_time: "20:00" }, "New deadline 20:00");
+		await expect(h.set({ local_time: "19:00" }, "Push it by 19:00")).rejects.toThrow("Keep the recorded user deadline");
+		expect(first.details.state?.userConstraint?.messageId).toBe("u1");
+	});
+
+	test("a missed deadline replans open requested rows and keeps executing", async () => {
+		setSystemTime(NOW);
+		const h = harness("Ship by 19:00");
+		await h.set({ local_time: "19:00" }, "Ship by 19:00");
+		h.todoPhases.push({ name: "Requested", tasks: [{ content: "Ship the API fix", status: "pending" }] });
+		setSystemTime(Date.parse("2026-10-21T15:01:00Z"));
+		h.handlers.get("context")!({ messages: [] }, h.ctx);
+		const missedNotice = h.notices.at(-1)!.content;
+		expect(missedNotice).toContain("MISSED 1m");
+		expect(missedNotice).toContain("Remaining: Ship the API fix");
+		expect(missedNotice).toContain("put the most valuable shippable piece first");
+		expect(h.handlers.get("tool_call")!({ toolName: "task", input: { tasks: [{ name: "ApiFix", task: "Ship the API fix" }] } }, h.ctx)).toBeUndefined();
+		expect(h.handlers.get("tool_call")!({ toolName: "todo", input: { op: "append", items: ["Ship the API fix"] } }, h.ctx)).toBeUndefined();
+		const unrelated = h.handlers.get("tool_call")!({ toolName: "todo", input: { op: "append", items: ["Add a new analytics dashboard"] } }, h.ctx) as { block?: boolean; reason?: string };
+		expect(unrelated.block).toBe(true);
+		expect(unrelated.reason).toContain("serves an open requested TODO row");
+		const agentDescription = h.tool.description + missedNotice + renderDeadlineReminder(h.branch.at(-1)?.data ?? state, Math.floor(Date.now() / 1000), undefined, h.todoPhases);
+		expect(agentDescription).not.toMatch(/clear|close|new time/i);
+		h.handlers.get("turn_end")!({ toolResults: [] }, h.ctx);
+		expect(h.notices.at(-1)?.customType).toBe("goal-deadline-continue");
+		expect(h.notices.at(-1)?.content).toContain("next usable piece");
+		const waiting = h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx) as { block?: boolean; reason?: string };
+		expect(waiting.block).toBe(true);
+		expect(waiting.reason).toContain("keep executing");
+	});
+
 	test("deadline set and arrival notices are two lines, deduped, and precede the missed-deadline refusal", async () => {
 		setSystemTime(NOW);
 		const h = harness();
@@ -931,21 +985,21 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		expect(result.details.state?.baselineDeadlineAt).toBe(Date.parse("2026-10-21T15:00:00Z") / 1000);
 		expect(h.notices).toHaveLength(1);
 		expect(h.notices[0]?.content).toContain("19:00");
-		expect(h.notices[0]?.content.split("\n")).toHaveLength(2);
+		expect(h.notices[0]?.content.split("\n")).toHaveLength(1);
 		h.handlers.get("context")!({ messages: [] }, h.ctx);
 		expect(h.notices).toHaveLength(1);
 
 		setSystemTime(Date.parse("2026-10-21T15:00:01Z"));
 		h.handlers.get("context")!({ messages: [] }, h.ctx);
 		expect(h.notices).toHaveLength(2);
-		expect(h.notices[1]?.content).toContain("passed");
+		expect(h.notices[1]?.content).toContain("MISSED");
 		expect(h.notices[1]?.content.split("\n")).toHaveLength(2);
 		h.handlers.get("context")!({ messages: [] }, h.ctx);
 		expect(h.notices).toHaveLength(2);
 
 		const blocked = h.handlers.get("tool_call")!({ toolName: "todo", input: { op: "append" } }, h.ctx) as { block?: boolean; reason?: string };
 		expect(blocked.block).toBe(true);
-		expect(h.notices[1]?.content).toContain("before adding task or TODO work");
+		expect(h.notices[1]?.content).toContain("Replan the open requested rows");
 		expect(blocked.reason?.split("\n", 1)[0]).toContain("19:00");
 	});
 
@@ -992,12 +1046,12 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		expect(wrong.details.state?.baselineDeadlineAt).toBe(1_792_591_200);
 		const fixed = await same.set({ local_time: "19:00" });
 		expect(fixed.details.state?.baselineDeadlineAt).toBe(1_792_594_800);
-		await expect(same.set({ local_time: "20:00" })).rejects.toThrow(/Only a newer user message/);
+		await expect(same.set({ local_time: "20:00" })).rejects.toThrow(/does not authorize changing the recorded deadline/);
 		// Negative control: after the correction window the same message no longer licenses a change.
 		const late = harness();
 		await late.set({ local_time: "18:00" });
 		setSystemTime(NOW + 45 * 60_000);
-		await expect(late.set({ local_time: "19:00" })).rejects.toThrow(/Only a newer user message/);
+		await expect(late.set({ local_time: "19:00" })).rejects.toThrow(/does not authorize changing the recorded deadline/);
 	});
 });
 
