@@ -290,6 +290,8 @@ test("repeated retro and checkpoint notices do not send another chief turn", asy
 			expect(h.notices.filter(notice => notice.customType === "todo-plan-check")).toHaveLength(1);
 			// The harness lead is idle: a plan problem wakes it instead of waiting for the user.
 			expect(h.notices.find(notice => notice.customType === "todo-plan-check")?.delivery).toMatchObject({ triggerTurn: true });
+			// A queued older plan check is replaced by the newer snapshot, never read stale.
+			expect(h.notices.find(notice => notice.customType === "todo-plan-check")?.details).toMatchObject({ supersedesQueued: true });
 			now += 11 * 60_000;
 			await h.tick();
 			expect(h.notices.filter(notice => notice.customType === "todo-plan-check")).toHaveLength(1);
