@@ -8,6 +8,7 @@ import {
 	type AgentToolContext,
 	type AgentToolResult,
 	type AgentToolUpdateCallback,
+	abortReasonText,
 	isNonBlankContext,
 	joinAdditionalContext,
 } from "@oh-my-pi/pi-agent-core";
@@ -31,7 +32,7 @@ import { appApproveKeys, appFollowUpKeys } from "@oh-my-pi/pi-tui/keybinding-mat
 import { logger } from "@oh-my-pi/pi-utils";
 import { refreshShellConfigCache } from "@oh-my-pi/pi-utils/procmgr";
 import { MAIN_AGENT_RULE_NAME } from "../../capability/rule";
-import { ASSISTANT_GATE_REFUSAL } from "@oh-my-pi/pi-agent-core/assistant-publication";
+import { ASSISTANT_GATE_REFUSAL, assistantAbortedDraftText } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import type { ModelRegistry } from "../../config/model-registry";
 import { type Settings, withActiveSettings } from "../../config/settings";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
@@ -2293,7 +2294,9 @@ export class ExtensionRunner {
 		event: BeforeAssistantMessageEvent,
 	): Promise<BeforeAssistantMessageEventResult | undefined> {
 		const refusal: BeforeAssistantMessageEventResult = { replacementText: ASSISTANT_GATE_REFUSAL, settled: true };
-		if (event.signal.aborted) return refusal;
+		if (event.signal.aborted) {
+			return { replacementText: assistantAbortedDraftText(abortReasonText(event.signal)), settled: true };
+		}
 		let ctx: ExtensionContext | undefined;
 		let result: BeforeAssistantMessageEventResult | undefined;
 		for (const ext of this.extensions) {
