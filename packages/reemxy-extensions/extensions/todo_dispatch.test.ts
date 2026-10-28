@@ -82,6 +82,22 @@ const decide = (overrides: Partial<DispatchInput> = {}) =>
   decideTodoDispatch({ ...base, ...overrides }, forecastApi);
 
 describe("todo dispatch supervisor", () => {
+  test("supervisor keeps all work visible without replaying the full attempt history every turn", () => {
+    const plan = scheduledPlan("Repair the delivery");
+    const row = plan[0].tasks[0];
+    row.schedule.attemptHistory = Array.from({ length: 30 }, (_, i) => ({
+      attemptId: `attempt-${i}`, terminalStatus: "failed", rejectionReason: `evidence-${i} ${"x".repeat(200)}`,
+    }));
+    plan[0].tasks.push({ content: "Follow-up", status: "pending", schedule: { dependencies: ["Repair the delivery"] } });
+    const notice = decide({ phases: plan }).staticPrompt;
+    expect(notice).toContain("Repair the delivery");
+    expect(notice).toContain("Follow-up");
+    expect(notice).toContain("attempt-29");
+    expect(notice).not.toContain("evidence-0");
+    expect(notice).toContain("30 attempts");
+    expect(row.schedule.attemptHistory).toHaveLength(30);
+  });
+
   test("alarms once per accepted estimate revision", () => {
     const plan = scheduledPlan();
     const first = decide({ phases: plan, deadline: due, now: now + 120_000 });

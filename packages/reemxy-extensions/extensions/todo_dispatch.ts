@@ -1409,7 +1409,12 @@ function taskDetails(task: TaskRow, timeZone?: string): string {
   const reestimates = schedule.reestimateCount ?? 0;
   const review = typeof schedule.review === "string" ? `; review=${schedule.review}` : "";
   const speculative = typeof schedule.speculativeOn === "string" ? `; speculativeOn=${JSON.stringify(schedule.speculativeOn)}` : "";
-  return `owner=${JSON.stringify(schedule.owner ?? null)}; dependencies=${dependencies}; resources=${resources}; O/L/P=${estimate}; progress=${progress}; estimateRevision=${revision}; reestimateCount=${reestimates}${review}${speculative}; attemptHistory=${JSON.stringify(schedule.attemptHistory ?? [])}`;
+  const attempts = schedule.attemptHistory ?? [];
+  const last = attempts.at(-1);
+  const attemptSummary = last
+    ? `${attempts.length} attempts; latest=${JSON.stringify({ attemptId: last.attemptId, workerName: last.workerName, terminalStatus: last.terminalStatus, rejectionReason: safeText(last.rejectionReason, 160) })}; full history: todo view with this exact task`
+    : "0 attempts";
+  return `owner=${JSON.stringify(schedule.owner ?? null)}; dependencies=${dependencies}; resources=${resources}; O/L/P=${estimate}; progress=${progress}; estimateRevision=${revision}; reestimateCount=${reestimates}${review}${speculative}; attemptHistory=${attemptSummary}`;
 }
 
 const USER_REVIEW_CUSTOM_TYPE = "todo-user-review";
