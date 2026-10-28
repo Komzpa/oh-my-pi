@@ -434,26 +434,31 @@ describe("relay tabs Chrome detaches omp from", () => {
 			await invoke({ action: "run", code: 'await tab.emulate({ userAgent: "omp-detach-test" });', timeout: 10 });
 			const tab = getTab(name);
 			if (tab?.backend !== "worker") throw new Error("expected a worker tab");
-			// Hold the re-adoption for the call's whole budget once the detached worker is gone. Real time: the
-			// re-adoption's own init deadline reads the same clock, so a faked clock would fail it instead.
-			const budgetMs = 1_000;
-			const terminate = tab.worker.terminate.bind(tab.worker);
-			const held = spyOn(tab.worker, "terminate").mockImplementation(async () => {
-				await terminate();
-				await Bun.sleep(budgetMs);
-			});
+			expect(tab.worker.mode).toBe("worker");
+			// Give real re-adoption enough startup time. Advance only the run's elapsed clock once the
+			// replacement is published: sleeping in terminate spends the init deadline too, and can test
+			// failed re-adoption instead of the successful re-adoption/no-replay boundary intended here.
+			const budgetMs = 10_000;
+			const worker = tab.worker;
+			const now = performance.now.bind(performance);
+			const elapsed = spyOn(performance, "now").mockImplementation(
+				() => now() + (tab.worker !== worker ? budgetMs : 0),
+			);
 			try {
 				const reapplying = ext.nextSend("Network.setUserAgentOverride");
-				const next = runInTab(name, { code: readMark.code, timeoutMs: budgetMs, session: tool }).catch(
-					(error: unknown) => error,
-				);
+				const next = runInTab(name, {
+					code: "await page.evaluate(() => { window.mark = 'reran'; });",
+					timeoutMs: budgetMs,
+					session: tool,
+				}).catch((error: unknown) => error);
 				await reapplying;
 				await ext.chromeDetach("target_closed");
 				const failure = String(await next);
 				expect(failure).toContain("before this call, so its code did not run");
 				expect(failure).toContain(`used up this call's ${budgetMs}ms budget, so the call was not run again`);
+				expect(failure).not.toContain("could not reattach");
 			} finally {
-				held.mockRestore();
+				elapsed.mockRestore();
 			}
 			expect((await invoke(readMark)).value).toBe("kept");
 		},
