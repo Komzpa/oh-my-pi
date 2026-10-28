@@ -47,6 +47,20 @@ test("estimate floor refuses below the owner's successful p50 and accepts the fl
   expect(estimateFloorRefusal(make(180), forecastTodoPlan([{ name: "Work", tasks: [row] }], { now }).rows, floors, now)).toBeUndefined();
 });
 
+test("evidence-based remaining work may be shorter than full-task profile median", () => {
+  const floors = successfulDurationFloors([
+    JSON.stringify({ kind: "outcome", agent: "coder", status: "completed", durationMs: 900_000 }),
+  ]);
+  const row = estimateRow("Finish facility panel", { startedAt: now - 18 * 60_000 });
+  const rows = forecastTodoPlan([{ name: "Work", tasks: [row] }], { now }).rows;
+  const update = { task: row.content, evidence: "Panel implemented; nine minutes remain to verify the mobile layout", estimate: { likelySeconds: 540 } };
+  expect(estimateFloorRefusal([update], rows, floors, now)).toBeUndefined();
+  expect(estimateFloorRefusal([{ ...update, evidence: undefined }], rows, floors, now)).toContain("below 15m");
+  const earlyRow = estimateRow("Early panel", { startedAt: now - 4 * 60_000 });
+  const early = forecastTodoPlan([{ name: "Work", tasks: [earlyRow] }], { now }).rows;
+  expect(estimateFloorRefusal([{ ...update, task: earlyRow.content }], early, floors, now)).toContain("below 11m");
+});
+
 test("retry uses the previous attempt's measured duration, not a multiplied estimate", () => {
   const floors = successfulDurationFloors([JSON.stringify({ kind: "outcome", agent: "coder", status: "completed", durationMs: 60_000 })]);
   const row = estimateRow("Redo implementation", { attemptHistory: [{ attemptId: "1", durationMs: 180_000 }] });
