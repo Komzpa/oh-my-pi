@@ -26,13 +26,13 @@ export interface IrcBridgeHost {
 export class IrcBridge {
 	/** Tracks parent IRC steers by object identity without trusting prompt text or publication on receipt. */
 	readonly #parentSteers = new WeakSet<AgentMessage>();
+	readonly #nonInterruptingAsides = new WeakSet<AgentMessage>();
 	/** A subagent's records from anyone but its parent: answered in their own turn, never by
 	 *  extending a finished one (whose text is the subagent's result). */
 	readonly #peerMessages = new WeakSet<AgentMessage>();
 	/** Queued broadcast legs and progress notes: they ask nothing of the recipient, so they
 	 *  inject at the next step boundary like any record but never cut a `wait` short. */
 	readonly #quietRecords = new WeakSet<AgentMessage>();
-	readonly #nonInterruptingAsides = new WeakSet<AgentMessage>();
 
 	readonly #host: IrcBridgeHost;
 	#interrupts: AgentMessage[] = [];
