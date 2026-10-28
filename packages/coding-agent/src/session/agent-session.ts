@@ -9910,6 +9910,14 @@ export class AgentSession implements SettingsScope {
 	}
 
 	#queueHiddenNextTurnMessage(message: CustomMessage, triggerTurn: boolean): void {
+		// A snapshot (`details.supersedesQueued`) replaces its queued predecessors of the same customType:
+		// next-turn messages wait for the next prompt, and stale copies of a regenerated notice or runbook
+		// piled up across compactions and restarts.
+		if (isSupersedingNextTurn(message)) {
+			this.#pendingNextTurnMessages = this.#pendingNextTurnMessages.filter(
+				queued => !(isSupersedingNextTurn(queued) && queued.customType === message.customType),
+			);
+		}
 		this.#pendingNextTurnMessages.push(message);
 		if (!triggerTurn) return;
 		const generation = this.#promptGeneration;
@@ -15496,4 +15504,9 @@ export class AgentSession implements SettingsScope {
 	consumeActiveFallbackCreditRedemption(targetModel?: Model): AnthropicFallbackCreditHandle | undefined {
 		return this.#recovery.consumeActiveFallbackCreditRedemption(targetModel);
 	}
+}
+
+function isSupersedingNextTurn(message: CustomMessage): boolean {
+	const details = message.details as { supersedesQueued?: unknown } | undefined;
+	return details?.supersedesQueued === true;
 }
