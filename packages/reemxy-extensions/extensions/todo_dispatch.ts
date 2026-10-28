@@ -625,8 +625,10 @@ export function estimateFloorRefusal(updates: readonly Record<string, unknown>[]
     const samples = profileSamples?.length ? profileSamples : floors.all;
     const sampleMedian = median(samples);
     const priorLikely = row.estimateRangeSeconds?.likely ?? 0;
-    const attemptTwoFloor = row.overdue || (row.schedule?.attemptHistory?.length ?? 0) >= 1 ? priorLikely * 2_000 : 0;
-    const floorMs = Math.max(sampleMedian ?? 0, attemptTwoFloor);
+    const previousAttempt = row.schedule?.attemptHistory?.at(-1);
+    const attemptFloor = typeof previousAttempt?.durationMs === "number" && Number.isFinite(previousAttempt.durationMs) && previousAttempt.durationMs > 0
+      ? previousAttempt.durationMs : 0;
+    const floorMs = Math.max(sampleMedian ?? 0, attemptFloor);
     const floorSource = sampleMedian === undefined
       ? `all profiles (successful outcomes, n=${samples.length})`
       : profileSamples?.length
@@ -634,7 +636,7 @@ export function estimateFloorRefusal(updates: readonly Record<string, unknown>[]
         : `all profiles p50 fallback (successful outcomes, n=${samples.length})`;
     const floorReasons = [
       sampleMedian === undefined ? undefined : `p50 ${Math.ceil(sampleMedian / 60_000)}m from ${floorSource}`,
-      attemptTwoFloor > 0 ? `2x previous likely ${Math.ceil(attemptTwoFloor / 60_000)}m` : undefined,
+      attemptFloor > 0 ? `previous attempt took ${Math.ceil(attemptFloor / 60_000)}m` : undefined,
     ].filter((reason): reason is string => reason !== undefined);
     const elapsedMs = typeof row.startedAt === "number" ? now - row.startedAt : 0;
     const ratifiesOverrun = row.status === "in_progress" && row.overdue && elapsedMs > priorLikely * 1_000
@@ -690,6 +692,12 @@ export function firstDeliveryCutRequired(
 
 export function missedEtaRowsText(rows: readonly TodoTaskForecast[], now: number): string {
   return rows.map((row) => `${JSON.stringify(row.content)} ${row.owner ?? "unassigned"} ${Math.floor(Math.max(0, now - (row.resourceFinish ?? row.startedAt ?? now)) / 60_000)}m over`).join("; ");
+}
+
+/** A forecast that expired before a worker started is a plan miss, not that worker's overrun. */
+export function workerPastForecast(p95: number | undefined, startedAt: number | undefined, now: number): boolean {
+  return typeof p95 === "number" && Number.isFinite(p95) && now >= p95
+    && !(typeof startedAt === "number" && Number.isFinite(startedAt) && startedAt > p95);
 }
 
 function scheduleEstimateFloorRefusal(updates: readonly Record<string, unknown>[], rows: readonly TodoTaskForecast[], now: number): string | undefined {
@@ -4331,7 +4339,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const p95 = row?.fixedPathP95Finish ?? (
         typeof row?.expectedResourceFinish === "number" ? row.expectedResourceFinish + LIKELY_GRACE_MS : row?.resourceFinish
       );
-      if (!row || typeof p95 !== "number" || !Number.isFinite(p95) || now < p95) {
+      if (!row || typeof p95 !== "number" || !workerPastForecast(p95, job.startTime, now)) {
         overdueWorkerEpisodes.delete(id);
         return [];
       }
@@ -4775,6 +4783,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         ? RETRO_REMEDY
         : id === "unread-receipts"
           ? UNREAD_REMEDY(unreadOwners)
+          : id === "todo-link"
+            ? "Link each running unassigned worker to the todo row matching its actual assignment; create a separate row if needed. Do not reassign it to an unrelated row. Use todo to update the plan."
           : id === "missed-eta" && call && taskServesRescheduledLateRow(call)
             ? "The late row was rescheduled in this assistant message; continue by starting its task now."
             : id === "missed-eta"
