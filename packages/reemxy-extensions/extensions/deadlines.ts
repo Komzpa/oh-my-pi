@@ -44,11 +44,12 @@ export interface ActiveGoalRef {
 	id: string;
 	createdAt: number;
 	status: string;
+	objective?: string;
 }
 
 export function goalRef(value: unknown): ActiveGoalRef | null {
 	if (!value || typeof value !== "object") return null;
-	const goal = value as { id?: unknown; createdAt?: unknown; status?: unknown };
+	const goal = value as { id?: unknown; createdAt?: unknown; status?: unknown; objective?: unknown };
 	if (typeof goal.id !== "string" || typeof goal.status !== "string") return null;
 	const createdAt =
 		typeof goal.createdAt === "number"
@@ -56,7 +57,9 @@ export function goalRef(value: unknown): ActiveGoalRef | null {
 			: typeof goal.createdAt === "string"
 				? Math.floor(Date.parse(goal.createdAt) / 1000)
 				: NaN;
-	return Number.isFinite(createdAt) ? { id: goal.id, createdAt, status: goal.status } : null;
+	return Number.isFinite(createdAt)
+		? { id: goal.id, createdAt, status: goal.status, ...(typeof goal.objective === "string" ? { objective: goal.objective } : {}) }
+		: null;
 }
 
 export type GoalResolution = ActiveGoalRef | null | undefined;

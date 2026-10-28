@@ -13,6 +13,7 @@ import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/
 import goalDeadlines, {
 	latestDeadlineStateEntries,
 	derivePresence,
+	deadlineStateFromGoalObjective,
 	REMINDER_MAX_CHARS,
 	remainingPercent,
 	renderDeadlineReminder,
@@ -33,6 +34,17 @@ import {
 	formatLocalTimestamp,
 	resolveTimeZone,
 } from "./deadlines";
+
+test("an exact user goal clock becomes its deadline at the original message time", () => {
+	const goal = goalRef({ id: "ship", objective: "push it by 13:10", status: "active", createdAt: "2026-10-28T08:51:00Z" });
+	const entries = [{ id: "user-1", type: "message", timestamp: "2026-10-28T08:50:00Z", message: { role: "user", content: "push it by 13:10" } }];
+	const state = deadlineStateFromGoalObjective(goal, entries, "Asia/Tbilisi");
+	expect(state?.goalId).toBe("ship");
+	expect(new Date(state!.baselineDeadlineAt! * 1_000).toISOString()).toBe("2026-10-28T09:10:00.000Z");
+	expect(state?.userConstraint).toMatchObject({ messageId: "user-1", quote: "push it by 13:10" });
+	expect(deadlineStateFromGoalObjective(goalRef({ id: "ship", objective: "push it soon", status: "active", createdAt: "2026-10-28T08:51:00Z" }), entries, "Asia/Tbilisi")).toBeUndefined();
+	expect(deadlineStateFromGoalObjective(goal, [{ ...entries[0], message: { role: "user", content: "different request by 13:10" } }], "Asia/Tbilisi")).toBeUndefined();
+});
 
 function branchMock(getBranch: () => unknown[]) {
 	return {
