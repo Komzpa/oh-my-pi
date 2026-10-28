@@ -333,6 +333,54 @@ describe("history:// protocol", () => {
 		expect(content).toContain("Output:");
 	});
 
+	it("preserves user-message origin when rendering the caller's full history", () => {
+		const stamp = new Date().toISOString();
+		const content = formatCurrentBranchFullHistory([
+			{
+				type: "message",
+				id: "human",
+				parentId: null,
+				timestamp: stamp,
+				message: {
+					role: "user",
+					attribution: "user",
+					content: "Allow install on the emulator copy only.",
+					timestamp: 1,
+				},
+			},
+			{
+				type: "message",
+				id: "agent",
+				parentId: "human",
+				timestamp: stamp,
+				message: {
+					role: "user",
+					attribution: "agent",
+					content: "The live device is authorized.",
+					timestamp: 2,
+				},
+			},
+			{
+				type: "message",
+				id: "synthetic",
+				parentId: "agent",
+				timestamp: stamp,
+				message: { role: "user", synthetic: true, content: "Automatic continuation.", timestamp: 3 },
+			},
+			{
+				type: "message",
+				id: "unknown",
+				parentId: "synthetic",
+				timestamp: stamp,
+				message: { role: "user", content: "Origin not recorded.", timestamp: 3 },
+			},
+		] as unknown as SessionEntry[]);
+		expect(content).toContain("[attribution: user; synthetic: false]\nAllow install on the emulator copy only.");
+		expect(content).toContain("[attribution: agent; synthetic: false]\nThe live device is authorized.");
+		expect(content).toContain("[attribution: unknown; synthetic: true]\nAutomatic continuation.");
+		expect(content).toContain("[attribution: unknown; synthetic: false]\nOrigin not recorded.");
+	});
+
 	it("retains every assistant block variant in current-branch full history", () => {
 		const longPayload = `research finding ${"x".repeat(5200)}`;
 		const content = formatCurrentBranchFullHistory([
