@@ -4859,7 +4859,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       .filter((row) => row.ownership === "idle-live-owner" && row.owner && idleResumeAttempts.has(row.owner))
       .map((row) => row.owner!);
     const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never);
-    const retroDue = sprintState.retroDueReason && !retroRowStaffed(phases) ? buildRetroLine(now, decision.deadline?.timezone) : "";
+    // The plan tick settles a completed facilitator up to a minute later; until then the snapshot already shows it.
+    const facilitatorDone = (ctx.getAsyncJobSnapshot()?.recent ?? []).some((job) =>
+      job.type === "task" && job.status === "completed" && [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name)));
+    const retroDue = sprintState.retroDueReason && !retroRowStaffed(phases) && !facilitatorDone ? buildRetroLine(now, decision.deadline?.timezone) : "";
     if (retroDue) {
       sprintState = { ...sprintState, retroDueNotifiedKey: retroNotifyKey() };
       persistSprintState();

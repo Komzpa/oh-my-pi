@@ -169,6 +169,22 @@ test("an async retro-facilitator that settles through wait clears the due notice
     expect(after).not.toContain("SprintRetro");
   } finally { setSystemTime(); }
 });
+test("the per-request context note drops the due retro once its facilitator completed", async () => {
+  // Live runtime lead 2026-10-28 08:06: wait returned the completed retro-facilitator, and the
+  // next request still carried "retrospective due" until the plan tick settled the job 40 s later.
+  setSystemTime(new Date(liveNow));
+  try {
+    const workers = [
+      { id: "done-a", type: "task", status: "completed", label: "Ship feature", startTime: liveNow - 3000, agentId: "worker-a" },
+    ];
+    const f = await fixture([{ name: "Work", tasks: [row("Ship feature")] }], workers);
+    expect(await f.check()).toContain("retrospective due");
+    await f.dispatch("SprintRetro");
+    f.setJobs([...workers, { id: "SprintRetro", type: "task", status: "completed", label: "SprintRetro", startTime: liveNow - 1000, agentId: "SprintRetro" }]);
+    const note = (await f.handlers.get("context")!({ messages: [] }, f.ctx)) as { messages?: Array<{ content: unknown }> } | undefined;
+    expect(JSON.stringify(note?.messages ?? [])).not.toContain("retrospective due");
+  } finally { setSystemTime(); }
+});
 test("an async background retro receipt clears the demand and never relists covered workers", async () => {
   // Live pts4 2026-10-04..05: SynthesizeRetro0057 completed as a background job (an async-result
   // branch entry, no task tool_result, never in the job snapshot), so finishRetro never ran and
