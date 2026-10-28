@@ -2394,6 +2394,15 @@
 			],
 			"type": "string"
 		},
+		"TodoScheduleReview": {
+			"enum": [
+				"user",
+				"accepted",
+				"redo",
+				"drop"
+			],
+			"type": "string"
+		},
 		"TodoWorkerOutcome": {
 			"enum": [
 				"completed",
@@ -2605,13 +2614,7 @@
 					"description": "Short final worker report retained for the user's review handoff."
 				},
 				"review": {
-					"enum": [
-						"user",
-						"accepted",
-						"redo",
-						"drop"
-					],
-					"type": "string",
+					"$ref": "#/$defs/TodoScheduleReview",
 					"description": "User decision state for a delivered implementation result."
 				},
 				"speculativeOn": {
