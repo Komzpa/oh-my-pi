@@ -19,7 +19,7 @@ function propose(forecastFinish: number, options: Record<string, unknown> = {}) 
 	});
 }
 
-test("an open plan forecast over an hour away becomes the persisted active deadline", () => {
+test("an open plan forecast over 15 minutes away becomes the persisted active deadline", () => {
 	const state = propose(now + 3 * 60 * 60_000)!;
 	const entries = [{ type: "custom", customType: STATE_ENTRY, data: state }];
 
@@ -30,8 +30,8 @@ test("an open plan forecast over an hour away becomes the persisted active deadl
 	);
 });
 
-test("a plan forecast within the next hour does not create an automatic deadline", () => {
-	expect(propose(now + 59 * 60_000)).toBeUndefined();
+test("a plan forecast within the next 15 minutes does not create an automatic deadline", () => {
+	expect(propose(now + 14 * 60_000)).toBeUndefined();
 });
 
 test("an active real goal or deadline prevents an automatic deadline", () => {

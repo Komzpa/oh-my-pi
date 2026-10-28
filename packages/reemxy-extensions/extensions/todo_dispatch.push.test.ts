@@ -29,7 +29,7 @@ function git(cwd: string, env: Record<string, string>, ...args: string[]) {
 
 // Live DC lead 2026-10-28: 36 commits sat unpushed for 8 hours and the owner had to ask three times.
 // The session had no /goal, and the push demand only fired for goal sessions.
-test("unpushed commits older than an hour demand a push without a goal", async () => {
+test("unpushed commits older than 15 minutes demand a push without a goal", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "push-demand-"));
 	try {
 		const remote = join(dir, "remote.git");
@@ -43,7 +43,7 @@ test("unpushed commits older than an hour demand a push without a goal", async (
 		git(work, id, "push", "-q", "-u", "origin", "HEAD");
 		writeFileSync(join(work, "b"), "b");
 		git(work, id, "add", "b");
-		const old = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+		const old = new Date(Date.now() - 20 * 60_000).toISOString();
 		git(work, { ...id, GIT_AUTHOR_DATE: old, GIT_COMMITTER_DATE: old }, "commit", "-q", "-m", "local fix");
 
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();

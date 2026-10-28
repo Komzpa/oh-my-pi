@@ -116,7 +116,8 @@ const MAX_LABEL = 120;
 const MAX_IDLE_RECHECK_MS = 30_000;
 const MAX_TASK_DISPATCH = 20;
 const RECENT_FINISH_MS = 3 * 60 * 60_000;
-const AUTO_GOAL_MIN_LEAD_MS = 60 * 60_000;
+// A plan longer than a worker's p90 (14-27 min in the router journal) is long enough to need a deadline.
+const AUTO_GOAL_MIN_LEAD_MS = 15 * 60_000;
 const ROSTER_ENTRY_TYPE = "todo-dispatch-roster";
 export const SPRINT_STATE_ENTRY_TYPE = "todo-dispatch-sprint-state";
 const CHIEF_RULES_ENTRY_TYPE = "chief-rules-after-compaction";
@@ -203,7 +204,8 @@ function survivingCompactionCustomType(ctx: ExtensionContext, customType: string
 // resolved merge open for hours behind feature rows and gates while main moved on, and spawned a
 // fresh round of merge workers for every move. Past these ages the gate demands commit, then push.
 export const STALE_MERGE_MS = 30 * 60_000;
-export const STALE_PUSH_MS = 60 * 60_000;
+// Same horizon as AUTO_GOAL_MIN_LEAD_MS: a finished worker's commit should not wait longer than one worker run.
+export const STALE_PUSH_MS = 15 * 60_000;
 // No word boundary: worker names are CamelCase ("E2EMergeOwner").
 const MERGE_WORK = /merg|conflict|rebas|cherry-pick/i;
 const GIT_COMMIT = /\bgit\b[^;&|\n]*\b(commit|merge\s+--continue)\b/;
