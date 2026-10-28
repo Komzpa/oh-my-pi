@@ -54,6 +54,7 @@ describe("sprint state prune keeps sessions bounded", () => {
 			retroDueReason: null,
 			lastNotices: Object.fromEntries(all.map((r) => [`todo-plan-check\0${r}`, "a1b2c3d4e5f60718"])),
 			ignoredDemands: {},
+			idleContinuationDemands: 0,
 		};
 		const pruned = pruneSprintState(state, new Set(live), now);
 		expect(JSON.stringify(pruned).length).toBeLessThan(20 * 1024);
@@ -84,6 +85,7 @@ describe("sprint state prune keeps sessions bounded", () => {
 			retroDueReason: null,
 			lastNotices: {},
 			ignoredDemands: {},
+			idleContinuationDemands: 0,
 		};
 		const pruned = pruneSprintState(state, new Set(["live-row"]));
 		expect(pruned.seenRows).toContain("live-row");
@@ -111,6 +113,7 @@ describe("sprint state prune keeps sessions bounded", () => {
 			retroDueReason: null,
 			lastNotices: {} as Record<string, string>,
 			ignoredDemands: {},
+			idleContinuationDemands: 0,
 		};
 		const branch: unknown[] = [];
 		let persistedJson = "";

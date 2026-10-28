@@ -162,12 +162,16 @@ async function session(phases: unknown[], branch: unknown[], running: Array<{ id
 	const cwd = mkdtempSync(join(tmpdir(), "todo-away-"));
 	const now = Date.now();
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+	const sent: Array<{ customType?: string; content: string; details?: unknown }> = [];
 	const api = {
 		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
 		getActiveTools: () => ["task", "todo", "wait"],
 		pi: { ...sdk, getLatestTodoPhasesFromEntries: () => phases, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 6 * 3_600_000 }) },
 		appendEntry: () => undefined,
-		sendMessage: () => undefined,
+		sendMessage: (message: { customType?: string; content: string; details?: unknown; attribution?: string; display?: boolean }) => {
+			sent.push(message);
+			branch.push({ type: "custom_message", ...message, timestamp: new Date().toISOString() });
+		},
 	} as unknown as ExtensionAPI;
 	await todoDispatch(api);
 	const jobs = running.map((job) => ({ id: job.id, agentId: job.id, type: "task", status: "running", label: job.label, startTime: now }));
@@ -182,7 +186,14 @@ async function session(phases: unknown[], branch: unknown[], running: Array<{ id
 		clearTimer: () => undefined,
 	} as unknown as ExtensionContext;
 	const wait = async () => (await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "w", input: {} }, ctx)) as { block?: boolean; reason?: string } | undefined;
-	const context = async () => ((await handlers.get("context")!({ messages: [] }, ctx)) as { messages?: Array<{ content: string }> } | undefined)?.messages?.at(-1)?.content ?? "";
+	const context = async () => {
+		const previousCount = sent.length;
+		const messages = [{ role: "user", content: "request" }];
+		const result = await handlers.get("context")!({ messages }, ctx) as { messages?: unknown[] };
+		expect(result.messages).toBe(messages);
+		await handlers.get("turn_end")!({ toolResults: [] }, ctx);
+		return sent.length > previousCount && sent.at(-1)?.customType === "todo-dispatch-time-note" ? sent.at(-1)!.content : "";
+	};
 	return { handlers, ctx, wait, context, cleanup: () => rmSync(cwd, { recursive: true, force: true }) };
 }
 
@@ -252,14 +263,14 @@ test("5. when the user writes while away, one notice lists the waiting rows with
 		await s.handlers.get("input")!({ type: "input", source: "interactive", text: "back" }, s.ctx);
 		branch.push(minutesAgo(Date.now(), 0));
 		const first = await s.context();
-		expect(first.startsWith("THE USER IS BACK")).toBe(true);
+		expect(first).toContain("THE USER IS BACK");
 		expect(first).toContain(`${JSON.stringify(APPROVE)}: approve the 3m budget — your proposal: approve 3m`);
 		expect(first).toContain(`proceeded on it: ${JSON.stringify(DEPLOY)}`);
 		expect(first).toContain(`${JSON.stringify(COPY)}: the Copy JSON from the dashboard only the user can open — no proposal recorded`);
 		expect(first).toContain("todo unblock");
 		expect(first.split("\nROLE:")[0]).not.toContain(JSON.stringify(RESTART));
 		// Same turn: still the one notice, not a second one.
-		expect((await s.context()).split("THE USER IS BACK").length - 1).toBe(1);
+		expect(await s.context()).not.toContain("THE USER IS BACK");
 		await s.handlers.get("agent_end")!({}, s.ctx);
 		expect(await s.context()).not.toContain("THE USER IS BACK");
 	} finally {
@@ -274,7 +285,7 @@ test("5. presence leaving away without a typed message also brings the notice, o
 	try {
 		expect(await s.context()).not.toContain("THE USER IS BACK");
 		branch.push(minutesAgo(Date.now(), 0));
-		expect(await s.context()).toStartWith("THE USER IS BACK");
+		expect(await s.context()).toContain("THE USER IS BACK");
 		await s.handlers.get("agent_end")!({}, s.ctx);
 		expect(await s.context()).not.toContain("THE USER IS BACK");
 	} finally {
