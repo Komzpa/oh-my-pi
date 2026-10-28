@@ -11,7 +11,6 @@ import type { AgentSession } from "../session/agent-session";
 export interface InteractiveSessionConnection extends Pick<
 	AgentSession,
 	| "promptCustomMessage"
-	| "buildUserSkillPrompt"
 	| "prompt"
 	| "resume"
 	| "abort"
@@ -63,7 +62,6 @@ export function createLocalInteractiveSessionConnection(
 		consumeDraft: () => session.sessionManager.consumeDraft(),
 		consumeDraftState: async draftText => (await session.sessionManager.consumeDraftState?.(draftText)) ?? null,
 		promptCustomMessage: (...args) => session.promptCustomMessage(...args),
-		buildUserSkillPrompt: (...args) => session.buildUserSkillPrompt(...args),
 		prompt: (...args) => session.prompt(...args),
 		resume: () => session.resume(),
 		abort: (...args) => session.abort(...args),
