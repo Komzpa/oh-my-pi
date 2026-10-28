@@ -90,6 +90,8 @@ import {
 } from "./settings";
 
 const THINKING_LOOP_REDIRECT_TYPE = "thinking-loop-redirect";
+/** Provider free-tier daily quota, shared by every `:free` model of the account (OpenRouter `free-models-per-day*`). */
+const FREE_TIER_DAILY_LIMIT_PATTERN = /free-models-per-day/i;
 const UNEXPECTED_STOP_MAX_RETRIES = 3;
 // Gateway-routed judges can take ~12s (observed: bifrost judge YES at 12.2s
 // while the client aborted at 4s, dropping the verdict and skipping the nudge).
@@ -1855,7 +1857,11 @@ export class TurnRecovery {
 			const reason = parseRateLimitReason(errorMessage);
 			cooldownMs = reason === "UNKNOWN" ? 5 * 60 * 1000 : calculateRateLimitBackoffMs(reason);
 		}
-		this.#host.modelRegistry.suppressSelector(currentSelector, Date.now() + cooldownMs);
+		const untilMs = Date.now() + cooldownMs;
+		this.#host.modelRegistry.suppressSelector(currentSelector, untilMs);
+		if (FREE_TIER_DAILY_LIMIT_PATTERN.test(errorMessage)) {
+			this.#host.modelRegistry.suppressFreeTier(currentSelector, untilMs);
+		}
 	}
 
 	/**

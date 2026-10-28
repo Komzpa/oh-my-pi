@@ -1694,6 +1694,23 @@ export function sessionModelDiscoveryProviders(
 }
 
 /**
+ * Hide models cooling down after a rate limit, so a new draw, or a redispatch of the same row, falls
+ * through to the next entry. When nothing outside the cooldown matches, the full list stays.
+ */
+function withoutCoolingDown(
+	registry: ModelLookupRegistry & Partial<Pick<ModelRegistry, "isSelectorSuppressed">>,
+	patterns: string[],
+	disabledProviders: ReadonlySet<string>,
+	settings?: Settings,
+): ModelLookupRegistry {
+	const enabled = registry.getAvailable().filter(model => !disabledProviders.has(model.provider));
+	const awake = enabled.filter(model => !registry.isSelectorSuppressed?.(`${model.provider}/${model.id}`));
+	if (awake.length === enabled.length) return registry;
+	const lookup = { getAvailable: () => awake };
+	return resolveModelOverride(patterns, lookup, settings).model ? lookup : registry;
+}
+
+/**
  * Resolve a list of override patterns to the first matching model, with an
  * auth-aware fallback to the parent session's active model.
  *
@@ -1725,7 +1742,9 @@ export function sessionModelDiscoveryProviders(
 export async function resolveModelOverrideWithAuthFallback(
 	modelPatterns: string[],
 	parentActiveModelPattern: string | undefined,
-	modelRegistry: ModelLookupRegistry & Pick<ModelRegistry, "getApiKey">,
+	modelRegistry: ModelLookupRegistry &
+		Pick<ModelRegistry, "getApiKey"> &
+		Partial<Pick<ModelRegistry, "isSelectorSuppressed">>,
 	settings?: Settings,
 	sessionId?: string,
 ): Promise<{
@@ -1736,9 +1755,14 @@ export async function resolveModelOverrideWithAuthFallback(
 	warning?: string;
 }> {
 	const disabledProviders = disabledProviderIds(settings);
-	let lookupRegistry: ModelLookupRegistry = modelRegistry;
+	let lookupRegistry: ModelLookupRegistry = withoutCoolingDown(
+		modelRegistry,
+		modelPatterns,
+		disabledProviders,
+		settings,
+	);
 	if (disabledProviders.size > 0) {
-		const enabledModels = modelRegistry.getAvailable().filter(model => !disabledProviders.has(model.provider));
+		const enabledModels = lookupRegistry.getAvailable().filter(model => !disabledProviders.has(model.provider));
 		lookupRegistry = { getAvailable: () => enabledModels };
 	}
 	const primary = resolveModelOverride(modelPatterns, lookupRegistry, settings);
