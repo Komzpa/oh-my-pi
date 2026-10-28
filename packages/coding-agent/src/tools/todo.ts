@@ -1546,7 +1546,7 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 // Tool Class
 // =============================================================================
 
-export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, RequirementTodoToolDetails> {
+export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolDetails> {
 	static readonly #schema: TodoToolSchema<TodoSchema> = createTodoToolSchema(todoSchema);
 	readonly name = "todo";
 	readonly approval = "read" as const;
@@ -1572,9 +1572,9 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, Requireme
 		_toolCallId: string,
 		params: TodoToolParamsType<TodoSchema>,
 		_signal?: AbortSignal,
-		_onUpdate?: AgentToolUpdateCallback<RequirementTodoToolDetails>,
+		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
-	): Promise<AgentToolResult<RequirementTodoToolDetails>> {
+	): Promise<AgentToolResult<TodoToolDetails>> {
 		const result = await artifactCwdScope.run(this.session.cwd, () =>
 			this.#executeTodo(_toolCallId, params, _signal, _onUpdate, _context),
 		);
@@ -1599,9 +1599,9 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, Requireme
 		_toolCallId: string,
 		params: TodoToolParamsType<TodoSchema>,
 		_signal?: AbortSignal,
-		_onUpdate?: AgentToolUpdateCallback<RequirementTodoToolDetails>,
+		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
-	): Promise<AgentToolResult<RequirementTodoToolDetails>> {
+	): Promise<AgentToolResult<TodoToolDetails>> {
 		const livePhasesSnapshot = JSON.stringify(this.session.getTodoPhases?.() ?? []);
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
 		if (this.session.sessionManager) {
@@ -1712,7 +1712,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, Requireme
 		const effective = failed ? previousPhases : updated;
 		const completedTasks = readOnly || failed ? [] : getCompletionTransitions(previousPhases, updated);
 		if (!readOnly && !failed) this.session.setTodoPhases?.(updated);
-		const details: RequirementTodoToolDetails = { op, phases: effective, storage };
+		const details: TodoToolDetails = { op, phases: effective, storage };
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 
 		return {
@@ -1728,7 +1728,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, Requireme
 		previousPhases: TodoPhase[],
 		storage: "memory" | "session",
 		signal?: AbortSignal,
-	): Promise<AgentToolResult<RequirementTodoToolDetails> | undefined> {
+	): Promise<AgentToolResult<TodoToolDetails> | undefined> {
 		const sessionManager = this.session.sessionManager;
 		if (!sessionManager) return undefined;
 		const task = typeof params.task === "string" ? params.task : undefined;
@@ -1791,6 +1791,12 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, Requireme
 					);
 					await sessionManager.flush();
 				}
+				const gateDetails: RequirementTodoToolDetails = {
+					op: "done",
+					phases: previousPhases,
+					storage,
+					requirementGateIssues: open.filter(issue => (issue.stalePassRows?.length ?? 0) > 0),
+				};
 				return {
 					content: [
 						{
@@ -1798,12 +1804,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, Requireme
 							text: formatDoneGateRefusal(open),
 						},
 					],
-					details: {
-						op: "done",
-						phases: previousPhases,
-						storage,
-						requirementGateIssues: open.filter(issue => (issue.stalePassRows?.length ?? 0) > 0),
-					},
+					details: gateDetails,
 					isError: true,
 				};
 			}
@@ -1818,8 +1819,8 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, Requireme
 		params: Record<string, unknown>,
 		previousPhases: TodoPhase[],
 		storage: string,
-	): Promise<AgentToolResult<RequirementTodoToolDetails>> {
-		const details = { op: "classify", phases: previousPhases, storage } as unknown as RequirementTodoToolDetails;
+	): Promise<AgentToolResult<TodoToolDetails>> {
+		const details = { op: "classify", phases: previousPhases, storage } as unknown as TodoToolDetails;
 		const id = typeof params.id === "string" ? params.id : undefined;
 		const rawClassification = params.classification;
 		const classification =
