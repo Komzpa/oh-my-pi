@@ -23,7 +23,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
-import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, latestDeadlineUserMessage, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState } from "./deadlines";
+import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, latestDeadlineUserMessage, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState, resolveTimeZone, STATE_ENTRY as GOAL_DEADLINE_STATE_ENTRY, type DeadlineState } from "./deadlines";
 import unansweredUserInstructions from "./unanswered-user-reply.md" with { type: "text" };
 import gateNoticeInstructions from "./gate-notices.md" with { type: "text" };
 import { countLiveWorkerModels } from "./agent_router";
@@ -116,12 +116,62 @@ const MAX_LABEL = 120;
 const MAX_IDLE_RECHECK_MS = 30_000;
 const MAX_TASK_DISPATCH = 20;
 const RECENT_FINISH_MS = 3 * 60 * 60_000;
+const AUTO_GOAL_MIN_LEAD_MS = 60 * 60_000;
 const ROSTER_ENTRY_TYPE = "todo-dispatch-roster";
 export const SPRINT_STATE_ENTRY_TYPE = "todo-dispatch-sprint-state";
 const CHIEF_RULES_ENTRY_TYPE = "chief-rules-after-compaction";
 const WORKER_BRIEF_ENTRY_TYPE = "worker-brief-after-compaction";
 const TODO_ERROR_ENTRY_TYPE = "todo-error-reminder";
 const COMPACTION_DEDUPED_ENTRY_TYPES = [CHIEF_RULES_ENTRY_TYPE, WORKER_BRIEF_ENTRY_TYPE, TODO_ERROR_ENTRY_TYPE];
+
+export function autoGoalDeadlineState(input: {
+  current: DeadlineState | null;
+  planKey: string;
+  forecastFinish: number | undefined;
+  now: number;
+  hasRealGoal: boolean;
+  hasRealDeadline: boolean;
+}): DeadlineState | undefined {
+  const { current, planKey, forecastFinish, now, hasRealGoal, hasRealDeadline } = input;
+  if (hasRealGoal || (hasRealDeadline && current?.auto !== true)) return undefined;
+  const currentDue =
+    current?.auto === true && current.baselineDeadlineAt !== undefined
+      ? current.baselineDeadlineAt * 1_000
+      : undefined;
+  const planReplaced = current?.auto === true && current.autoPlanKey !== planKey;
+  const deadlinePassed = currentDue !== undefined && now >= currentDue;
+  if (current?.auto === true && !planReplaced && !deadlinePassed) return undefined;
+  if (
+    forecastFinish === undefined ||
+    !Number.isFinite(forecastFinish) ||
+    forecastFinish <= now + AUTO_GOAL_MIN_LEAD_MS
+  ) {
+    if (current?.auto === true && (planReplaced || deadlinePassed)) {
+      return { ...current, active: false, stages: [], baselineDeadlineAt: undefined, autoPlanKey: planKey };
+    }
+    return undefined;
+  }
+
+  const deadlineAt = Math.ceil(forecastFinish / 1_000);
+  return {
+    version: 1,
+    goalId: "auto-todo-plan",
+    goalStartedAt: Math.floor(now / 1_000),
+    timezone: resolveTimeZone(),
+    active: true,
+    auto: true,
+    autoPlanKey: planKey,
+    stages: [
+      {
+        id: "auto-plan-forecast",
+        label: "Finish the TODO plan",
+        expectedResult: "Complete the current TODO plan",
+        deadlineAt,
+      },
+    ],
+    baselineDeadlineAt: deadlineAt,
+  };
+}
 // Latest-wins view for the three append-only custom types: keep only the newest message per
 // customType by message order, preserve every unrelated message and the retained order, never
 // mutate the input. Returns the original array when no type repeats, so callers can keep the
@@ -2363,7 +2413,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const header = ctx.sessionManager.getHeader();
     const presence = header !== null && !header.parentSession ? presenceOf(branch, now) : undefined;
     const goalPaused = lifecycleGoal(branch, [])?.status === "paused";
-    const deadline = sdk.readGoalDeadline(branch, ctx.cwd, { includePaused: true });
+    let deadline = sdk.readGoalDeadline(branch, ctx.cwd, { includePaused: true });
+    const deadlineState = rehydrateDeadlineState(branch);
+    const realGoal = lifecycleGoal(branch, []);
     const taskMaxConcurrency = ctx.getTaskMaxConcurrency?.();
     const capacity =
       typeof taskMaxConcurrency === "number" &&
@@ -2380,35 +2432,65 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       lastPresence = presence;
     }
     const restored = restoredChildren(persistedChildren, jobs);
-    const key = `${staticKey(phases, jobs, deadline, capacity, startableCapacity, goalPaused, restored, persistedChildren)}:${Math.floor(now / 60_000)}:${presence ?? ""}`;
+    let key = `${staticKey(phases, jobs, deadline, capacity, startableCapacity, goalPaused, restored, persistedChildren)}:${Math.floor(now / 60_000)}:${presence ?? ""}`;
     // External processes can settle without changing TODOs or the async-job snapshot.
     const hasExternalOwner = phases.some((phase) => phase.tasks.some((task) => parseExternalWait(task.schedule?.owner) !== null));
     if (!hasExternalOwner && !forceRefresh && pending.length === 0 && cachedDecision?.key === key) {
       if (refreshSnapshot) writeCurrentPlanSnapshot(ctx, cachedDecision.decision, now, phases);
       return cachedDecision.decision;
     }
-    const decision = decideTodoDispatch(
-      {
-        phases,
-        jobs,
-        externalOwnerProbe: options.externalOwnerProbe,
-        persistedChildren,
-        restoredChildren: restored,
-        isMainSession: header !== null && !header.parentSession,
-        capacity,
-        startableCapacity,
-        taskEnabled: pi.getActiveTools().includes("task") && startableCapacity > 0,
+    const decisionInput = {
+      phases,
+      jobs,
+      externalOwnerProbe: options.externalOwnerProbe,
+      persistedChildren,
+      restoredChildren: restored,
+      isMainSession: header !== null && !header.parentSession,
+      capacity,
+      startableCapacity,
+      taskEnabled: pi.getActiveTools().includes("task") && startableCapacity > 0,
+      now,
+      deadline,
+      goalPaused,
+      presence,
+      dispatchGateAvailable: nativeGateRegistered,
+      lastWakeKey,
+      cachedStatic,
+      idleResumeAttempts,
+    };
+    let decision = decideTodoDispatch(decisionInput, sdk);
+    if (header !== null && !header.parentSession && typeof pi.appendEntry === "function") {
+      const planKey = JSON.stringify(
+        phases.map(phase => [
+          phase.name,
+          phase.tasks.map(task => [task.content, task.schedule?.dependencies ?? []]),
+        ]),
+      );
+      const autoState = autoGoalDeadlineState({
+        current: deadlineState,
+        planKey,
+        forecastFinish:
+          decision.forecast?.unresolvedCount === 0
+            ? (decision.forecast.fixedPathP95Finish ?? decision.forecast.resourceFinish)
+            : undefined,
         now,
-        deadline,
-        goalPaused,
-        presence,
-        dispatchGateAvailable: nativeGateRegistered,
-        lastWakeKey,
-        cachedStatic,
-        idleResumeAttempts,
-      },
-      sdk,
-    );
+        hasRealGoal: Boolean(realGoal && (realGoal.status === "active" || realGoal.status === "paused")),
+        hasRealDeadline: Boolean(deadline && deadlineState?.auto !== true),
+      });
+      if (autoState) {
+        pi.appendEntry(GOAL_DEADLINE_STATE_ENTRY, autoState);
+        deadline =
+          autoState.active && autoState.baselineDeadlineAt !== undefined
+            ? {
+                goalId: autoState.goalId,
+                deadlineAt: autoState.baselineDeadlineAt * 1_000,
+                timezone: autoState.timezone,
+              }
+            : undefined;
+        key = `${staticKey(phases, jobs, deadline, capacity, startableCapacity, goalPaused, restored, persistedChildren)}:${Math.floor(now / 60_000)}:${presence ?? ""}`;
+        decision = decideTodoDispatch({ ...decisionInput, deadline }, sdk);
+      }
+    }
     cachedStatic = decision.key && decision.staticPrompt ? { key: decision.key, text: decision.staticPrompt } : null;
     if (pending.length === 0 && decision.key) cachedDecision = { key, decision };
     writeCurrentPlanSnapshot(ctx, decision, now, phases);
@@ -3946,7 +4028,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const decision = currentDecision(ctx, now);
       if (isMain(ctx)) syncCriticalFast(ctx, decision, fastByWorker);
       if (isMain(ctx)) {
-        const integration = integrationRequirement(ctx, Boolean(decision.key) && !decision.goalPaused, now);
+        // Unpushed or unfinished git work needs delivery in any session, not only one with a /goal.
+        const integration = integrationRequirement(ctx, !decision.goalPaused, now);
         if (integration) return integration;
       }
       const replan = replanRequirement(ctx, decision, now);
