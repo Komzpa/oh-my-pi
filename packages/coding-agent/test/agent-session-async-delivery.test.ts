@@ -176,6 +176,50 @@ describe("AgentSession owner-routed async delivery", () => {
 		expect(recent.find(job => job.id === "proc-job")?.command).toBe(command);
 	});
 
+	it("delivers each worker result once while preserving different results", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorages.push(authStorage);
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		const manager = new AsyncJobManager({});
+		AsyncJobManager.setInstance(manager);
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+			agentId: "SubAgent",
+			asyncJobManager: manager,
+		});
+
+		const registerJob = (id: string, result: string) =>
+			manager.register("task", id, async () => result, {
+				id,
+				ownerId: "SubAgent",
+				agentId: "worker-a",
+			});
+
+		registerJob("receipt-1", "same worker result");
+		await session.settleAsyncWork();
+		const firstResultTurns = mock.calls.length;
+		expect(firstResultTurns).toBeGreaterThan(0);
+
+		registerJob("receipt-2", "same worker result");
+		await session.settleAsyncWork();
+		expect(mock.calls).toHaveLength(firstResultTurns);
+
+		registerJob("receipt-3", "new worker result");
+		await session.settleAsyncWork();
+		expect(mock.calls).toHaveLength(firstResultTurns + 1);
+	});
+
 	it("delivers a background task's whole inline report without cutting it again", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
@@ -238,50 +282,6 @@ describe("AgentSession owner-routed async delivery", () => {
 		expect(delivered).toContain(`${ending}\n</output>`);
 		expect(delivered).toContain("</task-result>");
 		expect(delivered).not.toContain("Output truncated");
-	});
-
-	it("delivers each worker result once while preserving different results", async () => {
-		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
-		const agent = new Agent({
-			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["Test"], tools: [] },
-			convertToLlm,
-			streamFn: mock.stream,
-		});
-		const authStorage = await AuthStorage.create(":memory:");
-		authStorages.push(authStorage);
-		authStorage.keys.setRuntime("anthropic", "test-key");
-		const manager = new AsyncJobManager({});
-		AsyncJobManager.setInstance(manager);
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated(),
-			modelRegistry: new ModelRegistry(authStorage),
-			agentId: "SubAgent",
-			asyncJobManager: manager,
-		});
-
-		const registerJob = (id: string, result: string) =>
-			manager.register("task", id, async () => result, {
-				id,
-				ownerId: "SubAgent",
-				agentId: "worker-a",
-			});
-
-		registerJob("receipt-1", "same worker result");
-		await session.settleAsyncWork();
-		const firstResultTurns = mock.calls.length;
-		expect(firstResultTurns).toBeGreaterThan(0);
-
-		registerJob("receipt-2", "same worker result");
-		await session.settleAsyncWork();
-		expect(mock.calls).toHaveLength(firstResultTurns);
-
-		registerJob("receipt-3", "new worker result");
-		await session.settleAsyncWork();
-		expect(mock.calls).toHaveLength(firstResultTurns + 1);
 	});
 
 	it("does not spill an incomplete background capture as full output during follow-up delivery", async () => {

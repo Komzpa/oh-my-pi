@@ -55,9 +55,9 @@ import {
 } from "../../extensibility/extensions";
 import { runExtensionCompact } from "../../extensibility/extensions/compact-handler";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
-import { parseSkillInvocation } from "../../extensibility/skills";
-import { PYTHON_KERNEL_CANCEL_BUDGET_MS } from "../../eval/py/kernel";
+import { buildSkillPromptMessage, parseSkillInvocation } from "../../extensibility/skills";
 import { sendAgentMessageFromSession } from "../../irc/messaging";
+import { PYTHON_KERNEL_CANCEL_BUDGET_MS } from "../../eval/py/kernel";
 import { MCPManager } from "../../mcp/manager";
 import { reconnectMcpManagerServer } from "../../mcp/oauth-reauth";
 import type { MCPServerConfig } from "../../mcp/types";
