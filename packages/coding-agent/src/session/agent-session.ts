@@ -1498,9 +1498,7 @@ export class AgentSession implements SettingsScope {
 		// already decided wake-intended at deferral time.
 		const records = [...this.#irc.drainDeferredWakes(), ...this.#irc.drainPending()];
 		if (records.every(record => this.#nonWakingAsides.has(record)) || this.#planModeState?.enabled) {
-			// Passive notices stay in context for the next real turn. Plan mode likewise
-			// folds stranded IRC asides into context without waking an autonomous turn;
-			// convergence to ask/resolve stays user-driven.
+			// Passive notices and plan-mode asides remain recorded without waking a turn.
 			this.#recordWithoutTurn(records);
 			return;
 		}

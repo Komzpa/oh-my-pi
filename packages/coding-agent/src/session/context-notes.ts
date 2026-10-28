@@ -3,7 +3,6 @@ import type { CustomEntry, SessionEntry } from "./session-entries";
 import contextNotesPrompt from "../prompts/system/context-notes.md" with { type: "text" };
 
 export const CONTEXT_NOTES_ENTRY_TYPE = "experimental_context_notes";
-export const MAX_CONTEXT_NOTES_BYTES = 16_384;
 
 export interface ContextNotesEntry {
 	version: 1;
@@ -28,8 +27,7 @@ function isContextNotesData(data: unknown): data is ContextNotesEntry {
 		keys.includes("version") &&
 		keys.includes("text") &&
 		candidate.version === 1 &&
-		typeof candidate.text === "string" &&
-		Buffer.byteLength(candidate.text, "utf8") <= MAX_CONTEXT_NOTES_BYTES
+		typeof candidate.text === "string"
 	);
 }
 

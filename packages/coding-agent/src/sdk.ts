@@ -2425,9 +2425,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			get cwd() {
 				return sessionManager.getCwd();
 			},
-			get costGate() {
-				return currentCostGate();
-			},
 			submitUserReply:
 				options.hasUI === true
 					? text => {
@@ -2436,6 +2433,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							});
 						}
 					: undefined,
+			get costGate() {
+				return currentCostGate();
+			},
 			isToolActive: name => activeToolNames.has(name),
 			setActiveToolNames,
 			toolRegistry,

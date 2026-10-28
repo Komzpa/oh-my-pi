@@ -176,25 +176,6 @@ function normalizeIntent(intent: unknown): string | undefined {
 	);
 }
 
-/** Job ids the async-wait working row lists before collapsing the rest to `+N`. */
-const ASYNC_WAIT_LISTED_JOBS = 3;
-
-/** Working-row text while the run only waits on background jobs; short enough for a narrow terminal. */
-function formatAsyncWaitLabel(jobIds: readonly string[]): string {
-	if (jobIds.length === 0) return "Waiting for background work";
-	if (jobIds.length === 1) return `Waiting for background job ${jobIds[0]}`;
-	const listed = jobIds.slice(0, ASYNC_WAIT_LISTED_JOBS).join(", ");
-	const more = jobIds.length > ASYNC_WAIT_LISTED_JOBS ? ` +${jobIds.length - ASYNC_WAIT_LISTED_JOBS}` : "";
-	return `Waiting for ${jobIds.length} background jobs: ${listed}${more}`;
-}
-
-/** Render args for a live card: the harness strips `i` from executed args, but the stored block keeps it. */
-function renderArgsWithIntent(args: unknown, intent: string | undefined): unknown {
-	if (intent === undefined || !isRecord(args) || INTENT_FIELD in args) return args;
-	return { ...args, [INTENT_FIELD]: intent };
-}
-
-
 const REPEATED_STATUS_TEXT = "(no change: status repeated)";
 const STATUS_SHA_PATTERN = /\b(?:0x)?[a-f\d]{7,64}\b/gi;
 const STATUS_URL_PATTERN = /\b(?:https?:\/\/|www\.)\S+/i;
@@ -243,6 +224,24 @@ function repeatsUserVisibleStatus(previous: string, current: string, workerNames
 	for (const token of currentTokens) if (previousTokens.has(token)) shared++;
 	return shared / new Set([...previousTokens, ...currentTokens]).size >= 0.8;
 }
+/** Job ids the async-wait working row lists before collapsing the rest to `+N`. */
+const ASYNC_WAIT_LISTED_JOBS = 3;
+
+/** Working-row text while the run only waits on background jobs; short enough for a narrow terminal. */
+function formatAsyncWaitLabel(jobIds: readonly string[]): string {
+	if (jobIds.length === 0) return "Waiting for background work";
+	if (jobIds.length === 1) return `Waiting for background job ${jobIds[0]}`;
+	const listed = jobIds.slice(0, ASYNC_WAIT_LISTED_JOBS).join(", ");
+	const more = jobIds.length > ASYNC_WAIT_LISTED_JOBS ? ` +${jobIds.length - ASYNC_WAIT_LISTED_JOBS}` : "";
+	return `Waiting for ${jobIds.length} background jobs: ${listed}${more}`;
+}
+
+/** Render args for a live card: the harness strips `i` from executed args, but the stored block keeps it. */
+function renderArgsWithIntent(args: unknown, intent: string | undefined): unknown {
+	if (intent === undefined || !isRecord(args) || INTENT_FIELD in args) return args;
+	return { ...args, [INTENT_FIELD]: intent };
+}
+
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
 	/** Timestamp of the current turn's user prompt; drives the usage row's prompt→yield delta. */

@@ -2289,6 +2289,9 @@ export class TurnRecovery {
 			? this.#host.modelRegistry.find(failedMessage.provider, failedMessage.model)
 			: undefined;
 		const creditTargets = failedModel ? fallbackCreditTargets(failedModel) : [];
+		// The active model is the failed request's provider, even when an error wrapper rewrites message.provider.
+		const failedProvider = this.#host.model()?.provider ?? failedMessage.provider;
+		const failedProviderIsDepleted = this.#host.modelRegistry.authStorage.health.isProviderDepleted(failedProvider);
 		// Deferring a sibling Anthropic candidate below is only worth it while
 		// another attempt on the model that signed the replayed thinking follows:
 		// the active model is that model, and the retry policy will retry it. Any
@@ -2306,9 +2309,6 @@ export class TurnRecovery {
 			!!sourceModel &&
 			sourceModel.provider === latestAssistant.provider &&
 			sourceModel.id === latestAssistant.model;
-		// The active model is the failed request's provider, even when an error wrapper rewrites message.provider.
-		const failedProvider = this.#host.model()?.provider ?? failedMessage.provider;
-		const failedProviderIsDepleted = this.#host.modelRegistry.authStorage.health.isProviderDepleted(failedProvider);
 		for (const role of this.retryFallbackChainKeys(currentSelector)) {
 			for (const selector of this.findRetryFallbackCandidates(role, currentSelector, undefined, options)) {
 				if (this.isRetryFallbackSelectorSuppressed(selector)) continue;

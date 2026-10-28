@@ -169,8 +169,10 @@ Explicit compaction modes and focused instructions retain their existing behavio
   `text`, and `"clear"` is the only way to clear it.
 - Notebook revisions are journal entries on the active branch. Only the latest
   visible revision is injected into model context, including after resume or fork.
-  A context reset clears the visible notebook. Each replacement is limited to
-  **16,384 UTF-8 bytes**; oversized writes fail without replacing the notes.
+  A context reset clears the visible notebook. Replacements preserve the complete
+  UTF-8 text without a notebook-specific byte cap. Keep the working index concise
+  with recoverable history references to control automatic context growth; saving
+  does not silently truncate or discard state.
 - `new_context` requests rollover at the next safe tool-loop boundary. Rollover
   retains complete recent tool-call/result units and the notebook without calling
   a summarization model. Near the automatic threshold, the model receives a

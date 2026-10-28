@@ -53,6 +53,7 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 	let bashExecutions: number;
 
 	const THRESHOLD = 12; // mirrors MID_RUN_NUDGE_MUTATION_THRESHOLD
+	const MAX_PER_CYCLE = 2; // mirrors MID_RUN_NUDGE_MAX_PER_CYCLE
 	const NUDGE_TYPE = "mid-run-todo-nudge";
 
 	function toolUseAssistant(toolName: string): AssistantMessage {
