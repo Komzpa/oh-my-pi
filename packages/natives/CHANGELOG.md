@@ -7,6 +7,17 @@
 ### Changed
 
 - Updated Bun engine requirement to ≥1.4.4
+### Changed
+
+- Strengthened shell sibling-cancellation regression coverage with both live child identities and a release handshake, proving the other run survives cancellation before it exits normally.
+
+### Fixed
+
+- Preserve command-output hooks, native metadata and exit markers for direct async external commands with stdin-only FIFO redirects, without marking pipelines or redirected output.
+- Avoid delivering duplicate termination signals to shell process groups and their members, allowing TERM traps to flush output and finish cleanup.
+- Isolated the BSD `date -j` no-op regression from host numeric reference files and covered existing-file precedence without changing date selection.
+- Preserve native shell argument and exported-value bytes through expansion and external launches instead of replacing non-UTF-8 bytes.
+- Preserve native values through shell predicates, case/glob/regex matching, IFS/read, parameter transforms and executable shell serialization; preserve native `which` output, backup suffixes and TZif filenames.
 
 ## [18.13.2] - 2026-10-27
 

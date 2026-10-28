@@ -21,7 +21,7 @@ pub(crate) struct EchoCommand {
 
 	/// Tokens to echo to standard output.
 	#[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-	args: Vec<String>,
+	args: Vec<std::ffi::OsString>,
 }
 
 impl builtins::Command for EchoCommand {
@@ -33,7 +33,7 @@ impl builtins::Command for EchoCommand {
 	/// lone `-`, starts the text.
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where
-		I: IntoIterator<Item = String>,
+		I: IntoIterator<Item = std::ffi::OsString>,
 	{
 		let mut this = Self {
 			no_trailing_newline:            false,
@@ -44,11 +44,11 @@ impl builtins::Command for EchoCommand {
 		// `args` starts with the command name.
 		let mut args = args.into_iter().skip(1).peekable();
 		while let Some(word) = args.next_if(|word| {
-			word.len() > 1
+			word.to_str().is_some_and(|word| word.len() > 1
 				&& word.starts_with('-')
-				&& word[1..].bytes().all(|flag| matches!(flag, b'n' | b'e' | b'E'))
+				&& word[1..].bytes().all(|flag| matches!(flag, b'n' | b'e' | b'E')))
 		}) {
-			for flag in word[1..].bytes() {
+			for flag in word.to_str().expect("option was checked above")[1..].bytes() {
 				match flag {
 					b'n' => this.no_trailing_newline = true,
 					b'e' => this.interpret_backslash_escapes = true,
@@ -65,40 +65,33 @@ impl builtins::Command for EchoCommand {
 		context: brush_core::ExecutionContext<'_, SE>,
 	) -> Result<brush_core::ExecutionResult, Self::Error> {
 		let mut trailing_newline = !self.no_trailing_newline;
-		let mut s;
-		if self.interpret_backslash_escapes {
-			s = String::new();
-			for (i, arg) in self.args.iter().enumerate() {
-				if i > 0 {
-					s.push(' ');
-				}
-
-				let (expanded_arg, keep_going) = escape::expand_backslash_escapes(
-					arg.as_str(),
-					escape::EscapeExpansionMode::EchoBuiltin,
-				)?;
-				s.push_str(&String::from_utf8_lossy(expanded_arg.as_slice()));
-
+		let mut bytes = Vec::new();
+		for (i, arg) in self.args.iter().enumerate() {
+			if i > 0 {
+				bytes.push(b' ');
+			}
+			if self.interpret_backslash_escapes {
+				let (expanded_arg, keep_going) = escape::expand_backslash_escapes_bytes(arg.as_encoded_bytes(), escape::EscapeExpansionMode::EchoBuiltin)?;
+				bytes.extend(expanded_arg);
 				if !keep_going {
 					trailing_newline = false;
 					break;
 				}
+			} else {
+				bytes.extend_from_slice(arg.as_encoded_bytes());
 			}
-		} else {
-			s = self.args.join(" ");
 		}
-
 		if trailing_newline {
-			s.push('\n');
+			bytes.push(b'\n');
 		}
-
 		let mut stdout = context.stdout();
-		stdout.write_all(s.as_bytes())?;
+		stdout.write_all(&bytes)?;
 		stdout.flush()?;
 
 		Ok(ExecutionResult::success())
 	}
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -106,12 +99,19 @@ mod tests {
 
 	use super::EchoCommand;
 
+	#[test]
+	fn escapes_preserve_invalid_utf8_and_stop_at_control_escape() {
+		let expand = |input| brush_core::escape::expand_backslash_escapes_bytes(input, brush_core::escape::EscapeExpansionMode::EchoBuiltin).unwrap();
+		assert_eq!(expand(b"a\xff\\tb\\\xff\\cignored"), (b"a\xff\tb\\\xff".to_vec(), false));
+		assert_eq!(expand(b"x\\x41\xffz"), (b"xA\xffz".to_vec(), true));
+	}
+
 	fn parse(words: &[&str]) -> (bool, bool, Vec<String>) {
 		let echo = EchoCommand::new(
-			std::iter::once("echo").chain(words.iter().copied()).map(String::from),
+			std::iter::once("echo").chain(words.iter().copied()).map(std::ffi::OsString::from),
 		)
 		.unwrap();
-		(echo.no_trailing_newline, echo.interpret_backslash_escapes, echo.args)
+		(echo.no_trailing_newline, echo.interpret_backslash_escapes, echo.args.into_iter().map(|arg| arg.into_string().unwrap()).collect())
 	}
 
 	/// Contract: bash's echo option rules — combined and repeated flags

@@ -53,7 +53,7 @@ impl Review {
 				|| shell
 					.env()
 					.iter_exported()
-					.any(|(name, _)| is_git_repo_location_var(name)),
+					.any(|(name, _)| name.to_str().is_some_and(is_git_repo_location_var)),
 		};
 		Self(match classify(sub, invocation.args) {
 			Verdict::Allow => Judgment::Allow,

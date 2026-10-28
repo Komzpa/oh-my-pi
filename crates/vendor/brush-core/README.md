@@ -36,6 +36,11 @@
 
 `brush` (**B**o(u)rn(e) **RU**sty **SH**ell) is a modern [bash-](https://www.gnu.org/software/bash/) and [POSIX-](https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html) compatible shell written in Rust. Run your existing scripts and `.bashrc` unchanged -- with syntax highlighting and auto-suggestions built in.
 
+In this fork, shell source and parser syntax are Unicode, while evaluated shell
+values, positional arguments, assignments, tilde-expanded paths, and exported
+values use native OS strings. Operations that require text check Unicode rather
+than replacing bytes.
+
 ## At a glance
 
 ✅ Your existing `.bashrc` just works—aliases, functions, completions, all of it.<br/>

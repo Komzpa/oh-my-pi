@@ -39,7 +39,7 @@ impl builtins::Command for PrintfCommand {
 				context.shell,
 				&context.params,
 				variable_name,
-				result_str,
+				result_str.into(),
 			)
 			.await?;
 		} else {

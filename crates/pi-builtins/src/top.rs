@@ -209,9 +209,12 @@ impl builtins::Command for TopCommand {
 
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where
-		I: IntoIterator<Item = String>,
+		I: IntoIterator<Item = std::ffi::OsString>,
 	{
-		Self::try_parse_from(args.into_iter().map(normalize_top_flag))
+		Self::try_parse_from(args.into_iter().map(|arg| match arg.into_string() {
+			Ok(arg) => std::ffi::OsString::from(normalize_top_flag(arg)),
+			Err(arg) => arg,
+		}))
 	}
 
 	fn execute<SE: brush_core::ShellExtensions>(
@@ -579,7 +582,7 @@ mod tests {
 		let cmd = TopCommand::new(
 			["top", "-pid", "56943,101", "-stats", "pid,cpu,th,mem,pstate"]
 				.into_iter()
-				.map(String::from),
+				.map(std::ffi::OsString::from),
 		)
 		.expect("macOS-style flags must parse");
 		assert_eq!(cmd.pids, vec![56943, 101]);

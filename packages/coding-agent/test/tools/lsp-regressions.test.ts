@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as backgroundPriority from "@oh-my-pi/pi-utils/background-priority";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
@@ -3004,7 +3005,9 @@ describe("lsp regressions", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-go-work-only-");
 		const spawnCalls: BunSpawnCall[] = [];
 		recordBunSpawn(spawnCalls, cmd => {
-			if (cmd.join("\0") === "go\0work\0edit\0-json") {
+			const prefix = backgroundPriority.backgroundCommand([]).length;
+			const payloadCmd = cmd.slice(prefix);
+			if (payloadCmd.join("\0") === "go\0work\0edit\0-json") {
 				return { stdout: JSON.stringify({ Use: [{ DiskPath: "./service" }] }) };
 			}
 			return {};
@@ -3022,9 +3025,12 @@ describe("lsp regressions", () => {
 				file: "*",
 			});
 
-			const buildCalls = spawnCalls.filter(call => call.cmd[0] === "go" && call.cmd[1] === "build");
+			const payloadPrefix = backgroundPriority.backgroundCommand([]).length;
+			const buildCalls = spawnCalls.filter(
+				call => call.cmd[payloadPrefix] === "go" && call.cmd[payloadPrefix + 1] === "build",
+			);
 			expect(buildCalls).toHaveLength(1);
-			expect(buildCalls[0]?.cmd).toEqual(["go", "build", "./service/..."]);
+			expect(buildCalls[0]?.cmd.slice(payloadPrefix)).toEqual(["go", "build", "./service/..."]);
 			expect(buildCalls[0]?.options?.cwd).toBe(tempDir.path());
 			const output = textResult(result);
 			expect(output).toContain("Workspace diagnostics (");
@@ -3040,7 +3046,9 @@ describe("lsp regressions", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-go-work-before-mod-");
 		const spawnCalls: BunSpawnCall[] = [];
 		recordBunSpawn(spawnCalls, cmd => {
-			if (cmd.join("\0") === "go\0work\0edit\0-json") {
+			const payloadPrefix = backgroundPriority.backgroundCommand([]).length;
+			const payloadCmd = cmd.slice(payloadPrefix);
+			if (payloadCmd.join("\0") === "go\0work\0edit\0-json") {
 				return {
 					stdout: JSON.stringify({
 						Use: [{ DiskPath: "." }, { DiskPath: "./service" }, { DiskPath: "./tools/helper" }],
@@ -3069,10 +3077,16 @@ describe("lsp regressions", () => {
 				file: "*",
 			});
 
-			const buildCalls = spawnCalls.filter(call => call.cmd[0] === "go" && call.cmd[1] === "build");
+			const payloadPrefix = backgroundPriority.backgroundCommand([]).length;
+			const buildCalls = spawnCalls.filter(
+				call => call.cmd[payloadPrefix] === "go" && call.cmd[payloadPrefix + 1] === "build",
+			);
 			expect(buildCalls).toHaveLength(1);
-			expect(buildCalls[0]?.cmd.slice(0, 2)).toEqual(["go", "build"]);
-			expect(buildCalls[0]?.cmd.slice(2).sort()).toEqual(["./...", "./service/...", "./tools/helper/..."]);
+			expect(buildCalls[0]?.cmd.slice(payloadPrefix + 2).sort()).toEqual([
+				"./...",
+				"./service/...",
+				"./tools/helper/...",
+			]);
 			expect(textResult(result)).toContain("Workspace diagnostics (");
 			expect(textResult(result)).toContain("go build");
 		} finally {

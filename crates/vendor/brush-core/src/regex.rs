@@ -1,6 +1,6 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use std::{borrow::Cow, cell::RefCell};
+use std::{borrow::Cow, cell::RefCell, ffi::{OsStr, OsString}};
 
 use cached::Cached;
 
@@ -37,15 +37,82 @@ pub struct Regex {
 	pieces:           RegexWord,
 	case_insensitive: bool,
 	multiline:        bool,
+	native_pieces: Option<Vec<(OsString, bool)>>,
 }
 
 impl From<RegexWord> for Regex {
 	fn from(pieces: RegexWord) -> Self {
-		Self { pieces, case_insensitive: false, multiline: false }
+		Self { pieces, case_insensitive: false, multiline: false, native_pieces: None }
 	}
 }
 
 impl Regex {
+	pub(crate) fn from_native_pieces(pieces: Vec<(OsString, bool)>) -> Self {
+		if pieces.iter().all(|(s, _)| s.to_str().is_some()) {
+			return Self::from(pieces.into_iter().map(|(s, literal)| {
+				let s = s.into_string().expect("validated Unicode regex");
+				if literal { RegexPiece::Literal(s) } else { RegexPiece::Pattern(s) }
+			}).collect::<Vec<_>>());
+		}
+		Self { pieces: Vec::new(), case_insensitive: false, multiline: false, native_pieces: Some(pieces) }
+	}
+
+	/// Matches the shell's native byte subject and returns native capture values.
+	pub(crate) fn matches_os(&self, value: &OsStr) -> Result<Option<Vec<Option<OsString>>>, error::Error> {
+		if self.native_pieces.is_none() && let Some(value) = value.to_str() {
+			return Ok(self.matches(value)?.map(|captures| captures.into_iter().map(|c| c.map(Into::into)).collect()));
+		}
+		#[cfg(unix)]
+		{
+			use std::os::unix::ffi::OsStringExt;
+			let pieces: Vec<(&OsStr, bool)> = match &self.native_pieces {
+				Some(pieces) => pieces.iter().map(|(s, literal)| (s.as_os_str(), *literal)).collect(),
+				None => self.pieces.iter().map(|p| match p { RegexPiece::Pattern(s) => (OsStr::new(s), false), RegexPiece::Literal(s) => (OsStr::new(s), true) }).collect(),
+			};
+			let mut pattern = Vec::new();
+			for (piece, literal) in pieces {
+				for &byte in piece.as_encoded_bytes() {
+					if literal && matches!(byte, b'\\' | b'^' | b'$' | b'.' | b'|' | b'?' | b'*' | b'+' | b'(' | b')' | b'[' | b']' | b'{' | b'}') { pattern.push(b'\\'); }
+					pattern.push(byte);
+				}
+			}
+			let mut capture_count = 1;
+			let mut escaped = false;
+			let mut in_class = false;
+			for &byte in &pattern {
+				if escaped { escaped = false; continue; }
+				match byte {
+					b'\\' => escaped = true,
+					b'[' if !in_class => in_class = true,
+					b']' if in_class => in_class = false,
+					b'(' if !in_class => capture_count += 1,
+					_ => {},
+				}
+			}
+			let pattern = std::ffi::CString::new(pattern).map_err(|e| error::ErrorKind::InternalError(e.to_string()))?;
+			let subject = std::ffi::CString::new(value.as_encoded_bytes()).map_err(|e| error::ErrorKind::InternalError(e.to_string()))?;
+			let mut compiled = std::mem::MaybeUninit::<libc::regex_t>::uninit();
+			let flags = libc::REG_EXTENDED | if self.case_insensitive { libc::REG_ICASE } else { 0 };
+			// SAFETY: regcomp initializes the regex on success; pattern is NUL-terminated.
+			let status = unsafe { libc::regcomp(compiled.as_mut_ptr(), pattern.as_ptr(), flags) };
+			if status != 0 { return Err(error::ErrorKind::InternalError(format!("invalid native regular expression (regcomp {status})")).into()); }
+			struct Compiled(libc::regex_t);
+			impl Drop for Compiled { fn drop(&mut self) { unsafe { libc::regfree(&mut self.0) }; } }
+			// SAFETY: successful regcomp initialized the object, owned by the RAII guard.
+			let compiled = Compiled(unsafe { compiled.assume_init() });
+			let mut captures = vec![libc::regmatch_t { rm_so: -1, rm_eo: -1 }; capture_count];
+			// SAFETY: subject and capture buffer are live, correctly sized, and initialized.
+			let status = unsafe { libc::regexec(&compiled.0, subject.as_ptr(), captures.len(), captures.as_mut_ptr(), 0) };
+			if status == libc::REG_NOMATCH { return Ok(None); }
+			if status != 0 { return Err(error::ErrorKind::InternalError(format!("native regex execution failed ({status})")).into()); }
+			return Ok(Some(captures.into_iter().map(|capture| {
+				(capture.rm_so >= 0).then(|| OsString::from_vec(value.as_encoded_bytes()[capture.rm_so as usize..capture.rm_eo as usize].to_vec()))
+			}).collect()));
+		}
+		#[cfg(not(unix))]
+		Err(error::ErrorKind::InternalError("native regular expression is not valid Unicode".into()).into())
+	}
+
 	/// Sets the regular expression's case sensitivity.
 	///
 	/// # Arguments

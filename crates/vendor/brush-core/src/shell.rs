@@ -116,7 +116,7 @@ pub struct Shell<SE: extensions::ShellExtensions = extensions::DefaultShellExten
 	name: Option<String>,
 
 	/// Positional shell arguments (not including shell name).
-	args: Vec<String>,
+	args: Vec<std::ffi::OsString>,
 
 	/// Shell version
 	version: Option<String>,
@@ -345,7 +345,7 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
 	/// The update is applied in-place so that attributes on `_` (notably
 	/// `readonly`) are preserved: attempting to update a readonly `_` is a
 	/// silent no-op, matching bash's observable stdout behavior.
-	pub(crate) fn update_last_arg_variable(&mut self, last_arg: Option<String>) {
+	pub(crate) fn update_last_arg_variable(&mut self, last_arg: Option<std::ffi::OsString>) {
 		// Bash refuses to update a readonly `_`, emitting an error to stderr
 		// on each attempt. We silently skip the update here — the observable
 		// stdout effect ($_ stays unchanged) matches bash; the missing stderr

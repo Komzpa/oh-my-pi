@@ -27,7 +27,7 @@ import { getApprovalGrants } from "../../tools/approval-cache";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import { withFileMutationSession } from "../../tools/file-write-fallback";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
-import { applyToolProxy } from "../tool-proxy";
+import { applyToolProxy, withDeferredToolResultAcceptance } from "../tool-proxy";
 import type { ExtensionRunner } from "./runner";
 import type { ExtensionAgentIdentity, RegisteredTool, ToolCallEventResult } from "./types";
 
@@ -232,6 +232,18 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 	}
 
 	async execute(
+		toolCallId: string,
+		params: Static<TParameters>,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<TDetails, TParameters>,
+		context?: AgentToolContext,
+	): Promise<AgentToolResult<TDetails, TParameters>> {
+		return withDeferredToolResultAcceptance(this.tool, toolCallId, () =>
+			this.#execute(toolCallId, params, signal, onUpdate, context),
+		);
+	}
+
+	async #execute(
 		toolCallId: string,
 		params: Static<TParameters>,
 		signal?: AbortSignal,

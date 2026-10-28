@@ -13,7 +13,7 @@ use brush_core::{
 };
 use clap::Parser;
 
-use crate::host::quote_arg;
+use crate::host::quote_os_arg;
 
 /// Runs an operand with the process-group policy required by `nohup`.
 #[derive(Parser)]
@@ -26,7 +26,7 @@ pub(crate) struct NohupCommand {
 	#[clap(skip)]
 	version: bool,
 	#[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
-	command: Vec<String>,
+	command: Vec<std::ffi::OsString>,
 }
 
 impl NohupCommand {
@@ -34,8 +34,8 @@ impl NohupCommand {
 	/// `--help`/`--version` are recognized only as the first argument, and a
 	/// single leading `--` ends option processing, so `nohup -- --help` runs
 	/// a command named `--help` and `nohup -- --` runs one named `--`.
-	fn from_argv(mut argv: Vec<String>) -> Self {
-		match argv.first().map(String::as_str) {
+	fn from_argv(mut argv: Vec<std::ffi::OsString>) -> Self {
+		match argv.first().and_then(|arg| arg.to_str()) {
 			Some("--help") => {
 				return Self { help: true, version: false, command: Vec::new() };
 			},
@@ -59,7 +59,7 @@ impl builtins::Command for NohupCommand {
 	/// `nohup --help` (help) and `nohup -- --help` (run `--help`).
 	fn new<I>(args: I) -> std::result::Result<Self, clap::Error>
 	where
-		I: IntoIterator<Item = String>,
+		I: IntoIterator<Item = std::ffi::OsString>,
 	{
 		// The first element is the command name itself.
 		Ok(Self::from_argv(args.into_iter().skip(1).collect()))
@@ -126,13 +126,13 @@ fn report_missing_operand(mut stderr: impl Write) -> ExecutionResult {
 	ExecutionResult::new(125)
 }
 
-fn rebuild_command_line(command: &[String]) -> String {
+fn rebuild_command_line(command: &[std::ffi::OsString]) -> String {
 	let mut command_line = String::new();
 	for (idx, arg) in command.iter().enumerate() {
 		if idx > 0 {
 			command_line.push(' ');
 		}
-		command_line.push_str(&quote_arg(arg));
+		command_line.push_str(&quote_os_arg(arg));
 	}
 	command_line
 }
@@ -142,7 +142,7 @@ mod tests {
 	use super::{NohupCommand, rebuild_command_line, report_missing_operand};
 
 	fn parsed(argv: &[&str]) -> NohupCommand {
-		NohupCommand::from_argv(argv.iter().map(ToString::to_string).collect())
+		NohupCommand::from_argv(argv.iter().map(std::ffi::OsString::from).collect())
 	}
 
 	/// `nohup -- cmd args` must run `cmd`; the leading `--` is an option
@@ -186,7 +186,7 @@ mod tests {
 	fn new_skips_command_name() {
 		use brush_core::builtins::Command as _;
 
-		let cmd = NohupCommand::new(["nohup", "--", "sleep", "1"].map(String::from))
+		let cmd = NohupCommand::new(["nohup", "--", "sleep", "1"].map(std::ffi::OsString::from))
 			.expect("nohup argv parsing is infallible");
 		assert_eq!(cmd.command, ["sleep", "1"]);
 	}
@@ -203,11 +203,11 @@ mod tests {
 	#[test]
 	fn rebuilds_command_line_with_shell_quoting() {
 		let command = [
-			"printf".to_string(),
-			"%s %s".to_string(),
-			"two words".to_string(),
-			"it's".to_string(),
-			String::new(),
+			std::ffi::OsString::from("printf"),
+			std::ffi::OsString::from("%s %s"),
+			std::ffi::OsString::from("two words"),
+			std::ffi::OsString::from("it's"),
+			std::ffi::OsString::new(),
 		];
 
 		assert_eq!(

@@ -22,11 +22,11 @@ impl builtins::Command for TestCommand {
 	/// resolved
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where
-		I: IntoIterator<Item = String>,
+		I: IntoIterator<Item = std::ffi::OsString>,
 	{
 		let (mut this, rest_args) = brush_core::builtins::try_parse_known::<Self>(args)?;
 		if let Some(args) = rest_args {
-			this.args.extend(args);
+			this.args.extend(args.map(|arg| arg.into_string().map_err(|_| clap::Error::raw(clap::error::ErrorKind::InvalidUtf8, "test argument is not valid UTF-8"))).collect::<Result<Vec<_>, _>>()?);
 		}
 		Ok(this)
 	}

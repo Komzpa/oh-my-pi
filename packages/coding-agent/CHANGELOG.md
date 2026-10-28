@@ -42,6 +42,15 @@
 - The plan review's edit button in Tern names your editor ("Edit in Notepad", "Edit in nvim") instead of "Edit in $EDITOR"
 - Fixed `/tan` clones ending without a final answer when they call `ask`; the clone now keeps running and the parent receives its final answer instead of an empty result ([#17223](https://github.com/can1357/oh-my-pi/pull/17223) by [@trukhinyuri](https://github.com/trukhinyuri))
 - Fixed GitHub `/review` diff links keeping the snapshot that built the request after the cached diff refreshes in the background, instead of opening whatever file now sits at the same index ([#16310](https://github.com/can1357/oh-my-pi/pull/16310) by [@tkossak](https://github.com/tkossak))
+### Fixed
+
+- Spawned browser applications remain in their transcript's native scope on Linux instead of Chrome moving itself into the user manager's app slice; borrowed browsers are unchanged.
+
+- Session release now reports creation failures from launches already admitted when release began, while retaining failed daemon history without poisoning later releases.
+
+- Disposed sessions release CPU-monitor callbacks even when stopping their systemd slice fails; failed-stop markers and exit cleanup backstops remain armed without retaining the session or its settings
+- Terminal yields accept only one result per monitored run, including eval-bridged submissions; continuations re-arm the result slot, refused submissions do not complete the run, and warned abandonment of running owner jobs remains visible in the parent receipt
+- A stdio MCP server whose command is missing or exits during startup now reports its exit code and the first 4 KiB of its stderr instead of a bare `EPIPE` or "closed stdout"; a request the server already received is still never replayed
 
 ## [18.13.2] - 2026-10-27
 
@@ -115,6 +124,7 @@
 - JavaScript eval workers no longer block the JS event loop on first-use systemd scope setup: the scoped worker subprocess is created through the async `ToolResourceScope` boundary before `Bun.spawn`
 - Scoped kernels and workers no longer fail when the session `systemd-run` shim is first on PATH but the payload's complete spawn environment does not carry `OMP_SYSTEMD_RUN_REAL`: native scope launches exec the real manager binary directly
 - Masked desktop-session runtime dirs for Python eval kernels are now keyed by the session id instead of the cwd path: subagents sharing a cwd (or cwd paths sharing a 64-character sanitized prefix) no longer share one `XDG_RUNTIME_DIR`
+
 - Fixed `--resume <file|id>`, `--continue`, `SessionManager.continueRecent()`, the resume pickers and RPC `open_session` reviving an old copy of a conversation that had continued in a new file because omp could not keep writing the original (another omp process held it, or the file changed under it); resume now opens the copy with the newest turn, unless the original has turns of its own that copy lacks (for `--resume`, the pickers, and `--continue` or auto-resume of the terminal's last session), and says which file it picked; `--continue` and auto-resume without a record of the terminal's last session, and RPC `open_session`, take the copy with the newest turn among all linked copies, whichever one was written last. Copies saved before this fix are not linked and still resume as before ([#17159](https://github.com/can1357/oh-my-pi/pull/17159) by [@sjawhar](https://github.com/sjawhar))
 - Fixed a `retry.fallbackChains` entry naming another Claude model being skipped while the latest Claude turn carries signed thinking: the chain now moves to that entry when the failure is on another model, is not retried (an account-policy denial, a non-retryable error, or a wait past `retry.maxDelayMs`), or has spent its retries ([#17115](https://github.com/can1357/oh-my-pi/pull/17115) by [@sjawhar](https://github.com/sjawhar))
 - Anthropic composer predictions now cache the persisted conversation prefix; `/btw` follow-ups reuse stable topic history without caching regenerated image descriptions ([#17186](https://github.com/can1357/oh-my-pi/issues/17186))

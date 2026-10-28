@@ -14,15 +14,15 @@ impl AsyncPipeReader {
 		Ok(Self { inner: Some(fd) })
 	}
 
-	pub(crate) async fn read_to_string(&mut self) -> io::Result<String> {
+	pub(crate) async fn read_to_end(&mut self) -> io::Result<Vec<u8>> {
 		let Some(reader) = self.inner.take() else {
-			return Ok(String::new());
+			return Ok(Vec::new());
 		};
 
 		tokio::task::spawn_blocking(move || {
-			let mut s = String::new();
-			{ reader }.read_to_string(&mut s)?;
-			Ok(s)
+			let mut bytes = Vec::new();
+			{ reader }.read_to_end(&mut bytes)?;
+			Ok(bytes)
 		})
 		.await
 		.map_err(io::Error::other)?

@@ -66,7 +66,7 @@ impl builtins::Command for ExecCommand {
 		let mut cmd = commands::compose_std_command(
 			&context,
 			&self.args[0],
-			argv0.as_ref(),
+			std::ffi::OsStr::new(argv0.as_ref()),
 			&self.args[1..],
 			self.empty_environment,
 		)
@@ -104,7 +104,7 @@ impl ExecCommand {
 		let mut cmd = commands::compose_std_command(
 			&context,
 			&self.args[0],
-			argv0.as_ref(),
+			std::ffi::OsStr::new(argv0.as_ref()),
 			&self.args[1..],
 			self.empty_environment,
 		)

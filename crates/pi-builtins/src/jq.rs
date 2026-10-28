@@ -1474,17 +1474,19 @@ struct Session {
 }
 
 impl Session {
-	fn new(host: &Host) -> Self {
-		let env = host
-			.env()
-			.map(|(key, value)| (Val::from(key.to_owned()), Val::from(value.to_owned())));
-		Self {
-			env:            Val::obj(env.collect()),
+	fn new(host: &Host) -> io::Result<Self> {
+		let env = host.env().map(|(key, value)| {
+			let key = key.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "environment variable name is not valid UTF-8"))?;
+			let value = value.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("environment variable {key} is not valid UTF-8")))?;
+			Ok((Val::from(key.to_owned()), Val::from(value.to_owned())))
+		}).collect::<io::Result<_>>()?;
+		Ok(Self {
+			env:            Val::obj(env),
 			stderr:         RefCell::new(host.stderr_clone()),
 			cancel:         host.cancel_flag(),
 			reported_error: host.reported_error_flag(),
 			input:          read::Position::default(),
-		}
+		})
 	}
 
 	fn cancelled(&self) -> bool {
@@ -1528,7 +1530,7 @@ fn real_main(
 	color: bool,
 ) -> Result<i32, Error> {
 	let fs = host.fs().clone();
-	let session = Session::new(host);
+	let session = Session::new(host)?;
 	if let Some(test_files) = &cli.run_tests {
 		return Ok(match test_files.last() {
 			Some(file) => {

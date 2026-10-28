@@ -470,7 +470,7 @@ impl Run<'_> {
 		} else {
 			env = initial
 				.iter()
-				.map(|(name, value)| entry(name, value))
+				.map(|(name, value)| entry(name.as_encoded_bytes(), value.as_encoded_bytes()))
 				.collect();
 			if let Some(file) = &env0_from {
 				self.merge_env_file(&mut env, file)?;
@@ -609,8 +609,8 @@ impl Run<'_> {
 
 	/// The exported environment `env` starts from, in name order: the shell
 	/// keeps no `environ` order to preserve.
-	fn initial_environment(&self) -> Vec<(String, String)> {
-		let mut initial: Vec<(String, String)> = self
+	fn initial_environment(&self) -> Vec<(OsString, OsString)> {
+		let mut initial: Vec<(OsString, OsString)> = self
 			.host
 			.env()
 			.map(|(name, value)| (name.to_owned(), value.to_owned()))
@@ -760,11 +760,11 @@ impl Run<'_> {
 						return Err(self.die(&message));
 					};
 					let name = String::from_utf8_lossy(name).into_owned();
-					match self.host.var(&name).map(str::to_owned) {
+					match self.host.var_os(&name).map(|value| os_bytes_lossy(value).into_owned()) {
 						Some(value) => {
 							start_arg(&mut args, &mut sep);
-							self.vmsg(&format!("expanding ${{{name}}} into {}\n", value.quote()));
-							args.last_mut().expect("started").extend(value.as_bytes());
+							self.vmsg(&format!("expanding ${{{name}}} into {}\n", quote(&value)));
+							args.last_mut().expect("started").extend(value);
 						},
 						None => self.vmsg(&format!("replacing ${{{name}}} with empty string\n")),
 					}
@@ -1102,18 +1102,18 @@ impl Run<'_> {
 /// several with one name the first counts, as `getenv` finds it.
 fn environment_changes(
 	mut command: ShellCommand,
-	initial: &[(String, String)],
+	initial: &[(OsString, OsString)],
 	env: &[Vec<u8>],
 	cleared: bool,
 ) -> ShellCommand {
-	let mut wanted: Vec<(String, String)> = Vec::with_capacity(env.len());
+	let mut wanted: Vec<(OsString, OsString)> = Vec::with_capacity(env.len());
 	for entry in env {
 		let Some(eq) = memchr::memchr(b'=', entry) else {
 			continue;
 		};
-		let name = String::from_utf8_lossy(&entry[..eq]).into_owned();
+		let name = os_string(&entry[..eq]);
 		if wanted.iter().all(|(seen, _)| *seen != name) {
-			wanted.push((name, String::from_utf8_lossy(&entry[eq + 1..]).into_owned()));
+			wanted.push((name, os_string(&entry[eq + 1..])));
 		}
 	}
 	if cleared {
@@ -1123,22 +1123,22 @@ fn environment_changes(
 		}
 		return command;
 	}
-	let wanted_values: HashMap<&str, &str> = wanted
+	let wanted_values: HashMap<&std::ffi::OsStr, &std::ffi::OsStr> = wanted
 		.iter()
-		.map(|(name, value)| (name.as_str(), value.as_str()))
+		.map(|(name, value)| (name.as_os_str(), value.as_os_str()))
 		.collect();
 	for (name, _) in initial {
-		if !wanted_values.contains_key(name.as_str()) {
-			command = command.env_remove(name.as_str());
+		if !wanted_values.contains_key(name.as_os_str()) {
+			command = command.env_remove(name.as_os_str());
 		}
 	}
-	let initial: HashMap<&str, &str> = initial
+	let initial: HashMap<&std::ffi::OsStr, &std::ffi::OsStr> = initial
 		.iter()
-		.map(|(name, value)| (name.as_str(), value.as_str()))
+		.map(|(name, value)| (name.as_os_str(), value.as_os_str()))
 		.collect();
 	for (name, value) in &wanted {
-		if initial.get(name.as_str()) != Some(&value.as_str()) {
-			command = command.env(name.as_str(), value.as_str());
+		if initial.get(name.as_os_str()) != Some(&value.as_os_str()) {
+			command = command.env(name.as_os_str(), value.clone());
 		}
 	}
 	command
@@ -1152,7 +1152,7 @@ fn keep_directory_variables(mut command: ShellCommand, env: &[Vec<u8>]) -> Shell
 			.find(|entry| entry_name(entry) == Some(name.as_bytes()))
 		{
 			Some(entry) => {
-				let value = String::from_utf8_lossy(&entry[name.len() + 1..]).into_owned();
+				let value = os_string(&entry[name.len() + 1..]);
 				command = command.env(name, value);
 			},
 			None => command = command.env_remove(name),
@@ -1162,11 +1162,11 @@ fn keep_directory_variables(mut command: ShellCommand, env: &[Vec<u8>]) -> Shell
 }
 
 /// `NAME=VALUE` as an environment entry.
-fn entry(name: &str, value: &str) -> Vec<u8> {
+fn entry(name: &[u8], value: &[u8]) -> Vec<u8> {
 	let mut entry = Vec::with_capacity(name.len() + value.len() + 1);
-	entry.extend(name.as_bytes());
+	entry.extend(name);
 	entry.push(b'=');
-	entry.extend(value.as_bytes());
+	entry.extend(value);
 	entry
 }
 

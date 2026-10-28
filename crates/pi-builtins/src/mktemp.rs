@@ -295,7 +295,7 @@ impl Utility for Mktemp {
 
 		// Under POSIXLY_CORRECT the template must be the last argument. Clap's
 		// occurrence indices preserve that ordering after short-option expansion.
-		if host.var("POSIXLY_CORRECT").is_some()
+		if host.var_os("POSIXLY_CORRECT").is_some()
 			&& self.matches.contains_id(ARG_TEMPLATE)
 			&& !template_is_last(&self.matches)
 		{

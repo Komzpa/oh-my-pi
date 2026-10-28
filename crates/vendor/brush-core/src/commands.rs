@@ -115,20 +115,41 @@ impl<SE: ShellExtensions> ExecutionContext<'_, SE> {
 	}
 }
 
+/// An evaluated declaration assignment, distinct from parser source words.
+#[derive(Clone, Debug)]
+pub struct ExpandedAssignment {
+	/// The expanded variable name.
+	pub name: String,
+	/// The expanded array index, if present.
+	pub index: Option<OsString>,
+	/// The evaluated value.
+	pub value: variables::ShellValueLiteral,
+	/// Whether this assignment appends.
+	pub append: bool,
+}
+
+impl Display for ExpandedAssignment {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{}", self.name)?;
+		if let Some(index) = &self.index { write!(f, "[{index:?}]")?; }
+		write!(f, "{}={}", if self.append { "+" } else { "" }, self.value)
+	}
+}
+
 /// An argument to a command.
 #[derive(Clone, Debug)]
 pub enum CommandArg {
 	/// A simple string argument.
-	String(String),
+	String(OsString),
 	/// An assignment/declaration; typically treated as a string, but will
 	/// be specially handled by a limited set of built-in commands.
-	Assignment(ast::Assignment),
+	Assignment(ExpandedAssignment),
 }
 
 impl Display for CommandArg {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
-			Self::String(s) => f.write_str(s),
+			Self::String(s) => match s.to_str() { Some(s) => f.write_str(s), None => write!(f, "{s:?}") },
 			Self::Assignment(a) => write!(f, "{a}"),
 		}
 	}
@@ -136,22 +157,53 @@ impl Display for CommandArg {
 
 impl From<String> for CommandArg {
 	fn from(s: String) -> Self {
-		Self::String(s)
+		Self::String(s.into())
 	}
 }
 
 impl From<&String> for CommandArg {
 	fn from(value: &String) -> Self {
-		Self::String(value.clone())
+		Self::String(value.into())
 	}
 }
 
+impl From<OsString> for CommandArg {
+	fn from(value: OsString) -> Self { Self::String(value) }
+}
+
+
 impl CommandArg {
+	/// Returns the evaluated argument without converting it through Unicode.
+	pub fn into_os_string(self) -> OsString {
+		match self {
+			Self::String(s) => s,
+			Self::Assignment(a) => {
+				let mut result = OsString::from(a.name);
+				if let Some(index) = a.index { result.push("["); result.push(index); result.push("]"); }
+				result.push(if a.append { "+=" } else { "=" });
+				match a.value {
+					variables::ShellValueLiteral::Scalar(value) => result.push(value),
+					variables::ShellValueLiteral::Array(values) => {
+						result.push("(");
+						for (i, (key, value)) in values.0.into_iter().enumerate() {
+							if i > 0 { result.push(" "); }
+							if let Some(key) = key { result.push("["); result.push(key); result.push("]="); }
+							result.push(value);
+						}
+						result.push(")");
+					},
+				}
+				result
+			},
+		}
+	}
+
 	pub(crate) fn quote_for_tracing(&self) -> Cow<'_, str> {
 		match self {
-			Self::String(s) => escape::quote_if_needed(s, escape::QuoteMode::SingleQuote),
+			Self::String(s) => match s.to_str() { Some(s) => escape::quote_if_needed(s, escape::QuoteMode::SingleQuote), None => format!("{s:?}").into() },
 			Self::Assignment(a) => {
-				let mut s = a.name.to_string();
+				let mut s = a.name.clone();
+				if let Some(index) = &a.index { s.push_str(&format!("[{index:?}]")); }
 				let op = if a.append { "+=" } else { "=" };
 				s.push_str(op);
 				s.push_str(&escape::quote_if_needed(
@@ -293,8 +345,8 @@ fn is_url_root(text: &str) -> bool {
 #[allow(unused_variables, reason = "argv0 is only used on unix platforms")]
 pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtensions>(
 	context: &ExecutionContext<'_, SE>,
-	command_name: &str,
-	argv0: &str,
+	command_name: impl AsRef<OsStr>,
+	argv0: &OsStr,
 	args: &[S],
 	empty_env: bool,
 ) -> Result<std::process::Command, error::Error> {
@@ -338,8 +390,9 @@ pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtension
 			.into());
 		},
 	};
+	let command_name = command_name.as_ref();
 	let mut program = PathBuf::from(command_name);
-	if sys::fs::contains_path_separator(command_name) {
+	if sys::fs::contains_path_separator(&command_name.to_string_lossy()) {
 		let spelled = context.shell.absolute_path(Path::new(command_name));
 		if !filesystem.is_native_local(&spelled) {
 			program = host_path(filesystem, &spelled)
@@ -364,7 +417,7 @@ pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtension
 			// that are set (i.e., have a value). This means a variable that
 			// shows up in `declare -p` but has no *set* value will be omitted.
 			if v.value().is_set() {
-				command_env.push((k.as_str().into(), v.value().to_cow_str(context.shell).as_ref().into()));
+				command_env.push((k.clone(), v.value().to_cow_os(context.shell).into_owned()));
 			}
 		}
 		// A child started in the directory a URL aliases must not be told its
@@ -400,7 +453,7 @@ pub async fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtension
 			.map(|wrapper| {
 				wrapper.wrap_external_command(
 					program.as_os_str(),
-					OsStr::new(argv0),
+					argv0,
 					&command_args,
 					&command_env,
 				)
@@ -501,7 +554,7 @@ pub(crate) async fn on_preexecute(
 	let full_cmd = cmd.args.iter().map(|arg| arg.to_string()).join(" ");
 	cmd.shell.env_mut().update_or_add(
 		"BASH_COMMAND",
-		variables::ShellValueLiteral::Scalar(full_cmd),
+		variables::ShellValueLiteral::Scalar(full_cmd.into()),
 		|_| Ok(()),
 		env::EnvironmentLookup::Anywhere,
 		env::EnvironmentScope::Global,
@@ -527,7 +580,7 @@ pub struct SimpleCommand<'a, SE: extensions::ShellExtensions> {
 	pub params: ExecutionParameters,
 
 	/// The name of the command to execute.
-	pub command_name: String,
+	pub command_name: OsString,
 
 	/// The arguments to the command, including the command itself.
 	pub args: Vec<CommandArg>,
@@ -548,7 +601,7 @@ pub struct SimpleCommand<'a, SE: extensions::ShellExtensions> {
 
 	/// Optional override for the `argv[0]` value presented to an externally
 	/// spawned process. When `None`, `command_name` is used.
-	pub argv0: Option<String>,
+	pub argv0: Option<OsString>,
 
 	/// Optionally provides a function that can run after execution occurs. Note
 	/// that it is *not* invoked if the shell is discarded during the execution
@@ -569,7 +622,7 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 	pub const fn new(
 		shell: ShellForCommand<'a, SE>,
 		params: ExecutionParameters,
-		command_name: String,
+		command_name: OsString,
 		args: Vec<CommandArg>,
 	) -> Self {
 		Self {
@@ -594,7 +647,7 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 	#[allow(clippy::missing_panics_doc, reason = "these unwrap calls should not panic")]
 	pub async fn execute(mut self) -> Result<ExecutionSpawnResult, error::Error> {
 		// First see if it's the name of a builtin.
-		let builtin = self.shell.builtins().get(&self.command_name).cloned();
+		let builtin = self.command_name.to_str().and_then(|name| self.shell.builtins().get(name)).cloned();
 
 		// If we're in POSIX mode and found a special builtin (that's not disabled),
 		// then invoke it without considering functions.
@@ -611,8 +664,8 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 		// Assuming we weren't requested not to do so, check if it's the name of
 		// a shell function.
 		if self.use_functions {
-			if let Some(func_registration) =
-				self.shell.funcs().get(self.command_name.as_str()).cloned()
+			if let Some(func_registration) = self.command_name.to_str()
+				.and_then(|name| self.shell.funcs().get(name)).cloned()
 			{
 				return self.execute_via_function(func_registration).await;
 			}
@@ -628,7 +681,7 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 
 		// We still haven't found a command to invoke. We'll need to look for an
 		// external command.
-		if !sys::fs::contains_path_separator(&self.command_name) {
+		if !self.command_name.as_encoded_bytes().iter().any(|b| *b == b'/' || (cfg!(windows) && *b == b'\\')) {
 			// All else failed; if we were given path directories to search, try to look
 			// through them for a matching executable. Otherwise, use our default search
 			// logic.
@@ -639,11 +692,11 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 					Path::new(&self.command_name),
 				)
 				.await
+			} else if let Some(name) = self.command_name.to_str() {
+				self.shell.find_first_executable_in_path_using_cache(name).await
 			} else {
-				self
-					.shell
-					.find_first_executable_in_path_using_cache(&self.command_name)
-					.await
+				let path = self.shell.env_os("PATH").unwrap_or_default();
+				pathsearch::find_executable(self.shell.filesystem(), sys::fs::split_paths(&path), Path::new(&self.command_name)).await
 			};
 
 			if let Some(path) = path {
@@ -658,7 +711,7 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 					let _ = post_execute(&mut self.shell);
 				}
 
-				Err(ErrorKind::CommandNotFound(self.command_name).into())
+				Err(ErrorKind::CommandNotFound(self.command_name.to_string_lossy().into_owned()).into())
 			}
 		} else {
 			let command_name = PathBuf::from(self.command_name.clone());
@@ -677,8 +730,8 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 
 	/// Extracts the owned string representation of the last argument of a
 	/// command, suitable for recording into `$_`.
-	fn take_last_arg(args: &[CommandArg]) -> Option<String> {
-		args.last().map(ToString::to_string)
+	fn take_last_arg(args: &[CommandArg]) -> Option<OsString> {
+		args.last().cloned().map(CommandArg::into_os_string)
 	}
 
 	async fn execute_via_builtin(
@@ -693,7 +746,7 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 					*target,
 					self.params,
 					builtin,
-					self.command_name,
+					self.command_name.to_string_lossy().into_owned(),
 					self.args,
 				))
 			},
@@ -745,7 +798,7 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 			// cancellation token interrupts the lease's virtual I/O once
 			// cancelled, so the worker returns promptly.
 			let lease = shell.lease();
-			let command_name = self.command_name;
+			let command_name = self.command_name.to_string_lossy().into_owned();
 			let params = self.params;
 			let args = self.args;
 			let join_handle = tokio::task::spawn_blocking(move || {
@@ -767,7 +820,7 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 		} else {
 			let cmd_context = ExecutionContext {
 				shell:        &mut shell,
-				command_name: self.command_name,
+				command_name: self.command_name.to_string_lossy().into_owned(),
 				params:       self.params,
 			};
 
@@ -805,7 +858,7 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 			// produced.
 			ShellForCommand::OwnedShell { target, .. } => {
 				let mut shell = *target;
-				let command_name = self.command_name;
+				let command_name = self.command_name.to_string_lossy().into_owned();
 				let args = self.args;
 				let join_handle = tokio::spawn(async move {
 					let cmd_context = ExecutionContext { shell: &mut shell, command_name, params };
@@ -826,7 +879,7 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 			mut shell => {
 				let cmd_context = ExecutionContext {
 					shell:        &mut shell,
-					command_name: self.command_name,
+					command_name: self.command_name.to_string_lossy().into_owned(),
 					params,
 				};
 
@@ -851,20 +904,21 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 	async fn execute_via_external(self, path: &Path) -> Result<ExecutionSpawnResult, error::Error> {
 		let mut shell = self.shell;
 		let last_arg = Self::take_last_arg(&self.args);
+		let argv0 = self.argv0.unwrap_or_else(|| self.command_name.clone());
 
 		let cmd_context = ExecutionContext {
 			shell:        &mut shell,
-			command_name: self.command_name,
+			command_name: self.command_name.to_string_lossy().into_owned(),
 			params:       self.params,
 		};
 
-		let resolved_path = path.to_string_lossy();
 		let result = execute_external_command(
 			cmd_context,
-			resolved_path.as_ref(),
+			&self.command_name,
+			path,
 			self.in_pipeline,
 			self.process_group_id,
-			self.argv0.as_deref(),
+			Some(&argv0),
 			&self.args[1..],
 		)
 		.await;
@@ -882,10 +936,11 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 
 pub(crate) async fn execute_external_command(
 	context: ExecutionContext<'_, impl extensions::ShellExtensions>,
-	executable_path: &str,
+	command_name: &OsStr,
+	executable_path: &Path,
 	in_pipeline: bool,
 	process_group_id: Option<i32>,
-	argv0_override: Option<&str>,
+	argv0_override: Option<&OsStr>,
 	args: &[CommandArg],
 ) -> Result<ExecutionSpawnResult, error::Error> {
 	// Filter out the args; we only want strings.
@@ -916,7 +971,7 @@ pub(crate) async fn execute_external_command(
 	// Compose the std::process::Command that encapsulates what we want to launch.
 	// argv[0] defaults to context.command_name (the user-facing name of the
 	// command) unless the caller specified an explicit override.
-	let argv0 = argv0_override.unwrap_or(context.command_name.as_str());
+	let argv0 = argv0_override.unwrap_or_else(|| OsStr::new(&context.command_name));
 	#[allow(unused_mut, reason = "only mutated on unix platforms")]
 	let mut cmd = if context.params.deferred_redirects().is_empty() {
 		compose_std_command(
@@ -932,13 +987,14 @@ pub(crate) async fn execute_external_command(
 		// `interp::DeferredRedirect`): `/bin/sh` makes them and then execs the
 		// command in place, so the pid the shell tracks is the command's. Its
 		// argv[0] is then the resolved path.
-		let script = interp::deferred_redirect_script(context.params.deferred_redirects());
-		let mut trampoline_args = vec!["-c".to_owned(), script, "sh".to_owned()];
-		trampoline_args.push(executable_path.to_owned());
+		let (script, paths) = interp::deferred_redirect_script(context.params.deferred_redirects());
+		let mut trampoline_args = vec![OsString::from("-c"), OsString::from(script), OsString::from("sh")];
+		trampoline_args.extend(paths);
+		trampoline_args.push(executable_path.as_os_str().to_owned());
 		trampoline_args.extend(cmd_args.iter().map(|arg| (*arg).clone()));
-		compose_std_command(&context, "/bin/sh", "sh", trampoline_args.as_slice(), false).await?
+		compose_std_command(&context, "/bin/sh", OsStr::new("sh"), trampoline_args.as_slice(), false).await?
 	};
-	let mut marker_output = prepare_output_markers(&context, executable_path, cmd_args.as_slice());
+	let mut marker_output = prepare_output_markers(&context, command_name, executable_path, cmd_args.as_slice());
 
 
 	// Set up process group/session state.
@@ -1062,14 +1118,15 @@ pub(crate) async fn execute_external_command(
 
 fn prepare_output_markers<SE: extensions::ShellExtensions>(
 	context: &ExecutionContext<'_, SE>,
-	executable_path: &str,
-	args: &[&String],
+	command_name: &OsStr,
+	executable_path: &Path,
+	args: &[&OsString],
 ) -> Option<(openfiles::OpenFile, ExternalCommandOutputMarkers)> {
 	let marker = context.params.command_output_marker()?;
 	let markers = marker.markers_for_external_command(ExternalCommandInfo {
-		command_name:    context.command_name.as_str(),
+		command_name,
 		executable_path,
-		args:            args.iter().map(|arg| arg.as_str()).collect(),
+		args:            args.iter().map(|arg| arg.as_os_str()).collect(),
 	})?;
 	let mut output = context.params.try_stdout(context.shell)?;
 	if output.write_all(markers.start_marker.as_bytes()).is_err() {
@@ -1128,7 +1185,7 @@ pub(crate) async fn invoke_shell_function(
 		}
 	}
 
-	let positional_args = args.iter().map(|a| a.to_string());
+	let positional_args = args.iter().cloned().map(CommandArg::into_os_string);
 
 	// Pass through open files.
 	let params = context.params.clone();
@@ -1186,7 +1243,7 @@ pub(crate) async fn invoke_command_in_subshell_and_get_output(
 	shell: &mut Shell<impl extensions::ShellExtensions>,
 	params: &ExecutionParameters,
 	s: String,
-) -> Result<String, error::Error> {
+) -> Result<Vec<u8>, error::Error> {
 	// Instantiate a subshell to run the command in.
 	let mut subshell = shell.clone();
 
@@ -1210,7 +1267,7 @@ pub(crate) async fn invoke_command_in_subshell_and_get_output(
 
 	let cmd_join_handle = tokio::spawn(run_substitution_command(subshell, params, s));
 
-	let output_str = async_reader.read_to_string().await?;
+	let output = async_reader.read_to_end().await?;
 
 	// Now observe the command's completion.
 	let run_result = cmd_join_handle.await?;
@@ -1222,7 +1279,7 @@ pub(crate) async fn invoke_command_in_subshell_and_get_output(
 	// Note: $_ is naturally isolated from the parent because we cloned the
 	// shell to run the substitution.
 
-	Ok(output_str)
+	Ok(output)
 }
 
 async fn run_substitution_command(

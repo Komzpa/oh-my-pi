@@ -81,7 +81,7 @@ impl builtins::Command for HistoryCommand {
 				|| context.shell.history_file_path(),
 				|file| Some(context.shell.absolute_path(Path::new(file))),
 			),
-			time_format:       context.shell.history_time_format(),
+			time_format:       context.shell.history_time_format()?,
 			filesystem:        context.shell.filesystem().clone(),
 		};
 

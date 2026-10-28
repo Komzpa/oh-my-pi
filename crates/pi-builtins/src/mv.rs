@@ -21,7 +21,7 @@ use thiserror::Error;
 #[cfg(unix)]
 use uucore::fs::display_permissions_unix;
 use uucore::{
-	backup_control::{self, BackupMode, source_is_target_backup},
+	backup_control::{self, BackupMode},
 	display::Quotable,
 	fs::path_ends_with_terminator,
 	update_control::{self, UpdateMode},
@@ -108,7 +108,7 @@ pub struct Options {
 	pub backup: BackupMode,
 
 	/// '-S' --suffix' backup suffix
-	pub suffix: String,
+	pub suffix: OsString,
 
 	/// Available update mode "--update-mode=all|none|older"
 	pub update: UpdateMode,
@@ -142,7 +142,7 @@ impl Default for Options {
 		Self {
 			overwrite:     OverwriteMode::default(),
 			backup:        BackupMode::default(),
-			suffix:        backup_control::DEFAULT_BACKUP_SUFFIX.to_owned(),
+			suffix:        backup_control::DEFAULT_BACKUP_SUFFIX.into(),
 			update:        UpdateMode::default(),
 			target_dir:    None,
 			no_target_dir: false,
@@ -323,7 +323,7 @@ fn app() -> Command {
 		)
 		.arg(backup_control::arguments::backup())
 		.arg(backup_control::arguments::backup_no_args())
-		.arg(backup_control::arguments::suffix())
+		.arg(backup_control::arguments::suffix().value_parser(clap::value_parser!(OsString)))
 		.arg(update_control::arguments::update())
 		.arg(update_control::arguments::update_no_args())
 		.arg(
@@ -426,7 +426,9 @@ fn parse_paths(files: &[OsString], opts: &Options) -> Vec<PathBuf> {
 }
 
 fn handle_two_paths(host: &mut Host, source: &Path, target: &Path, opts: &Options) -> MvResult<()> {
-	if opts.backup == BackupMode::Simple && source_is_target_backup(source, target, &opts.suffix) {
+	let mut target_backup = target.as_os_str().to_owned();
+	target_backup.push(&opts.suffix);
+	if opts.backup == BackupMode::Simple && source.as_os_str() == target_backup {
 		return Err(
 			io::Error::new(
 				io::ErrorKind::NotFound,

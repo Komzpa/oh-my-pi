@@ -3,7 +3,7 @@
 use std::{
 	borrow::Cow,
 	collections::BTreeMap,
-	ffi::OsString,
+	ffi::{OsStr, OsString},
 	fmt::{Display, Write},
 };
 
@@ -11,6 +11,10 @@ use crate::{
 	error, escape, extensions,
 	shell::{Shell, ShellState},
 };
+fn checked_text(value: &OsStr) -> Result<&str, error::Error> {
+	value.to_str().ok_or_else(|| error::ErrorKind::InternalError("shell value is not valid UTF-8".into()).into())
+}
+
 
 /// A shell variable.
 #[derive(Clone, Debug)]
@@ -52,7 +56,7 @@ pub enum ShellVariableUpdateTransform {
 impl Default for ShellVariable {
 	fn default() -> Self {
 		Self {
-			value:               ShellValue::String(String::new()),
+			value:               ShellValue::String(OsString::new()),
 			exported:            false,
 			readonly:            false,
 			enumerable:          true,
@@ -200,7 +204,7 @@ impl ShellVariable {
 			},
 			_ => {
 				let mut new_values = BTreeMap::new();
-				new_values.insert(0, self.value.to_cow_str_without_dynamic_support().to_string());
+				new_values.insert(0, self.value.to_cow_os_without_dynamic_support().into_owned());
 				self.value = ShellValue::IndexedArray(new_values);
 				Ok(())
 			},
@@ -215,11 +219,8 @@ impl ShellVariable {
 				Err(error::ErrorKind::ConvertingIndexedArrayToAssociativeArray.into())
 			},
 			_ => {
-				let mut new_values: BTreeMap<String, String> = BTreeMap::new();
-				new_values.insert(
-					String::from("0"),
-					self.value.to_cow_str_without_dynamic_support().to_string(),
-				);
+				let mut new_values = BTreeMap::new();
+				new_values.insert(OsString::from("0"), self.value.to_cow_os_without_dynamic_support().into_owned());
 				self.value = ShellValue::AssociativeArray(new_values);
 				Ok(())
 			},
@@ -238,7 +239,7 @@ impl ShellVariable {
 			return Err(error::ErrorKind::ReadonlyVariable.into());
 		}
 
-		let value = self.convert_value_literal_for_assignment(value);
+		let value = self.convert_value_literal_for_assignment(value)?;
 
 		if append {
 			match (&self.value, &value) {
@@ -257,7 +258,7 @@ impl ShellVariable {
 				// start with the empty string. This will result in the right thing happening,
 				// even in treat-as-integer cases.
 				(ShellValue::Unset(_), ShellValueLiteral::Scalar(_)) => {
-					self.assign(ShellValueLiteral::Scalar(String::new()), false)?;
+					self.assign(ShellValueLiteral::Scalar(OsString::new()), false)?;
 				},
 				// If we're trying to append an array to a string, we first promote the string to be
 				// an array with the string being present at index 0.
@@ -274,13 +275,14 @@ impl ShellVariable {
 				ShellValue::String(base) => match value {
 					ShellValueLiteral::Scalar(suffix) => {
 						if treat_as_int {
-							let int_value =
-								base.parse::<i64>().unwrap_or(0) + suffix.parse::<i64>().unwrap_or(0);
-							base.clear();
-							base.push_str(int_value.to_string().as_str());
+							let int_value = checked_text(base)?.parse::<i64>().unwrap_or(0)
+								+ checked_text(&suffix)?.parse::<i64>().unwrap_or(0);
+							*base = int_value.to_string().into();
 						} else {
-							base.push_str(suffix.as_str());
-							Self::apply_value_transforms(base, treat_as_int, update_transform);
+							let mut combined = base.clone();
+							combined.push(suffix);
+							Self::apply_value_transforms(&mut combined, treat_as_int, update_transform)?;
+							*base = combined;
 						}
 						Ok(())
 					},
@@ -291,7 +293,7 @@ impl ShellVariable {
 				},
 				ShellValue::IndexedArray(existing_values) => match value {
 					ShellValueLiteral::Scalar(new_value) => {
-						self.assign_at_index(String::from("0"), new_value, append)
+						self.assign_at_index(OsString::from("0"), new_value, append)
 					},
 					ShellValueLiteral::Array(new_values) => {
 						ShellValue::update_indexed_array_from_literals(existing_values, new_values);
@@ -300,7 +302,7 @@ impl ShellVariable {
 				},
 				ShellValue::AssociativeArray(existing_values) => match value {
 					ShellValueLiteral::Scalar(new_value) => {
-						self.assign_at_index(String::from("0"), new_value, append)
+						self.assign_at_index(OsString::from("0"), new_value, append)
 					},
 					ShellValueLiteral::Array(new_values) => {
 						ShellValue::update_associative_array_from_literals(existing_values, new_values)
@@ -321,7 +323,7 @@ impl ShellVariable {
 						ShellValueUnsetType::AssociativeArray | ShellValueUnsetType::IndexedArray,
 					),
 					ShellValueLiteral::Scalar(s),
-				) => self.assign_at_index(String::from("0"), s, false),
+				) => self.assign_at_index(OsString::from("0"), s, false),
 
 				// If we're updating an indexed array value with an array, then preserve the array
 				// type. We also default to using an indexed array if we are
@@ -373,8 +375,8 @@ impl ShellVariable {
 	///   stored at the given index.
 	pub fn assign_at_index(
 		&mut self,
-		array_index: String,
-		value: String,
+		array_index: OsString,
+		value: OsString,
 		append: bool,
 	) -> Result<(), error::Error> {
 		match &self.value {
@@ -388,49 +390,35 @@ impl ShellVariable {
 		}
 
 		let treat_as_int = self.is_treated_as_integer();
-		let value = self.convert_value_str_for_assignment(value);
+		let value = self.convert_value_str_for_assignment(value)?;
 
 		match &mut self.value {
 			ShellValue::IndexedArray(arr) => {
-				let key = get_key_for_indexed_array(arr, array_index.as_str())?;
-
+				let key = get_key_for_indexed_array(arr, checked_text(&array_index)?)?;
 				if append {
-					let existing_value = arr.get(&key).map_or_else(|| "", |v| v.as_str());
-
-					let mut new_value;
+					let mut existing = arr.get(&key).cloned().unwrap_or_default();
 					if treat_as_int {
-						new_value = (existing_value.parse::<i64>().unwrap_or(0)
-							+ value.parse::<i64>().unwrap_or(0))
-						.to_string();
+						existing = (checked_text(&existing)?.parse::<i64>().unwrap_or(0)
+							+ checked_text(&value)?.parse::<i64>().unwrap_or(0)).to_string().into();
 					} else {
-						new_value = existing_value.to_owned();
-						new_value.push_str(value.as_str());
+						existing.push(value);
 					}
-
-					arr.insert(key, new_value);
+					arr.insert(key, existing);
 				} else {
 					arr.insert(key, value);
 				}
-
 				Ok(())
 			},
 			ShellValue::AssociativeArray(arr) => {
 				if append {
-					let existing_value = arr
-						.get(array_index.as_str())
-						.map_or_else(|| "", |v| v.as_str());
-
-					let mut new_value;
+					let mut existing = arr.get(&array_index).cloned().unwrap_or_default();
 					if treat_as_int {
-						new_value = (existing_value.parse::<i64>().unwrap_or(0)
-							+ value.parse::<i64>().unwrap_or(0))
-						.to_string();
+						existing = (checked_text(&existing)?.parse::<i64>().unwrap_or(0)
+							+ checked_text(&value)?.parse::<i64>().unwrap_or(0)).to_string().into();
 					} else {
-						new_value = existing_value.to_owned();
-						new_value.push_str(value.as_str());
+						existing.push(value);
 					}
-
-					arr.insert(array_index, new_value.clone());
+					arr.insert(array_index, existing);
 				} else {
 					arr.insert(array_index, value);
 				}
@@ -441,52 +429,38 @@ impl ShellVariable {
 		}
 	}
 
-	fn convert_value_literal_for_assignment(&self, value: ShellValueLiteral) -> ShellValueLiteral {
-		match value {
-			ShellValueLiteral::Scalar(s) => {
-				ShellValueLiteral::Scalar(self.convert_value_str_for_assignment(s))
-			},
+	fn convert_value_literal_for_assignment(&self, value: ShellValueLiteral) -> Result<ShellValueLiteral, error::Error> {
+		Ok(match value {
+			ShellValueLiteral::Scalar(s) => ShellValueLiteral::Scalar(self.convert_value_str_for_assignment(s)?),
 			ShellValueLiteral::Array(literals) => ShellValueLiteral::Array(ArrayLiteral(
-				literals
-					.0
-					.into_iter()
-					.map(|(k, v)| (k, self.convert_value_str_for_assignment(v)))
-					.collect(),
+				literals.0.into_iter().map(|(k, v)| Ok((k, self.convert_value_str_for_assignment(v)?))).collect::<Result<_, error::Error>>()?,
 			)),
-		}
+		})
 	}
 
-	fn convert_value_str_for_assignment(&self, mut s: String) -> String {
-		Self::apply_value_transforms(
-			&mut s,
-			self.is_treated_as_integer(),
-			self.get_update_transform(),
-		);
-
-		s
+	fn convert_value_str_for_assignment(&self, mut s: OsString) -> Result<OsString, error::Error> {
+		Self::apply_value_transforms(&mut s, self.is_treated_as_integer(), self.get_update_transform())?;
+		Ok(s)
 	}
 
-	fn apply_value_transforms(
-		s: &mut String,
-		treat_as_int: bool,
-		update_transform: ShellVariableUpdateTransform,
-	) {
+	fn apply_value_transforms(s: &mut OsString, treat_as_int: bool, update_transform: ShellVariableUpdateTransform) -> Result<(), error::Error> {
 		if treat_as_int {
-			*s = (*s).parse::<i64>().unwrap_or(0).to_string();
-		} else {
-			match update_transform {
-				ShellVariableUpdateTransform::None => (),
-				ShellVariableUpdateTransform::Lowercase => *s = (*s).to_lowercase(),
-				ShellVariableUpdateTransform::Uppercase => *s = (*s).to_uppercase(),
-				ShellVariableUpdateTransform::Capitalize => {
-					// This isn't really title-case; only the first character is capitalized.
-					*s = s.to_lowercase();
-					if let Some(c) = s.chars().next() {
-						s.replace_range(0..1, &c.to_uppercase().to_string());
-					}
-				},
-			}
+			*s = checked_text(s)?.parse::<i64>().unwrap_or(0).to_string().into();
+		} else if !matches!(update_transform, ShellVariableUpdateTransform::None) {
+			let mut initial = true;
+			*s = escape::map_native_chars(s, |c| {
+				let mapped = match update_transform {
+					ShellVariableUpdateTransform::None => unreachable!(),
+					ShellVariableUpdateTransform::Lowercase => c.to_lowercase().to_string(),
+					ShellVariableUpdateTransform::Uppercase => c.to_uppercase().to_string(),
+					ShellVariableUpdateTransform::Capitalize if initial => c.to_uppercase().to_string(),
+					ShellVariableUpdateTransform::Capitalize => c.to_lowercase().to_string(),
+				};
+				initial = false;
+				mapped
+			});
 		}
+		Ok(())
 	}
 
 	/// Tries to unset the value stored at the given index in the variable.
@@ -495,7 +469,7 @@ impl ShellVariable {
 	/// # Arguments
 	///
 	/// * `index` - The index at which to unset the value.
-	pub fn unset_index(&mut self, index: &str) -> Result<bool, error::Error> {
+	pub fn unset_index(&mut self, index: &OsStr) -> Result<bool, error::Error> {
 		match &mut self.value {
 			ShellValue::Unset(ty) => match ty {
 				ShellValueUnsetType::Untyped => Err(error::ErrorKind::NotArray.into()),
@@ -504,7 +478,7 @@ impl ShellVariable {
 			ShellValue::String(_) => Err(error::ErrorKind::NotArray.into()),
 			ShellValue::AssociativeArray(values) => Ok(values.remove(index).is_some()),
 			ShellValue::IndexedArray(values) => {
-				let key = get_key_for_indexed_array(values, index)?;
+				let key = get_key_for_indexed_array(values, checked_text(index)?)?;
 				Ok(values.remove(&key).is_some())
 			},
 			ShellValue::Dynamic { .. } => Ok(false),
@@ -583,11 +557,11 @@ pub enum ShellValue {
 	/// A value that has been typed but not yet set.
 	Unset(ShellValueUnsetType),
 	/// A string.
-	String(String),
+	String(OsString),
 	/// An associative array.
-	AssociativeArray(BTreeMap<String, String>),
+	AssociativeArray(BTreeMap<OsString, OsString>),
 	/// An indexed array.
-	IndexedArray(BTreeMap<u64, String>),
+	IndexedArray(BTreeMap<u64, OsString>),
 	/// A value that is dynamically computed.
 	Dynamic {
 		/// Function that can query the value.
@@ -603,7 +577,7 @@ pub enum ShellValue {
 
 #[cfg(feature = "serde")]
 fn default_dynamic_value_getter() -> DynamicValueGetter {
-	|_shell: &dyn ShellState| ShellValue::String(String::new())
+	|_shell: &dyn ShellState| ShellValue::String(OsString::new())
 }
 
 #[cfg(feature = "serde")]
@@ -627,7 +601,7 @@ pub enum ShellValueUnsetType {
 #[derive(Clone, Debug)]
 pub enum ShellValueLiteral {
 	/// A scalar value.
-	Scalar(String),
+	Scalar(OsString),
 	/// An array value.
 	Array(ArrayLiteral),
 }
@@ -635,7 +609,7 @@ pub enum ShellValueLiteral {
 impl ShellValueLiteral {
 	pub(crate) fn fmt_for_tracing(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
-			Self::Scalar(s) => Self::fmt_scalar_for_tracing(s.as_str(), f),
+			Self::Scalar(s) => Self::fmt_scalar_for_tracing(s, f),
 			Self::Array(elements) => {
 				write!(f, "(")?;
 				for (i, (key, value)) in elements.0.iter().enumerate() {
@@ -644,19 +618,22 @@ impl ShellValueLiteral {
 					}
 					if let Some(key) = key {
 						write!(f, "[")?;
-						Self::fmt_scalar_for_tracing(key.as_str(), f)?;
+						Self::fmt_scalar_for_tracing(key, f)?;
 						write!(f, "]=")?;
 					}
-					Self::fmt_scalar_for_tracing(value.as_str(), f)?;
+					Self::fmt_scalar_for_tracing(value, f)?;
 				}
 				write!(f, ")")
 			},
 		}
 	}
 
-	fn fmt_scalar_for_tracing(s: &str, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let processed = escape::quote_if_needed(s, escape::QuoteMode::SingleQuote);
-		write!(f, "{processed}")
+	fn fmt_scalar_for_tracing(s: &OsStr, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		if let Some(s) = s.to_str() {
+			write!(f, "{}", escape::quote_if_needed(s, escape::QuoteMode::SingleQuote))
+		} else {
+			write!(f, "{s:?}")
+		}
 	}
 }
 
@@ -668,25 +645,25 @@ impl Display for ShellValueLiteral {
 
 impl From<&str> for ShellValueLiteral {
 	fn from(value: &str) -> Self {
-		Self::Scalar(value.to_owned())
+		Self::Scalar(value.into())
 	}
 }
 
 impl From<String> for ShellValueLiteral {
 	fn from(value: String) -> Self {
-		Self::Scalar(value)
+		Self::Scalar(value.into())
 	}
 }
 
 impl From<Vec<&str>> for ShellValueLiteral {
 	fn from(value: Vec<&str>) -> Self {
-		Self::Array(ArrayLiteral(value.into_iter().map(|s| (None, s.to_owned())).collect()))
+		Self::Array(ArrayLiteral(value.into_iter().map(|s| (None, s.into())).collect()))
 	}
 }
 
 /// An array literal.
 #[derive(Clone, Debug)]
-pub struct ArrayLiteral(pub Vec<(Option<String>, String)>);
+pub struct ArrayLiteral(pub Vec<(Option<OsString>, OsString)>);
 
 /// Style for formatting a shell variable's value.
 #[derive(Copy, Clone, Debug)]
@@ -727,7 +704,7 @@ impl ShellValue {
 	{
 		let mut owned_values = BTreeMap::new();
 		for (i, value) in values.into_iter().enumerate() {
-			owned_values.insert(i as u64, value);
+			owned_values.insert(i as u64, value.into());
 		}
 
 		Self::IndexedArray(owned_values)
@@ -742,7 +719,7 @@ impl ShellValue {
 	pub fn indexed_array_from_strs(values: &[&str]) -> Self {
 		let mut owned_values = BTreeMap::new();
 		for (i, value) in values.iter().enumerate() {
-			owned_values.insert(i as u64, (*value).to_string());
+			owned_values.insert(i as u64, (*value).into());
 		}
 
 		Self::IndexedArray(owned_values)
@@ -761,7 +738,7 @@ impl ShellValue {
 	}
 
 	fn update_indexed_array_from_literals(
-		existing_values: &mut BTreeMap<u64, String>,
+		existing_values: &mut BTreeMap<u64, OsString>,
 		literal_values: ArrayLiteral,
 	) {
 		let mut new_key = if let Some((largest_index, _)) = existing_values.last_key_value() {
@@ -772,7 +749,7 @@ impl ShellValue {
 
 		for (key, value) in literal_values.0 {
 			if let Some(key) = key {
-				new_key = key.parse().unwrap_or(0);
+				new_key = key.to_str().and_then(|s| s.parse().ok()).unwrap_or(0);
 			}
 
 			existing_values.insert(new_key, value);
@@ -794,7 +771,7 @@ impl ShellValue {
 	}
 
 	fn update_associative_array_from_literals(
-		existing_values: &mut BTreeMap<String, String>,
+		existing_values: &mut BTreeMap<OsString, OsString>,
 		literal_values: ArrayLiteral,
 	) -> Result<(), error::Error> {
 		let mut literal_values = literal_values.0.into_iter();
@@ -816,11 +793,10 @@ impl ShellValue {
 			let mut current_key = Some(first_value);
 			for (key, value) in literal_values {
 				let value = if let Some(key) = key {
-					let mut word = String::with_capacity(key.len() + value.len() + 3);
-					word.push('[');
-					word.push_str(key.as_str());
-					word.push_str("]=");
-					word.push_str(value.as_str());
+					let mut word = OsString::from("[");
+					word.push(key);
+					word.push("]=");
+					word.push(value);
 					word
 				} else {
 					value
@@ -834,7 +810,7 @@ impl ShellValue {
 			}
 
 			if let Some(current_key) = current_key {
-				existing_values.insert(current_key, String::new());
+				existing_values.insert(current_key, OsString::new());
 			}
 		}
 
@@ -855,10 +831,10 @@ impl ShellValue {
 			Self::Unset(_) => Ok("".into()),
 			Self::String(s) => match style {
 				FormatStyle::Basic => {
-					Ok(escape::quote_if_needed(s.as_str(), escape::QuoteMode::SingleQuote))
+					Ok(escape::quote_native_if_needed(s, escape::QuoteMode::SingleQuote))
 				},
 				FormatStyle::DeclarePrint => {
-					Ok(escape::force_quote(s.as_str(), escape::QuoteMode::DoubleQuote).into())
+					Ok(escape::force_quote_native(s, escape::QuoteMode::DoubleQuote).into())
 				},
 			},
 			Self::AssociativeArray(values) => {
@@ -867,9 +843,9 @@ impl ShellValue {
 
 				for (key, value) in values {
 					let formatted_key =
-						escape::quote_if_needed(key.as_str(), escape::QuoteMode::DoubleQuote);
+						escape::quote_native_if_needed(key, escape::QuoteMode::DoubleQuote);
 					let formatted_value =
-						escape::force_quote(value.as_str(), escape::QuoteMode::DoubleQuote);
+						escape::force_quote_native(value, escape::QuoteMode::DoubleQuote);
 
 					// N.B. We include an unconditional trailing space character (even after the
 					// last entry in the associative array) to match standard
@@ -890,7 +866,7 @@ impl ShellValue {
 					}
 
 					let formatted_value =
-						escape::force_quote(value.as_str(), escape::QuoteMode::DoubleQuote);
+						escape::force_quote_native(value, escape::QuoteMode::DoubleQuote);
 					write!(result, "[{key}]={formatted_value}")?;
 				}
 
@@ -912,44 +888,44 @@ impl ShellValue {
 	/// * `index` - The index at which to retrieve the value.
 	pub fn get_at(
 		&self,
-		index: &str,
+		index: &OsStr,
 		shell: &Shell<impl extensions::ShellExtensions>,
-	) -> Result<Option<Cow<'_, str>>, error::Error> {
+	) -> Result<Option<Cow<'_, OsStr>>, error::Error> {
 		match self {
 			Self::Unset(_) => Ok(None),
 			Self::String(s) => {
-				if index.parse::<u64>().unwrap_or(0) == 0 {
-					Ok(Some(Cow::Borrowed(s)))
+				if checked_text(index)?.parse::<u64>().unwrap_or(0) == 0 {
+					Ok(Some(Cow::Borrowed(s.as_os_str())))
 				} else {
 					Ok(None)
 				}
 			},
-			Self::AssociativeArray(values) => Ok(values.get(index).map(|s| Cow::Borrowed(s.as_str()))),
+			Self::AssociativeArray(values) => Ok(values.get(index).map(|s| Cow::Borrowed(s.as_os_str()))),
 			Self::IndexedArray(values) => {
-				let key = get_key_for_indexed_array(values, index)?;
-				Ok(values.get(&key).map(|s| Cow::Borrowed(s.as_str())))
+				let key = get_key_for_indexed_array(values, checked_text(index)?)?;
+				Ok(values.get(&key).map(|s| Cow::Borrowed(s.as_os_str())))
 			},
 			Self::Dynamic { getter, .. } => {
 				let dynamic_value = getter(shell);
 				let result = dynamic_value.get_at(index, shell)?;
-				Ok(result.map(|s| s.to_string().into()))
+				Ok(result.map(|s| Cow::Owned(s.into_owned())))
 			},
 		}
 	}
 
 	/// Returns the keys of the elements in this variable.
-	pub fn element_keys(&self, shell: &Shell<impl extensions::ShellExtensions>) -> Vec<String> {
+	pub fn element_keys(&self, shell: &Shell<impl extensions::ShellExtensions>) -> Vec<OsString> {
 		match self {
 			Self::Unset(_) => vec![],
-			Self::String(_) => vec!["0".to_owned()],
+			Self::String(_) => vec![OsString::from("0")],
 			Self::AssociativeArray(array) => array.keys().map(|k| k.to_owned()).collect(),
-			Self::IndexedArray(array) => array.keys().map(|k| k.to_string()).collect(),
+			Self::IndexedArray(array) => array.keys().map(|k| k.to_string().into()).collect(),
 			Self::Dynamic { getter, .. } => getter(shell).element_keys(shell),
 		}
 	}
 
 	/// Returns the values of the elements in this variable.
-	pub fn element_values(&self, shell: &Shell<impl extensions::ShellExtensions>) -> Vec<String> {
+	pub fn element_values(&self, shell: &Shell<impl extensions::ShellExtensions>) -> Vec<OsString> {
 		match self {
 			Self::Unset(_) => vec![],
 			Self::String(s) => vec![s.to_owned()],
@@ -959,41 +935,43 @@ impl ShellValue {
 		}
 	}
 
-	/// Converts this value to a string.
-	pub fn to_cow_str(&self, shell: &Shell<impl extensions::ShellExtensions>) -> Cow<'_, str> {
-		self.try_get_cow_str(shell).unwrap_or(Cow::Borrowed(""))
+	/// Returns the value as a native string, preserving its bytes.
+	pub fn to_cow_os(&self, shell: &Shell<impl extensions::ShellExtensions>) -> Cow<'_, OsStr> {
+		self.try_get_cow_os(shell).unwrap_or(Cow::Borrowed(OsStr::new("")))
 	}
 
-	fn to_cow_str_without_dynamic_support(&self) -> Cow<'_, str> {
-		self
-			.try_get_cow_str_without_dynamic_support()
-			.unwrap_or(Cow::Borrowed(""))
+	fn to_cow_os_without_dynamic_support(&self) -> Cow<'_, OsStr> {
+		self.try_get_cow_os_without_dynamic_support().unwrap_or(Cow::Borrowed(OsStr::new("")))
 	}
 
-	/// Tries to convert this value to a string; returns `None` if the value is
-	/// unset or otherwise doesn't exist.
-	pub fn try_get_cow_str(
-		&self,
-		shell: &Shell<impl extensions::ShellExtensions>,
-	) -> Option<Cow<'_, str>> {
+	/// Returns the native value, or None when unset.
+	pub fn try_get_cow_os(&self, shell: &Shell<impl extensions::ShellExtensions>) -> Option<Cow<'_, OsStr>> {
 		match self {
-			Self::Dynamic { getter, .. } => {
-				let dynamic_value = getter(shell);
-				dynamic_value
-					.try_get_cow_str(shell)
-					.map(|s| s.to_string().into())
-			},
-			_ => self.try_get_cow_str_without_dynamic_support(),
+			Self::Dynamic { getter, .. } => getter(shell).try_get_cow_os(shell).map(|s| Cow::Owned(s.into_owned())),
+			_ => self.try_get_cow_os_without_dynamic_support(),
 		}
 	}
 
-	fn try_get_cow_str_without_dynamic_support(&self) -> Option<Cow<'_, str>> {
+	fn try_get_cow_os_without_dynamic_support(&self) -> Option<Cow<'_, OsStr>> {
 		match self {
-			Self::Unset(_) => None,
-			Self::String(s) => Some(Cow::Borrowed(s.as_str())),
-			Self::AssociativeArray(values) => values.get("0").map(|s| Cow::Borrowed(s.as_str())),
-			Self::IndexedArray(values) => values.get(&0).map(|s| Cow::Borrowed(s.as_str())),
-			Self::Dynamic { .. } => None,
+			Self::Unset(_) | Self::Dynamic { .. } => None,
+			Self::String(s) => Some(Cow::Borrowed(s.as_os_str())),
+			Self::AssociativeArray(values) => values.get(OsStr::new("0")).map(|s| Cow::Borrowed(s.as_os_str())),
+			Self::IndexedArray(values) => values.get(&0).map(|s| Cow::Borrowed(s.as_os_str())),
+		}
+	}
+
+	/// Returns a text view, rejecting non-UTF-8 values rather than changing them.
+	pub fn to_cow_str(&self, shell: &Shell<impl extensions::ShellExtensions>) -> Result<Cow<'_, str>, error::Error> {
+		Ok(self.try_get_cow_str(shell)?.unwrap_or(Cow::Borrowed("")))
+	}
+
+	/// Returns a text view when set, rejecting non-UTF-8 values.
+	pub fn try_get_cow_str(&self, shell: &Shell<impl extensions::ShellExtensions>) -> Result<Option<Cow<'_, str>>, error::Error> {
+		match self.try_get_cow_os(shell) {
+			None => Ok(None),
+			Some(Cow::Borrowed(value)) => Ok(Some(Cow::Borrowed(checked_text(value)?))),
+			Some(Cow::Owned(value)) => Ok(Some(Cow::Owned(checked_text(&value)?.to_owned()))),
 		}
 	}
 
@@ -1010,11 +988,11 @@ impl ShellValue {
 	) -> Result<String, error::Error> {
 		match self {
 			Self::Unset(_) => Ok(String::new()),
-			Self::String(s) => Ok(escape::force_quote(s.as_str(), escape::QuoteMode::SingleQuote)),
+			Self::String(s) => Ok(escape::force_quote_native(s, escape::QuoteMode::SingleQuote)),
 			Self::AssociativeArray(_) | Self::IndexedArray(_) => {
 				if let Some(index) = index {
-					if let Ok(Some(value)) = self.get_at(index, shell) {
-						Ok(escape::force_quote(value.as_ref(), escape::QuoteMode::SingleQuote))
+					if let Some(value) = self.get_at(OsStr::new(index), shell)? {
+						Ok(escape::force_quote_native(value.as_ref(), escape::QuoteMode::SingleQuote))
 					} else {
 						Ok(String::new())
 					}
@@ -1028,7 +1006,7 @@ impl ShellValue {
 }
 
 fn get_key_for_indexed_array(
-	values: &BTreeMap<u64, String>,
+	values: &BTreeMap<u64, OsString>,
 	index_str: &str,
 ) -> Result<u64, error::Error> {
 	let mut index_value = index_str.parse::<i64>().unwrap_or(0);
@@ -1050,25 +1028,31 @@ fn get_key_for_indexed_array(
 
 impl From<&str> for ShellValue {
 	fn from(value: &str) -> Self {
-		Self::String(value.to_owned())
+		Self::String(value.into())
 	}
 }
 
 impl From<&String> for ShellValue {
 	fn from(value: &String) -> Self {
-		Self::String(value.clone())
+		Self::String(value.into())
 	}
 }
 
 impl From<String> for ShellValue {
 	fn from(value: String) -> Self {
-		Self::String(value)
+		Self::String(value.into())
 	}
 }
 
 impl From<OsString> for ShellValue {
 	fn from(value: OsString) -> Self {
-		Self::String(value.to_string_lossy().into_owned())
+		Self::String(value)
+	}
+}
+
+impl From<Vec<OsString>> for ShellValue {
+	fn from(values: Vec<OsString>) -> Self {
+		Self::IndexedArray(values.into_iter().enumerate().map(|(i, v)| (i as u64, v)).collect())
 	}
 }
 

@@ -27,12 +27,12 @@ impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
 		let line = self
 			.env
 			.unset("READLINE_LINE")?
-			.map(|line| line.value().to_cow_str(self).to_string());
+			.map(|line| line.value().to_cow_str(self).map(|s| s.into_owned())).transpose()?;
 
 		let point = self
 			.env
 			.unset("READLINE_POINT")?
-			.and_then(|point| point.value().to_cow_str(self).parse::<usize>().ok())
+			.map(|point| point.value().to_cow_str(self).map(|s| s.parse::<usize>().ok())).transpose()?.flatten()
 			.unwrap_or(0);
 
 		if let Some(line) = line {

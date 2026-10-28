@@ -24,7 +24,7 @@ import { backgroundBrowserCommand } from "./priority";
 import { ensureRelayDaemon, isLoopbackRelayUrl, restartRelayDaemon } from "./relay/daemon";
 import type { RelayKind } from "./relay/kind";
 import { UPDATE_RELAY_EXTENSION, waitForRelayExtension } from "./relay/probe";
-import { ensureSharedBrowser } from "./shared-daemon";
+import { browserSpawnCommand, ensureSharedBrowser } from "./shared-daemon";
 import type { TernKind } from "./tern/kind";
 import { TernSocketClient } from "./tern/wire";
 
@@ -350,7 +350,8 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		const launchArgs = [...appArgs, `--remote-debugging-port=${port}`];
 		const env = await toolSessionEnvironment(opts.sessionId, workerEnvFromParent());
 		const scope = opts.sessionId ? new ToolResourceScope() : undefined;
-		const command = backgroundBrowserCommand(exe, launchArgs);
+		const launch = browserSpawnCommand({ executablePath: exe, args: launchArgs });
+		const command = backgroundBrowserCommand(launch.application, launch.args);
 		const child = Bun.spawn(scope ? await scope.wrapCommandAsync(command, env) : command, {
 			cwd: opts.cwd,
 			env,

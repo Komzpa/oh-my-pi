@@ -23,7 +23,8 @@ use crate::host::Host;
 pub(crate) fn shell_locale<'h>(host: &'h Host, category: &str) -> Option<&'h str> {
 	["LC_ALL", category, "LANG"]
 		.into_iter()
-		.find_map(|key| host.var(key).filter(|value| !value.is_empty()))
+		.find_map(|key| host.var_os(key).filter(|value| !value.is_empty()))
+		.and_then(std::ffi::OsStr::to_str)
 }
 
 /// Whether a `language_TERRITORY[.codeset][@modifier]` name has a UTF-8

@@ -865,7 +865,7 @@ fn copy_env_into_shell(
 			continue;
 		}
 		let value = inherited_env_value(normalized_key, value);
-		let mut var = ShellVariable::new(ShellValue::String(value.into_owned()));
+		let mut var = ShellVariable::new(ShellValue::String(value.into_owned().into()));
 		var.export();
 		shell
 			.env_mut()
@@ -881,7 +881,7 @@ fn copy_env_into_shell(
 	}
 
 	if let Some(path_value) = &merged_path {
-		let mut var = ShellVariable::new(ShellValue::String(path_value.clone()));
+		let mut var = ShellVariable::new(ShellValue::String(path_value.clone().into()));
 		var.export();
 		shell
 			.env_mut()
@@ -979,7 +979,7 @@ async fn create_session_for_run(
 			// The agent forwards its whole host env here, so temp paths need the
 			// same long-form expansion as the direct host copy above.
 			let value = inherited_env_value(normalized_key, value);
-			let mut var = ShellVariable::new(ShellValue::String(value.into_owned()));
+			let mut var = ShellVariable::new(ShellValue::String(value.into_owned().into()));
 			var.export();
 			shell
 				.env_mut()
@@ -1939,7 +1939,7 @@ fn apply_command_env(
 		if should_skip_env_var(normalized_key) {
 			continue;
 		}
-		let mut var = ShellVariable::new(ShellValue::String(value.clone()));
+		let mut var = ShellVariable::new(ShellValue::String(value.clone().into()));
 		var.export();
 		if let Err(err) = shell
 			.env_mut()
@@ -1967,7 +1967,7 @@ fn apply_env_fallback(shell: &mut BrushShell) -> Result<()> {
 	if shell.env().get("env").is_some() {
 		return Ok(());
 	}
-	let var = ShellVariable::new(ShellValue::String("$env".to_string()));
+	let var = ShellVariable::new(ShellValue::String("$env".into()));
 	shell
 		.env_mut()
 		.set_global("env", var)
@@ -2483,7 +2483,11 @@ mod tests {
 		assert_eq!(exit_code(&result), 0);
 		assert_eq!(shell.working_dir(), expected);
 		for key in ["TEMP", "TMP", "TMPDIR", "PWD"] {
-			assert_eq!(shell.env_str(key).as_deref(), Some(expected_str.as_str()), "{key}");
+			assert_eq!(
+				shell.env_str(key).expect("valid text").as_deref(),
+				Some(expected_str.as_str()),
+				"{key}"
+			);
 		}
 	}
 
@@ -2564,10 +2568,10 @@ mod tests {
 		)
 		.expect("inherit temp vars");
 
-		assert_eq!(shell.env_str("TEMP").as_deref(), Some("rel\\temp"));
-		assert_eq!(shell.env_str("TMP").as_deref(), Some("rel\\tmp"));
-		assert_eq!(shell.env_str("TMPDIR").as_deref(), Some("rel\\tmpdir"));
-		assert_eq!(shell.env_str("Temp"), None);
+		assert_eq!(shell.env_str("TEMP").expect("valid text").as_deref(), Some("rel\\temp"));
+		assert_eq!(shell.env_str("TMP").expect("valid text").as_deref(), Some("rel\\tmp"));
+		assert_eq!(shell.env_str("TMPDIR").expect("valid text").as_deref(), Some("rel\\tmpdir"));
+		assert_eq!(shell.env_str("Temp").expect("valid text"), None);
 	}
 
 	/// A host cwd spelled with 8.3 short names matches the stored long form of
@@ -2809,8 +2813,16 @@ mod tests {
 					_ => None,
 				})
 		};
-		assert_eq!(value("PATH").as_deref(), Some("/opt/bin"), "PATH is merged/preserved");
-		assert_eq!(value("HOME").as_deref(), Some("/home/tester"), "valid entry copied");
+		assert_eq!(
+			value("PATH").as_deref(),
+			Some(std::ffi::OsStr::new("/opt/bin")),
+			"PATH is merged/preserved"
+		);
+		assert_eq!(
+			value("HOME").as_deref(),
+			Some(std::ffi::OsStr::new("/home/tester")),
+			"valid entry copied"
+		);
 		assert!(value("GHOSTTY_BIN_DIR").is_none(), "non-UTF-8 value must be skipped");
 		assert!(value("BAD").is_none(), "non-UTF-8 key must be skipped");
 	}
@@ -2861,7 +2873,11 @@ mod tests {
 		assert!(value("GIT_DIR").is_none(), "GIT_DIR must not reach child commands");
 		assert!(value("GIT_WORK_TREE").is_none(), "GIT_WORK_TREE must not reach child commands");
 		assert!(value("GIT_INDEX_FILE").is_none(), "GIT_INDEX_FILE must not reach child commands");
-		assert_eq!(value("GIT_EDITOR").as_deref(), Some("true"), "unrelated git vars are kept");
+		assert_eq!(
+			value("GIT_EDITOR").as_deref(),
+			Some(std::ffi::OsStr::new("true")),
+			"unrelated git vars are kept"
+		);
 	}
 
 	/// The per-session env overlay is built from the same host environment, so
@@ -7697,6 +7713,7 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		)
 		.expect("cleanup script");
 		let shell = Shell::new(None);
+		let (tx, rx) = flume::unbounded::<String>();
 		let mut cancel = CancelToken::default();
 		let abort = cancel.emplace_abort_token();
 		let cwd = root.path().to_str().expect("utf8 cwd").to_owned();
@@ -7708,7 +7725,7 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 						cwd: Some(cwd),
 						..Default::default()
 					},
-					None,
+					Some(tx),
 					cancel,
 				)
 				.await
@@ -7727,6 +7744,8 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 			.expect("run task")
 			.expect("shell result");
 		assert!(result.cancelled);
+		let output: String = rx.try_iter().collect();
+		assert!(output.contains("flushing\n"), "TERM trap output was not delivered: {output:?}");
 		assert_eq!(
 			fs::read_to_string(root.path().join("cleaned"))
 				.expect("TERM cleanup after writing output"),
@@ -7760,6 +7779,32 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 	#[tokio::test(flavor = "multi_thread")]
 	async fn cancelling_one_run_spares_a_concurrent_runs_child() {
 		let _guard = shell_test_lock().lock().await;
+		// Keep A alive until B has finished cancelling; a fixed sleep can expire
+		// before the cancellation check on a loaded runner.
+		let root = tempfile::tempdir().expect("sibling release directory");
+		let release = root.path().join("release");
+		let record_identity = |label: &str, pid: i32| {
+			#[cfg(target_os = "linux")]
+			{
+				let stat = fs::read_to_string(format!("/proc/{pid}/stat")).expect("live child stat");
+				let startticks = stat
+					.rsplit_once(") ")
+					.expect("stat fields")
+					.1
+					.split_whitespace()
+					.nth(19)
+					.expect("startticks")
+					.to_owned();
+				let exe = fs::read_link(format!("/proc/{pid}/exe")).expect("live child executable");
+				eprintln!(
+					"sibling-child {label} pid={pid} startticks={startticks} exe={}",
+					exe.display()
+				);
+				(startticks, exe)
+			}
+			#[cfg(not(target_os = "linux"))]
+			let _ = (label, pid);
+		};
 
 		let shell_b = Shell::new(None);
 		let (tx_b, rx_b) = flume::unbounded::<String>();
@@ -7769,7 +7814,7 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 			shell_b
 				.run(
 					ShellRunOptions {
-						command: "sh -c 'printf \"ready\\n\"; sleep 30'".into(),
+						command: "sh -c 'printf \"ready %d\\n\" \"$$\"; sleep 30'".into(),
 						..Default::default()
 					},
 					Some(tx_b),
@@ -7793,17 +7838,27 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		})
 		.await
 		.expect("timed out waiting for run B readiness");
-		assert_eq!(b_ready.trim(), "ready", "run B should reach its long sleep before run A starts");
+		let b_child_pid = b_ready
+			.trim()
+			.strip_prefix("ready ")
+			.expect("run B should reach readiness before run A starts")
+			.parse::<i32>()
+			.expect("run B pid line should be an integer");
+		assert!(b_child_pid > 0, "got non-positive run B child pid: {b_child_pid}");
+		let _b_identity = record_identity("B-ready", b_child_pid);
+		let b_child = process::Process::from_pid(b_child_pid).expect("live run B child");
+		assert_eq!(b_child.status(), process::ProcessStatus::Running);
 
 		let shell_a = Shell::new(None);
 		let (tx_a, rx_a) = flume::unbounded::<String>();
+		let command_a = format!(
+			"sh -c 'printf \"%d\\n\" \"$$\"; while [ ! -e \"$1\" ]; do sleep 0.01; done' sh {}",
+			quote_arg(release.to_str().expect("utf8 release path")),
+		);
 		let handle_a = tokio::spawn(async move {
 			shell_a
 				.run(
-					ShellRunOptions {
-						command: "sh -c 'printf \"%d\\n\" \"$$\"; sleep 2'".into(),
-						..Default::default()
-					},
+					ShellRunOptions { command: command_a, ..Default::default() },
 					Some(tx_a),
 					CancelToken::default(),
 				)
@@ -7829,19 +7884,34 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		.await
 		.expect("timed out waiting for run A child pid");
 		assert!(a_child_pid > 0, "got non-positive run A child pid: {a_child_pid}");
+		let a_identity = record_identity("A-ready", a_child_pid);
+		let a_child = process::Process::from_pid(a_child_pid).expect("live run A child");
+		assert_eq!(a_child.status(), process::ProcessStatus::Running);
 
 		abort_b.abort(AbortReason::Signal);
 
-		let result_a = time::timeout(Duration::from_secs(10), handle_a)
-			.await
-			.expect("run A timed out")
-			.expect("run A task panicked")
-			.expect("run A failed");
 		let result_b = time::timeout(Duration::from_secs(10), handle_b)
 			.await
 			.expect("run B timed out")
 			.expect("run B task panicked")
 			.expect("run B failed");
+		assert_eq!(b_child.status(), process::ProcessStatus::Exited, "cancelled B child must exit");
+		assert_eq!(
+			a_child.status(),
+			process::ProcessStatus::Running,
+			"A must survive B cancellation"
+		);
+		assert_eq!(
+			record_identity("A-survived", a_child_pid),
+			a_identity,
+			"same A process must survive"
+		);
+		fs::write(&release, b"release").expect("release surviving run A");
+		let result_a = time::timeout(Duration::from_secs(10), handle_a)
+			.await
+			.expect("run A timed out")
+			.expect("run A task panicked")
+			.expect("run A failed");
 
 		assert_eq!(result_a.exit_code, Some(0), "cancelling run B must not SIGTERM run A's child");
 		assert!(!result_a.cancelled, "run A was never cancelled");

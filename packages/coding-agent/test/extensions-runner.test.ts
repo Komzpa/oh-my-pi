@@ -30,6 +30,7 @@ import type {
 	InputEvent,
 	InputEventResult,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { YieldTool } from "@oh-my-pi/pi-coding-agent/tools/yield";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -1647,6 +1648,51 @@ describe("ExtensionRunner", () => {
 			const res = await wrapper.execute("call-flagged", {} as never, undefined, undefined, undefined);
 			expect(firstText(res)).toBe("now failing");
 			expect(res.isError).toBe(true);
+		});
+
+		it("lets a terminal yield retry after an extension rejects the result", async () => {
+			const runner = await runnerFor(`
+				export default function(pi) {
+					let first = true;
+					pi.on("tool_result", (event) => {
+						if (event.toolName !== "yield" || !first) return;
+						first = false;
+						return { content: [{ type: "text", text: "revise" }], isError: true };
+					});
+				}
+			`);
+			const tool = new YieldTool({ cwd: tempDir.path(), hasUI: false, settings: Settings.isolated() } as never);
+			const accepted: unknown[] = [];
+			tool.subscribeAcceptedResult((_id, details) => accepted.push(details.data));
+			const wrapper = new ExtensionToolWrapper(tool, runner);
+			const rejected = await wrapper.execute("rejected", { data: "first" });
+			expect(rejected.isError).toBe(true);
+			expect(accepted).toEqual([]);
+			const retried = await wrapper.execute("retry", { data: "corrected" });
+			expect(retried.details?.status).toBe("success");
+			expect(accepted).toEqual(["corrected"]);
+			await expect(wrapper.execute("duplicate", { data: "replacement" })).rejects.toThrow("already submitted");
+		});
+
+		it("releases a terminal claim when an extension downgrades it to a section", async () => {
+			const runner = await runnerFor(`
+				export default function(pi) {
+					pi.on("tool_result", (event) => {
+						if (event.toolCallId !== "section") return;
+						return { content: event.content, details: { ...event.details, type: ["notes"] } };
+					});
+				}
+			`);
+			const tool = new YieldTool({ cwd: tempDir.path(), hasUI: false, settings: Settings.isolated() } as never);
+			const accepted: unknown[] = [];
+			tool.subscribeAcceptedResult((_id, details) => accepted.push(details));
+			const wrapper = new ExtensionToolWrapper(tool, runner);
+			await wrapper.execute("section", { data: "notes" });
+			expect(accepted).toMatchObject([{ type: ["notes"], data: "notes" }]);
+			const result = await wrapper.execute("terminal", { data: "answer" });
+			expect(result.details?.status).toBe("success");
+			expect(accepted).toHaveLength(2);
+			await expect(wrapper.execute("duplicate", { data: "changed" })).rejects.toThrow("already submitted");
 		});
 
 		it("preserves a tool-reported error through extension rewrites", async () => {

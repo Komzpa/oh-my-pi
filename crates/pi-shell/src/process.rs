@@ -1122,15 +1122,36 @@ impl TerminationTargets {
 		self.pgids.is_empty() && self.processes.is_empty()
 	}
 
-	/// Send `signal` to every recorded target. Failures are swallowed:
-	/// targets routinely exit between collection and signalling, and
-	/// the caller's policy is "best effort".
+	/// Send `signal` once to each target, including descendants outside the
+	/// recorded groups. Capture the trees before signalling so a TERM trap
+	/// cannot spawn cleanup work into a second delivery of the same wave.
 	pub fn signal(&self, signal: i32) {
-		for &pgid in &self.pgids {
-			let _ = kill_process_group(pgid, signal);
-		}
+		let protected = host_protected_pids();
+		let mut seen = HashSet::new();
+		let mut processes = Vec::new();
 		for process in &self.processes {
-			let _ = process.signal_tree(signal);
+			for child in process.signalable_descendants(&protected) {
+				if seen.insert(child.pid()) {
+					processes.push(child);
+				}
+			}
+			if !protected.contains(&process.pid()) && seen.insert(process.pid()) {
+				processes.push(process.clone());
+			}
+		}
+		let signalled_groups: HashSet<i32> = self
+			.pgids
+			.iter()
+			.copied()
+			.filter(|&pgid| kill_process_group(pgid, signal))
+			.collect();
+		for process in processes {
+			if !process
+				.group_id()
+				.is_some_and(|pgid| signalled_groups.contains(&pgid))
+			{
+				let _ = process.signal(signal);
+			}
 		}
 	}
 }

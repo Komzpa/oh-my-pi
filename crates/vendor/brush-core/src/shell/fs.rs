@@ -45,7 +45,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 			checked_path
 		};
 
-		let pwd = cleaned_path.to_string_lossy().to_string();
+		let pwd = cleaned_path.as_os_str().to_owned();
 
 		self.env.update_or_add(
 			"PWD",
@@ -58,7 +58,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 
 		self.env.update_or_add(
 			"OLDPWD",
-			variables::ShellValueLiteral::Scalar(oldpwd.to_string_lossy().to_string()),
+			variables::ShellValueLiteral::Scalar(oldpwd.into_os_string()),
 			|_| Ok(()),
 			EnvironmentLookup::Anywhere,
 			EnvironmentScope::Global,
@@ -84,8 +84,8 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 
 	/// Returns the shell's current home directory, if available.
 	pub(crate) fn home_dir(&self) -> Option<PathBuf> {
-		if let Some(home) = self.env.get_str("HOME", self) {
-			Some(PathBuf::from(home.to_string()))
+		if let Some(home) = self.env_os("HOME") {
+			Some(PathBuf::from(home.as_ref() as &std::ffi::OsStr))
 		} else {
 			// HOME isn't set, so let's sort it out ourselves.
 			users::get_current_user_home_dir()
@@ -99,8 +99,8 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 	///
 	/// * `filename` - The name of the executable to look for.
 	pub async fn find_executables_in_path(&self, filename: &str) -> Vec<PathBuf> {
-		let path_var = self.env.get_str("PATH", self).unwrap_or_default();
-		let paths = crate::sys::fs::split_paths(path_var.as_ref());
+		let path_var = self.env_os("PATH").unwrap_or_default();
+		let paths = crate::sys::fs::split_paths(path_var.as_ref() as &std::ffi::OsStr);
 
 		pathsearch::find_executables(&self.filesystem, paths, Path::new(filename)).await
 	}
@@ -116,8 +116,8 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		filename_prefix: &str,
 		case_insensitive: bool,
 	) -> Vec<PathBuf> {
-		let path_var = self.env.get_str("PATH", self).unwrap_or_default();
-		let paths = crate::sys::fs::split_paths(path_var.as_ref());
+		let path_var = self.env_os("PATH").unwrap_or_default();
+		let paths = crate::sys::fs::split_paths(path_var.as_ref() as &std::ffi::OsStr);
 
 		pathsearch::find_executables_with_prefix(
 			&self.filesystem,
@@ -139,8 +139,8 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		&self,
 		candidate_name: S,
 	) -> Option<PathBuf> {
-		let path_var = self.env_str("PATH").unwrap_or_default();
-		let paths = crate::sys::fs::split_paths(path_var.as_ref());
+		let path_var = self.env_os("PATH").unwrap_or_default();
+		let paths = crate::sys::fs::split_paths(path_var.as_ref() as &std::ffi::OsStr);
 		pathsearch::find_executable(&self.filesystem, paths, Path::new(candidate_name.as_ref())).await
 	}
 

@@ -5856,7 +5856,7 @@ fn uu_sort(host: &mut Host, matches: &ArgMatches, legacy_warnings: &[LegacyKeyWa
 	let tmp_base = matches
 		.get_one::<String>(options::TMP_DIR)
 		.map(PathBuf::from)
-		.or_else(|| host.var("TMPDIR").map(PathBuf::from))
+		.or_else(|| host.var_os("TMPDIR").map(PathBuf::from))
 		.unwrap_or_else(|| PathBuf::from("/tmp"));
 	let mut tmp_dir = TmpDirWrapper::new(fs.clone(), host.resolve(tmp_base));
 

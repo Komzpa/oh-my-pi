@@ -126,6 +126,7 @@ Artifacts and side channels:
     - isolated kept-alive run → follows the same idle/parking/revival path while retaining its workspace; explicit release captures final patches/branch state and cleans the isolation handle;
     - everything else (success and failure alike) → status `idle` with the live session attached, and `AgentLifecycleManager.global().adopt(id, { idleTtlMs, revive })` arms the park timer. The reviver reopens the session JSONL.
 16. Lifecycle thereafter: `idle` agents are parked after `task.agentIdleTtlMs` (session disposed; `AgentRef` + session file retained); `write agent://<id>` or the Agent Hub revives parked and killed agents back to `idle`. `"Main"` is never parked.
+17. Accepted-terminal-once per monitored run, any invocation path: an accepted terminal `yield` — direct tool call or eval-bridge (`callSessionTool`, JS and Python) — ends the monitored run/job and delivers exactly one parent completion carrying the accepted payload. A duplicate terminal yield inside the same run is rejected; a parent continuation (follow-up turn, IRC wake turn) re-arms a fresh result slot on the same tool. Invalid/refused yields never complete a run. Nonterminal incremental sections accumulate exactly once without completing the run.
 
 ## Modes / Variants
 - Execution mode
@@ -162,6 +163,7 @@ Artifacts and side channels:
 - Background work / cancellation
   - `write proc://<jobId>/kill` (no `content` needed) or parent tool-call abort cancels background jobs; parent tool-call abort cancels sync runs through the call signal. A cancelled run stops but its agent stays `idle` and resumable. An owned running subagent without a job can be cancelled through `proc://<agentId>/kill`, which aborts and releases its session.
   - Missing-`yield` recovery sends up to three internal reminder prompts to the child session.
+  - Autonomous focused/IRC turns also enqueue at most three internal reminders after refused yields, within the same observed turn. A running-process warning does not silently discard that turn's result or move it into the next prompt's result slot.
 
 ## Limits & Caps
 - Tool mode: `approval="exec"`, `strict=false`, `lenientArgValidation=true`, `loadMode="essential"`.

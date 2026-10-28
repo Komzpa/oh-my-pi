@@ -3,6 +3,7 @@
 use std::{
 	borrow::Cow,
 	collections::{HashMap, hash_map},
+	ffi::{OsStr, OsString},
 };
 
 use crate::{
@@ -149,10 +150,10 @@ impl ShellEnvironment {
 	//
 
 	/// Returns an iterator over all exported variables defined in the variable.
-	pub fn iter_exported(&self) -> impl Iterator<Item = (&String, &ShellVariable)> {
+	pub fn iter_exported(&self) -> impl Iterator<Item = (&OsString, &ShellVariable)> {
 		// We won't actually need to store all entries, but we expect it should be
 		// within the same order.
-		let mut visible_vars: HashMap<&String, &ShellVariable> =
+		let mut visible_vars: HashMap<&OsString, &ShellVariable> =
 			HashMap::with_capacity(self.entry_count);
 
 		for (_, var_map) in self.scopes.iter().rev() {
@@ -168,7 +169,7 @@ impl ShellEnvironment {
 	}
 
 	/// Returns an iterator over all the variables defined in the environment.
-	pub fn iter(&self) -> impl Iterator<Item = (&String, &ShellVariable)> {
+	pub fn iter(&self) -> impl Iterator<Item = (&OsString, &ShellVariable)> {
 		self.iter_using_policy(EnvironmentLookup::Anywhere)
 	}
 
@@ -181,10 +182,10 @@ impl ShellEnvironment {
 	pub fn iter_using_policy(
 		&self,
 		lookup_policy: EnvironmentLookup,
-	) -> impl Iterator<Item = (&String, &ShellVariable)> {
+	) -> impl Iterator<Item = (&OsString, &ShellVariable)> {
 		// We won't actually need to store all entries, but we expect it should be
 		// within the same order.
-		let mut visible_vars: HashMap<&String, &ShellVariable> =
+		let mut visible_vars: HashMap<&OsString, &ShellVariable> =
 			HashMap::with_capacity(self.entry_count);
 
 		let mut local_count = 0;
@@ -277,10 +278,8 @@ impl ShellEnvironment {
 		&self,
 		name: S,
 		shell: &Shell<SE>,
-	) -> Option<Cow<'_, str>> {
-		self
-			.get(name.as_ref())
-			.map(|(_, v)| v.value().to_cow_str(shell))
+	) -> Result<Option<Cow<'_, str>>, error::Error> {
+		self.get(name.as_ref()).map(|(_, v)| v.value().to_cow_str(shell)).transpose()
 	}
 
 	/// Checks if a variable of the given name is set in the environment.
@@ -340,9 +339,9 @@ impl ShellEnvironment {
 	///
 	/// * `name` - The name of the array variable to unset an element from.
 	/// * `index` - The index of the element to unset.
-	pub fn unset_index(&mut self, name: &str, index: &str) -> Result<bool, error::Error> {
+	pub fn unset_index(&mut self, name: &str, index: impl AsRef<std::ffi::OsStr>) -> Result<bool, error::Error> {
 		if let Some((_, var)) = self.get_mut(name) {
-			var.unset_index(index)
+			var.unset_index(index.as_ref())
 		} else {
 			Ok(false)
 		}
@@ -518,13 +517,15 @@ impl ShellEnvironment {
 	pub fn update_or_add_array_element<N: Into<String>>(
 		&mut self,
 		name: N,
-		index: String,
-		value: String,
+		index: impl Into<OsString>,
+		value: impl Into<OsString>,
 		updater: impl Fn(&mut ShellVariable) -> Result<(), error::Error>,
 		lookup_policy: EnvironmentLookup,
 		scope_if_creating: EnvironmentScope,
 	) -> Result<(), error::Error> {
 		let name = name.into();
+		let index = index.into();
+		let value = value.into();
 
 		if let Some(var) = self.get_mut_using_policy(&name, lookup_policy) {
 			var.assign_at_index(index, value, false)?;
@@ -551,7 +552,7 @@ impl ShellEnvironment {
 	/// * `name` - The name of the variable to add.
 	/// * `var` - The variable to add.
 	/// * `target_scope` - The scope to add the variable to.
-	pub fn add<N: Into<String>>(
+	pub fn add<N: Into<OsString>>(
 		&mut self,
 		name: N,
 		mut var: ShellVariable,
@@ -581,7 +582,7 @@ impl ShellEnvironment {
 	///
 	/// * `name` - The name of the variable to set.
 	/// * `var` - The variable to set.
-	pub fn set_global<N: Into<String>>(
+	pub fn set_global<N: Into<OsString>>(
 		&mut self,
 		name: N,
 		var: ShellVariable,
@@ -594,7 +595,7 @@ impl ShellEnvironment {
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ShellVariableMap {
-	variables: HashMap<String, ShellVariable>,
+	variables: HashMap<OsString, ShellVariable>,
 }
 
 impl ShellVariableMap {
@@ -603,7 +604,7 @@ impl ShellVariableMap {
 	//
 
 	/// Returns an iterator over all the variables in the map.
-	pub fn iter(&self) -> impl Iterator<Item = (&String, &ShellVariable)> {
+	pub fn iter(&self) -> impl Iterator<Item = (&OsString, &ShellVariable)> {
 		self.variables.iter()
 	}
 
@@ -614,7 +615,7 @@ impl ShellVariableMap {
 	///
 	/// * `name` - The name of the variable to retrieve.
 	pub fn get(&self, name: &str) -> Option<&ShellVariable> {
-		self.variables.get(name)
+		self.variables.get(OsStr::new(name))
 	}
 
 	/// Tries to retrieve a mutable reference to the variable with the given
@@ -624,7 +625,7 @@ impl ShellVariableMap {
 	///
 	/// * `name` - The name of the variable to retrieve.
 	pub fn get_mut(&mut self, name: &str) -> Option<&mut ShellVariable> {
-		self.variables.get_mut(name)
+		self.variables.get_mut(OsStr::new(name))
 	}
 
 	//
@@ -638,7 +639,7 @@ impl ShellVariableMap {
 	///
 	/// * `name` - The name of the variable to unset.
 	pub fn unset(&mut self, name: &str) -> Option<ShellVariable> {
-		self.variables.remove(name)
+		self.variables.remove(OsStr::new(name))
 	}
 
 	/// Sets a variable in the map.
@@ -647,7 +648,7 @@ impl ShellVariableMap {
 	///
 	/// * `name` - The name of the variable to set.
 	/// * `var` - The variable to set.
-	pub fn set<N: Into<String>>(&mut self, name: N, var: ShellVariable) -> Option<ShellVariable> {
+	pub fn set<N: Into<OsString>>(&mut self, name: N, var: ShellVariable) -> Option<ShellVariable> {
 		self.variables.insert(name.into(), var)
 	}
 }

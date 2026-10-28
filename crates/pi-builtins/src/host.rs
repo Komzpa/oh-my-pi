@@ -132,7 +132,7 @@ pub(crate) struct Host {
 
 	name:                  String,
 	paths:                 ShellPaths,
-	env:                   HashMap<String, String>,
+	env:                   HashMap<OsString, OsString>,
 	cancel:                Arc<AtomicBool>,
 	exit_code:             i32,
 	stdin_is_search_input: bool,
@@ -609,13 +609,18 @@ impl Host {
 	/// The shell's exported variables are *not* present in the host process
 	/// environment, so `std::env::var` would miss them.
 	pub fn var(&self, key: &str) -> Option<&str> {
-		self.env.get(key).map(String::as_str)
+		self.env.get(std::ffi::OsStr::new(key)).and_then(|value| value.to_str())
+	}
+
+	/// Looks up an exported value without converting its native encoding.
+	pub fn var_os(&self, key: &str) -> Option<&std::ffi::OsStr> {
+		self.env.get(std::ffi::OsStr::new(key)).map(OsString::as_os_str)
 	}
 
 	/// The exported shell environment, for building a child process
 	/// environment (`env_clear().envs(host.env())`).
-	pub fn env(&self) -> impl Iterator<Item = (&str, &str)> {
-		self.env.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+	pub fn env(&self) -> impl Iterator<Item = (&std::ffi::OsStr, &std::ffi::OsStr)> {
+		self.env.iter().map(|(k, v)| (k.as_os_str(), v.as_os_str()))
 	}
 
 	/// Whether the host has asked this invocation to stop (shell abort or
@@ -877,8 +882,8 @@ pub(crate) struct ShellCommand {
 /// One environment change a [`ShellCommand`] makes for its own command.
 enum EnvChange {
 	Clear,
-	Remove(String),
-	Set(String, String),
+	Remove(OsString),
+	Set(OsString, OsString),
 }
 
 impl ShellCommand {
@@ -912,14 +917,14 @@ impl ShellCommand {
 
 	/// Removes the variable `name` for the command (`env -u`), exported or
 	/// not. See [`ShellCommand::env_clear`] for the scope of the change.
-	pub fn env_remove(mut self, name: impl Into<String>) -> Self {
+	pub fn env_remove(mut self, name: impl Into<OsString>) -> Self {
 		self.env.push(EnvChange::Remove(name.into()));
 		self
 	}
 
 	/// Sets `name` to `value` in the command's environment (`env NAME=VALUE`).
 	/// See [`ShellCommand::env_clear`] for the scope of the change.
-	pub fn env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+	pub fn env(mut self, name: impl Into<OsString>, value: impl Into<OsString>) -> Self {
 		self.env.push(EnvChange::Set(name.into(), value.into()));
 		self
 	}
@@ -1076,7 +1081,7 @@ fn changed_env(
 	env: &brush_core::env::ShellEnvironment,
 	changes: &[EnvChange],
 ) -> Result<brush_core::env::ShellEnvironment, Error> {
-	let mut vars: HashMap<String, brush_core::ShellVariable> =
+	let mut vars: HashMap<OsString, brush_core::ShellVariable> =
 		env.iter().map(|(name, var)| (name.clone(), var.clone())).collect();
 	for change in changes {
 		match change {
@@ -1107,8 +1112,8 @@ fn search_path<SE: ShellExtensions>(shell: &Shell<SE>) -> Vec<PathBuf> {
 	} else {
 		"/usr/bin:/bin"
 	};
-	let path = shell.env().get_str("PATH", shell);
-	let path = path.as_deref().unwrap_or(DEFAULT_PATH);
+	let path = shell.env_os("PATH");
+	let path = path.as_deref().unwrap_or(std::ffi::OsStr::new(DEFAULT_PATH));
 	brush_core::sys::fs::split_paths(path)
 		.map(|dir| shell.working_dir().join(dir))
 		.collect()
@@ -1128,10 +1133,10 @@ async fn dispatch<SE: ShellExtensions>(
 	let mut args: Vec<CommandArg> = command
 		.argv
 		.into_iter()
-		.map(|arg| CommandArg::from(arg.to_string_lossy().into_owned()))
+		.map(CommandArg::from)
 		.collect();
-	let name = args.first().map(ToString::to_string).unwrap_or_default();
-	let argv0 = command.argv0.map(|argv0| argv0.to_string_lossy().into_owned());
+	let name = args.first().cloned().map(CommandArg::into_os_string).unwrap_or_default();
+	let argv0 = command.argv0;
 	if let (Some(argv0), Some(first)) = (&argv0, args.first_mut()) {
 		*first = CommandArg::from(argv0.clone());
 	}
@@ -1376,7 +1381,7 @@ impl Destination {
 pub(crate) struct ChildEnv {
 	cwd:    PathBuf,
 	filesystem: BlockingFs,
-	env:    Arc<Vec<(String, String)>>,
+	env:    Arc<Vec<(OsString, OsString)>>,
 	stderr: OpenFile,
 }
 
@@ -1689,6 +1694,26 @@ pub(crate) fn quote_arg(arg: &str) -> String {
 	format!("'{escaped}'")
 }
 
+/// Quotes native argv without converting non-UTF-8 Unix bytes through text.
+pub(crate) fn quote_os_arg(arg: &std::ffi::OsStr) -> String {
+	if let Some(text) = arg.to_str() {
+		return quote_arg(text);
+	}
+	#[cfg(unix)]
+	{
+		use std::os::unix::ffi::OsStrExt;
+		use std::fmt::Write as _;
+		let mut quoted = String::from("$'");
+		for byte in arg.as_bytes() {
+			write!(quoted, "\\x{byte:02x}").expect("writing to a String cannot fail");
+		}
+		quoted.push('\'');
+		quoted
+	}
+	#[cfg(not(unix))]
+	panic!("non-Unicode native argument cannot be represented in shell source")
+}
+
 /// Reads a boolean "disable" flag for the uutils builtins from the session
 /// environment (preferred) then the process environment, mirroring the nohup
 /// builtin gate. Truthy = present and not "", "0", or "false".
@@ -1705,7 +1730,7 @@ pub(crate) fn util<U: Utility, SE: ShellExtensions>() -> Registration<SE> {
 /// the utility's exit status) rather than through brush's generic usage-error
 /// path.
 pub(crate) struct Util<U: Utility> {
-	argv:    Vec<String>,
+	argv:    Vec<OsString>,
 	_marker: PhantomData<fn() -> U>,
 }
 
@@ -1736,7 +1761,7 @@ impl<U: Utility> builtins::Command for Util<U> {
 
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where
-		I: IntoIterator<Item = String>,
+		I: IntoIterator<Item = OsString>,
 	{
 		Ok(Self { argv: args.into_iter().collect(), _marker: PhantomData })
 	}
@@ -1752,12 +1777,11 @@ impl<U: Utility> builtins::Command for Util<U> {
 /// Drives a utility from raw arguments to an exit status.
 async fn run_utility<U: Utility, SE: ShellExtensions>(
 	context: ExecutionContext<'_, SE>,
-	argv: Vec<String>,
+	argv: Vec<OsString>,
 ) -> Result<ExecutionResult, Error> {
 	// Capture everything owned *before* the first await so the returned future
 	// stays `Send`: the borrowed `ExecutionContext` (and its `&mut Shell`) is
 	// dropped before we await the blocking task.
-	let argv: Vec<OsString> = argv.into_iter().map(OsString::from).collect();
 
 	let argv = match U::rewrite_argv(argv) {
 		Ok(argv) => argv,
@@ -1919,7 +1943,7 @@ fn build_host<SE: ShellExtensions>(
 	let mut env = HashMap::new();
 	for (key, var) in context.shell.env().iter_exported() {
 		if var.value().is_set() {
-			env.insert(key.clone(), var.value().to_cow_str(context.shell).into_owned());
+			env.insert(key.clone(), var.value().to_cow_os(context.shell).into_owned());
 		}
 	}
 
@@ -2158,8 +2182,8 @@ mod testing {
 		}
 
 		/// Sets an exported variable on a test host.
-		pub(crate) fn set_test_var(&mut self, key: &str, value: &str) {
-			self.env.insert(key.to_string(), value.to_string());
+		pub(crate) fn set_test_var(&mut self, key: &str, value: impl AsRef<std::ffi::OsStr>) {
+			self.env.insert(key.into(), value.as_ref().to_owned());
 		}
 
 		/// Requests cancellation on a test host.

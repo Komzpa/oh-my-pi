@@ -1405,8 +1405,8 @@ fn extract_time(options: &clap::ArgMatches) -> MetadataTimeField {
 /// Some env variables can be passed
 /// For now, we are only verifying if empty or not and known for `TERM`
 fn is_color_compatible_term(host: &Host) -> bool {
-	let term = host.var("TERM").map(OsString::from);
-	let colorterm = host.var("COLORTERM").map(OsString::from);
+	let term = host.var_os("TERM").map(OsString::from);
+	let colorterm = host.var_os("COLORTERM").map(OsString::from);
 
 	// Search function in the TERM struct to manage the wildcards
 	let term_matches = |term: &OsStr| -> bool {
@@ -1706,7 +1706,7 @@ fn parse_width(width_match: Option<&String>, host: &Host, runtime: &LsRuntime) -
 
 	let ret = match width_match {
 		Some(x) => parse_width_from_args(x)?,
-		None => match host.var("COLUMNS").map(OsString::from) {
+		None => match host.var_os("COLUMNS").map(OsString::from) {
 			Some(columns) => parse_width_from_env(columns),
 			None => calculate_term_size(),
 		},
@@ -1793,10 +1793,10 @@ impl Config {
 			SizeFormat::Bytes
 		};
 
-		let env_var_blocksize = host.var("BLOCKSIZE").map(OsString::from);
-		let env_var_block_size = host.var("BLOCK_SIZE").map(OsString::from);
-		let env_var_ls_block_size = host.var("LS_BLOCK_SIZE").map(OsString::from);
-		let env_var_posixly_correct = host.var("POSIXLY_CORRECT").map(OsString::from);
+		let env_var_blocksize = host.var_os("BLOCKSIZE").map(OsString::from);
+		let env_var_block_size = host.var_os("BLOCK_SIZE").map(OsString::from);
+		let env_var_ls_block_size = host.var_os("LS_BLOCK_SIZE").map(OsString::from);
+		let env_var_posixly_correct = host.var_os("POSIXLY_CORRECT").map(OsString::from);
 		let mut is_env_var_blocksize = false;
 
 		let raw_block_size = if let Some(opt_block_size) = opt_block_size {

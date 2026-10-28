@@ -2434,14 +2434,26 @@ mod tests {
 		);
 	}
 
-	/// Defends: bare `-j` parses as a no-op (never sets the clock) instead of
-	/// being rejected, and `-f` keeps GNU file semantics without `-j`.
+	/// Defends: `-j` without `-f` preserves reference-date selection, including
+	/// GNU existing-file precedence; a missing numeric reference means epoch seconds.
 	#[test]
 	fn bsd_j_alone_is_a_no_op() {
-		let (code, capture) = run_util::<Date>(&["-u", "-j", "-r", "0", "+%F"], "", "/");
+		let dir = tempfile::tempdir().unwrap();
+		let (code, capture) = run_util::<Date>(&["-u", "-j", "-r", "0", "+%F"], "", dir.path());
 
 		assert_eq!(code, 0);
 		assert_eq!(capture.out(), "1970-01-01\n");
+		assert_eq!(capture.err(), "");
+
+		let (plain_code, plain) = run_util::<Date>(&["-u", "-r", "0", "+%F"], "", dir.path());
+		assert_eq!((code, capture.out(), capture.err()), (plain_code, plain.out(), plain.err()));
+
+		let file = dir.path().join("0");
+		std::fs::write(&file, b"reference").unwrap();
+		filetime::set_file_mtime(&file, filetime::FileTime::from_unix_time(1_700_000_000, 0)).unwrap();
+		let (code, capture) = run_util::<Date>(&["-u", "-j", "-r", "0", "+%s"], "", dir.path());
+		assert_eq!(code, 0);
+		assert_eq!(capture.out(), "1700000000\n");
 		assert_eq!(capture.err(), "");
 	}
 

@@ -116,7 +116,7 @@ pub(crate) struct SetCommand {
 	set_option: SetOption,
 
 	#[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-	positional_args: Vec<String>,
+	positional_args: Vec<std::ffi::OsString>,
 }
 
 impl builtins::Command for SetCommand {
@@ -132,7 +132,7 @@ impl builtins::Command for SetCommand {
 	/// resolved
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where
-		I: IntoIterator<Item = String>,
+		I: IntoIterator<Item = std::ffi::OsString>,
 	{
 		//
 		// TODO(set): This is getting pretty messy; we need to see how to avoid this --
@@ -152,17 +152,17 @@ impl builtins::Command for SetCommand {
 				continue;
 			}
 
-			if arg == "-" || arg == "--" || (i > 0 && !arg.starts_with(['-', '+'])) {
+			if arg == "-" || arg == "--" || (i > 0 && !arg.to_str().is_some_and(|s| s.starts_with(['-', '+']))) {
 				now_parsing_positional_args = true;
 			}
 
-			if let Some(plus_options) = arg.strip_prefix("+") {
+			if let Some(plus_options) = arg.to_str().and_then(|s| s.strip_prefix('+')) {
 				next_arg_is_option_value = plus_options.ends_with('o');
 				for c in plus_options.chars() {
-					updated_args.push(format!("--+{c}"));
+					updated_args.push(format!("--+{c}").into());
 				}
 			} else {
-				next_arg_is_option_value = arg.starts_with('-') && arg.ends_with('o');
+				next_arg_is_option_value = arg.to_str().is_some_and(|s| s.starts_with('-') && s.ends_with('o'));
 				updated_args.push(arg);
 			}
 		}
@@ -415,12 +415,8 @@ fn display_all(
 			continue;
 		}
 
-		writeln!(
-			context.stdout(),
-			"{name}={}",
-			var.value()
-				.format(variables::FormatStyle::Basic, context.shell)?,
-		)?;
+		context.stdout().write_all(name.as_encoded_bytes())?;
+		writeln!(context.stdout(), "={}", var.value().format(variables::FormatStyle::Basic, context.shell)?)?;
 	}
 
 	// Display functions... unless we're in posix compliance mode.

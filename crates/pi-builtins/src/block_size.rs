@@ -110,7 +110,7 @@ impl BlockSize {
 
 	/// The default unit: 512 bytes under `POSIXLY_CORRECT`, else 1024.
 	pub fn default_for(host: &Host) -> Self {
-		Self::of(if host.var("POSIXLY_CORRECT").is_some() { 512 } else { 1024 })
+		Self::of(if host.var_os("POSIXLY_CORRECT").is_some() { 512 } else { 1024 })
 	}
 
 	/// Parses a `--block-size` spec.
@@ -161,10 +161,11 @@ impl BlockSize {
 	pub fn from_env(host: &Host, utility_var: &str) -> Self {
 		let Some(spec) = [utility_var, "BLOCK_SIZE", "BLOCKSIZE"]
 			.into_iter()
-			.find_map(|key| host.var(key))
+			.find_map(|key| host.var_os(key))
 		else {
 			return Self::default_for(host);
 		};
+		let Some(spec) = spec.to_str() else { return Self::default_for(host); };
 		match Self::parse(spec) {
 			Ok(size) => size,
 			Err(BlockSizeError::InvalidSuffix) => (1..spec.len())

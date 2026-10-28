@@ -1,14 +1,14 @@
 use std::{
 	collections::VecDeque,
+	ffi::{OsStr, OsString},
 	io::Write,
 	time::{Duration, Instant},
 };
 
 use brush_core::{ErrorKind, builtins, env, error, openfiles::OpenFile, variables};
 use clap::Parser;
-use itertools::Itertools;
 
-use crate::line_input::{CTRL_C, CTRL_D, LineInput, ReadAhead, decode_line};
+use crate::line_input::{CTRL_C, CTRL_D, LineInput, ReadAhead};
 
 /// Exit code returned when `read` times out.
 /// This is 128 + SIGALRM (14) = 142, matching bash behavior.
@@ -16,6 +16,43 @@ const TIMEOUT_EXIT_CODE: u8 = 142;
 
 /// Backslash character used for escape processing.
 const BACKSLASH: u8 = b'\\';
+
+fn decode_line(line: Vec<u8>) -> Result<OsString, brush_core::Error> {
+	#[cfg(unix)]
+	{ use std::os::unix::ffi::OsStringExt; Ok(OsString::from_vec(line)) }
+	#[cfg(not(unix))]
+	Ok(String::from_utf8(line)?.into())
+}
+
+#[cfg(unix)]
+fn native_units(value: &OsStr) -> Vec<OsString> {
+	let mut units = Vec::new();
+	let bytes = value.as_encoded_bytes();
+	let mut index = 0;
+	while index < bytes.len() {
+		let width = match bytes[index] { 0x00..=0x7f => 1, 0xc2..=0xdf => 2, 0xe0..=0xef => 3, 0xf0..=0xf4 => 4, _ => 1 };
+		let width = if index + width <= bytes.len() && std::str::from_utf8(&bytes[index..index+width]).is_ok() { width } else { 1 };
+		// SAFETY: slices are complete Unicode scalars or original undecodable native bytes.
+		units.push(unsafe { OsString::from_encoded_bytes_unchecked(bytes[index..index+width].to_vec()) });
+		index += width;
+	}
+	units
+}
+
+#[cfg(windows)]
+fn native_units(value: &OsStr) -> Vec<OsString> {
+	use std::os::windows::ffi::{OsStrExt, OsStringExt};
+	let units: Vec<u16> = value.encode_wide().collect();
+	let mut result = Vec::new();
+	let mut index = 0;
+	while index < units.len() {
+		let width = if (0xd800..=0xdbff).contains(&units[index]) && units.get(index+1).is_some_and(|u| (0xdc00..=0xdfff).contains(u)) { 2 } else { 1 };
+		result.push(OsString::from_wide(&units[index..index+width]));
+		index += width;
+	}
+	result
+}
+
 /// Default line delimiter (newline).
 const DEFAULT_DELIMITER: u8 = b'\n';
 /// NUL character used as delimiter when `-d ''` is specified.
@@ -31,7 +68,7 @@ pub(crate) struct ReadCommand {
 
 	/// Optionally, a delimiter to use other than a newline character.
 	#[clap(short = 'd')]
-	delimiter: Option<String>,
+	delimiter: Option<OsString>,
 
 	/// Use readline-like input.
 	#[clap(short = 'e')]
@@ -39,7 +76,7 @@ pub(crate) struct ReadCommand {
 
 	/// Provide text to use as initial input for readline.
 	#[clap(short = 'i', value_name = "STR")]
-	initial_text: Option<String>,
+	initial_text: Option<OsString>,
 
 	/// Read only the first N characters or until a specified
 	/// delimiter is reached, whichever happens first.
@@ -52,7 +89,7 @@ pub(crate) struct ReadCommand {
 
 	/// Prompt to display before reading.
 	#[clap(short = 'p')]
-	prompt: Option<String>,
+	prompt: Option<OsString>,
 
 	/// Read input in raw mode; no escape sequences.
 	#[clap(short = 'r')]
@@ -110,9 +147,9 @@ impl builtins::Command for ReadCommand {
 		}
 
 		// Retrieve effective value of IFS for splitting.
-		// We convert to owned String to release the borrow before the mutable borrow
+		// Own the native value to release its borrow before variable assignment.
 		// needed for variable assignment.
-		let ifs = context.shell.ifs().into_owned();
+		let ifs = context.shell.ifs()?.into_owned();
 
 		// Convert timeout to Duration.
 		let timeout = self.timeout_in_seconds.map(Duration::from_secs_f64);
@@ -166,14 +203,15 @@ impl builtins::Command for ReadCommand {
 /// - Default (`REPLY`): Assign entire input line to the `REPLY` variable
 fn assign_input_to_variables(
 	shell: &mut brush_core::Shell<impl brush_core::ShellExtensions>,
-	input_line: Option<&str>,
-	ifs: &str,
+	input_line: Option<&OsStr>,
+	ifs: &OsStr,
 	skip_ifs_splitting: bool,
 	array_variable: Option<&str>,
 	variable_names: &[String],
 ) -> Result<(), brush_core::Error> {
 	if let Some(array_variable) = array_variable {
-		let literal_fields = build_array_fields(input_line, ifs, skip_ifs_splitting);
+		let literal_fields = build_array_fields(input_line, ifs, skip_ifs_splitting)
+			.into_iter().map(|(index, value)| (index.map(Into::into), value.into())).collect();
 		shell.env_mut().update_or_add(
 			array_variable,
 			variables::ShellValueLiteral::Array(variables::ArrayLiteral(literal_fields)),
@@ -186,7 +224,7 @@ fn assign_input_to_variables(
 	} else {
 		shell.env_mut().update_or_add(
 			"REPLY",
-			variables::ShellValueLiteral::Scalar(input_line.unwrap_or_default().to_owned()),
+			variables::ShellValueLiteral::Scalar(input_line.unwrap_or_default().into()),
 			|_| Ok(()),
 			env::EnvironmentLookup::Anywhere,
 			env::EnvironmentScope::Global,
@@ -202,8 +240,8 @@ fn assign_input_to_variables(
 /// fields, the extra variables are set to empty strings.
 fn assign_to_named_variables(
 	shell: &mut brush_core::Shell<impl brush_core::ShellExtensions>,
-	input_line: Option<&str>,
-	ifs: &str,
+	input_line: Option<&OsStr>,
+	ifs: &OsStr,
 	skip_ifs_splitting: bool,
 	variable_names: &[String],
 ) -> Result<(), brush_core::Error> {
@@ -214,17 +252,19 @@ fn assign_to_named_variables(
 		let is_last = i == variable_names.len() - 1;
 
 		let value = if fields.is_empty() {
-			String::new()
+			OsString::new()
 		} else if is_last {
 			// Last variable gets all remaining fields joined by space.
-			std::mem::take(&mut fields).into_iter().join(" ")
+			let mut value = OsString::new();
+			for (index, field) in std::mem::take(&mut fields).into_iter().enumerate() { if index > 0 { value.push(" "); } value.push(field); }
+			value
 		} else {
 			fields.pop_front().unwrap_or_default()
 		};
 
 		shell.env_mut().update_or_add(
 			name,
-			variables::ShellValueLiteral::Scalar(value),
+			variables::ShellValueLiteral::Scalar(value.into()),
 			|_| Ok(()),
 			env::EnvironmentLookup::Anywhere,
 			env::EnvironmentScope::Global,
@@ -239,14 +279,14 @@ fn assign_to_named_variables(
 
 /// Builds array field values from input, optionally splitting by IFS.
 fn build_array_fields(
-	input_line: Option<&str>,
-	ifs: &str,
+	input_line: Option<&OsStr>,
+	ifs: &OsStr,
 	skip_ifs_splitting: bool,
-) -> Vec<(Option<String>, String)> {
+) -> Vec<(Option<String>, OsString)> {
 	match input_line {
 		Some(line) if skip_ifs_splitting => {
 			// With -N, don't split - put entire input as single element.
-			vec![(None, line.to_string())]
+			vec![(None, line.to_owned())]
 		},
 		Some(line) => {
 			let fields: VecDeque<_> = split_line_by_ifs(ifs, line, None /* max_fields */);
@@ -258,16 +298,16 @@ fn build_array_fields(
 
 /// Builds field values from input for assignment to named variables.
 fn build_variable_fields(
-	input_line: Option<&str>,
-	ifs: &str,
+	input_line: Option<&OsStr>,
+	ifs: &OsStr,
 	skip_ifs_splitting: bool,
 	num_variables: usize,
-) -> VecDeque<String> {
+) -> VecDeque<OsString> {
 	match input_line {
 		Some(line) if skip_ifs_splitting => {
 			// With -N, don't split - put entire input in first variable.
 			let mut fields = VecDeque::new();
-			fields.push_back(line.to_string());
+			fields.push_back(line.to_owned());
 			fields
 		},
 		Some(line) => split_line_by_ifs(ifs, line, Some(num_variables)),
@@ -282,14 +322,14 @@ fn build_variable_fields(
 #[derive(Debug)]
 enum ReadResult {
 	/// Successfully read a complete line (delimiter or char limit reached).
-	Line(String),
+	Line(OsString),
 	/// Reached end of input. Contains any partial content read before EOF.
-	Eof(Option<String>),
+	Eof(Option<OsString>),
 	/// Input was interrupted (e.g., Ctrl+C). No content is returned.
 	Interrupted,
 	/// The operation timed out. Contains any partial content read before
 	/// timeout.
-	TimedOut(Option<String>),
+	TimedOut(Option<OsString>),
 	/// For `-t 0`: input is immediately available (exit 0).
 	InputReady,
 	/// For `-t 0`: no input immediately available (exit 1).
@@ -543,7 +583,7 @@ where
 		match event {
 			InputEvent::Eof => {
 				// Bash discards pending backslash on EOF.
-				return Ok(ReadResult::Eof((!line.is_empty()).then(|| decode_line(line))));
+				return Ok(ReadResult::Eof(if line.is_empty() { None } else { Some(decode_line(line)?) }));
 			},
 
 			InputEvent::Timeout => {
@@ -551,7 +591,7 @@ where
 				if pending_backslash {
 					line.push(BACKSLASH);
 				}
-				return Ok(ReadResult::TimedOut((!line.is_empty()).then(|| decode_line(line))));
+				return Ok(ReadResult::TimedOut(if line.is_empty() { None } else { Some(decode_line(line)?) }));
 			},
 
 			InputEvent::CtrlC => {
@@ -564,7 +604,7 @@ where
 				return Ok(if line.is_empty() && !pending_backslash {
 					ReadResult::Eof(None)
 				} else {
-					ReadResult::Line(decode_line(line))
+					ReadResult::Line(decode_line(line)?)
 				});
 			},
 
@@ -585,7 +625,7 @@ where
 
 						// Check character limit (based on output length).
 						if count.reached(config.char_limit) {
-							return Ok(ReadResult::Line(decode_line(line)));
+							return Ok(ReadResult::Line(decode_line(line)?));
 						}
 						continue;
 					}
@@ -598,7 +638,7 @@ where
 
 				// Check for delimiter.
 				if config.delimiter == Some(byte) {
-					return Ok(ReadResult::Line(decode_line(line)));
+					return Ok(ReadResult::Line(decode_line(line)?));
 				}
 
 				// Ignore non-whitespace control characters.
@@ -611,7 +651,7 @@ where
 
 				// Check character limit (based on output length).
 				if count.reached(config.char_limit) {
-					return Ok(ReadResult::Line(decode_line(line)));
+					return Ok(ReadResult::Line(decode_line(line)?));
 				}
 			},
 		}
@@ -641,7 +681,7 @@ impl ReadCommand {
 		// behavior).
 		if let Some(prompt) = &self.prompt {
 			if input_file.is_terminal() {
-				write!(stderr_file, "{prompt}")?;
+				stderr_file.write_all(prompt.as_encoded_bytes())?;
 				stderr_file.flush()?;
 			}
 		}
@@ -651,7 +691,7 @@ impl ReadCommand {
 		let delimiter = if self.return_after_n_chars_no_delimiter.is_some() {
 			None
 		} else if let Some(delimiter_str) = &self.delimiter {
-			Some(delimiter_str.as_bytes().first().copied().unwrap_or(NUL_DELIMITER))
+			Some(delimiter_str.as_encoded_bytes().first().copied().unwrap_or(NUL_DELIMITER))
 		} else {
 			Some(DEFAULT_DELIMITER)
 		};
@@ -757,16 +797,18 @@ impl ReadCommand {
 /// * `ifs` - The IFS string (typically " \t\n")
 /// * `line` - The input line to split
 /// * `max_fields` - Optional limit on number of fields (for `read var1 var2`)
-fn split_line_by_ifs(ifs: &str, line: &str, max_fields: Option<usize>) -> VecDeque<String> {
-	let ifs_chars: Vec<char> = ifs.chars().collect();
+fn split_line_by_ifs(ifs: impl AsRef<OsStr>, line: impl AsRef<OsStr>, max_fields: Option<usize>) -> VecDeque<OsString> {
+	let ifs_chars = native_units(ifs.as_ref());
 
 	// Helper to check if a char is IFS whitespace (space, tab, or newline AND in
 	// IFS).
-	let is_ifs_whitespace =
-		|c: char| -> bool { (c == ' ' || c == '\t' || c == '\n') && ifs_chars.contains(&c) };
-
-	// Trim leading/trailing IFS whitespace from the input.
-	let trimmed_line = line.trim_matches(&is_ifs_whitespace);
+	let is_ifs_whitespace = |c: &OsString| -> bool {
+		matches!(c.as_encoded_bytes(), b" " | b"\t" | b"\n") && ifs_chars.contains(c)
+	};
+	let units = native_units(line.as_ref());
+	let start = units.iter().position(|c| !is_ifs_whitespace(c)).unwrap_or(units.len());
+	let end = units.iter().rposition(|c| !is_ifs_whitespace(c)).map_or(start, |i| i+1);
+	let trimmed_line = &units[start..end];
 	if trimmed_line.is_empty() {
 		return VecDeque::new();
 	}
@@ -779,19 +821,19 @@ fn split_line_by_ifs(ifs: &str, line: &str, max_fields: Option<usize>) -> VecDeq
 	// - `collecting_remainder`: We've hit max_fields, collect everything into last
 	//   field
 	let mut fields = VecDeque::new();
-	let mut current_field = String::new();
+	let mut current_field = OsString::new();
 	let mut consuming_whitespace_run = false;
 	let mut prev_was_non_ws_delim = false;
 	let mut collecting_remainder = false;
 
-	for c in trimmed_line.chars() {
+	for c in trimmed_line {
 		// Skip consecutive IFS whitespace (they act as single delimiter).
 		if consuming_whitespace_run && is_ifs_whitespace(c) {
 			continue;
 		}
 		consuming_whitespace_run = false;
 
-		let is_delimiter = ifs_chars.contains(&c);
+		let is_delimiter = ifs_chars.contains(c);
 		let at_field_limit = fields.len() + 1 >= max_fields;
 
 		if !at_field_limit && is_delimiter {
@@ -908,13 +950,13 @@ mod tests {
 	#[test]
 	fn test_split_line_by_ifs_empty_input() {
 		let result = split_line_by_ifs(" ", "", None);
-		assert_equal(result, VecDeque::<String>::new());
+		assert_equal(result, VecDeque::<OsString>::new());
 	}
 
 	#[test]
 	fn test_split_line_by_ifs_whitespace_only() {
 		let result = split_line_by_ifs(" ", "   ", None);
-		assert_equal(result, VecDeque::<String>::new());
+		assert_equal(result, VecDeque::<OsString>::new());
 	}
 
 	#[test]
@@ -928,24 +970,24 @@ mod tests {
 
 	#[test]
 	fn test_build_array_fields_basic() {
-		let result = build_array_fields(Some("a b c"), " ", false);
+		let result = build_array_fields(Some(OsStr::new("a b c")), OsStr::new(" "), false);
 		assert_eq!(result, vec![
-			(None, "a".to_string()),
-			(None, "b".to_string()),
-			(None, "c".to_string())
+			(None, OsString::from("a")),
+			(None, OsString::from("b")),
+			(None, OsString::from("c"))
 		]);
 	}
 
 	#[test]
 	fn test_build_array_fields_skip_splitting() {
 		// With -N option, entire input goes as single element.
-		let result = build_array_fields(Some("a b c"), " ", true);
-		assert_eq!(result, vec![(None, "a b c".to_string())]);
+		let result = build_array_fields(Some(OsStr::new("a b c")), OsStr::new(" "), true);
+		assert_eq!(result, vec![(None, OsString::from("a b c"))]);
 	}
 
 	#[test]
 	fn test_build_array_fields_none_input() {
-		let result = build_array_fields(None, " ", false);
+		let result = build_array_fields(None, OsStr::new(" "), false);
 		assert!(result.is_empty());
 	}
 
@@ -953,27 +995,27 @@ mod tests {
 
 	#[test]
 	fn test_build_variable_fields_basic() {
-		let result = build_variable_fields(Some("a b c"), " ", false, 3);
+		let result = build_variable_fields(Some(OsStr::new("a b c")), OsStr::new(" "), false, 3);
 		assert_equal(result, VecDeque::from(vec!["a", "b", "c"]));
 	}
 
 	#[test]
 	fn test_build_variable_fields_fewer_vars_than_fields() {
 		// Last variable gets remainder.
-		let result = build_variable_fields(Some("a b c d"), " ", false, 2);
+		let result = build_variable_fields(Some(OsStr::new("a b c d")), OsStr::new(" "), false, 2);
 		assert_equal(result, VecDeque::from(vec!["a", "b c d"]));
 	}
 
 	#[test]
 	fn test_build_variable_fields_skip_splitting() {
 		// With -N option, entire input goes to first variable.
-		let result = build_variable_fields(Some("a b c"), " ", true, 3);
+		let result = build_variable_fields(Some(OsStr::new("a b c")), OsStr::new(" "), true, 3);
 		assert_equal(result, VecDeque::from(vec!["a b c"]));
 	}
 
 	#[test]
 	fn test_build_variable_fields_none_input() {
-		let result = build_variable_fields(None, " ", false, 3);
+		let result = build_variable_fields(None, OsStr::new(" "), false, 3);
 		assert!(result.is_empty());
 	}
 

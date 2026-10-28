@@ -635,7 +635,7 @@ impl Settings {
 			show_words: matches.get_flag(options::WORDS),
 			show_max_line_length: matches.get_flag(options::MAX_LINE_LENGTH),
 			debug: matches.get_flag(options::DEBUG),
-			posixly_correct: host.var("POSIXLY_CORRECT").is_some(),
+			posixly_correct: host.var_os("POSIXLY_CORRECT").is_some(),
 			files0_from,
 			total_when,
 		};

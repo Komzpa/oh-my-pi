@@ -14,7 +14,7 @@ use clap::Parser;
 use tokio::time;
 use tokio_util::sync::CancellationToken;
 
-use crate::host::{parse_duration, quote_arg};
+use crate::host::{parse_duration, quote_os_arg};
 
 /// GNU timeout's exit status for its own usage/internal errors.
 const EXIT_TIMEOUT_FAILURE: u8 = 125;
@@ -52,14 +52,14 @@ struct TimeoutArgs {
 	duration: String,
 	// The command's own options belong to the command: `timeout 5 grep -v x`.
 	#[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
-	command: Vec<String>,
+	command: Vec<std::ffi::OsString>,
 }
 
 /// Holds the raw argument vector so parse failures surface as GNU timeout's
 /// exit status 125, not brush's generic usage-error status 2 (which the
 /// default `builtins::Command::new` path would produce).
 pub(crate) struct TimeoutCommand {
-	argv: Vec<String>,
+	argv: Vec<std::ffi::OsString>,
 }
 
 impl clap::FromArgMatches for TimeoutCommand {
@@ -146,7 +146,7 @@ impl builtins::Command for TimeoutCommand {
 
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where
-		I: IntoIterator<Item = String>,
+		I: IntoIterator<Item = std::ffi::OsString>,
 	{
 		Ok(Self { argv: args.into_iter().collect() })
 	}
@@ -224,7 +224,7 @@ impl builtins::Command for TimeoutCommand {
 			if idx > 0 {
 				command_line.push(' ');
 			}
-			command_line.push_str(&quote_arg(arg));
+			command_line.push_str(&quote_os_arg(arg));
 		}
 
 		// Grab an owned stderr handle up front: `run_future` below holds the
@@ -268,7 +268,7 @@ impl builtins::Command for TimeoutCommand {
 				stderr,
 				"timeout: sending signal {} to command '{}'",
 				signal_display(signal),
-				args.command[0]
+				args.command[0].to_str().ok_or_else(|| brush_core::Error::from(brush_core::ErrorKind::InternalError("timeout command is not valid UTF-8".into())))?
 			);
 		}
 		let signalled = spawns.signal(signal, !args.foreground);
@@ -312,7 +312,7 @@ impl builtins::Command for TimeoutCommand {
 					let _ = writeln!(
 						stderr,
 						"timeout: sending signal KILL to command '{}'",
-						args.command[0]
+						args.command[0].to_str().ok_or_else(|| brush_core::Error::from(brush_core::ErrorKind::InternalError("timeout command is not valid UTF-8".into())))?
 					);
 				}
 				killed = true;

@@ -2,7 +2,7 @@
 //!
 //! Ported from pi-shell's in-process `which` implementation.
 
-use std::{io::Write, path::Path};
+use std::{ffi::{OsStr, OsString}, io::Write, path::Path};
 
 use brush_core::{
 	ShellExtensions,
@@ -28,7 +28,7 @@ pub(crate) struct WhichCli {
 
 	/// Command names to locate.
 	#[arg(value_name = "name")]
-	names: Vec<String>,
+	names: Vec<OsString>,
 }
 
 impl Utility for WhichCli {
@@ -41,12 +41,12 @@ impl Utility for WhichCli {
 			let _ = writeln!(host.stderr, "usage: which [-as] program ...");
 			return 1;
 		}
-		let path_var = host.var("PATH").unwrap_or_default().to_owned();
+		let path_var = host.var_os("PATH").unwrap_or_else(|| OsStr::new("")).to_owned();
 		let mut all_found = true;
 
 		for name in self.names {
-			let matches = if sys::fs::contains_path_separator(&name) {
-				let candidate = host.resolve(&name);
+			let matches = if name.as_encoded_bytes().iter().any(|b| *b == b'/' || (cfg!(windows) && *b == b'\\')) {
+				let candidate = host.resolve(Path::new(&name));
 				if host.fs().is_dir(&candidate) {
 					Vec::new()
 				} else {
@@ -65,7 +65,8 @@ impl Utility for WhichCli {
 			}
 			if !self.silent {
 				for path in matches {
-					let _ = writeln!(host.stdout, "{}", path.display());
+					let _ = host.stdout.write_all(path.as_os_str().as_encoded_bytes());
+					let _ = host.stdout.write_all(b"\n");
 				}
 			}
 		}
@@ -82,7 +83,7 @@ pub(crate) fn which_builtin<SE: ShellExtensions>() -> Registration<SE> {
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
-	use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+	use std::{ffi::OsString, fs, os::unix::{ffi::OsStringExt, fs::PermissionsExt}, path::Path};
 
 	use clap::Parser;
 
@@ -103,10 +104,15 @@ mod tests {
 			std::iter::once("which").chain(argv.iter().copied()),
 		)
 		.expect("test arguments should parse");
+		let (code, output) = run_which_cli(cli, path.into(), cwd);
+		(code, String::from_utf8(output).expect("text fixture output should be UTF-8"))
+	}
+
+	fn run_which_cli(cli: WhichCli, path: OsString, cwd: &Path) -> (i32, Vec<u8>) {
 		let (mut host, capture) = Host::for_test("which", Vec::new(), cwd);
-		host.set_test_var("PATH", path);
+		host.set_test_var("PATH", &path);
 		let code = cli.run(&mut host);
-		(code, capture.out())
+		(code, capture.stdout())
 	}
 
 	/// Bare `which` used to silently exit 0; BSD/GNU which report a usage
@@ -139,6 +145,68 @@ mod tests {
 		assert_eq!(run_which(&["-as", "tool"], &path_var, &dir), (0, String::new()));
 		assert_eq!(run_which(&["-sa", "tool"], &path_var, &dir), (0, String::new()));
 		assert_eq!(run_which(&["-s", "tool", "missing"], &path_var, &dir), (1, String::new()));
+	}
+
+	#[test]
+	fn finds_commands_in_invalid_utf8_path_directory() {
+		let temp = tempfile::tempdir().expect("temp directory should be created");
+		let cwd = fs::canonicalize(temp.path()).expect("temp directory should canonicalize");
+		let dir = cwd.join(OsString::from_vec(b"bin-\xff".to_vec()));
+		fs::create_dir_all(&dir).expect("PATH directory should be created");
+		let tool = place_file(&dir, "tool", true);
+		let path = std::env::join_paths([&dir]).expect("PATH should join");
+		let cli = WhichCli::try_parse_from([OsString::from("which"), OsString::from("tool")])
+			.expect("test arguments should parse");
+		let (code, output) = run_which_cli(cli, path, &cwd);
+		assert_eq!(code, 0);
+		assert_eq!(output, [tool.as_os_str().as_encoded_bytes(), b"\n"].concat());
+	}
+
+	#[test]
+	fn finds_command_with_invalid_utf8_filename_operand() {
+		let temp = tempfile::tempdir().expect("temp directory should be created");
+		let cwd = fs::canonicalize(temp.path()).expect("temp directory should canonicalize");
+		let dir = cwd.join("bin");
+		fs::create_dir_all(&dir).expect("PATH directory should be created");
+		let name = OsString::from_vec(b"tool-\xff".to_vec());
+		let tool = dir.join(&name);
+		fs::write(&tool, b"#!/bin/sh\n").expect("file should be written");
+		fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).expect("permissions should be set");
+		let path = std::env::join_paths([&dir]).expect("PATH should join");
+		let cli = WhichCli::try_parse_from([OsString::from("which"), name]).expect("args parse");
+		let (code, output) = run_which_cli(cli, path, &cwd);
+		assert_eq!(code, 0);
+		assert_eq!(output, [tool.as_os_str().as_encoded_bytes(), b"\n"].concat());
+	}
+
+	#[test]
+	fn emits_invalid_utf8_matched_path_without_losing_native_bytes() {
+		let temp = tempfile::tempdir().expect("temp directory should be created");
+		let cwd = fs::canonicalize(temp.path()).expect("temp directory should canonicalize");
+		let dir = cwd.join(OsString::from_vec(b"bin-\xff".to_vec()));
+		fs::create_dir_all(&dir).expect("PATH directory should be created");
+		let tool = place_file(&dir, "tool", true);
+		let path = std::env::join_paths([&dir]).expect("PATH should join");
+		let cli = WhichCli::try_parse_from([OsString::from("which"), OsString::from("tool")])
+			.expect("test arguments should parse");
+		let (code, output) = run_which_cli(cli, path, &cwd);
+		assert_eq!(code, 0);
+		assert_eq!(output, [tool.as_os_str().as_encoded_bytes(), b"\n"].concat());
+	}
+
+	#[test]
+	fn ordinary_unicode_path_and_name_still_work() {
+		let temp = tempfile::tempdir().expect("temp directory should be created");
+		let cwd = fs::canonicalize(temp.path()).expect("temp directory should canonicalize");
+		let dir = cwd.join("bín");
+		fs::create_dir_all(&dir).expect("PATH directory should be created");
+		let tool = place_file(&dir, "tøol", true);
+		let path = std::env::join_paths([&dir]).expect("PATH should join");
+		let cli = WhichCli::try_parse_from([OsString::from("which"), OsString::from("tøol")])
+			.expect("args parse");
+		let (code, output) = run_which_cli(cli, path, &cwd);
+		assert_eq!(code, 0);
+		assert_eq!(output, [tool.as_os_str().as_encoded_bytes(), b"\n"].concat());
 	}
 
 	#[test]

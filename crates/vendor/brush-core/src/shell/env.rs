@@ -11,8 +11,13 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 	/// # Arguments
 	///
 	/// * `name` - The name of the variable to retrieve.
-	pub fn env_str(&self, name: &str) -> Option<Cow<'_, str>> {
+	pub fn env_str(&self, name: &str) -> Result<Option<Cow<'_, str>>, error::Error> {
 		self.env.get_str(name, self)
+	}
+
+	/// Retrieves a variable without converting native bytes to text.
+	pub fn env_os(&self, name: &str) -> Option<Cow<'_, std::ffi::OsStr>> {
+		self.env.get(name).map(|(_, var)| var.value().to_cow_os(self))
 	}
 
 	/// Tries to retrieve a variable from the shell's environment.

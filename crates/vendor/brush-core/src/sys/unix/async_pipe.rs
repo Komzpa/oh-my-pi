@@ -11,10 +11,10 @@ impl AsyncPipeReader {
 		Ok(Self(pipe::Receiver::from_file(std::fs::File::from(OwnedFd::from(reader)))?))
 	}
 
-	pub(crate) async fn read_to_string(&mut self) -> io::Result<String> {
+	pub(crate) async fn read_to_end(&mut self) -> io::Result<Vec<u8>> {
 		use tokio::io::AsyncReadExt;
-		let mut s = String::new();
-		self.0.read_to_string(&mut s).await?;
-		Ok(s)
+		let mut bytes = Vec::new();
+		self.0.read_to_end(&mut bytes).await?;
+		Ok(bytes)
 	}
 }

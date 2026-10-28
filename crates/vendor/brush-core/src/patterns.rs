@@ -1,6 +1,6 @@
 //! Shell patterns
 
-use std::{collections::VecDeque, path::Path};
+use std::{collections::VecDeque, ffi::{OsStr, OsString}, path::{Path, PathBuf}};
 
 use crate::{error, regex, sys, trace_categories};
 
@@ -24,10 +24,11 @@ impl PatternPiece {
 
 type PatternWord = Vec<PatternPiece>;
 
-fn component_string(components: &[PatternWord], index: usize) -> Option<String> {
-	components
-		.get(index)
-		.map(|component| component.iter().map(|piece| piece.as_str()).collect())
+type FilenameComponent = Vec<(OsString, bool)>;
+
+fn component_string(components: &[FilenameComponent], index: usize) -> Option<String> {
+	let spelling: OsString = components.get(index)?.iter().map(|(s, _)| s.as_os_str()).collect();
+	spelling.into_string().ok()
 }
 
 /// Options for filename expansion.
@@ -62,14 +63,14 @@ enum GlobstarMode {
 }
 
 /// True for a component spelled exactly `**` by unquoted pattern text.
-fn is_globstar_component(component: &PatternWord) -> bool {
-	component.iter().all(|piece| matches!(piece, PatternPiece::Pattern(_)))
-		&& component.iter().map(|piece| piece.as_str()).collect::<String>() == "**"
+fn is_globstar_component(component: &FilenameComponent) -> bool {
+	component.iter().all(|(_, literal)| !literal)
+		&& component.iter().map(|(s, _)| s.as_os_str()).collect::<OsString>() == "**"
 }
 
 /// True for the empty component between two slashes (or after a final one).
-fn is_empty_component(component: &PatternWord) -> bool {
-	component.iter().all(|piece| piece.as_str().is_empty())
+fn is_empty_component(component: &FilenameComponent) -> bool {
+	component.iter().all(|(s, _)| s.is_empty())
 }
 
 /// Stops expansion with [`error::ErrorKind::Interrupted`] once the run is
@@ -94,17 +95,14 @@ fn probe_path<'a>(fs: &pi_vfs::Fs, path: &'a Path) -> std::borrow::Cow<'a, Path>
 
 /// Returns the `scheme://` root when the pattern's leading components spell a
 /// virtual path (`scheme:` then an empty component, from splitting on `/`).
-fn url_pattern_root(components: &[PatternWord]) -> Option<std::path::PathBuf> {
-	let [first, second, ..] = components else {
-		return None;
-	};
-	if !second.iter().all(|piece| piece.as_str().is_empty()) {
+fn url_pattern_root(components: &[FilenameComponent]) -> Option<PathBuf> {
+	if !components.get(1)?.iter().all(|(s, _)| s.is_empty()) {
 		return None;
 	}
-	let mut root: String = first.iter().map(|piece| piece.as_str()).collect();
+	let mut root = component_string(components, 0)?;
 	let scheme_len = root.strip_suffix(':')?.len();
 	root.push_str("//");
-	let root = std::path::PathBuf::from(root);
+	let root = PathBuf::from(root);
 	(pi_vfs::url_scheme(&root).map(str::len) == Some(scheme_len)).then_some(root)
 }
 
@@ -116,12 +114,12 @@ pub(crate) enum PatternExpansionResult {
 	#[default]
 	NoGlob,
 	/// Glob expansion was attempted. Contains matching paths (may be empty).
-	Expanded(Vec<String>),
+	Expanded(Vec<OsString>),
 }
 
 impl PatternExpansionResult {
 	/// Returns the expansion results, regardless of variant.
-	pub fn into_paths(self) -> Vec<String> {
+	pub fn into_paths(self) -> Vec<OsString> {
 		match self {
 			Self::NoGlob => vec![],
 			Self::Expanded(paths) => paths,
@@ -141,6 +139,7 @@ pub struct Pattern {
 	enable_extended_globbing: bool,
 	multiline:                bool,
 	case_insensitive:         bool,
+	native_pieces: Option<Vec<(OsString, bool)>>,
 }
 
 impl Default for Pattern {
@@ -150,6 +149,7 @@ impl Default for Pattern {
 			enable_extended_globbing: false,
 			multiline:                true,
 			case_insensitive:         false,
+			native_pieces: None,
 		}
 	}
 }
@@ -179,6 +179,70 @@ impl From<String> for Pattern {
 }
 
 impl Pattern {
+	/// Constructs a pattern from evaluated native pieces and their quoting state.
+	pub(crate) fn from_native_pieces(pieces: Vec<(OsString, bool)>) -> Self {
+		if pieces.iter().all(|(s, _)| s.to_str().is_some()) {
+			return Self::from(pieces.into_iter().map(|(s, literal)| {
+				let s = s.into_string().expect("validated Unicode pattern");
+				if literal { PatternPiece::Literal(s) } else { PatternPiece::Pattern(s) }
+			}).collect::<Vec<_>>());
+		}
+		Self { native_pieces: Some(pieces), ..Self::default() }
+	}
+
+	fn native_spelling(&self) -> OsString {
+		let mut bytes = Vec::new();
+		let pieces: Vec<(&OsStr, bool)> = match &self.native_pieces {
+			Some(pieces) => pieces.iter().map(|(s, literal)| (s.as_os_str(), *literal)).collect(),
+			None => self.pieces.iter().map(|p| (OsStr::new(p.as_str()), matches!(p, PatternPiece::Literal(_)))).collect(),
+		};
+		for (piece, literal) in pieces {
+			for &byte in piece.as_encoded_bytes() {
+				if literal && matches!(byte, b'\\' | b'*' | b'?' | b'[' | b']' | b'(' | b')' | b'|' | b'!' | b'+' | b'@') { bytes.push(b'\\'); }
+				bytes.push(byte);
+			}
+		}
+		// SAFETY: only ASCII escapes are inserted into existing native encodings.
+		unsafe { OsString::from_encoded_bytes_unchecked(bytes) }
+	}
+
+	fn has_native_glob(&self, bytes: &[u8]) -> bool {
+		let mut escaped = false;
+		for (index, &byte) in bytes.iter().enumerate() {
+			if escaped { escaped = false; continue; }
+			if byte == b'\\' { escaped = true; continue; }
+			if matches!(byte, b'*' | b'?' | b'[')
+				|| (self.enable_extended_globbing && matches!(byte, b'@' | b'+' | b'!') && bytes.get(index + 1) == Some(&b'(')) {
+				return true;
+			}
+		}
+		false
+	}
+
+	/// Matches native bytes without replacing undecodable values.
+	pub(crate) fn exactly_matches_os(&self, value: &OsStr) -> Result<bool, error::Error> {
+		if self.native_pieces.is_none() && let Some(value) = value.to_str() {
+			return self.exactly_matches(value);
+		}
+		#[cfg(unix)]
+		{
+			let pattern = std::ffi::CString::new(self.native_spelling().as_encoded_bytes()).map_err(|e| error::ErrorKind::InternalError(e.to_string()))?;
+			let value = std::ffi::CString::new(value.as_encoded_bytes()).map_err(|e| error::ErrorKind::InternalError(e.to_string()))?;
+			let mut flags = 0;
+			#[cfg(any(target_os = "linux", target_os = "android"))]
+			{
+				// GNU fnmatch's FNM_EXTMATCH flag is not exported by Rust libc.
+				if self.enable_extended_globbing { flags |= 1 << 5; }
+				if self.case_insensitive { flags |= libc::FNM_CASEFOLD; }
+			}
+			// SAFETY: both arguments are live NUL-terminated byte strings.
+			return Ok(unsafe { libc::fnmatch(pattern.as_ptr(), value.as_ptr(), flags) } == 0);
+		}
+		#[cfg(not(unix))]
+		Err(error::ErrorKind::InternalError("native pattern is not valid Unicode".into()).into())
+	}
+
+
 	/// Enables (or disables) extended globbing support for this pattern.
 	///
 	/// # Arguments
@@ -214,7 +278,7 @@ impl Pattern {
 
 	/// Returns whether or not the pattern is empty.
 	pub fn is_empty(&self) -> bool {
-		self.pieces.iter().all(|p| p.as_str().is_empty())
+		self.native_pieces.as_ref().map_or_else(|| self.pieces.iter().all(|p| p.as_str().is_empty()), |p| p.iter().all(|(s, _)| s.is_empty()))
 	}
 
 	/// Expands the pattern into a list of matching file paths, reading
@@ -233,46 +297,44 @@ impl Pattern {
 		working_dir: &Path,
 		options: &FilenameExpansionOptions,
 	) -> Result<PatternExpansionResult, error::Error> {
-		// If the pattern has no pieces at all, short-circuit; there's nothing to
-		// expand. Note: we intentionally do NOT short-circuit when pieces are present
-		// but empty (e.g. from a quoted empty string ""); those fall through to the
-		// literal branch below which correctly returns Expanded([""]) instead of
-		// NoGlob, preserving the argument even when nullglob is enabled.
-		if self.pieces.is_empty() {
+		let native_local = cfg!(unix) && fs.is_native_local(working_dir)
+			&& pi_vfs::url_scheme(Path::new(&self.native_spelling())).is_none();
+		let pieces: Vec<(OsString, bool)> = self.native_pieces.clone().unwrap_or_else(|| {
+			self.pieces.iter().map(|p| (OsString::from(p.as_str()), matches!(p, PatternPiece::Literal(_)))).collect()
+		});
+		if pieces.is_empty() {
 			return Ok(PatternExpansionResult::NoGlob);
-
-		// Similarly, if we're *confident* the pattern doesn't require expansion,
-		// then we know there's a single expansion (before filtering).
-		} else if !self.pieces.iter().any(|piece| {
-			matches!(piece, PatternPiece::Pattern(_))
-				&& requires_expansion(piece.as_str(), self.enable_extended_globbing)
-		}) {
-			let concatenated: String = self.pieces.iter().map(|piece| piece.as_str()).collect();
-
-			return Ok(PatternExpansionResult::Expanded(vec![concatenated]));
+		}
+		let is_globbed = |component: &FilenameComponent| {
+			component.iter().any(|(s, literal)| !literal && s.to_str().map_or_else(
+				|| self.has_native_glob(s.as_encoded_bytes()),
+				|text| requires_expansion(text, self.enable_extended_globbing),
+			))
+		};
+		if !is_globbed(&pieces) {
+			return Ok(PatternExpansionResult::Expanded(vec![pieces.iter().map(|(s, _)| s.as_os_str()).collect()]));
 		}
 
 		tracing::debug!(target: trace_categories::PATTERN, "expanding pattern: {self:?}");
 
-		let mut components: Vec<PatternWord> = vec![];
-		for piece in &self.pieces {
-			let mut split_result: VecDeque<_> = sys::fs::split_path_for_pattern(piece.as_str())
-				.map(|s| match piece {
-					PatternPiece::Pattern(_) => PatternPiece::Pattern(s.to_owned()),
-					PatternPiece::Literal(_) => PatternPiece::Literal(s.to_owned()),
-				})
-				.collect();
-
+		let mut components: Vec<FilenameComponent> = vec![];
+		for (spelling, literal) in &pieces {
+			let mut split_result: VecDeque<OsString> = if let Some(text) = spelling.to_str() {
+				sys::fs::split_path_for_pattern(text).map(OsString::from).collect()
+			} else {
+				// Splitting at ASCII separators preserves the native encoding.
+				spelling.as_encoded_bytes().split(|b| *b == b'/')
+					.map(|part| unsafe { OsString::from_encoded_bytes_unchecked(part.to_vec()) }).collect()
+			};
 			if let Some(first_piece) = split_result.pop_front() {
 				if let Some(last_component) = components.last_mut() {
-					last_component.push(first_piece);
+					last_component.push((first_piece, *literal));
 				} else {
-					components.push(vec![first_piece]);
+					components.push(vec![(first_piece, *literal)]);
 				}
 			}
-
 			while let Some(piece) = split_result.pop_front() {
-				components.push(vec![piece]);
+				components.push(vec![(piece, *literal)]);
 			}
 		}
 
@@ -281,10 +343,8 @@ impl Pattern {
 		// drive-letter prefix like `c:` is also recognized, and a forward-slash
 		// MSYS/WSL drive alias (`/d/...`, `/mnt/d/...`) must be translated before
 		// `read_dir()` sees the root.
-		let starts_with_forward_slash = self
-			.pieces
-			.iter()
-			.find_map(|piece| piece.as_str().as_bytes().first().copied())
+		let starts_with_forward_slash = pieces.iter()
+			.find_map(|(s, _)| s.as_encoded_bytes().first().copied())
 			.is_some_and(|byte| byte == b'/');
 		let first_component = component_string(&components, 0);
 		let second_component = component_string(&components, 1);
@@ -325,7 +385,7 @@ impl Pattern {
 			// also uses `/` on Windows (to avoid `PathBuf::push` drive-letter
 			// semantics) — if we left `\` here, the strip_prefix below would
 			// miss on Windows and leave results as absolute paths.
-			let working_dir_str = working_dir.to_string_lossy();
+			let working_dir_str = if native_local { std::borrow::Cow::Borrowed("") } else { working_dir.to_string_lossy() };
 			let mut working_dir_str =
 				sys::fs::normalize_path_separators(&working_dir_str).into_owned();
 			if !working_dir_str.ends_with('/') {
@@ -341,7 +401,7 @@ impl Pattern {
 		// `**` and a pattern component still counts: `**//x` takes `**/` as
 		// its directory part (see `GlobstarMode::Dirs`).
 		if options.globstar {
-			let mut kept: Vec<PatternWord> = Vec::with_capacity(components.len());
+			let mut kept: Vec<FilenameComponent> = Vec::with_capacity(components.len());
 			for component in components {
 				let after_globstar_slash = kept.len() >= 2
 					&& kept.last().is_some_and(is_empty_component)
@@ -361,12 +421,6 @@ impl Pattern {
 		// comes before and after it (see `GlobstarMode`); decide it before the
 		// loop consumes the components.
 		let last_index = components.len().saturating_sub(1);
-		let is_globbed = |component: &PatternWord| {
-			component.iter().any(|piece| {
-				matches!(piece, PatternPiece::Pattern(_))
-					&& requires_expansion(piece.as_str(), self.enable_extended_globbing)
-			})
-		};
 		// One slot per component, so the mode a `**` component gets cannot drift
 		// from the component the loop below is at.
 		let globstar_modes: Vec<Option<GlobstarMode>> = if options.globstar {
@@ -424,19 +478,15 @@ impl Pattern {
 		let mut unverified_suffix = false;
 		let mut trailing_slash = false;
 		for (index, component) in components.into_iter().enumerate() {
-			if !component.iter().any(|piece| {
-				matches!(piece, PatternPiece::Pattern(_))
-					&& requires_expansion(piece.as_str(), self.enable_extended_globbing)
-			}) {
-				let flattened = component
-					.iter()
-					.map(|piece| piece.as_str())
-					.collect::<String>();
+			if !is_globbed(&component) {
+				let flattened: OsString = component.iter().map(|(s, _)| s.as_os_str()).collect();
 				for p in &mut paths_so_far {
 					if raw_relative {
 						*p = pi_vfs::join_path(p, Path::new(&flattened));
+					} else if native_local {
+						p.push(&flattened);
 					} else {
-						sys::fs::push_path_for_pattern(p, &flattened);
+						sys::fs::push_path_for_pattern(p, flattened.to_str().ok_or_else(|| error::ErrorKind::InternalError("non-Unicode virtual pattern".into()))?);
 					}
 				}
 				unverified_suffix = globbed;
@@ -465,19 +515,16 @@ impl Pattern {
 			for current_path in current_paths {
 				// After a `**` walk this lists every directory it found again.
 				ensure_not_cancelled(options.cancel.as_ref())?;
-				let subpattern = Self::from(&component)
+				let subpattern = Self::from_native_pieces(component.clone())
 					.set_extended_globbing(self.enable_extended_globbing)
 					.set_case_insensitive(self.case_insensitive);
-
-				let subpattern_starts_with_dot = subpattern
-					.pieces
-					.first()
-					.is_some_and(|piece| piece.as_str().starts_with('.'));
+				let subpattern_starts_with_dot = component.first()
+					.is_some_and(|(s, _)| s.as_encoded_bytes().starts_with(b"."));
 
 				let allow_dot_files =
 					!options.require_dot_in_pattern_to_match_dot_files || subpattern_starts_with_dot;
 
-				let regex = subpattern.to_regex(true, true)?;
+				let regex = if native_local { None } else { Some(subpattern.to_regex(true, true)?) };
 
 				// Matches keep the pattern's spelling (`./`, `../`), but a virtual
 				// provider is only asked to list a lexically normalized path.
@@ -489,19 +536,22 @@ impl Pattern {
 						// here yields on the native route.
 						ensure_not_cancelled(options.cancel.as_ref())?;
 						let file_name = entry.file_name();
-						let name = file_name.to_string_lossy();
-						if !allow_dot_files && name.starts_with('.') {
+						if !allow_dot_files && file_name.as_encoded_bytes().starts_with(b".") {
 							continue;
 						}
 						// Raw names match as on any filesystem; a pattern
 						// spelled as an absolute URL may also name the
 						// encoded segment (`my%20*`).
-						let matches = regex.is_match(name.as_ref()).unwrap_or(false)
-							|| (match_encoded && {
-								let encoded = pi_vfs::encode_segment(&file_name);
-								matches!(encoded, std::borrow::Cow::Owned(_))
-									&& regex.is_match(&encoded.to_string_lossy()).unwrap_or(false)
-							});
+						let matches = if let Some(regex) = &regex {
+							regex.is_match(&file_name.to_string_lossy()).unwrap_or(false)
+								|| (match_encoded && {
+									let encoded = pi_vfs::encode_segment(&file_name);
+									matches!(encoded, std::borrow::Cow::Owned(_))
+										&& regex.is_match(&encoded.to_string_lossy()).unwrap_or(false)
+								})
+						} else {
+							subpattern.exactly_matches_os(&file_name)?
+						};
 						if matches {
 							matching_paths_in_dir.push(pi_vfs::child_path(&current_path, &file_name));
 						}
@@ -537,6 +587,16 @@ impl Pattern {
 		let results: Vec<_> = paths_so_far
 			.into_iter()
 			.map(|path| {
+				if native_local {
+					let spelling = path.as_os_str().as_encoded_bytes();
+					let relative = if prefix_to_remove.is_some() {
+						let mut prefix = working_dir.as_os_str().to_owned();
+						if !prefix.as_encoded_bytes().ends_with(b"/") { prefix.push("/"); }
+						spelling.strip_prefix(prefix.as_encoded_bytes()).unwrap_or(spelling)
+					} else { spelling };
+					// SAFETY: a complete path prefix and ASCII separator were removed.
+					return unsafe { OsString::from_encoded_bytes_unchecked(relative.to_vec()) };
+				}
 				// Normalize separators *before* stripping the working-dir
 				// prefix so that `prefix_to_remove` (already normalized to
 				// use `/`) matches paths that may contain a mix of `\` and
@@ -562,10 +622,10 @@ impl Pattern {
 								.into_owned()
 						})
 						.collect::<Vec<_>>()
-						.join("/");
+						.join("/").into();
 				}
 
-				path_ref.to_string()
+				OsString::from(path_ref)
 			})
 			.collect();
 
@@ -639,7 +699,7 @@ impl Pattern {
 					// during this loop is only seen if it is read here.
 					ensure_not_cancelled(cancel)?;
 					let file_name = entry.file_name();
-					if !allow_dot_files && file_name.to_string_lossy().starts_with('.') {
+					if !allow_dot_files && file_name.as_encoded_bytes().starts_with(b".") {
 						continue;
 					}
 					let path = pi_vfs::child_path(&dir, &file_name);
@@ -755,7 +815,7 @@ impl Pattern {
 /// Checks whether a string contains glob metacharacters that would trigger
 /// pathname expansion. Delegates to the pattern parser's grammar, which is
 /// the single source of truth for what constitutes a glob metacharacter.
-fn requires_expansion(s: &str, enable_extended_globbing: bool) -> bool {
+pub(crate) fn requires_expansion(s: &str, enable_extended_globbing: bool) -> bool {
 	brush_parser::pattern::pattern_has_glob_metacharacters(s, enable_extended_globbing)
 }
 
@@ -766,108 +826,39 @@ fn pattern_to_regex_str(
 	Ok(brush_parser::pattern::pattern_to_regex_str(pattern, enable_extended_globbing)?)
 }
 
-/// Removes the largest matching prefix from a string that matches the given
-/// pattern.
-///
-/// # Arguments
-///
-/// * `s` - The string to remove the prefix from.
-/// * `pattern` - The pattern to match.
-pub(crate) fn remove_largest_matching_prefix<'a>(
-	s: &'a str,
-	pattern: Option<&Pattern>,
-) -> Result<&'a str, error::Error> {
-	if let Some(pattern) = pattern {
-		let re = pattern.to_regex(true, true)?;
-		let indices = s.char_indices().rev();
-		let mut last_idx = s.len();
-
-		#[allow(clippy::string_slice, reason = "because we get the indices from char_indices()")]
-		for (idx, _) in indices {
-			let prefix = &s[0..last_idx];
-			if re.is_match(prefix)? {
-				return Ok(&s[last_idx..]);
-			}
-
-			last_idx = idx;
+fn remove_matching(value: &OsStr, pattern: Option<&Pattern>, prefix: bool, largest: bool) -> Result<OsString, error::Error> {
+	let Some(pattern) = pattern else { return Ok(value.to_owned()); };
+	let units = crate::expansion::scalar_units(value)?;
+	let mut lengths: Vec<usize> = (0..=units.len()).collect();
+	if largest { lengths.reverse(); }
+	for length in lengths {
+		let (start, end) = if prefix { (0, length) } else { (units.len() - length, units.len()) };
+		let candidate: OsString = units[start..end].iter().map(|(s, _)| s.as_os_str()).collect();
+		if pattern.exactly_matches_os(&candidate)? {
+			return Ok(if prefix { units[end..].iter().map(|(s, _)| s.as_os_str()).collect() } else { units[..start].iter().map(|(s, _)| s.as_os_str()).collect() });
 		}
 	}
-	Ok(s)
+	Ok(value.to_owned())
 }
 
-/// Removes the smallest matching prefix from a string that matches the given
-/// pattern.
-///
-/// # Arguments
-///
-/// * `s` - The string to remove the prefix from.
-/// * `pattern` - The pattern to match.
-pub(crate) fn remove_smallest_matching_prefix<'a>(
-	s: &'a str,
-	pattern: Option<&Pattern>,
-) -> Result<&'a str, error::Error> {
-	if let Some(pattern) = pattern {
-		let re = pattern.to_regex(true, true)?;
-		let mut indices = s.char_indices();
-
-		#[allow(clippy::string_slice, reason = "because we get the indices from char_indices()")]
-		while indices.next().is_some() {
-			let next_index = indices.offset();
-			let prefix = &s[0..next_index];
-			if re.is_match(prefix)? {
-				return Ok(&s[next_index..]);
-			}
-		}
-	}
-	Ok(s)
+/// Removes the largest native prefix matching the pattern.
+pub(crate) fn remove_largest_matching_prefix(value: impl AsRef<OsStr>, pattern: Option<&Pattern>) -> Result<OsString, error::Error> {
+	remove_matching(value.as_ref(), pattern, true, true)
 }
 
-/// Removes the largest matching suffix from a string that matches the given
-/// pattern.
-///
-/// # Arguments
-///
-/// * `s` - The string to remove the suffix from.
-/// * `pattern` - The pattern to match.
-pub(crate) fn remove_largest_matching_suffix<'a>(
-	s: &'a str,
-	pattern: Option<&Pattern>,
-) -> Result<&'a str, error::Error> {
-	if let Some(pattern) = pattern {
-		let re = pattern.to_regex(true, true)?;
-		#[allow(clippy::string_slice, reason = "because we get the indices from char_indices()")]
-		for (idx, _) in s.char_indices() {
-			let suffix = &s[idx..];
-			if re.is_match(suffix)? {
-				return Ok(&s[..idx]);
-			}
-		}
-	}
-	Ok(s)
+/// Removes the smallest native prefix matching the pattern.
+pub(crate) fn remove_smallest_matching_prefix(value: impl AsRef<OsStr>, pattern: Option<&Pattern>) -> Result<OsString, error::Error> {
+	remove_matching(value.as_ref(), pattern, true, false)
 }
 
-/// Removes the smallest matching suffix from a string that matches the given
-/// pattern.
-///
-/// # Arguments
-///
-/// * `s` - The string to remove the suffix from.
-/// * `pattern` - The pattern to match.
-pub(crate) fn remove_smallest_matching_suffix<'a>(
-	s: &'a str,
-	pattern: Option<&Pattern>,
-) -> Result<&'a str, error::Error> {
-	if let Some(pattern) = pattern {
-		let re = pattern.to_regex(true, true)?;
-		#[allow(clippy::string_slice, reason = "because we get the indices from char_indices()")]
-		for (idx, _) in s.char_indices().rev() {
-			let suffix = &s[idx..];
-			if re.is_match(suffix)? {
-				return Ok(&s[..idx]);
-			}
-		}
-	}
-	Ok(s)
+/// Removes the largest native suffix matching the pattern.
+pub(crate) fn remove_largest_matching_suffix(value: impl AsRef<OsStr>, pattern: Option<&Pattern>) -> Result<OsString, error::Error> {
+	remove_matching(value.as_ref(), pattern, false, true)
+}
+
+/// Removes the smallest native suffix matching the pattern.
+pub(crate) fn remove_smallest_matching_suffix(value: impl AsRef<OsStr>, pattern: Option<&Pattern>) -> Result<OsString, error::Error> {
+	remove_matching(value.as_ref(), pattern, false, false)
 }
 
 #[cfg(test)]
@@ -1181,7 +1172,7 @@ mod tests {
 		let PatternExpansionResult::Expanded(paths) = result else {
 			anyhow::bail!("expected Expanded, got {result:?}");
 		};
-		Ok(paths)
+		paths.into_iter().map(|p| p.into_string().map_err(|p| anyhow::anyhow!("non-text test path: {p:?}"))).collect()
 	}
 
 	/// Regression test for the Windows prefix-strip mismatch fix.

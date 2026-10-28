@@ -222,7 +222,7 @@ struct Options {
 	/// `-R`, `-r`, `--recursive`
 	recursive:              bool,
 	/// `-S`, `--suffix`
-	backup_suffix:          String,
+	backup_suffix:          OsString,
 	/// `-t`, `--target-directory`
 	target_dir:             Option<PathBuf>,
 	/// `--update[=UPDATE]`
@@ -557,7 +557,7 @@ fn uu_app() -> Command {
 		)
 		.arg(backup_control::arguments::backup())
 		.arg(backup_control::arguments::backup_no_args())
-		.arg(backup_control::arguments::suffix())
+		.arg(backup_control::arguments::suffix().value_parser(clap::value_parser!(OsString)))
 		.arg(update_control::arguments::update())
 		.arg(update_control::arguments::update_no_args())
 		.arg(
@@ -1196,7 +1196,7 @@ impl MoveCopier {
 				reflink_mode: ReflinkMode::Auto,
 				attributes: Attributes::MOVE,
 				recursive: true,
-				backup_suffix: String::new(),
+				backup_suffix: OsString::new(),
 				target_dir: None,
 				update: UpdateMode::All,
 				debug: false,
@@ -2389,7 +2389,7 @@ fn copy_file(
 			&& !filesystem.try_exists(&dest_fs).unwrap_or(false)
 			&& !options.remove_destination()
 			&& !is_symlink_loop(&filesystem, &dest_fs)
-			&& host.var("POSIXLY_CORRECT").is_none()
+			&& host.var_os("POSIXLY_CORRECT").is_none()
 		{
 			return Err(CpError::Error(format!(
 				"not writing through dangling symlink {}",

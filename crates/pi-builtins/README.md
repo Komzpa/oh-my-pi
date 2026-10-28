@@ -38,6 +38,12 @@ is unrelated), the exported environment (`host.var`, `host.env`), cancellation
 (`host.child_env()`), and the accumulated exit status (`host.fail`,
 `host.exit_code`).
 
+Native environment names and values use `OsStr`/`OsString`; `Host::var` is a
+textual settings view, not a filename or launch-value accessor. Use `var_os` for
+paths and byte-valued settings. `which` writes native executable-path bytes;
+`read` retains native input, delimiters and IFS fields; cp/mv retain native backup
+suffixes, and TZif filenames are resolved through the shell filesystem.
+
 Utilities that run command lines (`xargs`, `find -exec`, `ifne`) set
 `RUNS_COMMANDS` and call `host.run_command(ShellCommand::new(argv))`. The adapter
 forks a subshell and runs each command through the shell's own dispatch, so
@@ -52,6 +58,15 @@ on a blocking thread, the shell's cancellation token, and panic containment.
 
 Utilities that are genuinely async — `sleep`, `timeout`, `ps`, `top`, `pgrep`,
 `kill`, `nohup` — implement `brush_core::builtins::Command` directly instead.
+
+Builtin argument carriers use native OS strings; utilities retain those arguments
+until their own parser handles them. Text-only operations reject invalid Unicode
+rather than replacing bytes. `timeout` and `nohup` quote native operands when
+reconstructing shell source, including non-UTF-8 bytes on Unix.
+Exported utility environment values and `getopts` option operands retain native
+OS strings; `printenv` writes their bytes and nested utility commands inherit
+them. Operations that interpret environment values as text use Unicode values.
+
 
 ## Registration
 
@@ -69,6 +84,10 @@ single one can be built and tested in isolation:
 ```console
 $ cargo nextest run -p pi-builtins --no-default-features --features base,util.sed
 ```
+
+`date -j` without `-f` leaves date selection unchanged: an existing `-r` file
+supplies its modification time; a missing numeric reference supplies epoch seconds.
+Regression fixtures must use a private working directory so host files cannot change that choice.
 
 ## Licensing
 

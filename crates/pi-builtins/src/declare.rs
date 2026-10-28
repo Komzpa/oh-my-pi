@@ -3,7 +3,6 @@ use std::{io::Write, sync::LazyLock};
 use brush_core::{
 	ErrorKind, ExecutionResult, builtins,
 	env::{self, EnvironmentLookup, EnvironmentScope},
-	parser::ast,
 	variables::{
 		self, ArrayLiteral, ShellValue, ShellValueLiteral, ShellValueUnsetType, ShellVariable,
 		ShellVariableUpdateTransform,
@@ -170,7 +169,7 @@ impl DeclareCommand {
 		verb: DeclareVerb,
 	) -> Result<bool, brush_core::Error> {
 		let name = match declaration {
-			brush_core::CommandArg::String(s) => s,
+			brush_core::CommandArg::String(s) => s.to_str().ok_or_else(|| brush_core::Error::from(ErrorKind::InternalError("declaration name is not valid UTF-8".into())))?,
 			brush_core::CommandArg::Assignment(_) => {
 				writeln!(context.stderr(), "declare: {declaration}: not found")?;
 				return Ok(false);
@@ -347,7 +346,7 @@ impl DeclareCommand {
 
 	fn declaration_to_name_and_value(
 		declaration: &brush_core::CommandArg,
-	) -> Result<(String, Option<String>, Option<ShellValueLiteral>, bool), brush_core::Error> {
+	) -> Result<(String, Option<std::ffi::OsString>, Option<ShellValueLiteral>, bool), brush_core::Error> {
 		let name;
 		let assigned_index;
 		let initial_value;
@@ -355,6 +354,7 @@ impl DeclareCommand {
 
 		match declaration {
 			brush_core::CommandArg::String(s) => {
+				let s = s.to_str().ok_or_else(|| brush_core::Error::from(ErrorKind::InternalError("declaration name is not valid UTF-8".into())))?;
 				// We need to handle the case of someone invoking `declare array[index]`.
 				// In such case, we ignore the index and treat it as a declaration of
 				// the array.
@@ -375,50 +375,37 @@ impl DeclareCommand {
 						.as_str()
 						.to_owned();
 
-					assigned_index = captures.get(2).map(|m| m.as_str().to_owned());
+					assigned_index = captures.get(2).map(|m| m.as_str().into());
 					name_is_array = true;
 				} else {
-					name = s.clone();
+					name = s.to_owned();
 					assigned_index = None;
 					name_is_array = false;
 				}
 				initial_value = None;
 			},
 			brush_core::CommandArg::Assignment(assignment) => {
-				match &assignment.name {
-					ast::AssignmentName::VariableName(var_name) => {
-						name = var_name.to_owned();
-						assigned_index = None;
-					},
-					ast::AssignmentName::ArrayElementName(var_name, index) => {
-						if matches!(assignment.value, ast::AssignmentValue::Array(_)) {
-							return Err(ErrorKind::AssigningListToArrayMember.into());
-						}
-
-						name = var_name.to_owned();
-						assigned_index = Some(index.to_owned());
-					},
+				name = assignment.name.clone();
+				assigned_index = assignment.index.clone();
+				if assigned_index.is_some() && matches!(assignment.value, ShellValueLiteral::Array(_)) {
+					return Err(ErrorKind::AssigningListToArrayMember.into());
 				}
 
 				match &assignment.value {
-					ast::AssignmentValue::Scalar(s) => {
+					ShellValueLiteral::Scalar(s) => {
 						if let Some(index) = &assigned_index {
 							initial_value = Some(ShellValueLiteral::Array(ArrayLiteral(vec![(
 								Some(index.to_owned()),
-								s.value.clone(),
+								s.clone(),
 							)])));
 							name_is_array = true;
 						} else {
-							initial_value = Some(ShellValueLiteral::Scalar(s.value.clone()));
+							initial_value = Some(ShellValueLiteral::Scalar(s.clone()));
 							name_is_array = false;
 						}
 					},
-					ast::AssignmentValue::Array(a) => {
-						initial_value = Some(ShellValueLiteral::Array(ArrayLiteral(
-							a.iter()
-								.map(|(i, v)| (i.as_ref().map(|w| w.value.clone()), v.value.clone()))
-								.collect(),
-						)));
+					ShellValueLiteral::Array(a) => {
+						initial_value = Some(ShellValueLiteral::Array(a.clone()));
 						name_is_array = true;
 					},
 				}
@@ -440,7 +427,7 @@ impl DeclareCommand {
 
 		// We start by excluding all variables that are not enumerable.
 		#[expect(clippy::type_complexity)]
-		let mut filters: Vec<Box<dyn Fn((&String, &ShellVariable)) -> bool>> =
+		let mut filters: Vec<Box<dyn Fn((&std::ffi::OsString, &ShellVariable)) -> bool>> =
 			vec![Box::new(|(_, v)| v.is_enumerable())];
 
 		// Add filters depending on verb.
@@ -517,21 +504,12 @@ impl DeclareCommand {
 					"="
 				};
 
-				writeln!(
-					context.stdout(),
-					"declare -{cs} {name}{separator_str}{}",
-					variable
-						.value()
-						.format(variables::FormatStyle::DeclarePrint, context.shell)?
-				)?;
+				write!(context.stdout(), "declare -{cs} ")?;
+				context.stdout().write_all(name.as_encoded_bytes())?;
+				writeln!(context.stdout(), "{separator_str}{}", variable.value().format(variables::FormatStyle::DeclarePrint, context.shell)?)?;
 			} else {
-				writeln!(
-					context.stdout(),
-					"{name}={}",
-					variable
-						.value()
-						.format(variables::FormatStyle::Basic, context.shell)?
-				)?;
+				context.stdout().write_all(name.as_encoded_bytes())?;
+				writeln!(context.stdout(), "={}", variable.value().format(variables::FormatStyle::Basic, context.shell)?)?;
 			}
 		}
 

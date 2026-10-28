@@ -39,7 +39,7 @@ impl Utility for Readlink {
 	fn run(self, host: &mut Host) -> i32 {
 		let mut no_trailing_delimiter = self.matches.get_flag(OPT_NO_NEWLINE);
 		let use_zero = self.matches.get_flag(OPT_ZERO);
-		let verbose = self.matches.get_flag(OPT_VERBOSE) || host.var("POSIXLY_CORRECT").is_some();
+		let verbose = self.matches.get_flag(OPT_VERBOSE) || host.var_os("POSIXLY_CORRECT").is_some();
 
 		// GNU readlink -f/-e/-m follows symlinks first and then applies `..`
 		// (physical resolution). Logical mode would collapse `..` first.

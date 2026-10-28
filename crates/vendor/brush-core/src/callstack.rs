@@ -173,7 +173,7 @@ pub struct Frame {
 	pub current:             Option<Arc<crate::SourcePosition>>,
 	/// Positional arguments (not including $0). May not be present for all
 	/// frames.
-	pub args:                Vec<String>,
+	pub args:                Vec<std::ffi::OsString>,
 	/// Optionally, indicates an additional line offset within the current source
 	/// context.
 	pub current_line_offset: usize,
@@ -354,7 +354,7 @@ impl CallStack {
 
 			if !frame.args.is_empty() && options.show_args {
 				for (i, arg) in frame.args.iter().enumerate() {
-					color_print::cwriteln!(f, "     <yellow>${}</yellow>: <blue>{}</blue>", i + 1, arg)?;
+					color_print::cwriteln!(f, "     <yellow>${}</yellow>: <blue>{:?}</blue>", i + 1, arg)?;
 				}
 			}
 		}
@@ -453,7 +453,7 @@ impl CallStack {
 		&mut self,
 		call_type: ScriptCallType,
 		source_info: &crate::SourceInfo,
-		args: impl IntoIterator<Item = String>,
+		args: impl IntoIterator<Item = std::ffi::OsString>,
 	) {
 		self.frames.push_front(Frame {
 			frame_type:          FrameType::Script(ScriptCall {
@@ -544,7 +544,7 @@ impl CallStack {
 		&mut self,
 		name: impl Into<String>,
 		function: &functions::Registration,
-		args: impl IntoIterator<Item = String>,
+		args: impl IntoIterator<Item = std::ffi::OsString>,
 	) {
 		self.frames.push_front(Frame {
 			frame_type:          FrameType::Function(FunctionCall {

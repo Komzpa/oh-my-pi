@@ -90,7 +90,7 @@ impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
 	/// * `name` - The name of the function to invoke.
 	/// * `args` - The arguments to pass to the function.
 	/// * `params` - Execution parameters to use for the invocation.
-	pub async fn invoke_function<N: AsRef<str>, I: IntoIterator<Item = A>, A: AsRef<str>>(
+	pub async fn invoke_function<N: AsRef<str>, I: IntoIterator<Item = A>, A: AsRef<std::ffi::OsStr>>(
 		&mut self,
 		name: N,
 		args: I,
@@ -110,7 +110,7 @@ impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
 
 		let command_args = args
 			.into_iter()
-			.map(|s| commands::CommandArg::String(String::from(s.as_ref())))
+			.map(|s| commands::CommandArg::String(s.as_ref().to_owned()))
 			.collect::<Vec<_>>();
 
 		let result =
