@@ -2371,9 +2371,19 @@ type TodoSchedule struct {
 	Progress         *TodoScheduleProgress `json:"progress,omitempty"`
 	StartedAt        *float64              `json:"startedAt,omitempty"`
 	FinishedAt       *float64              `json:"finishedAt,omitempty"`
+	// Time this row first entered the plan as a user requirement.
+	FirstRequirementAt *float64 `json:"firstRequirementAt,omitempty"`
+	// Time the first usable result was handed to the user.
+	FirstDeliveredAt *float64 `json:"firstDeliveredAt,omitempty"`
 	// Append-only durable attempts for this exact row.
-	AttemptHistory []TodoReworkAttempt   `json:"attemptHistory,omitempty"`
-	Executor       *TodoScheduleExecutor `json:"executor,omitempty"`
+	AttemptHistory []TodoReworkAttempt `json:"attemptHistory,omitempty"`
+	// Short final worker report retained for the user's review handoff.
+	ReviewSummary *string `json:"reviewSummary,omitempty"`
+	// User decision state for a delivered implementation result.
+	Review *TodoScheduleReview `json:"review,omitempty"`
+	// Review row whose verdict gates publication of this speculative work.
+	SpeculativeOn *string               `json:"speculativeOn,omitempty"`
+	Executor      *TodoScheduleExecutor `json:"executor,omitempty"`
 }
 
 func (v *TodoSchedule) UnmarshalJSON(data []byte) error {
@@ -2392,13 +2402,40 @@ func (v *TodoSchedule) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("progress", &out.Progress)
 	d.optional("startedAt", &out.StartedAt)
 	d.optional("finishedAt", &out.FinishedAt)
+	d.optional("firstRequirementAt", &out.FirstRequirementAt)
+	d.optional("firstDeliveredAt", &out.FirstDeliveredAt)
 	d.optional("attemptHistory", &out.AttemptHistory)
+	d.optional("reviewSummary", &out.ReviewSummary)
+	d.optional("review", &out.Review)
+	d.optional("speculativeOn", &out.SpeculativeOn)
 	d.optional("executor", &out.Executor)
 	if d.err != nil {
 		return d.err
 	}
 	*v = out
 	return nil
+}
+
+type TodoScheduleReview string
+
+const (
+	TodoScheduleReviewUser     TodoScheduleReview = "user"
+	TodoScheduleReviewAccepted TodoScheduleReview = "accepted"
+	TodoScheduleReviewRedo     TodoScheduleReview = "redo"
+	TodoScheduleReviewDrop     TodoScheduleReview = "drop"
+)
+
+func (v *TodoScheduleReview) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "TodoScheduleReview")
+	if err != nil {
+		return err
+	}
+	switch value := TodoScheduleReview(s); value {
+	case TodoScheduleReviewUser, TodoScheduleReviewAccepted, TodoScheduleReviewRedo, TodoScheduleReviewDrop:
+		*v = value
+		return nil
+	}
+	return unknownValue("TodoScheduleReview", s)
 }
 
 type ContextUsage struct {
