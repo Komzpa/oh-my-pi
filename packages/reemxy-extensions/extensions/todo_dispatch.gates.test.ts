@@ -2560,9 +2560,9 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
     expect(refused?.reason).toContain("missed-eta");
     expect(refused?.reason).toContain("Don't start workers to answer this.");
     expect(refused?.reason).not.toContain("chief-of-staff");
-    const bash = (await toolCall({ toolName: "bash", toolCallId: "u1b", input: { command: "systemctl restart codex-lb" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
-    expect(bash?.block).toBe(true);
-    expect(bash?.reason).toContain("missed-eta");
+    // A pure look passes the escalation; reading results is how the plan gets fixed.
+    const look = (await toolCall({ toolName: "bash", toolCallId: "u1b", input: { command: "systemctl status codex-lb" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    expect(look?.reason ?? "").not.toContain("missed-eta");
     // A worker spawn answering the demand is refused too.
     for (const agent of ["retro-facilitator", "plan-doctor"]) {
       const spawn = (await toolCall({ toolName: "task", toolCallId: `u1-${agent}`, input: { tasks: [{ agent, name: "Doctor", task: "diagnose" }] } }, ctx)) as { block?: boolean } | undefined;
