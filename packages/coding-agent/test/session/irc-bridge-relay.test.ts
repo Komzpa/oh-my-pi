@@ -145,7 +145,14 @@ describe("IrcBridge broadcast legs reaching a streaming recipient", () => {
 
 describe("IrcBridge snapshot asides", () => {
 	const custom = (customType: string, content: string, supersedesQueued?: boolean): AgentMessage =>
-		({ role: "custom", customType, content, display: false, details: supersedesQueued ? { supersedesQueued } : {}, timestamp: Date.now() }) as unknown as AgentMessage;
+		({
+			role: "custom",
+			customType,
+			content,
+			display: false,
+			details: supersedesQueued ? { supersedesQueued } : {},
+			timestamp: Date.now(),
+		}) as unknown as AgentMessage;
 
 	it("a newer snapshot of the same type replaces the queued one; other asides stay", () => {
 		const { bridge } = makeBridge();

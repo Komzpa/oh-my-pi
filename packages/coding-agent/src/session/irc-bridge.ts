@@ -145,10 +145,13 @@ export class IrcBridge {
 	queueAside(records: AgentMessage[]): void {
 		// A custom record flagged `details.supersedesQueued` is a snapshot: a newer one of the same
 		// customType replaces the queued older one, so a busy agent never reads stale state.
-		const snapshotTypes = new Set(records.filter(isSupersedingSnapshot).map(record => (record as { customType: string }).customType));
+		const snapshotTypes = new Set(
+			records.filter(isSupersedingSnapshot).map(record => (record as { customType: string }).customType),
+		);
 		if (snapshotTypes.size > 0) {
 			this.#asides = this.#asides.filter(
-				queued => !(isSupersedingSnapshot(queued) && snapshotTypes.has((queued as { customType: string }).customType)),
+				queued =>
+					!(isSupersedingSnapshot(queued) && snapshotTypes.has((queued as { customType: string }).customType)),
 			);
 		}
 		this.#asides.push(...records);
@@ -343,5 +346,9 @@ export class IrcBridge {
 function isSupersedingSnapshot(record: AgentMessage): boolean {
 	if (record.role !== "custom") return false;
 	const details = (record as { details?: unknown }).details;
-	return typeof details === "object" && details !== null && (details as { supersedesQueued?: unknown }).supersedesQueued === true;
+	return (
+		typeof details === "object" &&
+		details !== null &&
+		(details as { supersedesQueued?: unknown }).supersedesQueued === true
+	);
 }
