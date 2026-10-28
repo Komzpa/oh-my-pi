@@ -413,6 +413,8 @@ export interface TodoPhase {
 
 export type TodoConfidence = "low" | "medium" | "high";
 
+export type TodoScheduleReview = "user" | "accepted" | "redo" | "drop";
+
 export type TodoWorkerOutcome = "completed" | "failed" | "aborted";
 
 /** User-maintained duration estimate in seconds; `updatedAt` is Unix milliseconds. */
@@ -484,7 +486,7 @@ export interface TodoSchedule {
 	/** Short final worker report retained for the user's review handoff. */
 	reviewSummary?: string;
 	/** User decision state for a delivered implementation result. */
-	review?: "user" | "accepted" | "redo" | "drop";
+	review?: TodoScheduleReview;
 	/** Review row whose verdict gates publication of this speculative work. */
 	speculativeOn?: string;
 	executor?: TodoScheduleExecutor;
