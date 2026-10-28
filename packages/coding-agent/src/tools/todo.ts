@@ -169,7 +169,7 @@ const InitListEntry = type({
 const todoSchema = type({
 	op: TodoOp,
 	"list?": InitListEntry.array().describe("phases for init"),
-	"task?": type("string").describe("verbatim task content"),
+	"task?": type("string").describe("verbatim task content; with view, show that task and its full attempt history"),
 	"phase?": type("string").describe("phase name; with view, lists that whole phase including closed rows"),
 	"archive?": type("boolean").describe("with view, include archived rows"),
 	"items?": type("string")
@@ -1894,8 +1894,17 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		if (readOnly && entry.archive) details.archivedPhases = archivedPhases;
 		if (deadline) details.deadlineAt = deadline.deadlineAt;
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
-		const summary =
-			readOnly && entry.archive
+		const matchingTasks =
+			readOnly && entry.task
+				? [...effective, ...(entry.archive ? archivedPhases : [])].flatMap(phase =>
+						phase.tasks.filter(task => task.content === entry.task).map(task => ({ phase: phase.name, task })),
+					)
+				: undefined;
+		const summary = matchingTasks
+			? matchingTasks.length
+				? JSON.stringify(matchingTasks, null, 2)
+				: `Task not found: ${JSON.stringify(entry.task)}`
+			: readOnly && entry.archive
 				? formatTodoView(effective, { now, all: true, archive: true, archivedPhases })
 				: op === "init" || readOnly
 					? formatSummary(effective, errors, forecast, readOnly, now, readOnly ? entry.phase : undefined)
