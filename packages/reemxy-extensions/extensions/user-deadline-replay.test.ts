@@ -57,15 +57,15 @@ test("transcript replay persists without focus, wraps at 23:00, and survives rew
 	expect(h.branch.some(entry => entry.customType === deadlines.STATE_ENTRY)).toBe(true);
 	expect(deadlines.readGoalDeadline(h.branch)?.deadlineAt).toBe(Date.parse(replay.dueAt));
 	expect(nativeReadGoalDeadline(h.branch)?.deadlineAt).toBe(Date.parse(replay.dueAt));
-	expect(h.context()).not.toContain("WRAP-UP MODE");
+	expect(h.context()).not.toContain("MISSED");
 	expect(h.gate("todo", { op: "append", items: ["New row"] })).toBeUndefined();
 	h.setNow(replay.dueAt);
-	expect(h.context()).toContain("WRAP-UP MODE");
-	expect(h.context()).toContain("deadline 23:00 missed");
-	expect(h.context()).toContain("by 0m");
+	expect(h.context()).toContain("MISSED by 0m");
+	expect(h.context()).toContain("deadline 23:00");
+	expect(h.context()).toContain("Remaining: Verified delivery");
 	const missed = h.gate("todo", { op: "append", items: ["New row"] });
 	expect(missed).toMatchObject({ block: true });
-	expect(missed.reason.split("\n", 1)[0]).toBe("Ask about the 23:00 deadline: set a new time or clear it.");
+	expect(missed.reason).toContain("Only add or delegate work that serves an open requested TODO row");
 	expect(missed.reason.split("\n", 1)[0].length).toBeLessThanOrEqual(100);
 	expect(h.gate("todo", { op: "init", list: [{ phase: "New scope", items: ["New row"] }] })).toMatchObject({ block: true });
 	expect(h.gate("task", { tasks: [{ name: "NewWorker", agent: "coder", task: "New row" }] })).toMatchObject({ block: true });
@@ -73,10 +73,9 @@ test("transcript replay persists without focus, wraps at 23:00, and survives rew
 	h.setNow(replay.notesRewrittenAt);
 	h.branch.push({ type: "custom", customType: "experimental-context-notes", data: { text: "New notes with no deadline." } }, { type: "compaction", summary: "No deadline mentioned." });
 	h.handlers.get("session_compact")!({}, h.ctx);
-	expect(h.context()).toContain("deadline 23:00 missed");
-	expect(h.context()).toContain("by 129m");
+	expect(h.context()).toContain("MISSED by 129m");
 	h.handlers.get("session_start")!({}, h.ctx);
-	expect(h.context()).toContain("WRAP-UP MODE");
+	expect(h.context()).toContain("MISSED by 129m");
 });
 
 test("no-deadline negative control keeps context and todo/task behavior unchanged", () => {
@@ -94,11 +93,11 @@ test("assistant status promises and synthetic user messages cannot extend or cle
 	h.setNow(replay.notesRewrittenAt);
 	h.branch.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "New status time 23:45" }] } });
 	const later = { ...replay.set, stages: [{ ...replay.set.stages[0], deadline_at: replay.set.stages[0].deadline_at + 2_700 }] };
-	await expect(h.call(later)).rejects.toThrow("Only a newer user message");
-	await expect(h.call({ action: "clear" })).rejects.toThrow("/deadline close");
+	await expect(h.call(later)).rejects.toThrow("The quoted user message does not authorize changing the recorded deadline");
+	await expect(h.call({ action: "clear" })).rejects.toThrow("user_message must quote a newer real user message");
 	h.user("synthetic", "New deadline 23:45", "agent");
 	await expect(h.call({ ...later, user_message: "New deadline 23:45" })).rejects.toThrow("latest real user message");
-	expect(h.context()).toContain("deadline 23:00 missed");
+	expect(h.context()).toMatch(/MISSED by \d+m/);
 });
 
 test("a newer real user time replaces the constraint and clears wrap-up", async () => {
@@ -113,18 +112,18 @@ test("a newer real user time replaces the constraint and clears wrap-up", async 
 	expect(h.gate("task", { name: "AllowedWorker", task: "Delivery" })).toBeUndefined();
 });
 
-test("after a miss only a new time or the user's own reset reopens new work", async () => {
+test("after a miss unrelated work stays blocked until the user changes the constraint", async () => {
 	const h = deadlineHarness();
 	await h.call(replay.set);
 	h.setNow(replay.dueAt);
 	h.user("correction", "Correct the existing item: show its real verification state");
 	expect(h.gate("todo", { op: "append", items: ["New row"] })).toMatchObject({ block: true });
 	expect(h.gate("task", { name: "NewWorker", task: "New row" })).toMatchObject({ block: true });
-	await expect(h.call({ action: "clear", user_message: "drop the deadline" })).rejects.toThrow("/deadline close");
+	await expect(h.call({ action: "clear", user_message: "drop the deadline" })).rejects.toThrow("user_message must quote a newer real user message");
 	h.user("reset", "сбрось дедлайн, работаем дальше");
-	await expect(h.call({ action: "clear", user_message: "drop the deadline" })).rejects.toThrow("/deadline close");
+	await expect(h.call({ action: "clear", user_message: "drop the deadline" })).rejects.toThrow("user_message must quote a newer real user message");
 	await h.call({ action: "clear", user_message: "сбрось дедлайн" });
-	expect(h.context()).not.toContain("WRAP-UP MODE");
+	expect(h.context()).not.toContain("MISSED");
 	expect(h.gate("todo", { op: "append", items: ["New row"] })).toBeUndefined();
 	expect(h.gate("task", { name: "NewWorker", task: "New row" })).toBeUndefined();
 });
@@ -135,11 +134,11 @@ test("delivering stages and dropping focus do not close the user's deadline", as
 	await h.call({ action: "deliver", stage_id: "ship", delivered_artifact: "Verified partial delivery" });
 	h.branch.push({ type: "mode_change", mode: "none" });
 	h.setNow(replay.dueAt);
-	expect(h.context()).toContain("WRAP-UP MODE");
+	expect(h.context()).toContain("MISSED");
 	expect(nativeReadGoalDeadline(h.branch)?.deadlineAt).toBe(Date.parse(replay.dueAt));
 	h.user("close", "/deadline close");
-	await h.call({ action: "clear" });
-	expect(h.context()).not.toContain("WRAP-UP MODE");
+	await h.call({ action: "clear", user_message: "/deadline close" });
+	expect(h.context()).not.toContain("MISSED");
 	expect(nativeReadGoalDeadline(h.branch)).toBeUndefined();
 });
 
