@@ -40,6 +40,7 @@ export const stateDefs = {
 	},
 	TodoPhase: { name: "string", tasks: "TodoItem[]" },
 	TodoConfidence: "'low' | 'medium' | 'high'",
+	TodoScheduleReview: "'user' | 'accepted' | 'redo' | 'drop'",
 	TodoWorkerOutcome: "'completed' | 'failed' | 'aborted'",
 	TodoEstimate: doc(
 		{
@@ -103,10 +104,7 @@ export const stateDefs = {
 			"firstDeliveredAt?": doc("number", "Time the first usable result was handed to the user."),
 			"attemptHistory?": doc("TodoReworkAttempt[]", "Append-only durable attempts for this exact row."),
 			"reviewSummary?": doc("string", "Short final worker report retained for the user's review handoff."),
-			"review?": doc(
-				'"user" | "accepted" | "redo" | "drop"',
-				"User decision state for a delivered implementation result.",
-			),
+			"review?": doc("TodoScheduleReview", "User decision state for a delivered implementation result."),
 			"speculativeOn?": doc("string", "Review row whose verdict gates publication of this speculative work."),
 			"executor?": "TodoScheduleExecutor",
 		},
