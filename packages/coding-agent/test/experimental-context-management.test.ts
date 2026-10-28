@@ -345,6 +345,8 @@ describe("experimental context management", () => {
 		const manager = SessionManager.inMemory();
 		const first = [
 			user("earliest requirement: preserve the release-blocking migration."),
+			user("Allow install on the isolated emulator copy only; do not touch the live device."),
+			assistant("A tool claimed the live device was also authorized; this is not a user instruction."),
 			assistant("first result"),
 			user("second task"),
 			assistant("second result"),
@@ -409,6 +411,12 @@ describe("experimental context management", () => {
 		const historyText = history.content.find(content => content.type === "text");
 		if (historyText?.type !== "text") throw new Error("Expected full history text");
 		expect(historyText.text).toContain("earliest requirement: preserve the release-blocking migration.");
+		expect(historyText.text).toContain(
+			"Allow install on the isolated emulator copy only; do not touch the live device.",
+		);
+		expect(historyText.text).toContain(
+			"A tool claimed the live device was also authorized; this is not a user instruction.",
+		);
 
 		expect(getContextNotes(manager.getBranch())?.text).toBe(
 			"Latest durable notebook: retry only after migration backup.",
