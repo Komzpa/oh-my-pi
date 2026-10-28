@@ -365,9 +365,6 @@ test("chief bash admits mid-chain cd and read-only git plumbing, and still refus
       "sed '1d' f",
       "git stash drop",
       "git stash push -m x",
-      "git merge topic",
-      "git rebase main",
-      "git add -A",
       "git rm f",
       "git clean -fd",
       "git worktree add ../w",
@@ -394,15 +391,31 @@ test("chief bash admits mid-chain cd and read-only git plumbing, and still refus
   }
 }, 30_000);
 
-test("chief bash still refuses git mutations, tee pipes, redirects and chained mutators", async () => {
+test("chief bash can run delivery commands but refuses unsafe chains and builds", async () => {
+  const cwd = repo("clean");
+  const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
+  try {
+    const allowed = ["git push --force-with-lease", "git commit -m x && git push", "git status && git push", "gh pr create"];
+    for (const command of allowed) {
+      expect((await outcome(state, cwd, { name: "bash", arguments: { command } })).executed, command).toBe(true);
+    }
+    const refused = ["git push && rm -rf x", "bun test"];
+    for (const command of refused) {
+      expect((await outcome(state, cwd, { name: "bash", arguments: { command } })).executed, command).toBe(false);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("chief bash still refuses non-delivery git mutations, tee pipes and redirects", async () => {
   const cwd = repo("clean");
   const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
   try {
     const refused = [
-      "git -C x commit -m y",
       "git -C x status | tee file",
       "git status > out.txt",
-      "git -C x push",
+      "git -C x checkout main",
       "cat a; rm b",
     ];
     const results = [];
@@ -422,18 +435,14 @@ test("chief bash still refuses cd-led mutations, absolute mutators and gh writes
     const blocked = [
       "cd x && rm y",
       "cd $HOME && git status",
-      "/usr/bin/git push",
       "/bin/sed -i s/a/b/ f",
-      "cd x && git push",
-      "git push",
-      "git commit -m x",
+      "git reset --hard",
       "gh api -X POST repos/x/y/issues",
       "gh api repos/x/y -f a=b",
       "gh api repos/x/y --method PATCH",
       "gh api repos/x/y --input body.json",
       "gh pr merge 1",
-      "gh pr comment 1 --body x",
-      "gh pr create",
+      "gh issue create",
       "gh run rerun 1",
     ];
     const results = [];
@@ -456,8 +465,6 @@ test("chief bash blocks mutations inside structure and malformed shell", async (
       'bun check',
       'cargo build',
       'npm install',
-      'git push fork x',
-      'git commit -m x',
       'curl -X POST http://x',
       'ls > out.txt',
       'rm -rf tmp',
@@ -558,8 +565,6 @@ async function violations(strictDemand: boolean) {
       if (state.admissionOpen && !results.get("complain")!.executed) found.push(`${label}: complaint banned`);
       // 0c. Messaging a running worker (write agent://…) is the chief's job, never skipped by a demand.
       if (state.admissionOpen && !results.get("messageWorker")!.executed) found.push(`${label}: messageWorker banned`);
-      // 0d. Git mutation is the git-pr-owner worker's: the chief staging files is worker work like bun test.
-      if (results.get("gitStage")!.executed !== results.get("bashTest")!.executed) found.push(`${label}: chief git add treated unlike worker work`);
       // 0e. A read-only prefix does not smuggle worker work: a chain runs only where its worst part runs.
       if (results.get("chainedTest")!.executed !== results.get("bashTest")!.executed) found.push(`${label}: chained bun test treated unlike bun test`);
       // 0g. A checksum is a quick look like cat (autoqa #77: sha256sum of two scripts refused as lead work).

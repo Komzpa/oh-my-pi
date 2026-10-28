@@ -212,6 +212,37 @@ test("published assistant text answers the human, but a newer human turn require
 	} finally { h.shutdown(); }
 });
 
+test("text in the in-flight assistant message carrying wait answers the human", async () => {
+	const h = await noticeHarness([], Date.now() + 3600_000);
+	try {
+		h.entries.push(humanQuestion());
+		await h.handlers.get("message_start")?.({ message: { role: "assistant", content: [] } }, h.ctx);
+		await h.handlers.get("message_update")?.({ message: { role: "assistant", content: [{ type: "text", text: "I checked the current state; the worker is still running." }] } }, h.ctx);
+		expect(await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx)).toBeUndefined();
+	} finally { h.shutdown(); }
+});
+
+test("a queued plan check is dropped when a row it names is completed before delivery", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const row = phases[0]!.tasks[0]!;
+	row.status = "pending";
+	row.schedule.owner = undefined;
+	row.schedule.dependencies = [];
+	row.schedule.resources = [];
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+	try {
+		await h.tick();
+		const notice = h.notices.find((item) => item.customType === "todo-plan-check");
+		expect(notice?.content).toContain(row.content);
+		row.status = "completed";
+		const delivered = await h.handlers.get("context")!({
+			messages: [{ role: "custom", customType: "todo-plan-check", content: notice!.content, details: notice!.details }],
+		}, h.ctx) as { messages?: Array<{ customType?: string; content?: string }> };
+		expect(delivered.messages?.some((message) => message.customType === "todo-plan-check")).toBe(false);
+	} finally { h.shutdown(); }
+});
+
 test("injected peer messages and synthetic notices do not require human replies", async () => {
 	const h = await noticeHarness([], Date.now() + 3600_000);
 	try {
@@ -238,7 +269,9 @@ test("empty stop and unpublished drafts keep the human unanswered until final te
 		h.entries.push(humanQuestion());
 		// A pre-publication draft (including a completion claim rejected by a rewrite hook)
 		// is not in canonical history. Streamed text likewise cannot discharge the reply.
+		await h.handlers.get("message_start")?.({ message: { role: "assistant", content: [] } }, h.ctx);
 		await h.handlers.get("message_update")?.({ message: { role: "assistant", content: [{ type: "text", text: "Done" }] } }, h.ctx);
+		await h.handlers.get("message_end")?.({ message: { role: "assistant", content: [{ type: "text", text: "Done" }] } }, h.ctx);
 		h.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "  " }] } });
 		expect((await h.handlers.get("session_stop")!({}, h.ctx))?.decision).toBe("block");
 		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).toBe(true);
