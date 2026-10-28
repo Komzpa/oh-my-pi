@@ -37,6 +37,8 @@ type AutoRetryStartEvent = Extract<AgentSessionEvent, { type: "auto_retry_start"
 const RETRY_CAP_MOCK_API_SOURCE = "agent-session-retry-cap-test";
 const CODEX_BODY_READ_ERROR =
 	"Anthropic stream error (api_error): Transport error reading Codex response body: error decoding response body";
+const WEBSOCKET_LIMIT_ERROR =
+	"websocket_connection_limit_reached: Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.";
 const CYBER_POLICY_ERROR =
 	"Codex error event: This content was flagged for possible cybersecurity risk. Join Trusted Access for Cyber. (code=cyber_policy)";
 const CYBER_POLICY_FAILURE: MockResponse = {
@@ -2831,6 +2833,7 @@ describe("AgentSession retry delay cap", () => {
 			AIError.create(AIError.Flag.Transient),
 		],
 		["reasonless abort", "aborted", "Request was aborted", undefined],
+		["Codex websocket connection limit", "error", WEBSOCKET_LIMIT_ERROR, undefined],
 	] as const)(
 		"resumes a %s after a synthetic unexecuted tool result",
 		async (_case, stopReason, errorMessage, errorId) => {
@@ -2951,6 +2954,59 @@ describe("AgentSession retry delay cap", () => {
 			});
 		},
 	);
+
+	it("retries a Codex websocket lifetime cap at once instead of waiting out a usage-limit cooldown", async () => {
+		// The `limit_reached` arm of the usage-limit matcher used to classify this
+		// transport rollover as an exhausted account: 1800000ms heuristic wait, over
+		// retry.maxDelayMs, so the turn died. A fresh connection succeeds at once.
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) {
+			throw new Error("Expected bundled Anthropic test model to exist");
+		}
+		const mock = createMockModel({ handler: () => ({ throw: WEBSOCKET_LIMIT_ERROR }) });
+		mock.push({ throw: WEBSOCKET_LIMIT_ERROR });
+		mock.push({ content: ["Recovered on a fresh connection"] });
+		const requestedModels: string[] = [];
+		const agent = new Agent({
+			getApiKey: requestedModel => `${requestedModel.provider}-test-key`,
+			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: (requestedModel, context, options) => {
+				requestedModels.push(`${requestedModel.provider}/${requestedModel.id}`);
+				return mock.stream(requestedModel, context, options);
+			},
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxDelayMs": 100,
+		});
+		settings.setModelRole("default", `${model.provider}/${model.id}`);
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		const waitSpy = mockSchedulerWaitWithClock();
+		const retryStartEvents: AutoRetryStartEvent[] = [];
+		const retryEndEvents: AutoRetryEndEvent[] = [];
+		session.subscribe(event => {
+			if (event.type === "auto_retry_start") retryStartEvents.push(event);
+			if (event.type === "auto_retry_end") retryEndEvents.push(event);
+		});
+
+		await session.prompt("Hit the websocket lifetime cap");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([`${model.provider}/${model.id}`, `${model.provider}/${model.id}`]);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryStartEvents[0].delayMs).toBe(0);
+		expect(retryEndEvents).toEqual([expect.objectContaining({ success: true })]);
+		for (const call of waitSpy.mock.calls) {
+			expect(call[0]).toBeLessThanOrEqual(100);
+		}
+		expect(lastAssistant(session).stopReason).toBe("stop");
+	});
 
 	it("resumes a stalled Cursor stream after its exec tool result", async () => {
 		const stallMessage = "Provider stream stalled while waiting for the next event";
