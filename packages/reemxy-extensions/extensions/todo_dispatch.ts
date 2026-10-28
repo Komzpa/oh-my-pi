@@ -619,7 +619,7 @@ export function estimateFloorRefusal(updates: readonly Record<string, unknown>[]
     if (typeof update.status === "string" && !isNonClosedRowStatus(update.status)) continue;
     const content = typeof update.task === "string" ? update.task : undefined;
     const row = content ? rows.find((candidate) => candidate.content === content) : undefined;
-    const estimate = update.estimate as { likelySeconds?: unknown } | undefined;
+    const estimate = update.estimate as { likelySeconds?: unknown; basis?: unknown } | undefined;
     if (!row || !estimate || typeof estimate.likelySeconds !== "number") continue;
     const profile = row.schedule?.executor?.agentProfile;
     const profileSamples = typeof profile === "string" ? floors.profiles.get(profile) : undefined;
@@ -634,7 +634,8 @@ export function estimateFloorRefusal(updates: readonly Record<string, unknown>[]
     // applying the whole-attempt floor again would double-count elapsed work.
     const elapsedMs = typeof row.startedAt === "number" ? Math.max(0, now - row.startedAt) : 0;
     const hasRemainingEvidence = row.status === "in_progress" && elapsedMs > 0
-      && typeof update.evidence === "string" && update.evidence.trim().length > 0;
+      && typeof update.evidence === "string" && update.evidence.trim().length > 0
+      && typeof estimate.basis === "string" && /\bremaining\b/i.test(estimate.basis);
     const fullAttemptFloor = Math.max(sampleMedian ?? 0, attemptFloor);
     const floorMs = hasRemainingEvidence ? Math.max(0, fullAttemptFloor - elapsedMs) : fullAttemptFloor;
     const floorSource = sampleMedian === undefined
@@ -1418,7 +1419,7 @@ function taskDetails(task: TaskRow, timeZone?: string): string {
   const attempts = schedule.attemptHistory ?? [];
   const last = attempts.at(-1);
   const attemptSummary = last
-    ? `${attempts.length} attempts; latest=${JSON.stringify({ attemptId: last.attemptId, workerName: last.workerName, terminalStatus: last.terminalStatus, rejectionReason: safeText(last.rejectionReason, 160) })}; full history: todo view with this exact task`
+    ? `${attempts.length} attempts; latest=${JSON.stringify({ attemptId: last.attemptId, workerName: last.workerName, terminalStatus: last.terminalStatus, rejectionReason: safeText(last.rejectionReason, 160), deliverablePaths: last.deliverablePaths })}; full history: todo view with this exact task`
     : "0 attempts";
   return `owner=${JSON.stringify(schedule.owner ?? null)}; dependencies=${dependencies}; resources=${resources}; O/L/P=${estimate}; progress=${progress}; estimateRevision=${revision}; reestimateCount=${reestimates}${review}${speculative}; attemptHistory=${attemptSummary}`;
 }
