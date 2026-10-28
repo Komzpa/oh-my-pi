@@ -3091,7 +3091,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         if (!row || !isNonClosedRowStatus(row.status)) return [];
         if (killed && !running && row.schedule?.owner && row.schedule.owner !== item.owner) return [];
       } else {
-        if (killed && !running) return [];
+        // A stuck escalation targets a live attempt. Once that worker is gone from the job table
+        // (finished before a restart, reaped), no kill or receipt can ever satisfy it.
+        if (!running && (killed || jobs)) return [];
         const received = item.received || jobs?.recent.some(job => matches(job) && (job.status === "completed" || job.status === "failed") && (job.endTime ?? 0) > item.at)
           || (workerTrace(ctx, item.owner).receiptAt ?? 0) > item.at;
         // Retain the acknowledged escalation for this attempt so the next tick cannot rearm it.
