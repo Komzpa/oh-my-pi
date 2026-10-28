@@ -66,7 +66,7 @@ function spawnTextMatchesRowTitle(text: string, title: unknown): boolean {
 	);
 }
 
-function lanePathsFromText(text: string): string[] {
+export function lanePathsFromText(text: string): string[] {
 	const found: string[] = [];
 	const pattern = /(~\/[^\s'"`,;]+|\/[A-Za-z0-9_.-]+(?:\/[^\s'"`,;]+)*)/g;
 	for (const match of text.matchAll(pattern)) {
@@ -74,6 +74,8 @@ function lanePathsFromText(text: string): string[] {
 		if (!candidate || candidate === "~" || candidate === "/") continue;
 		if (candidate === "~" || candidate.startsWith("~/")) candidate = join(homedir(), candidate.slice(2));
 		if (!candidate.startsWith("/")) continue;
+		// HTTP routes (/ACK, /bundle/message/photo) are not checkout paths: the top-level directory must exist.
+		if (!existsSync(`/${candidate.split("/")[1]}`)) continue;
 		if (!found.includes(candidate)) found.push(candidate);
 	}
 	return found;
@@ -85,6 +87,8 @@ function ownedCheckoutScopes(
 	latestTodo?: () => TodoScheduleInput,
 ): string[] | undefined {
 	const fallback = sessionCwdScopes(ctx);
+	const declared = checkoutScopesFromResources(event.resources);
+	if (declared) return declared;
 	const readPhases = (): TodoScheduleInput | undefined => {
 		if (!latestTodo) return undefined;
 		try {
