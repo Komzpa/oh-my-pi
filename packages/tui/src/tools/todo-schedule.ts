@@ -30,8 +30,18 @@ export interface TodoSchedule {
 	progress?: { at: number; evidence: string };
 	startedAt?: number;
 	finishedAt?: number;
+	/** Time this row first entered the plan as a user requirement. */
+	firstRequirementAt?: number;
+	/** First usable result was handed to the user at this time. */
+	firstDeliveredAt?: number;
+	/** Short final worker report retained for the user's review handoff. */
+	reviewSummary?: string;
 	/** Append-only durable attempts for this exact row. */
 	attemptHistory?: TodoReworkAttempt[];
+	/** User review state for a delivered implementation result. */
+	review?: "user" | "accepted" | "redo" | "drop";
+	/** A row whose work is speculative until the named review is accepted. */
+	speculativeOn?: string;
 	/** Observed Task worker that actually executed this row, independent of forecast ownership. */
 	executor?: {
 		workerId: string;
@@ -81,6 +91,7 @@ export type TodoScheduleInput = readonly TodoScheduleInputPhase[];
 export interface TodoTaskForecast {
 	content: string;
 	status: TodoScheduleStatus;
+	schedule?: TodoSchedule;
 	blocker?: string;
 	/** Direct blocked prerequisite and its reason, when known. */
 	awaitingPrerequisite?: string;
@@ -261,6 +272,7 @@ interface PlanNode {
 	estimate?: TodoEstimate;
 	predecessors: PlanNode[];
 	successors: PlanNode[];
+	speculativeDependencyCount: number;
 	issues: string[];
 	dependencyIssues: TodoDependencyIssue[];
 	dependencySetKnown: boolean;
@@ -317,6 +329,7 @@ function analyzeDependencies(
 				estimate: task.schedule?.estimate,
 				predecessors: [],
 				successors: [],
+				speculativeDependencyCount: 0,
 				issues: [],
 				dependencyIssues: [],
 				dependencySetKnown: isClosed(task.status),
@@ -374,6 +387,20 @@ function analyzeDependencies(
 			continue;
 		}
 		if (!schedule) continue;
+		if (
+			schedule.speculativeOn !== undefined &&
+			(typeof schedule.speculativeOn !== "string" || !schedule.speculativeOn.trim())
+		) {
+			addIssue(
+				node,
+				{
+					code: "invalid-schedule-metadata",
+					task: node.content,
+					message: `Speculative review reference must be non-empty text for task: ${node.content}`,
+				},
+				allIssues,
+			);
+		}
 		if (schedule.owner !== undefined && (typeof schedule.owner !== "string" || schedule.owner.length === 0)) {
 			addIssue(
 				node,
@@ -509,6 +536,10 @@ function analyzeDependencies(
 				continue;
 			}
 			const predecessor = matches[0];
+			if (node.schedule?.speculativeOn === dependency && predecessor.schedule?.review === "user") {
+				node.speculativeDependencyCount += 1;
+				continue;
+			}
 			node.predecessors.push(predecessor);
 			predecessor.successors.push(node);
 			if (predecessor.status === "abandoned") {
@@ -591,7 +622,7 @@ function analyzeDependencies(
 		else if (node.status === "abandoned" || node.status === "blocked" || !node.dependencySetKnown) node.ready = false;
 		else
 			node.ready =
-				node.predecessors.length === node.schedule?.dependencies?.length &&
+				node.predecessors.length + node.speculativeDependencyCount === node.schedule?.dependencies?.length &&
 				node.predecessors.every(
 					predecessor => predecessor.status === "completed" && finiteTimestamp(predecessor.schedule?.finishedAt),
 				);
@@ -1303,6 +1334,7 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 			planningIssues: planningIssuesByTask.get(node.content),
 			content: node.content,
 			status: node.status,
+			schedule: node.schedule,
 			owner: typeof node.schedule?.owner === "string" ? node.schedule.owner : undefined,
 			earliestStart: validSet.has(node) ? node.earliestStart : undefined,
 			earliestFinish: validSet.has(node) ? node.earliestFinish : undefined,
@@ -1436,6 +1468,8 @@ export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded 
 						? `plan required: ${planActions}`
 						: `forecast unavailable${row.issues[0] ? `: ${safeText(row.issues[0])}` : ""}`;
 	const parts = [label];
+	if (row.schedule?.review === "user") parts.push("review: user");
+	if (row.schedule?.speculativeOn) parts.push(`speculative on ${safeText(row.schedule.speculativeOn)}`);
 	if (row.onProposal?.length) parts.push(`on proposal: ${row.onProposal.map(safeText).join(", ")}`);
 	if (row.confidence !== "unknown") parts.push(`confidence: ${row.confidence}`);
 	if (row.resourceConfidence && row.resourceConfidence !== "unknown")
@@ -1542,6 +1576,9 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 						? `plan required: ${planActions}`
 						: `forecast unavailable${row.issues[0] ? `: ${safeText(row.issues[0])}` : ""}`;
 	const parts = [label];
+	if (row.schedule?.review === "user") parts.push("review: user");
+	if (row.schedule?.speculativeOn)
+		parts.push(`speculative on ${truncateToWidth(safeText(row.schedule.speculativeOn), 32)}`);
 	const workEnd = terminal ? row.finishedAt : row.status === "in_progress" ? now : undefined;
 	const workedMs =
 		terminal && row.attemptDurationMs !== undefined
