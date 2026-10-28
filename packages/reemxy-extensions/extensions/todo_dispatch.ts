@@ -29,6 +29,7 @@ import gateNoticeInstructions from "./gate-notices.md" with { type: "text" };
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 import { derivePresence, isDeadlineStateEntryMetadata, isGoalLifecycleEntryMetadata, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
+import { appendTimedNote } from "./lead_time_notes";
 import { calibrationHints, readDurationHistory } from "./todo_calibration";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
@@ -88,6 +89,7 @@ export type SprintState = {
   handledDeliveryKey?: string;
   lastNotices: Record<string, string>;
   ignoredDemands: Record<string, number>;
+  idleContinuationDemands: number;
   recoveryWaits?: RecoveryWait[];
 };
 type TaskRow = TodoScheduleInput[number]["tasks"][number];
@@ -123,7 +125,6 @@ export const SPRINT_STATE_ENTRY_TYPE = "todo-dispatch-sprint-state";
 const CHIEF_RULES_ENTRY_TYPE = "chief-rules-after-compaction";
 const WORKER_BRIEF_ENTRY_TYPE = "worker-brief-after-compaction";
 const TODO_ERROR_ENTRY_TYPE = "todo-error-reminder";
-const COMPACTION_DEDUPED_ENTRY_TYPES = [CHIEF_RULES_ENTRY_TYPE, WORKER_BRIEF_ENTRY_TYPE, TODO_ERROR_ENTRY_TYPE];
 
 export function autoGoalDeadlineState(input: {
   current: DeadlineState | null;
@@ -172,26 +173,6 @@ export function autoGoalDeadlineState(input: {
     ],
     baselineDeadlineAt: deadlineAt,
   };
-}
-// Latest-wins view for the three append-only custom types: keep only the newest message per
-// customType by message order, preserve every unrelated message and the retained order, never
-// mutate the input. Returns the original array when no type repeats, so callers can keep the
-// pass-through behavior unchanged in the common case.
-function dedupeLatestWinsCompactionMessages(messages: AgentMessage[]): AgentMessage[] {
-  const lastIndexByType: Record<string, number> = {};
-  let hasDuplicate = false;
-  for (let index = 0; index < messages.length; index++) {
-    const message = messages[index];
-    if (message.role !== "custom" || !COMPACTION_DEDUPED_ENTRY_TYPES.includes(message.customType)) continue;
-    const customType = message.customType;
-    if (lastIndexByType[customType] !== undefined) hasDuplicate = true;
-    lastIndexByType[customType] = index;
-  }
-  if (!hasDuplicate) return messages;
-  return messages.filter((message, index) => {
-    if (message.role !== "custom" || !COMPACTION_DEDUPED_ENTRY_TYPES.includes(message.customType)) return true;
-    return lastIndexByType[message.customType] === index;
-  });
 }
 // Canonical surviving model context for the compact guard: use the shared
 // SessionManager.buildSessionContext producer and check whether that customType still reaches the model.
@@ -427,6 +408,7 @@ function blankSprintState(): SprintState {
     retroDueReason: null,
     lastNotices: {},
     ignoredDemands: {},
+    idleContinuationDemands: 0,
   };
 }
 
@@ -853,6 +835,9 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
       ignoredDemands: typeof data.ignoredDemands === "object" && data.ignoredDemands !== null
         ? Object.fromEntries(Object.entries(data.ignoredDemands).filter((entry): entry is [string, number] => typeof entry[1] === "number").slice(-MAX_NOTICE_KEYS))
         : {},
+      idleContinuationDemands: typeof (data as Partial<SprintState>).idleContinuationDemands === "number"
+        ? Math.max(0, Math.min(3, Math.floor((data as Partial<SprintState>).idleContinuationDemands!)))
+        : 0,
     };
   }
   return blankSprintState();
@@ -1980,6 +1965,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let lastWakeKey: string | null = null;
   let persistedChildren: PersistedChild[] = [];
   let sprintState: SprintState = blankSprintState();
+  let turnToolNames: string[] = [];
+  let idlePlanDemandedThisTurn = false;
   // Owners whose finished result the last plan check found unread; names the unread-receipts remedy.
   let unreadOwners: string[] = [];
   let persistedSprintStateJson = JSON.stringify(sprintState);
@@ -2064,7 +2051,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const sent = kind === "todo-plan-check" ? { ...((details as Record<string, unknown> | undefined) ?? {}), supersedesQueued: true } : details;
     pi.sendMessage(
       { customType: kind, content, display: false, attribution: "agent", ...(sent === undefined ? {} : { details: sent }) },
-      { deliverAs: "aside", triggerTurn: false, interruptWait: false, ...delivery },
+      { deliverAs: "nextTurn", triggerTurn: false, interruptWait: false, ...delivery },
     );
     return true;
   };
@@ -2383,7 +2370,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     clearIdleTimer();
     healPlanTicker(ctx);
   });
-  pi.on("turn_start", (_event, ctx) => { healPlanTicker(ctx); announceGates(ctx); });
+  pi.on("turn_start", (_event, ctx) => {
+    turnToolNames = [];
+    idlePlanDemandedThisTurn = false;
+    healPlanTicker(ctx);
+    announceGates(ctx);
+  });
   let presenceCache: { minute: number; entries: number; presence: Presence } | null = null;
   const presenceOf = (branch: readonly unknown[], now: number): Presence => {
     const minute = Math.floor(now / 60_000);
@@ -3270,6 +3262,75 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const user = latestDeadlineUserMessage([{ type: "message", message: event.message }]);
     if (user) announceHuman(ctx, user);
   });
+  const resetIdleContinuationDemand = () => {
+    if (sprintState.idleContinuationDemands === 0) return;
+    sprintState = { ...sprintState, idleContinuationDemands: 0 };
+    persistSprintState();
+  };
+  const demandIdlePlanContinuation = (ctx: ExtensionContext) => {
+    if (singleWriterLane || !isMain(ctx) || idlePlanDemandedThisTurn || gateSwitchedOff(ctx) || pauseGate?.paused) return;
+    if (turnToolNames.some((name) => name !== "wait" && name !== "stop")) return;
+    const now = Date.now();
+    const decision = currentDecision(ctx, now, [], true, true);
+    if (!decision.forecast || !decision.staffingSnapshotComplete) return;
+    const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx));
+    const tasks = phases.flatMap((phase) => phase.tasks);
+    const userWaits = new Set((decision.userWaits ?? []).map((row) => row.content));
+    const runningRows = new Set((decision.ownerRunStates ?? []).filter((row) => row.running).map((row) => row.content));
+    const tasksByContent = new Map(tasks.map((task) => [task.content, task] as const));
+    const waitsOnProgress = (content: string, visiting = new Set<string>()): boolean => {
+      if (visiting.has(content)) return false;
+      const task = tasksByContent.get(content);
+      if (!task) return false;
+      const next = new Set(visiting).add(content);
+      return (task.schedule?.dependencies ?? []).some((dependency) => {
+        if (userWaits.has(dependency) || runningRows.has(dependency)) return true;
+        const prerequisite = tasksByContent.get(dependency);
+        return prerequisite !== undefined && isNonClosedRowStatus(prerequisite.status) && waitsOnProgress(dependency, next);
+      });
+    };
+    const openRows = tasks.filter((task) => isNonClosedRowStatus(task.status) && !userWaits.has(task.content));
+    const uncoveredRows = openRows.filter((task) => !runningRows.has(task.content) && !waitsOnProgress(task.content));
+    if (uncoveredRows.length === 0) {
+      resetIdleContinuationDemand();
+      return;
+    }
+    const uncovered = new Set(uncoveredRows.map((row) => row.content));
+    const overdueRows = decision.forecast.rows.filter((row) => row.overdue && uncovered.has(row.content)).map((row) => row.content);
+    const readyRows = decision.forecast.rows.filter((row) => row.ready && uncovered.has(row.content)).map((row) => row.content);
+    const rowList = (rows: string[]) => rows.length ? rows.slice(0, MAX_ROWS).map((row) => JSON.stringify(shorten(row))).join(", ") : "none";
+    const openList = rowList(uncoveredRows.map((row) => row.content));
+    const demand = `REQUIRED PLAN CONTINUATION: open rows have no running worker and are not waiting on the user or a live worker. Overdue: ${rowList(overdueRows)}. Ready: ${rowList(readyRows)}. Open: ${openList}. Re-estimate each overdue row from current evidence, staff every ready row, resolve any other blocker, and keep going until the deliverable is complete or only user-blocked rows/live workers remain.`;
+    const count = sprintState.idleContinuationDemands;
+    if (count >= 3) return;
+    idlePlanDemandedThisTurn = true;
+    if (count === 2) {
+      sprintState = { ...sprintState, idleContinuationDemands: 3 };
+      persistSprintState();
+      pi.sendMessage(
+        {
+          customType: "todo-idle-plan-escalation",
+          content: `PLAN STATUS: 3 consecutive idle turns left overdue ${rowList(overdueRows)} and ready ${rowList(readyRows)} rows open; user intervention is needed.`,
+          display: true,
+          attribution: "agent",
+        },
+        { deliverAs: "nextTurn", triggerTurn: false, interruptWait: false },
+      );
+      return;
+    }
+    sprintState = { ...sprintState, idleContinuationDemands: count + 1 };
+    persistSprintState();
+    pi.sendMessage(
+      {
+        customType: "todo-idle-plan-demand",
+        content: demand,
+        display: false,
+        attribution: "agent",
+        details: { overdueRows, readyRows, openRows: uncoveredRows.map((row) => row.content), idleDemand: count + 1 },
+      },
+      { deliverAs: "nextTurn", triggerTurn: true, interruptWait: false },
+    );
+  };
   const unansweredUserReason = (ctx: ExtensionContext) => {
     if (singleWriterLane || !isMain(ctx)) return;
     // Canonical history contains finalized assistant_message rewrites, not streamed drafts.
@@ -3311,6 +3372,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   pi.on("session_stop", (_event, ctx) => {
     const reason = unansweredUserReason(ctx);
     if (reason) return { decision: "block", reason };
+    demandIdlePlanContinuation(ctx);
   });
   // The full chief-of-staff runbook (main) or a worker's original brief (subagent) can drop out of
   // context at compaction when the summary replaces the retained prefix. Conditionally re-persist it
@@ -4316,6 +4378,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   });
 
   pi.on("tool_call", async (event, ctx) => {
+    if (isMain(ctx)) {
+      turnToolNames.push(event.toolName);
+      resetIdleContinuationDemand();
+    }
     if (event.toolName === "wait") {
       const reason = unansweredUserReasonWithDraft(ctx);
       if (reason) return { block: true, reason };
@@ -5042,33 +5108,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     };
   });
 
-  // The role rides on every provider request. A before_agent_start system prompt lasts only for
-  // a user-started run, and a goal session lives mostly on autonomous continuations and restarts.
-  // The kill switch stops only what can block a call (demands, refusals); this note only informs, so it stays.
-  pi.on("context", async (event, ctx) => {
-    const queuedPlanCheck = event.messages.some((message) => message.role === "custom" && message.customType === "todo-plan-check");
-    let messages = event.messages;
-    if (queuedPlanCheck) {
-      const openRows = new Set(sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never)
-        .flatMap((phase) => phase.tasks)
-        .filter((row) => isOpenRowStatus(row.status))
-        .map((row) => row.content));
-      messages = messages.filter((message) => {
-        if (message.role !== "custom" || message.customType !== "todo-plan-check") return true;
-        const planRows = (message.details as { planRows?: unknown } | undefined)?.planRows;
-        return !Array.isArray(planRows) || planRows.every((row) => typeof row === "string" && openRows.has(row));
-      });
-    }
-    const deduped = dedupeLatestWinsCompactionMessages(messages);
-    const passThrough = deduped !== event.messages ? { messages: deduped } : undefined;
-    await refreshLiveWorkerModels(ctx);
-    announceGates(ctx);
-    if (singleWriterLane) return passThrough;
+  const appendLeadTimeNote = async (ctx: ExtensionContext) => {
     const now = Date.now();
-    if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)), now / 1_000)) return passThrough;
+    if (singleWriterLane || isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)), now / 1_000)) return;
     const decision = currentDecision(ctx, now);
     const chief = isMain(ctx) && pi.getActiveTools().includes("task");
-    if (!decision.prompt && !chief) return passThrough;
+    if (!decision.prompt && !chief) return;
     const attemptedIdleOwners = decision.readyCandidates
       .filter((row) => row.ownership === "idle-live-owner" && row.owner && idleResumeAttempts.has(row.owner))
       .map((row) => row.owner!);
@@ -5083,9 +5128,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     const facts = chief ? await integrationFacts(ctx, now) : "";
     const notice = isMain(ctx) ? returnNotice : null;
-    if (notice) notice.shown = true;
     const content = [
-      ...(notice ? [notice.text] : []),
+      ...(notice && !notice.shown ? [notice.text] : []),
       ...(chief ? [CHIEF_OF_STAFF] : []),
       ...(facts ? [facts] : []),
       ...(chief && lastTaskDispatchRefused ? ["The last task dispatch was refused; bounded work is open to you until the ready row can be dispatched."] : []),
@@ -5095,7 +5139,42 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         ? [`${decision.prompt}${attemptedIdleOwners.length ? `\nFAIL CLOSED: exact idle worker resume already attempted once for ${attemptedIdleOwners.join(", ")}; inspect the exact session/result, do not retry or create a duplicate writer.` : ""}`]
         : []),
     ].join("\n");
-    return { messages: [...deduped, { role: "developer", content, timestamp: now }] };
+    const workOpen = Boolean(decision.prompt || retroDue || phases.some((phase) => phase.tasks.some((task) => task.status === "pending" || task.status === "in_progress")));
+    const semanticKey = JSON.stringify({
+      notice: notice && !notice.shown ? notice.text : null,
+      chief,
+      facts: facts.replace(/\b\d+ min\b/g, "<minutes>"),
+      refused: chief && lastTaskDispatchRefused,
+      activeDemand: chief ? activeDemand : null,
+      retroDue,
+      plan: decision.staticPrompt,
+      alarms: decision.alarms.filter((alarm) => !alarm.startsWith("overdue-todo-minute:")),
+      deadline: decision.deadline ?? null,
+      attemptedIdleOwners,
+    });
+    const appended = await appendTimedNote(
+      pi,
+      ctx,
+      "todo-dispatch-time-note",
+      content,
+      semanticKey,
+      formatLocalClock(now, decision.deadline?.timezone),
+      workOpen,
+      now,
+    );
+    if (appended && notice) notice.shown = true;
+  };
+
+  pi.on("turn_end", async (_event, ctx) => {
+    announceGates(ctx);
+    await appendLeadTimeNote(ctx);
+  });
+  // Context shaping is append-only: all model-facing reminders are persisted at turn end.
+  pi.on("context", async (event, ctx) => {
+    await refreshLiveWorkerModels(ctx);
+    if (!singleWriterLane && isMain(ctx)) await gitState(ctx, Date.now(), true);
+    if (!singleWriterLane && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) currentDecision(ctx);
+    return { messages: event.messages };
   });
 
   const armIdleCheck = (ctx: ExtensionContext, decision = currentDecision(ctx)) => {

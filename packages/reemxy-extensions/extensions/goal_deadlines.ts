@@ -14,6 +14,7 @@ import { SettingsManager } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-
 import type { ActiveGoalRef, DeadlineState, QuotaSnapshot } from "./deadlines";
 import * as deadlineSdk from "./deadlines";
 import wrapUpInstructions from "./goal-deadline-wrap-up.md" with { type: "text" };
+import { appendTimedNote } from "./lead_time_notes";
 
 export const REMINDER_MAX_CHARS = 800;
 
@@ -421,7 +422,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		const content = prompt.render(gateNotices, { deadline: true, missed, due, goal: deadlineState.goalId, overdueMinutes, remaining }).trim();
 		pi.sendMessage?.(
 			{ customType: "goal-deadline-gate-notice", content, display: false, attribution: "agent" },
-			{ deliverAs: "aside", triggerTurn: false, interruptWait: false },
+			{ deliverAs: "nextTurn", triggerTurn: false, interruptWait: false },
 		);
 	};
 	const announceCompletionGate = (ctx: ExtensionContext) => {
@@ -435,7 +436,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		const key = `completion:${activeGoal.id}:${reason}`;
 		if (announcedGateNoticeKeys.has(key)) return;
 		announcedGateNoticeKeys.add(key);
-		pi.sendMessage?.({ customType: "goal-completion-gate-notice", content: prompt.render(gateNotices, { completion: true, action: reason.split("\n")[0] }).trim(), display: false, attribution: "agent" }, { deliverAs: "aside", triggerTurn: false, interruptWait: false });
+		pi.sendMessage?.({ customType: "goal-completion-gate-notice", content: prompt.render(gateNotices, { completion: true, action: reason.split("\n")[0] }).trim(), display: false, attribution: "agent" }, { deliverAs: "nextTurn", triggerTurn: false, interruptWait: false });
 	};
 	const focusedGoal = (ctx: ExtensionContext): ActiveGoalRef | null => {
 		const lifecycle = sdk.readFocusedGoal(selectBranchEntries(ctx.sessionManager, isGoalLifecycleEntryMetadata), ctx.cwd);
@@ -493,7 +494,39 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		persist();
 		updateUi(ctx);
 	});
-	pi.on("turn_end", (event, ctx) => {
+	pi.on("turn_end", async (event, ctx) => {
+		announceCompletionGate(ctx);
+		const gateDeadlineState = state?.active && (state.userConstraint || (state.auto && activeGoal?.status !== "active") || (activeGoal?.status === "active" && activeGoal.id === state.goalId)) ? state : null;
+		if (gateDeadlineState?.userConstraint) announceDeadlineGate(gateDeadlineState, deadlineSdk.isUserDeadlineMissed(gateDeadlineState), ctx.getTodoPhases?.());
+		const now = Date.now();
+		const deadlineState = state?.active && (state.userConstraint || (state.auto && activeGoal?.status !== "active") || (activeGoal?.status === "active" && activeGoal.id === state.goalId)) ? state : null;
+		const phases = ctx.getTodoPhases?.();
+		const quota = deadlineState ? readQuota() : undefined;
+		const reminder = deadlineState
+			? renderDeadlineReminder(deadlineState, Math.floor(now / 1_000), quota, phases)
+			: activeGoal?.status === "active" ? renderMissingScheduleReminder(activeGoal) : null;
+		const presence = renderPresence(userEntries(ctx), deadlineState, now);
+		const content = deadlineState?.userConstraint && deadlineSdk.isUserDeadlineMissed(deadlineState)
+			? [reminder, presence].filter(Boolean).join("\n\n")
+			: [presence, reminder].filter(Boolean).join("\n\n");
+		if (content) {
+			const remaining = phases?.flatMap(phase => phase.tasks.filter(task => task.status !== "completed" && task.status !== "abandoned").map(task => task.content));
+			const semanticKey = JSON.stringify({
+				goal: deadlineState ? {
+					id: deadlineState.goalId,
+					baselineDeadlineAt: deadlineState.baselineDeadlineAt,
+					statusSentAt: deadlineState.userConstraint?.statusSentAt,
+					stages: deadlineState.stages.map(stage => [stage.id, stage.label, stage.expectedResult, stage.deadlineAt, stage.deliveredAt]),
+					remaining,
+				} : null,
+				activeGoal: activeGoal?.status === "active" ? [activeGoal.id, activeGoal.status] : null,
+				deadlineStatus: deadlineState?.userConstraint ? deadlineSdk.isUserDeadlineMissed(deadlineState, now / 1_000) : null,
+				presence: derivePresence(userEntries(ctx), deadlineState, now),
+				quota: quota ? [quota.provider, quota.remainingPercent, quota.status] : null,
+			});
+			const workOpen = Boolean(reminder || remaining?.length);
+			await appendTimedNote(pi, ctx, "goal-deadline-time-note", content, semanticKey, deadlineSdk.formatLocalClock(now, deadlineState?.timezone), workOpen, now);
+		}
 		if (event.toolResults.length > 0) return;
 		const reason = missedWorkDemand(ctx);
 		if (reason) pi.sendMessage?.({ customType: "goal-deadline-continue", content: reason, display: false, attribution: "agent" }, { deliverAs: "nextTurn", triggerTurn: true });
@@ -538,17 +571,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 
 	pi.on("context", (event, ctx) => {
 		refresh(ctx);
-		announceCompletionGate(ctx);
-		const deadlineState = state?.active && (state.userConstraint || (state.auto && activeGoal?.status !== "active") || (activeGoal?.status === "active" && activeGoal.id === state.goalId)) ? state : null;
-		if (deadlineState?.userConstraint) announceDeadlineGate(deadlineState, deadlineSdk.isUserDeadlineMissed(deadlineState), ctx.getTodoPhases?.());
-		const reminder = deadlineState
-			? renderDeadlineReminder(deadlineState, Math.floor(Date.now() / 1000), readQuota(), ctx.getTodoPhases?.())
-			: activeGoal?.status === "active" ? renderMissingScheduleReminder(activeGoal) : null;
-		const missed = Boolean(deadlineState?.userConstraint && deadlineSdk.isUserDeadlineMissed(deadlineState));
-		const content = (missed ? [reminder, renderPresence(userEntries(ctx), deadlineState)] : [renderPresence(userEntries(ctx), deadlineState), reminder])
-			.filter(Boolean)
-			.join("\n\n");
-		return { messages: [...event.messages, { role: "developer", content, timestamp: Date.now() }] };
+		return { messages: event.messages };
 	});
 
 	pi.on("tool_result", (event, ctx) => {
