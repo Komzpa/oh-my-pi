@@ -629,7 +629,14 @@ export function estimateFloorRefusal(updates: readonly Record<string, unknown>[]
     const previousAttempt = row.schedule?.attemptHistory?.at(-1);
     const attemptFloor = typeof previousAttempt?.durationMs === "number" && Number.isFinite(previousAttempt.durationMs) && previousAttempt.durationMs > 0
       ? previousAttempt.durationMs : 0;
-    const floorMs = Math.max(sampleMedian ?? 0, attemptFloor);
+    // Profile and previous-attempt durations measure whole attempts. An
+    // evidenced re-estimate for work already underway measures what remains;
+    // applying the whole-attempt floor again would double-count elapsed work.
+    const elapsedMs = typeof row.startedAt === "number" ? Math.max(0, now - row.startedAt) : 0;
+    const hasRemainingEvidence = row.status === "in_progress" && elapsedMs > 0
+      && typeof update.evidence === "string" && update.evidence.trim().length > 0;
+    const fullAttemptFloor = Math.max(sampleMedian ?? 0, attemptFloor);
+    const floorMs = hasRemainingEvidence ? Math.max(0, fullAttemptFloor - elapsedMs) : fullAttemptFloor;
     const floorSource = sampleMedian === undefined
       ? `all profiles (successful outcomes, n=${samples.length})`
       : profileSamples?.length
@@ -639,7 +646,6 @@ export function estimateFloorRefusal(updates: readonly Record<string, unknown>[]
       sampleMedian === undefined ? undefined : `p50 ${Math.ceil(sampleMedian / 60_000)}m from ${floorSource}`,
       attemptFloor > 0 ? `previous attempt took ${Math.ceil(attemptFloor / 60_000)}m` : undefined,
     ].filter((reason): reason is string => reason !== undefined);
-    const elapsedMs = typeof row.startedAt === "number" ? now - row.startedAt : 0;
     const ratifiesOverrun = row.status === "in_progress" && row.overdue && elapsedMs > priorLikely * 1_000
       && estimate.likelySeconds * 1_000 >= elapsedMs * 0.9
       && estimate.likelySeconds * 1_000 <= elapsedMs * 1.1
