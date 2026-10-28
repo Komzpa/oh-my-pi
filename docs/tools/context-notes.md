@@ -31,7 +31,7 @@
 ## Flow and Side Effects
 
 1. Resolve the live owning journal and check cancellation.
-2. Validate `action` (and, for `replace`, that `text` is a nonempty string within the byte limit) before any journal preparation or mutation; invalid calls change nothing.
+2. Validate `action` (and, for `replace`, that `text` is a nonempty string) before any journal preparation or mutation; invalid calls change nothing.
 3. Reads project the latest notebook revision on the active branch.
 4. Writes capture the owner and branch leaf and await disk preparation.
 5. Recheck cancellation, session ownership, feature availability, and the branch leaf before appending an `experimental_context_notes` custom entry with `{ version: 1, text }`.
@@ -41,8 +41,8 @@ The latest valid, nonempty notebook is included in experimental context reconstr
 
 ## Limits and Errors
 
-- Maximum notebook size: **16,384 UTF-8 bytes**. Oversized writes fail before appending. Shorten the notebook and recover supporting detail through `history://current/full` using `read` or `grep`.
-- **CNOTES-OVERFLOW (producer/recovery requirement):** the notebook producer MUST keep practical headroom below the hard cap (target roughly 12 KiB), MUST replace superseded entries with a current compact index plus history entry-ID references instead of accumulating raw content, and — after an oversized-write rejection — MUST recover by reading with `action: "read"`, compacting, and retrying `action: "replace"` until a save succeeds before claiming checkpoint success; a failed save is never a finished checkpoint. Only `action: "clear"` clears the notebook; empty `text` is never a clear and MUST NOT be relied on as one, and `action: "read"` MUST NOT be able to mutate the notebook whatever `text` accompanies it. The rejection error reports attempted bytes, the maximum, the excess bytes, states that nothing was saved and the existing notebook is unchanged, and gives the concrete retry path (read with `action: "read"`, recover detail from `history://current/full`, retry a compact `action: "replace"` with entry-ID references). The runtime guard remains authoritative: no automatic truncation and no automatic choice of what to discard.
+- There is no notebook-specific byte cap. Saving and reopening preserve the entire UTF-8 text, including notebooks larger than 16 KiB; storage and provider context constraints still apply normally.
+- **CNOTES-PRESERVATION (producer/storage requirement, replaces CNOTES-OVERFLOW):** the runtime MUST save and project the complete replacement without size-based rejection, silent truncation, reset, or fallback to an older revision. The producer SHOULD keep automatic context compact by replacing superseded entries with a current index and recoverable history entry-ID references instead of accumulating raw logs; this guidance MUST NOT discard still-needed state to satisfy an arbitrary byte target. Only `action: "clear"` clears the notebook; empty `text` MUST NOT clear it, and `action: "read"` MUST NOT mutate it whatever `text` accompanies it. Cancellation or a disk-preparation error MUST preserve the previous notebook. The acceptance oracle saves and reopens exactly 18,824 UTF-8 bytes and a neighboring multibyte replacement byte-for-byte, and checks invalid, cancelled, and preparation-error writes against the previous revision.
 - Disabled, disposed, or mismatched-owner sessions fail with a `ToolError`.
 - A branch change during disk preparation rejects the write rather than saving to a different branch.
 - Cancellation and persistence errors propagate to the caller.
