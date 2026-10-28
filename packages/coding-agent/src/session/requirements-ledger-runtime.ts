@@ -899,6 +899,12 @@ export class RequirementsLedgerRuntime {
 		if (this.#getPublicationGeneration() !== decisionGeneration) return;
 		if (open.length === 0) {
 			this.#noticeState = "";
+			const lastReport = matchingRequirementBranchNewestFirst(
+				this.#host.sessionManager,
+				metadata => metadata.type === "custom" && metadata.customType === "requirements_publication_notice",
+			).next().value;
+			if (lastReport?.type === "custom" && isRecord(lastReport.data) && lastReport.data.state !== null)
+				this.#host.sessionManager.appendCustomEntry("requirements_publication_notice", { state: null });
 			return;
 		}
 		const tools = this.#host.agent.state?.tools;
@@ -931,9 +937,12 @@ export class RequirementsLedgerRuntime {
 			this.#host.sessionManager,
 			metadata =>
 				(metadata.type === "message" && metadata.messageRole === "user") ||
-				(metadata.type === "custom" && metadata.customType === "requirements_awaiting_user_notice"),
+				(metadata.type === "custom" &&
+					(metadata.customType === "requirements_awaiting_user_notice" ||
+						metadata.customType === "requirements_publication_notice")),
 		);
 		const userMessage = branch.findLast(entry => entry.type === "message" && entry.message.role === "user");
+		const userTurn = userMessage?.id ?? null;
 		const announced = new Set<string>();
 		for (const entry of branch) {
 			if (
@@ -966,11 +975,37 @@ export class RequirementsLedgerRuntime {
 			item => item.classification === "candidate" || item.classification === "linked",
 		).length;
 		this.#host.onSettledAssistantMessage(message);
-		const notice = formatRequirementPublicationStatus(visible, total);
 		const original = message.content
 			.filter(block => block.type === "text")
 			.map(block => block.text)
 			.join("");
+		// Only suppress an unchanged report. The audit snapshot includes the
+		// source closure and linked rows; issues capture changed gate outcomes.
+		const state = new Bun.CryptoHasher("sha256")
+			.update(
+				JSON.stringify([
+					total,
+					requirementAuditSnapshot(
+						requirements,
+						open.map(item => item.requirement.id),
+					),
+					open.map(item => [item.requirement.id, item.issues]),
+				]),
+			)
+			.digest("hex");
+		const previousReport = branch.findLast(
+			entry => entry.type === "custom" && entry.customType === "requirements_publication_notice",
+		);
+		if (
+			previousReport?.type === "custom" &&
+			isRecord(previousReport.data) &&
+			previousReport.data.userTurn === userTurn &&
+			previousReport.data.state === state &&
+			newKeys.length === 0
+		)
+			return { replacementText: original, settled: true, preserveImages: true };
+		this.#host.sessionManager.appendCustomEntry("requirements_publication_notice", { userTurn, state });
+		const notice = formatRequirementPublicationStatus(visible, total);
 		return {
 			replacementText: original ? `${original}\n\n${notice}` : notice,
 			settled: true,
