@@ -2560,7 +2560,7 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
     expect(refused?.reason).toContain("missed-eta");
     expect(refused?.reason).toContain("Don't start workers to answer this.");
     expect(refused?.reason).not.toContain("chief-of-staff");
-    const bash = (await toolCall({ toolName: "bash", toolCallId: "u1b", input: { command: "systemctl status codex-lb" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    const bash = (await toolCall({ toolName: "bash", toolCallId: "u1b", input: { command: "systemctl restart codex-lb" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(bash?.block).toBe(true);
     expect(bash?.reason).toContain("missed-eta");
     // A worker spawn answering the demand is refused too.
@@ -2617,13 +2617,16 @@ test("an escalated demand decays once every row is closed (live sunbim 2026-10-2
   try {
     await handlers.get("session_start")!({}, ctx);
     const toolCall = handlers.get("tool_call")!;
-    const before = (await toolCall({ toolName: "bash", toolCallId: "c1", input: { command: "ss -ltn" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    // Reading a worker's commit is a look and passes the escalation (live DC 2026-10-28).
+    const look = (await toolCall({ toolName: "bash", toolCallId: "c0", input: { command: "cd /tmp && git show --format=fuller 945d704" } }, ctx)) as { block?: boolean } | undefined;
+    expect(look?.block).not.toBe(true);
+    const before = (await toolCall({ toolName: "bash", toolCallId: "c1", input: { command: "make build" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(before?.reason ?? "").toContain("unread-receipts");
     // Its remedy is reading the result, not the missed-ETA replan text (live DC 2026-10-28).
     expect(before?.reason ?? "").toContain("agent://");
     expect(before?.reason ?? "").not.toContain("re-estimate");
     await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "c2", isError: false, content: [], details: undefined }, ctx);
-    const after = (await toolCall({ toolName: "bash", toolCallId: "c3", input: { command: "ss -ltn" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    const after = (await toolCall({ toolName: "bash", toolCallId: "c3", input: { command: "make build" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(after?.reason ?? "", "closed plan clears the escalation").not.toContain("unread-receipts");
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
