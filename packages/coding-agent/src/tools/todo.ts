@@ -200,6 +200,28 @@ function findTaskByContent(phases: TodoPhase[], content: string): { task: TodoIt
 	return undefined;
 }
 
+/** Starting an archived row brings it back into its phase: the archive hides closed rows, it does not forbid reopening them. */
+function restoreArchivedTask(
+	phases: TodoPhase[],
+	archived: TodoPhase[],
+	content: string | undefined,
+): { task: TodoItem; phase: TodoPhase } | undefined {
+	if (!content) return undefined;
+	for (const archivedPhase of archived) {
+		const task = archivedPhase.tasks.find(t => t.content === content);
+		if (!task) continue;
+		let phase = findPhaseByName(phases, archivedPhase.name);
+		if (!phase) {
+			phase = { name: archivedPhase.name, tasks: [] };
+			phases.push(phase);
+		}
+		const restored = cloneTask(task);
+		phase.tasks.push(restored);
+		return { task: restored, phase };
+	}
+	return undefined;
+}
+
 function findPhaseByName(phases: TodoPhase[], name: string): TodoPhase | undefined {
 	return phases.find(phase => phase.name === name);
 }
@@ -482,7 +504,7 @@ function replayTodoEdit(
 		if (errors.length > 0) return undefined;
 		return { phases: next, mutable: true };
 	}
-	const applied = applyParams(current, resolved, edit.at);
+	const applied = applyParams(current, resolved, edit.at, options.archived);
 	if (applied.errors.length > 0) return undefined;
 	return { phases: applied.phases, mutable: true };
 }
@@ -1129,7 +1151,10 @@ function applyEntry(
 		case "init":
 			return initPhases(entry, errors);
 		case "start": {
-			const hit = resolveTaskOrError(phases, entry.task, errors);
+			const hit =
+				findTaskByContent(phases, entry.task ?? "") ??
+				restoreArchivedTask(phases, archived, entry.task) ??
+				resolveTaskOrError(phases, entry.task, errors);
 			if (!hit) return phases;
 			const planningIssues = getTodoPlanningIssues(phases);
 			if (planningIssues.length > 0) {
