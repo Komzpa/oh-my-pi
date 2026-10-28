@@ -813,6 +813,7 @@ export class ExtensionRunner {
 		/** Builds `ctx.annotations`; supplied by the host that wires the bundled `/annotate` command. */
 		createAnnotations?: ExtensionAnnotationsFactory,
 		private readonly getTodoPhases?: ExtensionContext["getTodoPhases"],
+		private readonly updateTodoSchedule?: ExtensionContext["updateTodoSchedule"],
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
@@ -1789,6 +1790,7 @@ export class ExtensionRunner {
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
 			getTodoPhases: () => this.getTodoPhases?.(),
+			updateTodoSchedule: (task, patch) => this.updateTodoSchedule?.(task, patch) ?? false,
 			setSubagentFastMode: this.#setSubagentFastModeFn,
 			hasUI: this.hasUI(),
 			cwd: this.cwd,

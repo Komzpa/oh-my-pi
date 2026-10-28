@@ -14,6 +14,8 @@ import { execFileSync } from "node:child_process";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch, { noticeDigest } from "./todo_dispatch";
 
+const todoDispatchStateDir = process.env.OMP_TODO_DISPATCH_STATE_DIR ?? path.join(os.homedir(), ".local", "state", "omp-todo-dispatch");
+
 function branchMock(getBranch: () => unknown[]) {
 	return {
 		getBranch,
@@ -1041,8 +1043,8 @@ test("OMP_LANE_UNIT suppresses chief gates, retros and continuation nudges", asy
 
 async function stuckWorkerHarness(options: { filesAgeMs: number; elapsedMs: number; bulkFiles?: number }) {
 	const sessionId = `plantick-${process.pid}-${Math.random().toString(36).slice(2)}`;
-	const traceFile = path.join(os.homedir(), ".local", "state", "omp-todo-dispatch", `${sessionId}.gate.jsonl`);
-	const tree = fs.mkdtempSync(path.join(os.tmpdir(), "todo-plantick-tree-"));
+	const traceFile = path.join(todoDispatchStateDir, `${sessionId}.gate.jsonl`);
+	const tree = fs.mkdtempSync(path.join("/tmp", "todo-plantick-tree-"));
 	const sessions = fs.mkdtempSync(path.join(os.tmpdir(), "todo-plantick-session-"));
 	const sessionFile = path.join(sessions, "main.jsonl");
 	fs.mkdirSync(path.join(sessions, "main"));
@@ -1272,7 +1274,7 @@ test("80-percent ETA notice and second-reestimate warning precede consistent sch
 		expect(eta[0].content).toContain("evidence + a new estimate");
 		expect(eta[0].content).toContain("third same-owner reestimate is refused");
 		now = origin + 101_000;
-		const input = { op: "schedule", updates: [{ task: row.content, estimate: { likelySeconds: 200, updatedAt: now } }] };
+		const input = { op: "schedule", updates: [{ task: row.content, estimate: { likelySeconds: 300, updatedAt: now } }] };
 		const missed = await h.handlers.get("tool_call")!({ toolName: "todo", input }, h.ctx);
 		actionable(missed.reason, "Polish amber chart");
 		expect(missed.reason).toContain("evidence");

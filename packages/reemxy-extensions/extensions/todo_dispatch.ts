@@ -574,6 +574,128 @@ function todoScheduleUpdates(input: unknown): Array<Record<string, unknown>> {
   return out;
 }
 
+type SpawnOutcome = { kind?: unknown; agent?: unknown; status?: unknown; durationMs?: unknown; jobId?: unknown; spawnKey?: unknown };
+type DurationFloors = { profiles: Map<string, number[]>; all: number[] };
+let durationFloorsCache: { readAt: number; floors: DurationFloors } | undefined;
+const ROUTER_SPAWNS_PATH = join(homedir(), ".local", "state", "omp-agent-router", "spawns.jsonl");
+const TODO_DISPATCH_STATE_DIR = process.env.OMP_TODO_DISPATCH_STATE_DIR ?? join(homedir(), ".local", "state", "omp-todo-dispatch");
+
+export function successfulDurationFloors(lines: readonly string[]): DurationFloors {
+  const profiles = new Map<string, number[]>();
+  const all: number[] = [];
+  for (const line of lines) {
+    try {
+      const event = JSON.parse(line) as SpawnOutcome;
+      if (event.kind !== "outcome" || event.status !== "completed" || typeof event.durationMs !== "number" || !Number.isFinite(event.durationMs) || event.durationMs <= 0) continue;
+      const profile = typeof event.agent === "string" ? event.agent : "";
+      if (profile) profiles.set(profile, [...(profiles.get(profile) ?? []), event.durationMs]);
+      all.push(event.durationMs);
+    } catch {}
+  }
+  return { profiles, all };
+}
+
+function median(values: readonly number[]): number | undefined {
+  if (!values.length) return undefined;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return Math.round(sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2);
+}
+
+function durationFloors(now: number): DurationFloors {
+  if (durationFloorsCache && now - durationFloorsCache.readAt < 60_000) return durationFloorsCache.floors;
+  let floors: DurationFloors = { profiles: new Map(), all: [] };
+  try {
+    const content = readFileSync(ROUTER_SPAWNS_PATH, "utf8");
+    floors = successfulDurationFloors(content.trim().split("\n"));
+  } catch {}
+  durationFloorsCache = { readAt: now, floors };
+  return floors;
+}
+
+export function estimateFloorRefusal(updates: readonly Record<string, unknown>[], rows: readonly TodoTaskForecast[], floors: DurationFloors, now: number): string | undefined {
+  for (const update of updates) {
+    if (typeof update.status === "string" && !isNonClosedRowStatus(update.status)) continue;
+    const content = typeof update.task === "string" ? update.task : undefined;
+    const row = content ? rows.find((candidate) => candidate.content === content) : undefined;
+    const estimate = update.estimate as { likelySeconds?: unknown } | undefined;
+    if (!row || !estimate || typeof estimate.likelySeconds !== "number") continue;
+    const profile = row.schedule?.executor?.agentProfile;
+    const profileSamples = typeof profile === "string" ? floors.profiles.get(profile) : undefined;
+    const samples = profileSamples?.length ? profileSamples : floors.all;
+    const sampleMedian = median(samples);
+    const priorLikely = row.estimateRangeSeconds?.likely ?? 0;
+    const attemptTwoFloor = row.overdue || (row.schedule?.attemptHistory?.length ?? 0) >= 1 ? priorLikely * 2_000 : 0;
+    const floorMs = Math.max(sampleMedian ?? 0, attemptTwoFloor);
+    const floorSource = sampleMedian === undefined
+      ? `all profiles (successful outcomes, n=${samples.length})`
+      : profileSamples?.length
+        ? `${profile} profile p50 (successful outcomes, n=${profileSamples.length})`
+        : `all profiles p50 fallback (successful outcomes, n=${samples.length})`;
+    const floorReasons = [
+      sampleMedian === undefined ? undefined : `p50 ${Math.ceil(sampleMedian / 60_000)}m from ${floorSource}`,
+      attemptTwoFloor > 0 ? `2x previous likely ${Math.ceil(attemptTwoFloor / 60_000)}m` : undefined,
+    ].filter((reason): reason is string => reason !== undefined);
+    const elapsedMs = typeof row.startedAt === "number" ? now - row.startedAt : 0;
+    const ratifiesOverrun = row.status === "in_progress" && row.overdue && elapsedMs > priorLikely * 1_000
+      && estimate.likelySeconds * 1_000 >= elapsedMs * 0.9
+      && estimate.likelySeconds * 1_000 <= elapsedMs * 1.1
+      && !(typeof update.evidence === "string" && update.evidence.trim());
+    if (estimate.likelySeconds * 1_000 >= floorMs && !ratifiesOverrun) continue;
+    const detail = ratifiesOverrun
+      ? `likely ${Math.round(estimate.likelySeconds / 60)}m only ratifies ${Math.floor(elapsedMs / 60_000)}m already elapsed without new evidence`
+      : `likely ${Math.round(estimate.likelySeconds / 60)}m is below ${Math.ceil(floorMs / 60_000)}m`;
+    const evidence = ratifiesOverrun ? `Measured overrun: ${Math.floor(elapsedMs / 60_000)}m elapsed; state the remaining work` : `Measured floor: ${floorReasons.join("; ") || "no successful outcomes available"}`;
+    const lower = Math.max(1, Math.ceil(floorMs / 1_000));
+    const exactCall = JSON.stringify({
+      op: "schedule",
+      updates: [{
+        task: row.content,
+        evidence,
+        estimate: { optimisticSeconds: lower, likelySeconds: lower, pessimisticSeconds: lower * 2, confidence: "low", basis: evidence },
+      }],
+    });
+    return `Refusing todo schedule for ${JSON.stringify(shorten(row.content, 34))}: ${detail}; floor ${Math.ceil(floorMs / 60_000)}m; floor source ${floorReasons.join("; ") || `${floorSource}, no successful samples`}; exactly: todo ${exactCall}.`;
+  }
+  return undefined;
+}
+
+export function firstDeliveryCutRequired(
+  rows: readonly TodoTaskForecast[],
+  _requestAt: number,
+  userDeadlineAt: number | undefined,
+  _now: number,
+): string | undefined {
+  // Each request has its own first delivery. A quick row from another request
+  // must not hide a new requirement whose first usable slice is too far away.
+  const requests = new Map<number, TodoTaskForecast[]>();
+  for (const row of rows) {
+    const at = row.schedule?.firstRequirementAt;
+    if (typeof at !== "number" || !Number.isFinite(at)) continue;
+    requests.set(at, [...(requests.get(at) ?? []), row]);
+  }
+  for (const [requestAt, requestRows] of requests) {
+    if (requestRows.some((row) => row.schedule?.firstDeliveredAt !== undefined)) continue;
+    const earliest = requestRows
+      .filter((row) => isNonClosedRowStatus(row.status))
+      .map((row) => ({ row, finish: row.resourceFinish ?? row.fixedPathP95Finish }))
+      .filter((item): item is { row: TodoTaskForecast; finish: number } => typeof item.finish === "number" && Number.isFinite(item.finish))
+      .sort((left, right) => left.finish - right.finish)[0];
+    if (!earliest) continue;
+    const deadlineAt = Math.min(requestAt + 30 * 60_000, userDeadlineAt ?? Number.POSITIVE_INFINITY);
+    if (earliest.finish > deadlineAt) return earliest.row.content;
+  }
+  return undefined;
+}
+
+export function missedEtaRowsText(rows: readonly TodoTaskForecast[], now: number): string {
+  return rows.map((row) => `${JSON.stringify(row.content)} ${row.owner ?? "unassigned"} ${Math.floor(Math.max(0, now - (row.resourceFinish ?? row.startedAt ?? now)) / 60_000)}m over`).join("; ");
+}
+
+function scheduleEstimateFloorRefusal(updates: readonly Record<string, unknown>[], rows: readonly TodoTaskForecast[], now: number): string | undefined {
+  return estimateFloorRefusal(updates, rows, durationFloors(now), now);
+}
+
 /** Owners running for less than this are a fresh attempt (e.g. crash recovery,
  * 658): the missed ETA belongs to the killed attempt, so a reestimate is
  * legitimate replanning, not a slip. */
@@ -1102,7 +1224,8 @@ function isNonClosedRowStatus(status: string): boolean {
 }
 function userWaitRows(phases: TodoScheduleInput): Array<{ content: string; question: string; proposal?: string }> {
   return phases.flatMap((phase) => phase.tasks).flatMap((task) => {
-    const wait = task.status === "blocked" ? parseUserWait(task.blocker) : undefined;
+    const review = (task.schedule as { review?: unknown } | undefined)?.review === "user";
+    const wait = task.status === "blocked" && !review ? parseUserWait(task.blocker) : undefined;
     return wait ? [{ content: task.content, ...wait }] : [];
   });
 }
@@ -1274,7 +1397,95 @@ function taskDetails(task: TaskRow, timeZone?: string): string {
     : "none";
   const revision = schedule.estimateRevision ?? (schedule.estimate ? 1 : 0);
   const reestimates = schedule.reestimateCount ?? 0;
-  return `owner=${JSON.stringify(schedule.owner ?? null)}; dependencies=${dependencies}; resources=${resources}; O/L/P=${estimate}; progress=${progress}; estimateRevision=${revision}; reestimateCount=${reestimates}; attemptHistory=${JSON.stringify(schedule.attemptHistory ?? [])}`;
+  const review = typeof schedule.review === "string" ? `; review=${schedule.review}` : "";
+  const speculative = typeof schedule.speculativeOn === "string" ? `; speculativeOn=${JSON.stringify(schedule.speculativeOn)}` : "";
+  return `owner=${JSON.stringify(schedule.owner ?? null)}; dependencies=${dependencies}; resources=${resources}; O/L/P=${estimate}; progress=${progress}; estimateRevision=${revision}; reestimateCount=${reestimates}${review}${speculative}; attemptHistory=${JSON.stringify(schedule.attemptHistory ?? [])}`;
+}
+
+const USER_REVIEW_CUSTOM_TYPE = "todo-user-review";
+const USER_UNBLOCK_CUSTOM_TYPE = "todo-user-unblock";
+const USER_UNBLOCK_REPEAT_MS = 15 * 60_000;
+
+type DispatchTodoPhases = Array<{ name: string; tasks: Array<Record<string, unknown>> }>;
+
+function todoPhases(ctx: ExtensionContext): DispatchTodoPhases {
+  return (ctx.getTodoPhases?.() ?? []) as Array<{ name: string; tasks: Array<Record<string, unknown>> }>;
+}
+
+function updateTodoSchedule(ctx: ExtensionContext, update: (phases: DispatchTodoPhases) => DispatchTodoPhases): void {
+  if (!ctx.getTodoPhases || !ctx.updateTodoSchedule) return;
+  const before = todoPhases(ctx);
+  const next = update(structuredClone(before));
+  for (const phase of next) for (const row of phase.tasks) {
+    const previous = before.flatMap((entry) => entry.tasks).find((candidate) => candidate.content === row.content);
+    if (!previous || JSON.stringify(previous.schedule) === JSON.stringify(row.schedule)) continue;
+    const patch = {} as Record<string, unknown>;
+    for (const key of ["review", "reviewSummary", "firstRequirementAt", "firstDeliveredAt", "speculativeOn"]) {
+      if (row.schedule?.[key] !== previous.schedule?.[key]) patch[key] = row.schedule?.[key];
+    }
+    ctx.updateTodoSchedule(String(row.content), patch);
+  }
+}
+
+function rowReviewNotice(row: Record<string, unknown>): string {
+  const schedule = row.schedule as { attemptHistory?: Array<{ deliverablePaths?: string[] }>; executor?: { workerId?: string }; reviewSummary?: string } | undefined;
+  const paths = schedule?.attemptHistory?.at(-1)?.deliverablePaths?.filter((path): path is string => typeof path === "string") ?? [];
+  const reportLocation = schedule?.reviewSummary?.match(/https?:\/\/\S+|(?:^|\s)(?:[\w./-]+\.(?:png|jpe?g|webp|html|md|tsx?|jsx?|css|rs|py)|[0-9a-f]{7,40})(?=$|\s|[),.])/gi)?.map((part) => part.trim()).join(", ");
+  const where = paths.length ? paths.join(", ") : reportLocation ?? (schedule?.executor?.workerId ? `worker ${schedule.executor.workerId}'s diff/commit` : "the row's diff/commit");
+  const changed = schedule?.reviewSummary ? `Changed: ${schedule.reviewSummary}. ` : `Changed: completed ${String(row.content)}. `;
+  return `Delivered to you: ${JSON.stringify(row.content)} is ready to review. ${changed}Look at ${where}. Accept, redo, or drop?`;
+}
+
+function pendingReview(phases: DispatchTodoPhases): Array<Record<string, unknown>> {
+  return phases.flatMap((phase) => phase.tasks).filter((row) => (row.schedule as { review?: unknown } | undefined)?.review === "user");
+}
+
+export function userUnblockAskDue(askedAt: unknown, now: number): boolean {
+  return typeof askedAt !== "number" || !Number.isFinite(askedAt) || now - askedAt >= USER_UNBLOCK_REPEAT_MS;
+}
+
+function lastUserUnblockAsk(ctx: ExtensionContext, row: string): number | undefined {
+  const branch = ctx.sessionManager.getBranch() as Array<Record<string, unknown>>;
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index]!;
+    if (entry.type !== "custom_message" || entry.customType !== USER_UNBLOCK_CUSTOM_TYPE) continue;
+    const details = (entry.details ?? entry.data) as { row?: unknown; at?: unknown } | undefined;
+    if (details?.row === row && typeof details.at === "number") return details.at;
+  }
+  return;
+}
+
+function userUnblockWasAsked(ctx: ExtensionContext, row: string, question: string): boolean {
+  return (ctx.sessionManager.getBranch() as Array<Record<string, unknown>>).some((entry) => {
+    const details = entry.data as { row?: unknown; question?: unknown; asked?: unknown } | undefined;
+    return entry.type === "custom" && entry.customType === USER_UNBLOCK_CUSTOM_TYPE
+      && details?.row === row && details.question === question && details.asked === true;
+  });
+}
+
+function speculativeRows(phases: DispatchTodoPhases, review: string): Array<Record<string, unknown>> {
+  return phases.flatMap((phase) => phase.tasks).filter((row) => (row.schedule as { speculativeOn?: unknown } | undefined)?.speculativeOn === review);
+}
+
+export function acceptedSpeculativeMergeDemand(phases: DispatchTodoPhases): string | undefined {
+  const demands = phases.flatMap((phase) => phase.tasks)
+    .filter((row) => (row.schedule as { review?: unknown } | undefined)?.review === "accepted")
+    .flatMap((review) => {
+      const completed = speculativeRows(phases, String(review.content)).filter((row) => row.status === "completed");
+      return completed.length ? [`user accepted ${JSON.stringify(String(review.content))}; NEXT ACTION: fast merge/publish ${completed.map((row) => JSON.stringify(String(row.content))).join(", ")}`] : [];
+    });
+  return demands.length ? demands.join("; ") : undefined;
+}
+
+export function missingSpeculativeReview(item: Record<string, unknown>, phases: DispatchTodoPhases): string | undefined {
+  const brief = String(item.task ?? "");
+  const rows = phases.flatMap((phase) => phase.tasks);
+  const row = rows.find((candidate) => typeof candidate.content === "string" && brief.includes(candidate.content));
+  if (!row) return;
+  const schedule = row.schedule as { dependencies?: string[]; speculativeOn?: string } | undefined;
+  const reviews = new Set(pendingReview(phases).map((candidate) => String(candidate.content)));
+  const pending = schedule?.dependencies?.find((dependency) => reviews.has(dependency));
+  return pending && schedule?.speculativeOn !== pending ? pending : undefined;
 }
 
 function buildStaticPrompt(
@@ -1712,7 +1923,7 @@ export function decideTodoDispatch(
   for (const issue of planningIssues)
     alarmSet.add(`${issue.code}:${JSON.stringify(issue.task)}`);
   // A user-wait with a proposal is parked while away, not a recovery failure.
-  const recoveryBlocked = blocked.filter(({ task }) => !parkedContent.has(task.content));
+  const recoveryBlocked = blocked.filter(({ task }) => !parkedContent.has(task.content) && (task.schedule as { review?: unknown } | undefined)?.review !== "user");
   for (const { task } of recoveryBlocked)
     alarmSet.add(`blocked-recovery:${JSON.stringify(task.content)}:${JSON.stringify(task.blocker ?? null)}`);
   for (const row of ownerlessReady) alarmSet.add(`ownerless-ready:${JSON.stringify(row.content)}`);
@@ -1965,7 +2176,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let lastWakeKey: string | null = null;
   let persistedChildren: PersistedChild[] = [];
   let sprintState: SprintState = blankSprintState();
+  const requirementRowsSeen = new Set<string>();
+  let latestUserRequestAt: number | undefined;
   let turnToolNames: string[] = [];
+  const rescheduledRowsThisTurn = new Set<string>();
   let idlePlanDemandedThisTurn = false;
   // Owners whose finished result the last plan check found unread; names the unread-receipts remedy.
   let unreadOwners: string[] = [];
@@ -2005,6 +2219,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     clearIdleTimer();
     cachedStatic = null;
     cachedDecision = null;
+    requirementRowsSeen.clear();
     lastWakeKey = null;
     dispatchGateBaseline = null;
     pendingTaskReconciliation = null;
@@ -2338,6 +2553,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const load = (ctx: ExtensionContext) => {
     flushSprintState();
     reset();
+    for (const phase of todoPhases(ctx)) for (const task of phase.tasks) if (typeof task.content === "string") requirementRowsSeen.add(task.content);
     const roster = selectLatestBranchEntry(ctx.sessionManager, (metadata) => metadata.type === "custom" && metadata.customType === ROSTER_ENTRY_TYPE);
     const sprint = selectLatestBranchEntry(ctx.sessionManager, (metadata) => metadata.type === "custom" && metadata.customType === SPRINT_STATE_ENTRY_TYPE);
     persistedChildren = readPersistedChildren(roster ? [roster] : []);
@@ -2786,7 +3002,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return finish;
   };
   const planSnapshotPaths = (ctx: ExtensionContext) => {
-    const dir = join(homedir(), ".local", "state", "omp-todo-dispatch", "plan");
+    const dir = join(TODO_DISPATCH_STATE_DIR, "plan");
     const session = ctx.sessionManager.getHeader()?.id ?? "unknown";
     return {
       dir,
@@ -3259,8 +3475,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let inFlightAssistantHasText = false;
   pi.on("message_start", (event, ctx) => {
     inFlightAssistantHasText = false;
+    if (event.message?.role === "assistant") rescheduledRowsThisTurn.clear();
     const user = latestDeadlineUserMessage([{ type: "message", message: event.message }]);
     if (user) announceHuman(ctx, user);
+    if (!isMain(ctx) || event.message?.role !== "user") return;
+    latestUserRequestAt = Date.now();
+
   });
   const resetIdleContinuationDemand = () => {
     if (sprintState.idleContinuationDemands === 0) return;
@@ -3586,7 +3806,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (reason === lastGateReason) return;
     lastGateReason = reason;
     try {
-      const dir = join(homedir(), ".local", "state", "omp-todo-dispatch");
+      const dir = TODO_DISPATCH_STATE_DIR;
       mkdirSync(dir, { recursive: true });
       const session = ctx.sessionManager?.getHeader?.()?.id ?? "unknown";
       appendFileSync(join(dir, `${session}.gate.jsonl`), `${JSON.stringify({ at: new Date().toISOString(), pid: process.pid, reason, ...detail })}\n`);
@@ -4177,7 +4397,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // sessions) or <session-id>.off. Every demand and refusal of this extension stands down; the context
   // note (chief role, plan forecast, git facts) keeps coming because it cannot block anything.
   const gateSwitchedOff = (ctx: ExtensionContext) => {
-    const dir = join(homedir(), ".local", "state", "omp-todo-dispatch");
+    const dir = TODO_DISPATCH_STATE_DIR;
     const session = ctx.sessionManager?.getHeader?.()?.id;
     try { statSync(join(dir, "off")); return true; } catch {}
     if (session) try { statSync(join(dir, `${session}.off`)); return true; } catch {}
@@ -4453,6 +4673,48 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           gateTrace(ctx, "slip-reestimate-refused", {});
           return { block: true, reason: slip };
         }
+        const floorRefusal = scheduleEstimateFloorRefusal(updates, rows, Date.now());
+        if (floorRefusal) {
+          announceGates(ctx);
+          gateTrace(ctx, "estimate-floor-refused", {});
+          return { block: true, reason: floorRefusal };
+        }
+      }
+    }
+    if (event.toolName === "task" && isMain(ctx)) {
+      const phases = todoPhases(ctx);
+      const rows = phases.flatMap((phase) => phase.tasks);
+      const pending = pendingReview(phases);
+      const pendingContents = new Set(pending.map((row) => String(row.content)));
+      for (const item of taskItems(event.input)) {
+        const brief = String(item.task ?? "");
+        const row = rows.find((candidate) => typeof candidate.content === "string" && brief.includes(candidate.content));
+        if (!row) continue;
+        const schedule = row.schedule as { dependencies?: string[]; speculativeOn?: string; attemptHistory?: unknown[]; review?: string; progress?: { evidence?: string } } | undefined;
+        // A pending customer answer never blocks another implementation attempt.
+        // Record the retry as speculative on the delivered row before dispatch.
+        if (schedule?.review === "user") {
+          schedule.speculativeOn = String(row.content);
+          updateTodoSchedule(ctx, (current) => current.map((phase) => ({
+            ...phase,
+            tasks: phase.tasks.map((task) => task.content === row.content
+              ? { ...task, schedule: { ...task.schedule, speculativeOn: row.content } }
+              : task),
+          })));
+        }
+        const dependentReview = missingSpeculativeReview(item, phases);
+        if (dependentReview && schedule?.speculativeOn !== dependentReview) {
+          return { block: true, reason: `Schedule ${JSON.stringify(String(row.content))} as speculative on ${JSON.stringify(dependentReview)} first. Exactly: todo schedule this row with speculativeOn set to that review; use a separate worktree/branch or commit series and do not publish until accepted.` };
+        }
+        if ((schedule?.attemptHistory?.length ?? 0) >= 1 && !schedule?.review && !pending.some((candidate) => candidate.content === row.content)) {
+          return { block: true, reason: `Hand attempt ${(schedule?.attemptHistory?.length ?? 0)}'s result to the user first (it can stay speculative): ${rowReviewNotice(row)}. Then redo may proceed speculatively.` };
+        }
+        if (schedule?.speculativeOn && pendingContents.has(schedule.speculativeOn)) {
+          item.task = `${brief}\n\n${prompt.render(gateNoticeInstructions, { speculative: true, reviewRow: schedule.speculativeOn }).trim()}`;
+        }
+        if (schedule?.review === "redo" && schedule.progress?.evidence) {
+          item.task = `${item.task}\n\n${prompt.render(gateNoticeInstructions, { customerCorrection: true, correction: schedule.progress.evidence }).trim()}`;
+        }
       }
     }
     if (event.toolName === "task" && taskItems(event.input).some((item) => item["agent"] === "retro-facilitator")) resetDemand("retro");
@@ -4500,17 +4762,35 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // read-tier call or a `todo` call that changes the plan passes; an override or a worker spawn
     // does not lift it. It clears when the next plan check no longer reports the problem.
     // An ignored retro escalates too and only a retro-facilitator task lifts it.
-    const remedyFor = (id: string) => (id === "retro" ? RETRO_REMEDY : id === "unread-receipts" ? UNREAD_REMEDY(unreadOwners) : ESCALATION_REMEDY);
-    const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) => (id === "retro" || PLAN_DEMAND_IDS.has(id)) && isDemandEscalated(id));
+    const overdueForMissedEta = isDemandEscalated("missed-eta")
+      ? (currentDecision(ctx).forecast?.rows.filter((row) => row.overdue) ?? [])
+      : [];
+    const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) =>
+      (id === "retro" || PLAN_DEMAND_IDS.has(id)) && isDemandEscalated(id) && (id !== "missed-eta" || overdueForMissedEta.length > 0));
     if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) {
       const planFix = (call: GateCall): boolean => call.name === "todo" && !PLAN_WORK_OPS.has(todoOpOf(call) ?? "");
+      const taskServesRescheduledLateRow = (call: GateCall): boolean => call.name === "task" && taskItems(call.arguments ?? {}).some((item) =>
+        [...rescheduledRowsThisTurn].some((row) => String(item.task ?? "").includes(row)));
+      const remedyFor = (id: string, call?: GateCall) => id === "retro"
+        ? RETRO_REMEDY
+        : id === "unread-receipts"
+          ? UNREAD_REMEDY(unreadOwners)
+          : id === "missed-eta" && call && taskServesRescheduledLateRow(call)
+            ? "The late row was rescheduled in this assistant message; continue by starting its task now."
+            : id === "missed-eta"
+              ? `Fix each late row: ${missedEtaRowsText(overdueForMissedEta, Date.now())}. Exactly: todo schedule each late row with evidence, then task the late row. Don't start workers for unrelated work.`
+            : ESCALATION_REMEDY;
       const retroStaffed = (call: GateCall): boolean =>
         call.name === "task" && taskItems(call.arguments ?? {}).some((item) => item["agent"] === "retro-facilitator");
       const gates: ActiveGate[] = escalatedIds.map((id) => ({
         id,
         remedy: remedyFor(id),
         // Plan bookkeeping stays open under a due retro; only new work waits for the facilitator.
-        satisfies: id === "retro" ? (call: GateCall) => retroStaffed(call) || planFix(call) : planFix,
+        satisfies: id === "retro"
+          ? (call: GateCall) => retroStaffed(call) || planFix(call)
+          : id === "missed-eta"
+            ? (call: GateCall) => planFix(call) || taskServesRescheduledLateRow(call)
+            : planFix,
       }));
       const gateCall = { name: event.toolName, arguments: (event.input ?? {}) as Record<string, unknown> };
       const verdict = decideGateCall(gateCall, gates);
@@ -4519,7 +4799,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         && isChiefBash((event.input as { command: string }).command);
       if (!verdict.allowed && !look) {
         gateTrace(ctx, "escalation-refused", { toolName: event.toolName, gates: verdict.remedyGateIds });
-        const remedies = [...new Set(verdict.remedyGateIds.map(remedyFor))];
+        const remedies = [...new Set(verdict.remedyGateIds.map((id) => remedyFor(id, gateCall)))];
         return { block: true, reason: `Plan problem ignored: ${verdict.remedyGateIds.join(", ")}. ${remedies.join(" ")}` };
       }
     }
@@ -4654,6 +4934,31 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const unlinked = running.filter((job) => !owners.has(job.id) && !(job.agentId && owners.has(job.agentId)) && ![...owners].some((owner) => job.id.replace(/-\d+$/, "") === owner));
     const missing = (decision.forecast.planningIssues ?? []).length;
     const overdue = open.filter((row) => row.overdue);
+    const pendingReviews = phasesNow.flatMap((phase) => phase.tasks).filter((task) => (task.schedule as { review?: unknown } | undefined)?.review === "user");
+    const acceptedMergeDemand = acceptedSpeculativeMergeDemand(phasesNow);
+    const firstDeliveryLate = firstDeliveryCutRequired(
+      decision.forecast.rows,
+      sprintState.goalWorkStartedAt ?? now,
+      decision.deadline?.baselineDeadlineAt === undefined ? undefined : decision.deadline.baselineDeadlineAt * 1_000,
+      now,
+    );
+    const lateRowLines = overdue.map((row) => {
+      const overMs = typeof row.resourceFinish === "number" ? Math.max(0, now - row.resourceFinish) : Math.max(0, now - (row.startedAt ?? now));
+      return `${JSON.stringify(row.content)} · ${Math.floor(overMs / 60_000)}m over · owner ${row.owner ?? "unassigned"}`;
+    });
+    const userUnblockDue: Array<{ row: string; question: string }> = [];
+    for (const task of phasesNow.flatMap((phase) => phase.tasks)) {
+      if (task.status !== "blocked" || typeof task.blocker !== "string") continue;
+      if ((task.schedule as { review?: unknown } | undefined)?.review === "user") continue;
+      const wait = parseUserWait(task.blocker);
+      if (!wait) continue;
+      if (userUnblockWasAsked(ctx, task.content, wait.question)) continue;
+      const askedAt = lastUserUnblockAsk(ctx, task.content);
+      if (!userUnblockAskDue(askedAt, now)) continue;
+      userUnblockDue.push({ row: task.content, question: wait.question });
+      const content = `Ask the user now: ${task.content} — ${wait.question}`;
+      sendHarnessNotice(USER_UNBLOCK_CUSTOM_TYPE, task.content, content, { row: task.content, question: wait.question, at: now }, `${content}:${Math.floor(now / USER_UNBLOCK_REPEAT_MS)}`);
+    }
     const ready = (decision.dispatchableReady ?? []).filter((row) => openContents.has(row.content));
     const idle = open.length - running.length - (decision.externallyStaffedCount ?? 0);
     // A row naming an owner that runs nowhere looks staffed in the HUD and is not (user 2026-09-25:
@@ -4852,6 +5157,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     const problems = [
       retroLine,
+      ...(pendingReviews.length ? [`review: user — hand ${pendingReviews.map((task) => JSON.stringify(task.content)).join(", ")} to the user now; show the changed files/preview/commit and ask accept / redo / drop`] : []),
+      ...(acceptedMergeDemand ? [acceptedMergeDemand] : []),
+      ...(userUnblockDue.length ? userUnblockDue.map(({ row, question }) => `Ask the user now: ${row} — ${question}`) : []),
       ...staleWorkers,
       ...overrunWorkers,
       ...distantBlocked,
@@ -4867,7 +5175,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ...await criticalWorkerWarnings(ctx, open, running),
       understaffed && (hasReplannableWait(decision) || waitingCritical.includes("queued behind")) ? `only ${running.length} of ${capacity} worker slots run and no row is ready: the rest wait on running work. ${waitingCritical ? `Waiting rows on the chain that sets the ETA, in order:${waitingCritical}\n${waitingCritical.includes("queued behind") ? `${RESOURCE_QUEUE}\n` : ""}${WHY_EACH_LINK}\n${SPLIT_EACH} (skill step 7)` : "Split the waiting rows into the part that needs that result and the part that can start now, and dispatch the second part (skill step 7)"}` : "",
       missing ? `${missing} planning issue(s) (missing estimates or dependencies) block every non-read tool` : "",
-      overdue.length ? `${overdue.length} open row(s) past their time: ${names(overdue)}` : "",
+      overdue.length ? `${overdue.length} late row(s): ${lateRowLines.join("; ")}` : "",
+      firstDeliveryLate ? `first user handoff forecast is later than its 30-minute request window or the deadline for ${JSON.stringify(firstDeliveryLate)}; cut scope and ship the smallest visible piece first` : "",
       unresolved.length ? `${unresolved.length} row(s) have no forecast (the TODO header's "unresolved"); fix their estimate, dependencies or resources, or drop them: ${unresolved.slice(0, 4).map((row) => `${JSON.stringify(shorten(row.content))}${why(row) ? ` (${shorten(why(row)!)})` : ""}`).join(", ")}${unresolved.length > 4 ? `, … ${unresolved.length - 4} more` : ""}` : "",
       unlinked.length ? `${unlinked.length} running worker(s) own no row: ${unlinked.slice(0, 6).map((job) => job.id).join(", ")}` : "",
       deadOwners.length ? `${deadOwners.length} ready row(s) name an owner that is not running; staff them in one task call, one item per row with name = that owner and task = the row's exact title plus what to return: ${deadOwners.slice(0, 6).map((row) => `${JSON.stringify(shorten(row.content))} (owner ${row.owner})`).join(", ")}${deadOwners.length > 6 ? `, … ${deadOwners.length - 6} more` : ""}` : "",
@@ -4926,7 +5235,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     lastPlanTickReason = reason;
     lastPlanHeartbeatAt = now;
     try {
-      const dir = join(homedir(), ".local", "state", "omp-todo-dispatch");
+      const dir = TODO_DISPATCH_STATE_DIR;
       mkdirSync(dir, { recursive: true });
       const session = ctx.sessionManager?.getHeader?.()?.id ?? "unknown";
       appendFileSync(join(dir, `${session}.gate.jsonl`), `${JSON.stringify({ at: new Date(now).toISOString(), pid: process.pid, plantick: reason, ticks: planTickCount, ...detail })}\n`);
@@ -5044,7 +5353,28 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       // (live 21:32: an owner written by this very call was reported as missing).
       const details = (event as { details?: unknown }).details;
       const pendingTodo = details ? [{ type: "message", message: { role: "toolResult", toolName: "todo", details } }] : [];
+      if ((event.details as { op?: unknown } | undefined)?.op === "init") requirementRowsSeen.clear();
+      updateTodoSchedule(ctx, (phases) => phases.map((phase) => ({
+        ...phase,
+        tasks: phase.tasks.map((task) => {
+          const isNew = !requirementRowsSeen.has(task.content);
+          requirementRowsSeen.add(task.content);
+          if (!isNew || !isNonClosedRowStatus(task.status) || task.schedule?.firstRequirementAt !== undefined) return task;
+          return { ...task, schedule: { ...task.schedule, firstRequirementAt: latestUserRequestAt ?? Date.now() } };
+        }),
+      })));
       const updates = todoScheduleUpdates(event.input);
+      for (const update of updates) {
+        if (typeof update.task !== "string" || !["accepted", "redo", "drop"].includes(String(update.review))) continue;
+        const content = prompt.render(gateNoticeInstructions, {
+          customerVerdict: true,
+          reviewedRow: update.task,
+          accepted: update.review === "accepted",
+          correction: typeof update.evidence === "string" ? update.evidence : "Use the customer's actual words from the conversation.",
+        }).trim();
+        sendHarnessNotice(USER_REVIEW_CUSTOM_TYPE, update.task, content, { row: update.task, verdict: update.review }, content);
+      }
+      for (const update of updates) if (typeof update.task === "string" && (update.estimate !== undefined || typeof update.evidence === "string")) rescheduledRowsThisTurn.add(update.task);
       for (const update of updates) {
         if (typeof update.owner !== "string" || typeof update.task !== "string") continue;
         sendHarnessNotice("todo-gate-steering", `${update.task}:${update.owner}`, prompt.render(gateNoticeInstructions, { steering: true, row: JSON.stringify(update.task), owner: update.owner }).trim());
@@ -5084,6 +5414,38 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         const { updaterRejected } = settleSprintJobs(settled, Date.now());
         if (updaterRejected) setRetroDue("updater rejection");
         if (settled.length > 0) persistSprintState();
+        const completedIds = new Set(settled.filter((job) => job.status === "completed").flatMap((job) => [job.id, job.agentId].filter((id): id is string => typeof id === "string")));
+        if (completedIds.size) {
+          const resultById = new Map(details.results.flatMap((value) => {
+            if (typeof value !== "object" || value === null || typeof value.id !== "string") return [];
+            return [[value.id, value] as const];
+          }));
+          const delivered: Array<Record<string, unknown>> = [];
+          updateTodoSchedule(ctx, (phases) => phases.map((phase) => ({
+            ...phase,
+            tasks: phase.tasks.map((row) => {
+              const schedule = (row.schedule ?? {}) as Record<string, unknown>;
+              const owner = typeof schedule.owner === "string" ? schedule.owner : "";
+              const worker = [...completedIds].find((id) => liveJobMatchesOwner({ id }, owner));
+              if (!worker) return row;
+              const result = resultById.get(worker) as { output?: unknown } | undefined;
+              const output = typeof result?.output === "string" ? result.output.trim() : "";
+              const summary = output.split(/\n\s*\n/).at(-1)?.trim().slice(-800);
+              const updated = { ...row, schedule: {
+                ...schedule,
+                review: "user",
+                firstDeliveredAt: schedule.firstDeliveredAt ?? Date.now(),
+                ...(summary ? { reviewSummary: summary } : {}),
+              } };
+              delivered.push(updated);
+              return updated;
+            }),
+          })));
+          for (const row of delivered) {
+            const content = rowReviewNotice(row);
+            pi.sendMessage({ customType: USER_REVIEW_CUSTOM_TYPE, content, details: { row: row.content, at: Date.now() }, display: true, attribution: "agent" }, { deliverAs: "nextTurn", triggerTurn: false, interruptWait: false });
+          }
+        }
       }
       reportWorkerResultIncident(event);
     }
@@ -5167,6 +5529,28 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
 
   pi.on("turn_end", async (_event, ctx) => {
     announceGates(ctx);
+    if (isMain(ctx)) {
+      for (const row of pendingReview(todoPhases(ctx))) {
+        const rowName = String(row.content);
+        const content = `Handoff required: ${rowReviewNotice(row)}\n${prompt.render(gateNoticeInstructions, { customerReview: true, reviewedRow: rowName }).trim()}`;
+        sendHarnessNotice(USER_REVIEW_CUSTOM_TYPE, rowName, content, { row: rowName, at: Date.now() }, content);
+      }
+      const decision = currentDecision(ctx);
+      for (const row of decision.forecast?.rows ?? []) {
+        if (row.status !== "blocked" || !row.waitsForUser) continue;
+        if (userUnblockWasAsked(ctx, row.content, row.waitsForUser.question)) continue;
+        const finalText = ctx.getLastAssistantText?.() ?? "";
+        if (finalText.includes(row.content) && finalText.includes(row.waitsForUser.question)) {
+          pi.appendEntry(USER_UNBLOCK_CUSTOM_TYPE, { row: row.content, question: row.waitsForUser.question, at: Date.now(), asked: true });
+          continue;
+        }
+        const askedAt = lastUserUnblockAsk(ctx, row.content);
+        if (!userUnblockAskDue(askedAt, Date.now())) continue;
+        const content = `Ask the user now: ${row.content} — ${row.waitsForUser.question}`;
+        const at = Date.now();
+        sendHarnessNotice(USER_UNBLOCK_CUSTOM_TYPE, row.content, content, { row: row.content, question: row.waitsForUser.question, at }, `${content}:${Math.floor(at / USER_UNBLOCK_REPEAT_MS)}`);
+      }
+    }
     await appendLeadTimeNote(ctx);
   });
   // Context shaping is append-only: all model-facing reminders are persisted at turn end.

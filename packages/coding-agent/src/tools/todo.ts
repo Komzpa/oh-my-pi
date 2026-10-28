@@ -157,6 +157,8 @@ const TodoScheduleUpdateInput = type({
 	"resources?": type("string").array(),
 	"estimate?": TodoEstimateInput,
 	"evidence?": type("string"),
+	"review?": type('"user" | "accepted" | "redo" | "drop" | null'),
+	"speculativeOn?": type("string | null"),
 });
 
 const InitListEntry = type({
@@ -1115,6 +1117,10 @@ function applyScheduleUpdates(
 			}
 		}
 		if (update.evidence?.trim()) schedule.progress = { at: now, evidence: update.evidence.trim() };
+		if (update.review === null) delete schedule.review;
+		else if (update.review !== undefined) schedule.review = update.review;
+		if (update.speculativeOn === null) delete schedule.speculativeOn;
+		else if (update.speculativeOn !== undefined) schedule.speculativeOn = update.speculativeOn.trim();
 		candidates.set(task, schedule);
 	}
 
