@@ -303,30 +303,56 @@ test("waiting on a live worker does not demand another idle turn", async () => {
 	} finally { h.shutdown(); }
 });
 
-test("three ignored idle demands produce one user status line and no fourth wake", async () => {
+test("unchanged actionable TODO state blocks status-only stops after reads, history and waits without expiry", async () => {
 	const now = Date.now();
 	const phases = chainedPlan(1, now);
 	const row = phases[0]!.tasks[0]!;
 	row.status = "pending";
 	row.schedule.owner = undefined;
-	row.schedule.dependencies = [];
 	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
 	try {
-		for (let turn = 0; turn < 3; turn++) {
-			if (turn > 0) await h.handlers.get("turn_start")!({}, h.ctx);
-			await h.handlers.get("session_stop")!({}, h.ctx);
+		const tools = ["read", "todo", "wait", "read", "todo", "wait"];
+		for (const [turn, toolName] of tools.entries()) {
+			await h.handlers.get("turn_start")!({}, h.ctx);
+			const call = await h.handlers.get("tool_call")!({ toolName, input: toolName === "todo" ? { op: "history" } : {} }, h.ctx);
+			if (toolName === "wait" && turn >= 2) expect(call?.block).toBe(true);
+			const stop = await h.handlers.get("session_stop")!({}, h.ctx);
+			if (turn >= 2) {
+				expect(stop?.decision).toBe("block");
+				expect(stop?.reason).toContain("REQUIRED STATE CHANGE");
+			} else expect(stop?.decision).not.toBe("block");
 		}
 		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(2);
-		const escalation = h.notices.filter(notice => notice.customType === "todo-idle-plan-escalation");
-		expect(escalation).toHaveLength(1);
-		expect(escalation[0]?.content).toContain("PLAN STATUS:");
-		expect(escalation[0]?.content).toContain("assistant has not staffed ready work");
-		expect(escalation[0]?.content).not.toContain("user intervention is needed");
-		expect(escalation[0]?.display).toBe(true);
-		expect(escalation[0]?.delivery).toMatchObject({ deliverAs: "nextTurn", triggerTurn: false });
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-escalation")).toHaveLength(1);
+		// A genuine mutation resets enforcement; completed work needs no more wakes.
+		row.status = "completed";
 		await h.handlers.get("turn_start")!({}, h.ctx);
-		await h.handlers.get("session_stop")!({}, h.ctx);
-		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand" || notice.customType === "todo-idle-plan-escalation")).toHaveLength(3);
+		expect((await h.handlers.get("session_stop")!({}, h.ctx))?.decision).not.toBe("block");
+		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).not.toBe(true);
+	} finally { h.shutdown(); }
+});
+
+test("user-deferred Fireflies and external blockers never force ready work or mutate the plan", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(2, now);
+	const [fireflies, transcript] = phases[0]!.tasks;
+	fireflies.content = "Restore Fireflies capture";
+	fireflies.status = "blocked";
+	fireflies.blocker = "User explicitly deferred Fireflies";
+	transcript.status = "blocked";
+	transcript.blocker = "Awaiting externally supplied audio";
+	transcript.schedule.dependencies = [];
+	const before = JSON.stringify(phases);
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+	try {
+		for (let turn = 0; turn < 6; turn++) {
+			await h.handlers.get("turn_start")!({}, h.ctx);
+			expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).not.toBe(true);
+			expect((await h.handlers.get("session_stop")!({}, h.ctx))?.decision).not.toBe("block");
+		}
+		expect(JSON.stringify(phases)).toBe(before);
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(1);
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-escalation")).toHaveLength(0);
 	} finally { h.shutdown(); }
 });
 

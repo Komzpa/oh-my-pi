@@ -2199,7 +2199,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let sprintState: SprintState = blankSprintState();
   const requirementRowsSeen = new Set<string>();
   let latestUserRequestAt: number | undefined;
-  let turnToolNames: string[] = [];
   const rescheduledRowsThisTurn = new Set<string>();
   let idlePlanDemandedThisTurn = false;
   // Owners whose finished result the last plan check found unread; names the unread-receipts remedy.
@@ -2608,7 +2607,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     healPlanTicker(ctx);
   });
   pi.on("turn_start", (_event, ctx) => {
-    turnToolNames = [];
     idlePlanDemandedThisTurn = false;
     healPlanTicker(ctx);
     announceGates(ctx);
@@ -3512,9 +3510,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     sprintState = { ...sprintState, idleContinuationDemands: 0, idleContinuationKey: undefined };
     persistSprintState();
   };
-  const demandIdlePlanContinuation = (ctx: ExtensionContext) => {
-    if (singleWriterLane || !isMain(ctx) || idlePlanDemandedThisTurn || gateSwitchedOff(ctx) || pauseGate?.paused) return;
-    if (turnToolNames.some((name) => name !== "wait" && name !== "stop")) return;
+  const demandIdlePlanContinuation = (ctx: ExtensionContext, advance = true): string | undefined => {
+    if (singleWriterLane || !isMain(ctx) || gateSwitchedOff(ctx) || pauseGate?.paused) return;
     const now = Date.now();
     const decision = currentDecision(ctx, now, [], true, true);
     if (!decision.forecast || !decision.staffingSnapshotComplete) return;
@@ -3553,7 +3550,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const rowList = (rows: string[]) => rows.length ? rows.slice(0, MAX_ROWS).map((row) => JSON.stringify(shorten(row))).join(", ") : "none";
     const openList = rowList(uncoveredRows.map((row) => row.content));
     if (readyRows.length === 0 && overdueRows.length === 0) {
-      if (sprintState.idleContinuationDemands !== 0) return;
+      if (!advance || idlePlanDemandedThisTurn || sprintState.idleContinuationDemands !== 0) return;
       const blockers = uncoveredRows.filter(row => row.status === "blocked")
         .map(row => `${JSON.stringify(shorten(row.content))}: ${shorten(row.blocker ?? "reason not recorded")}`);
       idlePlanDemandedThisTurn = true;
@@ -3569,7 +3566,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     const demand = `REQUIRED PLAN CONTINUATION: open rows have no running worker and are not waiting on the user or a live worker. Overdue: ${rowList(overdueRows)}. Ready: ${rowList(readyRows)}. Open: ${openList}. Re-estimate each overdue row from current evidence, staff every ready row, resolve any other blocker, and keep going until the deliverable is complete or only user-blocked rows/live workers remain.`;
     const count = sprintState.idleContinuationDemands;
-    if (count >= 3) return;
+    const refusal = prompt.render(gateNoticeInstructions, { idleAction: true, readyRows: rowList(readyRows) }).trim();
+    if (!advance) return count >= 2 ? refusal : undefined;
+    if (count >= 3) return refusal;
+    if (idlePlanDemandedThisTurn) return;
     idlePlanDemandedThisTurn = true;
     if (count === 2) {
       sprintState = { ...sprintState, idleContinuationDemands: 3 };
@@ -3583,7 +3583,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         },
         { deliverAs: "nextTurn", triggerTurn: false, interruptWait: false },
       );
-      return;
+      return refusal;
     }
     sprintState = { ...sprintState, idleContinuationDemands: count + 1 };
     persistSprintState();
@@ -3639,7 +3639,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   pi.on("session_stop", (_event, ctx) => {
     const reason = unansweredUserReason(ctx);
     if (reason) return { decision: "block", reason };
-    demandIdlePlanContinuation(ctx);
+    const idleReason = demandIdlePlanContinuation(ctx);
+    if (idleReason) return { decision: "block", reason: idleReason };
   });
   // The full chief-of-staff runbook (main) or a worker's original brief (subagent) can drop out of
   // context at compaction when the summary replaces the retained prefix. Conditionally re-persist it
@@ -4645,12 +4646,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   });
 
   pi.on("tool_call", async (event, ctx) => {
-    if (isMain(ctx)) {
-      turnToolNames.push(event.toolName);
-    }
     if (event.toolName === "wait") {
       const reason = unansweredUserReasonWithDraft(ctx);
       if (reason) return { block: true, reason };
+      const idleReason = demandIdlePlanContinuation(ctx, false);
+      if (idleReason) return { block: true, reason: idleReason };
     }
     // A safety control, not a staffing gate: it holds even when the staffing gates are switched off.
     if (event.toolName === "bash" && !isMain(ctx)) {

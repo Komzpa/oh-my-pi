@@ -22,3 +22,7 @@ Main wait will be refused until {{#if recoveryCap}}proc://{{owner}}/kill succeed
 {{#if customerCorrection}}USER CORRECTION TO HONOR: {{correction}}{{/if}}
 {{#if customerVerdict}}{{#if accepted}}Customer accepted {{reviewedRow}}. NEXT ACTION: fast merge/publish completed speculative results for this row within existing authority; clear speculativeOn after delivery.{{else}}Customer requested a change to {{reviewedRow}}: {{correction}}. Replan from these words, steer affected workers and preserve their output, branches and attempt history. Do not discard work without explicit authorization.{{/if}}{{/if}}
 {{#if customerReview}}Interpret the customer's actual response to {{reviewedRow}} in context. Record an explicit decision with todo schedule review="accepted"|"redo"|"drop" and evidence quoting the relevant instruction. A word such as "accept" in a negation, question or unrelated request is not a decision. If there is no answer, continue dependent work speculatively and keep independent work moving. Reopen or close rows only as the decision requires through normal todo operations; retain attempt history and worktrees.{{/if}}
+
+{{#if idleAction}}
+REQUIRED STATE CHANGE: the same actionable TODO state has survived repeated idle turns. Ready: {{readyRows}}. Another status message or wait cannot finish this turn. Execute a ready row, assign and start a distinct worker for it, or record a genuine external blocker or terminal outcome in TODO with evidence. Read/history/status calls alone do not count as progress. Preserve user-deferred work.
+{{/if}}
