@@ -615,6 +615,10 @@ const PLAN_DEMAND_IDS = new Set(["missed-eta", "todo-plan-doctor", "todo-replan"
 const PLAN_WORK_OPS = new Set(["append", "init"]);
 const ESCALATION_REMEDY = "Fix the plan in a todo call: re-estimate the late row with evidence, split it, or drop it. Don't start workers to answer this.";
 // The retrospective is what stops the same failure from being retried: only staffing it lifts the gate.
+// Each escalated demand names its own fix; a generic "re-estimate the late row" sent the lead to
+// replan when the demand was an unread worker result (live DC 2026-10-28).
+const UNREAD_REMEDY = (owners: readonly string[]) =>
+  `Read ${owners.length ? owners.slice(0, 4).map((owner) => `agent://${owner}`).join(", ") : "each finished worker's agent:// output"}, then close its row or send it back with the reason in a todo call.`;
 const RETRO_REMEDY = "Staff the retrospective now: one task with agent retro-facilitator. It cannot be skipped or overridden.";
 export const GATE_IDS = ["planning-issues", "chief-no-bash", "idle-wait", "checkout", "retro", "escalation", "missed-eta", "receipt", "duplicate-worker"] as const;
 const READ_TIER = new Set(["read", "grep", "glob", "find"]);
@@ -1920,6 +1924,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let lastWakeKey: string | null = null;
   let persistedChildren: PersistedChild[] = [];
   let sprintState: SprintState = blankSprintState();
+  // Owners whose finished result the last plan check found unread; names the unread-receipts remedy.
+  let unreadOwners: string[] = [];
   let persistedSprintStateJson = JSON.stringify(sprintState);
   let dispatchGateBaseline: Map<string, string> | null = null;
   const taskCallBaselines = new Map<string, Map<string, string>>();
@@ -4226,6 +4232,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // read-tier call or a `todo` call that changes the plan passes; an override or a worker spawn
     // does not lift it. It clears when the next plan check no longer reports the problem.
     // An ignored retro escalates too and only a retro-facilitator task lifts it.
+    const remedyFor = (id: string) => (id === "retro" ? RETRO_REMEDY : id === "unread-receipts" ? UNREAD_REMEDY(unreadOwners) : ESCALATION_REMEDY);
     const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) => (id === "retro" || PLAN_DEMAND_IDS.has(id)) && isDemandEscalated(id));
     if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) {
       const planFix = (call: GateCall): boolean => call.name === "todo" && !PLAN_WORK_OPS.has(todoOpOf(call) ?? "");
@@ -4233,7 +4240,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         call.name === "task" && taskItems(call.arguments ?? {}).some((item) => item["agent"] === "retro-facilitator");
       const gates: ActiveGate[] = escalatedIds.map((id) => ({
         id,
-        remedy: id === "retro" ? RETRO_REMEDY : ESCALATION_REMEDY,
+        remedy: remedyFor(id),
         // Plan bookkeeping stays open under a due retro; only new work waits for the facilitator.
         satisfies: id === "retro" ? (call: GateCall) => retroStaffed(call) || planFix(call) : planFix,
       }));
@@ -4241,7 +4248,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const verdict = decideGateCall(gateCall, gates);
       if (!verdict.allowed) {
         gateTrace(ctx, "escalation-refused", { toolName: event.toolName, gates: verdict.remedyGateIds });
-        const remedies = [...new Set(verdict.remedyGateIds.map((id) => (id === "retro" ? RETRO_REMEDY : ESCALATION_REMEDY)))];
+        const remedies = [...new Set(verdict.remedyGateIds.map(remedyFor))];
         return { block: true, reason: `Plan problem ignored: ${verdict.remedyGateIds.join(", ")}. ${remedies.join(" ")}` };
       }
     }
@@ -4549,6 +4556,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const owner = ownerOf.get(row.content);
       return owner && !running.some((job) => job.id === owner || job.agentId === owner) && settled.some((job) => job.id === owner || job.agentId === owner);
     });
+    unreadOwners = unread.map((row) => ownerOf.get(row.content)!);
     const receding = recedingFinish(ctx, open, now, decision.deadline?.timezone);
     // Serial fan-in: many open rows wait directly on one row a worker is
     // running while worker slots are free (live batumarket 2026-10-22: 6 of 9 rows behind one
