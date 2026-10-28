@@ -24,6 +24,8 @@ export interface DeadlineState {
 	timezone: string;
 	active: boolean;
 	stages: DeadlineStage[];
+	auto?: true;
+	autoPlanKey?: string;
 	initialQuota?: QuotaSnapshot;
 	baselineDeadlineAt?: number;
 	/** User authority is durable even without goal focus; due time stays in baselineDeadlineAt. */
@@ -145,6 +147,8 @@ function validState(value: unknown): value is DeadlineState {
 		typeof state.timezone === "string" &&
 		typeof state.active === "boolean" &&
 		Array.isArray(state.stages) &&
+		(state.auto === undefined || state.auto === true) &&
+		(state.auto !== true || typeof state.autoPlanKey === "string") &&
 		(state.baselineDeadlineAt === undefined || Number.isFinite(state.baselineDeadlineAt)) &&
 		state.stages.every(
 			stage =>
@@ -254,6 +258,17 @@ export function readGoalDeadline(
 	options: { includePaused?: boolean } = {},
 ): { goalId: string; deadlineAt: number; timezone: string; paused?: boolean } | undefined {
 	const state = rehydrateDeadlineState(entries);
+	if (state?.auto === true) {
+		const goal = resolveLifecycleGoal(entries, () => readGoalPool(cwd));
+		if (goal?.status === "active" || goal?.status === "paused") return undefined;
+		if (!state.active || state.baselineDeadlineAt === undefined || !isUnixSeconds(state.baselineDeadlineAt))
+			return undefined;
+		return {
+			goalId: state.goalId,
+			deadlineAt: state.baselineDeadlineAt * 1_000,
+			timezone: resolveTimeZone(state.timezone),
+		};
+	}
 	if (state?.active && state.userConstraint && state.baselineDeadlineAt !== undefined && isUnixSeconds(state.baselineDeadlineAt))
 		return { goalId: state.goalId, deadlineAt: state.baselineDeadlineAt * 1_000, timezone: resolveTimeZone(state.timezone) };
 	const goal = resolveLifecycleGoal(entries, () => readGoalPool(cwd));

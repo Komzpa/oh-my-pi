@@ -226,6 +226,7 @@ export function renderDeadlineReminder(state: DeadlineState, now: number, curren
 		: "Quota now=unknown; do not infer capacity.";
 	const text = [
 		"Deliver usable work; reserve review time; delegate bounded cheap tasks when authorized. Adjust depth to time/quota. Overdue is not a verdict: floor it and catch up; show the latest artifact or say none.",
+		...(state.auto ? ["Deadline set automatically from the TODO plan forecast."] : []),
 		`Goal=${bounded(state.goalId, 64)} start=${deadlineSdk.formatLocalTimestamp(state.goalStartedAt * 1000, state.timezone)} now=${deadlineSdk.formatLocalTimestamp(now * 1000, state.timezone)} tz=${bounded(state.timezone, 40)}.`,
 		`Next=${bounded(current.label, 80)}; ${deadline(current.deadlineAt, state.goalStartedAt, now, state.timezone)}; expected=${bounded(current.expectedResult, 160)}.`,
 		`Final=${deadline(finalDue, state.goalStartedAt, now, state.timezone)}; overdue=${overdue}.`,
@@ -424,7 +425,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 	const persist = () => pi.appendEntry(sdk.STATE_ENTRY, state);
 	const updateUi = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		const deadlineState = state?.active && (state.userConstraint || (activeGoal?.status === "active" && activeGoal.id === state.goalId)) ? state : null;
+		const deadlineState = state?.active && (state.userConstraint || (state.auto && activeGoal?.status !== "active") || (activeGoal?.status === "active" && activeGoal.id === state.goalId)) ? state : null;
 		if (!deadlineState) {
 			ctx.ui.setStatus("goal-deadline", derivePresence(userEntries(ctx), null));
 			ctx.ui.setWidget("goal-deadline", undefined);
@@ -492,7 +493,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 	pi.on("context", (event, ctx) => {
 		refresh(ctx);
 		announceCompletionGate(ctx);
-		const deadlineState = state?.active && (state.userConstraint || (activeGoal?.status === "active" && activeGoal.id === state.goalId)) ? state : null;
+		const deadlineState = state?.active && (state.userConstraint || (state.auto && activeGoal?.status !== "active") || (activeGoal?.status === "active" && activeGoal.id === state.goalId)) ? state : null;
 		if (deadlineState?.userConstraint) announceDeadlineGate(deadlineState, deadlineSdk.isUserDeadlineMissed(deadlineState));
 		const reminder = deadlineState
 			? renderDeadlineReminder(deadlineState, Math.floor(Date.now() / 1000), readQuota())
