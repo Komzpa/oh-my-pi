@@ -11,7 +11,7 @@ import { setAssistantPublicationGate } from "@oh-my-pi/pi-agent-core/assistant-p
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { imageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
-import { isRecord, prompt } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
@@ -194,6 +194,7 @@ export class RequirementsLedgerRuntime {
 	#publicationGeneration = 0;
 	#publicationState = "";
 	#noticeState = "";
+	#linkedRowNotices: Promise<void> = Promise.resolve();
 	readonly #stablePublicationGate: RequirementPublicationGate = (message, signal) =>
 		this.#publicationGate(message, signal);
 
@@ -683,37 +684,64 @@ export class RequirementsLedgerRuntime {
 		return multiple ? { ...input, tasks: revised } : { ...input, ...(revised[0] as Record<string, unknown>) };
 	}
 
+	/** Resolves once every announcement queued by {@link afterToolCall} has been delivered or dropped. */
+	async settleBackgroundNotices(): Promise<void> {
+		await this.#linkedRowNotices;
+	}
+
+	#scheduleLinkedRowNotices(): void {
+		const sessionId = this.#sessionId();
+		this.#linkedRowNotices = this.#linkedRowNotices
+			.then(() => this.#announceLinkedRows(sessionId))
+			.catch(error => {
+				logger.warn("Linked-row requirement notice failed", {
+					error: error instanceof Error ? error.message : error,
+				});
+			});
+	}
+
+	async #announceLinkedRows(sessionId: string | null): Promise<void> {
+		if (this.#sessionId() !== sessionId) return;
+		const branch = matchingRequirementBranch(
+			this.#host.sessionManager,
+			metadata =>
+				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+				isTodoStateEntryMetadata(metadata),
+		);
+		const requirements = getLatestRequirements(branch).filter(item => item.classification === "linked");
+		const phases = getLatestTodoPhasesFromEntries(branch);
+		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
+		for (const requirement of requirements) {
+			for (const row of requirement.rows) {
+				if (!phases.some(phase => phase.tasks.some(task => task.content === row))) continue;
+				const rowRequirements = requirements.filter(item => item.rows.includes(row));
+				const ids = rowRequirements.map(item => item.id);
+				const artifact = await getRequirementRowArtifact(
+					{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager },
+					row,
+					phases,
+					checkoutCache,
+				);
+				if (this.#sessionId() !== sessionId) return;
+				const verdicts = rowRequirements.map(item => getRequirementRowVerdict(item, row));
+				await this.#announceFlowNotice(
+					JSON.stringify(["linked-row", row, ids, artifact, verdicts]),
+					`Audit ${ids.join(", ")} on ${JSON.stringify(row)} before marking it done.`,
+					`Closing this linked row requires a pass bound to ${formatRequirementGateArtifact(artifact, row)}. Call task({agent:"qa-auditor",name:"qa-auditor",requirementIds:${JSON.stringify(ids)},task:${JSON.stringify(`Audit ${ids.join(", ")} for TODO row ${JSON.stringify(row)} at its current artifact; return one receipt row per ID.`)}}).`,
+				);
+			}
+		}
+	}
+
 	async afterToolCall(context: AfterToolCallContext): Promise<AfterToolCallResult | undefined> {
 		if (this.#host.agentKind() !== "main") return undefined;
 		if (context.toolCall.name === "todo" && !context.isError) {
 			const details = isRecord(context.result.details) ? context.result.details : undefined;
 			if (details && (details.op === "classify" || details.op === "start")) {
-				const branch = matchingRequirementBranch(
-					this.#host.sessionManager,
-					metadata =>
-						(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
-						isTodoStateEntryMetadata(metadata),
-				);
-				const requirements = getLatestRequirements(branch).filter(item => item.classification === "linked");
-				const phases = getLatestTodoPhasesFromEntries(branch);
-				for (const requirement of requirements) {
-					for (const row of requirement.rows) {
-						if (!phases.some(phase => phase.tasks.some(task => task.content === row))) continue;
-						const rowRequirements = requirements.filter(item => item.rows.includes(row));
-						const ids = rowRequirements.map(item => item.id);
-						const artifact = await getRequirementRowArtifact(
-							{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager },
-							row,
-							phases,
-						);
-						const verdicts = rowRequirements.map(item => getRequirementRowVerdict(item, row));
-						await this.#announceFlowNotice(
-							JSON.stringify(["linked-row", row, ids, artifact, verdicts]),
-							`Audit ${ids.join(", ")} on ${JSON.stringify(row)} before marking it done.`,
-							`Closing this linked row requires a pass bound to ${formatRequirementGateArtifact(artifact, row)}. Call task({agent:"qa-auditor",name:"qa-auditor",requirementIds:${JSON.stringify(ids)},task:${JSON.stringify(`Audit ${ids.join(", ")} for TODO row ${JSON.stringify(row)} at its current artifact; return one receipt row per ID.`)}}).`,
-						);
-					}
-				}
+				// Resolving every linked row's artifact hashes checkouts, and delivering a
+				// notice waits on the host. Neither may hold the tool's turn (classify blocked
+				// the lead for minutes): queue the announcement and return.
+				this.#scheduleLinkedRowNotices();
 			}
 		}
 		if (context.toolCall.name === "wait") {

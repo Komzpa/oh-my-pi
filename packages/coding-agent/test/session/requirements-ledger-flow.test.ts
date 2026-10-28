@@ -243,6 +243,8 @@ describe("requirements ledger flow notices", () => {
 				result: started,
 				isError: false,
 			} as never);
+			// Linked-row notices are queued off the tool's turn; wait for delivery.
+			await runtime.settleBackgroundNotices();
 			expect(notices[0]).toContain('requirementIds:["R1"]');
 			expect(notices[0]).toContain("current artifact");
 			const before = notices.length;
