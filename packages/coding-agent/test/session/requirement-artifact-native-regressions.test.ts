@@ -4,7 +4,12 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { checkRequirementIdentity, currentRequirementIdentity } from "../../src/utils/requirement-artifact";
+import { statusCoordinator } from "../../../natives/native/status-coordinator.js";
+import {
+	checkRequirementIdentity,
+	currentRequirementIdentity,
+	currentRequirementGitStatus,
+} from "../../src/utils/requirement-artifact";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -33,6 +38,22 @@ async function fixture(files: Record<string, string>): Promise<{ root: string; h
 }
 
 describe("native Git worktree identity", () => {
+	it("checks foreground status without entering the display polling queue", async () => {
+		const { root } = await fixture({ "artifact.txt": "before\n" });
+		const repo = vcs.requireGit(root);
+		const queue = spyOn(statusCoordinator, "request").mockImplementation(() => {
+			throw new Error("display polling must not hold a requirement gate");
+		});
+		try {
+			expect(await currentRequirementGitStatus(repo)).toBe("");
+			fs.writeFileSync(path.join(root, "artifact.txt"), "after\n");
+			expect(await currentRequirementGitStatus(repo)).toContain("artifact.txt");
+			expect(queue).not.toHaveBeenCalled();
+		} finally {
+			queue.mockRestore();
+		}
+	});
+
 	it("applies eol clean filters before checking named path receipts", async () => {
 		const { root } = await fixture({
 			".gitattributes": "src/a.ts text eol=crlf\n",

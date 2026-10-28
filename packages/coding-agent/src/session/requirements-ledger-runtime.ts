@@ -45,6 +45,7 @@ import {
 	type RequirementAuditAssignment,
 	type RequirementImage,
 	type RequirementLedgerItem,
+	type RequirementDoneGateIssue,
 } from "../tools/requirements-ledger";
 
 /** Capture every attachment; editor markers are optional SDK presentation. */
@@ -296,7 +297,7 @@ export class RequirementsLedgerRuntime {
 	}
 
 	/** Announce newly reachable todo gates and requirement-retention behavior before execution. */
-	async beforeTodoCall(toolName: string, input: unknown, signal?: AbortSignal): Promise<void> {
+	async beforeTodoCall(toolName: string, input: unknown, _signal?: AbortSignal): Promise<void> {
 		if (this.#host.agentKind() !== "main" || toolName !== "todo" || !isRecord(input)) return;
 		const op = input.op;
 		if (op !== "done" && op !== "rm" && op !== "drop" && op !== "init") return;
@@ -360,30 +361,6 @@ export class RequirementsLedgerRuntime {
 				)
 				.join(" "),
 		);
-		const linkedRows = [...new Set(affected.map(item => item.row))];
-		const changes = getTodoRowChanges(branch);
-		const staleRows: Array<{
-			requirement: RequirementLedgerItem;
-			row: string;
-			artifact: RequirementGateArtifact;
-			verdict: RequirementVerdict;
-			lastChange?: { at: string; id: string };
-		}> = [];
-		for (const requirement of requirements) {
-			for (const row of requirement.rows.filter(row => linkedRows.includes(row))) {
-				const verdict = getRequirementRowVerdict(requirement, row);
-				if (verdict?.status !== "pass") continue;
-				const artifact = await getRequirementRowArtifact(
-					{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager, signal },
-					row,
-					phases,
-				);
-				const lastChange = changes.get(row);
-				if (getRequirementVerdictStaleness(requirement, [{ row, ...artifact, lastChange }]) !== null)
-					staleRows.push({ requirement, row, artifact, verdict, lastChange });
-			}
-		}
-		await this.#announceStaleRows(staleRows);
 	}
 
 	async #announceFlowNotice(key: string, action: string, details: string): Promise<void> {
@@ -689,10 +666,11 @@ export class RequirementsLedgerRuntime {
 		await this.#linkedRowNotices;
 	}
 
-	#scheduleLinkedRowNotices(): void {
+	#scheduleLinkedRowNotices(rows: readonly string[]): void {
+		if (rows.length === 0) return;
 		const sessionId = this.#sessionId();
 		this.#linkedRowNotices = this.#linkedRowNotices
-			.then(() => this.#announceLinkedRows(sessionId))
+			.then(() => this.#announceLinkedRows(sessionId, rows))
 			.catch(error => {
 				logger.warn("Linked-row requirement notice failed", {
 					error: error instanceof Error ? error.message : error,
@@ -700,7 +678,7 @@ export class RequirementsLedgerRuntime {
 			});
 	}
 
-	async #announceLinkedRows(sessionId: string | null): Promise<void> {
+	async #announceLinkedRows(sessionId: string | null, rows: readonly string[]): Promise<void> {
 		if (this.#sessionId() !== sessionId) return;
 		const branch = matchingRequirementBranch(
 			this.#host.sessionManager,
@@ -710,38 +688,43 @@ export class RequirementsLedgerRuntime {
 		);
 		const requirements = getLatestRequirements(branch).filter(item => item.classification === "linked");
 		const phases = getLatestTodoPhasesFromEntries(branch);
-		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
-		for (const requirement of requirements) {
-			for (const row of requirement.rows) {
-				if (!phases.some(phase => phase.tasks.some(task => task.content === row))) continue;
-				const rowRequirements = requirements.filter(item => item.rows.includes(row));
-				const ids = rowRequirements.map(item => item.id);
-				const artifact = await getRequirementRowArtifact(
-					{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager },
-					row,
-					phases,
-					checkoutCache,
-				);
-				if (this.#sessionId() !== sessionId) return;
-				const verdicts = rowRequirements.map(item => getRequirementRowVerdict(item, row));
-				await this.#announceFlowNotice(
-					JSON.stringify(["linked-row", row, ids, artifact, verdicts]),
-					`Audit ${ids.join(", ")} on ${JSON.stringify(row)} before marking it done.`,
-					`Closing this linked row requires a pass bound to ${formatRequirementGateArtifact(artifact, row)}. Call task({agent:"qa-auditor",name:"qa-auditor",requirementIds:${JSON.stringify(ids)},task:${JSON.stringify(`Audit ${ids.join(", ")} for TODO row ${JSON.stringify(row)} at its current artifact; return one receipt row per ID.`)}}).`,
-				);
-			}
+		for (const row of new Set(rows)) {
+			if (this.#sessionId() !== sessionId) return;
+			if (!phases.some(phase => phase.tasks.some(task => task.content === row))) continue;
+			const rowRequirements = requirements.filter(item => item.rows.includes(row));
+			if (rowRequirements.length === 0) continue;
+			const ids = rowRequirements.map(item => item.id);
+			const verdicts = rowRequirements.map(item => getRequirementRowVerdict(item, row));
+			await this.#announceFlowNotice(
+				JSON.stringify(["linked-row", row, ids, requirementRowDeclarationSnapshot(phases, [row]), verdicts]),
+				`Audit ${ids.join(", ")} on ${JSON.stringify(row)} before marking it done.`,
+				`Closing this linked row requires a qa-auditor pass bound to its current artifact. Call task({agent:"qa-auditor",name:"qa-auditor",requirementIds:${JSON.stringify(ids)},task:${JSON.stringify(`Audit ${ids.join(", ")} for TODO row ${JSON.stringify(row)} at its current artifact; return one receipt row per ID.`)}}).`,
+			);
 		}
 	}
 
 	async afterToolCall(context: AfterToolCallContext): Promise<AfterToolCallResult | undefined> {
 		if (this.#host.agentKind() !== "main") return undefined;
-		if (context.toolCall.name === "todo" && !context.isError) {
+		if (context.toolCall.name === "todo") {
 			const details = isRecord(context.result.details) ? context.result.details : undefined;
-			if (details && (details.op === "classify" || details.op === "start")) {
-				// Resolving every linked row's artifact hashes checkouts, and delivering a
-				// notice waits on the host. Neither may hold the tool's turn (classify blocked
-				// the lead for minutes): queue the announcement and return.
-				this.#scheduleLinkedRowNotices();
+			if (!context.isError && details && isRecord(context.args)) {
+				if (details.op === "classify" && context.args.classification === "linked") {
+					const rows = Array.isArray(context.args.rows)
+						? context.args.rows.filter((row): row is string => typeof row === "string")
+						: [];
+					this.#scheduleLinkedRowNotices(rows);
+				} else if (details.op === "start") {
+					this.#scheduleLinkedRowNotices(
+						getTodoActionRows(details.phases as TodoPhase[], context.args as { op: string }),
+					);
+				}
+			}
+			if (details?.op === "done" && Array.isArray(details.requirementGateIssues)) {
+				// The canonical done gate already checked and invalidated these passes.
+				// Reuse that exact evidence rather than resolving the artifacts twice.
+				await this.#announceStaleRows(
+					this.#staleGateRows(details.requirementGateIssues as RequirementDoneGateIssue[]),
+				);
 			}
 		}
 		if (context.toolCall.name === "wait") {
@@ -1033,23 +1016,7 @@ export class RequirementsLedgerRuntime {
 			}),
 			getPersistedRequirementAuditRejections(branch, this.#sessionId()),
 		);
-		const staleRows = open.flatMap(item => {
-			if (!item.issues.some(issue => issue.includes("freshness check failed"))) return [];
-			return item.auditRows.flatMap(audit => {
-				const verdict = getRequirementRowVerdict(item.requirement, audit.row);
-				return verdict?.status === "pass" && audit.ids.includes(item.requirement.id)
-					? [
-							{
-								requirement: item.requirement,
-								row: audit.row,
-								artifact: audit.artifact,
-								verdict,
-								lastChange: changes.get(audit.row),
-							},
-						]
-					: [];
-			});
-		});
+		const staleRows = this.#staleGateRows(open);
 		const invalidated = invalidateStaleRequirementVerdicts(requirements, open);
 		let currentRequirements = requirements;
 		const unchanged = () =>
@@ -1077,6 +1044,25 @@ export class RequirementsLedgerRuntime {
 		};
 	}
 
+	#staleGateRows(open: readonly RequirementDoneGateIssue[]) {
+		return open.flatMap(item => {
+			return item.auditRows.flatMap(audit => {
+				const verdict = getRequirementRowVerdict(item.requirement, audit.row);
+				return verdict?.status === "pass" && item.stalePassRows?.includes(audit.row)
+					? [
+							{
+								requirement: item.requirement,
+								row: audit.row,
+								artifact: audit.artifact,
+								verdict,
+								lastChange: audit.artifact.lastChange,
+							},
+						]
+					: [];
+			});
+		});
+	}
+
 	async #announceStaleRows(
 		staleRows: readonly {
 			requirement: RequirementLedgerItem;
@@ -1098,7 +1084,7 @@ export class RequirementsLedgerRuntime {
 			]);
 			await this.#announceFlowNotice(
 				key,
-				`Re-audit ${requirement.id} for ${JSON.stringify(row)} before publishing.`,
+				`Re-audit ${requirement.id} for ${JSON.stringify(row)} before done or publishing.`,
 				`The saved pass for ${verdict.artifact} is stale for this row artifact (${artifactText}). Call task({agent:"qa-auditor",name:"qa-auditor",requirementIds:${JSON.stringify([requirement.id])},task:${JSON.stringify(`Audit ${requirement.id} for TODO row ${JSON.stringify(row)} at its current artifact; return one receipt row for this exact ID.`)}}).`,
 			);
 		}

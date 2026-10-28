@@ -243,6 +243,8 @@
 - Fixed find treating nonempty linked files as empty and dropping them before judgment ([#17180](https://github.com/can1357/oh-my-pi/pull/17180) by [@alphastorm](https://github.com/alphastorm))
 - Fixed JSON selectors failing on BOM-prefixed input, backup and extensionless files, and modifier-only queries ([#17179](https://github.com/can1357/oh-my-pi/pull/17179) by [@alphastorm](https://github.com/alphastorm))
 - Fixed JSON selectors on `ssh://` text files while preserving pagination and the remote read limit ([#17179](https://github.com/can1357/oh-my-pi/pull/17179) by [@alphastorm](https://github.com/alphastorm))
+- Requirement classification and row-start notices no longer scan unrelated artifacts; completion verifies only selected rows without waiting for display polling.
+
 - Preserved requirements publication hooks alongside revived-agent lifecycle policy and image-aware side questions.
 - Withdrawing queued user messages also withdraws their captured requirements; follow-up capture uses expanded editor text.
 - TODO Markdown imports now audit newly completed rows, share metadata preservation, and retain pending user checks during initialization.

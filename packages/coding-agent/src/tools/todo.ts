@@ -5,7 +5,7 @@ import {
 	type TodoItem,
 	type TodoPhase,
 	type TodoCompletionTransition,
-	type TodoToolDetails,
+	type TodoToolDetails as BaseTodoToolDetails,
 } from "@oh-my-pi/pi-tui/tools/todo";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
@@ -57,9 +57,15 @@ import {
 	getPersistedRequirementAuditRejections,
 	prepareAwaitingUserCheck,
 	type RequirementsLedgerAppender,
+	type RequirementDoneGateIssue,
 } from "./requirements-ledger";
 
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
+
+/** Gate evidence already resolved by TodoTool; notices must not probe it again. */
+interface TodoToolDetails extends BaseTodoToolDetails {
+	requirementGateIssues?: RequirementDoneGateIssue[];
+}
 
 /** Whether an unknown value is a persisted todo phase. */
 export function isTodoPhase(value: unknown): value is TodoPhase {
@@ -1789,7 +1795,12 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 							text: formatDoneGateRefusal(open),
 						},
 					],
-					details: { op: "done", phases: previousPhases, storage },
+					details: {
+						op: "done",
+						phases: previousPhases,
+						storage,
+						requirementGateIssues: open.filter(issue => (issue.stalePassRows?.length ?? 0) > 0),
+					},
 					isError: true,
 				};
 			}
