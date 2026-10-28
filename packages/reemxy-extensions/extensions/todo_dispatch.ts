@@ -4247,7 +4247,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       }));
       const gateCall = { name: event.toolName, arguments: (event.input ?? {}) as Record<string, unknown> };
       const verdict = decideGateCall(gateCall, gates);
-      if (!verdict.allowed) {
+      // Reading a worker's commit or log is how a lead fixes the plan; a pure look passes.
+      const look = event.toolName === "bash" && typeof (event.input as { command?: unknown } | undefined)?.command === "string"
+        && isChiefBash((event.input as { command: string }).command);
+      if (!verdict.allowed && !look) {
         gateTrace(ctx, "escalation-refused", { toolName: event.toolName, gates: verdict.remedyGateIds });
         const remedies = [...new Set(verdict.remedyGateIds.map(remedyFor))];
         return { block: true, reason: `Plan problem ignored: ${verdict.remedyGateIds.join(", ")}. ${remedies.join(" ")}` };
