@@ -1267,13 +1267,85 @@ describe("awaiting-user publication gate", () => {
 		}
 	});
 
-	it("blocks a normal agent-side unverified row on every attempt", async () => {
-		const { cwd, gate } = fixture();
+	it("reports an agent-side unverified row once per user message without closing it", async () => {
+		const { cwd, manager, gate } = fixture();
 		try {
 			const message = { content: [{ type: "text", text: "done" }], stopReason: "stop" } as never;
 			const signal = new AbortController().signal;
 			expect((await gate()?.(message, signal))?.replacementText).toContain("Not audit-verified:");
+			expect((await gate()?.(message, signal))?.replacementText).toBe("done");
+			let restoredGate: RequirementPublicationGate | undefined;
+			new RequirementsLedgerRuntime({
+				agent: {} as never,
+				agentKind: () => "main",
+				cwd: () => cwd,
+				sessionManager: manager,
+				onSettledAssistantMessage: () => {},
+				setPublicationGate: next => {
+					restoredGate = next;
+				},
+			});
+			expect((await restoredGate?.(message, signal))?.replacementText).toBe("done");
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]).toBeUndefined();
+			const tool = new TodoTool({
+				cwd,
+				hasUI: false,
+				settings: Settings.isolated(),
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				sessionManager: manager,
+				getTodoPhases: () => getLatestTodoPhasesFromEntries(manager.getBranch()),
+				setTodoPhases: phases => manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
+			} as ToolSession);
+			expect((await tool.execute("unverified", { op: "done", task: "Build artifact" })).isError).toBe(true);
+			manager.appendMessage({ role: "user", content: "What is the status?", timestamp: Date.now() });
 			expect((await gate()?.(message, signal))?.replacementText).toContain("Not audit-verified:");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("reports changed open requirements again, including when an earlier state recurs", async () => {
+		const { cwd, manager, gate } = fixture();
+		try {
+			const message = { content: [{ type: "text", text: "Working" }], stopReason: "stop" } as never;
+			const signal = new AbortController().signal;
+			const appender = { appendEntry: (type: string, data?: unknown) => manager.appendCustomEntry(type, data) };
+			const initial = getLatestRequirements(manager.getBranch());
+			expect((await gate()?.(message, signal))?.replacementText).toContain("R1 (1 of 1)");
+			const expanded = createRequirementCandidates(initial, ["Inspect the generated summary"], AT);
+			appendRequirementsSnapshot(appender, expanded);
+			expect((await gate()?.(message, signal))?.replacementText).toContain("R1, R2 (2 of 2)");
+			expect((await gate()?.(message, signal))?.replacementText).toBe("Working");
+			appendRequirementsSnapshot(appender, initial);
+			expect((await gate()?.(message, signal))?.replacementText).toContain("R1 (1 of 1)");
+			appendRequirementsSnapshot(appender, []);
+			expect(await gate()?.(message, signal)).toBeUndefined();
+			appendRequirementsSnapshot(appender, initial);
+			expect((await gate()?.(message, signal))?.replacementText).toContain("R1 (1 of 1)");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("reports a newly user-owned check even after an earlier agent-side notice", async () => {
+		const { cwd, manager, gate } = fixture();
+		try {
+			const message = { content: [{ type: "text", text: "status" }], stopReason: "stop" } as never;
+			const signal = new AbortController().signal;
+			expect((await gate()?.(message, signal))?.replacementText).toContain("Not audit-verified:");
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+				phases: [
+					{
+						name: "Work",
+						tasks: [
+							{ content: "Build artifact", status: "blocked", awaitingUser: { action: "Inspect the result" } },
+						],
+					},
+				],
+			});
+			expect((await gate()?.(message, signal))?.replacementText).toContain("Not audit-verified:");
+			expect(await gate()?.(message, signal)).toBeUndefined();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
