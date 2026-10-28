@@ -441,10 +441,8 @@ export async function submitInteractiveInput(
 		| "optimisticSkillMessagePending"
 	> &
 		Partial<Pick<InteractiveMode, "loopPrompt" | "pauseLoop">>,
-	session: Pick<
-		InteractiveSessionConnection,
-		"buildUserSkillPrompt" | "prompt" | "promptCustomMessage" | "resume" | "isStreaming"
-	>,
+	session: Pick<InteractiveSessionConnection, "prompt" | "promptCustomMessage" | "resume" | "isStreaming"> &
+		Pick<AgentSession, "buildUserSkillPrompt">,
 	input: SubmittedUserInput,
 ): Promise<void> {
 	if (input.cancelled) {
@@ -671,7 +669,10 @@ export async function runInteractiveMode(
 	refreshScopedModelsAfterLogin?: () => Promise<void>,
 ): Promise<void> {
 	// The launcher retains the runtime connection independently of any terminal view.
-	const sessionConnection = createLocalInteractiveSessionConnection(session);
+	const sessionConnection = Object.assign(createLocalInteractiveSessionConnection(session), {
+		buildUserSkillPrompt: (...args: Parameters<AgentSession["buildUserSkillPrompt"]>) =>
+			session.buildUserSkillPrompt(...args),
+	});
 	const InteractiveModeConstructor = await loadInteractiveModeConstructor();
 	let mode: InteractiveMode;
 	try {
