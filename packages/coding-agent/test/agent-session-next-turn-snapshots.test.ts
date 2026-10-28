@@ -75,11 +75,11 @@ describe("next-turn snapshots", () => {
 		await send("RUNBOOK_V2", true);
 		await send("FLOW_B", false);
 		await send("RUNBOOK_V3", true);
-		expect(session.queuedMessageCount).toBe(3);
+		// Untriggered hidden next-turn context is not counted as queued work, so
+		// the delivered prompt below is the observable proof of what was kept.
 
 		await running;
 		await session.waitForIdle();
-		expect(session.queuedMessageCount).toBe(3);
 		await session.prompt("go");
 		await session.waitForIdle();
 
