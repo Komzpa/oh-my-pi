@@ -126,8 +126,10 @@ describe("InteractiveMode live settings", () => {
 		const localBegin = vi.spyOn(session, "beginDispose");
 		const localDispose = vi.spyOn(session, "dispose");
 		const quit = vi.spyOn(postmortem, "quit").mockRejectedValue(new Error("captured owner exit"));
+		const exitProcess = vi.spyOn(postmortem, "exitProcess").mockImplementation(() => undefined as never);
 		try {
-			await expect(mode.shutdown()).rejects.toThrow("captured owner exit");
+			await mode.shutdown();
+			expect(exitProcess).toHaveBeenCalledWith(0);
 			expect(events).toEqual(["begin", "draft:не отправлено 🐈", "dispose"]);
 			expect(localBegin).not.toHaveBeenCalled();
 			expect(localDispose).not.toHaveBeenCalled();
@@ -135,6 +137,7 @@ describe("InteractiveMode live settings", () => {
 			localBegin.mockRestore();
 			localDispose.mockRestore();
 			quit.mockRestore();
+			exitProcess.mockRestore();
 		}
 	});
 
