@@ -102,12 +102,12 @@ export class IrcBridge {
 			const records = [...this.#interrupts, ...this.#asides].filter(record => !isPeer(record));
 			this.#interrupts = this.#interrupts.filter(isPeer);
 			this.#asides = this.#asides.filter(isPeer);
-			return records;
+			return withoutSupersededSnapshots(records);
 		}
 		const records = [...this.#interrupts, ...this.#asides];
 		this.#interrupts = [];
 		this.#asides = [];
-		return records;
+		return withoutSupersededSnapshots(records);
 	}
 
 	/** Snapshots and discards every queued IRC record — used when a session-boundary transition
@@ -143,17 +143,6 @@ export class IrcBridge {
 	/** Queues records for the next step-boundary aside injection: IRC wakes deferred by a
 	 *  session transition, and extension `deliverAs: "aside"` sends. */
 	queueAside(records: AgentMessage[]): void {
-		// A custom record flagged `details.supersedesQueued` is a snapshot: a newer one of the same
-		// customType replaces the queued older one, so a busy agent never reads stale state.
-		const snapshotTypes = new Set(
-			records.filter(isSupersedingSnapshot).map(record => (record as { customType: string }).customType),
-		);
-		if (snapshotTypes.size > 0) {
-			this.#asides = this.#asides.filter(
-				queued =>
-					!(isSupersedingSnapshot(queued) && snapshotTypes.has((queued as { customType: string }).customType)),
-			);
-		}
 		this.#asides.push(...records);
 	}
 
@@ -341,6 +330,19 @@ export class IrcBridge {
 			this.#host.agent.emitExternalEvent({ type: "message_end", message: record });
 		}
 	}
+}
+
+/** A custom record flagged `details.supersedesQueued` is a snapshot: of several queued ones with the
+ *  same customType only the newest is delivered, so a busy agent never reads stale state. */
+function withoutSupersededSnapshots(records: AgentMessage[]): AgentMessage[] {
+	const newest = new Map<string, AgentMessage>();
+	for (const record of records) {
+		if (isSupersedingSnapshot(record)) newest.set((record as { customType: string }).customType, record);
+	}
+	if (newest.size === 0) return records;
+	return records.filter(
+		record => !isSupersedingSnapshot(record) || newest.get((record as { customType: string }).customType) === record,
+	);
 }
 
 function isSupersedingSnapshot(record: AgentMessage): boolean {
