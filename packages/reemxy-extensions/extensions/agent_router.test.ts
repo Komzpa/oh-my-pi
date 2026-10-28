@@ -14,6 +14,7 @@ import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-ent
 import agentRouter, {
 	countLiveWorkerModels,
 	createRouterState,
+	lanePathsFromText,
 	recordAsyncResultOutcome,
 	recordRetryFallbackApplied,
 	recordTaskOutcome,
@@ -293,6 +294,52 @@ describe("agent router", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+	test("explicit spawn resources keep nested coders on disjoint subdirs of one repo admitted", async () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const repo = join(dir, "root");
+			mkdirSync(join(repo, "server"), { recursive: true });
+			mkdirSync(join(repo, "client"), { recursive: true });
+			execFileSync("git", ["init", "-q", repo]);
+			const brief = (part: string) =>
+				`Work in ${repo}: edit ${part} only. Server serves POST /bundle/message/photo and replies /ACK; client calls /v1/cards.`;
+			const run = (withResources: boolean) => {
+				let running: Array<Record<string, string>> = [];
+				const context = ctx({
+					cwd: repo,
+					getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }),
+				});
+				const state = createRouterState();
+				const spawn = (spawnKey: string, part: string) =>
+					routeSubagentSpawn(
+						{
+							agent: "coder",
+							spawnKey,
+							assignment: brief(part),
+							...(withResources ? { resources: [join(repo, part)] } : {}),
+						},
+						context,
+						state,
+						{ stateFile: file },
+					);
+				const first = spawn(`nested-${withResources}-1`, "server");
+				running = [{ id: `nested-${withResources}-1`, type: "task", status: "running" }];
+				return { first, second: spawn(`nested-${withResources}-2`, "client") };
+			};
+			const withResources = run(true);
+			expect(withResources.first?.block).toBeUndefined();
+			expect(withResources.second?.block).toBeUndefined();
+			const control = run(false);
+			expect(control.first?.block).toBeUndefined();
+			expect(control.second?.block).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	test("lanePathsFromText drops HTTP routes whose top-level directory does not exist", () => {
+		const paths = lanePathsFromText("POST /bundle/message/photo then /ACK and /v1/cards; edit /tmp/some/dir");
+		expect(paths).toEqual(["/tmp/some/dir"]);
 	});
 	test("unowned batch coders scope from spawn row title and lane path", async () => {
 		const { dir, file } = tempStateFile();

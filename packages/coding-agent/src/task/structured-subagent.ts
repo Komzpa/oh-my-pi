@@ -166,6 +166,8 @@ export interface StructuredSubagentRequest {
 	effort?: TaskEffort;
 	/** Caller's description of how open-ended the work is; steers the child's `auto` thinking classification. */
 	solutionSpace?: string;
+	/** Absolute paths this worker writes; forwarded to `before_subagent_spawn` routing gates. */
+	resources?: string[];
 	/** Exact internal rung effort; wins over coarse effort and model selector defaults. */
 	thinkingLevel?: Effort;
 	identity?: StructuredSubagentIdentity;
@@ -711,6 +713,7 @@ async function applySpawnHook(
 			spawnKey,
 			isolated: request.isolation?.requested === true,
 			assignment: request.assignment,
+			resources: request.resources,
 		},
 		request.signal,
 	);
