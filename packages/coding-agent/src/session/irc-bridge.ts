@@ -143,6 +143,14 @@ export class IrcBridge {
 	/** Queues records for the next step-boundary aside injection: IRC wakes deferred by a
 	 *  session transition, and extension `deliverAs: "aside"` sends. */
 	queueAside(records: AgentMessage[]): void {
+		// A custom record flagged `details.supersedesQueued` is a snapshot: a newer one of the same
+		// customType replaces the queued older one, so a busy agent never reads stale state.
+		const snapshotTypes = new Set(records.filter(isSupersedingSnapshot).map(record => (record as { customType: string }).customType));
+		if (snapshotTypes.size > 0) {
+			this.#asides = this.#asides.filter(
+				queued => !(isSupersedingSnapshot(queued) && snapshotTypes.has((queued as { customType: string }).customType)),
+			);
+		}
 		this.#asides.push(...records);
 	}
 
@@ -330,4 +338,10 @@ export class IrcBridge {
 			this.#host.agent.emitExternalEvent({ type: "message_end", message: record });
 		}
 	}
+}
+
+function isSupersedingSnapshot(record: AgentMessage): boolean {
+	if (record.role !== "custom") return false;
+	const details = (record as { details?: unknown }).details;
+	return typeof details === "object" && details !== null && (details as { supersedesQueued?: unknown }).supersedesQueued === true;
 }

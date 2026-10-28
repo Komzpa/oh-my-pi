@@ -2004,8 +2004,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const { [key]: _previous, ...others } = sprintState.lastNotices;
     sprintState = { ...sprintState, lastNotices: boundedNotices({ ...others, [key]: digest }) };
     persistSprintState();
+    // A plan check is a whole-plan snapshot: the queue keeps only the newest one, so a busy lead
+    // never reads a stale "overdue, unstaffed" list after it already fixed the plan.
+    const sent = kind === "todo-plan-check" ? { ...((details as Record<string, unknown> | undefined) ?? {}), supersedesQueued: true } : details;
     pi.sendMessage(
-      { customType: kind, content, display: false, attribution: "agent", ...(details === undefined ? {} : { details }) },
+      { customType: kind, content, display: false, attribution: "agent", ...(sent === undefined ? {} : { details: sent }) },
       { deliverAs: "aside", triggerTurn: false, interruptWait: false, ...delivery },
     );
     return true;
