@@ -53,7 +53,7 @@ test("evidence-based remaining work may be shorter than full-task profile median
   ]);
   const row = estimateRow("Finish facility panel", { startedAt: now - 18 * 60_000 });
   const rows = forecastTodoPlan([{ name: "Work", tasks: [row] }], { now }).rows;
-  const update = { task: row.content, evidence: "Panel implemented; nine minutes remain to verify the mobile layout", estimate: { likelySeconds: 540 } };
+  const update = { task: row.content, evidence: "Panel implemented; nine minutes remain to verify the mobile layout", estimate: { likelySeconds: 540, basis: "Measured remaining work" } };
   expect(estimateFloorRefusal([update], rows, floors, now)).toBeUndefined();
   expect(estimateFloorRefusal([{ ...update, evidence: undefined }], rows, floors, now)).toContain("below 15m");
   const earlyRow = estimateRow("Early panel", { startedAt: now - 4 * 60_000 });
