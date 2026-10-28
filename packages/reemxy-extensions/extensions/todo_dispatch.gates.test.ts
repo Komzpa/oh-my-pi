@@ -2573,7 +2573,8 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
     expect(await toolCall({ toolName: "todo", toolCallId: "u2v", input: { op: "view" } }, ctx)).toBeUndefined();
     // Plan bookkeeping passes (classify, block); adding rows is more work, not a plan fix.
     expect(await toolCall({ toolName: "todo", toolCallId: "u2c", input: { op: "classify", id: "R1", classification: "not-a-requirement", reason: "test" } }, ctx)).toBeUndefined();
-    expect((await toolCall({ toolName: "todo", toolCallId: "u2a", input: { op: "append", phase: "Tasks", items: ["More work"] } }, ctx) as { block?: boolean } | undefined)?.block).toBe(true);
+    // A split adds rows, so append passes; starting their workers is what stays refused (live 2026-10-28).
+    expect((await toolCall({ toolName: "todo", toolCallId: "u2a", input: { op: "append", phase: "Tasks", items: ["Split part"] } }, ctx) as { reason?: string } | undefined)?.reason ?? "").not.toContain("Plan problem ignored");
     // A todo override alone does not lift it: the plan itself must be fixed.
     expect(await toolCall({ toolName: "todo", toolCallId: "u4", input: { ...CALLS.todoSchedule!.arguments, override: "missed-eta re-estimated" } }, ctx)).toBeUndefined();
     const still = (await toolCall({ toolName: "task", toolCallId: "u5", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean } | undefined;
