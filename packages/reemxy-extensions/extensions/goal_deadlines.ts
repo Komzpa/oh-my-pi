@@ -341,6 +341,32 @@ export function resolveWallClock(text: string, timeZone: string, nowMs: number):
 	return at(tomorrow.getUTCFullYear(), tomorrow.getUTCMonth() + 1, tomorrow.getUTCDate());
 }
 
+const OBJECTIVE_DEADLINE_CLOCK = /(?:^|\s)(?:by|before|until|до|к)\s+(\d{1,2}:\d{2})(?=\s|$|[.,;!?])/iu;
+
+export function deadlineStateFromGoalObjective(
+	goal: ActiveGoalRef | null,
+	entries: readonly unknown[],
+	timeZone = deadlineSdk.resolveTimeZone(),
+): DeadlineState | undefined {
+	if (!goal?.objective || goal.status !== "active") return undefined;
+	const clock = OBJECTIVE_DEADLINE_CLOCK.exec(goal.objective)?.[1];
+	if (!clock) return undefined;
+	const user = deadlineSdk.latestDeadlineUserMessage(entries, goal.objective);
+	if (!user) return undefined;
+	const deadlineAt = resolveWallClock(clock, timeZone, user.at * 1_000);
+	if (deadlineAt === undefined) return undefined;
+	return {
+		version: 1,
+		goalId: goal.id,
+		goalStartedAt: goal.createdAt,
+		timezone: timeZone,
+		active: true,
+		stages: [{ id: "user-goal-deadline", label: "Finish goal", expectedResult: goal.objective, deadlineAt }],
+		baselineDeadlineAt: deadlineAt,
+		userConstraint: { messageId: user.id, quote: goal.objective, recordedAt: user.at },
+	};
+}
+
 interface DeadlineToolParams {
 	action: "set" | "deliver" | "status" | "clear";
 	goal_id?: string;
@@ -444,6 +470,13 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 	};
 
 	const persist = () => pi.appendEntry(sdk.STATE_ENTRY, state);
+	const bindObjectiveDeadline = (ctx: ExtensionContext) => {
+		if (state || !activeGoal || !ctx.sessionManager) return;
+		const derived = deadlineStateFromGoalObjective(activeGoal, userEntries(ctx));
+		if (!derived) return;
+		state = derived;
+		persist();
+	};
 	const missedWorkDemand = (ctx: ExtensionContext): string | undefined => {
 		if (!deadlineSdk.isUserDeadlineMissed(state)) return undefined;
 		const phases = ctx.getTodoPhases?.() ?? [];
@@ -478,7 +511,9 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 	};
 	const load = (ctx: ExtensionContext) => {
 		state = sdk.rehydrateDeadlineState(latestDeadlineStateEntries(ctx));
-		refresh(ctx);
+		activeGoal = focusedGoal(ctx);
+		bindObjectiveDeadline(ctx);
+		updateUi(ctx);
 		announceCompletionGate(ctx);
 	};
 	pi.on("session_start", (_event, ctx) => load(ctx));
@@ -537,6 +572,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 	});
 	pi.on("goal_updated", (event, ctx) => {
 		activeGoal = sdk.goalRef(event.goal);
+		bindObjectiveDeadline(ctx);
 		announceCompletionGate(ctx);
 		updateUi(ctx);
 	});
