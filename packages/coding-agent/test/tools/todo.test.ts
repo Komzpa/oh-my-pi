@@ -659,6 +659,42 @@ describe("TodoTool operations", () => {
 		expect(done).toContain("  Work: 0/3 closed");
 	});
 
+	it("view of an exact task returns its complete history without changing the plan", async () => {
+		const attempt = {
+			attemptId: "one",
+			workerName: "worker",
+			resolvedModel: "model",
+			effort: "low",
+			startedAt: 1,
+			finishedAt: 2,
+			durationMs: 1,
+			terminalStatus: "failed" as const,
+			deliverablePaths: ["output.md"],
+			rejectionReason: "full evidence",
+		};
+		const phases: TodoPhase[] = [
+			{
+				name: "Work",
+				tasks: [
+					{ content: "repair", status: "pending", schedule: { attemptHistory: [attempt] } },
+					{
+						content: "neighbor",
+						status: "pending",
+						schedule: { attemptHistory: [{ ...attempt, attemptId: "neighbor" }] },
+					},
+				],
+			},
+		];
+		const tool = new TodoTool(createSession(phases));
+		const result = await tool.execute("view-history", { op: "view", task: "repair" });
+		const text = result.content.find(part => part.type === "text");
+		expect(text?.type === "text" && text.text).toContain("full evidence");
+		expect(text?.type === "text" && text.text).not.toContain("neighbor");
+		expect(phases[0].tasks[0].schedule?.attemptHistory).toEqual([attempt]);
+		const missing = await tool.execute("view-missing", { op: "view", task: "missing" });
+		expect(missing.content[0]).toEqual({ type: "text", text: 'Task not found: "missing"' });
+	});
+
 	it("shows open rows with finished worker results as needing lead review", async () => {
 		const now = Date.parse("2026-09-25T08:00:00.000Z");
 		const phases: TodoPhase[] = [
