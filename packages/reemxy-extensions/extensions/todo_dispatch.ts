@@ -610,9 +610,9 @@ export const DEMAND_IGNORE_MAX = 3;
 export const DEMAND_IGNORE_MAX_REPLAN = 5;
 export const OVERRIDE_SUPPRESS_TURNS = 5;
 const PLAN_DEMAND_IDS = new Set(["missed-eta", "todo-plan-doctor", "todo-replan", "todo-link", "unread-receipts"]);
-// Every todo op is plan bookkeeping (schedule, drop, classify, block, view, ...) except the two that
-// add work: append and init. An escalated demand admits the former and refuses the latter.
-const PLAN_WORK_OPS = new Set(["append", "init"]);
+// Every todo op is plan bookkeeping except init, which replaces the plan. Append stays open: the
+// remedy says "split it", and a split adds rows. Starting their workers (task) stays refused.
+const PLAN_WORK_OPS = new Set(["init"]);
 const ESCALATION_REMEDY = "Fix the plan in a todo call: re-estimate the late row with evidence, split it, or drop it. Don't start workers to answer this.";
 // The retrospective is what stops the same failure from being retried: only staffing it lifts the gate.
 // Each escalated demand names its own fix; a generic "re-estimate the late row" sent the lead to
