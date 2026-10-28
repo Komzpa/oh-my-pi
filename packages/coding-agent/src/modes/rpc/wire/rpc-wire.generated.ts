@@ -475,8 +475,18 @@ export interface TodoSchedule {
 	progress?: TodoScheduleProgress;
 	startedAt?: number;
 	finishedAt?: number;
+	/** Time this row first entered the plan as a user requirement. */
+	firstRequirementAt?: number;
+	/** Time the first usable result was handed to the user. */
+	firstDeliveredAt?: number;
 	/** Append-only durable attempts for this exact row. */
 	attemptHistory?: TodoReworkAttempt[];
+	/** Short final worker report retained for the user's review handoff. */
+	reviewSummary?: string;
+	/** User decision state for a delivered implementation result. */
+	review?: "user" | "accepted" | "redo" | "drop";
+	/** Review row whose verdict gates publication of this speculative work. */
+	speculativeOn?: string;
 	executor?: TodoScheduleExecutor;
 }
 

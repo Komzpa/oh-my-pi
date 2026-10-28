@@ -44,6 +44,7 @@ import type { LoopConditionConfig } from "@oh-my-pi/pi-tui/status-line/loop";
 import type { LivePhase } from "@oh-my-pi/pi-tui/apps/live-visualizer";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	Api,
@@ -748,6 +749,14 @@ export interface ExtensionLiveSession {
 export interface ExtensionContext {
 	/** Current hydrated plan, without replaying the session journal. Undefined before session initialization. */
 	getTodoPhases?(): TodoPhase[] | undefined;
+	/** Merge a schedule annotation into one exact row and append its durable snapshot. Never changes task status or attempt history. */
+	updateTodoSchedule?(
+		task: string,
+		patch: Pick<
+			TodoSchedule,
+			"review" | "reviewSummary" | "firstRequirementAt" | "firstDeliveredAt" | "speculativeOn"
+		>,
+	): boolean;
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
 	/** Current run mode. Use `"tui"` to guard terminal-only UI such as custom components. */

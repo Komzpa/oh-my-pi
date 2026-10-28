@@ -640,8 +640,18 @@ class TodoSchedule:
     progress: TodoScheduleProgress | None = None
     started_at: float | None = None
     finished_at: float | None = None
+    first_requirement_at: float | None = None
+    """Time this row first entered the plan as a user requirement."""
+    first_delivered_at: float | None = None
+    """Time the first usable result was handed to the user."""
     attempt_history: tuple[TodoReworkAttempt, ...] | None = None
     """Append-only durable attempts for this exact row."""
+    review_summary: str | None = None
+    """Short final worker report retained for the user's review handoff."""
+    review: Literal["user", "accepted", "redo", "drop"] | None = None
+    """User decision state for a delivered implementation result."""
+    speculative_on: str | None = None
+    """Review row whose verdict gates publication of this speculative work."""
     executor: TodoScheduleExecutor | None = None
 
 
@@ -2072,7 +2082,12 @@ def parse_todo_schedule(value: object, path: str = "TodoSchedule") -> TodoSchedu
         progress=optional(payload, "progress", parse_todo_schedule_progress, path),
         started_at=optional(payload, "startedAt", decode_float, path),
         finished_at=optional(payload, "finishedAt", decode_float, path),
+        first_requirement_at=optional(payload, "firstRequirementAt", decode_float, path),
+        first_delivered_at=optional(payload, "firstDeliveredAt", decode_float, path),
         attempt_history=optional(payload, "attemptHistory", array(parse_todo_rework_attempt), path),
+        review_summary=optional(payload, "reviewSummary", decode_str, path),
+        review=optional(payload, "review", cast('Decoder[Literal["user", "accepted", "redo", "drop"]]', literal(frozenset({"user", "accepted", "redo", "drop"}))), path),
+        speculative_on=optional(payload, "speculativeOn", decode_str, path),
         executor=optional(payload, "executor", parse_todo_schedule_executor, path),
     )
 

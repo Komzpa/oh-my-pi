@@ -32,7 +32,7 @@ test("Git integration probing yields while Git is slow and retains merge facts",
 });
 
 test("a non-repository has no Git integration state", async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "omp-no-git-"));
+  const cwd = mkdtempSync(join("/tmp", "omp-no-git-"));
   try {
     expect(await readGitIntegrationState(cwd, Date.now())).toBeNull();
   } finally {

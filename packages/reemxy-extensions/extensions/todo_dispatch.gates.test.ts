@@ -30,6 +30,8 @@ import {
 import todoDispatch, { decideGateCall, decideTodoDispatch, parseTodoOverride, SPRINT_STATE_ENTRY_TYPE } from "./todo_dispatch";
 import * as dispatchModule from "./todo_dispatch";
 
+const todoDispatchStateDir = process.env.OMP_TODO_DISPATCH_STATE_DIR ?? join(homedir(), ".local", "state", "omp-todo-dispatch");
+
 function assertLegible(reason: string | undefined, target?: string) {
   const first = reason?.split("\n")[0] ?? "";
   expect(first.length).toBeLessThanOrEqual(100);
@@ -621,12 +623,12 @@ test("omp is never handed a demand to enforce: no call is skipped, the demand is
 
 test("kill switch stops demands and refusals but the model still sees its plan and role", async () => {
   const id = `gates-switch-${process.pid}`;
-  const off = join(homedir(), ".local", "state", "omp-todo-dispatch", `${id}.off`);
+  const off = join(todoDispatchStateDir, `${id}.off`);
   const cwd = repo("resolvedStale");
   const state: State = { plan: "ready", git: "resolvedStale", admissionOpen: true, running: 0 };
   try {
     expect((await outcome(state, cwd, null, false, id)).demand?.toolName).toBeTruthy(); // baseline: gate demands something
-    mkdirSync(join(homedir(), ".local", "state", "omp-todo-dispatch"), { recursive: true });
+    mkdirSync(todoDispatchStateDir, { recursive: true });
     writeFileSync(off, "");
     const r = await outcome(state, cwd, null, false, id);
     expect(r.demand?.toolName).toBeUndefined();
@@ -634,7 +636,7 @@ test("kill switch stops demands and refusals but the model still sees its plan a
     expect((await outcome(state, cwd, CALLS.bashTest!, false, id)).executed).toBe(true);
   } finally {
     rmSync(off, { force: true });
-    rmSync(join(homedir(), ".local", "state", "omp-todo-dispatch", `${id}.gate.jsonl`), { force: true });
+    rmSync(join(todoDispatchStateDir, `${id}.gate.jsonl`), { force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
 }, 60_000);
@@ -1175,7 +1177,7 @@ test("main-session plan snapshots feed plan-doctor from dispatcher-owned state f
   writeFileSync(join(sessions, "main", "worker-done.jsonl"), "{}\n");
   const now = Date.now();
   const sessionId = `gates-snapshot-${process.pid}`;
-  const snapshotDir = join(homedir(), ".local", "state", "omp-todo-dispatch", "plan");
+  const snapshotDir = join(todoDispatchStateDir, "plan");
   const byCwd = join(snapshotDir, `${cwdSlug(cwd)}.md`);
   const bySession = join(snapshotDir, `${sessionId}.md`);
   rmSync(byCwd, { force: true });
@@ -2564,6 +2566,10 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
     sendMessage: () => undefined,
   } as unknown as ExtensionAPI;
   const branch = [...plan("ready", now), { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "missed-eta": 3 } } }];
+  const branchEntry = branch[0] as { message: { details: { phases: Array<{ tasks: Array<{ schedule: { estimate: { updatedAt: number }; startedAt?: number } }> }> } } };
+  const overdueRow = branchEntry.message.details.phases[0]!.tasks[0]!;
+  overdueRow.schedule.startedAt = now - 65 * 60_000;
+  overdueRow.schedule.estimate.updatedAt = now - 65 * 60_000;
   await todoDispatch(api);
   const ctx = {
     cwd,
@@ -2581,7 +2587,8 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
     const refused = (await toolCall({ toolName: "task", toolCallId: "u1", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(refused?.block).toBe(true);
     expect(refused?.reason).toContain("missed-eta");
-    expect(refused?.reason).toContain("Don't start workers to answer this.");
+    expect(refused?.reason).toContain('"Row A" worker-a');
+    expect(refused?.reason).toContain("Don't start workers for unrelated work.");
     expect(refused?.reason).not.toContain("chief-of-staff");
     // A pure look passes the escalation; reading results is how the plan gets fixed.
     const look = (await toolCall({ toolName: "bash", toolCallId: "u1b", input: { command: "systemctl status codex-lb" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
@@ -2765,7 +2772,8 @@ async function slipCall(tasks: unknown[], jobs: Jobs, call: Call) {
   } as unknown as ExtensionContext;
   try {
     const result = await handlers.get("tool_call")!({ toolName: call.name, toolCallId: "c", input: call.arguments }, ctx) as { block?: boolean; reason?: string } | undefined;
-    if (result?.block) assertLegible(result.reason, String(tasks[0]?.content).slice(0, 12));
+    if (result?.block && result.reason?.startsWith("Refusing todo schedule")) expect(result.reason).toContain("exactly: todo ");
+    else if (result?.block) assertLegible(result.reason, String(tasks[0]?.content).slice(0, 12));
     return result;
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
@@ -2796,22 +2804,29 @@ test("R1 (case A): a same-owner reestimate on a slipping running row is refused 
   expect(refused?.reason).not.toContain("proc://IntegrateFacilityCallouts/kill");
   expect(refused?.reason).toContain("with evidence (the failure reason) plus a new estimate");
   // Allowed: the same call changes the owner in the same update.
-  expect(await slipCall(tasks(), jobs, reestimateCall("Force-layout callouts", { owner: "CalloutRestaff" }))).toBeUndefined();
+  const restaffed = await slipCall(tasks(), jobs, reestimateCall("Force-layout callouts", { owner: "CalloutRestaff" }));
+  expect(restaffed?.block).toBe(true);
+  expect(restaffed?.reason).toContain("2x previous likely 30m");
   // Allowed: the same call drops the row.
   expect(await slipCall(tasks(), jobs, reestimateCall("Force-layout callouts", { status: "abandoned" }))).toBeUndefined();
   // Allowed: the row is split into new rows.
   expect(await slipCall(tasks(), jobs, { name: "todo", arguments: { op: "schedule", updates: [{ task: "Force-layout callouts (markup)" }, { task: "Force-layout callouts (positions)" }] } })).toBeUndefined();
 });
-test("an overdue running row accepts an evidence-backed reestimate; bare reestimate does not demand a kill", async () => {
+test("an overdue row's evidence-backed reestimate still meets the two-times estimate floor", async () => {
   const stale = Date.now() - 65 * 60_000;
   const jobs = slipJobs("EvidenceOwner", "coder", stale);
   const row = slipRow("Record scene inputs", "EvidenceOwner", 1, stale);
-  const accepted = await slipCall([row], jobs, reestimateCall("Record scene inputs", { evidence: "The earlier estimate missed scene parsing failures." }));
+  const accepted = await slipCall([row], jobs, reestimateCall("Record scene inputs", {
+    evidence: "The earlier estimate missed scene parsing failures.",
+    estimate: { optimisticSeconds: 1800, likelySeconds: 1800, pessimisticSeconds: 3600, confidence: "low", basis: "Measured remaining work" },
+  }));
   expect(accepted).toBeUndefined();
 
-  const bare = await slipCall([row], jobs, reestimateCall("Record scene inputs"));
+  const bare = await slipCall([row], jobs, reestimateCall("Record scene inputs", {
+    evidence: "Only evidence, estimate remains below the floor.",
+  }));
   expect(bare?.block).toBe(true);
-  expect(bare?.reason).not.toContain("proc://EvidenceOwner/kill");
+  expect(bare?.reason).toContain("2x previous likely 30m");
 });
 
 test("R2 (case B): the sixth reestimate under the same owner is refused, overdue or not", async () => {
@@ -2845,7 +2860,7 @@ test("owner recovery: five reestimates under A do not exhaust the next schedule 
   expect(restaff.isError).not.toBe(true);
   const jobs = slipJobs("SettleAdmissionFirstDivergence-2", "coder", now);
   const call = reestimateCall(content, {
-    estimate: { optimisticSeconds: 60, likelySeconds: 90, pessimisticSeconds: 120, confidence: "medium", basis: "New owner recovery" },
+    estimate: { optimisticSeconds: 1800, likelySeconds: 1800, pessimisticSeconds: 3600, confidence: "low", basis: "New owner recovery" },
   });
   expect(await slipCall(phases[0].tasks, jobs, call)).toBeUndefined();
   const accepted = await tool.execute("new-owner-estimate", call.arguments);
@@ -2922,7 +2937,7 @@ test("a resumed live non-task worker staffs its row and allows wait", async () =
   }
 });
 
-test("a fresh running owner may reestimate a slipping row; stale owners remain refused", async () => {
+test("a fresh owner does not waive the floor on a missed ETA; stale owners remain refused", async () => {
   const now = Date.now();
   const fresh = now - 5 * 60_000;
   const stale = now - 20 * 60_000;
@@ -2932,7 +2947,8 @@ test("a fresh running owner may reestimate a slipping row; stale owners remain r
     slipJobs("FreshRecoveryOwner", "coder", fresh),
     reestimateCall("Fresh recovery row"),
   );
-  expect(freshResult).toBeUndefined();
+  expect(freshResult?.block).toBe(true);
+  expect(freshResult?.reason).toContain("2x previous likely 30m");
 
   const staleRow = slipRow("Stale slipping row", "StaleSlippingOwner", 1, now - 65 * 60_000);
   const staleResult = await slipCall(

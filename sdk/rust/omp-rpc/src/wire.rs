@@ -3042,9 +3042,24 @@ pub struct TodoSchedule {
 	pub started_at: Option<f64>,
 	#[serde(rename = "finishedAt", default, skip_serializing_if = "Option::is_none")]
 	pub finished_at: Option<f64>,
+	/// Time this row first entered the plan as a user requirement.
+	#[serde(rename = "firstRequirementAt", default, skip_serializing_if = "Option::is_none")]
+	pub first_requirement_at: Option<f64>,
+	/// Time the first usable result was handed to the user.
+	#[serde(rename = "firstDeliveredAt", default, skip_serializing_if = "Option::is_none")]
+	pub first_delivered_at: Option<f64>,
 	/// Append-only durable attempts for this exact row.
 	#[serde(rename = "attemptHistory", default, skip_serializing_if = "Option::is_none")]
 	pub attempt_history: Option<Vec<TodoReworkAttempt>>,
+	/// Short final worker report retained for the user's review handoff.
+	#[serde(rename = "reviewSummary", default, skip_serializing_if = "Option::is_none")]
+	pub review_summary: Option<String>,
+	/// User decision state for a delivered implementation result.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub review: Option<TodoScheduleReview>,
+	/// Review row whose verdict gates publication of this speculative work.
+	#[serde(rename = "speculativeOn", default, skip_serializing_if = "Option::is_none")]
+	pub speculative_on: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub executor: Option<TodoScheduleExecutor>,
 }
@@ -5990,6 +6005,30 @@ impl AssistantErrorEventReason {
 		match self {
 			Self::Aborted => "aborted",
 			Self::Error => "error",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TodoScheduleReview {
+	#[serde(rename = "user")]
+	User,
+	#[serde(rename = "accepted")]
+	Accepted,
+	#[serde(rename = "redo")]
+	Redo,
+	#[serde(rename = "drop")]
+	Drop,
+}
+
+impl TodoScheduleReview {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::Accepted => "accepted",
+			Self::Redo => "redo",
+			Self::Drop => "drop",
 		}
 	}
 }
