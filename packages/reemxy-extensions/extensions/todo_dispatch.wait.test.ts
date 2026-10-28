@@ -1250,6 +1250,28 @@ test("sixty-minute escalation refuses repeated waits, ignores lead check-ins, an
 	} finally { h.cleanup(); }
 }, 60_000);
 
+test("cap recovery clears when its worker is gone and the row has a running new owner, without a kill", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const forecast = (phases, options) => {
+		const out = forecastTodoPlan(phases, options);
+		for (const row of out.rows) Object.assign(row, { estimateUpdatedAt: now, reestimateCount: 2 });
+		return out;
+	};
+	const h = await noticeHarness(phases, now + 3600_000, [], 0, forecast);
+	let running = [{ id: "worker-a", type: "task", status: "running", label: "Row 1", startTime: now }];
+	h.ctx.getAsyncJobSnapshot = () => ({ running, recent: [], nonJobAgents: [] });
+	const call = (toolName, input = {}) => h.handlers.get("tool_call")!({ toolName, input }, h.ctx);
+	try {
+		await call("todo", { op: "schedule", updates: [{ task: "Row 1", estimate: { updatedAt: now + 1 } }] });
+		expect((await call("wait"))?.reason).toContain("reassign");
+		// Live runtime 2026-10-28: after a restart the old worker was absent and its kill said "not found".
+		phases[0].tasks[0].schedule.owner = "worker-b";
+		running = [{ id: "worker-b", type: "task", status: "running", label: "Row 1", startTime: now }];
+		expect((await call("wait"))?.reason ?? "").not.toContain("Kill worker-a");
+	} finally { h.shutdown(); }
+});
+
 test("stuck escalation drops once its worker is gone from the job table without a kill or receipt", async () => {
 	const h = await stuckWorkerHarness({ filesAgeMs: 70 * 60_000, elapsedMs: 70 * 60_000 });
 	const call = () => h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
