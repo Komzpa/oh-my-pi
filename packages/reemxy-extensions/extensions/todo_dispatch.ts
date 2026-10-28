@@ -3096,7 +3096,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const killed = item.killed || jobs?.recent.some(job => matches(job) && job.status === "cancelled" && (job.endTime ?? 0) > item.at);
       if (item.kind === "cap") {
         if (!row || !isNonClosedRowStatus(row.status)) return [];
-        if (killed && !running && row.schedule?.owner && row.schedule.owner !== item.owner) return [];
+        // A worker gone from the job table counts as stopped: its kill can only answer "not found".
+        if ((killed || jobs) && !running && row.schedule?.owner && row.schedule.owner !== item.owner) return [];
       } else {
         // A stuck escalation targets a live attempt. Once that worker is gone from the job table
         // (finished before a restart, reaped), no kill or receipt can ever satisfy it.
