@@ -1199,8 +1199,25 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 		await runtime.captureCandidate("write probe.txt into the repo");
 		expect(runtime.remindUnclassifiedCandidates("write")).toBeUndefined();
 		expect(runtime.remindUnclassifiedCandidates("bash")).toBeUndefined();
-		expect(runtime.remindUnclassifiedCandidates("task")?.block).toBeUndefined();
+		const firstReminder = runtime.remindUnclassifiedCandidates("task");
+		expect(firstReminder?.block).toBeUndefined();
+		expect(firstReminder?.additionalContext).toContain("R1");
+		expect(runtime.remindUnclassifiedCandidates("task")).toBeUndefined();
+		const restored = new RequirementsLedgerRuntime({
+			agent: {} as never,
+			agentKind: () => "main",
+			cwd: () => "/",
+			sessionManager: manager,
+			onSettledAssistantMessage: () => {},
+			setPublicationGate: () => {},
+		});
+		expect(restored.remindUnclassifiedCandidates("task")).toBeUndefined();
+		manager.appendMessage({ role: "user", content: "continue", timestamp: Date.now() });
 		expect(runtime.remindUnclassifiedCandidates("task")?.additionalContext).toContain("R1");
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			phases: [{ name: "Work", tasks: [{ content: "Write probe", status: "pending" }] }],
+		});
+		expect(runtime.remindUnclassifiedCandidates("task")?.additionalContext).toContain("Write probe");
 		expect(runtime.remindUnclassifiedCandidates("read")).toBeUndefined();
 		expect(runtime.remindUnclassifiedCandidates("todo")).toBeUndefined();
 
