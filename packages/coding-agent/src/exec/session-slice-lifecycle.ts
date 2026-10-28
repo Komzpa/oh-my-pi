@@ -139,7 +139,8 @@ export interface SessionSliceHost {
 export class SessionSliceLifecycle {
 	readonly slice: string;
 	readonly ready: Promise<void>;
-	#host: SessionSliceHost;
+	#host: SessionSliceHost | undefined;
+	readonly #sessionId: string;
 	#root: string;
 	#groupsFn: (slice: string) => Promise<CpuGroup[]>;
 	#owned = false;
@@ -161,6 +162,7 @@ export class SessionSliceLifecycle {
 		deps: { groups?: (slice: string) => Promise<CpuGroup[]> } = {},
 	) {
 		this.#host = host;
+		this.#sessionId = host.sessionId;
 		this.#root = root;
 		this.#groupsFn = deps.groups ?? (slice => this.#groups(slice));
 		this.slice = sessionSliceName(host.sessionId);
@@ -194,7 +196,7 @@ export class SessionSliceLifecycle {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST" || !(await canTakeOverSliceDirectory(directory)))
 				throw error;
 		}
-		await writeIsolationOwner(directory, this.#host.sessionId);
+		await writeIsolationOwner(directory, this.#sessionId);
 		await Bun.write(path.join(directory, "boot-id"), await Bun.file("/proc/sys/kernel/random/boot_id").text());
 		this.#owned = true;
 		if (this.#stopped) return;
@@ -254,8 +256,7 @@ export class SessionSliceLifecycle {
 			for (const pid of group.pids) {
 				try {
 					const environment = (await Bun.file(`/proc/${pid}/environ`).text()).split("\0");
-					if (environment.includes(`OMP_SESSION_ID=${this.#host.sessionId}`))
-						members.push(`${group.name} pid=${pid}`);
+					if (environment.includes(`OMP_SESSION_ID=${this.#sessionId}`)) members.push(`${group.name} pid=${pid}`);
 				} catch {
 					// A name alone cannot attribute another session's kept process.
 				}
@@ -265,7 +266,8 @@ export class SessionSliceLifecycle {
 	}
 
 	async poll(now = Date.now()): Promise<void> {
-		if (!this.#owned || this.#stopped || this.#released || this.#polling) return;
+		const host = this.#host;
+		if (!host || !this.#owned || this.#stopped || this.#released || this.#polling) return;
 		this.#polling = true;
 		try {
 			const groups = await this.#groupsFn(this.slice);
@@ -282,7 +284,7 @@ export class SessionSliceLifecycle {
 			this.#previousAt = now;
 			// Two 15s windows at >= half a core ignore startup bursts but catch a forgotten busy loop in ~30s.
 			const cores = elapsed > 0 ? delta / 1_000_000 / elapsed : 0;
-			if (!this.#host.isIdleOrWaiting() || elapsed < 10 || cores < 0.5) {
+			if (!host.isIdleOrWaiting() || elapsed < 10 || cores < 0.5) {
 				this.#hotSamples = 0;
 				return;
 			}
@@ -292,7 +294,7 @@ export class SessionSliceLifecycle {
 			// CPU seconds monotonically increase; they must NOT be part of the dedupe key.
 			const picture = JSON.stringify([top.name, top.pids, cores < 4 ? "ordinary" : "many", kept]);
 			if (picture === this.#lastPicture || this.#stopped) return;
-			await this.#host.sendNotice(
+			await host.sendNotice(
 				prompt.render(cpuNoticeTemplate, {
 					slice: this.slice,
 					top: top.name,
@@ -301,7 +303,7 @@ export class SessionSliceLifecycle {
 					kept: kept.length ? kept.join(", ") : "none",
 				}),
 			);
-			await this.#host.sendUserLine?.(formatHogUserLine(top.name, cores));
+			await host.sendUserLine?.(formatHogUserLine(top.name, cores));
 			this.#lastPicture = picture;
 		} finally {
 			this.#polling = false;
@@ -324,6 +326,8 @@ export class SessionSliceLifecycle {
 
 	async #stop(): Promise<void> {
 		this.#stopped = true;
+		// Retain failed-stop ownership/backstops, not callbacks into the disposed session.
+		this.#host = undefined;
 		clearInterval(this.#timer);
 		try {
 			await this.ready;
@@ -336,7 +340,7 @@ export class SessionSliceLifecycle {
 		if (!this.#owned) return;
 		const kept = await this.keptMembers();
 		if (kept.length)
-			logger.info("Session kept processes survive exit", { sessionId: this.#host.sessionId, members: kept });
+			logger.info("Session kept processes survive exit", { sessionId: this.#sessionId, members: kept });
 		await systemctl(["stop", this.slice]);
 		this.#owned = false;
 		this.#cancelExit?.();

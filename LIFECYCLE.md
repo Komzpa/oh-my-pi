@@ -12,7 +12,8 @@ Local bash passes the full transcript id as `OMP_SESSION_ID`, separately from
 its shell/job session key. Native per-call slices are
 `omp-tool-<h12>-call-<pid>-<id>.slice`; systemd's
 hyphen-delimited hierarchy places them beneath the session parent. The
-per-call `TasksMax=500` readback and cleanup remain intact.
+per-call limit defaults to `TasksMax=16384` (16,384), with the existing
+`OMP_TOOL_TASKS_MAX` override; readback and cleanup remain intact.
 
 | Process class | What starts it | Slice through part B | Owner | End of life | Reaping site |
 | --- | --- | --- | --- | --- | --- |
@@ -21,7 +22,7 @@ per-call `TasksMax=500` readback and cleanup remain intact.
 | Tool `systemd-run` service/scope | PATH shim calling the real manager binary | Transcript session slice unless manager options include explicit `--slice` | Transcript id supplied by the local tool environment | Service exit, explicit stop, or session dispose/process exit | `SessionSliceLifecycle.stop`; startup marker reaper |
 | Deliberate kept unit | Explicit `systemd-run --slice=omp-keep.slice` | `omp-keep.slice` | `OMP_SESSION_ID` in the member environment | Explicit unit stop or natural exit, never a session-parent stop | Listed in the hidden CPU notice and exit log; keep slice never stopped |
 | Browser broker and automation Chrome | Per-session/project daemon broker through `ToolResourceScope` | Session parent, with a native per-call child | Transcript session id; no cross-session Chromium/profile sharing | Committed session switch/new, subagent lane completion/failure/task abort, session dispose, or broker shutdown | Session client release quiesces accepted launches and stops the owned daemons, then closes the connection; idle grace reaps the broker |
-| Named bash service | Per-session/project broker; pipe children inherit its scope, PTY uses the existing native launcher | Session parent | Transcript session id | Explicit stop, committed session switch/new, subagent lane completion/failure/task abort, session dispose, or broker shutdown | Session client release; persisted PID and `/proc/<pid>/stat` field 22 must match on read |
+| Named bash service | Per-session/project broker; pipe children inherit its scope, PTY uses the existing native launcher | Session parent | Transcript session id | Explicit stop, committed session switch/new, subagent lane completion/failure/task abort, session dispose, or broker shutdown | Session client release; persisted PID must be live on read, and a stored birth token must match `/proc/<pid>/stat` field 22; live legacy records without a stored birth token are preserved |
 | JavaScript/Python eval kernel | Existing native `ToolResourceScope`, with `toolSessionEnvironment` | Session parent, with a native per-call child | Transcript id (not eval's namespaced reuse key) | Kernel/context shutdown or session-parent stop | Existing kernel/context disposal and native scope owner drop |
 | Unowned host/native operations | Existing host helpers | Existing `omp-tool-call-<pid>-<id>.slice` | Native per-call owner | Native owner drop | `ToolProcessLimit::drop` |
 
@@ -40,6 +41,51 @@ pass an explicit slice, so when `OMP_SYSTEMD_RUN_REAL` is set they exec that
 real manager binary directly instead of resolving the session PATH shim,
 whose private real-target binding need not be present in a payload's complete
 spawn environment.
+
+When an external command needs a distinct argv[0], the scoped launcher uses
+an embedded target-native exec helper, not an interpreting shell or coreutils
+`env --argv0` (unavailable before 9.5). Cargo and Bazel compile the helper for
+the payload target and embed it in the native library; no installed companion
+or runtime compiler is required. A sealed, parent-owned CLOEXEC memfd holds
+the executable until the parent exits. Creation uses the kernel syscall
+directly, avoiding the glibc-2.27 `memfd_create` wrapper dependency. This
+removes that specific dependency; it does not prove the complete addon or
+embedded helper meets the shipped glibc 2.17 floor. That requires the shipped
+target toolchain and ELF compatibility checks for both artifacts, not a host
+Cargo build. No on-disk helper file or helper descriptor is left in the
+payload. Materialization errors fail the launch closed.
+The helper preserves argument bytes and the complete exported environment,
+including `BASH_ENV`, `ENV`, `IFS`, shell options and exported functions; it
+does not run startup hooks intended only for the actual payload. The existing
+scope, real nice 19 / ionice class 2 level 7, inherited descriptors and rlimits,
+process limits, stdout, termination grace and sibling isolation remain intact.
+Regression coverage must compare a non-shell payload against direct exec with
+a failing `BASH_ENV` hook and exported `IFS=:`; clearing the test environment
+alone cannot prove environment fidelity.
+
+The shell cancellation regression also checks that delayed TERM-trap output
+reaches the `Shell::run` callback and that the trap's cleanup marker exists.
+Cancellation signals each process once per wave: group-covered processes are
+not signalled again individually, while captured descendants outside those
+groups still receive the wave through their pinned process identities.
+
+The sibling cancellation regression starts run B before A, records both live
+child identities (PID, start ticks and executable on Linux), and holds A at a
+release gate until B's cancellation finishes. It asserts B exited while the
+same A process remains alive, then releases A and requires normal exit without
+cancellation. Readiness timeouts are infrastructure/test failures, not proof
+of either isolation failure or success; extending them is not an isolation fix.
+
+Shell parsing remains Unicode; evaluated values and external argv are native OS
+strings. Shell ingress filtering remains separate from exports created inside
+the shell and is not relaxed by the launch boundary.
+An async direct external command with a stdin-only FIFO redirect MUST retain
+the requested command-output marker hook, native command/executable/argument
+metadata, start marker and completion marker with the actual exit code. Its
+child opens the FIFO without blocking the parent; waiting/reaping the job
+retains the output descriptor through completion. Multi-stage pipelines,
+output/fd-duplication redirects and internal async lists remain unmarked so
+markers cannot become command input or contaminate redirected output.
 
 ## Session shutdown and CPU ownership
 
@@ -114,9 +160,11 @@ existing native termination and broker settlement bounds). A failed RPC,
 creation, termination, or unsettled process rejects release rather than being
 reported as successful cleanup. Every client still closes and is evicted in
 `finally`; an error therefore means the no-live-daemon condition was not proven,
-not that closed sockets/cache misses imply successful teardown. Session dispose
-and subagent lifecycle finalization finish their remaining cleanup even when
-release rejects. The initial task run publishes that failure as its final error
+not that closed sockets/cache misses imply successful teardown. Creation failures
+from launches admitted before the release barrier are included while that release
+drains; previously settled failures remain history and do not poison a later
+release. Session dispose and subagent lifecycle finalization finish their remaining
+cleanup even when release rejects. The initial task run publishes that failure as its final error
 receipt without skipping result acceptance, post-shutdown job reaping, or late
 cleanup tracking; the failed run is not reported as successful. Slice stops run
 after broker release settles, including failure, never before its RPCs finish.
@@ -158,7 +206,7 @@ we do not launch or migrate existing desktop/shared infrastructure to inspect it
 | --- | --- | --- |
 | `packages/coding-agent/src/launch/client.ts:327` broker | Caller cgroup (live-proof) | Existing native scope below `sessionSliceName(sessionId)`; separate runtime per full transcript id |
 | `packages/coding-agent/src/tools/browser/shared-daemon.ts:102` automation Chromium | Project broker cgroup (live-proof) | Inherits per-session broker scope; profile and target registry are session-specific |
-| `packages/coding-agent/src/tools/browser/registry.ts:303` spawned application browser | Caller cgroup | Existing native scope with transcript environment; borrowed CDP/desktop processes remain untouched |
+| `packages/coding-agent/src/tools/browser/registry.ts` spawned application browser | Caller cgroup | Existing native scope with transcript environment; on Linux the spawned child removes session bus addresses so Chrome cannot re-register into `app.slice`; stopping the transcript slice ends the owned application, while borrowed CDP/desktop processes remain untouched |
 | `packages/coding-agent/src/launch/broker.ts:891` pipe daemon / named service | Broker cgroup (live-proof) | Inherits per-session broker scope |
 | `packages/coding-agent/src/launch/broker.ts:819` PTY daemon | Native unowned per-call slice | Existing PTY scope with transcript environment inherited from broker |
 | `packages/coding-agent/src/launch/broker.ts:914` detached daemon | Broker cgroup | Per-session broker scope; existing daemon mode semantics unchanged |
@@ -187,5 +235,7 @@ we do not launch or migrate existing desktop/shared infrastructure to inspect it
 
 No shared infrastructure is silently labelled kept. Part B introduces no
 parallel systemd launcher and does not move or stop any existing unit. A
-persisted daemon with a missing/reused PID or mismatched birth tick is pruned
-by `readStoredDaemonRecord`; exited history without a PID is retained.
+persisted daemon whose PID is gone or whose stored birth token does not match
+`/proc/<pid>/stat` field 22 is pruned by `readStoredDaemonRecord`. Live legacy
+records without a stored birth token are preserved; when a token is present,
+it must match. Exited history without a PID is retained.

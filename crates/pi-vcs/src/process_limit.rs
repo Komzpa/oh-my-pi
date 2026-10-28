@@ -376,22 +376,64 @@ fn build_scope_argv(
 	args
 }
 
-/// `env` launcher with an `argv[0]` override, skipping `--argv0` (coreutils
-/// 9.5+) when the override equals the executable. `$`-escaping is left to
-/// the caller: the transient-service probe escapes its arguments while
-/// scope commands pass through unchanged, so escaping here would
-/// double-escape the probe.
+/// Own the embedded target executable without an installed companion or an
+/// inheritable descriptor. Descendants open this parent's sealed memfd by path;
+/// the kernel reclaims it when the parent exits, even after a crash.
 #[cfg(target_os = "linux")]
-fn env_exec(executable: &OsStr, argv0: &OsStr, extra: &[OsString]) -> Vec<OsString> {
-	let mut command = vec![env_bin().clone()];
-	if argv0 != executable {
-		let mut argv0_arg = OsString::from("--argv0=");
-		argv0_arg.push(argv0);
-		command.push(argv0_arg);
-	}
-	command.push(executable.to_os_string());
+fn argv0_launcher() -> io::Result<OsString> {
+	use std::{
+		fs::File,
+		io::Write,
+		os::fd::{AsRawFd, FromRawFd},
+	};
+	static HELPER: std::sync::LazyLock<io::Result<File>> = std::sync::LazyLock::new(|| {
+		// SAFETY: constant C string; a successful fresh fd is owned exactly once.
+		// Use the kernel syscall to retain the glibc 2.17 floor.
+		let fd = unsafe {
+			libc::syscall(
+				libc::SYS_memfd_create,
+				c"omp-argv0".as_ptr(),
+				libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+			) as libc::c_int
+		};
+		if fd < 0 {
+			return Err(io::Error::last_os_error());
+		}
+		// SAFETY: fd is fresh and valid; File takes its ownership exactly once.
+		let mut file = unsafe { File::from_raw_fd(fd) };
+		file.write_all(include_bytes!(env!("OMP_ARGV0_LAUNCHER")))?;
+		// SAFETY: fd remains owned and open. Make the executable immutable before
+		// publishing its path, and retain CLOEXEC across every launcher hop.
+		if unsafe { libc::fchmod(fd, 0o500) } < 0
+			// SAFETY: fd remains owned and open while the kernel applies these seals.
+			|| unsafe {
+				libc::fcntl(
+					fd,
+					libc::F_ADD_SEALS,
+					libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL,
+				)
+			} < 0
+		{
+			return Err(io::Error::last_os_error());
+		}
+		Ok(file)
+	});
+	let file = HELPER
+		.as_ref()
+		.map_err(|error| io::Error::new(error.kind(), error.to_string()))?;
+	Ok(format!("/proc/{}/fd/{}", std::process::id(), file.as_raw_fd()).into())
+}
+
+/// Preserve argv[0] and the complete environment without interpreting either.
+#[cfg(target_os = "linux")]
+fn env_exec(executable: &OsStr, argv0: &OsStr, extra: &[OsString]) -> io::Result<Vec<OsString>> {
+	let mut command = if argv0 == executable {
+		vec![executable.to_os_string()]
+	} else {
+		vec![argv0_launcher()?, argv0.to_os_string(), executable.to_os_string()]
+	};
 	command.extend_from_slice(extra);
-	command
+	Ok(command)
 }
 
 /// Shared process limit for short-lived host invocations.
@@ -519,17 +561,15 @@ impl ToolProcessLimit {
 			}
 			let probe_unit =
 				format!("omp-tool-call-probe-{}.scope", state.slice.trim_end_matches(".slice"));
-			// The probe is a wrap of `true` with normal argv0, so it takes
-			// exactly the `env_exec` shape of a real wrapped command and
-			// needs no coreutils 9.5+ `--argv0`: a passing probe proves
-			// real commands launch on common distros. The unit name marks
-			// the probe; argv0 does not.
+			// The service probe checks manager enforcement, not argv0 fidelity;
+			// distinct argv0 uses the embedded native helper on the real scope
+			// path.
 			let probe = build_scope_argv(
 				&state.slice,
 				&probe_unit.replace(".scope", ".service"),
 				true,
 				false,
-				&env_exec(true_bin(), true_bin(), &[]),
+				&env_exec(true_bin(), true_bin(), &[])?,
 				&ScopeEnvironment::default(),
 			);
 			let result = Command::new(&probe[0]).args(&probe[1..]).output()?;
@@ -613,7 +653,7 @@ impl ExternalCommandWrapper for ToolProcessLimit {
 		}
 		#[cfg(target_os = "linux")]
 		{
-			let command = env_exec(executable, argv0, args);
+			let command = env_exec(executable, argv0, args)?;
 			let payload_env = ScopeEnvironment::from_lookup(|name| {
 				env.iter()
 					.find(|(key, _)| key.as_os_str() == OsStr::new(name))
@@ -1337,15 +1377,163 @@ exec "$@"
 		assert_eq!(super::systemd_run_binary_from(None, path), shim.as_os_str());
 	}
 
+	/// Compare the actual native argv0 path with direct exec. The old shell
+	/// trampoline is a negative control, not an alternative implementation.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn argv0_launcher_preserves_payload_environment() {
+		use std::os::unix::{ffi::OsStringExt, process::CommandExt};
+		let fixture = tempfile::tempdir().unwrap();
+		let hook = fixture.path().join("hook");
+		std::fs::write(&hook, "printf 'WRAPPER_HOOK_RAN\\n'; exit 73\n").unwrap();
+		let executable = super::resolved_binary("python3");
+		let script = r#"import os,sys,resource
+assert open('/proc/self/cmdline','rb').read().split(b'\0')[0] == b'custom-marker'
+assert sys.argv[1:] == ['A$B', '', 'a b', '\udcff']
+assert resource.getrlimit(resource.RLIMIT_NOFILE)[0] == 128
+assert not any('memfd:omp-argv0' in os.readlink('/proc/self/fd/'+fd) for fd in os.listdir('/proc/self/fd') if os.path.exists('/proc/self/fd/'+fd))
+os.write(1, repr(sorted(os.environb.items())).encode())
+"#;
+		let extra = vec![
+			"-c".into(),
+			script.into(),
+			"A$B".into(),
+			"".into(),
+			"a b".into(),
+			std::ffi::OsString::from_vec(vec![255]),
+		];
+		let native = super::env_exec(&executable, OsStr::new("custom-marker"), &extra).unwrap();
+		for with_hook in [false, true] {
+			let run = |argv: &[std::ffi::OsString], direct: bool| {
+				let mut command = Command::new(&argv[0]);
+				command
+					.args(&argv[1..])
+					.env_clear()
+					.env("IFS", ":")
+					.env("ENV", &hook)
+					.env("SHELLOPTS", "braceexpand:hashall:interactive-comments")
+					.env("BASHOPTS", "checkwinsize:cmdhist:extquote")
+					.env("BASH_FUNC_fixture%%", "() { echo unexpected; }")
+					.env("OMP_EMPTY", "")
+					.env("OMP_BYTES", std::ffi::OsString::from_vec(vec![255]));
+				if with_hook {
+					command.env("BASH_ENV", &hook);
+				}
+				if direct {
+					command.arg0("custom-marker");
+				}
+				// SAFETY: child-only async-signal-safe setrlimit with a valid
+				// structure.
+				unsafe {
+					command.pre_exec(|| {
+						let limit = libc::rlimit { rlim_cur: 128, rlim_max: 128 };
+						if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) < 0 {
+							return Err(std::io::Error::last_os_error());
+						}
+						Ok(())
+					});
+				}
+				let child = command
+					.stdout(Stdio::piped())
+					.stderr(Stdio::piped())
+					.spawn()
+					.unwrap();
+				eprintln!("payload with_hook={with_hook} direct={direct} pid={}", child.id());
+				child.wait_with_output().unwrap()
+			};
+			let mut direct = vec![executable.clone()];
+			direct.extend_from_slice(&extra);
+			let expected = run(&direct, true);
+			assert!(expected.status.success(), "{:?}", expected);
+			let actual = run(&native, false);
+			assert!(actual.status.success(), "{:?}", actual);
+			assert_eq!(actual.stdout, expected.stdout, "complete environment must match direct exec");
+			assert_eq!(actual.stderr, expected.stderr);
+			let mut old = vec![
+				super::resolved_binary("bash"),
+				"-c".into(),
+				"exec -a \"$1\" -- \"$2\" \"${@:3}\"".into(),
+				"omp-exec".into(),
+				"custom-marker".into(),
+				executable.clone(),
+			];
+			old.extend_from_slice(&extra);
+			let broken = run(&old, false);
+			if with_hook {
+				assert_eq!(broken.status.code(), Some(73));
+				assert_eq!(broken.stdout, b"WRAPPER_HOOK_RAN\n");
+			} else {
+				assert!(broken.status.success(), "{:?}", broken);
+				assert_ne!(
+					broken.stdout, expected.stdout,
+					"negative control must detect shell environment normalization"
+				);
+			}
+		}
+		// Exercise the unchanged real priority prefix, not the compatibility
+		// fixture's pass-through wrappers. No manager or shared bus is used.
+		let priority_script = r#"import os,subprocess,sys
+assert os.getpriority(os.PRIO_PROCESS,0) == 19
+assert subprocess.check_output([sys.argv[1],'-p',str(os.getpid())]).strip() == b'best-effort: prio 7'
+print('priority-ok')
+"#;
+		let mut priority = super::background_priority_prefix().to_vec();
+		priority.extend(
+			super::env_exec(&executable, OsStr::new("priority-marker"), &[
+				"-c".into(),
+				priority_script.into(),
+				super::resolved_binary("ionice"),
+			])
+			.unwrap(),
+		);
+		let child = Command::new(&priority[0])
+			.args(&priority[1..])
+			.stdout(Stdio::piped())
+			.stderr(Stdio::piped())
+			.spawn()
+			.unwrap();
+		eprintln!("real priority payload pid={}", child.id());
+		let output = child.wait_with_output().unwrap();
+		assert!(output.status.success(), "{:?}", output);
+		assert_eq!(output.stdout, b"priority-ok\n");
+		// A Bash payload itself must still see and execute its own startup hook.
+		let shell = super::env_exec(&super::resolved_binary("bash"), OsStr::new("bash-payload"), &[
+			"-c".into(),
+			"exit 99".into(),
+		])
+		.unwrap();
+		let child = Command::new(&shell[0])
+			.args(&shell[1..])
+			.env_clear()
+			.env("BASH_ENV", &hook)
+			.stdout(Stdio::piped())
+			.stderr(Stdio::piped())
+			.spawn()
+			.unwrap();
+		eprintln!("actual Bash payload pid={}", child.id());
+		let output = child.wait_with_output().unwrap();
+		assert_eq!(output.status.code(), Some(73));
+		assert_eq!(output.stdout, b"WRAPPER_HOOK_RAN\n");
+		// Neighbor: identical argv0 needs no helper; missing executables fail,
+		// not fallback.
+		assert_eq!(super::env_exec(&executable, &executable, &extra).unwrap()[0], executable);
+		let missing =
+			super::env_exec(OsStr::new("/nonexistent/omp-payload"), OsStr::new("marker"), &[])
+				.unwrap();
+		let child = Command::new(&missing[0])
+			.args(&missing[1..])
+			.spawn()
+			.unwrap();
+		eprintln!("missing payload pid={}", child.id());
+		assert_eq!(child.wait_with_output().unwrap().status.code(), Some(127));
+	}
+
 	/// Bounded compatibility vehicle, no user manager, bus, or cgroup is
 	/// touched: PATH fixtures emulate coreutils <9.5 `env` (no `--argv0`,
 	/// the CI failure on Ubuntu 24.04 / Debian 12) and a pre-254 manager
 	/// (`systemctl --version` reports 253, so the escaping fallback is
-	/// active). The probe must launch with normal argv0 on such hosts, scope
-	/// arguments containing `$` must pass through unescaped (scope launches
-	/// never expand arguments), and a caller's custom argv0 must still be
-	/// honored where `env --argv0` exists. The pre-fix probe shape must fail
-	/// the same way CI did, or the fixture proves nothing.
+	/// active). Scope arguments and custom argv0 must survive on old env;
+	/// the old `env --argv0` shape must fail as it did in CI.
 	#[cfg(target_os = "linux")]
 	#[test]
 	fn probe_and_scope_launch_on_pre_95_env_with_normal_argv0() {
@@ -1366,7 +1554,7 @@ exec "$@"
 					"omp-tool-call-probe-test.service",
 					true,
 					false,
-					&super::env_exec(super::true_bin(), argv0, &[]),
+					&super::env_exec(super::true_bin(), argv0, &[]).unwrap(),
 					&super::ScopeEnvironment::default(),
 				)
 			};
@@ -1379,9 +1567,15 @@ exec "$@"
 			);
 			match case.as_str() {
 				"pre95" => {
-					// Fixture validity: the pre-fix probe shape (cosmetic
-					// argv0 override) fails exactly like CI.
-					let old = launch(&probe_argv(std::ffi::OsStr::new("omp-process-limit-probe")));
+					// Fixture validity: the old launcher must fail like CI.
+					let old = launch(&super::build_scope_argv(
+						"test.slice",
+						"test.scope",
+						false,
+						true,
+						&[super::env_bin().clone(), "--argv0=sh".into(), super::true_bin().clone()],
+						&super::ScopeEnvironment::default(),
+					));
 					assert!(!old.status.success(), "pre-fix probe shape must fail on coreutils <9.5");
 					assert!(
 						String::from_utf8_lossy(&old.stderr).contains("--argv0"),
@@ -1416,19 +1610,8 @@ exec "$@"
 				},
 				"custom-arg0" | "custom-arg0-unsupported" => {
 					let shell = super::resolved_binary("sh");
-					// Probe the actual fixture env, not a version string: old
-					// supported hosts legitimately cannot override argv0.
-					let capability = Command::new(super::env_bin())
-						.arg("--argv0=custom-marker")
-						.arg(&shell)
-						.args(["-c", r#"printf %s "$0""#])
-						.env_clear()
-						.env("PATH", &fixtures)
-						.output()
-						.expect("probe env --argv0 capability");
-					if case == "custom-arg0-unsupported" {
-						assert!(!capability.status.success(), "old env fixture must reject --argv0");
-					}
+					// The legacy launcher fails on old env, but custom argv0 must
+					// work.
 					let argv = super::build_scope_argv(
 						"test.slice",
 						"test.scope",
@@ -1437,27 +1620,13 @@ exec "$@"
 						&super::env_exec(&shell, std::ffi::OsStr::new("custom-marker"), &[
 							"-c".into(),
 							r#"printf %s "$0""#.into(),
-						]),
+						])
+						.unwrap(),
 						&super::ScopeEnvironment::default(),
 					);
 					let out = launch(&argv);
-					if capability.status.success() {
-						assert_eq!(String::from_utf8_lossy(&capability.stdout), "custom-marker");
-						assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-						assert_eq!(String::from_utf8_lossy(&out.stdout), "custom-marker");
-						eprintln!("{case}: supported custom argv0 executed");
-					} else {
-						for rejected in [&capability, &out] {
-							assert_eq!(rejected.status.code(), Some(125));
-							let stderr = String::from_utf8_lossy(&rejected.stderr);
-							assert!(
-								stderr.contains("unrecognized option")
-									&& stderr.contains("--argv0=custom-marker"),
-								"unsupported env must explicitly reject custom argv0: {stderr}"
-							);
-						}
-						eprintln!("{case}: unsupported custom argv0 explicitly rejected");
-					}
+					assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+					assert_eq!(String::from_utf8_lossy(&out.stdout), "custom-marker");
 				},
 				other => panic!("unknown case {other}"),
 			}
@@ -1498,9 +1667,7 @@ exec "$@"
 				.unwrap();
 			std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
 		}
-		// Phase 2 uses the actual host env, which may also predate 9.5.
-		// The child checks its capability and asserts either execution or
-		// the explicit unsupported-option failure; neither path is skipped.
+		// Exercise both the emulated old env and the host env.
 		let modern = tempfile::tempdir().expect("host env fixture");
 		symlink(&real_env, modern.path().join("env")).unwrap();
 		for (case, path) in [

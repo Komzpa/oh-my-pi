@@ -451,6 +451,7 @@ class DaemonBroker {
 	readonly #launches = new Set<Promise<void>>();
 	readonly #releasedSockets = new WeakSet<IpcConnection>();
 	#releasePromise: Promise<void> | undefined;
+	readonly #releaseLaunchFailures: string[] = [];
 	readonly #clients = new Set<IpcConnection>();
 	readonly #ownerSockets = new Map<string, { socket: IpcConnection; subscriptionId: string | undefined }>();
 	readonly #completionSubscriptions = new Map<string, string | undefined>();
@@ -739,6 +740,7 @@ class DaemonBroker {
 		// a resumed AgentSession may connect afresh once release has settled.
 		for (const socket of this.#clients) this.#releasedSockets.add(socket);
 		this.#releasePromise = this.#doRelease(timeoutMs).finally(() => {
+			this.#releaseLaunchFailures.length = 0;
 			this.#releasePromise = undefined;
 		});
 		return this.#releasePromise;
@@ -752,7 +754,10 @@ class DaemonBroker {
 				await record.persistQueue;
 			}),
 		);
-		const failures = results.flatMap(result => (result.status === "rejected" ? [String(result.reason)] : []));
+		const failures = [
+			...this.#releaseLaunchFailures,
+			...results.flatMap(result => (result.status === "rejected" ? [String(result.reason)] : [])),
+		];
 		if (failures.length > 0) throw new Error(`Daemon session release failed: ${failures.join("; ")}`);
 	}
 
@@ -895,6 +900,9 @@ class DaemonBroker {
 			const message = error instanceof Error ? error.message : String(error);
 			record.log?.append(`Daemon launch failed: ${message}\n`);
 			await this.#settle(record, generation, undefined, message);
+			// Only creation failures overlapping this release belong to its drain;
+			// completed historical failures remain available in the daemon snapshot.
+			if (this.#releasePromise) this.#releaseLaunchFailures.push(message);
 		}
 	}
 
