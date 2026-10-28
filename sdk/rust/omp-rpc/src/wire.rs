@@ -2923,6 +2923,30 @@ impl TodoConfidence {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TodoScheduleReview {
+	#[serde(rename = "user")]
+	User,
+	#[serde(rename = "accepted")]
+	Accepted,
+	#[serde(rename = "redo")]
+	Redo,
+	#[serde(rename = "drop")]
+	Drop,
+}
+
+impl TodoScheduleReview {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::Accepted => "accepted",
+			Self::Redo => "redo",
+			Self::Drop => "drop",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TodoWorkerOutcome {
 	#[serde(rename = "completed")]
 	Completed,
@@ -6005,30 +6029,6 @@ impl AssistantErrorEventReason {
 		match self {
 			Self::Aborted => "aborted",
 			Self::Error => "error",
-		}
-	}
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum TodoScheduleReview {
-	#[serde(rename = "user")]
-	User,
-	#[serde(rename = "accepted")]
-	Accepted,
-	#[serde(rename = "redo")]
-	Redo,
-	#[serde(rename = "drop")]
-	Drop,
-}
-
-impl TodoScheduleReview {
-	/// Wire value.
-	pub fn as_str(self) -> &'static str {
-		match self {
-			Self::User => "user",
-			Self::Accepted => "accepted",
-			Self::Redo => "redo",
-			Self::Drop => "drop",
 		}
 	}
 }

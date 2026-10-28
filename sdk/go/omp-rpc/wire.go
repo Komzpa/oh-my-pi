@@ -2204,6 +2204,28 @@ func (v *TodoConfidence) UnmarshalJSON(data []byte) error {
 	return unknownValue("TodoConfidence", s)
 }
 
+type TodoScheduleReview string
+
+const (
+	TodoScheduleReviewUser     TodoScheduleReview = "user"
+	TodoScheduleReviewAccepted TodoScheduleReview = "accepted"
+	TodoScheduleReviewRedo     TodoScheduleReview = "redo"
+	TodoScheduleReviewDrop     TodoScheduleReview = "drop"
+)
+
+func (v *TodoScheduleReview) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "TodoScheduleReview")
+	if err != nil {
+		return err
+	}
+	switch value := TodoScheduleReview(s); value {
+	case TodoScheduleReviewUser, TodoScheduleReviewAccepted, TodoScheduleReviewRedo, TodoScheduleReviewDrop:
+		*v = value
+		return nil
+	}
+	return unknownValue("TodoScheduleReview", s)
+}
+
 type TodoWorkerOutcome string
 
 const (
@@ -2414,28 +2436,6 @@ func (v *TodoSchedule) decodeFrom(raw map[string]json.RawMessage) error {
 	}
 	*v = out
 	return nil
-}
-
-type TodoScheduleReview string
-
-const (
-	TodoScheduleReviewUser     TodoScheduleReview = "user"
-	TodoScheduleReviewAccepted TodoScheduleReview = "accepted"
-	TodoScheduleReviewRedo     TodoScheduleReview = "redo"
-	TodoScheduleReviewDrop     TodoScheduleReview = "drop"
-)
-
-func (v *TodoScheduleReview) UnmarshalJSON(data []byte) error {
-	s, err := decodeString(data, "TodoScheduleReview")
-	if err != nil {
-		return err
-	}
-	switch value := TodoScheduleReview(s); value {
-	case TodoScheduleReviewUser, TodoScheduleReviewAccepted, TodoScheduleReviewRedo, TodoScheduleReviewDrop:
-		*v = value
-		return nil
-	}
-	return unknownValue("TodoScheduleReview", s)
 }
 
 type ContextUsage struct {

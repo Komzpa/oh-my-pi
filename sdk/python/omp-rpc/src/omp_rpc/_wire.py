@@ -134,6 +134,11 @@ _TODO_CONFIDENCE_VALUES: Final[frozenset[str]] = frozenset({"low", "medium", "hi
 _decode_todo_confidence = cast("Decoder[TodoConfidence]", literal(_TODO_CONFIDENCE_VALUES))
 
 
+TodoScheduleReview: TypeAlias = Literal["user", "accepted", "redo", "drop"]
+_TODO_SCHEDULE_REVIEW_VALUES: Final[frozenset[str]] = frozenset({"user", "accepted", "redo", "drop"})
+_decode_todo_schedule_review = cast("Decoder[TodoScheduleReview]", literal(_TODO_SCHEDULE_REVIEW_VALUES))
+
+
 TodoWorkerOutcome: TypeAlias = Literal["completed", "failed", "aborted"]
 _TODO_WORKER_OUTCOME_VALUES: Final[frozenset[str]] = frozenset({"completed", "failed", "aborted"})
 _decode_todo_worker_outcome = cast("Decoder[TodoWorkerOutcome]", literal(_TODO_WORKER_OUTCOME_VALUES))
@@ -648,7 +653,7 @@ class TodoSchedule:
     """Append-only durable attempts for this exact row."""
     review_summary: str | None = None
     """Short final worker report retained for the user's review handoff."""
-    review: Literal["user", "accepted", "redo", "drop"] | None = None
+    review: TodoScheduleReview | None = None
     """User decision state for a delivered implementation result."""
     speculative_on: str | None = None
     """Review row whose verdict gates publication of this speculative work."""
@@ -2086,7 +2091,7 @@ def parse_todo_schedule(value: object, path: str = "TodoSchedule") -> TodoSchedu
         first_delivered_at=optional(payload, "firstDeliveredAt", decode_float, path),
         attempt_history=optional(payload, "attemptHistory", array(parse_todo_rework_attempt), path),
         review_summary=optional(payload, "reviewSummary", decode_str, path),
-        review=optional(payload, "review", cast('Decoder[Literal["user", "accepted", "redo", "drop"]]', literal(frozenset({"user", "accepted", "redo", "drop"}))), path),
+        review=optional(payload, "review", _decode_todo_schedule_review, path),
         speculative_on=optional(payload, "speculativeOn", decode_str, path),
         executor=optional(payload, "executor", parse_todo_schedule_executor, path),
     )
@@ -4305,6 +4310,7 @@ __all__ = [
     "TodoItem",
     "TodoPhase",
     "TodoReminderEvent",
+    "TodoScheduleReview",
     "TodoStatus",
     "TokenUsage",
     "ToolCall",
