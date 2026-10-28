@@ -1201,8 +1201,6 @@ export interface BeforeSubagentSpawnEvent {
 	isolated?: boolean;
 	/** Verbatim task assignment text; lets routing gates scope checkouts before row owners are recorded. */
 	assignment?: string;
-	/** Absolute paths the caller declared this worker writes; authoritative over text inference. */
-	resources?: string[];
 }
 
 export type {
