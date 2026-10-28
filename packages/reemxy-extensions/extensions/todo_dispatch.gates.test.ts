@@ -1601,13 +1601,14 @@ test("PLAN CHECK has the harness ask an overdue worker once instead of telling c
 	const forecast = forecastTodoPlan(branch[0]!.message.details.phases, { now: liveNow, deadlineAt: liveNow + 3_600_000 });
 	const p95 = forecast.rows.find(row => row.content === "Row A")?.fixedPathP95Finish;
 	if (typeof p95 !== "number") throw new Error("expected the overdue row to have a P95 finish");
-	const checkinClock = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tbilisi", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(p95));
+  const checkinClock = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tbilisi", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(p95));
   let tick: (() => void) | undefined;
+  let workerStart = liveNow - 5_000;
   const ctx = {
     cwd,
     sessionManager: { getHeader: () => ({ id: "gates-overdue-worker" }), ...branchMock(() => branch), getSessionFile: () => sessionFile },
     getAsyncJobSnapshot: () => ({
-      running: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: liveNow - 30 * 60_000 }],
+      running: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: workerStart }],
       recent: [],
       nonJobAgents: [],
     }),
@@ -1628,6 +1629,8 @@ test("PLAN CHECK has the harness ask an overdue worker once instead of telling c
     (await handlers.get("session_start")!({}, ctx));
     (await tick!());
     await Promise.resolve();
+    expect(nudges).toHaveLength(0);
+    workerStart = liveNow - 60 * 60_000;
     (await tick!());
     await Promise.resolve();
     expect(nudges).toHaveLength(1);
@@ -1635,8 +1638,7 @@ test("PLAN CHECK has the harness ask an overdue worker once instead of telling c
     expect(nudges[0]!.content).toContain(`your row Row A is past its P95 at ${checkinClock}`);
     expect(nudges[0]!.content).not.toMatch(/\d{4}-\d{2}-\d{2}T[^ ]*Z/);
     expect(nudges[0]!.content).toContain("reply with current artifact/path, first failing proof, or what you wait on");
-    expect(sent[0]).toContain("overdue check-in sent to worker-a");
-    expect(sent[0]).not.toContain("write agent://<id> asking what it waits on");
+    expect(sent.some(line => line.includes("overdue check-in sent to worker-a"))).toBe(true);
   } finally {
     Date.now = realNow;
     handlers.get("session_shutdown")?.({}, ctx);
@@ -1672,7 +1674,7 @@ test("PLAN CHECK falls back when worker message delivery returns false", async (
     cwd,
     sessionManager: { getHeader: () => ({ id: "gates-overdue-worker-false" }), ...branchMock(() => branch), getSessionFile: () => sessionFile },
     getAsyncJobSnapshot: () => ({
-      running: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: liveNow - 30 * 60_000 }],
+      running: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: liveNow - 60 * 60_000 }],
       recent: [],
       nonJobAgents: [],
     }),
@@ -1731,7 +1733,7 @@ test("PLAN CHECK keeps the manual fallback when worker messaging is absent", asy
     cwd,
     sessionManager: { getHeader: () => ({ id: "gates-overdue-worker-absent" }), ...branchMock(() => branch), getSessionFile: () => sessionFile },
     getAsyncJobSnapshot: () => ({
-      running: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: liveNow - 30 * 60_000 }],
+      running: [{ id: "worker-a", agentId: "worker-a", type: "task", status: "running", label: "Row A", startTime: liveNow - 60 * 60_000 }],
       recent: [],
       nonJobAgents: [],
     }),
@@ -2565,7 +2567,7 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
     appendEntry: () => undefined,
     sendMessage: () => undefined,
   } as unknown as ExtensionAPI;
-  const branch = [...plan("ready", now), { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "missed-eta": 3 } } }];
+  const branch = [...plan("ready", now), { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { "missed-eta": 3, "todo-link": 3 } } }];
   const branchEntry = branch[0] as { message: { details: { phases: Array<{ tasks: Array<{ schedule: { estimate: { updatedAt: number }; startedAt?: number } }> }> } } };
   const overdueRow = branchEntry.message.details.phases[0]!.tasks[0]!;
   overdueRow.schedule.startedAt = now - 65 * 60_000;
@@ -2589,6 +2591,7 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
     expect(refused?.reason).toContain("missed-eta");
     expect(refused?.reason).toContain('"Row A" worker-a');
     expect(refused?.reason).toContain("Don't start workers for unrelated work.");
+    expect(refused?.reason).toContain("Link each running unassigned worker to the todo row matching its actual assignment");
     expect(refused?.reason).not.toContain("chief-of-staff");
     // A pure look passes the escalation; reading results is how the plan gets fixed.
     const look = (await toolCall({ toolName: "bash", toolCallId: "u1b", input: { command: "systemctl status codex-lb" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
@@ -2805,17 +2808,17 @@ test("R1 (case A): a same-owner reestimate on a slipping running row is refused 
   expect(refused?.reason).toContain("with evidence (the failure reason) plus a new estimate");
   // Allowed: the same call changes the owner in the same update.
   const restaffed = await slipCall(tasks(), jobs, reestimateCall("Force-layout callouts", { owner: "CalloutRestaff" }));
-  expect(restaffed?.block).toBe(true);
-  expect(restaffed?.reason).toContain("2x previous likely 30m");
+  expect(restaffed?.block).not.toBe(true);
   // Allowed: the same call drops the row.
   expect(await slipCall(tasks(), jobs, reestimateCall("Force-layout callouts", { status: "abandoned" }))).toBeUndefined();
   // Allowed: the row is split into new rows.
   expect(await slipCall(tasks(), jobs, { name: "todo", arguments: { op: "schedule", updates: [{ task: "Force-layout callouts (markup)" }, { task: "Force-layout callouts (positions)" }] } })).toBeUndefined();
 });
-test("an overdue row's evidence-backed reestimate still meets the two-times estimate floor", async () => {
+test("an overdue row's evidence-backed reestimate still meets the measured previous attempt floor", async () => {
   const stale = Date.now() - 65 * 60_000;
   const jobs = slipJobs("EvidenceOwner", "coder", stale);
   const row = slipRow("Record scene inputs", "EvidenceOwner", 1, stale);
+  row.schedule.attemptHistory = [{ attemptId: "previous", durationMs: 1_800_000 }];
   const accepted = await slipCall([row], jobs, reestimateCall("Record scene inputs", {
     evidence: "The earlier estimate missed scene parsing failures.",
     estimate: { optimisticSeconds: 1800, likelySeconds: 1800, pessimisticSeconds: 3600, confidence: "low", basis: "Measured remaining work" },
@@ -2826,7 +2829,7 @@ test("an overdue row's evidence-backed reestimate still meets the two-times esti
     evidence: "Only evidence, estimate remains below the floor.",
   }));
   expect(bare?.block).toBe(true);
-  expect(bare?.reason).toContain("2x previous likely 30m");
+  expect(bare?.reason).toContain("previous attempt took 30m");
 });
 
 test("R2 (case B): the sixth reestimate under the same owner is refused, overdue or not", async () => {
@@ -2937,18 +2940,19 @@ test("a resumed live non-task worker staffs its row and allows wait", async () =
   }
 });
 
-test("a fresh owner does not waive the floor on a missed ETA; stale owners remain refused", async () => {
+test("a fresh owner does not waive the measured attempt floor; stale owners remain refused", async () => {
   const now = Date.now();
   const fresh = now - 5 * 60_000;
   const stale = now - 20 * 60_000;
   const freshRow = slipRow("Fresh recovery row", "FreshRecoveryOwner", 1, now - 65 * 60_000);
+  freshRow.schedule.attemptHistory = [{ attemptId: "previous", durationMs: 1_800_000 }];
   const freshResult = await slipCall(
     [freshRow],
     slipJobs("FreshRecoveryOwner", "coder", fresh),
     reestimateCall("Fresh recovery row"),
   );
   expect(freshResult?.block).toBe(true);
-  expect(freshResult?.reason).toContain("2x previous likely 30m");
+  expect(freshResult?.reason).toContain("previous attempt took 30m");
 
   const staleRow = slipRow("Stale slipping row", "StaleSlippingOwner", 1, now - 65 * 60_000);
   const staleResult = await slipCall(

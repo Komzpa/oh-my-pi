@@ -1,6 +1,6 @@
 // @ts-nocheck -- exercises the extension through its registered runtime hooks.
 import { expect, test } from "bun:test";
-import { acceptedSpeculativeMergeDemand, estimateFloorRefusal, firstDeliveryCutRequired, missedEtaRowsText, missingSpeculativeReview, SPRINT_STATE_ENTRY_TYPE, successfulDurationFloors, userUnblockAskDue } from "./todo_dispatch";
+import { acceptedSpeculativeMergeDemand, estimateFloorRefusal, firstDeliveryCutRequired, missedEtaRowsText, missingSpeculativeReview, SPRINT_STATE_ENTRY_TYPE, successfulDurationFloors, userUnblockAskDue, workerPastForecast } from "./todo_dispatch";
 import todoDispatch from "./todo_dispatch";
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -9,6 +9,13 @@ import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/
 import { readGoalDeadline } from "./deadlines";
 
 const now = Date.now();
+
+test("a newly assigned worker is not blamed for an earlier plan miss", () => {
+  expect(workerPastForecast(now - 60_000, now - 5_000, now)).toBe(false);
+  expect(workerPastForecast(now - 60_000, now - 120_000, now)).toBe(true);
+  expect(workerPastForecast(now + 60_000, now - 120_000, now)).toBe(false);
+  expect(workerPastForecast(now - 60_000, undefined, now)).toBe(true);
+});
 
 function estimateRow(content: string, overrides = {}) {
   return {
@@ -40,15 +47,23 @@ test("estimate floor refuses below the owner's successful p50 and accepts the fl
   expect(estimateFloorRefusal(make(180), forecastTodoPlan([{ name: "Work", tasks: [row] }], { now }).rows, floors, now)).toBeUndefined();
 });
 
-test("attempt two estimate floor is at least twice the previous likely estimate", () => {
+test("retry uses the previous attempt's measured duration, not a multiplied estimate", () => {
   const floors = successfulDurationFloors([JSON.stringify({ kind: "outcome", agent: "coder", status: "completed", durationMs: 60_000 })]);
-  const row = estimateRow("Redo implementation", { attemptHistory: [{ attemptId: "1", durationMs: 60_000 }] });
+  const row = estimateRow("Redo implementation", { attemptHistory: [{ attemptId: "1", durationMs: 180_000 }] });
   const rows = forecastTodoPlan([{ name: "Work", tasks: [row] }], { now }).rows;
-  const refusal = estimateFloorRefusal([{ task: row.content, estimate: { likelySeconds: 239 } }], rows, floors, now);
-  expect(refusal).toContain("below 4m");
+  const refusal = estimateFloorRefusal([{ task: row.content, estimate: { likelySeconds: 179 } }], rows, floors, now);
+  expect(refusal).toContain("below 3m");
   expect(refusal).toContain("Redo implementation");
   expect(refusal).toContain('"op":"schedule"');
-  expect(estimateFloorRefusal([{ task: row.content, estimate: { likelySeconds: 240 } }], rows, floors, now)).toBeUndefined();
+  expect(estimateFloorRefusal([{ task: row.content, estimate: { likelySeconds: 180 } }], rows, floors, now)).toBeUndefined();
+});
+
+test("an overdue first attempt does not manufacture a retry duration", () => {
+  const floors = successfulDurationFloors([JSON.stringify({ kind: "outcome", agent: "coder", status: "completed", durationMs: 60_000 })]);
+  const row = estimateRow("Overdue original attempt", { startedAt: now - 10 * 60_000, estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180, confidence: "medium", basis: "prior", updatedAt: now - 10 * 60_000 } });
+  const rows = forecastTodoPlan([{ name: "Work", tasks: [row] }], { now }).rows;
+  expect(rows[0].overdue).toBe(true);
+  expect(estimateFloorRefusal([{ task: row.content, evidence: "Remaining work measured", estimate: { likelySeconds: 180 } }], rows, floors, now)).toBeUndefined();
 });
 
 test("a schedule that only ratifies elapsed time is refused without evidence", () => {
