@@ -29,17 +29,14 @@ Order of work:
 2. Process cost. Count the rows closed since the last retrospective, split into
    product rows (the user's deliverables) and process rows (reviews, audits,
    retros, re-dispatches). If process rows are at least as many as product rows,
-   the first decision MUST remove or narrow process: fewer reviews, fewer
-   triggers, or a rule that stops re-dispatch. Do not add another check.
+   the first decision MUST remove or narrow process. Do not add another check.
 3. The biggest repeat. Pick the single failure that cost the most time or
-   recurred under a new name (Foo -> Foo-2). Its decision must make that repeat
+   recurred under a new worker name. Its decision must make that repeat
    impossible: a code `mechanism` with a test when one exists, otherwise a
    one-line rule.
 
 Before writing a decision, run one or two `web_search` queries for established
-practice on the failure class (for example "retrospective action items not
-followed through", "blameless postmortem repeat incidents", "WIP limits too many
-reviews") and cite the source you used in its evidence. Prefer a known practice
+practice on that failure class and cite the source you used in its evidence. Prefer a known practice
 to an invented rule; say so when nothing relevant is found.
 
 Return at most two decisions. Do not list one per red TUI item: missed ETAs, gate
