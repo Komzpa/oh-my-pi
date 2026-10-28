@@ -217,7 +217,7 @@ export function isUserDeadlineMissed(state: DeadlineState | null, now = Date.now
 	return Boolean(state?.active && state.userConstraint && state.baselineDeadlineAt !== undefined && now >= state.baselineDeadlineAt);
 }
 
-export function latestDeadlineUserMessage(entries: readonly unknown[]): { id: string; text: string; at: number } | undefined {
+export function latestDeadlineUserMessage(entries: readonly unknown[], quote?: string): { id: string; text: string; at: number } | undefined {
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index] as {
 			id?: string;
@@ -230,7 +230,7 @@ export function latestDeadlineUserMessage(entries: readonly unknown[]): { id: st
 		const timestamp = entry.timestamp ?? message.timestamp;
 		const at = typeof timestamp === "number" ? timestamp : Date.parse(timestamp ?? "");
 		const text = typeof message.content === "string" ? message.content : (message.content ?? []).filter(part => part.type === "text").map(part => part.text ?? "").join("\n");
-		if (Number.isFinite(at)) return { id: entry.id ?? String(at), text, at: Math.floor(at / 1_000) };
+		if (Number.isFinite(at) && (quote === undefined || text.includes(quote))) return { id: entry.id ?? String(at), text, at: Math.floor(at / 1_000) };
 	}
 	return undefined;
 }
