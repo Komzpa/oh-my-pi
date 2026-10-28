@@ -1140,7 +1140,7 @@ test("agent_end and shutdown persist child IDs but drop stale IDs on an empty-sn
 
 test("an unchanged open plan leaves context messages untouched on each request", async () => {
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
-  let plan = phases;
+  const plan = phases;
   await todoDispatch({
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
       handlers.set(event, handler),
