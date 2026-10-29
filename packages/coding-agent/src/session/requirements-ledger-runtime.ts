@@ -150,6 +150,22 @@ function requirementArtifactState(artifact: RequirementGateArtifact): unknown {
 	};
 }
 
+/** Exact audit target carrier. It may narrow an already structured row scope, never create one. */
+function getAuditItemRowArtifact(
+	item: Record<string, unknown>,
+	row: string,
+	rows: readonly string[],
+	knownRows: ReadonlySet<string>,
+): string | undefined {
+	if (typeof item.artifact === "string") return getRequirementRowArtifactIdentity(item.artifact, row, rows, knownRows);
+	if (typeof item.task !== "string") return undefined;
+	const marker = `row ${JSON.stringify(row)} @ `;
+	const start = item.task.indexOf(marker);
+	if (start < 0) return undefined;
+	const typed = /^(?:git|file|deploy):[^\s,;]+/.exec(item.task.slice(start + marker.length))?.[0];
+	return typed ? `${marker}${typed}` : undefined;
+}
+
 export type RequirementPublicationGate = (
 	message: AssistantMessage,
 	signal: AbortSignal,
@@ -542,6 +558,7 @@ export class RequirementsLedgerRuntime {
 			];
 			const rowHeads: string[] = [];
 			const rowArtifacts: Record<string, string> = {};
+			const declaredArtifacts: string[] = [];
 			const imagePayloads: RequirementAuditImagePayload[] = [];
 			const imageLines: string[] = [];
 			for (const source of sources) {
@@ -590,23 +607,36 @@ export class RequirementsLedgerRuntime {
 			for (const id of ids) {
 				const requirement = requirements.find(candidate => candidate.id === id)!;
 				for (const row of getLinkedRequirementRows(requirement, assignedRows)) {
+					const declaredArtifact = getAuditItemRowArtifact(
+						item,
+						row,
+						assignedRows,
+						new Set(phases.flatMap(phase => phase.tasks.map(task => task.content))),
+					);
+					if (declaredArtifact && !declaredArtifacts.includes(declaredArtifact))
+						declaredArtifacts.push(declaredArtifact);
 					const artifact = await bindRequirementRowArtifact(
 						{
 							cwd: this.#host.cwd(),
 							sessionManager: this.#host.sessionManager,
 							signal,
 							setTodoPhases: this.#host.setTodoPhases,
+							...(declaredArtifact ? { receipt: declaredArtifact } : {}),
 						},
 						row,
 						phases,
 						this.#appender(),
 						checkoutCache,
 					);
-					Object.defineProperty(rowArtifacts, row, {
-						value: JSON.stringify(requirementArtifactState(artifact)),
-						enumerable: true,
-						configurable: true,
-					});
+					// An unresolved owner lookup is not a freshness baseline. The auditor's
+					// typed receipt will probe the real target at completion; only a target
+					// resolved now can prove that the artifact did not move during the audit.
+					if (!artifact.reason && (artifact.head || artifact.sha256 || artifact.identities?.length))
+						Object.defineProperty(rowArtifacts, row, {
+							value: JSON.stringify(requirementArtifactState(artifact)),
+							enumerable: true,
+							configurable: true,
+						});
 					const artifactText = formatRequirementGateArtifact(
 						!artifact.head && !artifact.sha256
 							? { ...artifact, lastChange: getTodoRowChanges(branch).get(row) }
@@ -626,6 +656,7 @@ export class RequirementsLedgerRuntime {
 			});
 			revised[index] = {
 				...item,
+				...(declaredArtifacts.length ? { artifact: declaredArtifacts.join("; ") } : {}),
 				task: `${item.task}\n\n${protocol}`,
 				...(imagePayloads.length ? { images: imagePayloads } : {}),
 			};
@@ -1356,11 +1387,9 @@ export class RequirementsLedgerRuntime {
 					checkoutCache,
 				);
 				if (assignment.rowArtifacts?.[row] !== undefined) {
-					const current = await getRequirementRowArtifact(
-						{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager },
-						row,
-						phases,
-					);
+					// `artifact` was resolved through the receipt's typed target above. Compare
+					// like-for-like so a transient QA owner cannot replace the audited target.
+					const current = artifact;
 					if (assignment.rowArtifacts[row] !== JSON.stringify(requirementArtifactState(current)))
 						return `${receipt.id}: row artifact changed after audit dispatch for ${JSON.stringify(row)}; dispatch: ${assignment.rowArtifacts[row]}; current: ${JSON.stringify(requirementArtifactState(current))}`;
 				}

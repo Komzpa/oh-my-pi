@@ -819,6 +819,63 @@ describe("requirements ledger auditor binding", () => {
 		}
 	});
 
+	it.each([false, true])(
+		"binds an explicit audit artifact before a fresh owner has a checkout mapping (advance: %s)",
+		async advance => {
+			const { cwd, manager, runtime } = fixture();
+			try {
+				const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
+				Object.assign(phases[0]!.tasks[0]!, { schedule: { owner: "fresh-auditor", resources: [] } });
+				manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				const dispatchHead = git(cwd, "rev-parse", "HEAD");
+				const artifact = `row ${JSON.stringify("Build artifact")} @ ${gitIdentity(cwd, dispatchHead)}`;
+				const prepared = await runtime.prepareAuditorTaskCall("task", "call-explicit-artifact", {
+					name: "fresh-auditor",
+					agent: "qa-auditor",
+					requirementIds: ["R1"],
+					artifact,
+					task: "Audit R1 please",
+					context: "",
+				});
+				expect(prepared?.artifact).toBe(artifact);
+				if (advance) {
+					writeFileSync(join(cwd, "artifact.txt"), "advanced after explicit dispatch\n");
+					git(cwd, "add", "artifact.txt");
+					git(cwd, "commit", "-m", "advance explicit artifact");
+				}
+				const outcome = await runtime.afterToolCall({
+					toolCall: { id: "call-explicit-artifact", name: "task" },
+					result: {
+						content: [],
+						details: {
+							results: [
+								{
+									index: 0,
+									agent: "qa-auditor",
+									id: "fresh-auditor",
+									exitCode: 0,
+									output: receiptTable(artifact),
+								},
+							],
+						},
+					},
+					isError: false,
+				} as never);
+				if (advance) {
+					expect(outcome).toBeDefined();
+					expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts).toBeUndefined();
+				} else {
+					expect(outcome).toBeUndefined();
+					expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]?.status).toBe(
+						"pass",
+					);
+				}
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		},
+	);
+
 	it("rejects an auditor receipt citing a SHA outside the dispatch/current HEADs", async () => {
 		const { cwd, manager, runtime } = fixture();
 		try {
