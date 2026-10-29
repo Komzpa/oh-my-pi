@@ -102,6 +102,7 @@ function keepGatedItemKeys<T, I>(item: FluentType<T, I>): FluentType<unknown, I>
 }
 
 export const taskItemSchema = type({
+	"artifact?": "string",
 	"images?": taskImagesRule,
 	"name?": "string",
 	"requirementIds?": "string[]",
@@ -114,6 +115,7 @@ export const taskItemSchema = type({
 	"+": "delete",
 });
 const taskItemSchemaIsolated = type({
+	"artifact?": "string",
 	"name?": "string",
 	"requirementIds?": "string[]",
 	agent: "string = 'task'",
@@ -128,6 +130,7 @@ const taskItemSchemaIsolated = type({
 });
 
 export const taskSchema = type({
+	"artifact?": "string",
 	"name?": "string",
 	"requirementIds?": "string[]",
 	agent: "string = 'task'",
@@ -141,6 +144,7 @@ export const taskSchema = type({
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
+	"artifact?": "string",
 	"images?": taskImagesRule,
 	"name?": "string",
 	"requirementIds?": "string[]",
@@ -232,6 +236,7 @@ function createTaskSchema(options: {
 	if (options.batchEnabled) {
 		if (options.isolationEnabled) {
 			const item = type.raw({
+				"artifact?": "string",
 				"name?": "string",
 				"requirementIds?": "string[]",
 				agent,
@@ -254,6 +259,7 @@ function createTaskSchema(options: {
 			);
 		}
 		const item = type.raw({
+			"artifact?": "string",
 			"name?": "string",
 			"requirementIds?": "string[]",
 			agent,
@@ -276,6 +282,7 @@ function createTaskSchema(options: {
 	}
 	if (options.isolationEnabled) {
 		return type.raw({
+			"artifact?": "string",
 			"name?": "string",
 			"requirementIds?": "string[]",
 			agent,
@@ -291,6 +298,7 @@ function createTaskSchema(options: {
 		});
 	}
 	return type.raw({
+		"artifact?": "string",
 		"name?": "string",
 		"requirementIds?": "string[]",
 		agent,
