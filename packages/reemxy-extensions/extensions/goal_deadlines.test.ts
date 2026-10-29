@@ -68,6 +68,48 @@ const state: DeadlineState = {
 	],
 };
 
+test.each([
+	["replaces an automatic plan deadline with the objective clock on session start", false],
+	["preserves an already user-bound deadline on session start", true],
+])("%s", (_name, userBound) => {
+	const goal = goalRef({ id: "ship", objective: "push it by 13:10", status: "active", createdAt: "2026-10-28T08:51:00Z" });
+	const existing: DeadlineState = {
+		...state,
+		goalId: "ship",
+		auto: true,
+		autoPlanKey: "existing-plan",
+		stages: [{ id: "auto-todo-plan", label: "Automatic plan", expectedResult: "Finish tasks", deadlineAt: 2_200 }],
+		...(userBound ? { userConstraint: { messageId: "earlier-user", quote: "keep the original deadline", recordedAt: 1_000 }, baselineDeadlineAt: 2_200 } : {}),
+	};
+	const branch: unknown[] = [
+		{ id: "user-1", type: "message", timestamp: "2026-10-28T08:50:00Z", message: { role: "user", content: goal!.objective } },
+		{ type: "custom", customType: STATE_ENTRY, data: existing },
+	];
+	expect(rehydrateDeadlineState(branch)).toEqual(existing);
+	const handlers = new Map<string, Function>();
+	goalDeadlines({
+		pi: { goalRef, readFocusedGoal: () => goal, rehydrateDeadlineState, STATE_ENTRY },
+		on: (event, handler) => handlers.set(event, handler),
+		registerTool: () => {},
+		appendEntry: (customType, data) => branch.push({ type: "custom", customType, data }),
+		zod: z,
+	} as unknown as ExtensionAPI);
+	const ctx = { cwd: "/tmp", hasUI: false, sessionManager: branchMock(() => branch), getTodoPhases: () => [] } as unknown as ExtensionContext;
+	handlers.get("session_start")!({}, ctx);
+	const restored = rehydrateDeadlineState(branch);
+	if (userBound) {
+		expect(branch).toHaveLength(2);
+		expect(restored).toEqual(existing);
+	} else {
+		expect(branch).toHaveLength(3);
+		expect(restored).toEqual(deadlineStateFromGoalObjective(goal, branch));
+		expect(restored?.stages[0].id).toBe("user-goal-deadline");
+		expect(restored?.baselineDeadlineAt).toBe(resolveWallClock("13:10", resolveTimeZone(), Date.parse("2026-10-28T08:50:00Z")));
+		expect(restored?.userConstraint).toMatchObject({ messageId: "user-1", quote: "push it by 13:10" });
+		expect(restored?.auto).toBeUndefined();
+	}
+});
+
 describe("goal deadline reminders", () => {
 	test("reports relative stage and final deadline progress", () => {
 		const reminder = renderDeadlineReminder(state, 1_300);

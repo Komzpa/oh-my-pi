@@ -474,7 +474,8 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 
 	const persist = () => pi.appendEntry(sdk.STATE_ENTRY, state);
 	const bindObjectiveDeadline = (ctx: ExtensionContext) => {
-		if (state || !activeGoal || !ctx.sessionManager) return;
+		// An automatic plan must not hide the user's explicit objective clock.
+		if (state?.userConstraint || !activeGoal || !ctx.sessionManager) return;
 		const derived = deadlineStateFromGoalObjective(activeGoal, userEntries(ctx));
 		if (!derived) return;
 		state = derived;
