@@ -1018,16 +1018,13 @@ export class RequirementsLedgerRuntime {
 			.filter(block => block.type === "text")
 			.map(block => block.text)
 			.join("");
-		// Only suppress an unchanged report. The audit snapshot includes the
-		// source closure and linked rows; issues capture changed gate outcomes.
+		// Suppress unchanged notices across audit-source churn, but publish again
+		// when the visible issues, full open set, total, or user turn changes.
 		const state = new Bun.CryptoHasher("sha256")
 			.update(
 				JSON.stringify([
 					total,
-					requirementAuditSnapshot(
-						requirements,
-						open.map(item => item.requirement.id),
-					),
+					visible.map(item => [item.requirement.id, item.issues]),
 					open.map(item => [item.requirement.id, item.issues]),
 				]),
 			)
