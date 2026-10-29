@@ -26,6 +26,7 @@ import {
 	evaluateRequirementDoneGate,
 	getPersistedRequirementAuditRejections,
 	getPersistedRequirementAuditorAssignments,
+	requirementAuditSnapshot,
 	requirementSourceDigest,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import { formatRequirementIdentity } from "@oh-my-pi/pi-coding-agent/utils/requirement-artifact";
@@ -1374,6 +1375,40 @@ describe("awaiting-user publication gate", () => {
 			expect((await tool.execute("unverified", { op: "done", task: "Build artifact" })).isError).toBe(true);
 			manager.appendMessage({ role: "user", content: "What is the status?", timestamp: Date.now() });
 			expect((await gate()?.(message, signal))?.replacementText).toContain("Not audit-verified:");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("suppresses an unchanged open notice across consecutive settled messages with a changed audit snapshot", async () => {
+		const { cwd, manager, gate } = fixture();
+		try {
+			const message = { content: [{ type: "text", text: "Working" }], stopReason: "stop" } as never;
+			const signal = new AbortController().signal;
+			const initial = getLatestRequirements(manager.getBranch());
+			const snapshotHash = () =>
+				createHash("sha256")
+					.update(requirementAuditSnapshot(getLatestRequirements(manager.getBranch()), ["R1"]))
+					.digest("hex");
+			const before = snapshotHash();
+			expect(await gate()?.(message, signal)).toMatchObject({
+				replacementText: "Working\n\nNot audit-verified: R1 (1 of 1)",
+				settled: true,
+			});
+			const changed = createRequirementCandidates(initial, ["Additional source context for the artifact"], AT).map(
+				requirement =>
+					requirement.id === "R2"
+						? { ...requirement, classification: "merged" as const, mergeInto: "R1" }
+						: requirement,
+			);
+			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, changed);
+			expect(snapshotHash()).not.toBe(before);
+			expect(await gate()?.(message, signal)).toMatchObject({ replacementText: "Working", settled: true });
+			expect(
+				manager
+					.getBranch()
+					.filter(entry => entry.type === "custom" && entry.customType === "requirements_publication_notice"),
+			).toHaveLength(1);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
