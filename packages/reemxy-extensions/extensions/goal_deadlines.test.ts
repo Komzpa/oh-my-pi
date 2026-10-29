@@ -43,7 +43,9 @@ test("an exact user goal clock becomes its deadline at the original message time
 	expect(new Date(state!.baselineDeadlineAt! * 1_000).toISOString()).toBe("2026-10-28T09:10:00.000Z");
 	expect(state?.userConstraint).toMatchObject({ messageId: "user-1", quote: "push it by 13:10" });
 	expect(deadlineStateFromGoalObjective(goalRef({ id: "ship", objective: "push it soon", status: "active", createdAt: "2026-10-28T08:51:00Z" }), entries, "Asia/Tbilisi")).toBeUndefined();
-	expect(deadlineStateFromGoalObjective(goal, [{ ...entries[0], message: { role: "user", content: "different request by 13:10" } }], "Asia/Tbilisi")).toBeUndefined();
+	const restored = deadlineStateFromGoalObjective(goal, [{ ...entries[0], message: { role: "user", content: "different request by 13:10" } }], "Asia/Tbilisi");
+	expect(new Date(restored!.baselineDeadlineAt! * 1_000).toISOString()).toBe("2026-10-28T09:10:00.000Z");
+	expect(restored?.userConstraint).toMatchObject({ messageId: "goal:ship", quote: "push it by 13:10" });
 });
 
 function branchMock(getBranch: () => unknown[]) {

@@ -352,8 +352,11 @@ export function deadlineStateFromGoalObjective(
 	const clock = OBJECTIVE_DEADLINE_CLOCK.exec(goal.objective)?.[1];
 	if (!clock) return undefined;
 	const user = deadlineSdk.latestDeadlineUserMessage(entries, goal.objective);
-	if (!user) return undefined;
-	const deadlineAt = resolveWallClock(clock, timeZone, user.at * 1_000);
+	// A restart checkpoint can retain the native goal after the original user
+	// message has fallen out of the selected branch. The objective remains the
+	// authoritative explicit clock; anchor it at the persisted goal creation time.
+	const recordedAt = user?.at ?? goal.createdAt;
+	const deadlineAt = resolveWallClock(clock, timeZone, recordedAt * 1_000);
 	if (deadlineAt === undefined) return undefined;
 	return {
 		version: 1,
@@ -363,7 +366,7 @@ export function deadlineStateFromGoalObjective(
 		active: true,
 		stages: [{ id: "user-goal-deadline", label: "Finish goal", expectedResult: goal.objective, deadlineAt }],
 		baselineDeadlineAt: deadlineAt,
-		userConstraint: { messageId: user.id, quote: goal.objective, recordedAt: user.at },
+		userConstraint: { messageId: user?.id ?? `goal:${goal.id}`, quote: goal.objective, recordedAt },
 	};
 }
 
