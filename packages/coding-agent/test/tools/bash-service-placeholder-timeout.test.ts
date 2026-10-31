@@ -111,13 +111,19 @@ describe("bash service placeholder arguments", () => {
 			await expect(bash.execute("ordinary-async", { command: "true", async: true })).rejects.toThrow(
 				"Async bash execution is disabled",
 			);
-			// Explicit requests still reject per the documented no-async/timeout contract.
-			await expect(
-				bash.execute("svc-async", { command: "true", name: "bad", async: true, pty: false }),
-			).rejects.toThrow("does not accept async or timeout");
-			await expect(
-				bash.execute("svc-timeout", { command: "true", name: "bad", timeout: 60, pty: false }),
-			).rejects.toThrow("does not accept async or timeout");
+			// Explicit requests are launched with a notice (upstream #16771 contract).
+			const explicit = await bash.execute("svc-explicit", {
+				command: "printf 'READY\\n'; sleep 30",
+				name: "explicit-service",
+				ready: { log: "READY", timeout: 5 },
+				pty: false,
+				async: true,
+				timeout: 60,
+			});
+			expect(explicit.details?.service?.ready).toBeTrue();
+			expect(textOf(explicit)).toContain("Ignored timeout");
+			expect(textOf(explicit)).toContain("Ignored async");
+			await client.request({ op: "stop", name: "explicit-service", timeoutMs: 1_000 }).catch(() => undefined);
 		} finally {
 			await client.request({ op: "stop", name: "plain-service", timeoutMs: 1_000 }).catch(() => undefined);
 			await client.request({ op: "stop", name: "placeholder-service", timeoutMs: 1_000 }).catch(() => undefined);
