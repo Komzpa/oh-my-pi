@@ -2662,6 +2662,8 @@ test("an escalated demand decays once every row is closed (live sunbim 2026-10-2
     await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "c2", isError: false, content: [], details: undefined }, ctx);
     const after = (await toolCall({ toolName: "bash", toolCallId: "c3", input: { command: "make build" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(after?.reason ?? "", "closed plan clears the escalation").not.toContain("unread-receipts");
+    // With the escalation gone the coordinator gate still holds: no open row covers the build.
+    expect(after?.reason ?? "").toContain("Add and schedule the new work");
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });
