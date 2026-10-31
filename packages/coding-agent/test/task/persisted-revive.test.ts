@@ -1973,6 +1973,7 @@ describe("cold revival replays the system prompt the last request sent", () => {
 				initialize: () => {},
 				onError: () => () => {},
 				hasHandlers: () => false,
+				hasLoadedHandlers: () => false,
 				emit: async (event: { type: string }) => {
 					if (event.type === "session_start") hooks.sessionStart?.();
 				},
@@ -2034,7 +2035,7 @@ describe("cold revival replays the system prompt the last request sent", () => {
 			enableLsp: false,
 			artifactsDir: cwd,
 		});
-		expect(result.exitCode).toBe(0);
+		expect(result.exitCode, result.stderr).toBe(0);
 		if (!spawned) throw new Error("Expected the spawn to create a session");
 		return spawned;
 	}
@@ -2341,7 +2342,7 @@ describe("cold revival replays the system prompt the last request sent", () => {
 			sessionFile: parentFile,
 			artifactsDir: childrenDir,
 		});
-		expect(result.exitCode).toBe(0);
+		expect(result.exitCode, result.stderr).toBe(0);
 
 		const restored = new AgentRegistry();
 		await registerPersistedSubagents(restored, parentFile);

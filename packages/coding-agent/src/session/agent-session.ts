@@ -19,6 +19,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { isPromise } from "node:util/types";
+import { currentRequirementInput } from "./requirement-input";
+import { invalidateStatus } from "@oh-my-pi/pi-natives/vcs";
 
 import {
 	type AfterToolCallContext,
@@ -47,6 +49,12 @@ import {
 	type ToolChoiceDirective,
 	wireToolsFingerprint,
 } from "@oh-my-pi/pi-agent-core";
+import {
+	getAssistantPublicationGate,
+	isAssistantPublicationSettled,
+	markAssistantPublicationSettled,
+	setAssistantPublicationGate,
+} from "@oh-my-pi/pi-agent-core/assistant-publication";
 import {
 	type CompactionPreparation,
 	type CompactionResult,
@@ -165,7 +173,11 @@ import { emitSessionShutdownEvent, TOP_LEVEL_AGENT, UNAVAILABLE_ANNOTATIONS } fr
 import { extensionEventFromSessionEvent } from "../extensibility/extensions/lifecycle-mirror";
 import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
-import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
+import type {
+	BeforeAssistantMessageEventResult,
+	CompactOptions,
+	ContextUsage,
+} from "../extensibility/extensions/types";
 import type { CustomCommandContext } from "../extensibility/custom-commands/types";
 import { SkillDescriptionCatalog } from "../extensibility/skill-descriptions";
 import {
@@ -238,7 +250,7 @@ import {
 } from "@oh-my-pi/pi-tui/thinking";
 import { isAttachmentOnlyTitleInput, isLowSignalTitleInput } from "../tiny/text";
 import type { ImageAttachmentEntry, ToolSession } from "../tools";
-import { resolveApproval } from "../tools/approval";
+import { resolveApproval, resolveToolTier } from "../tools/approval";
 import { type ApprovalGrantStore, getApprovalGrants } from "../tools/approval-cache";
 import { type AskToolDetails } from "@oh-my-pi/pi-tui/tools/ask";
 import { recoverAskHtml } from "../tools/ask";
@@ -349,7 +361,12 @@ import {
 	buildAsyncResultBatchMessage,
 } from "./async-job-delivery";
 import { type BashExecuteOptions, BashRunner, type BashRunnerHost } from "./bash-runner";
-import { RequirementsLedgerRuntime, type RequirementsLedgerRuntimeHost } from "./requirements-ledger-runtime";
+import {
+	RequirementsLedgerRuntime,
+	type PreparedRequirementCandidate,
+	type RequirementCandidateCommit,
+	type RequirementPublicationGate,
+} from "./requirements-ledger-runtime";
 import {
 	checkpointStartedAtFromEntry,
 	completedRewindFromEntry,
@@ -1084,6 +1101,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * command.
 	 */
 	readonly #queuedMessageRawText = new WeakMap<AgentMessage, string>();
+	readonly #queuedRequirementCandidates = new WeakMap<AgentMessage, { sessionId: string; ids: string[] }>();
 
 	// Event subscription state
 	#unsubscribeAgent?: () => void;
@@ -1166,6 +1184,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	/** Requirement capture, QA receipts, and completion gates for the main session. */
 	readonly #requirementsLedger: RequirementsLedgerRuntime;
+	#requirementsPublicationGate: RequirementPublicationGate | undefined;
 	readonly #modelMentions: ModelMentionRegistry;
 	#workPoolYieldItems: readonly WorkPoolYieldItem[] = [];
 	/** Item set matching the last successfully rebuilt provider prompt. The base
@@ -2302,15 +2321,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			consumeLastServedToolChoiceLabel: () => this.#toolChoiceQueue.consumeLastServedLabel(),
 		};
 		this.#todo = new TodoTracker(todoHost);
-		const requirementsHost: RequirementsLedgerRuntimeHost = {
-			agent: this.agent,
-			agentKind: () => this.#agentKind,
-			cwd: () => this.sessionManager.getCwd(),
-			sessionManager: this.sessionManager,
-			onSettledAssistantMessage: message => this.#onRequirementsSettled(message),
-			setTodoPhases: phases => this.#todo.setPhases(phases),
-		};
-		this.#requirementsLedger = new RequirementsLedgerRuntime(requirementsHost);
 		this.#modelMentions = new ModelMentionRegistry({
 			sessionManager: this.sessionManager,
 			modelRegistry: this.#modelRegistry,
@@ -2756,6 +2766,24 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#agentId = config.agentId;
 		this.#agentRegistry = config.agentRegistry;
 		this.#agentKind = config.agentKind ?? "main";
+		this.#requirementsLedger = new RequirementsLedgerRuntime({
+			agent: this.agent,
+			agentKind: () => this.#agentKind,
+			cwd: () => this.sessionManager.getCwd(),
+			sessionManager: this.sessionManager,
+			onSettledAssistantMessage: message => markAssistantPublicationSettled(message),
+			queueModelNotice: async content => {
+				await this.sendCustomMessage(
+					{ customType: "requirements-gate-notice", content, display: false, attribution: "agent" },
+					{ deliverAs: "nextTurn" },
+				);
+			},
+			setPublicationGate: gate => {
+				this.#requirementsPublicationGate = gate;
+				this.#syncAssistantPublicationGate();
+			},
+		});
+		this.#syncAssistantPublicationGate();
 		// A subagent's streamed text reaches no output sink until the run settles
 		// (the parent sees only the yield), so a failed turn's partial prose is
 		// replay-safe and transient provider errors after it stay retryable —
@@ -2784,6 +2812,21 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
 			this.#loopGuards.onAssistantEvent(message, assistantMessageEvent);
+			if (this.#runAssistantPublicationGateActive ?? Boolean(getAssistantPublicationGate(this.agent))) {
+				if (assistantMessageEvent.type === "start") {
+					this.#ttsr.onAssistantMessageStart();
+					this.tokenRate.begin(message.timestamp);
+				} else if (
+					assistantMessageEvent.type === "text_delta" ||
+					assistantMessageEvent.type === "thinking_delta" ||
+					assistantMessageEvent.type === "toolcall_delta"
+				) {
+					this.tokenRate.push(assistantMessageEvent.delta);
+				}
+				void this.#ttsr
+					.checkMessageUpdate({ type: "message_update", message, assistantMessageEvent })
+					.catch(error => logger.warn("TTSR raw stream check failed", { error }));
+			}
 		});
 		// Tool-result hook owns synchronous post-tool actions that must affect the current loop.
 		this.agent.afterToolCall = ctx => this.#afterToolCall(ctx);
@@ -3941,6 +3984,19 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			toolName: event.toolName,
 			startedAt: new Date().toISOString(),
 		};
+		const branch = this.sessionManager.getBranch();
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry.type !== "message") continue;
+			if (entry.message.role === "user") break;
+			if (entry.message.role !== "assistant") continue;
+			const original = entry.message.content.find(
+				block => block.type === "toolCall" && block.id === event.toolCallId,
+			);
+			if (original?.type === "toolCall" && JSON.stringify(original.arguments) !== JSON.stringify(event.args))
+				data.effectiveArguments = event.args;
+			break;
+		}
 		// The assistant message already persists the full arguments; store only
 		// the command/path projection the resume warning renders.
 		const args = summarizeToolArguments(event.args);
@@ -4065,6 +4121,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	// Track last assistant message for auto-compaction check
 	#lastAssistantMessage: AssistantMessage | undefined = undefined;
+	#runAssistantPublicationGateActive: boolean | undefined;
 	/**
 	 * Tool calls emitted by assistant turns of the current agent run. A mid-turn
 	 * transcript rebuild keeps only these unpaired calls live; calls left unpaired
@@ -4213,12 +4270,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	};
 
 	/** Commit messages in emission order without waiting for notification listeners. */
-
-	/** Notification hook the requirements ledger calls when a message settles. */
-	#onRequirementsSettled(message: AssistantMessage): void {
-		// No session-level action required; the ledger persists its own notices.
-	}
-
 	#queueMessageEndPersistence(message: AgentMessage, promptGeneration: number): Promise<void> {
 		const key = sessionMessagePersistenceKey(message);
 		const pending = this.#messageEndPersistenceTail
@@ -4229,6 +4280,20 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				}
 			});
 		if (key !== undefined) this.#pendingMessageEndPersistence.set(key, pending);
+		this.#messageEndPersistenceTail = pending.catch(() => {});
+		return pending;
+	}
+
+	/** Serialize QA receipts after the corresponding transcript commit. */
+	#queueRequirementMessageEndPersistence(message: AgentMessage, promptGeneration: number): Promise<void> {
+		const persistence = this.#queueMessageEndPersistence(message, promptGeneration);
+		if (message.role !== "custom" || message.customType !== ASYNC_RESULT_MESSAGE_TYPE) return persistence;
+		const pending = persistence.then(async () => {
+			if (this.#promptGeneration !== promptGeneration) return;
+			await this.#requirementsLedger
+				.consumeAsyncResult(message)
+				.catch(error => logger.warn("Requirements ledger async consume failed", { error }));
+		});
 		this.#messageEndPersistenceTail = pending.catch(() => {});
 		return pending;
 	}
@@ -4629,6 +4694,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// A fresh run supersedes the previously settled (and pruned) refusal
 		// turn: state-based lookups take over again.
 		if (event.type === "agent_start") {
+			this.#runAssistantPublicationGateActive = Boolean(getAssistantPublicationGate(this.agent));
 			this.#activeAgentPromptGeneration = eventPromptGeneration;
 			// A run resumed from an unpaired assistant tail (retry of a failed tool
 			// batch) executes that turn's calls without a new message_end.
@@ -4778,7 +4844,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// extension notifications must not own or delay the persistence work.
 		const messageEndPersistence =
 			event.type === "message_end"
-				? this.#queueMessageEndPersistence(event.message, eventPromptGeneration)
+				? this.#queueRequirementMessageEndPersistence(event.message, eventPromptGeneration)
 				: undefined;
 
 		// Deobfuscate assistant message content for display emission — the LLM echoes back
@@ -4809,14 +4875,27 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// concurrently and message_update skips the await, so a reset placed after
 		// it could land behind the new message's first deltas and clear them.
 		if (event.type === "turn_start") this.#ttsr.onTurnStart();
-		if (event.type === "message_start" && event.message.role === "assistant") this.#ttsr.onAssistantMessageStart();
+		if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_start" &&
+			event.message.role === "assistant"
+		)
+			this.#ttsr.onAssistantMessageStart();
 
 		// Meter generation per session: each session tracks its own stream, so a
 		// background subagent holds a live reading by the time it is focused and
 		// the main session's reading survives focus round-trips.
-		if (event.type === "message_start" && event.message.role === "assistant") {
+		if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_start" &&
+			event.message.role === "assistant"
+		) {
 			this.tokenRate.begin(event.message.timestamp);
-		} else if (event.type === "message_update" && event.message.role === "assistant") {
+		} else if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_update" &&
+			event.message.role === "assistant"
+		) {
 			const delta = event.assistantMessageEvent;
 			if (delta.type === "text_delta" || delta.type === "thinking_delta" || delta.type === "toolcall_delta") {
 				this.tokenRate.push(delta.delta);
@@ -4884,17 +4963,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 		if (event.type === "tool_stream_update") this.#streamingEditGuard.maybeAbort(event);
 
-		if (await this.#ttsr.checkMessageUpdate(event)) return;
+		if (!getAssistantPublicationGate(this.agent) && (await this.#ttsr.checkMessageUpdate(event))) return;
 
 		// Handle session persistence
 		if (event.type === "message_end") {
 			await messageEndPersistence;
 			if (this.#promptGeneration !== eventPromptGeneration) return;
-			// Route async-result (QA auditor receipt) messages to the requirements ledger after the
-			// message itself is persisted, so the rejection entry lands after the custom_message receipt.
-			if (event.message.role === "custom" && event.message.customType === ASYNC_RESULT_MESSAGE_TYPE) {
-				await this.#requirementsLedger.consumeAsyncResult(event.message);
-			}
 			if (interruptedThinkingMessage) {
 				this.sessionManager.appendCustomMessageEntry(
 					interruptedThinkingMessage.customType,
@@ -5043,6 +5117,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 		// Check auto-retry and auto-compaction after agent completes
 		if (event.type === "agent_end") {
+			this.#runAssistantPublicationGateActive = undefined;
 			const settledMessages = event.messages;
 			const activeMessages = this.agent.state.messages;
 			// TTSR retry work runs concurrently and clears the live flag before
@@ -5389,7 +5464,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					return;
 				}
 				const todoContinuationScheduled =
-					this.#stopTimeTodoRemindersEnabled && (await this.#todo.checkCompletion(msg));
+					this.#stopTimeTodoRemindersEnabled &&
+					!isAssistantPublicationSettled(msg) &&
+					(await this.#todo.checkCompletion(msg));
 				if (todoContinuationScheduled) {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
@@ -5790,7 +5867,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 	}
 
-	#afterToolCall(ctx: AfterToolCallContext): AfterToolCallResult | undefined {
+	async #afterToolCall(ctx: AfterToolCallContext): Promise<AfterToolCallResult | undefined> {
+		const tool = this.agent.state.tools.find(tool => tool.name === ctx.toolCall.name);
+		if (!tool || resolveToolTier(tool, ctx.args) !== "read") invalidateStatus();
 		if (
 			this.#isTerminalYieldToolResult({
 				toolName: ctx.toolCall.name,
@@ -5803,7 +5882,15 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#synchronouslyTerminatedYieldToolCallIds.add(ctx.toolCall.id);
 			this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
 		}
-		return this.#ttsr.afterToolCall(ctx);
+		const receipt = await this.#requirementsLedger.afterToolCall(ctx);
+		const ttsrResult = this.#ttsr.afterToolCall(ctx);
+		if (!receipt) return ttsrResult;
+		if (!ttsrResult) return receipt;
+		return {
+			...ttsrResult,
+			...receipt,
+			...(receipt.content && ttsrResult.content ? { content: [...ttsrResult.content, ...receipt.content] } : {}),
+		};
 	}
 	/**
 	 * Emits the extension `tool_call` event for a loop-dispatched call at
@@ -5816,14 +5903,48 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * execution still emit there).
 	 */
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
+		const result = await this.#beforeToolCallCore(ctx, signal);
+		if (result?.block) return result;
+		if (this.#agentKind === "main" && ctx.tool.name === "todo") {
+			await this.#requirementsLedger.beforeTodoCall(ctx.tool.name, result?.args ?? ctx.args, signal);
+		}
+		const reminder =
+			this.#agentKind === "main" && this.getActiveToolNames().includes("todo") && ctx.tool.name !== "todo"
+				? this.#requirementsLedger.remindUnclassifiedCandidates(ctx.tool.name, ctx.args)?.additionalContext
+				: undefined;
+		if (reminder === undefined) return result;
+		return {
+			...result,
+			additionalContext: result?.additionalContext ? `${result.additionalContext}\n\n${reminder}` : reminder,
+		};
+	}
+
+	async #beforeToolCallCore(
+		ctx: BeforeToolCallContext,
+		signal?: AbortSignal,
+	): Promise<BeforeToolCallResult | undefined> {
 		const runner = this.#extensionRunner;
 		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 		const ttsrResult = await this.#ttsr.beforeToolCall(ctx);
-		if (ttsrResult) {
+		if (ttsrResult?.block) {
 			runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 			return ttsrResult;
 		}
-		if (!runner?.hasHandlers("tool_call")) return undefined;
+		let effectiveArgs = ttsrResult?.args ?? ctx.args;
+		let additionalContext = ttsrResult?.additionalContext;
+		if (!runner?.hasHandlers("tool_call")) {
+			if (this.#agentKind === "main" && ctx.tool.name === "task") {
+				effectiveArgs =
+					(await this.#requirementsLedger.prepareAuditorTaskCall(
+						ctx.tool.name,
+						ctx.toolCall.id,
+						effectiveArgs,
+						signal,
+					)) ?? effectiveArgs;
+			}
+			if (effectiveArgs === ctx.args && additionalContext === undefined) return undefined;
+			return { args: effectiveArgs, ...(additionalContext === undefined ? {} : { additionalContext }) };
+		}
 		const metadata = ctx.toolCall.providerMetadata;
 		const computer = metadata?.type === "computer" ? metadata : undefined;
 		// Parity with the wrapper's pre-emit short-circuit: an already-denied
@@ -5831,13 +5952,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// or user policy), so resolving under the most permissive mode is exact;
 		// the wrapper still enforces the mode-accurate gate before execution.
 		const userPolicies: Record<string, unknown> = cfgToolsApproval.get(this.settings);
-		const approvalArgs = computer ? { actions: computer.actions } : ctx.args;
+		const approvalArgs = computer ? { actions: computer.actions } : effectiveArgs;
 		if (resolveApproval(ctx.tool, approvalArgs, "yolo", userPolicies).policy === "deny") {
 			return undefined;
 		}
 		const eventArgs = computer
 			? { actions: computer.actions, pendingSafetyChecks: computer.pendingSafetyChecks }
-			: ctx.args;
+			: effectiveArgs;
 		runner.markToolCallEmitted(ctx.toolCall.id, ctx.tool.name);
 		let callResult: Awaited<ReturnType<ExtensionRunner["emitToolCall"]>>;
 		try {
@@ -5860,10 +5981,23 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 		// A computer call's event input is a synthetic {actions, pendingSafetyChecks}
 		// view, not the execution params — a revision cannot map back onto them.
-		const args = callResult?.input !== undefined && !computer ? callResult.input : undefined;
-		const additionalContext = callResult?.additionalContext;
-		if (args === undefined && additionalContext === undefined) return undefined;
-		return { args, additionalContext };
+		if (callResult?.input !== undefined && !computer) effectiveArgs = callResult.input;
+		if (callResult?.additionalContext) {
+			additionalContext = additionalContext
+				? `${additionalContext}\n\n${callResult.additionalContext}`
+				: callResult.additionalContext;
+		}
+		if (this.#agentKind === "main" && ctx.tool.name === "task") {
+			effectiveArgs =
+				(await this.#requirementsLedger.prepareAuditorTaskCall(
+					ctx.tool.name,
+					ctx.toolCall.id,
+					effectiveArgs,
+					signal,
+				)) ?? effectiveArgs;
+		}
+		if (effectiveArgs === ctx.args && additionalContext === undefined) return undefined;
+		return { args: effectiveArgs, ...(additionalContext === undefined ? {} : { additionalContext }) };
 	}
 
 	/** Find the last assistant message in agent state (including aborted ones) */
@@ -5978,6 +6112,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			signal: this.#postPromptTasksAbortController.signal,
 		});
 		if (this.#promptGeneration !== generation || this.#abortInProgress || this.#isDisposed) {
+			this.#resetSessionStopContinuationState();
+			return false;
+		}
+		if (lastAssistantMessage && isAssistantPublicationSettled(lastAssistantMessage) && result?.decision !== "block") {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}
@@ -6517,6 +6655,63 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 	}
 
+	/** Compose extension revisions with the requirements gate on the actual published text. */
+	#syncAssistantPublicationGate(): void {
+		const runner = this.#extensionRunner;
+		const requirementsGate = this.#agentKind === "main" ? this.#requirementsPublicationGate : undefined;
+		const hasExtensionGate =
+			this.#agentKind === "main" && runner?.hasLoadedHandlers("before_assistant_message") === true;
+		if (!hasExtensionGate && !requirementsGate) {
+			setAssistantPublicationGate(this.agent, undefined);
+			return;
+		}
+		setAssistantPublicationGate(this.agent, async (message, signal) => {
+			let extensionResult: BeforeAssistantMessageEventResult | undefined;
+			if (runner?.hasHandlers("before_assistant_message")) {
+				extensionResult = await runner.emitBeforeAssistantMessage({
+					type: "before_assistant_message",
+					message,
+					signal,
+				});
+				if (
+					extensionResult?.settled === true &&
+					!signal.aborted &&
+					message.stopReason !== "aborted" &&
+					!message.content.some(block => block.type === "toolCall")
+				) {
+					markAssistantPublicationSettled(message);
+				}
+			}
+			if (requirementsGate) {
+				let gatedMessage = message;
+				if (extensionResult?.replacementText !== undefined) {
+					const content: AssistantMessage["content"] = [];
+					const keepProviderThinking = message.content.some(block => block.type === "toolCall");
+					let addedReplacement = false;
+					for (const block of message.content) {
+						if (
+							block.type === "toolCall" ||
+							block.type === "fallback" ||
+							block.type === "anthropicServerTool" ||
+							(keepProviderThinking && (block.type === "thinking" || block.type === "redactedThinking"))
+						) {
+							content.push(block);
+						} else if (extensionResult.replacementText && !addedReplacement) {
+							content.push({ type: "text", text: extensionResult.replacementText });
+							addedReplacement = true;
+						}
+					}
+					if (extensionResult.replacementText && !addedReplacement)
+						content.push({ type: "text", text: extensionResult.replacementText });
+					gatedMessage = { ...message, content };
+				}
+				const requirementsResult = await requirementsGate(gatedMessage, signal);
+				if (requirementsResult !== undefined) return requirementsResult;
+			}
+			return extensionResult;
+		});
+	}
+
 	/**
 	 * Set agent.sessionId from the session manager and install a dynamic
 	 * metadata resolver so every Anthropic API request carries
@@ -6631,6 +6826,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	beginDispose(): void {
 		this.#isDisposed = true;
+		setAssistantPublicationGate(this.agent, undefined);
 		for (const dispose of this.#disposers.splice(0)) dispose();
 		this.#modelDiscoveryAbortController.abort();
 		this.#queuedMessageDrainBlocked = false;
@@ -8728,6 +8924,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 
 	async #prompt(text: string, options?: PromptOptions): Promise<boolean> {
+		options = { ...options, rawRequirementText: options?.rawRequirementText ?? currentRequirementInput() };
 		// Stamp the operator's submission instant before ANY async preprocessing —
 		// command execution, image normalization, vision-model description — so the
 		// prompt→yield delta includes the whole wait, whatever path the prompt takes.
@@ -8866,7 +9063,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				timestamp: submittedAt,
 				attribution: promptAttribution,
 				prependMessages: prependNotices,
-				rawText: typedText,
+				rawText: options?.rawRequirementText ?? typedText,
 				onPromptQueued: options?.onPromptQueued,
 				onPromptAdmitted: onPromptQueuedAdmitted,
 				promptGeneration: queueGeneration,
@@ -8940,7 +9137,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				timestamp: submittedAt,
 				attribution: promptAttribution,
 				prependMessages: prependNotices,
-				rawText: typedText,
+				rawText: options?.rawRequirementText ?? typedText,
 				preprocessed: {
 					images: normalizedImages,
 					descriptionNotice: imageDescriptionNotice,
@@ -9000,6 +9197,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			dispatched = await this.#promptWithMessage(message, expandedText, {
 				...options,
 				followUpBatch: followUps,
+				rawRequirementText: options?.rawRequirementText ?? typedText,
 				images: normalizedImages,
 				prependMessages:
 					preludeMessages.length > 0 ||
@@ -9447,6 +9645,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			PromptOptions,
 			"toolChoice" | "images" | "skipCompactionCheck" | "solutionSpace" | "onPromptAdmitted"
 		> & {
+			rawRequirementText?: string;
 			prependMessages?: AgentMessage[];
 			skipPostPromptRecoveryWait?: boolean;
 			acceptTerminalEmptyStop?: boolean;
@@ -9465,14 +9664,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// deliberately do not claim it.
 		const generation = this.#promptGeneration;
 		this.#promptSequence++;
-		// Capture a requirement candidate for real user turns before the first model call.
-		if (message.role === "user" && !message.synthetic && expandedText.trim()) {
-			await this.#requirementsLedger.captureCandidate(expandedText);
-		}
 		const setupAbort = new AbortController();
 		this.#promptSetupAbortController = setupAbort;
 		try {
-			options?.onPromptAdmitted?.();
 			await this.#recovery.maybeRestoreRetryFallbackPrimary();
 			// Auto-prewalk: return from the previous task's handoff before the usage preflight checks the model,
 			// then judge this task alongside the rest of setup; the decision is applied right before dispatch.
@@ -9686,6 +9880,17 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			}
 
 			const agentPromptOptions = options?.toolChoice ? { toolChoice: options.toolChoice } : undefined;
+			let preparedCandidate: PreparedRequirementCandidate | undefined;
+			if (
+				message.role === "user" &&
+				message.attribution === "user" &&
+				!this.#queuedMessageRawText.has(message) &&
+				this.getActiveToolNames().includes("todo")
+			) {
+				const rawText = options?.rawRequirementText ?? this.#queuedMessageRawText.get(message) ?? expandedText;
+				preparedCandidate = await this.#requirementsLedger.prepareCandidate(rawText, options?.images);
+				if (this.#promptGeneration !== generation) return false;
+			}
 			const nonMessageTokens = computeNonMessageTokens(this, this.agent.tokenizer, this.settings.revision);
 			const contextWindow = this.model?.contextWindow ?? 0;
 			const breakdown = this.getContextBreakdown({ contextWindow, pendingMessages: messages });
@@ -9711,16 +9916,24 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				this.#planReferenceSent = true;
 			}
 			try {
-				const run = this.#recovery.promptAgentWithIdleRetry(messages, agentPromptOptions, () => {
-					// `agent.prompt` claims streaming synchronously before its
-					// first await: this callback fires exactly when THIS
-					// client-owned run goes live (never on a busy-retry that
-					// waits behind an autonomous run) — wake steers parked on
-					// the dispatch so they admit into the run they targeted.
+				const onAdmitted = () => {
 					this.#wakeDispatchLiveWaiters();
 					options?.followUpBatch?.release();
-				});
-				await run;
+					try {
+						options?.onPromptAdmitted?.();
+					} catch (error) {
+						logger.warn("Prompt admission callback failed after dispatch", { error });
+					}
+				};
+				const dispatch = preparedCandidate
+					? this.#promptWithCandidateAdmission(
+							messages,
+							agentPromptOptions,
+							preparedCandidate,
+							onAdmitted,
+						)
+					: this.#recovery.promptAgentWithIdleRetry(messages, agentPromptOptions, onAdmitted);
+				await dispatch;
 			} finally {
 				this.#stats.setPendingSnapshot(undefined);
 			}
@@ -9924,7 +10137,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		await this.#queueUserMessage(expandedText, images, "steer", {
 			timestamp: submittedAt,
 			attribution: options?.attribution,
-			rawText: text,
+			rawText: options?.rawRequirementText ?? text,
 			onPromptQueued: options?.onPromptQueued,
 		});
 	}
@@ -9946,10 +10159,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// Stamp before image preprocessing so a queued image follow-up measures
 		// from the operator's submission, not after the vision-model description.
 		const submittedAt = Date.now();
-		if (!options?.synthetic && expandedText.trim()) {
-			await this.#requirementsLedger.captureCandidate(expandedText);
-		}
 		if (!options?.synthetic) {
+			text = options?.rawRequirementText ?? currentRequirementInput() ?? text;
 			await this.#queueUserMessage(expandedText, images, "followUp", {
 				timestamp: submittedAt,
 				attribution: options?.attribution,
@@ -10192,6 +10403,16 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (options?.promptGeneration !== undefined && this.#promptGeneration !== options.promptGeneration) {
 			return false;
 		}
+		let preparedCandidate: PreparedRequirementCandidate | undefined;
+		if (attribution === "user" && this.getActiveToolNames().includes("todo")) {
+			preparedCandidate = await this.#requirementsLedger.prepareCandidate(rawText, images);
+		}
+		if (
+			(options?.promptGeneration !== undefined && this.#promptGeneration !== options.promptGeneration) ||
+			(await this.#sessionGenerationChanged(sessionGeneration))
+		)
+			return false;
+		if (options?.promptGeneration !== undefined && this.#promptGeneration !== options.promptGeneration) return false;
 		// `joinActiveTurn` admission: after every await above, the run that was
 		// live at call time may have settled — or `abort()` may have started
 		// (its `#abortInProgress` flag is raised synchronously at entry, while
@@ -10208,15 +10429,25 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		) {
 			return false;
 		}
+		const candidateCommit = preparedCandidate
+			? this.#requirementsLedger.commitCandidate(preparedCandidate)
+			: undefined;
+		if (preparedCandidate && !candidateCommit?.committed) return false;
 		if (mode === "aside") {
-			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
 			const records: AgentMessage[] = [...prependMessages, ...attachmentSourceNotices];
 			if (imageDescriptionNotice) records.push(imageDescriptionNotice);
 			const userMessage: AgentMessage = { role: "user", content, attribution, timestamp: timestamp ?? Date.now() };
 			this.#queuedMessageRawText.set(userMessage, rawText);
+			if (preparedCandidate && candidateCommit?.candidateIds?.length) {
+				this.#queuedRequirementCandidates.set(userMessage, {
+					sessionId: preparedCandidate.sessionId,
+					ids: candidateCommit.candidateIds,
+				});
+			}
 			records.push(userMessage);
 			this.#irc.queueAside(records);
 			options?.onPromptAdmitted?.();
+			this.#announceCandidateCommit(candidateCommit);
 			// The awaits above (image normalization / vision description) can span the run's
 			// settle, so the run may already be idle by the time the record lands in the aside
 			// queue with no loop left to drain it. Resuming here is a no-op while streaming and
@@ -10234,8 +10465,15 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			timestamp ?? Date.now(),
 			rawText,
 		);
+		if (preparedCandidate && candidateCommit?.candidateIds?.length) {
+			this.#queuedRequirementCandidates.set(queued[queued.length - 1], {
+				sessionId: preparedCandidate.sessionId,
+				ids: candidateCommit.candidateIds,
+			});
+		}
 		options?.onPromptQueued?.(queued);
 		options?.onPromptAdmitted?.();
+		this.#announceCandidateCommit(candidateCommit);
 		// joinActiveTurn admission must never start an autonomous turn: the
 		// live run owns delivery, and an idle queue stays put until the host
 		// decides what to do with its content.
@@ -11257,6 +11495,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.takeQueuedMessage(text, queue) !== undefined;
 	}
 
+	#withdrawQueuedRequirementCandidates(message: AgentMessage): void {
+		const captured = this.#queuedRequirementCandidates.get(message);
+		if (!captured) return;
+		this.#queuedRequirementCandidates.delete(message);
+		this.#requirementsLedger.withdrawQueuedCandidates(captured.sessionId, captured.ids);
+	}
+
 	/**
 	 * Remove exactly `messages` from the steering and follow-up queues; everything else queued
 	 * stays. A caller takes back what it queued (the groups reported by `onPromptQueued`) without
@@ -11281,6 +11526,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (index < 0) return undefined;
 
 		const removed = selected[index];
+		this.#withdrawQueuedRequirementCandidates(removed);
 		this.agent.replaceQueue(queue, this.#withoutQueuedUserMessage(selected, index));
 		this.#reconcileQueuedMessageDrain();
 		return toRestoredQueuedMessage(removed);
@@ -11360,6 +11606,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const fromSteer = lastUserIndex(steering);
 		if (fromSteer >= 0) {
 			const removed = steering[fromSteer];
+			this.#withdrawQueuedRequirementCandidates(removed);
 			this.agent.replaceQueues(this.#withoutQueuedUserMessage(steering, fromSteer), followUp.slice());
 			this.#reconcileQueuedMessageDrain();
 			return toRestoredQueuedMessage(removed);
@@ -11367,6 +11614,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const fromFollowUp = lastUserIndex(followUp);
 		if (fromFollowUp >= 0) {
 			const removed = followUp[fromFollowUp];
+			this.#withdrawQueuedRequirementCandidates(removed);
 			this.agent.replaceQueues(steering.slice(), this.#withoutQueuedUserMessage(followUp, fromFollowUp));
 			this.#reconcileQueuedMessageDrain();
 			return toRestoredQueuedMessage(removed);
@@ -12314,6 +12562,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			await this.#prewalk.resetForNewSession(this.#agentKind === "main" && cfgPrewalkEnabled.get(this.settings));
 			// Re-apply the configured selector so the new session does not inherit
 			// the previous session's auto-classified effort: auto stays auto but
@@ -12480,6 +12729,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#freshProviderSessionId = undefined;
 			this.#adoptInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			this.#advisors.reattachRecorderFeeds();
 			advisorRecordersDetached = false;
@@ -13043,6 +13293,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			}
 		});
 
+		this.#requirementsLedger.syncPublicationGate();
 		const rewoundAt = new Date().toISOString();
 		const details = { report, startedAt: checkpointState.startedAt, rewoundAt };
 		this.sessionManager.appendCustomMessageEntry(
@@ -14293,6 +14544,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					error: String(error),
 				});
 			}
+			this.#requirementsLedger.syncPublicationGate();
 			// Refresh the workspace-roots block to match the resumed session's directory set.
 			// Wrapped so a rebuild failure (e.g. a gate that intentionally fails in tests)
 			// doesn't roll back an otherwise-successful session switch.
@@ -14559,6 +14811,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			await this.#memory.resetContextForNewTranscript();
 
@@ -14688,11 +14941,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				attribution: "user",
 				timestamp: Date.now(),
 			});
+			await this.#captureRawRequirementCandidate(question);
 			this.sessionManager.appendMessage(sanitizeAssistantForReparentedHistory(assistantMessage));
 			this.#todo.syncFromBranch();
 			this.#modelMentions.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			await this.#memory.resetContextForNewTranscript();
 
@@ -15028,6 +15283,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#modelMentions.syncFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 
+		this.#requirementsLedger.syncPublicationGate();
 		this.#branchSummaryAbortController = undefined;
 
 		// Report a committed `ask` re-answer so the interactive caller can resume
@@ -16396,5 +16652,52 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	consumeActiveFallbackCreditRedemption(targetModel?: Model): AnthropicFallbackCreditHandle | undefined {
 		return this.#recovery.consumeActiveFallbackCreditRedemption(targetModel);
+	}
+	async #captureRawRequirementCandidate(rawText: string, images?: readonly ImageContent[]): Promise<void> {
+		if (this.getActiveToolNames().includes("todo")) await this.#requirementsLedger.captureCandidate(rawText, images);
+	}
+
+	async #promptWithCandidateAdmission(
+		messages: AgentMessage[],
+		options: { toolChoice?: ToolChoice } | undefined,
+		prepared: PreparedRequirementCandidate,
+		onPromptAdmitted?: () => void,
+	): Promise<void> {
+		const deadline = Date.now() + 30_000;
+		for (;;) {
+			const wasStreaming = this.agent.state.isStreaming;
+			const dispatch = this.agent.prompt(messages, options);
+			const accepted = !wasStreaming && this.agent.state.isStreaming;
+			if (accepted) {
+				const commit = this.#requirementsLedger.commitCandidate(prepared);
+				if (!commit.committed) {
+					this.agent.abort();
+					throw new Error("Requirement candidate session changed during prompt admission");
+				}
+				this.#announceCandidateCommit(commit);
+				this.#wakeDispatchLiveWaiters();
+				try {
+					onPromptAdmitted?.();
+				} catch (error) {
+					logger.warn("Prompt admission callback failed after dispatch", { error });
+				}
+			}
+			try {
+				await dispatch;
+				return;
+			} catch (error) {
+				if (!(error instanceof AgentBusyError) || accepted) throw error;
+				if (Date.now() >= deadline)
+					throw new Error("Timed out waiting for prior agent run to finish before prompting.");
+				await this.agent.waitForIdle();
+			}
+		}
+	}
+
+	#announceCandidateCommit(commit: RequirementCandidateCommit | undefined): void {
+		if (!commit?.committed || !commit.notice) return;
+		void this.#requirementsLedger.announceCandidateNotice(commit.notice).catch(error => {
+			logger.warn("Requirement candidate notice failed", { error });
+		});
 	}
 }

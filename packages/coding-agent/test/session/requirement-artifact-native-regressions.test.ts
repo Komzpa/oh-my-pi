@@ -84,6 +84,25 @@ describe("native Git worktree identity", () => {
 		expect(await checkRequirementIdentity(current.identity)).toEqual({ state: "fresh" });
 	}, 30_000);
 
+	it("authenticates reftable named paths including clean filters and tracked executable modes", async () => {
+		const { root } = await fixture({
+			".gitattributes": "src/run.sh text eol=crlf\n",
+			"src/run.sh": "#!/bin/sh\necho ready\n",
+		});
+		execFileSync("git", ["-C", root, "update-index", "--chmod=+x", "src/run.sh"]);
+		execFileSync("git", ["-C", root, "commit", "-qm", "record executable"]);
+		execFileSync("git", ["-C", root, "refs", "migrate", "--ref-format=reftable"]);
+		execFileSync("git", ["-C", root, "config", "core.fileMode", "false"]);
+		fs.chmodSync(path.join(root, "src/run.sh"), 0o644);
+		fs.writeFileSync(path.join(root, "src/run.sh"), "#!/bin/sh\r\necho ready\r\n");
+		const current = await currentRequirementIdentity({ kind: "git", repo: root, paths: ["src/run.sh"] });
+		if ("error" in current) throw new Error(current.error);
+		expect(await checkRequirementIdentity(current.identity)).toEqual({ state: "fresh" });
+		fs.writeFileSync(path.join(root, "src/run.sh"), "#!/bin/sh\necho changed\n");
+		vcs.invalidateStatus(root);
+		expect((await checkRequirementIdentity(current.identity)).state).not.toBe("fresh");
+	}, 30_000);
+
 	it("rejects a session write while confirming HEAD stayed fixed", async () => {
 		const { root, head } = await fixture({ "src/a.ts": "export const a = 1;\n" });
 		const repo = vcs.requireGit(root);

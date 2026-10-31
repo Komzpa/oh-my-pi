@@ -285,6 +285,25 @@ describe("PR41 slash TODO controller regressions", () => {
 		}
 	});
 
+	it("refuses import completion without QA while ordinary pending import remains allowed", async () => {
+		tempRoot = await mkdtemp(path.join(os.tmpdir(), "todo-controller-import-completion-"));
+		const row = "Audit before completion";
+		const manager = SessionManager.inMemory(tempRoot);
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			phases: [{ name: "Work", tasks: [{ content: row, status: "pending" }] }],
+		});
+		appendLinkedRequirement(manager, row);
+		const ctx = createContext(manager);
+		const controller = new TodoCommandController(ctx);
+		await writeFile(path.join(tempRoot, "TODO.md"), `# Work\n- [x] ${row}\n`);
+		await controller.handleTodoCommand("import");
+		expect(latest(manager)[0]?.tasks[0]?.status).toBe("pending");
+		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining("R1"));
+		await writeFile(path.join(tempRoot, "TODO.md"), `# Work\n- [ ] ${row}\n`);
+		await controller.handleTodoCommand("import");
+		expect(ctx.showStatus).toHaveBeenCalledWith(expect.stringContaining("Imported"));
+	});
+
 	it("audits abandoned rows before no-argument whole-plan done", async () => {
 		tempRoot = await mkdtemp(path.join(os.tmpdir(), "todo-controller-abandoned-done-"));
 		const row = "Abandoned but still linked";

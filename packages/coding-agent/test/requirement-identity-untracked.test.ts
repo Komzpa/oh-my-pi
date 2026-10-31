@@ -8,6 +8,10 @@ import {
 	describeGitCheckoutState,
 } from "../src/utils/requirement-artifact";
 
+import { useFastGitStatusCoordinator } from "./helpers/fast-status-coordinator";
+
+useFastGitStatusCoordinator();
+
 const dirs: string[] = [];
 function git(cwd: string, ...args: string[]): string {
 	const r = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });

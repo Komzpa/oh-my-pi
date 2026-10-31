@@ -1,4 +1,7 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
+import { ptree } from "@oh-my-pi/pi-utils";
+import { useFastGitStatusCoordinator } from "../helpers/fast-status-coordinator";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +25,8 @@ import {
 } from "../../src/tools/todo";
 import { formatRequirementIdentity } from "../../src/utils/requirement-artifact";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+
+useFastGitStatusCoordinator();
 
 function makeRepo(root: string, commit = true): void {
 	mkdirSync(root, { recursive: true });
@@ -112,6 +117,47 @@ describe("PR 41 todo artifact regressions", () => {
 			);
 			expect(result.reason).toContain("duplicate canonical resource");
 		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("retains declared service version through receipt-free artifact dispatch", async () => {
+		const root = mkdtempSync(join(tmpdir(), "bot41-service-target-"));
+		let commandProbe: { mockRestore(): void } | undefined;
+		const home = fs
+			.readFileSync(`/proc/${process.pid}/environ`)
+			.toString()
+			.split("\0")
+			.find(entry => entry.startsWith("HOME="))
+			?.slice(5);
+		if (!home) throw new Error("Expected fixture process HOME identity");
+		try {
+			const systemctl = join(root, "systemctl");
+			writeFileSync(
+				systemctl,
+				`#!/bin/sh\nprintf 'MainPID=${process.pid}\\nInvocationID=fixture-invocation\\nActiveState=active\\n'\n`,
+				{ mode: 0o755 },
+			);
+			const spawn = ptree.spawn;
+			commandProbe = spyOn(ptree, "spawn").mockImplementation((command, options) =>
+				spawn(command[0] === "systemctl" ? [systemctl, ...command.slice(1)] : command, options),
+			);
+			const row = "Audit running service";
+			const deployment = `deploy:fixture.service@${JSON.stringify(home)} scope=user env=HOME`;
+			const result = await getRequirementRowArtifact({ cwd: root }, row, phasesFor(row, { deployment }));
+			expect(result.reason ?? "").toBe("");
+			expect(result.identities).toEqual([
+				{ kind: "deploy", target: "fixture.service", value: home, scope: "user", env: "HOME" },
+			]);
+			const mismatch = await getRequirementRowArtifact(
+				{ cwd: root },
+				row,
+				phasesFor(row, { deployment: deployment.replace(JSON.stringify(home), "not-the-running-version") }),
+			);
+			expect(mismatch.identities).toBeUndefined();
+			expect(mismatch.reason).toContain("does not match the declared deployment version");
+		} finally {
+			commandProbe?.mockRestore();
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
@@ -228,6 +274,42 @@ describe("PR 41 todo artifact regressions", () => {
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
+	});
+
+	it("retains a pending owner check when init keeps its linked row", async () => {
+		const manager = SessionManager.inMemory();
+		const row = "Inspect saved artifact";
+		let tracker = phasesFor(row, {
+			status: "blocked",
+			blocker: "Check it",
+			awaitingUser: { action: "Check it", ids: ["card-1"] },
+		});
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: tracker });
+		appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [
+			{ ...createRequirementCandidates([], ["Inspect artifact"])[0]!, classification: "linked", rows: [row] },
+		]);
+		const session: ToolSession = {
+			cwd: process.cwd(),
+			hasUI: false,
+			getSessionFile: () => null,
+			settings: Settings.isolated(),
+			getSessionSpawns: () => "*",
+			sessionManager: manager,
+			getTodoPhases: () => tracker,
+			setTodoPhases: phases => (tracker = phases),
+		};
+		const tool = new TodoTool(session);
+		const result = await tool.execute("init", { op: "init", items: [row, "New unrelated row"] } as never);
+		expect(result.isError).toBeUndefined();
+		expect(tracker.flatMap(phase => phase.tasks).find(task => task.content === row)).toMatchObject({
+			status: "blocked",
+			blocker: "Check it",
+			awaitingUser: { action: "Check it", ids: ["card-1"] },
+		});
+		expect(tracker.flatMap(phase => phase.tasks).find(task => task.content === "New unrelated row")?.status).toBe(
+			"in_progress",
+		);
+		expect((await tool.execute("done", { op: "done", task: row } as never)).isError).toBe(true);
 	});
 
 	it("composes the model-facing todo guidance from static prompt files", () => {
