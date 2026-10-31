@@ -12,6 +12,7 @@ import type { ToolSession } from "../../tools";
 import type { RuntimeCallIdentity } from "../js/shared/runtime";
 import { bridgeValueFromToolResult, callSessionTool, type JsStatusEvent } from "../js/tool-bridge";
 import type { EvalShadowCellSession } from "../speculation/cell-session";
+import { getActiveEvalJobId } from "../speculation/runtime-context";
 
 export interface PyToolBridgeEntry {
 	toolSession: ToolSession;
@@ -29,6 +30,7 @@ export interface PyToolBridgeEntry {
 	 */
 	shieldedSignal?: AbortSignal;
 	shadowCell?: EvalShadowCellSession;
+	evalJobId?: string;
 	emitStatus?: (event: JsStatusEvent) => void;
 	/** Shows the user `out://` replies of bridged calls (`ToolBridgeOptions.onReply`). */
 	onReply?: (text: string) => void;
@@ -130,6 +132,7 @@ async function callSessionToolPromptOnAbort(
 		emitStatus: entry.emitStatus,
 		onReply: entry.onReply,
 		identity,
+		evalJobId: entry.evalJobId,
 	});
 	const signal = entry.shieldedSignal ?? entry.signal;
 	if (!signal) return await call;
@@ -270,6 +273,7 @@ function bridgeRegistrationKey(sessionId: string, runId: string): string {
 }
 
 export function registerPyToolBridge(sessionId: string, runId: string, entry: PyToolBridgeEntry): () => void {
+	entry.evalJobId ??= getActiveEvalJobId();
 	const key = bridgeRegistrationKey(sessionId, runId);
 	registrations.set(key, entry);
 	return () => {

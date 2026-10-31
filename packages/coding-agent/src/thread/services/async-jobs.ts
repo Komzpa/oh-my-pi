@@ -228,6 +228,7 @@ function serveManager(threadId: ThreadId): RpcServe<AsyncJobManager, AsyncJobMan
 			return job ? toJobWire(job) : undefined;
 		},
 		getRunningJobs: (manager, filter) => toJobWires(manager.getRunningJobs(filter)),
+		getRunningOwnerJobs: (manager, ownerId) => toJobWires(manager.getRunningOwnerJobs(ownerId)),
 		getRecentJobs: (manager, limit, filter) => toJobWires(manager.getRecentJobs(limit, filter)),
 		getAllJobs: (manager, filter) => toJobWires(manager.getAllJobs(filter)),
 		backgroundJob: (manager, jobId) => manager.backgroundJob(jobId),

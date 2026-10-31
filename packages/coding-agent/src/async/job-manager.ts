@@ -324,6 +324,8 @@ export interface AsyncJobManagerApi {
 	getJob(id: string): AsyncJob | undefined;
 	/** Running background jobs; foreground-backed jobs stay hidden until promoted. */
 	getRunningJobs(filter?: AsyncJobFilter): AsyncJob[];
+	/** Running owner jobs, including foreground-backed calls. */
+	getRunningOwnerJobs(ownerId: string | undefined): AsyncJob[];
 	/** Settled background jobs, newest first. */
 	getRecentJobs(limit?: number, filter?: AsyncJobFilter): AsyncJob[];
 	/** Every background job row. */
@@ -631,6 +633,15 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 	/** Running background jobs; foreground-backed jobs stay hidden until promoted. */
 	getRunningJobs(filter?: AsyncJobFilter): AsyncJob[] {
 		return this.#visibleJobs(filter).filter(job => job.status === "running");
+	}
+	/**
+	 * Running jobs owned by `ownerId`, including foreground-backed calls.
+	 * The list APIs above deliberately hide foreground-backed rows until
+	 * promotion, but teardown (`cancelAndReapOwnerJobs`) reaps them, so the
+	 * terminal-yield guard must enumerate this same set to name them.
+	 */
+	getRunningOwnerJobs(ownerId: string | undefined): AsyncJob[] {
+		return this.#filterJobs(this.#jobs.values(), { ownerId }).filter(job => job.status === "running");
 	}
 
 	/** Settled background jobs, newest first; foreground-backed jobs stay hidden. */

@@ -178,6 +178,24 @@
 - Out-of-credit provider errors now fail immediately instead of retrying for long periods; Retry works promptly once the account is funded.
 - DeepSeek-style `*** End` and `*** End Patch` markers are no longer written into files or truncate later edits
 - Composer prediction ghost text no longer vanishes when advisor messages arrive
+- Kept refused terminal yields in autonomous subagent turns on the bounded reminder path, so focused prompts retain their own result while owned background work is pending.
+- Excluded only the submitting eval cell from terminal-yield running-job checks across JS and Python bridges, while preserving checks for other owned work; forced-final incremental results now claim the same terminal latch as ordinary results.
+- Terminal yields rejected by a result extension can be corrected and resubmitted without ending the child run; typed error yields now also retain the first terminal outcome
+- Fixed a subagent's later terminal `yield` calls replacing the already-accepted result or looping on "Result submitted." forever; argument validation still runs before the first acceptance, and any later terminal yield in the same monitored run returns an explicit error telling the agent to stop, while a follow-up or IRC wake turn gets a fresh first acceptance; two concurrent sibling terminal yields accept only one ([#108](https://github.com/Komzpa/oh-my-pi/pull/108)).
+- Terminal `yield` now refuses once while a worker owns any running owner job (bash, eval, task) or nonpersistent service (and when service state cannot be verified), naming their commands and elapsed time. A repeated yield with the same live processes records `abandonedJobs` before normal owner-job cleanup, and the task result envelope carries a warning for it; auto-backgrounded bash results explicitly say the command is still running and worker-owned; typed non-`result` terminal yields with empty data are retried too, and schema-valid empty values are accepted ([#108](https://github.com/Komzpa/oh-my-pi/pull/108)).
+- Fixed an accepted terminal `yield` submitted through the eval bridge (JS/Python `callSessionTool`) never reaching the run monitor: the run now ends and the parent receives exactly one completion, the same as a direct tool call, with same-run duplicates still rejected and continuations getting a fresh result slot; late refusals from a previous run cannot reopen its successor's accepted result or spend its first live-process warning ([#108](https://github.com/Komzpa/oh-my-pi/pull/108)).
+
+- Retrying an aborted turn keeps the unsent composer draft instead of clearing it ([#17977](https://github.com/can1357/oh-my-pi/pull/17977) by [@Shadorain](https://github.com/Shadorain))
+- Fixed Windows bash output on non-UTF-8 code pages (Korean, Chinese, Japanese, …) turning into mojibake for the rest of a command after a builtin wrote one invalid byte (`printf '\xeb'`, `cut -c` through a CJK character); the stray byte now becomes `�` on its own line, and native programs' ANSI output still decodes, including through `| head` or from `cat` of a legacy file ([#17947](https://github.com/can1357/oh-my-pi/pull/17947) by [@H4vC](https://github.com/H4vC))
+- Fixed Hindsight silently dropping the last mental model (often `User Preferences`) from the prompt once models outgrew their share of the render budget ([#17548](https://github.com/can1357/oh-my-pi/issues/17548), [#17955](https://github.com/can1357/oh-my-pi/pull/17955) by [@harshaygadekar](https://github.com/harshaygadekar))
+- The run status `blocked` indicator of a focused subagent follows the subagent's own approval mode, tool policies, remembered grants, and "approve for this session" answers instead of the main session's
+- In the bash tool, `exec >file`, `exec 2>/dev/null` or `exec <file` no longer redirects every later command of the session; each command starts with its own stdin, stdout and stderr
+- In the bash tool, an `EXIT` trap fires once, at the end of the command that set it, instead of again after every later command
+- In the bash tool, output a background job (`(sleep 1; echo late) &`) writes after its command ended no longer shows up in a later command's output
+- In the bash tool, `env -i` no longer passes inherited variables whose names are not shell names (`A-B=1`) to the program, and `X=v env -i`/`X=v env -u X` no longer pass an exported outer `X`
+- In the bash tool, `xargs` reports a command killed by a signal as GNU xargs does: `xargs: CMD: terminated by signal N`, no further commands, status 125
+- On macOS, starting a bash tool session no longer briefly sets pi's umask to 022, which could give files created at that moment the wrong permissions
+- In the bash tool, an executable script without a `#!` line started in the background with its input from a FIFO (`./script < fifo &`) runs as a bash script instead of failing with `Exec format error`
 
 ## [18.16.0] - 2026-11-02
 

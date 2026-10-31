@@ -296,6 +296,10 @@ export class RemoteAsyncJobManager implements AsyncJobManagerApi {
 		return this.#rows(this.#remote.callSync("getRunningJobs", filter));
 	}
 
+	getRunningOwnerJobs(ownerId: string | undefined): AsyncJob[] {
+		return this.#rows(this.#remote.callSync("getRunningOwnerJobs", ownerId));
+	}
+
 	getRecentJobs(limit?: number, filter?: AsyncJobFilter): AsyncJob[] {
 		return this.#rows(this.#remote.callSync("getRecentJobs", limit, filter));
 	}
