@@ -14,6 +14,7 @@ import {
 	type ExtensionWidgetContent,
 	type MessageRenderer,
 	type AssistantThinkingRenderer,
+	type AssistantTextRenderer,
 } from "@oh-my-pi/pi-tui/chat/extension-types";
 export {
 	type ExtensionUiComponent,
@@ -23,6 +24,8 @@ export {
 	type MessageRenderer,
 	type AssistantThinkingRenderContext,
 	type AssistantThinkingRenderer,
+	type AssistantTextRenderContext,
+	type AssistantTextRenderer,
 } from "@oh-my-pi/pi-tui/chat/extension-types";
 import type { type as ArkType } from "@oh-my-pi/omptype";
 import type * as TypeBox from "@oh-my-pi/omptype/typebox";
@@ -31,14 +34,18 @@ import type {
 	AgentMessage,
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	SoftToolRequirement,
 	ThinkingLevel,
 	ToolApproval,
 	ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
-import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ContextUsage } from "@oh-my-pi/pi-tui/status-line/types";
 import type { LoopConditionConfig } from "@oh-my-pi/pi-tui/status-line/loop";
+import type { LivePhase } from "@oh-my-pi/pi-tui/apps/live-visualizer";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	Api,
 	AssistantMessage,
@@ -78,6 +85,7 @@ import type { ModelRegistry } from "../../config/model-registry";
 import type { EditToolDetails } from "@oh-my-pi/pi-tui/tools/edit";
 import type { PythonResult } from "../../eval/py/executor";
 import type { BashResult } from "../../exec/bash-executor";
+import type { LiveTranscript } from "../../live/controller";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type * as PiCodingAgent from "../../index";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
@@ -350,6 +358,23 @@ export interface ExtensionUIContext {
 
 	/** Listen to raw terminal input (interactive mode only). Returns an unsubscribe function. */
 	onTerminalInput(handler: TerminalInputHandler): () => void;
+
+	/**
+	 * Draw the assistant reply sent at `timestamp` (`message.timestamp`) again, re-running the
+	 * assistant text renderers, e.g. after a click changed what they return. Interactive mode only,
+	 * and only while `extensionRenderers.assistantText` is on; a no-op elsewhere.
+	 */
+	rerenderMessage(timestamp: number): void;
+
+	/**
+	 * True while a link whose scheme an extension registered can be picked to raise `link_activate`:
+	 * interactive mode in a plain terminal with `extensionRenderers.assistantText` on, and either the
+	 * link-hint key (`app.links.hint`, Alt+O by default) bound or `tui.mouse` on. Changing the setting,
+	 * or `tui.mouse` while the hint key is unbound, redraws the transcript and re-runs the assistant
+	 * text renderers, so a renderer can read this on each call, e.g. to show content inline instead of
+	 * behind a link nobody can pick. False everywhere else.
+	 */
+	getLinkClicksAvailable(): boolean;
 
 	/** Set status text in the footer/status bar. Pass undefined to clear. */
 	setStatus(key: string, text: string | undefined): void;
@@ -677,13 +702,69 @@ export type ExtensionAnnotationsFactory = (
 	sendUserMessage: (text: string, options?: SendUserMessageOptions) => void,
 ) => ExtensionAnnotationsAPI;
 
+/** Options for {@link ExtensionContext.startLive}. */
+export interface ExtensionLiveStartOptions {
+	/**
+	 * SDP offer from the extension's own WebRTC peer, e.g. a browser `RTCPeerConnection` with one
+	 * sendrecv Opus audio track and an `oai-events` data channel. That peer carries all audio;
+	 * the host opens no microphone or speaker.
+	 */
+	sdpOffer: string;
+	/** Realtime voice; defaults to the `live.voice` setting. */
+	voice?: string;
+	/**
+	 * Handlebars template replacing the bundled live instructions, rendered with
+	 * `{ username, firstName }` like the bundled prompt.
+	 */
+	instructions?: string;
+	/**
+	 * Phase changes (`connecting`, `listening`, `working`, `muted`, `error`). `muted` is a request:
+	 * the host has no track to mute, so silence the peer's microphone track until the next phase.
+	 */
+	onPhase?(phase: LivePhase): void;
+	/** Streaming and final transcripts of both sides of the conversation. */
+	onTranscript?(transcript: LiveTranscript): void;
+	/**
+	 * Called exactly once when the session ends, with the failure that ended it if any. A start
+	 * that fails to connect calls it too, before `startLive` rejects.
+	 */
+	onEnd?(error?: Error): void;
+}
+
+/** A live voice session started by {@link ExtensionContext.startLive}. */
+export interface ExtensionLiveSession {
+	/** SDP answer to apply to the extension's peer. */
+	sdpAnswer: string;
+	/** Voice in use. */
+	voice: string;
+	/**
+	 * Ends the session; resolves once it has stopped. Safe to call repeatedly. The host has no media
+	 * peer, so it never sees the extension's peer go away: call this when that peer disconnects
+	 * (`connectionstatechange` to `failed` or `closed`, or the relay socket closing). Until then the
+	 * call stays open and the TUI keeps its live visualizer up.
+	 */
+	stop(): Promise<void>;
+}
+
 export interface ExtensionContext {
+	/** Current hydrated plan, without replaying the session journal. Undefined before session initialization. */
+	getTodoPhases?(): TodoPhase[] | undefined;
+	/** Merge a schedule annotation into one exact row and append its durable snapshot. Never changes task status or attempt history. */
+	updateTodoSchedule?(
+		task: string,
+		patch: Pick<
+			TodoSchedule,
+			"review" | "reviewSummary" | "firstRequirementAt" | "firstDeliveredAt" | "speculativeOn"
+		>,
+	): boolean;
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
 	/** Current run mode. Use `"tui"` to guard terminal-only UI such as custom components. */
 	mode: ExtensionMode;
 	/** Get current context usage for the active model. */
 	getContextUsage(): ContextUsage | undefined;
+	/** Current task worker concurrency limit, if this host has settings available. */
+	getTaskMaxConcurrency(): number | undefined;
 	/** Get a read-only snapshot of async jobs owned by this session. */
 	getAsyncJobSnapshot(): AsyncJobSnapshot | null;
 	/** Compact the session context (interactive mode shows UI). */
@@ -708,6 +789,12 @@ export interface ExtensionContext {
 	abort(): void;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
+	/**
+	 * Set `/fast` for a live direct subagent owned by this session. Returns false
+	 * when the id is not an owned live subagent or its model has no tier control.
+	 * The change applies to the subagent's next provider request.
+	 */
+	setSubagentFastMode?(id: string, enabled: boolean): boolean;
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
 	/**
@@ -744,6 +831,8 @@ export interface ExtensionContext {
 	sessionModes?: ExtensionSessionModes;
 	/** Identity of the agent this session runs: the top-level session or a subagent. */
 	agent: ExtensionAgentIdentity;
+	/** Send a message to a live or revivable agent peer through the same route as `write agent://<id>`. */
+	sendAgentMessage(to: string, message: string): Promise<{ delivered: boolean; text: string }>;
 	/**
 	 * Whether the current project/workspace is trusted. OMP performs no
 	 * project-trust gating — project-level settings and extensions load
@@ -762,6 +851,13 @@ export interface ExtensionContext {
 	 * Optional for compatibility with hosts that do not provide side turns.
 	 */
 	runEphemeralTurn?(options: EphemeralTurnOptions): Promise<EphemeralTurnResult>;
+	/**
+	 * Start a Codex live voice session bound to this session, like `/live`, but with audio on the
+	 * extension's own WebRTC peer (for example a browser on another device). Delegated work runs as
+	 * normal turns of this session. Rejects while another live session is active.
+	 * Optional: present only in hosts that run live sessions (currently interactive mode).
+	 */
+	startLive?(options: ExtensionLiveStartOptions): Promise<ExtensionLiveSession>;
 	/** Structured memory runtime for status/search/save across the configured backend. */
 	memory?: MemoryRuntimeContext;
 	/** `/annotate` as an API: build or collect annotation feedback on text and diffs. */
@@ -1110,6 +1206,10 @@ export interface BeforeSubagentSpawnEvent {
 	patterns: string[];
 	/** Stable per-spawn key for deterministic selection, when the caller supplies one. */
 	spawnKey?: string;
+	/** Whether the caller explicitly requested an isolated worktree. */
+	isolated?: boolean;
+	/** Verbatim task assignment text; lets routing gates scope checkouts before row owners are recorded. */
+	assignment?: string;
 }
 
 export type {
@@ -1244,6 +1344,24 @@ export interface McpNotificationEvent {
 	method: string;
 	/** JSON-RPC params, opaque to the runtime. */
 	params: unknown;
+}
+
+// ============================================================================
+// Link Activation Events
+// ============================================================================
+
+/**
+ * The user picked a link whose scheme this extension registered with `pi.registerLinkScheme()`,
+ * by its hint tag or a click. Interactive mode only; delivered to the owning extension only, and
+ * run without the event-handler timeout, like a command. The URL is untrusted: the model can write
+ * such a link with any URL behind any label, so validate it like user input.
+ */
+export interface LinkActivateEvent {
+	type: "link_activate";
+	/** The link's full URL as drawn, e.g. `cc-stretch:open/1792/0/2`. Untrusted. */
+	url: string;
+	/** The registered scheme the URL uses, lowercase and without `:`. */
+	scheme: string;
 }
 
 // ============================================================================
@@ -1576,6 +1694,7 @@ export type ExtensionEvent =
 	| GoalUpdatedEvent
 	| CredentialDisabledEvent
 	| McpNotificationEvent
+	| LinkActivateEvent
 	| UserBashEvent
 	| UserPythonEvent
 	| InputEvent
@@ -1796,6 +1915,14 @@ export interface ExtensionAPI {
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "user_python", handler: ExtensionHandler<UserPythonEvent, UserPythonEventResult>): void;
 	on(event: "mcp_notification", handler: ExtensionHandler<McpNotificationEvent>): void;
+	on(event: "link_activate", handler: ExtensionHandler<LinkActivateEvent>): void;
+	/**
+	 * Register the single extension-owned provider for the native agent loop's soft tool gate.
+	 * The host evaluates it synchronously at each model-choice boundary with a fresh context;
+	 * Return undefined whenever the action is not currently safe. The host asks only after higher-priority queued
+	 * hard tool choices and pending-preview resolution requirements are absent. Register during extension load.
+	 */
+	registerSoftToolRequirementProvider(provider: (ctx: ExtensionContext) => SoftToolRequirement | undefined): void;
 
 	// =========================================================================
 	// Tool Registration
@@ -1911,6 +2038,26 @@ export interface ExtensionAPI {
 	registerAssistantThinkingRenderer(renderer: AssistantThinkingRenderer): void;
 
 	/**
+	 * Register a display-only transform for assistant text blocks: it returns the markdown to draw.
+	 * Called with the full text so far each time a streaming update is drawn (replies skip the
+	 * smooth-streaming reveal while renderers are active) and once more when the text is final.
+	 * The session, exports and model context keep the original text. Interactive mode only, and
+	 * only while the `extensionRenderers.assistantText` setting is on.
+	 */
+	registerAssistantTextRenderer(renderer: AssistantTextRenderer): void;
+
+	/**
+	 * Claim a link scheme (e.g. `"cc-stretch"` for `cc-stretch:…` links). In a plain terminal,
+	 * Markdown links using it draw without the ` (url)` suffix and are never handed to the terminal
+	 * or browser to open; picking one (its `app.links.hint` tag, or a click with `tui.mouse` on)
+	 * raises `link_activate` for this extension. Tern's native view draws them as its own links and
+	 * does not route their clicks back. Interactive mode only, and only while the
+	 * `extensionRenderers.assistantText` setting is on. Throws for an invalid scheme (fewer than two
+	 * characters, or not URL scheme syntax) or a reserved one (`http`, `https`, `file`, `mailto`, …).
+	 */
+	registerLinkScheme(scheme: string): void;
+
+	/**
 	 * Register a composer shape for the interactive editor.
 	 *
 	 * Registration happens during extension load. Built-in ids cannot be
@@ -1928,14 +2075,14 @@ export interface ExtensionAPI {
 	 * With the default delivery (no `deliverAs`), an idle `display: true` message renders in the
 	 * transcript immediately, even with `triggerTurn: false`, without starting a turn. This does
 	 * not apply to `deliverAs: "nextTurn"` or `deliverAs: "aside"`, which keep the semantics
-	 * described below (`nextTurn` stays hidden until consumed; `aside` starts a turn when idle).
+	 * described below (`nextTurn` stays hidden until consumed; `aside` starts a turn when idle unless `triggerTurn: false`).
 	 *
 	 * `deliverAs: "nextTurn"` keeps the message hidden from the editable pending-message UI.
 	 * If `triggerTurn` is also true while the current turn is still unwinding, the session schedules
 	 * an internal continuation that consumes the message on the next turn.
 	 *
 	 * `deliverAs: "aside"` injects the message at the next agent step boundary without interrupting
-	 * the in-flight tool batch; when the session is idle it starts a turn regardless of `triggerTurn`
+	 * the in-flight tool batch; when idle it starts a turn unless `triggerTurn` is explicitly false
 	 * (plan mode folds it into context instead).
 	 */
 	sendMessage<T = unknown>(
@@ -2176,7 +2323,7 @@ export type SendMessageHandler = <T = unknown>(
 	 * When paired with `triggerTurn: true` during prompt teardown, the session schedules
 	 * an internal continuation without surfacing the message in the editable pending queue.
 	 * `deliverAs: "aside"` injects at the next step boundary without interrupting the in-flight
-	 * tool batch, except that it ends a running interruptible `wait`; idle starts a turn regardless of `triggerTurn` (plan mode folds into context).
+	 * tool batch, except that it ends a running interruptible `wait`; idle starts a turn unless `triggerTurn` is explicitly false (plan mode folds into context).
 	 */
 	options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
 ) => void;
@@ -2256,7 +2403,10 @@ export interface ExtensionContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	getSystemPrompt: () => string[];
+	sendAgentMessage?: (to: string, message: string) => Promise<{ delivered: boolean; text: string }>;
 	runEphemeralTurn?: (options: EphemeralTurnOptions) => Promise<EphemeralTurnResult>;
+	startLive?: (options: ExtensionLiveStartOptions) => Promise<ExtensionLiveSession>;
+	setSubagentFastMode?: (id: string, enabled: boolean) => boolean;
 }
 
 /** Actions for ExtensionCommandContext (ctx.* in command handlers). */
@@ -2289,6 +2439,9 @@ export interface Extension {
 	tools: Map<string, RegisteredTool<any, any>>;
 	toolRegistrationListeners?: Set<ToolRegistrationListener>;
 	assistantThinkingRenderers: AssistantThinkingRenderer[];
+	assistantTextRenderers: AssistantTextRenderer[];
+	/** Link schemes claimed with `registerLinkScheme`, lowercase. */
+	linkSchemes: string[];
 	fileWriteFallbackHandlers: FileWriteFallbackHandler[];
 	fileDeleteFallbackHandlers: FileDeleteFallbackHandler[];
 	messageRenderers: Map<string, MessageRenderer>;
@@ -2298,6 +2451,8 @@ export interface Extension {
 	shortcuts: Map<KeyId, ExtensionShortcut>;
 	/** Set once the extension calls `registerProvider`; providers feed startup model resolution. */
 	registersProviders?: boolean;
+	/** Native soft tool gate provider registered by this extension, if any. */
+	softToolRequirementProvider?: (ctx: ExtensionContext) => SoftToolRequirement | undefined;
 }
 
 /**

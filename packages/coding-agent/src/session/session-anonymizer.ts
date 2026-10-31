@@ -78,6 +78,7 @@ const FIELD_RULES: Record<string, Rule> = {
 	...fields("num", [
 		"version",
 		"resolvedModelIsFallback",
+		"perCallModel",
 		"display",
 		"synthetic",
 		"steering",
@@ -205,6 +206,7 @@ const FIELD_RULES: Record<string, Rule> = {
 		"role",
 		"titleSource",
 		"thinkingLevel",
+		"perCallThinkingLevel",
 		"configured",
 		"serviceTier",
 		"purpose",
@@ -252,6 +254,7 @@ const FIELD_RULES: Record<string, Rule> = {
 		"provider",
 		"model",
 		"resolvedModel",
+		"perCallModelIdentity",
 		"upstreamProvider",
 		"upstreamModel",
 		"advisor",
@@ -625,7 +628,7 @@ const ARG_SCHEMAS: Record<string, ArgSchema> = {
 	),
 	checkpoint: argSchema("goal report"),
 	rewind: argSchema("goal report"),
-	context_notes: argSchema("text"),
+	context_notes: argSchema("action text"),
 	new_context: argSchema("text"),
 	memory_edit: argSchema("op id content importance# replacement_id"),
 	retain: argSchema("items content context scope"),
@@ -1795,7 +1798,9 @@ export async function anonymizeSessionTranscripts(session: AnonymizeSessionInput
 	let subagentError: string | undefined;
 	try {
 		if (session.sessionFile) {
-			subSessions = await collectSubSessions(session.sessionFile, key => unreadable.push(memberFor(key)));
+			subSessions = await collectSubSessions(session.sessionFile, {
+				onUnreadable: key => unreadable.push(memberFor(key)),
+			});
 		}
 	} catch (error) {
 		subagentError = error instanceof Error ? error.message : String(error);

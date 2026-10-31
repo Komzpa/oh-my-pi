@@ -60,6 +60,9 @@ export declare function requireGit(dir: string): VcsGitRepo;
 /** Repository metadata only (cheap fs walk) — for synchronous render paths. */
 export declare function gitInfo(dir: string): VcsGitRepoInfo | null;
 
+/** Latest committer time in milliseconds; zero for an unborn repository. */
+export declare function lastCommitTime(repo: VcsGitRepo): Promise<number | undefined>;
+
 /** Discover the Jujutsu workspace containing `dir`; `null` when absent. */
 export declare function jj(dir: string): VcsJjWorkspace | null;
 

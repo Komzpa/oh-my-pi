@@ -1,0 +1,1147 @@
+// @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { GoalRuntime } from "@oh-my-pi/pi-coding-agent/goals/runtime";
+import type { GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
+import { z } from "zod";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import goalDeadlines, {
+	latestDeadlineStateEntries,
+	derivePresence,
+	deadlineStateFromGoalObjective,
+	REMINDER_MAX_CHARS,
+	remainingPercent,
+	renderDeadlineReminder,
+	renderDeadlineUi,
+	renderPresence,
+	resolveWallClock,
+} from "./goal_deadlines";
+import {
+	goalRef,
+	readFocusedGoal,
+	rehydrateActiveGoal,
+	rehydrateDeadlineState,
+	readGoalDeadline,
+	resolveFocusedGoal,
+	STATE_ENTRY,
+	type DeadlineState,
+	formatLocalClock,
+	formatLocalTimestamp,
+	resolveTimeZone,
+} from "./deadlines";
+
+test("an exact user goal clock becomes its deadline at the original message time", () => {
+	const goal = goalRef({ id: "ship", objective: "push it by 13:10", status: "active", createdAt: "2026-10-28T08:51:00Z" });
+	const entries = [{ id: "user-1", type: "message", timestamp: "2026-10-28T08:50:00Z", message: { role: "user", content: "push it by 13:10" } }];
+	const state = deadlineStateFromGoalObjective(goal, entries, "Asia/Tbilisi");
+	expect(state?.goalId).toBe("ship");
+	expect(new Date(state!.baselineDeadlineAt! * 1_000).toISOString()).toBe("2026-10-28T09:10:00.000Z");
+	expect(state?.userConstraint).toMatchObject({ messageId: "user-1", quote: "push it by 13:10" });
+	expect(deadlineStateFromGoalObjective(goalRef({ id: "ship", objective: "push it soon", status: "active", createdAt: "2026-10-28T08:51:00Z" }), entries, "Asia/Tbilisi")).toBeUndefined();
+	const restored = deadlineStateFromGoalObjective(goal, [{ ...entries[0], message: { role: "user", content: "different request by 13:10" } }], "Asia/Tbilisi");
+	expect(new Date(restored!.baselineDeadlineAt! * 1_000).toISOString()).toBe("2026-10-28T09:10:00.000Z");
+	expect(restored?.userConstraint).toMatchObject({ messageId: "goal:ship", quote: "push it by 13:10" });
+});
+
+function branchMock(getBranch: () => unknown[]) {
+	return {
+		getBranch,
+		getBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().filter(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+		getLatestBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) => getBranch().findLast(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+	};
+}
+
+const state: DeadlineState = {
+	version: 1,
+	goalId: "goal-1",
+	goalStartedAt: 1_000,
+	timezone: "UTC",
+	active: true,
+	stages: [
+		{ id: "draft", label: "Draft", expectedResult: "Usable draft", deadlineAt: 1_600 },
+		{ id: "final", label: "Final", expectedResult: "Verified delivery", deadlineAt: 2_200 },
+	],
+};
+
+test.each([
+	["replaces an automatic plan deadline with the objective clock on session start", false],
+	["preserves an already user-bound deadline on session start", true],
+])("%s", (_name, userBound) => {
+	const goal = goalRef({ id: "ship", objective: "push it by 13:10", status: "active", createdAt: "2026-10-28T08:51:00Z" });
+	const existing: DeadlineState = {
+		...state,
+		goalId: "ship",
+		auto: true,
+		autoPlanKey: "existing-plan",
+		stages: [{ id: "auto-todo-plan", label: "Automatic plan", expectedResult: "Finish tasks", deadlineAt: 2_200 }],
+		...(userBound ? { userConstraint: { messageId: "earlier-user", quote: "keep the original deadline", recordedAt: 1_000 }, baselineDeadlineAt: 2_200 } : {}),
+	};
+	const branch: unknown[] = [
+		{ id: "user-1", type: "message", timestamp: "2026-10-28T08:50:00Z", message: { role: "user", content: goal!.objective } },
+		{ type: "custom", customType: STATE_ENTRY, data: existing },
+	];
+	expect(rehydrateDeadlineState(branch)).toEqual(existing);
+	const handlers = new Map<string, Function>();
+	goalDeadlines({
+		pi: { goalRef, readFocusedGoal: () => goal, rehydrateDeadlineState, STATE_ENTRY },
+		on: (event, handler) => handlers.set(event, handler),
+		registerTool: () => {},
+		appendEntry: (customType, data) => branch.push({ type: "custom", customType, data }),
+		zod: z,
+	} as unknown as ExtensionAPI);
+	const ctx = { cwd: "/tmp", hasUI: false, sessionManager: branchMock(() => branch), getTodoPhases: () => [] } as unknown as ExtensionContext;
+	handlers.get("session_start")!({}, ctx);
+	const restored = rehydrateDeadlineState(branch);
+	if (userBound) {
+		expect(branch).toHaveLength(2);
+		expect(restored).toEqual(existing);
+	} else {
+		expect(branch).toHaveLength(3);
+		expect(restored).toEqual(deadlineStateFromGoalObjective(goal, branch));
+		expect(restored?.stages[0].id).toBe("user-goal-deadline");
+		expect(restored?.baselineDeadlineAt).toBe(resolveWallClock("13:10", resolveTimeZone(), Date.parse("2026-10-28T08:50:00Z")));
+		expect(restored?.userConstraint).toMatchObject({ messageId: "user-1", quote: "push it by 13:10" });
+		expect(restored?.auto).toBeUndefined();
+	}
+});
+
+describe("goal deadline reminders", () => {
+	test("reports relative stage and final deadline progress", () => {
+		const reminder = renderDeadlineReminder(state, 1_300);
+		expect(reminder).toContain("Next=Draft");
+		expect(reminder).toContain("0h05m (50%)");
+		expect(reminder).toContain("Final=");
+		expect(reminder).toContain("0h15m (75%)");
+	});
+
+	test("renders due clocks in the persisted goal timezone", () => {
+		const due = Date.UTC(2026, 8, 25, 19, 16);
+		expect(formatLocalClock(due, "Asia/Tbilisi")).toBe("23:16");
+		expect(formatLocalTimestamp(due, "Asia/Tbilisi")).toBe("2026-09-25 23:16:00 Asia/Tbilisi");
+		expect(resolveTimeZone("not/a-time-zone")).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+		const reminder = renderDeadlineReminder({
+			...state,
+			timezone: "Asia/Tbilisi",
+			goalStartedAt: due / 1000,
+			stages: [{ id: "ship", label: "Ship", expectedResult: "Verified", deadlineAt: due / 1000 + 60 }],
+		}, due / 1000);
+		expect(reminder).toContain("2026-09-25 23:17:00 Asia/Tbilisi");
+	});
+
+	test("overdue work names missing artifact and continues", () => {
+		const reminder = renderDeadlineReminder(state, 1_700);
+		expect(reminder).toContain("overdue 0h01m (0%)");
+		expect(reminder).toContain("Latest artifact=none recorded");
+	});
+
+	test("paused or exhausted schedules inject nothing", () => {
+		expect(renderDeadlineReminder({ ...state, active: false }, 1_300)).toBeNull();
+		expect(
+			renderDeadlineReminder(
+				{ ...state, stages: state.stages.map(stage => ({ ...stage, deliveredAt: 1_250 })) },
+				1_300,
+			),
+		).toBeNull();
+	});
+
+	test("rehydrates latest durable session state after compaction", () => {
+		const newer = { ...state, timezone: "UTC" };
+		expect(
+			rehydrateDeadlineState([
+				{ type: "custom", customType: STATE_ENTRY, data: state },
+				{ type: "compaction", summary: "bounded" },
+				{ type: "custom", customType: STATE_ENTRY, data: newer },
+			]),
+		).toEqual(newer);
+	});
+
+	test("latest invalid deadline carrier does not revive an older valid schedule", () => {
+		for (const latest of [
+			{ type: "custom", customType: STATE_ENTRY, data: { version: 1 } },
+			{ type: "message", message: { role: "toolResult", toolName: "goal_deadline", details: { state: { version: 1 } } } },
+		]) {
+			const branch = [
+				{ type: "custom", customType: STATE_ENTRY, data: state },
+				latest,
+				{ type: "custom_message", customType: STATE_ENTRY, content: "Not deadline state" },
+				{ type: "message", message: { role: "assistant", toolName: "goal_deadline", content: "Not a tool result" } },
+			];
+			const ctx = { sessionManager: branchMock(() => branch) } as unknown as ExtensionContext;
+			const entries = latestDeadlineStateEntries(ctx);
+			expect(entries).toEqual([latest]);
+			expect(rehydrateDeadlineState(entries)).toBeNull();
+			branch.splice(1, 1);
+			expect(rehydrateDeadlineState(latestDeadlineStateEntries(ctx))).toEqual(state);
+		}
+	});
+
+	test("binds to the latest focused goal state", () => {
+		expect(
+			rehydrateActiveGoal([
+				{
+					type: "message",
+					message: { details: { goal: { id: "older", createdAt: "2026-09-22T04:00:00Z", status: "active" } } },
+				},
+				{
+					type: "custom",
+					customType: "pi-goal-state",
+					data: { goal: { id: "focused", createdAt: "2026-09-22T05:00:00Z", status: "active" } },
+				},
+			]),
+		).toEqual({ id: "focused", createdAt: 1_790_053_200, status: "active" });
+	});
+
+	test("resolves session focus from the persistent goal pool", () => {
+		expect(
+			resolveFocusedGoal(
+				[{ type: "custom", customType: "pi-goal-focus", data: { focusedGoalId: "focused" } }],
+				[
+					{ id: "other", createdAt: "2026-09-22T04:00:00Z", status: "active" },
+					{ id: "focused", createdAt: "2026-09-22T05:00:00Z", status: "active" },
+				],
+			),
+		).toEqual({ id: "focused", createdAt: 1_790_053_200, status: "active" });
+	});
+
+	test("reads only a matching active schedule and returns milliseconds", () => {
+		const goal = { id: "goal-1", createdAt: 1_000_000, status: "active" };
+		const active = [
+			{ type: "mode_change", mode: "goal", data: { goal } },
+			{ type: "custom", customType: STATE_ENTRY, data: state },
+		];
+		expect(readGoalDeadline(active)).toEqual({ goalId: "goal-1", deadlineAt: 2_200_000, timezone: "UTC" });
+		expect(
+			readGoalDeadline([
+				{ type: "mode_change", mode: "goal", data: { goal: { ...goal, status: "paused" } } },
+				active[1],
+			]),
+		).toBeUndefined();
+		expect(
+			readGoalDeadline([
+				{ type: "mode_change", mode: "goal", data: { goal: { ...goal, status: "complete" } } },
+				active[1],
+			]),
+		).toBeUndefined();
+		expect(
+			readGoalDeadline([
+				active[0],
+				{ type: "custom", customType: STATE_ENTRY, data: { ...state, goalId: "other" } },
+			]),
+		).toBeUndefined();
+		expect(
+			readGoalDeadline([active[0], { type: "custom", customType: STATE_ENTRY, data: { ...state, active: false } }]),
+		).toBeUndefined();
+		expect(
+			readGoalDeadline([
+				active[0],
+				{
+					type: "custom",
+					customType: STATE_ENTRY,
+					data: { ...state, stages: state.stages.map(stage => ({ ...stage, deliveredAt: 1_200 })) },
+				},
+			]),
+		).toBeUndefined();
+		expect(readGoalDeadline([...active, { type: "mode_change", mode: "none" }])).toBeUndefined();
+	});
+
+	test("paused deadlines are displayable without granting active goal authority", () => {
+		const paused = [
+			{
+				type: "mode_change",
+				mode: "goal_paused",
+				data: { goal: { id: "goal-1", createdAt: 1_000_000, status: "paused" } },
+			},
+			{ type: "custom", customType: STATE_ENTRY, data: state },
+		];
+		expect(readGoalDeadline(paused)).toBeUndefined();
+		expect(readFocusedGoal(paused)).toBeNull();
+		expect(readGoalDeadline(paused, undefined, { includePaused: true })).toEqual({
+			goalId: "goal-1",
+			deadlineAt: 2_200_000,
+			timezone: "UTC",
+			paused: true,
+		});
+		expect(
+			readGoalDeadline([...paused, { type: "mode_change", mode: "none" }], undefined, { includePaused: true }),
+		).toBeUndefined();
+		expect(
+			readGoalDeadline(
+				[...paused, { type: "custom", customType: STATE_ENTRY, data: { ...state, active: false } }],
+				undefined,
+				{ includePaused: true },
+			),
+		).toBeUndefined();
+	});
+
+	test("uses pi-goal-x pool only for explicit focus and honors native terminal mode", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "omp-deadline-reader-"));
+		try {
+			mkdirSync(join(cwd, ".pi"));
+			writeFileSync(
+				join(cwd, ".pi/.goals-pool-snapshot.json"),
+				JSON.stringify({ goals: [{ id: "goal-1", createdAt: "1970-01-01T00:16:40Z", status: "active" }] }),
+			);
+			const entries: unknown[] = [
+				{ type: "custom", customType: "pi-goal-focus", data: { focusedGoalId: "goal-1" } },
+				{ type: "custom", customType: STATE_ENTRY, data: state },
+			];
+			expect(readGoalDeadline(entries, cwd)).toEqual({ goalId: "goal-1", deadlineAt: 2_200_000, timezone: "UTC" });
+			entries.push({ type: "mode_change", mode: "none" });
+			expect(readGoalDeadline(entries, cwd)).toBeUndefined();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("surfaces deadlines in persistent UI text", () => {
+		const lines = renderDeadlineUi(state, 1_300);
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toContain("Deadline · Draft");
+		expect(lines[0]).toContain("0h05m (50%)");
+		expect(lines[1]).toContain("Expected: Usable draft");
+		// An open TODO plan prints the due time in its header: the footer must not repeat it.
+		const withTodo = renderDeadlineUi(state, 1_300, true);
+		expect(withTodo).toHaveLength(1);
+		expect(withTodo[0]).toContain("Goal · Draft → Usable draft");
+		expect(withTodo[0]).not.toContain("0h05m");
+	});
+
+	test("bounds reminder and never converts quota to tokens", () => {
+		const reminder = renderDeadlineReminder(
+			{ ...state, stages: [{ ...state.stages[0]!, expectedResult: "x".repeat(2_000) }] },
+			1_300,
+			{
+				provider: "codex-lb",
+				remainingPercent: 26,
+				status: "at_risk",
+				sourceAsOf: "2026-09-22T05:09:25Z",
+				recoveryAt: null,
+			},
+		);
+		expect(reminder!.length).toBeLessThanOrEqual(REMINDER_MAX_CHARS);
+		expect(reminder).toContain("now=26%");
+		expect(reminder).not.toMatch(/26\s*tokens/i);
+	});
+
+	test("invalid or expired deadline intervals do not fabricate percentages", () => {
+		expect(remainingPercent(1_000, 1_000, 900)).toBeNull();
+		expect(remainingPercent(1_000, 1_600, 1_700)).toBe(0);
+	});
+});
+
+describe("automatic presence", () => {
+	const userEntry = (timestamp: number) => ({
+		type: "message",
+		timestamp: new Date(timestamp).toISOString(),
+		message: { role: "user", content: "I am here", timestamp },
+	});
+	const presenceState = (deadlineAt: number): DeadlineState => ({
+		...state,
+		goalStartedAt: deadlineAt - 7_200,
+		baselineDeadlineAt: deadlineAt,
+	});
+
+	test("derives away at the silence and quiet-hour boundaries", () => {
+		const now = Date.UTC(2026, 8, 25, 23, 0);
+		const utcState = { ...presenceState(Math.floor(now / 1_000) + 7_200), timezone: "UTC" };
+		expect(derivePresence([userEntry(now - 30 * 60_000)], utcState, now)).toBe("away");
+		expect(derivePresence([userEntry(now - 15 * 60_000)], utcState, now)).toBe("away");
+		expect(derivePresence([userEntry(now - 14 * 60_000)], utcState, now)).toBe("watching");
+	});
+
+	test("derives watching during working hours", () => {
+		const now = Date.UTC(2026, 8, 25, 12, 0);
+		expect(derivePresence([userEntry(now - 15 * 60_000)], presenceState(Math.floor(now / 1_000) + 7_200), now)).toBe(
+			"watching",
+		);
+	});
+
+	test("derives firefighting for a recent weekend at-risk deadline", () => {
+		const now = Date.UTC(2026, 8, 26, 12, 0);
+		expect(
+			derivePresence([userEntry(now - 15 * 60_000)], presenceState(Math.floor(now / 1_000) + 60 * 60), now),
+		).toBe("firefighting");
+	});
+
+	test("uses the persisted goal timezone", () => {
+		const now = Date.UTC(2026, 8, 25, 8, 0);
+		const stateInLosAngeles = { ...presenceState(Math.floor(now / 1_000) + 7_200), timezone: "America/Los_Angeles" };
+		const message = renderPresence([userEntry(now - 15 * 60_000)], stateInLosAngeles, now);
+		expect(derivePresence([userEntry(now - 15 * 60_000)], stateInLosAngeles, now)).toBe("away");
+		expect(message).toContain("01:00 America/Los_Angeles");
+	});
+
+	test("reports the generic presence sentence", () => {
+		const now = Date.UTC(2026, 8, 25, 8, 0);
+		const message = renderPresence(
+			[userEntry(now - 30 * 60_000)],
+			presenceState(Math.floor(now / 1_000) + 7_200),
+			now,
+		);
+		expect(message).toStartWith("The user is: away (guess from signals:");
+		expect(message).toEndWith("the user's own words in the conversation outrank this guess.");
+	});
+
+	test("context passes messages through and turn end appends a persisted automatic reminder", async () => {
+		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+		const sent: Array<{ customType: string; content: string }> = [];
+		const activeGoal = { id: "goal-1", createdAt: 1_000, status: "active" as const };
+		goalDeadlines({
+			pi: { readFocusedGoal: () => activeGoal, rehydrateDeadlineState: () => null, STATE_ENTRY },
+			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
+				handlers.set(event, handler),
+			registerTool: () => {},
+			appendEntry: () => {},
+			sendMessage: message => { sent.push(message); },
+			zod: z,
+		} as unknown as ExtensionAPI);
+		const now = Date.now();
+		const ctx = {
+			cwd: "/tmp",
+			hasUI: false,
+			sessionManager: branchMock(() => [userEntry(now - 60_000)]),
+		} as unknown as ExtensionContext;
+		const messages = [{ role: "user", content: "I am here", timestamp: now - 60_000 }];
+		const result = await handlers.get("context")?.({ messages }, ctx) as { messages: typeof messages };
+		expect(result.messages).toBe(messages);
+		await handlers.get("turn_end")?.({ toolResults: [] }, ctx);
+		const reminder = sent.find(message => message.customType === "goal-deadline-time-note");
+		expect(reminder?.content).toContain("The user is: watching");
+		expect(reminder?.content).toContain("No deadline schedule is recorded.");
+	});
+});
+
+test("vetoes native and plugin goal completion until branch TODO work is closed", () => {
+	const reducerBranches: unknown[] = [];
+	let phases = [
+		{
+			name: "Delivery",
+			tasks: [
+				{ content: "Repair export", status: "pending" },
+				{ content: "Repair retrieval", status: "blocked" },
+				{ content: "Retire unused flow", status: "abandoned" },
+				{ content: "Run final review", status: "completed" },
+			],
+		},
+	];
+	let branch: unknown[] = [
+		{ id: "native-branch", type: "custom", customType: "user_todo_edit", data: { phases } },
+		{ type: "message", message: { role: "assistant", content: "Unrelated branch tail" } },
+	];
+	const host: {
+		getLatestTodoPhasesFromEntries?: (entries: unknown[]) => typeof phases;
+	} = {
+		getLatestTodoPhasesFromEntries: entries => {
+			reducerBranches.push(entries);
+			return getLatestTodoPhasesFromEntries(entries);
+		},
+	};
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+	goalDeadlines({
+		pi: host,
+		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+		registerTool: () => {},
+		appendEntry: () => {},
+		zod: z,
+	} as unknown as ExtensionAPI);
+	const branchReads: unknown[] = [];
+	const ctx = {
+		sessionManager: branchMock(() => {
+			branchReads.push(branch);
+			return branch;
+		}),
+	} as unknown as ExtensionContext;
+	const toolCall = handlers.get("tool_call")!;
+	const invoke = (toolName: string, input: Record<string, unknown>) => toolCall({ toolName, input }, ctx);
+
+	const native = invoke("goal", { op: "complete" }) as { block?: boolean; reason?: string };
+	expect(native.block).toBe(true);
+	const action = native.reason?.split("\n", 1)[0] ?? "";
+	expect(action.length).toBeLessThanOrEqual(100);
+	expect(action).toContain("Repair export");
+	expect(action).not.toMatch(/^Cannot complete goal/);
+	expect(native.reason).toContain("3 TODO tasks are unresolved");
+	expect(native.reason).toContain("Repair export");
+	expect(native.reason).toContain("Repair retrieval");
+	expect(native.reason).toContain("1 abandoned");
+	expect(reducerBranches[0]).toEqual([branch[0]]);
+
+	branch = [{ id: "plugin-branch", type: "message", message: { role: "toolResult", toolName: "todo", details: { phases } } }];
+	const plugin = invoke("update_goal", { status: "complete" }) as { block?: boolean; reason?: string };
+	expect(plugin.block).toBe(true);
+	expect(reducerBranches[1]).toEqual(branch);
+
+	phases = [
+		{
+			name: "Delivery",
+			tasks: [
+				{ content: "Repair export", status: "completed" },
+				{ content: "Repair retrieval", status: "completed" },
+			],
+		},
+	];
+	branch.push({ id: "closed-branch", type: "custom", customType: "user_todo_edit", data: { phases } });
+	expect(invoke("goal", { op: "complete" })).toBeUndefined();
+	expect(invoke("update_goal", { status: "complete" })).toBeUndefined();
+	expect(reducerBranches[2]).toEqual(branch);
+	expect(branchReads).toHaveLength(4);
+
+	const callsBeforeUnrelated = branchReads.length;
+	expect(invoke("goal", { op: "create" })).toBeUndefined();
+	expect(invoke("update_goal", { status: "in_progress" })).toBeUndefined();
+	expect(invoke("other_tool", { op: "complete" })).toBeUndefined();
+	expect(branchReads).toHaveLength(callsBeforeUnrelated);
+
+	host.getLatestTodoPhasesFromEntries = undefined;
+	const noReducer = invoke("goal", { op: "complete" }) as { block?: boolean; reason?: string };
+	expect(noReducer.block).toBe(true);
+	const noReducerAction = noReducer.reason?.split("\n", 1)[0] ?? "";
+	expect(noReducerAction).toBe("Restore the TODO reducer before completing this goal.");
+	expect(noReducerAction.length).toBeLessThanOrEqual(100);
+	expect(invoke("other_tool", { op: "complete" })).toBeUndefined();
+	expect(branchReads).toHaveLength(callsBeforeUnrelated);
+
+	ctx.getTodoPhases = () => phases;
+	expect(invoke("goal", { op: "complete" })).toBeUndefined();
+	phases = [{ name: "Delivery", tasks: [{ content: "Still running", status: "in_progress" }] }];
+	expect(invoke("update_goal", { status: "complete" })).toMatchObject({ block: true });
+	expect(branchReads).toHaveLength(callsBeforeUnrelated);
+});
+
+test("native lifecycle preserves the original deadline without reviving stale goal focus", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "omp-deadline-"));
+	try {
+		const now = 1_790_200_000;
+		const branch: unknown[] = [{ type: "custom", customType: "pi-goal-focus", data: { focusedGoalId: "stale" } }];
+		mkdirSync(join(cwd, ".pi"));
+		writeFileSync(
+			join(cwd, ".pi/.goals-pool-snapshot.json"),
+			JSON.stringify({ goals: [{ id: "stale", createdAt: "2026-09-22T05:00:00Z", status: "active" }] }),
+		);
+		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+		const sent: Array<{ customType?: string; content: string; details?: unknown }> = [];
+		let deadlineTool:
+			| {
+					execute: (
+						...args: unknown[]
+					) => Promise<{ content: Array<{ type: string; text: string }>; details: { state: DeadlineState } }>;
+			  }
+			| undefined;
+		let goalState: GoalModeState | undefined;
+		let status: string | undefined;
+		goalDeadlines({
+			pi: { goalRef, readFocusedGoal, rehydrateDeadlineState, STATE_ENTRY },
+			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
+				handlers.set(event, handler),
+			registerTool: (tool: typeof deadlineTool) => {
+				deadlineTool = tool;
+			},
+			appendEntry: (customType: string, data: unknown) => branch.push({ type: "custom", customType, data }),
+			sendMessage: (message: { customType?: string; content: string; details?: unknown }) => {
+				sent.push(message);
+				branch.push({ type: "custom_message", ...message, timestamp: new Date().toISOString() });
+			},
+			zod: z,
+			_goalCore: { state: { goal: { id: "stale", createdAt: "2026-09-22T05:00:00Z", status: "active" } } },
+		} as unknown as ExtensionAPI);
+		const ctx = {
+			cwd,
+			hasUI: true,
+			ui: {
+				setStatus: (_key: string, value: string | undefined) => {
+					status = value;
+				},
+				setWidget: () => {},
+			},
+			sessionManager: branchMock(() => branch),
+		} as unknown as ExtensionContext;
+		const runtime = new GoalRuntime({
+			getState: () => goalState,
+			setState: value => {
+				goalState = value;
+			},
+			getCurrentUsage: () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }),
+			now: () => now * 1000,
+			persist: (mode, data) => {
+				branch.push({ type: "mode_change", mode, data });
+			},
+			emit: async event => {
+				await handlers.get(event.type)?.(event, ctx);
+			},
+			sendHiddenMessage: async () => {},
+		});
+		const request = async () => {
+			const messages: unknown[] = [];
+			const result = await handlers.get("context")?.({ messages }, ctx) as { messages?: unknown[] } | undefined;
+			expect(result?.messages).toBe(messages);
+			return result;
+		};
+		await runtime.createGoal({ objective: "Finish by the original deadline" });
+		await expect(
+			deadlineTool!.execute(
+				"set",
+				{
+					action: "set",
+					stages: [
+						{ id: "ship", label: "Ship", expected_result: "Verified render", deadline_at: (now - 60) * 1_000 },
+					],
+				},
+				undefined,
+				undefined,
+				ctx,
+			),
+		).rejects.toThrow(/Unix seconds.*not milliseconds/);
+		const schedule = await deadlineTool!.execute(
+			"set",
+			{
+				action: "set",
+				timezone: "UTC",
+				stages: [
+					{ id: "ship", label: "Ship", expected_result: "Verified render", deadline_at: now - 60 },
+					{ id: "draft", label: "Draft", expected_result: "Usable draft", deadline_at: now - 120 },
+				],
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(schedule.details.state.goalId).toBe(goalState!.goal.id);
+		expect(schedule.details.state.stages[0]?.deadlineAt).toBe(now - 60);
+		expect(readGoalDeadline(branch, cwd)).toEqual({ goalId: goalState!.goal.id, deadlineAt: (now - 60) * 1000, timezone: schedule.details.state.timezone });
+		const corruptedDraft: DeadlineState = {
+			...schedule.details.state,
+			stages: schedule.details.state.stages.map(stage =>
+				stage.id === "draft" ? { ...stage, deadlineAt: stage.deadlineAt * 1_000 } : stage,
+			),
+		};
+		branch.push({ type: "custom", customType: STATE_ENTRY, data: corruptedDraft });
+		handlers.get("session_start")?.({}, ctx);
+		await request();
+		expect(status).toBe("away");
+		const invalidStatus = await deadlineTool!.execute("status", { action: "status" }, undefined, undefined, ctx);
+		expect(invalidStatus.content[0]?.text).toContain("forecast is unknown");
+		const repaired = await deadlineTool!.execute(
+			"set",
+			{
+				action: "set",
+				stages: [
+					{ id: "draft", label: "Draft corrected", expected_result: "Usable draft", deadline_at: now - 120 },
+				],
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(repaired.details.state.stages.find(stage => stage.id === "draft")?.deadlineAt).toBe(now - 120);
+		expect(repaired.details.state.stages.find(stage => stage.id === "ship")?.deadlineAt).toBe(now - 60);
+		expect(repaired.details.state.baselineDeadlineAt).toBe(now - 60);
+		expect(repaired.details.state.timezone).toBe("UTC");
+		const corruptedFinal: DeadlineState = {
+			...repaired.details.state,
+			stages: repaired.details.state.stages.map(stage =>
+				stage.id === "ship" ? { ...stage, deadlineAt: stage.deadlineAt * 1_000 } : stage,
+			),
+			baselineDeadlineAt: (repaired.details.state.baselineDeadlineAt ?? 0) * 1_000,
+		};
+		branch.push({ type: "custom", customType: STATE_ENTRY, data: corruptedFinal });
+		handlers.get("session_start")?.({}, ctx);
+		const repairedFinal = await deadlineTool!.execute(
+			"set",
+			{
+				action: "set",
+				stages: [
+					{ id: "ship", label: "Ship corrected", expected_result: "Verified render", deadline_at: now - 60 },
+				],
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(repairedFinal.details.state.baselineDeadlineAt).toBe(now - 60);
+		expect(repairedFinal.details.state.stages.find(stage => stage.id === "draft")?.deadlineAt).toBe(now - 120);
+		await deadlineTool!.execute(
+			"deliver",
+			{ action: "deliver", stage_id: "draft", delivered_artifact: "Usable draft" },
+			undefined,
+			undefined,
+			ctx,
+		);
+		await expect(
+			deadlineTool!.execute(
+				"set",
+				{
+					action: "set",
+					stages: [{ id: "ship", label: "Ship", expected_result: "Verified render", deadline_at: now + 3_600 }],
+				},
+				undefined,
+				undefined,
+				ctx,
+			),
+		).rejects.toThrow("cannot change deadline for existing stage ship");
+		const updated = await deadlineTool!.execute(
+			"set",
+			{
+				action: "set",
+				stages: [
+					{ id: "ship", label: "Ship refined", expected_result: "Verified render", deadline_at: now - 60 },
+					{ id: "draft", label: "Draft refined", expected_result: "Usable draft", deadline_at: now - 120 },
+					{ id: "review", label: "Review", expected_result: "Review note", deadline_at: now - 90 },
+				],
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(updated.details.state.baselineDeadlineAt).toBe(now - 60);
+		expect(updated.details.state.stages.find(stage => stage.id === "draft")?.deliveredArtifact).toBe("Usable draft");
+		expect(readGoalDeadline(branch, cwd)).toEqual({ goalId: goalState!.goal.id, deadlineAt: (now - 60) * 1000, timezone: updated.details.state.timezone });
+		const due = formatLocalTimestamp((now - 60) * 1000, updated.details.state.timezone);
+		const expectPresenceOnly = async () => { await request(); };
+		for (let step = 0; step < 2; step++) {
+			await request();
+		}
+		await runtime.pauseGoal();
+		expect(status).toBe("away");
+		await expectPresenceOnly();
+		expect(readGoalDeadline(branch, cwd)).toBeUndefined();
+		await runtime.resumeGoal();
+		await request();
+		await handlers.get("turn_end")?.({ toolResults: [] }, ctx);
+		expect(sent.findLast(message => message.customType === "goal-deadline-time-note")?.content).toContain(due);
+		expect(readGoalDeadline(branch, cwd)).toEqual({ goalId: goalState!.goal.id, deadlineAt: (now - 60) * 1000, timezone: updated.details.state.timezone });
+		const cleared = await deadlineTool!.execute("clear", { action: "clear" }, undefined, undefined, ctx);
+		expect(cleared.details.state.baselineDeadlineAt).toBeUndefined();
+		expect(cleared.details.state.stages).toEqual([]);
+		await expectPresenceOnly();
+		expect(readGoalDeadline(branch, cwd)).toBeUndefined();
+		handlers.get("session_start")?.({}, ctx);
+		await expectPresenceOnly();
+		const restored = await deadlineTool!.execute(
+			"set",
+			{
+				action: "set",
+				stages: [{ id: "ship", label: "Ship", expected_result: "Verified render", deadline_at: now - 60 }],
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(restored.details.state.baselineDeadlineAt).toBe(now - 60);
+		expect(readGoalDeadline(branch, cwd)).toEqual({ goalId: goalState!.goal.id, deadlineAt: (now - 60) * 1000, timezone: restored.details.state.timezone });
+		await runtime.completeGoalFromTool();
+		await expectPresenceOnly();
+		await runtime.createGoal({ objective: "Different goal" });
+		await request();
+		await runtime.dropGoal();
+		expect(status).toBe("away");
+		branch.push({
+			type: "message",
+			message: {
+				toolName: "goal_deadline",
+				details: { goal: { id: "stale", createdAt: "2026-09-22T05:00:00Z", status: "active" } },
+			},
+		});
+		await expectPresenceOnly();
+		expect(readGoalDeadline(branch, cwd)).toBeUndefined();
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("names deadline_at seconds and rejects implausible future seconds", async () => {
+	let deadlineTool:
+		| {
+				description: string;
+				parameters: z.ZodTypeAny;
+				execute: (...args: unknown[]) => Promise<{ details: { state: DeadlineState | null } }>;
+		  }
+		| undefined;
+	goalDeadlines({
+		pi: {
+			goalRef,
+			readFocusedGoal: () => ({ id: "focused-goal", createdAt: 1_000, status: "active" }),
+			rehydrateDeadlineState: () => null,
+			STATE_ENTRY,
+		},
+		on: () => {},
+		registerTool: (tool: typeof deadlineTool) => {
+			deadlineTool = tool;
+		},
+		appendEntry: () => {},
+		zod: z,
+	} as unknown as ExtensionAPI);
+	const ctx = {
+		cwd: "/tmp",
+		hasUI: false,
+		sessionManager: branchMock(() => []),
+	} as unknown as ExtensionContext;
+
+	expect(deadlineTool!.description).toContain("deadline_at is a Unix timestamp in seconds, not milliseconds");
+	const stageSchema = (
+		deadlineTool!.parameters as z.ZodObject<{
+			stages: z.ZodOptional<z.ZodArray<z.ZodObject<{ deadline_at: z.ZodTypeAny }>>>;
+		}>
+	).shape.stages.unwrap().element.shape;
+	expect(stageSchema.deadline_at.description).toContain("Unix timestamp in seconds");
+	await expect(
+		deadlineTool!.execute(
+			"set",
+			{
+				action: "set",
+				stages: [{ id: "future", label: "Future", expected_result: "Rejected", deadline_at: 4_102_444_801 }],
+			},
+			undefined,
+			undefined,
+			ctx,
+		),
+	).rejects.toThrow(/Unix seconds.*no later than 2100-01-01T00:00:00Z/);
+});
+
+test("clear lets an explicit set replace a corrupted immutable final deadline", async () => {
+	const branch: unknown[] = [];
+	const corrupted: DeadlineState = {
+		version: 1,
+		goalId: "focused-goal",
+		goalStartedAt: 1_000,
+		timezone: "UTC",
+		active: true,
+		stages: [{ id: "bad-final", label: "Bad final", expectedResult: "Wrong unit", deadlineAt: 1_790_236_800_000 }],
+		baselineDeadlineAt: 1_790_236_800_000,
+	};
+	let deadlineTool:
+		| { execute: (...args: unknown[]) => Promise<{ details: { state: DeadlineState | null } }> }
+		| undefined;
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+	goalDeadlines({
+		pi: {
+			goalRef,
+			readFocusedGoal: () => ({ id: "focused-goal", createdAt: 1_000, status: "active" }),
+			rehydrateDeadlineState,
+			STATE_ENTRY,
+		},
+		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+		registerTool: (tool: typeof deadlineTool) => {
+			deadlineTool = tool;
+		},
+		appendEntry: (customType: string, data: unknown) => branch.push({ type: "custom", customType, data }),
+		zod: z,
+	} as unknown as ExtensionAPI);
+	const ctx = {
+		cwd: "/tmp",
+		hasUI: false,
+		sessionManager: branchMock(() => [{ type: "custom", customType: STATE_ENTRY, data: corrupted }, ...branch]),
+	} as unknown as ExtensionContext;
+	handlers.get("session_start")?.({}, ctx);
+
+	const cleared = await deadlineTool!.execute("clear", { action: "clear" }, undefined, undefined, ctx);
+	expect(cleared.details.state?.stages).toEqual([]);
+	expect(cleared.details.state?.baselineDeadlineAt).toBeUndefined();
+	const replaced = await deadlineTool!.execute(
+		"set",
+		{
+			action: "set",
+			stages: [
+				{ id: "correct-final", label: "Correct final", expected_result: "Corrected", deadline_at: 1_790_236_800 },
+			],
+		},
+		undefined,
+		undefined,
+		ctx,
+	);
+	expect(replaced.details.state?.stages).toEqual([
+		{ id: "correct-final", label: "Correct final", expectedResult: "Corrected", deadlineAt: 1_790_236_800 },
+	]);
+	expect(replaced.details.state?.active).toBe(true);
+	expect(replaced.details.state?.baselineDeadlineAt).toBe(1_790_236_800);
+});
+
+test("persists a hard deadline without inventing goal focus or requiring goal metadata", async () => {
+	const invoke = async (
+		focusedGoal: { id: string; createdAt: number; status: "active" } | null,
+		metadata: { goal_id?: string; goal_started_at?: number; timezone?: string } = {},
+	) => {
+		let deadlineTool:
+			| { execute: (...args: unknown[]) => Promise<{ details: { state: DeadlineState | null } }> }
+			| undefined;
+		goalDeadlines({
+			pi: {
+				goalRef,
+				readFocusedGoal: () => focusedGoal,
+				rehydrateDeadlineState: () => null,
+				STATE_ENTRY,
+			},
+			on: () => {},
+			registerTool: (tool: typeof deadlineTool) => {
+				deadlineTool = tool;
+			},
+			appendEntry: () => {},
+			zod: z,
+		} as unknown as ExtensionAPI);
+		const ctx = {
+			cwd: "/tmp",
+			hasUI: false,
+			sessionManager: branchMock(() => []),
+		} as unknown as ExtensionContext;
+		return deadlineTool!.execute(
+			"set",
+			{
+				action: "set",
+				...metadata,
+				stages: [{ id: "deliver", label: "Deliver", expected_result: "Verified output", deadline_at: 2_000 }],
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+	};
+
+	const unfocused = await invoke(null);
+	expect(unfocused.details.state).toMatchObject({ goalId: "session-deadline", active: true, baselineDeadlineAt: 2_000 });
+	expect(unfocused.details.state?.userConstraint).toBeDefined();
+	const manual = await invoke(null, { goal_id: "manual-goal", goal_started_at: 1_000 });
+	expect(manual.details.state).toMatchObject({ goalId: "manual-goal", active: true, baselineDeadlineAt: 2_000 });
+	const focused = await invoke({ id: "focused-goal", createdAt: 1_000, status: "active" });
+	expect(focused.details.state).toMatchObject({ goalId: "focused-goal", goalStartedAt: 1_000, active: true });
+	expect(typeof focused.details.state?.timezone).toBe("string");
+});
+
+test("tool results paint deadline state once, after recording delivery", () => {
+	const handlers = new Map<string, Function>();
+	const branch = [{ type: "custom", customType: STATE_ENTRY, data: structuredClone(state) }];
+	const paints: unknown[] = [];
+	goalDeadlines({
+		pi: { goalRef, readFocusedGoal: () => ({ id: "goal-1", createdAt: 1_000, status: "active" }), rehydrateDeadlineState, STATE_ENTRY },
+		on: (event, handler) => handlers.set(event, handler),
+		registerTool: () => {},
+		appendEntry: (customType, data) => branch.push({ type: "custom", customType, data: structuredClone(data) }),
+		zod: z,
+	} as unknown as ExtensionAPI);
+	const ctx = {
+		cwd: "/tmp", hasUI: true,
+		sessionManager: branchMock(() => branch),
+		ui: { setStatus: () => {}, setWidget: (_key, lines) => paints.push(lines) },
+	} as unknown as ExtensionContext;
+	handlers.get("session_start")!({}, ctx);
+	paints.length = 0;
+	handlers.get("tool_result")!({ toolName: "bash", isError: false }, ctx);
+	expect(paints).toHaveLength(1);
+	paints.length = 0;
+	handlers.get("tool_result")!({ toolName: "update_goal_task", isError: false, input: { task_id: "draft", status: "complete", evidence: "draft delivered" } }, ctx);
+	expect(paints).toHaveLength(1);
+	expect(branch.at(-1)!.data.stages[0].deliveredArtifact).toBe("draft delivered");
+	expect(JSON.stringify(paints[0])).not.toContain("Draft");
+});
+
+describe("goal_deadline resolves wall-clock times and rejects arithmetic slips", () => {
+	afterEach(() => setSystemTime());
+	const NOW = Date.parse("2026-10-21T13:24:00Z");
+	const TBILISI = "Asia/Tbilisi";
+
+	const harness = (userText = "Continue until 19:00", userAtMs = NOW) => {
+		const branch: unknown[] = [{ id: "u1", type: "message", timestamp: new Date(userAtMs).toISOString(), message: { role: "user", content: userText } }];
+		const todoPhases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }> = [];
+		const notices: Array<{ customType: string; content: string }> = [];
+		let tool: { description: string; execute: (...args: unknown[]) => Promise<{ details: { state: DeadlineState | null } }> } | undefined;
+		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+		goalDeadlines({
+			pi: { goalRef, readFocusedGoal: () => null, rehydrateDeadlineState, STATE_ENTRY, latestDeadlineUserMessage: undefined },
+			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+			registerTool: (t: typeof tool) => {
+				tool = t;
+			},
+			appendEntry: (customType: string, data: unknown) => branch.push({ type: "custom", customType, data }),
+			sendMessage: (message: { customType: string; content: string }) => notices.push(message),
+			zod: z,
+		} as unknown as ExtensionAPI);
+		const ctx = { cwd: "/tmp", hasUI: false, sessionManager: branchMock(() => branch), getTodoPhases: () => todoPhases } as unknown as ExtensionContext;
+		handlers.get("session_start")?.({}, ctx);
+		const set = (stage: Record<string, unknown>, quote = userText) =>
+			tool!.execute("set", { action: "set", timezone: TBILISI, user_message: quote, stages: [{ id: "final", label: "Final", expected_result: "Delivered", ...stage }] }, undefined, undefined, ctx);
+		return { tool: tool!, set, branch, notices, handlers, ctx, todoPhases };
+	};
+
+	test("resolves a bare HH:MM to the next such moment in the timezone", () => {
+		expect(new Date(resolveWallClock("19:00", TBILISI, NOW)! * 1000).toISOString()).toBe("2026-10-21T15:00:00.000Z");
+		expect(new Date(resolveWallClock("10:00", TBILISI, NOW)! * 1000).toISOString()).toBe("2026-10-22T06:00:00.000Z");
+		expect(new Date(resolveWallClock("2026-10-21 19:00", TBILISI, NOW)! * 1000).toISOString()).toBe("2026-10-21T15:00:00.000Z");
+		expect(new Date(resolveWallClock("2026-07-01T09:30", "America/New_York", NOW)! * 1000).toISOString()).toBe("2026-07-01T13:30:00.000Z");
+		expect(resolveWallClock("25:00", TBILISI, NOW)).toBeUndefined();
+		expect(resolveWallClock("tomorrow", TBILISI, NOW)).toBeUndefined();
+	});
+
+	test("live case: 'Continue until 19:00' at 17:24 +04 becomes 15:00Z, not a missed 2025 deadline", async () => {
+		setSystemTime(NOW);
+		const { set, tool } = harness();
+		expect(tool.description).toContain("local_time");
+		const result = await set({ local_time: "19:00" });
+		expect(result.details.state?.stages[0]?.deadlineAt).toBe(Date.parse("2026-10-21T15:00:00Z") / 1000);
+		expect(result.details.state?.baselineDeadlineAt).toBe(1_792_594_800);
+	});
+
+	test("a deadline quote selects the newest real user message containing it", async () => {
+		setSystemTime(NOW);
+		const h = harness("Push it by 19:00");
+		h.branch.push(
+			{ id: "u2", type: "message", timestamp: new Date(NOW + 60_000).toISOString(), message: { role: "user", content: "Keep going" } },
+			{ id: "u3", type: "message", timestamp: new Date(NOW + 120_000).toISOString(), message: { role: "user", content: "One more detail" } },
+		);
+		const result = await h.set({ local_time: "19:00" }, "Push it by 19:00");
+		expect(result.details.state?.userConstraint).toMatchObject({ messageId: "u1", recordedAt: Math.floor(NOW / 1000) });
+	});
+
+	test("a made-up quote is rejected even when a user message exists", async () => {
+		setSystemTime(NOW);
+		const h = harness("Push it by 19:00");
+		await expect(h.set({ local_time: "19:00" }, "push it by 13:10")).rejects.toThrow("user_message must quote the latest real user message");
+	});
+
+	test("an older quoted message cannot replace a newer recorded deadline", async () => {
+		setSystemTime(NOW);
+		const h = harness("Push it by 19:00");
+		const first = await h.set({ local_time: "19:00" }, "Push it by 19:00");
+		h.branch.push({ id: "u2", type: "message", timestamp: new Date(NOW + 60_000).toISOString(), message: { role: "user", content: "New deadline 20:00" } });
+		await h.set({ local_time: "20:00" }, "New deadline 20:00");
+		await expect(h.set({ local_time: "19:00" }, "Push it by 19:00")).rejects.toThrow("Keep the recorded user deadline");
+		expect(first.details.state?.userConstraint?.messageId).toBe("u1");
+	});
+
+	test("a missed deadline replans open requested rows and keeps executing", async () => {
+		setSystemTime(NOW);
+		const h = harness("Ship by 19:00");
+		await h.set({ local_time: "19:00" }, "Ship by 19:00");
+		h.todoPhases.push({ name: "Requested", tasks: [{ content: "Ship the API fix", status: "pending" }] });
+		setSystemTime(Date.parse("2026-10-21T15:01:00Z"));
+		const messages: unknown[] = [];
+		expect((h.handlers.get("context")!({ messages }, h.ctx) as { messages: unknown[] }).messages).toBe(messages);
+		await h.handlers.get("turn_end")!({ toolResults: [] }, h.ctx);
+		const missedNotice = h.notices.findLast(notice => notice.customType === "goal-deadline-gate-notice")!.content;
+		expect(missedNotice).toContain("MISSED 1m");
+		expect(missedNotice).toContain("Remaining: Ship the API fix");
+		expect(missedNotice).toContain("put the most valuable shippable piece first");
+		expect(h.handlers.get("tool_call")!({ toolName: "task", input: { tasks: [{ name: "ApiFix", task: "Ship the API fix" }] } }, h.ctx)).toBeUndefined();
+		expect(h.handlers.get("tool_call")!({ toolName: "todo", input: { op: "append", items: ["Ship the API fix"] } }, h.ctx)).toBeUndefined();
+		const unrelated = h.handlers.get("tool_call")!({ toolName: "todo", input: { op: "append", items: ["Add a new analytics dashboard"] } }, h.ctx) as { block?: boolean; reason?: string };
+		expect(unrelated.block).toBe(true);
+		expect(unrelated.reason).toContain("serves an open requested TODO row");
+		const agentDescription = h.tool.description + missedNotice + renderDeadlineReminder(h.branch.at(-1)?.data ?? state, Math.floor(Date.now() / 1000), undefined, h.todoPhases);
+		expect(agentDescription).not.toMatch(/clear|close|new time/i);
+		h.handlers.get("turn_end")!({ toolResults: [] }, h.ctx);
+		const continuation = h.notices.findLast(notice => notice.customType === "goal-deadline-continue");
+		expect(continuation?.content).toContain("next usable piece");
+		const waiting = h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx) as { block?: boolean; reason?: string };
+		expect(waiting.block).toBe(true);
+		expect(waiting.reason).toContain("keep executing");
+	});
+
+	test("deadline set and arrival notices are two lines, deduped, and precede the missed-deadline refusal", async () => {
+		setSystemTime(NOW);
+		const h = harness();
+		const result = await h.set({ local_time: "19:00" });
+		expect(result.details.state?.baselineDeadlineAt).toBe(Date.parse("2026-10-21T15:00:00Z") / 1000);
+		expect(h.notices).toHaveLength(1);
+		expect(h.notices[0]?.content).toContain("19:00");
+		expect(h.notices[0]?.content.split("\n")).toHaveLength(1);
+		h.handlers.get("context")!({ messages: [] }, h.ctx);
+		expect(h.notices).toHaveLength(1);
+
+		setSystemTime(Date.parse("2026-10-21T15:00:01Z"));
+		h.handlers.get("context")!({ messages: [] }, h.ctx);
+		await h.handlers.get("turn_end")!({ toolResults: [] }, h.ctx);
+		const gateNotices = () => h.notices.filter(notice => notice.customType === "goal-deadline-gate-notice");
+		expect(gateNotices()).toHaveLength(2);
+		expect(gateNotices()[1]?.content).toContain("MISSED");
+		expect(gateNotices()[1]?.content.split("\n")).toHaveLength(2);
+		h.handlers.get("context")!({ messages: [] }, h.ctx);
+		await h.handlers.get("turn_end")!({ toolResults: [] }, h.ctx);
+		expect(gateNotices()).toHaveLength(2);
+
+		const blocked = h.handlers.get("tool_call")!({ toolName: "todo", input: { op: "append" } }, h.ctx) as { block?: boolean; reason?: string };
+		expect(blocked.block).toBe(true);
+		expect(gateNotices()[1]?.content).toContain("Replan the open requested rows");
+		expect(blocked.reason?.split("\n", 1)[0]).toContain("19:00");
+	});
+
+	test("a deadline_at that disagrees with local_time is rejected with the resolved value", async () => {
+		setSystemTime(NOW);
+		const { set } = harness();
+		await expect(set({ local_time: "19:00", deadline_at: 1_761_058_800 })).rejects.toThrow(/resolves to 1792594800 \(2026-10-21T15:00:00.000Z\)/);
+		const agreeing = await set({ local_time: "19:00", deadline_at: 1_792_594_830 });
+		expect(agreeing.details.state?.stages[0]?.deadlineAt).toBe(1_792_594_800);
+	});
+
+	test("invalid long stage ids keep a bounded imperative action and the full id in the detail", async () => {
+		setSystemTime(NOW);
+		const h = harness();
+		const stageId = `deadline-${"x".repeat(100)}-tail-92`;
+		let message = "";
+		try {
+			await h.set({ id: stageId, local_time: "not-a-time" });
+		} catch (error) {
+			message = error instanceof Error ? error.message : String(error);
+		}
+		const firstLine = message.split("\n", 1)[0] ?? "";
+		expect(firstLine.length).toBeLessThanOrEqual(100);
+		expect(firstLine).toContain("Set a valid local_time");
+		expect(firstLine).toContain("tail-92");
+		expect(message).toContain(stageId);
+	});
+
+	test("a new user deadline in the past or beyond a week is an arithmetic error, never WRAP-UP", async () => {
+		setSystemTime(NOW);
+		const past = harness();
+		await expect(past.set({ deadline_at: 1_761_058_800 })).rejects.toThrow(/epoch arithmetic error/);
+		const far = harness();
+		await expect(far.set({ deadline_at: 1_792_594_800 + 8 * 24 * 3600 })).rejects.toThrow(/more than 7 days ahead/);
+		const recent = harness();
+		const barely = await recent.set({ deadline_at: Math.floor(NOW / 1000) - 120 });
+		expect(barely.details.state?.active).toBe(true);
+	});
+
+	test("a wrong value from the same user message can be corrected; a self-extension cannot", async () => {
+		setSystemTime(NOW);
+		const same = harness();
+		const wrong = await same.set({ local_time: "18:00" });
+		expect(wrong.details.state?.baselineDeadlineAt).toBe(1_792_591_200);
+		const fixed = await same.set({ local_time: "19:00" });
+		expect(fixed.details.state?.baselineDeadlineAt).toBe(1_792_594_800);
+		await expect(same.set({ local_time: "20:00" })).rejects.toThrow(/does not authorize changing the recorded deadline/);
+		// Negative control: after the correction window the same message no longer licenses a change.
+		const late = harness();
+		await late.set({ local_time: "18:00" });
+		setSystemTime(NOW + 45 * 60_000);
+		await expect(late.set({ local_time: "19:00" })).rejects.toThrow(/does not authorize changing the recorded deadline/);
+	});
+});
+
+
+test("goal focus announces open TODO completion requirements before either completion tool", () => {
+	const handlers = new Map<string, Function>();
+	const notices: Array<{ customType: string; content: string }> = [];
+	const phases = [{ name: "Release", tasks: [{ content: "Publish violet report", status: "pending" }] }];
+	goalDeadlines({
+		pi: { goalRef },
+		on: (event, handler) => handlers.set(event, handler),
+		registerTool: () => {}, appendEntry: () => {}, zod: z,
+		sendMessage: message => notices.push(message),
+	} as unknown as ExtensionAPI);
+	const ctx = { getTodoPhases: () => phases, hasUI: false } as unknown as ExtensionContext;
+	const focus = () => handlers.get("goal_updated")!({ goal: { id: "violet-goal", createdAt: 1_000, status: "active" } }, ctx);
+	focus(); focus();
+	expect(notices).toHaveLength(1);
+	expect(notices[0].content.split("\n")).toHaveLength(2);
+	expect(notices[0].content).toContain("Publish violet report");
+	for (const call of [{ toolName: "goal", input: { op: "complete" } }, { toolName: "update_goal", input: { status: "complete" } }]) {
+		const refusal = handlers.get("tool_call")!(call, ctx);
+		expect(refusal.block).toBe(true);
+		expect(refusal.reason.split("\n")[0]).toBe(notices[0].content.split("\n")[0]);
+	}
+	phases[0].tasks[0].status = "completed";
+	focus();
+	expect(notices).toHaveLength(1);
+	expect(handlers.get("tool_call")!({ toolName: "goal", input: { op: "complete" } }, ctx)).toBeUndefined();
+});

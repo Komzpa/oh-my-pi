@@ -3,15 +3,16 @@
 > Applies one mutation to the session todo list and returns a text summary plus the full phase/task state.
 
 ## Source
+
 - Entry: `packages/coding-agent/src/tools/todo.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/todo.md`
 - Key collaborators:
-  - `packages/coding-agent/src/tools/index.ts` — registers tool, exposes session hooks, gates availability.
-  - `packages/coding-agent/src/modes/controllers/event-controller.ts` — updates the visible todo UI on tool completion.
-  - `packages/coding-agent/src/session/todo-tracker.ts` — owns canonical phases, restores branch snapshots, and manages completion reminders.
-  - `packages/coding-agent/src/session/agent-session.ts` — exposes todo state hooks and emits failure reminders.
-  - `packages/coding-agent/src/modes/controllers/todo-command-controller.ts` — `/todo` command path, custom-entry persistence, transcript reminder injection.
-  - `packages/tui/src/render/render-utils.ts` — collapsed-preview cap for renderer trees.
+   - `packages/coding-agent/src/tools/index.ts` — registers tool, exposes session hooks, gates availability.
+   - `packages/coding-agent/src/modes/controllers/event-controller.ts` — updates the visible todo UI on tool completion.
+   - `packages/coding-agent/src/session/todo-tracker.ts` — owns canonical phases, restores branch snapshots, and manages completion reminders.
+   - `packages/coding-agent/src/session/agent-session.ts` — exposes todo state hooks and emits failure reminders.
+   - `packages/coding-agent/src/modes/controllers/todo-command-controller.ts` — `/todo` command path, custom-entry persistence, transcript reminder injection.
+   - `packages/tui/src/render/render-utils.ts` — collapsed-preview cap for renderer trees.
 
 ## Inputs
 
@@ -27,31 +28,38 @@ The params object **is** a single op — the discriminator and its fields live a
 | `unblock` | `task` or `phase` | None | Returns blocked target tasks to `pending` and clears their blocker notes. |
 | `rm` | `task` or `phase` or neither | None | Removes the target task, clears the phase's task list, or clears all task lists. |
 | `append` | `phase`, `items` | None | Appends new `pending` tasks to a phase; creates the phase if missing. |
-| `view` | None | None | Echoes the current list. A `view` call is read-only: no normalization, no state write. |
+| `schedule` | `updates` | None | Atomically updates scheduling metadata without changing status. An update may rename a row with `content`; status and executor history stay attached, dependencies follow the new name, and blank/colliding names reject the whole batch. |
+| `view` | None | `archive` | Reads the live list without changing state. `archive: true` additionally shows event-log-recoverable archived rows. |
 
 ### Fields
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `op` | `"init" \| "start" \| "done" \| "rm" \| "drop" \| "block" \| "unblock" \| "append" \| "view"` | Yes in the schema | Operation discriminator. At execution time, an omitted op is repaired only for unambiguous `list`/`items` payloads (see Flow). |
+| `op` | `"init" | "start" | "done" | "block" | "rm" | "drop" | "unblock" | "append" | "schedule" | "view"` | Yes in the schema | Operation discriminator. At execution time, an omitted op is repaired only for unambiguous `list`/`items` payloads (see Flow). |
 | `list` | `{ phase: string; items: string[] }[]` | For `init` (unless a flat `items` list is given) | Full replacement payload. Each phase's `items` has `minItems: 1`; an explicit `list: []` clears all phases. |
 | `task` | `string` | For `start`; for task-targeted `done`/`drop`/`block`/`unblock`/`rm` | Exact task content match. |
 | `phase` | `string` | For `append`; for phase-targeted `done`/`drop`/`block`/`unblock`/`rm`; optional for a flat `init` | Exact phase name match, except `append` lazily creates a missing phase and a flat `init` synthesizes one (default `Tasks`). |
 | `items` | `string[]` | For `append`; or as a flat `init` payload | Tasks to append, or the full task list for a flat `init`. Op-specific validation requires at least one item; a stray empty array on an unrelated op is schema-valid and ignored. |
+| `updates` | schedule-update objects | For `schedule` | Each update targets a task by exact unique `task` content; optional `content` renames it and rewrites dependent references atomically. |
 | `reason` | `string` | No | Optional blocker note for `block`; normalized to a single trimmed line. |
+| `archive` | `boolean` | No | On `view` only, explicitly includes archived rows; ordinary results expose only a count and timestamp summary. |
 
 ## Outputs
+
 The tool returns a single-shot `AgentToolResult`:
 
 - `content`: one text part containing the summary from `formatSummary(...)`.
-  - Empty final state with no errors: `Todo list cleared.` (`Todo list is empty.` for a pure-`view` call).
-  - Non-empty final state: remaining-item list, current phase progress, then a per-phase tree.
-  - Op-specific errors prefix the summary with `Errors: ...`; schema failures instead return `Invalid todo arguments: ...`. Both set `isError: true` and leave returned/persisted phases at their pre-call state.
+   - Empty final state with no errors: `Todo list cleared.` (`Todo list is empty.` for a pure-`view` call).
+   - Non-empty final state: remaining-item list, current phase progress, then a per-phase tree.
+   - Op-specific errors prefix the summary with `Errors: ...`; schema failures instead return `Invalid todo arguments: ...`. Both set `isError: true` and leave returned/persisted phases at their pre-call state.
 - `details`:
-  - `phases: TodoPhase[]`
+  - `phases: TodoPhase[]` is the live state. Archived rows appear only in the durable compact `edit` event or explicit archive-view payload, not the ordinary displayed list.
   - `storage: "session" | "memory"`
-  - `completedTasks?: TodoCompletionTransition[]` when a task changed from non-completed to `completed` during the call
-  - `op?: TodoOperation` identifies the resolved operation, including a mutation that later produced op-specific errors; absent on schema-validation failures and legacy transcript entries.
+  - `archiveSummary?: { count: number; fromAt: number; toAt: number }` summarizes historical archive events without exposing their rows.
+  - `archivedPhases?: TodoPhase[]` is present only for explicit `{ op: "view", archive: true }`.
+  - `edit?: TodoPersistedEdit` is a compact event for successful writes; archive events carry `{ v: 1, kind: "archive", at, operation?, archivedPhases }`.
+  - `completedTasks?: TodoCompletionTransition[]` records tasks newly completed during the call.
+  - `op?: TodoOperation` identifies a resolved operation, including op-specific failures.
 
 `TodoPhase` / `TodoItem` state model:
 
@@ -61,6 +69,7 @@ The tool returns a single-shot `AgentToolResult`:
 The TUI renderer (`todoToolRenderer`) merges call and result into one transcript block and renders phases as a tree. Collapsed transcript previews cap tree items at `PREVIEW_LIMITS.COLLAPSED_ITEMS` (`8`).
 
 ## Flow
+
 1. `TodoTool.execute(...)` clones the current cached phases from `session.getTodoPhases?.() ?? []` (`packages/coding-agent/src/tools/todo.ts`).
 2. `resolveTodoParams(...)` validates the raw single-op payload. With `lenientArgValidation`, an omitted `op` can be inferred from non-empty `list` (`init`), non-empty `items` plus a non-empty `phase` (`append`), or non-empty `items` without that phase when no phases exist (`init`). Targeting fields alone cannot infer an op. Other schema failures return `Invalid todo arguments: ...`.
 3. `applyParams(...)` applies the resolved op with `applyEntry(...)`.
@@ -77,57 +86,65 @@ The TUI renderer (`todoToolRenderer`) merges call and result into one transcript
    - if multiple tasks are `in_progress`, only the first stays active and the rest become `pending`;
    - if none are `in_progress`, the first `pending` task in phase/task order is auto-promoted to `in_progress`;
    - blocked tasks are skipped, so a list may have no active task when all open work is blocked.
-7. `execute(...)` stores the updated phases with `session.setTodoPhases?.(...)` only when the op produced no errors and was not a `view`; a failed op is discarded. `storage` is `"session"` when `session.getSessionFile()` exists, else `"memory"`.
+7. A successful mutation archives an entire wholly closed phase once its latest known terminal timestamp is at least ten minutes old; phases with unknown terminal timestamps stay live. In phases with open work, retain up to ten most-recent terminal rows, keeping unknown-finish rows rather than assuming they are old, and archive older dated rows. Pending, active, and blocked tasks remain live. `view` and failed mutations never archive or write.
 8. `getCompletionTransitions(...)` compares the previous and updated phases (skipped for failed or `view` calls); newly completed tasks are returned in `details.completedTasks`.
 9. Details include the resolved `op` on success or op-specific failure, including an op inferred from omitted input. A payload that cannot be schema-validated returns before an op is available.
-10. The agent runtime watches `todo` tool results in `packages/coding-agent/src/session/agent-session.ts`; successful results refresh cached todos, failed results inject a hidden next-turn reminder telling the model that todo progress is not visible until it retries.
-11. The event controller updates the visible todo UI from `result.details.phases` on success, or shows a warning on error (`packages/coding-agent/src/modes/controllers/event-controller.ts`).
+10.   The agent runtime watches `todo` tool results in `packages/coding-agent/src/session/agent-session.ts`; successful results refresh cached todos, failed results inject a hidden next-turn reminder telling the model that todo progress is not visible until it retries.
+11.   The event controller updates the visible todo UI from `result.details.phases` on success, or shows a warning on error (`packages/coding-agent/src/modes/controllers/event-controller.ts`).
 
 ## Modes / Variants
+
 ### State transitions
 
-| Current status | `start` | `done` | `drop` | `block` | `unblock` | `rm` | `append` |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `pending` | `in_progress` on target | `completed` | `abandoned` | `blocked` | No change | Removed | New tasks enter as `pending` |
-| `in_progress` | Target stays `in_progress`; non-target active tasks become `pending` | `completed` | `abandoned` | `blocked` | No change | Removed | No status change |
-| `blocked` | Can be set to `in_progress` if targeted | `completed` | `abandoned` | Stays blocked; note may change | `pending`, note cleared | Removed | No status change |
-| `completed` | Can be set back to `in_progress` if targeted | Stays `completed` | Becomes `abandoned` if targeted | No change | No change | Removed | No status change |
-| `abandoned` | Can be set back to `in_progress` if targeted | Becomes `completed` if targeted | Stays `abandoned` | No change | No change | Removed | No status change |
+| Current status | `start`                                                              | `done`                          | `drop`                          | `block`                        | `unblock`               | `rm`    | `append`                     |
+| -------------- | -------------------------------------------------------------------- | ------------------------------- | ------------------------------- | ------------------------------ | ----------------------- | ------- | ---------------------------- |
+| `pending`      | `in_progress` on target                                              | `completed`                     | `abandoned`                     | `blocked`                      | No change               | Removed | New tasks enter as `pending` |
+| `in_progress`  | Target stays `in_progress`; non-target active tasks become `pending` | `completed`                     | `abandoned`                     | `blocked`                      | No change               | Removed | No status change             |
+| `blocked`      | Can be set to `in_progress` if targeted                              | `completed`                     | `abandoned`                     | Stays blocked; note may change | `pending`, note cleared | Removed | No status change             |
+| `completed`    | Can be set back to `in_progress` if targeted                         | Stays `completed`               | Becomes `abandoned` if targeted | No change                      | No change               | Removed | No status change             |
+| `abandoned`    | Can be set back to `in_progress` if targeted                         | Becomes `completed` if targeted | Stays `abandoned`               | No change                      | No change               | Removed | No status change             |
 
 Normalization then re-applies the single-active-task rule after the op runs.
 
 ### Op targeting rules
+
 - `done`, `drop`, `rm`:
-  - `task` set: affect one exact-content task.
-  - else `phase` set: affect every task in that exact-name phase.
-  - else: affect every task in every phase.
+   - `task` set: affect one exact-content task.
+   - else `phase` set: affect every task in that exact-name phase.
+   - else: affect every task in every phase.
 - `block` and `unblock` use the same task-or-phase lookup but reject an omitted target.
 - `append` is the only op that creates a missing phase.
 - `init` discards previous phases entirely.
 
 ### Markdown round-trip helpers
+
 The same file also exposes non-tool helpers used by `/todo`:
+
 - `phasesToMarkdown(...)` serializes phases as headings plus checklist items (`[ ]`, `[/]`, `[x]`, `[-]`, `[!]`). A blocked reason is preserved in a trailing `<!-- blocker: ... -->` comment.
 - `markdownToPhases(...)` parses that format, defaults orphan tasks into a `Todos` phase, also accepts `>` as `in_progress` and `~` as `abandoned`, restores blocked notes, and runs the same normalization step.
 
 ## Side Effects
+
 - Filesystem
-  - None in the tool itself.
+   - None in the tool itself.
 - Session state (transcript, memory, jobs, checkpoints, registries)
   - Mutates the session todo cache through `setTodoPhases`.
   - `storage` reports whether the session has a backing session file, but the tool does not append a custom session entry itself.
   - Successful state-changing tool-result messages carry `details.phases`; `getLatestTodoPhasesFromEntries(...)` restores the latest canonical snapshot. Failed and pure-`view` results are skipped.
   - Eval callers use `committedTodoPhases(...)` to persist mutations separately when there is no direct `todo` tool-result entry.
+  - Successful mutations update the live cache and persist compact edits; an archive edit carries the triggering operation and full archived rows so active-branch replay can reconstruct live and archive separately. Earlier full transcript snapshots remain unchanged for historical export consumers.
+  - `getLatestTodoArchiveFromEntries(...)` reconstructs archived rows for explicit archive views.
   - Failed `todo` results cause `agent-session` to enqueue a hidden next-turn reminder (`customType: "todo-error-reminder"`).
 - User-visible prompts / interactive UI
-  - Transcript block is rendered by `todoToolRenderer` and merged with the call line.
-  - `event-controller` updates the visible todo panel from successful results.
-  - On error, `event-controller` shows `Todo update failed...`; the visible panel may stay stale until a later successful call.
-  - `/todo expand` shows every phase and task in the sticky HUD; `/todo collapse` restores its bounded preview. Both are display-only and leave todo state unchanged.
+   - Transcript block is rendered by `todoToolRenderer` and merged with the call line.
+   - `event-controller` updates the visible todo panel from successful results.
+   - On error, `event-controller` shows `Todo update failed...`; the visible panel may stay stale until a later successful call.
+   - `/todo expand` shows every phase and task in the sticky HUD; `/todo collapse` restores its bounded preview. Both are display-only and leave todo state unchanged.
 - Background work / cancellation
-  - When every task is `completed` or `abandoned`, the TUI hides the HUD after `tasks.todoClearDelay`. Canonical phases are not removed. The dismissal is persisted as a `todo_hud_state` custom entry tied to the exact canonical snapshot (`packages/coding-agent/src/modes/interactive-mode.ts`).
+   - When every task is `completed` or `abandoned`, the TUI hides the HUD after `tasks.todoClearDelay`. Canonical phases are not removed. The dismissal is persisted as a `todo_hud_state` custom entry tied to the exact canonical snapshot (`packages/coding-agent/src/modes/interactive-mode.ts`).
 
 ## Limits & Caps
+
 - `init.list`: applies to a single op (`todoSchema`). The params object carries exactly one op.
 - `init.list[*].items`: schema-level `minItems: 1`.
 - Flat `init.items` and `append.items`: the shared schema allows any array length, but op-specific execution rejects missing/empty lists.
@@ -137,35 +154,39 @@ The same file also exposes non-tool helpers used by `/todo`:
 - Tool execution mode: `concurrency = "exclusive"`, `strict = true`, `loadMode = "discoverable"`.
 
 ## Errors
+
 - Ordinary bad op payloads are accumulated as human-readable strings in `errors`; the result is marked `isError: true` and the mutation is discarded — the returned and persisted state stay at the pre-call list.
 - Error strings come from the helpers in `packages/coding-agent/src/tools/todo.ts`, including:
-  - `Missing list for init operation`
-  - `Missing task content`
-  - `Duplicate phase "..." in init list` / `Duplicate task "..." in init list`
-  - `Task "..." not found` with an extra empty-list hint when applicable, or a hint that tasks are referenced by content (not `task-N` IDs) when the missing content looks like an ID
-  - `Missing phase name`
-  - `Phase "..." not found`
-  - `Missing phase name for append operation`
-  - `block requires a task or phase target`
-  - `unblock requires a task or phase target`
-  - `Missing items for append operation`
-  - `Task "..." already exists`
+   - `Missing list for init operation`
+   - `Missing task content`
+   - `Duplicate phase "..." in init list` / `Duplicate task "..." in init list`
+   - `Task "..." not found` with an extra empty-list hint when applicable, or a hint that tasks are referenced by content (not `task-N` IDs) when the missing content looks like an ID
+   - `Missing phase name`
+   - `Phase "..." not found`
+   - `Missing phase name for append operation`
+   - `block requires a task or phase target`
+   - `unblock requires a task or phase target`
+   - `Missing items for append operation`
+   - `Task "..." already exists`
 - A `todo` call carries a single op; any error in it discards every mutation the op made.
 - Runtime-level tool failure is handled outside the tool body: `agent-session` injects a hidden reminder and the event controller warns the user that visible progress may be stale.
 - Idempotency is op-specific:
-  - `init` is a full replacement; replaying the same payload yields the same state.
-  - `start`, `done`, `drop`, `block`, and `unblock` are effectively idempotent on an existing target state, though `start` also demotes another active task and a repeated `block` can update its reason.
-  - Task-targeted `rm` is not idempotent: the second call errors because the task is gone. Phase-targeted `rm` only empties the phase, so repeating it succeeds; untargeted `rm` similarly clears task lists without removing phase objects.
-  - `append` is not idempotent: duplicate task content is rejected with `Task "..." already exists`; the `append` op validates up front, so an op with any duplicate appends nothing.
+   - `init` is a full replacement; replaying the same payload yields the same state.
+   - `start`, `done`, `drop`, `block`, and `unblock` are effectively idempotent on an existing target state, though `start` also demotes another active task and a repeated `block` can update its reason.
+   - Task-targeted `rm` is not idempotent: the second call errors because the task is gone. Phase-targeted `rm` only empties the phase, so repeating it succeeds; untargeted `rm` similarly clears task lists without removing phase objects.
+   - `append` is not idempotent: duplicate task content is rejected with `Task "..." already exists`; the `append` op validates up front, so an op with any duplicate appends nothing.
 
 ## Notes
+
 - Task lookup is exact string equality inside the tool. The model-facing prompt says task content and phase names are identifiers and should stay unique; `append` enforces task uniqueness globally, and `init` rejects duplicate phase names and duplicate task contents in its payload.
 - `findTaskByContent(...)` returns the first matching task across phases. Duplicate task contents make later targeted ops ambiguous.
 - `normalizeInProgressTask(...)` runs once after the op, not mid-op. A single op (e.g. `init`) can build an intermediate invalid state and rely on final normalization.
 - `storage: "session"` means the session has a session-file backing; it does not mean this tool wrote a durable custom entry.
 - Reload persistence differs by path:
-  - plain `todo` calls survive in transcript tool-result details;
-  - `/todo` command edits additionally append `customType: "user_todo_edit"` entries and inject a visible-to-model `<system-reminder>` developer message describing the manual edit.
+   - plain `todo` calls survive in transcript tool-result details;
+   - `/todo` command edits additionally append `customType: "user_todo_edit"` entries and inject a visible-to-model `<system-reminder>` developer message describing the manual edit.
 - On resume, rewind, fork, or branch rehydration, `TodoTracker.syncFromBranch()` restores the latest successful mutation/custom-entry snapshot, including completed and abandoned tasks. Pure `view` results do not replace canonical state.
+- Fully closed phases remain live until their latest terminal timestamp is at least 10 minutes old, then archive wholesale even when fewer than 10 closed rows exist. A phase with open work keeps at most the 10 most-recent closed rows; unknown finish timestamps never justify premature archival. Ordinary chief/gates/forecast/widget/handoff consume live work and the bounded tail; only an explicit archive view exposes archived rows, including estimate, actual and executor evidence. Open forecasts may resolve completed archived prerequisites without displaying their rows. For streamed `/goal set`, the next provider request MUST contain exactly one current `<goal_context>`/`<todo_context>` block and one archive-summary line, with no archived task detail; `goal-mode-integration.test.ts` is the oracle.
+- In the Reemxy TODO dispatcher, a successful main-session `init` starts a fresh objective's finish-drift sample epoch. Failed `init` and ordinary `schedule`, `start`, and `done` calls keep the current samples; plan-doctor dispatch separately resets escalation state.
 - Tool availability is gated by `todo.enabled`, and the registry excludes it when `includeYield` is enabled unless the session is prewalk-armed (`packages/coding-agent/src/tools/index.ts`).
 - Subagents do not inherit `todo`; `packages/coding-agent/src/task/executor.ts` also filters it from the active set as a parent-owned tool. Exception (both layers): prewalk-armed subagents keep it — the prewalk plan nudge and todo gate require the child to commit its own todo list before the hand-off.

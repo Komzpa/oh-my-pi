@@ -59,6 +59,7 @@ import {
 	PERMISSION_OPTIONS_BY_ID,
 	PERMISSION_REQUIRED_TOOLS,
 } from "./acp-permission-gate";
+import { resolveToolTier } from "../tools/approval";
 import type { ClientBridge, ClientBridgePermissionOutcome } from "./client-bridge";
 import { toolReadsSkillUris } from "../system-prompt";
 
@@ -123,6 +124,7 @@ export interface SessionToolsHost {
 	steeringArrivalRelease(seq: number): void;
 	queuedMessageCount(): number;
 	planModeEnabled(): boolean;
+	planningRepairMessage?(): string | undefined;
 	model(): Model | undefined;
 	memoryBackendSession(): MemoryBackendStartOptions["session"];
 	clearInheritedProviderPromptCacheKey(): void;
@@ -268,6 +270,14 @@ export function projectMountedMCPXdevGuidance(routes: Iterable<MountedMCPToolRou
 const TOOL_ROSTER_NOTICE_MESSAGE_TYPE = "tool-roster-notice";
 const XDEV_MOUNT_NOTICE_MESSAGE_TYPE = "xdev-mount-notice";
 const EVAL_PRELUDE_NOTICE_MESSAGE_TYPE = "eval-prelude-notice";
+const PLANNING_CONTROL_TOOLS: Record<string, true> = {
+	todo: true,
+	task: true,
+	ask: true,
+	hub: true,
+	think: true,
+	yield: true,
+};
 
 /** Custom entry holding the digest of the base prompt the branch's primary model calls are built from. */
 const SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE = "system-prompt-digest";
@@ -353,6 +363,8 @@ export class SessionTools {
 	#createVibeTools: (() => AgentTool[]) | undefined;
 	#createThinkTool: SessionToolsOptions["createThinkTool"];
 	#installedVibeToolNames = new Set<string>();
+	/** An MCP refresh landed while vibe narrowed the active set; vibe exit activates its manager tools. */
+	#vibeDeferredMcpRefresh = false;
 	#builtInToolNames: Set<string>;
 	#rpcHostToolNames = new Set<string>();
 	#mcpManagerToolNames = new Set<string>();
@@ -536,6 +548,7 @@ export class SessionTools {
 		for (const name of this.#xdev?.mountedNames ?? []) this.#enabledToolNames.add(name);
 		this.#promptModelKey = this.#currentPromptModelKey();
 		this.#promptInlineDescriptors = this.#currentInlineDescriptors();
+		this.#host.agent.setTools(this.#host.agent.state.tools.map(tool => this.#wrapToolForAcpPermission(tool)));
 	}
 
 	/** Mutable registry shared with controller hosts that inspect available tools. */
@@ -920,7 +933,11 @@ export class SessionTools {
 	deactivateVibeTools(nextToolNames: string[]): Promise<void> {
 		return this.runToolRegistryMutation(async () => {
 			this.#uninstallVibeTools();
-			await this.#applyActiveToolsByName(nextToolNames);
+			await this.#applyActiveToolsByName([
+				...nextToolNames,
+				...(this.#vibeDeferredMcpRefresh ? this.#mcpManagerToolNames : []),
+			]);
+			this.#vibeDeferredMcpRefresh = false;
 		});
 	}
 
@@ -930,7 +947,11 @@ export class SessionTools {
 			const removed = new Set(this.#installedVibeToolNames);
 			this.#uninstallVibeTools();
 			const nextEnabled = this.getEnabledToolNames().filter(name => !removed.has(name));
-			await this.#applyActiveToolsByName(nextEnabled);
+			await this.#applyActiveToolsByName([
+				...nextEnabled,
+				...(this.#vibeDeferredMcpRefresh ? this.#mcpManagerToolNames : []),
+			]);
+			this.#vibeDeferredMcpRefresh = false;
 		});
 	}
 
@@ -999,6 +1020,34 @@ export class SessionTools {
 		}
 	}
 
+	#wrapToolForPlanningAdmission<T extends AgentTool>(tool: T): T {
+		return new Proxy(tool, {
+			get: (target, prop) => {
+				if (prop !== "execute") return target[prop as keyof T];
+				return async (
+					toolCallId: string,
+					args: unknown,
+					signal: AbortSignal | undefined,
+					onUpdate: never,
+					ctx: AgentToolContext | undefined,
+				) => {
+					if (signal?.aborted) throw new ToolAbortError("Tool call cancelled");
+					const planningRepair = this.#host.planningRepairMessage?.();
+					if (
+						planningRepair &&
+						resolveToolTier(target, args) !== "read" &&
+						PLANNING_CONTROL_TOOLS[target.name] !== true
+					) {
+						throw new ToolError(
+							`${planningRepair}\nEvery non-read tool is refused until the whole plan has estimates and dependencies.`,
+						);
+					}
+					return await target.execute(toolCallId, args as never, signal, onUpdate, ctx as never);
+				};
+			},
+		}) as T;
+	}
+
 	/** Enabled MCP tools in their current presentation partition. */
 	getSelectedMCPToolNames(): string[] {
 		// Every connected MCP tool is enabled; presentation (top-level vs xd://) is
@@ -1006,29 +1055,21 @@ export class SessionTools {
 		return this.getEnabledToolNames().filter(name => isMCPToolName(name) && this.#toolRegistry.has(name));
 	}
 
-	/**
-	 * Wrap a tool with a permission-gate proxy when an ACP client is connected.
-	 * Only wraps tools whose name is in PERMISSION_REQUIRED_TOOLS and only when
-	 * the bridge exposes `requestPermission`. No-ops for all other cases.
-	 *
-	 * Bash follows its own approval resolution, including pattern allows, denials,
-	 * and critical overrides. The schema's implicit yolo default retains ACP's
-	 * client permission gate for unmatched bash commands; explicitly selecting
-	 * yolo opts out. Other tools keep their existing ACP gate behavior.
-	 */
+	/** Wrap direct and eval-bridged tools with planning admission, then ACP permission checks. */
 	#wrapToolForAcpPermission<T extends AgentTool>(tool: T): T {
+		const planningGatedTool = this.#wrapToolForPlanningAdmission(tool);
 		const bridge = this.#host.clientBridge();
-		// Match the capability+method gating pattern used by read/write/bash.
-		if (!bridge?.capabilities.requestPermission || !bridge.requestPermission) return tool;
-		if (PERMISSION_REQUIRED_TOOLS[tool.name] !== true) return tool;
+		// Keep planning admission on every path, including tools without an ACP gate.
+		if (!bridge?.capabilities.requestPermission || !bridge.requestPermission) return planningGatedTool;
+		if (PERMISSION_REQUIRED_TOOLS[tool.name] !== true) return planningGatedTool;
 		// Default-config ACP sessions still ask for executable calls even though
 		// the schema defaults to yolo; explicit yolo is an intentional opt-in.
 		if (tool.name !== "bash" && this.#isExplicitAutoApproveMode()) {
 			const userPolicies: Record<string, unknown> = cfgToolsApproval.get(this.#host.settings);
 			const toolPolicy = userPolicies[tool.name];
-			if (!toolPolicy || toolPolicy === "allow") return tool;
+			if (!toolPolicy || toolPolicy === "allow") return planningGatedTool;
 		}
-		return new Proxy(tool, {
+		return new Proxy(planningGatedTool, {
 			get: (target, prop) => {
 				if (prop !== "execute") return target[prop as keyof T];
 				return async (
@@ -2481,7 +2522,8 @@ export class SessionTools {
 	 * Replace MCP tools in the registry and enable them immediately. Refreshes
 	 * are serialized so an older asynchronous prompt rebuild cannot commit
 	 * after a newer catalog snapshot. Every connected MCP tool becomes available
-	 * (mounted under `xd://` when that transport is active, else top-level).
+	 * (mounted under `xd://` when that transport is active, else top-level);
+	 * while vibe mode is active, activation waits for vibe exit.
 	 */
 	refreshMCPTools(mcpTools: CustomTool[]): Promise<void> {
 		const snapshot = [...mcpTools];
@@ -2524,16 +2566,19 @@ export class SessionTools {
 			if (managerToolSet.has(tool)) this.#mcpManagerToolNames.add(tool.name);
 		}
 
-		// Connected manager tools become active immediately. Extension-owned MCP
-		// tools retain their prior selection while both sets share one registry.
-		const retainedActiveExtensionToolNames = previousActiveMcpToolNames.filter(
-			name => this.#extensionMcpTools.has(name) && this.#toolRegistry.has(name),
+		// Connected manager tools become active immediately, except while vibe
+		// narrows the active set to the director's tools: then every MCP tool keeps
+		// its prior selection and vibe exit activates the manager set. Extension-owned
+		// MCP tools always retain their prior selection while both share one registry.
+		const vibeActive = this.#installedVibeToolNames.size > 0;
+		const retainedActiveMcpToolNames = previousActiveMcpToolNames.filter(
+			name => (vibeActive || this.#extensionMcpTools.has(name)) && this.#toolRegistry.has(name),
 		);
 		const nextActive = [
 			...new Set([
 				...this.#getActiveNonMCPToolNames(),
-				...this.#mcpManagerToolNames,
-				...retainedActiveExtensionToolNames,
+				...(vibeActive ? [] : this.#mcpManagerToolNames),
+				...retainedActiveMcpToolNames,
 			]),
 		];
 		try {
@@ -2541,6 +2586,7 @@ export class SessionTools {
 			if (this.#host.isDisposed()) {
 				restorePreviousMcpTools();
 			} else {
+				if (vibeActive) this.#vibeDeferredMcpRefresh = true;
 				// The settled mutation promise may retain this async frame; drop
 				// rollback references as soon as the new generation commits.
 				previousMcpTools.clear();

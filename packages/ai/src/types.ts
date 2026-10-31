@@ -603,6 +603,13 @@ export interface StreamOptions {
 	 */
 	storeResponses?: boolean;
 	/**
+	 * Request the Daybreak Blue cyber access program on Codex when the account
+	 * is eligible (see `openai-codex/access-programs.ts`). `false` omits
+	 * `access_programs`. Unset falls back to the host's
+	 * `configureCodexAccessPrograms` default, else on. Ignored elsewhere.
+	 */
+	codexAccessPrograms?: boolean;
+	/**
 	 * Disable native reasoning when the caller supplies an external scratchpad.
 	 * OpenAI Responses emits `reasoning: { effort: "none" }`; Anthropic and
 	 * Google transports use their native thinking-off controls.
@@ -660,6 +667,10 @@ export interface StreamOptions {
 	 * Optional callback for provider response metadata after headers are received.
 	 */
 	onResponse?: (response: ProviderResponseMetadata, model?: Model<Api>, signal?: AbortSignal) => void | Promise<void>;
+	/** Called only after a completed, non-error provider response, with the resolved credential identity. */
+	onProviderCallSucceeded?: (message: AssistantMessage) => void;
+	/** Called once for a final provider failure after retries; never for aborts. */
+	onProviderCallFailed?: (error: unknown) => void;
 	/**
 	 * Optional callback for raw Server-Sent Events as they arrive from HTTP streaming providers,
 	 * plus synthesized SSE-shaped frames for the Codex WebSocket transport (one synthetic frame
@@ -811,7 +822,7 @@ export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	 * A rejecting transformer is swallowed and the reserved payload stands in.
 	 */
 	cursorOnToolResult?: CursorToolResultHandler;
-	/** Cursor hands unhandled MCP calls to an external executor instead of reporting them as missing. */
+	/** The caller's client runs every tool: Cursor offers them all as MCP tools and hands each call off to it. */
 	cursorExternalToolExecutor?: boolean;
 	/**
 	 * Amazon Bedrock Guardrail settings forwarded through transports that do not
@@ -863,6 +874,8 @@ export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	 * provider. Non-Anthropic providers ignore the field.
 	 */
 	fallbacks?: FallbackParam[];
+	/** Factory Droid only: omit refusal fallbacks and reject responses served by another model. */
+	disableServerSideFallback?: boolean;
 }
 
 // Generic StreamFunction with typed options

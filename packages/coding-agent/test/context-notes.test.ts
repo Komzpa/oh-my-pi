@@ -8,7 +8,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	CONTEXT_NOTES_ENTRY_TYPE,
 	getContextNotes,
-	MAX_CONTEXT_NOTES_BYTES,
+	renderContextNotes,
 } from "@oh-my-pi/pi-coding-agent/session/context-notes";
 import type { ContextNotesEntry } from "@oh-my-pi/pi-coding-agent/session/context-notes";
 import type { CustomEntry, ResetBoundaryEntry, SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
@@ -68,7 +68,7 @@ function codexModel() {
 }
 
 describe("experimental context notes", () => {
-	it("accepts an omitted text on the model wire and reads saved notes without modifying the journal", async () => {
+	it("reads saved notes via action read without modifying the journal, even when placeholder text is supplied", async () => {
 		using tempDir = TempDir.createSync("@omp-context-notes-read-");
 		const sessionDir = path.join(tempDir.path(), "sessions");
 		const manager = SessionManager.create(tempDir.path(), sessionDir);
@@ -76,7 +76,7 @@ describe("experimental context notes", () => {
 		const tool = ContextNotesTool.createIf(toolSession(settings, manager));
 		if (!tool) throw new Error("expected context notes tool");
 		try {
-			await tool.execute("save", { text: "retain this notebook" });
+			await tool.execute("save", { action: "replace", text: "retain this notebook" });
 			const sessionFile = manager.getSessionFile();
 			if (!sessionFile) throw new Error("expected persisted session file");
 			const before = await Bun.file(sessionFile).text();
@@ -84,15 +84,26 @@ describe("experimental context notes", () => {
 			const model = codexModel();
 			const [wireTool] = convertOpenAICodexResponsesTools([tool], model);
 			if (wireTool?.type !== "function") throw new Error("expected function schema");
-			expect(isJsonSchemaValueValid(wireTool.parameters, {})).toBe(true);
-			expect(isJsonSchemaValueValid(wireTool.parameters, { text: "" })).toBe(true);
-			expect(isJsonSchemaValueValid(wireTool.parameters, { text: null })).toBe(false);
-			const args = validateToolCall([tool], { type: "toolCall", id: "read", name: tool.name, arguments: {} });
+			expect(isJsonSchemaValueValid(wireTool.parameters, {})).toBe(false);
+			expect(isJsonSchemaValueValid(wireTool.parameters, { action: "read" })).toBe(true);
+			expect(isJsonSchemaValueValid(wireTool.parameters, { action: "read", text: "" })).toBe(true);
+			expect(isJsonSchemaValueValid(wireTool.parameters, { action: "bogus" })).toBe(false);
+			expect(isJsonSchemaValueValid(wireTool.parameters, { action: "read", text: null })).toBe(false);
+			const args = validateToolCall([tool], {
+				type: "toolCall",
+				id: "read",
+				name: tool.name,
+				arguments: { action: "read", text: "" },
+			});
 			const read = await tool.execute("read", tool.parameters.assert(args));
 			expect(read.content).toEqual([{ type: "text", text: "retain this notebook" }]);
 			expect(getContextNotes(manager.getBranch())).toEqual(revision);
 			expect(await Bun.file(sessionFile).text()).toBe(before);
-			await tool.execute("clear", { text: "" });
+			// A read carrying replacement-looking text still cannot replace or clear.
+			await tool.execute("read-with-text", { action: "read", text: "must not be saved" });
+			expect(getContextNotes(manager.getBranch())).toEqual(revision);
+			expect(await Bun.file(sessionFile).text()).toBe(before);
+			await tool.execute("clear", { action: "clear" });
 			expect(getContextNotes(manager.getBranch())?.text).toBe("");
 			expect(getContextNotes(manager.getBranch())?.entryId).not.toBe(revision?.entryId);
 			const resumed = await SessionManager.open(sessionFile, sessionDir);
@@ -106,30 +117,95 @@ describe("experimental context notes", () => {
 		}
 	});
 
-	it("rejects an oversized UTF-8 replacement while retaining the current notebook revision", async () => {
+	it("rejects omitted or unknown actions and empty replacements without changing the notebook", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
-		const session = toolSession(settings, sessionManager);
-		const tool = ContextNotesTool.createIf(session);
+		const tool = ContextNotesTool.createIf(toolSession(settings, sessionManager));
 		if (!tool) throw new Error("expected context notes tool");
 
-		await tool.execute("initial", { text: "Retain this notebook after an invalid replacement." });
-		const multibyteCharacter = "€";
-		const oversized = multibyteCharacter.repeat(
-			Math.floor(MAX_CONTEXT_NOTES_BYTES / Buffer.byteLength(multibyteCharacter, "utf8")) + 1,
-		);
-		await expect(tool.execute("overflow", { text: oversized })).rejects.toThrow(
-			`${MAX_CONTEXT_NOTES_BYTES} UTF-8 bytes`,
-		);
-		expect(Buffer.byteLength(oversized, "utf8")).toBeGreaterThan(MAX_CONTEXT_NOTES_BYTES);
-		expect(getContextNotes(sessionManager.getBranch())?.text).toBe(
-			"Retain this notebook after an invalid replacement.",
-		);
-		expect(
-			sessionManager
-				.getBranch()
-				.filter(entry => entry.type === "custom" && entry.customType === CONTEXT_NOTES_ENTRY_TYPE),
-		).toHaveLength(1);
+		await tool.execute("initial", { action: "replace", text: "keep me" });
+		const revision = getContextNotes(sessionManager.getBranch());
+		const journalLength = sessionManager.getBranch().length;
+		// Legacy shapes: omitted text must not read, empty text must not clear.
+		await expect(tool.execute("legacy-read", {} as never)).rejects.toThrow("unchanged");
+		await expect(tool.execute("legacy-clear", { text: "" } as never)).rejects.toThrow("unchanged");
+		await expect(tool.execute("unknown", { action: "delete" } as never)).rejects.toThrow("unchanged");
+		await expect(tool.execute("empty-replace", { action: "replace", text: "" })).rejects.toThrow("unchanged");
+		await expect(tool.execute("missing-replace", { action: "replace" })).rejects.toThrow("unchanged");
+		expect(getContextNotes(sessionManager.getBranch())).toEqual(revision);
+		expect(sessionManager.getBranch()).toHaveLength(journalLength);
+	});
+
+	it.each([18_824, 18_825, 18_828, 65_537])(
+		"saves and reopens %i UTF-8 bytes without truncation or an older-revision fallback",
+		async bytes => {
+			using tempDir = TempDir.createSync("@omp-context-notes-large-");
+			const sessionDir = path.join(tempDir.path(), "sessions");
+			const manager = SessionManager.create(tempDir.path(), sessionDir);
+			const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
+			const tool = new ContextNotesTool(toolSession(settings, manager));
+			const text = "n".repeat(bytes - Buffer.byteLength("€😀", "utf8")) + "€😀";
+			try {
+				await tool.execute("initial", { action: "replace", text: "prior notebook" });
+				const prior = getContextNotes(manager.getBranch());
+				const saved = await tool.execute("save-large", { action: "replace", text });
+				expect(Buffer.byteLength(text, "utf8")).toBe(bytes);
+				expect(saved.details?.bytes).toBe(bytes);
+				expect(saved.details?.text).toBe(text);
+				expect(getContextNotes(manager.getBranch())?.entryId).not.toBe(prior?.entryId);
+				expect(renderContextNotes(manager.getBranch())).toContain(text);
+				const read = await tool.execute("read-large", { action: "read", text: "ignored" });
+				expect(read.details?.text).toBe(text);
+				const file = manager.getSessionFile();
+				if (!file) throw new Error("expected persisted session file");
+				const resumed = await SessionManager.open(file, sessionDir);
+				try {
+					const restored = getContextNotes(resumed.getBranch());
+					expect(Buffer.from(restored?.text ?? "", "utf8")).toEqual(Buffer.from(text, "utf8"));
+					expect(renderContextNotes(resumed.getBranch())).toContain(text);
+				} finally {
+					await resumed.close();
+				}
+			} finally {
+				await manager.close();
+			}
+		},
+	);
+
+	it("preserves the previous notebook on cancelled or failed disk preparation", async () => {
+		using tempDir = TempDir.createSync("@omp-context-notes-error-");
+		const sessionDir = path.join(tempDir.path(), "sessions");
+		const manager = SessionManager.create(tempDir.path(), sessionDir);
+		const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
+		const tool = new ContextNotesTool(toolSession(settings, manager));
+		try {
+			await tool.execute("initial", { action: "replace", text: "Retain this complete notebook €😀" });
+			const previous = getContextNotes(manager.getBranch());
+			const file = manager.getSessionFile();
+			if (!file) throw new Error("expected persisted session file");
+			const before = await Bun.file(file).text();
+			await expect(
+				tool.execute("cancelled", { action: "replace", text: "not saved" }, AbortSignal.abort()),
+			).rejects.toThrow();
+			const prepare = vi.spyOn(manager, "ensureOnDisk").mockRejectedValue(new Error("disk preparation failed"));
+			try {
+				await expect(tool.execute("failed", { action: "replace", text: "not saved" })).rejects.toThrow(
+					"disk preparation failed",
+				);
+			} finally {
+				prepare.mockRestore();
+			}
+			expect(getContextNotes(manager.getBranch())).toEqual(previous);
+			expect(await Bun.file(file).text()).toBe(before);
+			const resumed = await SessionManager.open(file, sessionDir);
+			try {
+				expect(getContextNotes(resumed.getBranch())).toEqual(previous);
+			} finally {
+				await resumed.close();
+			}
+		} finally {
+			await manager.close();
+		}
 	});
 
 	it("leaves the branch journal unchanged when reading a missing notebook", async () => {
@@ -138,7 +214,7 @@ describe("experimental context notes", () => {
 		const tool = ContextNotesTool.createIf(toolSession(settings, sessionManager));
 		if (!tool) throw new Error("expected context notes tool");
 
-		await tool.execute("read-missing", {});
+		await tool.execute("read-missing", { action: "read" });
 		expect(getContextNotes(sessionManager.getBranch())).toBeUndefined();
 		expect(sessionManager.getBranch()).toHaveLength(0);
 	});
@@ -168,7 +244,7 @@ describe("experimental context notes", () => {
 		const tool = ContextNotesTool.createIf(session);
 		if (!tool) throw new Error("expected context notes tool");
 
-		await tool.execute("save", { text: "preserve this across resume" });
+		await tool.execute("save", { action: "replace", text: "preserve this across resume" });
 		const sessionFile = sessionManager.getSessionFile();
 		if (!sessionFile) throw new Error("expected persisted session file");
 		const resumed = await SessionManager.open(sessionFile, sessionDir);
@@ -189,23 +265,118 @@ describe("experimental context notes", () => {
 		const advisorBound = toolSession(settings, SessionManager.inMemory(), "advisor-session");
 		expect(ContextNotesTool.createIf(advisorBound)).toBeNull();
 	});
-	it("does not append notes when the branch changes while disk preparation is pending", async () => {
+	async function runPendingSave(
+		prepare: (sessionManager: SessionManager) => void,
+		whilePending: (sessionManager: SessionManager) => void,
+		text: string,
+	) {
 		const sessionManager = SessionManager.inMemory();
 		const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
 		const tool = ContextNotesTool.createIf(toolSession(settings, sessionManager));
 		if (!tool) throw new Error("expected context notes tool");
+		prepare(sessionManager);
 		const pendingEnsure = Promise.withResolvers<void>();
 		const ensureSpy = vi.spyOn(sessionManager, "ensureOnDisk").mockImplementation(() => pendingEnsure.promise);
 		try {
-			const pendingWrite = tool.execute("stale-branch", { text: "must not persist" });
+			const pendingWrite = tool.execute("pending-save", { action: "replace", text });
 			await Promise.resolve();
-			sessionManager.appendCustomEntry("test_branch_change");
+			whilePending(sessionManager);
 			pendingEnsure.resolve();
-			await expect(pendingWrite).rejects.toThrow("session branch changed");
-			expect(getContextNotes(sessionManager.getBranch())).toBeUndefined();
+			return { sessionManager, result: await Promise.allSettled([pendingWrite]).then(([r]) => r) };
 		} finally {
 			ensureSpy.mockRestore();
 		}
+	}
+
+	it("does not append notes when the branch changes while disk preparation is pending", async () => {
+		let base = "";
+		const { sessionManager, result } = await runPendingSave(
+			manager => {
+				base = manager.appendCustomEntry("test_branch_base");
+				manager.appendCustomEntry("test_branch_tip");
+			},
+			manager => manager.branch(base),
+			"must not persist",
+		);
+		expect(result).toMatchObject({
+			status: "rejected",
+			reason: { message: expect.stringContaining("session branch changed") },
+		});
+		expect(getContextNotes(sessionManager.getBranch())).toBeUndefined();
+	});
+
+	it("saves notes when another writer appends while disk preparation is pending", async () => {
+		const { sessionManager, result } = await runPendingSave(
+			manager => void manager.appendCustomEntry("existing_journal_entry"),
+			manager => void manager.appendCustomEntry("concurrent_journal_entry"),
+			"save despite append",
+		);
+		expect(result).toMatchObject({ status: "fulfilled", value: { details: { text: "save despite append" } } });
+		expect(getContextNotes(sessionManager.getBranch())).toMatchObject({ text: "save despite append" });
+	});
+
+	it("saves the first notes of an empty session when entries are appended while disk preparation is pending", async () => {
+		const { sessionManager, result } = await runPendingSave(
+			() => {},
+			manager => void manager.appendCustomEntry("first_journal_entry"),
+			"first save",
+		);
+		expect(result).toMatchObject({ status: "fulfilled", value: { details: { text: "first save" } } });
+		expect(getContextNotes(sessionManager.getBranch())).toMatchObject({ text: "first save" });
+	});
+
+	const usageEntry = {
+		purpose: "test",
+		role: "default",
+		api: "openai-responses",
+		provider: "openai",
+		model: "gpt-5.5",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+	} as Parameters<SessionManager["appendModelUsage"]>[0];
+
+	it("saves notes when usage is recorded on the snapshotted leaf while disk preparation is pending", async () => {
+		const { sessionManager, result } = await runPendingSave(
+			manager => void manager.appendCustomEntry("active_leaf"),
+			manager => {
+				const usageId = manager.appendModelUsage(usageEntry, {
+					sessionId: manager.getSessionId(),
+					parentId: manager.getLeafId(),
+				});
+				// The usage entry became the leaf, so the leaf moved past the snapshot.
+				expect(manager.getLeafId()).toBe(usageId ?? null);
+			},
+			"save despite usage",
+		);
+		expect(result).toMatchObject({ status: "fulfilled", value: { details: { text: "save despite usage" } } });
+		expect(getContextNotes(sessionManager.getBranch())).toMatchObject({ text: "save despite usage" });
+	});
+
+	it("saves notes when usage is recorded on an older parent while disk preparation is pending", async () => {
+		let olderParent = "";
+		let leafBefore: string | null = null;
+		const { sessionManager, result } = await runPendingSave(
+			manager => {
+				olderParent = manager.appendCustomEntry("older_parent");
+				manager.appendCustomEntry("active_leaf");
+				leafBefore = manager.getLeafId();
+			},
+			manager => {
+				manager.appendModelUsage(usageEntry, { sessionId: manager.getSessionId(), parentId: olderParent });
+				// The usage entry hangs off an older parent, so the active leaf did not move.
+				expect(manager.getLeafId()).toBe(leafBefore);
+			},
+			"save despite late usage",
+		);
+		expect(result).toMatchObject({ status: "fulfilled", value: { details: { text: "save despite late usage" } } });
+		expect(getContextNotes(sessionManager.getBranch())).toMatchObject({ text: "save despite late usage" });
 	});
 
 	it("does not append notes when experimental context management is disabled while preparing disk", async () => {
@@ -216,7 +387,7 @@ describe("experimental context notes", () => {
 		const pendingEnsure = Promise.withResolvers<void>();
 		const ensureSpy = vi.spyOn(sessionManager, "ensureOnDisk").mockImplementation(() => pendingEnsure.promise);
 		try {
-			const pendingWrite = tool.execute("disabled-mid-write", { text: "must not persist" });
+			const pendingWrite = tool.execute("disabled-mid-write", { action: "replace", text: "must not persist" });
 			await Promise.resolve();
 			cfgCompactionExperimentalContextManagement.override(settings, false);
 			pendingEnsure.resolve();

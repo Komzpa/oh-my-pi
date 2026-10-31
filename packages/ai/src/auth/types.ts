@@ -58,7 +58,7 @@ export interface AuthAccountSelector {
 export interface AuthAccountPolicy {
 	readonly provider: string;
 	readonly account: AuthAccountSelector;
-	/** Higher values win after hard, plan, reserve, hot-window, and measured-usage safety checks. */
+	/** Higher values win after hard, plan, reserve and hot-window safety checks, and ahead of a missing usage report. */
 	readonly priority?: number;
 	/** Protected remaining quota percentage for this account. */
 	readonly reservePct?: number;
@@ -778,6 +778,8 @@ export type RotateCredentialOptions = {
 	apiKey?: string;
 	credentialId?: number;
 	signal?: AbortSignal;
+	/** Whether to wait for a briefly blocked sibling; defaults to true. The failed credential is blocked either way. */
+	waitForSibling?: boolean;
 };
 
 /**
@@ -949,6 +951,12 @@ export interface KeysApi {
 	 * {@link KeysApi.getWithCredential}, which surfaces that failure.
 	 */
 	get(provider: string, sessionId?: string, options?: AuthApiKeyOptions): Promise<string | undefined>;
+	/**
+	 * Warm usage needed by an unpinned OAuth selection without choosing a key,
+	 * advancing round-robin state, or pinning an account. Existing overrides,
+	 * pinned sessions, and pools that do not rank usage do no work.
+	 */
+	prefetchUsage(provider: string, sessionId?: string, options?: AuthApiKeyOptions): Promise<void>;
 	/**
 	 * Resolve a bearer together with its durable stored credential row id, when known.
 	 * Same precedence as {@link KeysApi.get}, but rejects with
@@ -1234,8 +1242,9 @@ export interface SessionsApi {
 
 /** Usage reporting, observation, and provider configuration. */
 export interface UsageApi {
-	/** Fetch aggregate usage reports for configured providers. */
+	/** Fetch usage reports for configured providers, optionally restricted to one provider. */
 	reports(options?: {
+		provider?: Provider;
 		baseUrlResolver?: (provider: Provider) => string | undefined;
 		signal?: AbortSignal;
 	}): Promise<UsageReport[] | null>;
@@ -1293,7 +1302,7 @@ export interface UsageApi {
 	removeProvider(provider: Provider): void;
 }
 
-/** Credential and model-level health probes. */
+/** Credential and model-level health probes plus provider depletion controls. */
 export interface HealthApi {
 	/**
 	 * Inspect the credential pool that {@link getApiKey} would use for one model
@@ -1332,6 +1341,18 @@ export interface HealthApi {
 	 * unchanged so callers can tell the two signals apart.
 	 */
 	check(options?: CheckCredentialsOptions): Promise<CredentialHealthResult[]>;
+	/** Whether this provider has an active depletion latch. Timed latches expire at their reset. */
+	isProviderDepleted(provider: Provider): boolean;
+	/**
+	 * Latch a provider after a classified quota response. HTTP 402 is accepted
+	 * only when the canonical billing-cap classifier accepts its body; HTTP 429
+	 * requires a finite future `resetAtMs`. A 402 latch has no deadline.
+	 */
+	markProviderDepleted(provider: Provider, options?: { status?: number; message?: string; resetAtMs?: number }): void;
+	/** Clear provider depletion after a successful provider call. */
+	markProviderSucceeded(provider: Provider): void;
+	/** Explicitly clear provider depletion, including an untimed billing latch. */
+	resetProviderDepletion(provider: Provider): void;
 }
 
 /** Usage-limit blocking and credential rotation operations. */
@@ -1372,7 +1393,7 @@ export interface LimitsApi {
 	 *
 	 * For usage-limit and account-policy failures with no free sibling, waits
 	 * (abortable via `options.signal`) when a sibling's block expires within a
-	 * few seconds, then reports `afterSiblingWait`.
+	 * few seconds, then reports `afterSiblingWait`, unless `options.waitForSibling` is false.
 	 */
 	rotate(
 		provider: string,

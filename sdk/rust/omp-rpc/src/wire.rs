@@ -2884,6 +2884,8 @@ impl SubagentStatus {
 pub struct TodoItem {
 	pub content: String,
 	pub status: TodoStatus,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub schedule: Option<TodoSchedule>,
 	/// What a `blocked` task is waiting on.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub blocker: Option<String>,
@@ -2897,6 +2899,193 @@ pub struct TodoItem {
 pub struct TodoPhase {
 	pub name: String,
 	pub tasks: Vec<TodoItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TodoConfidence {
+	#[serde(rename = "low")]
+	Low,
+	#[serde(rename = "medium")]
+	Medium,
+	#[serde(rename = "high")]
+	High,
+}
+
+impl TodoConfidence {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Low => "low",
+			Self::Medium => "medium",
+			Self::High => "high",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TodoScheduleReview {
+	#[serde(rename = "user")]
+	User,
+	#[serde(rename = "accepted")]
+	Accepted,
+	#[serde(rename = "redo")]
+	Redo,
+	#[serde(rename = "drop")]
+	Drop,
+}
+
+impl TodoScheduleReview {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::Accepted => "accepted",
+			Self::Redo => "redo",
+			Self::Drop => "drop",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TodoWorkerOutcome {
+	#[serde(rename = "completed")]
+	Completed,
+	#[serde(rename = "failed")]
+	Failed,
+	#[serde(rename = "aborted")]
+	Aborted,
+}
+
+impl TodoWorkerOutcome {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Completed => "completed",
+			Self::Failed => "failed",
+			Self::Aborted => "aborted",
+		}
+	}
+}
+
+/// User-maintained duration estimate in seconds; `updatedAt` is Unix milliseconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoEstimate {
+	#[serde(rename = "optimisticSeconds")]
+	pub optimistic_seconds: f64,
+	#[serde(rename = "likelySeconds")]
+	pub likely_seconds: f64,
+	#[serde(rename = "pessimisticSeconds")]
+	pub pessimistic_seconds: f64,
+	pub confidence: TodoConfidence,
+	pub basis: String,
+	#[serde(rename = "updatedAt")]
+	pub updated_at: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoScheduleProgress {
+	pub at: f64,
+	pub evidence: String,
+}
+
+/// Observed Task worker that executed this row, independent of forecast ownership; timestamps are Unix milliseconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoScheduleExecutor {
+	#[serde(rename = "workerId")]
+	pub worker_id: String,
+	#[serde(rename = "startedAt")]
+	pub started_at: f64,
+	#[serde(rename = "agentProfile", default, skip_serializing_if = "Option::is_none")]
+	pub agent_profile: Option<String>,
+	#[serde(rename = "resolvedModel", default, skip_serializing_if = "Option::is_none")]
+	pub resolved_model: Option<String>,
+	#[serde(rename = "thinkingLevel", default, skip_serializing_if = "Option::is_none")]
+	pub thinking_level: Option<String>,
+	#[serde(rename = "finishedAt", default, skip_serializing_if = "Option::is_none")]
+	pub finished_at: Option<f64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub outcome: Option<TodoWorkerOutcome>,
+}
+
+/// Immutable terminal worker attempt attached to its exact todo row; timestamps and duration are milliseconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoReworkAttempt {
+	#[serde(rename = "attemptId")]
+	pub attempt_id: String,
+	#[serde(rename = "workerName")]
+	pub worker_name: String,
+	#[serde(rename = "resolvedModel")]
+	pub resolved_model: String,
+	pub effort: String,
+	#[serde(rename = "startedAt")]
+	pub started_at: f64,
+	#[serde(rename = "finishedAt")]
+	pub finished_at: f64,
+	#[serde(rename = "durationMs")]
+	pub duration_ms: f64,
+	#[serde(rename = "terminalStatus")]
+	pub terminal_status: TodoWorkerOutcome,
+	#[serde(rename = "deliverablePaths")]
+	pub deliverable_paths: Vec<String>,
+	#[serde(rename = "rejectionReason", default, skip_serializing_if = "Option::is_none")]
+	pub rejection_reason: Option<String>,
+	#[serde(rename = "reflectionAnswer", default, skip_serializing_if = "Option::is_none")]
+	pub reflection_answer: Option<String>,
+	#[serde(rename = "noAnswerReason", default, skip_serializing_if = "Option::is_none")]
+	pub no_answer_reason: Option<String>,
+	#[serde(rename = "finalReportParagraph", default, skip_serializing_if = "Option::is_none")]
+	pub final_report_paragraph: Option<String>,
+	#[serde(rename = "infraFailureLine", default, skip_serializing_if = "Option::is_none")]
+	pub infra_failure_line: Option<String>,
+	#[serde(rename = "infraFailureError", default, skip_serializing_if = "Option::is_none")]
+	pub infra_failure_error: Option<String>,
+}
+
+/// Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoSchedule {
+	/// Exact task-content references; absent means unknown, while an empty array explicitly means independent.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub dependencies: Option<Vec<String>>,
+	/// Exclusive forecast owner while this task is running.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub owner: Option<String>,
+	/// Exclusive resource identifiers while running; absent means undeclared.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub resources: Option<Vec<String>>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub estimate: Option<TodoEstimate>,
+	/// Server-owned revision: the first estimate is revision 1.
+	#[serde(rename = "estimateRevision", default, skip_serializing_if = "Option::is_none")]
+	pub estimate_revision: Option<f64>,
+	#[serde(rename = "reestimateCount", default, skip_serializing_if = "Option::is_none")]
+	pub reestimate_count: Option<f64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub progress: Option<TodoScheduleProgress>,
+	#[serde(rename = "startedAt", default, skip_serializing_if = "Option::is_none")]
+	pub started_at: Option<f64>,
+	#[serde(rename = "finishedAt", default, skip_serializing_if = "Option::is_none")]
+	pub finished_at: Option<f64>,
+	/// Time this row first entered the plan as a user requirement.
+	#[serde(rename = "firstRequirementAt", default, skip_serializing_if = "Option::is_none")]
+	pub first_requirement_at: Option<f64>,
+	/// Time the first usable result was handed to the user.
+	#[serde(rename = "firstDeliveredAt", default, skip_serializing_if = "Option::is_none")]
+	pub first_delivered_at: Option<f64>,
+	/// Append-only durable attempts for this exact row.
+	#[serde(rename = "attemptHistory", default, skip_serializing_if = "Option::is_none")]
+	pub attempt_history: Option<Vec<TodoReworkAttempt>>,
+	/// Short final worker report retained for the user's review handoff.
+	#[serde(rename = "reviewSummary", default, skip_serializing_if = "Option::is_none")]
+	pub review_summary: Option<String>,
+	/// User decision state for a delivered implementation result.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub review: Option<TodoScheduleReview>,
+	/// Review row whose verdict gates publication of this speculative work.
+	#[serde(rename = "speculativeOn", default, skip_serializing_if = "Option::is_none")]
+	pub speculative_on: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub executor: Option<TodoScheduleExecutor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -4164,8 +4353,17 @@ pub struct SubagentLifecyclePayload {
 	pub agent_source: AgentSource,
 	pub status: SubagentLifecycleStatus,
 	pub index: i64,
+	/// Wall clock of the emitted lifecycle transition, in Unix milliseconds.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub at: Option<f64>,
+	#[serde(rename = "resolvedModelIdentity", default, skip_serializing_if = "Option::is_none")]
+	pub resolved_model_identity: Option<String>,
+	#[serde(rename = "resolvedThinkingLevel", default, skip_serializing_if = "Option::is_none")]
+	pub resolved_thinking_level: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub description: Option<String>,
+	#[serde(rename = "taskText", default, skip_serializing_if = "Option::is_none")]
+	pub task_text: Option<String>,
 	#[serde(rename = "sessionFile", default, skip_serializing_if = "Option::is_none")]
 	pub session_file: Option<String>,
 	#[serde(rename = "parentToolCallId", default, skip_serializing_if = "Option::is_none")]
@@ -5353,6 +5551,23 @@ pub struct LiveStartResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveConnectParams {
+	#[serde(rename = "sdpOffer")]
+	pub sdp_offer: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub voice: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveConnectResult {
+	pub voice: String,
+	#[serde(rename = "sdpAnswer")]
+	pub sdp_answer: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiveMuteParams {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub muted: Option<bool>,
@@ -5440,6 +5655,18 @@ pub struct SetAutoRetryParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BashParams {
 	pub command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetSessionLeaseParams {
+	#[serde(rename = "sessionIds")]
+	pub session_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetSessionLeaseResult {
+	pub held: Vec<String>,
+	pub unknown: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -6549,6 +6776,27 @@ impl Command for LiveStartCommand {
 	}
 }
 
+/// Start a live voice session whose audio runs on a caller-owned WebRTC peer: send its SDP offer, apply the returned answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveConnectCommand {
+	#[serde(rename = "sdpOffer")]
+	pub sdp_offer: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub voice: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub instructions: Option<String>,
+}
+
+impl Command for LiveConnectCommand {
+	const NAME: &'static str = "live_connect";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = LiveConnectResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<LiveConnectResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
 /// Stop the live voice session, if any.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct LiveStopCommand {}
@@ -6885,6 +7133,23 @@ impl Command for GetSessionStatsCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<SessionStats>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Which of these sessions a running process (this one included) owns, probed without taking ownership. Ids in neither list are free; `unknown` could not be probed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetSessionLeaseCommand {
+	#[serde(rename = "sessionIds")]
+	pub session_ids: Vec<String>,
+}
+
+impl Command for GetSessionLeaseCommand {
+	const NAME: &'static str = "get_session_lease";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = GetSessionLeaseResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<GetSessionLeaseResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 

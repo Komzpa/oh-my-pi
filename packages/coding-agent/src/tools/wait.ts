@@ -35,7 +35,7 @@ function takeQueuedMessage(messaging: WaitMessaging | undefined): IrcMessage | u
 }
 
 interface PendingReplies {
-	/** Agents asked that can still answer: running, or holding the question for a turn of its own, and not blocked on the caller. */
+	/** Agents asked that can still answer: running, holding the question for a turn of its own, or that promised a reply, and not blocked on the caller. */
 	from: string[];
 	/** Agents asked that cannot answer before the caller finishes (see `AgentAwaits.blocksOn`). */
 	blocked: string[];
@@ -47,20 +47,22 @@ interface PendingReplies {
  * Agents the caller messaged during its current run that have not answered
  * yet, split by whether a reply can still come. A message back answers, and
  * so does a settled job of the agent the caller owns, which delivers its
- * result. Only a running agent, or one still holding the question for a turn
- * of its own (a subagent answers a message that reached it as it finished
- * after its result is out), can answer: one that went idle otherwise has
- * finished the turn it got it in, and any automatic reply (a woken subagent's
- * relayed output) has arrived by then.
+ * result. A running agent, or one still holding the question for a turn of
+ * its own (a subagent answers a message that reached it as it finished after
+ * its result is out), can answer, and so can a live one that sent progress
+ * promising a later reply. Any other idle agent has finished the turn it got
+ * the question in, and any automatic reply (a woken subagent's relayed
+ * output) has arrived by then.
  */
 function pendingReplies(messaging: WaitMessaging): PendingReplies {
 	const { registry, senderId } = messaging;
 	const replies: PendingReplies = { from: [], blocked: [], stopped: [] };
 	const since = registry.get(senderId)?.session?.runStartedAt ?? 0;
-	for (const { to, sentAt } of IrcBus.global().unansweredSends(senderId, since)) {
+	for (const { to, sentAt, promised } of IrcBus.global().unansweredSends(senderId, since)) {
 		const session = registry.get(to)?.session;
 		if (session && registry.awaits.blocksOn(to, senderId, sentAt)) replies.blocked.push(to);
-		else if (session?.isStreaming || session?.hasQueuedIrcFrom(senderId)) replies.from.push(to);
+		else if (session && (promised || session.isStreaming || session.hasQueuedIrcFrom(senderId)))
+			replies.from.push(to);
 		else replies.stopped.push(to);
 	}
 	return replies;
@@ -116,7 +118,9 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		const senderId = this.session.getAgentId?.() ?? undefined;
 		const messaging = registry && senderId ? { registry, senderId } : undefined;
 		const manager = this.session.asyncJobManager;
-
+		const ownerFilter = { ownerId: senderId };
+		// A running task job is already listed on its TODO row (or under "unassigned workers") once a real plan exists.
+		const todoTracksTasks = (this.session.getTodoPhases?.() ?? []).some(phase => phase.tasks.length > 0);
 		const pending = takeQueuedMessage(messaging);
 		if (pending && messaging) return messageResult(messaging.senderId, pending);
 		// Refreshes owned-service tracking only; jobs are in-process, so a hung
@@ -139,7 +143,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		// wait watched it) is exactly what this wait is for: return it now.
 		const undelivered = manager ? undeliveredJobs(manager, senderId) : [];
 		if (manager && undelivered.length > 0) {
-			return buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], []);
+			return buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], [], [], todoTracksTasks);
 		}
 		const serviceRunning = hasLiveOwnedService(this.session);
 		if (jobs.length === 0 && !serviceRunning) {
@@ -156,7 +160,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 				};
 			}
 		}
-		return this.#blockUntilWake({ jobs, manager, messaging, serviceRunning, signal, onUpdate });
+		return this.#blockUntilWake({ jobs, manager, messaging, serviceRunning, signal, onUpdate, todoTracksTasks });
 	}
 
 	/**
@@ -170,8 +174,9 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		serviceRunning: boolean;
 		signal: AbortSignal | undefined;
 		onUpdate: AgentToolUpdateCallback<CoordinationDetails> | undefined;
+		todoTracksTasks: boolean;
 	}): Promise<AgentToolResult<CoordinationDetails>> {
-		const { jobs, manager, messaging, serviceRunning, signal, onUpdate } = args;
+		const { jobs, manager, messaging, serviceRunning, signal, onUpdate, todoTracksTasks } = args;
 		const watchedIds = jobs.map(job => job.id);
 		manager?.watchJobs(watchedIds);
 		const serviceAbort = new AbortController();
@@ -228,7 +233,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		const emitProgress = () =>
 			onUpdate?.({
 				content: [{ type: "text", text: "" }],
-				details: { op: "wait", jobs: snapshotJobs(this.session, jobs) },
+				details: { op: "wait", jobs: snapshotJobs(this.session, jobs), todoTracksTasks },
 			});
 		const progressTimer = onUpdate && jobs.length > 0 ? setInterval(emitProgress, PROGRESS_INTERVAL_MS) : undefined;
 		if (jobs.length > 0) emitProgress();

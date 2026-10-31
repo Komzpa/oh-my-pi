@@ -19,7 +19,24 @@ import { extractProviderRetryHint } from "../utils/retry-after";
 import type { AuthGatewayClientScope } from "./clients";
 import type { AuthGatewayServerOptions } from "./types";
 
-export type ModelResolver = (modelId: string) => Model<Api> | undefined;
+/** What a route knows about a request beyond the model id it names. */
+export interface ModelResolveOptions {
+	/**
+	 * The api the route's wire format speaks natively (`anthropic-messages` for
+	 * `/v1/messages`). A bare id served by several equally ranked providers
+	 * prefers a model on this api.
+	 */
+	api?: Api;
+	/**
+	 * Models the caller may use. A bare id resolves to its best candidate this
+	 * admits; a refused `provider/id` resolves to nothing, never to another
+	 * provider's bare id spelled the same way.
+	 */
+	accepts?: (model: Model<Api>) => boolean;
+}
+
+/** Resolves a client-requested model id, `provider/id` or bare `id`, to the model a route dispatches to. */
+export type ModelResolver = (modelId: string, options?: ModelResolveOptions) => Model<Api> | undefined;
 
 /** What the gateway's routes need, whatever transport carries the requests. */
 export interface AuthGatewayRouteOptions {
@@ -171,7 +188,10 @@ async function refreshGatewayApiKeyAfterAuthError(
 			apiKey: oldKey,
 			signal,
 		});
-		logger.debug("auth-gateway retrying provider request after usage-limit block", {
+		const outcome = switched
+			? "auth-gateway retrying provider request after usage-limit block"
+			: "auth-gateway usage-limit block, returning the error without retry";
+		logger.debug(outcome, {
 			format,
 			provider,
 			peer,
@@ -183,6 +203,7 @@ async function refreshGatewayApiKeyAfterAuthError(
 		if (!switched) return undefined;
 		return storage.keys.getWithCredential(provider, sessionId, modelKeyOptions(model, signal));
 	}
+	if (status === 402) return undefined;
 	await storage.limits.invalidateMatching(provider, oldKey, { sessionId, signal });
 	logger.debug("auth-gateway retrying provider request after credential invalidation", {
 		format,
@@ -274,6 +295,46 @@ export function buildGatewayApiKeyResolver(
 		if (next) onResolvedKey?.(next);
 		return next;
 	};
+}
+/**
+ * Forward a settled upstream failure to the canonical provider-health latch.
+ * The health owner classifies quota 402 bodies and timed 429 resets; gateway
+ * code only supplies the observed status, message, and provider reset hint.
+ */
+export function observeGatewayProviderFailure(storage: AuthStorage, model: Model<Api>, error: unknown): void {
+	const details =
+		typeof error === "object" && error !== null
+			? (error as {
+					errorClassificationMessage?: unknown;
+					errorMessage?: unknown;
+					errorStatus?: unknown;
+					message?: unknown;
+				})
+			: undefined;
+	const message =
+		error instanceof Error
+			? error.message
+			: typeof error === "string"
+				? error
+				: (details?.errorClassificationMessage ?? details?.errorMessage ?? details?.message ?? String(error));
+	if (typeof message !== "string") return;
+	const status =
+		typeof details?.errorStatus === "number"
+			? details.errorStatus
+			: (extractHttpStatusFromError(error) ??
+				extractHttpStatusFromError(message) ??
+				classifyGatewayError(message).status);
+	const retryAfterMs = status === 429 ? extractProviderRetryHint(model.provider, message) : undefined;
+	const resetAtMs =
+		retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+			? Date.now() + retryAfterMs
+			: undefined;
+	storage.health.markProviderDepleted(model.provider, { status, message, resetAtMs });
+}
+
+/** Clear the provider latch only after the provider layer reports a completed call. */
+export function observeGatewayProviderSuccess(storage: AuthStorage, provider: string): void {
+	storage.health.markProviderSucceeded(provider);
 }
 
 /**
