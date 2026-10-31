@@ -1625,7 +1625,8 @@ describe("per-call model preflight", () => {
 		);
 		expect(policy.modelOverride).toEqual(["mock/agent-own"]);
 		expect(policy.perCallModelGrants).toBeUndefined();
-		expect(policy.parentActiveModelPattern).toBe("mock/parent");
+		// An agent that names its own model never falls back to the parent session model on auth failure.
+		expect(policy.parentActiveModelPattern).toBeUndefined();
 	});
 
 	describe("an agent shadowing the seance name", () => {
