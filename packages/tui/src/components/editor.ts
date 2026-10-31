@@ -519,17 +519,19 @@ function sliceFlat(lines: readonly string[], start: number, end: number): string
 }
 
 /**
- * Common prefix and non-overlapping common suffix of `before.join("\n")` and `after.join("\n")` —
- * the split a flat char scan gives — without joining either buffer. Lines an edit left alone keep
- * their string identity, so they are skipped whole and a keystroke costs O(lines), not O(chars).
+ * Common prefix and non-overlapping common suffix of `before.join("\n")` and `after.join("\n")`,
+ * bounded by the edit cursors so repeated text cannot slide an edit away from its actual position.
+ * Unchanged lines are skipped whole, so a keystroke costs O(lines), not O(chars).
  */
 function diffFlatLines(
 	before: readonly string[],
 	after: readonly string[],
 	beforeLength: number,
 	afterLength: number,
+	beforeCursor: number,
+	afterCursor: number,
 ): { prefix: number; suffix: number } {
-	const prefixMax = Math.min(beforeLength, afterLength);
+	const prefixMax = Math.min(beforeCursor, afterCursor);
 	let prefix = 0;
 	let bl = 0;
 	let bc = 0;
@@ -570,7 +572,10 @@ function diffFlatLines(
 		}
 	}
 
-	const suffixMax = Math.min(beforeLength - prefix, afterLength - prefix);
+	const suffixMax = Math.min(
+		beforeLength - Math.max(prefix, beforeCursor),
+		afterLength - Math.max(prefix, afterCursor),
+	);
 	let suffix = 0;
 	bl = before.length - 1;
 	al = after.length - 1;
@@ -778,6 +783,12 @@ export class Editor implements Component, Focusable {
 	describeLanguage: (() => string | undefined) | undefined;
 	/** Label the TSP field to disable host-side editing while another input owner handles raw keys. */
 	nativeKeyPassthrough = false;
+	/**
+	 * Ask the TSP terminal to keep what is typed into this field and draw it at
+	 * the caret until this clears, then send it: set while startup cannot read
+	 * input yet (the prompt composer's deferred-input start).
+	 */
+	nativeTypeahead = false;
 	/**
 	 * TSP chrome around the `editor` node (the prompt composer's chips, mode
 	 * chip, send/stop): the root role, the children with `input` placed where
@@ -1899,6 +1910,7 @@ export class Editor implements Component, Focusable {
 			mode: this.nativeKeyPassthrough ? "PTY" : vim ? VIM_MODE_LABELS[vim.mode] : undefined,
 			lang: this.describeLanguage?.(),
 			maxLines: this.#maxHeight,
+			typeahead: this.nativeTypeahead || undefined,
 		};
 		let editor = this.#nativeEditor;
 		if (!editor || !sameProps(editor.props, props)) {
@@ -1981,7 +1993,7 @@ export class Editor implements Component, Focusable {
 				linesBefore !== undefined &&
 				this.#textRevision !== revision
 			) {
-				this.#trackVimSessionEdit(session, linesBefore);
+				this.#trackVimSessionEdit(session, linesBefore, line, col);
 			}
 		}
 	}
@@ -1991,11 +2003,22 @@ export class Editor implements Component, Focusable {
 	 * `deleteBefore`/`deleteAfter` exact even when typed text coincides with what was deleted
 	 * (Backspace then retyping the same grapheme), which a final-text diff cannot recover.
 	 */
-	#trackVimSessionEdit(session: VimSessionState, linesBefore: readonly string[]): void {
+	#trackVimSessionEdit(session: VimSessionState, linesBefore: readonly string[], line: number, col: number): void {
 		const linesAfter = this.#state.lines;
 		const beforeLength = flatLength(linesBefore);
 		const afterLength = flatLength(linesAfter);
-		const { prefix: p, suffix: q } = diffFlatLines(linesBefore, linesAfter, beforeLength, afterLength);
+		let beforeCursor = col;
+		for (let i = 0; i < line; i++) beforeCursor += linesBefore[i]!.length + 1;
+		let afterCursor = this.#state.cursorCol;
+		for (let i = 0; i < this.#state.cursorLine; i++) afterCursor += linesAfter[i]!.length + 1;
+		const { prefix: p, suffix: q } = diffFlatLines(
+			linesBefore,
+			linesAfter,
+			beforeLength,
+			afterLength,
+			beforeCursor,
+			afterCursor,
+		);
 		const removedEnd = beforeLength - q;
 		const insLen = afterLength - p - q;
 		const leftCut = Math.max(0, Math.min(removedEnd, session.leftEnd) - p);

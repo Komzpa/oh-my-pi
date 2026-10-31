@@ -13,9 +13,15 @@ import {
 	prompt,
 } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { resolveRoleChain, resolveRoleSelection } from "../config/model-resolver";
+import {
+	resolveConfiguredModelPatterns,
+	resolveProviderModelReference,
+	resolveRoleChain,
+	resolveRoleSelection,
+} from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import compressDescriptionPrompt from "../prompts/skills/compress-description.md" with { type: "text" };
+import type { CostGate } from "../session/cost-gate";
 import { Semaphore } from "../task/parallel";
 import type { Skill } from "./skills";
 
@@ -51,8 +57,29 @@ export function createSkillDescriptionCompressor(
 	settings: Settings,
 	sessionId?: string,
 	getTelemetry?: () => AgentTelemetry | undefined,
+	getCostGate?: () => CostGate | undefined | Promise<CostGate | undefined>,
 ): SkillDescriptionCompressor {
 	const select = (): Model<Api> | undefined => {
+		// The first exact provider/id match wins before every other matching phase.
+		// Resolve only that provider when possible: rendering uncached skill hints
+		// must not expand unrelated account catalogs for every background request.
+		// On a miss, use the complete pool below. A slash can instead belong to a
+		// raw aggregator id, and suffixes, aliases and fallbacks still need the
+		// ordinary resolver's full precedence rules.
+		const firstPattern = resolveConfiguredModelPatterns(
+			settings.getModelRole("smol")?.trim() || "@smol",
+			settings,
+		)[0];
+		const slash = firstPattern?.indexOf("/") ?? -1;
+		if (firstPattern && slash > 0) {
+			const provider = firstPattern.slice(0, slash).trim();
+			const id = firstPattern.slice(slash + 1).trim();
+			if (provider && id) {
+				const scoped = registry.getAvailableForProviders(new Set([provider]));
+				const exact = resolveProviderModelReference(provider, id, scoped);
+				if (exact) return exact;
+			}
+		}
 		const available = registry.getAvailable();
 		return (
 			resolveRoleChain("smol", settings, available)[0]?.model ??
@@ -69,6 +96,8 @@ export function createSkillDescriptionCompressor(
 			if (!model) throw new Error("No smol or tiny model available");
 			const apiKey = await registry.getApiKey(model, sessionId);
 			if (!apiKey) throw new Error(`No credential for ${model.provider}/${model.id}`);
+			const costGate = await getCostGate?.();
+			costGate?.admit();
 			const response = await instrumentedCompleteSimple(
 				model,
 				{
@@ -84,6 +113,7 @@ export function createSkillDescriptionCompressor(
 				},
 				{ telemetry: getTelemetry?.(), oneshotKind: "skill_description" },
 			);
+			costGate?.record(response.usage.cost.total);
 			if (response.stopReason === "length") {
 				throw new SkillDescriptionLengthError("Model stopped: length");
 			}

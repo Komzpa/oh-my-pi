@@ -19,6 +19,7 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import { calculateRateLimitBackoffMs, parseRateLimitReason } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { shouldDropTruncatedThinkingOnlyAssistant } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
 import { fallbackCreditTargets } from "@oh-my-pi/pi-catalog/compat/fallback-credit";
 import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
@@ -51,7 +52,13 @@ import type {
 	UsageFallbackConfirmation,
 	UsageFallbackConfirmer,
 } from "./agent-session-types";
-import { assistantTurnProducedOutput, isEmptyAssistantStop, isEmptyErrorTurn, operatorTitleText } from "./messages";
+import {
+	assistantTurnProducedOutput,
+	isEmptyAssistantStop,
+	isEmptyErrorTurn,
+	isUserAuthoredMessage,
+	operatorTitleText,
+} from "./messages";
 import {
 	type ActiveRetryFallbackState,
 	calculateRetryBackoffDelayMs,
@@ -74,6 +81,7 @@ import { describeUsageFallback } from "./retry-fallback-reason";
 import { getLatestCompactionEntry } from "./session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
+import { isUserQueuedMessage } from "./queued-messages";
 import { sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { journalJudgmentUsage } from "../judgment";
 import { classifyUnexpectedStop, isUnexpectedStopCandidate } from "./unexpected-stop-classifier";
@@ -98,7 +106,8 @@ const UNEXPECTED_STOP_MAX_RETRIES = 3;
 const UNEXPECTED_STOP_TIMEOUT_MS = 15_000;
 const EMPTY_STOP_MAX_RETRIES = 3;
 const MALFORMED_FUNCTION_CALL_MAX_RETRIES = 3;
-const STREAM_STALL_CONTINUE_MAX_RETRIES = 3;
+const STREAM_STALL_CONTINUE_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000] as const;
+const STREAM_STALL_CONTINUE_MAX_RETRIES = STREAM_STALL_CONTINUE_DELAYS_MS.length;
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
 const NON_WHITESPACE_RE = /\S/;
 const USAGE_PREFLIGHT_BLOCKED_PREFIX = "Usage preflight blocked:";
@@ -113,6 +122,12 @@ const HTTP2_STREAM_RESET_ERROR_RE =
 // eligible for preserved-turn continuation on resolved tool turns.
 const PREMATURE_STREAM_CLOSE_ERROR_RE =
 	/(?:stream closed before a (?:finish_reason|terminal response event)|Codex stream ended before terminal completion event|Cursor stream ended before turnEnded)/i;
+
+// Responses transport drops reported in the gateway's or provider's own words
+// (`stream_incomplete`, a websocket closed before `response.completed`). Narrower
+// than `AIError.isTransientStreamDropError`, which also covers Anthropic envelope
+// errors whose committed text keeps the main-session replay veto.
+const RESPONSES_STREAM_DROP_ERROR_RE = /stream_incomplete|(?:stream|websocket) closed before response\.completed/i;
 
 /**
  * Bare abort sentinels with no provider reason: our own `"Request was aborted"`
@@ -131,13 +146,15 @@ function hasNonWhitespace(value: string): boolean {
 }
 
 /**
- * End of the conversation in `messages`, before trailing eval runtime snapshots.
- * A session appends one at startup — right after the turn resume recovery closed
- * — and on display-context rebuilds, so it trails a failed turn without ending it.
+ * End of the conversation in `messages`, before trailing context-only custom
+ * messages: eval runtime snapshots (appended at startup and on display-context
+ * rebuilds) and deliveries folded in without a turn — e.g. an `async-result`
+ * landing while a user interrupt suppresses auto-resume. They trail a failed
+ * turn without ending it. A user-authored custom prompt is conversation.
  */
 function conversationEnd(messages: readonly AgentMessage[]): number {
 	let end = messages.length;
-	while (end > 0 && isEvalStateContext(messages[end - 1])) end--;
+	while (end > 0 && messages[end - 1].role === "custom" && !isUserAuthoredMessage(messages[end - 1])) end--;
 	return end;
 }
 
@@ -156,6 +173,27 @@ function retryableAssistantTurnEnd(messages: readonly AgentMessage[]): number | 
 	if (message.stopReason !== "error" && message.stopReason !== "aborted") return undefined;
 	return turnEnd;
 }
+/** An assistant turn cut off before any text or tool call; no provider replays it. */
+function isCutOffAssistant(message: AgentMessage): boolean {
+	return message.role === "assistant" && shouldDropTruncatedThinkingOnlyAssistant(message);
+}
+
+/**
+ * The last prompt in `messages[0, end)` that no replayed assistant turn has
+ * answered yet: a user prompt, or the operator's `.`/`c` continue directive.
+ */
+function unansweredPrompt(messages: readonly AgentMessage[], end: number): AgentMessage | undefined {
+	for (let index = end - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message.role === "assistant") {
+			if (!isCutOffAssistant(message)) return undefined;
+		} else if (isUserQueuedMessage(message) || (message.role === "developer" && message.userInitiated === true)) {
+			return message;
+		}
+	}
+	return undefined;
+}
+
 /** Whether `messages` ends in a failed/aborted turn whose most recent activity was a tool call. */
 function abortedToolCallTail(messages: readonly AgentMessage[]): boolean {
 	const turnEnd = retryableAssistantTurnEnd(messages);
@@ -178,10 +216,15 @@ function abortedToolCallTail(messages: readonly AgentMessage[]): boolean {
  * partially successful batch never qualifies: re-running a completed call
  * would repeat its side effects. Synthetic placeholder tails never qualify
  * either — their anchor is the aborted turn itself and its arguments may be
- * truncated, so those are re-generated via a fresh model call instead.
+ * truncated, so those are re-generated via a fresh model call instead. Nor
+ * does a tail carrying a delivery other than an eval snapshot: the strip
+ * would erase it from history, while a fresh model call keeps it in context.
  */
 function toolReplayStart(messages: readonly AgentMessage[]): number | undefined {
 	let end = conversationEnd(messages);
+	for (let i = end; i < messages.length; i++) {
+		if (!isEvalStateContext(messages[i])) return undefined;
+	}
 	const tail = messages[end - 1];
 	if (tail?.role === "assistant") {
 		if (tail.stopReason !== "aborted" && tail.stopReason !== "error") return undefined;
@@ -239,6 +282,8 @@ export interface TurnRecoveryHost {
 	setThinkingLevel(level: ConfiguredThinkingLevel | undefined): void;
 	/** Hard per-session effort ceiling; fallback recovery must never raise thinking above it. */
 	thinkingLevelCeiling(): Effort | undefined;
+	/** The session never switches to a retry fallback model (a per-call `model` subagent). */
+	modelFallbackDisabled?(): boolean;
 	isDisposed(): boolean;
 	isStreaming(): boolean;
 	isCompacting(): boolean;
@@ -261,6 +306,8 @@ export interface TurnRecoveryHost {
 		delayMs?: number;
 		generation?: number;
 		shouldContinue?: () => boolean;
+		/** Runs once, immediately before `agent.continue()`; never runs for a skipped request. */
+		beforeContinue?: () => void;
 		onError?: (error: unknown) => void;
 	}): void;
 	waitForSessionMessagePersistence(message: AssistantMessage): Promise<void>;
@@ -358,6 +405,8 @@ export class TurnRecovery {
 	 * the exhausted budget, a cancelled wait, an abort), so no turn inherits another turn's walk.
 	 */
 	readonly #refusalWalkTried = new Set<string>();
+	/** Per-model account walk allowance, snapshotted once and cleared when the retry saga ends. */
+	readonly #accountPolicyRotationsRemaining = new Map<string, number>();
 	#requestBodyReadTimeoutRecoveryPromptSequence: number | undefined;
 	#retryPromise: Promise<void> | undefined;
 	#retryResolve: (() => void) | undefined;
@@ -723,23 +772,29 @@ export class TurnRecovery {
 			provider: message.provider,
 			errorMessage: message.errorMessage,
 		});
-		this.#host.agent.appendMessage({
-			role: "developer",
-			content: [
-				{
-					type: "text",
-					text: prompt.render(streamStallContinueTemplate, {
-						retryCount: this.#streamStallContinueCount,
-						maxRetries: STREAM_STALL_CONTINUE_MAX_RETRIES,
-					}),
-				},
-			],
-			attribution: "agent",
-			timestamp: Date.now(),
-		});
+		const retryCount = this.#streamStallContinueCount;
 		this.#host.scheduleAgentContinue({
 			source: "stream-stall-continue",
+			delayMs: STREAM_STALL_CONTINUE_DELAYS_MS[retryCount - 1],
 			generation: this.#host.promptGeneration(),
+			// Append the reminder only when the delayed continuation really starts:
+			// an Esc during the wait must not leave a "resume the answer" instruction
+			// behind for the user's next, unrelated prompt.
+			beforeContinue: () =>
+				this.#host.agent.appendMessage({
+					role: "developer",
+					content: [
+						{
+							type: "text",
+							text: prompt.render(streamStallContinueTemplate, {
+								retryCount,
+								maxRetries: STREAM_STALL_CONTINUE_MAX_RETRIES,
+							}),
+						},
+					],
+					attribution: "agent",
+					timestamp: Date.now(),
+				}),
 		});
 		return true;
 	}
@@ -764,8 +819,8 @@ export class TurnRecovery {
 	 * primary, so callers can re-run the pre-send context-fit check against the
 	 * reverted (possibly smaller) window before issuing the next request.
 	 */
-	maybeRestoreRetryFallbackPrimary(): Promise<boolean> {
-		return this.#maybeRestoreRetryFallbackPrimary();
+	maybeRestoreRetryFallbackPrimary(options?: { requireContextFit?: boolean }): Promise<boolean> {
+		return this.#maybeRestoreRetryFallbackPrimary(options);
 	}
 
 	/** Applies model fallback policy from live usage health before a turn starts. */
@@ -850,6 +905,7 @@ export class TurnRecovery {
 	/** Resolve the pending retry promise; the saga is over, and so is its refusal walk. */
 	resolveRetry(): void {
 		this.#refusalWalkTried.clear();
+		this.#accountPolicyRotationsRemaining.clear();
 		if (this.#retryResolve) {
 			this.#retryResolve();
 			this.#retryResolve = undefined;
@@ -1666,10 +1722,10 @@ export class TurnRecovery {
 	 * HTTP/2 stream reset, a gateway close without the terminal event, or a
 	 * truncated stream envelope. A premature close (no finish_reason/terminal
 	 * event) and an envelope that never reached its terminal frame — including a
-	 * gateway's in-band `error` frame, which the provider reports as the same
-	 * envelope truncation — are the same failure class as a stall or reset.
-	 * Resets and closes are ignored while a deliberate abort, disposal, or
-	 * streaming-edit abort owns the stream.
+	 * gateway in-band `error` frame or a Responses `stream_incomplete` error
+	 * for an upstream websocket closed before `response.completed` — are the
+	 * same failure class as a stall or reset. Resets and closes are ignored
+	 * while a deliberate abort, disposal, or streaming-edit abort owns the stream.
 	 */
 	#isMidStreamTransportFailure(message: AssistantMessage, id: number): boolean {
 		if (message.stopReason !== "error" || !AIError.retriable(id)) return false;
@@ -1683,7 +1739,11 @@ export class TurnRecovery {
 			HTTP2_STREAM_RESET_ERROR_RE.test(errorMessage) ||
 			AIError.PYTHON_HTTP2_STREAM_RESET_PATTERN.test(errorMessage) ||
 			AIError.PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(errorMessage) ||
-			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage)
+			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage) ||
+			// Providers such as Cursor keep the raw diagnostic in errorClassificationMessage and
+			// display-only text in errorMessage; retry classification reads both, so must this.
+			RESPONSES_STREAM_DROP_ERROR_RE.test(errorMessage) ||
+			RESPONSES_STREAM_DROP_ERROR_RE.test(message.errorClassificationMessage ?? "")
 		);
 	}
 	/**
@@ -1726,27 +1786,17 @@ export class TurnRecovery {
 		);
 	}
 	/**
-	 * First-attempt mid-stream socket drop with streamed progress: the transport
-	 * died after the model had already emitted reasoning or tool calls, so the
-	 * failure says nothing about model health — retry the same model once before
-	 * consulting the fallback chain. A drop with no streamed content keeps the
-	 * immediate fallback (a different route may genuinely help), as do later
-	 * attempts. Never applies once the retry budget is spent (e.g.
-	 * `retry.maxRetries: 0`): there is no same-model retry left, so the
-	 * fallback-chain consult is the only recovery. Mirrors the stall handler's
-	 * socket check, extended to turns with tool calls.
+	 * A dropped stream says nothing about model availability, including when
+	 * the transport closed before the first token. Spend the same-model retry
+	 * budget before switching routes. Classification keeps hard HTTP failures
+	 * out even when their diagnostic mentions a dropped stream.
 	 */
-	#isFirstAttemptMidStreamSocketDrop(message: AssistantMessage, id: number, retryBudgetExhausted: boolean): boolean {
-		if (this.#retryAttempt !== 1 || retryBudgetExhausted) return false;
+	#isTransientStreamDrop(message: AssistantMessage, id: number): boolean {
 		if (message.stopReason !== "error" || !AIError.retriable(id)) return false;
+		if (AIError.is(id, AIError.Flag.UsageLimit) || AIError.is(id, AIError.Flag.AuthFailed)) return false;
 		if (this.#host.streamingEditAbortTriggered()) return false;
-		if (!isUnexpectedSocketCloseMessage(message.errorMessage ?? "")) return false;
-		return message.content.some(
-			block =>
-				(block.type === "thinking" && block.thinking.trim().length > 0) ||
-				block.type === "toolCall" ||
-				(block.type === "text" && block.text.trim().length > 0),
-		);
+		const diagnostic = message.errorClassificationMessage ?? message.errorMessage ?? "";
+		return AIError.isTransientStreamDropError(diagnostic) || isUnexpectedSocketCloseMessage(diagnostic);
 	}
 
 	/** Checks whether a provider error represents a classifier refusal. */
@@ -1993,7 +2043,7 @@ export class TurnRecovery {
 		) {
 			return false;
 		}
-		if (!cfgRetryModelFallback.get(this.#host.settings)) return false;
+		if (!cfgRetryModelFallback.get(this.#host.settings) || this.#host.modelFallbackDisabled?.()) return false;
 
 		let fallback: { role: string; selector: RetryFallbackSelector; apiKey: string } | undefined;
 		const ceiling = this.#host.thinkingLevelCeiling();
@@ -2494,7 +2544,7 @@ export class TurnRecovery {
 		return true;
 	}
 
-	async #maybeRestoreRetryFallbackPrimary(): Promise<boolean> {
+	async #maybeRestoreRetryFallbackPrimary(options?: { requireContextFit?: boolean }): Promise<boolean> {
 		if (!this.#activeRetryFallback) return false;
 		if (this.#activeRetryFallback.pinned) return false;
 		if (this.#getRetryFallbackRevertPolicy() !== "cooldown-expiry") return false;
@@ -2534,6 +2584,9 @@ export class TurnRecovery {
 		const primaryModel =
 			resolvedPrimary.model ?? this.#host.modelRegistry.find(originalSelector.provider, originalSelector.id);
 		if (!primaryModel) return false;
+		// Tool loops already own their live context. Leave a larger fallback in
+		// place when restoring would require pre-prompt context maintenance.
+		if (options?.requireContextFit && !this.#host.contextFitsModel(primaryModel)) return false;
 		const apiKey = await this.#host.modelRegistry.getApiKey(primaryModel, this.#host.sessionId());
 		if (!apiKey) return false;
 
@@ -2792,12 +2845,17 @@ export class TurnRecovery {
 			}
 		}
 
-		const allowModelFallback = options?.allowModelFallback !== false;
+		const allowModelFallback = options?.allowModelFallback !== false && !this.#host.modelFallbackDisabled?.();
 		const currentModel = this.#host.model();
 		const currentSelector = currentModel
 			? formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel())
 			: undefined;
 		if (accountPolicyDenial && currentModel) {
+			const accountPolicyKey = `${currentModel.provider}/${currentModel.id}`;
+			const rotationsRemaining =
+				this.#accountPolicyRotationsRemaining.get(accountPolicyKey) ??
+				Math.max(0, this.#host.modelRegistry.authStorage.credentials.list(currentModel.provider).length - 1);
+			this.#accountPolicyRotationsRemaining.set(accountPolicyKey, Math.max(0, rotationsRemaining - 1));
 			// `rotate` may sleep out a sibling's short block; register its signal
 			// as the retry controller so `abortRetry()` cancels that wait exactly
 			// like the backoff sleep below.
@@ -2810,8 +2868,12 @@ export class TurnRecovery {
 						error: errorMessage,
 						modelId: currentModel.id,
 						signal: rotateAbortController.signal,
+						waitForSibling: rotationsRemaining > 0,
 					})
 				).switched;
+				// Rotation is advisory: expired blocks or a repeatedly offered sibling
+				// must not retry beyond one pool traversal in this saga.
+				switchedCredential &&= rotationsRemaining > 0;
 			} catch (error) {
 				if (!rotateAbortController.signal.aborted) throw error;
 				if (this.#retryAbortController !== rotateAbortController) return false;
@@ -2829,6 +2891,15 @@ export class TurnRecovery {
 		// contents, not model health (issue #8760). Keep it on the same model; the
 		// retry budget still bounds a genuinely stuck stream.
 		const thinkingLoop = AIError.is(id, AIError.Flag.ThinkingLoop);
+		const transientStreamDrop = this.#isTransientStreamDrop(message, id);
+		// Bun's unexpected socket close retains the earlier route policy: one
+		// replay after streamed progress, immediate fallback before any content.
+		// Provider-reported stream drops still spend the configured retry budget.
+		const unexpectedSocketClose = isUnexpectedSocketCloseMessage(message.errorClassificationMessage ?? errorMessage);
+		const sameModelStreamReplay =
+			transientStreamDrop &&
+			!retryBudgetExhausted &&
+			(!unexpectedSocketClose || (message.content.length > 0 && this.#retryAttempt === 1));
 		// A Codex steering rejection answers our own `response.steer`, not the
 		// model's health, and the provider already stopped steering the session:
 		// replay on the same model while same-model retries remain. Once the
@@ -2907,7 +2978,7 @@ export class TurnRecovery {
 				!sameModelSteerReplay &&
 				!waitForSiblingCredential &&
 				!refusalWalkRepeats &&
-				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted)
+				!sameModelStreamReplay
 			) {
 				if (classifierRefusal) {
 					this.#refusalWalkTried.add(refusalWalkKey);
@@ -2918,7 +2989,11 @@ export class TurnRecovery {
 					// to a still-exhausted primary. A switched credential means a
 					// sibling is free now, and that wait covers only the spent one.
 					const usageCooldownMs = recordedUsageLimitOutcome?.switchedCredential ? undefined : usageLimitWaitMs;
-					this.noteRetryFallbackCooldown(currentSelector, usageCooldownMs ?? parsedRetryAfterMs, errorMessage);
+					this.noteRetryFallbackCooldown(
+						currentSelector,
+						transientStreamDrop ? 60_000 : (usageCooldownMs ?? parsedRetryAfterMs),
+						errorMessage,
+					);
 				}
 				switchedModel = await this.#tryRetryModelFallback(currentSelector, message, {
 					excludeProvider: longUsageLimitFallback ? currentModel.provider : undefined,
@@ -3347,7 +3422,7 @@ export class TurnRecovery {
 			} else {
 				// Remove the failed/aborted assistant message plus its synthetic tool
 				// results (same as auto-retry does before re-attempting), keeping the
-				// trailing eval snapshot the continuation is sent with.
+				// trailing context deliveries the continuation is sent with.
 				this.#host.agent.replaceMessages([
 					...messages.slice(0, activeTurnEnd - 1),
 					...messages.slice(conversationEnd(messages)),
@@ -3372,6 +3447,27 @@ export class TurnRecovery {
 		this.#host.scheduleAgentContinue({ source: "manual-retry", delayMs: 1 });
 
 		return true;
+	}
+	/**
+	 * Ready a bare resume of the prompt the model still owes a reply — an Esc or
+	 * a failure cut its turn off before any text or tool call. Drops the trailing
+	 * cut-off turns from active context, as {@link retry} drops a failed turn (no
+	 * provider replays them anyway), so `Agent.continue()` answers the prompt as is.
+	 *
+	 * @returns the prompt to resume; undefined while busy, or when an assistant
+	 * turn already answers the last prompt.
+	 */
+	prepareResume(): AgentMessage | undefined {
+		if (this.#host.isStreaming() || this.#host.isCompacting() || this.isRetrying) return undefined;
+		const messages = this.#host.agent.state.messages;
+		const end = conversationEnd(messages);
+		let tail = end;
+		while (tail > 0 && isCutOffAssistant(messages[tail - 1])) tail--;
+		const prompt = unansweredPrompt(messages, tail);
+		if (prompt && tail < end) {
+			this.#host.agent.replaceMessages([...messages.slice(0, tail), ...messages.slice(end)]);
+		}
+		return prompt;
 	}
 	/**
 	 * Strip the failed tool batch (and any aborted boundary) for a tool replay:

@@ -43,9 +43,9 @@ This is not context-overflow or payload-rejection handling and does not establis
 - message is **not** context overflow
 - not a usage-preflight block, the specially handled full-replay Responses body-read timeout, or an Anthropic HTTP 400 rejecting mutation of latest-assistant thinking
 - one of:
-  - the stop is a classifier refusal (`stopDetails.type` is `"refusal"` or `"sensitive"`)
-  - the error is an account-scoped policy denial eligible for credential rotation
-  - the normalized `AIError` classification is retryable (including stale Responses replay, transient transport/provider failures, and usage limits)
+   - the stop is a classifier refusal (`stopDetails.type` is `"refusal"` or `"sensitive"`)
+   - the error is an account-scoped policy denial eligible for credential rotation
+   - the normalized `AIError` classification is retryable (including stale Responses replay, transient transport/provider failures, and usage limits)
 
 Retry classification runs through `AIError.classifyMessage(...)`, using the persisted `errorId`/status when present and augmenting it from provider-aware message classification. It is not solely a regex policy, although legacy/string-only provider failures still use text classification.
 
@@ -66,11 +66,21 @@ Current retryable categories include:
 
 The normalized classifier recognizes the transient categories above from structured flags/status and provider-aware text patterns. Classifier refusals remain a separate typed `stopDetails` decision.
 
-Beyond `isRetryableError(...)`, empty generic aborts may enter the same retry engine when no user, dispose, or streaming-edit-guard abort is in progress. An interrupted turn whose tool calls already have matching results can also be continued safely: the failed assistant/tool-result sequence is preserved so completed side effects are not replayed. Resolved stream stalls and HTTP/2 stream resets (`NGHTTP2_INTERNAL_ERROR`, `NGHTTP2_REFUSED_STREAM`, `HTTP2StreamReset`) use the same preserve-and-continue path. Cursor idle-stall recovery continues after every emitted tool call has a result; the Connect stream is already closed by the idle abort. An HTTP/2 RST is the same: the stream is already dead. A text-only turn (no tool calls) that fails mid-stream after its reply text rendered cannot be replayed without duplicating that text, so it keeps the partial turn and continues with a developer reminder (`stream-stall-continue.md`) to resume where it stopped, up to 3 attempts per prompt while auto-retry is enabled (`TurnRecovery.handleCommittedTextStreamStall`).
+Beyond `isRetryableError(...)`, empty generic aborts may enter the same retry engine when no user, dispose, or streaming-edit-guard abort is in progress. An interrupted turn whose tool calls already have matching results can also be continued safely: the failed assistant/tool-result sequence is preserved so completed side effects are not replayed. Resolved stream stalls and HTTP/2 stream resets (`NGHTTP2_INTERNAL_ERROR`, `NGHTTP2_REFUSED_STREAM`, `HTTP2StreamReset`) use the same preserve-and-continue path. Cursor idle-stall recovery continues after every emitted tool call has a result; the Connect stream is already closed by the idle abort. An HTTP/2 RST is the same: the stream is already dead. A text-only turn (no tool calls) that fails mid-stream after its reply text rendered cannot be replayed without duplicating that text, so it keeps the partial turn and continues with a developer reminder (`stream-stall-continue.md`) to resume where it stopped, up to five attempts per consecutive failure sequence while auto-retry is enabled (delays and budget below) (`TurnRecovery.handleCommittedTextStreamStall`).
 
 Non-retryable hard errors may consult a configured fallback chain when switching models is the recovery; without a successful switch they do not back off and retry the same failing model. `retry.fallbackOn` narrows which errors consult a chain: `usage-limit` keeps every other error on the current model (retryable ones back off and retry until the budget runs out, hard errors surface), and `except-usage-limit` keeps usage limits off the chain. Fireworks Fast-to-base degradation is an intrinsic one-shot safety net and can run even when `retry.enabled` is false.
 
+Dropped streams reported by the provider (including Responses `stream_incomplete`) spend `retry.maxRetries` on the same model before consulting that chain, even if no content arrived. Unexpected socket closes instead permit only one same-model retry after replay-safe streamed content; a second close, an empty-content close, or a zero retry budget consults the chain immediately. When fallback is unavailable or disabled, ordinary same-model retries remain bounded by the configured budget. Same-model transport retries do not suppress the model selector. If a fallback is selected after a transport drop, the transport cooldown is 60 seconds; usage, authentication, and hard HTTP errors keep their existing immediate-fallback behavior. With `cooldown-expiry`, a continuing tool loop also checks for restoration after a successful turn, provided the primary can hold the live context. An active retry saga never restores its primary mid-retry.
+
 Malformed-function failures that cannot replay their committed text preserve the turn and append a corrective developer reminder, capped at three continuations per prompt. These terminal-stop continuations are separate from the standard retry lifecycle.
+
+Committed-text transport continuation has its own finite budget, separate from the standard retry lifecycle:
+
+- Only text-only failed turns with already-committed non-whitespace text qualify; tool calls, images, and server-tool blocks remain excluded. Partial text stays in context with a developer continuation reminder, never replayed or discarded.
+- Up to five eligible continuations run per consecutive failure sequence, waiting **2, 5, 15, 30, then 60 seconds** before their respective provider requests. A sixth eligible failure surfaces without another continuation.
+- `retry.enabled` still gates this path. Its existing independent budget does not consume or override generic `retry.maxRetries`; generic jittered backoff and provider retry/fallback behavior are unchanged.
+- A successful/nonmatching turn or new prompt resets the sequence. Abort, disposal, or conversation-generation invalidation cancels or skips a pending scheduled continuation.
+
 
 Retry state is owned by `TurnRecovery`:
 
@@ -89,7 +99,7 @@ Flow (`#handleRetryableError`):
 7. If the current model's retry budget is exhausted, stop unless a model switch or confirmed credential reset permits continuation. A fallback model receives a fresh retry budget; credential recovery keeps the cumulative count. Known thinking-only stream-close routes have a one-retry cap rather than the full configured budget.
 8. If the final delay exceeds `retry.maxDelayMs` and no credential/model switch happened, emit final failure without sleeping, except an authoritative usage-reset wait explicitly allowed by `retry.waitForUsageReset`.
 9. Record the recoverable error, emit `auto_retry_start`, and remove the failed assistant from active context unless preserving a resolved interrupted tool turn or proven-unexecuted tool-call/result pairs.
-10. Sleep with abort support, then schedule `agent.continue()` through the post-prompt task scheduler for the same prompt generation.
+10.   Sleep with abort support, then schedule `agent.continue()` through the post-prompt task scheduler for the same prompt generation.
 
 ### What resets retry counters
 
