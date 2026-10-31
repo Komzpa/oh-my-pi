@@ -35,7 +35,7 @@ function takeQueuedMessage(messaging: WaitMessaging | undefined): IrcMessage | u
 }
 
 interface PendingReplies {
-	/** Agents asked that can still answer: running, or holding the question for a turn of its own, and not blocked on the caller. */
+	/** Agents asked that can still answer: running, holding the question for a turn of its own, or that promised a reply, and not blocked on the caller. */
 	from: string[];
 	/** Agents asked that cannot answer before the caller finishes (see `AgentAwaits.blocksOn`). */
 	blocked: string[];
@@ -47,20 +47,22 @@ interface PendingReplies {
  * Agents the caller messaged during its current run that have not answered
  * yet, split by whether a reply can still come. A message back answers, and
  * so does a settled job of the agent the caller owns, which delivers its
- * result. Only a running agent, or one still holding the question for a turn
- * of its own (a subagent answers a message that reached it as it finished
- * after its result is out), can answer: one that went idle otherwise has
- * finished the turn it got it in, and any automatic reply (a woken subagent's
- * relayed output) has arrived by then.
+ * result. A running agent, or one still holding the question for a turn of
+ * its own (a subagent answers a message that reached it as it finished after
+ * its result is out), can answer, and so can a live one that sent progress
+ * promising a later reply. Any other idle agent has finished the turn it got
+ * the question in, and any automatic reply (a woken subagent's relayed
+ * output) has arrived by then.
  */
 function pendingReplies(messaging: WaitMessaging): PendingReplies {
 	const { registry, senderId } = messaging;
 	const replies: PendingReplies = { from: [], blocked: [], stopped: [] };
 	const since = registry.get(senderId)?.session?.runStartedAt ?? 0;
-	for (const { to, sentAt } of IrcBus.global().unansweredSends(senderId, since)) {
+	for (const { to, sentAt, promised } of IrcBus.global().unansweredSends(senderId, since)) {
 		const session = registry.get(to)?.session;
 		if (session && registry.awaits.blocksOn(to, senderId, sentAt)) replies.blocked.push(to);
-		else if (session?.isStreaming || session?.hasQueuedIrcFrom(senderId)) replies.from.push(to);
+		else if (session && (promised || session.isStreaming || session.hasQueuedIrcFrom(senderId)))
+			replies.from.push(to);
 		else replies.stopped.push(to);
 	}
 	return replies;
@@ -112,6 +114,8 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<CoordinationDetails>,
 	): Promise<AgentToolResult<CoordinationDetails>> {
+		const drainSignal = this.session.getRestartDrainSignal?.();
+		if (drainSignal) signal = signal ? AbortSignal.any([signal, drainSignal]) : drainSignal;
 		const registry = this.session.agentRegistry;
 		const senderId = this.session.getAgentId?.() ?? undefined;
 		const messaging = registry && senderId ? { registry, senderId } : undefined;
@@ -267,7 +271,14 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 					// Not `useless`: a message woke the agent, which the loop guard
 					// must treat as progress rather than an idle poll.
 					return {
-						content: [{ type: "text", text: "Wait interrupted by message." }],
+						content: [
+							{
+								type: "text",
+								text: this.session.getRestartDrainSignal?.().aborted
+									? "Wait interrupted for session restart."
+									: "Wait interrupted by message.",
+							},
+						],
 						details: { op: "wait", jobs: [], interrupted: true },
 					};
 				}

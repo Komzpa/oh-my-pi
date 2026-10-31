@@ -1,3 +1,4 @@
+import type { InteractiveViewSnapshot } from "../interactive-view";
 /**
  * RPC protocol types for headless operation.
  *
@@ -18,8 +19,13 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
-import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
-import type { RestoredQueuedMessage } from "../../session/agent-session-types";
+import type { AgentSession, AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type {
+	AgentSessionDisposeOptions,
+	PromptOptions,
+	RestoredQueuedMessage,
+} from "../../session/agent-session-types";
+import type { SessionLeaseReport } from "../../session/session-storage";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
 import type { FileEntry, SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { UsageLimitState } from "../../session/usage-limit";
@@ -49,19 +55,37 @@ export type RpcCommand =
 	| { id?: string; type: "negotiate_protocol"; protocolVersion: number }
 
 	// Prompting
-	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
+	| {
+			id?: string;
+			type: "prompt";
+			message: string;
+			images?: ImageContent[];
+			streamingBehavior?: "steer" | "followUp";
+			options?: Omit<PromptOptions, "onPromptAdmitted">;
+	  }
+	| {
+			id?: string;
+			type: "prompt_custom";
+			message: Parameters<AgentSession["promptCustomMessage"]>[0];
+			options?: Omit<NonNullable<Parameters<AgentSession["promptCustomMessage"]>[1]>, "onPromptAdmitted">;
+	  }
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "remove_queued_message"; message: string; queue: "steering" | "followUp" }
 	| { id?: string; type: "promote_queued_message"; message: string }
-	| { id?: string; type: "abort" }
+	| { id?: string; type: "abort"; options?: Parameters<AgentSession["abort"]>[0] }
 	| { id?: string; type: "abort_and_prompt"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort_and_restore_queue" }
 	| { id?: string; type: "new_session"; parentSession?: string }
 	| { id?: string; type: "open_session"; sessionDir: string; provider?: string; modelId?: string }
 
 	// State
-	| { id?: string; type: "get_state" }
+	| { id?: string; type: "begin_dispose" }
+	| { id?: string; type: "dispose_session"; options?: AgentSessionDisposeOptions }
+	| { id?: string; type: "checkpoint_session" }
+	| { id?: string; type: "save_draft"; text: string }
+	| { id?: string; type: "consume_draft" }
+	| { id?: string; type: "get_state"; view?: { collapseCompactedHistory?: boolean } }
 	| { id?: string; type: "set_fast_mode"; enabled: boolean }
 	| { id?: string; type: "set_slow_mode"; enabled: boolean }
 	| {
@@ -86,6 +110,7 @@ export type RpcCommand =
 	| { id?: string; type: "steer_subagent"; subagentId: string; message: string }
 	// Live voice (GPT live bound to this session)
 	| { id?: string; type: "live_start"; voice?: string; instructions?: string }
+	| { id?: string; type: "live_connect"; sdpOffer: string; voice?: string; instructions?: string }
 	| { id?: string; type: "live_stop" }
 	| { id?: string; type: "live_mute"; muted?: boolean }
 
@@ -125,6 +150,7 @@ export type RpcCommand =
 
 	// Session
 	| { id?: string; type: "get_session_stats" }
+	| { id?: string; type: "get_session_lease"; sessionIds: string[] }
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "switch_session"; sessionPath: string; provider?: string; modelId?: string }
 	| { id?: string; type: "branch"; entryId: string }
@@ -168,10 +194,14 @@ export type RpcCommand =
 // ============================================================================
 
 export interface RpcSessionState {
+	/** Present only when requested, so streaming state refreshes stay small. */
+	view?: InteractiveViewSnapshot;
 	model?: Model;
 	thinkingLevel: ThinkingLevel | undefined;
 	isStreaming: boolean;
 	isCompacting: boolean;
+	/** Exact root turn cleanup predicate, distinct from background async jobs. */
+	hasPostPromptWork?: boolean;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
 	interruptMode: "immediate" | "wait";
@@ -434,6 +464,7 @@ export type RpcResponse =
 
 	// Prompting (async - events follow)
 	| { id?: string; type: "response"; command: "prompt"; success: true; data?: { agentInvoked: boolean } }
+	| { id?: string; type: "response"; command: "prompt_custom"; success: true }
 	| { id?: string; type: "response"; command: "steer"; success: true }
 	| { id?: string; type: "response"; command: "follow_up"; success: true }
 	| {
@@ -457,6 +488,11 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "open_session"; success: true; data: RpcOpenSessionResult }
 
 	// State
+	| { id?: string; type: "response"; command: "begin_dispose"; success: true }
+	| { id?: string; type: "response"; command: "dispose_session"; success: true }
+	| { id?: string; type: "response"; command: "checkpoint_session"; success: true }
+	| { id?: string; type: "response"; command: "save_draft"; success: true }
+	| { id?: string; type: "response"; command: "consume_draft"; success: true; data: { text: string | null } }
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
 	| {
 			id?: string;
@@ -591,6 +627,7 @@ export type RpcResponse =
 
 	// Session
 	| { id?: string; type: "response"; command: "get_session_stats"; success: true; data: SessionStats }
+	| { id?: string; type: "response"; command: "get_session_lease"; success: true; data: SessionLeaseReport }
 	| { id?: string; type: "response"; command: "export_html"; success: true; data: { path: string } }
 	| { id?: string; type: "response"; command: "switch_session"; success: true; data: { cancelled: boolean } }
 	| { id?: string; type: "response"; command: "branch"; success: true; data: { text: string; cancelled: boolean } }
@@ -615,6 +652,13 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "set_session_name"; success: true }
 	// Live voice
 	| { id?: string; type: "response"; command: "live_start"; success: true; data: { voice: string } }
+	| {
+			id?: string;
+			type: "response";
+			command: "live_connect";
+			success: true;
+			data: { voice: string; sdpAnswer: string };
+	  }
 	| { id?: string; type: "response"; command: "live_stop"; success: true }
 	| { id?: string; type: "response"; command: "live_mute"; success: true; data: { muted: boolean } }
 	// Draft-only speech-to-text

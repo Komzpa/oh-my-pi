@@ -123,6 +123,9 @@ export const readHelp = {
 export const renderHelp = {
 	description: "Draw a session's entire thread through the production transcript pipeline (with repaint timing)",
 } satisfies CommandMetadata;
+export const restartHelp = {
+	description: "Queue, inspect, or cancel a graceful restart for an exact live interactive session",
+} satisfies CommandMetadata;
 
 export const sayHelp = {
 	description: "Synthesize text with the local TTS engine and play it through the speakers",
@@ -131,7 +134,8 @@ export const sayHelp = {
 export const searchHelp = { description: "Test web search providers" } satisfies CommandMetadata;
 
 export const sessionHelp = {
-	description: "Hand a session to another machine: pack it, unpack it, or mark the local copy moved",
+	description:
+		"Hand a session to another machine (pack, unpack, moved) or check which sessions a running omp owns (lease)",
 } satisfies CommandMetadata;
 
 export const shareHelp = {

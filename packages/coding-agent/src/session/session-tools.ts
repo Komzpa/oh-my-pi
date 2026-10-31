@@ -353,6 +353,8 @@ export class SessionTools {
 	#createVibeTools: (() => AgentTool[]) | undefined;
 	#createThinkTool: SessionToolsOptions["createThinkTool"];
 	#installedVibeToolNames = new Set<string>();
+	/** An MCP refresh landed while vibe narrowed the active set; vibe exit activates its manager tools. */
+	#vibeDeferredMcpRefresh = false;
 	#builtInToolNames: Set<string>;
 	#rpcHostToolNames = new Set<string>();
 	#mcpManagerToolNames = new Set<string>();
@@ -379,12 +381,6 @@ export class SessionTools {
 	#capturedPromptDigest: string | undefined;
 	/** Base-prompt digest each primary reply with provider output was produced under. */
 	readonly #replyPromptDigests = new WeakMap<AgentMessage, string>();
-	/**
-	 * Newest digest found in a branch view and how much of it was scanned. The
-	 * session manager's memoized view only grows in place, so a later read of
-	 * the same array scans just the appended entries.
-	 */
-	#recordedDigestScan: { branch: readonly SessionEntry[]; scanned: number; digest: string | undefined } | undefined;
 	/**
 	 * Dynamic (`xd://`) devices the model has already been told are mounted.
 	 * Seeded lazily from persisted history on resume (see
@@ -920,7 +916,11 @@ export class SessionTools {
 	deactivateVibeTools(nextToolNames: string[]): Promise<void> {
 		return this.runToolRegistryMutation(async () => {
 			this.#uninstallVibeTools();
-			await this.#applyActiveToolsByName(nextToolNames);
+			await this.#applyActiveToolsByName([
+				...nextToolNames,
+				...(this.#vibeDeferredMcpRefresh ? this.#mcpManagerToolNames : []),
+			]);
+			this.#vibeDeferredMcpRefresh = false;
 		});
 	}
 
@@ -930,7 +930,11 @@ export class SessionTools {
 			const removed = new Set(this.#installedVibeToolNames);
 			this.#uninstallVibeTools();
 			const nextEnabled = this.getEnabledToolNames().filter(name => !removed.has(name));
-			await this.#applyActiveToolsByName(nextEnabled);
+			await this.#applyActiveToolsByName([
+				...nextEnabled,
+				...(this.#vibeDeferredMcpRefresh ? this.#mcpManagerToolNames : []),
+			]);
+			this.#vibeDeferredMcpRefresh = false;
 		});
 	}
 
@@ -1520,26 +1524,10 @@ export class SessionTools {
 
 	/** Digest of the base prompt the current branch's newest reply with provider output was produced under. */
 	recordedPromptDigest(): string | undefined {
-		const branch = this.#host.sessionManager.getBranchView();
-		const scan = this.#recordedDigestScan;
-		if (scan?.branch === branch) {
-			for (let index = scan.scanned; index < branch.length; index++) {
-				const digest = promptDigestOfEntry(branch[index]);
-				if (digest !== null) scan.digest = digest;
-			}
-			scan.scanned = branch.length;
-			return scan.digest;
-		}
-		let digest: string | undefined;
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const found = promptDigestOfEntry(branch[index]);
-			if (found !== null) {
-				digest = found;
-				break;
-			}
-		}
-		this.#recordedDigestScan = { branch, scanned: branch.length, digest };
-		return digest;
+		const entry = this.#host.sessionManager.getLatestBranchMatching(
+			metadata => metadata.type === "custom" && metadata.customType === SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE,
+		);
+		return entry ? (promptDigestOfEntry(entry) ?? undefined) : undefined;
 	}
 
 	/**
@@ -1590,7 +1578,6 @@ export class SessionTools {
 	/** Drops retained transcript references when the session is disposed. */
 	releaseRestoredTranscript(): void {
 		this.#restoredTranscript = undefined;
-		this.#recordedDigestScan = undefined;
 	}
 
 	/**
@@ -2481,7 +2468,8 @@ export class SessionTools {
 	 * Replace MCP tools in the registry and enable them immediately. Refreshes
 	 * are serialized so an older asynchronous prompt rebuild cannot commit
 	 * after a newer catalog snapshot. Every connected MCP tool becomes available
-	 * (mounted under `xd://` when that transport is active, else top-level).
+	 * (mounted under `xd://` when that transport is active, else top-level);
+	 * while vibe mode is active, activation waits for vibe exit.
 	 */
 	refreshMCPTools(mcpTools: CustomTool[]): Promise<void> {
 		const snapshot = [...mcpTools];
@@ -2524,16 +2512,19 @@ export class SessionTools {
 			if (managerToolSet.has(tool)) this.#mcpManagerToolNames.add(tool.name);
 		}
 
-		// Connected manager tools become active immediately. Extension-owned MCP
-		// tools retain their prior selection while both sets share one registry.
-		const retainedActiveExtensionToolNames = previousActiveMcpToolNames.filter(
-			name => this.#extensionMcpTools.has(name) && this.#toolRegistry.has(name),
+		// Connected manager tools become active immediately, except while vibe
+		// narrows the active set to the director's tools: then every MCP tool keeps
+		// its prior selection and vibe exit activates the manager set. Extension-owned
+		// MCP tools always retain their prior selection while both share one registry.
+		const vibeActive = this.#installedVibeToolNames.size > 0;
+		const retainedActiveMcpToolNames = previousActiveMcpToolNames.filter(
+			name => (vibeActive || this.#extensionMcpTools.has(name)) && this.#toolRegistry.has(name),
 		);
 		const nextActive = [
 			...new Set([
 				...this.#getActiveNonMCPToolNames(),
-				...this.#mcpManagerToolNames,
-				...retainedActiveExtensionToolNames,
+				...(vibeActive ? [] : this.#mcpManagerToolNames),
+				...retainedActiveMcpToolNames,
 			]),
 		];
 		try {
@@ -2541,6 +2532,7 @@ export class SessionTools {
 			if (this.#host.isDisposed()) {
 				restorePreviousMcpTools();
 			} else {
+				if (vibeActive) this.#vibeDeferredMcpRefresh = true;
 				// The settled mutation promise may retain this async frame; drop
 				// rollback references as soon as the new generation commits.
 				previousMcpTools.clear();

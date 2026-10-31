@@ -419,6 +419,14 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	beforeModelCall?: AgentBeforeModelCall;
 
 	/**
+	 * Whether any installed `beforeModelCall` gate can currently stop a call. A run that is
+	 * already aborted skips its provider call when a gate exists, so a gate that is installed
+	 * but dormant reports `false` here and the aborted turn is still closed by the provider's
+	 * own aborted message. Absent means the gate is always active.
+	 */
+	beforeModelCallActive?: () => boolean;
+
+	/**
 	 * Optional transform applied to tool call arguments before execution.
 	 * Use for deobfuscating secrets or rewriting arguments.
 	 */
@@ -672,7 +680,8 @@ export interface ToolCallContext {
 	providerMetadata?: ToolCallProviderMetadata;
 	/**
 	 * Cooperative steering signal: aborted when a queued user/steering message
-	 * (or an interrupting peer IRC) is detected while this tool batch runs.
+	 * (or an interrupting peer IRC) is detected while this tool batch runs. Its
+	 * `reason` names the source: a {@link SteeringInterruptSource} or `"irc"`.
 	 * Unlike the hard abort signal it NEVER kills the tool — long-running
 	 * tools MAY observe it (via `ctx.toolCall.steeringSignal`) to finish early
 	 * or background themselves so the message injects promptly; ignoring it is
@@ -1252,6 +1261,12 @@ export interface AgentTool<
 	 * approving the call can record them. Omit it (or return `undefined`) and the call prompts by tier.
 	 */
 	approvalCacheTargets?: (args: unknown) => readonly string[] | undefined;
+
+	/**
+	 * Paths a call reads beyond its working directory, matched against restricted folders when it
+	 * reports no `approvalCacheTargets`. Unlike cache targets they never key a remembered grant.
+	 */
+	approvalRestrictionPaths?: (args: unknown) => readonly string[] | undefined;
 
 	/** The main execution callback for this tool. */
 	execute: AgentToolExecFn<TParameters, TDetails, TTheme>;

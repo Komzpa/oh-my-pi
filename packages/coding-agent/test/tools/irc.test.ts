@@ -7,13 +7,16 @@ import { executeSend } from "@oh-my-pi/pi-coding-agent/irc/messaging";
 import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { ensurePersistedRoster } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { IrcBridge, type IrcBridgeHost } from "@oh-my-pi/pi-coding-agent/session/irc-bridge";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { attachIrcWakeTurnMonitor } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { createSessionDefaults } from "../helpers/session-defaults";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 type IrcWakeObserver = (records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined;
 
@@ -196,6 +199,67 @@ describe("IRC", () => {
 			expect(receipt.outcome).toBe("revived");
 			expect(sub.delivered.map(msg => msg.body)).toEqual(["wake up"]);
 			expect(registry.get("0-Parked")?.status).toBe("idle");
+		});
+
+		it("send rehydrates and revives a terminal ref evicted from the resident roster", async () => {
+			using tempDir = TempDir.createSync("@omp-irc-evicted-resume-");
+			const rootFile = `${tempDir.path()}/main.jsonl`;
+			const rootDir = rootFile.slice(0, -".jsonl".length);
+			const childCount = 140;
+			const childId = (index: number) => `Worker-${String(index).padStart(3, "0")}`;
+			const sessionRecord = (id: string) =>
+				`${JSON.stringify({
+					type: "session",
+					version: CURRENT_SESSION_VERSION,
+					id,
+					timestamp: "2026-09-01T00:00:00.000Z",
+					cwd: tempDir.path(),
+				})}\n`;
+			const initRecord = `${JSON.stringify({
+				type: "session_init",
+				id: "init",
+				parentId: null,
+				timestamp: "2026-09-01T00:00:01.000Z",
+				systemPrompt: "test",
+				task: "persisted task",
+				tools: ["read"],
+			})}\n`;
+			await Bun.write(rootFile, sessionRecord("main"));
+			await Promise.all(
+				Array.from({ length: childCount }, (_, index) => {
+					const id = childId(index);
+					return Bun.write(`${rootDir}/${id}.jsonl`, sessionRecord(id) + initRecord);
+				}),
+			);
+			registry.register({
+				id: "0-Main",
+				displayName: "main",
+				kind: "main",
+				session: makeFakeSession().session,
+				sessionFile: rootFile,
+				status: "idle",
+			});
+			await ensurePersistedRoster(registry, rootFile);
+			const evictedId = Array.from({ length: childCount }, (_, index) => childId(index)).find(
+				id => registry.get(id) === undefined,
+			);
+			expect(evictedId).toBeDefined();
+			if (!evictedId) throw new Error("Expected the resident terminal-ref bound to evict a recipient");
+
+			const worker = makeFakeSession();
+			worker.setOutcome("woken");
+			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+				async ref => (ref.id === evictedId ? async () => worker.session : undefined),
+				() => 0,
+			);
+			const result = await executeSend(
+				{ registry, senderId: "0-Main", sessionFileHint: rootFile },
+				{ to: evictedId, message: "resume this task" },
+			);
+			expect(result.isError).not.toBe(true);
+			expect(worker.delivered.map(message => message.body)).toEqual(["resume this task"]);
+			expect(registry.get(evictedId)?.session).toBe(worker.session);
+			expect(registry.get(evictedId)?.status).toBe("idle");
 		});
 
 		it("send fails cleanly when a parked recipient has no reviver", async () => {
@@ -524,6 +588,30 @@ describe("IRC", () => {
 		});
 	});
 
+	it("makes a streaming IRC interrupt visible before the next turn boundary", async () => {
+		const bridge = new IrcBridge({
+			agent: new Agent(),
+			sessionManager: SessionManager.inMemory("/tmp"),
+			isDisposed: () => false,
+			isStreaming: () => true,
+			isRestartDraining: () => false,
+			queueForRestart: async () => {},
+			planModeEnabled: () => false,
+			emitSessionEvent: async () => {},
+			wakeForIrc: () => {},
+		});
+		const delivery = bridge.deliver({
+			id: "same-turn",
+			from: "Sender",
+			to: "Recipient",
+			body: "stop",
+			ts: Date.now(),
+		});
+		expect(bridge.hasInterrupts()).toBe(true);
+		expect(bridge.hasQueuedFrom("Sender")).toBe(true);
+		expect(await delivery).toBe("injected");
+	});
+
 	describe("wake-turn replies to broadcasts", () => {
 		/**
 		 * An idle subagent wired like a real one: deliveries go through the real
@@ -559,6 +647,8 @@ describe("IRC", () => {
 			const bridge = new IrcBridge({
 				isDisposed: () => false,
 				isStreaming: () => false,
+				isRestartDraining: () => false,
+				queueForRestart: async () => {},
 				planModeEnabled: () => false,
 				emitSessionEvent: async () => {},
 				wakeForIrc: wake,
@@ -692,6 +782,15 @@ describe("IRC", () => {
 				["0-A", "d-1"],
 				["0-B", "d-2"],
 			]);
+		});
+
+		it("does not relay a turn woken only by a progress note back to its sender", async () => {
+			const sender = makeFakeSession();
+			registry.register({ id: "0-C", displayName: "task", kind: "sub", status: "idle", session: sender.session });
+			const peer = registerIdleSubagent("0-A");
+			peer.wake([incoming("p-1", "0-C", { progress: true })]);
+			await peer.settled();
+			expect(sender.delivered).toEqual([]);
 		});
 	});
 

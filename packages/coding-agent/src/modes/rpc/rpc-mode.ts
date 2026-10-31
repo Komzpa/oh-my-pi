@@ -1,3 +1,4 @@
+import { assertInteractiveOwnerCanCheckpoint, createLocalInteractiveViewSource } from "../interactive-view";
 /**
  * RPC mode: Headless operation with JSON stdin/stdout protocol.
  *
@@ -52,9 +53,10 @@ import { requestTextPrediction, textPredictionBackend } from "../../predict/clie
 import { type AgentSession, type NavigateTreeResult, SessionBusyError } from "../../session/agent-session";
 import type { MCPManager } from "../../mcp/manager";
 import { reconnectMcpManagerServer } from "../../mcp/oauth-reauth";
-import type { RestoredQueuedMessage } from "../../session/agent-session-types";
+import type { AgentSessionDisposeOptions, RestoredQueuedMessage } from "../../session/agent-session-types";
 import { CACHE_WARMING_MODES } from "../../session/cache-warmer";
 import { findMostRecentNonEmptySession, findRecentSessionContinuation } from "../../session/session-listing";
+import { probeSessionLeases } from "../../session/session-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
@@ -433,6 +435,7 @@ const BACKGROUND_COMMANDS: ReadonlySet<string> = new Set<RpcCommand["type"]>([
 	"bash",
 	"predict_word",
 	"live_start",
+	"live_connect",
 	"btw_cancel",
 	"abort_branch_summary",
 ]);
@@ -451,14 +454,14 @@ const BACKGROUND_COMMANDS: ReadonlySet<string> = new Set<RpcCommand["type"]>([
  * while a shell command runs, or `abort` (and `steer`/`follow_up`/`get_state`)
  * while a `prompt` or `steer_subagent` is still admitting. `predict_word` is
  * backgrounded too, so a cold prediction engine never stalls the command queue
- * behind a keystroke. `live_start` and `dictation_start` respond only when
- * recording, so they are backgrounded and their stop commands can cancel them.
+ * behind a keystroke. `live_start`, `live_connect` and `dictation_start` respond only once
+ * connected or recording, so they are backgrounded and their stop commands can cancel them.
  * Response correlation is preserved via each command's `id`; ordering across
  * concurrent commands is not guaranteed and clients MUST match on `id`.
  *
  * @returns `undefined` when the frame was routed to a side-channel handler
  *   (extension UI response, host tool/URI frames) or dispatched in the
- *   background (`bash`, `predict_word`, `live_start`, `dictation_start`, `prompt`, `steer`, `follow_up`, `steer_subagent`). Otherwise a promise that
+ *   background (`bash`, `predict_word`, `live_start`, `live_connect`, `dictation_start`, `prompt`, `steer`, `follow_up`, `steer_subagent`). Otherwise a promise that
  *   resolves once the response for the command has been emitted via `output`.
  *   Errors from `handleCommand` on a command dispatched inline propagate; the
  *   caller is expected to wrap them.
@@ -484,6 +487,7 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 	if (
 		BACKGROUND_COMMANDS.has(command.type) ||
 		command.type === "prompt" ||
+		command.type === "prompt_custom" ||
 		command.type === "steer" ||
 		command.type === "dictation_start" ||
 		command.type === "follow_up" ||
@@ -508,6 +512,7 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 
 const USER_INPUT_TYPES: Record<string, true> = {
 	prompt: true,
+	prompt_custom: true,
 	steer: true,
 	follow_up: true,
 	abort_and_prompt: true,
@@ -1566,6 +1571,14 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			return () => {};
 		}
 
+		rerenderMessage(): void {
+			// No transcript is drawn in RPC mode
+		}
+
+		getLinkClicksAvailable(): boolean {
+			return false;
+		}
+
 		notify(message: string, type?: "info" | "warning" | "error"): void {
 			// Fire and forget - no response needed
 			this.output({
@@ -1803,6 +1816,19 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		},
 	);
 
+	const disposeOwner = async (options?: AgentSessionDisposeOptions): Promise<void> => {
+		// Report an unsaved side answer without skipping owner resource disposal.
+		await btw.close().catch(btwError => {
+			const message = toError(btwError).message;
+			logger.error(message);
+			output({ type: "notice", level: "error", message, source: "btw-history" });
+		});
+		// Close the realtime call (microphone, socket) before the session it delegates into.
+		dictationBridge.dispose();
+		await liveBridge.stop();
+		await session.dispose(options);
+	};
+
 	/**
 	 * Dispose the session, then end the process. A store failure still latched
 	 * at dispose makes `dispose()` reject, and the `notice` frame it emits is
@@ -1813,16 +1839,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	 */
 	const disposeAndExit = async (): Promise<never> => {
 		try {
-			// The process ends regardless; report an unsaved side answer instead of skipping dispose.
-			await btw.close().catch(btwError => {
-				const message = toError(btwError).message;
-				logger.error(message);
-				output({ type: "notice", level: "error", message, source: "btw-history" });
-			});
-			// Close the realtime call (microphone, socket) before the session it delegates into.
-			dictationBridge.dispose();
-			await liveBridge.stop();
-			await session.dispose();
+			await disposeOwner();
 		} catch (error) {
 			if (!persistenceFailure || error !== persistenceFailure) throw error;
 			// The notice frame this failure queued must reach the client before the
@@ -1872,7 +1889,10 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	await emitAvailableCommandsUpdate();
 
 	const inputGate = new RpcUserInputGate();
-	type OrderedUserInput = Extract<RpcCommand, { type: "prompt" | "steer" | "follow_up" | "abort_and_prompt" }>;
+	type OrderedUserInput = Extract<
+		RpcCommand,
+		{ type: "prompt" | "prompt_custom" | "steer" | "follow_up" | "abort_and_prompt" }
+	>;
 	type OrderedInputOutcome = "local" | "cancelled" | "admitted" | "builtin-agent";
 	const dispatchOrderedUserInput = (
 		command: OrderedUserInput,
@@ -1883,8 +1903,20 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			const isCurrent = () =>
 				inputGate.isCurrent(command) && !shutdownState.requested && session.sessionId === sessionId;
 			if (!isCurrent()) return "cancelled";
+			if (command.type === "prompt_custom") {
+				if (!ticket) return "cancelled";
+				await watchAndReportPromptResult({
+					ticket,
+					startPrompt: onPromptAdmitted =>
+						session.promptCustomMessage(command.message, { ...command.options, onPromptAdmitted }),
+					results: promptResults,
+					onError: onPromptError(command.id, "prompt_custom"),
+					extensionUserMessageTracker,
+				});
+				return "admitted";
+			}
 			let text = command.message;
-			let images = command.images;
+			let images = command.images ?? (command.type === "prompt" ? command.options?.images : undefined);
 			const runner = session.extensionRunner;
 			if (runner?.hasHandlers("input")) {
 				const result = await runner.emitInput(text, images, "rpc");
@@ -1903,7 +1935,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				await session.followUp(text, images);
 				return "admitted";
 			}
-			if (command.type === "prompt") {
+			if (command.type === "prompt" && command.options?.runCommands !== false) {
 				if (!ticket) return "cancelled";
 				const skillResult = await dispatchRpcSkillPrompt({
 					ticket,
@@ -1979,8 +2011,11 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				ticket,
 				startPrompt: onPromptAdmitted =>
 					session.prompt(text, {
+						...(command.type === "prompt" ? command.options : {}),
 						images,
-						...(command.type === "prompt" ? { streamingBehavior: command.streamingBehavior } : {}),
+						...(command.type === "prompt" && command.streamingBehavior
+							? { streamingBehavior: command.streamingBehavior }
+							: {}),
 						onPromptAdmitted,
 					}),
 				results: promptResults,
@@ -2039,6 +2074,17 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				}
 			}
 
+			case "prompt_custom": {
+				const ticket = promptResults.begin(id);
+				try {
+					if ((await dispatchOrderedUserInput(command, ticket)) === "cancelled") promptResults.settle(ticket);
+					return success(id, "prompt_custom");
+				} catch (promptSetupError) {
+					promptResults.discard(ticket);
+					throw promptSetupError;
+				}
+			}
+
 			case "steer":
 			case "follow_up": {
 				await dispatchOrderedUserInput(command, undefined);
@@ -2069,7 +2115,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			case "abort": {
 				goalController.stopForHostAbort();
 				abortBuiltinCommands("RPC command aborted by host");
-				await session.abort({ reason: USER_INTERRUPT_LABEL });
+				await session.abort(command.options ?? { reason: USER_INTERRUPT_LABEL });
 				return success(id, "abort");
 			}
 
@@ -2238,6 +2284,30 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			// State
 			// =================================================================
 
+			case "begin_dispose":
+				session.beginDispose();
+				return success(id, "begin_dispose");
+			case "dispose_session":
+				promptResults.abortOpen(true);
+				session.beginDispose();
+				pendingExtensionRequests.rejectAll("Session owner shut down before extension UI response completed");
+				await disposeOwner(command.options);
+				return success(id, "dispose_session");
+			case "checkpoint_session":
+				assertInteractiveOwnerCanCheckpoint(session);
+				await session.sessionManager.close();
+				assertInteractiveOwnerCanCheckpoint(session);
+				session.sessionManager.seal();
+				return success(id, "checkpoint_session");
+
+			case "save_draft":
+				await session.sessionManager.saveDraft(command.text);
+				return success(id, "save_draft");
+			case "consume_draft": {
+				const text = await session.sessionManager.consumeDraft();
+				return success(id, "consume_draft", { text });
+			}
+
 			case "get_state": {
 				// A goal exit triggered by the last turn restores tools asynchronously; report after it.
 				await goalController.settled();
@@ -2247,6 +2317,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					thinkingLevel: session.thinkingLevel,
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
+					hasPostPromptWork: session.hasPostPromptWork,
 					steeringMode: session.steeringMode,
 					followUpMode: session.followUpMode,
 					interruptMode: session.interruptMode,
@@ -2282,6 +2353,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					contextUsage: session.getContextUsage(),
 					goal: session.getGoalModeState() ?? null,
 				};
+				if (command.view) state.view = await createLocalInteractiveViewSource(session).capture(command.view);
 				return success(id, "get_state", state);
 			}
 
@@ -2360,18 +2432,24 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				return success(id, "set_host_tools", { toolNames: tools.map(tool => tool.name) });
 			}
 
-			case "live_start": {
-				if (dictationBridge.active) return error(id, "live_start", "End dictation before starting live voice");
+			case "live_start":
+			case "live_connect": {
+				const sdpOffer = command.type === "live_connect" ? command.sdpOffer : undefined;
+				// The frame is untyped input: without an offer, live_connect would open the host microphone.
+				if (command.type === "live_connect" && (typeof sdpOffer !== "string" || !sdpOffer.trim())) {
+					return error(id, command.type, "live_connect requires a non-empty sdpOffer");
+				}
+				if (dictationBridge.active) return error(id, command.type, "End dictation before starting live voice");
 				if (sessionChangesInProgress > 0 || shutdownState.requested)
-					return error(id, "live_start", "Session is changing or shutting down");
+					return error(id, command.type, "Session is changing or shutting down");
 				try {
 					return success(
 						id,
-						"live_start",
-						await liveBridge.start({ voice: command.voice, instructions: command.instructions }),
+						command.type,
+						await liveBridge.start({ voice: command.voice, instructions: command.instructions, sdpOffer }),
 					);
 				} catch (err) {
-					return error(id, "live_start", err instanceof Error ? err.message : String(err));
+					return error(id, command.type, err instanceof Error ? err.message : String(err));
 				}
 			}
 
@@ -2630,6 +2708,14 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			case "get_session_stats": {
 				const stats = session.getSessionStats();
 				return success(id, "get_session_stats", stats);
+			}
+
+			case "get_session_lease": {
+				const { sessionIds } = command;
+				if (!Array.isArray(sessionIds) || !sessionIds.every(sessionId => typeof sessionId === "string")) {
+					return error(id, "get_session_lease", "sessionIds must be an array of strings");
+				}
+				return success(id, "get_session_lease", probeSessionLeases(sessionIds));
 			}
 
 			case "export_html": {

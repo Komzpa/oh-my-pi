@@ -15,6 +15,8 @@ export interface IrcBridgeHost {
 	sessionManager: SessionManager;
 	isDisposed(): boolean;
 	isStreaming(): boolean;
+	isRestartDraining(): boolean;
+	queueForRestart(record: CustomMessage): Promise<void>;
 	planModeEnabled(): boolean;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	wakeForIrc(records: AgentMessage[]): void;
@@ -24,6 +26,7 @@ export interface IrcBridgeHost {
 export class IrcBridge {
 	/** Tracks parent IRC steers by object identity without trusting prompt text or publication on receipt. */
 	readonly #parentSteers = new WeakSet<AgentMessage>();
+	readonly #nonInterruptingAsides = new WeakSet<AgentMessage>();
 	/** A subagent's records from anyone but its parent: answered in their own turn, never by
 	 *  extending a finished one (whose text is the subagent's result). */
 	readonly #peerMessages = new WeakSet<AgentMessage>();
@@ -58,9 +61,9 @@ export class IrcBridge {
 		return this.#interrupts.length > 0;
 	}
 
-	/** Whether an aside is ready for step-boundary injection (not a parked wake). */
-	hasAsides(): boolean {
-		return this.#asides.length > 0;
+	/** Whether a queued aside should end an interruptible wait. */
+	hasInterruptingAsides(): boolean {
+		return this.#asides.some(record => !this.#nonInterruptingAsides.has(record));
 	}
 
 	/** Whether any undelivered IRC record remains queued. */
@@ -142,7 +145,11 @@ export class IrcBridge {
 
 	/** Queues records for the next step-boundary aside injection: IRC wakes deferred by a
 	 *  session transition, and extension `deliverAs: "aside"` sends. */
-	queueAside(records: AgentMessage[]): void {
+	queueAside(records: AgentMessage[], options?: { interruptWait?: boolean }): void {
+		for (const record of records) {
+			if (options?.interruptWait === false) this.#nonInterruptingAsides.add(record);
+			else this.#nonInterruptingAsides.delete(record);
+		}
 		this.#asides.push(...records);
 	}
 
@@ -189,6 +196,7 @@ export class IrcBridge {
 				const body = Reflect.get(details, "message");
 				const replyTo = Reflect.get(details, "replyTo");
 				const broadcast = Reflect.get(details, "broadcast") === true;
+				const progress = Reflect.get(details, "progress") === true;
 				if (typeof id !== "string" || typeof from !== "string" || typeof body !== "string") {
 					queue.remaining.push(record);
 					continue;
@@ -209,6 +217,7 @@ export class IrcBridge {
 					ts: record.timestamp,
 					...(typeof replyTo === "string" ? { replyTo } : {}),
 					...(broadcast ? { broadcast: true } : {}),
+					...(progress ? { progress: true } : {}),
 				});
 			}
 		}
@@ -245,9 +254,14 @@ export class IrcBridge {
 		const peerMessage = parentId !== undefined && (msg.broadcast === true || (!fromParent && !fromDescendant));
 		// An idle subagent runs a monitored wake turn whose output is relayed
 		// back to the sender (task executor `relayWakeTurnOutput`); the main
-		// agent, mid-turn asides, relays and broadcast legs have no such relay.
+		// agent, mid-turn asides, relays, broadcast legs and progress notes have no such relay.
 		const relayOnStop =
-			!streaming && !planModeIdle && msg.to !== MAIN_AGENT_ID && msg.wakeRelay !== true && msg.broadcast !== true;
+			!streaming &&
+			!planModeIdle &&
+			msg.to !== MAIN_AGENT_ID &&
+			msg.wakeRelay !== true &&
+			msg.broadcast !== true &&
+			msg.progress !== true;
 		// The body is agent-authored (a peer's message, or a wake relay's
 		// `<task-result>` around a subagent's output), so it must not close the
 		// harness envelope it is rendered into or open a forged one, e.g. a parent
@@ -260,6 +274,7 @@ export class IrcBridge {
 				from: msg.from,
 				message: envelopeBody,
 				replyTo: msg.replyTo ?? "",
+				progress: msg.progress === true,
 				interrupting: streaming,
 				relayOnStop,
 			}),
@@ -271,11 +286,17 @@ export class IrcBridge {
 				...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
 				...(msg.wakeRelay ? { wakeRelay: true } : {}),
 				...(msg.broadcast ? { broadcast: true } : {}),
+				...(msg.progress ? { progress: true } : {}),
 				...(fromParent ? { fromParent: true } : {}),
 			},
 			attribution: "agent",
 			timestamp: msg.ts,
 		};
+		const restartQueue = this.#queueDuringRestartDrain(record, peerMessage);
+		if (restartQueue) {
+			await restartQueue;
+			return "injected";
+		}
 		if (peerMessage) this.#peerMessages.add(record);
 		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
 		if (streaming) {
@@ -307,6 +328,13 @@ export class IrcBridge {
 		}
 		this.#host.wakeForIrc([record]);
 		return "woken";
+	}
+
+	#queueDuringRestartDrain(record: CustomMessage, peerMessage: boolean): Promise<void> | undefined {
+		if (!this.#host.isRestartDraining()) return undefined;
+		if (peerMessage) this.#peerMessages.add(record);
+		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
+		return this.#host.queueForRestart(record);
 	}
 
 	/** Emits an IRC relay observation for rendering without persisting it. */

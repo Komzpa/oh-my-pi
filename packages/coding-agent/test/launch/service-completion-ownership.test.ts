@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { Process } from "@oh-my-pi/pi-natives";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../src/config/settings";
+import { BashTool } from "../../src/tools/bash";
 import { startDaemonBrokerFromEnvironment } from "../../src/launch/broker";
 import * as brokerClients from "../../src/launch/client";
 import {
@@ -14,7 +15,6 @@ import {
 } from "../../src/launch/protocol";
 import { listServices, sendService, startService, waitForOwnedServiceCompletion } from "../../src/launch/services";
 import type { ToolSession } from "../../src/tools";
-import { BashTool } from "../../src/tools/bash";
 
 interface EmbeddedBroker {
 	/** Settles once this in-process broker has shut down and flushed its metadata. */
@@ -291,10 +291,13 @@ describe("session-owned supervised services", () => {
 		try {
 			vi.spyOn(brokerClients, "daemonClientForProject").mockResolvedValue(client);
 			const result = await new BashTool(session).execute("svc-env", {
-				command: `echo "env=$PI_SESSION_ID|$PI_SESSION_FILE"; read answer`,
+				command: `echo "env=$PI_SESSION_ID|$PI_SESSION_FILE|$PI_TOOL_CALL_ID"; read answer`,
 				name: "env-service",
 				pty: false,
-				ready: { log: `env=session-svc\\|${sessionFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, timeout: 5 },
+				ready: {
+					log: `env=session-svc\\|${sessionFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\|svc-env`,
+					timeout: 5,
+				},
 			});
 			expect(result.details?.service).toMatchObject({ name: "env-service", ready: true, timedOut: false });
 		} finally {

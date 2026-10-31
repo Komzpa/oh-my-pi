@@ -424,6 +424,47 @@ export interface QueuedMessagesState {
 	liveSteered?: number;
 }
 
+export interface CustomPromptMessage {
+	customType: string;
+	content: MessageContent;
+	display: boolean;
+	details?: unknown;
+	attribution?: "user" | "agent";
+}
+
+export interface CustomPromptOptions {
+	streamingBehavior?: "steer" | "followUp" | "aside";
+	toolChoice?: unknown;
+	queueChipText?: string;
+	queueOnly?: boolean;
+}
+
+export interface SessionPromptOptions {
+	expandPromptTemplates?: boolean;
+	runCommands?: boolean;
+	throwOnDrop?: boolean;
+	images?: ImageContent[];
+	streamingBehavior?: "steer" | "followUp" | "aside";
+	toolChoice?: unknown;
+	synthetic?: boolean;
+	userInitiated?: boolean;
+	attribution?: "user" | "agent";
+	skipCompactionCheck?: boolean;
+	solutionSpace?: string;
+}
+
+export interface SessionDisposeOptions {
+	mnemopiConsolidateTimeoutMs?: number;
+	drainTimeoutMs?: number;
+	reason?: "pre_exit" | "exit" | "sigint" | "sigterm" | "sighup" | "uncaught_exception" | "unhandled_rejection" | "manual";
+}
+
+export interface SessionAbortOptions {
+	goalReason?: "interrupted" | "internal";
+	reason?: string;
+	preserveCompaction?: boolean;
+}
+
 export interface ToolDescriptor {
 	name: string;
 	description: string;
@@ -481,12 +522,29 @@ export interface UsageLimitWrapUp {
 /** Provider-neutral state of an account past its usage limit, discriminated by `stage`. */
 export type UsageLimitState = UsageLimitLowPriority | UsageLimitWrapUp;
 
+export interface InteractiveViewOptions {
+	collapseCompactedHistory?: boolean;
+}
+
+export interface InteractiveViewSnapshot {
+	sessionId: string;
+	context: Record<string, unknown>;
+	streamMessage: AgentMessage | null;
+	pendingToolCallIds: string[];
+	isStreaming: boolean;
+	entryCount: number;
+	compactionCount: number;
+	sessionFile?: string;
+}
+
 export interface SessionState {
 	sessionId: string;
+	view?: InteractiveViewSnapshot;
 	model?: ModelInfo;
 	thinkingLevel?: ThinkingLevel;
 	isStreaming?: boolean;
 	isCompacting?: boolean;
+	hasPostPromptWork?: boolean;
 	steeringMode?: QueueMode;
 	followUpMode?: QueueMode;
 	interruptMode?: InterruptMode;
@@ -1526,6 +1584,12 @@ export interface PromptParams {
 	/** Images attached to the message. */
 	images?: ImageContent[];
 	streamingBehavior?: StreamingBehavior;
+	options?: SessionPromptOptions;
+}
+
+export interface PromptCustomParams {
+	message: CustomPromptMessage;
+	options?: CustomPromptOptions;
 }
 
 export interface SteerParams {
@@ -1549,6 +1613,10 @@ export interface PromoteQueuedMessageParams {
 	message: string;
 }
 
+export interface AbortParams {
+	options?: SessionAbortOptions;
+}
+
 export interface AbortAndPromptParams {
 	message: string;
 	/** Images attached to the message. */
@@ -1563,6 +1631,22 @@ export interface OpenSessionParams {
 	sessionDir: string;
 	provider?: string;
 	modelId?: string;
+}
+
+export interface DisposeSessionParams {
+	options?: SessionDisposeOptions;
+}
+
+export interface SaveDraftParams {
+	text: string;
+}
+
+export interface ConsumeDraftResult {
+	text: string | null;
+}
+
+export interface GetStateParams {
+	view?: InteractiveViewOptions;
 }
 
 export interface SetFastModeParams {
@@ -1673,6 +1757,17 @@ export interface LiveStartResult {
 	voice: string;
 }
 
+export interface LiveConnectParams {
+	sdpOffer: string;
+	voice?: string;
+	instructions?: string;
+}
+
+export interface LiveConnectResult {
+	voice: string;
+	sdpAnswer: string;
+}
+
 export interface LiveMuteParams {
 	muted?: boolean;
 }
@@ -1740,6 +1835,15 @@ export interface SetAutoRetryParams {
 
 export interface BashParams {
 	command: string;
+}
+
+export interface GetSessionLeaseParams {
+	sessionIds: string[];
+}
+
+export interface GetSessionLeaseResult {
+	held: string[];
+	unknown: string[];
 }
 
 export interface ExportHtmlParams {
@@ -1872,16 +1976,22 @@ export interface GetBtwHistoryResult {
 export interface RpcWireCommands {
 	negotiate_protocol: { params: NegotiateProtocolParams; result: NegotiateProtocolResult };
 	prompt: { params: PromptParams; result: PromptAck };
+	prompt_custom: { params: PromptCustomParams; result: undefined };
 	steer: { params: SteerParams; result: undefined };
 	follow_up: { params: FollowUpParams; result: undefined };
 	remove_queued_message: { params: RemoveQueuedMessageParams; result: RemoveQueuedMessageResult };
 	promote_queued_message: { params: PromoteQueuedMessageParams; result: PromoteQueuedMessageResult };
-	abort: { params: undefined; result: undefined };
+	abort: { params: AbortParams; result: undefined };
 	abort_and_prompt: { params: AbortAndPromptParams; result: undefined };
 	abort_and_restore_queue: { params: undefined; result: AbortAndRestoreQueueResult };
 	new_session: { params: NewSessionParams; result: CancellationResult };
 	open_session: { params: OpenSessionParams; result: OpenSessionResult };
-	get_state: { params: undefined; result: SessionState };
+	begin_dispose: { params: undefined; result: undefined };
+	dispose_session: { params: DisposeSessionParams; result: undefined };
+	checkpoint_session: { params: undefined; result: undefined };
+	save_draft: { params: SaveDraftParams; result: undefined };
+	consume_draft: { params: undefined; result: ConsumeDraftResult };
+	get_state: { params: GetStateParams; result: SessionState };
 	set_fast_mode: { params: SetFastModeParams; result: FastModeResult };
 	set_slow_mode: { params: SetSlowModeParams; result: SetSlowModeResult };
 	goal: { params: GoalParams; result: GoalResult };
@@ -1899,6 +2009,7 @@ export interface RpcWireCommands {
 	cancel_subagent: { params: CancelSubagentParams; result: CancelSubagentResult };
 	steer_subagent: { params: SteerSubagentParams; result: undefined };
 	live_start: { params: LiveStartParams; result: LiveStartResult };
+	live_connect: { params: LiveConnectParams; result: LiveConnectResult };
 	live_stop: { params: undefined; result: undefined };
 	live_mute: { params: LiveMuteParams; result: LiveMuteResult };
 	dictation_start: { params: DictationStartParams; result: undefined };
@@ -1920,6 +2031,7 @@ export interface RpcWireCommands {
 	bash: { params: BashParams; result: BashResult };
 	abort_bash: { params: undefined; result: undefined };
 	get_session_stats: { params: undefined; result: SessionStats };
+	get_session_lease: { params: GetSessionLeaseParams; result: GetSessionLeaseResult };
 	export_html: { params: ExportHtmlParams; result: ExportHtmlResult };
 	switch_session: { params: SwitchSessionParams; result: CancellationResult };
 	branch: { params: BranchParams; result: BranchResult };

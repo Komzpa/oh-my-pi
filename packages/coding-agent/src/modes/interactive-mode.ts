@@ -2,20 +2,13 @@
  * Interactive mode for the coding agent.
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
  */
+import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import {
-	type Agent,
-	AgentBusyError,
-	type AgentMessage,
-	agentPauseGate,
-	EventLoopKeepalive,
-	ThinkingLevel,
-} from "@oh-my-pi/pi-agent-core";
+import { type Agent, AgentBusyError, type AgentMessage, agentPauseGate, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, Model, Usage, UsageReport } from "@oh-my-pi/pi-ai";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { execReplace } from "@oh-my-pi/pi-natives";
 import type {
 	AutocompleteProvider,
 	Component,
@@ -88,6 +81,11 @@ import { appKey, editorKey, rawKeyHint } from "@oh-my-pi/pi-tui/chrome/keybindin
 import { formatModelString, type ResolvedModelRoleValue } from "../config/model-resolver";
 import { isSettingsInitialized, Settings, settings } from "../config/settings";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
+import {
+	createInteractiveViewSourceRouter,
+	createLocalInteractiveViewSource,
+	type InteractiveViewSource,
+} from "./interactive-view";
 import type {
 	AutocompleteProviderFactory,
 	ContextUsage,
@@ -100,6 +98,8 @@ import type {
 } from "../extensibility/extensions";
 import type {
 	CompactOptions,
+	ExtensionLiveSession,
+	ExtensionLiveStartOptions,
 	ExtensionSessionModes,
 	PlanReviewChoice,
 	PlanReviewOption,
@@ -114,6 +114,7 @@ import { loadSlashCommands } from "../extensibility/slash-commands";
 import type { GoalModeState } from "../goals/state";
 import { rebindMemoryBackendForCwd } from "../hindsight/backend";
 import { copyLocalArtifacts, resolveLocalRoot } from "../internal-urls";
+import { hasNativeJudge } from "../judgment";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import type { MCPManager } from "../mcp";
 import {
@@ -149,18 +150,20 @@ import {
 	type ResolvedRoleModel,
 	SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 } from "../session/agent-session";
+import { createLocalInteractiveSessionConnection, type InteractiveSessionConnection } from "./interactive-session";
 import type { CompactMode } from "../session/compact-modes";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
 import { HistoryStorage } from "../session/history-storage";
 import { syncTextPrediction, textPredictionBackend } from "../predict/client";
 import { setWordPredictionHost } from "@oh-my-pi/pi-tui/prompt/word-completion";
+import { imageAttachmentSource, tagImageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveMarkdownLinkHrefs } from "../internal-urls/hyperlink-targets";
 import type { ResolveContext } from "../internal-urls/index";
 import { modelMentionDisplayName } from "@oh-my-pi/pi-tui/prompt/model-mention-syntax";
 import { modelMentionChipLabel, shiftImageMarkers } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
 import type { SessionContext } from "../session/session-context";
-import type { SessionManager } from "../session/session-manager";
+import type { DraftEditorState, DraftImage, SessionManager } from "../session/session-manager";
 import {
 	canAutoCreateWorktree,
 	planWorktreeExit,
@@ -177,6 +180,21 @@ import type { SpaceHoldHandler } from "@oh-my-pi/pi-tui/space-hold";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { labelEchoesHandle } from "../task/label";
+import {
+	createRestartQueueController,
+	formatRestartRequestStatus,
+	isRestartResumePending,
+	type RestartControlIdentity,
+	type RestartControlRequest,
+	type RestartControlSnapshot,
+	type RestartQueueController,
+} from "../task/restart-queue";
+import {
+	publishRestartControl,
+	execRestartSuccessor,
+	confirmRestartSession,
+	type RestartControlPublication,
+} from "../restart-control";
 import { agentTypeBadge, formatTaskId } from "@oh-my-pi/pi-tui/tools/task";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { isMCPToolName } from "../tools/builtin-names";
@@ -218,6 +236,14 @@ import {
 } from "@oh-my-pi/pi-tui/tools/todo";
 import { vocalizer } from "../tts/vocalizer";
 import { applyFileLinkSetting, applyHyperlinkSetting, fileHyperlink } from "@oh-my-pi/pi-tui/render/hyperlink";
+import {
+	extensionLinkClicksAvailable,
+	extensionLinksRouted,
+	extensionLinksVersion,
+	setExtensionLinkPicking,
+	setExtensionLinks,
+} from "@oh-my-pi/pi-tui/render/extension-links";
+import { onNativeRenderingChange } from "@oh-my-pi/pi-tui/native/state";
 import { renderTreeList } from "@oh-my-pi/pi-tui/render/tree-list";
 import { formatStartupChangelogSummary, type StartupChangelogSelection } from "../utils/changelog";
 import { copyToClipboard } from "../utils/clipboard";
@@ -281,12 +307,8 @@ import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "./status-line-host";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
-import {
-	Composer,
-	type ComposerPreferences,
-	type ComposerStatusCache,
-	PINNED_HUD_TOGGLE_ID,
-} from "@oh-my-pi/pi-tui/prompt/composer";
+import { Composer, type ComposerPreferences, type ComposerStatusCache } from "@oh-my-pi/pi-tui/prompt/composer";
+import { PINNED_HUD_TOGGLE_ID } from "../task/output-manager";
 import { setMagicKeywords } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
 import { MAGIC_KEYWORDS } from "./magic-keywords";
 import { sharedComposerCache } from "@oh-my-pi/pi-tui/prompt/composer-cache";
@@ -361,8 +383,10 @@ import type {
 	ShowStatusOptions,
 	SelectOnlyModelSelectorOptions,
 	SubmittedUserInput,
+	YieldCompaction,
 } from "./types";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { ConversationPosition } from "./utils/conversation-position";
 import { materializeImageChipLinks, UiHelpers } from "./utils/ui-helpers";
 
 import {
@@ -433,6 +457,7 @@ import { cfgStreamRedactPatterns } from "../stream/settings";
 import { cfgSttEnabled } from "../stt/settings";
 import { combine, type SettingValueOf } from "../config/registry";
 import { cfgAdvisorEnabled, cfgAdvisorMaxNotesPerUpdate } from "../advisor/settings";
+import { cfgExtensionAssistantTextRenderers } from "../extensibility/settings";
 import { cfgTierAdvisor } from "../session/settings";
 import {
 	cfgCompactionEnabled,
@@ -482,6 +507,7 @@ const cfgLiveUiSettings = combine({
 	"display.showTurnTime": cfgDisplayShowTurnTime,
 	"tui.renderMermaid": cfgTuiRenderMermaid,
 	"tui.renderSvg": cfgTuiRenderSvg,
+	"extensionRenderers.assistantText": cfgExtensionAssistantTextRenderers,
 	"tui.autoGraph": cfgTuiAutoGraph,
 	"tui.textSizing": cfgTuiTextSizing,
 	"tui.tight": cfgTuiTight,
@@ -509,6 +535,8 @@ const STILL_CLOSING_DELAY_MS = 3_000;
 const JUDGMENT_BATCH_PROGRESS_RETAIN_MS = 1_000;
 /** Startup emits several status-bar changes within a second; persist only the settled one. */
 const COMPOSER_STATUS_PERSIST_DELAY_MS = 1_000;
+/** Status-line slot of the link-hint mode prompt; the `omp:` prefix keeps it apart from extension keys. */
+const LINK_HINT_STATUS_KEY = "omp:link-hints";
 const DEFAULT_WORKING_MESSAGE = "Working…";
 /** Native working-message shimmer under a session accent: the hue itself is the terminal's `accent`. */
 const NATIVE_ACCENT_SHIMMER: ShimmerPalette = { low: "dim", mid: "accent", high: "accent", bold: true };
@@ -647,11 +675,11 @@ function readPersistedToolNames(value: unknown): string[] | undefined {
 }
 
 export function shouldEnterPlanModeOnStartup(
-	sessionManager: Pick<SessionManager, "buildSessionContext" | "getEntries">,
+	sessionManager: Pick<SessionManager, "buildSessionContext" | "hasEntryType">,
 	sessionSettings: Settings,
 ): boolean {
 	const hasConversationContext = sessionManager.buildSessionContext().messages.length > 0;
-	const hasExplicitMode = sessionManager.getEntries().some(entry => entry.type === "mode_change");
+	const hasExplicitMode = sessionManager.hasEntryType("mode_change");
 	return (
 		!hasConversationContext &&
 		!hasExplicitMode &&
@@ -1338,8 +1366,11 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Canonical composer shared by cold prepaint and the session-aware runtime. */
 	readonly composer: Composer;
+	readonly #sessionConnection: InteractiveSessionConnection;
 	ui: TUI;
 	chatContainer: TranscriptContainer;
+	/** `!`/`$` runs started while the agent streams; {@link flushPendingBashComponents} moves them into the transcript. */
+	pendingShellContainer: Container;
 	pendingMessagesContainer: Container;
 	/** Judge-batch and automatic-download progress rows above the working line. */
 	progressHudContainer: Container;
@@ -1460,6 +1491,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	proseOnlyThinking = true;
 	expandThinkingBlocks = false;
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
+	yieldCompaction: YieldCompaction | undefined = undefined;
+	compactionQueueOrigin: ConversationPosition | undefined = undefined;
 	pendingTools = new Map<string, ToolExecutionHandle>();
 	transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
 	pendingBashComponents: BashExecutionComponent[] = [];
@@ -1724,6 +1757,15 @@ export class InteractiveMode implements InteractiveModeContext {
 	#autocompleteProviderFactories: AutocompleteProviderFactory[] = [];
 	#cleanupUnsubscribe?: () => void;
 	#signalTeardown?: SessionTeardown;
+	#restartInstanceId = crypto.randomUUID();
+	#restartGeneration = 0;
+	#restartQueueController: RestartQueueController | undefined;
+	#restartBoundIdentity: RestartControlIdentity | undefined;
+	#restartControlPublication: RestartControlPublication | undefined;
+	#restartControlBind: Promise<void> = Promise.resolve();
+	#restartControlInitializing = false;
+	#restartControlReady = false;
+	#restartControlRestoring = false;
 	readonly #version: string;
 	readonly #startupChangelog: StartupChangelogSelection | undefined;
 	/** Header components below the config warnings + welcome, retained so a live config-warning change can rebuild the header (#10048). */
@@ -1921,7 +1963,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.composer.setHoveredClickId(id);
 	}
 
-	clearTransientSessionUi(): void {
+	clearTransientSessionUi(options?: { viewOnly?: boolean }): void {
 		this.#hideSessionInfo();
 		if (this.loadingAnimation) {
 			this.loadingAnimation.stop();
@@ -1936,6 +1978,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.retryLoader = undefined;
 		}
 		this.statusContainer.disposeChildren();
+		this.pendingShellContainer.disposeChildren();
 		this.pendingMessagesContainer.disposeChildren();
 		this.#clearJudgmentBatchProgress();
 		this.#cancelModelCycleClearTimer();
@@ -1944,7 +1987,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#pendingCommandOutput = [];
 		this.#pendingCommandOutputSessionId = undefined;
 		this.#pendingCommandOutputCommands = 0;
-		this.compactionQueuedMessages = [];
+		// A view switch leaves the main session, and the input queued for it, in place. A session reset
+		// hands a queued `/compact` and the input in the compaction queue back to the editor.
+		if (!options?.viewOnly) this.#inputController.restoreCompactionQueueToEditor();
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.lastAssistantUsage = undefined;
@@ -1964,6 +2009,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#eventBusUnsubscribers: Array<() => void> = [];
 	/** Mirror of `tui.mouse`, read by the TUI's per-frame inline mouse tracking probe. */
 	#mouseCapture = false;
+	/** A link-scheme change awaits its transcript rebuild; any rebuild before it covers it. */
+	#extensionLinkRebuildPending = false;
 	#observerUiSyncTimer?: NodeJS.Timeout;
 	/** Repaints the subagent HUD so live-preview elapsed markers advance between progress events. */
 	#subagentPreviewTickTimer?: NodeJS.Timeout;
@@ -2002,9 +2049,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		composer?: Composer,
 		subagentEventBus?: EventBus,
 		refreshScopedModelsAfterLogin?: () => Promise<void>,
+		sessionConnection: InteractiveSessionConnection = createLocalInteractiveSessionConnection(session),
+		viewSource: InteractiveViewSource = createLocalInteractiveViewSource(session),
 	) {
 		this.refreshScopedModelsAfterLogin = refreshScopedModelsAfterLogin;
 		this.session = session;
+		this.#sessionConnection = sessionConnection;
 		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
 		this.#initialComposerModel = session.model;
@@ -2086,7 +2136,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#mouseCapture = cfgTuiMouse.get(this.settings);
 		this.#eventBusUnsubscribers.push(
 			cfgTuiMouse.listen(this.settings, on => {
+				const linksWereAvailable = extensionLinkClicksAvailable();
 				this.#mouseCapture = on;
+				// With the hint key unbound, the mouse is the only way to activate extension links.
+				if (extensionLinkClicksAvailable() !== linksWereAvailable) this.#redrawExtensionLinks();
 				// Dropping capture must also drop the band: with reporting off no
 				// motion event will ever arrive to clear a mid-hover highlight.
 				// The controller cache goes too, or a re-enable plus motion over
@@ -2099,7 +2152,16 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		);
 		this.ui.setInlineMouseTrackingProvider(() => this.#mouseCapture);
+		setExtensionLinkPicking(this.#linkPickable);
+		// Tern's native view routes link clicks itself, so claimed links stop (or start) being
+		// pickable here: re-run the renderers reading `getLinkClicksAvailable()`.
+		this.#eventBusUnsubscribers.push(
+			onNativeRenderingChange(() => {
+				if ((this.viewSession.extensionRunner?.getLinkSchemes().length ?? 0) > 0) this.#redrawExtensionLinks();
+			}),
+		);
 		this.chatContainer = new TranscriptContainer();
+		this.pendingShellContainer = new AnchoredLiveContainer();
 		this.pendingMessagesContainer = new AnchoredLiveContainer();
 		this.progressHudContainer = new AnchoredLiveContainer();
 		this.progressHudContainer.addChild(this.#judgmentBatchProgressHud);
@@ -2218,19 +2280,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Store pending commands for init() where file commands are loaded async
 		this.#pendingSlashCommands = this.#buildPendingSlashCommands();
 
-		this.#uiHelpers = new UiHelpers(this);
+		this.#uiHelpers = new UiHelpers(
+			this,
+			createInteractiveViewSourceRouter(() => this.viewSession, [this.session, viewSource]),
+		);
 		this.#btwController = new BtwController(this);
 		this.#tanCommandController = new TanCommandController(this);
 		this.#omfgController = new OmfgController(this);
 		this.#cleanseController = new CleanseCommandController(this);
 		this.#extensionUiController = new ExtensionUiController(this);
-		this.#eventController = new EventController(this);
+		this.#eventController = new EventController(this, this.#sessionConnection);
 		this.#commandController = new CommandController(this);
 		this.#todoCommandController = new TodoCommandController(this);
 		this.#liveCommandController = new LiveCommandController(this);
 		this.#selectorController = new SelectorController(this);
 		this.#focusController = new SessionFocusController(this);
-		this.#inputController = new InputController(this);
+		this.#inputController = new InputController(this, undefined, this.#sessionConnection);
 		this.collabController = new CollabController(this);
 		this.session.setPromptDropped?.(prompt => this.#restoreDroppedPrompt(prompt));
 		this.#observerRegistry = new SessionObserverRegistry();
@@ -2335,6 +2400,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.#pendingLoopIterations > 0);
 		this.#idleMaintenanceActivity.presentRecap = recap => this.#eventController.presentIdleRecap(recap);
 		this.syncIdleMaintenanceView();
+		this.#restartControlInitializing = true;
 
 		// Fresh dialog lifetime: a previous stop (if this mode is ever
 		// re-initialized) left the old controller aborted, and approvals queued
@@ -2358,14 +2424,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		// signal arriving mid-Ctrl+C no-ops instead of racing a second dispose.
 		this.#signalTeardown = createSessionTeardown({
 			getDraftText: () => this.#inputController.getDraftText(),
+			getDraftState: () => this.#draftEditorState(),
 			beginDispose: () => {
-				this.session.beginDispose();
+				void this.#sessionConnection.beginDispose();
 				this.statusLine.dispose();
 			},
-			saveDraft: text => this.sessionManager.saveDraft(text),
+			saveDraft: (text, state) => this.#sessionConnection.saveDraft(text, state),
 			disposeSession: async reason => {
 				await this.#btwController.dispose();
-				await this.session.dispose({
+				await this.#sessionConnection.disposeSession({
 					mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 					reason,
 				});
@@ -2441,6 +2508,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.composer.setRuntimeChildren(
 			[
 				this.chatContainer,
+				this.pendingShellContainer,
 				this.pendingMessagesContainer,
 				this.todoContainer,
 				this.subagentContainer,
@@ -2476,6 +2544,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					this.editorContainer,
 					this.attachmentChipsContainer,
 					this.reportContainer,
+					this.pendingShellContainer,
 					this.pendingMessagesContainer,
 					this.btwContainer,
 					this.omfgContainer,
@@ -2509,6 +2578,9 @@ export class InteractiveMode implements InteractiveModeContext {
 					this.editorContainer,
 					this.hookWidgetContainerBelow,
 				],
+				// Deferred shell runs are transcript output: natively they flow at its
+				// end, where they stay when they move in, not pinned over the composer.
+				nativeTail: [this.pendingShellContainer],
 			},
 		);
 		this.ui.setFocus(this.editor);
@@ -2699,14 +2771,38 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// Initialize hooks with TUI-based UI context
 		await logger.time("InteractiveMode.init:hooks", () => this.initHooksAndCustomTools());
+		// A live `disabledExtensions` edit suspends or resumes extensions: drop (or restore) their link
+		// schemes and renderers from the transcript.
+		const extensionRunner = this.session.extensionRunner;
+		if (extensionRunner) {
+			this.#eventBusUnsubscribers.push(
+				extensionRunner.onSuspensionChange(() => {
+					this.#applyExtensionLinks();
+					this.#redrawExtensionLinks();
+				}),
+			);
+		}
 
 		// Restore mode from session (e.g. plan mode on resume)
 		this.session.setSessionBeforeSwitchReconciler?.(async () => {
 			await this.#liveCommandController.stop();
 			await this.#quiesceVibeForSessionSwitch();
 		});
-		this.session.setSessionSwitchReconciler?.(() => this.#reconcileModeFromSession({ preserveActiveGoal: true }));
-		await logger.time("InteractiveMode.init:reconcileMode", () => this.#reconcileModeFromSession());
+		this.session.setSessionSwitchReconciler?.(async () => {
+			try {
+				await this.#reconcileModeFromSession({ preserveActiveGoal: true });
+			} finally {
+				await this.#restartControlSessionChanged();
+			}
+		});
+		const restartResumePending = isRestartResumePending(
+			this.sessionManager,
+			this.sessionManager.getSessionId(),
+			this.#restartInstanceId,
+		);
+		await logger.time("InteractiveMode.init:reconcileMode", () =>
+			this.#reconcileModeFromSession({ preserveActiveGoal: restartResumePending }),
+		);
 		this.#modesRestored = true;
 
 		// Brand-new sessions optionally start in plan mode when the user has made it
@@ -2726,11 +2822,16 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// Restore unsent editor draft from previous session shutdown (Ctrl+D).
 		// One-shot: consumeDraft removes the sidecar after read so the next
-		// resume does not re-restore the same text.
+		// resume does not re-restore the same text. Text typed while startup
+		// ran stays after it, where the caret lands.
 		try {
-			const draft = await logger.time("InteractiveMode.init:draft", () => this.sessionManager.consumeDraft());
-			if (draft && !this.editor.getText()) {
-				this.editor.setText(draft);
+			const draft = await logger.time("InteractiveMode.init:draft", () => this.#sessionConnection.consumeDraft());
+			if (draft) {
+				const typedDuringStartup = this.editor.getText();
+				this.editor.setText(draft + typedDuringStartup);
+				const state = await this.#sessionConnection.consumeDraftState?.(draft);
+				// Cursor and paste payloads describe the saved text alone; keep them off a startup that added keys.
+				if (state && !typedDuringStartup) this.#restoreDraftEditorState(state);
 				this.updateEditorBorderColor();
 				this.ui.requestRender();
 			}
@@ -2751,7 +2852,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 
 		this.#eventBusUnsubscribers.push(
-			this.session.subscribe(event => {
+			this.#sessionConnection.subscribe(event => {
 				if (event.type === "model_changed") {
 					this.#scheduleComposerStatusPersist();
 					this.session.prewarmModelConnection();
@@ -2861,13 +2962,22 @@ export class InteractiveMode implements InteractiveModeContext {
 			onTerminalAppearanceChange(mode, appearanceRefreshWasRequested ? {} : undefined);
 		});
 
-		// Keys pressed while a Tern startup loaded were held until hooks ran, the
-		// session mode settled, the draft was restored and every subscription
-		// above was installed. They replay into the restored draft, never over
-		// it, a startup shortcut (Alt+P, Ctrl+G, extension shortcuts) acts on the
-		// final mode, editor contents and observed session, and a held Enter
-		// still meets the bootstrap submit gate lifted just below.
-		this.ui.releaseHeldInput();
+		// Paint saved history after event handlers are installed, before recovery can
+		// start a root turn or wait for slow child revival.
+		await logger.time("InteractiveMode.renderInitialMessages", () =>
+			this.renderInitialMessages({ preserveExistingChat: true }),
+		);
+
+		// Restore child sessions and the root continuation through the controller
+		// before opening local or external restart admission. Its journal restore
+		// owns the child same-ID recovery order.
+		try {
+			await this.#initializeRestartControl();
+		} catch (error) {
+			if (process.env.OMP_RESTART_SESSION_ID) throw error;
+			this.showWarning(`Restart controls unavailable: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		this.#restartControlInitializing = false;
 
 		// Everything is wired: subscriptions observe agent events, the session
 		// mode is reconciled, and the submit handler is installed. Lift the
@@ -2881,8 +2991,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.disableSubmit = false;
 		this.#idleMaintenanceActivity.ready = true;
 		this.syncIdleMaintenanceView();
+		// Tern kept the typing of a startup and draws it in the composer; plain
+		// typing that reached omp already went into the draft. The first other
+		// key and everything after it were held until hooks ran, the session
+		// mode settled, the draft was restored and every subscription above was
+		// installed. Tern now sends what it kept, a startup shortcut (Alt+P,
+		// Ctrl+G, extension shortcuts) acts on the final mode, editor contents
+		// and observed session, and a held Enter meets the submit gate lifted
+		// above, so it submits the restored draft once. An active dialog
+		// retains focus and receives its own keys.
+		this.composer.releaseHeldInput();
 		// Publish native send readiness even when no user input triggers another frame.
 		this.ui.requestRender();
+		if (process.env.OMP_RESTART_SESSION_ID) {
+			if (!this.#restartControlPublication) throw new Error("Restart successor has no live control endpoint");
+			await confirmRestartSession(this.sessionManager.getSessionId());
+		}
 	}
 
 	/** Reload the title-generation system prompt override for the provided working
@@ -3158,7 +3282,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#scheduleLoopAutoSubmit();
 		this.#scheduleGoalContinuation();
 
-		using _ = new EventLoopKeepalive();
 		return await promise;
 	}
 
@@ -3276,7 +3399,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#isAutoSubmitBlocked(): boolean {
-		return this.session.isStreaming || this.session.isCompacting || this.session.hasPostPromptWork;
+		return (
+			this.#sessionConnection.isStreaming ||
+			this.#sessionConnection.isCompacting ||
+			this.#sessionConnection.hasPostPromptWork
+		);
 	}
 
 	#submitLoopPromptWhenReady(prompt: string): void {
@@ -4007,7 +4134,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#pendingSubmissionPreservesDraft = false;
 		}
 
-		if (wasPendingSubmission && !this.session.isStreaming && !this.streamingComponent) {
+		if (wasPendingSubmission && !this.#sessionConnection.isStreaming && !this.streamingComponent) {
 			this.optimisticUserMessageSignature = undefined;
 			pendingSubmissionDispose?.();
 			this.#optimisticUserMessageComponents = [];
@@ -4058,12 +4185,21 @@ export class InteractiveMode implements InteractiveModeContext {
 		setTerminalTextSizing(cfgTuiTextSizing.get(this.settings) && TERMINAL.supportsTextSizing);
 	}
 
-	/** Charts under assistant tables per `tui.autoGraph`; `smart` picks multi-series charts through the session's judge. */
+	/**
+	 * Charts under assistant tables per `tui.autoGraph`: `smart` picks charts through the session's judge,
+	 * `auto` only while the judge role resolves to a native backend (checked per table, so a login or
+	 * role change mid-session applies), else the local guess.
+	 */
 	#applyAutoGraphSetting(): void {
 		const mode = cfgTuiAutoGraph.get(this.settings);
-		setTableCharts(
-			mode,
-			mode === "smart" ? request => pickTableChart(request, this.session.tableChartJudge()) : undefined,
+		if (mode === "off" || mode === "always") {
+			setTableCharts(mode);
+			return;
+		}
+		setTableCharts("smart", request =>
+			mode === "auto" && !hasNativeJudge(this.settings, this.session.modelRegistry)
+				? undefined
+				: pickTableChart(request, this.session.tableChartJudge()),
 		);
 	}
 
@@ -4188,6 +4324,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			setSvgFigureRendering(cfgTuiRenderSvg.get(this.settings));
 			rebuildChat = true;
 		}
+		// Components take the extension text renderers when built; the rebuild keeps the streaming
+		// reply's components, so hand them the new set directly.
+		if (any("extensionRenderers.assistantText")) {
+			this.#applyExtensionLinks();
+			this.#eventController.applyAssistantTextRenderers();
+			rebuildChat = true;
+		}
 		if (any("tui.autoGraph")) {
 			this.#applyAutoGraphSetting();
 			rebuildChat = true;
@@ -4263,6 +4406,98 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.updateEditorBorderColor();
 		this.#scheduleComposerStatusPersist();
 		this.ui.requestRender();
+	}
+
+	/**
+	 * Push the viewed session's extension link schemes to the markdown renderer; returns whether that
+	 * changed. A focused subagent's runner draws with what the main runner leaves active.
+	 */
+	#applyExtensionLinks(): boolean {
+		const before = extensionLinksVersion();
+		const viewed = this.viewSession.extensionRunner;
+		viewed?.followSuspension(this.session.extensionRunner);
+		setExtensionLinks(viewed?.getLinkSchemes() ?? []);
+		return extensionLinksVersion() !== before;
+	}
+
+	/** Whether the user can pick a claimed link: the link-hint key is bound or `tui.mouse` delivers clicks. */
+	#linkPickable = (): boolean => this.#mouseCapture || Boolean(appKey(this.keybindings, "app.links.hint"));
+
+	syncExtensionLinks(): void {
+		if (!this.#applyExtensionLinks()) return;
+		this.#redrawExtensionLinks();
+	}
+
+	/** Redraw the transcript so renderers reading `getLinkClicksAvailable()` switch form now. */
+	#redrawExtensionLinks(): void {
+		// The rebuild keeps the live reply's components; re-run their renderers rather than waiting
+		// for the next streaming update.
+		this.#eventController.applyAssistantTextRenderers();
+		// A transcript replay in flight builds its components again before it commits.
+		if (this.#uiHelpers.restartTranscriptReplay()) return;
+		// Before the first transcript replay commits, that replay draws with the current links; a
+		// rebuild now would put the transcript in the chat it re-appends (#1955).
+		if (!this.initialChatRendered) return;
+		// Coalesced: a settings apply changing another transcript setting in the same pass rebuilds once.
+		if (this.#extensionLinkRebuildPending) return;
+		this.#extensionLinkRebuildPending = true;
+		queueMicrotask(() => {
+			// Cleared by any rebuild since; a replay started since draws the current links itself.
+			const pending = this.#extensionLinkRebuildPending;
+			this.#extensionLinkRebuildPending = false;
+			if (!pending || !this.initialChatRendered) return;
+			this.rebuildChatFromMessages();
+			this.ui.resetDisplay();
+		});
+	}
+
+	/** Raise `link_activate` for `url` on the viewed session's extension runner. */
+	#activateLink(url: string): boolean {
+		const runner = this.viewSession.extensionRunner;
+		if (!runner) return false;
+		// A focused subagent's runner is headless: hand its handler the UI drawing that transcript.
+		runner.emitLinkActivate(url, this.session.extensionRunner?.getUIContext()).catch((error: unknown) => {
+			logger.warn("link_activate dispatch failed", { url, error: String(error) });
+		});
+		return true;
+	}
+
+	activateViewportLink(index: number, col: number): boolean {
+		const url = this.composer.viewportLinkAt(index, col)?.url;
+		return url !== undefined && this.#activateLink(url);
+	}
+
+	startLinkHints(): boolean {
+		if (!extensionLinksRouted()) return false;
+		if (this.composer.viewportLinkCount() === 0) {
+			this.showStatus("No extension links on screen");
+			return true;
+		}
+		this.composer.startLinkHints(reason => {
+			this.statusLine.setHookStatus(LINK_HINT_STATUS_KEY, undefined);
+			if (reason === "crowded") {
+				// Raised while the composer paints; show the status after this frame.
+				queueMicrotask(() => this.showStatus("Too many extension links on one row to tag; widen the terminal"));
+			}
+			this.ui.requestRender();
+		});
+		this.statusLine.setHookStatus(LINK_HINT_STATUS_KEY, "Type a link tag · Esc cancels");
+		this.ui.requestRender();
+		return true;
+	}
+
+	get linkHintsActive(): boolean {
+		return this.composer.linkHintsActive;
+	}
+
+	typeLinkHint(letter: string): void {
+		const picked = this.composer.typeLinkHint(letter);
+		if (typeof picked === "object") this.#activateLink(picked.url);
+		this.ui.requestRender();
+	}
+
+	cancelLinkHints(): void {
+		this.composer.cancelLinkHints();
 	}
 
 	/** Coalesce status-cache writes; `stop()` flushes a pending one synchronously. */
@@ -4433,7 +4668,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			thinking: thinkingLevelWord(this.viewSession),
 			thinkingInModel: cfgStatusLineCompactThinkingLevel.get(settings),
 			rate: this.#nativeTokenRate(),
-			running: this.loadingAnimation !== undefined || this.session.isStreaming,
+			running: this.loadingAnimation !== undefined || this.#sessionConnection.isStreaming,
 			dictation:
 				cfgSttEnabled.get(settings) || this.#dictationStarting || dictation !== "idle"
 					? this.#dictationStarting && dictation === "idle"
@@ -4473,6 +4708,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	rebuildChatFromMessages(options: { reuseSettledComponents?: boolean } = {}): void {
+		this.#extensionLinkRebuildPending = false;
 		// Mid-stream rebuilds (e.g. `/shake`, theme/setting changes that touch the
 		// transcript) replay only committed `state.messages`. The agent's in-flight
 		// `streamMessage` and its still-pending tool calls live OUTSIDE
@@ -4488,6 +4724,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.viewSession?.isStreaming) {
 			const liveSet = new Set<Component>();
 			if (this.streamingComponent) liveSet.add(this.streamingComponent);
+			// Text after a tool call in the streaming reply is drawn by its own components.
+			for (const segment of this.#eventController.liveAssistantSegments()) liveSet.add(segment);
+			// So are replies a still-executing call's commands wrote to `out://`.
+			for (const reply of this.#eventController.liveToolReplies()) liveSet.add(reply);
 			for (const [id, component] of this.pendingTools) {
 				livePendingTools.set(id, component);
 				liveSet.add(component as unknown as Component);
@@ -5369,7 +5609,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Apply (or defer) the model/thinking change implied by the resolved plan role. */
 	async #applyPlanModelTransition(currentModel: Model | undefined, resolved: ResolvedModelRoleValue): Promise<void> {
-		const transition = resolvePlanModelTransition(currentModel, resolved, this.session.isStreaming);
+		const transition = resolvePlanModelTransition(currentModel, resolved, this.#sessionConnection.isStreaming);
 		if (transition.kind !== "apply" || !transition.deferred) {
 			this.#clearPendingPlanModelSwitch();
 		}
@@ -5665,7 +5905,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			throw error;
 		}
 		this.session.setPlanProposalHandler?.(title => this.session.preparePlanForReview(title));
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			await this.session.sendPlanModeContext({ deliverAs: "steer" });
 		}
 		this.#planModeHasEntered = true;
@@ -5685,7 +5925,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// Same model — only thinking level may differ. Avoid setModelTemporary()
 			// which would reset provider-side sessions and break continuity.
 			this.session.setThinkingLevel(prev.thinkingLevel);
-		} else if (this.session.isStreaming) {
+		} else if (this.#sessionConnection.isStreaming) {
 			this.#pendingModelSwitch = {
 				model: prev.model,
 				thinkingLevel: prev.thinkingLevel,
@@ -5730,9 +5970,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// The plan-mode prompt instructs the model to keep planning until it
 		// writes to `xd://propose`, so the live turn must be aborted inside
 		// `runModeExitTeardown` to avoid restarting on the stale toolset.
-		if (options?.interruptActiveTurn && this.session.isStreaming) {
+		if (options?.interruptActiveTurn && this.#sessionConnection.isStreaming) {
 			await this.session.runModeExitTeardown(async () => {
-				await this.session.abort({ reason: USER_INTERRUPT_LABEL });
+				await this.#sessionConnection.abort({ reason: USER_INTERRUPT_LABEL });
 				await this.#tearDownPlanMode(options);
 			});
 			return;
@@ -5885,7 +6125,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.goalModeEnabled = true;
 		this.#resetGoalContinuationSuppression();
 		this.#updateGoalModeStatus();
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			await this.session.sendGoalModeContext({ deliverAs: "steer" });
 		}
 		if (!options.silent) {
@@ -6543,13 +6783,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		// execution directive behind it as a synthetic follow-up. If `isStreaming`
 		// flips true between the check and dispatch (the same fire-and-forget race
 		// noted below), catch `AgentBusyError` and fall back to the same queue.
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			await this.session.followUp(planModePrompt, undefined, {
 				synthetic: true,
 			});
 		} else {
 			try {
-				await this.session.prompt(planModePrompt, { synthetic: true });
+				await this.#sessionConnection.prompt(planModePrompt, { synthetic: true });
 			} catch (error) {
 				if (!(error instanceof AgentBusyError)) throw error;
 				await this.session.followUp(planModePrompt, undefined, {
@@ -6562,7 +6802,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	async #abortPlanApprovalTurnSilently(): Promise<void> {
 		this.session.markPlanInternalAbortPending();
 		try {
-			await this.session.abort();
+			await this.#sessionConnection.abort();
 		} finally {
 			this.session.clearPlanInternalAbortPending();
 		}
@@ -6625,12 +6865,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			});
 			return true;
 		}
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			const images = input?.images?.length ? input.images : undefined;
 			await this.withLocalSubmission(
 				initialPrompt,
 				() =>
-					this.session.prompt(initialPrompt, {
+					this.#sessionConnection.prompt(initialPrompt, {
 						streamingBehavior: "steer",
 						images,
 					}),
@@ -6694,7 +6934,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			await mine;
 			return true;
 		}
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			// Same ordering covenant as below: a skill prompt may be reserving
 			// ahead of us even though the session looks continuously busy.
 			await this.#waitForInFlightSubmission();
@@ -6702,7 +6942,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			await this.withLocalSubmission(
 				initialPrompt,
 				() =>
-					this.session.prompt(initialPrompt, {
+					this.#sessionConnection.prompt(initialPrompt, {
 						streamingBehavior: "steer",
 						images,
 					}),
@@ -6733,7 +6973,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.withLocalSubmission(
 			initialPrompt,
 			() =>
-				this.session.prompt(initialPrompt, {
+				this.#sessionConnection.prompt(initialPrompt, {
 					streamingBehavior: "steer",
 					images,
 				}),
@@ -6761,7 +7001,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			const pendingBlocked =
 				awaited !== undefined &&
 				!awaited.cancelled &&
-				!this.session.isStreaming &&
+				!this.#sessionConnection.isStreaming &&
 				this.session.queuedMessageCount === 0 &&
 				!this.onInputCallback;
 			if (!skillBlocked && !pendingBlocked) return;
@@ -6816,7 +7056,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// injected context, which predictably invalidates the cache.
 			this.lastAssistantUsage = undefined;
 			this.session.setVibeModeState({ enabled: true });
-			if (this.session.isStreaming) {
+			if (this.#sessionConnection.isStreaming) {
 				await this.session.sendVibeModeContext({ deliverAs: "steer" });
 			}
 			this.#updateVibeModeStatus();
@@ -6842,8 +7082,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		// still-live Vibe tools before this teardown removes them (issue #8326).
 		let killed = 0;
 		await this.session.runModeExitTeardown(async () => {
-			if (this.session.isStreaming) {
-				await this.session.abort();
+			if (this.#sessionConnection.isStreaming) {
+				await this.#sessionConnection.abort();
 			}
 			killed = await VibeSessionRegistry.global().killAll(this.#vibeParentSession(), this.#vibeModeOwnerScope);
 			await this.session.deactivateVibeTools(this.#vibeModePreviousTools ?? []);
@@ -6976,11 +7216,14 @@ export class InteractiveMode implements InteractiveModeContext {
 				initial: rest?.trim() || undefined,
 			});
 			const images = input?.images?.length ? input.images : undefined;
-			if (this.session.isStreaming) {
+			if (this.#sessionConnection.isStreaming) {
 				await this.session.followUp(kickoff, images, { synthetic: true });
 			} else {
 				try {
-					await this.session.prompt(kickoff, images ? { synthetic: true, images } : { synthetic: true });
+					await this.#sessionConnection.prompt(
+						kickoff,
+						images ? { synthetic: true, images } : { synthetic: true },
+					);
 				} catch (error) {
 					if (!(error instanceof AgentBusyError)) throw error;
 					await this.session.followUp(kickoff, images, { synthetic: true });
@@ -7132,8 +7375,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.#enterGoalMode({ objective, silent: true });
 		if (!this.goalModeEnabled) return;
 		this.#resetGoalContinuationSuppression();
-		using _keepalive = new EventLoopKeepalive();
-		await this.session.prompt(objective, { streamingBehavior: "steer" });
+		await this.#sessionConnection.prompt(objective, { streamingBehavior: "steer" });
 	}
 
 	async #startGoalFromObjective(
@@ -7142,12 +7384,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	): Promise<boolean> {
 		await this.#enterGoalMode({ objective, silent: true });
 		this.#resetGoalContinuationSuppression();
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			const images = input?.images?.length ? input.images : undefined;
 			await this.withLocalSubmission(
 				objective,
 				() =>
-					this.session.prompt(objective, {
+					this.#sessionConnection.prompt(objective, {
 						streamingBehavior: "steer",
 						images,
 					}),
@@ -7172,13 +7414,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.goalModePaused = false;
 		this.#resetGoalContinuationSuppression();
 		this.#updateGoalModeStatus();
-		if (this.session.isStreaming) {
+		if (this.#sessionConnection.isStreaming) {
 			await this.session.sendGoalModeContext({ deliverAs: "steer" });
 			const images = input?.images?.length ? input.images : undefined;
 			await this.withLocalSubmission(
 				objective,
 				() =>
-					this.session.prompt(objective, {
+					this.#sessionConnection.prompt(objective, {
 						streamingBehavior: "steer",
 						images,
 					}),
@@ -7237,7 +7479,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (fromExtension) {
 			if (this.#hasAnswerablePlanReview()) return true;
-			if (this.session.isStreaming || this.session.isCompacting) return false;
+			if (this.#sessionConnection.isStreaming || this.#sessionConnection.isCompacting) return false;
 		}
 		const noPlan = "No plan to review yet — write one to a local://<slug>-plan.md file first.";
 		const [planFilePath] = await this.#listLocalPlanFiles();
@@ -7314,7 +7556,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.planModeEnabled || this.sessionManager.getSessionId() !== originSessionId) return;
 		// Without the abort barrier, a turn or another review may have started while the
 		// plan was read; everything from here to the overlay is synchronous.
-		if (!abortTurn && (this.session.isStreaming || this.session.isCompacting || this.#hasAnswerablePlanReview())) {
+		if (
+			!abortTurn &&
+			(this.#sessionConnection.isStreaming ||
+				this.#sessionConnection.isCompacting ||
+				this.#hasAnswerablePlanReview())
+		) {
 			return;
 		}
 
@@ -7554,7 +7801,7 @@ export class InteractiveMode implements InteractiveModeContext {
 						this.#planReviewAnnotationStateBySubmission.set(input, annotationStateKey);
 						this.onInputCallback(input);
 					} else {
-						await this.session.prompt(refinement);
+						await this.#sessionConnection.prompt(refinement);
 						this.#planReviewAnnotationState.delete(annotationStateKey);
 					}
 				} else {
@@ -7677,6 +7924,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	stop(): void {
 		this.syncIdleMaintenanceView(null);
 		this.#hidePlanReview();
+		void this.#disposeRestartControl();
 		this.#appearanceRefreshRequest = undefined;
 		// Settle any pending approval prompt as dismissed (deny). The
 		// controller stays aborted: approvals still queued behind the approval
@@ -7746,6 +7994,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.stop();
 			this.#ownsStartedUi = false;
 		}
+		// The markdown renderer's extension-link state is process-wide; release this session's schemes
+		// only after the TUI's final history flush, which still strips their markers.
+		setExtensionLinks([]);
+		setExtensionLinkPicking(undefined);
 		this.isInitialized = false;
 	}
 
@@ -7810,6 +8062,228 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 	}
 
+	async restart(): Promise<void> {
+		try {
+			await this.#handleRestartControl({ identity: this.#restartControlIdentity(), op: "request" });
+		} catch (error) {
+			this.showError(`Could not queue restart: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	async handleRestartCommand(action: "status" | "cancel"): Promise<void> {
+		try {
+			const snapshot = await this.#handleRestartControl({ identity: this.#restartControlIdentity(), op: action });
+			const request = snapshot.request;
+			if (action === "status") {
+				this.showStatus(formatRestartRequestStatus(request));
+				return;
+			}
+			this.showStatus(
+				request
+					? request.state === "cancelled"
+						? `Restart request ${request.requestId} cancelled.`
+						: `Restart request ${request.requestId} is ${request.state}; cancellation was not accepted.`
+					: "No restart request is available to cancel.",
+			);
+		} catch (error) {
+			this.showError(
+				action === "status"
+					? `Restart status unavailable: ${error instanceof Error ? error.message : String(error)}`
+					: `Restart cancellation failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	#restartControlIdentity(): RestartControlIdentity {
+		return {
+			instanceId: this.#restartInstanceId,
+			sessionId: this.sessionManager.getSessionId(),
+			generation: this.#restartGeneration,
+		};
+	}
+
+	#sameRestartControlIdentity(left: RestartControlIdentity | undefined, right: RestartControlIdentity): boolean {
+		return (
+			left?.instanceId === right.instanceId &&
+			left.sessionId === right.sessionId &&
+			left.generation === right.generation
+		);
+	}
+
+	#restartControlSnapshot(): RestartControlSnapshot {
+		const identity = this.#restartControlIdentity();
+		const controller = this.#restartQueueController;
+		const loadedExtensions = (this.session.extensionRunner?.getLoadedExtensions() ?? []).flatMap(extension =>
+			extension.sourceHash ? [{ path: extension.resolvedPath, sha256: extension.sourceHash }] : [],
+		);
+		if (
+			controller &&
+			this.#sameRestartControlIdentity(this.#restartBoundIdentity, identity) &&
+			!this.#restartControlRestoring &&
+			!this.#restartControlInitializing &&
+			!this.session.isSessionTransitioning &&
+			!this.#isShuttingDown
+		) {
+			return { ...controller.snapshot(), identity, cwd: this.sessionManager.getCwd(), loadedExtensions };
+		}
+		return { identity, pid: process.pid, cwd: this.sessionManager.getCwd(), request: null, loadedExtensions };
+	}
+
+	async #handleRestartControl(request: RestartControlRequest): Promise<RestartControlSnapshot> {
+		if (!this.#restartControlReady || this.#restartControlInitializing) {
+			throw new Error("Restart controls are still restoring for this session");
+		}
+		await this.#restartControlBind;
+		if (this.session.isSessionTransitioning)
+			throw new Error("Restart controls are unavailable during a session switch");
+		const identity = this.#restartControlIdentity();
+		if (!this.#sameRestartControlIdentity(request.identity, identity)) {
+			throw new Error("Restart control identity is stale; no request was applied");
+		}
+		if (this.#isShuttingDown) {
+			// An accepted restart remains observable until its endpoint closes.
+			// Rejecting status here makes a successful handoff look like a failure.
+			if (request.op === "status") return this.#restartControlSnapshot();
+			throw new Error("Restart controls are shutting down");
+		}
+		const controller = this.#restartQueueController;
+		if (
+			!controller ||
+			!this.#sameRestartControlIdentity(this.#restartBoundIdentity, identity) ||
+			this.#restartControlRestoring
+		) {
+			throw new Error("Restart controls are restoring for the current session; retry the command");
+		}
+		return controller.handle(request);
+	}
+
+	#rebindRestartQueueController(): Promise<void> {
+		const binding = this.#restartControlBind
+			.catch(() => undefined)
+			.then(async () => {
+				if (this.#isShuttingDown) return;
+				const identity = this.#restartControlIdentity();
+				if (
+					this.#restartQueueController &&
+					this.#sameRestartControlIdentity(this.#restartBoundIdentity, identity)
+				) {
+					return;
+				}
+				this.#restartControlRestoring = true;
+				const previous = this.#restartQueueController;
+				this.#restartQueueController = undefined;
+				this.#restartBoundIdentity = undefined;
+				let controller: RestartQueueController | undefined;
+				try {
+					previous?.dispose();
+					controller = createRestartQueueController({
+						session: this.session,
+						identity: () => this.#restartControlIdentity(),
+						restartSuccessor: process.env.OMP_RESTART_SESSION_ID === this.sessionManager.getSessionId(),
+						restart: () => this.#executeRestart(),
+						captureGoalMode: () => {
+							const state = this.session.getGoalModeState();
+							return state?.enabled && state.goal.status === "active" ? { goalId: state.goal.id } : undefined;
+						},
+						restorePendingAsk: onAnswered => {
+							const ui = this.getToolUIContext();
+							if (!ui) return false;
+							let pending = false;
+							void this.session
+								.restorePendingAsk(ui, onAnswered, () => {
+									pending = true;
+								})
+								.catch(error => this.showError(error instanceof Error ? error.message : String(error)));
+							return pending;
+						},
+						restoreGoalMode: async ({ goalId }, resumeWork) => {
+							if (this.#getPausedGoalState()?.goal.id !== goalId) return;
+							await this.#enterGoalMode({ resume: true, silent: true });
+							if (resumeWork === false) {
+								this.#goalSuppressNextContinuation = true;
+								this.#cancelGoalContinuation();
+								return;
+							}
+							this.#scheduleGoalContinuation();
+						},
+						onStateChange: record => {
+							if (
+								record.state === "queued" ||
+								record.state === "draining" ||
+								record.state === "checkpointed" ||
+								record.state === "restarting"
+							)
+								this.showStatus(formatRestartRequestStatus(record));
+						},
+					});
+					this.#restartQueueController = controller;
+					this.#restartBoundIdentity = identity;
+					await controller.restore();
+				} catch (error) {
+					if (controller && this.#restartQueueController === controller) {
+						this.#restartQueueController = undefined;
+						this.#restartBoundIdentity = undefined;
+						controller.dispose();
+					}
+					throw error;
+				} finally {
+					this.#restartControlRestoring = false;
+				}
+			});
+		this.#restartControlBind = binding;
+		return binding;
+	}
+
+	async #restartControlSessionChanged(): Promise<void> {
+		this.#restartGeneration++;
+		try {
+			await this.#rebindRestartQueueController();
+		} catch (error) {
+			this.showWarning(
+				`Restart controls could not restore the switched session: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	async #initializeRestartControl(): Promise<void> {
+		const identity = this.#restartControlIdentity();
+		if (!identity.sessionId) throw new Error("The current session has no durable runtime identity");
+		await this.#rebindRestartQueueController();
+		if (!this.#restartQueueController || !this.#sameRestartControlIdentity(this.#restartBoundIdentity, identity)) {
+			throw new Error("Restart queue did not restore the current session");
+		}
+		this.#restartControlReady = true;
+		this.#restartControlInitializing = false;
+		try {
+			this.#restartControlPublication = await publishRestartControl({
+				snapshot: () => this.#restartControlSnapshot(),
+				handle: request => this.#handleRestartControl(request),
+			});
+		} catch (error) {
+			if (process.env.OMP_RESTART_SESSION_ID) throw error;
+			logger.warn("External restart control endpoint unavailable", { error: String(error) });
+			this.showWarning(
+				`External restart control unavailable: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	async #disposeRestartControl(): Promise<void> {
+		const publication = this.#restartControlPublication;
+		this.#restartControlPublication = undefined;
+		if (publication) {
+			try {
+				await publication.dispose();
+			} catch (error) {
+				logger.warn("Failed to dispose restart control endpoint", { error: String(error) });
+			}
+		}
+		const controller = this.#restartQueueController;
+		this.#restartQueueController = undefined;
+		this.#restartBoundIdentity = undefined;
+		this.#restartControlReady = false;
+		controller?.dispose();
+	}
 	/**
 	 * Apply `worktree.onExit` to worktrees this launch created and return the ones
 	 * to remove after teardown. Stops the agent turn and live commands first so the
@@ -7821,7 +8295,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#abortLoopCondition();
 		this.#cancelLoopAutoSubmit();
 		try {
-			await this.session.abort();
+			await this.#sessionConnection.abort();
 			await this.#liveCommandController.stop();
 		} catch (err) {
 			this.showWarning(err instanceof Error ? err.message : String(err));
@@ -7834,57 +8308,100 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 	}
 
-	/**
-	 * Tear down like {@link shutdown}, then relaunch the CLI with the original
-	 * launch argv (session-source flags and positional prompts stripped, see
-	 * {@link restartArgv}), resuming this session when it exists on disk.
-	 *
-	 * On POSIX the relaunch is a true `execvp(3)` image replacement: same PID,
-	 * same terminal, no lingering parent. Postmortem cleanups and stdout are
-	 * flushed first because nothing in this process runs after a successful
-	 * exec. On Windows (no exec semantics) or on exec failure, falls back to
-	 * spawning the replacement and lingering only to forward its exit code.
-	 */
-	async restart(): Promise<void> {
-		if (this.#isShuttingDown) return;
+	/** Checkpoint and replace this process; startup failure returns the terminal to its shell. */
+	async #executeRestart(): Promise<void> {
+		if (this.#isShuttingDown) throw new Error("Cannot restart while the session is already shutting down");
+		const sessionId = this.#resumableSessionId();
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionId || !sessionFile)
+			throw new Error("Restart requires a durable session; the current process was kept alive");
+		// Resume the exact checkpoint, not a possibly stale session-index lookup or a fresh session.
+		const profile = getActiveProfile();
+		const cmd = [
+			...resolveCliEntryCmd(),
+			...restartArgv(process.argv.slice(2), sessionFile, { "--profile": true }),
+			...(profile ? ["--profile", profile] : []),
+		];
+		// Snapshot the unsent composer before closing input and disposing UI controllers.
+		// Shared teardown reuses this save instead of overwriting it with a cleared editor.
+		const draftAtSnapshot = this.editor.getText();
+		if (this.#signalTeardown) await this.#signalTeardown.saveDraft();
+		else await this.#sessionConnection.saveDraft(this.#inputController.getDraftText(), this.#draftEditorState());
+		// Release the writer claim before replacing the runtime with the exact checkpoint.
+		await this.#sessionConnection.checkpoint();
+		// Keys typed while the checkpoint flushed reached the editor after the snapshot; stopping the
+		// UI drains stdin, so persist the final text now or those keys are lost with the old process.
+		await this.#persistLateDraft(draftAtSnapshot);
+		this.ui.stop();
+		await this.#relaunch(cmd, sessionId, sessionFile);
+	}
+
+	/** Cursor, collapsed-content payloads and unsent image attachments of the composer. */
+	#draftEditorState(): DraftEditorState {
+		const editor = this.editor;
+		const images: DraftImage[] = editor.pendingImages.map((image, index) => {
+			const source = imageAttachmentSource(image);
+			const link = editor.pendingImageLinks[index];
+			return {
+				mimeType: image.mimeType,
+				data: image.data,
+				...(image.detail ? { detail: image.detail } : {}),
+				...(link ? { link } : {}),
+				...(source ? { source: { path: source.path, kind: source.kind } } : {}),
+			};
+		});
+		return { ...editor.snapshotDraftState(), images };
+	}
+
+	/** Re-attach saved images as the same pending attachments (order, bytes, links), then payloads and caret. */
+	#restoreDraftEditorState(state: DraftEditorState): void {
+		const images = state.images ?? [];
+		if (images.length > 0 && this.editor.pendingImages.length === 0) {
+			this.editor.pendingImages = images.map(saved => {
+				const image: ImageContent = { type: "image", data: saved.data, mimeType: saved.mimeType };
+				if (saved.detail) image.detail = saved.detail;
+				return saved.source ? tagImageAttachmentSource(image, saved.source.path, saved.source.kind) : image;
+			});
+			this.editor.pendingImageLinks = images.map(saved => saved.link);
+			this.editor.imageLinks = this.editor.pendingImageLinks;
+		}
+		this.editor.restoreDraftState(state);
+	}
+
+	/** Re-save the draft when keys reached the editor after the restart snapshot; never blocks the restart. */
+	async #persistLateDraft(savedText: string): Promise<void> {
+		const text = this.editor.getText();
+		if (text === savedText) return;
+		try {
+			await this.#sessionConnection.saveDraft(text, this.#draftEditorState());
+		} catch (error) {
+			logger.warn("Failed to save late session draft during restart", { error: String(error) });
+		}
+	}
+
+	/** Close the session, then replace this process with the relaunch command. */
+	async #relaunch(cmd: string[], sessionId: string, sessionFile: string): Promise<void> {
+		if (this.#isShuttingDown) throw new Error("Cannot restart while the session is already shutting down");
 		this.#beginClose();
 		try {
 			await this.#teardown();
 		} catch (error) {
 			this.#handleTeardownError("restart", error);
-			return;
-		}
-
-		const sessionFile = this.sessionManager.isSessionOnDisk() ? this.sessionManager.getSessionFile() : undefined;
-		// Pass the profile explicitly: native exec does not inherit Bun's process.env updates.
-		const activeProfile = getActiveProfile();
-		const cmd = [
-			...resolveCliEntryCmd(),
-			...restartArgv(
-				process.argv.slice(2),
-				sessionFile ? path.resolve(sessionFile) : undefined,
-				activeProfile ? { "--profile": true } : undefined,
-			),
-		];
-		if (activeProfile) cmd.push("--profile", activeProfile);
-		await postmortem.cleanup();
-		await postmortem.drainStdout();
-		if (process.platform !== "win32") {
-			try {
-				execReplace(cmd); // never returns on success
-			} catch (err) {
-				process.stderr.write(`${chalk.red(`Restart exec failed: ${err instanceof Error ? err.message : err}`)}\n`);
-			}
+			throw error;
 		}
 		try {
-			const child = Bun.spawn(cmd, {
-				stdin: "inherit",
-				stdout: "inherit",
-				stderr: "inherit",
-			});
-			await postmortem.quit(await child.exited);
-		} catch (err) {
-			process.stderr.write(`${chalk.red(`Restart spawn failed: ${err instanceof Error ? err.message : err}`)}\n`);
+			await postmortem.cleanup();
+			await postmortem.drainStdout();
+		} catch (error) {
+			// A cleanup failure must not leave a drained runtime holding the terminal.
+			process.stderr.write(`Restart cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`);
+		}
+		try {
+			execRestartSuccessor(cmd, sessionId);
+		} catch (error) {
+			process.stderr.write(
+				`Restart failed; resume with omp --resume ${JSON.stringify(sessionFile)}: ${String(error)}\n`,
+			);
 			await postmortem.quit(1);
 		}
 	}
@@ -7949,7 +8466,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (this.#signalTeardown) {
 				await this.#signalTeardown();
 			} else {
-				await this.session.dispose({
+				await this.#sessionConnection.disposeSession({
 					mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 				});
 			}
@@ -7966,6 +8483,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.closeNative();
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
+		await this.#disposeRestartControl();
 		await this.ui.terminal.drainInput(1000);
 		// Stop the run-state spinner interval BEFORE restoring the shell title, so a
 		// pending tick cannot re-emit an OSC title after `popTerminalTitle` hands the
@@ -8005,7 +8523,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.isShuttingDown ||
 			this.hasPendingSubmission() ||
 			this.session.hasAdmittedSubmission ||
-			this.session.isStreaming ||
+			this.#sessionConnection.isStreaming ||
 			this.session.queuedMessageCount > 0 ||
 			this.session.hasPendingAsyncWork()
 		) {
@@ -8124,7 +8642,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * duplicate into, so there the panel mounts in the transcript at once.
 	 */
 	presentCommandOutput(content: Component | readonly Component[]): void {
-		if (!this.session.isStreaming || this.ui.nativeRendering) {
+		if (!this.#sessionConnection.isStreaming || this.ui.nativeRendering) {
 			this.present(content);
 			return;
 		}
@@ -8499,6 +9017,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#uiHelpers.flushCompactionQueue(options);
 	}
 
+	runYieldCompaction(): void {
+		if (!this.yieldCompaction) return;
+		// Not awaited by callers: the compaction outlives the event dispatch or submission that starts it.
+		void this.#commandController.runYieldCompaction().catch(error => {
+			logger.warn("Queued compaction failed", { error: String(error) });
+		});
+	}
+
 	flushPendingBashComponents(): void {
 		this.#uiHelpers.flushPendingBashComponents();
 	}
@@ -8540,8 +9066,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		preserveExistingChat?: boolean;
 		clearTerminalHistory?: boolean;
 	}): Promise<void> {
+		// A focus switch replays another session's transcript: claim that session's link schemes first.
+		this.#applyExtensionLinks();
 		await this.#uiHelpers.renderInitialMessages(options);
 		this.syncRetryHintRow();
+		// A switch or tree move that replays the transcript strands a `/compact` queued for the old position.
+		this.#inputController.releaseStaleYieldCompaction();
 	}
 	/**
 	 * Reconcile the idle "F5 to Retry" status row with the transcript tail:
@@ -8871,13 +9401,29 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.showStatus(`Recording to ${this.#recorder.path} · /record again to stop`);
 	}
 
+	/** Why live mode cannot start right now, or `undefined` when it can. */
+	#liveStartBlocker(): string | undefined {
+		if (this.#dictationStarting || (this.#sttController && this.#sttController.state !== "idle")) {
+			return "Finish the current speech-to-text capture before starting live mode.";
+		}
+		return undefined;
+	}
+
 	/** Start or stop the Codex-backed realtime voice surface. */
 	async handleLiveCommand(): Promise<void> {
-		if (this.#dictationStarting || (this.#sttController && this.#sttController.state !== "idle")) {
-			this.showWarning("Finish the current speech-to-text capture before starting live mode.");
+		const blocker = this.#liveStartBlocker();
+		if (blocker) {
+			this.showWarning(blocker);
 			return;
 		}
 		await this.#liveCommandController.handleCommand();
+	}
+
+	/** Start a live session whose audio runs on an extension's own WebRTC peer. */
+	async startRemoteLive(options: ExtensionLiveStartOptions): Promise<ExtensionLiveSession> {
+		const blocker = this.#liveStartBlocker();
+		if (blocker) throw new Error(blocker);
+		return await this.#liveCommandController.startRemote(options);
 	}
 
 	async showDebugSelector(): Promise<void> {
@@ -9064,6 +9610,14 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleDequeue(): void {
 		this.#inputController.handleDequeue();
+	}
+
+	restoreCompactionQueueToEditor(status?: string): void {
+		this.#inputController.restoreCompactionQueueToEditor(status);
+	}
+
+	waitForSubmissionDispatches(): Promise<void> {
+		return this.#inputController.waitForSubmissionDispatches();
 	}
 
 	handleImagePaste(): Promise<boolean> {

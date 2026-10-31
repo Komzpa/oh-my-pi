@@ -7,7 +7,10 @@ import {
 	BRACKETED_PASTE_START,
 	type Component,
 	emergencyTerminalRestore,
+	isKeyRelease,
+	isKeyRepeat,
 	matchesKey,
+	parseKey,
 	parseSgrMouse,
 	type PasteOptions,
 	type SlashCommand,
@@ -42,13 +45,13 @@ import { createModelBrowserSource } from "../model-browser-source";
 import { parseQueueShorthand, splitQueuedMessages } from "@oh-my-pi/pi-tui/prompt/queue-input";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "../../modes/skill-command";
 import { parseFileSlashInvocation, renderFileSlashCommand } from "../../extensibility/slash-commands";
+import { createLocalInteractiveSessionConnection, type InteractiveSessionConnection } from "../interactive-session";
 import type { InteractiveModeContext, SubmittedUserInput } from "../../modes/types";
 import { openLocalFileInEditor } from "../local-file-editor";
-import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import { AgentRegistry } from "../../registry/agent-registry";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
-import { PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-tui/prompt/composer";
+import { PINNED_HUD_TOGGLE_ID } from "../../task/output-manager";
 import { pickRecentFocusableAgentId } from "./session-focus-controller";
 import { executeBuiltinSlashCommand, lookupBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
 import { restoreDetachedDraft } from "../../slash-commands/helpers/draft";
@@ -71,6 +74,7 @@ import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { resendProgramStatus } from "../../utils/run-status";
 import { loadImageInput } from "../../utils/image-loading";
 import { materializeImageChipLinks } from "../utils/ui-helpers";
+import { type ConversationPosition, continuesConversation, conversationPosition } from "../utils/conversation-position";
 import { ensureSupportedImageInput, ImageInputTooLargeError } from "@oh-my-pi/pi-tui/chat/image-loading";
 import { type ImageAttachmentSource, tagImageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-tui/prompt/image-format";
@@ -287,6 +291,7 @@ export class InputController {
 			readMacFileUrls: readMacFileUrlsFromClipboard,
 			isTerminalLocal: isClipboardTerminalLocal,
 		},
+		private sessionConnection: InteractiveSessionConnection = createLocalInteractiveSessionConnection(ctx.session),
 	) {}
 
 	/** Resolve the current tiny role at use time so project/session reloads cannot leave a stale model. */
@@ -314,9 +319,17 @@ export class InputController {
 	#globalEditorActionsListenerInstalled = false;
 	#expandToolsListenerInstalled = false;
 	#inlineMouseListenerInstalled = false;
+	#linkHintListenerInstalled = false;
 
 	/** Click-candidate id the hover band currently tracks; repaint only on change. */
 	#lastHoverClickId: string | undefined;
+	/**
+	 * Settles when the latest submission (Enter or the follow-up key) has passed its input hooks.
+	 * Each submission awaits the previous one's, so queue placement follows submission order.
+	 */
+	#submissionHookOrder: Promise<void> = Promise.resolve();
+	/** Submissions (Enter or the follow-up key) the session has not admitted yet and that still dispatch locally. */
+	readonly #submissionDispatches = new Set<Promise<void>>();
 
 	/** Return the last full editor snapshot delivered by its change contract. */
 	getDraftText(): string {
@@ -350,12 +363,17 @@ export class InputController {
 	};
 
 	#abortStreamingTurn(): void {
-		void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+		void this.sessionConnection.abort({ reason: USER_INTERRUPT_LABEL });
 	}
 
 	setupKeyHandlers(): void {
 		this.#draftText ??= this.ctx.editor.getText();
 		this.ctx.editor.setActionKeys("app.interrupt", this.ctx.keybindings.getKeys("app.interrupt"));
+		if (!this.#linkHintListenerInstalled) {
+			this.#linkHintListenerInstalled = true;
+			// First, so a tag letter typed in link-hint mode reaches no other listener or the editor.
+			this.ctx.ui.addInputListener(data => this.#handleLinkHintInput(data));
+		}
 		if (!this.#focusedLeftTapListenerInstalled) {
 			this.#focusedLeftTapListenerInstalled = true;
 			this.ctx.ui.addInputListener(data => {
@@ -580,11 +598,13 @@ export class InputController {
 				// then drop the captured prompt so the 800ms auto-resubmit never
 				// fires. Loop stays enabled (paused) — the next manual prompt
 				// resumes with a new body.
-				if (this.ctx.session.isStreaming) {
+				if (this.sessionConnection.isStreaming) {
 					this.#abortStreamingTurn();
 				}
 				this.ctx.pauseLoop();
 				this.ctx.cancelPendingSubmission();
+				// A setup cancelled before its turn starts emits no `agent_end`: hand the queue back here.
+				this.#restoreYieldCompactionOnStop();
 				return;
 			}
 			if (this.ctx.focusedAgentId) {
@@ -609,6 +629,7 @@ export class InputController {
 				return;
 			}
 			if (this.ctx.loadingAnimation && this.ctx.cancelPendingSubmission()) {
+				this.#restoreYieldCompactionOnStop();
 				return;
 			}
 			// The turn is over and only background jobs can resume it; its row
@@ -632,7 +653,7 @@ export class InputController {
 				// End the wait. The jobs keep running; their results land in context
 				// for the next prompt instead of starting a turn.
 				void this.ctx.eventController.stopAwaitingAsyncWork();
-			} else if (this.ctx.session.isStreaming) {
+			} else if (this.sessionConnection.isStreaming) {
 				this.#abortStreamingTurn();
 			} else if (this.ctx.editor.getText().trim()) {
 				// Esc must not destroy an in-progress draft.
@@ -834,7 +855,38 @@ export class InputController {
 		const event = parseSgrMouse(data);
 		if (!event) return undefined;
 		if (event.motion) this.#updateHoverHighlight(event.row);
-		else if (event.leftClick) this.#focusClickedAgent(event.row);
+		else if (event.leftClick && !this.#activateClickedLink(event.row, event.col)) this.#focusClickedAgent(event.row);
+		return { consume: true };
+	}
+
+	/**
+	 * Keyboard link picking. `app.links.hint` enters link-hint mode, which then owns the keyboard
+	 * while the editor has focus: a lowercase letter narrows the tags, and any other key cancels and
+	 * is swallowed so a stray Esc or Enter does nothing else. Ctrl+C and a paste cancel and still do
+	 * what they always do. Key releases and repeats (the hint key's own) are ignored; mouse reports
+	 * pass through untouched. Keys the TUI routes before input listeners (a space held for
+	 * push-to-talk) never reach this.
+	 */
+	#handleLinkHintInput(data: string): { consume?: boolean } | undefined {
+		// Overlays and editor-area dialogs (ask, selectors, hook input) own the keyboard.
+		const editorFocused = () => !this.ctx.ui.hasOverlay() && this.ctx.ui.getFocused() === this.ctx.editor;
+		if (!this.ctx.linkHintsActive) {
+			if (!this.ctx.keybindings.matches(data, "app.links.hint") || !editorFocused()) return undefined;
+			return this.ctx.startLinkHints() ? { consume: true } : undefined;
+		}
+		if (!editorFocused()) {
+			this.ctx.cancelLinkHints();
+			return undefined;
+		}
+		if (isKeyRelease(data) || isKeyRepeat(data)) return { consume: true };
+		if (data.startsWith("\x1b[<")) return undefined;
+		if (matchesKey(data, "ctrl+c") || data.startsWith("\x1b[200~")) {
+			this.ctx.cancelLinkHints();
+			return undefined;
+		}
+		const key = parseKey(data);
+		if (key !== undefined && /^[a-z]$/.test(key)) this.ctx.typeLinkHint(key);
+		else this.ctx.cancelLinkHints();
 		return { consume: true };
 	}
 
@@ -855,10 +907,22 @@ export class InputController {
 	// empty (resize transactions) or the row falls outside it: routing stale
 	// spans would highlight or focus an unrelated agent from old rows.
 	#viewportCandidates(screenRow: number): string[] {
+		const line = this.#viewportLine(screenRow);
+		return line === undefined ? [] : this.ctx.resolveViewportClickCandidates(line);
+	}
+
+	/** Mutable-viewport line under a screen row, or `undefined` outside the published viewport. */
+	#viewportLine(screenRow: number): number | undefined {
 		const viewport = this.ctx.ui.getMutableViewport();
 		const local = screenRow - viewport.top;
-		if (viewport.length === 0 || local < 0 || local >= viewport.length) return [];
-		return this.ctx.resolveViewportClickCandidates(local);
+		if (viewport.length === 0 || local < 0 || local >= viewport.length) return undefined;
+		return local;
+	}
+
+	// A click on an extension-owned link goes to that extension instead of focusing an agent.
+	#activateClickedLink(screenRow: number, col: number): boolean {
+		const line = this.#viewportLine(screenRow);
+		return line !== undefined && this.ctx.activateViewportLink(line, col);
 	}
 
 	/**
@@ -1009,7 +1073,7 @@ export class InputController {
 	}
 
 	setupEditorSubmitHandler(): void {
-		this.ctx.editor.onSubmit = async (text: string) => {
+		const submit = async (text: string) => {
 			const submittedText = text;
 			// The Editor resets before calling onSubmit, so this is normally empty;
 			// different editor text after an await below is a newer draft.
@@ -1034,9 +1098,9 @@ export class InputController {
 			// Empty submit while streaming with queued (or live-steered) messages:
 			// abort the active turn and let the post-unwind drain deliver the
 			// agent-core queue.
-			if (!text && !hasPendingImages && this.ctx.session.isStreaming) {
+			if (!text && !hasPendingImages && this.sessionConnection.isStreaming) {
 				if (this.ctx.session.hasInterruptibleInput) {
-					const aborting = this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+					const aborting = this.sessionConnection.abort({ reason: USER_INTERRUPT_LABEL });
 					await aborting;
 					this.ctx.updatePendingMessagesDisplay();
 					this.ctx.ui.requestRender();
@@ -1046,21 +1110,13 @@ export class InputController {
 
 			if (!text && !hasPendingImages) return;
 
-			// Continue shortcuts: "." or "c" resume the agent with a hidden agent-authored
-			// developer directive (no visible user message) instead of an empty turn, so the
-			// model continues the prior intent rather than second-guessing the interrupt.
-			// During a /guided-goal interview "c" is a plausible answer (e.g. option C),
-			// so it is sent as a normal reply there.
+			// Continue shortcuts: "." or "c" resume the agent without a visible user
+			// message (see AgentSession.resume). During a /guided-goal interview "c" is
+			// a plausible answer (e.g. option C), so it is sent as a normal reply there.
 			if (text === "." || (text === "c" && !this.ctx.isGuidedGoalInterviewActive())) {
 				if (this.ctx.onInputCallback) {
 					this.ctx.editor.clearDraft();
-					this.ctx.onInputCallback({
-						text: manualContinuePrompt,
-						cancelled: false,
-						started: true,
-						synthetic: true,
-						userInitiated: true,
-					});
+					this.ctx.onInputCallback({ text, cancelled: false, started: true, resume: true });
 				}
 				return;
 			}
@@ -1072,20 +1128,30 @@ export class InputController {
 			let hasInputImages = (inputImages?.length ?? 0) > 0;
 			const submittedImages = inputImages;
 
-			// A startup-deferred extension's input hook must see the first submission.
-			if (this.ctx.session.hasPendingDeferredExtensions) await this.ctx.session.loadDeferredExtensions();
-			if (runner?.hasHandlers("input")) {
-				const input = await this.#runInputHandlers(text, inputImages, inputImageLinks);
-				if (!input) {
-					// The handler consumed the submission. The editor text was reset
-					// before this callback ran, so anything in it now is a newer draft;
-					// only the submitted attachments are dropped, and only while they
-					// are still the live prefix.
-					this.#dropSubmittedPending(inputImages);
-					return;
+			// Input hooks pass in submission order with the follow-up key's (see `#submissionHookOrder`):
+			// `/queue` placement behind a queued `/compact` must follow the order the user sent them.
+			const earlier = this.#submissionHookOrder;
+			const hooksDone = Promise.withResolvers<void>();
+			this.#submissionHookOrder = hooksDone.promise;
+			try {
+				await earlier;
+				// A startup-deferred extension's input hook must see the first submission.
+				if (this.ctx.session.hasPendingDeferredExtensions) await this.ctx.session.loadDeferredExtensions();
+				if (runner?.hasHandlers("input")) {
+					const input = await this.#runInputHandlers(text, inputImages, inputImageLinks);
+					if (!input) {
+						// The handler consumed the submission. The editor text was reset
+						// before this callback ran, so anything in it now is a newer draft;
+						// only the submitted attachments are dropped, and only while they
+						// are still the live prefix.
+						this.#dropSubmittedPending(inputImages);
+						return;
+					}
+					({ text, images: inputImages, imageLinks: inputImageLinks } = input);
+					hasInputImages = (inputImages?.length ?? 0) > 0;
 				}
-				({ text, images: inputImages, imageLinks: inputImageLinks } = input);
-				hasInputImages = (inputImages?.length ?? 0) > 0;
+			} finally {
+				hooksDone.resolve();
 			}
 			const submittedMode = parseSlashCommand(text)?.name;
 			const draftDetached = submittedMode !== undefined && DETACHED_DRAFT_COMMANDS.has(submittedMode);
@@ -1196,7 +1262,7 @@ export class InputController {
 				if (this.ctx.loopModeEnabled) {
 					this.ctx.setLoopPrompt(text);
 				}
-				if (this.ctx.session.isCompacting) {
+				if (this.sessionConnection.isCompacting) {
 					const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
 					this.ctx.queueCompactionMessage(text, "steer", images);
 					return;
@@ -1254,7 +1320,7 @@ export class InputController {
 			}
 
 			// Queue input during compaction
-			if (this.ctx.session.isCompacting) {
+			if (this.sessionConnection.isCompacting) {
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
 				this.ctx.queueCompactionMessage(text, "steer", images);
 				// An inline `/loop` body queued here arms the loop only when it is
@@ -1272,7 +1338,7 @@ export class InputController {
 			if (this.#isLocalExtensionCommand(text)) {
 				this.ctx.editor.clearDraft(text);
 				try {
-					await this.ctx.session.prompt(text, { images: inputImages });
+					await this.sessionConnection.prompt(text, { images: inputImages });
 				} catch (error) {
 					// Restore the snapshot only when nothing newer was attached
 					// while the command ran; otherwise the newer draft wins.
@@ -1291,7 +1357,7 @@ export class InputController {
 
 			// If streaming, use prompt() with steer behavior
 			// This handles extension commands (execute immediately), prompt template expansion, and queueing
-			if (this.ctx.session.isStreaming) {
+			if (this.sessionConnection.isStreaming) {
 				this.ctx.editor.addToHistory(text);
 				// Enter already cleared the editor synchronously. A later clear here
 				// can erase the tail of an unbracketed paste arriving after Enter.
@@ -1306,7 +1372,7 @@ export class InputController {
 				try {
 					const forwarded = await this.ctx.withLocalSubmission(
 						text,
-						() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
+						() => this.sessionConnection.prompt(text, { streamingBehavior: "steer", images }),
 						{ imageCount: images?.length ?? 0 },
 					);
 					// An inline `/loop` body arms the loop only after dispatch
@@ -1383,7 +1449,7 @@ export class InputController {
 				try {
 					const forwarded = await this.ctx.withLocalSubmission(
 						text,
-						() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
+						() => this.sessionConnection.prompt(text, { streamingBehavior: "steer", images }),
 						{
 							imageCount: images?.length ?? 0,
 						},
@@ -1414,6 +1480,9 @@ export class InputController {
 			}
 			this.ctx.editor.addToHistory(text);
 		};
+		// A queued `/compact` waits for Enter input taken before it to reach the session (skill
+		// expansion, `/queue`, mode commands), the same as for the follow-up key.
+		this.ctx.editor.onSubmit = text => this.#trackSubmission(() => submit(text));
 	}
 
 	/**
@@ -1443,7 +1512,7 @@ export class InputController {
 	): { command: string; confirm: boolean } | undefined {
 		if (text !== submittedText || hasImages || !text || text.startsWith("/") || /\s/.test(text)) return undefined;
 		const emptySession =
-			!this.ctx.session.isStreaming &&
+			!this.sessionConnection.isStreaming &&
 			this.ctx.locallySubmittedUserSignatures.size === 0 &&
 			this.ctx.session.messages.length === 0;
 		const folded = text.toLowerCase();
@@ -1593,10 +1662,8 @@ export class InputController {
 		const isContinueShortcut = streamingBehavior === "steer" && !images && (text === "." || text === "c");
 		this.ctx.editor.clearDraft(text);
 		try {
-			// Synthetic directives must not use streamingBehavior: AgentSession would
-			// otherwise queue them as visible user messages while the target is busy.
 			if (isContinueShortcut) {
-				await target.prompt(manualContinuePrompt, { synthetic: true, userInitiated: true });
+				await target.resume();
 			} else {
 				await this.ctx.withLocalSubmission(text, () => target.prompt(text, { streamingBehavior, images }), {
 					imageCount: images?.length ?? 0,
@@ -1773,14 +1840,26 @@ export class InputController {
 	 * must not restore its messages into a subagent's composer.
 	 */
 	#popLastQueuedMessage(): RestoredQueuedMessage | undefined {
-		const fromQueue = this.ctx.viewSession.popLastQueuedMessage();
-		if (fromQueue) return fromQueue;
-		if (this.ctx.focusedAgentId) return undefined;
+		const yieldCompaction = this.ctx.focusedAgentId ? undefined : this.ctx.yieldCompaction;
+		// Steering pops first, as in `AgentSession.popLastQueuedMessage`. Behind a yield compaction,
+		// the session's follow-ups are older than it: the follow-ups it holds go next, then the request.
+		const queued = yieldCompaction ? this.ctx.viewSession.getQueuedMessages() : undefined;
+		if (!queued || queued.steering.length > queued.liveSteered) {
+			const fromQueue = this.ctx.viewSession.popLastQueuedMessage();
+			if (fromQueue) return fromQueue;
+			if (this.ctx.focusedAgentId) return undefined;
+		}
 		const compaction = this.ctx.compactionQueuedMessages;
-		if (compaction.length === 0) return undefined;
-		const last = compaction[compaction.length - 1];
-		this.ctx.compactionQueuedMessages = compaction.slice(0, -1);
-		return { text: last.text, images: last.images };
+		if (compaction.length > 0) {
+			const last = compaction[compaction.length - 1];
+			this.ctx.compactionQueuedMessages = compaction.slice(0, -1);
+			return { text: last.text, images: last.images };
+		}
+		if (yieldCompaction) {
+			this.ctx.yieldCompaction = undefined;
+			return { text: yieldCompaction.text };
+		}
+		return undefined;
 	}
 
 	/**
@@ -1833,7 +1912,7 @@ export class InputController {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 			return true;
 		} finally {
-			if (this.ctx.session.isStreaming) {
+			if (this.sessionConnection.isStreaming) {
 				this.ctx.updatePendingMessagesDisplay();
 				this.ctx.ui.requestRender();
 			}
@@ -1907,7 +1986,8 @@ export class InputController {
 				: undefined;
 		if (options.detachedText === undefined) this.ctx.editor.clearDraft(options.historyText);
 
-		if (this.ctx.session.isCompacting) {
+		this.releaseStaleYieldCompaction();
+		if (this.sessionConnection.isCompacting || this.ctx.yieldCompaction) {
 			for (let index = 0; index < messages.length; index++) {
 				this.ctx.compactionQueuedMessages.push({
 					text: messages[index] ?? "",
@@ -1925,7 +2005,7 @@ export class InputController {
 			return;
 		}
 
-		const startImmediately = !this.ctx.session.isStreaming && this.ctx.session.queuedMessageCount === 0;
+		const startImmediately = !this.sessionConnection.isStreaming && this.ctx.session.queuedMessageCount === 0;
 		let queuedCount = 0;
 		try {
 			if (startImmediately && this.ctx.onInputCallback) {
@@ -1946,7 +2026,7 @@ export class InputController {
 					message,
 					async () => {
 						if (startImmediately && queuedCount === 0) {
-							await this.ctx.session.prompt(message, {
+							await this.sessionConnection.prompt(message, {
 								images: queuedImages,
 								streamingBehavior: "followUp",
 							});
@@ -2016,20 +2096,53 @@ export class InputController {
 		// Detach before the first await: another Ctrl+Enter cannot submit the
 		// same draft, and later typing belongs to the next submission.
 		this.ctx.editor.clearDraft();
-
-		if (this.ctx.session.hasPendingDeferredExtensions) await this.ctx.session.loadDeferredExtensions();
-		if (this.ctx.session.extensionRunner?.hasHandlers("input")) {
+		// The conversation this was sent in; a queued `/compact` must not land in another one.
+		const origin = conversationPosition(this.ctx.sessionManager);
+		// Until this submission reaches the session (`prompt()` admits it synchronously) or finishes
+		// locally, the session cannot see it; a queued `/compact` waits for it (`waitForSubmissionDispatches`).
+		const dispatch = Promise.withResolvers<void>();
+		this.#submissionDispatches.add(dispatch.promise);
+		const admitted = () => {
+			if (this.#submissionDispatches.delete(dispatch.promise)) dispatch.resolve();
+		};
+		try {
+			// Input hooks pass in submission order (shared with Enter, see `#submissionHookOrder`), so a
+			// slow hook on a queued `/compact` cannot let later input reach the queues first. Dispatch past
+			// this point decides queue placement synchronously.
+			const earlier = this.#submissionHookOrder;
+			const hooksDone = Promise.withResolvers<void>();
+			this.#submissionHookOrder = hooksDone.promise;
 			try {
-				const input = await this.#runInputHandlers(text, images, imageLinks);
-				if (!input) return;
-				({ text, images, imageLinks } = input);
-			} catch (error) {
-				restoreDetachedDraft(this.ctx.editor, text, images, imageLinks);
-				this.ctx.showError(error instanceof Error ? error.message : String(error));
-				return;
+				await earlier;
+				if (this.ctx.session.hasPendingDeferredExtensions) await this.ctx.session.loadDeferredExtensions();
+				if (this.ctx.session.extensionRunner?.hasHandlers("input")) {
+					try {
+						const input = await this.#runInputHandlers(text, images, imageLinks);
+						if (!input) return;
+						({ text, images, imageLinks } = input);
+					} catch (error) {
+						restoreDetachedDraft(this.ctx.editor, text, images, imageLinks);
+						this.ctx.showError(error instanceof Error ? error.message : String(error));
+						return;
+					}
+				}
+			} finally {
+				hooksDone.resolve();
 			}
+			await this.#dispatchFollowUp(text, images, imageLinks, origin, admitted);
+		} finally {
+			admitted();
 		}
+	}
 
+	/** Dispatch a follow-up-key submission that passed its input hooks. `admitted` fires once the session holds it. */
+	async #dispatchFollowUp(
+		text: string,
+		images: ImageContent[] | undefined,
+		imageLinks: (string | undefined)[] | undefined,
+		origin: ConversationPosition,
+		admitted: () => void,
+	): Promise<void> {
 		// Ctrl+Enter detached the draft before the first await, so a side command
 		// has no editor state left to release; a render failure hands it back.
 		const restoreSideDraft = { restore: () => restoreDetachedDraft(this.ctx.editor, text, images, imageLinks) };
@@ -2041,7 +2154,10 @@ export class InputController {
 		// queued text into a user-attributed skill invocation before delivery.
 		// Side commands answer now instead: the queue would deliver them as a
 		// main-turn prompt. Builtins keep precedence, as in the dispatch below.
-		if (this.ctx.session.isCompacting) {
+		// A compaction queued for the next yield holds later follow-ups the same
+		// way, so they run after it.
+		this.releaseStaleYieldCompaction();
+		if (this.sessionConnection.isCompacting || this.ctx.yieldCompaction) {
 			if (
 				text &&
 				!this.#matchesBuiltinSlashCommand(text) &&
@@ -2057,7 +2173,12 @@ export class InputController {
 			try {
 				const input =
 					(images?.length ?? 0) > 0 || (imageLinks?.length ?? 0) > 0 ? { images, imageLinks } : undefined;
-				const slashResult = await executeBuiltinSlashCommand(text, { ctx: this.ctx, input, draftDetached: true });
+				const slashResult = await executeBuiltinSlashCommand(text, {
+					ctx: this.ctx,
+					input,
+					draftDetached: true,
+					followUp: origin,
+				});
 				if (slashResult === true) {
 					if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 					return;
@@ -2092,12 +2213,16 @@ export class InputController {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		};
 
-		if (this.ctx.session.isStreaming) {
+		if (this.sessionConnection.isStreaming) {
 			this.ctx.editor.addToHistory(text);
 			try {
 				await this.ctx.withLocalSubmission(
 					text,
-					() => this.ctx.session.prompt(text, { streamingBehavior: "followUp", images }),
+					() => {
+						const pending = this.sessionConnection.prompt(text, { streamingBehavior: "followUp", images });
+						admitted();
+						return pending;
+					},
 					{ imageCount: images?.length ?? 0 },
 				);
 			} catch (error) {
@@ -2111,9 +2236,15 @@ export class InputController {
 		// Not streaming — just submit normally
 		this.ctx.editor.addToHistory(text);
 		try {
-			await this.ctx.withLocalSubmission(text, () => this.ctx.session.prompt(text, { images }), {
-				imageCount: images?.length ?? 0,
-			});
+			await this.ctx.withLocalSubmission(
+				text,
+				() => {
+					const pending = this.sessionConnection.prompt(text, { images });
+					admitted();
+					return pending;
+				},
+				{ imageCount: images?.length ?? 0 },
+			);
 		} catch (error) {
 			restoreOnError(error);
 		}
@@ -2132,17 +2263,73 @@ export class InputController {
 		// advertises; otherwise a skill/text queued during compaction is stranded.
 		const compactionQueued = this.ctx.compactionQueuedMessages;
 		this.ctx.compactionQueuedMessages = [];
+		const yieldCompaction = this.ctx.yieldCompaction;
+		this.ctx.yieldCompaction = undefined;
 		const allQueued = [
 			...steering,
 			...compactionQueued.filter(e => e.mode === "steer").map(e => ({ text: e.text, images: e.images })),
 			...followUp,
+			...(yieldCompaction ? [{ text: yieldCompaction.text }] : []),
 			...compactionQueued.filter(e => e.mode === "followUp").map(e => ({ text: e.text, images: e.images })),
 		];
 		const restored = this.#restoreEntriesToEditor(allQueued, options?.currentText);
 		if (options?.abort) {
-			void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+			void this.sessionConnection.abort({ reason: USER_INTERRUPT_LABEL });
 		}
 		return restored;
+	}
+
+	/**
+	 * Hand a queued `/compact` and the input waiting in the compaction queue (follow-ups held behind
+	 * the request, or input typed while a compaction runs) back to the editor: the conversation it was
+	 * queued for is no longer the one that will receive it.
+	 */
+	restoreCompactionQueueToEditor(status = "Conversation changed: queued input returned to the editor"): void {
+		const request = this.ctx.yieldCompaction;
+		const held = this.ctx.compactionQueuedMessages;
+		this.ctx.compactionQueueOrigin = undefined;
+		if (!request && held.length === 0) return;
+		this.ctx.yieldCompaction = undefined;
+		this.ctx.compactionQueuedMessages = [];
+		this.#restoreEntriesToEditor([
+			...(request ? [{ text: request.text }] : []),
+			...held.map(e => ({ text: e.text, images: e.images })),
+		]);
+		this.ctx.showStatus(status);
+	}
+
+	/** A queued `/compact` whose conversation is gone (switch, tree move) goes back to the editor. */
+	releaseStaleYieldCompaction(): void {
+		const request = this.ctx.yieldCompaction;
+		if (!request || this.ctx.session.isSessionTransitioning) return;
+		if (!continuesConversation(this.ctx.sessionManager, request)) this.restoreCompactionQueueToEditor();
+	}
+
+	/** Esc stopped the run: a queued `/compact` and the follow-ups behind it go back to the editor. */
+	#restoreYieldCompactionOnStop(): void {
+		if (this.ctx.yieldCompaction) {
+			this.restoreCompactionQueueToEditor("Run stopped: queued compaction returned to the editor");
+		}
+	}
+
+	/**
+	 * Resolves once every submission (Enter or the follow-up key) reached the session (prompt or
+	 * custom-message admission, or the pending-submission hand-off) or finished dispatching locally.
+	 */
+	async waitForSubmissionDispatches(): Promise<void> {
+		while (this.#submissionDispatches.size > 0) await Promise.all(this.#submissionDispatches);
+	}
+
+	/** Track an Enter submission from the moment it is taken until its dispatch ends. */
+	async #trackSubmission(dispatch: () => Promise<void>): Promise<void> {
+		const done = Promise.withResolvers<void>();
+		this.#submissionDispatches.add(done.promise);
+		try {
+			await dispatch();
+		} finally {
+			this.#submissionDispatches.delete(done.promise);
+			done.resolve();
+		}
 	}
 
 	/**

@@ -2918,6 +2918,125 @@ pub struct QueuedMessagesState {
 	pub live_steered: i64,
 }
 
+///
+/// Open record: declared fields are decoded leniently (a value that does not fit stays
+/// in `extra`) and every other key is kept in `extra`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CustomPromptMessage {
+	pub custom_type: Option<String>,
+	pub content: Option<MessageContent>,
+	pub display: Option<bool>,
+	pub details: Option<Value>,
+	pub attribution: Option<CustomPromptMessageAttribution>,
+	/// Every key not decoded into a declared field.
+	pub extra: Map<String, Value>,
+}
+
+impl Serialize for CustomPromptMessage {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		let mut map = serializer.serialize_map(None)?;
+		if let Some(value) = &self.custom_type {
+			map.serialize_entry("customType", value)?;
+		}
+		if let Some(value) = &self.content {
+			map.serialize_entry("content", value)?;
+		}
+		if let Some(value) = &self.display {
+			map.serialize_entry("display", value)?;
+		}
+		if let Some(value) = &self.details {
+			map.serialize_entry("details", value)?;
+		}
+		if let Some(value) = &self.attribution {
+			map.serialize_entry("attribution", value)?;
+		}
+		for (key, value) in &self.extra {
+			match key.as_str() {
+				"customType" if self.custom_type.is_some() => continue,
+				"content" if self.content.is_some() => continue,
+				"display" if self.display.is_some() => continue,
+				"details" if self.details.is_some() => continue,
+				"attribution" if self.attribution.is_some() => continue,
+				_ => {}
+			}
+			map.serialize_entry(key, value)?;
+		}
+		map.end()
+	}
+}
+
+impl<'de> Deserialize<'de> for CustomPromptMessage {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let mut extra = Map::<String, Value>::deserialize(deserializer)?;
+		Ok(Self {
+			custom_type: take(&mut extra, "customType"),
+			content: take(&mut extra, "content"),
+			display: take(&mut extra, "display"),
+			details: take(&mut extra, "details"),
+			attribution: take(&mut extra, "attribution"),
+			extra,
+		})
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomPromptOptions {
+	#[serde(rename = "streamingBehavior", default, skip_serializing_if = "Option::is_none")]
+	pub streaming_behavior: Option<CustomPromptOptionsStreamingBehavior>,
+	#[serde(rename = "toolChoice", default, skip_serializing_if = "Option::is_none")]
+	pub tool_choice: Option<Value>,
+	#[serde(rename = "queueChipText", default, skip_serializing_if = "Option::is_none")]
+	pub queue_chip_text: Option<String>,
+	#[serde(rename = "queueOnly", default, skip_serializing_if = "Option::is_none")]
+	pub queue_only: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionPromptOptions {
+	#[serde(rename = "expandPromptTemplates", default, skip_serializing_if = "Option::is_none")]
+	pub expand_prompt_templates: Option<bool>,
+	#[serde(rename = "runCommands", default, skip_serializing_if = "Option::is_none")]
+	pub run_commands: Option<bool>,
+	#[serde(rename = "throwOnDrop", default, skip_serializing_if = "Option::is_none")]
+	pub throw_on_drop: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub images: Option<Vec<ImageContent>>,
+	#[serde(rename = "streamingBehavior", default, skip_serializing_if = "Option::is_none")]
+	pub streaming_behavior: Option<SessionPromptOptionsStreamingBehavior>,
+	#[serde(rename = "toolChoice", default, skip_serializing_if = "Option::is_none")]
+	pub tool_choice: Option<Value>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub synthetic: Option<bool>,
+	#[serde(rename = "userInitiated", default, skip_serializing_if = "Option::is_none")]
+	pub user_initiated: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub attribution: Option<SessionPromptOptionsAttribution>,
+	#[serde(rename = "skipCompactionCheck", default, skip_serializing_if = "Option::is_none")]
+	pub skip_compaction_check: Option<bool>,
+	#[serde(rename = "solutionSpace", default, skip_serializing_if = "Option::is_none")]
+	pub solution_space: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionDisposeOptions {
+	#[serde(rename = "mnemopiConsolidateTimeoutMs", default, skip_serializing_if = "Option::is_none")]
+	pub mnemopi_consolidate_timeout_ms: Option<f64>,
+	#[serde(rename = "drainTimeoutMs", default, skip_serializing_if = "Option::is_none")]
+	pub drain_timeout_ms: Option<f64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<SessionDisposeOptionsReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionAbortOptions {
+	#[serde(rename = "goalReason", default, skip_serializing_if = "Option::is_none")]
+	pub goal_reason: Option<SessionAbortOptionsGoalReason>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<String>,
+	#[serde(rename = "preserveCompaction", default, skip_serializing_if = "Option::is_none")]
+	pub preserve_compaction: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDescriptor {
 	pub name: String,
@@ -3044,10 +3163,68 @@ impl<'de> Deserialize<'de> for UsageLimitState {
 	}
 }
 
+///
+/// Open record: declared fields are decoded leniently (a value that does not fit stays
+/// in `extra`) and every other key is kept in `extra`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct InteractiveViewOptions {
+	pub collapse_compacted_history: Option<bool>,
+	/// Every key not decoded into a declared field.
+	pub extra: Map<String, Value>,
+}
+
+impl Serialize for InteractiveViewOptions {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		let mut map = serializer.serialize_map(None)?;
+		if let Some(value) = &self.collapse_compacted_history {
+			map.serialize_entry("collapseCompactedHistory", value)?;
+		}
+		for (key, value) in &self.extra {
+			match key.as_str() {
+				"collapseCompactedHistory" if self.collapse_compacted_history.is_some() => continue,
+				_ => {}
+			}
+			map.serialize_entry(key, value)?;
+		}
+		map.end()
+	}
+}
+
+impl<'de> Deserialize<'de> for InteractiveViewOptions {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let mut extra = Map::<String, Value>::deserialize(deserializer)?;
+		Ok(Self {
+			collapse_compacted_history: take(&mut extra, "collapseCompactedHistory"),
+			extra,
+		})
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InteractiveViewSnapshot {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	pub context: Map<String, Value>,
+	#[serde(rename = "streamMessage", deserialize_with = "Deserialize::deserialize")]
+	pub stream_message: Option<AgentMessage>,
+	#[serde(rename = "pendingToolCallIds")]
+	pub pending_tool_call_ids: Vec<String>,
+	#[serde(rename = "isStreaming")]
+	pub is_streaming: bool,
+	#[serde(rename = "entryCount")]
+	pub entry_count: f64,
+	#[serde(rename = "compactionCount")]
+	pub compaction_count: f64,
+	#[serde(rename = "sessionFile", default, skip_serializing_if = "Option::is_none")]
+	pub session_file: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionState {
 	#[serde(rename = "sessionId")]
 	pub session_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub view: Option<InteractiveViewSnapshot>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub model: Option<ModelInfo>,
 	#[serde(rename = "thinkingLevel", default, skip_serializing_if = "Option::is_none")]
@@ -3056,6 +3233,8 @@ pub struct SessionState {
 	pub is_streaming: bool,
 	#[serde(rename = "isCompacting", default = "default_session_state_is_compacting")]
 	pub is_compacting: bool,
+	#[serde(rename = "hasPostPromptWork", default = "default_session_state_has_post_prompt_work")]
+	pub has_post_prompt_work: bool,
 	#[serde(rename = "steeringMode", default = "default_session_state_steering_mode")]
 	pub steering_mode: QueueMode,
 	#[serde(rename = "followUpMode", default = "default_session_state_follow_up_mode")]
@@ -5150,6 +5329,15 @@ pub struct PromptParams {
 	pub images: Option<Vec<ImageContent>>,
 	#[serde(rename = "streamingBehavior", default, skip_serializing_if = "Option::is_none")]
 	pub streaming_behavior: Option<StreamingBehavior>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub options: Option<SessionPromptOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptCustomParams {
+	pub message: CustomPromptMessage,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub options: Option<CustomPromptOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5180,6 +5368,12 @@ pub struct PromoteQueuedMessageParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AbortParams {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub options: Option<SessionAbortOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AbortAndPromptParams {
 	pub message: String,
 	/// Images attached to the message.
@@ -5201,6 +5395,29 @@ pub struct OpenSessionParams {
 	pub provider: Option<String>,
 	#[serde(rename = "modelId", default, skip_serializing_if = "Option::is_none")]
 	pub model_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DisposeSessionParams {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub options: Option<SessionDisposeOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SaveDraftParams {
+	pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConsumeDraftResult {
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetStateParams {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub view: Option<InteractiveViewOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5353,6 +5570,23 @@ pub struct LiveStartResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveConnectParams {
+	#[serde(rename = "sdpOffer")]
+	pub sdp_offer: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub voice: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveConnectResult {
+	pub voice: String,
+	#[serde(rename = "sdpAnswer")]
+	pub sdp_answer: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiveMuteParams {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub muted: Option<bool>,
@@ -5440,6 +5674,18 @@ pub struct SetAutoRetryParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BashParams {
 	pub command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetSessionLeaseParams {
+	#[serde(rename = "sessionIds")]
+	pub session_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetSessionLeaseResult {
+	pub held: Vec<String>,
+	pub unknown: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5807,6 +6053,138 @@ impl AssistantErrorEventReason {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CustomPromptMessageAttribution {
+	#[serde(rename = "user")]
+	User,
+	#[serde(rename = "agent")]
+	Agent,
+}
+
+impl CustomPromptMessageAttribution {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::Agent => "agent",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CustomPromptOptionsStreamingBehavior {
+	#[serde(rename = "steer")]
+	Steer,
+	#[serde(rename = "followUp")]
+	FollowUp,
+	#[serde(rename = "aside")]
+	Aside,
+}
+
+impl CustomPromptOptionsStreamingBehavior {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Steer => "steer",
+			Self::FollowUp => "followUp",
+			Self::Aside => "aside",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionPromptOptionsStreamingBehavior {
+	#[serde(rename = "steer")]
+	Steer,
+	#[serde(rename = "followUp")]
+	FollowUp,
+	#[serde(rename = "aside")]
+	Aside,
+}
+
+impl SessionPromptOptionsStreamingBehavior {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Steer => "steer",
+			Self::FollowUp => "followUp",
+			Self::Aside => "aside",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionPromptOptionsAttribution {
+	#[serde(rename = "user")]
+	User,
+	#[serde(rename = "agent")]
+	Agent,
+}
+
+impl SessionPromptOptionsAttribution {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::Agent => "agent",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionDisposeOptionsReason {
+	#[serde(rename = "pre_exit")]
+	PreExit,
+	#[serde(rename = "exit")]
+	Exit,
+	#[serde(rename = "sigint")]
+	Sigint,
+	#[serde(rename = "sigterm")]
+	Sigterm,
+	#[serde(rename = "sighup")]
+	Sighup,
+	#[serde(rename = "uncaught_exception")]
+	UncaughtException,
+	#[serde(rename = "unhandled_rejection")]
+	UnhandledRejection,
+	#[serde(rename = "manual")]
+	Manual,
+}
+
+impl SessionDisposeOptionsReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::PreExit => "pre_exit",
+			Self::Exit => "exit",
+			Self::Sigint => "sigint",
+			Self::Sigterm => "sigterm",
+			Self::Sighup => "sighup",
+			Self::UncaughtException => "uncaught_exception",
+			Self::UnhandledRejection => "unhandled_rejection",
+			Self::Manual => "manual",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionAbortOptionsGoalReason {
+	#[serde(rename = "interrupted")]
+	Interrupted,
+	#[serde(rename = "internal")]
+	Internal,
+}
+
+impl SessionAbortOptionsGoalReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Interrupted => "interrupted",
+			Self::Internal => "internal",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GoalModeStateMode {
 	#[serde(rename = "active")]
 	Active,
@@ -5959,6 +6337,10 @@ fn default_session_state_is_compacting() -> bool {
 	serde_json::from_str("false").expect("valid wire default")
 }
 
+fn default_session_state_has_post_prompt_work() -> bool {
+	serde_json::from_str("false").expect("valid wire default")
+}
+
 fn default_session_state_steering_mode() -> QueueMode {
 	serde_json::from_str("\"one-at-a-time\"").expect("valid wire default")
 }
@@ -6085,6 +6467,26 @@ impl Command for PromptCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<PromptAck>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Submit an attributed custom message through the owner admission pipeline.
+///
+/// The returned value is only the acknowledgement: the work completes with a
+/// `prompt_result` notification carrying this command's id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptCustomCommand {
+	pub message: CustomPromptMessage,
+}
+
+impl Command for PromptCustomCommand {
+	const NAME: &'static str = "prompt_custom";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
 	}
 }
 
@@ -6251,9 +6653,88 @@ impl Command for OpenSessionCommand {
 	}
 }
 
-/// Snapshot the session state.
+/// Stop admitting new owner work before explicit shutdown.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct GetStateCommand {}
+pub struct BeginDisposeCommand {}
+
+impl Command for BeginDisposeCommand {
+	const NAME: &'static str = "begin_dispose";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
+	}
+}
+
+/// Dispose the runtime owner; view detachment does not call this.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct DisposeSessionCommand {}
+
+impl Command for DisposeSessionCommand {
+	const NAME: &'static str = "dispose_session";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
+	}
+}
+
+/// Close and seal the owner journal after restart admission.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct CheckpointSessionCommand {}
+
+impl Command for CheckpointSessionCommand {
+	const NAME: &'static str = "checkpoint_session";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
+	}
+}
+
+/// Persist unsent editor text with the runtime session writer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SaveDraftCommand {
+	pub text: String,
+}
+
+impl Command for SaveDraftCommand {
+	const NAME: &'static str = "save_draft";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
+	}
+}
+
+/// Restore and remove the unsent editor draft once.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ConsumeDraftCommand {}
+
+impl Command for ConsumeDraftCommand {
+	const NAME: &'static str = "consume_draft";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = Option<String>;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<ConsumeDraftResult>(data.unwrap_or_else(|| Value::Object(Map::new()))).map(|result| result.text)
+	}
+}
+
+/// Snapshot the session state, optionally including presentation without opening a view writer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct GetStateCommand {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub view: Option<InteractiveViewOptions>,
+}
 
 impl Command for GetStateCommand {
 	const NAME: &'static str = "get_state";
@@ -6546,6 +7027,27 @@ impl Command for LiveStartCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<LiveStartResult>(data.unwrap_or_else(|| Value::Object(Map::new()))).map(|result| result.voice)
+	}
+}
+
+/// Start a live voice session whose audio runs on a caller-owned WebRTC peer: send its SDP offer, apply the returned answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveConnectCommand {
+	#[serde(rename = "sdpOffer")]
+	pub sdp_offer: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub voice: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub instructions: Option<String>,
+}
+
+impl Command for LiveConnectCommand {
+	const NAME: &'static str = "live_connect";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = LiveConnectResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<LiveConnectResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 
@@ -6885,6 +7387,23 @@ impl Command for GetSessionStatsCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<SessionStats>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Which of these sessions a running process (this one included) owns, probed without taking ownership. Ids in neither list are free; `unknown` could not be probed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetSessionLeaseCommand {
+	#[serde(rename = "sessionIds")]
+	pub session_ids: Vec<String>,
+}
+
+impl Command for GetSessionLeaseCommand {
+	const NAME: &'static str = "get_session_lease";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = GetSessionLeaseResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<GetSessionLeaseResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 

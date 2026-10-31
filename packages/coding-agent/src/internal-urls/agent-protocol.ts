@@ -160,6 +160,15 @@ export class AgentProtocolHandler implements ProtocolHandler {
 	 * `read`, which would skip the previous-run banner {@link resolve} adds.
 	 */
 	async locate(url: InternalUrl, context?: ResolveContext): Promise<string | null> {
+		// A bounded restored roster may omit this worker; retain it before either
+		// output lookup or progress lookup, without changing the shared lookup path.
+		if (context?.sessionFile) {
+			await ensurePersistedRoster(
+				context.agentRegistry ?? AgentRegistry.global(),
+				context.sessionFile,
+				url.rawHost || url.hostname,
+			);
+		}
 		const outputId = url.rawHost || url.hostname;
 		if (!outputId) throw new Error("agent:// URL requires an output ID: agent://<id>");
 		if (outputId === "all" || hasPathExtraction(url)) return null;
@@ -187,10 +196,12 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		if (hasPathExtraction(url)) {
 			throw new Error("agent:// message target cannot have a JSON-path suffix.");
 		}
+		const progress = url.searchParams.has("progress");
+		if (progress && to === "all") throw new Error("agent://all broadcasts cannot be ?progress updates.");
 		if (!content.trim()) throw new Error("agent:// messages require non-empty content.");
 		const result = await executeSend(
 			{ registry, senderId, sessionFileHint: session.getSessionFile?.() },
-			{ to, message: content },
+			{ to, message: content, progress },
 		);
 		return {
 			content: [
@@ -205,6 +216,15 @@ export class AgentProtocolHandler implements ProtocolHandler {
 	}
 
 	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
+		// A bounded restored roster may omit this worker; retain it before either
+		// output lookup or progress lookup, without changing the shared lookup path.
+		if (context?.sessionFile) {
+			await ensurePersistedRoster(
+				context.agentRegistry ?? AgentRegistry.global(),
+				context.sessionFile,
+				url.rawHost || url.hostname,
+			);
+		}
 		const outputId = url.rawHost || url.hostname;
 		if (outputId === "all") throw new Error("agent://all is write-only; use it to broadcast a message.");
 		if (!outputId) {

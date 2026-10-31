@@ -105,6 +105,8 @@ export interface AsyncJobInspection {
 export interface AsyncJobSnapshot {
 	running: AsyncJobSnapshotItem[];
 	recent: AsyncJobSnapshotItem[];
+	/** Exact ids and session-corroborated liveness for registry agents without a running job. */
+	nonJobAgents?: Array<{ id: string; live: boolean }>;
 	delivery: AsyncJobDeliveryState;
 }
 
@@ -119,6 +121,12 @@ export interface AsyncJobTree {
 }
 
 export type { ShakeMode, ShakeResult } from "./shake-types";
+/** Stops this session at the next safe model boundary until released. */
+export interface RestartDrainLease {
+	wasRunning: boolean;
+	waitForQuiescence(): Promise<void>;
+	release(): void;
+}
 
 /**
  * Prewalk switches an active session one-way from its starting model to a
@@ -208,6 +216,12 @@ export interface AgentSessionConfig {
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Hard ceiling on the session's thinking effort (e.g. a task spawn's `task.maxEffort`-capped hint); every later change, including retry-fallback recovery, is re-clamped to it. */
 	thinkingLevelCeiling?: Effort;
+	/**
+	 * Disable retry fallback, context promotion and usage-aware fallback: the turn retries on, or fails
+	 * with, its own model instead. Startup model selection, and the return to the primary after a
+	 * startup fallback, are not affected.
+	 */
+	disableModelFallback?: boolean;
 	/** Retry chain ownership when startup selected one of its fallback entries. */
 	initialRetryFallback?: InitialRetryFallbackState;
 	/** Skip retry.fallbackChains validation at construction; the host calls `validateRetryFallbackChains()` later. */
@@ -499,6 +513,8 @@ export interface FollowUpOptions {
 	attribution?: MessageAttribution;
 	/** Called synchronously with the messages pushed onto the follow-up queue. See {@link PromptOptions.onPromptQueued}. */
 	onPromptQueued?: PromptOptions["onPromptQueued"];
+	/** Called synchronously once the message is on its queue. See {@link PromptOptions.onPromptAdmitted}. */
+	onPromptAdmitted?: () => void;
 }
 
 /** Options for AgentSession.steer(). */
