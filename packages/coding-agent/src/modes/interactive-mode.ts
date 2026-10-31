@@ -2979,16 +2979,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#restartControlInitializing = false;
 
-		// Tern kept the typing of a startup and draws it in the composer; plain
-		// typing that reached omp already went into the draft. The first other
-		// key and everything after it were held until hooks ran, the session
-		// mode settled, the draft was restored and every subscription above was
-		// installed. Tern now sends what it kept, a startup shortcut (Alt+P,
-		// Ctrl+G, extension shortcuts) acts on the final mode, editor contents
-		// and observed session, and a held Enter still meets the bootstrap
-		// submit gate lifted just below.
-		this.composer.releaseHeldInput();
-
 		// Everything is wired: subscriptions observe agent events, the session
 		// mode is reconciled, and the submit handler is installed. Lift the
 		// composer's bootstrap submit gate (`disableSubmit = true` since
@@ -3001,9 +2991,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.disableSubmit = false;
 		this.#idleMaintenanceActivity.ready = true;
 		this.syncIdleMaintenanceView();
-		// Replay startup keys into the restored draft only once Enter can dispatch.
-		// An active dialog retains focus and receives its own keys.
-		this.ui.releaseHeldInput();
+		// Tern kept the typing of a startup and draws it in the composer; plain
+		// typing that reached omp already went into the draft. The first other
+		// key and everything after it were held until hooks ran, the session
+		// mode settled, the draft was restored and every subscription above was
+		// installed. Tern now sends what it kept, a startup shortcut (Alt+P,
+		// Ctrl+G, extension shortcuts) acts on the final mode, editor contents
+		// and observed session, and a held Enter meets the submit gate lifted
+		// above, so it submits the restored draft once. An active dialog
+		// retains focus and receives its own keys.
+		this.composer.releaseHeldInput();
 		// Publish native send readiness even when no user input triggers another frame.
 		this.ui.requestRender();
 		if (process.env.OMP_RESTART_SESSION_ID) {
