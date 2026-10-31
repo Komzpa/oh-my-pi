@@ -4883,7 +4883,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						effectiveThinkingLevel,
 						cfgTaskAgentMaxEffort.get(settings),
 					),
-										...(perCallModelGrants
+					...(perCallModelGrants
 						? {
 								// Every request stays on an approved model that can run at or below the spawn's effort ceiling.
 								assertDispatchModel: (dispatchModel: Model) => {
