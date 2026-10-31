@@ -48,6 +48,7 @@ async function fixture(
 		profile?: string;
 		empty?: boolean;
 		toolsMissing?: boolean;
+		plainRow?: boolean;
 	} = {},
 ) {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-bot-runtime-"));
@@ -71,7 +72,14 @@ async function fixture(
 		appendRequirementsSnapshot({ appendEntry: (kind, data) => manager.appendCustomEntry(kind, data) }, requirements);
 	manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
 		phases: [
-			{ name: "Work", tasks: [{ content: ROW, status: "pending", schedule: { owner: "audit", resources: [cwd] } }] },
+			{
+				name: "Work",
+				tasks: [
+					options.plainRow
+						? { content: ROW, status: "pending", artifactCwd: cwd, artifactOwner: "main" }
+						: { content: ROW, status: "pending", schedule: { owner: "audit", resources: [cwd] } },
+				],
+			},
 		],
 	});
 	const raw = options.raw ?? "audit the artifact";
@@ -469,6 +477,32 @@ describe("runtime bot-thread regressions", () => {
 		await Bun.write(path.join(f.cwd, "artifact.txt"), "new work\n");
 		const result = await f.deliver("call", f.receipt());
 		expect(result).toBeDefined();
+		expect(f.verdict()).toBeUndefined();
+	});
+
+	it("accepts the same commit when dispatch recorded a head and the receipt resolves typed identities", async () => {
+		const f = await fixture({ plainRow: true });
+		await f.prepare("call", { requirementIds: ["R1"] });
+		expect(await f.deliver("call", f.receipt())).toBeUndefined();
+		expect(f.verdict()?.status).toBe("pass");
+	});
+
+	it("rejects a new commit after a head-shaped dispatch", async () => {
+		const f = await fixture({ plainRow: true });
+		await f.prepare("call", { requirementIds: ["R1"] });
+		await Bun.write(path.join(f.cwd, "artifact.txt"), "new work\n");
+		git(f.cwd, "commit", "-am", "move head");
+		const moved = formatRequirementIdentity({ kind: "git", repo: f.cwd, commit: git(f.cwd, "rev-parse", "HEAD") });
+		expect(await f.deliver("call", f.receipt("R1", f.raw, "pass", moved))).toBeDefined();
+		expect(f.verdict()).toBeUndefined();
+	});
+
+	it("rejects a changed dirty fingerprint after a head-shaped dispatch", async () => {
+		const f = await fixture({ plainRow: true });
+		await Bun.write(path.join(f.cwd, "artifact.txt"), "dirty at dispatch\n");
+		await f.prepare("call", { requirementIds: ["R1"] });
+		await Bun.write(path.join(f.cwd, "artifact.txt"), "dirty differently\n");
+		expect(await f.deliver("call", f.receipt())).toBeDefined();
 		expect(f.verdict()).toBeUndefined();
 	});
 
