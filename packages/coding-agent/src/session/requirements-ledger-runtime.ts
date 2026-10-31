@@ -91,6 +91,7 @@ import { BUNDLED_QA_AUDITOR_TEMPLATE } from "../task/agents";
 import type { AgentDefinition } from "../task/types";
 import type { SessionEntry } from "./session-entries";
 import { sha256File } from "../utils/file-hash";
+import type { RequirementIdentity } from "../utils/requirement-artifact";
 import auditInputTemplate from "../prompts/session/requirements-ledger-audit-input.md" with { type: "text" };
 import receiptHeader from "../prompts/session/requirements-ledger-receipt-header.md" with { type: "text" };
 import flowNoticeTemplate from "../prompts/session/requirements-ledger-flow-notice.md" with { type: "text" };
@@ -148,6 +149,22 @@ function requirementArtifactState(artifact: RequirementGateArtifact): unknown {
 		identities: artifact.identities,
 		awaitingUser: artifact.awaitingUser,
 	};
+}
+
+/**
+ * A checkout-resolved artifact carries its commit in `head`; a receipt-typed one carries the same
+ * commit in a path-less Git identity for that checkout. Compare both shapes at one commit location.
+ */
+function comparableArtifactState(state: unknown): string {
+	const value = { ...(state as { cwd?: string; head?: string | null; identities?: RequirementIdentity[] }) };
+	const git = value.identities?.filter(
+		identity => identity.kind === "git" && identity.paths === undefined && identity.repo === value.cwd,
+	);
+	if (!value.head && value.identities?.length === 1 && git?.length === 1 && git[0]!.kind === "git") {
+		value.head = git[0]!.commit;
+		delete value.identities;
+	}
+	return JSON.stringify(value);
 }
 
 /** Exact audit target carrier. It may narrow an already structured row scope, never create one. */
@@ -1387,7 +1404,10 @@ export class RequirementsLedgerRuntime {
 					// `artifact` was resolved through the receipt's typed target above. Compare
 					// like-for-like so a transient QA owner cannot replace the audited target.
 					const current = artifact;
-					if (assignment.rowArtifacts[row] !== JSON.stringify(requirementArtifactState(current)))
+					if (
+						comparableArtifactState(JSON.parse(assignment.rowArtifacts[row]!)) !==
+						comparableArtifactState(requirementArtifactState(current))
+					)
 						return `${receipt.id}: row artifact changed after audit dispatch for ${JSON.stringify(row)}; dispatch: ${assignment.rowArtifacts[row]}; current: ${JSON.stringify(requirementArtifactState(current))}`;
 				}
 				const lastChange = changes.get(row);
