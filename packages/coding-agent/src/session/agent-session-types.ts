@@ -514,6 +514,8 @@ export interface FollowUpOptions {
 	expandPromptTemplates?: boolean;
 	/** Explicit billing/initiator attribution. */
 	attribution?: MessageAttribution;
+	/** Original user text before input-extension transformations. */
+	rawRequirementText?: string;
 	/** Called synchronously with the messages pushed onto the follow-up queue. See {@link PromptOptions.onPromptQueued}. */
 	onPromptQueued?: PromptOptions["onPromptQueued"];
 }
@@ -522,6 +524,8 @@ export interface FollowUpOptions {
 export interface SteerOptions {
 	/** Explicit billing/initiator attribution. */
 	attribution?: MessageAttribution;
+	/** Original user text before input-extension transformations. */
+	rawRequirementText?: string;
 	/** Called synchronously with the messages pushed onto the steering queue. See {@link PromptOptions.onPromptQueued}. */
 	onPromptQueued?: PromptOptions["onPromptQueued"];
 }
