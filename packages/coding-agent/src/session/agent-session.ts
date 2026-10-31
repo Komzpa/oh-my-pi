@@ -4110,20 +4110,6 @@ export class AgentSession implements SettingsScope {
 		return pending;
 	}
 
-	/** Serialize QA receipts after the corresponding transcript commit. */
-	#queueRequirementMessageEndPersistence(message: AgentMessage, promptGeneration: number): Promise<void> {
-		const persistence = this.#queueMessageEndPersistence(message, promptGeneration);
-		if (message.role !== "custom" || message.customType !== ASYNC_RESULT_MESSAGE_TYPE) return persistence;
-		const pending = persistence.then(async () => {
-			if (this.#promptGeneration !== promptGeneration) return;
-			await this.#requirementsLedger
-				.consumeAsyncResult(message)
-				.catch(error => logger.warn("Requirements ledger async consume failed", { error }));
-		});
-		this.#messageEndPersistenceTail = pending.catch(() => {});
-		return pending;
-	}
-
 	async #waitForSessionMessagePersistence(message: AgentMessage): Promise<void> {
 		const key = sessionMessagePersistenceKey(message);
 		if (!key) return;
@@ -6229,6 +6215,20 @@ export class AgentSession implements SettingsScope {
 		if (key !== undefined && this.agent.promptCacheKey === key) {
 			this.agent.promptCacheKey = undefined;
 		}
+	}
+
+	/** Serialize QA receipts after the corresponding transcript commit. */
+	#queueRequirementMessageEndPersistence(message: AgentMessage, promptGeneration: number): Promise<void> {
+		const persistence = this.#queueMessageEndPersistence(message, promptGeneration);
+		if (message.role !== "custom" || message.customType !== ASYNC_RESULT_MESSAGE_TYPE) return persistence;
+		const pending = persistence.then(async () => {
+			if (this.#promptGeneration !== promptGeneration) return;
+			await this.#requirementsLedger
+				.consumeAsyncResult(message)
+				.catch(error => logger.warn("Requirements ledger async consume failed", { error }));
+		});
+		this.#messageEndPersistenceTail = pending.catch(() => {});
+		return pending;
 	}
 
 	/** Compose extension revisions with the requirements gate on the actual published text. */
