@@ -332,6 +332,7 @@ import {
 	type AsyncResultEntry,
 	buildAsyncResultBatchMessage,
 } from "./async-job-delivery";
+import { RequirementsLedgerRuntime, type RequirementsLedgerRuntimeHost } from "./requirements-ledger-runtime";
 import { BashRunner, type BashRunnerHost } from "./bash-runner";
 import {
 	checkpointStartedAtFromEntry,
@@ -1046,6 +1047,9 @@ export class AgentSession implements SettingsScope {
 	#planModeReminderCount = 0;
 	#planModeReminderAwaitingProgress = false;
 	readonly #todo: TodoTracker;
+
+	/** Requirement capture, QA receipts, and completion gates for the main session. */
+	readonly #requirementsLedger: RequirementsLedgerRuntime;
 	readonly #modelMentions: ModelMentionRegistry;
 	#workPoolYieldItems: readonly WorkPoolYieldItem[] = [];
 	/** Item set matching the last successfully rebuilt provider prompt. The base
@@ -2079,6 +2083,15 @@ export class AgentSession implements SettingsScope {
 			consumeLastServedToolChoiceLabel: () => this.#toolChoiceQueue.consumeLastServedLabel(),
 		};
 		this.#todo = new TodoTracker(todoHost);
+		const requirementsHost: RequirementsLedgerRuntimeHost = {
+			agent: this.agent,
+			agentKind: () => this.#agentKind,
+			cwd: () => this.sessionManager.getCwd(),
+			sessionManager: this.sessionManager,
+			onSettledAssistantMessage: message => this.#onRequirementsSettled(message),
+			setTodoPhases: phases => this.#todo.setPhases(phases),
+		};
+		this.#requirementsLedger = new RequirementsLedgerRuntime(requirementsHost);
 		this.#modelMentions = new ModelMentionRegistry({
 			sessionManager: this.sessionManager,
 			modelRegistry: this.#modelRegistry,
@@ -4026,6 +4039,12 @@ export class AgentSession implements SettingsScope {
 	};
 
 	/** Commit messages in emission order without waiting for notification listeners. */
+
+	/** Notification hook the requirements ledger calls when a message settles. */
+	#onRequirementsSettled(message: AssistantMessage): void {
+		// No session-level action required; the ledger persists its own notices.
+	}
+
 	#queueMessageEndPersistence(message: AgentMessage, promptGeneration: number): Promise<void> {
 		const key = sessionMessagePersistenceKey(message);
 		const pending = this.#messageEndPersistenceTail
@@ -4694,6 +4713,11 @@ export class AgentSession implements SettingsScope {
 		if (event.type === "message_end") {
 			await messageEndPersistence;
 			if (this.#promptGeneration !== eventPromptGeneration) return;
+			// Route async-result (QA auditor receipt) messages to the requirements ledger after the
+			// message itself is persisted, so the rejection entry lands after the custom_message receipt.
+			if (event.message.role === "custom" && event.message.customType === ASYNC_RESULT_MESSAGE_TYPE) {
+				await this.#requirementsLedger.consumeAsyncResult(event.message);
+			}
 			if (interruptedThinkingMessage) {
 				this.sessionManager.appendCustomMessageEntry(
 					interruptedThinkingMessage.customType,
@@ -8799,6 +8823,10 @@ export class AgentSession implements SettingsScope {
 		// deliberately do not claim it.
 		const generation = this.#promptGeneration;
 		this.#promptSequence++;
+		// Capture a requirement candidate for real user turns before the first model call.
+		if (message.role === "user" && !message.synthetic && expandedText.trim()) {
+			await this.#requirementsLedger.captureCandidate(expandedText);
+		}
 		const setupAbort = new AbortController();
 		this.#promptSetupAbortController = setupAbort;
 		try {
@@ -9268,6 +9296,9 @@ export class AgentSession implements SettingsScope {
 		// Stamp before image preprocessing so a queued image follow-up measures
 		// from the operator's submission, not after the vision-model description.
 		const submittedAt = Date.now();
+		if (!options?.synthetic && expandedText.trim()) {
+			await this.#requirementsLedger.captureCandidate(expandedText);
+		}
 		if (!options?.synthetic) {
 			await this.#queueUserMessage(expandedText, images, "followUp", {
 				timestamp: submittedAt,
