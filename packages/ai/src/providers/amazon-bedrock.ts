@@ -40,6 +40,8 @@ import { isRecord, normalizeSystemPrompts, normalizeToolCallId, resolveCacheRete
 import { resolveAwsAmbientRegion } from "../utils/aws-profile";
 import {
 	clearStreamingPartialJson,
+	copyPerCallContextMessage,
+	isPerCallContextMessage,
 	kStreamingBlockIndex,
 	kStreamingLastParseLen,
 	kStreamingPartialJson,
@@ -1372,6 +1374,7 @@ function convertMessages(
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const m = transformedMessages[i];
+		const resultStart = result.length;
 
 		switch (m.role) {
 			case "developer":
@@ -1479,16 +1482,17 @@ function convertMessages(
 			default:
 				throw new AIError.ValidationError("Unknown message role");
 		}
+		for (let index = resultStart; index < result.length; index++) {
+			copyPerCallContextMessage(result[index], m);
+		}
 	}
 
 	// Prioritize the final user checkpoint; buildSystemPrompt consumes any
 	// remaining configured capacity afterward.
-	if (result.length > 0) {
-		const lastMessage = result[result.length - 1];
-		if (lastMessage.role === "user" && lastMessage.content) {
-			const cachePoint = takeCachePoint(promptCachePolicy);
-			if (cachePoint) (lastMessage.content as UserContent[]).push(cachePoint);
-		}
+	const lastMessage = result.findLast(message => !isPerCallContextMessage(message));
+	if (lastMessage?.role === "user" && lastMessage.content) {
+		const cachePoint = takeCachePoint(promptCachePolicy);
+		if (cachePoint) (lastMessage.content as UserContent[]).push(cachePoint);
 	}
 
 	return result;

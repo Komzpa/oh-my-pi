@@ -184,7 +184,7 @@ describe("streamDevin large request recovery", () => {
 		expect(AIError.is(result.errorId, AIError.Flag.ContextOverflow)).toBe(true);
 	});
 
-	it("classifies as context overflow if the request follows a large tool execution", async () => {
+	it.each([false, true])("compacts a large tool continuation (elapsed tail: %s)", async withElapsed => {
 		const result = await runTrailerError(
 			{
 				messages: [
@@ -226,6 +226,17 @@ describe("streamDevin large request recovery", () => {
 						isError: false,
 						timestamp: 3,
 					},
+					...(withElapsed
+						? [
+								{
+									role: "developer" as const,
+									content:
+										"elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
+									synthetic: true,
+									timestamp: 4,
+								},
+							]
+						: []),
 				],
 			},
 			"invalid_argument",

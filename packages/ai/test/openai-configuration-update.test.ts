@@ -6,6 +6,7 @@ import {
 } from "@oh-my-pi/pi-ai/providers/openai-configuration-update";
 import { streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
 import type { Context, FetchImpl, Model, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
+import { markPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
 import * as piUtils from "@oh-my-pi/pi-utils";
@@ -29,6 +30,17 @@ const assistant = (id: string, text: string): TestItem => ({
 	content: [{ type: "output_text", text }],
 });
 const update = (effort: string) => ({ type: "configuration_update", reasoning: { effort } });
+
+function elapsedContext(messages: Context["messages"], seconds: number): Context {
+	const note = {
+		role: "developer" as const,
+		content: `elapsed ${seconds}s. Informational only: no deadline or time budget. Continue until the assigned work is done.`,
+		synthetic: true,
+		timestamp: seconds,
+	};
+	markPerCallContextMessage(note);
+	return { messages: [...messages, note] };
+}
 
 describe("planStableOpenAIEffort", () => {
 	it("pins the request-level effort to the baseline and carries changes as configuration_update items", () => {
@@ -174,6 +186,29 @@ describe("openai-codex configuration_update", () => {
 			item.type === "configuration_update" ? [item] : item.role === "user" ? ["user"] : [],
 		);
 
+	it("replays effort changes before refreshed elapsed scaffolding", async () => {
+		const model = createCodexModel("gpt-6-astra");
+		const options = {
+			apiKey: "token",
+			sessionId: "elapsed-effort",
+			providerSessionState: new Map<string, ProviderSessionState>(),
+		};
+		await buildTransformedCodexRequestBody(model, elapsedContext([firstUser], 5), { ...options, reasoning: "low" });
+		const history = [firstUser, firstAssistant, secondUser];
+		const second = await buildTransformedCodexRequestBody(model, elapsedContext(history, 9), {
+			...options,
+			reasoning: "high",
+		});
+		const third = await buildTransformedCodexRequestBody(model, elapsedContext([...history, secondAssistant], 12), {
+			...options,
+			reasoning: "high",
+		});
+		for (const body of [second, third]) {
+			expect(body.reasoning?.effort).toBe("low");
+			expect(body.input?.filter(item => item.type === "configuration_update")).toEqual([update("high")]);
+			expect(JSON.stringify(body.input?.at(-1))).toContain("elapsed");
+		}
+	});
 	it("plans side requests against a copy of the parent's updates", async () => {
 		const model = createCodexModel("gpt-6-astra");
 		const providerSessionState = new Map<string, ProviderSessionState>();
@@ -333,6 +368,37 @@ describe("openai-responses configuration_update", () => {
 		});
 	}
 
+	it("preserves the effort baseline across refreshed elapsed notes on actual requests", async () => {
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const bodies: Array<Record<string, unknown>> = [];
+		const fetchMock: FetchImpl = async (_input, init) => {
+			bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+			return sse(`elapsed_${bodies.length}`);
+		};
+		const messages: Context["messages"] = [{ role: "user", content: "first", timestamp: 0 }];
+		for (const seconds of [5, 9, 12]) {
+			const stream = streamOpenAIResponses(model, elapsedContext(messages, seconds), {
+				apiKey: "test-key",
+				fetch: fetchMock,
+				providerSessionState,
+				sessionId: "elapsed-effort",
+				reasoning: seconds === 5 ? "low" : "high",
+			});
+			for await (const _event of stream) {
+			}
+			messages.push(await stream.result(), { role: "user", content: `next ${seconds}`, timestamp: seconds });
+		}
+		expect(bodies.map(body => body.reasoning)).toEqual(Array(3).fill({ effort: "low", summary: "auto" }));
+		expect((bodies[1]!.input as TestItem[]).filter(item => item.type === "configuration_update")).toEqual([
+			update("high"),
+		]);
+		expect(bodies[2]!.previous_response_id).toBe("elapsed_2");
+		expect((bodies[2]!.input as TestItem[]).filter(item => item.type === "configuration_update")).toEqual([]);
+		for (const body of bodies.slice(1)) {
+			expect(JSON.stringify((body.input as TestItem[]).at(-1))).toContain("elapsed");
+		}
+		expect(JSON.stringify(bodies[2]!.input)).not.toContain("elapsed 9s");
+	});
 	it("pins the request-level effort and replays the update on the platform Responses endpoint", async () => {
 		const providerSessionState = new Map<string, ProviderSessionState>();
 		const bodies: Array<Record<string, unknown>> = [];

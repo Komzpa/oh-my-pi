@@ -197,6 +197,7 @@ Artifacts and side channels:
 - Hard wall clock: `task.maxRuntimeMs` applies to every spawn; default `0` disables it.
 - Recursion depth: `task.maxRecursionDepth` defaults to `2`; negative values disable the cap. The tool registry and shared preflight enforce it, and `runSubprocess(...)` strips child `task` access at max depth.
 - Inline summaries carry output up to `INLINE_OUTPUT_CHARS` (11500) characters whole (`packages/coding-agent/src/task/result-summary.ts`), keeping the envelope under async delivery's `ASYNC_INLINE_RESULT_MAX_CHARS` (12000); an envelope that a long `<error>` or `<merge-summary>` would push past that cap, and any longer output, gets a `PREVIEW_CHARS = 5000` head instead, which requires a full output artifact. `agent://<id>` points to that artifact.
+  - Each child attempt persists a developer transcript note at start and at request boundaries after five minutes have passed since the previous note: `<local HH:MM> · elapsed Nm in this attempt. Your role's time budget applies: past it, stop at the next checkable point and return what is done with its receipt.` Later requests include that history normally. A redispatch starts a fresh attempt clock; lifecycle revival continues the persisted attempt clock. The note does not abort or otherwise change runtime, effort, or model selection, and does not appear in the root session.
 
 ## Errors
 

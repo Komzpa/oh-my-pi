@@ -31,6 +31,7 @@ import {
 import { createAbortSourceTracker } from "../utils/abort";
 import { withReplaySafeStreamRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
+import { isLegacySubagentElapsedNote } from "../utils/subagent-elapsed-note";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
 import {
 	getOpenAIStreamFirstEventTimeoutMs,
@@ -1723,7 +1724,10 @@ export function buildParams(
 	if (model.reasoningMode && !options?.forceReasoningOff) {
 		params.reasoning = { ...params.reasoning, mode: model.reasoningMode };
 	}
+	// Plan stable effort against retained history, never the volatile elapsed tail.
+	const elapsedTail = isLegacySubagentElapsedNote(context.messages.at(-1)) ? messages.pop() : undefined;
 	applyResponsesStableEffort(model, params, messages, options, providerSessionState);
+	if (elapsedTail) messages.push(elapsedTail);
 
 	if (model.compat.isVercelGatewayHost) {
 		applyVercelResponsesCacheControls(params, model.compat, cacheRetention);
@@ -1734,7 +1738,10 @@ export function buildParams(
 	applyOpenAIExtraBody(params, options?.extraBody);
 	applyOpenAIResponsesPromptCachePolicy(params, model, options, statefulCacheBaseline);
 
-	let trailingScaffoldingItems = 0;
+	// The subagent elapsed note is rebuilt with new text every request and is the
+	// last context message; as trailing scaffolding it stays on the wire but out
+	// of the stateful chain baseline, so `previous_response_id` chaining survives.
+	let trailingScaffoldingItems = isLegacySubagentElapsedNote(context.messages.at(-1)) && messages.length > 0 ? 1 : 0;
 	if (options?.forceReasoningOff && model.compat.requiresReasoningOffJuiceInstruction) {
 		const effort = options.reasoning ?? "medium";
 		const juice = getJuiceValue(effort);
@@ -1742,7 +1749,7 @@ export function buildParams(
 			role: "developer",
 			content: [{ type: "input_text", text: `# Juice: ${juice} !important` }],
 		});
-		trailingScaffoldingItems = 1;
+		trailingScaffoldingItems += 1;
 	}
 
 	return { params, trailingScaffoldingItems, strictToolsApplied };
