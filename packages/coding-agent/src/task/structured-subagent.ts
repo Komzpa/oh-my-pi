@@ -653,7 +653,6 @@ export async function resolveEffectiveSubagentPolicy(
 		oauthAccountPools,
 		parentActiveModelPattern: inheritsParentModel ? parentActiveModelPattern : undefined,
 		perCallModelGrants,
-		structured,
 		schema,
 		planMode,
 		isIsolated,
