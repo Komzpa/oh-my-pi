@@ -12,7 +12,6 @@ export interface InteractiveSessionConnection extends Pick<
 	AgentSession,
 	| "promptCustomMessage"
 	| "prompt"
-	| "resume"
 	| "abort"
 	| "subscribe"
 	| "isStreaming"
@@ -63,7 +62,6 @@ export function createLocalInteractiveSessionConnection(
 		consumeDraftState: async draftText => (await session.sessionManager.consumeDraftState?.(draftText)) ?? null,
 		promptCustomMessage: (...args) => session.promptCustomMessage(...args),
 		prompt: (...args) => session.prompt(...args),
-		resume: () => session.resume(),
 		abort: (...args) => session.abort(...args),
 		subscribe: (...args) => session.subscribe(...args),
 		async waitForSettled(signal) {
